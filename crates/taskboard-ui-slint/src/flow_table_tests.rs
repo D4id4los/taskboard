@@ -68,7 +68,7 @@ fn kind_of(flow: &Flow) -> FK {
         | Flow::EditTitle { .. }
         | Flow::RenameStack { .. }
         | Flow::RenameBoard { .. } => FK::Text,
-        Flow::EditDue { .. } => FK::Due,
+        Flow::EditDate { .. } => FK::Due,
         Flow::Move { .. } | Flow::MoveStack { .. } => FK::Move,
         Flow::DragMove { .. } => FK::Drag,
         Flow::Palette { .. } => FK::Palette,
@@ -541,7 +541,14 @@ fn all_flows(fx: &Fixture) -> Vec<Flow> {
         Flow::Create { stack: s1 },
         Flow::CreateStack,
         Flow::EditTitle { task: a },
-        Flow::EditDue { task: a },
+        Flow::EditDate {
+            task: a,
+            field: crate::view_state::DateField::Due,
+        },
+        Flow::EditDate {
+            task: a,
+            field: crate::view_state::DateField::Scheduled,
+        },
         Flow::Move {
             task: a,
             target: s1,
@@ -839,7 +846,10 @@ mod buffer_invariants {
         a.test_reset();
         a.view_state.reconcile(&rig.handle.test_state().load_full());
         let [a_id, _b, _c] = fx.tasks;
-        *a.view_state.flow_mut() = Flow::EditDue { task: a_id };
+        *a.view_state.flow_mut() = Flow::EditDate {
+            task: a_id,
+            field: crate::view_state::DateField::Due,
+        };
     }
 
     #[test]
@@ -883,7 +893,7 @@ mod buffer_invariants {
             }
             assert!(
                 !adapter.borrow().due_buffers_empty(),
-                "a live EditDue keeps its buffers across refreshes"
+                "a live EditDate keeps its buffers across refreshes"
             );
         });
     }

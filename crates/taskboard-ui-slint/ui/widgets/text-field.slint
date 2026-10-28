@@ -32,6 +32,13 @@ export component TextField inherits Rectangle {
     // non-empty buffer; clicking it fires the same `accepted` seam as
     // Return — click ≡ key by construction. Reserves no space.
     in property <bool> commit-affordance: false;
+    // The clear affordance (round 3 D11): an independent trailing "×"
+    // under the same visibility rule as the checkmark (focused +
+    // non-empty). Click ≡ select-all + delete — it empties the buffer
+    // and fires `edited("")` (a *staged* clear; Return commits it) —
+    // never ≡ Return. The two flags are independent; a field carries
+    // one in practice.
+    in property <bool> clear-affordance: false;
     callback edited(string);
     callback accepted(string);
     // The focus-loss seam (round-3 L1, plan §7 — the probe-recorded
@@ -57,6 +64,14 @@ export component TextField inherits Rectangle {
     // The content-free preferred width (r2 D22): the token floor, so
     // a growing buffer cannot stretch the field or its ancestors.
     min-width: Theme.space-15;
+
+    // The clear affordance's one seam (round 3 D11): select-all +
+    // delete, not Return — the buffer empties and the staged clear
+    // rides `edited("")`.
+    function clear-buffer() {
+        input.text = "";
+        root.edited("");
+    }
 
     accessible-role: AccessibleRole.text-input;
     accessible-label: root.label;
@@ -142,6 +157,39 @@ export component TextField inherits Rectangle {
             y: (parent.height - self.height) / 2;
             commands: "M 2 6 L 5 9 L 10 3";
             stroke: commit-touch.has-hover ? Theme.text-primary : Theme.text-secondary;
+            stroke-width: Theme.focus-ring-width;
+            fill: transparent;
+            viewbox-width: 12;
+            viewbox-height: 12;
+        }
+    }
+
+    // The clear affordance (round 3 D11): the x variant — same slot,
+    // same visibility rule, its own seam. TouchArea-only like the
+    // checkmark (no tab stop — a focused child would unmount the
+    // moment it took focus); a11y label "Clear" with the field's
+    // label as description, AT activation on the same seam.
+    if (root.clear-affordance && input.has-focus && input.text != ""): clear-button := Rectangle {
+        x: parent.width - self.width - Theme.space-1;
+        y: (parent.height - self.height) / 2;
+        width: Theme.space-6;
+        height: Theme.space-6;
+        border-radius: Theme.radius-small;
+        background: clear-touch.has-hover ? Theme.surface-hover : transparent;
+        accessible-role: AccessibleRole.button;
+        accessible-label: "Clear";
+        accessible-description: root.label;
+        accessible-action-default => { root.clear-buffer(); }
+        clear-touch := TouchArea {
+            clicked => { root.clear-buffer(); }
+        }
+        Path {
+            width: Theme.space-3;
+            height: Theme.space-3;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            commands: "M 3 3 L 9 9 M 9 3 L 3 9";
+            stroke: clear-touch.has-hover ? Theme.text-primary : Theme.text-secondary;
             stroke-width: Theme.focus-ring-width;
             fill: transparent;
             viewbox-width: 12;

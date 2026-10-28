@@ -15,7 +15,7 @@
 
 use std::collections::BTreeSet;
 
-use chrono::{DateTime, TimeDelta, Utc};
+use chrono::{DateTime, NaiveTime, TimeDelta, Utc};
 use taskboard_domain::{
     AppState, Board, BoardId, Effort, ReminderRef, SidecarHealth, Stack, StackId, SyncPhase, Task,
     TaskId,
@@ -111,6 +111,21 @@ pub fn duration_bucket(delta: TimeDelta) -> DurationBucket {
     DurationBucket::Days(u32::try_from(hours / 24).unwrap_or(u32::MAX))
 }
 
+/// The ` · HH:MM` time suffix (round 3 D9/F15): empty for an absent
+/// or midnight instant — a midnight instant renders exactly the
+/// date-only shape it always did — else the UTC wall-clock time. One
+/// place: both date phrases compose it; the tint/direction language
+/// is untouched.
+#[must_use]
+pub fn at_time_suffix(instant: Option<DateTime<Utc>>) -> String {
+    match instant {
+        Some(instant) if instant.time() != NaiveTime::MIN => {
+            format!(" \u{b7} {}", instant.format("%H:%M"))
+        }
+        _ => String::new(),
+    }
+}
+
 /// The display phrase for a due classification (mono role), assembled
 /// from the bucket with the direction taken from the sign of
 /// `duedate - now`.
@@ -119,10 +134,11 @@ pub fn due_phrase(kind: DueKind, duedate: Option<DateTime<Utc>>, now: DateTime<U
     let Some(duedate) = duedate else {
         return String::new();
     };
+    let suffix = at_time_suffix(Some(duedate));
     let delta = duedate - now;
     let bucket = duration_bucket(delta.abs());
     let quantity = match bucket {
-        DurationBucket::Now => return "now".to_owned(),
+        DurationBucket::Now => return format!("now{suffix}"),
         DurationBucket::Minutes(n) => format!("{n}m"),
         DurationBucket::Hours(n) => format!("{n}h"),
         DurationBucket::Days(n) => format!("{n}d"),
@@ -132,9 +148,9 @@ pub fn due_phrase(kind: DueKind, duedate: Option<DateTime<Utc>>, now: DateTime<U
         _ => "due",
     };
     if delta < TimeDelta::zero() {
-        format!("{quantity} {word}")
+        format!("{quantity} {word}{suffix}")
     } else {
-        format!("in {quantity}")
+        format!("in {quantity}{suffix}")
     }
 }
 
@@ -148,16 +164,17 @@ pub fn scheduled_phrase(scheduled: Option<DateTime<Utc>>, now: DateTime<Utc>) ->
     let Some(scheduled) = scheduled else {
         return String::new();
     };
+    let suffix = at_time_suffix(Some(scheduled));
     let delta = scheduled - now;
     let bucket = duration_bucket(delta.abs());
     match (delta < TimeDelta::zero(), bucket) {
-        (_, DurationBucket::Now) => "starts now".to_owned(),
-        (false, DurationBucket::Minutes(n)) => format!("starts in {n}m"),
-        (false, DurationBucket::Hours(n)) => format!("starts in {n}h"),
-        (false, DurationBucket::Days(n)) => format!("starts in {n}d"),
-        (true, DurationBucket::Minutes(n)) => format!("started {n}m ago"),
-        (true, DurationBucket::Hours(n)) => format!("started {n}h ago"),
-        (true, DurationBucket::Days(n)) => format!("started {n}d ago"),
+        (_, DurationBucket::Now) => format!("starts now{suffix}"),
+        (false, DurationBucket::Minutes(n)) => format!("starts in {n}m{suffix}"),
+        (false, DurationBucket::Hours(n)) => format!("starts in {n}h{suffix}"),
+        (false, DurationBucket::Days(n)) => format!("starts in {n}d{suffix}"),
+        (true, DurationBucket::Minutes(n)) => format!("started {n}m ago{suffix}"),
+        (true, DurationBucket::Hours(n)) => format!("started {n}h ago{suffix}"),
+        (true, DurationBucket::Days(n)) => format!("started {n}d ago{suffix}"),
     }
 }
 
@@ -1634,6 +1651,32 @@ mod tests {
             Effort::new(5400).text_form()
         );
         assert_eq!(effort_phrase(Some(Effort::new(0))), "0s");
+    }
+
+    #[test]
+    fn at_time_suffix_is_empty_for_absent_and_midnight() {
+        use chrono::TimeZone;
+        assert_eq!(at_time_suffix(None), "");
+        let midnight = Utc.with_ymd_and_hms(2030, 1, 31, 0, 0, 0).unwrap();
+        assert_eq!(at_time_suffix(Some(midnight)), "");
+    }
+
+    #[test]
+    fn at_time_suffix_carries_the_utc_clock_and_both_phrases_compose_it() {
+        use chrono::TimeZone;
+        let now = Utc.with_ymd_and_hms(2030, 1, 31, 12, 0, 0).unwrap();
+        let timed = Utc.with_ymd_and_hms(2030, 2, 2, 14, 30, 0).unwrap();
+        assert_eq!(at_time_suffix(Some(timed)), " \u{b7} 14:30");
+        // Midnight instants render exactly the date-only shape.
+        let midnight = Utc.with_ymd_and_hms(2030, 2, 2, 0, 0, 0).unwrap();
+        let timed_phrase = due_phrase(DueKind::Later, Some(timed), now);
+        let midnight_phrase = due_phrase(DueKind::Later, Some(midnight), now);
+        assert!(timed_phrase.ends_with(" \u{b7} 14:30"));
+        assert_eq!(midnight_phrase.find('\u{b7}'), None);
+        let sched_timed = scheduled_phrase(Some(timed), now);
+        let sched_midnight = scheduled_phrase(Some(midnight), now);
+        assert!(sched_timed.ends_with(" \u{b7} 14:30"));
+        assert_eq!(sched_midnight.find('\u{b7}'), None);
     }
 
     #[test]

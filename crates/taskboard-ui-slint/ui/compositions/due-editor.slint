@@ -31,6 +31,14 @@ export component DueEditor inherits VerticalLayout {
     in property <bool> picker-open;
     in property <string> caption;
     in property <[[DueDayModel]]> grid;
+    // The shared editor's field identity (round-3 D8): due and
+    // scheduled mount the same composition — only the field's label
+    // and placeholder differ.
+    in property <string> field-label: "Due date entry";
+    in property <string> entry-placeholder: "YYYY-MM-DD or +2d";
+    // The x-clear affordance (round-3 D11): both date fields enable
+    // it; the staged clear rides `edited("")`.
+    in property <bool> clear-affordance: false;
     callback edited(string);
     callback accepted(string);
     callback picker-toggled();
@@ -55,9 +63,10 @@ export component DueEditor inherits VerticalLayout {
     HorizontalLayout {
         spacing: Theme.space-2;
         due-field := TextField {
-            placeholder: "YYYY-MM-DD or +2d";
-            label: "Due date entry";
+            placeholder: root.entry-placeholder;
+            label: root.field-label;
             initial-text: root.initial-text;
+            clear-affordance: root.clear-affordance;
             horizontal-stretch: 1;
             accepted(text) => { root.accepted(text); }
             edited(text) => { root.edited(text); }

@@ -17,6 +17,7 @@ export struct TaskDetailModel {
     stack-title: string,
     due-phrase: string,
     due-kind: DueKind,
+    scheduled-phrase: string,
     done: bool,
     description: string,
     edit-open: bool,
@@ -26,15 +27,19 @@ export struct TaskDetailModel {
     rules: [RuleRowModel],
     rule-presets: [string],
     rules-hint: string,
-    // The due-date editor (r2 D25): the open flag plus the pushed
-    // picker state (buffer, echo, caption, grid) — the adapter owns
-    // it all across refreshes (R-d), this model only carries.
+    // The date editors (r2 D25, round-3 D8): due and scheduled, one
+    // open at a time (the flow's exclusivity) over the shared
+    // picker state — the adapter owns it all across refreshes
+    // (R-d), this model only carries.
     due-open: bool,
     due-text: string,
     due-echo: string,
-    due-picker-open: bool,
-    due-caption: string,
-    due-grid: [[DueDayModel]],
+    scheduled-open: bool,
+    scheduled-text: string,
+    scheduled-echo: string,
+    date-picker-open: bool,
+    date-caption: string,
+    date-grid: [[DueDayModel]],
 }
 
 export component TaskView inherits FocusScope {
@@ -56,18 +61,26 @@ export component TaskView inherits FocusScope {
     callback rule-remove-clicked(int);
     callback rule-add-preset-clicked(int);
     callback rule-add-custom-accepted(string) -> bool;
-    // The due editor's seams (r2 D25), forwarded to the window.
+    // The date editors' seams (r2 D25, round-3 D8), forwarded to the
+    // window: one open seam per field, one shared interaction set.
     callback due-edit-opened();
-    callback due-edited(string);
-    callback due-accepted(string);
-    callback due-picker-toggled();
-    callback due-picker-key(int);
-    callback due-day-clicked(int);
+    callback scheduled-edit-opened();
+    callback date-edited(string);
+    callback date-accepted(string);
+    callback date-picker-toggled();
+    callback date-picker-key(int);
+    callback date-day-clicked(int);
 
     focus-on-tab-navigation: true;
     accessible-role: AccessibleRole.region;
     accessible-label: "Task: \{root.task.title}";
     init => self.focus();
+
+    pure function scheduled-color() -> color {
+        // The scheduled start carries no overdue semantics: one
+        // neutral tone (the tint language is the due field's).
+        Theme.text-secondary
+    }
 
     pure function due-color() -> color {
         root.task.due-kind == DueKind.overdue ? Semantic.overdue
@@ -168,13 +181,23 @@ export component TaskView inherits FocusScope {
                         text-color: Theme.text-secondary;
                         text: "Due date";
                     }
+                    // The closed cell reads interactive (round-3
+                    // D7/F13): hover surface + pointer, the title
+                    // cell's grammar.
                     if (!root.task.due-open): due-cell := Rectangle {
                         border-radius: Theme.radius-small;
                         accessible-role: AccessibleRole.button;
                         accessible-label: "Edit due date";
                         accessible-description: "Opens the due-date editor.";
                         accessible-action-default => { root.due-edit-opened(); }
-                        touch := TouchArea {
+                        // The hover surface first (z-under the text):
+                        // the title-cell grammar's hover affordance.
+                        if (due-touch.has-hover): Rectangle {
+                            background: Theme.surface-hover;
+                            border-radius: Theme.radius-small;
+                        }
+                        due-touch := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
                             clicked => { root.due-edit-opened(); }
                         }
                         RoleText {
@@ -186,14 +209,60 @@ export component TaskView inherits FocusScope {
                     if (root.task.due-open): DueEditor {
                         initial-text: root.task.due-text;
                         echo: root.task.due-echo;
-                        picker-open: root.task.due-picker-open;
-                        caption: root.task.due-caption;
-                        grid: root.task.due-grid;
-                        edited(text) => root.due-edited(text);
-                        accepted(text) => root.due-accepted(text);
-                        picker-toggled() => root.due-picker-toggled();
-                        picker-key(key) => root.due-picker-key(key);
-                        day-clicked(cell) => root.due-day-clicked(cell);
+                        picker-open: root.task.date-picker-open;
+                        caption: root.task.date-caption;
+                        grid: root.task.date-grid;
+                        clear-affordance: true;
+                        edited(text) => root.date-edited(text);
+                        accepted(text) => root.date-accepted(text);
+                        picker-toggled() => root.date-picker-toggled();
+                        picker-key(key) => root.date-picker-key(key);
+                        day-clicked(cell) => root.date-day-clicked(cell);
+                    }
+                }
+                // The start-date column (round-3 D8/F14): the due
+                // column's grammar, one look — same closed cell, the
+                // same editor composition.
+                VerticalLayout {
+                    RoleText {
+                        role: Typography.caption;
+                        text-color: Theme.text-secondary;
+                        text: "Start date";
+                    }
+                    if (!root.task.scheduled-open): scheduled-cell := Rectangle {
+                        border-radius: Theme.radius-small;
+                        accessible-role: AccessibleRole.button;
+                        accessible-label: "Edit start date";
+                        accessible-description: "Opens the start-date editor.";
+                        accessible-action-default => { root.scheduled-edit-opened(); }
+                        if (scheduled-touch.has-hover): Rectangle {
+                            background: Theme.surface-hover;
+                            border-radius: Theme.radius-small;
+                        }
+                        scheduled-touch := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            clicked => { root.scheduled-edit-opened(); }
+                        }
+                        RoleText {
+                            role: Typography.mono;
+                            text-color: root.scheduled-color();
+                            text: root.task.scheduled-phrase == "" ? "—" : root.task.scheduled-phrase;
+                        }
+                    }
+                    if (root.task.scheduled-open): DueEditor {
+                        field-label: "Start date entry";
+                        entry-placeholder: "YYYY-MM-DD or +2d";
+                        initial-text: root.task.scheduled-text;
+                        echo: root.task.scheduled-echo;
+                        picker-open: root.task.date-picker-open;
+                        caption: root.task.date-caption;
+                        grid: root.task.date-grid;
+                        clear-affordance: true;
+                        edited(text) => root.date-edited(text);
+                        accepted(text) => root.date-accepted(text);
+                        picker-toggled() => root.date-picker-toggled();
+                        picker-key(key) => root.date-picker-key(key);
+                        day-clicked(cell) => root.date-day-clicked(cell);
                     }
                 }
                 VerticalLayout {

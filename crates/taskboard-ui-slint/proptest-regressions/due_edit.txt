@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 5cdca6b1edd6ab4fbd3a701ce0eaec1516cae702c736e7a558b07faf6c37e4c3 # shrinks to days = 1005
+cc c52b20bf187392215b7a97197b0fee306d57d3f845d979469967f7a9fdd28ea9 # shrinks to moves = [(5, 1), (-1, 2), (4, 1)], seed = -976
