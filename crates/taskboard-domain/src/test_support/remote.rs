@@ -297,6 +297,7 @@ pub fn snapshot_strategy() -> impl Strategy<Value = RemoteBoardSnapshot> {
                         labels,
                         archived: row.archived,
                         last_modified: row.last_modified,
+                        created_at: row.last_modified,
                     }
                 })
                 .collect();
@@ -331,6 +332,7 @@ pub fn remote_task_strategy() -> impl Strategy<Value = RemoteTask> {
         prop::collection::btree_set(remote_number().prop_map(RemoteLabelId), 0..3),
         any::<bool>(),
         timestamp_strategy(),
+        timestamp_strategy(),
     )
         .prop_map(
             |(
@@ -345,6 +347,7 @@ pub fn remote_task_strategy() -> impl Strategy<Value = RemoteTask> {
                 labels,
                 archived,
                 last_modified,
+                created_at,
             )| {
                 RemoteTask {
                     id,
@@ -358,6 +361,7 @@ pub fn remote_task_strategy() -> impl Strategy<Value = RemoteTask> {
                     labels,
                     archived,
                     last_modified,
+                    created_at,
                 }
             },
         )

@@ -4044,6 +4044,7 @@ mod tests {
                         .collect(),
                     archived: t.archived,
                     last_modified: t.remote_seen?,
+                    created_at: t.remote_seen?,
                 })
             })
             .collect();

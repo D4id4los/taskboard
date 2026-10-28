@@ -71,6 +71,7 @@ pub(crate) fn remote_task(stack: u64, card: u64, last_modified: i64) -> RemoteTa
         labels: BTreeSet::new(),
         archived: false,
         last_modified: ts(last_modified),
+        created_at: ts(last_modified),
     }
 }
 

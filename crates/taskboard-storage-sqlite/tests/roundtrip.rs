@@ -1081,6 +1081,7 @@ async fn pre_membership_rows_decode_as_fresh_adds_at_the_epoch() {
         labels: BTreeSet::from([taskboard_domain::RemoteLabelId(9)]),
         archived: false,
         last_modified: ts(1_800_000_500),
+        created_at: ts(1_800_000_500),
     };
     let mut ctx = taskboard_domain::RemoteIndex::default();
     ctx.stack_by_ref.insert(
@@ -1178,6 +1179,7 @@ async fn pre_baseline_row_decodes_to_none_and_merges_under_the_fallback() {
         labels: BTreeSet::new(),
         archived: false,
         last_modified: ts(1_800_000_500),
+        created_at: ts(1_800_000_500),
     };
     let ctx = taskboard_domain::RemoteIndex::default();
     let first = taskboard_domain::merge::merge_task(&local, &remote, &ctx, true);

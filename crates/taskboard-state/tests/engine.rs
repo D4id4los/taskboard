@@ -1232,6 +1232,7 @@ async fn failed_report_with_pushes_applies_the_evidence() {
         labels: std::collections::BTreeSet::new(),
         archived: false,
         last_modified: ts(T0 + 60),
+        created_at: ts(T0 + 60),
     });
     let echo = echo_card.tasks.pop().expect("echo task");
     h.report_tx
@@ -2783,6 +2784,7 @@ async fn folded_synced_dismissal_withdraws_the_toast() {
                     labels: std::collections::BTreeSet::new(),
                     archived: false,
                     last_modified: ts(T0),
+                    created_at: ts(T0),
                 }],
                 labels: vec![],
             }),

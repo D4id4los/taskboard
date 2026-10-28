@@ -96,6 +96,11 @@ pub struct RemoteTask {
     /// versioning input. Epoch 0 on old servers decodes to the minimum
     /// `DateTime`, i.e. loses to everything.
     pub last_modified: DateTime<Utc>,
+    /// Server-side creation stamp (#150): the crash-window duplicate
+    /// detection's window input. Same sentinel rule as `last_modified` —
+    /// epoch 0 decodes to the minimum `DateTime`, which fails the
+    /// detection window and degrades to today's adopt-as-new behavior.
+    pub created_at: DateTime<Utc>,
 }
 
 /// The complete remote view of one board at sync time.

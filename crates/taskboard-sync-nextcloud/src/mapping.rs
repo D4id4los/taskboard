@@ -94,6 +94,7 @@ pub fn map_card(card: &Card, board: RemoteBoardId) -> RemoteTask {
             .collect::<BTreeSet<_>>(),
         archived: card.archived,
         last_modified: epoch_secs(card.last_modified),
+        created_at: epoch_secs(card.created_at),
     }
 }
 
@@ -352,6 +353,24 @@ mod tests {
             DateTime::<Utc>::MIN_UTC,
             "old-server epoch 0 loses every LWW comparison"
         );
+        // The card's creation stamp (#150) rides the same sentinel rule:
+        // an old server's 0 decodes to the minimum, which fails the
+        // duplicate-detection window and degrades to adopt-as-new.
+        let card: Card = serde_json::from_str(r#"{"id": 5, "title": "c"}"#).unwrap();
+        let view = map_card(&card, RemoteBoardId(42));
+        assert_eq!(view.created_at, DateTime::<Utc>::MIN_UTC);
+        assert_eq!(view.last_modified, DateTime::<Utc>::MIN_UTC);
+    }
+
+    #[test]
+    fn card_mapping_carries_the_creation_stamp() {
+        let card: Card = serde_json::from_str(
+            r#"{"id": 5, "title": "c", "createdAt": 1700000123, "lastModified": 1700000200}"#,
+        )
+        .unwrap();
+        let view = map_card(&card, RemoteBoardId(42));
+        assert_eq!(view.created_at, ts(1_700_000_123));
+        assert_eq!(view.last_modified, ts(1_700_000_200));
     }
 
     #[test]
@@ -700,6 +719,7 @@ mod tests {
             prop_assert_eq!(view.archived, archived);
             prop_assert_eq!(view.duedate, duedate);
             prop_assert_eq!(view.last_modified, ts(last_modified));
+            prop_assert_eq!(view.created_at, epoch_secs(card.created_at));
             prop_assert_eq!(view.id.card, taskboard_domain::RemoteCardId(id));
             prop_assert_eq!(view.id.stack, RemoteStackId(stack));
             prop_assert_eq!(view.id.board, RemoteBoardId(board_num));

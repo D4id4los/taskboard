@@ -3938,6 +3938,7 @@ mod tests {
             labels,
             archived: arc,
             last_modified: ts(stamp_secs),
+            created_at: ts(stamp_secs),
         }
     }
 
