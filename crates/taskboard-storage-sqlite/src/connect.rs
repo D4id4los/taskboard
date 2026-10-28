@@ -199,7 +199,7 @@ mod tests {
             .fetch_one(&raw)
             .await
             .expect("migration bookkeeping");
-        assert_eq!(applied, 12, "each shipped migration recorded exactly once");
+        assert_eq!(applied, 13, "each shipped migration recorded exactly once");
         raw.close().await;
         second.close().await;
     }
@@ -812,11 +812,21 @@ mod tests {
         // table 0004 re-creates, so the bookkeeping row must go with it or
         // the re-created table would lack the column (SQLite has no
         // dependency tracking; the real pre-0004 upgrade runs 4, …, 7 in
-        // order and lands with the column in place).
-        sqlx::query("DELETE FROM _sqlx_migrations WHERE version = 4 OR version = 7")
+        // order and lands with the column in place). 0013 is the same
+        // shape: its insistence ALTER targets the re-created table, so it
+        // replays with the strip too.
+        sqlx::query("DELETE FROM _sqlx_migrations WHERE version IN (4, 7, 13)")
             .execute(&raw)
             .await
             .expect("strip bookkeeping");
+        // 0013's adhoc_alarms half must strip too: its table was not
+        // dropped, so the replayed ALTER would collide with the
+        // surviving column (the real pre-0004 upgrade runs 8 and 13
+        // fresh, in order).
+        sqlx::query("ALTER TABLE adhoc_alarms DROP COLUMN insistence")
+            .execute(&raw)
+            .await
+            .expect("strip insistence col");
         // 0007's task columns ride the same strip (they re-run with it);
         // literal statements only (sqlx 0.9 audits dynamic SQL).
         sqlx::query("ALTER TABLE tasks DROP COLUMN scheduled")
