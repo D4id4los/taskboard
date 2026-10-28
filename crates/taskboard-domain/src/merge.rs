@@ -11,8 +11,11 @@
 //!   and LWW against the local tombstone clock. Cards have no remote
 //!   delete timestamp, so an observed remote absence always wins
 //!   (delete-wins fallback, R3).
-//! - **Labels** merge as one field (whole-set LWW); **position**
-//!   (`stack` + `order`) is one composite field.
+//! - **Labels** are per-membership OR-set state (ADR 0004's 2026-10-28
+//!   amendment, #129): adds survive concurrently, a removal wins only
+//!   when strictly newer, removals are remembered (no-flap), and entity
+//!   death dominates. **Position** (`stack` + `order`) is one composite
+//!   field.
 //! - **Push echoes** are adopted unconditionally (the server normalizes
 //!   what we just wrote) with clocks advanced to
 //!   `max(local, echo.last_modified)`.
