@@ -64,7 +64,8 @@ mechanically, one baseline record per entity kind).
   stack-from-A-order-from-B chimera. Interleaving of two devices'
   orderings is a documented limitation.
 - *Labels* merge as one field (whole-set LWW). Add-wins OR-set merging is
-  backlogged.
+  backlogged. (Retired by the 2026-10-28 amendment below: labels merge as
+  per-membership OR-set state since #129.)
 
 ** Deletion
 
@@ -252,3 +253,38 @@ remote-vs-local *value provenance*, not queued-op protection.
 Enforcement: the anti-clobber proptest (fields outside a diff's touched
 set keep local values and clocks) and the flipped granularity-trap pin
 in =crates/taskboard-domain/src/merge.rs=.
+
+* Amendment 2026-10-28 — labels merge as an OR-set (#129)
+
+Label assignments are per-membership state: =Task.label_memberships=
+maps each label id to =Added{at}= / =Removed{at}=. The whole-set field
+and its clock (the bullet above) retire with the amendment. Local verbs
+stamp the membership at =now=. At merge, the incoming card's label set
+diffs against the persisted baseline's: an observed remote add stamps
+=Added{ts_r}=, an observed removal stamps =Removed{ts_r}= — an
+unchanged remote set emits no events, so Deck cache-lag echoes of our
+own writes are invisible by construction. Per membership, local state
+vs remote event resolves by the outcome table with an add-wins-on-tie
+bias: a remove beats an add only when strictly newer; adds at equal
+stamps survive in both orders; same-verb merges keep the max clock.
+
+Removed memberships are never forgotten — a stale remote re-add older
+than the removal cannot resurrect the label (the no-flap requirement);
+the push echo preserves removals the same way (every local id missing
+from the echo is tombstoned, never dropped). Entity death dominates: a
+label absent from the board listing force-removes its memberships and
+kills concurrent assignments (the assignment cannot exist server-side;
+the push would 404) — the same rule on the local =DeleteLabel= door.
+The whole-set-LWW limitation above is retired for labels; its residue
+moves to the skew class: a true concurrent add-vs-remove pair is still
+decided by cross-machine stamp order (the same documented class as
+#133).
+
+Enforcement: the outcome-table unit pins (both tie cells) and the
+commutativity / concurrent-add / remove-needs-newer / no-flap /
+entity-death proptests in =crates/taskboard-domain/src/merge.rs=,
+=command.rs=, and =pipeline.rs=; the upgrade pin S12 (pre-0012 join
+rows decode as fresh adds at the epoch stamp) in
+=crates/taskboard-storage-sqlite=. The push wire shape is unchanged:
+the card PUT still carries the live label set (=live_labels= mapped
+through =RemoteIndex=).
