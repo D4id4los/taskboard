@@ -194,7 +194,19 @@ pub fn deliver_task_notification(
 pub fn journey_state() -> (Fixture, AppState) {
     let (fixture, mut state) = golden_state();
     let mut overdue = state.tasks.get(&fixture.task1).expect("task").clone();
-    overdue.duedate = Some(chrono::Utc::now() - TimeDelta::hours(2));
+    // Midnight-aligned (round-3 D9): the due phrases now carry the
+    // UTC `· HH:MM` suffix for non-midnight instants — a wall-clock
+    // stamp would make the goldens run-dependent. Midnight renders
+    // exactly the date-only shape the goldens pin.
+    let today = chrono::Utc::now().date_naive();
+    overdue.duedate = Some(
+        today
+            .checked_sub_signed(TimeDelta::try_days(1).unwrap())
+            .expect("yesterday exists")
+            .and_hms_opt(0, 0, 0)
+            .expect("midnight")
+            .and_utc(),
+    );
     state.tasks.insert(fixture.task1, overdue);
     // The projection is derived: two fabricated ops give the badge its
     // pending count; the phase carries the stored Offline.
@@ -326,10 +338,18 @@ pub fn two_board_state() -> (TwoBoardFixture, AppState) {
 pub fn today_overdue_state() -> (TwoBoardFixture, AppState, [TaskId; 2]) {
     let (fixture, mut state) = two_board_state();
     let now = chrono::Utc::now();
-    // −30 min: the caption bucket ("30m overdue") is stable for the
-    // run's lifetime and identical across runs (each run rebuilds the
-    // stamp against its own now).
-    let overdue_stamp = now - chrono::TimeDelta::try_minutes(30).unwrap();
+    // Midnight-aligned (round-3 D9): the due phrases carry the UTC
+    // `· HH:MM` suffix for non-midnight instants, and a minute-
+    // relative stamp flips its caption bucket across minute
+    // boundaries — midnight renders the date-only shape, stable for
+    // the run's lifetime and identical across runs.
+    let overdue_stamp = now
+        .date_naive()
+        .checked_sub_signed(chrono::TimeDelta::try_days(1).unwrap())
+        .expect("yesterday exists")
+        .and_hms_opt(0, 0, 0)
+        .expect("midnight")
+        .and_utc();
     let board_one_task = TaskId::from_uuid(uuid::Uuid::from_u128(0x3001));
     let board_two_task = TaskId::from_uuid(uuid::Uuid::from_u128(0x3004));
     for id in [board_one_task, board_two_task] {

@@ -12,15 +12,28 @@
 //! - `YYYY-MM-DD` — committed as **00:00 UTC** of that date (a
 //!   date-only entry means "that day begins"; `due_phrase` still
 //!   renders the relative phrase);
+//! - `YYYY-MM-DD HH:MM` — that UTC wall-clock instant (round 3
+//!   D9/F15); exactly one space separates the parts, and out-of-range
+//!   `HH`/`MM` refuse — never clamp. A time suffix on a relative
+//!   form (`+2d 14:30`) is deliberately **not** accepted: the
+//!   relative arm stays single-component;
 //! - `+N<unit>` with unit ∈ `m | h | d | w` — relative to the
 //!   caller's `now`, digits then one unit letter, mirroring the
 //!   domain [`ReminderOffset`](taskboard_domain::ReminderOffset)
 //!   text-form grammar so both UI text grammars read the same;
 //! - empty input means **clear**;
 //! - anything else is a typed refusal — no command, buffer kept.
+//!
+//! UTC is the grammar's zone: `14:30` means 14:30 UTC, and
+//! [`format_entry`] is the inverse seed formatter — the two cannot
+//! disagree by an offset because both are UTC-fixed and this crate
+//! has no tz database.
 
-use crate::presentation::{DUE_SOON_HORIZON, DueKind};
-use chrono::{DateTime, Datelike, Duration as ChronoDuration, NaiveDate, Utc};
+use crate::presentation::DueKind;
+use chrono::{
+    DateTime, Datelike, Duration as ChronoDuration, NaiveDate, NaiveDateTime, NaiveTime, TimeDelta,
+    Timelike, Utc,
+};
 
 /// The typed refusal (r2 D25): carries no text — the caller keeps the
 /// buffer and dispatches nothing.
@@ -38,6 +51,18 @@ pub fn parse(text: &str, now: DateTime<Utc>) -> Result<Option<DateTime<Utc>>, Du
     let trimmed = text.trim();
     if trimmed.is_empty() {
         return Ok(None);
+    }
+    if let Some((date_part, time_part)) = trimmed.split_once(' ') {
+        // Exactly one space (D9): a double space is a refusal, and
+        // `NaiveTime`'s parse refuses any trailing junk — `HH:MM`
+        // only, out-of-range fields refuse rather than clamp.
+        if !time_part.starts_with(' ')
+            && let Ok(date) = NaiveDate::parse_from_str(date_part, "%Y-%m-%d")
+            && let Ok(time) = NaiveTime::parse_from_str(time_part, "%H:%M")
+        {
+            return Ok(Some(NaiveDateTime::new(date, time).and_utc()));
+        }
+        return Err(DueParseError);
     }
     if let Ok(date) = NaiveDate::parse_from_str(trimmed, "%Y-%m-%d") {
         let midnight = date.and_hms_opt(0, 0, 0).ok_or(DueParseError)?;
@@ -77,11 +102,22 @@ fn parse_relative(text: &str, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
 pub fn echo(text: &str, now: DateTime<Utc>) -> String {
     match parse(text, now) {
         Ok(None) => "clears the due date".to_owned(),
-        Ok(Some(instant)) => {
-            let date = instant.date_naive();
-            format!("sets {date}")
-        }
+        Ok(Some(instant)) => format!("sets {}", format_entry(Some(instant))),
         Err(DueParseError) => String::new(),
+    }
+}
+
+/// The seed formatter (round 3 D11): the inverse of [`parse`]'s
+/// absolute forms — `None` is the empty buffer; a midnight instant
+/// formats date-only; any other instant carries its UTC `HH:MM`.
+/// `parse(format_entry(x)) == x` (truncated to the minute) is the
+/// pinned round-trip.
+#[must_use]
+pub fn format_entry(value: Option<DateTime<Utc>>) -> String {
+    match value {
+        None => String::new(),
+        Some(instant) if instant.time() == NaiveTime::MIN => instant.format("%Y-%m-%d").to_string(),
+        Some(instant) => instant.format("%Y-%m-%d %H:%M").to_string(),
     }
 }
 
@@ -93,25 +129,37 @@ pub struct GridCell {
     pub date: Option<NaiveDate>,
 }
 
-/// The calendar picker's pure state (r2 D25/R-d): cursor and
-/// displayed month live in the adapter across refreshes; the Slint
-/// side only renders pushed rows.
+/// The calendar picker's pure state (r2 D25/R-d): cursor, displayed
+/// month, and the optional time-of-day live in the adapter across
+/// refreshes; the Slint side only renders pushed rows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DuePickerState {
     cursor: NaiveDate,
     month: NaiveDate,
+    /// `None` is date-only (commits midnight — today's shape, so
+    /// untouched steppers keep existing instants stable); `Some` is
+    /// the picker's time-of-day the steppers move (round 3 D9).
+    time: Option<NaiveTime>,
 }
+
+/// One 15-minute stepper press (round 3 D9).
+pub const TIME_STEP_MINUTES: u32 = 15;
 
 impl DuePickerState {
     /// Opens on `due`'s month (the anchor the user is editing) or
     /// today's when no due is set; the cursor sits on the due date or
-    /// today.
+    /// today. A non-midnight anchor seeds the time (the steppers pick
+    /// up where the value is); a midnight/absent anchor stays
+    /// date-only.
     #[must_use]
     pub fn open(today: NaiveDate, due: Option<DateTime<Utc>>) -> Self {
         let anchor = due.map_or(today, |instant| instant.date_naive());
         Self {
             cursor: anchor,
             month: first_of_month(anchor),
+            time: due
+                .map(|instant| instant.time())
+                .filter(|time| *time != NaiveTime::MIN),
         }
     }
 
@@ -126,15 +174,71 @@ impl DuePickerState {
         self.month
     }
 
+    /// The picker's time-of-day (`None` = date-only).
+    #[must_use]
+    pub fn time(&self) -> Option<NaiveTime> {
+        self.time
+    }
+
     /// Moves the cursor by `n` days (±1 arrow, ±7 week). The
-    /// displayed month does not follow — the cursor may leave it
-    /// (committing still works; the grid simply shows no cursor).
+    /// displayed month follows the cursor (round 3 D12/F28 — the
+    /// cursor can never leave the grid), so an arrow across a month
+    /// edge flips the caption.
     pub fn move_days(&mut self, n: i64) {
         if let Some(delta) = ChronoDuration::try_days(n)
             && let Some(moved) = self.cursor.checked_add_signed(delta)
         {
             self.cursor = moved;
+            self.month = first_of_month(moved);
         }
+    }
+
+    /// Steps the time-of-day by ±15 minutes (the `n`-fold step),
+    /// wrapping over midnight — the date follows (`move_days`), a
+    /// step is an instant move, not a wall-clock edit. A date-only
+    /// picker stays date-only: the steppers are inert until a time
+    /// exists (typed in or seeded).
+    ///
+    /// # Panics
+    ///
+    /// Never: the midnight anchor is a compile-time constant shape.
+    pub fn step_time(&mut self, n: i32) {
+        let Some(time) = self.time else {
+            return;
+        };
+        let current = i64::from(time.num_seconds_from_midnight() / 60);
+        let total = current + i64::from(n) * i64::from(TIME_STEP_MINUTES);
+        let wrapped = total.rem_euclid(i64::from(24 * 60));
+        if total < 0 {
+            self.move_days(-1);
+        } else if total >= i64::from(24 * 60) {
+            self.move_days(1);
+        }
+        self.time = Some(
+            NaiveTime::from_hms_opt(0, 0, 0).expect("midnight")
+                + ChronoDuration::try_minutes(wrapped).expect("wrapped minutes fit"),
+        );
+    }
+
+    /// The commit instant: the cursor's date at the picker's time —
+    /// midnight when date-only (today's shape). Enter and the day
+    /// cells both funnel through this.
+    ///
+    /// # Panics
+    ///
+    /// Never on calendar dates: the fallback anchors on the cursor,
+    /// which always has a midnight.
+    #[must_use]
+    pub fn commit_instant(&self) -> DateTime<Utc> {
+        let (hour, minute) = self.time.map_or((0, 0), |t| (t.hour(), t.minute()));
+        self.cursor
+            .and_hms_opt(hour, minute, 0)
+            .unwrap_or_else(|| {
+                self.cursor
+                    .and_hms_opt(0, 0, 0)
+                    .expect("a date has a midnight")
+            })
+            .and_utc()
     }
 
     /// Switches the displayed month by `n` (PageUp/PageDown); the
@@ -183,16 +287,16 @@ impl DuePickerState {
 /// The month grid's tint classification (r2 D25): the
 /// [`DueKind`] semantics a *date* carries relative to `today` —
 /// past days read overdue, today and the due-soon horizon read soon,
-/// later days later. No domain predicate duplication: the thresholds
-/// are the same constants the presentation layer pins
-/// (`DUE_SOON_HORIZON`).
+/// later days later. No domain predicate duplication: the horizon is
+/// the same typed value the presentation layer's `due_sets` consumes
+/// (round 3 D14 — one knob everywhere).
 ///
 /// # Panics
 ///
 /// Never on calendar dates: the `unwrap_or_else` anchors on `today`,
 /// which always has a midnight.
 #[must_use]
-pub fn cell_kind(date: NaiveDate, today: NaiveDate) -> DueKind {
+pub fn cell_kind(date: NaiveDate, today: NaiveDate, horizon: TimeDelta) -> DueKind {
     let midnight = |date: NaiveDate| {
         date.and_hms_opt(0, 0, 0)
             .unwrap_or_else(|| today.and_hms_opt(0, 0, 0).expect("today has a midnight"))
@@ -202,7 +306,7 @@ pub fn cell_kind(date: NaiveDate, today: NaiveDate) -> DueKind {
     let today_start = midnight(today);
     if date_start < today_start {
         DueKind::Overdue
-    } else if instant_or_end(date) <= today_start + DUE_SOON_HORIZON {
+    } else if instant_or_end(date) <= today_start + horizon {
         DueKind::Soon
     } else {
         DueKind::Later
@@ -242,20 +346,23 @@ fn shift_month(date: NaiveDate, n: i32) -> Option<NaiveDate> {
 }
 
 fn clamp_into_month(cursor: NaiveDate, month: NaiveDate) -> NaiveDate {
-    cursor
-        .with_day(cursor.day().min(days_in_month(month)))
-        .unwrap_or(cursor)
-        .with_month(month.month())
-        .unwrap_or(cursor)
-        .with_year(month.year())
-        .unwrap_or(cursor)
+    // Reconstructed whole, not field-patched: a chained `with_month`/
+    // `with_day` walk hits intermediate invalid dates (Oct 31 → Feb)
+    // whose `None`s silently skipped the clamp and left the cursor
+    // behind (the proptest-found desync).
+    NaiveDate::from_ymd_opt(
+        month.year(),
+        month.month(),
+        cursor.day().min(days_in_month(month)),
+    )
+    .unwrap_or(cursor)
 }
 
 /// A relative parse hits `now + N·unit` exactly.
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::TimeZone;
+    use chrono::{TimeZone, Timelike};
     use proptest::prelude::*;
 
     fn now() -> DateTime<Utc> {
@@ -309,6 +416,44 @@ mod tests {
     }
 
     #[test]
+    fn date_time_parses_to_the_utc_wall_clock() {
+        let parsed = parse("2030-01-31 14:30", now()).expect("valid time form");
+        assert_eq!(
+            parsed,
+            Some(Utc.with_ymd_and_hms(2030, 1, 31, 14, 30, 0).unwrap())
+        );
+    }
+
+    #[test]
+    fn time_form_edges_refuse() {
+        for text in [
+            "2030-01-31 24:00",
+            "2030-01-31 12:60",
+            "2030-01-31  14:30",   // double space
+            "2030-01-3114:30",     // no space
+            "+2d 14:30",           // no time suffix on the relative form
+            "2030-01-31 14:30:15", // seconds are not the grammar
+        ] {
+            assert_eq!(parse(text, now()), Err(DueParseError), "{text}");
+        }
+    }
+
+    #[test]
+    fn echo_shows_the_time_only_when_present() {
+        assert_eq!(echo("2030-01-31", now()), "sets 2030-01-31");
+        assert_eq!(echo("2030-01-31 14:30", now()), "sets 2030-01-31 14:30");
+    }
+
+    #[test]
+    fn format_entry_seeds_the_buffer_forms() {
+        assert_eq!(format_entry(None), "");
+        let midnight = Utc.with_ymd_and_hms(2030, 1, 31, 0, 0, 0).unwrap();
+        assert_eq!(format_entry(Some(midnight)), "2030-01-31");
+        let timed = Utc.with_ymd_and_hms(2030, 1, 31, 14, 30, 0).unwrap();
+        assert_eq!(format_entry(Some(timed)), "2030-01-31 14:30");
+    }
+
+    #[test]
     fn picker_opens_on_the_due_anchor() {
         let due = Utc.with_ymd_and_hms(2030, 1, 31, 0, 0, 0).unwrap();
         let picker = DuePickerState::open(now().date_naive(), Some(due));
@@ -355,33 +500,110 @@ mod tests {
     }
 
     #[test]
-    fn arrows_move_days_without_dragging_the_month() {
+    fn arrows_move_days_and_the_month_follows() {
+        // Round 3 D12/F28 redefinition: the displayed month syncs to
+        // the moved cursor — the "grid simply shows no cursor" desync
+        // is gone.
         let mut picker = DuePickerState::open(NaiveDate::from_ymd_opt(2030, 1, 31).unwrap(), None);
         picker.move_days(1);
         assert_eq!(
             picker.cursor(),
             NaiveDate::from_ymd_opt(2030, 2, 1).unwrap()
         );
-        assert_eq!(picker.month(), NaiveDate::from_ymd_opt(2030, 1, 1).unwrap());
+        assert_eq!(
+            picker.month(),
+            NaiveDate::from_ymd_opt(2030, 2, 1).unwrap(),
+            "the month flipped with the cursor"
+        );
         picker.move_days(-1);
         picker.move_days(-7);
         assert_eq!(
             picker.cursor(),
             NaiveDate::from_ymd_opt(2030, 1, 24).unwrap()
         );
+        assert_eq!(picker.month(), NaiveDate::from_ymd_opt(2030, 1, 1).unwrap());
+    }
+
+    #[test]
+    fn time_steppers_step_fifteen_minutes_and_wrap_midnight() {
+        let due = chrono::Utc
+            .with_ymd_and_hms(2030, 1, 31, 14, 30, 0)
+            .unwrap();
+        let mut picker =
+            DuePickerState::open(NaiveDate::from_ymd_opt(2030, 1, 31).unwrap(), Some(due));
+        assert_eq!(
+            picker.time(),
+            Some(NaiveTime::from_hms_opt(14, 30, 0).unwrap()),
+            "open seeds a non-midnight anchor's time"
+        );
+        picker.step_time(1);
+        assert_eq!(
+            picker.commit_instant(),
+            chrono::Utc
+                .with_ymd_and_hms(2030, 1, 31, 14, 45, 0)
+                .unwrap()
+        );
+        // Wrap forward over midnight: the date follows.
+        let late = chrono::Utc
+            .with_ymd_and_hms(2030, 1, 31, 23, 50, 0)
+            .unwrap();
+        let mut picker =
+            DuePickerState::open(NaiveDate::from_ymd_opt(2030, 1, 31).unwrap(), Some(late));
+        picker.step_time(1);
+        assert_eq!(
+            picker.commit_instant(),
+            chrono::Utc.with_ymd_and_hms(2030, 2, 1, 0, 5, 0).unwrap()
+        );
+        // Wrap backward: the date follows the other way.
+        picker.step_time(-1);
+        picker.step_time(-1);
+        assert_eq!(
+            picker.commit_instant(),
+            chrono::Utc
+                .with_ymd_and_hms(2030, 1, 31, 23, 35, 0)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn date_only_picker_stays_midnight_until_a_time_exists() {
+        let mut picker = DuePickerState::open(NaiveDate::from_ymd_opt(2030, 1, 31).unwrap(), None);
+        assert_eq!(picker.time(), None, "no anchor time = date-only");
+        picker.step_time(1);
+        assert_eq!(picker.time(), None, "the steppers are inert on date-only");
+        assert_eq!(
+            picker.commit_instant(),
+            chrono::Utc.with_ymd_and_hms(2030, 1, 31, 0, 0, 0).unwrap()
+        );
     }
 
     #[test]
     fn cell_kind_carries_the_due_semantics() {
         let today = NaiveDate::from_ymd_opt(2030, 1, 31).unwrap();
+        let horizon = crate::presentation::DUE_SOON_HORIZON;
         assert_eq!(
-            cell_kind(NaiveDate::from_ymd_opt(2030, 1, 30).unwrap(), today),
+            cell_kind(
+                NaiveDate::from_ymd_opt(2030, 1, 30).unwrap(),
+                today,
+                horizon
+            ),
             DueKind::Overdue
         );
-        assert_eq!(cell_kind(today, today), DueKind::Soon);
+        assert_eq!(cell_kind(today, today, horizon), DueKind::Soon);
         assert_eq!(
-            cell_kind(NaiveDate::from_ymd_opt(2030, 2, 28).unwrap(), today),
+            cell_kind(
+                NaiveDate::from_ymd_opt(2030, 2, 28).unwrap(),
+                today,
+                horizon
+            ),
             DueKind::Later
+        );
+        // The horizon is the knob: a longer window reads soon what the
+        // default reads later.
+        let week = TimeDelta::try_days(7).unwrap();
+        assert_eq!(
+            cell_kind(NaiveDate::from_ymd_opt(2030, 2, 5).unwrap(), today, week),
+            DueKind::Soon
         );
     }
 
@@ -397,6 +619,23 @@ mod tests {
     }
 
     proptest::proptest! {
+        /// The seed formatter and the parser agree on every instant
+        /// ±10 y: `parse(format_entry(x)) == x` truncated to the
+        /// minute — the date-shift guard (round 3 D9): both are
+        /// UTC-fixed, so no offset can sneak between them.
+        #[test]
+        fn entry_round_trips_without_date_shift(secs in -316_224_000i64..=316_224_000) {
+            let now = now();
+            let instant = (now + ChronoDuration::try_seconds(secs).unwrap())
+                .with_second(0)
+                .unwrap()
+                .with_nanosecond(0)
+                .unwrap();
+            let text = format_entry(Some(instant));
+            let parsed = parse(&text, now).expect("formatted entries parse");
+            assert_eq!(parsed, Some(instant), "{text}");
+        }
+
         /// ISO round-trips: every date within ±10 y parses to its own
         /// midnight.
         #[test]
@@ -440,6 +679,28 @@ mod tests {
         #[test]
         fn junk_never_panics(text in ".*") {
             let _ = parse(&text, now());
+        }
+
+        /// Month-follow invariant (round 3 D12): after any move
+        /// sequence — day arrows, month jumps, edges — the cursor is
+        /// inside the displayed month. The caption can never drift
+        /// off the cursor.
+        #[test]
+        fn the_cursor_stays_inside_the_displayed_month(
+            moves in prop::collection::vec((-10i64..=10, 0..3u8), 0..24),
+            seed in -3650i64..=3650,
+        ) {
+            let date = (now() + ChronoDuration::try_days(seed).unwrap()).date_naive();
+            let mut picker = DuePickerState::open(date, None);
+            for &(amount, kind) in &moves {
+                match kind {
+                    0 => picker.move_days(amount),
+                    1 => picker.move_months(i32::try_from(amount).unwrap_or(0)),
+                    _ => picker.month_edge(amount >= 0),
+                }
+                prop_assert_eq!(picker.cursor().month(), picker.month().month());
+                prop_assert_eq!(picker.cursor().year(), picker.month().year());
+            }
         }
 
         /// The grid is always 7-divisible, blanks lead, and every

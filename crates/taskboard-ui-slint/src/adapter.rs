@@ -147,13 +147,19 @@ pub(crate) struct Adapter {
     /// The timers row's alarm (DR-3/3, D-I8); consumed by the next
     /// `timer.cancel` dispatch, then cleared (one-shot).
     timer_target: Option<taskboard_domain::AdhocAlarmId>,
-    /// The due editor's live state (r2 D25/R-d): the typed buffer, its
-    /// echo, and the picker cursor/month — adapter-owned so a refresh
-    /// push can never reset them. A commit consumes all three; the
-    /// clean close keeps the buffer/echo (D25) and closes the picker.
+    /// The date editor's live state (r2 D25/R-d, round-3 D8): the
+    /// typed buffer, its echo, and the picker cursor/month/time —
+    /// adapter-owned so a refresh push can never reset them. A commit
+    /// consumes all three; the clean close keeps the buffer/echo (D25)
+    /// and closes the picker. One set for both date fields (the flow
+    /// names the field; the editor state stays singular).
     due_buffer: String,
     due_echo: String,
     due_picker: Option<crate::due_edit::DuePickerState>,
+    /// The one-shot grid focus flag (round-3 D10): `false` on the
+    /// default-open (the text field keeps focus), `true` on the
+    /// Down-in-field stroke — consumed by the next push.
+    picker_focus_on_mount: bool,
     /// The id tables of the last refresh pass (D2): index → id.
     tables: IdTables,
     /// The persistent model handles of this window (r2 D9): the
@@ -301,11 +307,11 @@ impl Adapter {
         // consumed here, ahead of the resolver, so the insert-mode
         // chain never has to bind it. The stroke is the grammar's own
         // Down row — never a private-use literal.
-        if matches!(self.view_state.flow(), Flow::EditDue { .. })
+        if matches!(self.view_state.flow(), Flow::EditDate { .. })
             && self.due_picker.is_none()
             && Ok(stroke) == crate::keymap::stroke::parse("Down")
         {
-            self.open_due_picker(window);
+            self.open_due_picker(window, true);
             return true;
         }
         // The chain reflects the view-state machine, not a stale seam
@@ -483,23 +489,24 @@ impl Adapter {
         self.sync_view_context();
         let state = self.state.load();
         self.view_state.reconcile(&state);
-        // §8 (W-SM-c): the due editor's buffers never outlive the
-        // flow — non-empty ⇔ `Flow::EditDue` armed. Every outcome
+        // §8 (W-SM-c): the date editor's buffers never outlive the
+        // flow — non-empty ⇔ `Flow::EditDate` armed. Every outcome
         // path and settle flows through here, so this is the one
         // wipe point (commit, discard, leaving-settle and
-        // reconcile-drop all end the flow before this read). Chunk
-        // 3's D11 buffer seeding builds on this wipe.
-        if !matches!(self.view_state.flow(), Flow::EditDue { .. }) {
+        // reconcile-drop all end the flow before this read). The D11
+        // buffer seeding happens inside the armed window (the begin
+        // seam, before `apply_outcomes`).
+        if !matches!(self.view_state.flow(), Flow::EditDate { .. }) {
             self.due_buffer.clear();
             self.due_echo.clear();
             self.due_picker = None;
         }
         debug_assert!(
-            matches!(self.view_state.flow(), Flow::EditDue { .. })
+            matches!(self.view_state.flow(), Flow::EditDate { .. })
                 || (self.due_buffer.is_empty()
                     && self.due_echo.is_empty()
                     && self.due_picker.is_none()),
-            "the due editor's buffers outlived the flow"
+            "the date editor's buffers outlived the flow"
         );
         let chain = self.shell.chain();
         let day = self.day_ctx();
@@ -613,9 +620,9 @@ impl Adapter {
             return false;
         }
         let was_drag = matches!(flow, Flow::DragMove { .. });
-        let was_due = matches!(flow, Flow::EditDue { .. });
+        let was_date = matches!(flow, Flow::EditDate { .. });
         let outcomes = self.view_state.settle_flow(state);
-        if was_due {
+        if was_date {
             self.due_picker = None;
         }
         self.apply_outcomes(window, &outcomes);
@@ -660,8 +667,8 @@ impl Adapter {
         self.scale_drag = None;
     }
 
-    /// The due editor's adapter-owned buffers, for the §8 invariant
-    /// journeys: non-empty ⇔ `Flow::EditDue` armed. (The journeys
+    /// The date editor's adapter-owned buffers, for the §8 invariant
+    /// journeys: non-empty ⇔ `Flow::EditDate` armed. (The journeys
     /// land with the buffer-invariants commit; the seam carries its
     /// allow until then.)
     #[cfg(test)]
@@ -670,7 +677,7 @@ impl Adapter {
         self.due_buffer.is_empty() && self.due_echo.is_empty() && self.due_picker.is_none()
     }
 
-    /// Seeds the due editor's buffers non-empty (the §8 invariant
+    /// Seeds the date editor's buffers non-empty (the §8 invariant
     /// journeys).
     #[cfg(test)]
     #[allow(dead_code)]
@@ -776,15 +783,15 @@ impl Adapter {
             ) => self.interpret_edit(effect, &state),
             // The due editor (r2 D25): Escape discards (the clean
             // close — no commit, buffer/echo kept); the commit itself
-            // rides `commit_due`, so Activate is a named inert here
+            // rides `commit_date`, so Activate is a named inert here
             // (the field's `accepted` seam owns Return) — the r2
             // swallow-all arm is gone (round-3 F18): every other
             // effect settles the flow and re-runs via the resolver.
-            (Flow::EditDue { .. }, UiEffect::SetMode(Mode::Normal)) => {
+            (Flow::EditDate { .. }, UiEffect::SetMode(Mode::Normal)) => {
                 self.due_picker = None;
                 self.view_state.discard_edit()
             }
-            (Flow::EditDue { .. }, UiEffect::Activate | UiEffect::SetMode(Mode::Insert)) => {
+            (Flow::EditDate { .. }, UiEffect::Activate | UiEffect::SetMode(Mode::Insert)) => {
                 Vec::new()
             }
             // -- quick capture (chunk 10 D8): the GLOBAL action, from
@@ -1101,7 +1108,7 @@ impl Adapter {
             | Flow::EditTitle { .. }
             | Flow::RenameStack { .. }
             | Flow::RenameBoard { .. } => FlowKind::Text,
-            Flow::EditDue { .. } => FlowKind::Due,
+            Flow::EditDate { .. } => FlowKind::Due,
             Flow::Move { .. } | Flow::MoveStack { .. } => FlowKind::Move,
             Flow::DragMove { .. } => FlowKind::Drag,
             Flow::Palette { .. } => FlowKind::Palette,
@@ -2382,6 +2389,7 @@ pub(crate) fn install(
         due_buffer: String::new(),
         due_echo: String::new(),
         due_picker: None,
+        picker_focus_on_mount: false,
         board_target: None,
         rule_target: None,
         rule_add_offset: None,
@@ -3609,11 +3617,13 @@ fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     });
 }
 
-/// The due-date editor's seams (r2 D25). The commit funnel is the one
-/// `commit_due` below: the typed Return path, the picker's Enter, and
-/// the day cells' clicks all end in it — click ≡ key by construction.
-/// The picker's cursor/month live on the adapter (R-d) and only ride
-/// the refresh push.
+/// The date editor's seams (r2 D25, round-3 D8). The commit funnel
+/// is the one `commit_date` below: the typed Return path, the picker's
+/// Enter, and the day cells' clicks all end in it — click ≡ key by
+/// construction. The picker's cursor/month/time live on the adapter
+/// (R-d) and only ride the refresh push. Due and scheduled share
+/// every seam; the flow's `DateField` is read only where the
+/// `TaskChanges` mask differs and where the anchor value is read.
 #[allow(clippy::too_many_lines)] // one wiring sequence, kept flat for review
 fn install_due_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     let open = Rc::clone(adapter);
@@ -3623,18 +3633,22 @@ fn install_due_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
             return;
         };
         let mut a = open.borrow_mut();
-        // Round 3 (L2, plan §3.3): a live flow settles before the
-        // due editor replaces it — the open never silently swallows
-        // an armed flow.
-        settle_pointer_conflict(&mut a, &window);
-        let state = a.state.load_full();
-        let outcomes = a.view_state.begin_edit_due(&state);
-        a.apply_outcomes(&window, &outcomes);
+        begin_date_edit(&mut a, &window, crate::view_state::DateField::Due);
+    });
+
+    let open_sched = Rc::clone(adapter);
+    let open_sched_weak = window.as_weak();
+    window.on_task_scheduled_edit_opened(move || {
+        let Some(window) = open_sched_weak.upgrade() else {
+            return;
+        };
+        let mut a = open_sched.borrow_mut();
+        begin_date_edit(&mut a, &window, crate::view_state::DateField::Scheduled);
     });
 
     let edited = Rc::clone(adapter);
     let edited_weak = window.as_weak();
-    window.on_task_due_edited(move |text| {
+    window.on_task_date_edited(move |text| {
         let Some(window) = edited_weak.upgrade() else {
             return;
         };
@@ -3645,12 +3659,13 @@ fn install_due_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         // echo in place (the grid/caption are untouched).
         let mut model = window.get_task_model();
         model.due_echo = SharedString::from(a.due_echo.clone());
+        model.scheduled_echo = SharedString::from(a.due_echo.clone());
         window.set_task_model(model);
     });
 
     let accepted = Rc::clone(adapter);
     let accepted_weak = window.as_weak();
-    window.on_task_due_accepted(move |text| {
+    window.on_task_date_accepted(move |text| {
         let Some(window) = accepted_weak.upgrade() else {
             return;
         };
@@ -3658,13 +3673,13 @@ fn install_due_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         match crate::due_edit::parse(&text, chrono::Utc::now()) {
             // A refusal keeps the buffer and dispatches nothing.
             Err(crate::due_edit::DueParseError) => {}
-            parsed => commit_due(&mut a, &window, parsed.expect("non-error parse")),
+            parsed => commit_date(&mut a, &window, parsed.expect("non-error parse")),
         }
     });
 
     let toggle = Rc::clone(adapter);
     let toggle_weak = window.as_weak();
-    window.on_task_due_picker_toggled(move || {
+    window.on_task_date_picker_toggled(move || {
         let Some(window) = toggle_weak.upgrade() else {
             return;
         };
@@ -3672,13 +3687,13 @@ fn install_due_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         if a.due_picker.take().is_some() {
             a.refresh(&window);
         } else {
-            a.open_due_picker(&window);
+            a.open_due_picker(&window, false);
         }
     });
 
     let key = Rc::clone(adapter);
     let key_weak = window.as_weak();
-    window.on_task_due_picker_key(move |code| {
+    window.on_task_date_picker_key(move |code| {
         let Some(window) = key_weak.upgrade() else {
             return;
         };
@@ -3695,12 +3710,17 @@ fn install_due_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
             5 => picker.move_months(1),
             6 => picker.month_edge(true),
             7 => picker.month_edge(false),
-            // Enter: the cursor's midnight through the one funnel.
+            // Enter: the cursor's date at the picker's time through
+            // the one funnel.
             8 => {
-                let instant = picker.cursor().and_hms_opt(0, 0, 0).map(|m| m.and_utc());
-                commit_due(&mut a, &window, instant);
+                let instant = picker.commit_instant();
+                commit_date(&mut a, &window, Some(instant));
                 return;
             }
+            // The time steppers (round-3 D9): ±15 min, wrapping —
+            // the date follows the wrap.
+            9 => picker.step_time(-1),
+            10 => picker.step_time(1),
             _ => return,
         }
         a.refresh(&window);
@@ -3708,7 +3728,7 @@ fn install_due_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
 
     let day = Rc::clone(adapter);
     let day_weak = window.as_weak();
-    window.on_task_due_day_clicked(move |cell| {
+    window.on_task_date_day_clicked(move |cell| {
         let Some(window) = day_weak.upgrade() else {
             return;
         };
@@ -3727,41 +3747,89 @@ fn install_due_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
             .as_mut()
             .expect("checked above")
             .set_cursor(date);
-        let instant = date.and_hms_opt(0, 0, 0).map(|m| m.and_utc());
-        commit_due(&mut a, &window, instant);
+        // The click carries the picker's time (round-3 D9): cursor
+        // date + time-of-day through the one funnel.
+        let instant = a
+            .due_picker
+            .as_ref()
+            .expect("checked above")
+            .commit_instant();
+        commit_date(&mut a, &window, Some(instant));
     });
 }
 
-/// Opens the picker anchored on the subject task's due (or today) —
-/// the calendar button's and the Down-in-field toggle's shared path.
+/// The one begin seam (round-3 D11): settle any live flow, arm
+/// `field`'s editor, then seed the buffer with the field's *current
+/// value* — inside the armed window, before the outcomes' refresh, so
+/// the §8 invariant (non-empty ⇔ armed) holds and an immediate Return
+/// re-commits the value instead of clearing it.
+fn begin_date_edit(a: &mut Adapter, window: &AppWindow, field: crate::view_state::DateField) {
+    settle_pointer_conflict(a, window);
+    let state = a.state.load_full();
+    let outcomes = a.view_state.begin_edit_date(&state, field);
+    let value = a
+        .view_state
+        .subject_task()
+        .and_then(|id| state.tasks.get(&id))
+        .and_then(|t| match field {
+            crate::view_state::DateField::Due => t.duedate,
+            crate::view_state::DateField::Scheduled => t.scheduled,
+        });
+    a.due_buffer = crate::due_edit::format_entry(value);
+    a.due_echo = crate::due_edit::echo(&a.due_buffer, chrono::Utc::now());
+    a.apply_outcomes(window, &outcomes);
+}
+
+/// Opens the picker anchored on the armed field's current value (or
+/// today) — the calendar button's, the Down-in-field toggle's, and
+/// the default-open begin's shared path. `focus_grid` is the one-shot
+/// `focus-on-mount` flag: `false` keeps the text field focused
+/// (typing-first), `true` hands focus to the grid.
 impl Adapter {
-    fn open_due_picker(&mut self, window: &AppWindow) {
+    fn open_due_picker(&mut self, window: &AppWindow, focus_grid: bool) {
         let state = self.state.load_full();
-        let due = self
+        let field = match self.view_state.flow() {
+            Flow::EditDate { field, .. } => *field,
+            _ => return,
+        };
+        let anchor = self
             .view_state
             .subject_task()
             .and_then(|id| state.tasks.get(&id))
-            .and_then(|t| t.duedate);
+            .and_then(|t| match field {
+                crate::view_state::DateField::Due => t.duedate,
+                crate::view_state::DateField::Scheduled => t.scheduled,
+            });
+        self.picker_focus_on_mount = focus_grid;
         self.due_picker = Some(crate::due_edit::DuePickerState::open(
             chrono::Utc::now().date_naive(),
-            due,
+            anchor,
         ));
         self.refresh(window);
     }
 }
 
-/// The one commit funnel (r2 D25): dispatch the typed `UpdateTask`
-/// duedate change, then end the flow. `None` clears (the empty-entry
-/// semantics).
-fn commit_due(a: &mut Adapter, window: &AppWindow, instant: Option<chrono::DateTime<chrono::Utc>>) {
+/// The one commit funnel (r2 D25, round-3 D8): dispatch the typed
+/// `UpdateTask` change for the flow's field, then end the flow.
+/// `None` clears (the empty-entry / x-clear semantics).
+fn commit_date(
+    a: &mut Adapter,
+    window: &AppWindow,
+    instant: Option<chrono::DateTime<chrono::Utc>>,
+) {
     let task = match a.view_state.flow() {
-        Flow::EditDue { task } => *task,
+        Flow::EditDate { task, field } => (*task, *field),
         _ => return,
     };
+    let (duedate, scheduled) = match task.1 {
+        crate::view_state::DateField::Due => (Some(instant), None),
+        crate::view_state::DateField::Scheduled => (None, Some(instant)),
+    };
     let command = StateCommand::UpdateTask {
-        id: task,
+        id: task.0,
         changes: taskboard_domain::TaskChanges {
-            duedate: Some(instant),
+            duedate,
+            scheduled,
             ..taskboard_domain::TaskChanges::default()
         },
     };
@@ -3771,7 +3839,7 @@ fn commit_due(a: &mut Adapter, window: &AppWindow, instant: Option<chrono::DateT
     a.due_buffer.clear();
     a.due_echo.clear();
     a.due_picker = None;
-    let outcomes = a.view_state.end_edit_due();
+    let outcomes = a.view_state.end_edit_date();
     a.apply_outcomes(window, &outcomes);
 }
 

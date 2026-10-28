@@ -23,7 +23,7 @@ use crate::actions::{ActionId, ContextId};
 use crate::keymap::Keymap;
 use crate::presentation::{self, DueKind, DueSets};
 use crate::responsive::Breakpoint;
-use crate::view_state::{Flow, ViewState};
+use crate::view_state::{DateField, Flow, ViewState};
 use crate::{
     AppWindow, BannerRowModel, BoardBarModel, BoardModel, BoardSegmentModel,
     Breakpoint as SlintBreakpoint, DecorationKind, DragState, DueDayModel, DueKind as SlintDueKind,
@@ -1032,10 +1032,24 @@ fn push_task_detail(
     // The due editor's grid (r2 D25): rows of seven, leading blanks,
     // cursor/today/kind markers — pushed only while the editor is
     // open; the empty model otherwise.
-    let due_open = matches!(vs.flow(), Flow::EditDue { .. });
+    let due_open = matches!(
+        vs.flow(),
+        Flow::EditDate {
+            field: DateField::Due,
+            ..
+        }
+    );
+    let scheduled_open = matches!(
+        vs.flow(),
+        Flow::EditDate {
+            field: DateField::Scheduled,
+            ..
+        }
+    );
+    let date_open = due_open || scheduled_open;
     let due_grid_rows: Vec<slint::ModelRc<DueDayModel>> = due
         .picker
-        .filter(|_| due_open)
+        .filter(|_| date_open)
         .map(|picker| {
             let today = now.date_naive();
             picker
@@ -1054,11 +1068,16 @@ fn push_task_detail(
                                     blank: date.is_none(),
                                     cursor: date.is_some_and(|d| d == picker.cursor()),
                                     today: date.is_some_and(|d| d == today),
-                                    kind: to_slint_due_kind(
-                                        date.map_or(crate::presentation::DueKind::None, |d| {
-                                            crate::due_edit::cell_kind(d, today)
-                                        }),
-                                    ),
+                                    kind: to_slint_due_kind(date.map_or(
+                                        crate::presentation::DueKind::None,
+                                        |d| {
+                                            crate::due_edit::cell_kind(
+                                                d,
+                                                today,
+                                                crate::presentation::DUE_SOON_HORIZON,
+                                            )
+                                        },
+                                    )),
                                 }
                             })
                             .collect::<Vec<DueDayModel>>(),
@@ -1067,7 +1086,7 @@ fn push_task_detail(
                 .collect::<Vec<slint::ModelRc<DueDayModel>>>()
         })
         .unwrap_or_default();
-    let due_grid = slint::ModelRc::new(slint::VecModel::from(due_grid_rows));
+    let date_grid = slint::ModelRc::new(slint::VecModel::from(due_grid_rows));
 
     let presets_handle = models.task_rule_presets.get_or_insert_with(Rc::default);
     let mut mutations = diff_rows(presets_handle, &preset_rows);
@@ -1098,14 +1117,20 @@ fn push_task_detail(
         rule_presets: ModelRc::from(presets_handle.clone()),
         rules_hint: SharedString::from(presentation::rule_list_hint(task_rules.len())),
         due_open,
-        due_text: SharedString::from(due.text),
-        due_echo: SharedString::from(due.echo),
-        due_picker_open: due.picker.is_some(),
-        due_caption: SharedString::from(
+        due_text: SharedString::from(if due_open { due.text } else { "" }),
+        due_echo: SharedString::from(if due_open { due.echo } else { "" }),
+        scheduled_open,
+        scheduled_text: SharedString::from(if scheduled_open { due.text } else { "" }),
+        scheduled_echo: SharedString::from(if scheduled_open { due.echo } else { "" }),
+        scheduled_phrase: SharedString::from(subject.map_or(String::new(), |t| {
+            presentation::scheduled_phrase(t.scheduled, now)
+        })),
+        date_picker_open: due.picker.is_some(),
+        date_caption: SharedString::from(
             due.picker
                 .map_or(String::new(), |p| p.month().format("%Y-%m").to_string()),
         ),
-        due_grid,
+        date_grid,
     });
     tables.task_rules = task_rules;
     mutations

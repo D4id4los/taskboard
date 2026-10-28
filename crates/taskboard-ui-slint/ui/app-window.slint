@@ -314,11 +314,12 @@ export component AppWindow inherits Window {
                 rule-add-preset-clicked(i) => root.rule-add-preset-clicked(i);
                 rule-add-custom-accepted(t) => root.rule-add-custom-accepted(t);
                 due-edit-opened() => root.task-due-edit-opened();
-                due-edited(t) => root.task-due-edited(t);
-                due-accepted(t) => root.task-due-accepted(t);
-                due-picker-toggled() => root.task-due-picker-toggled();
-                due-picker-key(k) => root.task-due-picker-key(k);
-                due-day-clicked(c) => root.task-due-day-clicked(c);
+                scheduled-edit-opened() => root.task-scheduled-edit-opened();
+                date-edited(t) => root.task-date-edited(t);
+                date-accepted(t) => root.task-date-accepted(t);
+                date-picker-toggled() => root.task-date-picker-toggled();
+                date-picker-key(k) => root.task-date-picker-key(k);
+                date-day-clicked(c) => root.task-date-day-clicked(c);
             }
 
             // The board create/rename fields (r2 D21): the
@@ -668,11 +669,12 @@ export component AppWindow inherits Window {
     // and the composition resets its buffer — no reject seam.
     pure callback rule-add-custom-accepted(string) -> bool;
     pure callback task-due-edit-opened();
-    pure callback task-due-edited(string);
-    pure callback task-due-accepted(string);
-    pure callback task-due-picker-toggled();
-    pure callback task-due-picker-key(int);
-    pure callback task-due-day-clicked(int);
+    pure callback task-scheduled-edit-opened();
+    pure callback task-date-edited(string);
+    pure callback task-date-accepted(string);
+    pure callback task-date-picker-toggled();
+    pure callback task-date-picker-key(int);
+    pure callback task-date-day-clicked(int);
     pure callback banner-snooze-clicked(int);
     pure callback banner-mute-clicked(int);
     pure callback banner-row-activated(int);
