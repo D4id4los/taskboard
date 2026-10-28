@@ -807,7 +807,7 @@ pub fn task_row(state: &AppState, task: &Task, due: &DueContext) -> TaskRow {
         stack_id: task.stack.as_uuid().to_string(),
         stack_title,
         labels: task
-            .labels
+            .live_labels()
             .iter()
             .filter_map(|id| state.labels.get(id))
             .map(|l| l.title.clone())

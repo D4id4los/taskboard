@@ -20,7 +20,7 @@ use crate::test_platform::on_slint_thread;
 use crate::view_state::Flow;
 use crate::{UiHandle, UiSettings};
 use std::cell::RefCell;
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -489,6 +489,7 @@ fn fixture() -> (AppState, Fixture) {
     let task = |id: TaskId, stk: StackId, order: i64| Task {
         id,
         remote: None,
+        label_memberships: BTreeMap::new(),
         title: format!("task-{order}"),
         description: String::new(),
         duedate: None,
@@ -496,7 +497,6 @@ fn fixture() -> (AppState, Fixture) {
         done: None,
         stack: stk,
         order,
-        labels: BTreeSet::default(),
         effort: None,
         importance: None,
         urgency: None,
@@ -510,7 +510,6 @@ fn fixture() -> (AppState, Fixture) {
             scheduled: now,
             done: now,
             position: now,
-            labels: now,
             effort: now,
             importance: now,
             urgency: now,

@@ -336,7 +336,6 @@ mod today_tests {
     use crate::test_support::{self, proptest_config};
     use chrono::{TimeDelta, TimeZone};
     use proptest::prelude::*;
-    use std::collections::BTreeSet;
 
     fn day() -> TimeDelta {
         TimeDelta::try_hours(24).unwrap()
@@ -363,7 +362,7 @@ mod today_tests {
             done,
             stack: crate::ids::StackId::from(uuid::Uuid::from_u128(1)),
             order,
-            labels: BTreeSet::default(),
+            label_memberships: BTreeMap::default(),
             effort: None,
             importance: None,
             urgency: None,
@@ -378,7 +377,6 @@ mod today_tests {
                 scheduled: stamp(100),
                 done: stamp(100),
                 position: stamp(100),
-                labels: stamp(100),
                 effort: stamp(100),
                 importance: stamp(100),
                 urgency: stamp(100),

@@ -5,7 +5,7 @@
 //! reads. Shared between the bench target and the fixture-contract test
 //! via `#[path]` (plan D1).
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use chrono::{DateTime, TimeDelta, TimeZone, Utc};
 use taskboard_domain::entities::{
@@ -144,10 +144,16 @@ fn fixture_label(l: usize, board: &Board) -> Label {
 }
 
 fn fixture_task(i: usize, stacks: &[Stack], labels: &[Label]) -> Task {
-    let mut label_set = BTreeSet::new();
-    label_set.insert(labels[i % LABEL_COUNT].id);
+    let mut label_set = BTreeMap::new();
+    label_set.insert(
+        labels[i % LABEL_COUNT].id,
+        taskboard_domain::entities::MembershipState::Added { at: ts(ix(i)) },
+    );
     if !i.is_multiple_of(2) {
-        label_set.insert(labels[(i + 3) % LABEL_COUNT].id);
+        label_set.insert(
+            labels[(i + 3) % LABEL_COUNT].id,
+            taskboard_domain::entities::MembershipState::Added { at: ts(ix(i)) },
+        );
     }
     Task {
         id: TaskId::from(id(TASK_BASE, i)),
@@ -163,7 +169,7 @@ fn fixture_task(i: usize, stacks: &[Stack], labels: &[Label]) -> Task {
         done: i.is_multiple_of(10).then(|| ts(ix(i) + 2_000_000)),
         stack: stacks[i % STACK_COUNT].id,
         order: ix(i),
-        labels: label_set,
+        label_memberships: label_set,
         effort: None,
         importance: None,
         urgency: None,
@@ -186,7 +192,6 @@ fn task_clocks(i: usize) -> TaskClocks {
         scheduled: ts(ix(i) + 1_500_000),
         done: t,
         position: t,
-        labels: t,
         effort: ts(ix(i) + 1_600_000),
         importance: ts(ix(i) + 1_700_000),
         urgency: ts(ix(i) + 1_800_000),

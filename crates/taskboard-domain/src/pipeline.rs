@@ -104,8 +104,8 @@ pub(crate) struct PendingTaskIntent {
     pub(crate) importance: bool,
     pub(crate) urgency: bool,
     pub(crate) recur: bool,
-    /// The D-S6 rules flag: the guard's one deliberate non-clock member
-    /// (rules carry their own embedded write clocks, not `TaskClocks`).
+    /// The D-S6 rules flag: a deliberate non-clock member (rules carry
+    /// their own embedded write clocks, not `TaskClocks`).
     pub(crate) reminder_rules: bool,
     pub(crate) deleted: bool,
 }
@@ -234,8 +234,12 @@ fn keep_task_intent(merged: &mut Task, local: &Task, task_id: TaskId, p: Pending
         merged.clocks.recur = local.clocks.recur;
     }
     if p.labels {
-        merged.labels.clone_from(&local.labels);
-        merged.clocks.labels = local.clocks.labels;
+        // The coarse whole-map restore (the guard protects the OR-set
+        // map's entries, not a clock — the second deliberate non-clock
+        // guard member beside `reminder_rules`).
+        merged
+            .label_memberships
+            .clone_from(&local.label_memberships);
     }
     if p.deleted {
         merged.deleted = local.deleted;
@@ -1498,7 +1502,6 @@ mod tests {
             scheduled: e,
             done: e,
             position: e,
-            labels: e,
             effort: e,
             importance: e,
             urgency: e,
@@ -1517,8 +1520,10 @@ mod tests {
         assert_eq!(clock_keys, manifest_clocks);
 
         // (b) An all-true PendingTaskIntent: the guard key set covers the
-        // clock set and differs from it by exactly the deliberate
-        // non-clock `reminder_rules` flag (D-S6).
+        // clock set and differs from it by exactly the two deliberate
+        // non-clock members — `reminder_rules` (D-S6: rules carry their
+        // own embedded write clocks) and `labels` (the OR-set guard
+        // protects the membership map's entries, not a clock).
         let intent = PendingTaskIntent {
             title: true,
             description: true,
@@ -1543,7 +1548,7 @@ mod tests {
             .map(String::as_str)
             .collect();
         let extra: BTreeSet<&str> = intent_keys.difference(&manifest_clocks).copied().collect();
-        assert_eq!(extra, BTreeSet::from(["reminder_rules"]));
+        assert_eq!(extra, BTreeSet::from(["reminder_rules", "labels"]));
         assert!(manifest_clocks.is_subset(&intent_keys));
 
         // (d) A fully-populated TaskChanges (every slot `Some`, so
@@ -2463,7 +2468,7 @@ mod tests {
             .find(|t| t.remote == Some(remote.id))
             .expect("remote task adopted");
         assert_eq!(
-            adopted_task.labels,
+            adopted_task.live_labels(),
             BTreeSet::from([adopted_label.id]),
             "R7 resolution uses the post-adoption mapping"
         );
@@ -3474,7 +3479,7 @@ mod tests {
                     stack: r.stack,
                     order: t.order,
                     labels: t
-                        .labels
+                        .live_labels()
                         .iter()
                         .filter_map(|id| label_refs.get(id).map(|ref_| ref_.label))
                         .collect(),
@@ -5294,8 +5299,10 @@ mod tests {
         let label_id = label.id;
         state.labels.insert(label_id, label);
         let mut local = bound_task(1);
-        local.labels.insert(label_id);
-        local.clocks.labels = ts(BASE + 120);
+        local.label_memberships.insert(
+            label_id,
+            crate::entities::MembershipState::Added { at: ts(BASE + 120) },
+        );
         state.tasks.insert(local.id, local);
         let op = crate::outbox::PendingOp {
             op_id: crate::outbox::OpId(uuid::Uuid::from_u128(91)),
@@ -5319,8 +5326,15 @@ mod tests {
 
         let final_state = app_into_state(&app);
         let merged = task_by_card(&final_state, 1);
-        assert_eq!(merged.labels, BTreeSet::from([label_id]), "protected set");
-        assert_eq!(merged.clocks.labels, ts(BASE + 120));
+        assert_eq!(
+            merged.live_labels(),
+            BTreeSet::from([label_id]),
+            "protected set"
+        );
+        assert_eq!(
+            merged.label_memberships[&label_id],
+            crate::entities::MembershipState::Added { at: ts(BASE + 120) }
+        );
         assert_eq!(merged.remote_seen, Some(ts(BASE + 300)));
     }
 

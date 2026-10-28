@@ -98,7 +98,6 @@ struct TaskRow {
     ck_scheduled: String,
     ck_done: String,
     ck_position: String,
-    ck_labels: String,
     ck_effort: String,
     ck_importance: String,
     ck_urgency: String,
@@ -325,10 +324,23 @@ fn decode_task(
                 card: RemoteCardId(nums[2]),
             },
         );
-    let labels: BTreeSet<LabelId> = label_sets
-        .get(&id)
-        .map(|set| set.iter().copied().map(LabelId::from).collect())
-        .unwrap_or_default();
+    let label_memberships: BTreeMap<LabelId, taskboard_domain::entities::MembershipState> =
+        label_sets
+            .get(&id)
+            .map(|set| {
+                set.iter()
+                    .copied()
+                    .map(|u| {
+                        (
+                            LabelId::from(u),
+                            taskboard_domain::entities::MembershipState::Added {
+                                at: taskboard_domain::entities::BoardClocks::epoch(),
+                            },
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
     Ok(Task {
         id: TaskId::from(id),
         remote,
@@ -339,7 +351,7 @@ fn decode_task(
         done: row.done,
         stack: StackId::from(stack),
         order: row.sort_order,
-        labels,
+        label_memberships,
         effort: row
             .effort
             .map(u64::try_from)
@@ -379,10 +391,6 @@ fn decode_task(
                 .map_err(|_| RepositoryError::Corrupted)?,
             position: row
                 .ck_position
-                .parse()
-                .map_err(|_| RepositoryError::Corrupted)?,
-            labels: row
-                .ck_labels
                 .parse()
                 .map_err(|_| RepositoryError::Corrupted)?,
             effort: row
@@ -611,7 +619,7 @@ impl SqliteTaskRepository {
                       importance, urgency, recur,
                       archived as "archived: bool", deleted as "deleted: bool",
                       ck_title, ck_description, ck_duedate, ck_scheduled, ck_done,
-                      ck_position, ck_labels, ck_effort, ck_importance, ck_urgency,
+                      ck_position, ck_effort, ck_importance, ck_urgency,
                       ck_recur, ck_archived, ck_deleted,
                       remote_seen as "remote_seen: DateTime<Utc>",
                       remote_baseline
@@ -1142,7 +1150,15 @@ async fn execute_batch(
             task.clocks.scheduled.to_rfc3339(),
             task.clocks.done.to_rfc3339(),
             task.clocks.position.to_rfc3339(),
-            task.clocks.labels.to_rfc3339(),
+            // Vestigial since the OR-set migration (the membership map
+            // owns the label clocks): NOT NULL without a DEFAULT keeps
+            // the column in every INSERT; it is never read again.
+            task.label_memberships
+                .values()
+                .map(|s| s.at())
+                .max()
+                .unwrap_or_else(taskboard_domain::entities::BoardClocks::epoch)
+                .to_rfc3339(),
             task.clocks.effort.to_rfc3339(),
             task.clocks.importance.to_rfc3339(),
             task.clocks.urgency.to_rfc3339(),
@@ -1168,7 +1184,13 @@ async fn execute_batch(
         .execute(&mut *tx)
         .await
         .map_err(|e| stmt_error(&e))?;
-        for label in &task.labels {
+        for (label, state) in task.label_memberships.iter().filter(|(_, state)| {
+            matches!(
+                state,
+                taskboard_domain::entities::MembershipState::Added { .. }
+            )
+        }) {
+            let _ = state;
             sqlx::query!(
                 r#"INSERT INTO task_labels (task, label) VALUES (?, ?)"#,
                 codec::uuid_to_text(task.id.as_uuid()),
@@ -1178,7 +1200,7 @@ async fn execute_batch(
             .await
             .map_err(|e| stmt_error(&e))?;
         }
-        tracing::trace!(task = ?task.id, stack = ?task.stack, labels = task.labels.len(), "task upserted");
+        tracing::trace!(task = ?task.id, stack = ?task.stack, labels = task.live_labels().len(), "task upserted");
     }
 
     // R-11 (DR-5/1): the time-entry writes, dead until chunk DR-5/2's

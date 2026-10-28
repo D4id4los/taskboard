@@ -57,7 +57,7 @@ fn fixture_shape_matches_table() {
 
         for task in state.tasks.values() {
             assert!(
-                task.labels.len() == 1 || task.labels.len() == 2,
+                task.live_labels().len() == 1 || task.live_labels().len() == 2,
                 "label-set size must be 1 or 2"
             );
         }
@@ -102,8 +102,11 @@ fn fixture_is_valid_persistence_input() {
                 outbox_count(n),
                 "pending_ops must be re-derived from the outbox depth"
             );
-            let label_sizes: BTreeSet<usize> =
-                loaded.tasks.values().map(|t| t.labels.len()).collect();
+            let label_sizes: BTreeSet<usize> = loaded
+                .tasks
+                .values()
+                .map(|t| t.live_labels().len())
+                .collect();
             assert!(label_sizes.is_subset(&BTreeSet::from([1, 2])));
         });
 }

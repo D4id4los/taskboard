@@ -1228,7 +1228,7 @@ mod view_component_tests {
     use crate::actions::ContextId;
     use crate::test_platform::on_slint_thread;
     use chrono::TimeDelta;
-    use std::collections::BTreeSet;
+
     use std::sync::Arc;
 
     use slint::Model as _;
@@ -1247,7 +1247,6 @@ mod view_component_tests {
             scheduled: epoch(),
             done: epoch(),
             position: epoch(),
-            labels: epoch(),
             effort: epoch(),
             importance: epoch(),
             urgency: epoch(),
@@ -1266,6 +1265,7 @@ mod view_component_tests {
         taskboard_domain::Task {
             id,
             remote: None,
+            label_memberships: std::collections::BTreeMap::new(),
             title: format!("task-{order}"),
             description: String::new(),
             duedate: None,
@@ -1273,7 +1273,6 @@ mod view_component_tests {
             done: None,
             stack,
             order,
-            labels: BTreeSet::new(),
             effort: None,
             importance: None,
             urgency: None,

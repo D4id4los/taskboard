@@ -8,7 +8,7 @@
 //! fixture-contract test via `#[path]` (the storage bench's D1
 //! convention).
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use chrono::{DateTime, TimeZone, Utc};
 use taskboard_domain::entities::{Board, Color, Stack, Task};
@@ -121,7 +121,7 @@ fn fixture_task(i: usize, stacks: &[Stack]) -> Task {
         done: has_done(order).then(|| ts(order + 2_000_000)),
         stack: stacks[i % STACK_COUNT].id,
         order,
-        labels: BTreeSet::new(),
+        label_memberships: BTreeMap::new(),
         effort: None,
         importance: None,
         urgency: None,
@@ -138,7 +138,6 @@ fn fixture_task(i: usize, stacks: &[Stack]) -> Task {
                 scheduled: t,
                 done: t,
                 position: t,
-                labels: t,
                 effort: t,
                 importance: t,
                 urgency: t,

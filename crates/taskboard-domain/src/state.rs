@@ -483,7 +483,6 @@ impl AppState {
 
 #[cfg(test)]
 mod sync_states_tests {
-    use std::collections::BTreeSet;
 
     use super::*;
     use crate::entities::{BoardClocks, Color, LabelClocks, StackClocks, TaskClocks};
@@ -862,7 +861,7 @@ mod sync_states_tests {
             done: None,
             stack: StackId::from(Uuid::from_u128(s)),
             order: 0,
-            labels: BTreeSet::default(),
+            label_memberships: BTreeMap::default(),
             effort: None,
             importance: None,
             urgency: None,
@@ -877,7 +876,6 @@ mod sync_states_tests {
                 scheduled: ts(100),
                 done: ts(100),
                 position: ts(100),
-                labels: ts(100),
                 effort: ts(100),
                 importance: ts(100),
                 urgency: ts(100),

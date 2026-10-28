@@ -14,6 +14,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use std::collections::BTreeMap;
 use taskboard_domain::persistence::{
     BoxFuture, PersistedState, PersistenceAction, RepositoryError, TaskRepository,
 };
@@ -2663,12 +2664,12 @@ async fn folded_synced_dismissal_withdraws_the_toast() {
             }),
             title: "task".into(),
             description: String::new(),
+            label_memberships: BTreeMap::new(),
             duedate: Some(ts(T0)),
             scheduled: None,
             done: None,
             stack: stack_id,
             order: 1,
-            labels: std::collections::BTreeSet::new(),
             effort: None,
             importance: None,
             urgency: None,
@@ -2683,7 +2684,6 @@ async fn folded_synced_dismissal_withdraws_the_toast() {
                 scheduled: ts(T0),
                 done: ts(T0),
                 position: ts(T0),
-                labels: ts(T0),
                 effort: ts(T0),
                 importance: ts(T0),
                 urgency: ts(T0),

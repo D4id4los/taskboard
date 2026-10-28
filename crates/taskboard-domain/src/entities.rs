@@ -10,6 +10,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use crate::ids::{
@@ -262,7 +263,6 @@ pub const TASK_FIELDS: &[(&str, &[&str], FieldFamily)] = &[
     ("duedate", &["duedate"], FieldFamily::Native),
     ("done", &["done"], FieldFamily::Native),
     ("position", &["stack", "order"], FieldFamily::Native),
-    ("labels", &["labels"], FieldFamily::Native),
     ("archived", &["archived"], FieldFamily::Native),
     ("deleted", &["deleted"], FieldFamily::Native),
     ("scheduled", &["scheduled"], FieldFamily::Native),
@@ -290,8 +290,6 @@ pub struct TaskClocks {
     pub done: DateTime<Utc>,
     /// Write time of the composite position (`stack` + `order`).
     pub position: DateTime<Utc>,
-    /// Write time of the whole label set.
-    pub labels: DateTime<Utc>,
     /// Write time of `effort`.
     pub effort: DateTime<Utc>,
     /// Write time of `importance`.
@@ -409,6 +407,38 @@ impl BoardClocks {
     }
 }
 
+/// Per-membership OR-set state of one `(task, label)` assignment (ADR
+/// 0004's labels amendment, #129). `Removed` is the membership's
+/// tombstone: it persists — forgetting a removal lets a stale remote
+/// re-add flap (the classic OR-set requirement).
+///
+/// A1 note: a hand-rolled exhaustive enum, not a `(state, clock)` pair —
+/// every representable value is well-formed (any `DateTime<Utc>` is a
+/// legal stamp; stamps are cross-machine wall-clock data by design, ADR
+/// 0004), so there is no invariant for a fallible minting constructor to
+/// guard and no clock is read inside the type. The only trust boundary
+/// is the storage codec, whose unknown-state decode maps to
+/// `RepositoryError::Corrupted`. `Copy` keeps the small map value-shaped
+/// in merge code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MembershipState {
+    /// The assignment is live since `at`.
+    Added { at: DateTime<Utc> },
+    /// The assignment was removed at `at` (remembered, never deleted
+    /// while either entity lives).
+    Removed { at: DateTime<Utc> },
+}
+
+impl MembershipState {
+    /// The membership's write clock (either variant's stamp).
+    #[must_use]
+    pub const fn at(self) -> DateTime<Utc> {
+        match self {
+            Self::Added { at } | Self::Removed { at } => at,
+        }
+    }
+}
+
 /// A board. Title, color, and the archived flag are locally editable
 /// (`boards rename`/`color`/`archive`/`unarchive`); deletion is the
 /// `boards delete` tombstone ceremony.
@@ -479,8 +509,10 @@ pub struct Task {
     pub stack: StackId,
     /// Sort order within the stack — half of the composite position field.
     pub order: i64,
-    /// Attached labels (whole-set LWW as one mergeable field).
-    pub labels: std::collections::BTreeSet<LabelId>,
+    /// Label memberships (the OR-set map, #129): every label the task
+    /// has ever referenced, `Added` = live, `Removed` = remembered
+    /// tombstone. The live set is [`Task::live_labels`].
+    pub label_memberships: BTreeMap<LabelId, MembershipState>,
     /// Estimated effort; `None` = unestimated.
     pub effort: Option<Effort>,
     /// Importance; `None` = unset.
@@ -517,6 +549,17 @@ impl Task {
     #[must_use]
     pub const fn is_open(&self) -> bool {
         self.done.is_none()
+    }
+
+    /// The live label set (the `Added` memberships' ids) — the read
+    /// shape every former `task.labels` reader keeps.
+    #[must_use]
+    pub fn live_labels(&self) -> std::collections::BTreeSet<LabelId> {
+        self.label_memberships
+            .iter()
+            .filter(|(_, s)| matches!(s, MembershipState::Added { .. }))
+            .map(|(id, _)| *id)
+            .collect()
     }
 }
 
