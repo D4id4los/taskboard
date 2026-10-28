@@ -581,6 +581,25 @@ async fn task_upsert_keeps_label_set() {
         BTreeSet::from([l.id]),
         "label set must survive the upsert"
     );
+
+    // T5b — the no-flap storage half (#129): a remembered removal
+    // survives a later upsert of the same task.
+    let mut with_tombstone = retitled;
+    with_tombstone.label_memberships.insert(
+        l.id,
+        taskboard_domain::entities::MembershipState::Removed { at: ts(103) },
+    );
+    repo.apply(vec![PersistenceAction::UpsertTask(with_tombstone)])
+        .await
+        .expect("apply");
+    let reloaded = repo.load().await.expect("load");
+    let stored = reloaded.tasks.get(&t.id).expect("task still present");
+    assert!(!stored.live_labels().contains(&l.id));
+    assert_eq!(
+        stored.label_memberships.get(&l.id),
+        Some(&taskboard_domain::entities::MembershipState::Removed { at: ts(103) }),
+        "the tombstone row persists through the delete-then-rewrite"
+    );
 }
 
 /// T6 — a mid-batch failure rolls back the whole transaction: neither the
@@ -971,6 +990,124 @@ async fn corrupt_baseline_json_is_typed_corruption() {
     let err = db.repo().load().await.expect_err("load must fail");
     assert_eq!(err, RepositoryError::Corrupted);
     db.close().await;
+}
+
+// S12 — the memberships upgrade pin (DR-4/L, #129): raw pre-0012-shape
+// task_labels rows (no state column) decode as fresh adds at the epoch
+// stamp — the pre-migration live set bit-for-bit — and the loaded task
+// merges a pull to the same live labels as a hand-built fresh-add task.
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // raw DDL + the merge-equivalence leg
+async fn pre_membership_rows_decode_as_fresh_adds_at_the_epoch() {
+    let mut db = common::FileDb::new().await;
+    let b = board(71);
+    let s = stack(81, &b);
+    let l = label(61, &b);
+    db.repo()
+        .apply(vec![
+            PersistenceAction::UpsertBoard(b),
+            PersistenceAction::UpsertStack(s.clone()),
+            PersistenceAction::UpsertLabel(l.clone()),
+        ])
+        .await
+        .expect("parents");
+    let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", db.path().display()))
+        .await
+        .expect("raw connection");
+    // Raw pre-0012-shape INSERT: a task and two task_labels rows with
+    // only the (task, label) columns the pre-migration schema had.
+    sqlx::query(
+        r"INSERT INTO tasks (id, stack, title, description, sort_order, archived, deleted,
+                             ck_title, ck_description, ck_duedate, ck_done, ck_position,
+                             ck_labels, ck_archived, ck_deleted)
+           VALUES ('00000000-0000-0000-0000-0000000000bb', '00000000-0000-0000-0000-000000000051',
+                   'pre-memberships', 'd', 1, 0, 0,
+                   '2020-01-01T00:00:00+00:00', '2020-01-01T00:00:00+00:00',
+                   '2020-01-01T00:00:00+00:00', '2020-01-01T00:00:00+00:00',
+                   '2020-01-01T00:00:00+00:00', '2020-01-01T00:00:00+00:00',
+                   '2020-01-01T00:00:00+00:00', '2020-01-01T00:00:00+00:00')",
+    )
+    .execute(&pool)
+    .await
+    .expect("raw insert");
+    sqlx::query(
+        r"INSERT INTO task_labels (task, label) VALUES
+              ('00000000-0000-0000-0000-0000000000bb', '00000000-0000-0000-0000-00000000003d')",
+    )
+    .execute(&pool)
+    .await
+    .expect("raw join insert");
+    pool.close().await;
+
+    let loaded = db.repo().load().await.expect("load");
+    let upgraded = loaded
+        .tasks
+        .get(&TaskId::from(uuid::Uuid::from_u128(0xbb)))
+        .expect("task loaded")
+        .clone();
+    let label_id = LabelId::from(uuid::Uuid::from_u128(0x3d));
+    assert_eq!(
+        upgraded.live_labels(),
+        BTreeSet::from([label_id]),
+        "the pre-migration live set is preserved bit-for-bit"
+    );
+    assert_eq!(
+        upgraded.label_memberships.get(&label_id),
+        Some(&taskboard_domain::entities::MembershipState::Added {
+            at: taskboard_domain::entities::BoardClocks::epoch()
+        }),
+        "backfilled as a fresh add at the epoch stamp"
+    );
+    db.close().await;
+
+    // Merge equivalence: the upgraded task and a hand-built fresh-add
+    // task produce the same live labels from the same pull.
+    let remote = taskboard_domain::RemoteTask {
+        id: taskboard_domain::RemoteCardRef {
+            board: RemoteBoardId(77),
+            stack: RemoteStackId(7),
+            card: RemoteCardId(8),
+        },
+        title: "pre-memberships".into(),
+        description: String::new(),
+        duedate: None,
+        scheduled: None,
+        done: None,
+        stack: RemoteStackId(7),
+        order: 1,
+        labels: BTreeSet::from([taskboard_domain::RemoteLabelId(9)]),
+        archived: false,
+        last_modified: ts(1_800_000_500),
+    };
+    let mut ctx = taskboard_domain::RemoteIndex::default();
+    ctx.stack_by_ref.insert(
+        taskboard_domain::RemoteStackRef {
+            board: RemoteBoardId(77),
+            stack: RemoteStackId(7),
+        },
+        s.id,
+    );
+    ctx.label_by_ref.insert(
+        taskboard_domain::RemoteLabelRef {
+            board: RemoteBoardId(77),
+            label: taskboard_domain::RemoteLabelId(9),
+        },
+        label_id,
+    );
+    let merged_upgraded = taskboard_domain::merge::merge_task(&upgraded, &remote, &ctx, true);
+    let mut hand_built = upgraded.clone();
+    hand_built.label_memberships.insert(
+        label_id,
+        taskboard_domain::entities::MembershipState::Added {
+            at: taskboard_domain::entities::BoardClocks::epoch(),
+        },
+    );
+    let merged_hand = taskboard_domain::merge::merge_task(&hand_built, &remote, &ctx, true);
+    assert_eq!(
+        merged_upgraded.live_labels(),
+        merged_hand.live_labels(),
+        "the epoch backfill merges like a hand-built fresh add"
+    );
 }
 
 // S3 — the upgrade pin: a raw pre-0011-shape row decodes to a `None`

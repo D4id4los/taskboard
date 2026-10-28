@@ -60,6 +60,11 @@ async fn tasks_schema_matches_the_task_fields_manifest() {
         .iter()
         .map(|(clock, _, _)| (*clock).to_string())
         .collect();
+    // `ck_labels` is vestigial since 0012 (the membership map owns the
+    // label clocks): NOT NULL without a DEFAULT keeps the column in every
+    // INSERT, but it is never read again (ADR 0005: additive-only).
+    let mut ck_columns = ck_columns;
+    ck_columns.remove("labels");
     assert_eq!(ck_columns, manifest_clocks);
 
     // One value column per manifest task field (with the documented
@@ -71,7 +76,8 @@ async fn tasks_schema_matches_the_task_fields_manifest() {
         "missing value columns: {expected:?}"
     );
 
-    // The labels whole-set rides `task_labels` with exactly (task, label).
+    // The label memberships ride `task_labels` with exactly
+    // (task, label, state, ck_membership) — the OR-set columns (#129).
     let label_rows = sqlx::query("PRAGMA table_info(task_labels)")
         .fetch_all(&pool)
         .await
@@ -82,7 +88,12 @@ async fn tasks_schema_matches_the_task_fields_manifest() {
         .collect();
     assert_eq!(
         label_columns,
-        BTreeSet::from(["task".to_string(), "label".to_string()])
+        BTreeSet::from([
+            "task".to_string(),
+            "label".to_string(),
+            "state".to_string(),
+            "ck_membership".to_string(),
+        ])
     );
 
     // The rule-clock column exists (D-S9's reserved slot); the codec

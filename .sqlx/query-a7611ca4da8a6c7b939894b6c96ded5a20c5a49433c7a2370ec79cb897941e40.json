@@ -1,0 +1,62 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT task, label, state, ck_membership FROM task_labels ORDER BY task, label",
+  "describe": {
+    "columns": [
+      {
+        "name": "task",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "task_labels",
+            "name": "task"
+          }
+        }
+      },
+      {
+        "name": "label",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "task_labels",
+            "name": "label"
+          }
+        }
+      },
+      {
+        "name": "state",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "task_labels",
+            "name": "state"
+          }
+        }
+      },
+      {
+        "name": "ck_membership",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "task_labels",
+            "name": "ck_membership"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "a7611ca4da8a6c7b939894b6c96ded5a20c5a49433c7a2370ec79cb897941e40"
+}

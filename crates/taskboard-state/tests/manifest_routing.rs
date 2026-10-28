@@ -348,13 +348,15 @@ fn every_taskchanges_slot_is_manifest_covered() {
             "slot `{slot}` lost its single-slot routing entry"
         );
     }
-    // Partition sanity: the non-`UpdateTask` slots (done/position/
-    // labels/deleted) are manifest rows too, but ride their own verbs
-    // (the composite position row names `stack` + `order`).
+    // Partition sanity: the non-`UpdateTask` slots (done/position/deleted)
+    // are manifest rows too, but ride their own verbs (the composite
+    // position row names `stack` + `order`). Labels are no longer a
+    // manifest row: since the OR-set amendment (#129) the memberships
+    // carry per-entry state, not a `TaskClocks` slot, and they still
+    // never ride `UpdateTask` (their own Assign/Unassign verbs).
     for (field, manifest_names) in [
         ("done", vec!["done"]),
         ("position", vec!["stack", "order"]),
-        ("labels", vec!["labels"]),
         ("deleted", vec!["deleted"]),
     ] {
         for name in manifest_names {
@@ -362,6 +364,14 @@ fn every_taskchanges_slot_is_manifest_covered() {
         }
         assert!(changes_for(field).is_none());
     }
+    assert!(
+        !manifest_fields.contains("labels"),
+        "labels left the clock manifest with the whole-set clock"
+    );
+    assert!(
+        changes_for("labels").is_none(),
+        "labels never ride UpdateTask"
+    );
     // The planner's bucket accept the routed ops (partition property's
     // precondition): an UpdateAppData op buckets into no native group.
     let op = taskboard_domain::PendingOp {

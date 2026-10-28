@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO task_labels (task, label, state, ck_membership) VALUES (?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "55d5cff7d498f66aa8487e3f19d5601289a6179405118e2111b26e5e5c0e290a"
+}
