@@ -286,3 +286,50 @@ The runbook records *where* each decision lands; it decides nothing:
   ruling*: the shipped winit + femtovg configuration is sanctioned
   as-is (ADR 0016 amendment); the permission-based software-GL
   fallback is the contract, and the on-device verdicts measured it.
+
+* 9. Exit codes, the signal ladder, and supervision
+
+Amended 2026-10-28 (DR-2/D, issue #162): the daemon, kiosk appliance,
+and desktop GUI share one three-rung signal ladder, and the process
+exit code finally tells supervision the truth about the drain.
+
+** 9.1 The rung table
+
+| Rung | Trigger                                | Behavior                                                                                              |
+|------+----------------------------------------+-------------------------------------------------------------------------------------------------------|
+|    1 | first SIGINT/SIGTERM/=daemon stop= | today's graceful drain: stop accepting, bounded joins (=shutdown_timeout_secs=), socket removed, flush |
+|    2 | second signal while rung 1 is running  | skip the bounded joins, abort the sync actors, one salvage flush attempt (2 s bound), exit =128+signum= |
+|    3 | third signal                           | immediate exit =128+signum= — the "rung 2 itself wedged" escape                                         |
+
+** 9.2 The exit-code contract
+
+| Code     | Meaning                                                                              |
+|----------+--------------------------------------------------------------------------------------|
+|        0 | clean: full drain, no aborts — including signal-initiated graceful and =daemon stop= |
+|        1 | *degraded drain*: a bounded join (sync actor, engine, notifier, ipc/web drain) aborted at its budget |
+| 130 / 143 | forced by SIGINT / SIGTERM at rung 2+                                                 |
+
+Before this change a degraded drain exited 0 with only a log line —
+invisible to supervision. Units keyed on "0 is the only good exit"
+will now also see 1 and 130/143; that is the contract working.
+
+** 9.3 The daemon surface's signal inventory
+
+- SIGINT and SIGTERM are installed (the ladder's triggers; =daemon
+  stop= counts as a rung-1 trigger too).
+- SIGHUP, SIGQUIT and SIGKILL keep their kernel defaults on every
+  surface (death, no handler) — SIGHUP is *not* installed on the
+  daemon surface. A tty left raw by a signal death recovers with:
+  : stty sane
+
+** 9.4 The systemd mapping
+
+- *Kiosk unit* (=Restart=always=): every exit restarts. Add
+  =SuccessExitStatus=143= so a SIGTERM-forced stop (the normal
+  =systemctl stop= path during a wedged drain) *reads* as a clean
+  stop in =systemctl= results.
+- *Daemon unit* (=Restart=on-failure=): deliberately **no**
+  =SuccessExitStatus= — a forced (143) or degraded (1) exit must
+  count as failure so supervision recovers the daemon.
+  =systemctl stop= suppresses =Restart= anyway, so an
+  operator-initiated stop is not fought.
