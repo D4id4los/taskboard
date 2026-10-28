@@ -26,8 +26,9 @@ pub mod remote;
 pub mod state;
 
 pub use entities::{
-    effort_strategy, importance_strategy, label_clocks_strategy, remote_task_baseline_strategy,
-    stack_clocks_strategy, task_clocks_strategy, task_strategy, urgency_strategy,
+    effort_strategy, importance_strategy, label_clocks_strategy, membership_map_strategy,
+    membership_state_strategy, remote_task_baseline_strategy, stack_clocks_strategy,
+    task_clocks_strategy, task_strategy, urgency_strategy,
 };
 pub use messages::{label_changes_strategy, state_command_strategy, task_changes_strategy};
 pub use recur::{
