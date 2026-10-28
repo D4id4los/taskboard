@@ -570,30 +570,20 @@ pub fn apply_sync_report(
     // BOUND stack survives (every replayed card resolves into it and
     // the unbound orphan is provably empty), the orphan gets a
     // ref-delete push. Runs before §3 so the orphan's R1 adoption is
-    // suppressed — no local duplicate row is ever created.
+    // suppressed — no local duplicate row is ever created. Clause 2 for
+    // stacks is the bound-stack requirement below: an unbound stack
+    // never pushed, so it has no crash window.
     let mut dup_enqueues: Vec<PersistenceAction> = Vec::new();
     let mut dup_stack_suppressed: std::collections::BTreeSet<RemoteStackRef> =
         std::collections::BTreeSet::new();
-    let dup_stack_creates: Vec<(&crate::outbox::PendingOp, bool)> = outbox
+    let dup_stack_creates: Vec<&crate::outbox::PendingOp> = outbox
         .iter()
         .filter(|entry| {
             matches!(entry.op, LocalOp::CreateStack(_))
                 && op_results.get(&entry.op_id) != Some(&false)
         })
-        .map(|entry| {
-            let echoed = pushes.iter().any(|o| {
-                o.op == entry.op_id
-                    && matches!(
-                        &o.result,
-                        PushResult::Applied {
-                            echo: Some(RemoteEcho::Stack(_)),
-                        }
-                    )
-            });
-            (entry, echoed)
-        })
         .collect();
-    for (entry, _echoed) in &dup_stack_creates {
+    for entry in &dup_stack_creates {
         let LocalOp::CreateStack(local_stack_id) = entry.op else {
             continue;
         };
