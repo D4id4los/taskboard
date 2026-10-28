@@ -49,6 +49,7 @@
 //!     system_rx,
 //!     notifier,
 //!     taskboard_state::ReminderEngineConfig::disabled(),
+//!     taskboard_state::DayRollConfig::disabled(),
 //! )
 //! .await?;
 //!
