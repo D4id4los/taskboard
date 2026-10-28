@@ -140,7 +140,7 @@ async fn ip1_core_verbs_serve_and_persist_over_ipc() {
             .collect();
         assert_eq!(titles, ["first task"]);
 
-        handle.join(DRAIN_BUDGET).await;
+        let _ = handle.join(DRAIN_BUDGET).await;
     })
     .await;
 }
@@ -166,7 +166,7 @@ async fn ip2_typed_failures_cross_the_wire_as_envelopes() {
         let envelope = &json_lines(outcome.err.as_bytes())[0];
         assert_eq!(envelope["error"]["kind"], "unknown-task");
 
-        handle.join(DRAIN_BUDGET).await;
+        let _ = handle.join(DRAIN_BUDGET).await;
     })
     .await;
 }
@@ -189,7 +189,7 @@ async fn ip3_clap_surface_routes_help_and_usage_errors() {
         assert_ne!(outcome.out, String::new(), "help on out");
         assert_eq!(outcome.err, "");
 
-        handle.join(DRAIN_BUDGET).await;
+        let _ = handle.join(DRAIN_BUDGET).await;
     })
     .await;
 }
@@ -219,7 +219,7 @@ async fn ip4_refusals_are_usage_class_and_leave_the_session_healthy() {
         let outcome = exec_once(&db, &argv("boards create Personal")).await;
         assert_eq!(outcome.code, 0);
 
-        handle.join(DRAIN_BUDGET).await;
+        let _ = handle.join(DRAIN_BUDGET).await;
     })
     .await;
 }
@@ -256,7 +256,7 @@ async fn ip5_version_mismatch_is_typed_and_parseable() {
         );
         drop(stream);
 
-        handle.join(DRAIN_BUDGET).await;
+        let _ = handle.join(DRAIN_BUDGET).await;
     })
     .await;
 }
@@ -278,7 +278,7 @@ async fn ip6_status_answers_live_without_triggering_a_cycle() {
             assert_eq!(sync.phase, "idle", "status must never trigger a cycle");
         }
 
-        handle.join(DRAIN_BUDGET).await;
+        let _ = handle.join(DRAIN_BUDGET).await;
     })
     .await;
 }
@@ -301,7 +301,7 @@ async fn ip7_shutdown_acks_drains_and_removes_the_socket() {
         tokio::time::timeout(common::LIVE_DEADLINE, handle.stopped())
             .await
             .expect("stopped resolves");
-        handle.join(DRAIN_BUDGET).await;
+        let _ = handle.join(DRAIN_BUDGET).await;
         assert!(
             !sidecar.exists(),
             "graceful shutdown removes the socket artifact"
@@ -340,7 +340,7 @@ async fn ip8_concurrent_connections_serialize_and_both_answer() {
             .collect();
         assert_eq!(titles, ["from-one", "from-two"]);
 
-        handle.join(DRAIN_BUDGET).await;
+        let _ = handle.join(DRAIN_BUDGET).await;
     })
     .await;
 }
@@ -363,7 +363,7 @@ async fn ip9_stale_socket_artifacts_are_recovered_at_bind() {
         let outcome = exec_once(&db, &argv("boards create Personal")).await;
         assert_eq!(outcome.code, 0);
 
-        handle.join(DRAIN_BUDGET).await;
+        let _ = handle.join(DRAIN_BUDGET).await;
         assert!(!sidecar.exists());
     })
     .await;
@@ -438,7 +438,7 @@ async fn ip11_connector_daemon_serves_even_when_sync_fails() {
         let outcome = exec_once(&db, &argv("stacks add Todo")).await;
         assert_eq!(outcome.code, 0, "{}", outcome.err);
 
-        handle.join(DRAIN_BUDGET).await;
+        let _ = handle.join(DRAIN_BUDGET).await;
         drop(password);
     })
     .await;
@@ -475,7 +475,7 @@ async fn ip12_a_silent_connection_cannot_wedge_the_drain() {
         let (reborn, db) = served(dir.path(), "ip12.db").await;
         let outcome = exec_once(&db, &argv("boards create Personal")).await;
         assert_eq!(outcome.code, 0);
-        reborn.join(DRAIN_BUDGET).await;
+        let _ = reborn.join(DRAIN_BUDGET).await;
     })
     .await;
 }
@@ -585,7 +585,7 @@ async fn ip13_detach_drops_the_connector_and_the_daemon_still_serves() {
             protocol::DetachWireOutcome::NoConnector
         );
 
-        handle.join(DRAIN_BUDGET).await;
+        let _ = handle.join(DRAIN_BUDGET).await;
     })
     .await;
 }
@@ -621,7 +621,7 @@ async fn ip14_a_foreign_identity_never_detaches() {
             "the booted credential is untouched by a mismatched request"
         );
 
-        handle.join(DRAIN_BUDGET).await;
+        let _ = handle.join(DRAIN_BUDGET).await;
     })
     .await;
 }
@@ -639,7 +639,7 @@ async fn ip15_a_standalone_daemon_answers_no_connector() {
             protocol::DetachWireOutcome::NoConnector
         );
 
-        handle.join(DRAIN_BUDGET).await;
+        let _ = handle.join(DRAIN_BUDGET).await;
     })
     .await;
 }
@@ -814,7 +814,7 @@ async fn ip16_attach_from_persisted_state_attaches_and_serves() {
         assert_eq!(boards[0].title, "Personal");
         assert!(boards[0].connector.is_none() && boards[0].remote.is_none());
 
-        handle.join(DRAIN_BUDGET).await;
+        let _ = handle.join(DRAIN_BUDGET).await;
     })
     .await;
 }
@@ -861,7 +861,7 @@ async fn ip17_attach_swaps_a_live_connector() {
         let view = status_once(&db).await;
         assert_eq!(view.connector_attached, Some(true), "still attached");
 
-        handle.join(DRAIN_BUDGET).await;
+        let _ = handle.join(DRAIN_BUDGET).await;
     })
     .await;
 }
@@ -921,7 +921,7 @@ async fn ip18_attach_refusals_are_typed_and_leave_the_daemon_untouched() {
         assert_eq!(before, after, "the refusals changed nothing");
         assert_eq!(after, Some(false));
 
-        handle.join(DRAIN_BUDGET).await;
+        let _ = handle.join(DRAIN_BUDGET).await;
     })
     .await;
 }
@@ -970,7 +970,7 @@ async fn ip19_a_stray_second_ref_across_join_is_a_typed_shutdown_failure() {
         // The "future bug" stray: a clone a mis-planted feature would
         // leave behind, alive across the entire shutdown tail.
         let stray = app.clone();
-        handle.join(DRAIN_BUDGET).await;
+        let _ = handle.join(DRAIN_BUDGET).await;
         let Err(shared) = taskboard_app::bootstrap::shutdown_from_arc(app).await else {
             panic!("a shared core must fail typed, not shut down");
         };
@@ -989,7 +989,7 @@ async fn ip20_the_shutdown_tail_takes_exclusive_ownership_after_the_drain() {
     bounded(async {
         let dir = tempdir();
         let (handle, app, _db) = served_with_core(dir.path(), "ip20.db").await;
-        handle.join(DRAIN_BUDGET).await;
+        let _ = handle.join(DRAIN_BUDGET).await;
         let outcome = taskboard_app::bootstrap::shutdown_from_arc(app).await;
         // Standalone idle boot: no sync actor to abort.
         assert_eq!(
@@ -1074,7 +1074,7 @@ async fn j1_daemon_stop_answers_while_a_verb_is_in_flight() {
             .expect("the stop answers promptly, not behind A");
         stop.expect("shutdown ack");
 
-        handle.join(Duration::from_secs(1)).await;
+        let _ = handle.join(Duration::from_secs(1)).await;
         assert!(
             !sidecar.exists(),
             "the drain completed and removed the socket artifact"
