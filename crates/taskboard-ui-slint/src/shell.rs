@@ -176,6 +176,8 @@ impl KeymapShell {
             | UiEffect::ShowTask
             | UiEffect::ControlNext
             | UiEffect::ControlPrev
+            | UiEffect::ScrollUp
+            | UiEffect::ScrollDown
             | UiEffect::PickerKey(_)
             | UiEffect::BeginCreate
             | UiEffect::BeginCreateStack

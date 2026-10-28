@@ -5588,6 +5588,111 @@ fn the_control_walk_reaches_fields_buttons_and_the_picker() {
     );
 }
 
+/// Round-3 D26 — the scroll actions page the focused area: the
+/// settings pane pages adapter-side through the two-way facts and
+/// clamps at both ends (the end of content IS the save row's
+/// reachability), the board column hint arms for the focused column,
+/// and the task detail — no container — is a typed no-op.
+#[test]
+fn scroll_actions_page_the_focused_area() {
+    let (_fixture, state) = fixture::two_board_state();
+
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: false,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            macro_rules! window {
+                () => {
+                    harness.handle.window()
+                };
+            }
+            macro_rules! scroll_hint {
+                ($h:expr) => {
+                    $h.handle
+                        .window()
+                        .global::<taskboard_ui_slint::ScrollPageHint>()
+                };
+            }
+
+            // -- settings: pages to the end and clamps at both ends --
+            harness.press(ActionId::AppSettings);
+            harness.driver.advance_time(0);
+            macro_rules! scroll_facts {
+                ($h:expr) => {
+                    $h.handle
+                        .window()
+                        .global::<taskboard_ui_slint::SettingsScrollFacts>()
+                };
+            }
+            let viewport = scroll_facts!(harness).get_viewport_height();
+            let content = scroll_facts!(harness).get_content_height();
+            assert!(
+                content > viewport,
+                "precondition: the settings pane scrolls"
+            );
+            harness.press(ActionId::ViewScrollDown);
+            harness.driver.advance_time(0);
+            let after_one = scroll_facts!(harness).get_viewport_y();
+            assert!(after_one > 0.0, "one page advanced the pane");
+
+            // Page to the end: the clamp is content − viewport (the
+            // save row's reachability), and further pages stay there.
+            for _ in 0..20 {
+                harness.press(ActionId::ViewScrollDown);
+                harness.driver.advance_time(0);
+            }
+            let max = scroll_facts!(harness).get_viewport_y();
+            assert!(
+                (max - (content - viewport)).abs() < 1.0,
+                "the pane clamped at the end of content"
+            );
+            harness.press(ActionId::ViewScrollDown);
+            harness.driver.advance_time(0);
+            assert_eq!(
+                scroll_facts!(harness).get_viewport_y(),
+                max,
+                "the clamp holds"
+            );
+
+            // Page up clamps at the top.
+            for _ in 0..20 {
+                harness.press(ActionId::ViewScrollUp);
+                harness.driver.advance_time(0);
+            }
+            assert_eq!(
+                scroll_facts!(harness).get_viewport_y(),
+                0.0,
+                "the top clamp"
+            );
+
+            // -- board: the focused task's column pages --
+            harness.press(ActionId::NavFocusBoard);
+            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::ViewScrollDown);
+            harness.driver.advance_time(0);
+            let h = scroll_hint!(harness);
+            assert!(h.get_nonce() > 0, "the focused column's page hint armed");
+            assert_eq!(h.get_family(), 1, "the board-column family");
+            assert_eq!(h.get_page(), 1, "the down direction");
+
+            // -- task detail: no container, a typed no-op --
+            harness.press(ActionId::NavNextView);
+            harness.press(ActionId::NavNextView);
+            assert_eq!(window!().get_current_view(), View::TaskDetail);
+            let nonce_before = scroll_hint!(harness).get_nonce();
+            harness.press(ActionId::ViewScrollDown);
+            harness.driver.advance_time(0);
+            assert_eq!(
+                scroll_hint!(harness).get_nonce(),
+                nonce_before,
+                "the containerless detail hints nothing"
+            );
+        },
+    );
+}
+
 /// R2 D25 — the due editor's typed path: ISO commits at 00:00 UTC,
 /// `+N<unit>` commits relative to now (bracketed by the journey's own
 /// clock reads), an empty accept clears, and a refusal dispatches

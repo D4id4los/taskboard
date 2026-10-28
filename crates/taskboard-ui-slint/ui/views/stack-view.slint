@@ -8,6 +8,7 @@ import { EmptyState } from "../widgets/empty-state.slint";
 import { TextField } from "../widgets/text-field.slint";
 import { FocusScrollHint } from "../focus-scroll.slint";
 import { ListView } from "../widgets/listview.slint";
+import { ScrollPageHint } from "../scroll-page.slint";
 
 // The stack-detail model (D22).
 export struct StackDetailModel {
@@ -80,6 +81,16 @@ export component StackView inherits FocusScope {
                 request-nonce: FocusScrollHint.target-a == -1
                     ? FocusScrollHint.nonce
                     : 0;
+                // Family 3, index −1 (round-3 D26): the stack-detail
+                // viewport pages.
+                page-request: ScrollPageHint.family == 3
+                    && ScrollPageHint.index == -1
+                    ? ScrollPageHint.page
+                    : 0;
+                page-nonce: ScrollPageHint.family == 3
+                    && ScrollPageHint.index == -1
+                    ? ScrollPageHint.nonce
+                    : -1;
                 total-rows: root.stack.tasks.length;
                 for task[task-index] in root.stack.tasks: detail-task := TaskCard {
                     model: task;

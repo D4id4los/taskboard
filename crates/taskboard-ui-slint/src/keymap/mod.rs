@@ -470,6 +470,11 @@ mod tests {
             // preset (the no-second-class gate).
             ActionId::NavNextControl,
             ActionId::NavPrevControl,
+            // Round 3 (D26): the scroll actions too (the same gate;
+            // the picker family stays out — uniformly bound, and
+            // nav.show-task stays out — uniformly unbound).
+            ActionId::ViewScrollUp,
+            ActionId::ViewScrollDown,
         ];
         for preset in [Preset::Standard, Preset::Emacs, Preset::Vi] {
             let bound: std::collections::BTreeSet<ActionId> =

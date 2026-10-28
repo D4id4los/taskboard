@@ -193,6 +193,28 @@ static STANDARD: &[(ActionId, ContextId, &[&str])] = &[
         ContextId::Settings,
         &["Shift+Tab"],
     ),
+    // Round 3 (D26): the scroll actions — PageDown/PageUp, the CUA
+    // paging convention, in the five view contexts (never Global:
+    // Global is chain-visible under insert and the page keys are
+    // native text-field motions there).
+    (ActionId::ViewScrollDown, ContextId::Today, &["PageDown"]),
+    (ActionId::ViewScrollUp, ContextId::Today, &["PageUp"]),
+    (ActionId::ViewScrollDown, ContextId::Board, &["PageDown"]),
+    (ActionId::ViewScrollUp, ContextId::Board, &["PageUp"]),
+    (
+        ActionId::ViewScrollDown,
+        ContextId::StackDetail,
+        &["PageDown"],
+    ),
+    (ActionId::ViewScrollUp, ContextId::StackDetail, &["PageUp"]),
+    (
+        ActionId::ViewScrollDown,
+        ContextId::TaskDetail,
+        &["PageDown"],
+    ),
+    (ActionId::ViewScrollUp, ContextId::TaskDetail, &["PageUp"]),
+    (ActionId::ViewScrollDown, ContextId::Settings, &["PageDown"]),
+    (ActionId::ViewScrollUp, ContextId::Settings, &["PageUp"]),
     // Round 3 (D25): the picker keys — the CUA arrows and navigation on the DatePicker context (armed exactly while the grid holds focus). The time steppers stay button-only.
     (ActionId::PickerLeft, ContextId::DatePicker, &["Left"]),
     (ActionId::PickerRight, ContextId::DatePicker, &["Right"]),
@@ -358,6 +380,22 @@ static EMACS: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::NavPrevControl, ContextId::TaskDetail, &["Ctrl+b"]),
     (ActionId::NavNextControl, ContextId::Settings, &["Ctrl+f"]),
     (ActionId::NavPrevControl, ContextId::Settings, &["Ctrl+b"]),
+    // Round 3 (D26): the scroll actions — C-v/M-v, emacs'
+    // scroll-up/down commands, in the five view contexts.
+    (ActionId::ViewScrollDown, ContextId::Today, &["Ctrl+v"]),
+    (ActionId::ViewScrollUp, ContextId::Today, &["Alt+v"]),
+    (ActionId::ViewScrollDown, ContextId::Board, &["Ctrl+v"]),
+    (ActionId::ViewScrollUp, ContextId::Board, &["Alt+v"]),
+    (
+        ActionId::ViewScrollDown,
+        ContextId::StackDetail,
+        &["Ctrl+v"],
+    ),
+    (ActionId::ViewScrollUp, ContextId::StackDetail, &["Alt+v"]),
+    (ActionId::ViewScrollDown, ContextId::TaskDetail, &["Ctrl+v"]),
+    (ActionId::ViewScrollUp, ContextId::TaskDetail, &["Alt+v"]),
+    (ActionId::ViewScrollDown, ContextId::Settings, &["Ctrl+v"]),
+    (ActionId::ViewScrollUp, ContextId::Settings, &["Alt+v"]),
     // Round 3 (D25): the picker keys — emacs' calendar-mode vocabulary (C-v/M-v are calendar-scroll: an intentional shadowing of the Global scroll rows *within* the DatePicker context — chain-head priority, different contexts, no contract contact).
     (ActionId::PickerLeft, ContextId::DatePicker, &["Ctrl+b"]),
     (ActionId::PickerRight, ContextId::DatePicker, &["Ctrl+f"]),
@@ -476,6 +514,11 @@ static VI: &[(ActionId, ContextId, &[&str])] = &[
         ContextId::Settings,
         &["Shift+Tab"],
     ),
+    // Round 3 (D26): the scroll actions ride ViNormal once — motions
+    // are modal (the vi model); ViNormal is absent from insert chains,
+    // so text is safe.
+    (ActionId::ViewScrollDown, ContextId::ViNormal, &["Ctrl+f"]),
+    (ActionId::ViewScrollUp, ContextId::ViNormal, &["Ctrl+b"]),
     // Round 3 (D25): the picker keys — the home-row motions on the DatePicker context (armed only while the grid holds focus, so the field's printables are untouched).
     (ActionId::PickerLeft, ContextId::DatePicker, &["h"]),
     (ActionId::PickerRight, ContextId::DatePicker, &["l"]),

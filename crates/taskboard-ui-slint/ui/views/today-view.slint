@@ -16,6 +16,7 @@
 import { Theme, Semantic, RoleText, Typography } from "../theme.slint";
 import { FocusScrollHint } from "../focus-scroll.slint";
 import { ListView } from "../widgets/listview.slint";
+import { ScrollPageHint } from "../scroll-page.slint";
 import { TaskCard, TaskCardModel } from "../widgets/task-card.slint";
 import { EmptyState } from "../widgets/empty-state.slint";
 import { TimersSection, TimerRowModel } from "../compositions/timers.slint";
@@ -171,6 +172,16 @@ export component TodayView inherits FocusScope {
                         request-nonce: FocusScrollHint.target-a == sindex
                             ? FocusScrollHint.nonce
                             : 0;
+                        // Family 2 (round-3 D26): the focused task's
+                        // section pages, independently.
+                        page-request: ScrollPageHint.family == 2
+                            && ScrollPageHint.index == sindex
+                            ? ScrollPageHint.page
+                            : 0;
+                        page-nonce: ScrollPageHint.family == 2
+                            && ScrollPageHint.index == sindex
+                            ? ScrollPageHint.nonce
+                            : -1;
                         total-rows: section.rows.length;
                         for row[rindex] in section.rows: today-row := VerticalLayout {
                             spacing: Theme.space-1;

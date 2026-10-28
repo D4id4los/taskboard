@@ -484,6 +484,9 @@ mod tests {
             // (the full re-rank is chunk 6 §7.1's commit).
             ActionId::NavNextControl,
             ActionId::NavPrevControl,
+            // Round 3 (D26): the scroll actions join at ranks 180/190.
+            ActionId::ViewScrollDown,
+            ActionId::ViewScrollUp,
         ];
         assert_eq!(
             ids(&rows),

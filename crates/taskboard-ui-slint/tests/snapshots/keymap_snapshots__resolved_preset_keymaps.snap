@@ -80,6 +80,12 @@ expression: rows
         - sequence:
             - Ctrl+End
           action: nav.last-item
+        - sequence:
+            - PageUp
+          action: view.scroll-up
+        - sequence:
+            - PageDown
+          action: view.scroll-down
     - context: board
       bindings:
         - sequence:
@@ -157,6 +163,12 @@ expression: rows
         - sequence:
             - Ctrl+End
           action: nav.last-item
+        - sequence:
+            - PageUp
+          action: view.scroll-up
+        - sequence:
+            - PageDown
+          action: view.scroll-down
     - context: stack-detail
       bindings:
         - sequence:
@@ -180,6 +192,12 @@ expression: rows
         - sequence:
             - Ctrl+End
           action: nav.last-item
+        - sequence:
+            - PageUp
+          action: view.scroll-up
+        - sequence:
+            - PageDown
+          action: view.scroll-down
     - context: task-detail
       bindings:
         - sequence:
@@ -203,6 +221,12 @@ expression: rows
         - sequence:
             - Ctrl+End
           action: nav.last-item
+        - sequence:
+            - PageUp
+          action: view.scroll-up
+        - sequence:
+            - PageDown
+          action: view.scroll-down
     - context: settings
       bindings:
         - sequence:
@@ -214,6 +238,12 @@ expression: rows
         - sequence:
             - Escape
           action: app.settings
+        - sequence:
+            - PageUp
+          action: view.scroll-up
+        - sequence:
+            - PageDown
+          action: view.scroll-down
     - context: menu
       bindings:
         - sequence:
@@ -364,6 +394,12 @@ expression: rows
         - sequence:
             - Ctrl+p
           action: nav.prev-item
+        - sequence:
+            - Alt+v
+          action: view.scroll-up
+        - sequence:
+            - Ctrl+v
+          action: view.scroll-down
     - context: board
       bindings:
         - sequence:
@@ -443,6 +479,12 @@ expression: rows
             - Ctrl+p
           action: nav.prev-item
         - sequence:
+            - Alt+v
+          action: view.scroll-up
+        - sequence:
+            - Ctrl+v
+          action: view.scroll-down
+        - sequence:
             - Ctrl+Left
           action: stack.narrower
         - sequence:
@@ -471,6 +513,12 @@ expression: rows
         - sequence:
             - Ctrl+p
           action: nav.prev-item
+        - sequence:
+            - Alt+v
+          action: view.scroll-up
+        - sequence:
+            - Ctrl+v
+          action: view.scroll-down
     - context: task-detail
       bindings:
         - sequence:
@@ -494,6 +542,12 @@ expression: rows
         - sequence:
             - Ctrl+p
           action: nav.prev-item
+        - sequence:
+            - Alt+v
+          action: view.scroll-up
+        - sequence:
+            - Ctrl+v
+          action: view.scroll-down
     - context: settings
       bindings:
         - sequence:
@@ -505,6 +559,12 @@ expression: rows
         - sequence:
             - Ctrl+f
           action: nav.next-control
+        - sequence:
+            - Alt+v
+          action: view.scroll-up
+        - sequence:
+            - Ctrl+v
+          action: view.scroll-down
     - context: menu
       bindings:
         - sequence:
@@ -702,9 +762,15 @@ expression: rows
             - b
           action: board.next
         - sequence:
+            - Ctrl+b
+          action: view.scroll-up
+        - sequence:
             - d
             - d
           action: task.delete
+        - sequence:
+            - Ctrl+f
+          action: view.scroll-down
         - sequence:
             - g
             - D

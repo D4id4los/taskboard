@@ -9,6 +9,7 @@
 // element class than the proven TextField).
 
 import { Theme } from "../ui/theme.slint";
+import { ListView } from "../ui/widgets/listview.slint";
 
 export global WalkProbeFacts {
     in-out property <int> first-gained: 0;
@@ -46,6 +47,25 @@ export component WalkProbeWindow inherits Window {
             }
         }
     }
+    // The ListView page-arithmetic probe (P3, plan §12): the page()
+    // function's clamp and one-row-context overlap, driven directly
+    // from the test.
+    page-list := ListView {
+        x: Theme.space-15;
+        y: 0;
+        width: Theme.space-15;
+        height: Theme.space-15;
+        visible-height: parent.height;
+    }
+
+    in-out property <length> page-y <=> page-list.content-y;
+    in-out property <length> page-visible-height <=> page-list.visible-height;
+    in-out property <length> page-content-height <=> page-list.content-height;
+    in-out property <int> page-total-rows <=> page-list.total-rows;
+    public function page-by(page: int) {
+        page-list.page(page);
+    }
+
     stop-b := FocusScope {
         x: Theme.space-6;
         y: 0;
