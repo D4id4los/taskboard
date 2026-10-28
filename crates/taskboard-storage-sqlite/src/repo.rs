@@ -312,7 +312,7 @@ fn decode_stack(row: StackRow) -> Result<Stack, RepositoryError> {
 #[allow(clippy::too_many_lines)] // 21 columns; the mapping is linear
 fn decode_task(
     row: TaskRow,
-    label_sets: &BTreeMap<Uuid, BTreeSet<Uuid>>,
+    label_sets: &BTreeMap<Uuid, BTreeMap<Uuid, taskboard_domain::entities::MembershipState>>,
 ) -> Result<Task, RepositoryError> {
     let id = decode::uuid(&row.id)?;
     let stack = decode::uuid(&row.stack)?;
@@ -327,19 +327,7 @@ fn decode_task(
     let label_memberships: BTreeMap<LabelId, taskboard_domain::entities::MembershipState> =
         label_sets
             .get(&id)
-            .map(|set| {
-                set.iter()
-                    .copied()
-                    .map(|u| {
-                        (
-                            LabelId::from(u),
-                            taskboard_domain::entities::MembershipState::Added {
-                                at: taskboard_domain::entities::BoardClocks::epoch(),
-                            },
-                        )
-                    })
-                    .collect()
-            })
+            .map(|set| set.iter().map(|(u, s)| (LabelId::from(*u), *s)).collect())
             .unwrap_or_default();
     Ok(Task {
         id: TaskId::from(id),
@@ -629,11 +617,12 @@ impl SqliteTaskRepository {
         .await
         .map_err(|e| stmt_error(&e))?;
 
-        let task_label_rows =
-            sqlx::query!(r#"SELECT task, label FROM task_labels ORDER BY task, label"#)
-                .fetch_all(&mut *tx)
-                .await
-                .map_err(|e| stmt_error(&e))?;
+        let task_label_rows = sqlx::query!(
+            r#"SELECT task, label, state, ck_membership FROM task_labels ORDER BY task, label"#
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| stmt_error(&e))?;
 
         let outbox_rows = sqlx::query_as!(
             OutboxRow,
@@ -742,12 +731,24 @@ impl SqliteTaskRepository {
             labels.insert(label.id, label);
         }
 
-        // Group the join table once; tasks look up their whole label set.
-        let mut label_sets: BTreeMap<Uuid, BTreeSet<Uuid>> = BTreeMap::new();
+        // Group the join table once; tasks look up their membership map.
+        let mut label_sets: BTreeMap<
+            Uuid,
+            BTreeMap<Uuid, taskboard_domain::entities::MembershipState>,
+        > = BTreeMap::new();
         for row in task_label_rows {
             let task = decode::uuid(&row.task)?;
             let label = decode::uuid(&row.label)?;
-            label_sets.entry(task).or_default().insert(label);
+            let clock: DateTime<Utc> = row
+                .ck_membership
+                .parse()
+                .map_err(|_| RepositoryError::Corrupted)?;
+            let state = match row.state.as_str() {
+                "added" => taskboard_domain::entities::MembershipState::Added { at: clock },
+                "removed" => taskboard_domain::entities::MembershipState::Removed { at: clock },
+                _ => return Err(RepositoryError::Corrupted),
+            };
+            label_sets.entry(task).or_default().insert(label, state);
         }
 
         let mut tasks = BTreeMap::new();
@@ -1174,8 +1175,8 @@ async fn execute_batch(
         .execute(&mut *tx)
         .await.map_err(|e| stmt_error(&e))?;
 
-        // The label set is one whole-set field: replace its join rows
-        // wholesale. Plain upserts only — `INSERT OR REPLACE` would
+        // The memberships are one OR-set map: replace the task's join
+        // rows wholesale. Plain upserts only — `INSERT OR REPLACE` would
         // delete-then-insert and fire `ON DELETE CASCADE` (plan T5).
         sqlx::query!(
             r#"DELETE FROM task_labels WHERE task = ?"#,
@@ -1184,17 +1185,26 @@ async fn execute_batch(
         .execute(&mut *tx)
         .await
         .map_err(|e| stmt_error(&e))?;
-        for (label, state) in task.label_memberships.iter().filter(|(_, state)| {
-            matches!(
-                state,
-                taskboard_domain::entities::MembershipState::Added { .. }
-            )
-        }) {
-            let _ = state;
+        // Every membership entry is written — including `Removed`
+        // tombstones: forgetting a removal lets a stale remote re-add
+        // flap (the no-flap rule, #129). Tombstoned rows persist while
+        // either entity lives; hard row deletion still sweeps via the
+        // FK cascades.
+        for (label, state) in &task.label_memberships {
+            let (state_text, ck) = match state {
+                taskboard_domain::entities::MembershipState::Added { at } => {
+                    ("added", at.to_rfc3339())
+                }
+                taskboard_domain::entities::MembershipState::Removed { at } => {
+                    ("removed", at.to_rfc3339())
+                }
+            };
             sqlx::query!(
-                r#"INSERT INTO task_labels (task, label) VALUES (?, ?)"#,
+                r#"INSERT INTO task_labels (task, label, state, ck_membership) VALUES (?, ?, ?, ?)"#,
                 codec::uuid_to_text(task.id.as_uuid()),
                 codec::uuid_to_text(label.as_uuid()),
+                state_text,
+                ck,
             )
             .execute(&mut *tx)
             .await
