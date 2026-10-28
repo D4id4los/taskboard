@@ -779,7 +779,7 @@ pub(crate) async fn publish_on(
 ///
 /// # Errors
 ///
-/// [`DeckError`] — pass-through: the caller degrades to today's
+/// [`CommandError`] — pass-through: the caller degrades to today's
 /// behavior (warn + continue), never failing the publish.
 async fn sweep_publish_orphans(
     app: &crate::App,
@@ -789,9 +789,9 @@ async fn sweep_publish_orphans(
     created: &taskboard_sync_nextcloud::model::Board,
     connector: &taskboard_domain::ConnectorId,
     bound_remote: &mut RemoteBoardId,
-) -> Result<(), String> {
-    let board_id = crate::commands::resolve_board(app, None).map_err(|err| err.to_string())?;
-    let listed = client.boards().await.map_err(|err| err.to_string())?;
+) -> Result<(), CommandError> {
+    let board_id = crate::commands::resolve_board(app, None)?;
+    let listed = client.boards().await?;
     let window_start = created.last_modified.saturating_sub(600);
     let orphans: Vec<&taskboard_sync_nextcloud::model::Board> = listed
         .iter()
@@ -819,8 +819,7 @@ async fn sweep_publish_orphans(
         // single wait then targets the final binding (DEC-12).
         app.engine
             .execute(StateCommand::UnbindBoard { board: board_id })
-            .await
-            .map_err(|err| err.to_string())?;
+            .await?;
         let oldest = orphans
             .iter()
             .min_by_key(|board| board.last_modified)
@@ -831,8 +830,7 @@ async fn sweep_publish_orphans(
                 remote: RemoteBoardId(oldest.id),
                 connector: connector.clone(),
             })
-            .await
-            .map_err(|err| err.to_string())?;
+            .await?;
         *bound_remote = RemoteBoardId(oldest.id);
     }
     // Delete every non-survivor candidate: the orphans other than the
@@ -846,14 +844,11 @@ async fn sweep_publish_orphans(
     if bound_remote.0 != created.id {
         doomed.push(created.id);
     }
-    for board_id in doomed {
-        client
-            .delete_board(board_id)
-            .await
-            .map_err(|err| err.to_string())?;
+    for doomed_id in doomed {
+        client.delete_board(doomed_id).await?;
         tracing::debug!(
             rule = RULE_R_DUP,
-            orphan = board_id,
+            orphan = doomed_id,
             "crash-window publish orphan deleted"
         );
     }
