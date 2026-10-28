@@ -706,6 +706,8 @@ fn drive_sequence(steps: &[Step]) -> Result<(), TestCaseError> {
                 LocalOp::CreateLabel(id) | LocalOp::UpdateLabel(id) | LocalOp::DeleteLabel(id) => {
                     disk.labels.contains_key(&id)
                 }
+                // Ref-deletes address remote refs, no local row.
+                LocalOp::DeleteRemoteCard { .. } | LocalOp::DeleteRemoteStack { .. } => true,
                 LocalOp::UpdateBoard(id) | LocalOp::DeleteBoard(id) => {
                     disk.boards.contains_key(&id)
                 }

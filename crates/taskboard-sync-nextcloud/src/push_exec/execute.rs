@@ -306,6 +306,49 @@ impl<'a> PushExecutor<'a> {
                     ),
                 }
             }
+            MaterializedOp::DeleteRemoteCard { card } => {
+                // The #150 collapse's doomed-twin delete: addressed by the
+                // ref directly (no overlay), delete ctx so a 404/403
+                // classifies RemoteMissing — the goal achieved either way.
+                match self
+                    .client
+                    .delete_card(card.board.get(), card.stack.get(), card.card.get())
+                    .await
+                {
+                    Ok(_) => GroupOutcome::Outcomes(vec![PushOutcome {
+                        op: group.primary,
+                        result: PushResult::Applied { echo: None },
+                    }]),
+                    Err(err) => classify(
+                        group,
+                        &err,
+                        PushCtx {
+                            existing: true,
+                            delete: true,
+                        },
+                    ),
+                }
+            }
+            MaterializedOp::DeleteRemoteStack { stack } => {
+                match self
+                    .client
+                    .delete_stack(stack.board.get(), stack.stack.get())
+                    .await
+                {
+                    Ok(_) => GroupOutcome::Outcomes(vec![PushOutcome {
+                        op: group.primary,
+                        result: PushResult::Applied { echo: None },
+                    }]),
+                    Err(err) => classify(
+                        group,
+                        &err,
+                        PushCtx {
+                            existing: true,
+                            delete: true,
+                        },
+                    ),
+                }
+            }
             MaterializedOp::DeleteLabel { label } => {
                 match self.overlay.label_by_local.get(&label).copied() {
                     None => GroupOutcome::Outcomes(all_applied(group)),
