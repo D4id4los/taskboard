@@ -2829,6 +2829,25 @@ fn the_scale_echo_syncs_both_ways() {
                 "1.9",
                 "the echo follows the reverted live scale"
             );
+
+            // A Return-less draft never survives the surface: close
+            // and reopen settings, and the mount re-renders the
+            // canonical live echo (plan §5.1 draft invariants).
+            window.invoke_settings_field_edited(4, "9.9".into());
+            {
+                let echo = model().get_scale_echo();
+                assert_eq!(echo, "9.9", "the draft renders");
+            }
+            harness.press(ActionId::AppSettings);
+            harness.press(ActionId::AppSettings);
+            let window = harness.handle.window();
+            assert_eq!(
+                window
+                    .global::<taskboard_ui_slint::SettingsModel>()
+                    .get_scale_echo(),
+                "1.9",
+                "the mount discards the stale draft"
+            );
         },
     );
 }
