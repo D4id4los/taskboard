@@ -572,8 +572,10 @@ impl App {
 
         // The authority exited on the Shutdown broadcast long before;
         // the bounded join only bounds a wedged task. Ordering: actors
-        // → authority → reports drop → engine (D5-13).
-        join_bounded(authority_join, timeout, "authority").await;
+        // → authority → reports drop → engine (D5-13). Each bounded
+        // join's budget fact is aggregated: any abort at the budget is
+        // a degraded drain (design D-6's exit-code contract).
+        let authority_budget_hit = join_bounded(authority_join, timeout, "authority").await;
 
         // The control handle holds clones of the reports sender and the
         // engine handle; it dies here so the ordering contract below
@@ -588,13 +590,11 @@ impl App {
         // this point would hang the engine join to its bounded abort.
         drop(reports);
 
-        join_bounded(engine_join, timeout, "state engine").await;
+        let engine_budget_hit = join_bounded(engine_join, timeout, "state engine").await;
 
         // The consumer exits on its own once the engine's exit closed
-        // the channel; the bounded join only bounds a wedged sink. A
-        // log-line flusher missing its budget is not
-        // process-outcome-relevant (`ShutdownOutcome` is unchanged).
-        join_bounded(notifier_join, timeout, "notifier").await;
+        // the channel; the bounded join only bounds a wedged sink.
+        let notifier_budget_hit = join_bounded(notifier_join, timeout, "notifier").await;
 
         tracing::info!("shutdown: stopping the storage actor");
         drop(storage);
@@ -602,7 +602,10 @@ impl App {
             tracing::warn!(?join_err, "storage actor join failed");
         }
         tracing::info!(actor_aborted, "shutdown complete");
-        ShutdownOutcome { actor_aborted }
+        ShutdownOutcome {
+            actor_aborted,
+            budget_hit: authority_budget_hit | engine_budget_hit | notifier_budget_hit,
+        }
     }
 }
 
@@ -611,6 +614,21 @@ impl App {
 pub struct ShutdownOutcome {
     /// The sync actor was aborted at the timeout instead of joining.
     pub actor_aborted: bool,
+    /// Any other bounded join (authority, state engine, notifier)
+    /// aborted at the timeout instead of joining.
+    pub budget_hit: bool,
+}
+
+impl ShutdownOutcome {
+    /// The degraded-drain predicate (design D-6's exit-code contract,
+    /// in exactly one place): any bounded join aborted at its budget.
+    /// The IPC/web server drains' budget fact reaches the exit decision
+    /// through [`exit_if_degraded`]'s `server_budget_hit` parameter —
+    /// the two join types predate the outcome type.
+    #[must_use]
+    pub fn degraded(&self) -> bool {
+        self.actor_aborted || self.budget_hit
+    }
 }
 
 /// The daemon-shutdown tail found a second strong reference to the
@@ -1140,6 +1158,75 @@ pub async fn shutdown_from_arc(app: Arc<App>) -> Result<ShutdownOutcome, CoreSti
     }
 }
 
+/// The fixed small bound of rung 2's one salvage attempt at an engine
+/// flush (design D-6). A parameter on [`salvage_flush`] so the
+/// hermetic give-up test can force the expiry deterministically.
+pub const SALVAGE_FLUSH_BUDGET: Duration = Duration::from_secs(2);
+
+/// Rung 2's salvage (design D-6/§10 Q4–Q6): one bounded attempt at an
+/// engine flush while the engine and storage actors are still alive.
+/// Best-effort by design — expiry (or an engine already gone) warns
+/// once and returns `false`, and the caller proceeds to exit at the
+/// forcing signal's code; the exit code is never shaped by the
+/// flush's fate. The abort-before-flush order is the caller's
+/// ([`abort_connectors`] first): the flush roundtrips the engine and
+/// storage actors, so those must stay alive through it.
+pub async fn salvage_flush(app: &App, budget: Duration) -> bool {
+    match tokio::time::timeout(budget, app.engine.flush()).await {
+        Ok(()) => true,
+        Err(_elapsed) => {
+            tracing::warn!("rung 2 salvage flush missed its budget; exiting without it");
+            false
+        }
+    }
+}
+
+/// Rung 2's actor aborts (design D-6): drains the connector registry
+/// and aborts every sync actor immediately — no `Detach` send, no join
+/// wait. The sync actors are the wedgers an in-flight cycle pins (the
+/// engine/storage/notifier/authority actors are *not* aborted here:
+/// the salvage flush needs engine+storage, and process exit is the
+/// rest's terminator moments later).
+///
+/// # Panics
+///
+/// Only if the connector-lifecycle mutex is poisoned by a panic while
+/// held (unreachable: the critical sections never panic).
+pub fn abort_connectors(app: &App) {
+    let actors: Vec<SyncActor> = app
+        .connectors
+        .lock()
+        .expect("connector lock")
+        .drain(..)
+        .collect();
+    for actor in actors {
+        tracing::warn!(connector = %actor.id, "rung 2: aborting connector actor");
+        actor.join.abort();
+    }
+}
+
+/// The degraded-drain exit flip (design D-6's exit-code contract): a
+/// drain that aborted any bounded join — sync actor, other actor
+/// ([`ShutdownOutcome::degraded`]), or an IPC/web server drain past
+/// its budget — is not a clean drain and must not masquerade as one:
+/// `tracing::error!` + `exit(1)`. Production-path-only glue that exits
+/// the process, so it carries no test of its own; the predicate
+/// (`ShutdownOutcome::degraded`) and the aggregation
+/// (`App::shutdown`) carry the behavior. `CoreStillShared` keeps its
+/// eyre route to exit 1 — consistent with code 1's meaning.
+pub fn exit_if_degraded(outcome: ShutdownOutcome, server_budget_hit: bool) {
+    if outcome.actor_aborted {
+        tracing::warn!("sync actor did not stop in time and was aborted");
+    }
+    if server_budget_hit {
+        tracing::warn!("a server drain (ipc/web) did not finish in time");
+    }
+    if outcome.degraded() || server_budget_hit {
+        tracing::error!("drain degraded; exiting 1");
+        std::process::exit(1);
+    }
+}
+
 /// Daemon lifecycle: await `ctrl_c` (and SIGTERM on unix), then run the
 /// graceful shutdown sequence. The second-signal force-exit lives in
 /// `main` (thin glue, deliberately untested).
@@ -1174,6 +1261,37 @@ pub async fn wait_for_signal() {
     #[cfg(not(unix))]
     {
         let _ = tokio::signal::ctrl_c().await;
+    }
+}
+
+#[cfg(test)]
+mod shutdown_outcome_tests {
+    use super::ShutdownOutcome;
+
+    /// T4 (design D-6): the degraded predicate is exactly the disjoin
+    /// of the two abort facts — one definition, one place.
+    #[test]
+    fn shutdown_outcome_degraded_truth_table() {
+        let clean = ShutdownOutcome {
+            actor_aborted: false,
+            budget_hit: false,
+        };
+        let actor = ShutdownOutcome {
+            actor_aborted: true,
+            budget_hit: false,
+        };
+        let budget = ShutdownOutcome {
+            actor_aborted: false,
+            budget_hit: true,
+        };
+        let both = ShutdownOutcome {
+            actor_aborted: true,
+            budget_hit: true,
+        };
+        assert!(!clean.degraded());
+        assert!(actor.degraded());
+        assert!(budget.degraded());
+        assert!(both.degraded());
     }
 }
 
