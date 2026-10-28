@@ -245,7 +245,7 @@ export component TaskView inherits FocusScope {
                             text: root.task.due-phrase == "" ? "—" : root.task.due-phrase;
                         }
                     }
-                    if (root.task.due-open): due-editor := DueEditor {
+                    if (root.task.due-open): DueEditor {
                         initial-text: root.task.due-text;
                         echo: root.task.due-echo;
                         clear-affordance: true;
@@ -283,7 +283,7 @@ export component TaskView inherits FocusScope {
                             text: root.task.scheduled-phrase == "" ? "—" : root.task.scheduled-phrase;
                         }
                     }
-                    if (root.task.scheduled-open): scheduled-editor := DueEditor {
+                    if (root.task.scheduled-open): DueEditor {
                         field-label: "Start date entry";
                         entry-placeholder: "YYYY-MM-DD or +2d";
                         initial-text: root.task.scheduled-text;

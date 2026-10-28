@@ -40,7 +40,7 @@ export component DueEditor inherits VerticalLayout {
     // the leftover; the calendar button is max-width-pinned at the
     // square (an `alignment: start` row would size every cell to its
     // preferred width and defeat the stretch).
-    field-row := HorizontalLayout {
+    HorizontalLayout {
         spacing: Theme.space-2;
         due-field := TextField {
             placeholder: root.entry-placeholder;
