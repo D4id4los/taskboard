@@ -170,6 +170,7 @@ pub enum ActionId {
     NavNextView,
     NavPrevView,
     NavFocusBoard,
+    NavShowTask,
     NavNextItem,
     NavPrevItem,
     BoardNext,
@@ -231,6 +232,7 @@ impl ActionId {
             Self::NavNextView => "nav.next-view",
             Self::NavPrevView => "nav.prev-view",
             Self::NavFocusBoard => "nav.focus-board",
+            Self::NavShowTask => "nav.show-task",
             Self::NavNextItem => "nav.next-item",
             Self::NavPrevItem => "nav.prev-item",
             Self::BoardNext => "board.next",
@@ -481,6 +483,23 @@ pub const REGISTRY: &[ActionEntry] = &[
         enabled: true,
         menu_rank: 80,
         description: "Returns to the board view from any deeper view.",
+        menu_group: Some(MenuGroup::ViewNav),
+    },
+    ActionEntry {
+        id: ActionId::NavShowTask,
+        label: "Show task",
+        // Palette-only availability: the row never renders in a menu
+        // (the `menu.*` masking precedent) while staying first class
+        // for config overrides, hints, and this snapshot. No preset
+        // binding by recorded decision (round-3 D23): the trigger IS
+        // the palette's Return (`menu.invoke`); a second chord would
+        // be a synonym, and the no-second-class gate reads uniformly
+        // unbound in all three presets.
+        contexts: &[ContextId::Palette],
+        category: Category::Navigation,
+        enabled: true,
+        menu_rank: 90,
+        description: "Shows the task picked in the search palette: selects its board and stack, focuses its card, and scrolls it into view.",
         menu_group: Some(MenuGroup::ViewNav),
     },
     ActionEntry {
@@ -944,6 +963,7 @@ mod tests {
             ActionId::NavNextView,
             ActionId::NavPrevView,
             ActionId::NavFocusBoard,
+            ActionId::NavShowTask,
             ActionId::NavNextItem,
             ActionId::NavPrevItem,
             ActionId::BoardNext,
