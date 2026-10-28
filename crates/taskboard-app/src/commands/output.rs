@@ -590,6 +590,38 @@ pub struct ReminderMuteReceipt {
     pub muted: bool,
 }
 
+/// The `tasks repeat` receipt: `rule: None` names the cleared
+/// post-state (`--off`) — the post-state-truth precedent (a repeated
+/// `--off` that found nothing to clear reports the same shape).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RepeatReceipt {
+    /// The task's local uuid.
+    pub task_id: String,
+    /// The task's title.
+    pub task_title: String,
+    /// The rule in post-state; `None` = the task no longer repeats.
+    pub rule: Option<RecurRuleReceipt>,
+}
+
+/// The projected recurring-series rule (never the domain's serde
+/// shape): canonical text forms plus the domain's next-occurrence law.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RecurRuleReceipt {
+    /// The series' uuid (stable across the whole occurrence chain).
+    pub series: String,
+    /// The anchor (the first scheduled local date), ISO format.
+    pub anchor: chrono::NaiveDate,
+    /// The pattern's canonical text form (`daily`, `weekly on mon,fri`,
+    /// `monthly on 2nd-mon`, ...).
+    pub pattern: String,
+    /// The bound's canonical text form (empty | `until YYYY-MM-DD` |
+    /// `count N`).
+    pub bound: String,
+    /// The next advertised member; `None` = the `Until` bound excludes
+    /// it (this head is the series' last).
+    pub next: Option<chrono::NaiveDate>,
+}
+
 /// The `config print` payload: the effective configuration plus the
 /// diagnosis (validity travels *in* the payload; exit 0 either way).
 ///

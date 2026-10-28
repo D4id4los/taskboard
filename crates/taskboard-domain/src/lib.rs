@@ -117,9 +117,10 @@ pub use push::{
 };
 pub use reconcile::{ReconcileCounts, normalized_title, plan_reconcile};
 pub use recur::{
-    DayOfMonth, EveryDays, EveryWeeks, InvalidRecur, MonthlyAnchor, NthWeek, OccurrenceCount,
-    OccurrenceOutcome, RecurBound, RecurPattern, RecurRule, WeekdaySet, next_after,
-    occurrence_outcome, occurs_on, roll_target, schedule,
+    DayOfMonth, EveryDays, EveryWeeks, InvalidRecur, MonthlyAnchor, NextOccurrence, NthWeek,
+    OccurrenceCount, OccurrenceOutcome, RecurBound, RecurPattern, RecurRule, WeekdaySet,
+    next_after, next_occurrence, occurrence_outcome, occurs_on, roll_reference_date, roll_target,
+    schedule, series_reference_date,
 };
 pub use reminders::{
     AdhocAlarm, AdhocWhen, Insistence, InvalidReminderOffset, Notification, NotifierMessage,

@@ -545,6 +545,156 @@ fn parse_before_flag(raw: &str) -> Result<chrono::TimeDelta, String> {
         .ok_or_else(|| "expected <int><unit> components (s|m|h|d), e.g. 10m or 1h30m".to_owned())
 }
 
+/// The `--weekly` value: the empty default-missing value is the bare
+/// flag's task-weekday default; anything else goes through the
+/// domain's weekday-set text form — one parser, one taxonomy (the
+/// `parse_effort` shape).
+fn parse_weekdays_flag(raw: &str) -> Result<WeekdaysFlag, String> {
+    if raw.is_empty() {
+        return Ok(WeekdaysFlag::TaskWeekday);
+    }
+    taskboard_domain::WeekdaySet::parse_text_form(raw)
+        .map(WeekdaysFlag::Days)
+        .map_err(|err| err.to_string())
+}
+
+/// The `--monthly` value: the empty default-missing value is the bare
+/// flag's task-day default; anything else is a
+/// [`taskboard_domain::MonthlyAnchor`] text form.
+fn parse_monthly_flag(raw: &str) -> Result<MonthlyFlag, String> {
+    if raw.is_empty() {
+        return Ok(MonthlyFlag::TaskDay);
+    }
+    taskboard_domain::MonthlyAnchor::parse_text_form(raw)
+        .map(MonthlyFlag::Anchor)
+        .map_err(|err| err.to_string())
+}
+
+/// Wraps the domain's day-interval text form (`3` | `3d`).
+fn parse_every_days_flag(raw: &str) -> Result<taskboard_domain::EveryDays, String> {
+    taskboard_domain::EveryDays::parse_text_form(raw).map_err(|err| err.to_string())
+}
+
+/// Wraps the domain's week-interval text form (`2` | `2w`).
+fn parse_every_weeks_flag(raw: &str) -> Result<taskboard_domain::EveryWeeks, String> {
+    taskboard_domain::EveryWeeks::parse_text_form(raw).map_err(|err| err.to_string())
+}
+
+/// Wraps the domain's occurrence-count text form (bare digits, ≥ 1).
+fn parse_count_flag(raw: &str) -> Result<taskboard_domain::OccurrenceCount, String> {
+    taskboard_domain::OccurrenceCount::parse_text_form(raw).map_err(|err| err.to_string())
+}
+
+/// The `tasks repeat --until` bound: an inclusive **local** calendar
+/// date (`YYYY-MM-DD`) — a pure date, deliberately without
+/// `parse_due`'s UTC-midnight semantics (a bound is not an instant).
+/// Anything else is a clap usage error (exit 2).
+fn parse_until_flag(raw: &str) -> Result<chrono::NaiveDate, String> {
+    chrono::NaiveDate::parse_from_str(raw, "%Y-%m-%d")
+        .map_err(|_| "expected a local date YYYY-MM-DD".to_owned())
+}
+
+/// The `--weekly` flag's value shape: the bare flag (the empty
+/// `default_missing_value`) names the task's own weekday — resolved
+/// handler-side, the calendar does not exist at parse time — and an
+/// explicit value carries the weekday set.
+#[derive(Debug, Clone, PartialEq)]
+pub enum WeekdaysFlag {
+    /// Bare `--weekly`: the task's own weekday.
+    TaskWeekday,
+    /// `--weekly mon,wed,fri`.
+    Days(taskboard_domain::WeekdaySet),
+}
+
+/// The `--monthly` flag's value shape: the bare flag names the task's
+/// own day-of-month (handler-side resolution), an explicit value is a
+/// [`taskboard_domain::MonthlyAnchor`] text form.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MonthlyFlag {
+    /// Bare `--monthly`: the task's own day-of-month.
+    TaskDay,
+    /// `--monthly 15` | `--monthly 2nd-mon`.
+    Anchor(taskboard_domain::MonthlyAnchor),
+}
+
+/// The `tasks repeat` pattern/mode flags: exactly one of the four
+/// (`--daily`/`--weekly`/`--monthly` set a pattern, `--off` clears the
+/// rule) — clap-enforced by the `repeat-mode` arg group (`multiple =
+/// false`, `required = true`).
+#[derive(Debug, Clone, clap::Args)]
+#[group(id = "repeat-mode", multiple = false, required = true)]
+pub struct RepeatModeFlags {
+    /// Every N days (bare flag = 1).
+    #[arg(
+        long,
+        num_args(0..=1),
+        default_missing_value = "1",
+        value_parser = parse_every_days_flag
+    )]
+    pub daily: Option<taskboard_domain::EveryDays>,
+    /// On the given weekdays (`mon,wed,fri`) of every
+    /// `--every-weeks`-th week; bare flag = the task's own weekday.
+    /// A month never lacks a weekday — no monthly-style clamp question.
+    #[arg(
+        long,
+        num_args(0..=1),
+        default_missing_value = "",
+        value_parser = parse_weekdays_flag
+    )]
+    pub weekly: Option<WeekdaysFlag>,
+    /// Monthly on a day-of-month (`15`, clamped in short months) or an
+    /// nth weekday (`2nd-mon`; a month lacking it contributes no
+    /// member — legal grammar, legal rule). Bare flag = the task's own
+    /// day-of-month.
+    #[arg(
+        long,
+        num_args(0..=1),
+        default_missing_value = "",
+        value_parser = parse_monthly_flag
+    )]
+    pub monthly: Option<MonthlyFlag>,
+    /// Stop repeating (clear the rule; the head stays an ordinary
+    /// task). Exclusive with every set flag and bound.
+    #[arg(long, conflicts_with_all = ["every_weeks", "until", "count"])]
+    pub off: bool,
+}
+
+/// The `tasks repeat` flags (the pattern family above, plus bounds) —
+/// a flattened `Args` struct so the bounds can require the pattern by
+/// the group id.
+#[derive(Debug, Clone, clap::Args)]
+pub struct RepeatArgs {
+    /// The task (uuid | unique ≥8-char uuid prefix | exact title).
+    pub task: String,
+    /// Exactly one of `--daily`/`--weekly`/`--monthly`/`--off`.
+    #[command(flatten)]
+    pub mode: RepeatModeFlags,
+    /// The weekly interval (≥ 1); requires `--weekly`.
+    #[arg(
+        long,
+        requires = "weekly",
+        conflicts_with_all = ["daily", "monthly"],
+        value_parser = parse_every_weeks_flag
+    )]
+    pub every_weeks: Option<taskboard_domain::EveryWeeks>,
+    /// No member after this inclusive local date; requires a pattern.
+    #[arg(
+        long,
+        requires = "repeat-mode",
+        conflicts_with_all = ["count"],
+        value_parser = parse_until_flag
+    )]
+    pub until: Option<chrono::NaiveDate>,
+    /// At most N completed occurrences (≥ 1); requires a pattern.
+    #[arg(
+        long,
+        requires = "repeat-mode",
+        conflicts_with_all = ["until"],
+        value_parser = parse_count_flag
+    )]
+    pub count: Option<taskboard_domain::OccurrenceCount>,
+}
+
 /// The `timers add --at` flag (D-R9's host-local ruling, applied at the
 /// CLI edge — this is the only place the app reads `chrono::Local`).
 /// Accepted, in order: (1) full RFC-3339 with offset → absolute instant;
@@ -836,6 +986,11 @@ pub enum TasksCmd {
         #[arg(long, requires = "task", conflicts_with_all = ["before", "clear", "off", "list"])]
         on: bool,
     },
+    /// Repeat a task on a schedule (`--daily`/`--weekly`/`--monthly`
+    /// with optional `--until`/`--count` bounds) or stop repeating
+    /// (`--off`). Exactly one mode per line; the anchor is the task's
+    /// scheduled/duedate local date, else today.
+    Repeat(RepeatArgs),
 }
 
 #[cfg(test)]
