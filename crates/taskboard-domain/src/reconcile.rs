@@ -700,6 +700,124 @@ mod tests {
     }
 
     #[test]
+    fn membership_tombstones_re_key_with_their_stamps() {
+        let mut app = bound_board();
+        let bound = label(1, "urgent", true);
+        let local = label(2, "Urgent", false);
+        app.labels.insert(bound.id, bound.clone());
+        app.labels.insert(local.id, local.clone());
+        let s = stack(5, "s", true);
+        app.stacks.insert(s.id, s.clone());
+        let mut carrier = task(10, s.id, "card", true);
+        carrier.label_memberships.insert(
+            bound.id,
+            crate::entities::MembershipState::Removed { at: ts(100) },
+        );
+        let carrier_id = carrier.id;
+        app.tasks.insert(carrier.id, carrier);
+        let (actions, _) = plan_reconcile(&app, &[], board());
+        assert!(
+            actions.iter().any(|a| matches!(a, PersistenceAction::UpsertTask(t)
+                if t.id == carrier_id
+                    && t.label_memberships.get(&local.id) == Some(&crate::entities::MembershipState::Removed { at: ts(100) })
+                    && !t.label_memberships.contains_key(&bound.id))),
+            "the remembered removal re-keys to the survivor with its stamp"
+        );
+    }
+
+    #[test]
+    fn an_edge_re_key_collision_merges_through_the_outcome_table() {
+        let mut app = bound_board();
+        let bound = label(1, "urgent", true);
+        let local = label(2, "Urgent", false);
+        app.labels.insert(bound.id, bound.clone());
+        app.labels.insert(local.id, local.clone());
+        let s = stack(5, "s", true);
+        app.stacks.insert(s.id, s.clone());
+        // The task holds BOTH observations: a live membership under the
+        // survivor's id and a newer removal under the bound id. The
+        // collision merges through the outcome table: the strictly newer
+        // removal wins.
+        let mut carrier = task(10, s.id, "card", true);
+        carrier.label_memberships.insert(
+            local.id,
+            crate::entities::MembershipState::Added { at: ts(100) },
+        );
+        carrier.label_memberships.insert(
+            bound.id,
+            crate::entities::MembershipState::Removed { at: ts(200) },
+        );
+        let carrier_id = carrier.id;
+        app.tasks.insert(carrier.id, carrier);
+        let (actions, _) = plan_reconcile(&app, &[], board());
+        assert!(
+            actions.iter().any(|a| matches!(a, PersistenceAction::UpsertTask(t)
+                if t.id == carrier_id
+                    && t.label_memberships.get(&local.id) == Some(&crate::entities::MembershipState::Removed { at: ts(200) })
+                    && !t.label_memberships.contains_key(&bound.id))),
+            "the two observations of one membership fold by the table"
+        );
+    }
+
+    #[test]
+    fn a_task_with_no_edge_under_the_absorbed_label_is_not_rewritten() {
+        let mut app = bound_board();
+        let bound = label(1, "urgent", true);
+        let local = label(2, "Urgent", false);
+        app.labels.insert(bound.id, bound.clone());
+        app.labels.insert(local.id, local.clone());
+        let s = stack(5, "s", true);
+        app.stacks.insert(s.id, s.clone());
+        let mut carrier = task(10, s.id, "card", true);
+        carrier.label_memberships.insert(
+            local.id,
+            crate::entities::MembershipState::Added { at: ts(100) },
+        );
+        let before = carrier.clone();
+        app.tasks.insert(carrier.id, carrier);
+        let (actions, _) = plan_reconcile(&app, &[], board());
+        assert!(
+            !actions
+                .iter()
+                .any(|a| matches!(a, PersistenceAction::UpsertTask(t)
+                if t.id == before.id && t.label_memberships != before.label_memberships)),
+            "a task whose map is unchanged emits nothing"
+        );
+    }
+
+    #[test]
+    fn the_pair_merge_folds_the_two_membership_maps() {
+        // merge_task_pair: local row has {A: Added(100)}, bound row has
+        // {A: Removed(200), B: Added(150)} — the fold keeps A removed
+        // (strictly newer) and adds B.
+        let s = stack(5, "s", true);
+        let mut local = task(10, s.id, "card", false);
+        local.label_memberships.insert(
+            LabelId::from(uuid::Uuid::from_u128(0xa0)),
+            crate::entities::MembershipState::Added { at: ts(100) },
+        );
+        let mut bound = task(10, s.id, "card", true);
+        bound.label_memberships.insert(
+            LabelId::from(uuid::Uuid::from_u128(0xa0)),
+            crate::entities::MembershipState::Removed { at: ts(200) },
+        );
+        bound.label_memberships.insert(
+            LabelId::from(uuid::Uuid::from_u128(0xa1)),
+            crate::entities::MembershipState::Added { at: ts(150) },
+        );
+        let merged = merge_task_pair(&local, &bound);
+        assert_eq!(
+            merged.label_memberships[&LabelId::from(uuid::Uuid::from_u128(0xa0))],
+            crate::entities::MembershipState::Removed { at: ts(200) },
+            "the strictly newer removal wins the contested key"
+        );
+        assert_eq!(
+            merged.label_memberships[&LabelId::from(uuid::Uuid::from_u128(0xa1))],
+            crate::entities::MembershipState::Added { at: ts(150) }
+        );
+    }
+
+    #[test]
     fn tasks_match_only_within_shared_stack_row() {
         let mut app = bound_board();
         let s1 = stack(1, "a", true);
