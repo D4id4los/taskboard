@@ -523,10 +523,14 @@ async fn drain_and_shutdown(
         // wedged peer must never hold the daemon's shutdown hostage)
         // and the refcount is released either way. The dashboard's
         // drain rides the same budget as the IPC socket's.
-        server.join(shutdown_timeout).await;
+        // Commit 4 threads these into the degraded-drain exit; the
+        // fact is surfaced, not swallowed, from here on.
+        let ipc_hit = server.join(shutdown_timeout).await;
+        let mut web_hit = false;
         if let Some(web) = web {
-            web.join(shutdown_timeout).await;
+            web_hit = web.join(shutdown_timeout).await;
         }
+        let _ = (ipc_hit, web_hit);
         taskboard_app::bootstrap::shutdown_from_arc(app).await
     };
     let outcome = tokio::select! {

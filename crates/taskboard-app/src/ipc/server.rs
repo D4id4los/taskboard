@@ -110,12 +110,17 @@ impl IpcServerHandle {
     /// released either way. The daemon's shutdown must never depend on
     /// a peer's behavior.
     ///
+    /// Returns whether the budget was hit (the drain aborted) — the
+    /// two-state fact the degraded-drain exit decision aggregates
+    /// (design D-6: a drain that dropped in-flight work is not clean).
+    ///
     /// # Panics
     ///
     /// Never on the happy path; an internal task panicking (a bug)
     /// surfaces here as a join error, logged and swallowed — the
     /// daemon's own shutdown must proceed regardless.
-    pub async fn join(self, drain_budget: Duration) {
+    #[must_use = "a budget hit is the degraded-drain fact the tail must surface"]
+    pub async fn join(self, drain_budget: Duration) -> bool {
         // Stop accepting (idempotent — a `Shutdown` request may have
         // fired already); then drain what was accepted.
         self.request_shutdown();
@@ -127,7 +132,8 @@ impl IpcServerHandle {
             let _ = (&mut accept).await;
             let _ = (&mut dispatcher).await;
         };
-        if tokio::time::timeout(drain_budget, drain).await.is_err() {
+        let budget_hit = tokio::time::timeout(drain_budget, drain).await.is_err();
+        if budget_hit {
             tracing::warn!("ipc drain did not finish in time; dropping in-flight connections");
             accept.abort();
             dispatcher.abort();
@@ -145,6 +151,7 @@ impl IpcServerHandle {
         {
             tracing::debug!(socket = %sidecar.display(), "ipc socket removed");
         }
+        budget_hit
     }
 }
 
@@ -708,9 +715,10 @@ mod drain_tests {
     /// (here: a dispatcher stuck forever) is aborted at the budget and
     /// `join` still completes — the daemon's own shutdown must never
     /// depend on a peer's or an in-flight request's behavior (the
-    /// WI-5 review regression).
+    /// WI-5 review regression). T8: the aborted drain is reported as
+    /// the budget-hit fact (design D-6).
     #[tokio::test]
-    async fn join_bounds_the_drain_even_with_a_task_that_never_finishes() {
+    async fn a_wedged_drain_reports_the_budget_hit_and_still_completes() {
         let (stop, stop_rx) = watch::channel(false);
         let handle = IpcServerHandle {
             stop,
@@ -719,12 +727,30 @@ mod drain_tests {
             dispatcher: tokio::spawn(std::future::pending::<()>()),
             sidecar: None,
         };
-        tokio::time::timeout(
+        let budget_hit = tokio::time::timeout(
             Duration::from_secs(2),
             handle.join(Duration::from_millis(100)),
         )
         .await
         .expect("join completes although the dispatcher never does");
+        assert!(budget_hit, "the aborted drain is the budget-hit fact");
+    }
+
+    /// T8's completing arm: a drain inside the budget is clean —
+    /// `join` answers `false` (the degraded predicate must not fire
+    /// on a healthy shutdown).
+    #[tokio::test]
+    async fn a_drain_inside_the_budget_reports_clean() {
+        let (stop, stop_rx) = watch::channel(false);
+        let handle = IpcServerHandle {
+            stop,
+            stop_rx,
+            accept: tokio::spawn(async {}),
+            dispatcher: tokio::spawn(async {}),
+            sidecar: None,
+        };
+        let budget_hit = handle.join(Duration::from_secs(5)).await;
+        assert!(!budget_hit);
     }
 }
 

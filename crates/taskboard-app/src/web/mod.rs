@@ -104,20 +104,25 @@ impl DashboardServerHandle {
     /// (the per-connection tasks turn keep-alives off at the stop
     /// signal), and always completes. `drain_budget` bounds the wait;
     /// past it the accept task is *aborted* — a wedged peer must never
-    /// hold the daemon's shutdown hostage.
-    pub async fn join(self, drain_budget: Duration) {
+    /// hold the daemon's shutdown hostage. Returns whether the budget
+    /// was hit (the `IpcServerHandle::join` contract mirrored): the
+    /// two-state fact the degraded-drain exit decision aggregates
+    /// (design D-6).
+    #[must_use = "a budget hit is the degraded-drain fact the tail must surface"]
+    pub async fn join(self, drain_budget: Duration) -> bool {
         self.request_shutdown();
         let mut accept = self.accept;
-        if tokio::time::timeout(drain_budget, &mut accept)
+        let budget_hit = tokio::time::timeout(drain_budget, &mut accept)
             .await
-            .is_err()
-        {
+            .is_err();
+        if budget_hit {
             tracing::warn!("web drain did not finish in time; dropping connections");
             accept.abort();
             if !accept.is_finished() {
                 let _ = accept.await;
             }
         }
+        budget_hit
     }
 }
 
@@ -312,20 +317,36 @@ mod tests {
 
     /// The drain budget is a hard bound (the `IpcServerHandle`
     /// contract, mirrored): an accept task that never finishes is
-    /// aborted at the budget and `join` still completes.
+    /// aborted at the budget, `join` still completes, and the abort is
+    /// reported as the budget-hit fact (T8, design D-6).
     #[tokio::test]
-    async fn join_bounds_the_drain_even_with_a_task_that_never_finishes() {
+    async fn a_wedged_drain_reports_the_budget_hit_and_still_completes() {
         let (stop, _stop_rx) = watch::channel(false);
         let handle = DashboardServerHandle {
             stop,
             accept: tokio::spawn(std::future::pending::<()>()),
             local_addr: std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
         };
-        tokio::time::timeout(
+        let budget_hit = tokio::time::timeout(
             Duration::from_secs(2),
             handle.join(Duration::from_millis(100)),
         )
         .await
         .expect("join completes although the accept task never does");
+        assert!(budget_hit, "the aborted drain is the budget-hit fact");
+    }
+
+    /// T8's completing arm (the mirror pair's other half): a drain
+    /// inside the budget is clean — `join` answers `false`.
+    #[tokio::test]
+    async fn a_drain_inside_the_budget_reports_clean() {
+        let (stop, _stop_rx) = watch::channel(false);
+        let handle = DashboardServerHandle {
+            stop,
+            accept: tokio::spawn(async {}),
+            local_addr: std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
+        };
+        let budget_hit = handle.join(Duration::from_secs(5)).await;
+        assert!(!budget_hit);
     }
 }

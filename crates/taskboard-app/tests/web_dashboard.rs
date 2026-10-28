@@ -237,7 +237,7 @@ async fn w1_the_dashboard_journey_over_the_real_server() {
 
     // Shutdown: the bounded drain completes, and the port actually
     // closes — a poll predicate with a deadline, never a sleep.
-    web.join(Duration::from_secs(5)).await;
+    let _ = web.join(Duration::from_secs(5)).await;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     loop {
         match client
@@ -369,7 +369,7 @@ async fn w4_the_generated_token_persists_beside_the_db() {
     let url = format!("http://{}/d/{}/", web.local_addr(), persisted.trim());
     let index = client.get(&url).send().await.expect("index");
     assert_eq!(index.status(), 200);
-    web.join(Duration::from_secs(5)).await;
+    let _ = web.join(Duration::from_secs(5)).await;
     let _ = app.shutdown().await;
 }
 
@@ -404,6 +404,6 @@ async fn w5_a_conflicting_bind_is_the_typed_refusal() {
         "the conflicting bind must be the typed Bind refusal"
     );
 
-    first.join(Duration::from_secs(5)).await;
+    let _ = first.join(Duration::from_secs(5)).await;
     let _ = app.shutdown().await;
 }
