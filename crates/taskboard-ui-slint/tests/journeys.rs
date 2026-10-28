@@ -4949,6 +4949,27 @@ fn the_due_picker_journeys_reach_the_boundary() {
             // to the due's January grid.
             harness.stroke(parse("Down").expect("Down"));
             harness.driver.advance_time(0);
+            // Tab from the grid lands on the header's first month
+            // button (the widget-level tab stop); Return activates it
+            // (round-3 D12/F28, acceptance f): the month steps back —
+            // December 2029 starts on a Saturday (5 leading blanks,
+            // 31 days padded to 42 cells in 6 rows), the cursor on
+            // the 31st (flattened 35).
+            harness.stroke(parse("Tab").expect("Tab"));
+            harness.driver.advance_time(0);
+            harness.stroke(parse("Return").expect("Return"));
+            harness.driver.advance_time(0);
+            assert_eq!(
+                grid_shape(&harness),
+                (6, 42),
+                "the month button answered Return"
+            );
+            assert_eq!(cursor_index(&harness), Some(35));
+            // Back to January for the legs below.
+            harness.handle.window().invoke_task_date_picker_key(5);
+            harness.driver.advance_time(0);
+            harness.stroke(parse("Down").expect("Down"));
+            harness.driver.advance_time(0);
             harness.stroke(parse("Right").expect("Right"));
             harness.driver.advance_time(0);
             assert_eq!(grid_shape(&harness), (5, 35));
