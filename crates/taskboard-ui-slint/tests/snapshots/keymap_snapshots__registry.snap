@@ -475,6 +475,24 @@ expression: rows
   menu_rank: 160
   description: Cancels the selected standalone alarm before or after it fires.
   menu_group: task
+- id: task.track-start
+  label: Start tracking
+  contexts:
+    - global
+  category: task
+  enabled: true
+  menu_rank: 170
+  description: "Starts tracking the focused task: any running timer closes, this task's opens."
+  menu_group: task
+- id: task.track-stop
+  label: Stop tracking
+  contexts:
+    - global
+  category: task
+  enabled: true
+  menu_rank: 180
+  description: "Stops the running timer, closing its open time entry."
+  menu_group: task
 - id: menu.next
   label: Next menu entry
   contexts:
