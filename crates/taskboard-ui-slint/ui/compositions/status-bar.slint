@@ -272,7 +272,7 @@ export component StatusBar inherits Rectangle {
                 text: root.tracking-chip;
                 tone: Tone.info;
             }
-            if (false && root.tracking-chip-visible && root.tracking-chip-action-visible): stop-touch := TouchArea {
+            if (root.tracking-chip-visible && root.tracking-chip-action-visible): stop-touch := TouchArea {
                 min-width: Theme.space-6;
                 min-height: Theme.space-6;
                 accessible-role: AccessibleRole.button;
