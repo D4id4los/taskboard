@@ -56,4 +56,15 @@ fn main() {
     )
     .expect("slider grab probe compilation failed");
     println!("cargo:rerun-if-changed={}", grab_source.display());
+
+    // The control-walk probe (round-3 D25): the synthetic-Tab
+    // traversal and the FocusScope focus seam, same include shape.
+    let walk_source = manifest.join("tests/walk_probe.slint");
+    slint_build::compile_with_output_path(
+        &walk_source,
+        out.join("walk_probe.rs"),
+        slint_build::CompilerConfiguration::new().with_debug_info(true),
+    )
+    .expect("walk probe compilation failed");
+    println!("cargo:rerun-if-changed={}", walk_source.display());
 }

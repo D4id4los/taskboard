@@ -576,6 +576,43 @@ impl ViewState {
         vec![FlowOutcome::RefreshNow]
     }
 
+    /// `nav.show-task` (round-3 D23): resolves the task → stack →
+    /// board, selects all three, and mounts the board view — the
+    /// task's home, always (`ViewId::Board`), from any source view.
+    /// A stale id (the entity died between the palette push and the
+    /// invoke) is inert: empty outcomes, no repaint — the
+    /// `palette_jump` stale rule. Subjects are left alone (the
+    /// refresh-time re-validation pops stale ones), and
+    /// `settings_return` stays as-is (overwritten at the next open).
+    pub fn show_task(&mut self, state: &AppState, task: TaskId) -> Vec<FlowOutcome> {
+        let Some(stack) = state.tasks.get(&task).map(|t| t.stack) else {
+            return Vec::new();
+        };
+        let Some(board) = state.stacks.get(&stack).map(|s| s.board) else {
+            return Vec::new();
+        };
+        self.board = Some(board);
+        self.selected_stack = Some(stack);
+        self.focused_task = Some(task);
+        self.view = ViewId::Board;
+        vec![FlowOutcome::RefreshNow]
+    }
+
+    /// The toolbar view switcher's pushed index (round-3 D22): the
+    /// `[Board, Today]` segment order. The deeper views are the board
+    /// branch (`nav.focus-board` returns from them), and while
+    /// Settings is open the segment names where settings returns to
+    /// (nothing recorded reads as the board).
+    #[must_use]
+    pub fn switcher_selection(&self) -> usize {
+        let view = if self.view == ViewId::Settings {
+            self.settings_return.unwrap_or(ViewId::Board)
+        } else {
+            self.view
+        };
+        usize::from(view == ViewId::Today)
+    }
+
     // -- board selection (design §3.8) -----------------------------------
 
     /// Seeds or repairs the board selection: `None` takes the first
@@ -1409,16 +1446,18 @@ impl ViewState {
     pub fn palette_jump(&mut self, state: &AppState, target: SearchTarget) -> Vec<FlowOutcome> {
         let mut outcomes = match target {
             SearchTarget::Task(task_id) => {
-                let Some(task) = state.tasks.get(&task_id) else {
+                // The stale check keeps the close-only rule; the live
+                // retarget IS `show_task` (round-3 D23: one
+                // implementation — board, stack, focus — two dispatch
+                // sites, never a parallel path).
+                let live = state
+                    .tasks
+                    .get(&task_id)
+                    .is_some_and(|t| state.stacks.contains_key(&t.stack));
+                if !live {
                     return self.close_palette();
-                };
-                let Some(stack) = state.stacks.get(&task.stack) else {
-                    return self.close_palette();
-                };
-                let board = stack.board;
-                let out = self.select_board(state, board);
-                self.focused_task = Some(task_id);
-                out
+                }
+                self.show_task(state, task_id)
             }
             SearchTarget::Stack(stack_id) => {
                 let Some(stack) = state.stacks.get(&stack_id) else {
@@ -1842,7 +1881,7 @@ mod tests {
 
     use taskboard_domain::{Board, BoardClocks, BoardId, Stack, StackClocks, Task, TaskClocks};
 
-    fn epoch() -> chrono::DateTime<Utc> {
+    pub(super) fn epoch() -> chrono::DateTime<Utc> {
         taskboard_domain::BoardClocks::epoch()
     }
 
@@ -2787,7 +2826,7 @@ mod tests {
     /// board 1 is the seed): board one carries the classic two-stack
     /// shape (stack a: tasks a, b; stack b: task c), board two one
     /// stack (c: task d).
-    fn two_board_fixture() -> (AppState, BoardId, BoardId, [StackId; 3], [TaskId; 4]) {
+    pub(super) fn two_board_fixture() -> (AppState, BoardId, BoardId, [StackId; 3], [TaskId; 4]) {
         let b1 = BoardId::from_uuid(uuid::Uuid::from_u128(0x1001));
         let b2 = BoardId::from_uuid(uuid::Uuid::from_u128(0x1002));
         let sa = StackId::from_uuid(uuid::Uuid::from_u128(0x2001));
@@ -3896,6 +3935,7 @@ mod tests {
 
 #[cfg(test)]
 mod settings_surface_tests {
+    use super::tests::{epoch, two_board_fixture};
     use super::*;
 
     fn one_board() -> AppState {
@@ -3995,5 +4035,164 @@ mod settings_surface_tests {
             vs.next_view(&state);
             assert_ne!(vs.view(), ViewId::Settings);
         }
+    }
+
+    // -- nav.show-task (round-3 D23) ---------------------------------------
+
+    #[test]
+    fn show_task_targets_the_tasks_board_stack_and_focus() {
+        let (state, b1, b2, [sa, sb, sc], [.., tc, td]) = two_board_fixture();
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        // Seed a foreign selection: board one, first stack, no focus.
+        vs.select_board(&state, b1);
+
+        // A cross-board target: td lives on board two's sc.
+        let outcomes = vs.show_task(&state, td);
+        assert_eq!(outcomes, vec![FlowOutcome::RefreshNow]);
+        assert_eq!(vs.view(), ViewId::Board, "the task's home view");
+        assert_eq!(vs.board(), Some(b2), "the task's board");
+        assert_eq!(vs.selected_stack(), Some(sc), "the task's stack");
+        assert_eq!(vs.focused_task(), Some(td));
+
+        // A same-board target retargets stack and focus too: tc lives
+        // on board one's second stack.
+        vs.show_task(&state, tc);
+        assert_eq!(vs.board(), Some(b1));
+        assert_eq!(vs.selected_stack(), Some(sb));
+        assert_eq!(vs.focused_task(), Some(tc));
+        let _ = sa;
+    }
+
+    #[test]
+    fn show_task_is_inert_on_a_stale_target() {
+        let (state, b1, _, _, _) = two_board_fixture();
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        vs.select_board(&state, b1);
+        let ghost = TaskId::from_uuid(uuid::Uuid::now_v7());
+        let focus_before = vs.focused_task();
+
+        assert_eq!(vs.show_task(&state, ghost), Vec::new(), "no outcomes");
+        assert_eq!(vs.view(), ViewId::Board, "no repaint, no retarget");
+        assert_eq!(vs.focused_task(), focus_before, "the focus is untouched");
+        assert_eq!(vs.board(), Some(b1), "the selection is untouched");
+    }
+
+    #[test]
+    fn show_task_switches_to_the_board_from_any_view() {
+        let (state, b1, _, _, [ta, ..]) = two_board_fixture();
+        // From Today.
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        vs.focus_today();
+        vs.show_task(&state, ta);
+        assert_eq!(vs.view(), ViewId::Board);
+        assert_eq!(vs.focused_task(), Some(ta));
+
+        // From StackDetail.
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        vs.select_board(&state, b1);
+        vs.next_view(&state);
+        assert_eq!(vs.view(), ViewId::StackDetail);
+        vs.show_task(&state, ta);
+        assert_eq!(vs.view(), ViewId::Board);
+
+        // From Settings: one semantics, no per-source branching; the
+        // return snapshot stays as-is (overwritten at the next open).
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        vs.select_board(&state, b1);
+        vs.open_settings();
+        vs.show_task(&state, ta);
+        assert_eq!(vs.view(), ViewId::Board);
+        assert_eq!(vs.focused_task(), Some(ta));
+    }
+
+    #[test]
+    fn show_task_lands_on_a_done_task() {
+        let (mut state, b1, _, _, [ta, ..]) = two_board_fixture();
+        state.tasks.get_mut(&ta).expect("task").done = Some(epoch());
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        vs.focus_today();
+
+        // Done tasks keep their board cards: the landing is the same
+        // retarget, no special case.
+        assert_eq!(vs.show_task(&state, ta), vec![FlowOutcome::RefreshNow]);
+        assert_eq!(vs.view(), ViewId::Board);
+        assert_eq!(vs.board(), Some(b1));
+        assert_eq!(vs.focused_task(), Some(ta));
+    }
+
+    #[test]
+    fn palette_jump_task_arm_matches_show_task() {
+        let (state, b1, _, [.., sb, _], [.., tc, _]) = two_board_fixture();
+        // Two machines, same starting shape: the palette Task arm and
+        // a direct show_task must land identically (the seam
+        // discipline's equivalence pin).
+        let mut jumped = ViewState::new();
+        jumped.reconcile(&state);
+        jumped.select_board(&state, b1);
+        jumped.open_palette();
+        let jumped_outcomes = jumped.palette_jump(&state, SearchTarget::Task(tc));
+
+        let mut shown = ViewState::new();
+        shown.reconcile(&state);
+        shown.select_board(&state, b1);
+        let show_outcomes = shown.show_task(&state, tc);
+
+        assert_eq!(jumped.focused_task(), shown.focused_task());
+        assert_eq!(jumped.board(), shown.board());
+        assert_eq!(jumped.selected_stack(), Some(sb));
+        assert_eq!(shown.selected_stack(), Some(sb));
+        assert_eq!(jumped.view(), shown.view());
+        // The palette arm additionally ends the flow (the close
+        // ending); the show_task outcomes are its prefix.
+        assert_eq!(jumped_outcomes.len(), show_outcomes.len() + 1);
+        assert_eq!(&jumped_outcomes[..show_outcomes.len()], &show_outcomes[..]);
+        assert!(matches!(
+            jumped_outcomes.last(),
+            Some(FlowOutcome::SetMode(crate::router::Mode::Normal))
+        ));
+    }
+
+    // -- the toolbar switcher projection (round-3 D22) ---------------------
+
+    #[test]
+    fn switcher_selection_projects_views_and_settings_return() {
+        let (state, b1, _, _, _) = two_board_fixture();
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        vs.select_board(&state, b1);
+
+        // The board branch: the board view and both deeper views keep
+        // the board segment lit (nav.focus-board returns from them).
+        assert_eq!(vs.switcher_selection(), 0);
+        vs.next_view(&state);
+        assert_eq!(vs.view(), ViewId::StackDetail);
+        assert_eq!(vs.switcher_selection(), 0);
+        vs.next_view(&state);
+        assert_eq!(vs.view(), ViewId::TaskDetail);
+        assert_eq!(vs.switcher_selection(), 0);
+
+        // Today lights the second segment.
+        vs.focus_today();
+        assert_eq!(vs.switcher_selection(), 1);
+
+        // Settings shows where settings returns to; nothing recorded
+        // reads as the board (a fresh machine never opened settings).
+        vs.open_settings();
+        assert_eq!(vs.switcher_selection(), 1, "the return view is today");
+        vs.close_settings();
+        let fresh = ViewState::new();
+        assert_eq!(fresh.switcher_selection(), 0, "no return recorded: board");
+
+        // A StackDetail return still reads as the board branch.
+        vs.close_settings();
+        vs.next_view(&state);
+        vs.open_settings();
+        assert_eq!(vs.switcher_selection(), 0);
     }
 }
