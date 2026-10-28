@@ -31,6 +31,7 @@ use insta::assert_yaml_snapshot;
 mod common;
 
 use common::{FixedClock, T0, seed_board_state, stranger_task_id, test_validators, ts};
+use std::collections::BTreeMap;
 
 /// A board-bearing fake repo (no command creates boards) plus the
 /// running engine over it. The clock advances one minute per message.
@@ -70,6 +71,47 @@ impl Scenario {
             notifier,
             ReminderEngineConfig::disabled(),
             DayRollConfig::disabled(),
+        )
+        .await
+        .expect("engine boots");
+        Self {
+            handle,
+            repo,
+            report_tx,
+            system_tx,
+            clock,
+        }
+    }
+
+    /// A series scenario: the day-boundary roll is armed over the given
+    /// persisted state and the logical clock starts at `clock_secs`
+    /// (UTC-midnight calendar). The caller drives tokio's paused time
+    /// for the timer wakes; `run` still steps the logical clock per
+    /// command.
+    async fn start_series(state: taskboard_domain::PersistedState, clock_secs: i64) -> Self {
+        let repo = Arc::new(InMemoryRepository::with_state(state));
+        let clock = FixedClock::new(clock_secs);
+        let (sync_out, _sync_in) = tokio::sync::mpsc::channel::<SyncCommand>(8);
+        let (report_tx, report_rx) = tokio::sync::mpsc::channel::<SyncReport>(8);
+        let (system_tx, system_rx) = tokio::sync::broadcast::channel::<SystemEvent>(8);
+        let (notifier, _notifications) = tokio::sync::mpsc::channel::<NotifierMessage>(64);
+        let (handle, _join) = spawn_state_engine(
+            repo.clone(),
+            Arc::new(CountingIds::new()),
+            clock.clone(),
+            sync_out,
+            report_rx,
+            system_tx.clone(),
+            system_rx,
+            notifier,
+            ReminderEngineConfig::disabled(),
+            DayRollConfig {
+                enabled: true,
+                calendar: taskboard_domain::DayCalendar {
+                    day_start_time: chrono::NaiveTime::MIN,
+                    offset: chrono::FixedOffset::east_opt(0).expect("zero offset"),
+                },
+            },
         )
         .await
         .expect("engine boots");
@@ -1288,4 +1330,386 @@ async fn s36_tracking_rows_enter_the_disk_contract() {
     })
     .await;
     s.snap("s36b");
+}
+
+// ---------------------------------------------------------------------
+// S37/S38 — the recurring series materialization (DR-6/2): the
+// completion spawn (s37a–c) and the day-boundary roll (s38a–c) enter
+// the disk contract. Existing scenarios are untouched: the roll
+// scenarios opt in via their own fixture, and every other scenario's
+// `ReminderEngineConfig::disabled()` + disabled day roll never arms the
+// timer.
+// ---------------------------------------------------------------------
+
+/// The series tests' boot instant: 2026-06-15 00:00:00 UTC.
+const SERIES_T0: i64 = 1_781_481_600;
+
+fn daily_rule(bound: taskboard_domain::RecurBound) -> taskboard_domain::RecurRule {
+    taskboard_domain::RecurRule {
+        series: taskboard_domain::SeriesId::from_uuid(uuid::Uuid::from_u128(9_000)),
+        anchor: chrono::NaiveDate::from_ymd_opt(2026, 6, 1).unwrap(),
+        pattern: taskboard_domain::RecurPattern::Daily {
+            every: taskboard_domain::recur::EveryDays::new(1).unwrap(),
+        },
+        bound,
+        continued_from: None,
+    }
+}
+
+/// A persisted board + stack + recurring head (with one label, one
+/// reminder rule, and the mute flag) + a live label entity.
+fn seed_series_state(
+    scheduled: Option<i64>,
+    duedate: Option<i64>,
+    bound: taskboard_domain::RecurBound,
+) -> taskboard_domain::PersistedState {
+    use taskboard_domain::{Label, LabelClocks, Stack, StackClocks, StackId, TaskId};
+    let mut state = seed_board_state("kiosk");
+    let board_id = *state.boards.keys().next().expect("one board");
+    let stack_id = StackId::from_uuid(uuid::Uuid::from_u128(500));
+    state.stacks.insert(
+        stack_id,
+        Stack {
+            id: stack_id,
+            remote: None,
+            board: board_id,
+            title: "chores".into(),
+            order: 1,
+            archived: false,
+            deleted: false,
+            clocks: StackClocks {
+                title: ts(SERIES_T0),
+                order: ts(SERIES_T0),
+                deleted: ts(SERIES_T0),
+            },
+            remote_seen: None,
+        },
+    );
+    let label_id = taskboard_domain::LabelId::from_uuid(uuid::Uuid::from_u128(510));
+    state.labels.insert(
+        label_id,
+        Label {
+            id: label_id,
+            remote: None,
+            board: board_id,
+            title: "weekly".into(),
+            color: Color::new("00aa00"),
+            deleted: false,
+            clocks: LabelClocks {
+                title: ts(SERIES_T0),
+                color: ts(SERIES_T0),
+                deleted: ts(SERIES_T0),
+            },
+            remote_seen: None,
+        },
+    );
+    let task_id = TaskId::from_uuid(uuid::Uuid::from_u128(600));
+    let mut task = taskboard_domain::Task {
+        id: task_id,
+        remote: None,
+        title: "water the plants".into(),
+        description: "the balcony ones".into(),
+        label_memberships: BTreeMap::from([(
+            label_id,
+            taskboard_domain::entities::MembershipState::Added { at: ts(SERIES_T0) },
+        )]),
+        duedate: duedate.map(ts),
+        scheduled: scheduled.map(ts),
+        done: None,
+        stack: stack_id,
+        order: 1,
+        effort: Some(taskboard_domain::entities::Effort::new(600)),
+        importance: Some(taskboard_domain::entities::Importance::High),
+        urgency: Some(taskboard_domain::entities::Urgency::Low),
+        recur: Some(daily_rule(bound)),
+        archived: false,
+        deleted: false,
+        clocks: taskboard_domain::TaskClocks {
+            title: ts(SERIES_T0),
+            description: ts(SERIES_T0),
+            duedate: ts(SERIES_T0),
+            scheduled: ts(SERIES_T0),
+            done: ts(SERIES_T0),
+            position: ts(SERIES_T0),
+            effort: ts(SERIES_T0),
+            importance: ts(SERIES_T0),
+            urgency: ts(SERIES_T0),
+            recur: ts(SERIES_T0),
+            archived: ts(SERIES_T0),
+            deleted: ts(SERIES_T0),
+        },
+        remote_seen: None,
+        remote_baseline: None,
+    };
+    let rule_id = taskboard_domain::ReminderRuleId::from_uuid(uuid::Uuid::from_u128(700));
+    state.reminders.rules.insert(
+        rule_id,
+        taskboard_domain::ReminderRule {
+            id: rule_id,
+            task: task_id,
+            offset: taskboard_domain::ReminderOffset::before(
+                chrono::TimeDelta::try_minutes(-30).unwrap(),
+            )
+            .unwrap(),
+            created_at: ts(SERIES_T0 - 3_600),
+            updated_at: ts(SERIES_T0 - 3_600),
+        },
+    );
+    state.reminders.muted.insert(task_id);
+    let _ = &mut task;
+    state.tasks.insert(task_id, task);
+    state
+}
+
+/// S37a — completing a recurring head spawns the successor: the whole
+/// batch (done stamp, replicated rule, label ops, mute, successor
+/// upsert) lands in one persisted contract dump.
+#[cfg_attr(miri, ignore)]
+#[tokio::test]
+async fn s37a_completion_spawn_full_contents() {
+    let mut s = Scenario::start_with(seed_series_state(
+        Some(SERIES_T0 + 32_400),
+        Some(SERIES_T0 + 61_200),
+        taskboard_domain::RecurBound::None,
+    ))
+    .await;
+    let head_id = s
+        .handle
+        .shared_state()
+        .load()
+        .tasks
+        .keys()
+        .next()
+        .copied()
+        .expect("the seeded head");
+    let CommandOutcome::Applied = s
+        .run(StateCommand::SetTaskDone {
+            id: head_id,
+            done: true,
+        })
+        .await
+    else {
+        panic!("wrong receipt");
+    };
+    s.snap("s37a");
+}
+
+/// S37b — the Until bound's terminal transition: a member past the
+/// until date suppresses the spawn; the same batch completes the head
+/// and clears the rule (appdata-lane trigger included).
+#[cfg_attr(miri, ignore)]
+#[tokio::test]
+async fn s37b_until_bound_suppresses_and_clears() {
+    let mut s = Scenario::start_with(seed_series_state(
+        Some(SERIES_T0 + 32_400),
+        None,
+        taskboard_domain::RecurBound::Until(chrono::NaiveDate::from_ymd_opt(2026, 6, 15).unwrap()),
+    ))
+    .await;
+    let head_id = s
+        .handle
+        .shared_state()
+        .load()
+        .tasks
+        .keys()
+        .next()
+        .copied()
+        .expect("the seeded head");
+    let CommandOutcome::Applied = s
+        .run(StateCommand::SetTaskDone {
+            id: head_id,
+            done: true,
+        })
+        .await
+    else {
+        panic!("wrong receipt");
+    };
+    s.snap("s37b");
+}
+
+/// S37c — the Count bound's final completion: one derived prior
+/// completion plus this one exhausts `Count(2)`; the head completes
+/// rule-less.
+#[cfg_attr(miri, ignore)]
+#[tokio::test]
+async fn s37c_count_bound_final_completion() {
+    let mut state = seed_series_state(Some(SERIES_T0 + 32_400), None, {
+        taskboard_domain::RecurBound::Count(
+            taskboard_domain::recur::OccurrenceCount::new(2).unwrap(),
+        )
+    });
+    let prior = taskboard_domain::Task {
+        id: taskboard_domain::TaskId::from_uuid(uuid::Uuid::from_u128(601)),
+        remote: None,
+        title: "prior occurrence".into(),
+        description: String::new(),
+        label_memberships: BTreeMap::new(),
+        duedate: None,
+        scheduled: Some(ts(SERIES_T0 - 86_400 + 32_400)),
+        done: Some(ts(SERIES_T0 - 43_200)),
+        stack: taskboard_domain::StackId::from_uuid(uuid::Uuid::from_u128(500)),
+        order: 2,
+        effort: None,
+        importance: None,
+        urgency: None,
+        recur: Some(daily_rule(taskboard_domain::RecurBound::Count(
+            taskboard_domain::recur::OccurrenceCount::new(2).unwrap(),
+        ))),
+        archived: false,
+        deleted: false,
+        clocks: taskboard_domain::TaskClocks {
+            title: ts(SERIES_T0 - 86_400),
+            description: ts(SERIES_T0 - 86_400),
+            duedate: ts(SERIES_T0 - 86_400),
+            scheduled: ts(SERIES_T0 - 86_400),
+            done: ts(SERIES_T0 - 43_200),
+            position: ts(SERIES_T0 - 86_400),
+            effort: ts(SERIES_T0 - 86_400),
+            importance: ts(SERIES_T0 - 86_400),
+            urgency: ts(SERIES_T0 - 86_400),
+            recur: ts(SERIES_T0 - 86_400),
+            archived: ts(SERIES_T0 - 86_400),
+            deleted: ts(SERIES_T0 - 86_400),
+        },
+        remote_seen: None,
+        remote_baseline: None,
+    };
+    state.tasks.insert(prior.id, prior);
+    let mut s = Scenario::start_with(state).await;
+    let head_id = s
+        .handle
+        .shared_state()
+        .load()
+        .tasks
+        .values()
+        .find(|t| t.done.is_none())
+        .expect("the open head")
+        .id;
+    let CommandOutcome::Applied = s
+        .run(StateCommand::SetTaskDone {
+            id: head_id,
+            done: true,
+        })
+        .await
+    else {
+        panic!("wrong receipt");
+    };
+    s.snap("s37c");
+}
+
+/// Wakes the engine's day timer until `predicate` (over the persisted
+/// dump) holds, under paused time — never a sleep-as-wait.
+async fn wakes_until(
+    repo: &InMemoryRepository,
+    predicate: impl Fn(&taskboard_domain::PersistedState) -> bool,
+) {
+    tokio::time::timeout(std::time::Duration::from_secs(60), async {
+        loop {
+            if predicate(&repo.snapshot()) {
+                return;
+            }
+            // One wake step plus the grace step for the tick's work.
+            tokio::time::advance(std::time::Duration::from_secs(31)).await;
+            tokio::time::advance(std::time::Duration::from_millis(200)).await;
+        }
+    })
+    .await
+    .expect("predicate satisfied within the deadline");
+}
+
+/// S38a — the day-boundary roll of one stale head (timer armed): the
+/// catch-up member, fresh clocks, the lane ops.
+#[cfg_attr(miri, ignore)]
+#[tokio::test(start_paused = true)]
+async fn s38a_day_boundary_roll_of_one_stale_head() {
+    let s = Scenario::start_series(
+        seed_series_state(
+            Some(SERIES_T0 - 86_400 + 32_400),
+            Some(SERIES_T0 - 86_400 + 61_200),
+            taskboard_domain::RecurBound::None,
+        ),
+        SERIES_T0,
+    )
+    .await;
+    let head_id = s
+        .handle
+        .shared_state()
+        .load()
+        .tasks
+        .keys()
+        .next()
+        .copied()
+        .expect("the seeded head");
+    wakes_until(&s.repo, |state| {
+        state.tasks[&head_id].scheduled == Some(ts(SERIES_T0 + 32_400))
+    })
+    .await;
+    s.snap("s38a");
+}
+
+/// S38b — quiet-day idempotence: two wakes, one rollover — the second
+/// tick's watermark fast path persists nothing.
+#[cfg_attr(miri, ignore)]
+#[tokio::test(start_paused = true)]
+async fn s38b_quiet_day_idempotence() {
+    let s = Scenario::start_series(
+        seed_series_state(
+            Some(SERIES_T0 - 86_400 + 32_400),
+            None,
+            taskboard_domain::RecurBound::None,
+        ),
+        SERIES_T0,
+    )
+    .await;
+    let head_id = s
+        .handle
+        .shared_state()
+        .load()
+        .tasks
+        .keys()
+        .next()
+        .copied()
+        .expect("the seeded head");
+    wakes_until(&s.repo, |state| {
+        state.tasks[&head_id].scheduled == Some(ts(SERIES_T0 + 32_400))
+    })
+    .await;
+    let settled = s.repo.snapshot();
+    // A second wake on the same local day: full no-op.
+    tokio::time::advance(std::time::Duration::from_secs(31)).await;
+    tokio::time::advance(std::time::Duration::from_millis(200)).await;
+    assert_eq!(s.repo.snapshot().tasks, settled.tasks, "rolled once");
+    s.snap("s38b");
+}
+
+/// S38c — boot catch-up over a multi-day gap: the boot scan rolls the
+/// stale head straight to the catch-up member (offline kiosk path).
+#[cfg_attr(miri, ignore)]
+#[tokio::test(start_paused = true)]
+async fn s38c_boot_catchup_over_a_multi_day_gap() {
+    // Boot three days after the head's date; the daily series catches
+    // up to *today*, not day-by-day.
+    let s = Scenario::start_series(
+        seed_series_state(
+            Some(SERIES_T0 - 3 * 86_400 + 32_400),
+            None,
+            taskboard_domain::RecurBound::None,
+        ),
+        SERIES_T0,
+    )
+    .await;
+    let head_id = s
+        .handle
+        .shared_state()
+        .load()
+        .tasks
+        .keys()
+        .next()
+        .copied()
+        .expect("the seeded head");
+    wakes_until(&s.repo, |state| {
+        state.tasks[&head_id].scheduled == Some(ts(SERIES_T0 + 32_400))
+    })
+    .await;
+    s.snap("s38c");
 }
