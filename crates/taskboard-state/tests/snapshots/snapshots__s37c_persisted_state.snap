@@ -1,0 +1,164 @@
+---
+source: crates/taskboard-state/tests/snapshots.rs
+expression: "&persisted"
+---
+boards:
+  00000000-0000-0000-0000-000000000001:
+    id: 00000000-0000-0000-0000-000000000001
+    remote: ~
+    title: kiosk
+    color: 0000ff
+    archived: false
+    deleted: false
+    clocks:
+      title: "0001-01-01T00:00:00Z"
+      color: "0001-01-01T00:00:00Z"
+      archived: "0001-01-01T00:00:00Z"
+      deleted: "0001-01-01T00:00:00Z"
+    remote_seen: ~
+stacks:
+  00000000-0000-0000-0000-0000000001f4:
+    id: 00000000-0000-0000-0000-0000000001f4
+    remote: ~
+    board: 00000000-0000-0000-0000-000000000001
+    title: chores
+    order: 1
+    archived: false
+    deleted: false
+    clocks:
+      title: "2026-06-15T00:00:00Z"
+      order: "2026-06-15T00:00:00Z"
+      deleted: "2026-06-15T00:00:00Z"
+    remote_seen: ~
+tasks:
+  00000000-0000-0000-0000-000000000258:
+    id: 00000000-0000-0000-0000-000000000258
+    remote: ~
+    title: water the plants
+    description: the balcony ones
+    duedate: ~
+    scheduled: "2026-06-15T09:00:00Z"
+    done: "1970-01-01T10:01:00Z"
+    stack: 00000000-0000-0000-0000-0000000001f4
+    order: 1
+    label_memberships:
+      00000000-0000-0000-0000-0000000001fe:
+        Added:
+          at: "2026-06-15T00:00:00Z"
+    effort: 600
+    importance: high
+    urgency: low
+    recur: ~
+    archived: false
+    deleted: false
+    clocks:
+      title: "2026-06-15T00:00:00Z"
+      description: "2026-06-15T00:00:00Z"
+      duedate: "2026-06-15T00:00:00Z"
+      scheduled: "2026-06-15T00:00:00Z"
+      done: "1970-01-01T10:01:00Z"
+      position: "2026-06-15T00:00:00Z"
+      effort: "2026-06-15T00:00:00Z"
+      importance: "2026-06-15T00:00:00Z"
+      urgency: "2026-06-15T00:00:00Z"
+      recur: "1970-01-01T10:01:00Z"
+      archived: "2026-06-15T00:00:00Z"
+      deleted: "2026-06-15T00:00:00Z"
+    remote_seen: ~
+    remote_baseline: ~
+  00000000-0000-0000-0000-000000000259:
+    id: 00000000-0000-0000-0000-000000000259
+    remote: ~
+    title: prior occurrence
+    description: ""
+    duedate: ~
+    scheduled: "2026-06-14T09:00:00Z"
+    done: "2026-06-14T12:00:00Z"
+    stack: 00000000-0000-0000-0000-0000000001f4
+    order: 2
+    label_memberships: {}
+    effort: ~
+    importance: ~
+    urgency: ~
+    recur:
+      series: 00000000-0000-0000-0000-000000002328
+      anchor: 2026-06-01
+      pattern:
+        Daily:
+          every: 1
+      bound:
+        Count: 2
+      continued_from: ~
+    archived: false
+    deleted: false
+    clocks:
+      title: "2026-06-14T00:00:00Z"
+      description: "2026-06-14T00:00:00Z"
+      duedate: "2026-06-14T00:00:00Z"
+      scheduled: "2026-06-14T00:00:00Z"
+      done: "2026-06-14T12:00:00Z"
+      position: "2026-06-14T00:00:00Z"
+      effort: "2026-06-14T00:00:00Z"
+      importance: "2026-06-14T00:00:00Z"
+      urgency: "2026-06-14T00:00:00Z"
+      recur: "2026-06-14T00:00:00Z"
+      archived: "2026-06-14T00:00:00Z"
+      deleted: "2026-06-14T00:00:00Z"
+    remote_seen: ~
+    remote_baseline: ~
+labels:
+  00000000-0000-0000-0000-0000000001fe:
+    id: 00000000-0000-0000-0000-0000000001fe
+    remote: ~
+    board: 00000000-0000-0000-0000-000000000001
+    title: weekly
+    color: 00aa00
+    deleted: false
+    clocks:
+      title: "2026-06-15T00:00:00Z"
+      color: "2026-06-15T00:00:00Z"
+      deleted: "2026-06-15T00:00:00Z"
+    remote_seen: ~
+outbox:
+  - op_id: 00000000-0000-0000-0000-000000000001
+    op:
+      UpdateTask: 00000000-0000-0000-0000-000000000258
+    queued_at: "1970-01-01T10:01:00Z"
+  - op_id: 00000000-0000-0000-0000-000000000002
+    op:
+      UpdateAppData: 00000000-0000-0000-0000-000000000258
+    queued_at: "1970-01-01T10:01:00Z"
+validators: {}
+sync:
+  00000000-0000-0000-0000-000000000001:
+    phase: Idle
+    last_success: ~
+    pending_ops: 2
+    counters:
+      cycles: 0
+      pushes: 0
+      pulls: 0
+      failures: 0
+      offline_episodes: 0
+      last_cycle: ~
+    sidecar: Healthy
+    features:
+      card_startdate: false
+reminders:
+  rules:
+    00000000-0000-0000-0000-0000000002bc:
+      id: 00000000-0000-0000-0000-0000000002bc
+      task: 00000000-0000-0000-0000-000000000258
+      offset:
+        - -1800
+        - 0
+      created_at: "2026-06-14T23:00:00Z"
+      updated_at: "2026-06-14T23:00:00Z"
+  deliveries: []
+  dismissals: []
+  snoozes: {}
+  muted:
+    - 00000000-0000-0000-0000-000000000258
+  alarms: {}
+tracking:
+  entries: {}
