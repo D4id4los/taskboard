@@ -167,6 +167,32 @@ static STANDARD: &[(ActionId, ContextId, &[&str])] = &[
     // Round-1 chunk 3 (D28b): Escape closes the settings surface
     // (dialog semantics; the opener is the global Ctrl+, route).
     (ActionId::AppSettings, ContextId::Settings, &["Escape"]),
+    // Round 3 (D25): the control walk — Tab/Shift+Tab are the CUA
+    // convention and were unbound in every context; the five view
+    // contexts only (under insert the chain masks them and Tab stays
+    // the fields' native traversal).
+    (ActionId::NavNextControl, ContextId::Today, &["Tab"]),
+    (ActionId::NavPrevControl, ContextId::Today, &["Shift+Tab"]),
+    (ActionId::NavNextControl, ContextId::Board, &["Tab"]),
+    (ActionId::NavPrevControl, ContextId::Board, &["Shift+Tab"]),
+    (ActionId::NavNextControl, ContextId::StackDetail, &["Tab"]),
+    (
+        ActionId::NavPrevControl,
+        ContextId::StackDetail,
+        &["Shift+Tab"],
+    ),
+    (ActionId::NavNextControl, ContextId::TaskDetail, &["Tab"]),
+    (
+        ActionId::NavPrevControl,
+        ContextId::TaskDetail,
+        &["Shift+Tab"],
+    ),
+    (ActionId::NavNextControl, ContextId::Settings, &["Tab"]),
+    (
+        ActionId::NavPrevControl,
+        ContextId::Settings,
+        &["Shift+Tab"],
+    ),
 ];
 
 /// `emacs` — default-emacs-authentic (the review's tmux standard):
@@ -293,6 +319,27 @@ static EMACS: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::ModeNormal, ContextId::ViInsert, &["Escape"]),
     // Round-1 chunk 3 (D28b): Escape closes the settings surface.
     (ActionId::AppSettings, ContextId::Settings, &["Escape"]),
+    // Round 3 (D25): the control walk — the isearch chords C-f/C-b,
+    // free in the four non-board view contexts (the Board context
+    // keeps them for stack.next/stack.prev, the recorded emacs
+    // preservation; the board's controls keep native Tab: unbound →
+    // Unhandled → traversal).
+    (ActionId::NavNextControl, ContextId::Today, &["Ctrl+f"]),
+    (ActionId::NavPrevControl, ContextId::Today, &["Ctrl+b"]),
+    (
+        ActionId::NavNextControl,
+        ContextId::StackDetail,
+        &["Ctrl+f"],
+    ),
+    (
+        ActionId::NavPrevControl,
+        ContextId::StackDetail,
+        &["Ctrl+b"],
+    ),
+    (ActionId::NavNextControl, ContextId::TaskDetail, &["Ctrl+f"]),
+    (ActionId::NavPrevControl, ContextId::TaskDetail, &["Ctrl+b"]),
+    (ActionId::NavNextControl, ContextId::Settings, &["Ctrl+f"]),
+    (ActionId::NavPrevControl, ContextId::Settings, &["Ctrl+b"]),
 ];
 
 /// `vi` — vim-authentic: everything lives in `ViNormal` (the honest
@@ -368,4 +415,29 @@ static VI: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::MenuDismiss, ContextId::Palette, &["Escape"]),
     // Round-1 chunk 3 (D28b): Escape closes the settings surface.
     (ActionId::AppSettings, ContextId::Settings, &["Escape"]),
+    // Round 3 (D25): the control walk — Tab/Shift+Tab in the five
+    // view contexts (unbound today; under ViInsert the chain masks
+    // them and Tab stays the fields' native traversal).
+    (ActionId::NavNextControl, ContextId::Today, &["Tab"]),
+    (ActionId::NavPrevControl, ContextId::Today, &["Shift+Tab"]),
+    (ActionId::NavNextControl, ContextId::Board, &["Tab"]),
+    (ActionId::NavPrevControl, ContextId::Board, &["Shift+Tab"]),
+    (ActionId::NavNextControl, ContextId::StackDetail, &["Tab"]),
+    (
+        ActionId::NavPrevControl,
+        ContextId::StackDetail,
+        &["Shift+Tab"],
+    ),
+    (ActionId::NavNextControl, ContextId::TaskDetail, &["Tab"]),
+    (
+        ActionId::NavPrevControl,
+        ContextId::TaskDetail,
+        &["Shift+Tab"],
+    ),
+    (ActionId::NavNextControl, ContextId::Settings, &["Tab"]),
+    (
+        ActionId::NavPrevControl,
+        ContextId::Settings,
+        &["Shift+Tab"],
+    ),
 ];

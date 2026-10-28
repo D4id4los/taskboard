@@ -118,6 +118,11 @@ pub(crate) struct Adapter {
     /// occurrence — held, never re-read from config (the `day_start`
     /// consumers contract).
     reminder_defaults: taskboard_domain::ReminderDefaults,
+    /// pub(crate) for the walk-guard test seam only (the shell's
+    /// view context is the guard test's chain input).
+    #[cfg(test)]
+    pub(crate) shell: KeymapShell,
+    #[cfg(not(test))]
     shell: KeymapShell,
     resolver: KeymapResolver,
     /// pub(crate) for the lib tests' flow/buffer seams only.
@@ -222,6 +227,13 @@ pub(crate) struct Adapter {
     /// The exit-effect counter (the §6 component-test seam: journeys
     /// assert the quit request without killing the platform).
     pub(crate) quit_requests: usize,
+    /// The control walk's re-entrancy flag (round-3 D25): held while
+    /// the synthetic traversal event is in flight, so the injected
+    /// `Tab` rejects out of `intercept-key` before the callback even
+    /// borrows (the runtime then consumes it for traversal itself).
+    /// Shared with the intercept closure — the guard must precede the
+    /// `borrow_mut`, not live inside it.
+    pub(crate) walk_reentry: Rc<std::cell::Cell<bool>>,
 }
 
 impl Adapter {
@@ -322,6 +334,9 @@ impl Adapter {
         text: &SharedString,
         modifiers: KeyboardModifiers,
     ) -> bool {
+        if self.walk_reentry.get() {
+            return false;
+        }
         let Some(stroke) = to_stroke(text, modifiers) else {
             return false;
         };
@@ -686,6 +701,19 @@ impl Adapter {
         self.interpret(window, effect);
     }
 
+    /// The control walk's guard seam (round-3 D25): drives one Tab
+    /// stroke through the real intercept path so the re-entrancy
+    /// rejection is asserted against the production guard, and the
+    /// cleared flag resolves the bound walk row exactly once.
+    #[cfg(test)]
+    pub(crate) fn intercept_tab_for_test(&mut self, window: &AppWindow) -> bool {
+        self.intercept(
+            window,
+            &SharedString::from("\t"),
+            slint::language::KeyboardModifiers::default(),
+        )
+    }
+
     /// Resets every machine the table reads so pair passes are
     /// order-independent (the flow table and the buffer journeys).
     #[cfg(test)]
@@ -997,6 +1025,14 @@ impl Adapter {
             // absorbed by the flow-guarded seam.
             Self::teardown_runtime_drag(window);
         }
+        // The control walk (round-3 D25): the traversal re-injection
+        // runs after the outcomes, outside the table — the walk never
+        // mutates view state, it moves slint focus only.
+        if matches!(effect, UiEffect::ControlNext | UiEffect::ControlPrev) {
+            let backwards = effect == UiEffect::ControlPrev;
+            let flag = self.walk_reentry.clone();
+            Self::dispatch_traversal(window, &flag, backwards);
+        }
     }
 
     /// The focus-into-view seam (#373 design round §3a, D-5): after a
@@ -1040,6 +1076,36 @@ impl Adapter {
         scroll.set_target_a(target_a);
         scroll.set_target_b(target_b);
         scroll.set_nonce(scroll.get_nonce() + 1);
+    }
+
+    /// The control walk's traversal re-injection (round-3 D25): the
+    /// synthetic `Tab` key press drives the runtime's own tab
+    /// traversal (`window.rs` key handler); the previous direction is
+    /// the Shift-wrapped variant (the journey driver's modifier
+    /// technique, the `teardown_runtime_drag` synthetic-event
+    /// precedent). `walk_reentry` is held across the dispatch so the
+    /// injected stroke rejects out of `intercept-key` before the
+    /// callback borrows — one press = exactly one stop, never a loop.
+    fn dispatch_traversal(
+        window: &AppWindow,
+        walk_reentry: &std::cell::Cell<bool>,
+        backwards: bool,
+    ) {
+        walk_reentry.set(true);
+        let win = window.window();
+        let tab: slint::SharedString = "\t".into();
+        if backwards {
+            let shift: slint::SharedString =
+                slint::platform::Key::into(slint::platform::Key::Shift);
+            win.dispatch_event(slint::platform::WindowEvent::KeyPressed {
+                text: shift.clone(),
+            });
+            win.dispatch_event(slint::platform::WindowEvent::KeyPressed { text: tab });
+            win.dispatch_event(slint::platform::WindowEvent::KeyReleased { text: shift });
+        } else {
+            win.dispatch_event(slint::platform::WindowEvent::KeyPressed { text: tab });
+        }
+        walk_reentry.set(false);
     }
 
     /// The native drag's teardown seam (r2 chunk-8 D-G): a synthetic
@@ -1379,6 +1445,8 @@ impl Adapter {
             | UiEffect::PrevView
             | UiEffect::FocusBoard
             | UiEffect::ShowTask
+            | UiEffect::ControlNext
+            | UiEffect::ControlPrev
             | UiEffect::BeginCreate
             | UiEffect::BeginCreateStack
             | UiEffect::BeginTitleEdit
@@ -2656,6 +2724,7 @@ pub(crate) fn install(
         },
         |rotation| rotation.active().view(),
     );
+    let walk_flag = Rc::new(std::cell::Cell::new(false));
     let adapter = Rc::new(RefCell::new(Adapter {
         keymap,
         day_start,
@@ -2687,6 +2756,7 @@ pub(crate) fn install(
         timer_draft: None,
         timer_target: None,
         track_target: None,
+        walk_reentry: Rc::clone(&walk_flag),
         tables: IdTables::default(),
         models: crate::models::PushModels::default(),
         width_drag: None,
@@ -2773,11 +2843,21 @@ pub(crate) fn install(
 
     {
         let adapter = Rc::clone(&adapter);
+        let walk_flag = Rc::clone(&walk_flag);
         let weak = window.as_weak();
         window.on_intercept_key(move |text, modifiers| {
             let Some(window) = weak.upgrade() else {
                 return false;
             };
+            // The control walk's re-entrancy guard (round-3 D25):
+            // rejects the injected `Tab` before any borrow — the
+            // runtime then consumes the stroke for traversal itself.
+            // Checking the flag ahead of `borrow_mut` is what makes
+            // the guard total: the injected event re-enters this
+            // closure while the walk's own borrow is still held.
+            if walk_flag.get() {
+                return false;
+            }
             adapter.borrow_mut().intercept(&window, &text, modifiers)
         });
     }

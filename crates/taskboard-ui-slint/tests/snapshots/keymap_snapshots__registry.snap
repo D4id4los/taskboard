@@ -128,6 +128,32 @@ expression: rows
   menu_rank: 90
   description: "Shows the task picked in the search palette: selects its board and stack, focuses its card, and scrolls it into view."
   menu_group: view-nav
+- id: nav.next-control
+  label: Next control
+  contexts:
+    - today
+    - board
+    - stack-detail
+    - task-detail
+    - settings
+  category: navigation
+  enabled: true
+  menu_rank: 160
+  description: "Moves the keyboard focus to the next control (field or button) in reading order; wraps like the runtime's tab traversal."
+  menu_group: view-nav
+- id: nav.prev-control
+  label: Previous control
+  contexts:
+    - today
+    - board
+    - stack-detail
+    - task-detail
+    - settings
+  category: navigation
+  enabled: true
+  menu_rank: 170
+  description: "Moves the keyboard focus to the previous control (field or button) in reading order; wraps like the runtime's tab traversal."
+  menu_group: view-nav
 - id: nav.next-item
   label: Focus next item
   contexts:

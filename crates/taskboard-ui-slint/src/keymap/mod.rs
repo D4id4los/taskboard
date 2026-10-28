@@ -466,6 +466,10 @@ mod tests {
             ActionId::BoardRename,
             ActionId::NavFirstItem,
             ActionId::NavLastItem,
+            // Round 3 (D25): the control walk is bound in every
+            // preset (the no-second-class gate).
+            ActionId::NavNextControl,
+            ActionId::NavPrevControl,
         ];
         for preset in [Preset::Standard, Preset::Emacs, Preset::Vi] {
             let bound: std::collections::BTreeSet<ActionId> =
@@ -628,6 +632,40 @@ mod tests {
         assert_eq!(
             resolver.feed(c_slash, &task_chain, &keymap),
             crate::resolver::Resolution::Action(ActionId::AppRedo)
+        );
+    }
+
+    /// Round 3 (D25, the recorded emacs preservation): C-f/C-b are
+    /// the control walk in the four non-board view contexts, and stay
+    /// stack.next/stack.prev on the board chain.
+    #[test]
+    fn emacs_control_walk_preserves_the_board_chords() {
+        let keymap = Keymap::from_preset(Preset::Emacs);
+        let board_chain = [ContextId::Board, ContextId::ViNormal, ContextId::Global];
+        let detail_chain = [
+            ContextId::TaskDetail,
+            ContextId::ViNormal,
+            ContextId::Global,
+        ];
+        let c_f = stroke::parse("Ctrl+f").expect("ctrl f");
+        let c_b = stroke::parse("Ctrl+b").expect("ctrl b");
+        assert_eq!(
+            keymap.resolve(&board_chain, &[c_f]),
+            Some(ActionId::StackNext),
+            "the board keeps its isearch chords"
+        );
+        assert_eq!(
+            keymap.resolve(&board_chain, &[c_b]),
+            Some(ActionId::StackPrev)
+        );
+        assert_eq!(
+            keymap.resolve(&detail_chain, &[c_f]),
+            Some(ActionId::NavNextControl),
+            "the detail chain walks controls"
+        );
+        assert_eq!(
+            keymap.resolve(&detail_chain, &[c_b]),
+            Some(ActionId::NavPrevControl)
         );
     }
 
