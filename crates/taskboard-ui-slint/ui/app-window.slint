@@ -567,7 +567,7 @@ export component AppWindow inherits Window {
             capture-accepted() => root.capture-accepted();
             text-flow-focus-lost() => root.text-flow-focus-lost();
         }
-        if (root.palette-open): SearchPalette {
+        if (root.palette-open): palette-panel := SearchPalette {
             width: min(root.width - 2 * Theme.space-2, 560px * Theme.base-scale);
             x: (root.width - self.width) / 2;
             y: max(Theme.space-4,

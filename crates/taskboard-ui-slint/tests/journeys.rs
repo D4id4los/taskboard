@@ -4655,6 +4655,85 @@ fn the_switcher_drives_and_tracks_the_view() {
     );
 }
 
+/// Round-3 D24 (R3-F34) — the palette input row's geometry pin: with
+/// zero rows the panel's height is exactly the input row (the field's
+/// natural single-line height) plus the panel padding — the
+/// full-screen-field regression's pin; with a full cap of rows the
+/// panel stays content-sized and clamped above the status bar at the
+/// minimum viewport.
+#[test]
+fn the_palette_input_row_stays_one_line() {
+    let (_fixture, mut state) = fixture::two_board_state();
+    let stack = *state.stacks.keys().next().expect("fixture stack");
+    for n in 0..12 {
+        let id = TaskId::from_uuid(uuid::Uuid::now_v7());
+        let mut task = state.tasks.values().next().expect("fixture task").clone();
+        task.id = id;
+        task.stack = stack;
+        task.order = 10 + n;
+        task.title = format!("zebra row {n}");
+        state.tasks.insert(id, task);
+    }
+
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: false,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            macro_rules! window {
+                () => {
+                    harness.handle.window()
+                };
+            }
+
+            #[allow(clippy::items_after_statements)] // the run closure's helper
+            fn palette_panel(driver: &SlintDriver) -> support::driver::Element {
+                driver
+                    .find_all_by_id("AppWindow::palette-panel")
+                    .into_iter()
+                    .next()
+                    .expect("the palette panel is mounted")
+            }
+
+            harness.press(ActionId::PaletteSearch);
+            harness.driver.advance_time(0);
+            // Zero rows: the panel is content-sized — the full-window
+            // pane regression (the surplus distributing into the
+            // field) cannot recur; the input row reads one line.
+            let panel = palette_panel(&harness.driver);
+            let field = harness
+                .driver
+                .find_all_by_label("Search")
+                .into_iter()
+                .next()
+                .expect("the query field is addressable");
+            let natural = f64::from(field.size().height);
+            assert!(
+                natural > 0.0 && natural < 100.0,
+                "the input row is one line, not a pane"
+            );
+            let height = f64::from(panel.size().height);
+            assert!(
+                height < natural * 3.0,
+                "the zero-row panel is content-sized ({height}), not a pane"
+            );
+
+            // Eight rows: content-driven, clamped above the status
+            // bar, even at the minimum viewport.
+            harness.type_text("zebra");
+            harness.driver.advance_time(0);
+            let panel = palette_panel(&harness.driver);
+            assert_eq!(window!().get_palette_model().row_count(), 8);
+            assert!(
+                f64::from(panel.absolute_position().y + panel.size().height)
+                    <= f64::from(window!().get_status_top()),
+                "the panel stays above the status bar"
+            );
+        },
+    );
+}
+
 // ---- round 2 (D16–D21): the action round-up journeys --------------------
 
 /// Presses one action through `preset`'s own binding table (the
