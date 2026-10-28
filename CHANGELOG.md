@@ -8,6 +8,25 @@ The workspace carries a single global version (see `docs/architecture.org`);
 `scripts/bump_version.sh <major|minor|patch>` cuts release entries.
 
 ## [Unreleased]
+### Added
+
+- Reminder insistence levels (#475, DR-3 chunk 2): every reminder rule
+  and ad-hoc alarm carries `Insistence { normal, alarm }` — per-reminder
+  "how loud" flavour data stamped at creation and immutable per row (a
+  different level is a re-create: remove + add; the dedup stays keyed
+  by offset alone and the receipt names the survivor). Fired
+  notifications snapshot the level beside the title, so sinks are
+  self-describing; the implicit default reminder is always `normal`.
+  Nothing consumes the level yet — the evaluator decides *when*, never
+  *how loud*; the alarm window, re-toasts, and the sound ramp are the
+  escalation chunk's. `tasks remind --insistence` and
+  `timers add --insistence` select the rung (unknown values are usage
+  errors, never defaults); receipts and list rows report the level
+  read back from state, and text lists mark ` [alarm]`. The rules
+  sidecar section gains the key additively — old documents fold
+  `normal`, an unknown rung relays verbatim. Migration 0013 adds both
+  columns with `'normal'` defaults; existing rows decode `normal`.
+
 ### Changed
 
 - Legacy single-server configs migrate automatically (round-3 D21,
