@@ -48,6 +48,10 @@ pub struct KeymapShell {
     /// Whether the focused task is done (round 2, D19): the reopen
     /// verb's gate, synced by the adapter from the focused task.
     pub focused_task_done: bool,
+    /// The date-picker grid holds slint focus (round-3 D25): the
+    /// `DatePicker` context rides the chain head while it does —
+    /// non-masking, event-mirrored from the grid's focus seam.
+    pub date_picker_grid: bool,
 }
 
 impl KeymapShell {
@@ -70,9 +74,22 @@ impl KeymapShell {
             return vec![ContextId::Palette, ContextId::ViInsert, ContextId::Global];
         }
         if self.mode == Mode::Insert {
+            // The picker grid's context rides the chain head
+            // (round-3 D25): non-masking — Escape still resolves
+            // `ModeNormal` from `ViInsert`.
+            if self.date_picker_grid {
+                return vec![
+                    ContextId::DatePicker,
+                    ContextId::ViInsert,
+                    ContextId::Global,
+                ];
+            }
             return vec![ContextId::ViInsert, ContextId::Global];
         }
-        let mut chain = Vec::with_capacity(3);
+        let mut chain = Vec::with_capacity(4);
+        if self.date_picker_grid {
+            chain.push(ContextId::DatePicker);
+        }
         if let Some(view) = self.view {
             chain.push(view);
         }
@@ -159,6 +176,7 @@ impl KeymapShell {
             | UiEffect::ShowTask
             | UiEffect::ControlNext
             | UiEffect::ControlPrev
+            | UiEffect::PickerKey(_)
             | UiEffect::BeginCreate
             | UiEffect::BeginCreateStack
             | UiEffect::Activate

@@ -43,10 +43,16 @@ export component DatePicker inherits Rectangle {
             grid-scope.focus();
         }
     }
-    // The picker FocusScope's key map: 0 left, 1 right, 2 up, 3 down,
-    // 4 page-up, 5 page-down, 6 home, 7 end, 8 commit (Return),
-    // 9 time-step back, 10 time-step forward.
+    // The picker's intents: the int code space is the CLICK seams'
+    // vocabulary (day cells, month/time IconButtons) — the keyboard
+    // drives the grid through the registry's `picker.*` actions
+    // (round-3 D25): the grid FocusScope holds focus, the
+    // `DatePicker` context arms, and the preset's keys resolve. No
+    // `Key.*` literals live in this file any more.
     callback picker-key(int);
+    // The grid focus seam (round-3 D25): arms/disarms the
+    // `DatePicker` keymap context exactly with the grid's focus.
+    callback grid-focus-changed(bool);
     // The flattened cell index (row * 7 + col) — resolved against the
     // adapter's picker state (D2: no dates cross the seam).
     callback day-clicked(int);
@@ -77,37 +83,12 @@ export component DatePicker inherits Rectangle {
                 self.focus();
             }
         }
-        key-pressed(event) => {
-            if (event.text == Key.LeftArrow) {
-                root.picker-key(0);
-                accept
-            } else if (event.text == Key.RightArrow) {
-                root.picker-key(1);
-                accept
-            } else if (event.text == Key.UpArrow) {
-                root.picker-key(2);
-                accept
-            } else if (event.text == Key.DownArrow) {
-                root.picker-key(3);
-                accept
-            } else if (event.text == Key.PageUp) {
-                root.picker-key(4);
-                accept
-            } else if (event.text == Key.PageDown) {
-                root.picker-key(5);
-                accept
-            } else if (event.text == Key.Home) {
-                root.picker-key(6);
-                accept
-            } else if (event.text == Key.End) {
-                root.picker-key(7);
-                accept
-            } else if (event.text == Key.Return) {
-                root.picker-key(8);
-                accept
-            } else {
-                reject
-            }
+        // The focus seam (round-3 D25): the derived property +
+        // `changed` is the proven mechanism-A idiom (the focus_seam
+        // probe's FocusScope leg).
+        property <bool> grid-has-focus: self.has-focus;
+        changed grid-has-focus => {
+            root.grid-focus-changed(self.grid-has-focus);
         }
 
         panel := VerticalLayout {

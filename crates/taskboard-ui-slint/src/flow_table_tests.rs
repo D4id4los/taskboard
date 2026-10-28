@@ -44,7 +44,7 @@ enum FK {
     Capture,
 }
 
-/// The ten effect classes the matrix columns range over.
+/// The eleven effect classes the matrix columns range over.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum EC {
     Nav,
@@ -57,6 +57,7 @@ enum EC {
     Menu,
     System,
     Title,
+    Picker,
 }
 
 fn kind_of(flow: &Flow) -> FK {
@@ -171,6 +172,12 @@ fn key_of(effect: &UiEffect) -> EK {
         UiEffect::ShowTask => EK::ShowTask,
         UiEffect::ControlNext => EK::ControlNext,
         UiEffect::ControlPrev => EK::ControlPrev,
+        // The picker keys are applied in `apply_effect`, before the
+        // table — the matrix never sees them (the menu-family
+        // pattern). Their class cell is exercised via `class_of`.
+        UiEffect::PickerKey(_) => {
+            unreachable!("picker keys are applied before the table")
+        }
     }
 }
 
@@ -188,6 +195,7 @@ fn class_of(effect: &UiEffect) -> EC {
         crate::router::EffectClass::Menu => EC::Menu,
         crate::router::EffectClass::System => EC::System,
         crate::router::EffectClass::Title => EC::Title,
+        crate::router::EffectClass::Picker => EC::Picker,
     }
 }
 
@@ -247,6 +255,7 @@ fn class_table() -> Vec<(FK, EC, Exp)> {
         C::Menu,
         C::System,
         C::Title,
+        C::Picker,
     ] {
         row(FK::None, class, exp(Z, N));
     }
@@ -257,7 +266,7 @@ fn class_table() -> Vec<(FK, EC, Exp)> {
         row(FK::Text, class, exp(NZ, N));
     }
     row(FK::Text, C::BeginCapture, exp(Z, K(KCap)));
-    for class in [C::Edit, C::Cancel, C::Menu, C::System] {
+    for class in [C::Edit, C::Cancel, C::Menu, C::System, C::Picker] {
         row(FK::Text, class, exp(Z, K(KTxt)));
     }
     // DUE: the settle is the clean close — never a commit.
@@ -272,7 +281,7 @@ fn class_table() -> Vec<(FK, EC, Exp)> {
         row(FK::Due, class, exp(Z, N));
     }
     row(FK::Due, C::BeginCapture, exp(Z, K(KCap)));
-    for class in [C::Edit, C::Menu, C::System] {
+    for class in [C::Edit, C::Menu, C::System, C::Picker] {
         row(FK::Due, class, exp(Z, K(KDue)));
     }
     // MOVE / DRAG: settle cancels (no dispatch), then re-runs.
@@ -288,7 +297,7 @@ fn class_table() -> Vec<(FK, EC, Exp)> {
             row(kind, class, exp(Z, N));
         }
         row(kind, C::BeginCapture, exp(Z, K(KCap)));
-        for class in [C::Edit, C::Menu, C::System] {
+        for class in [C::Edit, C::Menu, C::System, C::Picker] {
             row(kind, class, exp(Z, K(kind)));
         }
     }
@@ -299,7 +308,7 @@ fn class_table() -> Vec<(FK, EC, Exp)> {
         }
         row(kind, C::OpenPalette, exp(Z, K(kind)));
         row(kind, C::BeginCapture, exp(Z, K(KCap)));
-        for class in [C::Edit, C::Menu, C::System] {
+        for class in [C::Edit, C::Menu, C::System, C::Picker] {
             row(kind, class, exp(Z, K(kind)));
         }
     }
@@ -789,7 +798,7 @@ fn the_matrix_covers_every_class_cell() {
     let cells = class_table();
     assert_eq!(
         cells.len(),
-        7 * 10,
+        7 * 11,
         "one row per (FlowKind, EffectClass) cell"
     );
     let mut seen = std::collections::BTreeSet::new();

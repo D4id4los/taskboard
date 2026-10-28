@@ -669,6 +669,56 @@ mod tests {
         );
     }
 
+    /// Round 3 (D25): the picker context is every preset's chain head
+    /// while the grid holds focus, resolves the cursor verbs, and
+    /// never masks — Escape still resolves `ModeNormal` from
+    /// `ViInsert` (the editor's clean close), and the modal-masks
+    /// contract is untouched.
+    #[test]
+    fn picker_context_chains_and_never_masks() {
+        let escape = stroke::parse("Escape").expect("escape");
+        for preset in [Preset::Standard, Preset::Emacs, Preset::Vi] {
+            let keymap = Keymap::from_preset(preset);
+            let chain = [
+                ContextId::DatePicker,
+                ContextId::ViInsert,
+                ContextId::Global,
+            ];
+            for verb in [
+                ActionId::PickerLeft,
+                ActionId::PickerRight,
+                ActionId::PickerUp,
+                ActionId::PickerDown,
+                ActionId::PickerPrevMonth,
+                ActionId::PickerNextMonth,
+                ActionId::PickerMonthStart,
+                ActionId::PickerMonthEnd,
+                ActionId::PickerCommit,
+            ] {
+                assert!(
+                    keymap.first_binding_display(verb, &chain).is_some(),
+                    "{preset:?} does not resolve {verb} in the picker chain"
+                );
+            }
+            assert_eq!(
+                keymap.resolve(&chain, &[escape]),
+                Some(ActionId::ModeNormal),
+                "{preset:?}: Escape still closes the editor cleanly"
+            );
+            assert!(
+                !keymap.visible_chain(&chain).is_empty()
+                    && keymap
+                        .visible_chain(&chain)
+                        .last()
+                        .is_some_and(|c| *c == ContextId::Global),
+                "{preset:?}: the DatePicker context never masks"
+            );
+        }
+        for preset in [Preset::Standard, Preset::Emacs, Preset::Vi] {
+            assert!(!preset.masks().contains(&ContextId::DatePicker));
+        }
+    }
+
     /// Grouped rows per context for the conflict/shadow contracts.
     fn rows_by_context(preset: Preset) -> BTreeMap<ContextId, Vec<(ActionId, Vec<Stroke>)>> {
         let mut grouped: BTreeMap<_, Vec<_>> = BTreeMap::new();

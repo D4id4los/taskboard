@@ -84,6 +84,9 @@ export global KeyboardState {
     in-out property <length> menu-pointer-y: 0;
     // The §5.7 status signal: prefix-pending / prefix-abort feedback.
     in-out property <KeyFeedback> last-feedback: KeyFeedback.none;
+    // The picker grid's focus mirror (round-3 D25): the adapter
+    // pushes the shell fact; the harness chain reads it.
+    in-out property <bool> date-picker-grid: false;
 }
 
 // The Q15 startup-warning state (rendered by the status bar).
@@ -441,6 +444,7 @@ export component AppWindow inherits Window {
                 grid: root.task-model.date-grid;
                 focus-on-mount: root.task-model.date-grid-focus;
                 picker-key(k) => root.task-date-picker-key(k);
+                grid-focus-changed(f) => root.date-picker-grid-focus-changed(f);
                 day-clicked(c) => root.task-date-day-clicked(c);
             }
 
@@ -751,6 +755,9 @@ export component AppWindow inherits Window {
     pure callback task-date-accepted(string);
     pure callback task-date-picker-toggled();
     pure callback task-date-picker-key(int);
+    // The picker grid's focus seam (round-3 D25): arms the
+    // `DatePicker` keymap context exactly with the grid's focus.
+    pure callback date-picker-grid-focus-changed(bool);
     pure callback task-date-day-clicked(int);
     // The dismissal layer's seam (round-3 D10): drops the picker
     // only — the editor and its flow stay armed.

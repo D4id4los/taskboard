@@ -41,6 +41,48 @@ use chrono::{
 pub struct DueParseError;
 
 /// Parses one typed entry against `now`. `Ok(None)` = clear;
+/// The picker's key vocabulary (round-3 D25): the closed enum of the
+/// ten widget codes plus the commit — the registry's `picker.*`
+/// actions map onto it and the click seams (day cells, month/time
+/// `IconButtons`) reuse the same codes. Time steppers stay
+/// button-only: no preset binds them, the enum carries them for the
+/// click seam alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DatePickerKey {
+    Left,
+    Right,
+    Up,
+    Down,
+    PrevMonth,
+    NextMonth,
+    MonthStart,
+    MonthEnd,
+    Commit,
+    TimeBack,
+    TimeForward,
+}
+
+impl DatePickerKey {
+    /// The widget's `picker-key(int)` code space (the click seams).
+    #[must_use]
+    pub fn from_code(code: i32) -> Option<Self> {
+        match code {
+            0 => Some(Self::Left),
+            1 => Some(Self::Right),
+            2 => Some(Self::Up),
+            3 => Some(Self::Down),
+            4 => Some(Self::PrevMonth),
+            5 => Some(Self::NextMonth),
+            6 => Some(Self::MonthStart),
+            7 => Some(Self::MonthEnd),
+            8 => Some(Self::Commit),
+            9 => Some(Self::TimeBack),
+            10 => Some(Self::TimeForward),
+            _ => None,
+        }
+    }
+}
+
 /// `Ok(Some(instant))` = commit; `Err` = refuse.
 ///
 /// # Errors

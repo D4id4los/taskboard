@@ -528,6 +528,87 @@ expression: rows
   menu_rank: 180
   description: "Stops the running timer, closing its open time entry."
   menu_group: task
+- id: picker.left
+  label: Picker cursor left
+  contexts:
+    - date-picker
+  category: picker
+  enabled: true
+  menu_rank: 900
+  description: "Moves the calendar picker's cursor one day back."
+  menu_group: ~
+- id: picker.right
+  label: Picker cursor right
+  contexts:
+    - date-picker
+  category: picker
+  enabled: true
+  menu_rank: 900
+  description: "Moves the calendar picker's cursor one day forward."
+  menu_group: ~
+- id: picker.up
+  label: Picker cursor up
+  contexts:
+    - date-picker
+  category: picker
+  enabled: true
+  menu_rank: 900
+  description: "Moves the calendar picker's cursor one week back."
+  menu_group: ~
+- id: picker.down
+  label: Picker cursor down
+  contexts:
+    - date-picker
+  category: picker
+  enabled: true
+  menu_rank: 900
+  description: "Moves the calendar picker's cursor one week forward."
+  menu_group: ~
+- id: picker.prev-month
+  label: Picker previous month
+  contexts:
+    - date-picker
+  category: picker
+  enabled: true
+  menu_rank: 900
+  description: "Steps the calendar picker to the previous month, keeping the cursor on-grid."
+  menu_group: ~
+- id: picker.next-month
+  label: Picker next month
+  contexts:
+    - date-picker
+  category: picker
+  enabled: true
+  menu_rank: 900
+  description: "Steps the calendar picker to the next month, keeping the cursor on-grid."
+  menu_group: ~
+- id: picker.month-start
+  label: Picker month start
+  contexts:
+    - date-picker
+  category: picker
+  enabled: true
+  menu_rank: 900
+  description: "Moves the calendar picker's cursor to the first of the month."
+  menu_group: ~
+- id: picker.month-end
+  label: Picker month end
+  contexts:
+    - date-picker
+  category: picker
+  enabled: true
+  menu_rank: 900
+  description: "Moves the calendar picker's cursor to the last day of the month."
+  menu_group: ~
+- id: picker.commit
+  label: Commit picked date
+  contexts:
+    - date-picker
+  category: picker
+  enabled: true
+  menu_rank: 900
+  description: "Commits the calendar picker's cursor date (at the picker's time) through the date flow's one commit funnel."
+  menu_group: ~
 - id: menu.next
   label: Next menu entry
   contexts:

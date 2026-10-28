@@ -263,6 +263,9 @@ impl Adapter {
         let keyboard = window.global::<KeyboardState>();
         keyboard.set_vi_insert(self.shell.mode == crate::router::Mode::Insert);
         keyboard.set_menu_open(self.shell.menu.open);
+        // The picker grid's context mirror (round-3 D25): the harness
+        // chain and the markup read the same fact.
+        keyboard.set_date_picker_grid(self.shell.date_picker_grid);
         keyboard
             .set_menu_selected_index(i32::try_from(self.shell.menu.selected).unwrap_or(i32::MAX));
         keyboard.set_menu_root_selected_index(
@@ -546,6 +549,13 @@ impl Adapter {
             self.due_buffer.clear();
             self.due_echo.clear();
             self.due_picker = None;
+            // The picker dies with the flow (§8): the grid cannot hold
+            // focus any more, so the `DatePicker` context disarms
+            // here as well as through the focus seam — a missed
+            // focus-loss on unmount can never leave the context armed
+            // over the next editor (R-C's exactness).
+            self.shell.date_picker_grid = false;
+            window.global::<KeyboardState>().set_date_picker_grid(false);
         }
         debug_assert!(
             matches!(self.view_state.flow(), Flow::EditDate { .. })
@@ -1348,10 +1358,11 @@ impl Adapter {
             // EDIT residue (the effects the kept arms don't own —
             // SetMode(Insert) under a text/due flow): named inert.
             (_, C::Edit) => R::Inert,
-            // MENU/SYSTEM: applied in `apply_effect` before the
-            // table (audit §5); unreachable here — typed inert,
+            // MENU/SYSTEM/PICKER: applied in `apply_effect` before
+            // the table (audit §5; the picker keys are the same
+            // family, round-3 D25); unreachable here — typed inert,
             // never silent.
-            (_, C::Menu | C::System) => R::Inert,
+            (_, C::Menu | C::System | C::Picker) => R::Inert,
         }
     }
 
@@ -1437,6 +1448,7 @@ impl Adapter {
                     self.shell.apply(&effect, self.menu_entries.len());
                 }
             }
+            UiEffect::PickerKey(key) => self.apply_picker_key(window, key),
             UiEffect::OpenPalette
             | UiEffect::SetMode(_)
             | UiEffect::FocusNext
@@ -2933,6 +2945,7 @@ fn install_view_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     install_stack_done_seam(window, adapter);
     install_today_row_seams(window, adapter);
     install_task_seam(window, adapter);
+    install_picker_grid_seam(window, adapter);
     install_due_seam(window, adapter);
     install_task_back_seam(window, adapter);
     install_settings_back_seam(window, adapter);
@@ -4059,6 +4072,27 @@ fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
 /// every seam; the flow's `DateField` is read only where the
 /// `TaskChanges` mask differs and where the anchor value is read.
 #[allow(clippy::too_many_lines)] // one wiring sequence, kept flat for review
+/// The picker grid's focus seam (round-3 D25, plan §5.3): the
+/// grid `FocusScope`'s `changed has-focus` mirrors onto the shell —
+/// the `DatePicker` context rides the chain head exactly while the
+/// grid holds focus, and never masks (Escape resolves `ModeNormal`
+/// from `ViInsert` regardless).
+fn install_picker_grid_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
+    let grid = Rc::clone(adapter);
+    let weak = window.as_weak();
+    window.on_date_picker_grid_focus_changed(move |focused: bool| {
+        let Some(window) = weak.upgrade() else { return };
+        let mut a = grid.borrow_mut();
+        a.shell.date_picker_grid = focused;
+        // The mirror rides with the seam (the Down-in-field path
+        // lands here without a `sync` around it).
+        window
+            .global::<KeyboardState>()
+            .set_date_picker_grid(focused);
+    });
+}
+
+#[allow(clippy::too_many_lines)] // the r2 D25 seam family, kept flat
 fn install_due_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     let open = Rc::clone(adapter);
     let open_weak = window.as_weak();
@@ -4132,32 +4166,14 @@ fn install_due_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
             return;
         };
         let mut a = key.borrow_mut();
-        let Some(picker) = a.due_picker.as_mut() else {
-            return; // a stale stroke against an already-closed picker
+        // The click seams carry the widget's int code space; the
+        // registry actions arrive as typed `PickerKey` effects on the
+        // same function (round-3 D25: one implementation, two
+        // dispatch sites).
+        let Some(key) = crate::due_edit::DatePickerKey::from_code(code) else {
+            return;
         };
-        match code {
-            0 => picker.move_days(-1),
-            1 => picker.move_days(1),
-            2 => picker.move_days(-7),
-            3 => picker.move_days(7),
-            4 => picker.move_months(-1),
-            5 => picker.move_months(1),
-            6 => picker.month_edge(true),
-            7 => picker.month_edge(false),
-            // Enter: the cursor's date at the picker's time through
-            // the one funnel.
-            8 => {
-                let instant = picker.commit_instant();
-                commit_date(&mut a, &window, Some(instant));
-                return;
-            }
-            // The time steppers (round-3 D9): ±15 min, wrapping —
-            // the date follows the wrap.
-            9 => picker.step_time(-1),
-            10 => picker.step_time(1),
-            _ => return,
-        }
-        a.refresh(&window);
+        a.apply_picker_key(&window, key);
     });
 
     let dismiss = Rc::clone(adapter);
@@ -4231,6 +4247,41 @@ fn begin_date_edit(a: &mut Adapter, window: &AppWindow, field: crate::view_state
     // (typing-first preserved). Inert when the begin refused (the
     // flow never armed).
     a.open_due_picker(window, false);
+}
+
+impl Adapter {
+    /// The picker's one key body (round-3 D25): the keyboard's
+    /// `picker.*` actions and the widget's click seams both land
+    /// here — the same `due_picker` mutations, the commit through the
+    /// one `commit_date` funnel, the refresh after every move.
+    fn apply_picker_key(&mut self, window: &AppWindow, key: crate::due_edit::DatePickerKey) {
+        use crate::due_edit::DatePickerKey as K;
+        let Some(picker) = self.due_picker.as_mut() else {
+            return; // a stale stroke against an already-closed picker
+        };
+        match key {
+            K::Left => picker.move_days(-1),
+            K::Right => picker.move_days(1),
+            K::Up => picker.move_days(-7),
+            K::Down => picker.move_days(7),
+            K::PrevMonth => picker.move_months(-1),
+            K::NextMonth => picker.move_months(1),
+            K::MonthStart => picker.month_edge(true),
+            K::MonthEnd => picker.month_edge(false),
+            // Commit: the cursor's date at the picker's time through
+            // the one funnel.
+            K::Commit => {
+                let instant = picker.commit_instant();
+                commit_date(self, window, Some(instant));
+                return;
+            }
+            // The time steppers (round-3 D9): ±15 min, wrapping —
+            // the date follows the wrap. Button-only.
+            K::TimeBack => picker.step_time(-1),
+            K::TimeForward => picker.step_time(1),
+        }
+        self.refresh(window);
+    }
 }
 
 /// Opens the picker anchored on the armed field's current value (or
@@ -4824,6 +4875,7 @@ impl crate::UiHandle {
                 ContextId::Global
                 | ContextId::Menu
                 | ContextId::Palette
+                | ContextId::DatePicker
                 | ContextId::ViNormal
                 | ContextId::ViInsert => {
                     return;

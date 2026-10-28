@@ -247,6 +247,35 @@ expression: rows
         - sequence:
             - Escape
           action: mode.normal
+    - context: date-picker
+      bindings:
+        - sequence:
+            - Return
+          action: picker.commit
+        - sequence:
+            - Up
+          action: picker.up
+        - sequence:
+            - Down
+          action: picker.down
+        - sequence:
+            - Left
+          action: picker.left
+        - sequence:
+            - Right
+          action: picker.right
+        - sequence:
+            - Home
+          action: picker.month-start
+        - sequence:
+            - End
+          action: picker.month-end
+        - sequence:
+            - PageUp
+          action: picker.prev-month
+        - sequence:
+            - PageDown
+          action: picker.next-month
 - preset: emacs
   contexts:
     - context: global
@@ -515,6 +544,35 @@ expression: rows
         - sequence:
             - Escape
           action: mode.normal
+    - context: date-picker
+      bindings:
+        - sequence:
+            - Return
+          action: picker.commit
+        - sequence:
+            - Alt+<
+          action: picker.month-start
+        - sequence:
+            - Alt+>
+          action: picker.month-end
+        - sequence:
+            - Ctrl+b
+          action: picker.left
+        - sequence:
+            - Ctrl+f
+          action: picker.right
+        - sequence:
+            - Ctrl+n
+          action: picker.down
+        - sequence:
+            - Ctrl+p
+          action: picker.up
+        - sequence:
+            - Alt+v
+          action: picker.prev-month
+        - sequence:
+            - Ctrl+v
+          action: picker.next-month
 - preset: vi
   contexts:
     - context: global
@@ -729,3 +787,33 @@ expression: rows
         - sequence:
             - Escape
           action: mode.normal
+    - context: date-picker
+      bindings:
+        - sequence:
+            - Return
+          action: picker.commit
+        - sequence:
+            - G
+          action: picker.month-end
+        - sequence:
+            - Ctrl+b
+          action: picker.prev-month
+        - sequence:
+            - Ctrl+f
+          action: picker.next-month
+        - sequence:
+            - g
+            - g
+          action: picker.month-start
+        - sequence:
+            - h
+          action: picker.left
+        - sequence:
+            - j
+          action: picker.down
+        - sequence:
+            - k
+          action: picker.up
+        - sequence:
+            - l
+          action: picker.right
