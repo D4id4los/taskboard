@@ -353,6 +353,11 @@ pub fn attributed_board(
 ) -> Option<BoardId> {
     match op {
         LocalOp::UpdateBoard(board) | LocalOp::DeleteBoard(board) => Some(*board),
+        // Ref-deletes carry their attribution board (the #150 collapse
+        // enqueues them under the cycle's board).
+        LocalOp::DeleteRemoteCard { board, .. } | LocalOp::DeleteRemoteStack { board, .. } => {
+            Some(*board)
+        }
         LocalOp::CreateStack(stack)
         | LocalOp::RenameStack(stack)
         | LocalOp::MoveStack(stack)

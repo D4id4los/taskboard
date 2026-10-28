@@ -151,7 +151,10 @@ fn pending_task_intents(
             | LocalOp::UpdateLabel(_)
             | LocalOp::DeleteLabel(_)
             | LocalOp::UpdateBoard(_)
-            | LocalOp::DeleteBoard(_) => continue,
+            | LocalOp::DeleteBoard(_)
+            // Ref-deletes target no local task — no intent to guard.
+            | LocalOp::DeleteRemoteCard { .. }
+            | LocalOp::DeleteRemoteStack { .. } => continue,
             // Filtered by the guard arm above; the compiler cannot see it.
             LocalOp::UpdateAppData(_) => unreachable!("handled above"),
         });
@@ -1302,6 +1305,13 @@ fn apply_push_outcomes(
                         tracing::debug!(rule = RULE_R9, op_id = ?outcome.op, label_id = ?id, "pushed label delete finalized");
                         continue;
                     }
+                    // Ref-deletes (#150): no local row exists, so nothing
+                    // finalizes — the echo is None anyway; the op completes.
+                    LocalOp::DeleteRemoteCard { .. } | LocalOp::DeleteRemoteStack { .. } => {
+                        op_results.insert(outcome.op, true);
+                        tracing::debug!(rule = RULE_R9, op_id = ?outcome.op, "pushed ref-delete completed");
+                        continue;
+                    }
                     LocalOp::CreateTask(_)
                     | LocalOp::UpdateTask(_)
                     | LocalOp::MoveTask(_)
@@ -1478,6 +1488,13 @@ fn apply_push_outcomes(
                 LocalOp::AssignLabel(..) | LocalOp::UnassignLabel(..) => {
                     op_results.insert(outcome.op, true);
                     tracing::debug!(rule = RULE_R9, op_id = ?outcome.op, "remote missing, assign op finalized");
+                }
+                // A ref-delete that 404s achieved its goal: the doomed
+                // duplicate is gone either way (the 404-tolerant path,
+                // D-5c). No tombstone — there is no local row.
+                LocalOp::DeleteRemoteCard { .. } | LocalOp::DeleteRemoteStack { .. } => {
+                    op_results.insert(outcome.op, true);
+                    tracing::debug!(rule = RULE_R9, op_id = ?outcome.op, "remote missing, ref-delete complete");
                 }
                 // Unreachable while nothing enqueues the op (MD-10) — and
                 // even then, a missing document group must never tombstone

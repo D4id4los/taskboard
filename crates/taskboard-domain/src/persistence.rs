@@ -485,6 +485,10 @@ pub fn apply_actions(state: &mut PersistedState, actions: &[PersistenceAction]) 
                         crate::outbox::LocalOp::CreateLabel(id)
                         | crate::outbox::LocalOp::UpdateLabel(id)
                         | crate::outbox::LocalOp::DeleteLabel(id) => board_labels.contains(&id),
+                        // Ref-deletes carry their board exactly; a wiped
+                        // board's queued ref-deletes die with it.
+                        crate::outbox::LocalOp::DeleteRemoteCard { board: b, .. }
+                        | crate::outbox::LocalOp::DeleteRemoteStack { board: b, .. } => b == *board,
                     };
                     !doomed
                 });

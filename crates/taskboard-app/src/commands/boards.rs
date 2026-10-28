@@ -272,6 +272,9 @@ async fn read_scope(
             taskboard_domain::LocalOp::CreateLabel(id)
             | taskboard_domain::LocalOp::UpdateLabel(id)
             | taskboard_domain::LocalOp::DeleteLabel(id) => board_labels.contains(&id),
+            // Ref-deletes carry their attribution board exactly.
+            taskboard_domain::LocalOp::DeleteRemoteCard { board, .. }
+            | taskboard_domain::LocalOp::DeleteRemoteStack { board, .. } => board == board_id,
         })
         .count();
     Ok(BoardScope {
