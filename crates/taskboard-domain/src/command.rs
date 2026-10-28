@@ -1808,7 +1808,11 @@ pub fn plan_command(
                 outcome: CommandOutcome::Applied,
             })
         }
-        StateCommand::AddReminderRule { task, offset } => {
+        StateCommand::AddReminderRule {
+            task,
+            offset,
+            insistence,
+        } => {
             // Edit-style intent: reminding a dead task is a rejection,
             // even when the offset would "dedup".
             live_task(app, *task)?;
@@ -1833,7 +1837,7 @@ pub fn plan_command(
             // document-lane trigger rides the add — the op is the flush
             // trigger, never a native card write.
             let rule = crate::reminders::ReminderRule {
-                insistence: Insistence::Normal,
+                insistence: *insistence,
                 id: ids.new_reminder_rule_id(),
                 task: *task,
                 offset: *offset,
@@ -1889,7 +1893,11 @@ pub fn plan_command(
                 outcome: CommandOutcome::ReminderCleared { removed },
             })
         }
-        StateCommand::CreateAdhocAlarm { label, when } => {
+        StateCommand::CreateAdhocAlarm {
+            label,
+            when,
+            insistence,
+        } => {
             // Device-local by ruling: no outbox op, no document-lane
             // trigger — the alarm never leaves this machine.
             let fire_at = match *when {
@@ -1908,7 +1916,7 @@ pub fn plan_command(
                 crate::reminders::AdhocWhen::At(t) => t,
             };
             let alarm = crate::reminders::AdhocAlarm {
-                insistence: Insistence::Normal,
+                insistence: *insistence,
                 id: ids.new_adhoc_alarm_id(),
                 label: label.clone(),
                 fire_at,
@@ -5974,6 +5982,7 @@ mod tests {
         StateCommand::AddReminderRule {
             task: task_id(),
             offset: offset_before(secs),
+            insistence: Insistence::Normal,
         }
     }
 
@@ -6044,6 +6053,100 @@ mod tests {
     }
 
     #[test]
+    fn add_rule_stamps_insistence() {
+        let (app, outbox) = base();
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::AddReminderRule {
+                task: task_id(),
+                offset: offset_before(600),
+                insistence: Insistence::Alarm,
+            },
+        )
+        .expect("accepted");
+        let PersistenceAction::UpsertReminderRule(rule) = &plan.actions[0] else {
+            panic!("the upsert is the first action");
+        };
+        assert_eq!(rule.insistence, Insistence::Alarm, "the level is stamped");
+    }
+
+    #[test]
+    fn create_alarm_stamps_insistence() {
+        let (app, outbox) = base();
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::CreateAdhocAlarm {
+                label: "tea".into(),
+                when: crate::reminders::AdhocWhen::At(ts(T0 + 600)),
+                insistence: Insistence::Alarm,
+            },
+        )
+        .expect("accepted");
+        let PersistenceAction::UpsertAdhocAlarm(alarm) = &plan.actions[0] else {
+            panic!("the upsert is the only action");
+        };
+        assert_eq!(alarm.insistence, Insistence::Alarm, "the level is stamped");
+    }
+
+    #[test]
+    fn dedup_ignores_insistence_and_names_the_survivor() {
+        // The D-5 immutability contract: the dedup keys on offset alone;
+        // a differing level at the same offset reports the survivor
+        // unchanged, and the only path to a different level is
+        // remove + re-add.
+        let (mut app, outbox) = base();
+        let mut survivor = reminder_rule(61, task_id());
+        survivor.offset = offset_before(60);
+        with_rules(&mut app, &[survivor.clone()]);
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::AddReminderRule {
+                task: task_id(),
+                offset: offset_before(60),
+                insistence: Insistence::Alarm,
+            },
+        )
+        .expect("accepted");
+        assert_eq!(
+            plan.outcome,
+            CommandOutcome::ReminderRuleAdded {
+                rule: survivor.id,
+                added: false,
+            },
+            "the dedup hits regardless of the requested level"
+        );
+        assert_eq!(plan.actions, Vec::new(), "nothing is planned on a hit");
+        // Re-create: remove, then add at the same offset with the new
+        // level — the fresh row carries it.
+        let mut after = app.clone();
+        after.reminders.rules.remove(&survivor.id);
+        let plan = run(
+            &after,
+            &outbox,
+            &StateCommand::AddReminderRule {
+                task: task_id(),
+                offset: offset_before(60),
+                insistence: Insistence::Alarm,
+            },
+        )
+        .expect("accepted");
+        let PersistenceAction::UpsertReminderRule(rule) = &plan.actions[0] else {
+            panic!("the upsert is the first action");
+        };
+        assert_eq!(
+            plan.outcome,
+            CommandOutcome::ReminderRuleAdded {
+                rule: rule.id,
+                added: true,
+            }
+        );
+        assert_eq!(rule.insistence, Insistence::Alarm, "the re-add re-stamps");
+    }
+
+    #[test]
     fn add_rule_rejects_unknown_and_deleted_tasks_before_any_dedup() {
         let (mut app, outbox) = base();
         let mut own = reminder_rule(61, task_id());
@@ -6056,7 +6159,8 @@ mod tests {
                 &outbox,
                 &StateCommand::AddReminderRule {
                     task: stranger,
-                    offset: offset_before(60)
+                    offset: offset_before(60),
+                    insistence: Insistence::Normal,
                 }
             ),
             Err(CommandError::UnknownTask(_))
@@ -6258,6 +6362,7 @@ mod tests {
             &StateCommand::CreateAdhocAlarm {
                 label: "tea".into(),
                 when: crate::reminders::AdhocWhen::In(dur),
+                insistence: Insistence::Normal,
             },
         )
         .expect("accepted");
@@ -6285,6 +6390,7 @@ mod tests {
             &StateCommand::CreateAdhocAlarm {
                 label: "tea".into(),
                 when: crate::reminders::AdhocWhen::In(chrono::TimeDelta::MAX),
+                insistence: Insistence::Normal,
             },
         )
         .expect("accepted");
@@ -6308,6 +6414,7 @@ mod tests {
             &StateCommand::CreateAdhocAlarm {
                 label: "tea".into(),
                 when: crate::reminders::AdhocWhen::At(past),
+                insistence: Insistence::Normal,
             },
         )
         .expect("a past instant is legal data: it fires on the next tick");
@@ -6329,6 +6436,7 @@ mod tests {
                     when: crate::reminders::AdhocWhen::In(
                         chrono::TimeDelta::try_seconds(secs).unwrap(),
                     ),
+                    insistence: Insistence::Normal,
                 },
             )
             .expect_err("dur <= 0 is a typed rejection");

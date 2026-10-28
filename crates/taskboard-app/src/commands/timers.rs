@@ -80,6 +80,7 @@ pub async fn add_on(
         .execute(StateCommand::CreateAdhocAlarm {
             label: label.to_owned(),
             when,
+            insistence: taskboard_domain::Insistence::Normal,
         })
         .await?;
     let CommandOutcome::AdhocAlarmCreated { alarm } = outcome else {

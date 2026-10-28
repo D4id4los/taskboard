@@ -86,9 +86,7 @@ pub fn insistence_to_text(level: taskboard_domain::reminders::Insistence) -> &'s
 
 /// Parses the stored TEXT form back; `None` on an unknown rung.
 #[must_use]
-pub fn insistence_from_text(
-    raw: &str,
-) -> Option<taskboard_domain::reminders::Insistence> {
+pub fn insistence_from_text(raw: &str) -> Option<taskboard_domain::reminders::Insistence> {
     use taskboard_domain::reminders::Insistence::{Alarm, Normal};
     match raw {
         "normal" => Some(Normal),

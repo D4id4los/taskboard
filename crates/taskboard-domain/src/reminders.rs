@@ -598,12 +598,11 @@ pub fn notifications_for(
                         .map(|rule| rule.insistence)
                         .unwrap_or_default(),
                     // The implicit default has no row: it is always
-                    // `Normal` (design D-I3).
-                    ReminderRef::Default(_) => Insistence::Normal,
-                    // Unreachable by anchor construction (an Adhoc ref
-                    // anchors on `ReminderAnchor::Alarm`); `Normal` keeps
-                    // the arm total.
-                    ReminderRef::Adhoc(_) => Insistence::Normal,
+                    // `Normal` (design D-I3). (An `Adhoc` ref here is
+                    // unreachable by anchor construction — an adhoc
+                    // firing anchors on `ReminderAnchor::Alarm` — and
+                    // stays `Normal` for totality.)
+                    ReminderRef::Default(_) | ReminderRef::Adhoc(_) => Insistence::Normal,
                 },
                 occurrence: firing.occurrence,
             }),
@@ -1137,6 +1136,7 @@ mod tests {
     /// base occurrence and the snooze chain by hand, gates on
     /// delivered ∧ ¬dismissed, resolves titles from the task/alarm rows,
     /// and skips missing anchors (the `notifications_for` contract).
+    #[allow(clippy::too_many_lines)] // the independent re-derivation is the point
     fn expected_active(
         tasks: &std::collections::BTreeMap<TaskId, Task>,
         reminders: &ReminderState,
@@ -1949,7 +1949,10 @@ mod tests {
 
     #[test]
     fn insistence_serde_roundtrips_and_rejects_unknown() {
-        for (level, wire) in [(Insistence::Normal, "\"normal\""), (Insistence::Alarm, "\"alarm\"")] {
+        for (level, wire) in [
+            (Insistence::Normal, "\"normal\""),
+            (Insistence::Alarm, "\"alarm\""),
+        ] {
             let json = serde_json::to_string(&level).expect("serializable");
             assert_eq!(json, wire);
             let back: Insistence = serde_json::from_str(&json).expect("decodable");
@@ -1963,8 +1966,14 @@ mod tests {
 
     #[test]
     fn insistence_text_form_roundtrips() {
-        assert_eq!(Insistence::parse_text_form("normal"), Some(Insistence::Normal));
-        assert_eq!(Insistence::parse_text_form("alarm"), Some(Insistence::Alarm));
+        assert_eq!(
+            Insistence::parse_text_form("normal"),
+            Some(Insistence::Normal)
+        );
+        assert_eq!(
+            Insistence::parse_text_form("alarm"),
+            Some(Insistence::Alarm)
+        );
         assert_eq!(Insistence::Normal.text_form(), "normal");
         assert_eq!(Insistence::Alarm.text_form(), "alarm");
         assert_eq!(Insistence::parse_text_form("critical"), None);
@@ -1974,7 +1983,10 @@ mod tests {
     #[test]
     fn insistence_default_and_order_follow_the_ladder() {
         assert_eq!(Insistence::default(), Insistence::Normal);
-        assert!(Insistence::Normal < Insistence::Alarm, "higher = more insistent");
+        assert!(
+            Insistence::Normal < Insistence::Alarm,
+            "higher = more insistent"
+        );
     }
 
     #[test]

@@ -490,6 +490,7 @@ async fn r9_alarm_fires_within_one_tick_and_survives_until_dismissal() {
         .execute(StateCommand::CreateAdhocAlarm {
             label: "steep the tea".into(),
             when: AdhocWhen::In(chrono::TimeDelta::try_seconds(30).unwrap()),
+            insistence: taskboard_domain::Insistence::Normal,
         })
         .await
         .expect("accepted");
@@ -583,6 +584,7 @@ async fn r10_future_alarm_is_quiet_below_its_target() {
         .execute(StateCommand::CreateAdhocAlarm {
             label: "wake up".into(),
             when: AdhocWhen::In(chrono::TimeDelta::try_hours(1).unwrap()),
+            insistence: taskboard_domain::Insistence::Normal,
         })
         .await
         .expect("accepted")
@@ -623,6 +625,7 @@ async fn r11_snoozed_alarm_refires_at_its_target() {
         .execute(StateCommand::CreateAdhocAlarm {
             label: "tea".into(),
             when: AdhocWhen::In(chrono::TimeDelta::try_seconds(30).unwrap()),
+            insistence: taskboard_domain::Insistence::Normal,
         })
         .await
         .expect("accepted")
@@ -709,6 +712,7 @@ async fn r12_snooze_on_a_fired_alarm_moves_the_awaiting_key() {
         .execute(StateCommand::CreateAdhocAlarm {
             label: "tea".into(),
             when: AdhocWhen::In(chrono::TimeDelta::try_seconds(30).unwrap()),
+            insistence: taskboard_domain::Insistence::Normal,
         })
         .await
         .expect("accepted")

@@ -36,9 +36,10 @@ pub use recur::{
     weekday_set_strategy, weekday_strategy,
 };
 pub use reminders::{
-    adhoc_alarm_id_strategy, adhoc_alarm_strategy, build_reminders, reminder_delivery_strategy,
-    reminder_offset_strategy, reminder_ref_strategy, reminder_rows_strategy,
-    reminder_rule_id_strategy, reminder_rule_strategy, reminder_snooze_strategy, task_map_strategy,
+    adhoc_alarm_id_strategy, adhoc_alarm_strategy, build_reminders, insistence_strategy,
+    reminder_delivery_strategy, reminder_offset_strategy, reminder_ref_strategy,
+    reminder_rows_strategy, reminder_rule_id_strategy, reminder_rule_strategy,
+    reminder_snooze_strategy, task_map_strategy,
 };
 pub use remote::{push_outcome_strategy, remote_task_strategy, snapshot_strategy};
 pub use state::{app_state_strategy, persisted_state_strategy};

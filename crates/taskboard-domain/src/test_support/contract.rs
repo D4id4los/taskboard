@@ -12,12 +12,12 @@ use std::task::{Context, Poll, Waker};
 use chrono::{TimeZone, Utc};
 
 use crate::entities::{Task, TaskClocks};
-use crate::reminders::Insistence;
 use crate::ids::{StackId, TaskId};
 use crate::outbox::{LocalOp, OpId, PendingOp};
 use crate::persistence::{
     PersistedState, PersistenceAction, SyncValidators, TaskRepository, ValidatorKey,
 };
+use crate::reminders::Insistence;
 use crate::state::SyncStatus;
 
 /// Runs the full contract against `repo`, awaiting futures with the caller's

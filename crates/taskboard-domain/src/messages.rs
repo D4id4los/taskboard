@@ -237,15 +237,20 @@ pub enum StateCommand {
     /// Add one reminder rule to the task's rule set — unless a rule at
     /// this exact offset already exists, in which case nothing is
     /// planned and the receipt names the surviving rule (the dedup is
-    /// sound because `(task, offset)` fully determines firing semantics:
-    /// `occurrence_of` is pure in `(offset, duedate)`). Legal on a task
-    /// without a duedate (the rule arms when a duedate arrives —
+    /// sound because `(task, offset)` fully determines *firing*
+    /// semantics: `occurrence_of` is pure in `(offset, duedate)`;
+    /// insistence is flavour and never keys the dedup — a different
+    /// level at the same offset is a re-create, remove + add). Legal on
+    /// a task without a duedate (the rule arms when a duedate arrives —
     /// occurrence arithmetic is due-anchored).
     AddReminderRule {
         /// The task the rule watches.
         task: TaskId,
         /// The new rule's due-anchored offset.
         offset: crate::reminders::ReminderOffset,
+        /// How loudly the rule insists (stamped at creation, immutable
+        /// per row).
+        insistence: crate::reminders::Insistence,
     },
     /// Remove the named reminder rule (deliveries and snooze links are
     /// pruned by the persistence cascade; the sidecar flush derives the
@@ -287,6 +292,8 @@ pub enum StateCommand {
         label: String,
         /// Absolute instant or engine-stamped duration.
         when: crate::reminders::AdhocWhen,
+        /// How loudly the alarm insists (stamped at creation).
+        insistence: crate::reminders::Insistence,
     },
     /// Cancel a standalone alarm (its deliveries and snooze links are
     /// pruned by the persistence cascade). An unknown id is a typed
