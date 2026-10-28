@@ -36,6 +36,11 @@ export component TextField inherits Rectangle {
     // The settings form's write-only secret field (round-1 D26b): echo
     // off. The a11y label stays the field's address, never the value.
     in property <bool> secret: false;
+    // The eye toggle (round-3 D16): markup-local state — no model
+    // property, nothing secret-adjacent ever leaves the field. The
+    // settings view is if-mounted, so `revealed` resets when the form
+    // unmounts: exactly "persists while the form lives".
+    in-out property <bool> revealed: false;
     in-out property <string> text <=> input.text;
     // The checkmark commit affordance (r2 D23): when enabled, a
     // trailing check square renders while the field holds focus and a
@@ -152,11 +157,63 @@ export component TextField inherits Rectangle {
         // the theme cannot reach into a primitive's input. The
         // colour still flows from tokens.
         color: Theme.text-primary;
-        input-type: root.secret ? InputType.password : InputType.text;
+        input-type: root.secret && !root.revealed
+            ? InputType.password
+            : InputType.text;
         wrap: root.multiline ? word-wrap : no-wrap;
         vertical-alignment: root.multiline ? TextVerticalAlignment.top : TextVerticalAlignment.center;
         edited() => root.edited(input.text);
         accepted() => root.accepted(input.text);
+    }
+
+    // The eye affordance (round-3 D16): the rightmost slot of a
+    // secret field. TouchArea-only (the recorded Slint negative — a
+    // TouchArea click never moves focus — is the feature here:
+    // toggling never steals focus mid-typing), a11y button with a
+    // state-labelled action so click ≡ AT. The glyphs are two
+    // geometric paths (the D19 no-icon-font vocabulary): a closed lid
+    // arc and an open eye with a pupil rectangle.
+    if root.secret: eye-button := Rectangle {
+        x: parent.width - self.width - Theme.space-1;
+        y: (parent.height - self.height) / 2;
+        width: Theme.space-6;
+        height: Theme.space-6;
+        border-radius: Theme.radius-small;
+        background: eye-touch.has-hover ? Theme.surface-hover : transparent;
+        accessible-role: AccessibleRole.button;
+        accessible-label: root.revealed ? "Conceal" : "Reveal";
+        accessible-action-default => {
+            root.revealed = !root.revealed;
+        }
+        eye-touch := TouchArea {
+            clicked => {
+                root.revealed = !root.revealed;
+            }
+        }
+        Path {
+            width: Theme.space-3;
+            height: Theme.space-3;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            commands: root.revealed
+                ? "M 1 6 C 3 2, 9 2, 11 6"
+                : "M 1 6 C 3 9, 9 9, 11 6";
+            stroke: eye-touch.has-hover ? Theme.text-primary : Theme.text-secondary;
+            stroke-width: Theme.focus-ring-width;
+            fill: transparent;
+            viewbox-width: 12;
+            viewbox-height: 12;
+        }
+        // The pupil: only the open eye carries it.
+        Rectangle {
+            width: Theme.space-1 + 1px;
+            height: self.width;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            border-radius: self.width / 2;
+            background: eye-touch.has-hover ? Theme.text-primary : Theme.text-secondary;
+            visible: root.revealed;
+        }
     }
 
     // The commit affordance (r2 D23): overlays the trailing padding —
@@ -168,7 +225,11 @@ export component TextField inherits Rectangle {
     // tab stop); a11y label "Commit" with the field's label as
     // description.
     if (root.commit-affordance && input.has-focus && input.text != ""): commit-button := Rectangle {
-        x: parent.width - self.width - Theme.space-1;
+        // The eye owns the rightmost slot when the field is a
+        // secret (round-3 D16): the affordances shift one square
+        // left to coexist with it.
+        x: parent.width - self.width - Theme.space-1
+            - (root.secret ? Theme.space-6 + Theme.space-1 : 0);
         y: (parent.height - self.height) / 2;
         width: Theme.space-6;
         height: Theme.space-6;
@@ -206,7 +267,11 @@ export component TextField inherits Rectangle {
     // moment it took focus); a11y label "Clear" with the field's
     // label as description, AT activation on the same seam.
     if (root.clear-affordance && input.has-focus && input.text != ""): clear-button := Rectangle {
-        x: parent.width - self.width - Theme.space-1;
+        // The eye owns the rightmost slot when the field is a
+        // secret (round-3 D16): the affordances shift one square
+        // left to coexist with it.
+        x: parent.width - self.width - Theme.space-1
+            - (root.secret ? Theme.space-6 + Theme.space-1 : 0);
         y: (parent.height - self.height) / 2;
         width: Theme.space-6;
         height: Theme.space-6;
