@@ -142,7 +142,11 @@ impl FakeEngine {
                 // The timers verbs (DR-3/3, D-P13): the planner's
                 // `In` arm mirrors the engine's stamp (now + dur,
                 // `At` verbatim); cancel is terminal-by-deletion.
-                StateCommand::CreateAdhocAlarm { label, when } => {
+                StateCommand::CreateAdhocAlarm {
+                    label,
+                    when,
+                    insistence: taskboard_domain::Insistence::Normal,
+                } => {
                     let id = taskboard_domain::AdhocAlarmId::from_uuid(uuid::Uuid::now_v7());
                     let fire_at = match when {
                         taskboard_domain::AdhocWhen::At(at) => at,

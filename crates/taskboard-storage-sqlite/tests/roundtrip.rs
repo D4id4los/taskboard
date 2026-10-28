@@ -1235,12 +1235,8 @@ async fn pre_insistence_rows_decode_normal() {
     pool.close().await;
 
     let loaded = db.repo().load().await.expect("load");
-    let rule = loaded.reminders.rules
-        [&ReminderRuleId::from(uuid::Uuid::from_u128(0x21))]
-        .clone();
-    let alarm = loaded.reminders.alarms
-        [&AdhocAlarmId::from(uuid::Uuid::from_u128(0x2a))]
-        .clone();
+    let rule = loaded.reminders.rules[&ReminderRuleId::from(uuid::Uuid::from_u128(0x21))].clone();
+    let alarm = loaded.reminders.alarms[&AdhocAlarmId::from(uuid::Uuid::from_u128(0x2a))].clone();
     assert_eq!(rule.insistence, Insistence::Normal, "rules fold normal");
     assert_eq!(alarm.insistence, Insistence::Normal, "alarms fold normal");
     db.close().await;
@@ -1251,9 +1247,7 @@ async fn pre_insistence_rows_decode_normal() {
 #[tokio::test]
 async fn insistence_round_trips_through_sqlite() {
     use taskboard_domain::ids::{AdhocAlarmId, ReminderRuleId};
-    use taskboard_domain::reminders::{
-        AdhocAlarm, Insistence, ReminderOffset, ReminderRule,
-    };
+    use taskboard_domain::reminders::{AdhocAlarm, Insistence, ReminderOffset, ReminderRule};
 
     let mut db = common::FileDb::new().await;
     let repo = db.repo();

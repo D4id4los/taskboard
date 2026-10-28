@@ -939,9 +939,9 @@ pub fn lane_gc_scheduled(document: &AppDataDocument, drop: bool) -> AppDataDocum
 
 #[cfg(test)]
 mod tests {
-    use crate::reminders::Insistence;
     use super::*;
     use crate::entities::TASK_FIELDS;
+    use crate::reminders::Insistence;
     use chrono::TimeZone;
     use proptest::prelude::*;
 

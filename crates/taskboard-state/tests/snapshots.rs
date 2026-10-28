@@ -945,6 +945,7 @@ async fn s10_boards_reset() {
     s.run(StateCommand::AddReminderRule {
         task,
         offset: taskboard_domain::ReminderOffset::at_due(),
+        insistence: taskboard_domain::Insistence::Normal,
     })
     .await;
     s.run(StateCommand::BindBoard {

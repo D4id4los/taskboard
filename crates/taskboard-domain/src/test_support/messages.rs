@@ -3,6 +3,7 @@
 
 use proptest::prelude::*;
 
+use super::reminders::insistence_strategy;
 use super::{string_strategy, timestamp_strategy};
 
 /// Sparse task changes.
@@ -146,8 +147,16 @@ pub fn state_command_strategy() -> impl Strategy<Value = crate::messages::StateC
             ),
         (super::task_id_strategy(), any::<bool>())
             .prop_map(|(task, muted)| StateCommand::SetTaskRemindersMuted { task, muted }),
-        (super::task_id_strategy(), reminder_offset_strategy())
-            .prop_map(|(task, offset)| StateCommand::AddReminderRule { task, offset }),
+        (
+            super::task_id_strategy(),
+            reminder_offset_strategy(),
+            insistence_strategy(),
+        )
+            .prop_map(|(task, offset, insistence)| StateCommand::AddReminderRule {
+                task,
+                offset,
+                insistence,
+            }),
         super::task_id_strategy().prop_map(|task| StateCommand::ClearReminderRules { task }),
         // 5: tracking commands (DR-5/1)
         super::task_id_strategy().prop_map(|task| StateCommand::StartTracking { task }),

@@ -1598,9 +1598,9 @@ fn cascade_board(
 
 #[cfg(test)]
 mod tests {
-    use crate::reminders::Insistence;
     use super::*;
     use crate::merge_testutil::*;
+    use crate::reminders::Insistence;
     use crate::test_support;
 
     use crate::remote::{RemoteIndex, RemoteLabel};

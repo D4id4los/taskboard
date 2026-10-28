@@ -349,7 +349,11 @@ impl ActionRouter {
             // invocation carries neither.
             ActionId::ReminderRuleAdd => match (ctx.focused_task, ctx.rule_add_offset) {
                 (Some(task), Some(offset)) => {
-                    DispatchOutcome::Command(StateCommand::AddReminderRule { task, offset })
+                    DispatchOutcome::Command(StateCommand::AddReminderRule {
+                        task,
+                        offset,
+                        insistence: taskboard_domain::Insistence::Normal,
+                    })
                 }
                 _ => DispatchOutcome::NoTarget,
             },
@@ -364,6 +368,7 @@ impl ActionRouter {
                     DispatchOutcome::Command(StateCommand::CreateAdhocAlarm {
                         label: label.clone(),
                         when: *when,
+                        insistence: taskboard_domain::Insistence::Normal,
                     })
                 }
                 None => DispatchOutcome::NoTarget,
@@ -503,6 +508,7 @@ mod tests {
             DispatchOutcome::Command(StateCommand::CreateAdhocAlarm {
                 label: "tea".to_owned(),
                 when,
+                insistence: taskboard_domain::Insistence::Normal,
             })
         );
         let alarm = taskboard_domain::AdhocAlarmId::from_uuid(Uuid::now_v7());
@@ -617,7 +623,8 @@ mod tests {
             ActionRouter::dispatch(ActionId::ReminderRuleAdd, &ctx),
             DispatchOutcome::Command(StateCommand::AddReminderRule {
                 task,
-                offset: ctx.rule_add_offset.expect("set")
+                offset: ctx.rule_add_offset.expect("set"),
+                insistence: taskboard_domain::Insistence::Normal,
             })
         );
         let rule = taskboard_domain::ReminderRuleId::from_uuid(Uuid::now_v7());

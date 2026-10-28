@@ -534,8 +534,8 @@ pub fn apply_actions(state: &mut PersistedState, actions: &[PersistenceAction]) 
 
 #[cfg(test)]
 mod tests {
-    use crate::reminders::Insistence;
     use super::*;
+    use crate::reminders::Insistence;
     use crate::test_support;
     use proptest::prelude::*;
 

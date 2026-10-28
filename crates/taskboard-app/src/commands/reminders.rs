@@ -126,6 +126,7 @@ pub async fn add_on(
         .execute(StateCommand::AddReminderRule {
             task: task_id,
             offset,
+            insistence: taskboard_domain::Insistence::Normal,
         })
         .await?;
     let CommandOutcome::ReminderRuleAdded { rule, added } = outcome else {

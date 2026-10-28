@@ -3909,6 +3909,7 @@ fn the_rule_list_journeys_reach_the_boundary() {
                     TimeDelta::try_minutes(-5).expect("-5m"),
                 )
                 .expect("legal offset"),
+                insistence: taskboard_domain::Insistence::Normal,
             }]);
 
             // A custom entry parses at the adapter ("45m").
@@ -3922,6 +3923,7 @@ fn the_rule_list_journeys_reach_the_boundary() {
                     TimeDelta::try_minutes(-45).expect("-45m"),
                 )
                 .expect("legal offset"),
+                insistence: taskboard_domain::Insistence::Normal,
             }]);
 
             // A parse miss dispatches nothing (absorbed — D12).
@@ -5142,6 +5144,7 @@ fn a_parse_missed_custom_offset_clears_its_buffer() {
                     TimeDelta::try_minutes(-45).expect("-45m"),
                 )
                 .expect("legal offset"),
+                insistence: taskboard_domain::Insistence::Normal,
             }]);
         },
     );
@@ -7225,7 +7228,7 @@ fn the_timers_form_creates_then_cancels() {
             harness.type_text("in 3m");
             harness.stroke(parse("Return").expect("Return"));
             match harness.engine.drain().as_slice() {
-                [StateCommand::CreateAdhocAlarm { label, when }] => {
+                [StateCommand::CreateAdhocAlarm { label, when, .. }] => {
                     assert_eq!(label.as_str(), "Tea");
                     assert_eq!(
                         *when,
