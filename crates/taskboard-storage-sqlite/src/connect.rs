@@ -199,7 +199,7 @@ mod tests {
             .fetch_one(&raw)
             .await
             .expect("migration bookkeeping");
-        assert_eq!(applied, 14, "each shipped migration recorded exactly once");
+        assert_eq!(applied, 15, "each shipped migration recorded exactly once");
         raw.close().await;
         second.close().await;
     }
@@ -1213,5 +1213,66 @@ mod tests {
             expected,
             "the terminal dataset holds the base and every marker exactly once"
         );
+    }
+
+    /// A pre-0015 database (no `time_entries` table) upgrades cleanly:
+    /// the migration re-applies as a plain `CREATE TABLE`, the column
+    /// set is exactly D-T9's seven with `entry_id` the primary key, and
+    /// `load()` folds the empty table into the default `TrackingState`.
+    #[tokio::test]
+    async fn migration_0015_upgrades_a_pre_tracking_database() {
+        let file = tempfile::Builder::new().suffix(".db").tempfile().unwrap();
+        let raw = SqlitePool::connect(&format!("sqlite://{}?mode=rwc", file.path().display()))
+            .await
+            .expect("raw connect");
+        // Simulate a pre-0015 database: run the shipped migrations, strip
+        // the 0015 artifacts and their bookkeeping row. Purely additive —
+        // no dependent objects to strip with it.
+        sqlx::migrate!("./migrations")
+            .run(&raw)
+            .await
+            .expect("migrate");
+        sqlx::query("DROP TABLE time_entries")
+            .execute(&raw)
+            .await
+            .expect("strip time_entries");
+        sqlx::query("DELETE FROM _sqlx_migrations WHERE version = 15")
+            .execute(&raw)
+            .await
+            .expect("strip bookkeeping");
+        raw.close().await;
+
+        let repo = open(file.path(), test_connector())
+            .await
+            .expect("migrating open");
+        let raw = sqlx::sqlite::SqliteConnectOptions::new().filename(file.path());
+        let pool = sqlx::SqlitePool::connect_with(raw).await.expect("raw pool");
+        let columns: Vec<(String, String, i64)> = sqlx::query_as(
+            "SELECT name, type, pk FROM pragma_table_info('time_entries') ORDER BY cid",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("table info");
+        pool.close().await;
+        assert_eq!(
+            columns,
+            vec![
+                ("entry_id".to_owned(), "TEXT".to_owned(), 1),
+                ("task_id".to_owned(), "TEXT".to_owned(), 0),
+                ("task_title".to_owned(), "TEXT".to_owned(), 0),
+                ("start".to_owned(), "TEXT".to_owned(), 0),
+                ("end".to_owned(), "TEXT".to_owned(), 0),
+                ("created_at".to_owned(), "TEXT".to_owned(), 0),
+                ("updated_at".to_owned(), "TEXT".to_owned(), 0),
+            ],
+            "exactly D-T9's seven columns, entry_id the primary key"
+        );
+        let state = repo.load().await.expect("load");
+        assert_eq!(
+            state.tracking,
+            taskboard_domain::TrackingState::default(),
+            "an empty table folds into the default tracking state"
+        );
+        repo.close().await;
     }
 }

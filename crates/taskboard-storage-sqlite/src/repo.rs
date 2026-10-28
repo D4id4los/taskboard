@@ -12,7 +12,7 @@ use taskboard_domain::entities::{
 use taskboard_domain::ids::{
     AdhocAlarmId, BoardId, ConnectorId, LabelId, ReminderRuleId, RemoteBoardBinding, RemoteBoardId,
     RemoteCardId, RemoteCardRef, RemoteLabelId, RemoteLabelRef, RemoteStackId, RemoteStackRef,
-    StackId, TaskId,
+    StackId, TaskId, TimeEntryId,
 };
 use taskboard_domain::outbox::{OpId, PendingOp};
 use taskboard_domain::persistence::{
@@ -23,6 +23,7 @@ use taskboard_domain::reminders::{
     ReminderSnoozeKey, ReminderState,
 };
 use taskboard_domain::state::{SyncPhase, SyncStates, derive_sync_states};
+use taskboard_domain::tracking::TimeEntry;
 use uuid::Uuid;
 
 use crate::codec;
@@ -184,6 +185,17 @@ struct ReminderSnoozeRow {
     reminder: String,
     occurrence: DateTime<Utc>,
     rescheduled_to: DateTime<Utc>,
+}
+
+/// Raw `time_entries` row.
+struct TimeEntryRow {
+    entry_id: String,
+    task_id: String,
+    task_title: String,
+    start: DateTime<Utc>,
+    end: Option<DateTime<Utc>>,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
 }
 
 /// Raw `reminder_dismissals` row.
@@ -507,6 +519,27 @@ fn decode_reminder_rule(
     ))
 }
 
+fn decode_time_entry(row: &TimeEntryRow) -> Result<(TimeEntryId, TimeEntry), RepositoryError> {
+    // Strict on load, tolerant on the wire: SQLite rows are
+    // trusted-written (validated at their originating planner, ADR
+    // 0017's leniency boundary); a corrupt row is a corrupted database.
+    // Span validity is not re-checked here — the type documents decoded
+    // rows as trusted-written; read-side projections clamp.
+    let id = TimeEntryId::from(decode::uuid(&row.entry_id)?);
+    Ok((
+        id,
+        TimeEntry {
+            id,
+            task: TaskId::from(decode::uuid(&row.task_id)?),
+            task_title: row.task_title.clone(),
+            start: row.start,
+            end: row.end,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+        },
+    ))
+}
+
 fn decode_reminder_delivery(
     row: &ReminderDeliveryRow,
 ) -> Result<ReminderDelivery, RepositoryError> {
@@ -726,6 +759,19 @@ impl SqliteTaskRepository {
                 .await
                 .map_err(|e| stmt_error(&e))?;
 
+        let time_entry_rows = sqlx::query_as!(
+            TimeEntryRow,
+            r#"SELECT entry_id, task_id, task_title,
+                      start as "start: DateTime<Utc>",
+                      end as "end: DateTime<Utc>",
+                      created_at as "created_at: DateTime<Utc>",
+                      updated_at as "updated_at: DateTime<Utc>"
+               FROM time_entries ORDER BY entry_id"#
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| stmt_error(&e))?;
+
         let mut boards = BTreeMap::new();
         for row in board_rows {
             let board = decode_board(row, &self.default_connector)?;
@@ -826,6 +872,11 @@ impl SqliteTaskRepository {
             let alarm = decode_adhoc_alarm(&row)?;
             alarms.insert(alarm.id, alarm);
         }
+        let mut tracking = taskboard_domain::TrackingState::default();
+        for row in time_entry_rows {
+            let (id, entry) = decode_time_entry(&row)?;
+            tracking.entries.insert(id, entry);
+        }
         let reminders = ReminderState {
             rules,
             deliveries,
@@ -844,9 +895,7 @@ impl SqliteTaskRepository {
             validators,
             sync,
             reminders,
-            // Chunk DR-5/2's migration hydrates this map; the empty
-            // default is the honest shape until that codec exists.
-            tracking: taskboard_domain::TrackingState::default(),
+            tracking,
             // Chunk DR-6/6's migration (0016) hydrates both maps; the
             // empty default is the honest shape until that codec exists.
             habits: taskboard_domain::HabitState::default(),
@@ -934,12 +983,7 @@ async fn execute_batch(
     let mut mute_toggles = Vec::new();
     let mut clear_board_content = Vec::new();
     // R-11 (DR-5/1): these two arms are the no-wildcard rule's own tax —
-    // the planner cannot emit rows otherwise. The writes below use
-    // runtime-checked `sqlx::query` (not the compile-checked macro)
-    // because the `time_entries` table arrives with DR-5/2's migration
-    // (0013 went to DR-3/2's insistence upgrade, 0014 to this chunk's
-    // #150 ref-delete payload; DR-5/2 renumbers again at its rebase);
-    // no producer emits these actions until that chunk lands.
+    // the planner cannot emit rows otherwise.
     let mut entry_upserts = Vec::new();
     let mut entry_deletes = Vec::new();
     // R-11 (DR-6/5), the tracking precedent: the no-wildcard rule's tax
@@ -1241,15 +1285,13 @@ async fn execute_batch(
         tracing::trace!(task = ?task.id, stack = ?task.stack, labels = task.live_labels().len(), "task upserted");
     }
 
-    // R-11 (DR-5/1): the time-entry writes, dead until chunk DR-5/2's
-    // migration creates the table (see the partition comment).
-    // Written against the plan's D-T9 DDL: hyphenated-UUID TEXT ids,
+    // R-11 (DR-5/1): the time-entry writes. Hyphenated-UUID TEXT ids,
     // RFC 3339 TEXT stamps, no FKs (entries outlive soft-deleted tasks).
     // Deletes run after upserts so a batch carrying both for one id
     // mirrors `apply_actions`' sequential last-write-wins semantics.
     for entry in entry_upserts {
-        sqlx::query(
-            r"INSERT INTO time_entries (entry_id, task_id, task_title, start, end, created_at, updated_at)
+        sqlx::query!(
+            r#"INSERT INTO time_entries (entry_id, task_id, task_title, start, end, created_at, updated_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(entry_id) DO UPDATE SET
                        task_id = excluded.task_id,
@@ -1257,26 +1299,28 @@ async fn execute_batch(
                        start = excluded.start,
                        end = excluded.end,
                        created_at = excluded.created_at,
-                       updated_at = excluded.updated_at",
+                       updated_at = excluded.updated_at"#,
+            codec::uuid_to_text(entry.id.as_uuid()),
+            codec::uuid_to_text(entry.task.as_uuid()),
+            entry.task_title,
+            entry.start.to_rfc3339(),
+            entry.end.map(|end| end.to_rfc3339()),
+            entry.created_at.to_rfc3339(),
+            entry.updated_at.to_rfc3339(),
         )
-        .bind(codec::uuid_to_text(entry.id.as_uuid()))
-        .bind(codec::uuid_to_text(entry.task.as_uuid()))
-        .bind(&entry.task_title)
-        .bind(entry.start.to_rfc3339())
-        .bind(entry.end.map(|end| end.to_rfc3339()))
-        .bind(entry.created_at.to_rfc3339())
-        .bind(entry.updated_at.to_rfc3339())
         .execute(&mut *tx)
         .await
         .map_err(|e| stmt_error(&e))?;
         tracing::trace!(entry = ?entry.id, "time entry upserted");
     }
     for entry_id in entry_deletes {
-        sqlx::query(r"DELETE FROM time_entries WHERE entry_id = ?")
-            .bind(codec::uuid_to_text(entry_id.as_uuid()))
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| stmt_error(&e))?;
+        sqlx::query!(
+            r#"DELETE FROM time_entries WHERE entry_id = ?"#,
+            codec::uuid_to_text(entry_id.as_uuid())
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| stmt_error(&e))?;
         tracing::trace!(entry = ?entry_id, "time entry deleted");
     }
 

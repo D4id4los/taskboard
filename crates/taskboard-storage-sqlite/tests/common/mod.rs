@@ -51,6 +51,9 @@ pub fn actions_from_state(state: &PersistedState) -> Vec<PersistenceAction> {
     for task in &state.reminders.muted {
         actions.push(PersistenceAction::SetTaskRemindersMuted(*task, true));
     }
+    for entry in state.tracking.entries.values() {
+        actions.push(PersistenceAction::UpsertTimeEntry(entry.clone()));
+    }
     for (key, validators) in &state.validators {
         actions.push(PersistenceAction::UpsertValidators(
             *key,
