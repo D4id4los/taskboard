@@ -1,0 +1,64 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The control-walk probe (round-3 D25, plan §12 P1/P2): the real
+// tab-traversal mechanism against sibling FocusScopes — the
+// focus-seam probe's include shape. P1: a synthetic `KeyPressed
+// { "\t" }` moves focus between two `focus-on-tab-navigation` stops
+// and the Shift-wrapped variant moves it back. P2: `changed
+// has-focus` fires on a FocusScope exactly once per focus change —
+// the date-picker grid's context seam (mechanism A on a different
+// element class than the proven TextField).
+
+import { Theme } from "../ui/theme.slint";
+
+export global WalkProbeFacts {
+    in-out property <int> first-gained: 0;
+    in-out property <int> first-lost: 0;
+    in-out property <int> second-gained: 0;
+    in-out property <int> second-lost: 0;
+}
+
+export component WalkProbeWindow inherits Window {
+    width: Theme.space-15 * 2;
+    height: Theme.space-15;
+
+    out property <bool> first-focused: stop-a.has-focus;
+    out property <bool> second-focused: stop-b.has-focus;
+
+    public function focus-a() {
+        stop-a.focus();
+    }
+    public function focus-b() {
+        stop-b.focus();
+    }
+
+    stop-a := FocusScope {
+        x: 0;
+        y: 0;
+        width: Theme.space-6;
+        height: Theme.space-15;
+        focus-on-tab-navigation: true;
+        property <bool> focused: self.has-focus;
+        changed focused => {
+            if (self.focused) {
+                WalkProbeFacts.first-gained += 1;
+            } else {
+                WalkProbeFacts.first-lost += 1;
+            }
+        }
+    }
+    stop-b := FocusScope {
+        x: Theme.space-6;
+        y: 0;
+        width: Theme.space-6;
+        height: Theme.space-15;
+        focus-on-tab-navigation: true;
+        property <bool> focused: self.has-focus;
+        changed focused => {
+            if (self.focused) {
+                WalkProbeFacts.second-gained += 1;
+            } else {
+                WalkProbeFacts.second-lost += 1;
+            }
+        }
+    }
+}
