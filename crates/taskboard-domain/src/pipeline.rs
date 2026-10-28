@@ -755,11 +755,25 @@ pub fn apply_sync_report(
     // Cascade territory (a dead stack) stays tombstone-wins: the
     // present-stack set is derived up front so the carve-out's guard
     // can consult it.
-    let present_refs: std::collections::BTreeSet<(RemoteBoardId, RemoteCardId)> = snapshot
+    // The listing is read *before* the cycle's pushes (fetch-before-
+    // write), so a card this cycle's create echo carried is absent from
+    // it by construction. The echo is fresher presence evidence than
+    // the listing — without this, R3 would judge a freshly created card
+    // "absent" in its very first cycle (a tombstone before this chunk;
+    // a spurious resurrect after it).
+    let mut present_refs: std::collections::BTreeSet<(RemoteBoardId, RemoteCardId)> = snapshot
         .tasks
         .iter()
         .map(|t| (t.id.board, t.id.card))
         .collect();
+    for outcome in pushes {
+        if let PushResult::Applied {
+            echo: Some(RemoteEcho::Task(echo)),
+        } = &outcome.result
+        {
+            present_refs.insert((echo.id.board, echo.id.card));
+        }
+    }
     let present_stack_refs: std::collections::BTreeSet<RemoteStackRef> =
         snapshot.stacks.iter().map(|s| s.id).collect();
     let reminder_rules = folded_rules.as_ref().unwrap_or(&current.reminders.rules);
@@ -2346,6 +2360,53 @@ mod tests {
             events_of(&app),
             &[crate::messages::SystemEvent::TaskResurrected(merged.id)],
         );
+    }
+
+    #[test]
+    fn create_echo_survives_a_stale_same_cycle_listing() {
+        // Fetch-before-write: a card created and echoed in this cycle is
+        // absent from the pre-push listing. The echo is presence
+        // evidence — the fresh card must neither tombstone nor
+        // resurrect in its first cycle.
+        let task = unsynced_task();
+        let state = base_state(task);
+        let id = task_by_card(&state, 1).id;
+        let create_op = pending(LocalOp::CreateTask(id), 557);
+        let stale_listing = single_stack_snapshot(vec![], BASE + 60);
+        let mut echo = remote_task(1, 5, BASE + 60);
+        echo.title = "local 1".into();
+
+        let app = apply_sync_report(
+            &state,
+            &[create_op],
+            &stale_listing,
+            &[PushOutcome {
+                op: OpId(uuid::Uuid::from_u128(557)),
+                result: PushResult::Applied {
+                    echo: Some(RemoteEcho::Task(echo)),
+                },
+            }],
+            DateTime::<chrono::Utc>::MAX_UTC,
+            &CountingIds::default(),
+            ts(BASE + 60),
+            &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
+        );
+
+        let merged = app.0.tasks.values().next().unwrap();
+        assert!(!merged.deleted, "the echo's card is present");
+        assert_eq!(
+            merged.remote.map(|r| r.card),
+            Some(crate::ids::RemoteCardId(5))
+        );
+        assert!(
+            !app.1
+                .iter()
+                .any(|a| matches!(a, PersistenceAction::EnqueueOp(_))),
+            "no second create"
+        );
+        assert_eq!(events_of(&app).len(), 0);
     }
 
     #[test]
