@@ -1277,6 +1277,7 @@ pub fn apply_sync_report(
         // Sync ingestion is an engine mutation from a foreign source:
         // stamp it like a local command would be.
         last_updated: Some(now),
+        habits: crate::habit::HabitState::default(),
     };
     // The projection is a display derivation over the ops that remain
     // queued after this cycle's push outcomes (the engine re-derives
@@ -1480,6 +1481,7 @@ pub fn apply_push_report(
         tracking: current.tracking.clone(),
         sync,
         last_updated: Some(now),
+        habits: crate::habit::HabitState::default(),
     };
     crate::state::derive_sync_states(
         &state.boards,

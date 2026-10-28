@@ -9,7 +9,9 @@
 
 use uuid::Uuid;
 
-use crate::ids::{AdhocAlarmId, BoardId, LabelId, ReminderRuleId, StackId, TaskId, TimeEntryId};
+use crate::ids::{
+    AdhocAlarmId, BoardId, HabitId, LabelId, ReminderRuleId, StackId, TaskId, TimeEntryId,
+};
 use crate::outbox::OpId;
 
 /// Source of fresh local entity ids (`UUIDv7`).
@@ -28,6 +30,8 @@ pub trait IdGenerator: Send + Sync + std::fmt::Debug {
     fn new_adhoc_alarm_id(&self) -> AdhocAlarmId;
     /// A fresh label id.
     fn new_label_id(&self) -> LabelId;
+    /// A fresh habit id.
+    fn new_habit_id(&self) -> HabitId;
     /// A fresh outbox-operation id.
     fn new_op_id(&self) -> OpId;
 }
@@ -63,6 +67,10 @@ impl IdGenerator for UuidV7Generator {
 
     fn new_label_id(&self) -> LabelId {
         LabelId::from(Uuid::now_v7())
+    }
+
+    fn new_habit_id(&self) -> HabitId {
+        HabitId::from(Uuid::now_v7())
     }
 
     fn new_op_id(&self) -> OpId {

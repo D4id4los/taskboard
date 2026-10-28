@@ -66,3 +66,6 @@ reminders:
   alarms: {}
 tracking:
   entries: {}
+habits:
+  habits: {}
+  log: {}

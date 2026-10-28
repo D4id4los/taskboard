@@ -399,6 +399,7 @@ fn raw_app_state_strategy() -> impl Strategy<Value = AppState> {
                 tracking: crate::tracking::TrackingState::default(),
                 sync: SyncStates::new(),
                 last_updated: None,
+                habits: crate::habit::HabitState::default(),
             }
         },
     )
@@ -516,6 +517,7 @@ pub fn persisted_state_strategy() -> impl Strategy<Value = PersistedState> {
                     sync,
                     reminders: state.reminders,
                     tracking: state.tracking,
+                    habits: state.habits,
                 }
             },
         )

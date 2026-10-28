@@ -167,6 +167,7 @@ pub fn build_state(n: usize) -> AppState {
         labels: BTreeMap::new(),
         reminders: taskboard_domain::reminders::ReminderState::default(),
         tracking: taskboard_domain::tracking::TrackingState::default(),
+        habits: taskboard_domain::habit::HabitState::default(),
         sync: SyncStates::new(),
         last_updated: None,
     }

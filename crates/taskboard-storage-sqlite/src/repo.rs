@@ -847,6 +847,9 @@ impl SqliteTaskRepository {
             // Chunk DR-5/2's migration hydrates this map; the empty
             // default is the honest shape until that codec exists.
             tracking: taskboard_domain::TrackingState::default(),
+            // Chunk DR-6/6's migration (0016) hydrates both maps; the
+            // empty default is the honest shape until that codec exists.
+            habits: taskboard_domain::HabitState::default(),
         };
         // The per-board projection is derived, never stored: stored rows
         // carry phase/last_success, `pending_ops` is attributed from the
@@ -939,6 +942,13 @@ async fn execute_batch(
     // no producer emits these actions until that chunk lands.
     let mut entry_upserts = Vec::new();
     let mut entry_deletes = Vec::new();
+    // R-11 (DR-6/5), the tracking precedent: the no-wildcard rule's tax
+    // for the habit family. Runtime-checked `sqlx::query` because the
+    // `habits`/`habit_log` tables arrive with chunk DR-6/6's migration
+    // (0016); no producer emits these actions on the real repo until
+    // that migration lands.
+    let mut habit_upserts = Vec::new();
+    let mut habit_log_rows = Vec::new();
     for action in actions {
         match action {
             PersistenceAction::UpsertBoard(board) => boards.push(board),
@@ -973,6 +983,10 @@ async fn execute_batch(
             }
             PersistenceAction::UpsertTimeEntry(entry) => entry_upserts.push(entry),
             PersistenceAction::DeleteTimeEntry(entry_id) => entry_deletes.push(*entry_id),
+            PersistenceAction::UpsertHabit(habit) => habit_upserts.push(habit),
+            PersistenceAction::RecordHabitLog(key, entry) => {
+                habit_log_rows.push((key, entry));
+            }
         }
     }
 
@@ -1264,6 +1278,67 @@ async fn execute_batch(
             .await
             .map_err(|e| stmt_error(&e))?;
         tracing::trace!(entry = ?entry_id, "time entry deleted");
+    }
+
+    for habit in habit_upserts {
+        sqlx::query(
+            r"INSERT INTO habits (habit_id, board_id, title, target, sort_order, anchor_time,
+                         ck_title, ck_target, ck_order, ck_anchor_time, ck_deleted, deleted,
+                         continued_from)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(habit_id) DO UPDATE SET
+                       board_id = excluded.board_id,
+                       title = excluded.title,
+                       target = excluded.target,
+                       sort_order = excluded.sort_order,
+                       anchor_time = excluded.anchor_time,
+                       ck_title = excluded.ck_title,
+                       ck_target = excluded.ck_target,
+                       ck_order = excluded.ck_order,
+                       ck_anchor_time = excluded.ck_anchor_time,
+                       ck_deleted = excluded.ck_deleted,
+                       deleted = excluded.deleted,
+                       continued_from = excluded.continued_from",
+        )
+        .bind(codec::uuid_to_text(habit.id.as_uuid()))
+        .bind(codec::uuid_to_text(habit.board.as_uuid()))
+        .bind(&habit.title)
+        .bind(serde_json::to_string(&habit.target).expect("target serializes"))
+        .bind(habit.order)
+        .bind(habit.anchor_time.map(|t| t.to_string()))
+        .bind(habit.clocks.title.to_rfc3339())
+        .bind(habit.clocks.target.to_rfc3339())
+        .bind(habit.clocks.order.to_rfc3339())
+        .bind(habit.clocks.anchor_time.to_rfc3339())
+        .bind(habit.clocks.deleted.to_rfc3339())
+        .bind(habit.deleted)
+        .bind(
+            habit
+                .continued_from
+                .map(|s| codec::uuid_to_text(s.as_uuid())),
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| stmt_error(&e))?;
+        tracing::trace!(habit = ?habit.id, "habit upserted");
+    }
+    for (key, entry) in habit_log_rows {
+        sqlx::query(
+            r"INSERT INTO habit_log (habit_id, window_start, count, clock)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(habit_id, window_start) DO UPDATE SET
+                       count = excluded.count,
+                       clock = excluded.clock
+                   WHERE excluded.clock > habit_log.clock",
+        )
+        .bind(codec::uuid_to_text(key.habit.as_uuid()))
+        .bind(key.window.as_date().to_string())
+        .bind(i64::from(entry.count))
+        .bind(entry.clock.to_rfc3339())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| stmt_error(&e))?;
+        tracing::trace!(habit = ?key.habit, window = %key.window.as_date(), "habit log recorded");
     }
 
     // Op removals before appends so a batch that completes and re-enqueues
