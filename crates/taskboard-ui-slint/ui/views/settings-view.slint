@@ -44,9 +44,6 @@ export struct ConnectionRow {
     server: string,
     username: string,
     status: SettingsRowStatus,
-    // The legacy `[nextcloud]` singleton world's row (D4): displayed,
-    // but Test/Remove are dead controls.
-    read-only: bool,
     // The row-level busy marker (r2 D34): this connector's ceremony
     // is in flight — the dot slot renders the busy state.
     busy: bool,
@@ -524,7 +521,7 @@ export component SettingsView inherits FocusScope {
                 }
                 SettingsButton {
                     text: "Test";
-                    enabled: !row.read-only && !SettingsModel.busy;
+                    enabled: !SettingsModel.busy;
                     clicked => {
                         root.test-clicked(index);
                     }
@@ -536,7 +533,7 @@ export component SettingsView inherits FocusScope {
                 // carries click-through — the recorded decision).
                 SettingsButton {
                     text: "Bind";
-                    enabled: !row.read-only && !SettingsModel.busy
+                    enabled: !SettingsModel.busy
                         && SettingsModel.selected-board != "";
                     clicked => {
                         root.bind-clicked(index);
@@ -544,7 +541,7 @@ export component SettingsView inherits FocusScope {
                 }
                 SettingsButton {
                     text: "Remove";
-                    enabled: !row.read-only && !SettingsModel.busy;
+                    enabled: !SettingsModel.busy;
                     clicked => {
                         root.remove-clicked(index);
                     }

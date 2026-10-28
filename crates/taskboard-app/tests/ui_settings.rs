@@ -17,9 +17,7 @@ use taskboard_app::notifications::LogSink;
 use taskboard_app::secrets::{AppPassword, CredentialStore};
 use taskboard_app::ui_requests::{ConnectionWorkspace, UI_REQUEST_DEBOUNCE, ui_request_channel};
 use taskboard_ui_slint::keymap::Preset;
-use taskboard_ui_slint::requests::{
-    ConnectionProfile, ConnectionTarget, Secret, SettingsError, UiRequest,
-};
+use taskboard_ui_slint::requests::{ConnectionProfile, Secret, SettingsError, UiRequest};
 
 mod common;
 
@@ -286,19 +284,21 @@ async fn a_dropped_reply_receiver_never_wedges_the_forwarder() {
     forwarder.await.expect("forwarder joins cleanly");
 }
 
-/// A9 — the legacy scalar world: Save and Remove both refuse typed,
-/// file and store byte-untouched.
+/// M9 (A9's replacement, round-3 D21) — the legacy scalar world
+/// migrates ahead of the Save ceremony: typed Ok, the file is
+/// array-world (identity keys gone, `.bak-legacy` holds the
+/// pre-image), the store holds the new secret.
 #[tokio::test]
-async fn the_legacy_singleton_world_is_refused_typed_on_save_and_remove() {
+async fn a_legacy_file_migrates_ahead_of_the_save_ceremony() {
+    let server = mount_boards_ok().await;
     let dir = tempfile::tempdir().expect("tempdir");
     let config = dir.path().join("taskboard.toml");
-    std::fs::write(
-        &config,
-        "[storage]\ndb_path = '/tmp/t.db'\n[nextcloud]\n\
+    let before = format!(
+        "[storage]\ndb_path = '{}/taskboard.db'\n[nextcloud]\n\
          server_url = \"https://legacy.example\"\nusername = \"old-user\"\n",
-    )
-    .expect("seed config");
-    let before = std::fs::read_to_string(&config).expect("read");
+        dir.path().display()
+    );
+    std::fs::write(&config, &before).expect("seed config");
     let store = Arc::new(FakeCredentialStore::default());
     let (_app, workspace) = booted_workspace(config.clone(), store.clone()).await;
     let (tx, rx) = ui_request_channel();
@@ -308,54 +308,152 @@ async fn the_legacy_singleton_world_is_refused_typed_on_save_and_remove() {
         workspace,
     );
 
-    for request in [
-        UiRequest::SaveConnection {
-            profile: ConnectionProfile {
-                name: "home".into(),
-                server_url: "https://new.example".into(),
-                username: "alice".into(),
-                password: Secret("pw".into()),
-            },
-            reply: tokio::sync::oneshot::channel().0,
-        },
-        UiRequest::RemoveConnection {
-            name: "nextcloud".into(),
-            reply: tokio::sync::oneshot::channel().0,
-        },
-    ] {
-        // The reply receivers are dropped on purpose: the typed outcome
-        // for these two is pinned by the A6/A8 path; here the structural
-        // fact is the untouched file.
-        let _ = tx.try_send(request);
-    }
-    // Give the handlers a scheduled yield (no sleeps — the channel
-    // round-trip below is the deterministic barrier instead).
     let (reply, reply_rx) = tokio::sync::oneshot::channel();
-    tx.try_send(UiRequest::TestConnection {
-        target: ConnectionTarget {
-            server_url: "https://legacy.example".into(),
-            username: "old-user".into(),
+    tx.try_send(UiRequest::SaveConnection {
+        profile: ConnectionProfile {
+            name: "home".into(),
+            server_url: server.uri(),
+            username: "alice".into(),
+            password: Secret("hunter2-secret".into()),
         },
         reply,
     })
     .expect("capacity holds");
-    // The legacy world's Test is a store probe; the fake store answers
-    // NotFound → NoSecretStored (the typed result proves the handler
-    // ran after both refusals).
     let outcome = reply_rx
         .await
-        .expect("reply lane alive")
-        .expect_err("no secret");
-    assert!(matches!(outcome, SettingsError::NoSecretStored));
+        .expect("the reply lane is alive")
+        .expect("the save succeeded after the migration");
+    assert!(
+        outcome.connectors.iter().any(|row| row.name == "home"),
+        "the reply carries the fresh list"
+    );
 
+    let written = std::fs::read_to_string(&config).expect("read back");
+    assert!(written.contains("[[sync.connectors]]"), "array world");
+    assert!(
+        !written.contains("[nextcloud]"),
+        "the scalar table is gone (the identity moved into the entry)"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("taskboard.toml.bak-legacy"))
+            .expect("the backup exists"),
+        before,
+        "the backup is the exact pre-image"
+    );
+    assert_eq!(
+        store.load(&server.uri(), "alice").expect("stored").expose(),
+        "hunter2-secret"
+    );
+
+    drop(tx);
+    forwarder.await.expect("forwarder joins cleanly");
+}
+
+/// M9's persist-failure twin — an unwritable config replies typed
+/// `PersistFailed` and the file stays byte-untouched.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_legacy_file_on_unwritable_media_refuses_persist_failed() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let server = mount_boards_ok().await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = dir.path().join("taskboard.toml");
+    let before = "[nextcloud]\nserver_url = \"https://legacy.example\"\nusername = \"old-user\"\n";
+    std::fs::write(&config, before).expect("seed config");
+    let store = Arc::new(FakeCredentialStore::default());
+    let (_app, workspace) = booted_workspace(config.clone(), store.clone()).await;
+    let (tx, rx) = ui_request_channel();
+    let forwarder = taskboard_app::ui_requests::spawn_ui_request_forwarder(
+        rx,
+        Arc::new(ArcSwap::from_pointee(taskboard_domain::AppState::default())),
+        workspace,
+    );
+
+    let mut perms = std::fs::metadata(dir.path()).expect("stat").permissions();
+    perms.set_mode(0o500);
+    std::fs::set_permissions(dir.path(), perms).expect("chmod");
+
+    let (reply, reply_rx) = tokio::sync::oneshot::channel();
+    tx.try_send(UiRequest::SaveConnection {
+        profile: ConnectionProfile {
+            name: "home".into(),
+            server_url: server.uri(),
+            username: "alice".into(),
+            password: Secret("hunter2-secret".into()),
+        },
+        reply,
+    })
+    .expect("capacity holds");
+    let outcome = reply_rx
+        .await
+        .expect("the reply lane is alive")
+        .expect_err("the persist is refused typed");
+    assert!(
+        matches!(outcome, SettingsError::PersistFailed),
+        "the typed refusal, never silent"
+    );
+
+    let mut perms = std::fs::metadata(dir.path()).expect("stat").permissions();
+    perms.set_mode(0o700);
+    std::fs::set_permissions(dir.path(), perms).expect("chmod back");
     assert_eq!(
         std::fs::read_to_string(&config).expect("read"),
         before,
-        "the legacy file is byte-untouched"
+        "the file is byte-untouched"
+    );
+
+    drop(tx);
+    forwarder.await.expect("forwarder joins cleanly");
+}
+
+/// M10 — the Remove choreography on a legacy file migrates first,
+/// then removes the sole entry; the no-empty-husk rule leaves a clean
+/// array-less file.
+#[tokio::test]
+async fn remove_on_a_legacy_file_migrates_then_removes_the_sole_entry() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = dir.path().join("taskboard.toml");
+    std::fs::write(
+        &config,
+        "[nextcloud]\nserver_url = \"https://legacy.example\"\nusername = \"old-user\"\n",
+    )
+    .expect("seed config");
+    let store = Arc::new(FakeCredentialStore::default());
+    let (_app, workspace) = booted_workspace(config.clone(), store.clone()).await;
+    let (tx, rx) = ui_request_channel();
+    let forwarder = taskboard_app::ui_requests::spawn_ui_request_forwarder(
+        rx,
+        Arc::new(ArcSwap::from_pointee(taskboard_domain::AppState::default())),
+        workspace,
+    );
+
+    let (reply, reply_rx) = tokio::sync::oneshot::channel();
+    tx.try_send(UiRequest::RemoveConnection {
+        name: "nextcloud".into(),
+        reply,
+    })
+    .expect("capacity holds");
+    let outcome = reply_rx
+        .await
+        .expect("the reply lane is alive")
+        .expect("the remove succeeded after the migration");
+    assert!(
+        outcome.connectors.is_empty(),
+        "the sole entry is gone from the fresh list"
+    );
+
+    let written = std::fs::read_to_string(&config).expect("read back");
+    assert!(
+        !written.contains("sync.connectors"),
+        "the no-empty-husk rule removed the array with its last entry"
     );
     assert!(
-        store.load("https://legacy.example", "old-user").is_err(),
-        "the store is untouched"
+        !written.contains("server_url"),
+        "the scalar identity was migrated away, then removed"
+    );
+    assert!(
+        dir.path().join("taskboard.toml.bak-legacy").is_file(),
+        "the migration's backup exists"
     );
 
     drop(tx);

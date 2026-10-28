@@ -38,9 +38,6 @@ pub struct ConnectorInfo {
     pub name: String,
     pub server_url: String,
     pub username: String,
-    /// The legacy `[nextcloud]` singleton world's synthesized row
-    /// (D4): displayed, but mutation is refused typed.
-    pub read_only: bool,
 }
 
 /// One local board for the settings board selector — secret-free,
@@ -86,9 +83,6 @@ pub struct ConnectionTarget {
 /// renders structure, never message text).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SettingsError {
-    /// The resolved config is the legacy `[nextcloud]` singleton
-    /// world: displayed read-only, mutation refused typed (D4).
-    LegacyConfig,
     /// A field failed the config-shaped validation.
     Invalid { field: Field, kind: InvalidKind },
     /// The row's secret is not in the credential store.

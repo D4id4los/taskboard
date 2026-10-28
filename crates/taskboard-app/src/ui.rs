@@ -276,16 +276,12 @@ pub fn resolve_day_start(
 pub fn resolve_connector_infos(
     config: &crate::config::AppConfig,
 ) -> Result<Vec<taskboard_ui_slint::requests::ConnectorInfo>, crate::config::ConfigError> {
-    // The legacy-singleton world (no array) synthesizes its one row
-    // read-only (D4): displayed, refused on mutation.
-    let legacy = config.sync.connectors.is_none();
     Ok(crate::connectors::configured_connectors(config)?
         .into_iter()
         .map(|spec| taskboard_ui_slint::requests::ConnectorInfo {
             name: spec.name.to_string(),
             server_url: spec.server_url,
             username: spec.username,
-            read_only: legacy,
         })
         .collect())
 }

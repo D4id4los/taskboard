@@ -6701,6 +6701,7 @@ dependencies = [
  "nix 0.31.3",
  "notify-rust",
  "png",
+ "proptest",
  "reqwest",
  "rpassword",
  "rustyline",

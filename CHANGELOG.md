@@ -10,6 +10,21 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 ### Changed
 
+- Legacy single-server configs migrate automatically (round-3 D21,
+  #351's migration half): on a serving boot, at the connect/login
+  ceremony's entry, and ahead of every settings write, a
+  `[nextcloud]`-shaped file gains one `[[sync.connectors]]` entry
+  (name `nextcloud`) and loses its identity keys — a best-effort
+  backup (`taskboard.toml.bak-legacy`) carries the pre-image. On
+  read-only media the app runs the migrated config in memory and
+  retries the file on the next settings write. Explicit
+  `backend = "standalone"` installs, half-configured files, and
+  hand-made mixed shapes are never migrated. The settings surface's
+  typed legacy-config rejection and its read-only row are gone —
+  every row is mutable; read-only observations (`status`,
+  `daemon stop`, `config print`, the IPC client probe) still never
+  touch the file.
+
 - One-shot daemon commands join the one signal policy (ADR 0012's
   2026-10-27 amendment, #196): ^C during a non-ceremony one-shot
   command cancels it typed — the `cancelled` envelope, exit 130, the

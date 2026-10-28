@@ -28,6 +28,7 @@ use taskboard_ui_slint::requests::{
 use crate::bootstrap::ConnectorControl;
 use crate::commands::CommandError;
 use crate::config::{AppConfig, ConfigError, ConnectorCfg, SyncBackend};
+use crate::migration::url_host;
 use crate::secrets::{CredentialError, CredentialStore};
 
 /// Capacity of the UI → app request channel: human-input scale (the
@@ -314,10 +315,7 @@ async fn save_connection(
         host = %url_host(&profile.server_url),
         "settings save started"
     );
-    let raw = read_raw_config(workspace)?;
-    if raw.sync.connectors.is_none() {
-        return Err(SettingsError::LegacyConfig);
-    }
+    let raw = ensure_migrated(workspace)?;
     if profile.password.0.trim().is_empty() {
         return Err(SettingsError::Invalid {
             field: Field::Password,
@@ -387,10 +385,7 @@ async fn remove_connection(
     workspace: &ConnectionWorkspace,
     name: &str,
 ) -> Result<ConnectionsSnapshot, SettingsError> {
-    let raw = read_raw_config(workspace)?;
-    if raw.sync.connectors.is_none() {
-        return Err(SettingsError::LegacyConfig);
-    }
+    let raw = ensure_migrated(workspace)?;
     let identity = raw
         .sync
         .connectors
@@ -441,10 +436,7 @@ async fn attach_connection(
     board: BoardId,
     connector_name: &str,
 ) -> Result<ConnectionsSnapshot, SettingsError> {
-    let raw = read_raw_config(workspace)?;
-    if raw.sync.connectors.is_none() {
-        return Err(SettingsError::LegacyConfig);
-    }
+    let raw = ensure_migrated(workspace)?;
     let entry = raw
         .sync
         .connectors
@@ -612,16 +604,6 @@ fn map_execute_error(err: &ExecuteError) -> SettingsError {
     }
 }
 
-/// The log-safe host of a server URL (r2 D34): scheme- and
-/// userinfo-stripped, up to the first path/query/fragment character.
-/// Tracing fields carry host and name only — never the full URL,
-/// never credentials.
-fn url_host(url: &str) -> &str {
-    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
-    let rest = rest.split(['/', '?', '#']).next().unwrap_or(rest);
-    rest.rsplit_once('@').map_or(rest, |(_, host)| host)
-}
-
 /// Persists the preset word and replies with the rebuilt keymap: the
 /// config's overrides re-resolved under the chosen preset (plan D9).
 fn set_keymap_preset(
@@ -669,6 +651,40 @@ fn set_scale(workspace: &ConnectionWorkspace, scale: f64) -> Result<(), Settings
 /// run — env included; R6's re-read-per-request rule).
 fn read_raw_config(workspace: &ConnectionWorkspace) -> Result<AppConfig, SettingsError> {
     AppConfig::extract_raw(Some(&workspace.config_write_path)).map_err(|err| map_config_error(&err))
+}
+
+/// The raw config, migrated first when the file is the legacy scalar
+/// world (round-3 D21): "the next successful settings write completes
+/// the migration" made concrete — a boot whose persist failed (or a
+/// boot-less one-shot) is completed here. Array world → returned
+/// as-is; file migrated → re-read (the migrated file); a genuinely
+/// unwritable file → typed `PersistFailed`; a non-migratable scalar
+/// world (env-injected identity, or the writer backstop's refusal
+/// class) → typed `PersistRejected` — the same outcome class the
+/// removed typed legacy gate produced, honest about the corner.
+fn ensure_migrated(workspace: &ConnectionWorkspace) -> Result<AppConfig, SettingsError> {
+    let raw = read_raw_config(workspace)?;
+    if raw.sync.connectors.is_some() {
+        return Ok(raw);
+    }
+    match crate::migration::migrate_config_file(&workspace.config_write_path) {
+        Ok(true) => {
+            let migrated = read_raw_config(workspace)?;
+            for entry in migrated.sync.connectors.iter().flatten() {
+                tracing::info!(
+                    connector = %entry.name,
+                    host = %crate::migration::url_host(&entry.server_url),
+                    "settings write completed the legacy config migration"
+                );
+            }
+            Ok(migrated)
+        }
+        Ok(false) => Err(SettingsError::PersistRejected),
+        Err(err) => {
+            tracing::warn!(error = %err, "settings: the legacy config migration failed");
+            Err(SettingsError::PersistFailed)
+        }
+    }
 }
 
 /// The fresh secret-free list for the reply (the `configured_connectors`
@@ -1316,24 +1332,6 @@ mod tests {
         assert!(!path.exists(), "no write at all when nothing was received");
     }
     // -- A10: the mapping tables ------------------------------------------
-
-    /// r2 D34 — the log-safe host extraction: scheme, userinfo, path,
-    /// query, and fragment all stripped; a schemeless URL keeps its
-    /// authority.
-    #[test]
-    fn url_host_strips_everything_but_the_authority() {
-        assert_eq!(
-            url_host("https://cloud.example.com/nc"),
-            "cloud.example.com"
-        );
-        assert_eq!(
-            url_host("http://user:pw@host.example:8080/?x=1"),
-            "host.example:8080"
-        );
-        assert_eq!(url_host("https://a.example#frag"), "a.example");
-        assert_eq!(url_host("host.example/path"), "host.example");
-        assert_eq!(url_host("https://bare.example"), "bare.example");
-    }
 
     /// A10 — every reachable `CommandError` class from the extracted
     /// ceremony maps to its typed variant; the config rejections map to

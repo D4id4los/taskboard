@@ -43,12 +43,9 @@ const UNAVAILABLE_GENERIC: &str = "The server or store is unreachable.";
 const FAILED_GENERIC: &str = "The operation failed.";
 
 /// One typed failure's sentence (r2 D28/F21): short, present tense,
-/// user-actionable. Exhaustive, 15 arms — no wildcard.
+/// user-actionable. Exhaustive, 14 arms — no wildcard.
 fn error_text(err: &SettingsError) -> &'static str {
     match err {
-        SettingsError::LegacyConfig => {
-            "This config is the legacy single-server form; connect from the config file instead."
-        }
         SettingsError::Invalid { field, kind } => invalid_text(*field, *kind),
         SettingsError::NoSecretStored => "No password is stored for this row; save it again.",
         SettingsError::StoreUnsupported => {
@@ -170,12 +167,11 @@ mod tests {
         }
     }
 
-    /// The `SettingsError` totality loop: all 15 variants map to
+    /// The `SettingsError` totality loop: all 14 variants map to
     /// non-empty text through `status_text`'s detail path.
     #[test]
     fn every_settings_error_variant_maps_to_text() {
         let all = [
-            SettingsError::LegacyConfig,
             SettingsError::Invalid {
                 field: Field::Name,
                 kind: InvalidKind::Empty,
@@ -194,7 +190,7 @@ mod tests {
             SettingsError::NoRemoteMatch,
             SettingsError::BindRefused,
         ];
-        assert_eq!(all.len(), 15, "the variant list is the enum's totality");
+        assert_eq!(all.len(), 14, "the variant list is the enum's totality");
         for err in all {
             assert_ne!(
                 status_text(SettingsOutcome::Rejected, Some(&err)),
@@ -250,7 +246,6 @@ mod tests {
     /// arm listing.
     fn any_settings_error() -> impl Strategy<Value = SettingsError> {
         prop_oneof![
-            Just(SettingsError::LegacyConfig),
             (any_field(), any_invalid_kind())
                 .prop_map(|(field, kind)| SettingsError::Invalid { field, kind }),
             Just(SettingsError::NoSecretStored),
@@ -296,7 +291,6 @@ mod tests {
     /// mapping matches).
     fn variant_name(err: &SettingsError) -> &'static str {
         match err {
-            SettingsError::LegacyConfig => "legacy",
             SettingsError::Invalid { .. } => "invalid",
             SettingsError::NoSecretStored => "no-secret",
             SettingsError::StoreUnsupported => "store-unsupported",

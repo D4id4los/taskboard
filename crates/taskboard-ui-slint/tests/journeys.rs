@@ -2474,7 +2474,6 @@ fn the_settings_form_routes_the_save_ceremony() {
                         name: "home".into(),
                         server_url: "https://c.example".into(),
                         username: "alice".into(),
-                        read_only: false,
                     }],
                 }))
                 .expect("the reply lane is alive");
@@ -2524,16 +2523,14 @@ fn connector_episodes_flip_the_row_status() {
                 name: "nextcloud".into(),
                 server_url: "https://c.example".into(),
                 username: "alice".into(),
-                read_only: false,
             },
-            // The D4 structural surface: a legacy-world row arrives
-            // flagged, and the flag survives the push (the row renders
-            // its Test/Remove controls dead — markup-owned).
+            // A second plain row (the two-row shape the status
+            // episode below reads; the D4 read-only flag is gone with
+            // round-3 D21 — every row is mutable).
             taskboard_ui_slint::requests::ConnectorInfo {
                 name: "legacy".into(),
                 server_url: "https://legacy.example".into(),
                 username: "bob".into(),
-                read_only: true,
             },
         ],
         ..UiSettings::default()
@@ -2562,14 +2559,7 @@ fn connector_episodes_flip_the_row_status() {
                 .window()
                 .global::<taskboard_ui_slint::SettingsModel>()
                 .get_rows();
-            assert!(
-                !rows.row_data(0).expect("row").read_only,
-                "a live connector's row is mutable"
-            );
-            assert!(
-                rows.row_data(1).expect("row").read_only,
-                "the legacy row arrives flagged read-only"
-            );
+            assert_eq!(rows.row_count(), 2, "both rows arrive");
 
             harness.handle.observe_connector_episode(
                 &taskboard_domain::SystemEvent::ConnectorLost(taskboard_domain::ConnectorId::from(
@@ -3447,7 +3437,6 @@ fn busy_status_holds_until_the_reply_lands() {
                         name: "home".into(),
                         server_url: "https://c.example".into(),
                         username: "alice".into(),
-                        read_only: false,
                     }],
                 }))
                 .expect("the reply lane is alive");
@@ -3743,7 +3732,6 @@ fn every_settings_field_carries_its_info_tip() {
             name: "nextcloud".into(),
             server_url: "https://c.example".into(),
             username: "alice".into(),
-            read_only: false,
         }],
         ..UiSettings::default()
     };
@@ -5954,7 +5942,6 @@ fn connector_row(name: &str) -> ConnectorInfo {
         name: name.to_owned(),
         server_url: "https://c.example".into(),
         username: "alice".into(),
-        read_only: false,
     }
 }
 
