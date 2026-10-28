@@ -434,9 +434,18 @@ pub async fn run_desktop(
     // D5b: the physical exit paths are wired so shutdown is always
     // graceful (`app.exit` as an action is chunk 2). Thin main-glue
     // class — deliberately untested; the forwarder and config carry
-    // the tests.
-    let exit_watcher = tokio::spawn(async {
-        crate::bootstrap::wait_for_signal().await;
+    // the tests. The lifecycle watcher installs after the boot
+    // returned (D-7/Q11) and runs the same `new(1)` ladder: second
+    // signal = this tail's escalate arm (the skip-joins role), third =
+    // the watcher's force rung.
+    let signals = crate::signals::install_lifecycle_watcher();
+    let crate::signals::LifecycleSignals {
+        begin_drain: mut signal_quit,
+        mut escalate,
+        ..
+    } = signals;
+    let exit_watcher = tokio::spawn(async move {
+        crate::signals::changed_or_never(&mut signal_quit).await;
         tracing::info!("shutdown signal received");
         quit_until_accepted().await;
     });
@@ -446,10 +455,18 @@ pub async fn run_desktop(
     exit_watcher.abort();
     forwarder.abort();
     request_forwarder.abort();
-    let outcome = app.shutdown().await;
-    if outcome.actor_aborted {
-        tracing::warn!("sync actor did not stop in time and was aborted");
-    }
+    // The GUI tail's escalate arm needs nothing from `App` (the owned
+    // `shutdown` flushes first — the salvage obligation is satisfied
+    // or in flight), so there is no ownership trap on this surface.
+    let outcome = tokio::select! {
+        outcome = app.shutdown() => outcome,
+        () = crate::signals::changed_or_never(&mut escalate) => {
+            let code = escalate.borrow_and_update().exit_code();
+            tracing::warn!(code, "escalation during the desktop shutdown; forcing exit");
+            std::process::exit(code);
+        }
+    };
+    crate::bootstrap::exit_if_degraded(outcome, false);
     run_result?;
     Ok(())
 }

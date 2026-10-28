@@ -6,8 +6,9 @@
 //! `commands::dispatch` (typed handlers, exit codes) — transparently
 //! relayed over the daemon's IPC socket when one serves this database —
 //! or run the daemon lifecycle: boot the in-process core through
-//! `bootstrap`, serve the per-database IPC socket, wait for the signal
-//! or `daemon stop`, graceful drain with a second-signal force exit.
+//! `bootstrap`, serve the per-database IPC socket, and ride the
+//! three-rung signal ladder to the honest exit code (0 clean / 1
+//! degraded / 128+signum forced).
 //! All wiring lives in the `taskboard_app` library so tests and future
 //! frontends reuse it.
 
@@ -21,7 +22,7 @@ use std::time::Duration;
 use clap::Parser as _;
 
 use taskboard_app::App;
-use taskboard_app::bootstrap::{bootstrap, wait_for_signal};
+use taskboard_app::bootstrap::bootstrap;
 use taskboard_app::cli::{Cli, Command, DaemonCmd};
 use taskboard_app::commands::{
     BasicSession, CommandCtx, CommandError, IpcRoute, dispatch, report, route_for_ipc,
@@ -407,7 +408,13 @@ async fn daemon_lifecycle(
     // `standalone` daemon gives scripters the same no-boot-per-command
     // latency the connector profile gets, and idling is over.
     let (app, server, web) = boot_and_serve(config, config_path, json, "daemon").await?;
-    serve_and_shutdown(app, server, web).await
+    // The lifecycle watcher installs here — after the core boot
+    // returns, once per lifecycle entry (design D-7/§10 Q11): signals
+    // during the boot keep the default disposition, and an
+    // install-at-top would swallow a boot-phase ^C into an `Initiate`
+    // nobody listens to yet.
+    let mut signals = taskboard_app::signals::install_lifecycle_watcher();
+    serve_and_shutdown(app, server, web, &mut signals).await
 }
 
 /// The shared headless boot (ADR 0016): resolve the credential store,
@@ -483,69 +490,119 @@ async fn boot_and_serve(
 }
 
 /// The shared serve→drain→shutdown tail (ADR 0016): wait for the first
-/// exit — shutdown signal or `daemon stop` over IPC — then the bounded
-/// drain with the second-signal force exit armed throughout. The daemon
+/// exit — the lifecycle watcher's rung 1 or `daemon stop` over IPC —
+/// then the bounded drain under the ladder's escalation. The daemon
 /// lifecycle and the kiosk appliance's headless fallback both enter
 /// here; the appliance's GUI branch enters [`drain_and_shutdown`]
-/// directly (its serve phase already ended with the window).
+/// directly (its serve phase already ended with the window). The
+/// control-lane arm additionally feeds `stop_request`: a later signal
+/// escalates instead of re-initiating (the machine owns the counting).
 async fn serve_and_shutdown(
     app: Arc<App>,
     server: taskboard_app::ipc::server::IpcServerHandle,
     web: Option<taskboard_app::web::DashboardServerHandle>,
+    signals: &mut taskboard_app::signals::LifecycleSignals,
 ) -> color_eyre::Result<()> {
-    // The first-signal wait happens here — *before* arming the
-    // force-exit watcher — because `ctrl_c` and SIGTERM notify every
-    // listener: an early watcher would catch the first signal instead
-    // of the second.
     tokio::select! {
-        () = wait_for_signal() => {
+        () = taskboard_app::signals::changed_or_never(&mut signals.begin_drain) => {
             tracing::info!("shutdown signal received");
         }
         () = server.stopped() => {
             tracing::info!("shutdown requested over ipc");
+            let _ = signals.stop_request.send(());
         }
     }
-    drain_and_shutdown(app, server, web).await
+    drain_and_shutdown(app, server, web, signals).await
 }
 
-/// The drain half of the shared tail, without the serve wait: bounded
-/// server join and graceful core shutdown via `shutdown_from_arc`, the
-/// second-signal force exit armed throughout. A core still shared at
-/// the tail is the typed F9-01 runtime failure.
+/// The forcing signal's code off the escalation watch — always a real
+/// signal's kind (`StopRequest` never records one).
+fn escalated_code(
+    escalate: &mut tokio::sync::watch::Receiver<taskboard_app::signals::Signal>,
+) -> i32 {
+    escalate.borrow_and_update().exit_code()
+}
+
+/// Rung 2 in full (design D-6): abort the wedging connector sync
+/// actors first (the salvage flush roundtrips the engine and storage
+/// actors — Q4), then one bounded salvage attempt, then the forced
+/// exit at the forcing signal's code. Best-effort by design.
+async fn escalate_exit(
+    app: &App,
+    escalate: &mut tokio::sync::watch::Receiver<taskboard_app::signals::Signal>,
+) -> ! {
+    let code = escalated_code(escalate);
+    tracing::warn!(
+        code,
+        "escalation during the drain; aborting connectors and salvaging"
+    );
+    taskboard_app::bootstrap::abort_connectors(app);
+    taskboard_app::bootstrap::salvage_flush(app, taskboard_app::bootstrap::SALVAGE_FLUSH_BUDGET)
+        .await;
+    std::process::exit(code);
+}
+
+/// Escalation during the owned shutdown: plain forced exit. `App::shutdown`
+/// flushes first (the salvage obligation is already satisfied or in
+/// flight), so there is nothing left to rescue (§10 Q5).
+fn forced_exit(escalate: &mut tokio::sync::watch::Receiver<taskboard_app::signals::Signal>) -> ! {
+    let code = escalated_code(escalate);
+    tracing::warn!(code, "escalation during the owned shutdown; forcing exit");
+    std::process::exit(code);
+}
+
+/// The drain half of the shared tail (design D-6), in two interruptible
+/// phases: the bounded server drain (interruptible at full salvage) and
+/// the owned shutdown. The `Arc` is never cloned — an extra strong
+/// reference would fail `shutdown_from_arc`'s `try_unwrap` on every
+/// clean drain.
 async fn drain_and_shutdown(
     app: Arc<App>,
     server: taskboard_app::ipc::server::IpcServerHandle,
     web: Option<taskboard_app::web::DashboardServerHandle>,
+    signals: &mut taskboard_app::signals::LifecycleSignals,
 ) -> color_eyre::Result<()> {
     let shutdown_timeout = Duration::from_secs(app.config.app.shutdown_timeout_secs);
-    let drain = async {
-        // Bounded: past the budget the servers abort their tasks (a
-        // wedged peer must never hold the daemon's shutdown hostage)
-        // and the refcount is released either way. The dashboard's
-        // drain rides the same budget as the IPC socket's.
-        // Commit 4 threads these into the degraded-drain exit; the
-        // fact is surfaced, not swallowed, from here on.
-        let ipc_hit = server.join(shutdown_timeout).await;
-        let mut web_hit = false;
-        if let Some(web) = web {
-            web_hit = web.join(shutdown_timeout).await;
-        }
-        let _ = (ipc_hit, web_hit);
-        taskboard_app::bootstrap::shutdown_from_arc(app).await
+    // Phase A: the bounded server drains. An escalation landing here
+    // finds `app` still owned: full salvage.
+    let (ipc_hit, web_hit) = tokio::select! {
+        hits = async {
+            // Bounded: past the budget the servers abort their tasks (a
+            // wedged peer must never hold the daemon's shutdown hostage)
+            // and the refcount is released either way. The dashboard's
+            // drain rides the same budget as the IPC socket's.
+            let ipc_hit = server.join(shutdown_timeout).await;
+            let web_hit = match web {
+                Some(web) => web.join(shutdown_timeout).await,
+                None => false,
+            };
+            (ipc_hit, web_hit)
+        } => hits,
+        () = taskboard_app::signals::changed_or_never(&mut signals.escalate) =>
+            escalate_exit(&app, &mut signals.escalate).await,
     };
-    let outcome = tokio::select! {
-        outcome = drain => outcome,
-        () = wait_for_signal() => {
-            tracing::warn!("second signal during shutdown; forcing exit");
-            std::process::exit(130);
-        }
-    };
-    // A shared core at the tail is a typed runtime failure (the salvage
-    // flush+broadcast already ran) — exit 1 via eyre, never a panic.
-    let outcome = outcome?;
-    if outcome.actor_aborted {
-        tracing::warn!("sync actor did not stop in time and was aborted");
+    // An escalation retained across the phase boundary is consumed
+    // here, while `app` is still owned (a cold-start rung 2 lands in
+    // this arm via the watch's buffered send).
+    if signals.escalate.has_changed().unwrap_or(false) {
+        escalate_exit(&app, &mut signals.escalate).await;
     }
+    // Phase B: the owned shutdown — its *first* step is the engine
+    // flush (`App::shutdown`'s order), so an escalation landing here
+    // finds the salvage already done or in flight.
+    let outcome = tokio::select! {
+        // A shared core at the tail is a typed runtime failure (the
+        // salvage flush+broadcast already ran) — exit 1 via eyre, never
+        // a panic.
+        outcome = taskboard_app::bootstrap::shutdown_from_arc(app) => outcome?,
+        () = taskboard_app::signals::changed_or_never(&mut signals.escalate) =>
+            forced_exit(&mut signals.escalate),
+    };
+    // The drain resolved: de-arm, so the exit epilogue cannot flip a
+    // clean 0 into a forced code (§10 Q9; the escape stays armed for
+    // genuinely fresh signals — §10 Q10).
+    let _ = signals.progress.send(());
+    taskboard_app::bootstrap::exit_if_degraded(outcome, ipc_hit || web_hit);
     Ok(())
 }
 
@@ -595,6 +652,10 @@ async fn run_kiosk(
     let config_write_path = AppConfig::write_path(config_path.clone());
     let (app, server, mut web) =
         boot_and_serve(config, config_path, json, "kiosk appliance").await?;
+    // Install after the boot returns, once for this lifecycle entry
+    // (the daemon tail's rule; D-7/Q11) — the fixed-board/mount error
+    // paths below hold the signals for their `drain_and_shutdown`s.
+    let mut signals = taskboard_app::signals::install_lifecycle_watcher();
 
     // The `[kiosk] fixed_board` pin's typed boot resolution (KDF-10):
     // the state is loaded (boards live in the ArcSwap), the display
@@ -617,7 +678,7 @@ async fn run_kiosk(
             // The server is already spawned — drain through the shared
             // tail (the mount-error arm's convention), then report
             // typed.
-            let _ = drain_and_shutdown(app, server, web.take()).await;
+            let _ = drain_and_shutdown(app, server, web.take(), &mut signals).await;
             std::process::exit(i32::from(report(json, &CommandError::from(err))));
         }
     }
@@ -628,7 +689,7 @@ async fn run_kiosk(
             // socket is already serving, so keep serving the shared
             // daemon tail.
             tracing::error!("no display available; continuing as headless daemon");
-            serve_and_shutdown(app, server, web.take()).await
+            serve_and_shutdown(app, server, web.take(), &mut signals).await
         }
         taskboard_app::ui::KioskStart::Appliance => {
             // The hand-over, in `run_desktop`'s order: the escape hatch
@@ -680,22 +741,26 @@ async fn run_kiosk(
                 Err(err) => {
                     forwarder.abort();
                     request_forwarder.abort();
-                    let _ = drain_and_shutdown(app, server, web.take()).await;
+                    let _ = drain_and_shutdown(app, server, web.take(), &mut signals).await;
                     return Err(err.into());
                 }
             };
 
-            // The exit watcher (Q2): signal and `daemon stop` both quit
-            // the event loop; window close is the third exit and needs
-            // no arm — it ends `run` directly.
+            // The exit watcher (Q2): the ladder's rung 1 and `daemon
+            // stop` both quit the event loop; window close is the third
+            // exit and needs no arm — it ends `run` directly. Clone
+            // halves; the owning `signals` stays with the drain tail.
             let stop_rx = server.stopped_receiver();
+            let mut begin_drain = signals.begin_drain.clone();
+            let stop_feed = signals.stop_request.clone();
             let watcher = tokio::spawn(async move {
                 tokio::select! {
-                    () = wait_for_signal() => {
+                    () = taskboard_app::signals::changed_or_never(&mut begin_drain) => {
                         tracing::info!("shutdown signal received");
                     }
                     () = taskboard_app::ipc::server::IpcServerHandle::stopped_from(stop_rx) => {
                         tracing::info!("shutdown requested over ipc");
+                        let _ = stop_feed.send(());
                     }
                 }
                 // The retry matters here exactly as in `run_desktop`:
@@ -711,7 +776,7 @@ async fn run_kiosk(
             request_forwarder.abort();
             // The shutdown-tail error (a still-shared core) outranks
             // the loop result, mirroring `run_desktop`'s order.
-            drain_and_shutdown(app, server, web.take()).await?;
+            drain_and_shutdown(app, server, web.take(), &mut signals).await?;
             run_result?;
             Ok(())
         }
