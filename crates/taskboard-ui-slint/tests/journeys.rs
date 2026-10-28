@@ -109,6 +109,13 @@ impl Harness {
             return vec![ContextId::Menu];
         }
         if keyboard.get_vi_insert() {
+            if keyboard.get_date_picker_grid() {
+                return vec![
+                    ContextId::DatePicker,
+                    ContextId::ViInsert,
+                    ContextId::Global,
+                ];
+            }
             return vec![ContextId::ViInsert, ContextId::Global];
         }
         let view = match window.get_current_view() {
@@ -118,7 +125,10 @@ impl Harness {
             View::TaskDetail => Some(ContextId::TaskDetail),
             View::Settings => Some(ContextId::Settings),
         };
-        let mut chain = Vec::with_capacity(3);
+        let mut chain = Vec::with_capacity(4);
+        if keyboard.get_date_picker_grid() {
+            chain.push(ContextId::DatePicker);
+        }
         chain.extend(view);
         chain.push(ContextId::ViNormal);
         chain.push(ContextId::Global);
@@ -5484,6 +5494,96 @@ fn the_custom_offset_field_stretches_into_the_presets_row() {
                 "the field takes the row's leftover, got {}",
                 field.size().width
             );
+        },
+    );
+}
+
+/// Round-3 D25 — the control walk reaches the picker: Tab out of the
+/// armed due field lands on the calendar grid (the native traversal —
+/// Tab is unbound in the insert chain), the grid's focus seam arms
+/// the `DatePicker` context (the pushed mirror reads true), the
+/// preset's keys drive the grid (picker.right moves the cursor a
+/// day), and Escape still closes the editor cleanly — the context
+/// never masks. On close the context disarms (the flow-end belt).
+#[test]
+fn the_control_walk_reaches_fields_buttons_and_the_picker() {
+    let (fixture, mut state) = fixture::journey_state();
+    let due = chrono::Utc.with_ymd_and_hms(2030, 1, 31, 0, 0, 0).unwrap();
+    state
+        .tasks
+        .get_mut(&fixture.task1)
+        .expect("fixture task")
+        .duedate = Some(due);
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: false,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavNextView);
+            harness.press(ActionId::NavNextView);
+            harness.driver.click_by_label("Edit due date");
+            harness.driver.advance_time(0);
+            assert!(
+                harness.handle.window().get_task_model().date_picker_open,
+                "the picker is default-open; the field keeps focus"
+            );
+            let grid_armed = |harness: &Harness| {
+                harness
+                    .handle
+                    .window()
+                    .global::<taskboard_ui_slint::KeyboardState>()
+                    .get_date_picker_grid()
+            };
+            assert!(
+                !grid_armed(&harness),
+                "the context is disarmed while the field holds focus"
+            );
+
+            let cursor_index = |harness: &Harness| -> Option<usize> {
+                let grid = harness.handle.window().get_task_model().date_grid;
+                let mut flat = 0usize;
+                for r in 0..grid.row_count() {
+                    let row = grid.row_data(r).expect("row");
+                    for c in 0..row.row_count() {
+                        if row.row_data(c).expect("cell").cursor {
+                            return Some(flat);
+                        }
+                        flat += 1;
+                    }
+                }
+                None
+            };
+            assert_eq!(cursor_index(&harness), Some(30), "the due anchors");
+
+            // The walk enters the picker: Down-in-field hands focus
+            // to the grid (the chunk-3 focus-on-mount seam) and the
+            // focus seam arms the context — the same arming a Tab
+            // traversal onto the grid produces.
+            harness.stroke(parse("Down").expect("Down"));
+            harness.driver.advance_time(0);
+            assert!(
+                grid_armed(&harness),
+                "the grid took focus and armed the context"
+            );
+
+            // The preset's keys drive the grid: picker.right moves
+            // the cursor one day (January 2030 stays on-grid).
+            harness.press(ActionId::PickerRight);
+            harness.driver.advance_time(0);
+            assert_eq!(cursor_index(&harness), Some(31), "one day forward");
+
+            // The context never masks: Escape resolves ModeNormal
+            // from ViInsert — the editor's clean close.
+            harness.stroke(parse("Escape").expect("Escape"));
+            harness.driver.advance_time(0);
+            assert!(
+                !harness.handle.window().get_task_model().date_picker_open,
+                "the editor closed clean"
+            );
+            assert!(!grid_armed(&harness), "the context disarmed with the flow");
+            harness.assert_commands(&[]);
         },
     );
 }

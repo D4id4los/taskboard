@@ -193,6 +193,24 @@ static STANDARD: &[(ActionId, ContextId, &[&str])] = &[
         ContextId::Settings,
         &["Shift+Tab"],
     ),
+    // Round 3 (D25): the picker keys — the CUA arrows and navigation on the DatePicker context (armed exactly while the grid holds focus). The time steppers stay button-only.
+    (ActionId::PickerLeft, ContextId::DatePicker, &["Left"]),
+    (ActionId::PickerRight, ContextId::DatePicker, &["Right"]),
+    (ActionId::PickerUp, ContextId::DatePicker, &["Up"]),
+    (ActionId::PickerDown, ContextId::DatePicker, &["Down"]),
+    (
+        ActionId::PickerPrevMonth,
+        ContextId::DatePicker,
+        &["PageUp"],
+    ),
+    (
+        ActionId::PickerNextMonth,
+        ContextId::DatePicker,
+        &["PageDown"],
+    ),
+    (ActionId::PickerMonthStart, ContextId::DatePicker, &["Home"]),
+    (ActionId::PickerMonthEnd, ContextId::DatePicker, &["End"]),
+    (ActionId::PickerCommit, ContextId::DatePicker, &["Return"]),
 ];
 
 /// `emacs` — default-emacs-authentic (the review's tmux standard):
@@ -340,6 +358,24 @@ static EMACS: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::NavPrevControl, ContextId::TaskDetail, &["Ctrl+b"]),
     (ActionId::NavNextControl, ContextId::Settings, &["Ctrl+f"]),
     (ActionId::NavPrevControl, ContextId::Settings, &["Ctrl+b"]),
+    // Round 3 (D25): the picker keys — emacs' calendar-mode vocabulary (C-v/M-v are calendar-scroll: an intentional shadowing of the Global scroll rows *within* the DatePicker context — chain-head priority, different contexts, no contract contact).
+    (ActionId::PickerLeft, ContextId::DatePicker, &["Ctrl+b"]),
+    (ActionId::PickerRight, ContextId::DatePicker, &["Ctrl+f"]),
+    (ActionId::PickerUp, ContextId::DatePicker, &["Ctrl+p"]),
+    (ActionId::PickerDown, ContextId::DatePicker, &["Ctrl+n"]),
+    (ActionId::PickerPrevMonth, ContextId::DatePicker, &["Alt+v"]),
+    (
+        ActionId::PickerNextMonth,
+        ContextId::DatePicker,
+        &["Ctrl+v"],
+    ),
+    (
+        ActionId::PickerMonthStart,
+        ContextId::DatePicker,
+        &["Alt+<"],
+    ),
+    (ActionId::PickerMonthEnd, ContextId::DatePicker, &["Alt+>"]),
+    (ActionId::PickerCommit, ContextId::DatePicker, &["Return"]),
 ];
 
 /// `vi` — vim-authentic: everything lives in `ViNormal` (the honest
@@ -440,4 +476,26 @@ static VI: &[(ActionId, ContextId, &[&str])] = &[
         ContextId::Settings,
         &["Shift+Tab"],
     ),
+    // Round 3 (D25): the picker keys — the home-row motions on the DatePicker context (armed only while the grid holds focus, so the field's printables are untouched).
+    (ActionId::PickerLeft, ContextId::DatePicker, &["h"]),
+    (ActionId::PickerRight, ContextId::DatePicker, &["l"]),
+    (ActionId::PickerUp, ContextId::DatePicker, &["k"]),
+    (ActionId::PickerDown, ContextId::DatePicker, &["j"]),
+    (
+        ActionId::PickerPrevMonth,
+        ContextId::DatePicker,
+        &["Ctrl+b"],
+    ),
+    (
+        ActionId::PickerNextMonth,
+        ContextId::DatePicker,
+        &["Ctrl+f"],
+    ),
+    (
+        ActionId::PickerMonthStart,
+        ContextId::DatePicker,
+        &["g", "g"],
+    ),
+    (ActionId::PickerMonthEnd, ContextId::DatePicker, &["G"]),
+    (ActionId::PickerCommit, ContextId::DatePicker, &["Return"]),
 ];

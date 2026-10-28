@@ -36,6 +36,11 @@ pub enum ContextId {
     Palette,
     ViNormal,
     ViInsert,
+    /// The date-picker's grid (round-3 D25): active exactly while the
+    /// grid `FocusScope` holds slint focus; non-masking — Escape still
+    /// resolves `ModeNormal` from `ViInsert` (the editor's clean
+    /// close).
+    DatePicker,
 }
 
 impl ContextId {
@@ -53,6 +58,7 @@ impl ContextId {
             Self::Palette => "palette",
             Self::ViNormal => "vi-normal",
             Self::ViInsert => "vi-insert",
+            Self::DatePicker => "date-picker",
         }
     }
 }
@@ -74,6 +80,11 @@ pub enum Category {
     Task,
     Menu,
     Mode,
+    /// The picker keys (round-3 D25): never rendered as a menu
+    /// section — picker rows are never chain-visible outside the
+    /// `DatePicker` context, so they never render in menus (the
+    /// `menu.*` masking argument).
+    Picker,
 }
 
 impl Category {
@@ -87,6 +98,7 @@ impl Category {
             Self::Task => "task",
             Self::Menu => "menu",
             Self::Mode => "mode",
+            Self::Picker => "picker",
         }
     }
 
@@ -103,6 +115,7 @@ impl Category {
             Self::Task => "Task",
             Self::Menu => "Menu",
             Self::Mode => "Mode",
+            Self::Picker => "Picker",
         }
     }
 }
@@ -214,6 +227,15 @@ pub enum ActionId {
     MenuDismiss,
     ModeInsert,
     ModeNormal,
+    PickerLeft,
+    PickerRight,
+    PickerUp,
+    PickerDown,
+    PickerPrevMonth,
+    PickerNextMonth,
+    PickerMonthStart,
+    PickerMonthEnd,
+    PickerCommit,
 }
 
 impl ActionId {
@@ -278,6 +300,15 @@ impl ActionId {
             Self::MenuDismiss => "menu.dismiss",
             Self::ModeInsert => "mode.insert",
             Self::ModeNormal => "mode.normal",
+            Self::PickerLeft => "picker.left",
+            Self::PickerRight => "picker.right",
+            Self::PickerUp => "picker.up",
+            Self::PickerDown => "picker.down",
+            Self::PickerPrevMonth => "picker.prev-month",
+            Self::PickerNextMonth => "picker.next-month",
+            Self::PickerMonthStart => "picker.month-start",
+            Self::PickerMonthEnd => "picker.month-end",
+            Self::PickerCommit => "picker.commit",
         }
     }
 
@@ -897,6 +928,101 @@ pub const REGISTRY: &[ActionEntry] = &[
         description: "Stops the running timer, closing its open time entry.",
         menu_group: Some(MenuGroup::Task),
     },
+    // The picker keys (round-3 D25): the date grid's ten hardcoded
+    // key codes as registry rows — the DatePicker context carries
+    // them exactly while the grid holds focus. The time steppers
+    // stay button-only (no regression, no invented bindings). The
+    // cursor-family rank style; never rendered as a menu section.
+    ActionEntry {
+        id: ActionId::PickerLeft,
+        label: "Picker cursor left",
+        contexts: &[ContextId::DatePicker],
+        category: Category::Picker,
+        enabled: true,
+        menu_rank: 900,
+        description: "Moves the calendar picker's cursor one day back.",
+        menu_group: None,
+    },
+    ActionEntry {
+        id: ActionId::PickerRight,
+        label: "Picker cursor right",
+        contexts: &[ContextId::DatePicker],
+        category: Category::Picker,
+        enabled: true,
+        menu_rank: 900,
+        description: "Moves the calendar picker's cursor one day forward.",
+        menu_group: None,
+    },
+    ActionEntry {
+        id: ActionId::PickerUp,
+        label: "Picker cursor up",
+        contexts: &[ContextId::DatePicker],
+        category: Category::Picker,
+        enabled: true,
+        menu_rank: 900,
+        description: "Moves the calendar picker's cursor one week back.",
+        menu_group: None,
+    },
+    ActionEntry {
+        id: ActionId::PickerDown,
+        label: "Picker cursor down",
+        contexts: &[ContextId::DatePicker],
+        category: Category::Picker,
+        enabled: true,
+        menu_rank: 900,
+        description: "Moves the calendar picker's cursor one week forward.",
+        menu_group: None,
+    },
+    ActionEntry {
+        id: ActionId::PickerPrevMonth,
+        label: "Picker previous month",
+        contexts: &[ContextId::DatePicker],
+        category: Category::Picker,
+        enabled: true,
+        menu_rank: 900,
+        description: "Steps the calendar picker to the previous month, keeping the cursor on-grid.",
+        menu_group: None,
+    },
+    ActionEntry {
+        id: ActionId::PickerNextMonth,
+        label: "Picker next month",
+        contexts: &[ContextId::DatePicker],
+        category: Category::Picker,
+        enabled: true,
+        menu_rank: 900,
+        description: "Steps the calendar picker to the next month, keeping the cursor on-grid.",
+        menu_group: None,
+    },
+    ActionEntry {
+        id: ActionId::PickerMonthStart,
+        label: "Picker month start",
+        contexts: &[ContextId::DatePicker],
+        category: Category::Picker,
+        enabled: true,
+        menu_rank: 900,
+        description: "Moves the calendar picker's cursor to the first of the month.",
+        menu_group: None,
+    },
+    ActionEntry {
+        id: ActionId::PickerMonthEnd,
+        label: "Picker month end",
+        contexts: &[ContextId::DatePicker],
+        category: Category::Picker,
+        enabled: true,
+        menu_rank: 900,
+        description: "Moves the calendar picker's cursor to the last day of the month.",
+        menu_group: None,
+    },
+    ActionEntry {
+        id: ActionId::PickerCommit,
+        label: "Commit picked date",
+        contexts: &[ContextId::DatePicker],
+        category: Category::Picker,
+        enabled: true,
+        menu_rank: 900,
+        description: "Commits the calendar picker's cursor date (at the picker's time) through the date flow's one commit funnel.",
+        menu_group: None,
+    },
     ActionEntry {
         id: ActionId::MenuNext,
         label: "Next menu entry",
@@ -1043,6 +1169,15 @@ mod tests {
             ActionId::MenuDismiss,
             ActionId::ModeInsert,
             ActionId::ModeNormal,
+            ActionId::PickerLeft,
+            ActionId::PickerRight,
+            ActionId::PickerUp,
+            ActionId::PickerDown,
+            ActionId::PickerPrevMonth,
+            ActionId::PickerNextMonth,
+            ActionId::PickerMonthStart,
+            ActionId::PickerMonthEnd,
+            ActionId::PickerCommit,
         ];
         for id in ALL {
             assert_eq!(REGISTRY.iter().filter(|e| e.id == *id).count(), 1);
@@ -1135,6 +1270,9 @@ mod tests {
                     // The menu-cursor rows never render on a page; only
                     // the projected quick rows must be rank-ordered.
                     && !row.contexts.contains(&ContextId::Menu)
+                    // The picker keys (round-3 D25) share the cursor
+                    // rank family and never render anywhere.
+                    && row.category != Category::Picker
             })
             .map(|row| row.menu_rank)
             .collect();

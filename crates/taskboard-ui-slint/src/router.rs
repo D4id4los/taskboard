@@ -78,6 +78,11 @@ pub enum UiEffect {
     /// previous direction) under the walk's re-entrancy guard.
     ControlNext,
     ControlPrev,
+    /// The picker keys (round-3 D25): applied before/aside the flow
+    /// table (the menu-family pattern) — the picker mutates its own
+    /// adapter state and refreshes; the date flow is Insert and the
+    /// picker's own seams own the commit funnel.
+    PickerKey(crate::due_edit::DatePickerKey),
     /// Open the inline create row.
     BeginCreate,
     /// Open the inline create row for a new stack on the live board
@@ -168,6 +173,9 @@ pub enum EffectClass {
     System,
     /// The title editor's arm verb (round-3 W-SM-d).
     Title,
+    /// The picker keys: applied in `apply_effect`, before the table
+    /// (the menu-family pattern) — unreachable in the resolver.
+    Picker,
 }
 
 impl UiEffect {
@@ -206,6 +214,7 @@ impl UiEffect {
             Self::BeginCapture => EffectClass::BeginCapture,
             Self::Activate | Self::SetMode(_) => EffectClass::Edit,
             Self::BeginTitleEdit => EffectClass::Title,
+            Self::PickerKey(_) => EffectClass::Picker,
             Self::CancelMove => EffectClass::Cancel,
             Self::OpenMenu
             | Self::CloseMenu
@@ -408,6 +417,33 @@ impl ActionRouter {
             ActionId::NavShowTask => DispatchOutcome::UiEffect(UiEffect::ShowTask),
             ActionId::NavNextControl => DispatchOutcome::UiEffect(UiEffect::ControlNext),
             ActionId::NavPrevControl => DispatchOutcome::UiEffect(UiEffect::ControlPrev),
+            ActionId::PickerLeft => {
+                DispatchOutcome::UiEffect(UiEffect::PickerKey(crate::due_edit::DatePickerKey::Left))
+            }
+            ActionId::PickerRight => DispatchOutcome::UiEffect(UiEffect::PickerKey(
+                crate::due_edit::DatePickerKey::Right,
+            )),
+            ActionId::PickerUp => {
+                DispatchOutcome::UiEffect(UiEffect::PickerKey(crate::due_edit::DatePickerKey::Up))
+            }
+            ActionId::PickerDown => {
+                DispatchOutcome::UiEffect(UiEffect::PickerKey(crate::due_edit::DatePickerKey::Down))
+            }
+            ActionId::PickerPrevMonth => DispatchOutcome::UiEffect(UiEffect::PickerKey(
+                crate::due_edit::DatePickerKey::PrevMonth,
+            )),
+            ActionId::PickerNextMonth => DispatchOutcome::UiEffect(UiEffect::PickerKey(
+                crate::due_edit::DatePickerKey::NextMonth,
+            )),
+            ActionId::PickerMonthStart => DispatchOutcome::UiEffect(UiEffect::PickerKey(
+                crate::due_edit::DatePickerKey::MonthStart,
+            )),
+            ActionId::PickerMonthEnd => DispatchOutcome::UiEffect(UiEffect::PickerKey(
+                crate::due_edit::DatePickerKey::MonthEnd,
+            )),
+            ActionId::PickerCommit => DispatchOutcome::UiEffect(UiEffect::PickerKey(
+                crate::due_edit::DatePickerKey::Commit,
+            )),
             ActionId::NavNextItem => DispatchOutcome::UiEffect(UiEffect::FocusNext),
             ActionId::NavPrevItem => DispatchOutcome::UiEffect(UiEffect::FocusPrev),
             ActionId::TaskCreate => DispatchOutcome::UiEffect(UiEffect::BeginCreate),
