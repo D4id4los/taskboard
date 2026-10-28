@@ -995,7 +995,8 @@ async fn ip20_the_shutdown_tail_takes_exclusive_ownership_after_the_drain() {
         assert_eq!(
             outcome,
             Ok(taskboard_app::bootstrap::ShutdownOutcome {
-                actor_aborted: false
+                actor_aborted: false,
+                budget_hit: false,
             })
         );
     })

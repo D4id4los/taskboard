@@ -338,6 +338,10 @@ async fn b4_shutdown_mid_cycle_is_bounded_and_keeps_the_outbox() {
 
     let outcome = app.shutdown().await;
     assert!(outcome.actor_aborted, "the hung actor must be aborted");
+    assert!(
+        outcome.degraded(),
+        "a shutdown that aborted a join is a degraded drain (design D-6)"
+    );
 
     // The database reopens; the queued op is intact (not lost, and the
     // aborted cycle cannot have completed it).
@@ -612,6 +616,11 @@ async fn b8_standalone_boot_never_touches_credentials_and_serves_commands() {
 
     let outcome = app.shutdown().await;
     assert!(!outcome.actor_aborted);
+    assert!(!outcome.budget_hit);
+    assert!(
+        !outcome.degraded(),
+        "the standalone clean drain stays clean"
+    );
 }
 
 // ---------------------------------------------------------------------
@@ -993,4 +1002,88 @@ async fn seed_a_stack(app: &App) -> StackId {
         panic!("expected CreatedStack");
     };
     id
+}
+
+// ---------------------------------------------------------------------
+// DR-2/D: rung 2's salvage flush (design D-6)
+// ---------------------------------------------------------------------
+
+/// Boots the standalone shape (B8's config): engine + storage live, no
+/// sync actor, no credentials consulted.
+async fn standalone_boot(dir: &tempfile::TempDir) -> App {
+    let mut config = common::valid_config("https://unused.example.com");
+    config.sync.backend = Some(taskboard_app::config::SyncBackend::Standalone);
+    config.nextcloud.server_url = None;
+    config.nextcloud.username = None;
+    config.storage.db_path = Some(dir.path().join("taskboard.db"));
+    bootstrap(
+        config,
+        Arc::new(common::FakeCredentialStore::default()),
+        Arc::new(taskboard_app::notifications::LogSink),
+    )
+    .await
+    .expect("standalone boot needs no credentials")
+}
+
+/// T5 (DR-2/D): rung 2's salvage flush persists the pending command
+/// while the actors are still alive — a fresh open of the same db (the
+/// reopen path the operator's next boot takes) already sees the board.
+#[tokio::test]
+async fn b14_salvage_flush_persists_the_pending_command_while_the_actors_live() {
+    let dir = tempdir();
+    let app = standalone_boot(&dir).await;
+    app.engine
+        .execute(StateCommand::CreateBoard {
+            title: "salvaged".into(),
+            color: Color::new("3366cc"),
+        })
+        .await
+        .expect("board accepted");
+
+    let salvaged = taskboard_app::bootstrap::salvage_flush(&app, Duration::from_secs(5)).await;
+    assert!(salvaged, "an idle graph flushes well inside any budget");
+
+    let repo = open(
+        dir.path().join("taskboard.db"),
+        taskboard_domain::ConnectorId::from("nextcloud"),
+    )
+    .await
+    .expect("reopen");
+    let state: PersistedState = repo.load().await.expect("reload");
+    assert!(
+        state.boards.values().any(|b| b.title == "salvaged"),
+        "the salvage flush persisted the pending command"
+    );
+
+    app.shutdown().await;
+}
+
+/// T6 (DR-2/D §10 Q5/Q6): the salvage gives up at the budget and the
+/// caller proceeds: `false`, no panic. Determinism: the flush's inbox
+/// send cannot be delivered inside the first poll slot — the engine
+/// inbox is filled to capacity with persist-bearing commands (each
+/// parks the engine on a storage roundtrip, so the zero-budget timer
+/// fires long before the backlog — and the Flush behind it — drains).
+#[tokio::test]
+async fn b15_salvage_flush_gives_up_at_a_zero_budget() {
+    let dir = tempdir();
+    let app = standalone_boot(&dir).await;
+    // Fill the 256-slot engine inbox past capacity: every slot is a
+    // real persist-bearing command, so the engine drains slowly (one
+    // storage roundtrip each) and `flush`'s send stays pending across
+    // the salvage's first polls.
+    for n in 0..512 {
+        app.engine.dispatch(StateCommand::CreateBoard {
+            title: format!("backlog {n}"),
+            color: Color::new("3366cc"),
+        });
+    }
+
+    let salvaged = taskboard_app::bootstrap::salvage_flush(&app, Duration::ZERO).await;
+    assert!(
+        !salvaged,
+        "the zero budget expires before the flush can land"
+    );
+
+    app.shutdown().await;
 }
