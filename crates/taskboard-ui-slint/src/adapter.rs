@@ -13,6 +13,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
+use chrono::{DateTime, Utc};
 
 use slint::language::KeyboardModifiers;
 use slint::{ComponentHandle as _, ModelRc, SharedString};
@@ -86,6 +87,16 @@ enum Resolve {
     CancelOnly,
     Replace,
     Inert,
+}
+
+/// The status bar's transient notice line (#130): presentation text
+/// plus expiry. Never blocking — a passive line wherever the status
+/// bar renders.
+pub(crate) struct Notice {
+    /// The composed phrase (captured at event time).
+    text: String,
+    /// The expiry instant (event time + the presentation horizon).
+    until: DateTime<Utc>,
 }
 
 /// The adapter state: the validated keymap (applied at UI start, one
@@ -189,6 +200,11 @@ pub(crate) struct Adapter {
     /// The kiosk display-mode rotation (K13, issue #363): the pure
     /// state machine plus the hand-over's dwell. `None` on desktop —
     /// the byte-identical guarantee is a type, not a gate.
+    /// The status bar's transient resurrect notice (#130): the
+    /// composed line plus its expiry instant. Adapter-held
+    /// presentation state (the liveness-map precedent); expiry rides
+    /// the cadence tick's wall clock — no UI-held timer.
+    notice: Option<Notice>,
     rotation: Option<crate::view_state::KioskRotation>,
     /// The rotation flip's single-shot dwell timer (K13). Armed by
     /// `install` only when `rotation` is present, re-armed by the
@@ -1689,19 +1705,34 @@ fn request_scale_anchor(window: &AppWindow) {
 /// degrades to a cleared pending state (R-reply).
 impl Adapter {
     /// The drain-side batch form of
-    /// [`Self::record_connector_liveness`].
-    pub(crate) fn record_connector_liveness_batch(
-        &mut self,
-        events: &[taskboard_domain::SystemEvent],
-    ) {
+    /// [`Self::record_system_event`].
+    pub(crate) fn record_system_events(&mut self, events: &[taskboard_domain::SystemEvent]) {
         for event in events {
-            self.record_connector_liveness(event);
+            self.record_system_event(event);
         }
     }
 
-    /// Records one connector-liveness episode (the system drain's
-    /// pre-refresh hook, D8).
-    pub(crate) fn record_connector_liveness(&mut self, event: &taskboard_domain::SystemEvent) {
+    /// The notice's cadence-tick half: expires the line past its
+    /// horizon and pushes both status-bar properties. Runs every tick
+    /// (cheap: two property writes), so expiry needs no timer of its
+    /// own.
+    pub(crate) fn push_notice(&mut self, window: &AppWindow) {
+        let now = chrono::Utc::now();
+        if !crate::presentation::notice_visible(now, self.notice.as_ref().map(|n| n.until)) {
+            self.notice = None;
+        }
+        let (text, visible) = match &self.notice {
+            Some(notice) => (notice.text.as_str(), true),
+            None => ("", false),
+        };
+        window.set_notice_text(text.into());
+        window.set_notice_visible(visible);
+    }
+
+    /// Records one system-event episode (the system drain's
+    /// pre-refresh hook, D8): connector liveness and the resurrect
+    /// notice are the recorded verdicts today.
+    pub(crate) fn record_system_event(&mut self, event: &taskboard_domain::SystemEvent) {
         use taskboard_domain::SystemEvent as E;
         match event {
             E::ConnectorLost(id) => {
@@ -1709,6 +1740,22 @@ impl Adapter {
             }
             E::ConnectorRestored(id) => {
                 self.settings.liveness.insert(id.to_string(), false);
+            }
+            E::TaskResurrected(id) => {
+                // The title resolves once, at event time, against the
+                // current snapshot — the resurrected task is live and
+                // unbound by the time the cycle settles.
+                let title = self
+                    .state
+                    .load()
+                    .tasks
+                    .get(id)
+                    .map(|t| t.title.clone())
+                    .unwrap_or_default();
+                self.notice = Some(Notice {
+                    text: crate::presentation::resurrect_notice_phrase(&title),
+                    until: chrono::Utc::now() + crate::presentation::RESURRECT_NOTICE_HORIZON,
+                });
             }
             _ => {}
         }
@@ -2629,6 +2676,7 @@ pub(crate) fn install(
         rotation_timer,
         rotation_fire: Rc::new(|| {}), // replaced below, before any fire can happen
         quit_requests: 0,
+        notice: None,
     }));
     // The status auto-clear's fire closure (r2 D28): weak handles
     // only — no Rc cycle. Armed by `set_settings_outcome` from the

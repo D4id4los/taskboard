@@ -446,9 +446,7 @@ fn start_repaint_driver(
                 }
             }
             if !events.is_empty() {
-                adapter
-                    .borrow_mut()
-                    .record_connector_liveness_batch(&events);
+                adapter.borrow_mut().record_system_events(&events);
             }
             // The settings reply drain (D25b): the non-blocking poll
             // under the same cadence — a settled reply refreshes.
@@ -458,6 +456,10 @@ fn start_repaint_driver(
                 minute.set(Some(wall_minute));
                 dirty = true;
             }
+            // The notice's expiry rides the same cadence tick's wall
+            // clock (no UI-held timer); the push is cheap enough to
+            // run unconditionally.
+            adapter.borrow_mut().push_notice(&window);
             if dirty {
                 adapter.borrow_mut().refresh(&window);
             }
@@ -502,7 +504,7 @@ impl UiHandle {
     pub fn observe_connector_episode(&self, event: &taskboard_domain::SystemEvent) {
         if let Some(window) = self.window.as_weak().upgrade() {
             let mut adapter = self.adapter.borrow_mut();
-            adapter.record_connector_liveness(event);
+            adapter.record_system_event(event);
             adapter.refresh(&window);
         }
     }

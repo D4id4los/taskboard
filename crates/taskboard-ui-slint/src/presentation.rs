@@ -452,6 +452,27 @@ pub fn notification_phrase(occurrence: DateTime<Utc>, now: DateTime<Utc>) -> Str
     }
 }
 
+/// The status-bar notice's expiry horizon (#130): a presentation
+/// constant — the resurrect line is transient, never blocking (the
+/// kiosk/daemon rule); expiry rides the cadence tick's wall clock.
+pub const RESURRECT_NOTICE_HORIZON: chrono::TimeDelta =
+    chrono::TimeDelta::try_seconds(10).expect("non-zero constant");
+
+/// The notice's visibility decision (#130): visible while the expiry
+/// instant is still ahead of `now` — the pure half of the cadence tick's
+/// clear.
+#[must_use]
+pub fn notice_visible(now: DateTime<Utc>, until: Option<DateTime<Utc>>) -> bool {
+    until.is_some_and(|until| until > now)
+}
+
+/// The resurrect notice's passive status line (#130). Pure; asserted
+/// non-empty and deterministic — never asserted on its copy (AGENTS §5).
+#[must_use]
+pub fn resurrect_notice_phrase(title: &str) -> String {
+    format!("\"{title}\" was deleted remotely while it had unsynced work \u{2014} re-created")
+}
+
 /// One active timer row (D-I7): the alarm plus its walked effective
 /// occurrence, carried so the push pass derives the countdown phrase
 /// once per refresh.
@@ -2256,5 +2277,26 @@ mod connector_status_tests {
             connector_row_status(&state, &connector, false),
             ConnectorStatus::Failed
         );
+    }
+    #[test]
+    fn the_notice_expires_past_its_horizon() {
+        let now = Utc::now();
+        assert!(notice_visible(
+            now,
+            Some(now + chrono::TimeDelta::seconds(1))
+        ));
+        assert!(!notice_visible(now, Some(now)));
+        assert!(!notice_visible(
+            now,
+            Some(now - chrono::TimeDelta::seconds(1))
+        ));
+        assert!(!notice_visible(now, None), "no notice is never visible");
+    }
+
+    #[test]
+    fn the_resurrect_phrase_is_nonempty_and_deterministic() {
+        let once = resurrect_notice_phrase("held work");
+        assert!(!once.is_empty() && once.contains("held work"));
+        assert_eq!(once, resurrect_notice_phrase("held work"));
     }
 }

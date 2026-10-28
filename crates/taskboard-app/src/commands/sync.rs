@@ -10,7 +10,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use taskboard_domain::{StateCommand, SyncErrorKind, SyncPhase, SyncStatus};
+use taskboard_domain::{StateCommand, SyncErrorKind, SyncPhase, SyncStatus, SystemEvent, TaskId};
 
 use crate::commands::CommandError;
 use crate::commands::output::SyncStatusView;
@@ -126,6 +126,10 @@ pub(crate) async fn sync_on(
         let view = SyncStatusView::new(&watched_status(app, scope));
         return Ok(SyncOutcome::NoWait(view));
     }
+    // The resurrect listener rides the system broadcast: subscribe
+    // *before* the nudge so a resurrect born in the awaited cycle is
+    // observable (the engine emits during report ingestion).
+    let mut system_rx = app.system.subscribe();
     // Belt-and-braces nudge; the boot cycle coalesces with it. A
     // connector-less engine (standalone gate passed on a booted session
     // whose connector was detached, WI-H) answers `NoOp` — refuse typed
@@ -135,7 +139,42 @@ pub(crate) async fn sync_on(
     if outcome == taskboard_domain::CommandOutcome::NoOp {
         return Err(CommandError::SyncUnavailable);
     }
-    Ok(wait_for_sync_result(app, &startup, timeout, scope).await)
+    let outcome = wait_for_sync_result(app, &startup, timeout, scope).await;
+    report_resurrections(app, &mut system_rx);
+    Ok(outcome)
+}
+
+/// The CLI's resurrect surfacing: drains the system broadcast and prints
+/// one status line per resurrected task (never a prompt — a kiosk or
+/// daemon session just reads its log). The titles resolve against the
+/// *current* shared snapshot: the resurrected task is live and unbound
+/// by the time the cycle settles.
+fn report_resurrections(
+    app: &crate::App,
+    system_rx: &mut tokio::sync::broadcast::Receiver<SystemEvent>,
+) {
+    let mut events = Vec::new();
+    while let Ok(event) = system_rx.try_recv() {
+        events.push(event);
+    }
+    let state = app.engine.shared_state().load_full();
+    for id in resurrected_tasks(&events) {
+        let title = state.tasks.get(&id).map_or("", |t| t.title.as_str());
+        println!("sync: task \"{title}\" held unsynced work; re-created as a new card");
+    }
+}
+
+/// The pure fold behind the surfacing: the resurrected ids in arrival
+/// order, duplicates preserved (two episodes are two lines — the honest
+/// report).
+fn resurrected_tasks(events: &[SystemEvent]) -> Vec<TaskId> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            SystemEvent::TaskResurrected(id) => Some(*id),
+            _ => None,
+        })
+        .collect()
 }
 
 /// The pure freshness classifier: has a cycle landed since the startup
@@ -481,5 +520,43 @@ mod detach_tests {
         );
 
         let _ = app.shutdown().await;
+    }
+}
+
+#[cfg(test)]
+mod resurrect_fold_tests {
+    use super::resurrected_tasks;
+    use taskboard_domain::SystemEvent;
+    use taskboard_domain::{ConnectorId, TaskId};
+    use uuid::Uuid;
+
+    fn task_id(n: u128) -> TaskId {
+        TaskId::from(Uuid::from_u128(n))
+    }
+
+    #[test]
+    fn the_fold_yields_only_resurrected_ids_in_arrival_order() {
+        let events = [
+            SystemEvent::NetworkLost,
+            SystemEvent::TaskResurrected(task_id(1)),
+            SystemEvent::ConnectorLost(ConnectorId::from("nc")),
+            SystemEvent::TaskResurrected(task_id(2)),
+            SystemEvent::StorageFailed,
+        ];
+        assert_eq!(resurrected_tasks(&events), vec![task_id(1), task_id(2)]);
+    }
+
+    #[test]
+    fn duplicates_are_preserved_two_episodes_are_two_lines() {
+        let events = [
+            SystemEvent::TaskResurrected(task_id(7)),
+            SystemEvent::TaskResurrected(task_id(7)),
+        ];
+        assert_eq!(resurrected_tasks(&events), vec![task_id(7), task_id(7)]);
+    }
+
+    #[test]
+    fn the_empty_broadcast_yields_no_lines() {
+        assert_eq!(resurrected_tasks(&[]).len(), 0);
     }
 }
