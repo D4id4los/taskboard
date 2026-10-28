@@ -2760,6 +2760,194 @@ async fn delete_stack_404_maps_to_remote_missing() {
     assert!(matches!(outcomes[0].result, PushResult::RemoteMissing));
 }
 
+// ---- ref-delete push path (#150, R-dup) -----------------------------
+// The crash-window collapse's doomed twins: addressed by the remote ref
+// directly (no overlay resolution), 404-tolerant by classification.
+
+fn ref_card(raw_board: u64, raw_stack: u64, raw_card: u64) -> RemoteCardRef {
+    RemoteCardRef {
+        board: RemoteBoardId(raw_board),
+        stack: RemoteStackId(raw_stack),
+        card: taskboard_domain::RemoteCardId(raw_card),
+    }
+}
+
+#[tokio::test]
+async fn ref_card_delete_targets_the_refs_components_and_applies_without_an_echo() {
+    let server = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .and(path(
+            "/index.php/apps/deck/api/v1.0/boards/42/stacks/7/cards/517",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_string(card_json(517, 7, 0)))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
+    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]), FEATURES);
+    let outcome = exec
+        .execute(
+            &group(
+                100,
+                MaterializedOp::DeleteRemoteCard {
+                    card: ref_card(42, 7, 517),
+                },
+                taskboard_domain::PushTarget::RemoteCard(ref_card(42, 7, 517)),
+                &[],
+            ),
+            &[],
+            empty_tables(),
+        )
+        .await;
+    server.verify().await;
+
+    let GroupOutcome::Outcomes(outcomes) = outcome else {
+        panic!("expected outcomes");
+    };
+    assert!(matches!(
+        outcomes[0].result,
+        PushResult::Applied { echo: None }
+    ));
+}
+
+#[tokio::test]
+async fn ref_card_delete_404_completes_the_goal_as_remote_missing() {
+    let server = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .and(path(
+            "/index.php/apps/deck/api/v1.0/boards/42/stacks/7/cards/517",
+        ))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
+
+    let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
+    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]), FEATURES);
+    let outcome = exec
+        .execute(
+            &group(
+                100,
+                MaterializedOp::DeleteRemoteCard {
+                    card: ref_card(42, 7, 517),
+                },
+                taskboard_domain::PushTarget::RemoteCard(ref_card(42, 7, 517)),
+                &[],
+            ),
+            &[],
+            empty_tables(),
+        )
+        .await;
+
+    let GroupOutcome::Outcomes(outcomes) = outcome else {
+        panic!("expected outcomes");
+    };
+    assert!(matches!(outcomes[0].result, PushResult::RemoteMissing));
+}
+
+#[tokio::test]
+async fn ref_stack_delete_targets_the_refs_components_and_applies_without_an_echo() {
+    let server = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .and(path("/index.php/apps/deck/api/v1.0/boards/42/stacks/8"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(stack_json(8, "orphan", 0)))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
+    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]), FEATURES);
+    let target = taskboard_domain::RemoteStackRef {
+        board: RemoteBoardId(42),
+        stack: RemoteStackId(8),
+    };
+    let outcome = exec
+        .execute(
+            &group(
+                100,
+                MaterializedOp::DeleteRemoteStack { stack: target },
+                taskboard_domain::PushTarget::RemoteStack(target),
+                &[],
+            ),
+            &[],
+            empty_tables(),
+        )
+        .await;
+    server.verify().await;
+
+    let GroupOutcome::Outcomes(outcomes) = outcome else {
+        panic!("expected outcomes");
+    };
+    assert!(matches!(
+        outcomes[0].result,
+        PushResult::Applied { echo: None }
+    ));
+}
+
+#[tokio::test]
+async fn ref_stack_delete_404_completes_the_goal_as_remote_missing() {
+    let server = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .and(path("/index.php/apps/deck/api/v1.0/boards/42/stacks/8"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
+
+    let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
+    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]), FEATURES);
+    let target = taskboard_domain::RemoteStackRef {
+        board: RemoteBoardId(42),
+        stack: RemoteStackId(8),
+    };
+    let outcome = exec
+        .execute(
+            &group(
+                100,
+                MaterializedOp::DeleteRemoteStack { stack: target },
+                taskboard_domain::PushTarget::RemoteStack(target),
+                &[],
+            ),
+            &[],
+            empty_tables(),
+        )
+        .await;
+
+    let GroupOutcome::Outcomes(outcomes) = outcome else {
+        panic!("expected outcomes");
+    };
+    assert!(matches!(outcomes[0].result, PushResult::RemoteMissing));
+}
+
+#[tokio::test]
+async fn ref_card_delete_transport_failure_aborts_the_cycle() {
+    let server = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .and(path(
+            "/index.php/apps/deck/api/v1.0/boards/42/stacks/7/cards/517",
+        ))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&server)
+        .await;
+
+    let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
+    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]), FEATURES);
+    let outcome = exec
+        .execute(
+            &group(
+                100,
+                MaterializedOp::DeleteRemoteCard {
+                    card: ref_card(42, 7, 517),
+                },
+                taskboard_domain::PushTarget::RemoteCard(ref_card(42, 7, 517)),
+                &[],
+            ),
+            &[],
+            empty_tables(),
+        )
+        .await;
+    assert!(matches!(outcome, GroupOutcome::Aborted { landed } if landed.is_empty()));
+}
+
 // ---- board delete push path ----------------------------------------
 
 #[tokio::test]
