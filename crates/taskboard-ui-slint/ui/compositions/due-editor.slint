@@ -11,26 +11,18 @@
 // (the clean close), so the picker never shadows the view Escape
 // (R-c).
 
-import { Theme, Typography, Semantic, RoleText, DueKind } from "../theme.slint";
+import { Theme, Typography, RoleText } from "../theme.slint";
 import { TextField } from "../widgets/text-field.slint";
 import { IconButton, IconKind } from "../widgets/icon-button.slint";
 
-// One day cell: the day number plus its markers; blanks render
-// nothing (the weekday offset and the 7-padding tail).
-export struct DueDayModel {
-    label: string,
-    blank: bool,
-    cursor: bool,
-    today: bool,
-    kind: DueKind,
-}
-
+// The date editor's field half (round-3 D10): the typed field with
+// its live echo plus the calendar toggle. The picker itself is the
+// window-level `DatePicker` overlay anchored to the field row below
+// (the main-menu pattern) — the anchor geometry rides the out
+// properties as live bindings, not snapshots.
 export component DueEditor inherits VerticalLayout {
     in property <string> initial-text;
     in property <string> echo;
-    in property <bool> picker-open;
-    in property <string> caption;
-    in property <[[DueDayModel]]> grid;
     // The shared editor's field identity (round-3 D8): due and
     // scheduled mount the same composition — only the field's label
     // and placeholder differ.
@@ -42,25 +34,13 @@ export component DueEditor inherits VerticalLayout {
     callback edited(string);
     callback accepted(string);
     callback picker-toggled();
-    // The picker FocusScope's key map: 0 left, 1 right, 2 up, 3 down,
-    // 4 page-up, 5 page-down, 6 home, 7 end, 8 commit (Return).
-    callback picker-key(int);
-    // The flattened cell index (row * 7 + col) — resolved against the
-    // adapter's picker state (D2: no dates cross the seam).
-    callback day-clicked(int);
 
-    pure function cell-color(kind: DueKind) -> color {
-        kind == DueKind.overdue ? Semantic.overdue
-        : kind == DueKind.soon ? Semantic.warning
-        : kind == DueKind.done ? Semantic.success
-        : Theme.text-primary
-    }
 
     // The stretch default's alignment: the field's stretch 1 takes
     // the leftover; the calendar button is max-width-pinned at the
     // square (an `alignment: start` row would size every cell to its
     // preferred width and defeat the stretch).
-    HorizontalLayout {
+    field-row := HorizontalLayout {
         spacing: Theme.space-2;
         due-field := TextField {
             placeholder: root.entry-placeholder;
@@ -83,109 +63,5 @@ export component DueEditor inherits VerticalLayout {
         role: Typography.caption;
         text-color: Theme.text-secondary;
         text: root.echo;
-    }
-
-    if (root.picker-open): picker-panel := FocusScope {
-        focus-on-tab-navigation: true;
-        accessible-role: AccessibleRole.button;
-        accessible-label: "Calendar grid";
-        init => { self.focus(); }
-        key-pressed(event) => {
-            if (event.text == Key.LeftArrow) {
-                root.picker-key(0);
-                accept
-            } else if (event.text == Key.RightArrow) {
-                root.picker-key(1);
-                accept
-            } else if (event.text == Key.UpArrow) {
-                root.picker-key(2);
-                accept
-            } else if (event.text == Key.DownArrow) {
-                root.picker-key(3);
-                accept
-            } else if (event.text == Key.PageUp) {
-                root.picker-key(4);
-                accept
-            } else if (event.text == Key.PageDown) {
-                root.picker-key(5);
-                accept
-            } else if (event.text == Key.Home) {
-                root.picker-key(6);
-                accept
-            } else if (event.text == Key.End) {
-                root.picker-key(7);
-                accept
-            } else if (event.text == Key.Return) {
-                root.picker-key(8);
-                accept
-            } else {
-                reject
-            }
-        }
-
-        VerticalLayout {
-            spacing: Theme.space-1;
-
-            // The header: prev/next month flanking the caption.
-            HorizontalLayout {
-                spacing: Theme.space-2;
-                alignment: start;
-                IconButton {
-                    icon: IconKind.chevron-left;
-                    label: "Previous month";
-                    clicked => root.picker-key(4);
-                }
-                RoleText {
-                    role: Typography.body;
-                    text: root.caption;
-                    vertical-alignment: center;
-                    horizontal-stretch: 1;
-                }
-                IconButton {
-                    icon: IconKind.chevron-right;
-                    label: "Next month";
-                    clicked => root.picker-key(5);
-                }
-            }
-
-            // The weekday initials row (Monday-first, the grid's
-            // column order).
-            HorizontalLayout {
-                spacing: Theme.space-1 / 2;
-                for weekday in ["M", "T", "W", "T", "F", "S", "S"]: RoleText {
-                    role: Typography.caption;
-                    text-color: Theme.text-secondary;
-                    text: weekday;
-                    horizontal-alignment: center;
-                    horizontal-stretch: 1;
-                }
-            }
-
-            // The day grid: cursor ring = success (the selected
-            // language), today ring = focus-ring, text tinted by the
-            // date's DueKind (r2 D25).
-            for row[row-index] in root.grid: HorizontalLayout {
-                spacing: Theme.space-1 / 2;
-                for cell[cell-index] in row: day-cell := Rectangle {
-                    border-radius: Theme.radius-small;
-                    border-width: cell.cursor || cell.today ? Theme.focus-ring-width : 0;
-                    border-color: cell.cursor ? Semantic.success : Semantic.focus-ring;
-                    background: cell.cursor ? Theme.surface-hover : transparent;
-                    min-height: Theme.space-5;
-                    horizontal-stretch: 1;
-                    touch := TouchArea {
-                        enabled: !cell.blank;
-                        clicked => { root.day-clicked(row-index * 7 + cell-index); }
-                    }
-                    RoleText {
-                        role: Typography.mono;
-                        text: cell.blank ? "" : cell.label;
-                        text-color: root.cell-color(cell.kind);
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
-                }
-            }
-        }
     }
 }

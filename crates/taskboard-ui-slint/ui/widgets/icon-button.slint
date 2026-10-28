@@ -21,6 +21,8 @@ export enum IconKind {
     chevron-left,
     // The remove affordance (chunk 6, D12): an x.
     remove,
+    // The time-step-back affordance (round-3 D9): a minus bar.
+    minus,
     // The month-next affordance (r2 D25): a right chevron.
     chevron-right,
     // The picker-toggle affordance (r2 D25): a calendar.
@@ -112,6 +114,15 @@ export component IconButton inherits Rectangle {
                     height: Theme.space-1 / 2;
                     background: icon-box.icon-color();
                 }
+            }
+        }
+
+        if (root.icon == IconKind.minus): VerticalLayout {
+            Rectangle {
+                vertical-stretch: 1;
+                min-height: Theme.space-1 / 2;
+                max-height: Theme.space-1 / 2;
+                background: icon-box.icon-color();
             }
         }
 

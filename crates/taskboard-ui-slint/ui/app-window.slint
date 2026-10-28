@@ -22,7 +22,8 @@ import { BoardBarModel, BoardSegmentModel } from "compositions/board-bar.slint";
 import { StackView, StackDetailModel } from "views/stack-view.slint";
 import { TodayView, TodayModel } from "views/today-view.slint";
 import { TaskView, TaskDetailModel } from "views/task-view.slint";
-import { DueDayModel } from "compositions/due-editor.slint";
+import { DueDayModel } from "compositions/date-picker.slint";
+import { DatePicker } from "compositions/date-picker.slint";
 export { DueDayModel }
 import {
     SettingsView,
@@ -37,7 +38,7 @@ import { TaskCard } from "widgets/task-card.slint";
 import { DragState } from "drag-state.slint";
 import { FocusScrollHint } from "focus-scroll.slint";
 import { TextField } from "widgets/text-field.slint";
-import { MenuPanelFacts } from "menu-facts.slint";
+import { MenuPanelFacts, DatePickerFacts } from "menu-facts.slint";
 import { SettingsScrollFacts } from "settings-facts.slint";
 
 // Re-export the globals so the generated Rust module exposes them
@@ -318,8 +319,6 @@ export component AppWindow inherits Window {
                 date-edited(t) => root.task-date-edited(t);
                 date-accepted(t) => root.task-date-accepted(t);
                 date-picker-toggled() => root.task-date-picker-toggled();
-                date-picker-key(k) => root.task-date-picker-key(k);
-                date-day-clicked(c) => root.task-date-day-clicked(c);
             }
 
             // The board create/rename fields (r2 D21): the
@@ -373,6 +372,45 @@ export component AppWindow inherits Window {
                 timers-chip-clicked() => root.timers-chip-clicked();
             }
         }
+
+            // The date-picker overlay (round-3 D10/R2): the
+            // dismissal layer first (a full-window TouchArea, no
+            // visual — the later sibling is hit-tested first, the
+            // menu's probe-P1 shape), then the anchored panel. An
+            // outside click dismisses the picker only — the editor
+            // and its buffer stay armed. The mount condition is the
+            // panel's own, so the layer can never linger. The panel
+            // sits below the field when it fits, else above, both
+            // clamped into the window (status bar included) — the
+            // min-viewport fallback is the menu's narrow-window
+            // shape.
+            if (root.current-view == View.task-detail
+                    && root.task-model.date-picker-open): TouchArea {
+                width: 100%;
+                height: 100%;
+                clicked => root.date-picker-dismiss-requested();
+            }
+            if (root.current-view == View.task-detail
+                    && root.task-model.date-picker-open): DatePicker {
+                width: min(root.width - 2 * Theme.space-2,
+                           max(self.preferred-width, 280px * Theme.base-scale));
+                x: max(Theme.space-2,
+                       min(DatePickerFacts.anchor-x,
+                           root.width - self.width - Theme.space-2));
+                y: max(Theme.space-2,
+                       min((DatePickerFacts.anchor-y + DatePickerFacts.anchor-height
+                                + Theme.space-1 + self.height <= status.y
+                            ? DatePickerFacts.anchor-y + DatePickerFacts.anchor-height
+                                + Theme.space-1
+                            : DatePickerFacts.anchor-y - self.height - Theme.space-1),
+                           status.y - self.height - Theme.space-2));
+                caption: root.task-model.date-caption;
+                time-text: root.task-model.date-time-text;
+                grid: root.task-model.date-grid;
+                focus-on-mount: root.task-model.date-grid-focus;
+                picker-key(k) => root.task-date-picker-key(k);
+                day-clicked(c) => root.task-date-day-clicked(c);
+            }
 
         // The D2 outside-click dismissal layer (round 1): a full-window
         // TouchArea declared AFTER the chrome and BEFORE the menu
@@ -675,6 +713,9 @@ export component AppWindow inherits Window {
     pure callback task-date-picker-toggled();
     pure callback task-date-picker-key(int);
     pure callback task-date-day-clicked(int);
+    // The dismissal layer's seam (round-3 D10): drops the picker
+    // only — the editor and its flow stay armed.
+    pure callback date-picker-dismiss-requested();
     pure callback banner-snooze-clicked(int);
     pure callback banner-mute-clicked(int);
     pure callback banner-row-activated(int);

@@ -4907,8 +4907,10 @@ fn the_due_picker_journeys_reach_the_boundary() {
             harness.press(ActionId::NavNextView);
             harness.driver.click_by_label("Edit due date");
             harness.driver.advance_time(0);
-            harness.handle.window().invoke_task_date_picker_toggled();
-            harness.driver.advance_time(0);
+            assert!(
+                harness.handle.window().get_task_model().date_picker_open,
+                "the picker is default-open on edit entry (round-3 D10)"
+            );
 
             // January 2030: one leading blank (Tuesday start), 31
             // days, padded to 35 cells in 5 rows; the cursor sits on
@@ -4938,11 +4940,15 @@ fn the_due_picker_journeys_reach_the_boundary() {
             assert_eq!(grid_shape(&harness), (5, 35));
             assert_eq!(cursor_index(&harness), Some(31));
 
-            // Right follows the month (round-3 D12/F28): the caption
-            // flips to February and the cursor stays on-grid — Feb 1
-            // 2030 is a Friday (4 leading blanks, flattened 4), 28
-            // days padded to 35 cells in 5 rows. Left returns to the
-            // due's January grid.
+            // Down-in-field hands focus to the grid (the one-shot
+            // focus-on-mount; round-3 D10): the arrows drive from
+            // here. Right follows the month (round-3 D12/F28): the
+            // caption flips to February and the cursor stays on-grid
+            // — Feb 1 2030 is a Friday (4 leading blanks, flattened
+            // 4), 28 days padded to 35 cells in 5 rows. Left returns
+            // to the due's January grid.
+            harness.stroke(parse("Down").expect("Down"));
+            harness.driver.advance_time(0);
             harness.stroke(parse("Right").expect("Right"));
             harness.driver.advance_time(0);
             assert_eq!(grid_shape(&harness), (5, 35));
@@ -4988,8 +4994,6 @@ fn the_due_picker_journeys_reach_the_boundary() {
             // A day-cell click ≡ cursor+Enter: the 15th commits.
             harness.driver.click_by_label("Edit due date");
             harness.driver.advance_time(0);
-            harness.handle.window().invoke_task_date_picker_toggled();
-            harness.driver.advance_time(0);
             harness.handle.window().invoke_task_date_day_clicked(1 + 14);
             harness.assert_commands(&[StateCommand::UpdateTask {
                 id: fixture.task1,
@@ -5002,12 +5006,10 @@ fn the_due_picker_journeys_reach_the_boundary() {
             }]);
 
             // Escape closes the whole editor clean — no command, the
-            // editor collapses, a reopen starts with the picker closed
-            // (the clean close closed it), and the cycle leaves the
-            // view closable by its own back binding (R-c).
+            // editor collapses (the default-open picker dies with it),
+            // a reopen starts default-open again, and the cycle
+            // leaves the view closable by its own back binding (R-c).
             harness.driver.click_by_label("Edit due date");
-            harness.driver.advance_time(0);
-            harness.handle.window().invoke_task_date_picker_toggled();
             harness.driver.advance_time(0);
             harness.stroke(parse("Escape").expect("Escape"));
             harness.assert_commands(&[]);
@@ -5019,8 +5021,9 @@ fn the_due_picker_journeys_reach_the_boundary() {
             harness.driver.click_by_label("Edit due date");
             harness.driver.advance_time(0);
             assert!(
-                !harness.handle.window().get_task_model().date_picker_open,
-                "a reopen starts collapsed — the clean close closed the picker"
+                harness.handle.window().get_task_model().date_picker_open,
+                "a reopen starts default-open — the picker is part of \
+                 the editor's armed affordance"
             );
             harness.stroke(parse("Escape").expect("Escape"));
             harness.press(ActionId::NavFocusBoard);
@@ -5028,6 +5031,78 @@ fn the_due_picker_journeys_reach_the_boundary() {
                 harness.handle.window().get_current_view(),
                 View::Board,
                 "the view's back binding still works after the cycle"
+            );
+        },
+    );
+}
+
+/// Round-3 D10 (acceptance d, review focus c) — the overlay: the
+/// picker mounts at window level and pushes nothing (the metadata
+/// row's y is unchanged while it is open), and the dismissal layer's
+/// outside click drops the picker only — the editor stays armed with
+/// its seeded buffer, nothing dispatches, and Escape still ends the
+/// whole editor.
+#[test]
+fn the_picker_overlay_dismisses_without_disturbing_the_editor() {
+    let (fixture, mut state) = fixture::journey_state();
+    state
+        .tasks
+        .get_mut(&fixture.task1)
+        .expect("fixture task")
+        .duedate = Some(chrono::Utc.with_ymd_and_hms(2030, 1, 31, 0, 0, 0).unwrap());
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavNextView);
+            harness.press(ActionId::NavNextView);
+            harness.driver.click_by_label("Edit due date");
+            harness.driver.advance_time(0);
+            assert!(harness.handle.window().get_task_model().date_picker_open);
+            let caption = |harness: &Harness| {
+                harness
+                    .driver
+                    .find_by_label("Due date")
+                    .expect("the metadata caption is mounted")
+                    .absolute_position()
+                    .y
+            };
+            let y_open = caption(&harness);
+
+            // Outside click: the dismissal layer absorbs it — the
+            // picker drops, the editor and its seeded buffer stay.
+            harness.driver.click_at(600.0, 450.0);
+            harness.driver.advance_time(0);
+            assert!(
+                !harness.handle.window().get_task_model().date_picker_open,
+                "the outside click dismissed the picker"
+            );
+            assert_eq!(
+                caption(&harness),
+                y_open,
+                "the metadata row's y is unchanged — the picker pushes nothing"
+            );
+            let field = harness
+                .driver
+                .find_by_label("Due date entry")
+                .expect("the editor stays armed after the dismissal");
+            assert_eq!(
+                field.value().as_deref(),
+                Some("2030-01-31"),
+                "the seeded buffer is intact"
+            );
+            harness.assert_commands(&[]);
+
+            // Escape still ends the whole editor — no command.
+            harness.stroke(parse("Escape").expect("Escape"));
+            harness.assert_commands(&[]);
+            assert!(
+                !harness.handle.window().get_task_model().due_open,
+                "the editor collapsed"
             );
         },
     );
