@@ -52,8 +52,10 @@ use chrono::{DateTime, Utc};
 
 use crate::entities::{Board, Label, MembershipState, RemoteTaskBaseline, Stack, Task};
 use crate::ids::{
-    LabelId, ReminderRuleId, RemoteBoardId, RemoteLabelId, RemoteStackId, StackId, TaskId,
+    LabelId, ReminderRuleId, RemoteBoardId, RemoteCardRef, RemoteLabelId, RemoteStackId, StackId,
+    TaskId,
 };
+use crate::outbox::OpId;
 use crate::reminders::ReminderRule;
 use crate::remote::{
     RemoteBoard, RemoteIndex, RemoteLabel, RemoteStack, RemoteTask, resolve_label,
@@ -67,6 +69,9 @@ pub(crate) const RULE_R4: &str = "R4";
 pub(crate) const RULE_R5: &str = "R5";
 pub(crate) const RULE_R6: &str = "R6";
 pub(crate) const RULE_R9: &str = "R9";
+/// The crash-window duplicate reconcile's rule tag (#150): collapses are
+/// traced, never broadcast — the duplicate was ours.
+pub(crate) const RULE_R_DUP: &str = "R-dup";
 
 /// Smallest representable `DateTime<Utc>`: never-newer than anything.
 pub(crate) fn utc_min() -> DateTime<Utc> {
@@ -882,6 +887,211 @@ pub fn has_unsynced_work(
         .values()
         .any(|rule| rule.task == task.id && rule.updated_at > seen);
     field_work || membership_work || rule_work
+}
+
+/// R-dup — one crash-window duplicate's create signature: the outbox's
+/// pending `CreateTask` op (or the just-landed echo of the replayed one),
+/// with the queue stamp the window clause anchors on (#150, D-5b
+/// clause 2). No signatures in scope ⇒ the pass cannot fire — the
+/// structural no-op is a type-level fact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CreateSignature {
+    /// The task the create op belongs to.
+    pub task: TaskId,
+    /// The create op's id.
+    pub op: OpId,
+    /// When the op entered the outbox — the window's lower anchor.
+    pub queued_at: DateTime<Utc>,
+    /// `true` when the create's echo landed this cycle (the replay arm:
+    /// the task is bound to the *newer* card). Pending otherwise.
+    pub echoed_this_cycle: bool,
+}
+
+/// R-dup — one collapse verdict: the local task, the surviving remote
+/// card, every doomed card (each gets a ref-delete push), and the
+/// pending create op the collapse satisfies, if any (#150, D-5c).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DuplicateCollapse {
+    /// The local task the duplicate group belongs to.
+    pub task: TaskId,
+    /// The surviving card's remote ref (oldest member; an exact stamp
+    /// tie keeps the bound card).
+    pub survivor: RemoteCardRef,
+    /// `false` when the survivor is the already-bound card — no rebind.
+    pub rebind: bool,
+    /// Every non-survivor member's ref; one ref-delete push each.
+    pub doomed: Vec<RemoteCardRef>,
+    /// The pending create op the collapse completes (`Some` only in the
+    /// pending arm; the echo arm's op already completed in §1).
+    pub satisfied_op: Option<OpId>,
+}
+
+/// The duplicate-detection window's half-width in seconds (D-5b
+/// clause 3, DEC-4): generous by design — a false positive requires a
+/// same-title, same-stack, content-equal card created within a minute
+/// of our own create.
+const DUP_WINDOW_SECS: i64 = 60;
+
+fn dup_window_contains(stamp: DateTime<Utc>, queued_at: DateTime<Utc>, now: DateTime<Utc>) -> bool {
+    stamp >= queued_at - chrono::Duration::seconds(DUP_WINDOW_SECS)
+        && stamp <= now + chrono::Duration::seconds(DUP_WINDOW_SECS)
+}
+
+/// R-dup — detects whether one *unbound* snapshot card is a
+/// crash-window duplicate of ours (#150, D-5b): pure, total, injected
+/// data only. The four clauses must all hold against one matching
+/// create signature; the first matching signature wins (deterministic
+/// in `creates` order). `bound_card` is the matched task's bound card
+/// observation when one exists in this cycle's evidence (snapshot
+/// listing or this cycle's echo); a bound task without an observation
+/// fails clause 3 conservatively — the next full pull retries.
+///
+/// Clause vocabulary: (1) same normalized title + same resolved stack;
+/// (2) the create signature (this function runs per signature); (3) the
+/// window `[op.queued_at − 60s, now + 60s]` on both stamps; (4) content
+/// equality on the pushed shape (description, duedate, done, archived
+/// always; `scheduled` only when the server's native `startdate` lane
+/// was on — the create never sent it otherwise).
+#[must_use]
+pub fn detect_crash_window_duplicates(
+    candidate: &RemoteTask,
+    bound_card: Option<&RemoteTask>,
+    tasks: &BTreeMap<TaskId, Task>,
+    stacks: &BTreeMap<StackId, Stack>,
+    creates: &[CreateSignature],
+    now: DateTime<Utc>,
+    native_scheduled: bool,
+) -> Option<DuplicateCollapse> {
+    for sig in creates {
+        let local = tasks.get(&sig.task)?;
+        // Clause 1: same normalized title, same resolved stack.
+        if crate::reconcile::normalized_title(&local.title)
+            != crate::reconcile::normalized_title(&candidate.title)
+        {
+            continue;
+        }
+        let Some(local_stack_ref) = stacks.get(&local.stack).and_then(|s| s.remote) else {
+            // An unmapped local stack fails the clause: the task could
+            // not have pushed, so it has no crash window.
+            continue;
+        };
+        if local_stack_ref.stack != candidate.stack || local_stack_ref.board != candidate.id.board {
+            continue;
+        }
+        // Clause 4: byte-ours content equality (title is clause 1's job;
+        // order and labels are excluded — DEC-8).
+        let content_equal = local.description == candidate.description
+            && local.duedate == candidate.duedate
+            && local.done == candidate.done
+            && local.archived == candidate.archived
+            && (local.scheduled == candidate.scheduled || !native_scheduled);
+        if !content_equal {
+            continue;
+        }
+        // Clause 3: the window, on the candidate's stamp and — when the
+        // task is bound — the bound card's stamp too.
+        if !dup_window_contains(candidate.created_at, sig.queued_at, now) {
+            continue;
+        }
+        let bound_member = match (&local.remote, bound_card) {
+            (Some(ref_), Some(obs)) => {
+                if obs.id != *ref_ || !dup_window_contains(obs.created_at, sig.queued_at, now) {
+                    continue;
+                }
+                Some((obs.id, obs.created_at))
+            }
+            (Some(_), None) => continue, // conservative: no bound observation
+            (None, _) => None,
+        };
+        // Clause 2 holds by construction: the caller passes only
+        // in-scope create signatures (pending or echoed this cycle).
+        let satisfied_op = (!sig.echoed_this_cycle).then_some(sig.op);
+        return Some(crate::merge::collapse_for_task(
+            sig.task,
+            bound_member,
+            vec![(candidate.id, candidate.created_at)],
+            satisfied_op,
+        ));
+    }
+    None
+}
+
+/// R-dup — group formation + survivorship for one task's duplicate
+/// group (#150, D-5c, DEC-5/DEC-10): the **oldest** member survives (it
+/// owns any remote-side history the crash window could not have), an
+/// exact stamp tie keeps the **bound** card (no rebind churn for an
+/// undecidable order), and every other member is doomed. Deterministic
+/// under candidate arrival order — the fold's inputs carry their own
+/// stamps, not their positions.
+///
+/// # Panics
+///
+/// Never with a non-empty group (the pipeline only forms verdicts over
+/// observed members); an empty `candidates` without `bound` has no
+/// survivor and panics — a caller contract, not an input-validation
+/// surface.
+#[must_use]
+pub fn collapse_for_task(
+    task: TaskId,
+    bound: Option<(RemoteCardRef, DateTime<Utc>)>,
+    candidates: Vec<(RemoteCardRef, DateTime<Utc>)>,
+    satisfied_op: Option<OpId>,
+) -> DuplicateCollapse {
+    // (ref, stamp, is_bound): on equal stamps the bound member sorts first.
+    let mut members: Vec<(RemoteCardRef, DateTime<Utc>, bool)> = candidates
+        .into_iter()
+        .map(|(ref_, stamp)| (ref_, stamp, false))
+        .collect();
+    if let Some((ref_, stamp)) = bound {
+        members.push((ref_, stamp, true));
+    }
+    let &(survivor, _, survivor_is_bound) = members
+        .iter()
+        // `(stamp, !is_bound)`: on an exact stamp tie the bound member
+        // sorts first (DEC-5 — no rebind churn for an undecidable order).
+        .min_by(|a, b| (a.1, !a.2).cmp(&(b.1, !b.2)))
+        .expect("a collapse group has at least one member");
+    let doomed: Vec<RemoteCardRef> = members
+        .iter()
+        .filter(|(ref_, _, _)| *ref_ != survivor)
+        .map(|(ref_, _, _)| *ref_)
+        .collect();
+    tracing::debug!(
+        rule = RULE_R_DUP,
+        task_id = ?task,
+        survivor = ?survivor,
+        doomed = doomed.len(),
+        satisfied_op = ?satisfied_op,
+        "crash-window duplicate collapse formed"
+    );
+    DuplicateCollapse {
+        task,
+        survivor,
+        rebind: !survivor_is_bound,
+        doomed,
+        satisfied_op,
+    }
+}
+
+/// R-dup — rebinds the local task to the surviving older card: the
+/// binding trio writes (ref, `remote_seen`, baseline refresh — D-1c's
+/// every-adoption-point rule) and **nothing else**. Content equality
+/// was clause 4's job; the survivor's labels/order land via the next
+/// pull's R4 compare, where a tie keeps local (the pushed truth).
+#[must_use]
+pub fn rebind_task_to_survivor(local: &Task, survivor: &RemoteTask) -> Task {
+    let mut rebinded = local.clone();
+    rebinded.remote = Some(survivor.id);
+    rebinded.remote_seen = Some(survivor.last_modified);
+    rebinded.remote_baseline = Some(crate::entities::RemoteTaskBaseline::of(survivor));
+    tracing::debug!(
+        rule = RULE_R_DUP,
+        task_id = ?local.id,
+        survivor = ?survivor.id,
+        remote_seen = ?survivor.last_modified,
+        "task rebound to the surviving card"
+    );
+    rebinded
 }
 
 /// R9a/R9b — unconditional echo adoption after a create/update push. The
@@ -4210,6 +4420,364 @@ mod tests {
             let merged = merge_task(&adopted, &remote2, &ctx, native_scheduled);
 
             assert_baseline_gate(&adopted, &remote2, &merged, touched, native_scheduled);
+        }
+    }
+}
+
+#[cfg(test)]
+mod duplicate_reconcile_tests {
+    //! R-dup's clause pins (#150, T-5/T-6/T-8): each detection clause
+    //! independently, its near-miss negatives, the survivorship rules,
+    //! and the structural no-op property.
+
+    use super::*;
+    use crate::entities::TaskClocks;
+    use crate::merge_testutil::*;
+    use proptest::prelude::*;
+
+    use uuid::Uuid;
+
+    fn dup_task(title: &str, bound_card: Option<u64>) -> Task {
+        let id = TaskId::from(Uuid::from_u128(500));
+        Task {
+            id,
+            remote: bound_card.map(|card| card_ref(1, card)),
+            title: title.into(),
+            description: String::new(),
+            duedate: None,
+            scheduled: None,
+            done: None,
+            stack: local_stack().id,
+            order: 0,
+            label_memberships: BTreeMap::new(),
+            effort: None,
+            importance: None,
+            urgency: None,
+            recur: None,
+            archived: false,
+            deleted: false,
+            clocks: TaskClocks {
+                title: ts(BASE),
+                description: ts(BASE),
+                duedate: ts(BASE),
+                scheduled: ts(BASE),
+                done: ts(BASE),
+                position: ts(BASE),
+                effort: ts(BASE),
+                importance: ts(BASE),
+                urgency: ts(BASE),
+                recur: ts(BASE),
+                archived: ts(BASE),
+                deleted: ts(BASE),
+            },
+            remote_seen: bound_card.map(|_| ts(BASE)),
+            remote_baseline: None,
+        }
+    }
+
+    fn dup_stacks() -> BTreeMap<StackId, Stack> {
+        let mut stacks = BTreeMap::new();
+        stacks.insert(local_stack().id, local_stack());
+        stacks
+    }
+
+    fn sig(queued_at: i64, echoed: bool) -> CreateSignature {
+        CreateSignature {
+            task: TaskId::from(Uuid::from_u128(500)),
+            op: OpId(Uuid::from_u128(600)),
+            queued_at: ts(queued_at),
+            echoed_this_cycle: echoed,
+        }
+    }
+
+    fn candidate(stack: u64, card: u64, created_at: i64) -> RemoteTask {
+        let mut task = remote_task(stack, card, created_at);
+        task.id = card_ref(stack, card);
+        task.title = "local draft".into();
+        task.created_at = ts(created_at);
+        task
+    }
+
+    fn detect(
+        candidate: &RemoteTask,
+        bound_card: Option<&RemoteTask>,
+        creates: &[CreateSignature],
+        now: i64,
+    ) -> Option<DuplicateCollapse> {
+        let mut tasks = BTreeMap::new();
+        let local = dup_task("local draft", bound_card.map(|b| b.id.card.0));
+        tasks.insert(local.id, local);
+        detect_crash_window_duplicates(
+            candidate,
+            bound_card,
+            &tasks,
+            &dup_stacks(),
+            creates,
+            ts(now),
+            true,
+        )
+    }
+
+    const QUEUED: i64 = BASE;
+    const NOW: i64 = BASE + 30;
+
+    // ---- T-5a: clause 1 — same title, same resolved stack ------------
+
+    #[test]
+    fn same_title_on_a_different_stack_is_not_ours() {
+        let c = candidate(2, 900, QUEUED + 10);
+        assert!(detect(&c, None, &[sig(QUEUED, false)], NOW).is_none());
+    }
+
+    #[test]
+    fn an_unmapped_local_stack_fails_clause_1() {
+        let mut tasks = BTreeMap::new();
+        let mut local = dup_task("local draft", None);
+        let orphan = StackId::from(Uuid::from_u128(901));
+        local.stack = orphan;
+        tasks.insert(local.id, local);
+        let mut stacks = BTreeMap::new();
+        let mut orphan_stack = local_stack();
+        orphan_stack.id = orphan;
+        orphan_stack.remote = None;
+        stacks.insert(orphan, orphan_stack);
+        let c = candidate(1, 900, QUEUED + 10);
+        assert!(
+            detect_crash_window_duplicates(
+                &c,
+                None,
+                &tasks,
+                &stacks,
+                &[sig(QUEUED, false)],
+                ts(NOW),
+                true
+            )
+            .is_none()
+        );
+    }
+
+    // ---- T-5b: clause 2 — no create signature, no collapse -----------
+
+    #[test]
+    fn a_strangers_twin_card_without_our_create_is_adopted_not_collapsed() {
+        let c = candidate(1, 900, QUEUED + 10);
+        assert!(detect(&c, None, &[], NOW).is_none());
+    }
+
+    // ---- T-5c: clause 3 — the window ----------------------------------
+
+    #[test]
+    fn a_same_titled_card_created_before_the_window_is_not_ours() {
+        let c = candidate(1, 900, QUEUED - 61);
+        assert!(detect(&c, None, &[sig(QUEUED, false)], NOW).is_none());
+    }
+
+    #[test]
+    fn a_stamp_beyond_the_skew_tolerated_upper_bound_is_not_ours() {
+        let c = candidate(1, 900, NOW + 61);
+        assert!(detect(&c, None, &[sig(QUEUED, false)], NOW).is_none());
+    }
+
+    #[test]
+    fn a_bound_card_outside_the_window_fails_clause_3() {
+        let bound = candidate(1, 800, QUEUED - 120); // the crash-window bound card would never be this old
+        let c = candidate(1, 900, QUEUED + 10);
+        assert!(detect(&c, Some(&bound), &[sig(QUEUED, true)], NOW).is_none());
+    }
+
+    // ---- T-5d: clause 4 — byte-ours content ---------------------------
+
+    #[test]
+    fn a_description_mismatch_rejects() {
+        let mut c = candidate(1, 900, QUEUED + 10);
+        c.description = "not ours".into();
+        assert!(detect(&c, None, &[sig(QUEUED, false)], NOW).is_none());
+    }
+
+    #[test]
+    fn a_duedate_mismatch_rejects() {
+        let mut c = candidate(1, 900, QUEUED + 10);
+        c.duedate = Some(ts(BASE + 9_000));
+        assert!(detect(&c, None, &[sig(QUEUED, false)], NOW).is_none());
+    }
+
+    #[test]
+    fn a_scheduled_mismatch_rejects_only_on_the_native_lane() {
+        let mut c = candidate(1, 900, QUEUED + 10);
+        c.scheduled = Some(ts(BASE + 9_000));
+        // Native lane on: the create carried startdate, so a mismatch
+        // is a real content difference.
+        assert!(detect(&c, None, &[sig(QUEUED, false)], NOW).is_none());
+        // Conservative lane off: the create never sent the field, so
+        // the local value must not reject.
+        let mut tasks = BTreeMap::new();
+        let local = dup_task("local draft", None);
+        tasks.insert(local.id, local);
+        assert!(
+            detect_crash_window_duplicates(
+                &c,
+                None,
+                &tasks,
+                &dup_stacks(),
+                &[sig(QUEUED, false)],
+                ts(NOW),
+                false
+            )
+            .is_some()
+        );
+    }
+
+    // ---- T-5e: the positive, both arms --------------------------------
+
+    #[test]
+    fn the_pending_arm_collapses_the_older_unbound_candidate() {
+        let c = candidate(1, 900, QUEUED + 10);
+        let collapse = detect(&c, None, &[sig(QUEUED, false)], NOW).expect("ours");
+        assert_eq!(collapse.task, TaskId::from(Uuid::from_u128(500)));
+        assert_eq!(collapse.survivor, c.id);
+        assert!(collapse.rebind, "the unbound survivor means a rebind");
+        assert!(collapse.doomed.is_empty(), "no bound card to doom");
+        assert_eq!(collapse.satisfied_op, Some(OpId(Uuid::from_u128(600))));
+    }
+
+    #[test]
+    fn the_echo_arm_dooms_the_bound_newer_card() {
+        // Bound card B (created by the replay POST, newer), candidate A
+        // (the first POST's card, older).
+        let bound = candidate(1, 800, QUEUED + 20);
+        let a = candidate(1, 900, QUEUED + 10);
+        let collapse = detect(&a, Some(&bound), &[sig(QUEUED, true)], NOW).expect("ours");
+        assert_eq!(collapse.survivor, a.id, "the older first POST survives");
+        assert!(collapse.rebind);
+        assert_eq!(collapse.doomed, vec![bound.id]);
+        assert_eq!(
+            collapse.satisfied_op, None,
+            "the echo arm already completed"
+        );
+    }
+
+    // ---- T-6: survivorship ---------------------------------------------
+
+    #[test]
+    fn an_exact_stamp_tie_keeps_the_bound_card() {
+        let bound = candidate(1, 800, QUEUED + 10);
+        let c = candidate(1, 900, QUEUED + 10);
+        let collapse = detect(&c, Some(&bound), &[sig(QUEUED, true)], NOW).expect("ours");
+        assert_eq!(collapse.survivor, bound.id, "tie ⇒ the bound card");
+        assert!(!collapse.rebind);
+        assert_eq!(collapse.doomed, vec![c.id]);
+    }
+
+    #[test]
+    fn survivorship_is_order_independent() {
+        let bound = candidate(1, 800, QUEUED + 10);
+        let a = candidate(1, 900, QUEUED + 5);
+        let b = candidate(1, 901, QUEUED + 20);
+        let satisfied = Some(OpId(Uuid::from_u128(600)));
+        let one = collapse_for_task(
+            TaskId::from(Uuid::from_u128(500)),
+            Some((bound.id, bound.created_at)),
+            vec![(a.id, a.created_at), (b.id, b.created_at)],
+            satisfied,
+        );
+        let two = collapse_for_task(
+            TaskId::from(Uuid::from_u128(500)),
+            Some((bound.id, bound.created_at)),
+            vec![(b.id, b.created_at), (a.id, a.created_at)],
+            satisfied,
+        );
+        assert_eq!(one, two, "arrival order must not decide survivorship");
+        assert_eq!(one.survivor, a.id, "the oldest member survives");
+        assert!(one.rebind);
+        let mut doomed = one.doomed.clone();
+        doomed.sort();
+        assert_eq!(doomed, vec![bound.id, b.id]);
+        assert_eq!(
+            one.doomed,
+            vec![b.id, bound.id],
+            "doom order follows the member order"
+        );
+    }
+
+    #[test]
+    fn a_multi_orphan_group_collapses_to_one_survivor() {
+        let bound = candidate(1, 800, QUEUED + 20);
+        let a = candidate(1, 900, QUEUED + 5);
+        let b = candidate(1, 901, QUEUED + 10);
+        let collapse = collapse_for_task(
+            TaskId::from(Uuid::from_u128(500)),
+            Some((bound.id, bound.created_at)),
+            vec![(a.id, a.created_at), (b.id, b.created_at)],
+            Some(OpId(Uuid::from_u128(600))),
+        );
+        assert_eq!(collapse.survivor, a.id);
+        assert_eq!(collapse.doomed.len(), 2);
+        assert_eq!(collapse.satisfied_op, Some(OpId(Uuid::from_u128(600))));
+    }
+
+    // ---- the rebind helper ---------------------------------------------
+
+    #[test]
+    fn the_rebind_writes_the_binding_trio_and_nothing_else() {
+        let mut local = dup_task("local draft", Some(800));
+        local.title = "kept local title".into();
+        let before = local.clone();
+        let survivor = candidate(1, 900, QUEUED + 10);
+        let rebinded = rebind_task_to_survivor(&local, &survivor);
+        assert_eq!(rebinded.remote, Some(survivor.id));
+        assert_eq!(rebinded.remote_seen, Some(survivor.last_modified));
+        assert_eq!(
+            rebinded.remote_baseline,
+            Some(crate::entities::RemoteTaskBaseline::of(&survivor))
+        );
+        assert_eq!(rebinded.title, before.title);
+        assert_eq!(rebinded.clocks, before.clocks);
+        assert_eq!(rebinded.stack, before.stack);
+        assert_eq!(rebinded.order, before.order);
+        assert_eq!(rebinded.label_memberships, before.label_memberships);
+    }
+
+    // ---- T-8: the structural no-op + survivor total order --------------
+
+    proptest! {
+        #![proptest_config(proptest::test_runner::Config::with_cases(256))]
+
+        #[test]
+        fn an_empty_create_scope_is_a_structural_no_op(
+            candidate in crate::test_support::remote_task_strategy(),
+            bound in crate::test_support::remote_task_strategy(),
+            now in crate::test_support::timestamp_strategy(),
+        ) {
+            // No signatures in scope ⇒ the pass cannot fire, whatever
+            // the candidate looks like ("trigger only on observed
+            // duplicate" is structural, not configured).
+            let tasks = BTreeMap::new();
+            let stacks = BTreeMap::new();
+            prop_assert!(detect_crash_window_duplicates(
+                &candidate, Some(&bound), &tasks, &stacks, &[], now, true
+            )
+            .is_none());
+        }
+
+        #[test]
+        fn the_oldest_member_survives_and_a_tie_keeps_the_bound_card(
+            s1 in crate::test_support::timestamp_strategy(),
+            s2 in crate::test_support::timestamp_strategy(),
+            b1 in 1_u64..1_000_000,
+            b2 in 1_u64..1_000_000,
+        ) {
+            let bound = (card_ref(1, b1), s1);
+            let cand = (card_ref(1, b2), s2);
+            let collapse = collapse_for_task(
+                TaskId::from(Uuid::from_u128(1)),
+                Some(bound),
+                vec![cand],
+                None,
+            );
+            let expected_survivor = if (cand.1, false) < (bound.1, false) { cand.0 } else { bound.0 };
+            prop_assert_eq!(collapse.survivor, expected_survivor);
+            prop_assert_eq!(collapse.rebind, expected_survivor == cand.0);
+            prop_assert_eq!(collapse.doomed.len(), 1);
         }
     }
 }
