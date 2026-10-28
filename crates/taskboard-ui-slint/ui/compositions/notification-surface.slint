@@ -74,20 +74,20 @@ export component NotificationSurface inherits Rectangle {
                     clicked => root.done-clicked(row-index);
                 }
             }
-            VerticalLayout {
-                IconButton {
-                    icon: IconKind.snooze;
-                    tone: Tone.info;
-                    label: "Snooze reminder";
-                    clicked => root.snooze-clicked(row-index);
-                }
-            }
             if (row.can-track-start): VerticalLayout {
                 IconButton {
                     icon: IconKind.play;
                     tone: Tone.info;
                     label: "Start task";
                     clicked => root.track-start-clicked(row-index);
+                }
+            }
+            VerticalLayout {
+                IconButton {
+                    icon: IconKind.snooze;
+                    tone: Tone.info;
+                    label: "Snooze reminder";
+                    clicked => root.snooze-clicked(row-index);
                 }
             }
             if (row.can-mute): VerticalLayout {
