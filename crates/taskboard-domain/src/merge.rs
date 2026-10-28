@@ -967,7 +967,12 @@ pub fn detect_crash_window_duplicates(
     native_scheduled: bool,
 ) -> Option<DuplicateCollapse> {
     for sig in creates {
-        let local = tasks.get(&sig.task)?;
+        // A signature whose task vanished mid-cycle (a local delete racing
+        // the collapse) disqualifies that signature only — later
+        // signatures still get their verdict.
+        let Some(local) = tasks.get(&sig.task) else {
+            continue;
+        };
         // Clause 1: same normalized title, same resolved stack.
         if crate::reconcile::normalized_title(&local.title)
             != crate::reconcile::normalized_title(&candidate.title)
