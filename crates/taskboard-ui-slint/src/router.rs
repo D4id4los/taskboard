@@ -68,6 +68,11 @@ pub enum UiEffect {
     PrevView,
     /// Return to the board view and its scope.
     FocusBoard,
+    /// `nav.show-task` (round-3 D23): act on the search palette's
+    /// selected row — the Task retarget mounts the task's home view.
+    /// Inert dispatched outside a palette flow (no preset binds it;
+    /// the palette's Return is `menu.invoke`).
+    ShowTask,
     /// Open the inline create row.
     BeginCreate,
     /// Open the inline create row for a new stack on the live board
@@ -168,6 +173,7 @@ impl UiEffect {
             Self::NextView
             | Self::PrevView
             | Self::FocusBoard
+            | Self::ShowTask
             | Self::BoardNext
             | Self::BoardPrevious
             | Self::BoardSelect(_)
@@ -392,6 +398,7 @@ impl ActionRouter {
             ActionId::NavNextView => DispatchOutcome::UiEffect(UiEffect::NextView),
             ActionId::NavPrevView => DispatchOutcome::UiEffect(UiEffect::PrevView),
             ActionId::NavFocusBoard => DispatchOutcome::UiEffect(UiEffect::FocusBoard),
+            ActionId::NavShowTask => DispatchOutcome::UiEffect(UiEffect::ShowTask),
             ActionId::NavNextItem => DispatchOutcome::UiEffect(UiEffect::FocusNext),
             ActionId::NavPrevItem => DispatchOutcome::UiEffect(UiEffect::FocusPrev),
             ActionId::TaskCreate => DispatchOutcome::UiEffect(UiEffect::BeginCreate),

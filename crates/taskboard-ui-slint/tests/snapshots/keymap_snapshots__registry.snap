@@ -119,6 +119,15 @@ expression: rows
   menu_rank: 80
   description: Returns to the board view from any deeper view.
   menu_group: view-nav
+- id: nav.show-task
+  label: Show task
+  contexts:
+    - palette
+  category: navigation
+  enabled: true
+  menu_rank: 90
+  description: "Shows the task picked in the search palette: selects its board and stack, focuses its card, and scrolls it into view."
+  menu_group: view-nav
 - id: nav.next-item
   label: Focus next item
   contexts:

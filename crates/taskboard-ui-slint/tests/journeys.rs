@@ -4474,6 +4474,95 @@ fn the_palette_searches_and_jumps_across_boards() {
         },
     );
 }
+/// Round-3 D23 (R3-F35) — the show-task repro journey: open the
+/// palette **from Today**, query a task that lives **on another
+/// board**, Return. The board view mounts on the task's board, the
+/// task's stack is selected, the card is emphasized (the pre-fix bug
+/// left the board's first stack selected and the view unchanged), and
+/// the `FocusScrollHint` global arms with the task's column/row so
+/// the column `ListView` seeks. Sibling: activation from Settings.
+#[test]
+fn a_palette_activation_shows_the_task() {
+    let (fixture, mut state) = fixture::two_board_state();
+    let id = TaskId::from_uuid(uuid::Uuid::now_v7());
+    let mut needle = state.tasks.values().next().expect("fixture task").clone();
+    needle.id = id;
+    needle.stack = fixture.stack_c;
+    needle.order = 5;
+    needle.title = "zebra needle".to_owned();
+    state.tasks.insert(id, needle);
+
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: false,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            macro_rules! window {
+                () => {
+                    harness.handle.window()
+                };
+            }
+
+            // From Today: the source view is part of the repro.
+            harness.stroke(parse("Ctrl+T").expect("ctrl t"));
+            assert_eq!(window!().get_current_view(), View::Today);
+
+            // The palette round-trip: one unique hit, Return shows it.
+            harness.press(ActionId::PaletteSearch);
+            assert!(window!().get_palette_open());
+            harness.type_text("zebra needle");
+            assert_eq!(window!().get_palette_model().row_count(), 1);
+            let before = window!()
+                .global::<taskboard_ui_slint::FocusScrollHint>()
+                .get_nonce();
+            harness.stroke(parse("Return").expect("return"));
+
+            assert!(!window!().get_palette_open(), "the jump ends the flow");
+            assert_eq!(window!().get_current_view(), View::Board);
+            assert_eq!(
+                window!().get_board_bar_model().selected,
+                1,
+                "the task's board (board two) is selected"
+            );
+            assert_eq!(
+                harness.emphasized_card(),
+                Some((0, 1)),
+                "the needle's card is focused in its stack"
+            );
+            let hint = window!().global::<taskboard_ui_slint::FocusScrollHint>();
+            assert!(
+                hint.get_nonce() > before,
+                "the retarget armed the scroll hint"
+            );
+            assert_eq!(
+                (hint.get_target_a(), hint.get_target_b()),
+                (0, 1),
+                "column 0, canonical row 1 of the task's stack"
+            );
+
+            // From Settings: one semantics, no per-source branching —
+            // the activation still mounts the board view on the
+            // task's home.
+            harness.press(ActionId::AppSettings);
+            assert_eq!(window!().get_current_view(), View::Settings);
+            harness.press(ActionId::PaletteSearch);
+            harness.type_text("zebra needle");
+            harness.stroke(parse("Return").expect("return"));
+            assert_eq!(
+                window!().get_current_view(),
+                View::Board,
+                "the view is always the task's home board"
+            );
+            assert_eq!(
+                window!().get_board_bar_model().selected,
+                1,
+                "board two stayed selected"
+            );
+        },
+    );
+}
+
 // ---- round 2 (D16–D21): the action round-up journeys --------------------
 
 /// Presses one action through `preset`'s own binding table (the

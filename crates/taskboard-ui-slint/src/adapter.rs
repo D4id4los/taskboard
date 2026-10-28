@@ -749,6 +749,10 @@ impl Adapter {
             effect,
             UiEffect::FocusNext | UiEffect::FocusPrev | UiEffect::FocusFirst | UiEffect::FocusLast
         );
+        // The show-task retarget arms the hint with the same
+        // before/after discipline (round-3 D23 §3.3): `before` reads
+        // the pre-effect focus so the jump always re-arms.
+        let show_task = effect == UiEffect::ShowTask;
         let focus_before = self.view_state.focused_task();
         let leaving = matches!(
             effect,
@@ -946,6 +950,22 @@ impl Adapter {
                     self.view_state.open_settings()
                 }
             }
+            // nav.show-task (round-3 D23): acts on the palette's
+            // selection — the Task retarget rides `palette_jump`'s
+            // `show_task` arm, the other targets keep today's
+            // retargets, a stale/absent cursor closes only. Inert
+            // dispatched outside a palette flow (no preset binds it).
+            (Flow::Palette { .. }, UiEffect::ShowTask) => {
+                let selected = match self.view_state.flow() {
+                    Flow::Palette { selected } => *selected,
+                    _ => 0,
+                };
+                match self.tables.palette.get(selected).copied() {
+                    Some(target) => self.view_state.palette_jump(&state, target),
+                    None => self.view_state.close_palette(),
+                }
+            }
+            (Flow::None, UiEffect::ShowTask) => Vec::new(),
             // A mode flip with no view meaning stays plain shell
             // state (D10) — e.g. Escape out of an empty insert.
             (Flow::None, UiEffect::SetMode(mode)) => {
@@ -966,7 +986,7 @@ impl Adapter {
             }
         };
         self.apply_outcomes(window, &outcomes);
-        if focus_walk {
+        if focus_walk || show_task {
             self.push_focus_scroll_hint(window, focus_before);
         }
         if drag_teardown {
@@ -1357,6 +1377,7 @@ impl Adapter {
             | UiEffect::NextView
             | UiEffect::PrevView
             | UiEffect::FocusBoard
+            | UiEffect::ShowTask
             | UiEffect::BeginCreate
             | UiEffect::BeginCreateStack
             | UiEffect::BeginTitleEdit
@@ -1400,6 +1421,7 @@ impl Adapter {
             crate::view_state::Flow::Palette { selected } => *selected,
             _ => 0,
         };
+        let before = self.view_state.focused_task();
         let target = self.tables.palette.get(selected).copied();
         let state = self.state.load();
         let outcomes = match target {
@@ -1408,6 +1430,11 @@ impl Adapter {
             None => self.view_state.close_palette(),
         };
         self.apply_outcomes(window, &outcomes);
+        // Round-3 D23 §3.3: the invoke's retarget arms the scroll
+        // hint the same way the walk effects do (a stack-target jump
+        // emits its StackDetail hint here; an inert close re-arms
+        // nothing — the unchanged-focus guard holds).
+        self.push_focus_scroll_hint(window, before);
         self.finish_mutation(window);
     }
 

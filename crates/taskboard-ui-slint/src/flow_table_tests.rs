@@ -121,6 +121,7 @@ enum EK {
     FocusLast,
     OpenSettings,
     BeginTitleEdit,
+    ShowTask,
 }
 
 fn key_of(effect: &UiEffect) -> EK {
@@ -165,6 +166,7 @@ fn key_of(effect: &UiEffect) -> EK {
         UiEffect::FocusLast => EK::FocusLast,
         UiEffect::OpenSettings => EK::OpenSettings,
         UiEffect::BeginTitleEdit => EK::BeginTitleEdit,
+        UiEffect::ShowTask => EK::ShowTask,
     }
 }
 
@@ -609,6 +611,7 @@ fn all_effects(fx: &Fixture) -> Vec<UiEffect> {
         UiEffect::FocusLast,
         UiEffect::OpenSettings,
         UiEffect::BeginTitleEdit,
+        UiEffect::ShowTask,
     ]
 }
 
