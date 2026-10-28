@@ -33,8 +33,13 @@ use chrono::{DateTime, NaiveDate, Utc};
 use crate::capabilities::DeckFeatures;
 use crate::days::DayCalendar;
 use crate::entities::{Label, MembershipState, Stack, Task, TaskClocks};
+use crate::habit::{
+    Habit, HabitClocks, HabitLogEntry, HabitLogKey, WindowStart, append_order_after, log_window,
+};
 use crate::idgen::IdGenerator;
-use crate::ids::{BoardId, LabelId, ReminderRuleId, RemoteBoardId, SeriesId, StackId, TaskId};
+use crate::ids::{
+    BoardId, HabitId, LabelId, ReminderRuleId, RemoteBoardId, SeriesId, StackId, TaskId,
+};
 use crate::messages::{LabelChanges, StateCommand, TaskChanges};
 use crate::outbox::{LocalOp, OpId, PendingOp, op_targets_task};
 use crate::persistence::PersistenceAction;
@@ -123,6 +128,21 @@ pub enum CommandError {
     /// A user-authored span must satisfy `end > start`.
     #[error("time span must be positive")]
     InvalidSpan,
+    /// No habit with this id exists.
+    #[error("unknown habit")]
+    UnknownHabit(HabitId),
+    /// The habit is tombstoned; edit-style intents cannot target it.
+    #[error("habit is deleted")]
+    HabitDeleted(HabitId),
+    /// `AdjustHabitLog` with a window that is not the canonical period
+    /// start of the habit's *current* target kind.
+    #[error("habit window is not a canonical period start")]
+    InvalidHabitWindow {
+        /// The named habit.
+        habit: HabitId,
+        /// The offending window.
+        window: WindowStart,
+    },
 }
 
 /// Typed receipt of an accepted command.
@@ -192,6 +212,28 @@ pub enum CommandOutcome {
     EntryDeleted {
         /// The deleted entry.
         id: crate::ids::TimeEntryId,
+    },
+    /// The command created a habit with this id.
+    HabitCreated(HabitId),
+    /// The +1 landed in this window — the attribution decision is
+    /// user-visible feedback (the repair case must be observable, not
+    /// silent). `count` is the post-increment value.
+    HabitLogged {
+        /// The counted habit.
+        habit: HabitId,
+        /// The window the increment was attributed to.
+        window: WindowStart,
+        /// The window's post-increment count.
+        count: u32,
+    },
+    /// The audited correction's post-write state.
+    HabitLogAdjusted {
+        /// The corrected habit.
+        habit: HabitId,
+        /// The corrected window.
+        window: WindowStart,
+        /// The window's post-write count.
+        count: u32,
     },
     /// The command muted or unmuted a task's reminder firings.
     ReminderMuted {
@@ -294,6 +336,28 @@ fn live_label(app: &AppState, id: LabelId) -> Result<&Label, CommandError> {
 
 fn existing_label(app: &AppState, id: LabelId) -> Result<&Label, CommandError> {
     app.labels.get(&id).ok_or(CommandError::UnknownLabel(id))
+}
+
+fn live_habit(app: &AppState, id: HabitId) -> Result<&Habit, CommandError> {
+    let habit = app
+        .habits
+        .habits
+        .get(&id)
+        .ok_or(CommandError::UnknownHabit(id))?;
+    if habit.deleted {
+        Err(CommandError::HabitDeleted(id))
+    } else {
+        Ok(habit)
+    }
+}
+
+/// An existing habit for a *terminal* intent: tombstoned is not an error
+/// here (the repeat is an accepted no-op), only absence is.
+fn existing_habit(app: &AppState, id: HabitId) -> Result<&Habit, CommandError> {
+    app.habits
+        .habits
+        .get(&id)
+        .ok_or(CommandError::UnknownHabit(id))
 }
 
 fn op_targets_label(op: &LocalOp, label: LabelId) -> bool {
@@ -2115,6 +2179,169 @@ pub fn plan_command(
                 outcome: CommandOutcome::EntryDeleted { id: *id },
             })
         }
+        StateCommand::CreateHabit {
+            board,
+            title,
+            target,
+        } => {
+            live_board_of(app, *board)?;
+            let order = append_order_after(
+                app.habits
+                    .habits
+                    .values()
+                    .filter(|h| h.is_live() && h.board == *board)
+                    .map(|h| h.order),
+            );
+            let id = ids.new_habit_id();
+            let habit = Habit {
+                id,
+                board: *board,
+                title: title.clone(),
+                target: *target,
+                order,
+                // No anchor chip, no conversion link at mint time
+                // (D-H7a): create arms never carry the seam.
+                anchor_time: None,
+                clocks: HabitClocks::all(now),
+                continued_from: None,
+                deleted: false,
+            };
+            // No outbox op (D-H9): the board-level sidecar flush
+            // vocabulary is chunk 6's.
+            Ok(CommandPlan {
+                actions: vec![PersistenceAction::UpsertHabit(habit)],
+                outcome: CommandOutcome::HabitCreated(id),
+            })
+        }
+        StateCommand::UpdateHabit { habit: id, changes } => {
+            let stored = live_habit(app, *id)?;
+            let mut updated = stored.clone();
+            if let Some(title) = &changes.title
+                && updated.title != *title
+            {
+                updated.title.clone_from(title);
+                updated.clocks.title = now;
+            }
+            if let Some(target) = changes.target
+                && updated.target != target
+            {
+                updated.target = target;
+                updated.clocks.target = now;
+            }
+            if let Some(anchor_time) = changes.anchor_time
+                && updated.anchor_time != anchor_time
+            {
+                updated.anchor_time = anchor_time;
+                updated.clocks.anchor_time = now;
+            }
+            if let Some(continued_from) = changes.continued_from
+                && updated.continued_from != continued_from
+            {
+                // Seam data, not contested content: no clock slot.
+                updated.continued_from = continued_from;
+            }
+            if updated == *stored {
+                // A mask naming only unchanged values plans zero actions
+                // (no clock churn onto the future sync wire).
+                return Ok(no_op());
+            }
+            Ok(CommandPlan {
+                actions: vec![PersistenceAction::UpsertHabit(updated)],
+                outcome: CommandOutcome::Applied,
+            })
+        }
+        StateCommand::MoveHabit { habit: id, order } => {
+            let habit = live_habit(app, *id)?;
+            if habit.order == *order {
+                return Ok(no_op());
+            }
+            let mut updated = habit.clone();
+            updated.order = *order;
+            updated.clocks.order = now;
+            Ok(CommandPlan {
+                actions: vec![PersistenceAction::UpsertHabit(updated)],
+                outcome: CommandOutcome::Applied,
+            })
+        }
+        StateCommand::LogHabit { habit: id } => {
+            let habit = live_habit(app, *id)?;
+            // No NoOp branch — every invocation is exactly one increment
+            // (count habits); the receipt's count is the post-increment
+            // value. Monotone under a monotone clock (the row always
+            // carries this fresh `now`).
+            let window = log_window(habit, &app.habits.log, now, day);
+            let key = HabitLogKey { habit: *id, window };
+            let count = app.habits.log.get(&key).map_or(0, |entry| entry.count) + 1;
+            Ok(CommandPlan {
+                actions: vec![PersistenceAction::RecordHabitLog(
+                    key,
+                    HabitLogEntry { count, clock: now },
+                )],
+                outcome: CommandOutcome::HabitLogged {
+                    habit: *id,
+                    window,
+                    count,
+                },
+            })
+        }
+        StateCommand::AdjustHabitLog {
+            habit: id,
+            window,
+            count,
+        } => {
+            let habit = live_habit(app, *id)?;
+            // The window must be canonical for the habit's *current*
+            // target kind (D-H12's write-side gate).
+            let canonical = WindowStart::of_period(habit.target.kind(), window.as_date());
+            if *window != canonical {
+                return Err(CommandError::InvalidHabitWindow {
+                    habit: *id,
+                    window: *window,
+                });
+            }
+            let key = HabitLogKey {
+                habit: *id,
+                window: *window,
+            };
+            if app.habits.log.get(&key).is_some_and(|e| e.count == *count) {
+                // Identical count: no clock churn.
+                return Ok(no_op());
+            }
+            // The audited fresh stamp: the correction is newest-write
+            // under LWW by construction.
+            Ok(CommandPlan {
+                actions: vec![PersistenceAction::RecordHabitLog(
+                    key,
+                    HabitLogEntry {
+                        count: *count,
+                        clock: now,
+                    },
+                )],
+                outcome: CommandOutcome::HabitLogAdjusted {
+                    habit: *id,
+                    window: *window,
+                    count: *count,
+                },
+            })
+        }
+        StateCommand::DeleteHabit { habit: id } => {
+            // Terminal intent: a repeat is an accepted no-op, not an
+            // error.
+            let habit = existing_habit(app, *id)?;
+            if habit.deleted {
+                return Ok(no_op());
+            }
+            let mut updated = habit.clone();
+            updated.deleted = true;
+            updated.clocks.deleted = now;
+            // The log is never touched — history outlives the tracker.
+            // Resurrection-safe on sync by the LWW clocks (the fold is
+            // chunk 6's). No outbox op (D-H9).
+            Ok(CommandPlan {
+                actions: vec![PersistenceAction::UpsertHabit(updated)],
+                outcome: CommandOutcome::Applied,
+            })
+        }
         StateCommand::RequestSync => Ok(CommandPlan {
             actions: Vec::new(),
             outcome: CommandOutcome::SyncRequested,
@@ -2573,6 +2800,23 @@ mod tests {
             &crate::reminders::ReminderDefaults::default(),
             test_day(),
             now(),
+        )
+    }
+
+    fn run_at(
+        app: &AppState,
+        outbox: &[PendingOp],
+        command: &StateCommand,
+        at: DateTime<Utc>,
+    ) -> Result<CommandPlan, CommandError> {
+        plan_command(
+            app,
+            outbox,
+            command,
+            &CountingIds::default(),
+            &crate::reminders::ReminderDefaults::default(),
+            test_day(),
+            at,
         )
     }
 
@@ -7417,6 +7661,716 @@ mod tests {
                 .collect();
             prop_assert_eq!(open.len(), 1, "the union's next start converges to one");
             prop_assert_eq!(open[0].task, target);
+        }
+    }
+    // ---- Habit verbs (DR-6/5) ------------------------------------------
+
+    const HABIT: u64 = 600;
+
+    fn habit_id() -> HabitId {
+        HabitId::from(uuid::Uuid::from_u128(u128::from(HABIT)))
+    }
+
+    fn habit_row(target: crate::habit::HabitTarget) -> Habit {
+        Habit {
+            id: habit_id(),
+            board: BoardId::from(uuid::Uuid::from_u128(u128::from(BOARD))),
+            title: "meditate".into(),
+            target,
+            order: 0,
+            anchor_time: None,
+            clocks: crate::habit::HabitClocks::all(ts(T0 - 3_600)),
+            continued_from: None,
+            deleted: false,
+        }
+    }
+
+    fn habit_app(target: crate::habit::HabitTarget) -> (AppState, Vec<PendingOp>) {
+        let (mut app, outbox) = base();
+        let habit = habit_row(target);
+        app.habits.habits.insert(habit.id, habit);
+        (app, outbox)
+    }
+
+    fn day_log(count: u32) -> HabitLogEntry {
+        HabitLogEntry {
+            count,
+            clock: ts(T0 - 1_800),
+        }
+    }
+
+    fn ymd(y: i32, m: u32, d: u32) -> chrono::NaiveDate {
+        chrono::NaiveDate::from_ymd_opt(y, m, d).unwrap()
+    }
+
+    #[test]
+    fn create_habit_appends_and_mints_the_row_shape() {
+        let (app, outbox) = base();
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::CreateHabit {
+                board: BoardId::from(uuid::Uuid::from_u128(u128::from(BOARD))),
+                title: "meditate".into(),
+                target: crate::habit::HabitTarget::PerDay(
+                    crate::habit::NonZeroCount::new(3).unwrap(),
+                ),
+            },
+        )
+        .unwrap();
+        assert_eq!(plan.actions.len(), 1, "exactly the upsert — no op (D-H9)");
+        let PersistenceAction::UpsertHabit(habit) = &plan.actions[0] else {
+            panic!("wrong action");
+        };
+        assert_eq!(habit.order, 0, "append on an empty board");
+        assert_eq!(habit.clocks, crate::habit::HabitClocks::all(now()));
+        assert_eq!(habit.anchor_time, None);
+        assert_eq!(habit.continued_from, None, "create never mints a link");
+        assert!(!habit.deleted);
+        assert_eq!(plan.outcome, CommandOutcome::HabitCreated(habit.id));
+    }
+
+    #[test]
+    fn create_habit_appends_after_the_greatest_live_order() {
+        let (mut app, outbox) = habit_app(crate::habit::HabitTarget::PerDay(
+            crate::habit::NonZeroCount::new(1).unwrap(),
+        ));
+        let mut later = habit_row(crate::habit::HabitTarget::PerDay(
+            crate::habit::NonZeroCount::new(1).unwrap(),
+        ));
+        later.id = HabitId::from(uuid::Uuid::from_u128(601));
+        later.order = 7;
+        app.habits.habits.insert(later.id, later);
+        // A tombstone's order never gates the append.
+        let mut dead = habit_row(crate::habit::HabitTarget::PerDay(
+            crate::habit::NonZeroCount::new(1).unwrap(),
+        ));
+        dead.id = HabitId::from(uuid::Uuid::from_u128(602));
+        dead.order = 99;
+        dead.deleted = true;
+        app.habits.habits.insert(dead.id, dead);
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::CreateHabit {
+                board: BoardId::from(uuid::Uuid::from_u128(u128::from(BOARD))),
+                title: "second".into(),
+                target: crate::habit::HabitTarget::PerDay(
+                    crate::habit::NonZeroCount::new(1).unwrap(),
+                ),
+            },
+        )
+        .unwrap();
+        let PersistenceAction::UpsertHabit(habit) = &plan.actions[0] else {
+            panic!("wrong action");
+        };
+        assert_eq!(habit.order, 8, "max live order + 1");
+    }
+
+    #[test]
+    fn create_habit_refuses_unknown_and_deleted_boards_typed() {
+        let (app, outbox) = base();
+        let stranger = BoardId::from(uuid::Uuid::from_u128(654_321));
+        assert_eq!(
+            run(
+                &app,
+                &outbox,
+                &StateCommand::CreateHabit {
+                    board: stranger,
+                    title: "x".into(),
+                    target: crate::habit::HabitTarget::PerDay(
+                        crate::habit::NonZeroCount::new(1).unwrap()
+                    ),
+                },
+            )
+            .unwrap_err(),
+            CommandError::UnknownBoard(stranger)
+        );
+        let mut dead_board = app.boards.values().next().unwrap().clone();
+        let dead_id = dead_board.id;
+        dead_board.deleted = true;
+        let mut app = app;
+        app.boards.insert(dead_id, dead_board);
+        app.stacks.clear();
+        app.tasks.clear();
+        assert_eq!(
+            run(
+                &app,
+                &outbox,
+                &StateCommand::CreateHabit {
+                    board: dead_id,
+                    title: "x".into(),
+                    target: crate::habit::HabitTarget::PerDay(
+                        crate::habit::NonZeroCount::new(1).unwrap()
+                    ),
+                },
+            )
+            .unwrap_err(),
+            CommandError::BoardDeleted(dead_id)
+        );
+    }
+
+    #[test]
+    fn update_habit_stamps_only_the_named_fields() {
+        let (app, outbox) = habit_app(crate::habit::HabitTarget::PerDay(
+            crate::habit::NonZeroCount::new(3).unwrap(),
+        ));
+        let series = crate::ids::SeriesId::from(uuid::Uuid::from_u128(4242));
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::UpdateHabit {
+                habit: habit_id(),
+                changes: crate::HabitChanges {
+                    title: Some("renamed".into()),
+                    target: Some(crate::habit::HabitTarget::PerWeek(
+                        crate::habit::NonZeroCount::new(2).unwrap(),
+                    )),
+                    anchor_time: Some(Some(chrono::NaiveTime::from_hms_opt(7, 30, 0).unwrap())),
+                    continued_from: Some(Some(series)),
+                },
+            },
+        )
+        .unwrap();
+        assert_eq!(plan.outcome, CommandOutcome::Applied);
+        let PersistenceAction::UpsertHabit(updated) = &plan.actions[0] else {
+            panic!("wrong action");
+        };
+        assert_eq!(updated.title, "renamed");
+        assert_eq!(updated.clocks.title, now());
+        assert_eq!(updated.target.kind(), crate::habit::PeriodKind::Week);
+        assert_eq!(updated.clocks.target, now());
+        assert_eq!(
+            updated.anchor_time,
+            Some(chrono::NaiveTime::from_hms_opt(7, 30, 0).unwrap())
+        );
+        assert_eq!(updated.clocks.anchor_time, now());
+        // The seam links but stamps nothing (D-H7a).
+        assert_eq!(updated.continued_from, Some(series));
+        assert_eq!(updated.clocks.order, ts(T0 - 3_600));
+        assert_eq!(updated.clocks.deleted, ts(T0 - 3_600));
+    }
+
+    #[test]
+    fn update_habit_unchanged_only_mask_is_a_noop_and_clears_explicitly() {
+        let (app, outbox) = habit_app(crate::habit::HabitTarget::PerDay(
+            crate::habit::NonZeroCount::new(3).unwrap(),
+        ));
+        // Mask naming only unchanged values: zero actions, no clock churn.
+        let noop = run(
+            &app,
+            &outbox,
+            &StateCommand::UpdateHabit {
+                habit: habit_id(),
+                changes: crate::HabitChanges {
+                    title: Some("meditate".into()),
+                    ..crate::HabitChanges::default()
+                },
+            },
+        )
+        .unwrap();
+        assert_eq!(noop, no_op());
+        // Some(None) clears the chip (vs. None = untouched, the case above
+        // kept anchor_time absent and passed; here it is present).
+        let seeded = habit_app(crate::habit::HabitTarget::PerDay(
+            crate::habit::NonZeroCount::new(3).unwrap(),
+        ));
+        let mut seeded_app = seeded.0;
+        seeded_app
+            .habits
+            .habits
+            .get_mut(&habit_id())
+            .unwrap()
+            .anchor_time = Some(chrono::NaiveTime::from_hms_opt(7, 0, 0).unwrap());
+        let cleared = run(
+            &seeded_app,
+            &seeded.1,
+            &StateCommand::UpdateHabit {
+                habit: habit_id(),
+                changes: crate::HabitChanges {
+                    anchor_time: Some(None),
+                    ..crate::HabitChanges::default()
+                },
+            },
+        )
+        .unwrap();
+        let PersistenceAction::UpsertHabit(updated) = &cleared.actions[0] else {
+            panic!("wrong action");
+        };
+        assert_eq!(updated.anchor_time, None, "the chip cleared");
+        // Unlink: Some(None) clears the seam.
+        let linked = habit_app(crate::habit::HabitTarget::PerDay(
+            crate::habit::NonZeroCount::new(3).unwrap(),
+        ));
+        let mut linked_app = linked.0;
+        linked_app
+            .habits
+            .habits
+            .get_mut(&habit_id())
+            .unwrap()
+            .continued_from = Some(crate::ids::SeriesId::from(uuid::Uuid::from_u128(1)));
+        let unlinked = run(
+            &linked_app,
+            &linked.1,
+            &StateCommand::UpdateHabit {
+                habit: habit_id(),
+                changes: crate::HabitChanges {
+                    continued_from: Some(None),
+                    ..crate::HabitChanges::default()
+                },
+            },
+        )
+        .unwrap();
+        let PersistenceAction::UpsertHabit(updated) = &unlinked.actions[0] else {
+            panic!("wrong action");
+        };
+        assert_eq!(updated.continued_from, None, "the seam unlinked");
+    }
+
+    #[test]
+    fn move_habit_mirrors_movetask_semantics() {
+        let (app, outbox) = habit_app(crate::habit::HabitTarget::PerDay(
+            crate::habit::NonZeroCount::new(1).unwrap(),
+        ));
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::MoveHabit {
+                habit: habit_id(),
+                order: 5,
+            },
+        )
+        .unwrap();
+        assert_eq!(plan.outcome, CommandOutcome::Applied);
+        let PersistenceAction::UpsertHabit(updated) = &plan.actions[0] else {
+            panic!("wrong action");
+        };
+        assert_eq!(updated.order, 5);
+        assert_eq!(updated.clocks.order, now());
+        // Identical order is the accepted no-op.
+        let repeat = run(
+            &app,
+            &outbox,
+            &StateCommand::MoveHabit {
+                habit: habit_id(),
+                order: 0,
+            },
+        )
+        .unwrap();
+        assert_eq!(repeat, no_op());
+    }
+
+    #[test]
+    fn log_habit_targets_the_natural_window_per_kind() {
+        // 1970-01-01 is a Thursday; UTC-midnight day calendar.
+        for (target, expected) in [
+            (
+                crate::habit::HabitTarget::PerDay(crate::habit::NonZeroCount::new(3).unwrap()),
+                ymd(1970, 1, 1),
+            ),
+            (
+                crate::habit::HabitTarget::PerWeek(crate::habit::NonZeroCount::new(3).unwrap()),
+                ymd(1969, 12, 29),
+            ),
+            (
+                crate::habit::HabitTarget::PerMonth(crate::habit::NonZeroCount::new(3).unwrap()),
+                ymd(1970, 1, 1),
+            ),
+        ] {
+            let (app, outbox) = habit_app(target);
+            let plan = run(&app, &outbox, &StateCommand::LogHabit { habit: habit_id() }).unwrap();
+            let CommandOutcome::HabitLogged {
+                habit,
+                window,
+                count,
+            } = plan.outcome
+            else {
+                panic!("wrong receipt");
+            };
+            assert_eq!(habit, habit_id());
+            assert_eq!(window.as_date(), expected);
+            assert_eq!(count, 1, "post-increment");
+            let PersistenceAction::RecordHabitLog(key, entry) = &plan.actions[0] else {
+                panic!("wrong action");
+            };
+            assert_eq!(key.window.as_date(), expected);
+            assert_eq!(entry.count, 1);
+            assert_eq!(entry.clock, now());
+        }
+    }
+
+    #[test]
+    fn log_habit_night_owl_targets_yesterdays_window() {
+        let (app, outbox) = habit_app(crate::habit::HabitTarget::PerDay(
+            crate::habit::NonZeroCount::new(3).unwrap(),
+        ));
+        // Local 02:00 +02:00 on 1970-01-01 with a 05:00 day start: still
+        // 1969-12-31's window.
+        let owl = DayCalendar {
+            day_start_time: chrono::NaiveTime::from_hms_opt(5, 0, 0).unwrap(),
+            offset: chrono::FixedOffset::east_opt(2 * 3_600).unwrap(),
+        };
+        let at = Utc.timestamp_opt(0, 0).unwrap(); // 1970-01-01 00:00 UTC
+        let plan = plan_command(
+            &app,
+            &outbox,
+            &StateCommand::LogHabit { habit: habit_id() },
+            &CountingIds::default(),
+            &crate::reminders::ReminderDefaults::default(),
+            owl,
+            at,
+        )
+        .unwrap();
+        let CommandOutcome::HabitLogged { window, .. } = plan.outcome else {
+            panic!("wrong receipt");
+        };
+        assert_eq!(window.as_date(), ymd(1969, 12, 31));
+    }
+
+    #[test]
+    fn log_habit_surplus_repairs_only_under_the_full_rule() {
+        let quota = crate::habit::NonZeroCount::new(3).unwrap();
+        // Case 1 — the repair: yesterday unmet, today met, in grace.
+        let (mut app, outbox) = habit_app(crate::habit::HabitTarget::PerDay(quota));
+        app.habits.log.insert(
+            HabitLogKey {
+                habit: habit_id(),
+                window: crate::habit::WindowStart::of_period(
+                    crate::habit::PeriodKind::Day,
+                    ymd(1970, 1, 1),
+                ),
+            },
+            day_log(3),
+        );
+        let plan = run(&app, &outbox, &StateCommand::LogHabit { habit: habit_id() }).unwrap();
+        let CommandOutcome::HabitLogged { window, count, .. } = plan.outcome else {
+            panic!("wrong receipt");
+        };
+        assert_eq!(window.as_date(), ymd(1969, 12, 31), "the repair landed");
+        assert_eq!(count, 1, "yesterday's row increments from zero");
+        // Case 2 — today unmet: routine log stays natural (never lags).
+        let (app, outbox) = habit_app(crate::habit::HabitTarget::PerDay(quota));
+        let plan = run(&app, &outbox, &StateCommand::LogHabit { habit: habit_id() }).unwrap();
+        let CommandOutcome::HabitLogged { window, .. } = plan.outcome else {
+            panic!("wrong receipt");
+        };
+        assert_eq!(window.as_date(), ymd(1970, 1, 1));
+        // Case 3 — yesterday already met: no repair either.
+        let (mut app, outbox) = habit_app(crate::habit::HabitTarget::PerDay(quota));
+        app.habits.log.insert(
+            HabitLogKey {
+                habit: habit_id(),
+                window: crate::habit::WindowStart::of_period(
+                    crate::habit::PeriodKind::Day,
+                    ymd(1970, 1, 1),
+                ),
+            },
+            day_log(3),
+        );
+        app.habits.log.insert(
+            HabitLogKey {
+                habit: habit_id(),
+                window: crate::habit::WindowStart::of_period(
+                    crate::habit::PeriodKind::Day,
+                    ymd(1969, 12, 31),
+                ),
+            },
+            day_log(3),
+        );
+        let plan = run(&app, &outbox, &StateCommand::LogHabit { habit: habit_id() }).unwrap();
+        let CommandOutcome::HabitLogged { window, .. } = plan.outcome else {
+            panic!("wrong receipt");
+        };
+        assert_eq!(window.as_date(), ymd(1970, 1, 1));
+    }
+
+    #[test]
+    fn log_habit_is_monotone_under_an_advancing_clock() {
+        let (mut app, outbox) = habit_app(crate::habit::HabitTarget::PerDay(
+            crate::habit::NonZeroCount::new(5).unwrap(),
+        ));
+        for n in 1..=3_u32 {
+            let at = ts(T0 + i64::from(n) * 60);
+            let plan = run_at(
+                &app,
+                &outbox,
+                &StateCommand::LogHabit { habit: habit_id() },
+                at,
+            )
+            .unwrap();
+            let PersistenceAction::RecordHabitLog(_key, entry) = &plan.actions[0] else {
+                panic!("wrong action");
+            };
+            assert_eq!(entry.count, n);
+            assert_eq!(entry.clock, at, "fresh stamp each invocation");
+            apply_actions_to_habits(&mut app.habits, &plan.actions);
+        }
+        let key = HabitLogKey {
+            habit: habit_id(),
+            window: crate::habit::WindowStart::of_period(
+                crate::habit::PeriodKind::Day,
+                ymd(1970, 1, 1),
+            ),
+        };
+        assert_eq!(app.habits.log[&key].count, 3);
+    }
+
+    /// Applies a plan's actions to just the habit section (the planner
+    /// tests' in-memory advance; [`apply_actions`] is contract-tested on
+    /// the full shape in persistence.rs).
+    fn apply_actions_to_habits(
+        habits: &mut crate::habit::HabitState,
+        actions: &[PersistenceAction],
+    ) {
+        for action in actions {
+            match action {
+                PersistenceAction::UpsertHabit(habit) => {
+                    habits.habits.insert(habit.id, habit.clone());
+                }
+                PersistenceAction::RecordHabitLog(key, entry) => match habits.log.get(key) {
+                    Some(stored) if stored.clock >= entry.clock => {}
+                    _ => {
+                        habits.log.insert(*key, *entry);
+                    }
+                },
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn log_and_edit_habit_refuse_unknown_and_deleted_typed() {
+        let (app, outbox) = habit_app(crate::habit::HabitTarget::PerDay(
+            crate::habit::NonZeroCount::new(1).unwrap(),
+        ));
+        let stranger = HabitId::from(uuid::Uuid::from_u128(654_321));
+        for command in [
+            StateCommand::LogHabit { habit: stranger },
+            StateCommand::MoveHabit {
+                habit: stranger,
+                order: 1,
+            },
+            StateCommand::DeleteHabit { habit: stranger },
+        ] {
+            assert_eq!(
+                run(&app, &outbox, &command).unwrap_err(),
+                CommandError::UnknownHabit(stranger)
+            );
+        }
+        // Tombstoned: edit-style intents refuse; the terminal repeat is
+        // the accepted no-op.
+        let mut dead_app = app.clone();
+        let dead = {
+            let mut h = habit_row(crate::habit::HabitTarget::PerDay(
+                crate::habit::NonZeroCount::new(1).unwrap(),
+            ));
+            h.deleted = true;
+            h
+        };
+        dead_app.habits.habits.insert(dead.id, dead);
+        for command in [
+            StateCommand::LogHabit { habit: habit_id() },
+            StateCommand::MoveHabit {
+                habit: habit_id(),
+                order: 3,
+            },
+            StateCommand::UpdateHabit {
+                habit: habit_id(),
+                changes: crate::HabitChanges {
+                    title: Some("x".into()),
+                    ..crate::HabitChanges::default()
+                },
+            },
+            StateCommand::AdjustHabitLog {
+                habit: habit_id(),
+                window: crate::habit::WindowStart::of_period(
+                    crate::habit::PeriodKind::Day,
+                    ymd(1970, 1, 1),
+                ),
+                count: 1,
+            },
+        ] {
+            assert_eq!(
+                run(&dead_app, &outbox, &command).unwrap_err(),
+                CommandError::HabitDeleted(habit_id())
+            );
+        }
+        assert_eq!(
+            run(
+                &dead_app,
+                &outbox,
+                &StateCommand::DeleteHabit { habit: habit_id() }
+            )
+            .unwrap(),
+            no_op()
+        );
+    }
+
+    fn adjust_cmd(window: crate::habit::WindowStart, count: u32) -> StateCommand {
+        StateCommand::AdjustHabitLog {
+            habit: habit_id(),
+            window,
+            count,
+        }
+    }
+
+    #[test]
+    fn adjust_habit_log_sets_overwrites_backdates_and_noops() {
+        let (mut app, outbox) = habit_app(crate::habit::HabitTarget::PerDay(
+            crate::habit::NonZeroCount::new(3).unwrap(),
+        ));
+        let today =
+            crate::habit::WindowStart::of_period(crate::habit::PeriodKind::Day, ymd(1970, 1, 1));
+        let yesterday =
+            crate::habit::WindowStart::of_period(crate::habit::PeriodKind::Day, ymd(1969, 12, 31));
+        // Set (absent row): the audited fresh stamp.
+        let plan = run_at(&app, &outbox, &adjust_cmd(today, 2), ts(T0 + 60)).unwrap();
+        assert_eq!(
+            plan.outcome,
+            CommandOutcome::HabitLogAdjusted {
+                habit: habit_id(),
+                window: today,
+                count: 2,
+            }
+        );
+        apply_actions_to_habits(&mut app.habits, &plan.actions);
+        // Overwrite.
+        let plan = run_at(&app, &outbox, &adjust_cmd(today, 5), ts(T0 + 120)).unwrap();
+        apply_actions_to_habits(&mut app.habits, &plan.actions);
+        // Backdate: a canonical previous window is legal (the explicit
+        // valve the automatic path never uses).
+        let plan = run_at(&app, &outbox, &adjust_cmd(yesterday, 1), ts(T0 + 180)).unwrap();
+        apply_actions_to_habits(&mut app.habits, &plan.actions);
+        assert_eq!(app.habits.log.len(), 2);
+        let key = HabitLogKey {
+            habit: habit_id(),
+            window: today,
+        };
+        assert_eq!(app.habits.log[&key].count, 5);
+        assert_eq!(
+            app.habits.log[&key].clock,
+            ts(T0 + 120),
+            "the overwrite's stamp"
+        );
+        // Count 0 is a legal correction; the row stays, honestly clocked.
+        let plan = run_at(&app, &outbox, &adjust_cmd(yesterday, 0), ts(T0 + 240)).unwrap();
+        assert_eq!(plan.actions.len(), 1, "an emptied window keeps its row");
+        // Same count: the accepted no-op (no clock churn).
+        let repeat = run_at(&app, &outbox, &adjust_cmd(today, 5), ts(T0 + 300)).unwrap();
+        assert_eq!(repeat, no_op());
+    }
+
+    #[test]
+    fn adjust_habit_log_rejects_non_canonical_windows_typed() {
+        // A Thursday for a weekly habit: not a Monday, not canonical.
+        let (app, outbox) = habit_app(crate::habit::HabitTarget::PerWeek(
+            crate::habit::NonZeroCount::new(1).unwrap(),
+        ));
+        assert_eq!(
+            run(
+                &app,
+                &outbox,
+                &StateCommand::AdjustHabitLog {
+                    habit: habit_id(),
+                    window: crate::habit::WindowStart::of_period(
+                        crate::habit::PeriodKind::Day,
+                        ymd(1970, 1, 1)
+                    ),
+                    count: 1,
+                },
+            )
+            .unwrap_err(),
+            CommandError::InvalidHabitWindow {
+                habit: habit_id(),
+                window: crate::habit::WindowStart::of_period(
+                    crate::habit::PeriodKind::Day,
+                    ymd(1970, 1, 1)
+                ),
+            }
+        );
+    }
+
+    #[test]
+    fn delete_habit_tombstones_and_never_touches_the_log() {
+        let (mut app, outbox) = habit_app(crate::habit::HabitTarget::PerDay(
+            crate::habit::NonZeroCount::new(1).unwrap(),
+        ));
+        let key = HabitLogKey {
+            habit: habit_id(),
+            window: crate::habit::WindowStart::of_period(
+                crate::habit::PeriodKind::Day,
+                ymd(1970, 1, 1),
+            ),
+        };
+        app.habits.log.insert(key, day_log(4));
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::DeleteHabit { habit: habit_id() },
+        )
+        .unwrap();
+        assert_eq!(plan.outcome, CommandOutcome::Applied);
+        assert_eq!(plan.actions.len(), 1, "the tombstone upsert, nothing else");
+        let PersistenceAction::UpsertHabit(tombstone) = &plan.actions[0] else {
+            panic!("wrong action");
+        };
+        assert!(tombstone.deleted);
+        assert_eq!(tombstone.clocks.deleted, now());
+        // The log survives the batch (the executable contract).
+        let mut persisted = crate::persistence::PersistedState {
+            habits: app.habits.clone(),
+            ..crate::persistence::PersistedState::default()
+        };
+        crate::persistence::apply_actions(&mut persisted, &plan.actions);
+        assert_eq!(persisted.habits.log[&key], day_log(4), "history outlives");
+        assert!(persisted.habits.habits[&habit_id()].deleted);
+    }
+
+    #[test]
+    fn habit_commands_plan_zero_outbox_ops() {
+        // D-H9's lane fence, pinned structurally: no habit arm enqueues
+        // anything in this chunk.
+        let (app, outbox) = habit_app(crate::habit::HabitTarget::PerDay(
+            crate::habit::NonZeroCount::new(1).unwrap(),
+        ));
+        let commands = [
+            StateCommand::CreateHabit {
+                board: BoardId::from(uuid::Uuid::from_u128(u128::from(BOARD))),
+                title: "x".into(),
+                target: crate::habit::HabitTarget::PerDay(
+                    crate::habit::NonZeroCount::new(1).unwrap(),
+                ),
+            },
+            StateCommand::UpdateHabit {
+                habit: habit_id(),
+                changes: crate::HabitChanges {
+                    title: Some("y".into()),
+                    ..crate::HabitChanges::default()
+                },
+            },
+            StateCommand::MoveHabit {
+                habit: habit_id(),
+                order: 2,
+            },
+            StateCommand::LogHabit { habit: habit_id() },
+            StateCommand::AdjustHabitLog {
+                habit: habit_id(),
+                window: crate::habit::WindowStart::of_period(
+                    crate::habit::PeriodKind::Day,
+                    ymd(1970, 1, 1),
+                ),
+                count: 1,
+            },
+            StateCommand::DeleteHabit { habit: habit_id() },
+        ];
+        for command in &commands {
+            let plan = run(&app, &outbox, command).unwrap();
+            assert!(
+                plan.actions
+                    .iter()
+                    .all(|a| !matches!(a, PersistenceAction::EnqueueOp(_))),
+                "no outbox op in this chunk: {command:?}"
+            );
         }
     }
 }

@@ -10,7 +10,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::entities::Color;
-use crate::ids::{BoardId, ConnectorId, LabelId, RemoteBoardId, StackId, TaskId};
+use crate::habit::{HabitTarget, WindowStart};
+use crate::ids::{BoardId, ConnectorId, HabitId, LabelId, RemoteBoardId, StackId, TaskId};
 use crate::reminders::ReminderRef;
 use crate::remote::{PushOutcome, RemoteBoardSnapshot};
 use crate::state::SyncErrorKind;
@@ -353,6 +354,65 @@ pub enum StateCommand {
         /// The entry to delete.
         id: crate::ids::TimeEntryId,
     },
+    /// Create a habit tracker on the live board: the payload carries no
+    /// order (the planner appends, D-H11) and no conversion link (the
+    /// §4.7 seam links an already-created pair only, D-H7a). Zero quotas
+    /// are unrepresentable — the target rides the mint.
+    CreateHabit {
+        /// The owning board (must be live).
+        board: BoardId,
+        /// Display title.
+        title: String,
+        /// The quota per period.
+        target: crate::habit::HabitTarget,
+    },
+    /// Edit a habit's fields (sparse changeset; untouched fields keep
+    /// clocks). The target may change kind freely — former-kind log rows
+    /// stay in the map but become analytically inert (D-H12).
+    UpdateHabit {
+        /// Habit to edit.
+        habit: HabitId,
+        /// The edits.
+        changes: HabitChanges,
+    },
+    /// Reorder a habit in its board's list (the UI computes midpoints on
+    /// drag, the `MoveTask` precedent). Identical order is the accepted
+    /// no-op.
+    MoveHabit {
+        /// Habit to move.
+        habit: HabitId,
+        /// Requested sort order.
+        order: i64,
+    },
+    /// Log one occurrence of the habit: exactly one increment into the
+    /// window the attribution picks ([`taskboard_domain::habit::log_window`]
+    /// — the natural window, or the previous one under the surplus-
+    /// repairs rule). Never a no-op: every invocation is +1 by design
+    /// (count habits). The receipt names the window the increment landed
+    /// in — user-visible feedback, not silent repair.
+    LogHabit {
+        /// The habit to count against.
+        habit: HabitId,
+    },
+    /// Audited correction of one window's count (set, overwrite, or
+    /// backdate — this is the explicit valve the automatic path never
+    /// uses). The window must be a canonical period start of the habit's
+    /// *current* target kind or the command is a typed rejection. A count
+    /// of 0 is legal (an emptied window keeps its row, honestly clocked).
+    AdjustHabitLog {
+        /// The habit whose window is corrected.
+        habit: HabitId,
+        /// The canonical window to correct.
+        window: WindowStart,
+        /// The corrected count.
+        count: u32,
+    },
+    /// Delete (tombstone) a habit. The log is never touched — history
+    /// outlives the tracker. A repeat is the accepted no-op.
+    DeleteHabit {
+        /// Habit to delete.
+        habit: HabitId,
+    },
     /// User-visible refresh request; the engine forwards it to the sync
     /// actor.
     RequestSync,
@@ -424,6 +484,37 @@ where
     D: serde::Deserializer<'de>,
 {
     Deserialize::deserialize(de).map(Some)
+}
+
+/// Sparse habit edit: `None` = untouched, `Some(_)` = set (the
+/// `TaskChanges` discipline). Stamp the matching field clock only for
+/// `Some` entries; `continued_from` stamps nothing (seam data, D-H7a).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HabitChanges {
+    /// New title.
+    pub title: Option<String>,
+    /// New quota (count *and* period kind may change).
+    pub target: Option<HabitTarget>,
+    /// New display anchor chip; `Some(None)` clears it, `None` =
+    /// untouched. The inner layer survives serde: an explicit `null`
+    /// deserializes to `Some(None)` (clear), an absent field to `None`
+    /// (untouched).
+    #[serde(
+        default,
+        deserialize_with = "deserialize_double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub anchor_time: Option<Option<chrono::NaiveTime>>,
+    /// The §4.7 conversion seam's write path: `Some(Some(series))`
+    /// links, `Some(None)` unlinks, `None` = untouched. Settable only
+    /// here — create never mints a link, and the field carries no clock
+    /// slot (D-H7a).
+    #[serde(
+        default,
+        deserialize_with = "deserialize_double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub continued_from: Option<Option<crate::ids::SeriesId>>,
 }
 
 /// Sparse label edit: `None` = untouched.
