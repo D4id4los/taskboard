@@ -73,8 +73,9 @@ pub use capabilities::{DeckFeatures, flags_for};
 pub use clock::{Clock, SystemClock};
 pub use command::{
     CommandError, CommandOutcome, CommandPlan, bind_wipe_count, bind_wipe_forecast, plan_command,
+    plan_day_rolls,
 };
-pub use days::{day_window, window_start};
+pub use days::{DayCalendar, day_window, window_start};
 pub use entities::{
     Board, BoardClocks, Color, Effort, Importance, Label, LabelClocks, Stack, StackClocks, Task,
     TaskClocks, Urgency,

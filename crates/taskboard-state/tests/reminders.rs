@@ -201,6 +201,7 @@ async fn spawn(spawner: Spawner) -> Harness {
         system_rx,
         notifier,
         spawner.reminders,
+        taskboard_state::DayRollConfig::disabled(),
     )
     .await
     .expect("engine boots");

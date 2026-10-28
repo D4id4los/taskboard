@@ -24,7 +24,7 @@ use taskboard_domain::{
     RemoteBoardSnapshot, StateCommand, SyncCommand, SyncErrorKind, SyncPhase, SyncReport,
     SystemEvent,
 };
-use taskboard_state::{ReminderEngineConfig, spawn_state_engine};
+use taskboard_state::{DayRollConfig, ReminderEngineConfig, spawn_state_engine};
 
 use insta::assert_yaml_snapshot;
 
@@ -69,6 +69,7 @@ impl Scenario {
             system_rx,
             notifier,
             ReminderEngineConfig::disabled(),
+            DayRollConfig::disabled(),
         )
         .await
         .expect("engine boots");

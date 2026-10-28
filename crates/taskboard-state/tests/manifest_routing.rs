@@ -166,6 +166,15 @@ fn changes_for(field: &str) -> Option<TaskChanges> {
     Some(changes)
 }
 
+/// The injected day calendar of the routing tests: UTC midnight — the
+/// plain dates of the fixture instants are the window-dates too.
+fn test_day() -> taskboard_domain::DayCalendar {
+    taskboard_domain::DayCalendar {
+        day_start_time: chrono::NaiveTime::MIN,
+        offset: chrono::FixedOffset::east_opt(0).unwrap(),
+    }
+}
+
 /// The routed op of a single-slot `UpdateTask` through `plan_command`.
 fn routed_op(app: &AppState, field: &str) -> LocalOp {
     let changes = changes_for(field).unwrap_or_else(|| panic!("`{field}` has no EditTask slot"));
@@ -178,6 +187,7 @@ fn routed_op(app: &AppState, field: &str) -> LocalOp {
         },
         &CountingIds::new(),
         &taskboard_domain::ReminderDefaults::default(),
+        test_day(),
         ts(100),
     )
     .unwrap();
@@ -254,6 +264,7 @@ fn every_manifest_row_routes_through_its_declared_lane() {
         },
         &CountingIds::new(),
         &taskboard_domain::ReminderDefaults::default(),
+        test_day(),
         ts(100),
     )
     .unwrap();
@@ -277,6 +288,7 @@ fn every_manifest_row_routes_through_its_declared_lane() {
         },
         &CountingIds::new(),
         &taskboard_domain::ReminderDefaults::default(),
+        test_day(),
         ts(100),
     )
     .unwrap();
@@ -458,6 +470,7 @@ async fn the_engine_execute_path_routes_like_the_planner() {
         system_rx,
         notifier,
         ReminderEngineConfig::disabled(),
+        taskboard_state::DayRollConfig::disabled(),
     )
     .await
     .expect("engine boots");

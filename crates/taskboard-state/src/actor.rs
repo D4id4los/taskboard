@@ -20,6 +20,7 @@
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
+use chrono::NaiveDate;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::task::JoinHandle;
 
@@ -28,10 +29,10 @@ use taskboard_domain::{
     NotifierMessage, PersistedState, PersistenceAction, ReminderFiring, RepositoryError,
     SidecarHealth, StateCommand, SyncCommand, SyncCounters, SyncPhase, SyncStateReader, SyncStates,
     SyncStatus, SystemEvent, TaskRepository, ValidatorKey, apply_push_report, apply_sync_report,
-    notifications_for, plan_command,
+    notifications_for, plan_command, plan_day_rolls,
 };
 
-use crate::config::ReminderEngineConfig;
+use crate::config::{DayRollConfig, ReminderEngineConfig};
 use crate::core::EngineCore;
 use crate::error::{EngineStartupError, ExecuteError};
 use crate::metrics::{EngineMetrics, EngineMetricsSnapshot};
@@ -261,6 +262,7 @@ pub async fn spawn_state_engine(
     system: broadcast::Receiver<SystemEvent>,
     notifier: mpsc::Sender<NotifierMessage>,
     reminder_cfg: ReminderEngineConfig,
+    day_roll: DayRollConfig,
 ) -> Result<(EngineHandle, JoinHandle<()>), EngineStartupError> {
     let persisted = repo.load().await.map_err(EngineStartupError::Load)?;
     // Log the counts straight off the hydrated data — never clone the
@@ -300,6 +302,7 @@ pub async fn spawn_state_engine(
             system_out: system_out.downgrade(),
             notifier,
             reminders: reminder_cfg,
+            day_roll,
         },
         shared,
         signals,
@@ -321,6 +324,7 @@ struct EngineParts {
     system_out: broadcast::WeakSender<SystemEvent>,
     notifier: mpsc::Sender<NotifierMessage>,
     reminders: ReminderEngineConfig,
+    day_roll: DayRollConfig,
 }
 
 #[allow(
@@ -345,6 +349,7 @@ async fn run_loop(
         system_out,
         notifier,
         reminders: reminder_cfg,
+        day_roll,
     } = parts;
     // Edge-trigger state for `StorageFailed`: the event fires on the
     // ok->fail transition (a dying disk fires once per failure epoch,
@@ -369,8 +374,16 @@ async fn run_loop(
     // With `enabled == false` the select! precondition keeps the sleep
     // future from ever being constructed, so a disabled engine performs
     // zero timer work (the paused-time suites stay auto-advance-free).
+    // The day-boundary roll shares the wake (D-E8): either engine arming
+    // the timer is enough — the accepted coupling is one clock read +
+    // date compare per wake on a reminders-off kiosk.
     let mut next_tick = tokio::time::Instant::now();
-    let mut timer_armed = reminder_cfg.enabled;
+    let mut timer_armed = reminder_cfg.enabled || day_roll.enabled;
+    // The day roll's watermark (D-E9): engine-internal edge state like
+    // `storage_failing`, never persisted as user state — a restart
+    // re-scans once, which is the boot catch-up path and is idempotent
+    // by the stale predicate's construction.
+    let mut last_roll: Option<NaiveDate> = None;
 
     loop {
         if draining && !reports_open {
@@ -409,6 +422,7 @@ async fn run_loop(
                         ),
                         &metrics,
                         &reminder_cfg.defaults,
+                        day_roll.calendar,
                         command,
                         reply,
                         &mut storage_failing,
@@ -538,16 +552,33 @@ async fn run_loop(
             },
 
             () = tokio::time::sleep_until(next_tick), if timer_armed => {
-                reminder_tick(
-                    &mut core,
-                    &shared,
-                    &signals,
-                    (&repo, clock.as_ref(), &system_out, &notifier),
-                    &metrics,
-                    &reminder_cfg,
-                    &mut storage_failing,
-                )
-                .await;
+                // Each tick runs under its own flag: an engine with only
+                // one of the two enabled performs only that engine's work.
+                if reminder_cfg.enabled {
+                    reminder_tick(
+                        &mut core,
+                        &shared,
+                        &signals,
+                        (&repo, clock.as_ref(), &system_out, &notifier),
+                        &metrics,
+                        &reminder_cfg,
+                        &mut storage_failing,
+                    )
+                    .await;
+                }
+                if day_roll.enabled {
+                    day_tick(
+                        &mut core,
+                        &shared,
+                        &signals,
+                        (&repo, ids.as_ref(), clock.as_ref(), &system_out),
+                        &metrics,
+                        &day_roll,
+                        &mut last_roll,
+                        &mut storage_failing,
+                    )
+                    .await;
+                }
                 next_tick = tokio::time::Instant::now() + reminder_cfg.tick;
             }
         }
@@ -586,6 +617,7 @@ async fn execute_command(
     (repo, ids, clock, sync_outs, system_out, notifier): Seams<'_>,
     metrics: &EngineMetrics,
     reminder_defaults: &taskboard_domain::ReminderDefaults,
+    day: taskboard_domain::DayCalendar,
     command: StateCommand,
     reply: Option<oneshot::Sender<Result<CommandOutcome, ExecuteError>>>,
     storage_failing: &mut bool,
@@ -617,6 +649,7 @@ async fn execute_command(
         &command,
         ids,
         reminder_defaults,
+        day,
         now,
     ) {
         Ok(plan) => plan,
@@ -1110,6 +1143,54 @@ async fn reminder_tick(
         publish(core, shared, signals, metrics);
     }
     send_notifications(notifier, payloads).await;
+}
+
+/// One day-boundary tick (DR-6/2 D-E9), shaped like [`reminder_tick`]:
+/// the injected clock is read once, the roll batch is computed purely,
+/// and persistence precedes publish (durable-then-publish). The
+/// watermark advances only after a successful apply — a failed batch is
+/// retried on the next tick, and a quiet day (already rolled, or nothing
+/// stale) is a full no-op: nothing computed, written, or published.
+/// The watermark is engine bookkeeping, not user state.
+#[allow(clippy::too_many_arguments)] // the seams + watermark + edge are the context
+async fn day_tick(
+    core: &mut EngineCore,
+    shared: &Arc<ArcSwap<AppState>>,
+    signals: &broadcast::Sender<EngineSignal>,
+    (repo, ids, clock, system_out): (
+        &Arc<dyn TaskRepository>,
+        &dyn IdGenerator,
+        &dyn Clock,
+        &broadcast::WeakSender<SystemEvent>,
+    ),
+    metrics: &EngineMetrics,
+    cfg: &DayRollConfig,
+    last_roll: &mut Option<NaiveDate>,
+    storage_failing: &mut bool,
+) {
+    let now = clock.now();
+    let today = cfg.calendar.today(now);
+    if *last_roll == Some(today) {
+        return; // the quiet fast path
+    }
+    let actions = plan_day_rolls(&core.app(), today, cfg.calendar, ids, now);
+    if actions.is_empty() {
+        // A quiet day: the watermark advance is the whole effect.
+        *last_roll = Some(today);
+        return;
+    }
+    if let Err(err) = repo.apply(actions.clone()).await {
+        // Nothing rolled: memory never advanced and the watermark did
+        // not move — the next tick retries the same rollover.
+        tracing::error!(?err, "day-roll batch lost; nothing rolled");
+        note_storage_failure(storage_failing, system_out);
+        return;
+    }
+    *storage_failing = false;
+    if core.interpret(&actions, now) {
+        publish(core, shared, signals, metrics);
+    }
+    *last_roll = Some(today);
 }
 
 /// Maps the firings onto the batch that settles them: one

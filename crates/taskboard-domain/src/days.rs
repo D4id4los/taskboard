@@ -69,6 +69,59 @@ pub fn day_window(
     (start, end)
 }
 
+/// The injected day-boundary vocabulary: `(day_start_time, offset)` as
+/// one `Copy` value the planners and ticks receive explicitly (the D-F6
+/// consumer contract, "later engine features via bootstrap injection").
+/// No A1 mint — any `(NaiveTime, FixedOffset)` pair is well-formed, so
+/// there is no invariant to guard; the type exists to make the day
+/// convention a visible parameter instead of ambient state.
+///
+/// Three pure methods, total by the fixed-offset rule (no transitions,
+/// so every conversion is exact):
+///
+/// - [`today`](DayCalendar::today) — the **window-date** of `now`, the
+///   date whose [`day_window`] contains it (the night-owl rule: 03:00
+///   with a 05:00 start is still yesterday). This is "today" wherever a
+///   decision needs the current local day.
+/// - [`calendar_date`](DayCalendar::calendar_date) — the plain
+///   offset-calendar date an instant literally sits on. Field
+///   *references* (a recurring head's scheduled/duedate day) use this
+///   flavor so the spawn is drift-free from generation to generation.
+/// - [`instant`](DayCalendar::instant) — offset-local `(date,
+///   time-of-day)` → UTC, the write direction for a moved date field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DayCalendar {
+    /// The local time a day window opens at (`[preferences]
+    /// day_start_time`).
+    pub day_start_time: chrono::NaiveTime,
+    /// The device's fixed UTC offset, resolved once at boot.
+    pub offset: FixedOffset,
+}
+
+impl DayCalendar {
+    /// The window-date of `now`: the plain calendar date of the instant
+    /// that opens `now`'s day window.
+    #[must_use]
+    pub fn today(&self, now: DateTime<Utc>) -> NaiveDate {
+        let (start, _) = day_window(now, self.day_start_time, self.offset);
+        self.calendar_date(start)
+    }
+
+    /// The plain offset-calendar date of an instant (no window
+    /// step-back).
+    #[must_use]
+    pub fn calendar_date(&self, t: DateTime<Utc>) -> NaiveDate {
+        t.with_timezone(&self.offset).date_naive()
+    }
+
+    /// Offset-local `(date, time-of-day)` → UTC. Total: a fixed offset
+    /// has no transitions, so no reading is ambiguous or missing.
+    #[must_use]
+    pub fn instant(&self, date: NaiveDate, time_of_day: chrono::NaiveTime) -> DateTime<Utc> {
+        offset_local_to_utc(date.and_time(time_of_day), self.offset)
+    }
+}
+
 /// Back-converts an offset-local wall-clock reading to its instant:
 /// `utc = local − offset`, exact for every representable reading
 /// because a fixed offset has no transitions, so no reading is

@@ -28,17 +28,20 @@
 
 use std::collections::BTreeMap;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 
 use crate::capabilities::DeckFeatures;
-use crate::entities::{Label, Stack, Task, TaskClocks};
+use crate::days::DayCalendar;
+use crate::entities::{Label, MembershipState, Stack, Task, TaskClocks};
 use crate::idgen::IdGenerator;
-use crate::ids::{BoardId, LabelId, ReminderRuleId, RemoteBoardId, StackId, TaskId};
+use crate::ids::{BoardId, LabelId, ReminderRuleId, RemoteBoardId, SeriesId, StackId, TaskId};
 use crate::messages::{LabelChanges, StateCommand, TaskChanges};
 use crate::outbox::{LocalOp, OpId, PendingOp, op_targets_task};
 use crate::persistence::PersistenceAction;
+use crate::recur::{RecurBound, RecurRule, next_after, roll_target};
 use crate::reminders::{
-    ReminderDefaults, ReminderDismissal, ReminderRef, ReminderSnooze, active_notifications,
+    ReminderDefaults, ReminderDismissal, ReminderRef, ReminderRule, ReminderSnooze,
+    active_notifications,
 };
 use crate::state::AppState;
 use crate::tracking::{ClosedSpan, TimeEntry};
@@ -389,6 +392,239 @@ fn flush_ops(
         .collect()
 }
 
+/// The head's reference date — the plain calendar day the series
+/// "is on" (D-E5's chain): the calendar date of `scheduled`, else of
+/// `duedate`, else the completion day (the window-date of `now`). Plain
+/// dates make the spawn drift-free: a head scheduled 03:00 references
+/// the date its instant literally sits on, and the successor's own
+/// reference reproduces it exactly.
+fn series_reference_date(head: &Task, day: DayCalendar, now: DateTime<Utc>) -> NaiveDate {
+    if let Some(scheduled) = head.scheduled {
+        return day.calendar_date(scheduled);
+    }
+    head.duedate
+        .map_or_else(|| day.today(now), |d| day.calendar_date(d))
+}
+
+/// The roll's stale-reference: the same chain minus the dateless
+/// fallback — a dateless head is never stale (nothing anchors it to a
+/// day), so `None` means "skip".
+fn roll_reference_date(task: &Task, day: DayCalendar) -> Option<NaiveDate> {
+    task.scheduled
+        .map(|s| day.calendar_date(s))
+        .or_else(|| task.duedate.map(|d| day.calendar_date(d)))
+}
+
+/// How many completions attribute to `series`: every row carrying the
+/// series and a done stamp, **including soft-deleted rows** — a
+/// completion happened; deleting the card later must not extend the
+/// quota (history outlives deletion). Derived only; no counter column
+/// exists anywhere.
+fn count_done_in_series(app: &AppState, series: SeriesId) -> u32 {
+    u32::try_from(
+        app.tasks
+            .values()
+            .filter(|t| t.recur.as_ref().is_some_and(|r| r.series == series) && t.done.is_some())
+            .count(),
+    )
+    .unwrap_or(u32::MAX)
+}
+
+/// The bound gate at a completion (D-E2). `Until` is arithmetic: the
+/// successor's member date must fall on or before the bound (inclusive,
+/// matching `schedule`'s `d <= u` filter). `Count` derives from
+/// completion history: the completing head itself is still open in
+/// `app`, so the count *including this completion* is `count_done + 1`;
+/// the series admits the spawn iff that stays under `n`.
+fn bound_admits(app: &AppState, rule: &RecurRule, next_date: NaiveDate) -> bool {
+    match rule.bound {
+        RecurBound::None => true,
+        RecurBound::Until(until) => next_date <= until,
+        RecurBound::Count(n) => {
+            u64::from(count_done_in_series(app, rule.series)) + 1 < u64::from(n.get())
+        }
+    }
+}
+
+/// The successor's insertion order after `head` in its stack (D-E4): the
+/// least live order strictly above the head's decides — no candidate
+/// (head is last) appends at `head.order + 1`; an adjacent candidate
+/// (`gap == 1`) ties *the head only* (the canonical `(order, id)` sort
+/// plus `UUIDv7` minting resolve the tie; all orders strictly between two
+/// adjacent tasks' orders are free, so no third task can share it);
+/// otherwise the floor midpoint of the free interval. The single source
+/// the later habit-drag work (D-C13) reuses.
+fn insertion_order_after(app: &AppState, head: &Task) -> i64 {
+    let next_order = app
+        .tasks
+        .values()
+        .filter(|t| t.is_live() && t.stack == head.stack && t.order > head.order)
+        .map(|t| t.order)
+        .min();
+    match next_order {
+        None => head.order + 1,
+        Some(next) => {
+            let gap = next - head.order;
+            if gap == 1 {
+                head.order
+            } else {
+                head.order + gap / 2
+            }
+        }
+    }
+}
+
+/// The completion spawn batch (D-E3/D-E6): the successor card, its
+/// create/label ops, the replicated reminder rules, the single
+/// document-lane flush trigger, and the device-local mute replication —
+/// entities first, ops after. The head's delivery/dismissal/snooze
+/// history does not copy: the successor's reminders carry new
+/// `(reminder, occurrence)` keys, so they re-arm by construction. Adhoc
+/// alarms are not replicated (a one-shot timer was the head's affair).
+/// `next_date` is the arm's already-checked member date (the bound gate
+/// consumed it) — the one schedule decision, computed once.
+fn completion_spawn(
+    app: &AppState,
+    head: &Task,
+    next_date: NaiveDate,
+    day: DayCalendar,
+    ids: &dyn IdGenerator,
+    now: DateTime<Utc>,
+) -> Vec<PersistenceAction> {
+    let local_tod = |t: DateTime<Utc>| t.with_timezone(&day.offset).time();
+    let mut successor = head.clone();
+    successor.id = ids.new_task_id();
+    // Newborn local task: no remote identity of any kind rides over.
+    successor.remote = None;
+    successor.remote_seen = None;
+    successor.remote_baseline = None;
+    successor.done = None;
+    successor.order = insertion_order_after(app, head);
+    successor.scheduled = head.scheduled.map(|s| day.instant(next_date, local_tod(s)));
+    successor.duedate = head.duedate.map(|d| day.instant(next_date, local_tod(d)));
+    // Live labels only, re-stamped: the head's `Removed` tombstones are
+    // its own history; a fresh task never referenced those labels.
+    successor.label_memberships = head
+        .live_labels()
+        .into_iter()
+        .map(|label| (label, MembershipState::Added { at: now }))
+        .collect();
+    successor.archived = false;
+    successor.deleted = false;
+    // The rule copies verbatim — same series, anchor, pattern, bound,
+    // `continued_from`.
+    successor.clocks = all_task_clocks(now);
+
+    let mut actions = vec![PersistenceAction::UpsertTask(successor.clone())];
+    actions.push(enqueue(LocalOp::CreateTask(successor.id), ids, now));
+    // Freshly created cards start label-less; the per-label ops are what
+    // make the labels roam (the `AssignLabel` verb's own emission,
+    // label-id ascending).
+    let labels: Vec<LabelId> = successor.label_memberships.keys().copied().collect();
+    for label in labels {
+        actions.push(enqueue(LocalOp::AssignLabel(successor.id, label), ids, now));
+    }
+    // Per head rule, rule-id ascending, the `AddReminderRule` arm's
+    // shape: fresh id, copied offset, both stamps at the spawn instant.
+    for old in app.reminders.rules.values().filter(|r| r.task == head.id) {
+        actions.push(PersistenceAction::UpsertReminderRule(ReminderRule {
+            id: ids.new_reminder_rule_id(),
+            task: successor.id,
+            offset: old.offset,
+            created_at: now,
+            updated_at: now,
+        }));
+    }
+    // The single document-group trigger covering the successor's `recur`
+    // and its new rules (coalescing is push-side).
+    actions.push(enqueue(LocalOp::UpdateAppData(successor.id), ids, now));
+    // Mute replication is device-local like the mute verb — no op.
+    if app.reminders.muted.contains(&head.id) {
+        actions.push(PersistenceAction::SetTaskRemindersMuted(successor.id, true));
+    }
+    actions
+}
+
+/// The day-boundary roll planner (DR-6/2 §3): every stale head's date
+/// fields move to `roll_target`'s catch-up member, as an ordinary field
+/// edit with fresh clocks. A head is stale iff it is live, open,
+/// recur-bearing, and its reference date (scheduled, else duedate; a
+/// dateless head is never stale) is strictly before `today`. Bound
+/// suppression writes nothing (D-E2: the rule clears only at its
+/// terminal completion). Batch layout: all upserts (task-id ascending —
+/// `app.tasks` is a `BTreeMap`), then their enqueues in the same order.
+/// Deterministic per `(state, today)`: two devices rolling the same head
+/// produce identical targets (the pure law), so LWW makes the race
+/// benign.
+#[must_use]
+pub fn plan_day_rolls(
+    app: &AppState,
+    today: NaiveDate,
+    calendar: DayCalendar,
+    ids: &dyn IdGenerator,
+    now: DateTime<Utc>,
+) -> Vec<PersistenceAction> {
+    let mut upserts = Vec::new();
+    let mut ops = Vec::new();
+    for task in app.tasks.values() {
+        let Some(rule) = &task.recur else {
+            continue;
+        };
+        if !task.is_live() || task.done.is_some() {
+            continue;
+        }
+        let Some(reference) = roll_reference_date(task, calendar) else {
+            continue;
+        };
+        if reference >= today {
+            continue;
+        }
+        let target = roll_target(&rule.pattern, rule.anchor, reference, today);
+        match rule.bound {
+            RecurBound::Until(until) if target > until => continue,
+            // Unreachable in practice (a count-exhausted series suppresses
+            // at its completion) but total by construction.
+            RecurBound::Count(n) if count_done_in_series(app, rule.series) >= n.get() => {
+                continue;
+            }
+            _ => {}
+        }
+        let local_tod = |t: DateTime<Utc>| t.with_timezone(&calendar.offset).time();
+        let mut rolled = task.clone();
+        // The `UpdateTask` arm's lane split (D-V2's conservative
+        // routing): a moved duedate is always native; a moved scheduled
+        // rides the document lane on a board without `card_startdate`.
+        let mut native = false;
+        let mut app_lane = false;
+        if let Some(s) = task.scheduled {
+            rolled.scheduled = Some(calendar.instant(target, local_tod(s)));
+            rolled.clocks.scheduled = now;
+            let board = app.stacks.get(&task.stack).map(|s| s.board);
+            if board.is_some_and(|b| board_features(app, b).card_startdate) {
+                native = true;
+            } else {
+                app_lane = true;
+            }
+        }
+        if let Some(d) = task.duedate {
+            rolled.duedate = Some(calendar.instant(target, local_tod(d)));
+            rolled.clocks.duedate = now;
+            native = true;
+        }
+        upserts.push(PersistenceAction::UpsertTask(rolled));
+        if native {
+            ops.push(LocalOp::UpdateTask(task.id));
+        }
+        if app_lane {
+            ops.push(LocalOp::UpdateAppData(task.id));
+        }
+    }
+    upserts
+        .into_iter()
+        .chain(ops.into_iter().map(|op| enqueue(op, ids, now)))
+        .collect()
+}
+
 /// Plans one local command against the current view.
 ///
 /// Returns the persistence batch and the receipt. The function is total:
@@ -411,6 +647,11 @@ fn flush_ops(
 /// `defaults` is the injected per-device reminder configuration
 /// (`[reminders] default_before`) — the only config input of the
 /// active-notification view the Mark Done planner consults.
+///
+/// `day` is the injected day calendar (`[preferences] day_start_time` +
+/// the device's fixed offset) — the completion spawn's date vocabulary
+/// (DR-6/2 D-E5: plain calendar dates for field references, the
+/// window-date for "today").
 #[allow(clippy::too_many_lines)] // one catalogue; splitting hides the table
 pub fn plan_command(
     app: &AppState,
@@ -418,6 +659,7 @@ pub fn plan_command(
     command: &StateCommand,
     ids: &dyn IdGenerator,
     defaults: &ReminderDefaults,
+    day: DayCalendar,
     now: DateTime<Utc>,
 ) -> Result<CommandPlan, CommandError> {
     match command {
@@ -655,6 +897,31 @@ pub fn plan_command(
             let mut updated = task.clone();
             updated.done = done.then_some(now);
             updated.clocks.done = now;
+            // The completion spawn (DR-6/2, D-E1): completing a recurring
+            // head either spawns its successor or — the bound-suppressed
+            // terminal transition — clears the rule. Both decisions ride
+            // the same pure plan; the suppressed clear mutates `updated`
+            // *before* the plan is assembled so it is part of action 1's
+            // upsert. A plain task's plan is byte-identical to the
+            // pre-series catalogue (the existing suite is the pin);
+            // reopening never spawns and never clears.
+            let spawn_actions = match (*done, task.recur.clone()) {
+                (true, Some(rule)) => {
+                    let next_date = next_after(
+                        &rule.pattern,
+                        rule.anchor,
+                        series_reference_date(task, day, now),
+                    );
+                    if bound_admits(app, &rule, next_date) {
+                        Some(completion_spawn(app, task, next_date, day, ids, now))
+                    } else {
+                        updated.recur = None;
+                        updated.clocks.recur = now;
+                        None
+                    }
+                }
+                _ => None,
+            };
             let mut plan = applied_task(&updated, ids, now);
             // The reopen hazard (R3.2, R3.5.5): completing the task also
             // dismisses its currently-active occurrences — explicit rows
@@ -704,6 +971,16 @@ pub fn plan_command(
                     plan.actions
                         .push(enqueue(LocalOp::UpdateAppData(*id), ids, now));
                 }
+                // The suppressed terminal transition's flush trigger
+                // (D-E2 item 4): the `recur → None` clear is appdata-lane
+                // content, so the head's document group must reform. The
+                // unsuppressed spawn's successor actions follow (batch
+                // items 5–10).
+                if spawn_actions.is_none() && task.recur.is_some() {
+                    plan.actions
+                        .push(enqueue(LocalOp::UpdateAppData(*id), ids, now));
+                }
+                plan.actions.extend(spawn_actions.unwrap_or_default());
             }
             Ok(plan)
         }
@@ -2027,7 +2304,7 @@ mod tests {
     const T0: i64 = 36_000; // 10:00:00Z, the injected "now" of the tests
     const BOARD: u64 = 800;
     const STACK: u64 = 900;
-    const TASK: u64 = 1;
+    pub(crate) const TASK: u64 = 1;
     const LABEL: u64 = 500;
 
     fn ts(secs: i64) -> DateTime<Utc> {
@@ -2056,7 +2333,7 @@ mod tests {
         }
     }
 
-    fn task(id: u64, stack_id: StackId, bound: bool) -> Task {
+    pub(crate) fn task(id: u64, stack_id: StackId, bound: bool) -> Task {
         Task {
             id: TaskId::from(uuid::Uuid::from_u128(u128::from(id))),
             remote: bound.then_some(crate::ids::RemoteCardRef {
@@ -2128,7 +2405,7 @@ mod tests {
 
     /// Fixture: one live bound board, one live stack, one live bound task,
     /// one live bound label, empty outbox.
-    fn base() -> (AppState, Vec<PendingOp>) {
+    pub(crate) fn base() -> (AppState, Vec<PendingOp>) {
         let board_id = BoardId::from(uuid::Uuid::from_u128(u128::from(BOARD)));
         let stack_id = StackId::from(uuid::Uuid::from_u128(u128::from(STACK)));
         let app = AppState {
@@ -2183,11 +2460,11 @@ mod tests {
         (app, Vec::new())
     }
 
-    fn stack_id() -> StackId {
+    pub(crate) fn stack_id() -> StackId {
         StackId::from(uuid::Uuid::from_u128(u128::from(STACK)))
     }
 
-    fn board_id() -> BoardId {
+    pub(crate) fn board_id() -> BoardId {
         BoardId::from(uuid::Uuid::from_u128(u128::from(BOARD)))
     }
 
@@ -2257,7 +2534,7 @@ mod tests {
         assert_eq!(existing_board(&dead, stranger).map(|b| b.id), Ok(stranger));
     }
 
-    fn task_id() -> TaskId {
+    pub(crate) fn task_id() -> TaskId {
         TaskId::from(uuid::Uuid::from_u128(u128::from(TASK)))
     }
 
@@ -2276,8 +2553,18 @@ mod tests {
             command,
             &CountingIds::default(),
             &crate::reminders::ReminderDefaults::default(),
+            test_day(),
             now(),
         )
+    }
+
+    /// The tests' injected day calendar: UTC midnight — the plain
+    /// calendar date of a fixture instant is its window-date too.
+    pub(crate) fn test_day() -> DayCalendar {
+        DayCalendar {
+            day_start_time: chrono::NaiveTime::MIN,
+            offset: chrono::FixedOffset::east_opt(0).unwrap(),
+        }
     }
 
     fn op_for(raw: u128, op: LocalOp) -> PendingOp {
@@ -4287,6 +4574,7 @@ mod tests {
             &command,
             &ids,
             &crate::reminders::ReminderDefaults::default(),
+            test_day(),
             now(),
         )
         .unwrap();
@@ -4309,6 +4597,7 @@ mod tests {
             &command,
             &ids,
             &crate::reminders::ReminderDefaults::default(),
+            test_day(),
             now(),
         )
         .unwrap();
@@ -4390,6 +4679,7 @@ mod tests {
             },
             &CountingIds::default(),
             &crate::reminders::ReminderDefaults::default(),
+            test_day(),
             now(),
         )
         .unwrap();
@@ -6881,6 +7171,7 @@ mod tests {
                 &command,
                 &CountingIds::default(),
                 &crate::reminders::ReminderDefaults::default(),
+                test_day(),
                 now(),
             )
             .expect("the verbs accept every (state, pool) shape here");
@@ -6961,6 +7252,7 @@ mod tests {
                 &StateCommand::StopTracking,
                 &CountingIds::default(),
                 &crate::reminders::ReminderDefaults::default(),
+                test_day(),
                 now(),
             )
             .unwrap();
@@ -6988,6 +7280,7 @@ mod tests {
                 &StateCommand::StartTracking { task: target },
                 &CountingIds::default(),
                 &crate::reminders::ReminderDefaults::default(),
+                test_day(),
                 now(),
             )
             .unwrap();
@@ -7006,6 +7299,7 @@ mod tests {
 
 #[cfg(test)]
 mod proptests {
+    use super::tests::test_day;
     use super::*;
     use crate::test_support::{
         CountingIds, app_state_strategy, persisted_state_strategy, proptest_config,
@@ -7067,6 +7361,7 @@ mod proptests {
                 &command,
                 &CountingIds::default(),
                 &crate::reminders::ReminderDefaults::default(),
+                test_day(),
                 chrono::Utc.timestamp_opt(36_000, 0).unwrap(),
             );
 
@@ -7122,6 +7417,7 @@ mod proptests {
                 &command,
                 &CountingIds::default(),
                 &crate::reminders::ReminderDefaults::default(),
+                test_day(),
                 now,
             );
             let variant = plan_command(
@@ -7130,6 +7426,7 @@ mod proptests {
                 &command,
                 &CountingIds::default(),
                 &crate::reminders::ReminderDefaults::default(),
+                test_day(),
                 now,
             );
 
@@ -7180,5 +7477,656 @@ mod proptests {
                 Some(_) => prop_assert_eq!(result, Ok(board)),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod series_tests {
+    //! The completion spawn and the day-boundary roll (DR-6/2): planner
+    //! tests 1–8 of the stage-1 plan. The injected day calendar is UTC
+    //! midnight unless a test says otherwise, so fixture instants'
+    //! plain calendar dates are their window-dates too.
+
+    use super::*;
+    use crate::recur::{EveryDays, RecurPattern};
+    use crate::test_support::CountingIds;
+    use chrono::{NaiveDate, NaiveTime, TimeZone};
+
+    const SERIES: u128 = 9_000;
+
+    fn ts(secs: i64) -> DateTime<Utc> {
+        Utc.timestamp_opt(secs, 0).unwrap()
+    }
+
+    fn date(y: i32, m: u32, d: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, d).unwrap()
+    }
+
+    /// UTC instant at `date` `h:mm`.
+    fn at(d: NaiveDate, h: u32, m: u32) -> DateTime<Utc> {
+        Utc.from_utc_datetime(&d.and_hms_opt(h, m, 0).unwrap())
+    }
+
+    fn utc_midnight() -> DayCalendar {
+        DayCalendar {
+            day_start_time: NaiveTime::MIN,
+            offset: chrono::FixedOffset::east_opt(0).unwrap(),
+        }
+    }
+
+    fn now() -> DateTime<Utc> {
+        at(date(2026, 6, 15), 10, 0)
+    }
+
+    fn daily_rule(bound: RecurBound) -> RecurRule {
+        RecurRule {
+            series: crate::ids::SeriesId::from_uuid(uuid::Uuid::from_u128(SERIES)),
+            anchor: date(2026, 6, 1),
+            pattern: RecurPattern::Daily {
+                every: EveryDays::new(1).unwrap(),
+            },
+            bound,
+            continued_from: None,
+        }
+    }
+
+    /// The recurring head: daily series, scheduled 09:00 and due 17:00
+    /// on 2026-06-15, carrying one live label and content decorations.
+    fn recur_head(bound: RecurBound) -> Task {
+        let mut head = super::tests::task(super::tests::TASK, super::tests::stack_id(), true);
+        head.title = "water the plants".into();
+        head.description = "the balcony ones".into();
+        head.scheduled = Some(at(date(2026, 6, 15), 9, 0));
+        head.duedate = Some(at(date(2026, 6, 15), 17, 0));
+        head.order = 1;
+        head.effort = Some(crate::entities::Effort::new(2));
+        head.importance = Some(crate::entities::Importance::High);
+        head.urgency = Some(crate::entities::Urgency::Low);
+        head.recur = Some(daily_rule(bound));
+        head
+    }
+
+    fn base_with(head: Task) -> (AppState, Vec<PendingOp>) {
+        let (mut app, outbox) = super::tests::base();
+        app.tasks.insert(head.id, head);
+        (app, outbox)
+    }
+
+    fn head_id() -> TaskId {
+        super::tests::task_id()
+    }
+
+    /// An id source burned past every fixture id: the fixture tasks use
+    /// small `u128`s, the counter starts at 1 — minting raw would
+    /// collide with the head itself.
+    fn burned_ids() -> CountingIds {
+        let ids = CountingIds::new();
+        for _ in 0..100 {
+            ids.new_op_id();
+        }
+        ids
+    }
+
+    /// `SetTaskDone { done: true }` over `app` with a fresh id source.
+    fn complete(app: &AppState, outbox: &[PendingOp]) -> CommandPlan {
+        let command = StateCommand::SetTaskDone {
+            id: head_id(),
+            done: true,
+        };
+        plan_command(
+            app,
+            outbox,
+            &command,
+            &burned_ids(),
+            &crate::reminders::ReminderDefaults::default(),
+            utc_midnight(),
+            now(),
+        )
+        .unwrap()
+    }
+
+    fn successor_of(plan: &CommandPlan) -> Task {
+        spawned_successor(plan).expect("the plan spawns a successor")
+    }
+
+    /// The spawned successor, if the plan spawned one (a suppressed
+    /// completion's only upsert is the head itself).
+    fn spawned_successor(plan: &CommandPlan) -> Option<Task> {
+        plan.actions.iter().find_map(|action| match action {
+            PersistenceAction::UpsertTask(t) if t.id != head_id() => Some(t.clone()),
+            _ => None,
+        })
+    }
+
+    // ---- 1: the successor inventory (D-E3) -----------------------------
+
+    #[test]
+    fn completing_a_recurring_head_spawns_the_successor() {
+        let (app, outbox) = base_with(recur_head(RecurBound::None));
+        let plan = complete(&app, &outbox);
+        assert_eq!(plan.outcome, CommandOutcome::Applied);
+
+        let head = &app.tasks[&head_id()];
+        let successor = successor_of(&plan);
+        assert_ne!(successor.id, head.id, "fresh id");
+        assert_eq!(successor.title, head.title);
+        assert_eq!(successor.description, head.description);
+        assert_eq!(successor.stack, head.stack);
+        assert_eq!(successor.done, None, "the successor is open");
+        assert!(!successor.archived, "archiving is not copied");
+        assert!(!successor.deleted);
+        assert_eq!(successor.remote, None, "newborn local task");
+        assert_eq!(successor.remote_seen, None);
+        assert_eq!(successor.remote_baseline, None);
+        assert_eq!(successor.effort, head.effort, "content carries over");
+        assert_eq!(successor.importance, head.importance);
+        assert_eq!(successor.urgency, head.urgency);
+        assert_eq!(
+            successor.recur, head.recur,
+            "the rule copies verbatim — same series identity"
+        );
+        // The next member dates, each field's own time-of-day preserved.
+        assert_eq!(
+            successor.scheduled,
+            Some(at(date(2026, 6, 16), 9, 0)),
+            "scheduled at the next member, 09:00 kept"
+        );
+        assert_eq!(
+            successor.duedate,
+            Some(at(date(2026, 6, 16), 17, 0)),
+            "duedate at the next member, 17:00 kept"
+        );
+        // Labels re-stamped at the spawn instant.
+        assert_eq!(
+            successor.label_memberships,
+            app.tasks[&head_id()]
+                .live_labels()
+                .into_iter()
+                .map(|l| (l, crate::entities::MembershipState::Added { at: now() }))
+                .collect::<BTreeMap<_, _>>(),
+        );
+        // Newborn clocks: every slot at the spawn instant.
+        assert_eq!(successor.clocks, all_task_clocks(now()));
+    }
+
+    // ---- 2: the midpoint insertion rule (D-E4) -------------------------
+
+    fn head_at_order(order: i64) -> Task {
+        let mut head = recur_head(RecurBound::None);
+        head.order = order;
+        head
+    }
+
+    fn orders_of_neighbors(app: &AppState, head: &Task) -> Vec<i64> {
+        let mut orders: Vec<i64> = app
+            .tasks
+            .values()
+            .filter(|t| t.is_live() && t.stack == head.stack && t.id != head.id)
+            .map(|t| t.order)
+            .collect();
+        orders.sort_unstable();
+        orders
+    }
+
+    #[test]
+    fn the_successor_lands_immediately_after_the_head() {
+        // Case 1: the head is last ⇒ the append slot is free.
+        let (app, outbox) = base_with(head_at_order(10));
+        let order = successor_of(&complete(&app, &outbox)).order;
+        assert_eq!(order, 11, "free +1 slot");
+
+        // Case 2: gap ≥ 2 ⇒ the floor midpoint of the free interval.
+        let (mut app, outbox) = base_with(head_at_order(1));
+        let mut blocker = super::tests::task(2, super::tests::stack_id(), true);
+        blocker.order = 5;
+        blocker.done = Some(ts(1));
+        app.tasks.insert(blocker.id, blocker); // done tasks still occupy slots
+        let order = successor_of(&complete(&app, &outbox)).order;
+        assert_eq!(order, 3, "1 + 4/2");
+
+        // Case 3: gap == 1 ⇒ the successor ties the head only.
+        let (mut app, outbox) = base_with(head_at_order(1));
+        let mut next = super::tests::task(2, super::tests::stack_id(), true);
+        next.order = 2;
+        app.tasks.insert(next.id, next);
+        let plan = complete(&app, &outbox);
+        let successor = successor_of(&plan);
+        assert_eq!(successor.order, 1, "the tie slot");
+        let others = orders_of_neighbors(&app, &app.tasks[&head_id()]);
+        assert!(
+            !others.contains(&1),
+            "no third task shares the head's order: {others:?}"
+        );
+        // The canonical (order, id) sort puts the successor after the head.
+        assert!(
+            (successor.order, successor.id) > (app.tasks[&head_id()].order, head_id()),
+            "canonical order renders the successor after the head"
+        );
+    }
+
+    // ---- 3: the Until bound and the terminal rule (D-E2) ---------------
+
+    #[test]
+    fn until_bound_suppresses_and_clears_at_the_terminal_completion() {
+        // Inclusive bound: a member *on* the until date still spawns.
+        let (app, outbox) = base_with(recur_head(RecurBound::Until(date(2026, 6, 16))));
+        let plan = complete(&app, &outbox);
+        let successor = successor_of(&plan);
+        assert_eq!(successor.scheduled, Some(at(date(2026, 6, 16), 9, 0)));
+
+        // A member past the until date: no successor; the head still
+        // completes and the rule clears as the terminal transition.
+        let (app, outbox) = base_with(recur_head(RecurBound::Until(date(2026, 6, 15))));
+        let head = &app.tasks[&head_id()];
+        eprintln!(
+            "DBG ref={:?} until={:?} rule={:?}",
+            series_reference_date(head, utc_midnight(), now()),
+            date(2026, 6, 15),
+            head.recur
+        );
+        let plan = complete(&app, &outbox);
+        eprintln!("DBG actions={:?}", plan.actions);
+        assert!(
+            spawned_successor(&plan).is_none(),
+            "no successor was spawned"
+        );
+        let PersistenceAction::UpsertTask(done_head) = &plan.actions[0] else {
+            panic!("first action is the head's upsert");
+        };
+        assert_eq!(done_head.done, Some(now()), "the head still completes");
+        assert_eq!(
+            done_head.recur, None,
+            "the series ends; the head is an ordinary standalone task"
+        );
+        assert_eq!(done_head.clocks.recur, now(), "fresh recur clock");
+        assert!(
+            plan.actions.iter().any(|action| matches!(
+                action,
+                PersistenceAction::EnqueueOp(op)
+                    if matches!(op.op, LocalOp::UpdateAppData(id) if id == head_id())
+            )),
+            "the clear is appdata-lane content: the flush trigger rides"
+        );
+    }
+
+    // ---- 4: the Count bound derives from history (D-E2) ----------------
+
+    fn done_occurrence(raw: u128, deleted: bool) -> Task {
+        let mut t = recur_head(RecurBound::None);
+        t.id = TaskId::from_uuid(uuid::Uuid::from_u128(raw));
+        t.done = Some(ts(100));
+        t.deleted = deleted;
+        t
+    }
+
+    #[test]
+    fn count_bound_evaluates_derived_history() {
+        // Count(2), no prior completions: this completion is #1 ⇒ spawns.
+        let (app, outbox) = base_with(recur_head(RecurBound::Count(
+            crate::recur::OccurrenceCount::new(2).unwrap(),
+        )));
+        let plan = complete(&app, &outbox);
+        assert!(spawned_successor(&plan).is_some(), "admits the spawn");
+
+        // One prior done occurrence: this completion is #2 ⇒ suppressed.
+        let (mut app, outbox) = base_with(recur_head(RecurBound::Count(
+            crate::recur::OccurrenceCount::new(2).unwrap(),
+        )));
+        app.tasks.insert(
+            TaskId::from_uuid(uuid::Uuid::from_u128(9_500)),
+            done_occurrence(9_500, false),
+        );
+        let plan = complete(&app, &outbox);
+        assert!(spawned_successor(&plan).is_none(), "no successor");
+        let PersistenceAction::UpsertTask(done_head) = &plan.actions[0] else {
+            panic!("first action is the head's upsert");
+        };
+        assert_eq!(done_head.recur, None, "the quota ended the series");
+
+        // A soft-deleted done occurrence still counts: history outlives
+        // deletion — no counter column exists anywhere (structural).
+        let (mut app, outbox) = base_with(recur_head(RecurBound::Count(
+            crate::recur::OccurrenceCount::new(2).unwrap(),
+        )));
+        app.tasks.insert(
+            TaskId::from_uuid(uuid::Uuid::from_u128(9_501)),
+            done_occurrence(9_501, true),
+        );
+        let plan = complete(&app, &outbox);
+        assert!(spawned_successor(&plan).is_none(), "deleted still counts");
+    }
+
+    // ---- 5: reminder replication (D-E6 items 8–10) ---------------------
+
+    #[test]
+    fn reminder_rules_replicate_without_history() {
+        let (mut app, outbox) = base_with(recur_head(RecurBound::None));
+        let rule = crate::reminders::ReminderRule {
+            id: crate::ids::ReminderRuleId::from_uuid(uuid::Uuid::from_u128(4_100)),
+            task: head_id(),
+            offset: crate::reminders::ReminderOffset::before(
+                chrono::TimeDelta::try_minutes(-30).unwrap(),
+            )
+            .unwrap(),
+            created_at: ts(50),
+            updated_at: ts(50),
+        };
+        app.reminders.rules.insert(rule.id, rule);
+        app.reminders.muted.insert(head_id());
+        let plan = complete(&app, &outbox);
+        let successor = successor_of(&plan);
+
+        let replicated: Vec<&crate::reminders::ReminderRule> = plan
+            .actions
+            .iter()
+            .filter_map(|action| match action {
+                PersistenceAction::UpsertReminderRule(r) => Some(r),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(replicated.len(), 1, "one rule per head rule");
+        let fresh = replicated[0];
+        assert_ne!(
+            fresh.id,
+            crate::ids::ReminderRuleId::from_uuid(uuid::Uuid::from_u128(4_100))
+        );
+        assert_eq!(fresh.task, successor.id);
+        assert_eq!(
+            fresh.offset,
+            crate::reminders::ReminderOffset::before(chrono::TimeDelta::try_minutes(-30).unwrap())
+                .unwrap()
+        );
+        assert_eq!(fresh.created_at, now());
+        assert_eq!(fresh.updated_at, now());
+        // Zero delivery/dismissal/snooze rows touch the successor: the
+        // batch's dismissal rows (none here — nothing fired) and
+        // deliveries are keyed to the *head's* occurrences.
+        assert!(
+            plan.actions
+                .iter()
+                .all(|action| !matches!(action, PersistenceAction::RecordReminderDelivery(_)))
+        );
+        assert!(
+            plan.actions
+                .contains(&PersistenceAction::SetTaskRemindersMuted(
+                    successor.id,
+                    true
+                )),
+            "the mute flag replicates"
+        );
+    }
+
+    #[test]
+    fn a_head_with_neither_rules_nor_mute_replicates_neither() {
+        let (app, outbox) = base_with(recur_head(RecurBound::None));
+        let plan = complete(&app, &outbox);
+        assert!(
+            plan.actions
+                .iter()
+                .all(|action| !matches!(action, PersistenceAction::UpsertReminderRule(_)))
+        );
+        assert!(
+            plan.actions
+                .iter()
+                .all(|action| !matches!(action, PersistenceAction::SetTaskRemindersMuted(_, _)))
+        );
+    }
+
+    // ---- 6: reopen and the plain-completion pin (D-E1) -----------------
+
+    #[test]
+    fn reopening_never_spawns_and_plain_completion_is_untouched() {
+        // Reopen direction on a recur head: exactly the applied_task
+        // shape — upsert + UpdateTask op, nothing else.
+        let (mut app, outbox) = base_with(recur_head(RecurBound::None));
+        app.tasks.get_mut(&head_id()).unwrap().done = Some(ts(90));
+        let command = StateCommand::SetTaskDone {
+            id: head_id(),
+            done: false,
+        };
+        let plan = plan_command(
+            &app,
+            &outbox,
+            &command,
+            &burned_ids(),
+            &crate::reminders::ReminderDefaults::default(),
+            utc_midnight(),
+            now(),
+        )
+        .unwrap();
+        assert_eq!(plan.actions.len(), 2, "upsert + op, no spawn");
+        assert!(plan.actions.iter().all(|action| !matches!(
+            action,
+            PersistenceAction::UpsertTask(t) if t.id != head_id()
+        )));
+
+        // A non-recur head's completion plan is byte-identical to the
+        // pre-series catalogue (structural pin).
+        let (mut app, outbox) = base_with(recur_head(RecurBound::None));
+        app.tasks.get_mut(&head_id()).unwrap().recur = None;
+        let plan = complete(&app, &outbox);
+        assert_eq!(plan.actions.len(), 2);
+        assert!(matches!(plan.actions[0], PersistenceAction::UpsertTask(_)));
+        assert!(matches!(
+            &plan.actions[1],
+            PersistenceAction::EnqueueOp(op)
+                if matches!(op.op, LocalOp::UpdateTask(id) if id == head_id())
+        ));
+    }
+
+    // ---- 7: the mirror rule and date conventions (D-E5) ----------------
+
+    #[test]
+    fn dateless_and_dueonly_successors_mirror_the_head() {
+        // Due-only head ⇒ due-only successor.
+        let (mut app, outbox) = base_with(recur_head(RecurBound::None));
+        app.tasks.get_mut(&head_id()).unwrap().scheduled = None;
+        let successor = successor_of(&complete(&app, &outbox));
+        assert_eq!(successor.scheduled, None, "mirror the population");
+        assert_eq!(successor.duedate, Some(at(date(2026, 6, 16), 17, 0)));
+
+        // Dateless head ⇒ dateless successor (the series survives with
+        // no stored dates, exactly as the user kept it).
+        let (mut app, outbox) = base_with(recur_head(RecurBound::None));
+        let head = app.tasks.get_mut(&head_id()).unwrap();
+        head.scheduled = None;
+        head.duedate = None;
+        let successor = successor_of(&complete(&app, &outbox));
+        assert_eq!(successor.scheduled, None);
+        assert_eq!(successor.duedate, None);
+    }
+
+    // ---- 8: the day-boundary roll planner (D-E10/D-E11) ----------------
+
+    use crate::recur::roll_target;
+
+    fn roll(app: &AppState, today: NaiveDate) -> Vec<PersistenceAction> {
+        plan_day_rolls(app, today, utc_midnight(), &burned_ids(), now())
+    }
+
+    #[test]
+    fn a_stale_head_rolls_to_the_catch_up_member_with_fresh_clocks() {
+        let (mut app, _outbox) = base_with(recur_head(RecurBound::None));
+        let head = app.tasks.get_mut(&head_id()).unwrap();
+        head.scheduled = Some(at(date(2026, 6, 12), 9, 0));
+        head.duedate = Some(at(date(2026, 6, 12), 17, 0));
+        let snapshot = head.clone();
+        let actions = roll(&app, date(2026, 6, 15));
+
+        assert_eq!(
+            actions.len(),
+            3,
+            "upsert + two ops: duedate native, scheduled on a features-less board app-lane"
+        );
+        let PersistenceAction::UpsertTask(rolled) = &actions[0] else {
+            panic!("first action is the roll upsert");
+        };
+        let target = roll_target(
+            &snapshot.recur.as_ref().unwrap().pattern,
+            snapshot.recur.as_ref().unwrap().anchor,
+            date(2026, 6, 12),
+            date(2026, 6, 15),
+        );
+        assert_eq!(target, date(2026, 6, 15), "daily catch-up lands today");
+        assert_eq!(
+            rolled.scheduled,
+            Some(at(target, 9, 0)),
+            "the time-of-day is preserved"
+        );
+        assert_eq!(rolled.duedate, Some(at(target, 17, 0)));
+        assert_eq!(rolled.clocks.scheduled, now(), "fresh field clocks");
+        assert_eq!(rolled.clocks.duedate, now());
+        assert!(matches!(
+            &actions[1],
+            PersistenceAction::EnqueueOp(op) if matches!(op.op, LocalOp::UpdateTask(id) if id == head_id())
+        ));
+    }
+
+    #[test]
+    fn the_stale_predicate_is_live_open_recur_and_reference_before_today() {
+        // Done, deleted, and dateless heads never roll; a recur head
+        // dated today or in the future never rolls.
+        let (mut app, _outbox) = base_with(recur_head(RecurBound::None));
+        {
+            let head = app.tasks.get_mut(&head_id()).unwrap();
+            head.scheduled = Some(at(date(2026, 6, 14), 9, 0));
+            head.duedate = None;
+        }
+        assert_eq!(roll(&app, date(2026, 6, 15)).len(), 2, "stale rolls");
+
+        let mut done = app.clone();
+        done.tasks.get_mut(&head_id()).unwrap().done = Some(ts(200));
+        assert!(
+            roll(&done, date(2026, 6, 15)).is_empty(),
+            "done is not stale"
+        );
+
+        let mut dead = app.clone();
+        dead.tasks.get_mut(&head_id()).unwrap().deleted = true;
+        assert!(
+            roll(&dead, date(2026, 6, 15)).is_empty(),
+            "deleted is not stale"
+        );
+
+        let mut dateless = app.clone();
+        let head = dateless.tasks.get_mut(&head_id()).unwrap();
+        head.scheduled = None;
+        head.duedate = None;
+        assert!(
+            roll(&dateless, date(2026, 6, 15)).is_empty(),
+            "dateless never stale"
+        );
+
+        let mut future = app.clone();
+        future.tasks.get_mut(&head_id()).unwrap().scheduled = Some(at(date(2026, 6, 20), 9, 0));
+        assert!(
+            roll(&future, date(2026, 6, 15)).is_empty(),
+            "future is not stale"
+        );
+
+        let mut today = app.clone();
+        today.tasks.get_mut(&head_id()).unwrap().scheduled = Some(at(date(2026, 6, 15), 9, 0));
+        assert!(
+            roll(&today, date(2026, 6, 15)).is_empty(),
+            "today is not stale"
+        );
+    }
+
+    #[test]
+    fn an_until_bound_head_whose_target_exceeds_the_bound_stays_stale() {
+        let (mut app, _outbox) = base_with(recur_head(RecurBound::Until(date(2026, 6, 13))));
+        app.tasks.get_mut(&head_id()).unwrap().scheduled = Some(at(date(2026, 6, 12), 9, 0));
+        let actions = roll(&app, date(2026, 6, 15));
+        assert!(
+            actions.is_empty(),
+            "roll-path suppression writes nothing: no roll, no clear"
+        );
+        assert_eq!(
+            app.tasks[&head_id()].recur,
+            app.tasks[&head_id()].recur,
+            "the rule survives"
+        );
+    }
+
+    #[test]
+    fn rolls_iterate_task_id_ascending_entities_then_ops() {
+        let (mut app, _outbox) = base_with(recur_head(RecurBound::None));
+        let head = app.tasks.get_mut(&head_id()).unwrap();
+        head.scheduled = Some(at(date(2026, 6, 12), 9, 0));
+        head.duedate = None; // scheduled-only on a features-less board ⇒ app lane
+        // A second stale head with a greater id.
+        let mut other = recur_head(RecurBound::None);
+        other.id = TaskId::from_uuid(uuid::Uuid::from_u128(9_999));
+        other.scheduled = Some(at(date(2026, 6, 12), 8, 0));
+        other.duedate = None;
+        app.tasks.insert(other.id, other);
+
+        let actions = roll(&app, date(2026, 6, 15));
+        let upserts: Vec<TaskId> = actions
+            .iter()
+            .filter_map(|action| match action {
+                PersistenceAction::UpsertTask(t) => Some(t.id),
+                _ => None,
+            })
+            .collect();
+        let ops: Vec<TaskId> = actions
+            .iter()
+            .filter_map(|action| match action {
+                PersistenceAction::EnqueueOp(op) => match op.op {
+                    LocalOp::UpdateAppData(id) | LocalOp::UpdateTask(id) => Some(id),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect();
+        let mut sorted = upserts.clone();
+        sorted.sort();
+        assert_eq!(upserts, sorted, "task-id ascending");
+        assert_eq!(upserts.len(), ops.len(), "one op per rolled head");
+        assert!(
+            actions
+                .iter()
+                .take_while(|action| matches!(action, PersistenceAction::UpsertTask(_)))
+                .count()
+                == upserts.len(),
+            "entities first, ops after"
+        );
+    }
+
+    #[test]
+    fn the_roll_lanes_follow_the_board_features() {
+        let (mut app, _outbox) = base_with(recur_head(RecurBound::None));
+        let head = app.tasks.get_mut(&head_id()).unwrap();
+        head.scheduled = Some(at(date(2026, 6, 12), 9, 0));
+        head.duedate = None;
+        // CONSERVATIVE (the default: no row) routes scheduled to the
+        // document lane.
+        let actions = roll(&app, date(2026, 6, 15));
+        assert!(matches!(
+            &actions[1],
+            PersistenceAction::EnqueueOp(op)
+                if matches!(op.op, LocalOp::UpdateAppData(id) if id == head_id())
+        ));
+
+        // A card_startdate board routes it natively.
+        let (mut app, _outbox) = base_with(recur_head(RecurBound::None));
+        let head = app.tasks.get_mut(&head_id()).unwrap();
+        head.scheduled = Some(at(date(2026, 6, 12), 9, 0));
+        head.duedate = None;
+        app.sync = crate::state::SyncStates::with_row(
+            super::tests::board_id(),
+            crate::state::SyncStatus {
+                features: DeckFeatures {
+                    card_startdate: true,
+                },
+                ..crate::state::SyncStatus::default()
+            },
+        );
+        let actions = roll(&app, date(2026, 6, 15));
+        assert!(matches!(
+            &actions[1],
+            PersistenceAction::EnqueueOp(op)
+                if matches!(op.op, LocalOp::UpdateTask(id) if id == head_id())
+        ));
     }
 }
