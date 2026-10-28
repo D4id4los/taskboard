@@ -531,6 +531,7 @@ fn push_notifications(
                 can_done: buttons.done,
                 can_mute: buttons.mute,
                 can_cancel: buttons.cancel,
+                can_track_start: buttons.track_start,
             }
         })
         .collect();
@@ -813,6 +814,7 @@ fn push_board(
 ) -> usize {
     let flow = vs.flow().clone();
     let scale = window.global::<Theme>().get_base_scale();
+    let tracked_task = presentation::tracking_open_task(state);
     let mut mutations = 0;
     let mut columns: Vec<StackColumnModel> = Vec::with_capacity(stack_ids.len());
     for stack_id in stack_ids {
@@ -833,7 +835,7 @@ fn push_board(
                 sets,
                 vs,
                 now,
-                decorations_model(models, task),
+                decorations_model(models, task, tracked_task),
             ));
         }
         mutations += diff_rows(&cards_handle, &cards);
@@ -868,7 +870,13 @@ fn push_board(
     if let Flow::DragMove { task, .. } = &flow
         && let Some(dragged) = state.tasks.get(task)
     {
-        let mut ghost = task_card_model(dragged, sets, vs, now, decorations_model(models, dragged));
+        let mut ghost = task_card_model(
+            dragged,
+            sets,
+            vs,
+            now,
+            decorations_model(models, dragged, tracked_task),
+        );
         ghost.dragging_source = false;
         window.global::<DragState>().set_ghost_model(ghost);
     }
@@ -952,10 +960,14 @@ impl PushModels {
 /// per-task handle and diff the desired decorations onto it (r2
 /// D9's `card_decorations` slot — the handle identity that makes
 /// unchanged cards compare fully equal).
-fn decorations_model(models: &mut PushModels, task: &Task) -> ModelRc<TaskDecoration> {
+fn decorations_model(
+    models: &mut PushModels,
+    task: &Task,
+    tracked_task: Option<TaskId>,
+) -> ModelRc<TaskDecoration> {
     let slot = models.card_decorations.entry(task.id).or_default();
     models.pass_tasks.insert(task.id);
-    diff_rows(slot, &field_decorations(task));
+    diff_rows(slot, &field_decorations(task, tracked_task));
     ModelRc::from(slot.clone())
 }
 
@@ -974,6 +986,7 @@ fn push_stack_detail(
         .subject_stack()
         .map(|stack| state.tasks_in_stack(stack))
         .unwrap_or_default();
+    let tracked_task = presentation::tracking_open_task(state);
     let detail_handle = models.detail_tasks.get_or_insert_with(Rc::default).clone();
     let mut detail_rows: Vec<TaskCardModel> = Vec::with_capacity(tasks.len());
     // The same single-pass anchor filter as `push_board` (DDF-5).
@@ -987,7 +1000,7 @@ fn push_stack_detail(
             sets,
             vs,
             now,
-            decorations_model(models, task),
+            decorations_model(models, task, tracked_task),
         ));
     }
     let mutations = diff_rows(&detail_handle, &detail_rows);
@@ -1020,6 +1033,9 @@ fn push_task_detail(
     due: &DueEditorPush<'_>,
 ) -> usize {
     let subject = vs.subject_task().and_then(|t| state.tasks.get(&t));
+    // The detail button's verb (DR-5/4, D-TU6): exactly one while a
+    // subject exists, both false without.
+    let track_verb = presentation::detail_tracking_verb(state, vs.subject_task());
     let editing = matches!(vs.flow(), Flow::EditTitle { task } if vs.subject_task().is_some_and(|s| *task == s));
     let description_editing = matches!(vs.flow(), Flow::EditDescription { task } if vs.subject_task().is_some_and(|s| *task == s));
     // The subject task's rules in id order (the table and the row
@@ -1120,6 +1136,8 @@ fn push_task_detail(
             subject.map_or(DueKind::None, |t| presentation::due_kind(t, sets)),
         ),
         done: subject.is_some_and(|t| t.done.is_some()),
+        can_track_start: track_verb == Some(presentation::TrackDetail::Start),
+        can_track_stop: track_verb == Some(presentation::TrackDetail::Stop),
         description: SharedString::from(subject.map_or(String::new(), |t| t.description.clone())),
         description_edit_open: description_editing,
         description_initial: SharedString::from(if description_editing {
@@ -1190,6 +1208,27 @@ fn push_status_bar(
             presentation::countdown_phrase(c.effective, now)
         )
     })));
+    // The tracking chip (DR-5/4, D-T16): display on kiosk TOO — the
+    // appliance shows what is being worked on; only the stop
+    // affordance empties (the deliberate deviation from the timers
+    // chip's wholesale kiosk hide). Elapsed re-derives per pass from
+    // the ArcSwap snapshot — no UI-held timer state; the wall-minute
+    // repaint re-pushes the text.
+    let tracking = presentation::tracking_chip(state);
+    window.set_tracking_chip_visible(tracking.is_some());
+    window.set_tracking_chip(SharedString::from(tracking.as_ref().map_or(
+        String::new(),
+        |c| {
+            format!(
+                "{} \u{b7} {}",
+                c.title.clone(),
+                presentation::open_elapsed_phrase(c.start, now)
+            )
+        },
+    )));
+    window.set_tracking_chip_action_visible(
+        tracking.is_some() && presentation::tracking_chip_action_visible(kiosk),
+    );
     // The badge reads the *selected* board's row (design §3.2); the
     // recency caption follows it — the badge's freshness, per board.
     let badge = presentation::sync_badge_for_board(&state.sync, vs.board());
@@ -1290,8 +1329,12 @@ fn level_tone(level: &str) -> Tone {
 /// The field decorations of one task (doc 4 §7 item 3): importance and
 /// urgency ride the card's existing decorations slot — labels come from
 /// the domain text forms, tones from the monotone mapping. No effort/
-/// scheduled chips (their phrases carry them).
-fn field_decorations(task: &Task) -> Vec<TaskDecoration> {
+/// scheduled chips (their phrases carry them). `tracked_task` is the
+/// pass's shared open-entry pick (DR-5/4, D-TU3): the matching card
+/// appends the static tracking badge — no elapsed (the chip owns the
+/// one moving number), so wall-minute re-pushes don't churn card
+/// decoration diffs.
+fn field_decorations(task: &Task, tracked_task: Option<TaskId>) -> Vec<TaskDecoration> {
     let mut out = Vec::new();
     if let Some(level) = task.importance {
         out.push(TaskDecoration {
@@ -1305,6 +1348,13 @@ fn field_decorations(task: &Task) -> Vec<TaskDecoration> {
             kind: DecorationKind::Urgency,
             label: level.text_form().into(),
             tone: level_tone(level.text_form()),
+        });
+    }
+    if presentation::tracking_badge_visible(tracked_task, task.id) {
+        out.push(TaskDecoration {
+            kind: DecorationKind::Tracking,
+            label: "tracking".into(),
+            tone: Tone::Info,
         });
     }
     out
@@ -1350,6 +1400,7 @@ fn push_today(
 ) -> usize {
     let sections = taskboard_domain::days::today_sections(&state.tasks, day.now, day.window);
     let multi_board = presentation::live_boards(state).len() > 1;
+    let tracked_task = presentation::tracking_open_task(state);
     // (ids, section) in display order, filtered before anything
     // derived — rows, `today_tasks`, and the counts all follow.
     let display: [(&[taskboard_domain::TaskId], &str); 4] = [
@@ -1386,7 +1437,13 @@ fn push_today(
             filtered.push(*id);
             today_tasks.push(*id);
             rows.push(TodayRowModel {
-                card: task_card_model(task, sets, vs, day.now, decorations_model(models, task)),
+                card: task_card_model(
+                    task,
+                    sets,
+                    vs,
+                    day.now,
+                    decorations_model(models, task, tracked_task),
+                ),
                 context: SharedString::from(presentation::today_row_context(
                     state,
                     task,
@@ -1554,7 +1611,7 @@ mod tests {
         let mut t = task();
         t.importance = Some(Importance::High);
         t.urgency = Some(Urgency::VeryLow);
-        let decorations = field_decorations(&t);
+        let decorations = field_decorations(&t, None);
         assert_eq!(decorations.len(), 2);
         assert!(matches!(decorations[0].kind, DecorationKind::Importance));
         assert!(matches!(decorations[0].tone, Tone::Warning));
@@ -1596,7 +1653,7 @@ mod tests {
 
     #[test]
     fn unset_levels_decorate_nothing() {
-        assert_eq!(field_decorations(&task()), [] as [TaskDecoration; 0]);
+        assert_eq!(field_decorations(&task(), None), [] as [TaskDecoration; 0]);
     }
 
     /// D9 — the diff primitive: positional compare, truncate, append;
@@ -1663,7 +1720,7 @@ mod tests {
     fn an_unchanged_card_compares_equal_across_refresh_passes() {
         let mut t = task();
         t.importance = Some(Importance::Normal);
-        let decorations = Rc::new(VecModel::from(field_decorations(&t)));
+        let decorations = Rc::new(VecModel::from(field_decorations(&t, None)));
         let vs = ViewState::default();
         let now = epoch();
         let sets = DueSets::default();
@@ -1681,7 +1738,7 @@ mod tests {
             &sets,
             &vs,
             now,
-            ModelRc::new(VecModel::from(field_decorations(&t))),
+            ModelRc::new(VecModel::from(field_decorations(&t, None))),
         );
         assert_eq!(diff_rows(&model, &[fresh]), 1);
     }

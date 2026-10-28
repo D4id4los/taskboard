@@ -135,6 +135,32 @@ pub fn add_alarm(
     id
 }
 
+/// The tracking-surface helper (DR-5/4, D-TU12): mints one open entry
+/// into `state` and hands back its id — the journeys address the chip
+/// and the badge through these, never hand-building the domain row.
+#[must_use]
+pub fn add_open_entry(
+    state: &mut AppState,
+    task: taskboard_domain::TaskId,
+    title: &str,
+    start: chrono::DateTime<chrono::Utc>,
+) -> taskboard_domain::TimeEntryId {
+    let id = taskboard_domain::TimeEntryId::from_uuid(uuid::Uuid::now_v7());
+    state.tracking.entries.insert(
+        id,
+        taskboard_domain::TimeEntry {
+            id,
+            task,
+            task_title: title.to_owned(),
+            start,
+            end: None,
+            created_at: start,
+            updated_at: start,
+        },
+    );
+    id
+}
+
 /// Records the delivery receipt for an alarm's occurrence (the fire
 /// fact that makes the row awaiting).
 pub fn deliver_alarm(
@@ -254,6 +280,18 @@ pub fn golden_state() -> (Fixture, AppState) {
     state.tasks.insert(task0, task(task0, stack_a, 0));
     state.tasks.insert(task1, task(task1, stack_a, 1));
     state.tasks.insert(task2, task(task2, stack_b, 0));
+    // The seeded running timer (DR-5/4, D-TU12): task1 holds the open
+    // entry, 12 minutes old at fixture construction — the chip and
+    // the badge appear in the golden matrix (wall-clock-derived text
+    // is the established golden class; a minute-boundary straddle is
+    // the recorded residual risk).
+    let open_task1 = add_open_entry(
+        &mut state,
+        task1,
+        "task-1",
+        chrono::Utc::now() - TimeDelta::minutes(12),
+    );
+    debug_assert!(state.tracking.entries.contains_key(&open_task1));
     (
         Fixture {
             stack_a,

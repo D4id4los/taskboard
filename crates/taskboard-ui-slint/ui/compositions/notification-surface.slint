@@ -22,6 +22,10 @@ export struct NotificationRowModel {
     can-done: bool,
     can-mute: bool,
     can-cancel: bool,
+    // DR-5/4 (D-T16): Start Task on task-anchored rows only — the
+    // planner dismisses implicitly in the same batch, so this
+    // dispatches exactly one command.
+    can-track-start: bool,
 }
 
 export component NotificationSurface inherits Rectangle {
@@ -32,6 +36,7 @@ export component NotificationSurface inherits Rectangle {
     callback snooze-clicked(int);
     callback mute-clicked(int);
     callback cancel-clicked(int);
+    callback track-start-clicked(int);
 
     background: Theme.background;
     accessible-role: AccessibleRole.region;
@@ -75,6 +80,14 @@ export component NotificationSurface inherits Rectangle {
                     tone: Tone.info;
                     label: "Snooze reminder";
                     clicked => root.snooze-clicked(row-index);
+                }
+            }
+            if (row.can-track-start): VerticalLayout {
+                IconButton {
+                    icon: IconKind.play;
+                    tone: Tone.info;
+                    label: "Start task";
+                    clicked => root.track-start-clicked(row-index);
                 }
             }
             if (row.can-mute): VerticalLayout {

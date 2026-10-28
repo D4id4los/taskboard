@@ -16,6 +16,9 @@ export enum DecorationKind {
     urgency,
     habit,
     reminder,
+    // The running-timer badge (DR-5/4, D-TU3): the card whose task
+    // holds the open entry — static label, the chip owns the elapsed.
+    tracking,
 }
 
 export struct TaskDecoration {

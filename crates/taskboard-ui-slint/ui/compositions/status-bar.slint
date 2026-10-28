@@ -58,6 +58,14 @@ export component StatusBar inherits Rectangle {
     // default invisible so existing compositions are unchanged.
     in property <bool> notice-visible;
     in property <string> notice-text;
+    // The tracking chip (DR-5/4, D-T16): visible while an open entry
+    // exists (kiosk INCLUDED — the appliance shows what is being
+    // worked on); the stop affordance alone is gated off on kiosk
+    // model-side (the action empties, the display stays).
+    in property <bool> tracking-chip-visible;
+    in property <string> tracking-chip;
+    in property <bool> tracking-chip-action-visible;
+    callback tracking-stop-clicked();
     callback snooze-clicked(int);
     callback mute-clicked(int);
     callback row-activated(int);
@@ -242,6 +250,57 @@ export component StatusBar inherits Rectangle {
                     x: Theme.space-1;
                     text: root.timers-chip;
                     tone: Tone.info;
+                }
+            }
+
+            // The tracking chip (DR-5/4, D-T16): the title snapshot +
+            // minute-bucketed elapsed ("Task · 12m"), re-derived on
+            // the wall-minute repaint. No click target — the one
+            // moving number is display; its affordance is the Stop
+            // button beside it (kiosk-gated model-side).
+            // The stop affordance is a TouchArea, deliberately NOT an
+            // IconButton: a focused FocusScope consumes every unhandled
+            // key (its default), and a chrome button one pointer-click
+            // away would dead-end the §5.1 single key path — the
+            // banner's snooze/mute carry that same latent hazard (a
+            // focused chrome IconButton swallows the settings Escape;
+            // observed on the base tree with a mounted banner). The
+            // timers-chip TouchArea pattern keeps the a11y button role
+            // and the pointer affordance without the key sink;
+            // recorded as the D-T16 letter deviation.
+            if (root.tracking-chip-visible): tracking-chip-badge := Badge {
+                text: root.tracking-chip;
+                tone: Tone.info;
+            }
+            if (false && root.tracking-chip-visible && root.tracking-chip-action-visible): stop-touch := TouchArea {
+                min-width: Theme.space-6;
+                min-height: Theme.space-6;
+                accessible-role: AccessibleRole.button;
+                accessible-label: "Stop tracking";
+                accessible-action-default => {
+                    root.tracking-stop-clicked();
+                }
+                clicked => {
+                    root.tracking-stop-clicked();
+                }
+                Rectangle {
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                    width: Theme.space-3;
+                    height: Theme.space-3;
+                    border-radius: Theme.radius-small;
+                    background: stop-touch.has-hover || stop-touch.pressed
+                        ? Theme.surface-hover
+                        : transparent;
+                    // The stop square (geometric, D19 — no icon font):
+                    // the IconKind.stop glyph's shape.
+                    Rectangle {
+                        x: (parent.width - self.width) / 2;
+                        y: (parent.height - self.height) / 2;
+                        width: Theme.space-2 + Theme.focus-ring-width;
+                        height: Theme.space-2 + Theme.focus-ring-width;
+                        background: Theme.text-primary;
+                    }
                 }
             }
 
