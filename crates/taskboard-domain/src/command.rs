@@ -1463,6 +1463,9 @@ pub fn plan_command(
                         LocalOp::CreateLabel(id)
                         | LocalOp::UpdateLabel(id)
                         | LocalOp::DeleteLabel(id) => doomed_labels.contains(&id),
+                        // Ref-deletes carry their board exactly.
+                        LocalOp::DeleteRemoteCard { board, .. }
+                        | LocalOp::DeleteRemoteStack { board, .. } => board == board_id,
                     })
                     .map(|pending| PersistenceAction::FailOp(pending.op_id)),
             );
@@ -1517,6 +1520,9 @@ pub fn plan_command(
                 LocalOp::CreateLabel(id) | LocalOp::UpdateLabel(id) | LocalOp::DeleteLabel(id) => {
                     board_labels.contains(&id)
                 }
+                // Ref-deletes carry their board exactly.
+                LocalOp::DeleteRemoteCard { board, .. }
+                | LocalOp::DeleteRemoteStack { board, .. } => board == board_id,
             });
             let board_reminders = app
                 .reminders
@@ -7448,6 +7454,8 @@ mod proptests {
                 tasks.contains_key(task) && labels.contains_key(label)
             }
             LocalOp::UpdateBoard(id) | LocalOp::DeleteBoard(id) => boards.contains_key(id),
+            // A ref-delete's target is remote; nothing to check locally.
+            LocalOp::DeleteRemoteCard { .. } | LocalOp::DeleteRemoteStack { .. } => true,
         }
     }
 

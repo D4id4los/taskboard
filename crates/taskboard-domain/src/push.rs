@@ -24,7 +24,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::entities::{Board, Label, Stack, Task};
-use crate::ids::{BoardId, LabelId, StackId, TaskId};
+use crate::ids::{BoardId, LabelId, RemoteCardRef, RemoteStackRef, StackId, TaskId};
 use crate::outbox::{LocalOp, OpId, PendingOp};
 
 /// Which entity a [`PushGroup`] materializes against.
@@ -38,6 +38,11 @@ pub enum PushTarget {
     Stack(StackId),
     /// A label entity.
     Label(LabelId),
+    /// A remote card the local side has no binding for (the #150
+    /// ref-delete; never coalesces — the ref carries no `TaskId`).
+    RemoteCard(RemoteCardRef),
+    /// A remote stack with no local binding (the #150 stack variant).
+    RemoteStack(RemoteStackRef),
     /// A board's sidecar document (the flush; one per board per cycle,
     /// always the last group — the entries key on remote card ids that
     /// exist only after the cycle's creates echoed).
@@ -127,6 +132,18 @@ pub enum MaterializedOp {
     DeleteLabel {
         /// The label to delete.
         label: LabelId,
+    },
+    /// DELETE a remote card by ref (the #150 collapse's doomed twin);
+    /// no local row exists, so no echo adoption ever rides it.
+    DeleteRemoteCard {
+        /// The doomed card's remote ref.
+        card: RemoteCardRef,
+    },
+    /// DELETE a remote stack by ref (the #150 stack variant; the bound
+    /// survivor keeps the cards).
+    DeleteRemoteStack {
+        /// The doomed stack's remote ref.
+        stack: RemoteStackRef,
     },
     /// The board's sidecar flush (one PUT of the unioned document).
     /// Carries no content: the flush materializes from the sync actor's
@@ -350,6 +367,8 @@ pub fn plan_pushes(outbox: &[PendingOp], entities: EntityTables<'_>) -> Vec<Push
     let mut label_ops: Vec<(LabelId, usize, &PendingOp)> = Vec::new();
     let mut board_ops: Vec<(BoardId, usize, &PendingOp)> = Vec::new();
     let mut document_ops: Vec<(BoardId, usize, &PendingOp)> = Vec::new();
+    let mut ref_card_ops: Vec<(RemoteCardRef, usize, &PendingOp)> = Vec::new();
+    let mut ref_stack_ops: Vec<(RemoteStackRef, usize, &PendingOp)> = Vec::new();
     for (idx, entry) in outbox.iter().enumerate() {
         match entry.op {
             LocalOp::CreateTask(id)
@@ -369,6 +388,14 @@ pub fn plan_pushes(outbox: &[PendingOp], entities: EntityTables<'_>) -> Vec<Push
             }
             LocalOp::UpdateBoard(id) | LocalOp::DeleteBoard(id) => {
                 board_ops.push((id, idx, entry));
+            }
+            // Ref-deletes (#150): one single-op group each, no coalescing
+            // (the ref carries no local id to bucket by).
+            LocalOp::DeleteRemoteCard { card, .. } => {
+                ref_card_ops.push((card, idx, entry));
+            }
+            LocalOp::DeleteRemoteStack { stack, .. } => {
+                ref_stack_ops.push((stack, idx, entry));
             }
             // The document lane: `UpdateAppData` coalesces into the
             // board's sidecar flush, never a native wire group. The
@@ -394,6 +421,8 @@ pub fn plan_pushes(outbox: &[PendingOp], entities: EntityTables<'_>) -> Vec<Push
     groups.extend(plan_stack_groups(&stack_ops, entities.stacks));
     groups.extend(plan_label_groups(&label_ops, entities.labels));
     groups.extend(plan_task_groups(&task_ops, entities.tasks));
+    groups.extend(plan_ref_card_groups(&ref_card_ops));
+    groups.extend(plan_ref_stack_groups(&ref_stack_ops));
     groups.extend(plan_document_groups(&document_ops));
 
     // Boards → stacks → labels → tasks → the document flush last (the
@@ -410,9 +439,11 @@ pub fn plan_pushes(outbox: &[PendingOp], entities: EntityTables<'_>) -> Vec<Push
 fn kind_rank(target: PushTarget) -> u8 {
     match target {
         PushTarget::Board(_) => 0,
-        PushTarget::Stack(_) => 1,
+        // A ref-stack delete rides the stack rank (the orphan dies with
+        // its class); a ref-card delete rides the task rank.
+        PushTarget::Stack(_) | PushTarget::RemoteStack(_) => 1,
         PushTarget::Label(_) => 2,
-        PushTarget::Task(_) => 3,
+        PushTarget::Task(_) | PushTarget::RemoteCard(_) => 3,
         PushTarget::Document(_) => 4,
     }
 }
@@ -707,6 +738,40 @@ fn plan_task_groups(
                 }
             }
             groups
+        })
+        .collect()
+}
+
+/// One single-op group per doomed remote card ref — never coalesced.
+fn plan_ref_card_groups(ops: &[(RemoteCardRef, usize, &PendingOp)]) -> Vec<(usize, PushGroup)> {
+    ops.iter()
+        .map(|(card, idx, entry)| {
+            (
+                *idx,
+                PushGroup {
+                    target: PushTarget::RemoteCard(*card),
+                    materialized: MaterializedOp::DeleteRemoteCard { card: *card },
+                    primary: entry.op_id,
+                    subsumed: Vec::new(),
+                },
+            )
+        })
+        .collect()
+}
+
+/// One single-op group per doomed remote stack ref — never coalesced.
+fn plan_ref_stack_groups(ops: &[(RemoteStackRef, usize, &PendingOp)]) -> Vec<(usize, PushGroup)> {
+    ops.iter()
+        .map(|(stack, idx, entry)| {
+            (
+                *idx,
+                PushGroup {
+                    target: PushTarget::RemoteStack(*stack),
+                    materialized: MaterializedOp::DeleteRemoteStack { stack: *stack },
+                    primary: entry.op_id,
+                    subsumed: Vec::new(),
+                },
+            )
         })
         .collect()
 }

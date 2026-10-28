@@ -162,6 +162,8 @@ pub fn op_kind_to_text(op: &LocalOp) -> &'static str {
         LocalOp::UpdateBoard(_) => "update_board",
         LocalOp::UpdateAppData(_) => "update_app_data",
         LocalOp::DeleteBoard(_) => "delete_board",
+        LocalOp::DeleteRemoteCard { .. } => "delete_remote_card",
+        LocalOp::DeleteRemoteStack { .. } => "delete_remote_stack",
     }
 }
 
@@ -219,6 +221,28 @@ pub(crate) fn op_to_columns(op: &LocalOp) -> OpColumns {
             label_id: None,
             board_id: Some(board),
         },
+        // Ref-deletes attribute through their local board; the remote
+        // ref itself rides `op_payload` (no local-id column can hold it).
+        LocalOp::DeleteRemoteCard { board, .. } | LocalOp::DeleteRemoteStack { board, .. } => {
+            OpColumns {
+                task_id: None,
+                stack_id: None,
+                label_id: None,
+                board_id: Some(board),
+            }
+        }
+    }
+}
+
+/// The JSON stored in `outbox.payload` for the op kinds whose target
+/// carries remote ids (the ref-deletes, #150): `None` for every
+/// column-addressed op kind.
+#[must_use]
+pub fn op_payload_to_json(op: &LocalOp) -> Option<String> {
+    match op {
+        LocalOp::DeleteRemoteCard { card, .. } => Some(serde_json::to_string(card).ok()?),
+        LocalOp::DeleteRemoteStack { stack, .. } => Some(serde_json::to_string(stack).ok()?),
+        _ => None,
     }
 }
 
@@ -235,6 +259,7 @@ pub fn op_from_columns(
     stack_id: Option<&str>,
     label_id: Option<&str>,
     board_id: Option<&str>,
+    payload: Option<&str>,
 ) -> Result<LocalOp, CodecError> {
     fn parse_id<T: From<Uuid>>(raw: Option<&str>) -> Result<T, CodecError> {
         raw.map(uuid_from_text)
@@ -265,6 +290,17 @@ pub fn op_from_columns(
         "update_board" => Ok(LocalOp::UpdateBoard(parse_id::<BoardId>(board_id)?)),
         "update_app_data" => Ok(LocalOp::UpdateAppData(parse_id(task_id)?)),
         "delete_board" => Ok(LocalOp::DeleteBoard(parse_id::<BoardId>(board_id)?)),
+        // Ref-deletes (#150): the local board stays a column, the remote
+        // ref decodes strictly from the payload (missing or undecodable
+        // is the corruption class, like a missing required column).
+        "delete_remote_card" => Ok(LocalOp::DeleteRemoteCard {
+            board: parse_id::<BoardId>(board_id)?,
+            card: serde_json::from_str(payload.ok_or(CodecError)?).map_err(|_| CodecError)?,
+        }),
+        "delete_remote_stack" => Ok(LocalOp::DeleteRemoteStack {
+            board: parse_id::<BoardId>(board_id)?,
+            stack: serde_json::from_str(payload.ok_or(CodecError)?).map_err(|_| CodecError)?,
+        }),
         _ => Err(CodecError),
     }
 }
@@ -435,6 +471,10 @@ pub(crate) fn remote_col(raw: u64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn codec_payload(op: &LocalOp) -> Option<String> {
+        op_payload_to_json(op)
+    }
     use taskboard_domain::ids::{RemoteBoardId, RemoteCardId, RemoteLabelId, RemoteStackId};
 
     fn id(raw: u128) -> Uuid {
@@ -488,12 +528,14 @@ mod tests {
             let stack_text = cols.stack_id.map(|s| uuid_to_text(s.as_uuid()));
             let label_text = cols.label_id.map(|l| uuid_to_text(l.as_uuid()));
             let board_text = cols.board_id.map(|b| uuid_to_text(b.as_uuid()));
+            let payload_text = codec_payload(&op);
             let back = op_from_columns(
                 op_kind_to_text(&op),
                 task_text.as_deref(),
                 stack_text.as_deref(),
                 label_text.as_deref(),
                 board_text.as_deref(),
+                payload_text.as_deref(),
             );
             assert_eq!(back, Ok(op), "{op:?} must round-trip through columns");
         }
@@ -502,8 +544,87 @@ mod tests {
     #[test]
     fn unknown_op_tag_is_rejected() {
         assert_eq!(
-            op_from_columns("nope", None, None, None, None),
+            op_from_columns("nope", None, None, None, None, None),
             Err(CodecError)
+        );
+    }
+
+    #[test]
+    fn ref_delete_ops_roundtrip_through_board_column_and_payload() {
+        let board = taskboard_domain::ids::BoardId::from(id(9));
+        let card = taskboard_domain::ids::RemoteCardRef {
+            board: taskboard_domain::ids::RemoteBoardId(42),
+            stack: taskboard_domain::ids::RemoteStackId(7),
+            card: taskboard_domain::ids::RemoteCardId(517),
+        };
+        let stack_ref = taskboard_domain::ids::RemoteStackRef {
+            board: taskboard_domain::ids::RemoteBoardId(42),
+            stack: taskboard_domain::ids::RemoteStackId(8),
+        };
+        for op in [
+            LocalOp::DeleteRemoteCard { board, card },
+            LocalOp::DeleteRemoteStack {
+                board,
+                stack: stack_ref,
+            },
+        ] {
+            let payload = codec_payload(&op).expect("ref-delete carries a payload");
+            let back = op_from_columns(
+                op_kind_to_text(&op),
+                None,
+                None,
+                None,
+                Some(&uuid_to_text(board.as_uuid())),
+                Some(&payload),
+            );
+            assert_eq!(back, Ok(op), "{op:?} must round-trip");
+        }
+    }
+
+    #[test]
+    fn ref_delete_ops_require_board_and_payload() {
+        // Missing payload is the corruption class, like a missing column.
+        assert_eq!(
+            op_from_columns(
+                "delete_remote_card",
+                None,
+                None,
+                None,
+                Some(&uuid_to_text(id(9))),
+                None
+            ),
+            Err(CodecError)
+        );
+        // Missing board likewise.
+        assert_eq!(
+            op_from_columns(
+                "delete_remote_stack",
+                None,
+                None,
+                None,
+                None,
+                Some(r#"{"board":42,"stack":8}"#)
+            ),
+            Err(CodecError)
+        );
+        // Undecodable payload likewise.
+        assert_eq!(
+            op_from_columns(
+                "delete_remote_card",
+                None,
+                None,
+                None,
+                Some(&uuid_to_text(id(9))),
+                Some("{bad")
+            ),
+            Err(CodecError)
+        );
+        // Column-addressed op kinds carry no payload.
+        assert_eq!(
+            op_payload_to_json(&LocalOp::CreateTask(taskboard_domain::ids::TaskId::from(
+                id(1)
+            ))),
+            None
         );
     }
 
@@ -511,33 +632,54 @@ mod tests {
     fn missing_required_op_column_is_rejected() {
         // Task ops need task_id.
         assert_eq!(
-            op_from_columns("create_task", None, None, None, None),
+            op_from_columns("create_task", None, None, None, None, None),
             Err(CodecError)
         );
         // The sidecar op is task-scoped like its siblings.
         assert_eq!(
-            op_from_columns("update_app_data", None, None, None, None),
+            op_from_columns("update_app_data", None, None, None, None, None),
             Err(CodecError)
         );
         // assign_label needs both columns.
         assert_eq!(
-            op_from_columns("assign_label", Some(&uuid_to_text(id(1))), None, None, None),
+            op_from_columns(
+                "assign_label",
+                Some(&uuid_to_text(id(1))),
+                None,
+                None,
+                None,
+                None
+            ),
             Err(CodecError)
         );
         // The legacy `rename_board` tag is unknown after the 0005 tag
         // rename (one representation, no alias drift) — a rejection, not
         // a silent alias.
         assert_eq!(
-            op_from_columns("rename_board", None, Some(&uuid_to_text(id(2))), None, None),
+            op_from_columns(
+                "rename_board",
+                None,
+                Some(&uuid_to_text(id(2))),
+                None,
+                None,
+                None
+            ),
             Err(CodecError)
         );
         assert_eq!(
-            op_from_columns("rename_board", None, None, None, Some(&uuid_to_text(id(2)))),
+            op_from_columns(
+                "rename_board",
+                None,
+                None,
+                None,
+                Some(&uuid_to_text(id(2))),
+                None
+            ),
             Err(CodecError)
         );
         // Unparseable id text counts as missing.
         assert_eq!(
-            op_from_columns("create_task", Some("junk"), None, None, None),
+            op_from_columns("create_task", Some("junk"), None, None, None, None),
             Err(CodecError)
         );
     }

@@ -544,6 +544,60 @@ async fn idempotent_reapply_leaves_same_state() {
     assert_eq!(loaded.outbox[0].op_id, op.op_id);
 }
 
+/// T2 (DR-4/R) — the ref-delete ops survive a close/open cycle through
+/// the board column + JSON payload (the #150 collapse's doomed deletes).
+#[tokio::test]
+async fn ref_delete_ops_roundtrip_through_persistence() {
+    let repo = open_memory(taskboard_domain::ConnectorId::from("nextcloud"))
+        .await
+        .expect("open");
+    let board_id = taskboard_domain::BoardId::from(uuid::Uuid::from_u128(2));
+    let card_ref = taskboard_domain::RemoteCardRef {
+        board: taskboard_domain::RemoteBoardId(42),
+        stack: taskboard_domain::RemoteStackId(7),
+        card: taskboard_domain::RemoteCardId(517),
+    };
+    let stack_ref = taskboard_domain::RemoteStackRef {
+        board: taskboard_domain::RemoteBoardId(42),
+        stack: taskboard_domain::RemoteStackId(8),
+    };
+    let batch = vec![
+        PersistenceAction::EnqueueOp(PendingOp {
+            op_id: OpId(uuid::Uuid::from_u128(10)),
+            op: LocalOp::DeleteRemoteCard {
+                board: board_id,
+                card: card_ref,
+            },
+            queued_at: ts(7),
+        }),
+        PersistenceAction::EnqueueOp(PendingOp {
+            op_id: OpId(uuid::Uuid::from_u128(11)),
+            op: LocalOp::DeleteRemoteStack {
+                board: board_id,
+                stack: stack_ref,
+            },
+            queued_at: ts(7),
+        }),
+    ];
+    repo.apply(batch).await.expect("enqueue");
+    let loaded = repo.load().await.expect("load");
+    assert_eq!(loaded.outbox.len(), 2);
+    assert!(
+        matches!(
+            &loaded.outbox[0].op,
+            LocalOp::DeleteRemoteCard { card, .. } if *card == card_ref
+        ),
+        "card ref-delete round-trips"
+    );
+    assert!(
+        matches!(
+            &loaded.outbox[1].op,
+            LocalOp::DeleteRemoteStack { stack, .. } if *stack == stack_ref
+        ),
+        "stack ref-delete round-trips"
+    );
+}
+
 /// T5 — upserting a task again must not cascade-delete its `task_labels`
 /// rows (the `INSERT OR REPLACE` trap).
 #[tokio::test]

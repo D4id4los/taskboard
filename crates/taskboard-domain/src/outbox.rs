@@ -52,6 +52,25 @@ pub enum LocalOp {
     UpdateBoard(crate::ids::BoardId),
     /// Board delete; the tombstone finalizes on success (R9c).
     DeleteBoard(crate::ids::BoardId),
+    /// DELETE a remote card the local side has **no binding** for — the
+    /// crash-window duplicate collapse's doomed twin (#150, rule R-dup).
+    /// `board` is the local attribution row; `card` is the wire target.
+    /// Completes under `Applied` and under `RemoteMissing` (gone either
+    /// way) with no tombstone side effect — there is no local row.
+    DeleteRemoteCard {
+        /// The local board the collapse ran under.
+        board: crate::ids::BoardId,
+        /// The doomed card's remote ref.
+        card: crate::ids::RemoteCardRef,
+    },
+    /// Stack twin of [`LocalOp::DeleteRemoteCard`]: the unbound orphan
+    /// stack the collapse deletes (the bound survivor keeps the cards).
+    DeleteRemoteStack {
+        /// The local board the collapse ran under.
+        board: crate::ids::BoardId,
+        /// The doomed stack's remote ref.
+        stack: crate::ids::RemoteStackRef,
+    },
     /// App-data document entry for a task is stale: fields and/or
     /// reminder rules. Full-send at flush; coalesces per board into the
     /// single sidecar document upload (D-S5). Nothing enqueues it yet —
@@ -79,6 +98,10 @@ impl LocalOp {
     pub fn owning_board(&self, entities: &EntityTables<'_>) -> Option<BoardId> {
         match *self {
             Self::UpdateBoard(board) | Self::DeleteBoard(board) => Some(board),
+            // Ref-deletes attribute exactly: they carry their board.
+            Self::DeleteRemoteCard { board, .. } | Self::DeleteRemoteStack { board, .. } => {
+                Some(board)
+            }
             Self::CreateStack(stack)
             | Self::RenameStack(stack)
             | Self::MoveStack(stack)
@@ -122,7 +145,10 @@ pub fn op_targets_task(op: &LocalOp, task: TaskId) -> bool {
         | LocalOp::UpdateLabel(_)
         | LocalOp::DeleteLabel(_)
         | LocalOp::UpdateBoard(_)
-        | LocalOp::DeleteBoard(_) => false,
+        | LocalOp::DeleteBoard(_)
+        // Ref-deletes target no local task by construction.
+        | LocalOp::DeleteRemoteCard { .. }
+        | LocalOp::DeleteRemoteStack { .. } => false,
     }
 }
 
@@ -354,5 +380,70 @@ mod tests {
         let json = serde_json::to_string(&op).unwrap();
         let back: PendingOp = serde_json::from_str(&json).unwrap();
         assert_eq!(back, op);
+    }
+
+    #[test]
+    fn ref_delete_ops_own_their_board_and_target_no_task() {
+        let board = BoardId::from(Uuid::from_u128(1));
+        let card_ref = crate::ids::RemoteCardRef {
+            board: crate::ids::RemoteBoardId(42),
+            stack: crate::ids::RemoteStackId(7),
+            card: crate::ids::RemoteCardId(517),
+        };
+        let stack_ref = crate::ids::RemoteStackRef {
+            board: crate::ids::RemoteBoardId(42),
+            stack: crate::ids::RemoteStackId(8),
+        };
+        let empty: BTreeMap<TaskId, Task> = BTreeMap::new();
+        let stacks: BTreeMap<StackId, Stack> = BTreeMap::new();
+        let labels: BTreeMap<LabelId, Label> = BTreeMap::new();
+        let boards: BTreeMap<BoardId, Board> = BTreeMap::new();
+        let t = tables(&empty, &stacks, &labels, &boards);
+        let card_op = LocalOp::DeleteRemoteCard {
+            board,
+            card: card_ref,
+        };
+        let stack_op = LocalOp::DeleteRemoteStack {
+            board,
+            stack: stack_ref,
+        };
+        assert_eq!(card_op.owning_board(&t), Some(board));
+        assert_eq!(stack_op.owning_board(&t), Some(board));
+        assert!(!op_targets_task(&card_op, TaskId::from(Uuid::from_u128(9))));
+        assert!(!op_targets_task(
+            &stack_op,
+            TaskId::from(Uuid::from_u128(9))
+        ));
+    }
+
+    #[test]
+    fn ref_delete_pending_ops_roundtrip_through_serde() {
+        let card_ref = crate::ids::RemoteCardRef {
+            board: crate::ids::RemoteBoardId(42),
+            stack: crate::ids::RemoteStackId(7),
+            card: crate::ids::RemoteCardId(517),
+        };
+        for op in [
+            LocalOp::DeleteRemoteCard {
+                board: BoardId::from(Uuid::from_u128(1)),
+                card: card_ref,
+            },
+            LocalOp::DeleteRemoteStack {
+                board: BoardId::from(Uuid::from_u128(1)),
+                stack: crate::ids::RemoteStackRef {
+                    board: crate::ids::RemoteBoardId(42),
+                    stack: crate::ids::RemoteStackId(8),
+                },
+            },
+        ] {
+            let pending = PendingOp {
+                op_id: OpId(Uuid::from_u128(2)),
+                op,
+                queued_at: Utc.timestamp_opt(1_700_100_011, 0).unwrap(),
+            };
+            let json = serde_json::to_string(&pending).unwrap();
+            let back: PendingOp = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, pending);
+        }
     }
 }
