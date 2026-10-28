@@ -560,6 +560,7 @@ fn push_notifications(
 /// render budget) consumes later.
 #[must_use]
 #[allow(clippy::too_many_arguments)] // the pass's inputs, one bundle
+#[expect(clippy::too_many_lines)] // the pass is one linear pipeline
 pub fn push(
     window: &AppWindow,
     state: &AppState,
@@ -567,6 +568,7 @@ pub fn push(
     keymap: &Keymap,
     chain: &[ContextId],
     day: crate::view_state::DayCtx,
+    calendar: taskboard_domain::DayCalendar,
     kiosk: bool,
     reminder_defaults: &taskboard_domain::ReminderDefaults,
     models: &mut PushModels,
@@ -634,10 +636,21 @@ pub fn push(
         &stack_ids,
         &mut tables,
         now,
+        calendar,
         models,
     );
-    mutations += push_today(window, state, vs, &sets, day, kiosk, &mut tables, models);
-    mutations += push_stack_detail(window, state, vs, &sets, &mut tables, now, models);
+    mutations += push_today(
+        window,
+        state,
+        vs,
+        &sets,
+        day,
+        calendar,
+        kiosk,
+        &mut tables,
+        models,
+    );
+    mutations += push_stack_detail(window, state, vs, &sets, &mut tables, now, calendar, models);
     mutations += push_task_detail(window, state, vs, &sets, &mut tables, now, models, due);
     mutations += push_status_bar(
         window,
@@ -815,6 +828,7 @@ fn push_board(
     stack_ids: &[StackId],
     tables: &mut IdTables,
     now: DateTime<Utc>,
+    calendar: taskboard_domain::DayCalendar,
     models: &mut PushModels,
 ) -> usize {
     let flow = vs.flow().clone();
@@ -840,7 +854,7 @@ fn push_board(
                 sets,
                 vs,
                 now,
-                decorations_model(models, task, tracked_task),
+                decorations_model(models, task, tracked_task, calendar, now),
             ));
         }
         mutations += diff_rows(&cards_handle, &cards);
@@ -880,7 +894,7 @@ fn push_board(
             sets,
             vs,
             now,
-            decorations_model(models, dragged, tracked_task),
+            decorations_model(models, dragged, tracked_task, calendar, now),
         );
         ghost.dragging_source = false;
         window.global::<DragState>().set_ghost_model(ghost);
@@ -969,15 +983,18 @@ fn decorations_model(
     models: &mut PushModels,
     task: &Task,
     tracked_task: Option<TaskId>,
+    calendar: taskboard_domain::DayCalendar,
+    now: DateTime<Utc>,
 ) -> ModelRc<TaskDecoration> {
     let slot = models.card_decorations.entry(task.id).or_default();
     models.pass_tasks.insert(task.id);
-    diff_rows(slot, &field_decorations(task, tracked_task));
+    diff_rows(slot, &field_decorations(task, tracked_task, calendar, now));
     ModelRc::from(slot.clone())
 }
 
 /// The stack-detail model over the snapshotted subject (D7/D22).
 /// Returns the diff's mutation count.
+#[allow(clippy::too_many_arguments)] // the pass's inputs, one bundle
 fn push_stack_detail(
     window: &AppWindow,
     state: &AppState,
@@ -985,6 +1002,7 @@ fn push_stack_detail(
     sets: &DueSets,
     tables: &mut IdTables,
     now: DateTime<Utc>,
+    calendar: taskboard_domain::DayCalendar,
     models: &mut PushModels,
 ) -> usize {
     let tasks = vs
@@ -1005,7 +1023,7 @@ fn push_stack_detail(
             sets,
             vs,
             now,
-            decorations_model(models, task, tracked_task),
+            decorations_model(models, task, tracked_task, calendar, now),
         ));
     }
     let mutations = diff_rows(&detail_handle, &detail_rows);
@@ -1339,7 +1357,12 @@ fn level_tone(level: &str) -> Tone {
 /// appends the static tracking badge — no elapsed (the chip owns the
 /// one moving number), so wall-minute re-pushes don't churn card
 /// decoration diffs.
-fn field_decorations(task: &Task, tracked_task: Option<TaskId>) -> Vec<TaskDecoration> {
+fn field_decorations(
+    task: &Task,
+    tracked_task: Option<TaskId>,
+    calendar: taskboard_domain::DayCalendar,
+    now: DateTime<Utc>,
+) -> Vec<TaskDecoration> {
     let mut out = Vec::new();
     if let Some(level) = task.importance {
         out.push(TaskDecoration {
@@ -1360,6 +1383,23 @@ fn field_decorations(task: &Task, tracked_task: Option<TaskId>) -> Vec<TaskDecor
             kind: DecorationKind::Tracking,
             label: "tracking".into(),
             tone: Tone::Info,
+        });
+    }
+    // The recurring badge (DR-6/4, D-S7): derived per frame from the
+    // published state — no UI-held recurrence state. Append-last (the
+    // rule-D vocabulary grows at the tail); the tone mapping is
+    // models-side, the decision is presentation-side. Day-granularity
+    // labels keep re-pushes diff-stable within a window.
+    if let Some(badge) = presentation::recur_badge(task, calendar, now) {
+        let tone = if badge.stale {
+            Tone::Overdue
+        } else {
+            Tone::Neutral
+        };
+        out.push(TaskDecoration {
+            kind: DecorationKind::Recur,
+            label: presentation::recur_badge_label(&badge, calendar.today(now)).into(),
+            tone,
         });
     }
     out
@@ -1399,6 +1439,7 @@ fn push_today(
     vs: &ViewState,
     sets: &presentation::DueSets,
     day: crate::view_state::DayCtx,
+    calendar: taskboard_domain::DayCalendar,
     kiosk: bool,
     tables: &mut IdTables,
     models: &mut PushModels,
@@ -1447,7 +1488,7 @@ fn push_today(
                     sets,
                     vs,
                     day.now,
-                    decorations_model(models, task, tracked_task),
+                    decorations_model(models, task, tracked_task, calendar, day.now),
                 ),
                 context: SharedString::from(presentation::today_row_context(
                     state,
@@ -1611,12 +1652,21 @@ mod tests {
         taskboard_domain::BoardClocks::epoch()
     }
 
+    /// The tests' day calendar: UTC, midnight day start — `epoch()`
+    /// instant reads land on their literal calendar date.
+    fn calendar() -> taskboard_domain::DayCalendar {
+        taskboard_domain::DayCalendar {
+            day_start_time: chrono::NaiveTime::MIN,
+            offset: chrono::FixedOffset::east_opt(0).expect("zero is a valid offset"),
+        }
+    }
+
     #[test]
     fn field_decorations_carry_kind_tone_and_the_domain_label() {
         let mut t = task();
         t.importance = Some(Importance::High);
         t.urgency = Some(Urgency::VeryLow);
-        let decorations = field_decorations(&t, None);
+        let decorations = field_decorations(&t, None, calendar(), epoch());
         assert_eq!(decorations.len(), 2);
         assert!(matches!(decorations[0].kind, DecorationKind::Importance));
         assert!(matches!(decorations[0].tone, Tone::Warning));
@@ -1625,6 +1675,41 @@ mod tests {
         // The label is the domain text form verbatim — one vocabulary.
         assert_eq!(decorations[0].label, Importance::High.text_form());
         assert_eq!(decorations[1].label, Urgency::VeryLow.text_form());
+    }
+
+    /// The recurring decoration arm (DR-6/4, T14): a recur task gains
+    /// exactly one `recur` decoration, append-last after
+    /// importance/urgency/tracking, with the ruled tone per staleness
+    /// and the presentation-side label.
+    #[test]
+    fn the_recur_decoration_appends_last_with_the_ruled_tone() {
+        let mut t = task();
+        t.importance = Some(Importance::High);
+        t.recur = Some(taskboard_domain::RecurRule {
+            series: taskboard_domain::SeriesId::from_uuid(uuid::Uuid::from_u128(1)),
+            anchor: chrono::NaiveDate::from_ymd_opt(2026, 10, 1).unwrap(),
+            pattern: taskboard_domain::RecurPattern::Daily {
+                every: taskboard_domain::EveryDays::new(1).unwrap(),
+            },
+            bound: taskboard_domain::RecurBound::None,
+            continued_from: None,
+        });
+        // A fresh open head (reference today at the epoch calendar) is
+        // not stale: neutral tone, append-last after importance.
+        let fresh = field_decorations(&t, None, calendar(), epoch());
+        assert_eq!(fresh.len(), 2);
+        assert!(matches!(fresh[0].kind, DecorationKind::Importance));
+        assert!(matches!(fresh[1].kind, DecorationKind::Recur));
+        assert!(matches!(fresh[1].tone, Tone::Neutral));
+        assert!(!fresh[1].label.is_empty());
+        // A stale head (scheduled two days before the reading time)
+        // flips the tone to overdue.
+        let late = epoch() + chrono::TimeDelta::try_days(2).unwrap();
+        t.scheduled = Some(epoch());
+        let stale = field_decorations(&t, None, calendar(), late);
+        assert_eq!(stale.len(), 2);
+        assert!(matches!(stale[1].kind, DecorationKind::Recur));
+        assert!(matches!(stale[1].tone, Tone::Overdue));
     }
 
     #[test]
@@ -1658,7 +1743,10 @@ mod tests {
 
     #[test]
     fn unset_levels_decorate_nothing() {
-        assert_eq!(field_decorations(&task(), None), [] as [TaskDecoration; 0]);
+        assert_eq!(
+            field_decorations(&task(), None, calendar(), epoch()),
+            [] as [TaskDecoration; 0]
+        );
     }
 
     /// D9 — the diff primitive: positional compare, truncate, append;
@@ -1725,7 +1813,12 @@ mod tests {
     fn an_unchanged_card_compares_equal_across_refresh_passes() {
         let mut t = task();
         t.importance = Some(Importance::Normal);
-        let decorations = Rc::new(VecModel::from(field_decorations(&t, None)));
+        let decorations = Rc::new(VecModel::from(field_decorations(
+            &t,
+            None,
+            calendar(),
+            epoch(),
+        )));
         let vs = ViewState::default();
         let now = epoch();
         let sets = DueSets::default();
@@ -1743,7 +1836,12 @@ mod tests {
             &sets,
             &vs,
             now,
-            ModelRc::new(VecModel::from(field_decorations(&t, None))),
+            ModelRc::new(VecModel::from(field_decorations(
+                &t,
+                None,
+                calendar(),
+                epoch(),
+            ))),
         );
         assert_eq!(diff_rows(&model, &[fresh]), 1);
     }
@@ -1907,6 +2005,7 @@ mod tests {
                 &keymap,
                 &chain,
                 day,
+                calendar(),
                 kiosk,
                 &taskboard_domain::ReminderDefaults::default(),
                 models,

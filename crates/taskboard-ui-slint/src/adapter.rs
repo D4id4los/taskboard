@@ -558,6 +558,16 @@ impl Adapter {
         }
     }
 
+    /// The injected day-boundary vocabulary ([`Self::day_ctx`]'s
+    /// sibling): the held `day_start` pair as the domain `DayCalendar`
+    /// the recurring badge's derivations read (DR-6/4).
+    fn calendar(&self) -> taskboard_domain::DayCalendar {
+        taskboard_domain::DayCalendar {
+            day_start_time: self.day_start.0,
+            offset: self.day_start.1,
+        }
+    }
+
     /// The pass's time bundle (chunk 10 D4): a fresh `now` and the
     /// window derived from the held pair — recomputed on every pass,
     /// so the rollover rides the existing minute-boundary repaint.
@@ -619,6 +629,7 @@ impl Adapter {
             &self.keymap,
             &chain,
             day,
+            self.calendar(),
             self.kiosk,
             &self.reminder_defaults,
             &mut self.models,
