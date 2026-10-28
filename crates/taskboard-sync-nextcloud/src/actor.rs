@@ -683,7 +683,7 @@ async fn cycle(
                             CachedAppData {
                                 last_modified: stamp.last_modified,
                                 filesize: stamp.filesize,
-                                document,
+                                document: *document,
                             },
                         );
                     }

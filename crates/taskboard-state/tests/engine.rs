@@ -2722,6 +2722,7 @@ async fn folded_synced_dismissal_withdraws_the_toast() {
         sections: AppDataSections {
             tasks: None,
             reminder_rules: None,
+            time_entries: None,
             dismissals: Some(
                 [(
                     CARD.to_string(),

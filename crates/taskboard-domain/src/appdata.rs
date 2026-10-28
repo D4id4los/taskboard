@@ -80,6 +80,15 @@ pub struct AppDataSections {
     /// card id (the `dismissals` section, design D-1/D-9).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dismissals: Option<BTreeMap<String, DismissalsEntry>>,
+    /// Board-level synced time entries, keyed by entry UUID (design
+    /// D-T10) — the one section whose keys are not card ids: history
+    /// outlives task deletion, so `prune_absent_cards` must never see it.
+    #[serde(
+        rename = "time-entries",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub time_entries: Option<BTreeMap<String, TimeEntryRecord>>,
     /// Unknown sections: carried verbatim.
     #[serde(flatten, default, skip_serializing_if = "BTreeMap::is_empty")]
     pub unknown: BTreeMap<String, Value>,
@@ -581,6 +590,124 @@ impl Serialize for DismissalEntry {
     }
 }
 
+/// One synced time entry's document shape, or a deletion tombstone, or a
+/// shape this version does not model (preserved verbatim, never folded —
+/// D-S2's materialization rule). Board-level section keyed by the entry
+/// UUID (design D-T10); `task` is the decimal remote card id.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TimeEntryRecord {
+    /// `{ "task": "<decimal card>", "title": str, "start": rfc3339,
+    /// "end": rfc3339|null, "created": rfc3339, "clock": rfc3339 }`.
+    /// `task: None` decodes tolerantly (a peer row without the key) but
+    /// is never emitted by this version — an unbound-task entry has no
+    /// identity another device could resolve (D-T10).
+    Entry {
+        task: Option<String>,
+        title: String,
+        start: DateTime<Utc>,
+        end: Option<DateTime<Utc>>,
+        created: DateTime<Utc>,
+        clock: DateTime<Utc>,
+    },
+    /// `{ "deleted": true, "clock": rfc3339 }` — a global delete (D-T12:
+    /// deliberate deletes roam; retention aging never does).
+    Tombstone { clock: DateTime<Utc> },
+    /// A shape this version does not model: preserved verbatim.
+    Verbatim(Value),
+}
+
+impl TimeEntryRecord {
+    /// The row's write clock; `None` for verbatim content (which the
+    /// union therefore never orders against a clocked row).
+    #[must_use]
+    pub fn clock(&self) -> Option<DateTime<Utc>> {
+        match self {
+            Self::Entry { clock, .. } | Self::Tombstone { clock } => Some(*clock),
+            Self::Verbatim(_) => None,
+        }
+    }
+
+    /// Decodes one time-entry row; an unmodelable shape stays `Verbatim`
+    /// with the original value (never an error). Span validity is **not**
+    /// a decode input — synced rows fold as-is (the §6 skew ruling); the
+    /// read-side projections clamp.
+    fn deserialize_verbatim(raw: Value) -> Self {
+        let Value::Object(map) = &raw else {
+            return Self::Verbatim(raw);
+        };
+        if map.get("deleted") == Some(&Value::Bool(true)) {
+            if let Ok(clock) = serde_json::from_value(map["clock"].clone()) {
+                return Self::Tombstone { clock };
+            }
+            return Self::Verbatim(raw);
+        }
+        let task = match map.get("task") {
+            None | Some(Value::Null) => Some(None),
+            Some(Value::String(text)) => Some(Some(text.clone())),
+            _ => None, // present but not a string: unmodelable
+        };
+        let end = match map.get("end") {
+            None | Some(Value::Null) => Some(None),
+            Some(value) => serde_json::from_value(value.clone()).ok().map(Some),
+        };
+        if let (Some(task), Some(end), Ok(title), Ok(start), Ok(created), Ok(clock)) = (
+            task,
+            end,
+            serde_json::from_value(map.get("title").cloned().unwrap_or(Value::Null)),
+            serde_json::from_value(map.get("start").cloned().unwrap_or(Value::Null)),
+            serde_json::from_value(map.get("created").cloned().unwrap_or(Value::Null)),
+            serde_json::from_value(map.get("clock").cloned().unwrap_or(Value::Null)),
+        ) {
+            return Self::Entry {
+                task,
+                title,
+                start,
+                end,
+                created,
+                clock,
+            };
+        }
+        Self::Verbatim(raw)
+    }
+}
+
+impl<'de> Deserialize<'de> for TimeEntryRecord {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // The tolerant boundary: any shape this version does not model
+        // decodes as `Verbatim`, never a document failure.
+        Ok(Self::deserialize_verbatim(Value::deserialize(
+            deserializer,
+        )?))
+    }
+}
+
+impl Serialize for TimeEntryRecord {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Entry {
+                task,
+                title,
+                start,
+                end,
+                created,
+                clock,
+            } => serde_json::json!({
+                "task": task,
+                "title": title,
+                "start": start,
+                "end": end,
+                "created": created,
+                "clock": clock,
+            })
+            .serialize(serializer),
+            Self::Tombstone { clock } => {
+                serde_json::json!({ "deleted": true, "clock": clock }).serialize(serializer)
+            }
+            Self::Verbatim(value) => value.serialize(serializer),
+        }
+    }
+}
+
 /// The dismissal row's wire key: `"<rule uuid>|<rfc3339 occurrence>"`.
 /// Neither component can contain `|` (a UUID is hex+dashes, rfc3339 is
 /// digits/punct), so the encoding is injective.
@@ -660,6 +787,16 @@ pub fn union(base: &AppDataDocument, overlay: &AppDataDocument) -> AppDataDocume
                         .and_modify(|base_entry| union_dismissals_entry(base_entry, overlay_entry))
                         .or_insert_with(|| overlay_entry.clone());
                 }
+                Some(merged)
+            }
+            (Some(b), None) => Some(b.clone()),
+            (None, Some(o)) => Some(o.clone()),
+            (None, None) => None,
+        },
+        time_entries: match (&base.sections.time_entries, &overlay.sections.time_entries) {
+            (Some(b), Some(o)) => {
+                let mut merged = b.clone();
+                union_time_entries(&mut merged, o);
                 Some(merged)
             }
             (Some(b), None) => Some(b.clone()),
@@ -758,6 +895,40 @@ fn union_dismissals_entry(base: &mut DismissalsEntry, overlay: &DismissalsEntry)
         base.unknown
             .entry(key.clone())
             .or_insert_with(|| value.clone());
+    }
+}
+
+/// Per-row embedded-clock LWW on the entry UUID key (D-T11: newer
+/// `clock` wins; tombstones compete by the same clock — a delete after
+/// an adjust wins, a later-dated live row beats an older tombstone; the
+/// remote stop of an open entry is just a newer write). Verbatim shapes
+/// are additive and never displaced by overlay content this version
+/// cannot order.
+///
+/// Deliberate divergence (D-7) from `union_rules_entry`/
+/// `union_dismissals_entry`: **equal clocks resolve to the overlay**,
+/// matching `union_task_entry` and D-T11's normative text — the flush's
+/// just-stamped local writes must win the pull-side tie.
+fn union_time_entries(
+    base: &mut BTreeMap<String, TimeEntryRecord>,
+    overlay: &BTreeMap<String, TimeEntryRecord>,
+) {
+    for (key, overlay_row) in overlay {
+        let winner = match base.get(key) {
+            None => Some(overlay_row.clone()),
+            Some(base_row) => match (base_row, overlay_row) {
+                // Verbatim content is never ordered against a clocked
+                // row: whichever side holds it keeps the slot.
+                (TimeEntryRecord::Verbatim(_), _) | (_, TimeEntryRecord::Verbatim(_)) => None,
+                (b, o) => match (b.clock(), o.clock()) {
+                    (Some(bc), Some(oc)) if bc > oc => None,
+                    _ => Some(o.clone()),
+                },
+            },
+        };
+        if let Some(winner) = winner {
+            base.insert(key.clone(), winner);
+        }
     }
 }
 
@@ -2083,6 +2254,255 @@ mod tests {
         assert!(empty.sections.dismissals.is_none());
     }
 
+    // ---- DR-5/2: the board-level time-entries section (D-T10/D-T11) --
+
+    fn entry_row(task: Option<&str>, clock: i64) -> TimeEntryRecord {
+        TimeEntryRecord::Entry {
+            task: task.map(str::to_owned),
+            title: "write chapter 3".to_owned(),
+            start: ts(100),
+            end: Some(ts(200)),
+            created: ts(90),
+            clock: ts(clock),
+        }
+    }
+
+    fn open_row(task: Option<&str>, clock: i64) -> TimeEntryRecord {
+        TimeEntryRecord::Entry {
+            task: task.map(str::to_owned),
+            title: "running".to_owned(),
+            start: ts(100),
+            end: None,
+            created: ts(90),
+            clock: ts(clock),
+        }
+    }
+
+    #[test]
+    fn time_entry_rows_round_trip_and_unknown_shapes_stay_verbatim() {
+        let raw = serde_json::json!({
+            "018f0000-0000-7000-8000-000000000001":
+                { "task": "412", "title": "Write chapter 3",
+                  "start": "2026-04-01T08:00:00Z", "end": "2026-04-01T09:00:00Z",
+                  "created": "2026-04-01T07:59:00Z", "clock": "2026-04-01T09:00:00Z" },
+            "018f0000-0000-7000-8000-000000000002":
+                { "task": null, "title": "local-only",
+                  "start": "2026-04-01T08:00:00Z", "end": null,
+                  "created": "2026-04-01T07:59:00Z", "clock": "2026-04-01T09:00:00Z" },
+            "018f0000-0000-7000-8000-000000000003":
+                { "deleted": true, "clock": "2026-04-01T10:00:00Z" },
+            // The demotions — each lands Verbatim with value equality.
+            "no-title": { "task": "412", "start": "2026-04-01T08:00:00Z",
+                          "created": "2026-04-01T07:59:00Z", "clock": "2026-04-01T09:00:00Z" },
+            "bad-clock": { "task": "412", "title": "t", "start": "2026-04-01T08:00:00Z",
+                           "created": "2026-04-01T07:59:00Z", "clock": "not-a-time" },
+            "bad-end": { "task": "412", "title": "t", "start": "2026-04-01T08:00:00Z",
+                         "end": "yesterday-ish", "created": "2026-04-01T07:59:00Z",
+                         "clock": "2026-04-01T09:00:00Z" },
+            "non-object-row": 7,
+            "deleted-bad-clock": { "deleted": true, "clock": "not-a-time" },
+            "task-not-a-string": { "task": 412, "title": "t", "start": "2026-04-01T08:00:00Z",
+                                   "created": "2026-04-01T07:59:00Z",
+                                   "clock": "2026-04-01T09:00:00Z" }
+        });
+        let section: BTreeMap<String, TimeEntryRecord> =
+            serde_json::from_value(raw.clone()).unwrap();
+        assert_eq!(
+            section["018f0000-0000-7000-8000-000000000001"],
+            TimeEntryRecord::Entry {
+                task: Some("412".to_owned()),
+                title: "Write chapter 3".to_owned(),
+                start: "2026-04-01T08:00:00Z".parse().unwrap(),
+                end: Some("2026-04-01T09:00:00Z".parse().unwrap()),
+                created: "2026-04-01T07:59:00Z".parse().unwrap(),
+                clock: "2026-04-01T09:00:00Z".parse().unwrap(),
+            },
+            "the full entry decodes typed"
+        );
+        assert!(
+            matches!(
+                section["018f0000-0000-7000-8000-000000000002"],
+                TimeEntryRecord::Entry {
+                    task: None,
+                    end: None,
+                    ..
+                }
+            ),
+            "the null-task open row decodes tolerantly"
+        );
+        assert!(matches!(
+            section["018f0000-0000-7000-8000-000000000003"],
+            TimeEntryRecord::Tombstone { .. }
+        ));
+        for key in [
+            "no-title",
+            "bad-clock",
+            "bad-end",
+            "non-object-row",
+            "deleted-bad-clock",
+            "task-not-a-string",
+        ] {
+            assert!(
+                matches!(section[key], TimeEntryRecord::Verbatim(_)),
+                "{key}"
+            );
+            // Decode→encode is value-verbatim on everything unmodeled.
+            assert_eq!(
+                serde_json::to_value(&section[key]).unwrap(),
+                raw[key],
+                "{key} relays verbatim"
+            );
+        }
+    }
+
+    #[test]
+    fn the_time_entries_section_serializes_exactly_the_modeled_keys() {
+        let entry = serde_json::to_value(entry_row(Some("412"), 100)).unwrap();
+        let mut keys: Vec<_> = entry.as_object().unwrap().keys().cloned().collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            vec!["clock", "created", "end", "start", "task", "title"]
+        );
+        let open = serde_json::to_value(open_row(None, 100)).unwrap();
+        assert_eq!(open["end"], Value::Null);
+        assert_eq!(open["task"], Value::Null);
+        let tombstone =
+            serde_json::to_value(TimeEntryRecord::Tombstone { clock: ts(100) }).unwrap();
+        let mut keys: Vec<_> = tombstone.as_object().unwrap().keys().cloned().collect();
+        keys.sort();
+        assert_eq!(keys, vec!["clock", "deleted"]);
+        assert_eq!(tombstone["deleted"], true);
+    }
+
+    #[test]
+    fn the_time_entries_section_rides_the_document_envelope() {
+        let doc = document(
+            2,
+            AppDataSections {
+                time_entries: Some(
+                    [("k".to_owned(), entry_row(Some("412"), 100))]
+                        .into_iter()
+                        .collect(),
+                ),
+                ..Default::default()
+            },
+        );
+        let json = serde_json::to_value(&doc).unwrap();
+        assert!(json["sections"]["time-entries"]["k"].is_object());
+        let back: AppDataDocument = serde_json::from_value(json).unwrap();
+        assert_eq!(back, doc);
+        // A non-object body for the known key fails the document exactly
+        // like every existing known section (the strict boundary, D-5).
+        let garbage: Result<AppDataDocument, _> = serde_json::from_value(serde_json::json!({
+            "format": 1, "board": 2,
+            "sections": { "time-entries": "not-a-map" }
+        }));
+        assert!(garbage.is_err());
+    }
+
+    #[test]
+    fn union_time_entries_picks_newer_clocks_ties_to_the_overlay_and_keeps_verbatim() {
+        let mut base = BTreeMap::new();
+        base.insert("newer-base".to_owned(), entry_row(Some("412"), 200));
+        base.insert("tie".to_owned(), entry_row(Some("412"), 100));
+        base.insert(
+            "verbatim".to_owned(),
+            TimeEntryRecord::Verbatim(serde_json::json!({ "future": true })),
+        );
+        base.insert("base-only".to_owned(), entry_row(Some("413"), 50));
+        let mut overlay = BTreeMap::new();
+        overlay.insert("newer-base".to_owned(), entry_row(Some("412"), 100));
+        overlay.insert("tie".to_owned(), open_row(Some("412"), 100));
+        overlay.insert(
+            "verbatim".to_owned(),
+            TimeEntryRecord::Tombstone { clock: ts(999) },
+        );
+        overlay.insert("fresh".to_owned(), entry_row(Some("414"), 300));
+        union_time_entries(&mut base, &overlay);
+        assert_eq!(
+            base["newer-base"].clock(),
+            Some(ts(200)),
+            "the newer embedded clock wins"
+        );
+        assert_eq!(
+            base["tie"],
+            open_row(Some("412"), 100),
+            "an equal clock resolves to the overlay (D-7, the deliberate divergence)"
+        );
+        assert!(
+            matches!(base["verbatim"], TimeEntryRecord::Verbatim(_)),
+            "a verbatim slot is never displaced by a clocked row"
+        );
+        assert!(base.contains_key("base-only"), "base-only rows survive");
+        assert_eq!(base["fresh"], entry_row(Some("414"), 300));
+        // All four (Some/None) section arms ride the document union.
+        let doc = |entries: Option<BTreeMap<String, TimeEntryRecord>>| {
+            document(
+                2,
+                AppDataSections {
+                    time_entries: entries,
+                    ..Default::default()
+                },
+            )
+        };
+        let some: BTreeMap<String, TimeEntryRecord> =
+            [("k".to_owned(), entry_row(Some("1"), 1))].into();
+        assert!(
+            union(&doc(None), &doc(Some(some.clone())))
+                .sections
+                .time_entries
+                .is_some()
+        );
+        assert!(
+            union(&doc(Some(some.clone())), &doc(None))
+                .sections
+                .time_entries
+                .is_some()
+        );
+        assert!(
+            union(&doc(None), &doc(None))
+                .sections
+                .time_entries
+                .is_none()
+        );
+        assert_eq!(
+            union(&doc(Some(some.clone())), &doc(Some(some)))
+                .sections
+                .time_entries,
+            Some([("k".to_owned(), entry_row(Some("1"), 1))].into())
+        );
+    }
+
+    #[test]
+    fn union_time_entry_tombstones_compete_by_the_same_clock() {
+        let mut base = BTreeMap::new();
+        base.insert("e".to_owned(), entry_row(Some("412"), 100));
+        let mut overlay = BTreeMap::new();
+        overlay.insert(
+            "e".to_owned(),
+            TimeEntryRecord::Tombstone { clock: ts(200) },
+        );
+        union_time_entries(&mut base, &overlay);
+        assert!(
+            matches!(base["e"], TimeEntryRecord::Tombstone { .. }),
+            "a newer tombstone beats the live row"
+        );
+        let mut base = BTreeMap::new();
+        base.insert(
+            "e".to_owned(),
+            TimeEntryRecord::Tombstone { clock: ts(100) },
+        );
+        let mut overlay = BTreeMap::new();
+        overlay.insert("e".to_owned(), entry_row(Some("412"), 300));
+        union_time_entries(&mut base, &overlay);
+        assert_eq!(
+            base["e"],
+            entry_row(Some("412"), 300),
+            "a later-dated live row beats the older tombstone"
+        );
+    }
+
     // ---- proptest: verbatim preservation is the load-bearing property --
 
     proptest! {
@@ -2361,6 +2781,45 @@ mod tests {
                 &back["sections"]["dismissals"]["55"][peer_key.as_str()],
                 &raw["sections"]["dismissals"]["55"][peer_key.as_str()]
             );
+        }
+
+        // P3 (DR-5/2, D-T11): the time-entries section rides the document
+        // union's embedded-clock LWW — idempotent, and the winner's clock
+        // is never older than either side's; an open→closed transition
+        // rides as a newer write.
+        #[test]
+        fn time_entry_union_lww_laws(
+            base_clock in 0_i64..4_000_000_000,
+            overlay_clock in 0_i64..4_000_000_000,
+        ) {
+            let mut base = BTreeMap::new();
+            base.insert("e".to_owned(), entry_row(Some("412"), base_clock));
+            let mut overlay = BTreeMap::new();
+            overlay.insert("e".to_owned(), open_row(Some("412"), overlay_clock));
+            union_time_entries(&mut base, &overlay);
+            prop_assert_eq!(
+                base["e"].clock(),
+                Some(ts(base_clock.max(overlay_clock))),
+                "the newer embedded clock wins"
+            );
+            // Idempotence: re-unioning the overlay changes nothing.
+            let once = base.clone();
+            union_time_entries(&mut base, &overlay);
+            prop_assert_eq!(&base, &once);
+            // Convergence up to the tie rule's overlay bias: the standard
+            // three-document identity the dismissal laws use.
+            let union_maps = |a: &BTreeMap<String, TimeEntryRecord>,
+                              b: &BTreeMap<String, TimeEntryRecord>| {
+                let mut merged = a.clone();
+                union_time_entries(&mut merged, b);
+                merged
+            };
+            let ab = union_maps(&base, &overlay);
+            let ba = union_maps(&overlay, &base);
+            let converged = union_maps(&ab, &ba);
+            prop_assert_eq!(&converged, &ab);
+            let converged = union_maps(&ba, &ab);
+            prop_assert_eq!(&converged, &ab);
         }
     }
 }
