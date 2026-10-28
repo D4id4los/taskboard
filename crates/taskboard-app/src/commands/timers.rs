@@ -27,10 +27,13 @@ pub async fn add(
     store: Arc<dyn CredentialStore>,
     label: &str,
     when: taskboard_domain::AdhocWhen,
+    insistence: taskboard_domain::Insistence,
 ) -> Result<TimerAddReceipt, CommandError> {
     let label = label.to_owned();
-    crate::commands::tasks::with_core(config, store, async |app| add_on(app, &label, when).await)
-        .await
+    crate::commands::tasks::with_core(config, store, async |app| {
+        add_on(app, &label, when, insistence).await
+    })
+    .await
 }
 
 /// # Errors
@@ -74,29 +77,31 @@ pub async fn add_on(
     app: &crate::App,
     label: &str,
     when: taskboard_domain::AdhocWhen,
+    insistence: taskboard_domain::Insistence,
 ) -> Result<TimerAddReceipt, CommandError> {
     let outcome = app
         .engine
         .execute(StateCommand::CreateAdhocAlarm {
             label: label.to_owned(),
             when,
-            insistence: taskboard_domain::Insistence::Normal,
+            insistence,
         })
         .await?;
     let CommandOutcome::AdhocAlarmCreated { alarm } = outcome else {
         return Err(CommandError::UnknownAdhocAlarm(label.to_owned()));
     };
     let state = app.engine.shared_state().load_full();
-    let fire_at = state
+    let (fire_at, insistence) = state
         .reminders
         .alarms
         .get(&alarm)
-        .map(|a| a.fire_at)
+        .map(|a| (a.fire_at, a.insistence))
         .expect("the create outcome names the minted alarm");
     Ok(TimerAddReceipt {
         alarm_id: alarm.as_uuid().to_string(),
         label: label.to_owned(),
         fire_at,
+        insistence,
     })
 }
 
@@ -217,6 +222,7 @@ pub fn timer_rows(state: &AppState, now: DateTime<Utc>) -> Vec<TimerRow> {
                 effective_at,
                 overdue: effective_at <= now,
                 remaining,
+                insistence: alarm.insistence,
             })
         })
         .collect()
@@ -238,6 +244,9 @@ pub fn render_text_list(list: &TimersList) -> String {
                 row.effective_at.to_rfc3339(),
                 row.alarm_id
             );
+            if row.insistence == taskboard_domain::Insistence::Alarm {
+                let _ = write!(line, " [alarm]");
+            }
             if row.overdue {
                 let _ = write!(line, " [overdue]");
             }
@@ -250,12 +259,17 @@ pub fn render_text_list(list: &TimersList) -> String {
 /// The human-readable `add` receipt (the stamped value, not an echo).
 #[must_use]
 pub fn render_text_add(receipt: &TimerAddReceipt) -> String {
-    format!(
+    use std::fmt::Write as _;
+    let mut line = format!(
         "timer \"{}\" set for {} (alarm {})",
         receipt.label,
         receipt.fire_at.to_rfc3339(),
         receipt.alarm_id
-    )
+    );
+    if receipt.insistence == taskboard_domain::Insistence::Alarm {
+        let _ = write!(line, " [alarm]");
+    }
+    line
 }
 
 /// The human-readable `cancel` receipt.
@@ -277,6 +291,8 @@ pub enum TimersInvocation {
         label: String,
         /// The timing flag pair (clap enforces exactly one).
         when: taskboard_domain::AdhocWhen,
+        /// The explicit `--insistence` value; `Normal` when `None`.
+        insistence: taskboard_domain::Insistence,
     },
     /// `list` (pure read).
     List,
@@ -293,6 +309,7 @@ pub fn collapse(cmd: crate::cli::TimersCmd) -> Option<TimersInvocation> {
             timer_label: label,
             in_,
             at,
+            insistence,
         } => {
             let when = match (in_, at) {
                 (Some(dur), _) => taskboard_domain::AdhocWhen::In(dur),
@@ -301,7 +318,11 @@ pub fn collapse(cmd: crate::cli::TimersCmd) -> Option<TimersInvocation> {
                 // `None` keeps `collapse` total for direct calls.
                 (None, None) => return None,
             };
-            Some(TimersInvocation::Add { label, when })
+            Some(TimersInvocation::Add {
+                label,
+                when,
+                insistence: insistence.unwrap_or_default(),
+            })
         }
         crate::cli::TimersCmd::List => Some(TimersInvocation::List),
         crate::cli::TimersCmd::Cancel { selector } => Some(TimersInvocation::Cancel(selector)),
@@ -334,15 +355,17 @@ pub async fn timers_command(
             )
             .await
         }
-        TimersInvocation::Add { label, when } => {
-            super::run_core(
-                io,
-                config_path,
-                render_text_add,
-                move |config, store| async move { add(config, store, &label, when).await },
-            )
-            .await
-        }
+        TimersInvocation::Add {
+            label,
+            when,
+            insistence,
+        } => super::run_core(
+            io,
+            config_path,
+            render_text_add,
+            move |config, store| async move { add(config, store, &label, when, insistence).await },
+        )
+        .await,
     }
 }
 
@@ -360,8 +383,14 @@ pub async fn timers_line(
         TimersInvocation::Cancel(selector) => {
             crate::commands::emit_result(io, cancel_on(app, &selector).await, render_text_cancel)
         }
-        TimersInvocation::Add { label, when } => {
-            crate::commands::emit_result(io, add_on(app, &label, when).await, render_text_add)
-        }
+        TimersInvocation::Add {
+            label,
+            when,
+            insistence,
+        } => crate::commands::emit_result(
+            io,
+            add_on(app, &label, when, insistence).await,
+            render_text_add,
+        ),
     }
 }

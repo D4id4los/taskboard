@@ -61,14 +61,17 @@ async fn t1_add_in_stamps_and_persists() {
         timer_label: "steep the tea".into(),
         in_: Some(chrono::TimeDelta::try_minutes(30).unwrap()),
         at: None,
+        insistence: None,
     })
     .expect("one invocation")
     {
-        TimersInvocation::Add { label, when } => {
-            timers::add(config.clone(), forbidden_store(), &label, when)
-                .await
-                .expect("add boots")
-        }
+        TimersInvocation::Add {
+            label,
+            when,
+            insistence,
+        } => timers::add(config.clone(), forbidden_store(), &label, when, insistence)
+            .await
+            .expect("add boots"),
         _ => panic!("collapse yields the add"),
     };
     let now = chrono::Utc::now();
@@ -133,11 +136,13 @@ async fn run_add(config: &AppConfig, label: &str, args: &[&str]) -> TimerAddRece
         panic!("the argv selects the timers group");
     };
     match timers::collapse(cmd).expect("add collapses") {
-        TimersInvocation::Add { label, when } => {
-            timers::add(config.clone(), forbidden_store(), &label, when)
-                .await
-                .expect("add boots")
-        }
+        TimersInvocation::Add {
+            label,
+            when,
+            insistence,
+        } => timers::add(config.clone(), forbidden_store(), &label, when, insistence)
+            .await
+            .expect("add boots"),
         _ => panic!("the argv selects add"),
     }
 }
@@ -287,6 +292,7 @@ async fn t7_session_lane_routes_timers() {
                     timer_label: "tea".into(),
                     in_: Some(chrono::TimeDelta::try_minutes(5).unwrap()),
                     at: None,
+                    insistence: None,
                 },
                 0,
             ),
@@ -321,4 +327,29 @@ async fn t7_session_lane_routes_timers() {
     assert_eq!(lines.len(), 3);
     let stderr_text = String::from_utf8_lossy(&err);
     assert!(stderr_text.contains("\"unknown-adhoc-alarm\""));
+}
+
+/// T-insistence: `--insistence alarm` rides the clap parse, the receipt
+/// carries the level (read back from the alarms map), and the list row
+/// exposes it; the omitted flag folds `Normal`.
+#[tokio::test]
+async fn t_add_insistence_receipt_and_list_row_carry_the_level() {
+    use taskboard_domain::Insistence;
+    let dir = tempdir();
+    let config = standalone_config(dir.path(), "insist.db");
+
+    let receipt = run_add(
+        &config,
+        "loud tea",
+        &["--in", "2m", "--insistence", "alarm"],
+    )
+    .await;
+    assert_eq!(receipt.insistence, Insistence::Alarm);
+    let rows = list(&config).await.timers;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].alarm_id, receipt.alarm_id);
+    assert_eq!(rows[0].insistence, Insistence::Alarm);
+
+    let receipt = run_add(&config, "quiet tea", &["--in", "2m"]).await;
+    assert_eq!(receipt.insistence, Insistence::Normal);
 }

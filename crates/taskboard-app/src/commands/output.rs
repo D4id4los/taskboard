@@ -465,6 +465,8 @@ pub struct ReminderRow {
     /// The task's firings are muted (mutes are visible where rules
     /// are).
     pub task_muted: bool,
+    /// How loudly the rule insists.
+    pub insistence: taskboard_domain::Insistence,
 }
 
 /// The `tasks remind --list` payload: rows in task canonical order,
@@ -490,6 +492,9 @@ pub struct ReminderAddReceipt {
     pub before: String,
     /// `false` = a rule at this offset already existed; nothing changed.
     pub added: bool,
+    /// The rule's insistence, read from post-state — the survivor's
+    /// level on a dedup hit, never an input echo.
+    pub insistence: taskboard_domain::Insistence,
 }
 
 /// The `timers add` receipt (`fire_at` is state truth — the stamped
@@ -502,6 +507,9 @@ pub struct TimerAddReceipt {
     pub label: String,
     /// The absolute fire instant.
     pub fire_at: chrono::DateTime<chrono::Utc>,
+    /// The alarm's insistence, read back from the alarms map (the
+    /// `fire_at` state-truth precedent).
+    pub insistence: taskboard_domain::Insistence,
 }
 
 /// The `timers cancel` receipt (projected from the pre-execute row —
@@ -535,6 +543,8 @@ pub struct TimerRow {
     /// `effective_at - now` when positive (the snoozed/moved target's
     /// remaining time).
     pub remaining: Option<chrono::TimeDelta>,
+    /// How loudly the alarm insists.
+    pub insistence: taskboard_domain::Insistence,
 }
 
 /// The `timers list` payload.
