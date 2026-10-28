@@ -180,6 +180,7 @@ proptest! {
                 prop_assert_eq!(loaded.outbox, state.outbox);
                 prop_assert_eq!(loaded.validators, state.validators);
                 prop_assert_eq!(loaded.reminders, state.reminders);
+                prop_assert_eq!(loaded.tracking, state.tracking);
                 prop_assert_eq!(loaded.sync.aggregate().phase, state.sync.aggregate().phase);
                 prop_assert_eq!(loaded.sync.aggregate().last_success, state.sync.aggregate().last_success);
                 prop_assert_eq!(
@@ -1382,4 +1383,78 @@ async fn unknown_insistence_text_is_a_typed_corruption() {
     let err = db.repo().load().await.expect_err("corrupt decode");
     assert!(matches!(err, RepositoryError::Corrupted));
     db.close().await;
+}
+
+// ---- Time-entry storage (DR-5/2, #487, migration 0015) -----------------
+
+fn time_entry(id: u128, task: &Task, open: bool) -> taskboard_domain::TimeEntry {
+    taskboard_domain::TimeEntry {
+        id: taskboard_domain::TimeEntryId::from(uuid::Uuid::from_u128(id)),
+        task: task.id,
+        task_title: task.title.clone(),
+        start: ts(1_000),
+        end: open.then_some(ts(2_000)),
+        created_at: ts(999),
+        updated_at: ts(2_500),
+    }
+}
+
+/// The load codec (D-T9): a closed and an open (`end` NULL) entry
+/// round-trip through apply → load as typed-equal rows.
+#[tokio::test]
+async fn time_entry_rows_round_trip_including_the_open_row() {
+    let repo = open_memory(taskboard_domain::ConnectorId::from("nextcloud"))
+        .await
+        .expect("open");
+    let b = board(11);
+    let s = stack(2, &b);
+    let t = task(1, &s, BTreeMap::default());
+    let closed = time_entry(20, &t, true);
+    let open = time_entry(21, &t, false);
+    repo.apply(vec![
+        PersistenceAction::UpsertBoard(b),
+        PersistenceAction::UpsertStack(s),
+        PersistenceAction::UpsertTask(t),
+        PersistenceAction::UpsertTimeEntry(closed.clone()),
+        PersistenceAction::UpsertTimeEntry(open.clone()),
+    ])
+    .await
+    .expect("apply");
+    let loaded = repo.load().await.expect("load");
+    assert_eq!(loaded.tracking.entries.get(&closed.id), Some(&closed));
+    assert_eq!(
+        loaded.tracking.entries.get(&open.id),
+        Some(&open),
+        "the open row's end column reads back None"
+    );
+    repo.close().await;
+}
+
+/// The batch contract's last-write-wins pin: upsert and delete for one
+/// entry id in a single apply batch lands the delete (the statements run
+/// in the fixed partition order, mirroring `apply_actions`' sequence).
+#[tokio::test]
+async fn a_batch_carrying_upsert_then_delete_for_one_entry_lands_the_delete() {
+    let repo = open_memory(taskboard_domain::ConnectorId::from("nextcloud"))
+        .await
+        .expect("open");
+    let b = board(11);
+    let s = stack(2, &b);
+    let t = task(1, &s, BTreeMap::default());
+    let entry = time_entry(22, &t, true);
+    repo.apply(vec![
+        PersistenceAction::UpsertBoard(b),
+        PersistenceAction::UpsertStack(s),
+        PersistenceAction::UpsertTask(t),
+        PersistenceAction::UpsertTimeEntry(entry.clone()),
+        PersistenceAction::DeleteTimeEntry(entry.id),
+    ])
+    .await
+    .expect("apply");
+    let loaded = repo.load().await.expect("load");
+    assert!(
+        !loaded.tracking.entries.contains_key(&entry.id),
+        "the delete after the upsert wins"
+    );
+    repo.close().await;
 }
