@@ -83,16 +83,21 @@ export component TooltipPanel inherits Rectangle {
     opacity: TooltipState.visible && TooltipState.placed ? 1 : 0;
     x: TooltipState.tip-x;
     y: TooltipState.tip-y;
-    // Round-1 D9/D10, widened by r2 D14: content-hugging width under
-    // the caps — 60% of the window and an absolute 420·scale,
-    // whichever is smaller. The natural term is the wider of the
-    // caption's own unwrapped preferred width (wrap does not change
-    // it, probe P5 — the wrap-probe comment stays the authority) and
-    // the hint row's keycap-row preferred width (F28: the height
-    // always included the hint; the width now does too). Binding the
-    // panel to the layout's preferred width would cycle through the
-    // children's explicit width bindings.
-    width: min(max(caption.preferred-width, hint-natural())
+    // Round-1 D9/D10, widened by r2 D14, description term added by
+    // r3 D17: content-hugging width under the caps — 60% of the
+    // window and an absolute 420·scale, whichever is smaller. The
+    // natural term is the widest of the caption's own unwrapped
+    // preferred width (wrap does not change it, probe P5 — the
+    // wrap-probe comment stays the authority), the description's
+    // (r3 D17: a long help sentence drives the panel to the cap and
+    // wraps inside it — a wrapped RoleText's preferred width IS the
+    // unwrapped natural width, the same P5 fact) and the hint row's
+    // keycap-row preferred width (F28). Binding the panel to the
+    // layout's preferred width would cycle through the children's
+    // explicit width bindings.
+    width: min(max(caption.preferred-width,
+                   description-natural(),
+                   hint-natural())
                    + 2 * Theme.space-2,
                min(root.window-width * 0.6, 420px * Theme.base-scale));
     // A hint-less tip is not widened by an empty model: the keys-less
@@ -102,6 +107,13 @@ export component TooltipPanel inherits Rectangle {
     // its branch.
     pure function hint-natural() -> length {
         TooltipState.keys.length == 0 ? 0px : hint-row.preferred-width;
+    }
+    // The description term (r3 D17): the part is always mounted (the
+    // hint-row fact — a conditional element cannot be referenced
+    // outside its branch) and hidden when description-less, so its
+    // intrinsic preferred width is referenceable here.
+    pure function description-natural() -> length {
+        TooltipState.description == "" ? 0px : description-text.preferred-width;
     }
     height: layout.preferred-height;
     background: Theme.surface-raised;
@@ -137,12 +149,13 @@ export component TooltipPanel inherits Rectangle {
             wrap: word-wrap;
             width: root.width - 2 * Theme.space-2;
         }
-        if (TooltipState.description != ""): RoleText {
+        description-text := RoleText {
             role: Typography.caption;
             text-color: Theme.text-secondary;
             text: TooltipState.description;
             wrap: word-wrap;
             width: root.width - 2 * Theme.space-2;
+            visible: TooltipState.description != "";
         }
         // Always mounted so its preferred width can be mirrored (the
         // conditional element cannot be referenced from outside its
