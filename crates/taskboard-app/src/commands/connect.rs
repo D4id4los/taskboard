@@ -233,6 +233,30 @@ pub async fn run<P: PromptReader>(
     prompts: &mut P,
     store: &Arc<dyn CredentialStore>,
 ) -> Result<ConnectReceipt, CommandError> {
+    // 0. Legacy-config migration (round-3 D21, plan §2.2): a scalar
+    //    file is upgraded to the array world before the guards read
+    //    it, so the ceremony continues on `sync.connectors` (Path B)
+    //    and every later surface sees the same shape. Unmigratable
+    //    corners (env-injected identity, unwritable file) continue
+    //    with the raw as-is — the scalar-world paths below are kept
+    //    exactly for them.
+    let raw = if raw.sync.connectors.is_none() {
+        match crate::migration::migrate_config_file(config_path) {
+            Ok(true) => AppConfig::extract_raw(Some(config_path)).map_err(CommandError::from)?,
+            Ok(false) => raw,
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    "connect: the legacy config migration did not persist; \
+                     continuing on the scalar world"
+                );
+                raw
+            }
+        }
+    } else {
+        raw
+    };
+
     // 1. D2 guard (before gathering: a declined flip must not cost the
     //    user a typed password; a refusal before prompting is today's
     //    pinned behavior, L9).

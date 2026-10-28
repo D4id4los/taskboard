@@ -1540,8 +1540,8 @@ pub enum SettingsOutcome {
     None,
     Ok,
     Busy,
-    /// The operation was refused (validation, legacy config, verify
-    /// rejected, persist rejected).
+    /// The operation was refused (validation, verify rejected,
+    /// persist rejected).
     Rejected,
     /// The server/store was unreachable.
     Unavailable,
@@ -1615,8 +1615,7 @@ impl SettingsVm {
 
     fn outcome_of(err: &SettingsError) -> SettingsOutcome {
         match err {
-            SettingsError::LegacyConfig
-            | SettingsError::Invalid { .. }
+            SettingsError::Invalid { .. }
             | SettingsError::NoSecretStored
             | SettingsError::StoreUnsupported
             | SettingsError::VerifyRejected
@@ -2086,7 +2085,6 @@ impl Adapter {
                     name: row.name.clone().into(),
                     server: row.server_url.clone().into(),
                     username: row.username.clone().into(),
-                    read_only: row.read_only,
                     busy: connector_busy && self.settings.busy_target == row.name,
                     status: match status {
                         crate::presentation::ConnectorStatus::Idle => Row::Idle,

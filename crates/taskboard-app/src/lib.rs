@@ -40,6 +40,7 @@ mod connector_ceremonies;
 pub mod connectors;
 pub mod ipc;
 pub mod lockfile;
+pub mod migration;
 pub mod notifications;
 pub mod repl;
 mod repl_history;

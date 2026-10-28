@@ -95,6 +95,8 @@ taskboard-domain = { workspace = true, features = ["test-support"] }
 # zero lock change).
 sqlx.workspace = true
 wiremock.workspace = true
+# The migration core's idempotence property (M2; plan §7).
+proptest.workspace = true
 tempfile.workspace = true
 base64.workspace = true
 # The MCP smoke's screenshot decode (design §8.2; dev-only).

@@ -110,7 +110,7 @@ async fn run(mut cli: Cli, raw_argv: Vec<String>) -> color_eyre::Result<()> {
         // daemon's process. Handled before the transport routing; the
         // lane table pins it `Local` (never relayed).
         if matches!(command, Command::Gui) {
-            let config = match AppConfig::load(cli.config.clone()) {
+            let config = match taskboard_app::migration::load_migrated(cli.config.clone()) {
                 Ok(config) => config,
                 Err(err) => {
                     std::process::exit(i32::from(report(cli.json, &CommandError::from(err))))
@@ -204,7 +204,7 @@ async fn run(mut cli: Cli, raw_argv: Vec<String>) -> color_eyre::Result<()> {
     // boots the appliance (ADR 0016). An explicit `daemon` subcommand
     // is `Some` above and skips this routing entirely.
     if bare_invocation {
-        let config = match AppConfig::load(cli.config.clone()) {
+        let config = match taskboard_app::migration::load_migrated(cli.config.clone()) {
             Ok(config) => config,
             // The session boot's typed failure class, reported through
             // the same envelope a one-shot uses (JSON under `--json`).
@@ -237,7 +237,7 @@ async fn run(mut cli: Cli, raw_argv: Vec<String>) -> color_eyre::Result<()> {
         }
     }
 
-    let config = match AppConfig::load(cli.config.clone()) {
+    let config = match taskboard_app::migration::load_migrated(cli.config.clone()) {
         Ok(config) => config,
         Err(err) => std::process::exit(i32::from(report(cli.json, &CommandError::from(err)))),
     };

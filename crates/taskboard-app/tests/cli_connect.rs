@@ -196,10 +196,24 @@ async fn c14_forced_repoint_with_bad_credentials_leaves_the_old_identity_intact(
     .expect_err("401 rejects the forced re-point");
     assert_eq!(err.error_kind(), "invalid-credentials");
 
+    // The D21 migration ran at the ceremony's entry (before verify),
+    // so the rejected ceremony leaves the file in its migrated form
+    // — the old *identity* is intact (entry 0), which is the test's
+    // contract; the pre-migration bytes live in the backup.
+    let written = std::fs::read_to_string(&config_path).expect("config");
+    assert!(
+        written.contains("server_url = \"https://old.example.com\""),
+        "the old identity survives the rejected ceremony"
+    );
+    assert!(
+        written.contains("[[sync.connectors]]"),
+        "the entry-point migration happened before the verify"
+    );
     assert_eq!(
-        std::fs::read_to_string(&config_path).expect("config"),
+        std::fs::read_to_string(config_path.with_file_name("taskboard.toml.bak-legacy"))
+            .expect("backup"),
         before,
-        "config bytes unchanged"
+        "the backup carries the pre-migration bytes"
     );
     let old = store.load(old_server, "alice").expect("old secret alive");
     assert_eq!(old.expose(), "old-s3cret");
@@ -802,9 +816,19 @@ async fn c8_declined_repoint_leaves_everything_untouched() {
     .await
     .expect_err("declined re-point refuses");
     assert_eq!(err.error_kind(), "connection-exists");
+    // The D21 entry-point migration ran before the guards; the declined
+    // ceremony leaves the migrated file with the old identity intact.
+    let written = std::fs::read_to_string(&config_path).expect("config");
+    assert!(written.contains("[[sync.connectors]]"), "migrated form");
+    assert!(
+        written.contains("server_url = \"https://old.example.com\""),
+        "the old identity survives the declined ceremony"
+    );
     assert_eq!(
-        std::fs::read_to_string(&config_path).expect("config"),
-        before
+        std::fs::read_to_string(config_path.with_file_name("taskboard.toml.bak-legacy"))
+            .expect("backup"),
+        before,
+        "the backup carries the pre-migration bytes"
     );
     let old = store
         .load("https://old.example.com", "alice")
@@ -956,4 +980,114 @@ async fn c12_standalone_plus_repoint_with_both_flags_proceeds() {
         store.load("https://old.example.com", "alice"),
         Err(CredentialError::NotFound)
     ));
+}
+
+/// M7 — the ceremony on a legacy scalar file migrates it first (plan
+/// §2.2): the run succeeds on the array world, the file is rewritten
+/// through Path B (entry 0's identity), and a second connect does not
+/// duplicate entries.
+#[tokio::test]
+async fn m7_connect_on_a_legacy_file_migrates_it_first() {
+    let server = mount_boards_ok().await;
+    let dir = tempdir();
+    let config_path = seed_config(
+        &dir,
+        format!(
+            "[nextcloud]\n\
+             server_url = \"{}\"\n\
+             username = \"alice\"\n",
+            server.uri()
+        )
+        .as_str(),
+    );
+    let store: Arc<dyn CredentialStore> = Arc::new(FakeCredentialStore::default());
+
+    // Same identity as the file's: the idempotent re-verify (the D3
+    // guard's no-prompt arm) — the migration alone is the observable.
+    let receipt = run_connect(
+        &config_path,
+        args(Some(server.uri())),
+        &mut FakePrompts::new(&["s3cret-m7-pw"]),
+        &store,
+    )
+    .await
+    .expect("the ceremony succeeds on the migrated world");
+
+    assert!(receipt.verified);
+    let written = std::fs::read_to_string(&config_path).expect("read back");
+    assert!(written.contains("[[sync.connectors]]"), "array world");
+    assert!(
+        !written.contains("[nextcloud]"),
+        "the scalar table is gone (identity moved into the entry)"
+    );
+    let loaded = AppConfig::load(Some(config_path.clone())).expect("round-trips");
+    let entries = loaded.sync.connectors.as_deref().expect("array");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].name, "nextcloud");
+    assert_eq!(entries[0].server_url, server.uri());
+    assert_eq!(entries[0].username, "alice");
+    assert!(
+        config_path
+            .with_file_name("taskboard.toml.bak-legacy")
+            .is_file(),
+        "the migration's backup exists"
+    );
+
+    // A second connect rewrites entry 0 in place — no duplication.
+    let other = mount_boards_ok().await;
+    let receipt = run_connect(
+        &config_path,
+        ConnectArgs {
+            force: true,
+            ..args(Some(other.uri()))
+        },
+        &mut FakePrompts::new(&["s3cret-m7-pw2"]),
+        &store,
+    )
+    .await
+    .expect("the re-point proceeds on the array world");
+    assert!(receipt.verified);
+    let loaded = AppConfig::load(Some(config_path)).expect("round-trips");
+    let entries = loaded.sync.connectors.as_deref().expect("array");
+    assert_eq!(entries.len(), 1, "no duplicate entry");
+    assert_eq!(entries[0].server_url, other.uri());
+}
+
+/// M8 — an explicit-`standalone` file is *not* the legacy world: no
+/// migration; the D2 guard's typed refusal is unchanged (plan §3).
+#[tokio::test]
+async fn m8_an_explicit_standalone_file_never_migrates() {
+    let server = mount_boards_ok().await;
+    let dir = tempdir();
+    let config_path = seed_config(
+        &dir,
+        "[sync]\nbackend = \"standalone\"\n\
+         [nextcloud]\n\
+         server_url = \"https://legacy.example.com\"\n\
+         username = \"alice\"\n",
+    );
+    let before = std::fs::read_to_string(&config_path).expect("read");
+    let store: Arc<dyn CredentialStore> = Arc::new(FakeCredentialStore::default());
+
+    let err = run_connect(
+        &config_path,
+        args(Some(server.uri())),
+        &mut FakePrompts::new(&["pw"]),
+        &store,
+    )
+    .await
+    .expect_err("the D2 guard refuses without a confirmable terminal");
+
+    assert!(
+        matches!(
+            err,
+            taskboard_app::commands::CommandError::BackendExplicitStandalone
+        ),
+        "the typed refusal is unchanged"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&config_path).expect("read"),
+        before,
+        "the file is byte-untouched — no migration happened"
+    );
 }

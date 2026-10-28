@@ -100,13 +100,20 @@ fn connectors_item(
     doc: &mut toml_edit::DocumentMut,
 ) -> Result<&mut toml_edit::Item, std::io::Error> {
     // The legacy-singleton exclusion is the writer-level backstop: a
-    // `[nextcloud]` identity beside the array would decode-reject
-    // (the `NextcloudTableWithConnectors` shape), so refuse instead of
-    // writing a mixed file.
-    if doc.get("nextcloud").is_some_and(toml_edit::Item::is_table) {
+    // `[nextcloud]` *identity* (server_url/username present — the same
+    // predicate validate's `NextcloudTableWithConnectors` keys on)
+    // beside the array would decode-reject, so refuse instead of
+    // writing a mixed file. A `[nextcloud]` husk holding only
+    // `credential_store` (process-global; the migration leaves it)
+    // stays a valid settings-write target (plan §6, M11).
+    let identity_husk = doc
+        .get("nextcloud")
+        .and_then(toml_edit::Item::as_table)
+        .is_some_and(|table| table.contains_key("server_url") || table.contains_key("username"));
+    if identity_husk {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            "[nextcloud] present: the scalar world is not a settings-write target",
+            "[nextcloud] identity present: the scalar world is not a settings-write target",
         ));
     }
     doc.get_mut("sync")
@@ -127,8 +134,9 @@ fn entry_name(item: &toml_edit::Item) -> Option<&str> {
 
 /// Builds the `toml_edit` table for one connector entry (field order
 /// matching the config's declaration order; deterministic rendering
-/// via `toml_edit::value`).
-fn connector_entry_table(entry: &ConnectorCfg) -> toml_edit::Table {
+/// via `toml_edit::value`). Shared with the legacy-config migration's
+/// entry rendering (plan §1) — one entry-rendering rule, no duplicate.
+pub(crate) fn connector_entry_table(entry: &ConnectorCfg) -> toml_edit::Table {
     let mut table = toml_edit::Table::new();
     table.insert("name", toml_edit::value(entry.name.as_str()));
     table.insert("backend", toml_edit::value(backend_word(entry.backend)));
@@ -154,8 +162,9 @@ fn connector_entry_inline(entry: &ConnectorCfg) -> toml_edit::Value {
     toml_edit::Value::InlineTable(table)
 }
 
-/// The config word for a backend (the serde spelling).
-fn backend_word(backend: SyncBackend) -> &'static str {
+/// The config word for a backend (the serde spelling). Shared with the
+/// legacy-config migration's entry rendering (plan §1).
+pub(crate) fn backend_word(backend: SyncBackend) -> &'static str {
     match backend {
         SyncBackend::Nextcloud => "nextcloud",
         SyncBackend::Standalone => "standalone",
@@ -169,10 +178,11 @@ fn backend_word(backend: SyncBackend) -> &'static str {
 /// is owner-only). An entry with the same `name` is
 /// replaced in place (document order preserved); otherwise the entry
 /// is appended. Both array renderings are navigated (array-of-tables
-/// and plain array of inline tables — the REPL writer's rule). The
-/// scalar world (`[nextcloud]` singleton, or no array at all) is
-/// refused typed at the writer level — the backstop behind the
-/// handler's earlier `LegacyConfig` rejection (plan D4/A3).
+/// and plain array of inline tables — the REPL writer's rule). A
+/// hand-made scalar world (a `[nextcloud]` *identity* beside the
+/// array, or no array at all) is refused typed at the writer level —
+/// the backstop; the handler migrates the reachable legacy world
+/// ahead of the write (round-3 D21, plan §6/A3).
 ///
 /// # Errors
 ///
@@ -512,5 +522,32 @@ mod overlay_tests {
         assert!((loaded.ui.scale - 2.0).abs() < f64::EPSILON);
         assert_eq!(loaded.ui.keymap.preset, crate::config::KeymapPreset::Emacs);
         assert_eq!(loaded.ui.keymap.overrides.len(), 1, "overrides survive");
+    }
+
+    /// M11 — the relaxed backstop (round-3 D21, plan §6): a
+    /// `[nextcloud]` husk holding only the process-global
+    /// `credential_store` beside a valid array is a valid upsert
+    /// target (the migration leaves that husk; refusing it would
+    /// block every later Save).
+    #[test]
+    fn upsert_accepts_a_credential_store_husk_beside_the_array() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = seed_config(
+            &dir,
+            "[nextcloud]\ncredential_store = \"file\"\n\
+             [[sync.connectors]]\nname = \"work\"\nbackend = \"nextcloud\"\n\
+             server_url = \"https://old.example\"\nusername = \"old-user\"\n",
+        );
+
+        overlay_upsert_connector(&config, &entry("work", "https://new.example", "new-user"))
+            .expect("the husk is not the scalar world");
+
+        let loaded = crate::config::AppConfig::load(Some(config)).expect("round-trips");
+        assert_eq!(loaded.sync.connectors.as_deref().expect("array").len(), 1);
+        assert_eq!(
+            loaded.nextcloud.credential_store,
+            crate::config::CredentialStoreKind::File,
+            "the process-global kind survives"
+        );
     }
 }
