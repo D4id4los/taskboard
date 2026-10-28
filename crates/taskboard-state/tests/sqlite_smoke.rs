@@ -59,6 +59,7 @@ async fn i1_engine_roundtrips_durably_through_the_sqlite_actor() {
             system_rx,
             notifier,
             ReminderEngineConfig::disabled(),
+            taskboard_state::DayRollConfig::disabled(),
         )
         .await
         .expect("engine boots");
@@ -256,6 +257,7 @@ async fn reloaded_rule_never_refires_a_delivered_occurrence() {
                     default_before: ReminderOffset::at_due(),
                 },
             },
+            taskboard_state::DayRollConfig::disabled(),
         )
         .await
         .expect("engine boots");

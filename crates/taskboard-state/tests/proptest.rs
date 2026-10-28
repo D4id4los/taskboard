@@ -518,6 +518,7 @@ fn drive_sequence(steps: &[Step]) -> Result<(), TestCaseError> {
             system_rx,
             notifier,
             ReminderEngineConfig::disabled(),
+            taskboard_state::DayRollConfig::disabled(),
         )
         .await
         .expect("engine boots");

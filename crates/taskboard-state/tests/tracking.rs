@@ -45,6 +45,7 @@ async fn spawn_over(repo: Arc<InMemoryRepository>, clock: Arc<FixedClock>) -> Ha
         system_rx,
         notifier,
         ReminderEngineConfig::disabled(),
+        taskboard_state::DayRollConfig::disabled(),
     )
     .await
     .expect("engine boots");

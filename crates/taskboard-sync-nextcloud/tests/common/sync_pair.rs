@@ -58,6 +58,7 @@ pub(crate) async fn boot_pair(client: DeckClient) -> SyncPair {
         system_engine_rx,
         notifier,
         taskboard_state::ReminderEngineConfig::disabled(),
+        taskboard_state::DayRollConfig::disabled(),
     )
     .await
     .expect("engine boots");

@@ -1239,6 +1239,34 @@ impl AppConfig {
         }
     }
 
+    /// The day-boundary roll's injected config (DR-6/2 D-E8): always
+    /// enabled (no user-facing knob — the roll is the recurring-series
+    /// feature's core materialization), with the calendar built from the
+    /// validated `[preferences] day_start_time` and the device's fixed
+    /// UTC offset resolved once at boot (the `resolve_day_start`
+    /// convention; the UI keeps its own derivation).
+    ///
+    /// # Panics
+    ///
+    /// Never on a validated config (an unparseable `day_start_time` is
+    /// rejected by [`AppConfig::validate`]).
+    #[must_use]
+    pub fn day_calendar(&self) -> taskboard_state::DayRollConfig {
+        let day_start_time = self
+            .preferences
+            .day_start_time
+            .parse::<chrono::NaiveTime>()
+            .expect("day_start_time validated");
+        let offset = *chrono::Local::now().offset();
+        taskboard_state::DayRollConfig {
+            enabled: true,
+            calendar: taskboard_domain::DayCalendar {
+                day_start_time,
+                offset,
+            },
+        }
+    }
+
     /// The validated server URL. Call after [`AppConfig::validate`].
     ///
     /// # Panics

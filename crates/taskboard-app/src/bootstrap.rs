@@ -901,6 +901,7 @@ async fn bootstrap_with_modules(
         system_rx_engine,
         notifier,
         config.reminder_engine_config(),
+        config.day_calendar(),
     )
     .await;
 

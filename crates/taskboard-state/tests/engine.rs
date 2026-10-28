@@ -24,7 +24,9 @@ use taskboard_domain::{
     RemoteBoardId, RemoteBoardSnapshot, Stack, StackClocks, StackId, StateCommand, SyncCommand,
     SyncErrorKind, SyncPhase, SyncReport, SystemEvent,
 };
-use taskboard_state::{EngineStartupError, ExecuteError, ReminderEngineConfig, spawn_state_engine};
+use taskboard_state::{
+    DayRollConfig, EngineStartupError, ExecuteError, ReminderEngineConfig, spawn_state_engine,
+};
 
 mod common;
 
@@ -137,6 +139,9 @@ struct Spawner {
     ids: Arc<dyn IdGenerator>,
     clock: Arc<dyn Clock>,
     reminders: ReminderEngineConfig,
+    /// The day roll is disabled by default (the same auto-advance
+    /// policy); the day-tick tests opt in via this field.
+    day_roll: DayRollConfig,
 }
 
 impl Default for Spawner {
@@ -149,6 +154,7 @@ impl Default for Spawner {
             ids: Arc::new(CountingIds::new()),
             clock: FixedClock::new(T0),
             reminders: ReminderEngineConfig::disabled(),
+            day_roll: DayRollConfig::disabled(),
         }
     }
 }
@@ -180,6 +186,7 @@ async fn spawn(spawner: Spawner) -> Harness {
         system_rx,
         notifier,
         spawner.reminders,
+        spawner.day_roll,
     )
     .await
     .expect("engine boots");
@@ -887,6 +894,7 @@ async fn a12_boot_failure_surfaces_load_error() {
         system_rx,
         notifier,
         ReminderEngineConfig::disabled(),
+        DayRollConfig::disabled(),
     )
     .await;
     assert!(matches!(
