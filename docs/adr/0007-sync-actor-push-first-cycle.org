@@ -211,3 +211,28 @@ same-cycle pull adopts no twin. A listing failure classifies through
 the normative write table's delete column (a listing 403 is "gone"
 there). The residual lagging-listing window rides the #258
 amendment's accepted risk unchanged. There is no configuration knob.
+
+* Amendment (2026-10-28): the create crash-window reconciles at pull (#150)
+
+The residual duplicate-create window above stays — Deck offers no
+idempotency keys, so a response-lost replay can still mint a second
+card — but its consequence is no longer permanent pollution: the pull
+now recognizes the duplicate as ours (rule =R-dup=) under a four-clause
+predicate — same normalized title and resolved stack, a create
+signature in scope (the op still pending, or its replay echo landed
+this cycle), both cards' =createdAt= inside
+=[op.queued_at − 60s, now + 60s]=, and byte-equal content on the pushed
+shape — and collapses it: the local task rebinds to the *older* card
+(an exact stamp tie keeps the bound one), the newer twin is deleted
+through the 404-tolerant delete path, and the duplicate's adoption is
+suppressed before any local row exists. Stacks collapse with the
+survivorship inverted (the *bound* stack survives — it holds the cards;
+the unbound orphan is provably empty and Deck's stack delete would
+cascade). Residues, accepted: a pull failure in the echo cycle leaves
+the orphan to adopt as before (the signature is one-cycle by design —
+widening it would break the "no signature without our own create"
+guarantee); a server clock skewed beyond the tolerance defeats the
+window the same way; a stranger's genuinely twin card created within a
+minute of our own create is the residual false-positive surface (the
+crash signature cannot exist without our create in the window).
+Detail: the DR-4/R chunk of the sync merge-policy design round.

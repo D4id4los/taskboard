@@ -114,10 +114,13 @@ revisit only if real usage hits it.
   =DEFAULT_BOARD_COLOR= fallback) → =BindBoard= → =SetBoard= → wait
   for the first cycle (drains the outbox onto the fresh board).
   Mid-ceremony transport failure is safe-but-messy: the board may
-  exist server-side unbound; a retry publishes a second board — the
-  runbook says delete the orphan in the Nextcloud UI (the
-  duplicate-create crash-window backlog entry owns the general
-  problem).
+  exist server-side unbound; a retry publishes a second board —
+  amended 2026-10-28 (#150): the ceremony now sweeps same-title,
+  same-color orphans stamped inside a 10-minute window, rebinds to the
+  oldest, and deletes the rest, so the runbook below is the *floor*
+  for anything the window misses (a listing failure during the sweep
+  degrades to it; the orphan then still needs the manual delete). The
+  runbook: delete the orphan in the Nextcloud UI.
 - =boards select --bind-local-board= — the migration path onto an
   existing board, with the same pre-validate → bind → =SetBoard= →
   adoption-wait shape. Plain =boards select= while a live local-only
