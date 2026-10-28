@@ -635,6 +635,8 @@ async fn cycle(
             &app_data,
             tables,
             &persisted.reminders.rules,
+            &persisted.tracking.entries,
+            read_at,
             *board_id,
             st.features.card_startdate,
         );
@@ -664,6 +666,7 @@ async fn cycle(
                     stacks: &persisted.stacks,
                     rules: &persisted.reminders.rules,
                     dismissals: &persisted.reminders.dismissals,
+                    entries: &persisted.tracking.entries,
                 })
                 .await;
                 match verdict {
