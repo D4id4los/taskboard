@@ -81,7 +81,7 @@ fn error_text(err: &SettingsError) -> &'static str {
 /// The `Field`×`InvalidKind` lattice (r2 D28): nested exhaustive
 /// matches — one inner arm per kind per field, no wildcard at either
 /// level, so a new variant on either enum fails to compile here.
-fn invalid_text(field: Field, kind: InvalidKind) -> &'static str {
+pub(crate) fn invalid_text(field: Field, kind: InvalidKind) -> &'static str {
     match field {
         Field::Name => match kind {
             InvalidKind::Empty => "Enter a name for the connection.",

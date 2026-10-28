@@ -14,6 +14,16 @@
 
 import { Theme, Typography, RoleText, Semantic } from "../theme.slint";
 
+// The tri-state validity flavour (round-3 D19): neutral is the empty
+// field — no decoration; invalid/valid drive the border regardless of
+// focus (instant feedback never waits for focus). Declared beside the
+// widget that owns the flavour; consumers re-export the import.
+export enum FieldValidity {
+    neutral,
+    invalid,
+    valid,
+}
+
 export component TextField inherits Rectangle {
     in property <string> placeholder;
     // The a11y label (D16).
@@ -45,6 +55,12 @@ export component TextField inherits Rectangle {
     // Return fires `accepted` without inserting a newline (the
     // recorded probe) — commit-on-Return is the grammar.
     in property <bool> multiline: false;
+    // The validity flavour (round-3 D19): the border token driver —
+    // invalid renders the danger border focused or not (instant
+    // feedback), valid the success border, neutral keeps today's
+    // focus-gated contract verbatim. Focus never re-colours an
+    // invalid/valid border.
+    in property <FieldValidity> validity: FieldValidity.neutral;
     callback edited(string);
     callback accepted(string);
     // The focus-loss seam (round-3 L1, plan §7 — the probe-recorded
@@ -64,8 +80,14 @@ export component TextField inherits Rectangle {
 
     background: Theme.surface-raised;
     border-radius: Theme.radius-small;
-    border-width: input.has-focus ? Theme.focus-ring-width : 0;
-    border-color: Semantic.focus-ring;
+    border-width: root.validity == FieldValidity.neutral
+        ? (input.has-focus ? Theme.focus-ring-width : 0)
+        : Theme.focus-ring-width;
+    border-color: root.validity == FieldValidity.invalid
+        ? Semantic.danger
+        : root.validity == FieldValidity.valid
+            ? Semantic.success
+            : Semantic.focus-ring;
     // The multiline editor is a fixed three-line window (the growth
     // binding — `input.preferred-height` — is a width-dependent
     // layout cycle on the pinned Slint, deprecated and panic-prone;

@@ -37,7 +37,6 @@ use crate::requests::{
 };
 use crate::resolver::{KeymapResolver, Resolution};
 use crate::router::{ActionRouter, DispatchOutcome, EffectClass, Mode, UiEffect};
-use crate::scale::UiScale;
 use crate::settings_form::{self, ConnectionDraft};
 use crate::shell::KeymapShell;
 use crate::view_state::{Flow, FlowOutcome, FocusEdge, ViewState};
@@ -1558,6 +1557,12 @@ struct SettingsVm {
     /// changed only by `apply_keymap_update` — the reply, never the
     /// click, is the selection's source.
     preset: crate::keymap::Preset,
+    /// The scale field's staged buffer (round-3 D20a): set per
+    /// keystroke on the scale field, discarded on Return commit and
+    /// on focus loss. While present it is the field's rendered echo
+    /// and the flavour's input; the live-scale echo renders only in
+    /// its absence.
+    scale_draft: Option<String>,
 }
 
 impl SettingsVm {
@@ -1890,6 +1895,88 @@ impl Adapter {
             .set_startup_keymap_findings(i32::try_from(update.findings).unwrap_or(i32::MAX));
     }
 
+    /// The validity flavour pass (round-3 D19): each field's `FieldStatus`
+    /// recomputed from the form ladder — the same source of truth the
+    /// Save gate reads — plus the per-field error string, which is the
+    /// status line's own sentence for the same (field, kind) pair (zero
+    /// new presentation code). The password's validity is computed from
+    /// the draft, which clears on send: a successful save never leaves a
+    /// stale red border behind. The scale field's flavour comes from its
+    /// staged draft only: with no draft the field merely echoes the live
+    /// scale, which is valid by construction — a permanent success border
+    /// would be noise, so that state is neutral. The scale echo is
+    /// draft-when-present, live-scale-otherwise (round-3 D20a, finding
+    /// 23): written on every pass so the field can never drift from the
+    /// applied value.
+    fn push_settings_validity(global: &crate::SettingsModel, vm: &SettingsVm, live_scale: f64) {
+        fn apply(
+            global: &crate::SettingsModel,
+            field: settings_form::Field,
+            status: settings_form::FieldStatus,
+        ) {
+            let (validity, error) = match status {
+                settings_form::FieldStatus::Neutral => (crate::FieldValidity::Neutral, ""),
+                settings_form::FieldStatus::Valid => (crate::FieldValidity::Valid, ""),
+                settings_form::FieldStatus::Invalid(kind) => (
+                    crate::FieldValidity::Invalid,
+                    crate::settings_status::invalid_text(
+                        map_form_field(field),
+                        map_form_kind(kind),
+                    ),
+                ),
+            };
+            match field {
+                settings_form::Field::Name => {
+                    global.set_validity_name(validity);
+                    global.set_error_name(error.into());
+                }
+                settings_form::Field::ServerUrl => {
+                    global.set_validity_server(validity);
+                    global.set_error_server(error.into());
+                }
+                settings_form::Field::Username => {
+                    global.set_validity_username(validity);
+                    global.set_error_username(error.into());
+                }
+                settings_form::Field::Password => {
+                    global.set_validity_password(validity);
+                    global.set_error_password(error.into());
+                }
+            }
+        }
+        for field in [
+            settings_form::Field::Name,
+            settings_form::Field::ServerUrl,
+            settings_form::Field::Username,
+            settings_form::Field::Password,
+        ] {
+            apply(global, field, settings_form::field_status(field, &vm.draft));
+        }
+        let scale_status = vm.scale_draft.as_deref().map_or(
+            settings_form::FieldStatus::Neutral,
+            settings_form::scale_status,
+        );
+        let (scale_validity, scale_error) = match scale_status {
+            settings_form::FieldStatus::Neutral => (crate::FieldValidity::Neutral, ""),
+            settings_form::FieldStatus::Valid => (crate::FieldValidity::Valid, ""),
+            settings_form::FieldStatus::Invalid(kind) => (
+                crate::FieldValidity::Invalid,
+                crate::settings_status::invalid_text(
+                    crate::requests::Field::Scale,
+                    map_form_kind(kind),
+                ),
+            ),
+        };
+        global.set_validity_scale(scale_validity);
+        global.set_error_scale(scale_error.into());
+        global.set_scale_echo(
+            vm.scale_draft
+                .clone()
+                .unwrap_or_else(|| settings_form::format_scale(live_scale))
+                .into(),
+        );
+    }
+
     /// Pushes the settings view-model onto the window global (the
     /// refresh pass's settings half; rows fold liveness + the bound
     /// boards' phases, D8). The row list rides the persistent
@@ -1958,6 +2045,8 @@ impl Adapter {
         global.set_draft_server(self.settings.draft.server_url.clone().into());
         global.set_draft_username(self.settings.draft.username.clone().into());
         global.set_save_enabled(self.settings.save_enabled());
+        let live_scale = f64::from(window.global::<crate::Theme>().get_base_scale());
+        Self::push_settings_validity(&global, &self.settings, live_scale);
         global.set_preset_index(preset_index(self.settings.preset));
         global.set_status_text(SharedString::from(crate::settings_status::status_text(
             self.settings.outcome,
@@ -1986,6 +2075,15 @@ impl Adapter {
                 // pushed model (the draft never renders it back).
                 self.settings.draft.password.clear();
                 self.settings.draft.password.push_str(text);
+                self.settings_field_insert_engage(window);
+                return;
+            }
+            4 => {
+                // The scale field's staged buffer (round-3 D20a): the
+                // draft becomes the rendered echo and the flavour's
+                // input; a concurrent slider preview must not clobber
+                // it (writer point 2 gates on its presence).
+                self.settings.scale_draft = Some(text.to_owned());
                 self.settings_field_insert_engage(window);
                 return;
             }
@@ -2269,6 +2367,9 @@ impl Adapter {
     /// to `previous`. Both input paths (field Return, slider release)
     /// share it, so both clamp identically by construction.
     fn apply_scale_commit(&mut self, window: &AppWindow, scale: f64, previous: f64) {
+        // The commit consumed the field's staged buffer (round-3
+        // D20a): the canonical echo re-renders from the live value.
+        self.settings.scale_draft = None;
         #[allow(clippy::cast_possible_truncation)]
         window.global::<crate::Theme>().set_base_scale(scale as f32);
         let (reply, reply_rx) = oneshot::channel();
@@ -2295,16 +2396,28 @@ impl Adapter {
     /// first, then persist over the lane; an `Err` reply reverts (D9).
     pub(crate) fn settings_scale_committed(&mut self, window: &AppWindow, text: &str) {
         self.settings_field_committed(window);
-        let Ok(scale) = text.parse::<f64>() else {
-            self.set_settings_outcome(window, SettingsOutcome::Rejected, None);
-            return;
-        };
-        if self.settings.pending.is_some() || UiScale::new(scale).is_err()
-        // presentation mirror; the authoritative check is the app-side mint
-        {
+        if self.settings.pending.is_some() {
             self.set_settings_outcome(window, SettingsOutcome::Rejected, None);
             return;
         }
+        // The typed refusal (round-3 D20a, recorded decision): the
+        // same validator the flavour renders drives the status
+        // detail, so the error line and the status line agree; the
+        // draft is KEPT on failure — the typo stays visible under
+        // its invalid flavour until focus loss or a good commit.
+        if let Some(kind) = settings_form::scale_invalid_kind(text) {
+            self.set_settings_outcome(
+                window,
+                SettingsOutcome::Rejected,
+                Some(SettingsError::Invalid {
+                    field: crate::requests::Field::Scale,
+                    kind: map_form_kind(kind),
+                }),
+            );
+            return;
+        }
+        #[allow(clippy::cast_precision_loss)]
+        let scale = text.trim().parse::<f64>().expect("validated parse");
         let previous = f64::from(window.global::<crate::Theme>().get_base_scale());
         self.apply_scale_commit(window, scale, previous);
     }
