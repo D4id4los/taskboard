@@ -532,6 +532,8 @@ fn domain_error_kind(err: &taskboard_domain::CommandError) -> &'static str {
         D::InvalidSnoozePostpone => "invalid-snooze-postpone",
         D::UnknownTimeEntry(_) => "unknown-time-entry",
         D::InvalidSpan => "invalid-span",
+        D::UnknownHabit(_) | D::HabitDeleted(_) => "unknown-habit",
+        D::InvalidHabitWindow { .. } => "invalid-habit-window",
     }
 }
 

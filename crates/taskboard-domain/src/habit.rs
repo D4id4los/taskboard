@@ -356,12 +356,81 @@ fn prev_month_checked(start: NaiveDate) -> Option<NaiveDate> {
     prev_month_end.with_day(1)
 }
 
+/// The append order for a board's habit list (D-H11): one past the
+/// greatest live order, or 0 on an empty list — the `CaptureTask` append
+/// shape, board-scoped. The ordering arithmetic lives here (not in the
+/// planner) so the later batch-order affordance (D-C13's "sort by time
+/// is just a batch of `MoveHabit` edits") reuses the single source.
+#[must_use]
+pub fn append_order_after(live_orders: impl Iterator<Item = i64>) -> i64 {
+    live_orders.max().map_or(0, |max| max + 1)
+}
+
 /// The period-end *instant* of the window starting at `start`: the
 /// opening instant of the next period's day window — through the
 /// `DayCalendar` vocabulary, never a second timezone concept (D-H4).
 #[must_use]
 pub fn period_end(kind: PeriodKind, start: NaiveDate, day: DayCalendar) -> DateTime<Utc> {
     crate::days::window_start(period_after(kind, start), day.day_start_time, day.offset)
+}
+
+/// Attribution happens at log time (D-H5): the normative log shape (a
+/// count per window, one LWW clock, **no per-completion instants**)
+/// makes read-time attribution undefinable — row counts cannot be split
+/// by time after the fact. So the *window choice of the +1* is the
+/// attribution, and this pure function is the whole decision.
+///
+/// 1. `natural` — the window-date of `now` (the night-owl rule), floored
+///    to the habit's period.
+/// 2. The previous window is in its **grace** iff `now` is before the
+///    previous window's end + 24 h (the fixed overflow — no knob, D-C8).
+/// 3. **Surplus-repairs**: return the previous window iff it is in
+///    grace ∧ still under quota ∧ the natural window already met quota;
+///    else the natural window.
+///
+/// Why the repair is guarded: the literal "late completions attribute
+/// to the earlier member" rule applied unconditionally would land every
+/// routine log in the previous period (a 9 AM log on day D falls inside
+/// day D−1's 24 h overflow), lagging the whole streak one period.
+/// Guarding on "today already met" keeps routine behavior natural and
+/// makes the overflow a *make-up* mechanism: doubling up after meeting
+/// today heals yesterday (the D-C8 ADHD-forgiveness intent);
+/// `AdjustHabitLog` stays the explicit valve for everything else.
+/// Per-kind reach falls out of the arithmetic: daily habits can repair
+/// yesterday all day (prev end + 24 h = end of today); weekly/monthly
+/// habits only within the first 24 h of the new period.
+///
+/// # Panics
+///
+/// Panics only if chrono cannot represent the 24 h grace offset — a
+/// programming error, not an input condition.
+#[must_use]
+pub fn log_window(
+    habit: &Habit,
+    log: &BTreeMap<HabitLogKey, HabitLogEntry>,
+    now: DateTime<Utc>,
+    day: DayCalendar,
+) -> WindowStart {
+    let kind = habit.target.kind();
+    let quota = habit.target.quota().get();
+    let count = |window: WindowStart| {
+        log.get(&HabitLogKey {
+            habit: habit.id,
+            window,
+        })
+        .map_or(0, |entry| entry.count)
+    };
+    let natural = WindowStart::of_period(kind, day.today(now));
+    let prev_date = period_before(kind, natural.as_date());
+    let prev = WindowStart::of_period(kind, prev_date);
+    let grace_end = period_end(kind, prev_date, day)
+        + chrono::TimeDelta::try_hours(24).expect("24 h is representable");
+    let in_grace = now < grace_end;
+    if in_grace && count(prev) < quota && count(natural) >= quota {
+        prev
+    } else {
+        natural
+    }
 }
 
 #[cfg(test)]
