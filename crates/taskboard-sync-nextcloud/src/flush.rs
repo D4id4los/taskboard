@@ -52,7 +52,7 @@ pub(crate) enum FlushVerdict {
     Applied {
         outcomes: Vec<PushOutcome>,
         stamp: AttachmentStamp,
-        document: AppDataDocument,
+        document: Box<AppDataDocument>,
     },
     /// The write landed but its echo did not decode: outcomes still
     /// complete (the write is authoritative), the cache stays cold so
@@ -252,6 +252,7 @@ pub(crate) async fn run_flush(ctx: FlushCtx<'_>) -> FlushVerdict {
             tasks: (!overlay_tasks.is_empty()).then_some(overlay_tasks),
             reminder_rules: (!overlay_rules.is_empty()).then_some(overlay_rules),
             dismissals: (!overlay_dismissals.is_empty()).then_some(overlay_dismissals),
+            time_entries: None,
             unknown: BTreeMap::new(),
         },
         unknown: BTreeMap::new(),
@@ -330,7 +331,7 @@ pub(crate) async fn run_flush(ctx: FlushCtx<'_>) -> FlushVerdict {
                 })
                 .collect(),
             stamp,
-            document: merged,
+            document: Box::new(merged),
         },
         Ok(None) => FlushVerdict::AppliedUncached {
             outcomes: resolved_members

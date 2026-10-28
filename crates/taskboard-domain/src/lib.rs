@@ -67,8 +67,9 @@ pub(crate) mod merge_testutil;
 pub use appdata::{
     ANCHOR_CARD_TITLE, APPDATA_FORMAT, AppDataDocument, AppDataSections, DismissalEntry,
     DismissalsEntry, MODELED_TASK_FIELD_KEYS, ModeledValue, RuleEntry, RulesEntry, TaskEntry,
-    TaskFieldWrite, derive_rule_tombstones, dismissal_wire_key, dismissals_entry_for,
-    lane_gc_scheduled, modeled_key, prune_absent_cards, rules_entry_for, task_entry_for, union,
+    TaskFieldWrite, TimeEntryRecord, derive_rule_tombstones, dismissal_wire_key,
+    dismissals_entry_for, lane_gc_scheduled, modeled_key, prune_absent_cards, rules_entry_for,
+    task_entry_for, union,
 };
 pub use capabilities::{DeckFeatures, flags_for};
 pub use clock::{Clock, SystemClock};

@@ -2059,6 +2059,7 @@ mod tests {
                 tasks: (!tasks_map.is_empty()).then_some(tasks_map),
                 reminder_rules: rules_map,
                 dismissals: dismissals_map,
+                time_entries: None,
                 unknown: std::collections::BTreeMap::new(),
             },
             unknown: std::collections::BTreeMap::new(),
