@@ -18,6 +18,7 @@
 pub mod contract;
 pub use memory::InMemoryRepository;
 pub mod entities;
+pub mod habit_strategies;
 pub mod memory;
 pub mod messages;
 pub mod recur;
@@ -44,6 +45,10 @@ pub use reminders::{
 pub use remote::{push_outcome_strategy, remote_task_strategy, snapshot_strategy};
 pub use state::{app_state_strategy, persisted_state_strategy};
 pub mod tracking_strategies;
+pub use habit_strategies::{
+    HabitFixture, habit_fixture_strategy, habit_strategy, habit_target_strategy,
+    period_kind_strategy, quota_strategy,
+};
 pub use tracking_strategies::{time_entry_strategy, tracking_state_strategy};
 
 use chrono::{DateTime, TimeZone, Utc};

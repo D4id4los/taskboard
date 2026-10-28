@@ -433,6 +433,73 @@ pub fn log_window(
     }
 }
 
+/// The habit's streak as of `now` (D-H6): the number of consecutive
+/// **counting** periods ending at the current one. Pure and total.
+///
+/// Walk periods backward from the natural window (as [`log_window`]
+/// computes it). For each period:
+///
+/// - count ≥ quota → **counts**: streak += 1, continue backward;
+/// - else if `now` is before the period's end + 24 h → **pending**:
+///   transparent — it neither counts nor breaks, walk on. At most two
+///   periods can be pending for any `now` (the current one, plus the
+///   previous during its first 24 h — the `period_end` arithmetic
+///   enforces this; pinned by property);
+/// - else → **missed**: stop.
+///
+/// Behavior contract: the morning of an unmet today still shows
+/// yesterday's run (today is pending); a missed period breaks the chain
+/// exactly when its grace closes; a brand-new habit with an empty log
+/// has streak 0. Periods before the log's earliest row are empty ⇒
+/// missed ⇒ the walk terminates naturally — no creation boundary is
+/// needed (a pre-creation row can only arrive via the explicit
+/// `AdjustHabitLog` valve, which is allowed to count: audited data).
+/// Rows keyed by non-canonical or former-kind windows are inert (D-H12).
+///
+/// # Panics
+///
+/// Panics only if chrono cannot represent the 24 h grace offset — a
+/// programming error, not an input condition.
+#[must_use]
+pub fn streak(
+    habit: &Habit,
+    log: &BTreeMap<HabitLogKey, HabitLogEntry>,
+    now: DateTime<Utc>,
+    day: DayCalendar,
+) -> u32 {
+    let kind = habit.target.kind();
+    let quota = habit.target.quota().get();
+    let count = |window: WindowStart| {
+        log.get(&HabitLogKey {
+            habit: habit.id,
+            window,
+        })
+        .map_or(0, |entry| entry.count)
+    };
+    let grace = chrono::TimeDelta::try_hours(24).expect("24 h is representable");
+    let mut streak = 0_u32;
+    let mut cursor = WindowStart::of_period(kind, day.today(now)).as_date();
+    loop {
+        if count(WindowStart(cursor)) >= quota {
+            streak += 1;
+        } else {
+            let grace_end = period_end(kind, cursor, day) + grace;
+            if now >= grace_end {
+                // Missed: the chain is broken exactly here.
+                break;
+            }
+            // Pending: transparent — neither counts nor breaks.
+        }
+        let prev = period_before(kind, cursor);
+        if prev >= cursor {
+            // Saturated at the chrono bound: no earlier period exists.
+            break;
+        }
+        cursor = prev;
+    }
+    streak
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -602,5 +669,415 @@ mod tests {
             Just(PeriodKind::Week),
             Just(PeriodKind::Month),
         ]
+    }
+
+    // ---- Attribution + streak properties (DR-6/5 §5.1) ------------------
+
+    use crate::command::{CommandError, CommandOutcome, plan_command};
+    use crate::messages::StateCommand;
+    use crate::persistence::{PersistedState, apply_actions};
+    use crate::reminders::ReminderDefaults;
+    use crate::state::AppState;
+    use crate::test_support::{CountingIds, HabitFixture, habit_fixture_strategy, habit_strategy};
+
+    fn log_plan(
+        fixture: &HabitFixture,
+        command: &StateCommand,
+        at: DateTime<Utc>,
+    ) -> Result<crate::command::CommandPlan, CommandError> {
+        let app = AppState {
+            habits: fixture.state(),
+            ..AppState::default()
+        };
+        plan_command(
+            &app,
+            &[],
+            command,
+            &CountingIds::new(),
+            &ReminderDefaults::default(),
+            fixture.day,
+            at,
+        )
+    }
+
+    fn stored_count(fixture: &HabitFixture, window: WindowStart) -> u32 {
+        fixture
+            .log
+            .get(&HabitLogKey {
+                habit: fixture.habit.id,
+                window,
+            })
+            .map_or(0, |entry| entry.count)
+    }
+
+    /// The hand model of D-H6, implemented plainly: returns the streak
+    /// and how many pending skips the walk took.
+    fn reference_walk(fixture: &HabitFixture, now: DateTime<Utc>) -> (u32, usize) {
+        let kind = fixture.habit.target.kind();
+        let quota = fixture.habit.target.quota().get();
+        let mut cursor = WindowStart::of_period(kind, fixture.day.today(now)).as_date();
+        let mut streak = 0_u32;
+        let mut pendings = 0_usize;
+        loop {
+            let count = stored_count(fixture, WindowStart(cursor));
+            if count >= quota {
+                streak += 1;
+            } else {
+                let grace_end = period_end(kind, cursor, fixture.day) + grace_offset();
+                if now >= grace_end {
+                    break;
+                }
+                pendings += 1;
+            }
+            let prev = period_before(kind, cursor);
+            if prev >= cursor {
+                break;
+            }
+            cursor = prev;
+        }
+        (streak, pendings)
+    }
+
+    fn grace_offset() -> chrono::TimeDelta {
+        chrono::TimeDelta::try_hours(24).expect("representable")
+    }
+
+    fn ts(secs: i64) -> DateTime<Utc> {
+        chrono::TimeZone::timestamp_opt(&Utc, secs, 0).unwrap()
+    }
+
+    proptest! {
+        #![proptest_config(proptest_config(64))]
+
+        /// §5.1 items 1–2: over generated command sequences (LogHabit at
+        /// non-decreasing `now`, AdjustHabitLog interleaved), every +1
+        /// lands in exactly one window (Σ invariant), the touched
+        /// window's count rises by exactly one relative to its
+        /// pre-command value, the receipt reports the stored count, and
+        /// a repair choice implies the full surplus-repairs rule.
+        #[test]
+        fn log_sequences_are_monotone_and_partition_attribution(
+            (fixture, steps) in habit_fixture_strategy().prop_flat_map(|fixture| {
+                (
+                    Just(fixture.clone()),
+                    proptest::collection::vec(
+                        (any::<bool>(), 0_usize..2, 0_u32..=60, 0_i64..=3_600),
+                        1..8,
+                    ),
+                )
+            }),
+        ) {
+            let mut fixture = fixture;
+            let mut now = fixture.now;
+            let initial_sum: u64 = fixture.log.values().map(|e| u64::from(e.count)).sum();
+            let mut logs = 0_u64;
+            let quota = fixture.habit.target.quota().get();
+            let any_adjust_known = steps.iter().any(|step| !step.0);
+            for (is_log, window_pick, count, dt) in steps.clone() {
+                now += chrono::TimeDelta::try_seconds(dt).expect("bounded");
+                let natural = WindowStart::of_period(
+                    fixture.habit.target.kind(),
+                    fixture.day.today(now),
+                );
+                let prev = WindowStart::of_period(
+                    fixture.habit.target.kind(),
+                    period_before(fixture.habit.target.kind(), natural.as_date()),
+                );
+                let command = if is_log {
+                    StateCommand::LogHabit { habit: fixture.habit.id }
+                } else {
+                    let window = if window_pick == 0 { natural } else { prev };
+                    StateCommand::AdjustHabitLog {
+                        habit: fixture.habit.id,
+                        window,
+                        count,
+                    }
+                };
+                let plan = log_plan(&fixture, &command, now).expect("fixture is commandable");
+                if is_log {
+                    logs += 1;
+                    // (With interleaved corrections the Σ invariant is
+                    // pinned separately, over log-only sequences — an
+                    // audited adjust may legitimately lower a window.)
+                    let (key, entry) = match &plan.actions[0] {
+                        crate::persistence::PersistenceAction::RecordHabitLog(k, e) => (*k, *e),
+                        other => panic!("unexpected action: {other:?}"),
+                    };
+                    let pre = stored_count(&fixture, key.window);
+                    prop_assert_eq!(entry.count, pre + 1, "exactly one increment");
+                    prop_assert!(
+                        key.window == natural || key.window == prev,
+                        "the choice is natural or prev"
+                    );
+                    if key.window == prev {
+                        // The constructive pin of the surplus-repairs rule.
+                        let grace_end = period_end(
+                            fixture.habit.target.kind(),
+                            prev.as_date(),
+                            fixture.day,
+                        ) + grace_offset();
+                        prop_assert!(now < grace_end, "repair only in grace");
+                        prop_assert!(pre < quota, "repair only an unmet prev");
+                        prop_assert!(
+                            stored_count(&fixture, natural) >= quota,
+                            "repair only a met natural"
+                        );
+                    }
+                    let CommandOutcome::HabitLogged {
+                        habit,
+                        window,
+                        count: receipt,
+                    } = plan.outcome
+                    else {
+                        panic!("wrong receipt");
+                    };
+                    prop_assert_eq!(habit, fixture.habit.id);
+                    prop_assert_eq!(window, key.window);
+                    prop_assert_eq!(receipt, entry.count);
+                }
+                // Advance the fixture's log by the plan's actions (the
+                // executable contract).
+                let mut persisted = PersistedState {
+                    habits: fixture.state(),
+                    ..PersistedState::default()
+                };
+                apply_actions(&mut persisted, &plan.actions);
+                fixture.log = persisted.habits.log;
+            }
+            // When no correction ran, each +1 lands in exactly one
+            // window: the partition invariant (pinned constructively
+            // per-command above; the Σ form is the log-only prop).
+            if !any_adjust_known {
+                let final_sum: u64 = fixture.log.values().map(|e| u64::from(e.count)).sum();
+                prop_assert_eq!(final_sum, initial_sum + logs, "each +1 lands in exactly one window");
+            }
+        }
+
+        /// §5.1 item 3: `streak` equals the hand model on generated
+        /// rows, and the walk never takes more than two pending skips.
+        #[test]
+        fn streak_matches_the_hand_model_and_never_skips_twice_plus(
+            (fixture, probe) in habit_fixture_strategy().prop_flat_map(|fixture| {
+                (
+                    Just(fixture.clone()),
+                    0_i64..=200_000,
+                )
+            }),
+        ) {
+            let _ = probe;
+            let (expected, pendings) = reference_walk(&fixture, fixture.now);
+            prop_assert!(pendings <= 2, "at most two transparent periods");
+            prop_assert_eq!(streak(&fixture.habit, &fixture.log, fixture.now, fixture.day), expected);
+        }
+
+        /// §5.1 item 4 (the negative pin): two habit sets differing only
+        /// in `anchor_time` produce identical canonical `(order, id)`
+        /// orderings — no ordering surface reads the chip.
+        #[test]
+        fn anchor_time_never_influences_the_canonical_order(
+            habits in proptest::collection::vec(habit_strategy(), 1..6),
+        ) {
+            let mut perturbed = habits.clone();
+            for (i, habit) in perturbed.iter_mut().enumerate() {
+                habit.anchor_time = Some(
+                    chrono::NaiveTime::from_num_seconds_from_midnight_opt(
+                        u32::try_from(i * 1_337).expect("bounded"),
+                        0,
+                    )
+                    .expect("in-range seconds"),
+                );
+            }
+            let key = |habit: &Habit| (habit.order, habit.id);
+            let mut a: Vec<_> = habits.iter().map(key).collect();
+            let mut b: Vec<_> = perturbed.iter().map(key).collect();
+            a.sort();
+            b.sort();
+            prop_assert_eq!(a, b);
+        }
+    }
+
+    // ---- Deterministic streak cases (§5.3) -------------------------------
+
+    fn met(
+        counts: &mut BTreeMap<HabitLogKey, HabitLogEntry>,
+        habit: &Habit,
+        window: WindowStart,
+        at: DateTime<Utc>,
+    ) {
+        counts.insert(
+            HabitLogKey {
+                habit: habit.id,
+                window,
+            },
+            HabitLogEntry {
+                count: 5,
+                clock: at,
+            },
+        );
+    }
+
+    #[test]
+    fn a_brand_new_habit_with_an_empty_log_has_streak_zero() {
+        let day = crate::days::DayCalendar {
+            day_start_time: chrono::NaiveTime::MIN,
+            offset: chrono::FixedOffset::east_opt(0).unwrap(),
+        };
+        let habit = Habit {
+            id: HabitId::from(uuid::Uuid::from_u128(1)),
+            board: BoardId::from(uuid::Uuid::from_u128(2)),
+            title: "new".into(),
+            target: HabitTarget::PerDay(NonZeroCount::new(3).unwrap()),
+            order: 0,
+            anchor_time: None,
+            clocks: HabitClocks::all(ts(100)),
+            continued_from: None,
+            deleted: false,
+        };
+        let today = NaiveDate::from_ymd_opt(2026, 10, 28).unwrap();
+        let now = crate::days::window_start(today, day.day_start_time, day.offset)
+            + chrono::TimeDelta::try_hours(9).expect("9 h");
+        let empty = BTreeMap::new();
+        assert_eq!(
+            streak(&habit, &empty, now, day),
+            0,
+            "today pending, everything earlier missed"
+        );
+    }
+
+    #[test]
+    fn the_morning_of_an_unmet_today_still_shows_yesterdays_run() {
+        let day = crate::days::DayCalendar {
+            day_start_time: chrono::NaiveTime::MIN,
+            offset: chrono::FixedOffset::east_opt(0).unwrap(),
+        };
+        let habit = Habit {
+            id: HabitId::from(uuid::Uuid::from_u128(1)),
+            board: BoardId::from(uuid::Uuid::from_u128(2)),
+            title: "daily".into(),
+            target: HabitTarget::PerDay(NonZeroCount::new(3).unwrap()),
+            order: 0,
+            anchor_time: None,
+            clocks: HabitClocks::all(ts(100)),
+            continued_from: None,
+            deleted: false,
+        };
+        let today = NaiveDate::from_ymd_opt(2026, 10, 28).unwrap();
+        let now = crate::days::window_start(today, day.day_start_time, day.offset)
+            + chrono::TimeDelta::try_hours(8).expect("8 h");
+        let yesterday = WindowStart(period_before(PeriodKind::Day, today));
+        let mut log = BTreeMap::new();
+        met(&mut log, &habit, yesterday, ts(100));
+        // Today unmet but its grace is open: pending — yesterday counts.
+        assert_eq!(streak(&habit, &log, now, day), 1);
+        // And the day before yesterday unmet breaks it exactly there.
+        assert_eq!(
+            streak(&habit, &BTreeMap::new(), now, day),
+            0,
+            "no rows, no run"
+        );
+    }
+
+    #[test]
+    fn a_single_miss_breaks_exactly_after_its_grace_free_window() {
+        let day = crate::days::DayCalendar {
+            day_start_time: chrono::NaiveTime::MIN,
+            offset: chrono::FixedOffset::east_opt(0).unwrap(),
+        };
+        let habit = Habit {
+            id: HabitId::from(uuid::Uuid::from_u128(1)),
+            board: BoardId::from(uuid::Uuid::from_u128(2)),
+            title: "daily".into(),
+            target: HabitTarget::PerDay(NonZeroCount::new(3).unwrap()),
+            order: 0,
+            anchor_time: None,
+            clocks: HabitClocks::all(ts(100)),
+            continued_from: None,
+            deleted: false,
+        };
+        let today = NaiveDate::from_ymd_opt(2026, 10, 28).unwrap();
+        let w = |d: NaiveDate| WindowStart::of_period(PeriodKind::Day, d);
+        let miss = period_before(PeriodKind::Day, period_before(PeriodKind::Day, today));
+        let mut log = BTreeMap::new();
+        for date in [today, period_before(PeriodKind::Day, today)] {
+            met(&mut log, &habit, w(date), ts(100));
+        }
+        // Older met run so the grace span is observable.
+        let mut older = period_before(PeriodKind::Day, miss);
+        for _ in 0..4 {
+            met(&mut log, &habit, w(older), ts(100));
+            older = period_before(PeriodKind::Day, older);
+        }
+        // Inside the miss's grace (its end + 24 h = today's window start):
+        // the miss is pending; the chain spans both neighbors.
+        let grace_end = period_end(PeriodKind::Day, miss, day) + grace_offset();
+        let inside = grace_end - chrono::TimeDelta::try_hours(1).expect("1 h");
+        let past = grace_end + chrono::TimeDelta::try_hours(1).expect("1 h");
+        let inside_streak = streak(&habit, &log, inside, day);
+        let past_streak = streak(&habit, &log, past, day);
+        assert_eq!(past_streak, 2, "the chain breaks at the closed miss");
+        assert!(
+            inside_streak > past_streak,
+            "inside the grace the miss is transparent: {inside_streak} vs {past_streak}"
+        );
+        // A surplus log can repair the miss while it is pending: the
+        // healed period itself joins the chain (the walk counts it).
+        let mut repaired = log.clone();
+        met(&mut repaired, &habit, w(miss), ts(100));
+        assert_eq!(
+            streak(&habit, &repaired, inside, day),
+            inside_streak + 1,
+            "the repaired miss counts on top of the spanned neighbors"
+        );
+    }
+
+    #[test]
+    fn foreign_kind_rows_are_inert_and_a_quota_change_rebases_the_streak() {
+        let day = crate::days::DayCalendar {
+            day_start_time: chrono::NaiveTime::MIN,
+            offset: chrono::FixedOffset::east_opt(0).unwrap(),
+        };
+        let mut habit = Habit {
+            id: HabitId::from(uuid::Uuid::from_u128(1)),
+            board: BoardId::from(uuid::Uuid::from_u128(2)),
+            title: "retargeted".into(),
+            target: HabitTarget::PerWeek(NonZeroCount::new(2).unwrap()),
+            order: 0,
+            anchor_time: None,
+            clocks: HabitClocks::all(ts(100)),
+            continued_from: None,
+            deleted: false,
+        };
+        let today = NaiveDate::from_ymd_opt(2026, 10, 28).unwrap(); // a Wednesday
+        let now = crate::days::window_start(today, day.day_start_time, day.offset)
+            + chrono::TimeDelta::try_hours(10).expect("10 h");
+        let mut log = BTreeMap::new();
+        // Daily rows from the habit's former life at *non-canonical*
+        // weekly dates (this Wednesday and Tuesday — no Monday): they
+        // are analytically inert for a weekly target (D-H12).
+        for offset in [0_i64, 1] {
+            let date = today - chrono::Days::new(u64::try_from(offset).expect("positive"));
+            met(
+                &mut log,
+                &habit,
+                WindowStart::of_period(PeriodKind::Day, date),
+                ts(100),
+            );
+        }
+        assert_eq!(
+            streak(&habit, &log, now, day),
+            0,
+            "non-canonical dates never count for a weekly target"
+        );
+        // (Rows on dates that *are* canonical weekly windows share the
+        // (habit, date) key — one fact, not two — and count; that is
+        // the key model, not leakage.)
+        met(
+            &mut log,
+            &habit,
+            WindowStart::of_period(PeriodKind::Week, today),
+            ts(100),
+        );
+        assert_eq!(streak(&habit, &log, now, day), 1);
+        let _ = &mut habit;
     }
 }

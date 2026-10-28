@@ -84,7 +84,8 @@ pub use entities::{
 pub use find::{MatchQuality, SearchHit, SearchTarget, find};
 pub use habit::{
     Habit, HabitClocks, HabitLogEntry, HabitLogKey, HabitState, HabitTarget, InvalidHabitTarget,
-    NonZeroCount, PeriodKind, WindowStart, period_after, period_before, period_end, period_start,
+    NonZeroCount, PeriodKind, WindowStart, log_window, period_after, period_before, period_end,
+    period_start, streak,
 };
 pub use idgen::{IdGenerator, UuidV7Generator};
 pub use ids::{
