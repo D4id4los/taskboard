@@ -135,7 +135,9 @@ export component AppWindow inherits Window {
     callback settings-bind-clicked(int);
     callback settings-detach-clicked(int);
     callback settings-preset-picked(int);
+    callback settings-view-mounted();
     callback settings-scale-committed(string);
+    callback settings-scale-focus-lost();
     in-out property <BoardModel> board-model;
     in-out property <BoardBarModel> board-bar-model;
     in-out property <StackDetailModel> stack-model;
@@ -290,6 +292,7 @@ export component AppWindow inherits Window {
             }
             if (root.current-view == View.settings): SettingsView {
                 back-clicked() => root.settings-back-clicked();
+                view-mounted() => root.settings-view-mounted();
                 field-edited(f, t) => root.settings-field-edited(f, t);
                 field-committed() => root.settings-field-committed();
                 save-clicked(n, s, u, p) => root.settings-save-clicked(n, s, u, p);
@@ -300,6 +303,7 @@ export component AppWindow inherits Window {
                 detach-clicked(i) => root.settings-detach-clicked(i);
                 preset-picked(i) => root.settings-preset-picked(i);
                 scale-committed(t) => root.settings-scale-committed(t);
+                scale-focus-lost() => root.settings-scale-focus-lost();
                 scale-pressed() => root.settings-scale-pressed();
                 scale-preview(v) => root.settings-scale-preview(v);
                 scale-released(v) => root.settings-scale-released(v);

@@ -257,6 +257,7 @@ component LabeledField inherits VerticalLayout {
             commit-affordance: true;
             secret: root.secret;
             validity: root.validity;
+            autofocus: false;
             text <=> root.text;
             edited(t) => {
                 root.edited(root.field-index, t);
@@ -276,6 +277,12 @@ export component SettingsView inherits FocusScope {
     // D6.6: the back affordance routes the same close path as Escape
     // (the adapter's dedicated `settings-back-clicked` seam).
     callback back-clicked();
+    // The mount seam (r3 D20a): the fields' two-way text bindings
+    // clobber the model's echo/draft strings at instantiation (the
+    // TextField init writes its empty initial-text through the
+    // binding), so the adapter re-pushes the VM AFTER the children
+    // initialised — the mount pass is the fresh echo/validity pass.
+    callback view-mounted();
     callback field-edited(int, string);
     callback field-committed();
     callback save-clicked(string, string, string, string);
@@ -289,11 +296,18 @@ export component SettingsView inherits FocusScope {
     callback detach-clicked(int);
     callback preset-picked(int);
     callback scale-committed(string);
+    // The scale field's focus-loss seam (r3 D20a writer 7): a
+    // Return-less edit is discarded and the echo re-syncs to live.
+    callback scale-focus-lost();
     // The slider gesture (r2 D29): press / preview / release — the
     // width-drag trio's seams.
     callback scale-pressed();
     callback scale-preview(float);
     callback scale-released(float);
+
+    init => {
+        root.view-mounted();
+    }
 
     VerticalLayout {
         padding: Theme.space-4;
@@ -326,8 +340,16 @@ export component SettingsView inherits FocusScope {
         // unable to absorb layout height — the F-C3 mechanism, dead.
         // Layouts skip invisible children, so a hidden status leaves
         // the viewport identical; a visible one shrinks it — the fix.
-        status-line := HorizontalLayout {
-            visible: SettingsModel.last-outcome != SettingsOutcome.none;
+        // Recorded deviation from the plan's "visible: contract kept
+        // verbatim": on the pinned Slint 1.18.1 a `visible: false`
+        // child of a VerticalLayout still reserves its pinned height
+        // AND the inter-child spacing (measured: 45 px at scale 1.0 —
+        // the plan's "layouts skip invisible children" assumption is
+        // falsified for pinned-height elements), which would tax the
+        // viewport permanently. A conditional element is truly absent
+        // (the true-skip fact), so the hidden status leaves the
+        // viewport identical; a visible one shrinks it — the fix.
+        if SettingsModel.last-outcome != SettingsOutcome.none: status-line := HorizontalLayout {
             spacing: Theme.space-2;
             vertical-stretch: 0;
             min-height: status-text.preferred-height + 2 * Theme.space-2;
@@ -350,6 +372,15 @@ export component SettingsView inherits FocusScope {
         // one content column. The header above stays pinned.
         flick := Flickable {
             vertical-stretch: 1;
+            // The slider-grab fix (r3 D20b, probe P3 verdict): the
+            // mouse-drag pan gesture steals a wobbling slider drag
+            // (>= 8 px vertical inside 500 ms is intercepted; the
+            // probe reproduced it and exonerated the preview
+            // re-layout). Killing the mouse-drag pan restores the
+            // full gesture while touch panning (kiosk) and wheel
+            // scrolling stay alive — both ignore this property by
+            // construction. Live preview kept; no fallback.
+            mouse-drag-pan-enabled: false;
             // The journeys' scroll seam (r2 D30): two-way to the
             // global — journeys drive the scroll, gestures write
             // back (the two-way-to-built-in probe passed).
@@ -358,6 +389,15 @@ export component SettingsView inherits FocusScope {
             // keeps its name — zero Rust churn (chunk 4's scroll
             // anchoring reads the global).
             content-y <=> SettingsScrollFacts.viewport-y;
+            // The write-back mirror (r3 D20c): the flickable's
+            // pan/wheel paths call `remove_binding()` on `content-y`
+            // on their first write (the pinned source, probe
+            // finding), severing the two-way alias above — the mirror
+            // keeps the facts fresh through the severance so the
+            // journeys' geometry reads stay honest.
+            changed content-y => {
+                SettingsScrollFacts.viewport-y = self.content-y;
+            }
             // The viewport drives the journeys' facts (the
             // mirror-facts pattern).
             changed height => {
@@ -365,6 +405,31 @@ export component SettingsView inherits FocusScope {
             }
             changed content-height => {
                 self.mirror-facts();
+                // The scale commit's one-shot scroll anchor (r3
+                // D20c): the new row offset is MEASURED, not
+                // predicted — exact for the uniformly scaled content.
+                // The clamp replaces the built-in in-bounds guard,
+                // which a bound content-y disables (the downward
+                // blank screen, finding 25); it holds for both
+                // directions. One commit, one consume — manual
+                // scrolling afterwards is never fought.
+                if (SettingsScrollFacts.anchor-requested) {
+                    // The restore writes `content-y` DIRECTLY: the
+                    // global write rides the two-way alias, which the
+                    // flickable's wheel/pan paths have severed by the
+                    // time a user-triggered commit lands (probe
+                    // finding) — only a direct write reaches the
+                    // scroll.
+                    self.content-y = clamp(
+                        SettingsScrollFacts.anchor-offset
+                            - SettingsScrollFacts.scale-row-y,
+                        // The viewport height is the Flickable's own
+                        // height (the deprecated alias is not used).
+                        min(0px, self.height - self.content-height),
+                        0px,
+                    );
+                    SettingsScrollFacts.anchor-requested = false;
+                }
             }
             init => {
                 self.mirror-facts();
@@ -619,7 +684,12 @@ export component SettingsView inherits FocusScope {
             role: Typography.title;
             text: "Interface scale";
         }
-        HorizontalLayout {
+        scale-row := HorizontalLayout {
+            // The anchor's measured term (r3 D20c): the row's offset
+            // within the content — scroll-independent layout space.
+            changed y => {
+                SettingsScrollFacts.scale-row-y = self.y;
+            }
             spacing: Theme.space-2;
             RoleText {
                 role: Typography.body;
@@ -662,6 +732,19 @@ export component SettingsView inherits FocusScope {
                     label: "Scale";
                     commit-affordance: true;
                     validity: SettingsModel.validity-scale;
+                    // The echo renders text at mount — a focused,
+                    // non-empty field would swallow the key chain
+                    // (the D18 insert-mask contract). The timers-form
+                    // rule applies: a field that always carries text
+                    // must never grab the window's initial focus.
+                    autofocus: false;
+                    // The echo (r3 D20a): the field renders the
+                    // model's draft-when-present, live-scale-
+                    // otherwise string — the finding-23 sync hole.
+                    text <=> SettingsModel.scale-echo;
+                    focus-lost() => {
+                        root.scale-focus-lost();
+                    }
                     // Commit on Return only (D9): a per-keystroke commit
                     // would live-apply half-typed values and spam the lane.
                     // The field stays authoritative (r2 D29).

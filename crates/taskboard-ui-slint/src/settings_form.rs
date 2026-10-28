@@ -234,14 +234,18 @@ pub fn scale_status(text: &str) -> FieldStatus {
     }
 }
 
-/// The live-scale echo (round-3 D20a): Rust `{}` `Display` on `f64`
-/// is shortest-round-trip; a rendering with no fraction gets ".0"
-/// appended, so the echo never lies about the applied value (1 →
-/// "1.0"; non-grid values like 2.25 render verbatim — `UiScale`
-/// enforces only the window, not the 0.1 grid).
+/// The live-scale echo (round-3 D20a): the applied scale's storage
+/// precision is the theme's `f32` property, so the value first rounds
+/// through `f32` — rendering the widened `f64` directly would print
+/// the widening noise (1.7 → "1.7000000476837158") and the echo would
+/// lie. Rust `{}` `Display` on `f32` is shortest-round-trip; a
+/// rendering with no fraction gets ".0" appended (1 → "1.0";
+/// non-grid values like 2.25 render verbatim — `UiScale` enforces
+/// only the window, not the 0.1 grid).
 #[must_use]
 pub fn format_scale(value: f64) -> String {
-    let rendered = format!("{value}");
+    #[allow(clippy::cast_possible_truncation)] // the theme's own precision
+    let rendered = format!("{}", value as f32);
     if rendered.contains('.') {
         rendered
     } else {
