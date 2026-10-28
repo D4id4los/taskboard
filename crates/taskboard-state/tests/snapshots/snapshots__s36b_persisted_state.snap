@@ -126,3 +126,6 @@ tracking:
       end: "1969-12-31T12:00:00Z"
       created_at: "1970-01-01T10:05:00Z"
       updated_at: "1970-01-01T10:05:00Z"
+habits:
+  habits: {}
+  log: {}

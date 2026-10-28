@@ -101,6 +101,8 @@ pub struct PersistedState {
     pub reminders: ReminderState,
     /// Settled time-tracking history and the open entries (ADR 0017).
     pub tracking: crate::tracking::TrackingState,
+    /// Habit trackers and their count log (DR-6/5).
+    pub habits: crate::habit::HabitState,
 }
 
 impl From<PersistedState> for AppState {
@@ -112,6 +114,7 @@ impl From<PersistedState> for AppState {
             labels: persisted.labels,
             reminders: persisted.reminders,
             tracking: persisted.tracking,
+            habits: persisted.habits,
             sync: persisted.sync,
             last_updated: None,
         }
@@ -237,6 +240,15 @@ pub enum PersistenceAction {
     /// Remove a time entry (the storage/roaming chunk derives the wire
     /// tombstone at flush).
     DeleteTimeEntry(crate::ids::TimeEntryId),
+    /// Insert or replace a habit (entity upsert discipline — replace by
+    /// id; the tombstone rides the row).
+    UpsertHabit(crate::habit::Habit),
+    /// Record a habit window's count. Keyed set-union on the
+    /// `(habit, window)` key: insert when absent; on collision keep the
+    /// row with the **strictly newer** clock (count LWW under the row
+    /// clock); an equal clock keeps the stored row (deterministic tie —
+    /// sqlite-upsert parity note as `EnqueueOp`).
+    RecordHabitLog(crate::habit::HabitLogKey, crate::habit::HabitLogEntry),
     /// Clear the local content of one board: stacks, tasks, labels,
     /// outbox entries, sync validators, and reminder facts (rules,
     /// deliveries, snooze links, mutes) of its tasks. The board row
@@ -347,6 +359,19 @@ pub fn apply_actions(state: &mut PersistedState, actions: &[PersistenceAction]) 
             }
             PersistenceAction::DeleteTimeEntry(id) => {
                 state.tracking.entries.remove(id);
+            }
+            PersistenceAction::UpsertHabit(habit) => {
+                state.habits.habits.insert(habit.id, habit.clone());
+            }
+            PersistenceAction::RecordHabitLog(key, entry) => {
+                match state.habits.log.get(key) {
+                    // Keyed set-union, strictly-newer-clock LWW; the
+                    // equal-clock tie keeps the stored row (deterministic).
+                    Some(stored) if stored.clock >= entry.clock => {}
+                    _ => {
+                        state.habits.log.insert(*key, *entry);
+                    }
+                }
             }
             PersistenceAction::RecordReminderDelivery(delivery) => {
                 if !state
@@ -1128,6 +1153,90 @@ mod tests {
                 crate::ids::TimeEntryId::from(uuid::Uuid::from_u128(1)),
             )],
         );
+    }
+
+    // ---- Habit actions (DR-6/5 semantics, defined once here) ----------
+
+    fn habit_row(raw: u128) -> crate::habit::Habit {
+        crate::habit::Habit {
+            id: crate::ids::HabitId::from(uuid::Uuid::from_u128(raw)),
+            board: crate::ids::BoardId::from(uuid::Uuid::from_u128(900)),
+            title: format!("habit {raw}"),
+            target: crate::habit::HabitTarget::PerDay(crate::habit::NonZeroCount::new(1).unwrap()),
+            order: 0,
+            anchor_time: None,
+            clocks: crate::habit::HabitClocks::all(ts(100)),
+            continued_from: None,
+            deleted: false,
+        }
+    }
+
+    fn log_key(raw: u128, day: chrono::NaiveDate) -> crate::habit::HabitLogKey {
+        crate::habit::HabitLogKey {
+            habit: crate::ids::HabitId::from(uuid::Uuid::from_u128(raw)),
+            window: crate::habit::WindowStart::of_period(crate::habit::PeriodKind::Day, day),
+        }
+    }
+
+    #[test]
+    fn upsert_habit_replaces_by_id() {
+        let mut state = PersistedState::default();
+        let habit = habit_row(1);
+        apply_actions(&mut state, &[PersistenceAction::UpsertHabit(habit.clone())]);
+        let mut renamed = habit.clone();
+        renamed.title = "renamed".into();
+        renamed.clocks.title = ts(200);
+        apply_actions(&mut state, &[PersistenceAction::UpsertHabit(renamed)]);
+        assert_eq!(state.habits.habits.len(), 1, "replace, not append");
+        assert_eq!(state.habits.habits[&habit.id].title, "renamed");
+    }
+
+    #[test]
+    fn record_habit_log_is_keyed_union_with_strictly_newer_clock_lww() {
+        let mut state = PersistedState::default();
+        let key = log_key(1, chrono::NaiveDate::from_ymd_opt(2026, 10, 28).unwrap());
+        let first = crate::habit::HabitLogEntry {
+            count: 1,
+            clock: ts(1_000),
+        };
+        apply_actions(&mut state, &[PersistenceAction::RecordHabitLog(key, first)]);
+        // An older clock loses: the stored row stays.
+        let older = crate::habit::HabitLogEntry {
+            count: 9,
+            clock: ts(500),
+        };
+        apply_actions(&mut state, &[PersistenceAction::RecordHabitLog(key, older)]);
+        assert_eq!(state.habits.log[&key], first, "strictly-newer clock wins");
+        // An equal clock keeps the stored row (deterministic tie).
+        let equal = crate::habit::HabitLogEntry {
+            count: 9,
+            clock: ts(1_000),
+        };
+        apply_actions(&mut state, &[PersistenceAction::RecordHabitLog(key, equal)]);
+        assert_eq!(
+            state.habits.log[&key], first,
+            "the equal-clock tie keeps stored"
+        );
+        // A newer clock replaces.
+        let newer = crate::habit::HabitLogEntry {
+            count: 2,
+            clock: ts(2_000),
+        };
+        apply_actions(&mut state, &[PersistenceAction::RecordHabitLog(key, newer)]);
+        assert_eq!(state.habits.log[&key], newer);
+        // A foreign key is an independent row (set-union, not replace-all).
+        let other = log_key(1, chrono::NaiveDate::from_ymd_opt(2026, 10, 27).unwrap());
+        apply_actions(
+            &mut state,
+            &[PersistenceAction::RecordHabitLog(
+                other,
+                crate::habit::HabitLogEntry {
+                    count: 5,
+                    clock: ts(3_000),
+                },
+            )],
+        );
+        assert_eq!(state.habits.log.len(), 2);
     }
 
     fn reminder_rule(raw: u128) -> crate::reminders::ReminderRule {

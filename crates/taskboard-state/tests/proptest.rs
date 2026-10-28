@@ -240,6 +240,7 @@ proptest! {
             labels: persisted.labels.clone(),
             reminders: persisted.reminders.clone(),
             tracking: persisted.tracking.clone(),
+            habits: taskboard_domain::HabitState::default(),
             sync: persisted.sync.clone(),
             last_updated: None,
         };
@@ -660,6 +661,7 @@ fn drive_sequence(steps: &[Step]) -> Result<(), TestCaseError> {
                 labels: disk_derived.labels,
                 reminders: disk_derived.reminders,
                 tracking: disk_derived.tracking,
+                habits: taskboard_domain::HabitState::default(),
                 sync: disk_derived.sync,
                 last_updated: mem_after.last_updated,
             };

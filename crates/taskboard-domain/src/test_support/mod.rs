@@ -52,7 +52,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use uuid::Uuid;
 
 use crate::idgen::IdGenerator;
-use crate::ids::{AdhocAlarmId, BoardId, LabelId, ReminderRuleId, StackId, TaskId, TimeEntryId};
+use crate::ids::{
+    AdhocAlarmId, BoardId, HabitId, LabelId, ReminderRuleId, StackId, TaskId, TimeEntryId,
+};
 use crate::outbox::OpId;
 
 /// Deterministic id source: UUIDs from a monotonically increasing
@@ -102,6 +104,10 @@ impl IdGenerator for CountingIds {
 
     fn new_label_id(&self) -> LabelId {
         LabelId::from(Uuid::from_u128(self.next()))
+    }
+
+    fn new_habit_id(&self) -> HabitId {
+        HabitId::from(Uuid::from_u128(self.next()))
     }
 
     fn new_op_id(&self) -> OpId {
@@ -209,6 +215,8 @@ id_strategy!(stack_id_strategy, StackId);
 id_strategy!(task_id_strategy, TaskId);
 id_strategy!(label_id_strategy, LabelId);
 id_strategy!(time_entry_id_strategy, TimeEntryId);
+id_strategy!(habit_id_strategy, crate::ids::HabitId);
+id_strategy!(series_id_strategy, crate::ids::SeriesId);
 
 /// A positive remote board id (0 is the epoch-0 sentinel of old servers).
 pub fn remote_board_id_strategy() -> impl Strategy<Value = crate::ids::RemoteBoardId> {

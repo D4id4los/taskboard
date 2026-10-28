@@ -1,6 +1,5 @@
 ---
 source: crates/taskboard-state/tests/snapshots.rs
-assertion_line: 130
 expression: "&persisted"
 ---
 boards:
@@ -101,3 +100,6 @@ reminders:
   alarms: {}
 tracking:
   entries: {}
+habits:
+  habits: {}
+  log: {}

@@ -39,6 +39,9 @@ pub struct AppState {
     /// Settled time-tracking history and the open entries (ADR 0017):
     /// the open entry is the running timer, elapsed is derived at read.
     pub tracking: crate::tracking::TrackingState,
+    /// Habit trackers and their count log (DR-6/5): a window's state is
+    /// its log row — no derived running/completed bit exists anywhere.
+    pub habits: crate::habit::HabitState,
     /// Current sync status, keyed per board (the surfaces read the
     /// `aggregate()` fold).
     pub sync: SyncStates,

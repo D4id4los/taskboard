@@ -35,6 +35,7 @@ pub mod command;
 pub mod days;
 pub mod entities;
 pub mod find;
+pub mod habit;
 pub mod idgen;
 pub mod ids;
 pub mod merge;
@@ -81,6 +82,10 @@ pub use entities::{
     TaskClocks, Urgency,
 };
 pub use find::{MatchQuality, SearchHit, SearchTarget, find};
+pub use habit::{
+    Habit, HabitClocks, HabitLogEntry, HabitLogKey, HabitState, HabitTarget, InvalidHabitTarget,
+    NonZeroCount, PeriodKind, WindowStart, period_after, period_before, period_end, period_start,
+};
 pub use idgen::{IdGenerator, UuidV7Generator};
 pub use ids::{
     AdhocAlarmId, BoardId, ConnectorId, HabitId, LabelId, ReminderRuleId, RemoteBoardBinding,
