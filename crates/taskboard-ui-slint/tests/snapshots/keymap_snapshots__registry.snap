@@ -71,7 +71,7 @@ expression: rows
     - global
   category: navigation
   enabled: true
-  menu_rank: 90
+  menu_rank: 60
   description: "Shows the today view: overdue, scheduled, due-today, and done-today rows across all boards."
   menu_group: view-nav
 - id: view.inbox
@@ -80,7 +80,7 @@ expression: rows
     - global
   category: navigation
   enabled: true
-  menu_rank: 100
+  menu_rank: 70
   description: "Jumps to the global Inbox board's first stack; quietly no-ops when the inbox is empty of boards."
   menu_group: view-nav
 - id: palette.search
@@ -98,7 +98,7 @@ expression: rows
     - global
   category: navigation
   enabled: true
-  menu_rank: 60
+  menu_rank: 100
   description: Moves to the next view in the board → stack → task cycle.
   menu_group: view-nav
 - id: nav.prev-view
@@ -107,7 +107,7 @@ expression: rows
     - global
   category: navigation
   enabled: true
-  menu_rank: 70
+  menu_rank: 110
   description: Moves to the previous view in the board → stack → task cycle.
   menu_group: view-nav
 - id: nav.focus-board
@@ -189,7 +189,7 @@ expression: rows
     - task-detail
   category: navigation
   enabled: true
-  menu_rank: 90
+  menu_rank: 120
   description: Moves the focus to the next card or switcher entry in reading order.
   menu_group: view-nav
 - id: nav.first-item
@@ -201,7 +201,7 @@ expression: rows
     - task-detail
   category: navigation
   enabled: true
-  menu_rank: 105
+  menu_rank: 140
   description: Moves the focus to the first card in reading order.
   menu_group: view-nav
 - id: nav.last-item
@@ -213,7 +213,7 @@ expression: rows
     - task-detail
   category: navigation
   enabled: true
-  menu_rank: 115
+  menu_rank: 150
   description: Moves the focus to the last card in reading order.
   menu_group: view-nav
 - id: nav.prev-item
@@ -225,7 +225,7 @@ expression: rows
     - task-detail
   category: navigation
   enabled: true
-  menu_rank: 100
+  menu_rank: 130
   description: Moves the focus to the previous card or switcher entry in reading order.
   menu_group: view-nav
 - id: board.next
