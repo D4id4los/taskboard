@@ -288,3 +288,32 @@ rows decode as fresh adds at the epoch stamp) in
 =crates/taskboard-storage-sqlite=. The push wire shape is unchanged:
 the card PUT still carries the live label set (=live_labels= mapped
 through =RemoteIndex=).
+
+* Amendment 2026-10-28 — resurrect-as-new-card on delete/edit contention (#130)
+
+**Amendment 2026-10-28 (#130, delete/edit contention):** an observed
+remote absence tombstones the card — *unless the task holds unsynced
+user work*, derived as =has_unsynced_work=: any field clock,
+label-membership stamp, or the task's reminder-rule =updated_at=
+strictly newer than =remote_seen= (echo adoption maxes the first two,
+so synced work compares =<=). Under contention the task survives as a
+live, unbound task with exactly one =CreateTask= re-enqueued — the next
+push mints a fresh remote card and the echo rebinds; a second delete of
+that card is an ordinary synced delete (one new card per contention
+episode). Absences inside a collapsing stack are cascade territory and
+keep tombstone-wins, as do already-tombstoned tasks. Contention
+surfacing is the non-blocking =SystemEvent::TaskResurrected= (status
+line / CLI line / tracing) — never a prompt: kiosk and daemon sessions
+must not block. Accepted residue: the reminder-rule clause has no echo
+stamp-back, so a rule edit whose sidecar flush already landed can bias
+toward resurrect until the card's next change — the data-preserving
+direction.
+
+This amends §Deletion's card bullet: the sentence "an observed remote
+absence always beats concurrent local edits (delete-wins tombstone,
+stamped with the observation time)" gains the carve-out above, and the
+two sentences that followed it ("Automatic resurrection would create
+zombie tasks reappearing after every sync", "Resurrect-as-new-card is
+backlogged") are superseded — the zombie fear stays dead for *synced*
+cards (guard 1: tombstones never resurrect), and the backlog item is
+implemented by this amendment.
