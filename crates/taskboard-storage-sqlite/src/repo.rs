@@ -844,7 +844,7 @@ impl SqliteTaskRepository {
             validators,
             sync,
             reminders,
-            // Chunk DR-5/2's migration 0013 hydrates this map; the empty
+            // Chunk DR-5/2's migration hydrates this map; the empty
             // default is the honest shape until that codec exists.
             tracking: taskboard_domain::TrackingState::default(),
         };
@@ -934,7 +934,8 @@ async fn execute_batch(
     // the planner cannot emit rows otherwise. The writes below use
     // runtime-checked `sqlx::query` (not the compile-checked macro)
     // because the `time_entries` table arrives with DR-5/2's migration
-    // (renumbered: 0013 went to the #150 ref-delete payload, DR-4/R);
+    // (0013 went to DR-3/2's insistence upgrade, 0014 to this chunk's
+    // #150 ref-delete payload; DR-5/2 renumbers again at its rebase);
     // no producer emits these actions until that chunk lands.
     let mut entry_upserts = Vec::new();
     let mut entry_deletes = Vec::new();
@@ -1227,7 +1228,7 @@ async fn execute_batch(
     }
 
     // R-11 (DR-5/1): the time-entry writes, dead until chunk DR-5/2's
-    // migration 0013 creates the table (see the partition comment).
+    // migration creates the table (see the partition comment).
     // Written against the plan's D-T9 DDL: hyphenated-UUID TEXT ids,
     // RFC 3339 TEXT stamps, no FKs (entries outlive soft-deleted tasks).
     // Deletes run after upserts so a batch carrying both for one id
