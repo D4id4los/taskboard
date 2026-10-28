@@ -54,7 +54,7 @@ tasks:
     done: ~
     stack: 00000000-0000-0000-0000-000000000002
     order: 0
-    labels: []
+    label_memberships: {}
     effort: ~
     importance: ~
     urgency: ~
@@ -68,7 +68,6 @@ tasks:
       scheduled: "1970-01-01T10:04:00Z"
       done: "1970-01-01T10:04:00Z"
       position: "1970-01-01T10:04:00Z"
-      labels: "1970-01-01T10:04:00Z"
       effort: "1970-01-01T10:04:00Z"
       importance: "1970-01-01T10:04:00Z"
       urgency: "1970-01-01T10:04:00Z"
@@ -87,7 +86,7 @@ tasks:
     done: ~
     stack: 00000000-0000-0000-0000-000000000002
     order: 1
-    labels: []
+    label_memberships: {}
     effort: ~
     importance: ~
     urgency: ~
@@ -101,7 +100,6 @@ tasks:
       scheduled: "1970-01-01T10:05:00Z"
       done: "1970-01-01T10:05:00Z"
       position: "1970-01-01T10:05:00Z"
-      labels: "1970-01-01T10:05:00Z"
       effort: "1970-01-01T10:05:00Z"
       importance: "1970-01-01T10:05:00Z"
       urgency: "1970-01-01T10:05:00Z"
@@ -120,7 +118,7 @@ tasks:
     done: ~
     stack: 00000000-0000-0000-0000-000000000004
     order: 2
-    labels: []
+    label_memberships: {}
     effort: ~
     importance: ~
     urgency: ~
@@ -134,7 +132,6 @@ tasks:
       scheduled: "1970-01-01T10:06:00Z"
       done: "1970-01-01T10:06:00Z"
       position: "1970-01-01T10:06:00Z"
-      labels: "1970-01-01T10:06:00Z"
       effort: "1970-01-01T10:06:00Z"
       importance: "1970-01-01T10:06:00Z"
       urgency: "1970-01-01T10:06:00Z"
