@@ -171,6 +171,8 @@ pub enum ActionId {
     NavPrevView,
     NavFocusBoard,
     NavShowTask,
+    NavNextControl,
+    NavPrevControl,
     NavNextItem,
     NavPrevItem,
     BoardNext,
@@ -233,6 +235,8 @@ impl ActionId {
             Self::NavPrevView => "nav.prev-view",
             Self::NavFocusBoard => "nav.focus-board",
             Self::NavShowTask => "nav.show-task",
+            Self::NavNextControl => "nav.next-control",
+            Self::NavPrevControl => "nav.prev-control",
             Self::NavNextItem => "nav.next-item",
             Self::NavPrevItem => "nav.prev-item",
             Self::BoardNext => "board.next",
@@ -334,6 +338,18 @@ const VIEW_NAV: &[ContextId] = &[
     ContextId::StackDetail,
     ContextId::TaskDetail,
 ];
+/// The control-navigation walk's binding/availability contexts
+/// (round-3 D25): the five view contexts, never `Global` — Global is
+/// chain-visible under insert mode, and Tab/PageUp/PageDown are
+/// native text-field motions there.
+pub const CONTROL_NAV: &[ContextId] = &[
+    ContextId::Today,
+    ContextId::Board,
+    ContextId::StackDetail,
+    ContextId::TaskDetail,
+    ContextId::Settings,
+];
+
 /// The board verbs' menu availability (design §3.8): global-capable
 /// like the `nav.*` family — offered in every context's menu.
 const GLOBAL_VIEW_NAV: &[ContextId] = &[
@@ -500,6 +516,26 @@ pub const REGISTRY: &[ActionEntry] = &[
         enabled: true,
         menu_rank: 90,
         description: "Shows the task picked in the search palette: selects its board and stack, focuses its card, and scrolls it into view.",
+        menu_group: Some(MenuGroup::ViewNav),
+    },
+    ActionEntry {
+        id: ActionId::NavNextControl,
+        label: "Next control",
+        contexts: CONTROL_NAV,
+        category: Category::Navigation,
+        enabled: true,
+        menu_rank: 160,
+        description: "Moves the keyboard focus to the next control (field or button) in reading order; wraps like the runtime's tab traversal.",
+        menu_group: Some(MenuGroup::ViewNav),
+    },
+    ActionEntry {
+        id: ActionId::NavPrevControl,
+        label: "Previous control",
+        contexts: CONTROL_NAV,
+        category: Category::Navigation,
+        enabled: true,
+        menu_rank: 170,
+        description: "Moves the keyboard focus to the previous control (field or button) in reading order; wraps like the runtime's tab traversal.",
         menu_group: Some(MenuGroup::ViewNav),
     },
     ActionEntry {
@@ -964,6 +1000,8 @@ mod tests {
             ActionId::NavPrevView,
             ActionId::NavFocusBoard,
             ActionId::NavShowTask,
+            ActionId::NavNextControl,
+            ActionId::NavPrevControl,
             ActionId::NavNextItem,
             ActionId::NavPrevItem,
             ActionId::BoardNext,

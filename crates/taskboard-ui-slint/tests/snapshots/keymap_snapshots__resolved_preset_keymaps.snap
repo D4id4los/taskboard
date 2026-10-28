@@ -48,6 +48,12 @@ expression: rows
     - context: today
       bindings:
         - sequence:
+            - Tab
+          action: nav.next-control
+        - sequence:
+            - Shift+Tab
+          action: nav.prev-control
+        - sequence:
             - Return
           action: task.edit
         - sequence:
@@ -76,6 +82,12 @@ expression: rows
           action: nav.last-item
     - context: board
       bindings:
+        - sequence:
+            - Tab
+          action: nav.next-control
+        - sequence:
+            - Shift+Tab
+          action: nav.prev-control
         - sequence:
             - Return
           action: task.edit
@@ -148,6 +160,12 @@ expression: rows
     - context: stack-detail
       bindings:
         - sequence:
+            - Tab
+          action: nav.next-control
+        - sequence:
+            - Shift+Tab
+          action: nav.prev-control
+        - sequence:
             - N
           action: task.create
         - sequence:
@@ -165,6 +183,12 @@ expression: rows
     - context: task-detail
       bindings:
         - sequence:
+            - Tab
+          action: nav.next-control
+        - sequence:
+            - Shift+Tab
+          action: nav.prev-control
+        - sequence:
             - Up
           action: nav.prev-item
         - sequence:
@@ -181,6 +205,12 @@ expression: rows
           action: nav.last-item
     - context: settings
       bindings:
+        - sequence:
+            - Tab
+          action: nav.next-control
+        - sequence:
+            - Shift+Tab
+          action: nav.prev-control
         - sequence:
             - Escape
           action: app.settings
@@ -283,6 +313,9 @@ expression: rows
             - Alt+>
           action: nav.last-item
         - sequence:
+            - Ctrl+b
+          action: nav.prev-control
+        - sequence:
             - Ctrl+c
             - Ctrl+t
           action: task.complete
@@ -293,6 +326,9 @@ expression: rows
         - sequence:
             - Ctrl+d
           action: task.delete
+        - sequence:
+            - Ctrl+f
+          action: nav.next-control
         - sequence:
             - Ctrl+n
           action: nav.next-item
@@ -392,6 +428,12 @@ expression: rows
             - Alt+>
           action: nav.last-item
         - sequence:
+            - Ctrl+b
+          action: nav.prev-control
+        - sequence:
+            - Ctrl+f
+          action: nav.next-control
+        - sequence:
             - Ctrl+n
           action: nav.next-item
         - sequence:
@@ -412,6 +454,12 @@ expression: rows
             - Alt+>
           action: nav.last-item
         - sequence:
+            - Ctrl+b
+          action: nav.prev-control
+        - sequence:
+            - Ctrl+f
+          action: nav.next-control
+        - sequence:
             - Ctrl+n
           action: nav.next-item
         - sequence:
@@ -422,6 +470,12 @@ expression: rows
         - sequence:
             - Escape
           action: app.settings
+        - sequence:
+            - Ctrl+b
+          action: nav.prev-control
+        - sequence:
+            - Ctrl+f
+          action: nav.next-control
     - context: menu
       bindings:
         - sequence:
@@ -468,8 +522,46 @@ expression: rows
         - sequence:
             - Ctrl+T
           action: view.today
+    - context: today
+      bindings:
+        - sequence:
+            - Tab
+          action: nav.next-control
+        - sequence:
+            - Shift+Tab
+          action: nav.prev-control
+    - context: board
+      bindings:
+        - sequence:
+            - Tab
+          action: nav.next-control
+        - sequence:
+            - Shift+Tab
+          action: nav.prev-control
+    - context: stack-detail
+      bindings:
+        - sequence:
+            - Tab
+          action: nav.next-control
+        - sequence:
+            - Shift+Tab
+          action: nav.prev-control
+    - context: task-detail
+      bindings:
+        - sequence:
+            - Tab
+          action: nav.next-control
+        - sequence:
+            - Shift+Tab
+          action: nav.prev-control
     - context: settings
       bindings:
+        - sequence:
+            - Tab
+          action: nav.next-control
+        - sequence:
+            - Shift+Tab
+          action: nav.prev-control
         - sequence:
             - Escape
           action: app.settings

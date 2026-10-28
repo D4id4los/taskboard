@@ -73,6 +73,11 @@ pub enum UiEffect {
     /// Inert dispatched outside a palette flow (no preset binds it;
     /// the palette's Return is `menu.invoke`).
     ShowTask,
+    /// The control-navigation walk (round-3 D25): the adapter
+    /// re-injects the runtime's tab traversal (Shift-wrapped for the
+    /// previous direction) under the walk's re-entrancy guard.
+    ControlNext,
+    ControlPrev,
     /// Open the inline create row.
     BeginCreate,
     /// Open the inline create row for a new stack on the live board
@@ -174,6 +179,8 @@ impl UiEffect {
             | Self::PrevView
             | Self::FocusBoard
             | Self::ShowTask
+            | Self::ControlNext
+            | Self::ControlPrev
             | Self::BoardNext
             | Self::BoardPrevious
             | Self::BoardSelect(_)
@@ -399,6 +406,8 @@ impl ActionRouter {
             ActionId::NavPrevView => DispatchOutcome::UiEffect(UiEffect::PrevView),
             ActionId::NavFocusBoard => DispatchOutcome::UiEffect(UiEffect::FocusBoard),
             ActionId::NavShowTask => DispatchOutcome::UiEffect(UiEffect::ShowTask),
+            ActionId::NavNextControl => DispatchOutcome::UiEffect(UiEffect::ControlNext),
+            ActionId::NavPrevControl => DispatchOutcome::UiEffect(UiEffect::ControlPrev),
             ActionId::NavNextItem => DispatchOutcome::UiEffect(UiEffect::FocusNext),
             ActionId::NavPrevItem => DispatchOutcome::UiEffect(UiEffect::FocusPrev),
             ActionId::TaskCreate => DispatchOutcome::UiEffect(UiEffect::BeginCreate),

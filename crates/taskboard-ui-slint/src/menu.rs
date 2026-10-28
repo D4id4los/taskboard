@@ -480,6 +480,10 @@ mod tests {
             // page at ranks 105/115.
             ActionId::NavFirstItem,
             ActionId::NavLastItem,
+            // Round 3 (D25): the control walk joins at ranks 160/170
+            // (the full re-rank is chunk 6 §7.1's commit).
+            ActionId::NavNextControl,
+            ActionId::NavPrevControl,
         ];
         assert_eq!(
             ids(&rows),

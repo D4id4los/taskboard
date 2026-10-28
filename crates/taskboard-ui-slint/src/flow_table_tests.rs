@@ -122,6 +122,8 @@ enum EK {
     OpenSettings,
     BeginTitleEdit,
     ShowTask,
+    ControlNext,
+    ControlPrev,
 }
 
 fn key_of(effect: &UiEffect) -> EK {
@@ -167,6 +169,8 @@ fn key_of(effect: &UiEffect) -> EK {
         UiEffect::OpenSettings => EK::OpenSettings,
         UiEffect::BeginTitleEdit => EK::BeginTitleEdit,
         UiEffect::ShowTask => EK::ShowTask,
+        UiEffect::ControlNext => EK::ControlNext,
+        UiEffect::ControlPrev => EK::ControlPrev,
     }
 }
 
@@ -612,6 +616,8 @@ fn all_effects(fx: &Fixture) -> Vec<UiEffect> {
         UiEffect::OpenSettings,
         UiEffect::BeginTitleEdit,
         UiEffect::ShowTask,
+        UiEffect::ControlNext,
+        UiEffect::ControlPrev,
     ]
 }
 
@@ -728,6 +734,49 @@ fn every_flow_effect_pair_resolves_to_its_matrix_row() {
             failures.len(),
             flows.len() * effects.len(),
             failures.join("\n")
+        );
+    });
+}
+
+/// Round-3 D25 — the walk's re-entrancy guard: with the flag held
+/// the Tab stroke rejects before the callback borrows (the injected
+/// echo can never re-enter the resolver — a hang or a double step is
+/// the failure); with the flag clear the bound walk row resolves and
+/// dispatches exactly one traversal. The flag is checked ahead of the
+/// `borrow_mut`, so the guard holds while the walk's own borrow is
+/// live — the borrow would panic otherwise, and the panic IS the
+/// assertion's teeth here.
+#[test]
+fn walk_reentry_rejects_exactly_one_tab() {
+    on_slint_thread(|| {
+        let (state, _fx) = fixture();
+        let rig = rig(state);
+        let adapter = rig.adapter();
+        {
+            let mut a = adapter.borrow_mut();
+            a.test_reset();
+            // A view context so the Tab binding is chain-visible.
+            a.shell.view = Some(crate::actions::ContextId::Board);
+        }
+        // The guard rejects while held (the injected echo's path).
+        adapter.borrow().walk_reentry.set(true);
+        let rejected = {
+            let mut a = adapter.borrow_mut();
+            a.intercept_tab_for_test(rig.handle.window())
+        };
+        assert!(!rejected, "the held flag rejects the injected Tab");
+        adapter.borrow().walk_reentry.set(false);
+
+        // The cleared flag: the bound row resolves, the synthetic
+        // traversal fires under the guard, and the flag clears after.
+        let consumed = {
+            let mut a = adapter.borrow_mut();
+            a.intercept_tab_for_test(rig.handle.window())
+        };
+        assert!(consumed, "the bound walk row resolves");
+        assert!(
+            !adapter.borrow().walk_reentry.get(),
+            "the guard clears when the dispatch returns"
         );
     });
 }
