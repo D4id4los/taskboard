@@ -459,6 +459,7 @@ async fn s3_sync_ingestion_binds_and_pulls() {
                     labels: std::collections::BTreeSet::default(),
                     archived: false,
                     last_modified: ts(T0),
+                    created_at: ts(T0),
                 }],
                 labels: vec![],
             }),
@@ -1893,6 +1894,7 @@ fn remote_card(card: u64, title: &str, at: i64) -> taskboard_domain::RemoteTask 
         labels: std::collections::BTreeSet::default(),
         archived: false,
         last_modified: ts(at),
+        created_at: ts(at),
     }
 }
 

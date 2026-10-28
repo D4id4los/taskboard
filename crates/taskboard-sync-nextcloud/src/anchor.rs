@@ -245,6 +245,7 @@ mod tests {
             labels: std::collections::BTreeSet::new(),
             archived: false,
             last_modified: chrono::Utc.timestamp_opt(1_700_000_000, 0).unwrap(),
+            created_at: chrono::Utc.timestamp_opt(1_700_000_000, 0).unwrap(),
         }
     }
 
