@@ -596,12 +596,15 @@ mod tests {
         chrono::Utc.timestamp_opt(secs, 0).unwrap()
     }
 
-    fn clock(secs: i64) -> chrono::DateTime<chrono::Utc> {
-        ts(secs)
-    }
-
-    /// One live (or soft-deleted) bound task in one stack on `board`.
-    fn fixture(deleted: bool) -> (EntityTables<'static>, TaskId) {
+    /// One live (or soft-deleted) bound task in one stack on `board`:
+    /// the owned tables, so each test builds its own `EntityTables`.
+    fn fixture(
+        deleted: bool,
+    ) -> (
+        BTreeMap<TaskId, Task>,
+        BTreeMap<taskboard_domain::StackId, Stack>,
+        TaskId,
+    ) {
         let board = BoardId::from(uuid::Uuid::from_u128(1));
         let stack_id = taskboard_domain::StackId::from(uuid::Uuid::from_u128(2));
         let id = TaskId::from(uuid::Uuid::from_u128(1));
@@ -627,18 +630,18 @@ mod tests {
             archived: false,
             deleted,
             clocks: taskboard_domain::TaskClocks {
-                title: clock(1),
-                description: clock(1),
-                duedate: clock(1),
-                scheduled: clock(1),
-                done: clock(1),
-                position: clock(1),
-                effort: clock(1),
-                importance: clock(1),
-                urgency: clock(1),
-                recur: clock(1),
-                archived: clock(1),
-                deleted: clock(1),
+                title: ts(1),
+                description: ts(1),
+                duedate: ts(1),
+                scheduled: ts(1),
+                done: ts(1),
+                position: ts(1),
+                effort: ts(1),
+                importance: ts(1),
+                urgency: ts(1),
+                recur: ts(1),
+                archived: ts(1),
+                deleted: ts(1),
             },
             remote_seen: None,
             remote_baseline: None,
@@ -655,23 +658,17 @@ mod tests {
             archived: false,
             deleted: false,
             clocks: taskboard_domain::StackClocks {
-                title: clock(1),
-                order: clock(1),
-                deleted: clock(1),
+                title: ts(1),
+                order: ts(1),
+                deleted: ts(1),
             },
             remote_seen: None,
         };
-        let pair = Box::leak(Box::new((
+        (
             BTreeMap::from([(id, t)]),
             BTreeMap::from([(stack_id, stack)]),
-        )));
-        let tables = EntityTables {
-            tasks: &pair.0,
-            stacks: &pair.1,
-            labels: empty_labels(),
-            boards: empty_boards(),
-        };
-        (tables, id)
+            id,
+        )
     }
 
     fn entry(
@@ -695,7 +692,13 @@ mod tests {
 
     #[test]
     fn a_tracking_only_board_fires_the_tracking_clause() {
-        let (tables, task_id) = fixture(false);
+        let (tasks, stacks, task_id) = fixture(false);
+        let tables = EntityTables {
+            tasks: &tasks,
+            stacks: &stacks,
+            labels: empty_labels(),
+            boards: empty_boards(),
+        };
         let board = BoardId::from(uuid::Uuid::from_u128(1));
         let now = ts(10_000_000);
         // No entries: a task with no app-data has no flush work.
