@@ -1,0 +1,72 @@
+---
+source: crates/taskboard-state/tests/snapshots.rs
+expression: "&persisted"
+---
+boards:
+  00000000-0000-0000-0000-000000000001:
+    id: 00000000-0000-0000-0000-000000000001
+    remote: ~
+    title: kiosk
+    color: 0000ff
+    archived: false
+    deleted: false
+    clocks:
+      title: "0001-01-01T00:00:00Z"
+      color: "0001-01-01T00:00:00Z"
+      archived: "0001-01-01T00:00:00Z"
+      deleted: "0001-01-01T00:00:00Z"
+    remote_seen: ~
+stacks: {}
+tasks: {}
+labels: {}
+outbox: []
+validators: {}
+sync:
+  00000000-0000-0000-0000-000000000001:
+    phase: Idle
+    last_success: ~
+    pending_ops: 0
+    counters:
+      cycles: 0
+      pushes: 0
+      pulls: 0
+      failures: 0
+      offline_episodes: 0
+      last_cycle: ~
+    sidecar: Healthy
+    features:
+      card_startdate: false
+reminders:
+  rules: {}
+  deliveries: []
+  dismissals: []
+  snoozes: {}
+  muted: []
+  alarms: {}
+tracking:
+  entries: {}
+habits:
+  habits:
+    00000000-0000-0000-0000-000000000001:
+      id: 00000000-0000-0000-0000-000000000001
+      board: 00000000-0000-0000-0000-000000000001
+      title: meditate
+      target:
+        PerDay: 3
+      order: 0
+      anchor_time: ~
+      clocks:
+        title: "1970-01-01T10:01:00Z"
+        target: "1970-01-01T10:01:00Z"
+        order: "1970-01-01T10:01:00Z"
+        anchor_time: "1970-01-01T10:01:00Z"
+        deleted: "1970-01-01T10:05:00Z"
+      continued_from: ~
+      deleted: true
+  log:
+    00000000-0000-0000-0000-000000000001|1969-12-31:
+      count: 2
+      clock: "1970-01-01T10:03:00Z"
+    00000000-0000-0000-0000-000000000001|1970-01-01:
+      count: 2
+      clock: "1970-01-01T10:04:00Z"
