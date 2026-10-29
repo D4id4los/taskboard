@@ -854,7 +854,10 @@ mod tests {
         }
 
         /// §5.1 item 3: `streak` equals the hand model on generated
-        /// rows, and the walk never takes more than two pending skips.
+        /// rows at a `now` probed across the fixture's in-day instant
+        /// and up to ~2.3 days forward (spanning grace opens/closes and
+        /// period boundaries), and the walk never takes more than two
+        /// pending skips.
         #[test]
         fn streak_matches_the_hand_model_and_never_skips_twice_plus(
             (fixture, probe) in habit_fixture_strategy().prop_flat_map(|fixture| {
@@ -864,10 +867,11 @@ mod tests {
                 )
             }),
         ) {
-            let _ = probe;
-            let (expected, pendings) = reference_walk(&fixture, fixture.now);
+            let now = fixture.now
+                + chrono::TimeDelta::try_seconds(probe).expect("bounded probe");
+            let (expected, pendings) = reference_walk(&fixture, now);
             prop_assert!(pendings <= 2, "at most two transparent periods");
-            prop_assert_eq!(streak(&fixture.habit, &fixture.log, fixture.now, fixture.day), expected);
+            prop_assert_eq!(streak(&fixture.habit, &fixture.log, now, fixture.day), expected);
         }
 
         /// §5.1 item 4 (the negative pin): two habit sets differing only
