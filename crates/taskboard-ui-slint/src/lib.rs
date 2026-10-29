@@ -233,6 +233,7 @@ pub fn mount(
     commands: mpsc::Sender<StateCommand>,
     requests: mpsc::Sender<requests::UiRequest>,
     settings: UiSettings,
+    delivery_health: tokio::sync::watch::Receiver<crate::presentation::DeliveryHealth>,
 ) -> Result<UiHandle, UiMountError> {
     fonts::register_bundled_fonts();
     let window = AppWindow::new().map_err(UiMountError::WindowCreation)?;
@@ -276,6 +277,7 @@ pub fn mount(
         Arc::clone(&state),
         Rc::clone(&status_timer),
         Rc::clone(&rotation_timer),
+        delivery_health,
     );
     let tooltip_timer = install_tooltip_delay(&window);
     let handle = UiHandle {
@@ -448,6 +450,14 @@ fn start_repaint_driver(
             if !events.is_empty() {
                 adapter.borrow_mut().record_system_events(&events);
             }
+            // The delivery-health drain (round-3 chunk 7, D31): the
+            // same non-blocking poll — a changed snapshot pushes the
+            // chip and counts as changed (the Lagged semantics' twin:
+            // strictly better delivery only clears the surface, so a
+            // missed tick can never strand a stale failure chip).
+            if adapter.borrow_mut().drain_delivery_health(&window) {
+                dirty = true;
+            }
             // The settings reply drain (D25b): the non-blocking poll
             // under the same cadence — a settled reply refreshes.
             adapter.borrow_mut().drain_setting_replies(&window);
@@ -494,6 +504,19 @@ impl UiHandle {
     pub fn drain_setting_replies(&self) {
         if let Some(window) = self.window.as_weak().upgrade() {
             self.adapter.borrow_mut().drain_setting_replies(&window);
+        }
+    }
+
+    /// One delivery-health drain (round-3 chunk 7, D31): the same
+    /// non-blocking watch poll the repaint timer runs every cadence
+    /// tick. Public for the component journeys (the established
+    /// [`UiHandle`]-seam pattern): the test plays the app half by
+    /// sending on the watch, then drives the drain.
+    pub fn drain_delivery_health(&self) -> bool {
+        if let Some(window) = self.window.as_weak().upgrade() {
+            self.adapter.borrow_mut().drain_delivery_health(&window)
+        } else {
+            false
         }
     }
 
@@ -599,9 +622,23 @@ mod mount_tests {
         mpsc::Sender<StateCommand>,
         mpsc::Sender<requests::UiRequest>,
         mpsc::Receiver<requests::UiRequest>,
+        tokio::sync::watch::Receiver<crate::presentation::DeliveryHealth>,
     );
 
-    pub(super) fn handover() -> Handover {
+    /// The health-free hand-over (tests that exercise the health lane
+    /// bring their own watch channel; the sender half is the fixture).
+    type Handover6 = (
+        Arc<ArcSwap<AppState>>,
+        broadcast::Receiver<EngineSignal>,
+        broadcast::Receiver<SystemEvent>,
+        mpsc::Sender<StateCommand>,
+        mpsc::Sender<requests::UiRequest>,
+        mpsc::Receiver<requests::UiRequest>,
+    );
+
+    /// The health-free hand-over: tests that exercise the health lane
+    /// bring their own watch channel (the sender half is the fixture).
+    pub(super) fn handover6() -> Handover6 {
         let (commands_tx, _commands_rx) = mpsc::channel(64);
         let (requests_tx, requests_rx) = mpsc::channel(16);
         let (system_tx, system_rx) = broadcast::channel(16);
@@ -618,12 +655,80 @@ mod mount_tests {
         )
     }
 
+    pub(super) fn handover() -> Handover {
+        let (commands_tx, _commands_rx) = mpsc::channel(64);
+        let (requests_tx, requests_rx) = mpsc::channel(16);
+        let (system_tx, system_rx) = broadcast::channel(16);
+        let (signals_tx, signals_rx) = broadcast::channel(16);
+        // The delivery-health lane: a detached receiver (its sender
+        // dropped) — the health tests bring their own channel.
+        let (_health_tx, health_rx) =
+            tokio::sync::watch::channel(crate::presentation::DeliveryHealth::default());
+        drop(system_tx);
+        drop(signals_tx);
+        (
+            Arc::new(ArcSwap::from_pointee(AppState::default())),
+            signals_rx,
+            system_rx,
+            commands_tx,
+            requests_tx,
+            requests_rx,
+            health_rx,
+        )
+    }
+
+    /// The delivery-health lane (round-3 chunk 7, D31): a degraded
+    /// snapshot pushed on the watch surfaces as the visible chip after
+    /// one drain pass; a later success clears it. Typed edges only —
+    /// the chip text is never asserted.
+    #[test]
+    fn the_repaint_driver_refreshes_on_health_change() {
+        on_slint_thread(|| {
+            let (state, signals, system, commands, requests_tx, _requests_rx) = handover6();
+            let (health_tx, health_rx) =
+                tokio::sync::watch::channel(crate::presentation::DeliveryHealth::default());
+            let handle = mount(
+                state,
+                signals,
+                system,
+                commands,
+                requests_tx,
+                UiSettings::default(),
+                health_rx,
+            )
+            .expect("mount succeeds on the null platform");
+            // The healthy default: the chip is absent after the mount
+            // refresh.
+            assert!(!handle.window.get_delivery_chip_visible());
+            let now = chrono::Utc::now();
+            let degraded = crate::presentation::DeliveryHealth {
+                last_attempt: Some(now),
+                last_failure: Some(now),
+                ..crate::presentation::DeliveryHealth::default()
+            };
+            health_tx.send(degraded.clone()).expect("watch send");
+            assert!(handle.drain_delivery_health());
+            handle.refresh();
+            assert!(handle.window.get_delivery_chip_visible());
+            assert_ne!(handle.window.get_delivery_chip(), "");
+            // Strictly better delivery clears the surface.
+            let cleared = crate::presentation::DeliveryHealth {
+                last_success: Some(now + chrono::TimeDelta::seconds(1)),
+                ..degraded
+            };
+            health_tx.send(cleared).expect("watch send");
+            assert!(handle.drain_delivery_health());
+            handle.refresh();
+            assert!(!handle.window.get_delivery_chip_visible());
+        });
+    }
+
     /// The dispatch acceptance line: a valid scale reaches
     /// `Theme.base-scale` via the generated `Global` setter.
     #[test]
     fn mount_pushes_the_configured_scale_into_the_theme() {
         on_slint_thread(|| {
-            let (state, signals, system, commands, requests_tx, _requests_rx) = handover();
+            let (state, signals, system, commands, requests_tx, _requests_rx, health) = handover();
             let handle = mount(
                 state,
                 signals,
@@ -634,6 +739,7 @@ mod mount_tests {
                     scale: UiScale::new(2.0).expect("valid"),
                     ..UiSettings::default()
                 },
+                health,
             )
             .expect("mount succeeds on the null platform");
             let base_scale = handle.window.global::<Theme>().get_base_scale();
@@ -644,7 +750,7 @@ mod mount_tests {
     #[test]
     fn mount_defaults_the_theme_scale_to_one() {
         on_slint_thread(|| {
-            let (state, signals, system, commands, requests_tx, _requests_rx) = handover();
+            let (state, signals, system, commands, requests_tx, _requests_rx, health) = handover();
             let handle = mount(
                 state,
                 signals,
@@ -652,6 +758,7 @@ mod mount_tests {
                 commands,
                 requests_tx,
                 UiSettings::default(),
+                health,
             )
             .expect("mount succeeds on the null platform");
             assert_eq!(handle.window.global::<Theme>().get_base_scale(), 1.0);
@@ -664,7 +771,7 @@ mod mount_tests {
     #[test]
     fn width_push_maps_the_breakpoint() {
         on_slint_thread(|| {
-            let (state, signals, system, commands, requests_tx, _requests_rx) = handover();
+            let (state, signals, system, commands, requests_tx, _requests_rx, health) = handover();
             let handle = mount(
                 state,
                 signals,
@@ -672,6 +779,7 @@ mod mount_tests {
                 commands,
                 requests_tx,
                 UiSettings::default(),
+                health,
             )
             .expect("mount succeeds on the null platform");
             let responsive = handle.window.global::<Responsive>();
@@ -698,7 +806,7 @@ mod mount_tests {
     #[test]
     fn mount_produces_a_hidden_window_instance() {
         on_slint_thread(|| {
-            let (state, signals, system, commands, requests_tx, _requests_rx) = handover();
+            let (state, signals, system, commands, requests_tx, _requests_rx, health) = handover();
             let handle = mount(
                 state,
                 signals,
@@ -706,6 +814,7 @@ mod mount_tests {
                 commands,
                 requests_tx,
                 UiSettings::default(),
+                health,
             )
             .expect("mount succeeds on the null platform");
             assert!(!handle.window.window().is_visible());
@@ -724,7 +833,7 @@ mod mount_tests {
             "the default hand-over is no rotation"
         );
         on_slint_thread(|| {
-            let (state, signals, system, commands, requests_tx, _requests_rx) = handover();
+            let (state, signals, system, commands, requests_tx, _requests_rx, health) = handover();
             let handle = mount(
                 state,
                 signals,
@@ -732,6 +841,7 @@ mod mount_tests {
                 commands,
                 requests_tx,
                 UiSettings::default(),
+                health,
             )
             .expect("mount succeeds on the null platform");
             assert!(!handle.window.window().is_fullscreen());
@@ -743,7 +853,7 @@ mod mount_tests {
     #[test]
     fn mount_applies_the_kiosk_fullscreen_profile() {
         on_slint_thread(|| {
-            let (state, signals, system, commands, requests_tx, _requests_rx) = handover();
+            let (state, signals, system, commands, requests_tx, _requests_rx, health) = handover();
             let handle = mount(
                 state,
                 signals,
@@ -754,6 +864,7 @@ mod mount_tests {
                     kiosk: true,
                     ..UiSettings::default()
                 },
+                health,
             )
             .expect("mount succeeds on the null platform");
             assert!(handle.window.window().is_fullscreen());
@@ -808,6 +919,8 @@ mod mount_tests {
             );
             let (commands_tx, _commands_rx) = mpsc::channel(16);
             let (requests_tx, mut requests_rx) = mpsc::channel(16);
+            let (_health_tx, health) =
+                tokio::sync::watch::channel(crate::presentation::DeliveryHealth::default());
             let handle = mount(
                 Arc::new(ArcSwap::from_pointee(state)),
                 {
@@ -827,6 +940,7 @@ mod mount_tests {
                     )]),
                     ..UiSettings::default()
                 },
+                health,
             )
             .expect("mount succeeds on the null platform");
             let seeded = handle.adapter.borrow().view_state.stack_width(board, stack);
@@ -848,7 +962,7 @@ mod mount_tests {
     #[test]
     fn mount_without_the_kiosk_flag_stays_windowed() {
         on_slint_thread(|| {
-            let (state, signals, system, commands, requests_tx, _requests_rx) = handover();
+            let (state, signals, system, commands, requests_tx, _requests_rx, health) = handover();
             let handle = mount(
                 state,
                 signals,
@@ -856,6 +970,7 @@ mod mount_tests {
                 commands,
                 requests_tx,
                 UiSettings::default(),
+                health,
             )
             .expect("mount succeeds on the null platform");
             assert!(!handle.window.window().is_fullscreen());
@@ -923,7 +1038,7 @@ mod first_frame_tests {
             // there, so its event is captured. The guard is dropped at
             // closure end.
             let guard = tracing::subscriber::set_default(subscriber);
-            let (state, signals, system, commands, requests_tx, _requests_rx) = handover();
+            let (state, signals, system, commands, requests_tx, _requests_rx, health) = handover();
             crate::mount(
                 state,
                 signals,
@@ -931,6 +1046,7 @@ mod first_frame_tests {
                 commands,
                 requests_tx,
                 crate::UiSettings::default(),
+                health,
             )
             .expect("mount succeeds on the null platform");
             drop(guard);
@@ -1005,6 +1121,8 @@ mod keymap_adapter_tests {
         let (signals_tx, signals_rx) = broadcast::channel(4);
         drop(system_tx);
         drop(signals_tx);
+        let (_health_tx, health) =
+            tokio::sync::watch::channel(crate::presentation::DeliveryHealth::default());
         let handle = mount(
             Arc::new(ArcSwap::from_pointee(AppState::default())),
             signals_rx,
@@ -1015,6 +1133,7 @@ mod keymap_adapter_tests {
                 keymap: vi_keymap(),
                 ..UiSettings::default()
             },
+            health,
         )
         .expect("mount succeeds on the null platform");
         // Escape the desktop default (chunk 10 D2) for the board-level
@@ -1090,6 +1209,8 @@ mod keymap_adapter_tests {
             let (signals_tx, signals_rx) = broadcast::channel(4);
             drop(system_tx);
             drop(signals_tx);
+            let (_health_tx, health) =
+                tokio::sync::watch::channel(crate::presentation::DeliveryHealth::default());
             let handle = mount(
                 Arc::new(ArcSwap::from_pointee(AppState::default())),
                 signals_rx,
@@ -1097,6 +1218,7 @@ mod keymap_adapter_tests {
                 commands_tx,
                 requests_tx,
                 UiSettings::default(), // standard preset
+                health,
             )
             .expect("mount succeeds on the null platform");
 
@@ -1381,6 +1503,8 @@ mod view_component_tests {
         let (signals_tx, signals_rx) = broadcast::channel(16);
         drop(system_tx);
         drop(signals_tx);
+        let (_health_tx, health) =
+            tokio::sync::watch::channel(crate::presentation::DeliveryHealth::default());
         let handle = mount(
             Arc::new(ArcSwap::from_pointee(state)),
             signals_rx,
@@ -1391,6 +1515,7 @@ mod view_component_tests {
                 keymap,
                 ..UiSettings::default()
             },
+            health,
         )
         .expect("mount succeeds on the null platform");
         // The desktop default is Today (chunk 10 D2); these component
@@ -1968,6 +2093,8 @@ mod view_component_tests {
             let (signals_tx, signals_rx) = broadcast::channel(16);
             drop(system_tx);
             drop(signals_tx);
+            let (_health_tx, health) =
+                tokio::sync::watch::channel(crate::presentation::DeliveryHealth::default());
             let handle = mount(
                 Arc::new(ArcSwap::from_pointee(state)),
                 signals_rx,
@@ -1978,6 +2105,7 @@ mod view_component_tests {
                     kiosk: true,
                     ..UiSettings::default()
                 },
+                health,
             )
             .expect("mount succeeds on the null platform");
             assert_eq!(

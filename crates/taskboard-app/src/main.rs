@@ -731,6 +731,7 @@ async fn run_kiosk(
                 commands_tx,
                 requests_tx,
                 ui_settings,
+                app.delivery_health.clone(),
             ) {
                 Ok(handle) => handle,
                 // Mount failure (the display-var-outlives-its-server

@@ -479,6 +479,9 @@ mod tests {
                 let (signals_tx, signals_rx) = broadcast::channel(4);
                 drop(system_tx);
                 drop(signals_tx);
+                let (_htx, health) = tokio::sync::watch::channel(
+                    taskboard_ui_slint::presentation::DeliveryHealth::default(),
+                );
                 let handle = taskboard_ui_slint::mount(
                     Arc::new(ArcSwap::from_pointee(AppState::default())),
                     signals_rx,
@@ -486,6 +489,7 @@ mod tests {
                     commands_tx,
                     requests_tx,
                     UiSettings::default(),
+                    health,
                 )
                 .expect("mount succeeds on the testing backend");
                 // Escape the desktop Today default (chunk 10 D2): the
@@ -548,6 +552,9 @@ mod tests {
                 let (signals_tx, signals_rx) = broadcast::channel(4);
                 drop(system_tx);
                 drop(signals_tx);
+                let (_htx, health) = tokio::sync::watch::channel(
+                    taskboard_ui_slint::presentation::DeliveryHealth::default(),
+                );
                 let handle = taskboard_ui_slint::mount(
                     Arc::new(ArcSwap::from_pointee(AppState::default())),
                     signals_rx,
@@ -555,6 +562,7 @@ mod tests {
                     commands_tx,
                     requests_tx,
                     UiSettings::default(),
+                    health,
                 )
                 .expect("mount succeeds on the testing backend");
                 // Escape the desktop Today default (chunk 10 D2): the

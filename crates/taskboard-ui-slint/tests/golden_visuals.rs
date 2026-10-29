@@ -104,6 +104,7 @@ fn capture_and_compare(driver: &mut SlintDriver, scale: f64, width: u32, regen: 
             scale: taskboard_ui_slint::UiScale::new(scale).expect("valid"),
             ..UiSettings::default()
         },
+        detached_health(),
     )
     .expect("mount succeeds on the testing backend");
     // The board goldens capture the board view: escape the desktop
@@ -199,6 +200,7 @@ fn capture_today(driver: &mut SlintDriver, scale: f64, width: u32, regen: bool) 
             scale: taskboard_ui_slint::UiScale::new(scale).expect("valid"),
             ..UiSettings::default()
         },
+        detached_health(),
     )
     .expect("mount succeeds on the testing backend");
     // The today goldens capture the TODAY view: no escape — the
@@ -282,6 +284,7 @@ fn capture_kiosk(driver: &mut SlintDriver, mode: &str, regen: bool) {
         commands,
         requests_tx,
         kiosk_rotation_settings(),
+        detached_health(),
     )
     .expect("mount succeeds on the testing backend");
     driver.bind(&handle);
@@ -352,4 +355,13 @@ fn the_kiosk_today_golden_holds() {
         !regen,
         "goldens regenerated — review the PNG diff before landing"
     );
+}
+
+/// A detached delivery-health receiver (its sender dropped): the
+/// hand-over the mount tests that don't exercise the health lane use.
+fn detached_health()
+-> tokio::sync::watch::Receiver<taskboard_ui_slint::presentation::DeliveryHealth> {
+    let (_tx, rx) =
+        tokio::sync::watch::channel(taskboard_ui_slint::presentation::DeliveryHealth::default());
+    rx
 }

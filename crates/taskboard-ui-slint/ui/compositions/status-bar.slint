@@ -65,6 +65,12 @@ export component StatusBar inherits Rectangle {
     in property <bool> tracking-chip-visible;
     in property <string> tracking-chip;
     in property <bool> tracking-chip-action-visible;
+    // The OS-delivery health chip (round-3 chunk 7, D31): passive,
+    // non-clickable (no affordance — the fix is environmental; the
+    // in-app rows are the fallback). Warning-toned like the startup
+    // findings, in the chips' row.
+    in property <bool> delivery-chip-visible;
+    in property <string> delivery-chip;
     callback tracking-stop-clicked();
     callback snooze-clicked(int);
     callback mute-clicked(int);
@@ -272,6 +278,24 @@ export component StatusBar inherits Rectangle {
                 text: root.tracking-chip;
                 tone: Tone.info;
             }
+            // The delivery chip (chunk 7, D31): warning-toned
+            // caption + badge, the sidecar-warning shape. No click
+            // target — the record lives in the log and the in-app
+            // notification rows.
+            if (root.delivery-chip-visible): HorizontalLayout {
+                spacing: Theme.space-2;
+                RoleText {
+                    role: Typography.caption;
+                    text-color: Semantic.warning;
+                    text: root.delivery-chip;
+                    vertical-alignment: center;
+                }
+                Badge {
+                    text: "!";
+                    tone: Tone.warning;
+                }
+            }
+
             if (root.tracking-chip-visible && root.tracking-chip-action-visible): stop-touch := TouchArea {
                 min-width: Theme.space-6;
                 min-height: Theme.space-6;

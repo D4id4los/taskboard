@@ -425,6 +425,7 @@ pub async fn run_desktop(
         commands_tx,
         requests_tx,
         ui_settings,
+        app.delivery_health.clone(),
     )?;
 
     // D5b: the physical exit paths are wired so shutdown is always

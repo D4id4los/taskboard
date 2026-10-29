@@ -53,11 +53,13 @@
 //! # }
 //! ```
 
+use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, watch};
 use tokio::task::JoinHandle;
 
 use taskboard_domain::{
@@ -66,6 +68,7 @@ use taskboard_domain::{
 use taskboard_state::{AttachReceipt, EngineHandle, spawn_state_engine};
 use taskboard_storage_sqlite::{StorageHandle, spawn_storage_actor};
 use taskboard_sync_nextcloud::{DeckClient, spawn_sync_actor};
+use taskboard_ui_slint::presentation::DeliveryHealth;
 
 use crate::config::{AppConfig, ConfigError, SyncBackend};
 use crate::lockfile::{InstanceLock, LockError};
@@ -376,6 +379,11 @@ pub struct App {
     authority_join: JoinHandle<()>,
     /// The per-database instance lock, held for the process lifetime.
     _lock: InstanceLock,
+    /// The delivery-health watch's receiver half (round-3 chunk 7,
+    /// D31): handed to the UI at mount — the status-bar chip drains it
+    /// beside the two broadcasts. Cloneable (the watch half pattern);
+    /// the tracker's half dies with the notifier consumer.
+    pub delivery_health: watch::Receiver<DeliveryHealth>,
 }
 
 impl std::fmt::Debug for App {
@@ -550,6 +558,10 @@ impl App {
             authority_join,
             authority: _,
             _lock,
+            // The health lane dies with the process (or the UI's
+            // clone outlives the shutdown tail harmlessly — a closed
+            // watch reads the last snapshot).
+            delivery_health: _,
         } = self;
         let timeout = Duration::from_secs(config.app.shutdown_timeout_secs);
         tracing::info!("shutdown: flushing the engine");
@@ -794,7 +806,10 @@ pub async fn bootstrap(
 /// `[app] mode` (D-R13). One `Arc` per process — the consumer holds it
 /// for its lifetime; no live swap exists (D-R13). The resolution
 /// matrix behavior is owned by `notifications::resolve_sink`'s tests;
-/// this glue adds the `Arc` and nothing else.
+/// this glue adds the `Arc` and nothing else. Fence: the D-R13 matrix
+/// is the resolution authority; DR-3 chunk 1 owns settlement; the
+/// round-3 chunk-7 additions (observer, probe, health) hang off this
+/// glue without altering resolution.
 #[must_use]
 pub fn resolve_notifier_sink(config: &AppConfig) -> Arc<dyn NotificationSink> {
     match crate::notifications::resolve_sink(config.reminders.sink, config.app.mode) {
@@ -802,6 +817,108 @@ pub fn resolve_notifier_sink(config: &AppConfig) -> Arc<dyn NotificationSink> {
             Arc::new(crate::notifications::DesktopSink::default())
         }
         crate::notifications::SinkKind::Log => Arc::new(crate::notifications::LogSink),
+    }
+}
+
+/// One boot-time server probe's answer (round-3 chunk 7, D31):
+/// structural, so the unit tests stay bus-free — the production call
+/// site logs, the enum is what the tests pin.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SinkDiagnosis {
+    Available {
+        name: String,
+        vendor: String,
+        version: String,
+    },
+    Unavailable,
+}
+
+/// The probe's boxed-future spelling (the object-safe async trait
+/// pattern, `NotificationSink`'s shape) — factored once, the trait and
+/// both implementors share it.
+pub(crate) type ProbeFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<ServerInfo, ProbeCause>> + Send + 'a>>;
+
+/// The probe's failure cause (the backend error, boxed — logged once
+/// at the diagnosis, never classified).
+pub(crate) type ProbeCause = Arc<dyn std::error::Error + Send + Sync>;
+
+/// The notification server's identity facts (the FDO
+/// `GetServerInformation` triple; the spec-version field is consumed
+/// nowhere).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ServerInfo {
+    pub name: String,
+    pub vendor: String,
+    pub version: String,
+}
+
+/// The server-facts probe abstraction: production wraps
+/// `notify_rust::get_server_information()`; tests stub it. The boxed
+/// future keeps the trait object-safe without an async-trait crate
+/// (the [`crate::notifications::NotificationSink`] spelling).
+pub(crate) trait ServerProbe: Send + Sync + std::fmt::Debug {
+    fn server_info(&self) -> ProbeFuture<'_>;
+}
+
+/// The production probe: one fresh session connection per call (the
+/// same per-operation posture as [`crate::notifications::DesktopSink`]'s
+/// toasts — nothing outlives the probe).
+#[derive(Debug)]
+struct DesktopServerProbe;
+
+impl ServerProbe for DesktopServerProbe {
+    fn server_info(&self) -> ProbeFuture<'_> {
+        Box::pin(async move {
+            // notify-rust's public probe is the sync wrapper (it
+            // `block_on`s internally — a panic inside the runtime);
+            // the blocking pool is the honest caller.
+            tokio::task::spawn_blocking(notify_rust::get_server_information)
+                .await
+                .map_err(|err| Arc::new(err) as Arc<dyn std::error::Error + Send + Sync>)
+                .and_then(|answered| {
+                    answered
+                        .map(|info| ServerInfo {
+                            name: info.name,
+                            vendor: info.vendor,
+                            version: info.version,
+                        })
+                        .map_err(|err| Arc::new(err) as Arc<dyn std::error::Error + Send + Sync>)
+                })
+        })
+    }
+}
+
+/// The boot-time toast diagnosis: names the notification server, or
+/// says plainly that desktop toasts will not work (and that the
+/// in-app surface remains). Log-only — never a boot failure, never a
+/// config knob (the D-R13 resolution stands; this only makes it *say*
+/// what it did). Not re-run at delivery time: the per-toast fresh
+/// connections make mid-run diagnosis redundant; the runtime truth is
+/// the delivery health snapshot.
+async fn diagnose_desktop_sink(probe: &dyn ServerProbe) -> SinkDiagnosis {
+    match probe.server_info().await {
+        Ok(info) => {
+            tracing::info!(
+                name = %info.name,
+                vendor = %info.vendor,
+                version = %info.version,
+                "desktop toasts: notification server resolved"
+            );
+            SinkDiagnosis::Available {
+                name: info.name,
+                vendor: info.vendor,
+                version: info.version,
+            }
+        }
+        Err(err) => {
+            tracing::warn!(
+                cause = %err,
+                "desktop toasts requested but no notification daemon is reachable; \
+                 reminders surface in-app only"
+            );
+            SinkDiagnosis::Unavailable
+        }
     }
 }
 
@@ -821,6 +938,16 @@ async fn bootstrap_with_modules(
     // (main) refuses `Desktop`/`Kiosk` itself until Phase 7 supplies
     // those frontends.
     config.validate()?;
+
+    // The boot-time sink diagnosis (round-3 chunk 7, D31): under a
+    // resolved Desktop sink, one probe before the actor graph spawns —
+    // a toasts-hostile desktop is named at boot instead of at the
+    // first failed fire. Log-only; the result is not consumed further.
+    if crate::notifications::resolve_sink(config.reminders.sink, config.app.mode)
+        == crate::notifications::SinkKind::Desktop
+    {
+        let _ = diagnose_desktop_sink(&DesktopServerProbe).await;
+    }
 
     // One core per database: acquire the instance lock before anything
     // is opened or spawned; the OS releases it on process death. The
@@ -885,8 +1012,15 @@ async fn bootstrap_with_modules(
     // Spawned before the engine: the immediate first tick can notify
     // during hydration-heavy boots, and ordering the consumer first is
     // free. The consumer exits when the engine's exit closes the
-    // channel.
-    let notifier_join = crate::notifications::spawn_notifier(notifications, notifier_sink);
+    // channel. The delivery-health watch (round-3 chunk 7, D31) rides
+    // the consumer's observation stream: the tracker tallies, the UI
+    // drains the receiver half (the status-bar chip's lane).
+    let (health_tx, delivery_health) = watch::channel(DeliveryHealth::default());
+    let notifier_join = crate::notifications::spawn_notifier(
+        notifications,
+        notifier_sink,
+        Arc::new(crate::notifications::HealthTracker::new(health_tx)),
+    );
 
     // The engine reaches the database only through the storage actor
     // (single-writer discipline): the handle *is* the port adapter.
@@ -1021,6 +1155,7 @@ async fn bootstrap_with_modules(
         authority,
         authority_join,
         _lock: lock,
+        delivery_health,
     })
 }
 
@@ -1791,5 +1926,71 @@ mod connector_module_tests {
         .await
         .expect_err("credential failure surfaces");
         assert!(matches!(err, BootstrapError::Credential(_)));
+    }
+}
+
+/// The boot diagnosis' pins (round-3 chunk 7, D31): structural — the
+/// stub probe answers without a bus, the enum is the assertion, and
+/// the log-only posture is the fact that neither outcome is an error.
+#[cfg(test)]
+mod sink_diagnosis_tests {
+    use super::{
+        DesktopServerProbe, ProbeFuture, ServerInfo, ServerProbe, SinkDiagnosis,
+        diagnose_desktop_sink,
+    };
+    use std::sync::Arc;
+
+    #[derive(Debug)]
+    struct StubProbe(Result<ServerInfo, Arc<dyn std::error::Error + Send + Sync>>);
+
+    impl ServerProbe for StubProbe {
+        fn server_info(&self) -> ProbeFuture<'_> {
+            Box::pin(async move {
+                self.0
+                    .clone()
+                    .map_err(|err| Arc::clone(&err) as Arc<dyn std::error::Error + Send + Sync>)
+            })
+        }
+    }
+
+    fn server() -> ServerInfo {
+        ServerInfo {
+            name: "plasma".into(),
+            vendor: "KDE".into(),
+            version: "6.6".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_resolved_server_diagnosis_is_available() {
+        let diagnosis = diagnose_desktop_sink(&StubProbe(Ok(server()))).await;
+        assert_eq!(
+            diagnosis,
+            SinkDiagnosis::Available {
+                name: "plasma".into(),
+                vendor: "KDE".into(),
+                version: "6.6".into(),
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_server_diagnosis_is_unavailable_and_boot_proceeds() {
+        // Log-only ceiling: the diagnosis is a value, not a boot
+        // failure — the call returns Ok-shaped and the boot continues.
+        let diagnosis =
+            diagnose_desktop_sink(&StubProbe(Err(Arc::new(std::io::Error::other("no bus"))))).await;
+        assert_eq!(diagnosis, SinkDiagnosis::Unavailable);
+    }
+
+    #[tokio::test]
+    async fn the_production_probe_compiles_and_types() {
+        // The real call site: whatever this machine answers, the
+        // outcome is one of the two diagnosis shapes.
+        let diagnosis = diagnose_desktop_sink(&DesktopServerProbe).await;
+        assert!(matches!(
+            diagnosis,
+            SinkDiagnosis::Available { .. } | SinkDiagnosis::Unavailable
+        ));
     }
 }

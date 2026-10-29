@@ -76,6 +76,7 @@ use chrono::TimeZone as _;
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
 use slint::ComponentHandle as _;
 use taskboard_domain::TaskId;
+use taskboard_ui_slint::presentation;
 use taskboard_ui_slint::requests;
 use taskboard_ui_slint::{UiHandle, UiSettings, mount};
 
@@ -119,6 +120,8 @@ fn mounted(n: usize, kiosk: bool) -> Bench {
     let (requests_tx, _requests_rx) = tokio::sync::mpsc::channel(16);
     let (_stx, signals) = tokio::sync::broadcast::channel(16);
     let (_syt, system) = tokio::sync::broadcast::channel(16);
+    let (_htx, health) =
+        tokio::sync::watch::channel(taskboard_ui_slint::presentation::DeliveryHealth::default());
     let handle = mount(
         Arc::clone(&state),
         signals,
@@ -129,6 +132,7 @@ fn mounted(n: usize, kiosk: bool) -> Bench {
             kiosk,
             ..UiSettings::default()
         },
+        health,
     )
     .expect("mount succeeds on the null platform");
     handle

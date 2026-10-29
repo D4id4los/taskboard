@@ -214,6 +214,11 @@ pub(crate) struct Adapter {
     /// presentation state (the liveness-map precedent); expiry rides
     /// the cadence tick's wall clock — no UI-held timer.
     notice: Option<Notice>,
+    /// The OS-delivery health lane (round-3 chunk 7, D31): the watch
+    /// receiver the app hands over at mount; drained non-blocking
+    /// beside the two broadcasts — a failure repaints within one
+    /// cadence tick, no new thread or task in the UI.
+    delivery_health: tokio::sync::watch::Receiver<crate::presentation::DeliveryHealth>,
     rotation: Option<crate::view_state::KioskRotation>,
     /// The rotation flip's single-shot dwell timer (K13). Armed by
     /// `install` only when `rotation` is present, re-armed by the
@@ -2036,6 +2041,24 @@ impl Adapter {
     /// A `KeymapUpdate` swaps the keymap live and refreshes; a failed
     /// scale reverts the theme value; persistence is never undone by
     /// any reply.
+    /// The delivery chip's drain (round-3 chunk 7, D31): the
+    /// non-blocking watch poll beside the two broadcasts — a changed
+    /// health snapshot pushes the chip properties and reports the
+    /// change so the caller marks the pass dirty (the settings-reply
+    /// drain's shape). Healthy maps to an absent chip; degraded maps
+    /// to the visible one via [`crate::presentation::delivery_chip`].
+    /// Returns whether the snapshot changed.
+    pub(crate) fn drain_delivery_health(&mut self, window: &AppWindow) -> bool {
+        if !self.delivery_health.has_changed().unwrap_or(false) {
+            return false;
+        }
+        let health = self.delivery_health.borrow_and_update().clone();
+        let chip = crate::presentation::delivery_chip(&health);
+        window.set_delivery_chip_visible(chip.is_some());
+        window.set_delivery_chip(SharedString::from(chip.unwrap_or_default()));
+        true
+    }
+
     pub(crate) fn drain_setting_replies(&mut self, window: &AppWindow) {
         let mut i = 0;
         let mut drained = false;
@@ -2863,6 +2886,7 @@ pub(crate) fn install(
     state: Arc<ArcSwap<AppState>>,
     status_timer: Rc<slint::Timer>,
     rotation_timer: Rc<slint::Timer>,
+    delivery_health: tokio::sync::watch::Receiver<crate::presentation::DeliveryHealth>,
 ) -> Rc<RefCell<Adapter>> {
     // The load path (round-1 D16): the uuid-keyed settings map
     // converts once here and seeds the fresh ViewState before the
@@ -2948,6 +2972,7 @@ pub(crate) fn install(
         rotation_fire: Rc::new(|| {}), // replaced below, before any fire can happen
         quit_requests: 0,
         notice: None,
+        delivery_health,
     }));
     // The status auto-clear's fire closure (r2 D28): weak handles
     // only — no Rc cycle. Armed by `set_settings_outcome` from the

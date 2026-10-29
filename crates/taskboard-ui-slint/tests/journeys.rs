@@ -66,6 +66,7 @@ impl Harness {
             commands,
             requests_tx,
             settings,
+            detached_health(),
         )
         .expect("mount succeeds on the testing backend");
         let mut harness = Self {
@@ -8232,4 +8233,13 @@ fn a_task_notification_row_keeps_all_four_buttons() {
             assert!(harness.driver.find_by_label("Cancel timer").is_none());
         },
     );
+}
+
+/// A detached delivery-health receiver (its sender dropped): the
+/// hand-over the mount tests that don't exercise the health lane use.
+fn detached_health()
+-> tokio::sync::watch::Receiver<taskboard_ui_slint::presentation::DeliveryHealth> {
+    let (_tx, rx) =
+        tokio::sync::watch::channel(taskboard_ui_slint::presentation::DeliveryHealth::default());
+    rx
 }

@@ -30,6 +30,8 @@ fn mount_populated(
     let state = Arc::new(ArcSwap::from_pointee(fixture::golden_state().1));
     let (commands, _engine) = support::fake_engine::FakeEngine::channel(Arc::clone(&state));
     let (requests_tx, _requests_rx) = tokio::sync::mpsc::channel(16);
+    let (_htx, health) =
+        tokio::sync::watch::channel(taskboard_ui_slint::presentation::DeliveryHealth::default());
     let handle = taskboard_ui_slint::mount(
         state,
         dummy_signals(),
@@ -40,6 +42,7 @@ fn mount_populated(
             scale: taskboard_ui_slint::UiScale::new(scale).expect("valid"),
             ..UiSettings::default()
         },
+        health,
     )
     .expect("mount succeeds on the testing backend");
     driver.bind(&handle);
@@ -667,6 +670,7 @@ fn the_segmented_picker_roles_and_routes_the_preset_pick() {
                 commands,
                 requests_tx,
                 UiSettings::default(),
+                detached_health(),
             )
             .expect("mount succeeds on the testing backend");
             driver.bind(&handle);
@@ -747,6 +751,7 @@ fn the_backend_picker_renders_two_segments_with_only_nextcloud_enabled() {
                 commands,
                 requests_tx,
                 UiSettings::default(),
+                detached_health(),
             )
             .expect("mount succeeds on the testing backend");
             driver.bind(&handle);
@@ -801,4 +806,13 @@ fn the_backend_picker_renders_two_segments_with_only_nextcloud_enabled() {
             ));
         },
     );
+}
+
+/// A detached delivery-health receiver (its sender dropped): the
+/// hand-over the mount tests that don't exercise the health lane use.
+fn detached_health()
+-> tokio::sync::watch::Receiver<taskboard_ui_slint::presentation::DeliveryHealth> {
+    let (_tx, rx) =
+        tokio::sync::watch::channel(taskboard_ui_slint::presentation::DeliveryHealth::default());
+    rx
 }

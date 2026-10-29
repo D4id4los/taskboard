@@ -185,6 +185,7 @@ fn mount_board(
         commands,
         requests_tx,
         UiSettings::default(),
+        detached_health(),
     )
     .expect("mount succeeds on the testing backend");
     handle.dispatch_action(ActionId::NavFocusBoard);
@@ -423,6 +424,7 @@ fn the_today_sections_virtualise() {
                 commands,
                 requests_tx,
                 UiSettings::default(),
+                detached_health(),
             )
             .expect("mount succeeds on the testing backend");
             driver.bind(&handle);
@@ -547,6 +549,7 @@ fn a_removal_above_the_today_viewport_leaves_the_rows_resting() {
                 commands,
                 requests_tx,
                 UiSettings::default(),
+                detached_health(),
             )
             .expect("mount succeeds on the testing backend");
             driver.bind(&handle);
@@ -633,4 +636,13 @@ fn a_compact_stack_switch_remounts_the_viewport_cleanly() {
             );
         },
     );
+}
+
+/// A detached delivery-health receiver (its sender dropped): the
+/// hand-over the mount tests that don't exercise the health lane use.
+fn detached_health()
+-> tokio::sync::watch::Receiver<taskboard_ui_slint::presentation::DeliveryHealth> {
+    let (_tx, rx) =
+        tokio::sync::watch::channel(taskboard_ui_slint::presentation::DeliveryHealth::default());
+    rx
 }
