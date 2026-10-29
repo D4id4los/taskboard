@@ -5607,7 +5607,9 @@ fn the_control_walk_reaches_fields_buttons_and_the_picker() {
                 }
                 None
             };
-            assert_eq!(cursor_index(&harness), Some(30), "the due anchors");
+            // January 2030 opens on a Tuesday: one Monday-first leading
+            // blank, so the 31st sits at flat index 31.
+            assert_eq!(cursor_index(&harness), Some(31), "the due anchors");
 
             // The walk enters the picker: Down-in-field hands focus
             // to the grid (the chunk-3 focus-on-mount seam) and the
@@ -5624,7 +5626,7 @@ fn the_control_walk_reaches_fields_buttons_and_the_picker() {
             // the cursor one day (January 2030 stays on-grid).
             harness.press(ActionId::PickerRight);
             harness.driver.advance_time(0);
-            assert_eq!(cursor_index(&harness), Some(31), "one day forward");
+            assert_eq!(cursor_index(&harness), Some(32), "one day forward");
 
             // The context never masks: Escape resolves ModeNormal
             // from ViInsert — the editor's clean close.
