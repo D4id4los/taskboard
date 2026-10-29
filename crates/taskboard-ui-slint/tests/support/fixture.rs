@@ -109,6 +109,8 @@ fn board(id: BoardId) -> Board {
 pub struct Fixture {
     pub stack_a: StackId,
     pub stack_b: StackId,
+    /// Stack "a"'s first task — the walk's `NavNextItem` focus target.
+    pub task0: TaskId,
     /// Stack "a"'s second task; `journey_state` marks it overdue.
     pub task1: TaskId,
 }
@@ -298,6 +300,7 @@ pub fn golden_state() -> (Fixture, AppState) {
         Fixture {
             stack_a,
             stack_b,
+            task0,
             task1,
         },
         state,
