@@ -408,9 +408,10 @@ impl DeliveryObserver for HealthTracker {
 /// channel into `sink` until the channel closes (the engine task owns
 /// the only sender clone; its exit closes the channel). Every sink
 /// call is bracketed by [`DeliveryEvent`]s for `observer`; a failed
-/// delivery is observed and skipped — never fatal. The consumer keeps
-/// no failure log of its own: the sink logs the backend cause, the
-/// event stream is the typed record.
+/// delivery is observed and skipped — never fatal. Fire failures keep
+/// no consumer log of their own: the sink logs the backend cause, the
+/// event stream is the typed record; a withdrawal failure stays at
+/// debug (best-effort — no health, no surface).
 #[must_use]
 pub fn spawn_notifier(
     mut notifications: tokio::sync::mpsc::Receiver<NotifierMessage>,
@@ -438,14 +439,20 @@ pub fn spawn_notifier(
                         });
                     }
                 }
-                // Withdrawal failures are observed as best-effort,
-                // never surfaced (the in-app notification is the
-                // source of truth).
+                // Withdrawal failures are observed as best-effort and
+                // logged at debug — neither outcome moves the delivery
+                // health or any user-visible surface (the in-app
+                // notification is the source of truth).
                 NotifierMessage::Withdraw {
                     reminder,
                     occurrence,
                 } => {
-                    if sink.withdraw(&reminder, &occurrence).await.is_err() {
+                    if let Err(err) = sink.withdraw(&reminder, &occurrence).await {
+                        tracing::debug!(
+                            ?err,
+                            reminder = %reminder.text_form(),
+                            "toast withdrawal failed"
+                        );
                         observer.on_event(DeliveryEvent::WithdrawFailed {
                             reminder,
                             occurrence,
