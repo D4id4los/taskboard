@@ -2116,3 +2116,72 @@ async fn s44_cascade_absence_stays_tombstoned() {
     );
     s.snap("s44");
 }
+
+// ---------------------------------------------------------------------
+// S45 — the habit trackers enter the disk contract (DR-6/5). One
+// scenario pair: the created habit with its first log increment (s45a),
+// then the audited correction, a second window's row, and the
+// tombstone — the log outliving the tracker (s45b). The `habits`
+// section's serialized shape (entity fields, the `(habit, window)`
+// string wire key, per-row count + clock) is the contract.
+// ---------------------------------------------------------------------
+
+#[cfg_attr(miri, ignore)]
+#[tokio::test]
+async fn s45a_created_habit_and_first_log_enter_the_disk_contract() {
+    let mut s = Scenario::start().await;
+    let board = s.board_id();
+    let CommandOutcome::HabitCreated(habit) = s
+        .run(StateCommand::CreateHabit {
+            board,
+            title: "meditate".into(),
+            target: taskboard_domain::HabitTarget::PerDay(
+                taskboard_domain::NonZeroCount::new(3).unwrap(),
+            ),
+        })
+        .await
+    else {
+        panic!("wrong receipt");
+    };
+    let CommandOutcome::HabitLogged { .. } = s.run(StateCommand::LogHabit { habit }).await else {
+        panic!("wrong receipt");
+    };
+    s.snap("s45a");
+}
+
+#[cfg_attr(miri, ignore)]
+#[tokio::test]
+async fn s45b_adjust_second_window_and_tombstone() {
+    let mut s = Scenario::start().await;
+    let board = s.board_id();
+    let CommandOutcome::HabitCreated(habit) = s
+        .run(StateCommand::CreateHabit {
+            board,
+            title: "meditate".into(),
+            target: taskboard_domain::HabitTarget::PerDay(
+                taskboard_domain::NonZeroCount::new(3).unwrap(),
+            ),
+        })
+        .await
+    else {
+        panic!("wrong receipt");
+    };
+    s.run(StateCommand::LogHabit { habit }).await;
+    // Yesterday's audited backfill (the explicit valve) plus a second
+    // today increment.
+    s.run(StateCommand::AdjustHabitLog {
+        habit,
+        window: taskboard_domain::WindowStart::of_period(
+            taskboard_domain::PeriodKind::Day,
+            chrono::NaiveDate::from_ymd_opt(1970, 1, 1).expect("epoch") - chrono::Days::new(1),
+        ),
+        count: 2,
+    })
+    .await;
+    s.run(StateCommand::LogHabit { habit }).await;
+    // The tombstone: the rows survive it (history outlives).
+    let CommandOutcome::Applied = s.run(StateCommand::DeleteHabit { habit }).await else {
+        panic!("wrong receipt");
+    };
+    s.snap("s45b");
+}
