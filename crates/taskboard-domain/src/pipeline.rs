@@ -1273,11 +1273,14 @@ pub fn apply_sync_report(
             ..current.reminders.clone()
         },
         tracking: current.tracking.clone(),
+        // No habit data enters the sync path: definitions and log rows
+        // ride chunk DR-6/6's sidecar sections; both carry through
+        // untouched.
+        habits: current.habits.clone(),
         sync,
         // Sync ingestion is an engine mutation from a foreign source:
         // stamp it like a local command would be.
         last_updated: Some(now),
-        habits: crate::habit::HabitState::default(),
     };
     // The projection is a display derivation over the ops that remain
     // queued after this cycle's push outcomes (the engine re-derives
@@ -1479,9 +1482,12 @@ pub fn apply_push_report(
         // No tracking data enters the sync path: entries ride their own
         // chunk's lane; history carries through untouched.
         tracking: current.tracking.clone(),
+        // No habit data enters the push path: definitions and log rows
+        // ride chunk DR-6/6's sidecar sections; both carry through
+        // untouched.
+        habits: current.habits.clone(),
         sync,
         last_updated: Some(now),
-        habits: crate::habit::HabitState::default(),
     };
     crate::state::derive_sync_states(
         &state.boards,
@@ -2526,6 +2532,70 @@ mod tests {
         assert!(app.reminders.rules.is_empty());
         let row = app.sync.get(*state.boards.keys().next().unwrap()).unwrap();
         assert_eq!(row.features, DeckFeatures::NATIVE, "the flags ride the row");
+    }
+
+    #[test]
+    fn the_sync_and_push_reports_carry_the_habits_section_through() {
+        // A sync/push cycle rebuilds the published state from the
+        // report; the habits section has no lane in either cycle yet
+        // (chunk DR-6/6's sidecar sections) — it must carry through
+        // untouched, exactly like tracking. A default here would wipe
+        // every tracker and the whole log on every cycle.
+        let task = bound_task(1);
+        let mut state = base_state(task);
+        let habit = crate::habit::Habit {
+            id: crate::ids::HabitId::from(uuid::Uuid::from_u128(700)),
+            board: *state.boards.keys().next().unwrap(),
+            title: "meditate".into(),
+            target: crate::habit::HabitTarget::PerDay(crate::habit::NonZeroCount::new(3).unwrap()),
+            order: 0,
+            anchor_time: None,
+            clocks: crate::habit::HabitClocks::all(ts(BASE)),
+            continued_from: None,
+            deleted: false,
+        };
+        let key = crate::habit::HabitLogKey {
+            habit: habit.id,
+            window: crate::habit::WindowStart::of_period(
+                crate::habit::PeriodKind::Day,
+                chrono::NaiveDate::from_ymd_opt(2026, 10, 28).unwrap(),
+            ),
+        };
+        state.habits.habits.insert(habit.id, habit);
+        state.habits.log.insert(
+            key,
+            crate::habit::HabitLogEntry {
+                count: 2,
+                clock: ts(BASE),
+            },
+        );
+        let expected = state.habits.clone();
+
+        let (pushed, _actions) = apply_push_report(
+            &state,
+            &[],
+            &[],
+            ts(BASE),
+            &CountingIds::default(),
+            ts(BASE + 3_600),
+            DeckFeatures::NATIVE,
+        );
+        assert_eq!(pushed.habits, expected, "a push cycle never touches habits");
+
+        let snap = single_stack_snapshot(vec![remote_task(1, 1, BASE)], BASE);
+        let (app, _actions, _events) = apply_sync_report(
+            &state,
+            &[],
+            &snap,
+            &[],
+            ts(BASE),
+            &CountingIds::default(),
+            ts(BASE + 3_600),
+            &crate::test_support::test_connector(),
+            &AppDataEvidence::Absent,
+            DeckFeatures::CONSERVATIVE,
+        );
+        assert_eq!(app.habits, expected, "a sync cycle never touches habits");
     }
 
     #[test]
