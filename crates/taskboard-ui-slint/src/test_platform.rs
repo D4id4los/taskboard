@@ -205,6 +205,8 @@ mod tests {
 
     fn mounted(state: taskboard_domain::AppState) -> crate::UiHandle {
         let (state, signals, system, commands, requests) = handover(state);
+        let (_health_tx, health) =
+            tokio::sync::watch::channel(crate::presentation::DeliveryHealth::default());
         mount(
             state,
             signals,
@@ -212,6 +214,7 @@ mod tests {
             commands,
             requests,
             UiSettings::default(),
+            health,
         )
         .expect("mount succeeds on the null platform")
     }

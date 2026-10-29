@@ -10,6 +10,27 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 ### Added
 
+- Reminder OS-delivery observability (GUI review round 3, chunk 7,
+  #474's delivery half): the notifier consumer now emits typed
+  delivery events (attempted / delivered / failed / withdrawn /
+  withdraw-failed) through a `DeliveryObserver` seam — every sink,
+  the CI fakes included, produces the same stream with no daemon. A
+  `HealthTracker` tallies the stream into a delivery-health snapshot
+  published on a `tokio::sync::watch`; the status bar drains it
+  beside the two broadcasts and shows a warning-toned "desktop toast
+  delivery failing — reminders surface in-app" chip while the last
+  attempt failed (a later success clears it — a state of the world,
+  never a timer). Boot under a resolved `desktop` sink probes the
+  notification server once and names it in the log — or says plainly
+  that toasts will not work and the in-app surface remains (log-only,
+  never a boot failure, no config knob: the D-R13 resolution stands).
+  The backend failure cause stays in the sink's warn line (the chip
+  says *degraded*, the log says *why*); the delivered-mark stays
+  unconditional on the sink outcome — it is the local receipt guarding
+  the in-app fallback surface, whose persistence is DR-3 chunk 1's
+  landed territory (fence comments in `notifications.rs` and
+  `bootstrap.rs`).
+
 - Reminder insistence levels (#475, DR-3 chunk 2): every reminder rule
   and ad-hoc alarm carries `Insistence { normal, alarm }` — per-reminder
   "how loud" flavour data stamped at creation and immutable per row (a

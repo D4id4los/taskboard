@@ -653,6 +653,8 @@ fn rig(state: AppState) -> Rig {
     let state = Arc::new(arc_swap::ArcSwap::from_pointee(state));
     let (commands_tx, commands_rx) = mpsc::channel(64);
     let (requests_tx, _requests_rx) = mpsc::channel(16);
+    let (_health_tx, health) =
+        tokio::sync::watch::channel(crate::presentation::DeliveryHealth::default());
     let handle = mount(
         state,
         dummy_receiver(),
@@ -660,6 +662,7 @@ fn rig(state: AppState) -> Rig {
         commands_tx,
         requests_tx,
         UiSettings::default(),
+        health,
     )
     .expect("mount succeeds on the null platform");
     Rig {

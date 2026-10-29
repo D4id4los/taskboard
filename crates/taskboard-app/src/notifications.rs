@@ -17,6 +17,9 @@ use std::collections::HashMap;
 use crate::config::{AppMode, SinkChoice};
 
 use taskboard_domain::{Notification, NotifierMessage, ReminderRef};
+// The health snapshot is presentation-side data (one shared shape for
+// the app actor and the dumb UI); the watch lane is app-owned.
+use taskboard_ui_slint::presentation::DeliveryHealth;
 
 /// Channel capacity of the notifier inbox (engine → sink consumer).
 /// The engine's tick bursts are bounded by the firing evaluation, so 64
@@ -132,6 +135,16 @@ impl NotificationSink for LogSink {
 /// fire-and-forget. Closing a toast natively (the user, or the
 /// desktop's timeout) is NOT a dismissal — the dismissal is the synced
 /// engine fact (design D-10, issue #444 tracks native action buttons).
+///
+/// # DR-3 fence (round 3, chunk 7)
+///
+/// Settlement — the delivered-vs-dismissed lifecycle, prune/compaction
+/// timing, and the in-app surface's persistence — is DR-3 chunk 1's
+/// territory (landed on `main`); this module owns OS delivery and
+/// delivery *visibility* only. Neither round re-times the other's fix:
+/// the delivered-mark is intentionally unconditional on the sink
+/// outcome (the mark is the local receipt guarding the in-app row,
+/// the always-on fallback surface). Cross-ref: #474.
 #[derive(Default)]
 pub struct DesktopSink {
     /// The fire-time toast handles keyed by `(reminder, occurrence)` —
@@ -289,40 +302,159 @@ pub(crate) fn resolve_sink(choice: SinkChoice, mode: AppMode) -> SinkKind {
     }
 }
 
+/// One delivery-pipeline observation (app-owned, ui-safe data). The
+/// consumer emits one event per sink call around every deliver/withdraw;
+/// observers turn the stream into logs, health, or test pins. Carries
+/// no error cause by design: the backend cause stays where it is
+/// readable — the [`DesktopSink`] warn — while this event is the typed
+/// record (the chip says *degraded*, the log says *why*).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DeliveryEvent {
+    Attempted {
+        reminder: ReminderRef,
+        occurrence: DateTime<Utc>,
+    },
+    Delivered {
+        reminder: ReminderRef,
+        occurrence: DateTime<Utc>,
+    },
+    Failed {
+        reminder: ReminderRef,
+        occurrence: DateTime<Utc>,
+    },
+    Withdrawn {
+        reminder: ReminderRef,
+        occurrence: DateTime<Utc>,
+    },
+    WithdrawFailed {
+        reminder: ReminderRef,
+        occurrence: DateTime<Utc>,
+    },
+}
+
+/// The seam every delivery observation flows through (round-3 D31):
+/// implementors may log, tally health, or collect for tests. One
+/// stream for every [`NotificationSink`] implementor — the CI fakes
+/// included — with no daemon.
+pub trait DeliveryObserver: Send + Sync + std::fmt::Debug {
+    fn on_event(&self, event: DeliveryEvent);
+}
+
+/// The default observer: the seam's optionality — tests and callers
+/// that do not care about delivery health compile `spawn_notifier`
+/// unchanged with this.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct NoopObserver;
+
+impl DeliveryObserver for NoopObserver {
+    fn on_event(&self, _: DeliveryEvent) {}
+}
+
+/// The trait-object default ([`NoopObserver`] behind the `Arc`).
+#[must_use]
+pub fn no_op_observer() -> Arc<dyn DeliveryObserver> {
+    Arc::new(NoopObserver)
+}
+
+/// The production observer (round-3 D31): tallies the event stream
+/// into a [`DeliveryHealth`] snapshot and publishes it on a
+/// `tokio::sync::watch` — the status-bar chip's data lane. Withdraw
+/// events are best-effort by contract and never move the health.
+#[derive(Debug)]
+pub(crate) struct HealthTracker {
+    health: std::sync::Mutex<DeliveryHealth>,
+    tx: tokio::sync::watch::Sender<DeliveryHealth>,
+}
+
+impl HealthTracker {
+    pub(crate) fn new(tx: tokio::sync::watch::Sender<DeliveryHealth>) -> Self {
+        Self {
+            health: std::sync::Mutex::new(DeliveryHealth::default()),
+            tx,
+        }
+    }
+
+    /// Applies one event to the tally and publishes the snapshot.
+    /// Timestamps are wall-clock telemetry at the consumer (delivery
+    /// timing, not engine logic); tests assert the transitions, never
+    /// the stamps.
+    pub(crate) fn apply(&self, event: &DeliveryEvent) {
+        let mut health = self.health.lock().expect("delivery health mutex poisoned");
+        match event {
+            DeliveryEvent::Attempted { .. } => health.last_attempt = Some(Utc::now()),
+            DeliveryEvent::Delivered { .. } => {
+                health.last_success = Some(Utc::now());
+                health.consecutive_failures = 0;
+            }
+            DeliveryEvent::Failed { .. } => {
+                health.last_failure = Some(Utc::now());
+                health.consecutive_failures = health.consecutive_failures.saturating_add(1);
+            }
+            // Withdraw is best-effort by contract (D-10): neither
+            // outcome is a delivery health fact.
+            DeliveryEvent::Withdrawn { .. } | DeliveryEvent::WithdrawFailed { .. } => {}
+        }
+        let _ = self.tx.send(health.clone());
+    }
+}
+
+impl DeliveryObserver for HealthTracker {
+    fn on_event(&self, event: DeliveryEvent) {
+        self.apply(&event);
+    }
+}
+
 /// Spawns the notifier consumer: drains the engine's notification
 /// channel into `sink` until the channel closes (the engine task owns
-/// the only sender clone; its exit closes the channel). A failed
-/// delivery is logged and skipped — never fatal.
+/// the only sender clone; its exit closes the channel). Every sink
+/// call is bracketed by [`DeliveryEvent`]s for `observer`; a failed
+/// delivery is observed and skipped — never fatal. The consumer keeps
+/// no failure log of its own: the sink logs the backend cause, the
+/// event stream is the typed record.
 #[must_use]
 pub fn spawn_notifier(
     mut notifications: tokio::sync::mpsc::Receiver<NotifierMessage>,
     sink: Arc<dyn NotificationSink>,
+    observer: Arc<dyn DeliveryObserver>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         tracing::debug!("notifier: consumer started");
         while let Some(message) = notifications.recv().await {
             match message {
                 NotifierMessage::Fire(notification) => {
-                    if let Err(err) = sink.deliver(&notification).await {
-                        tracing::warn!(
-                            ?err,
-                            reminder = %notification.reminder.text_form(),
-                            "notification delivery failed"
-                        );
+                    observer.on_event(DeliveryEvent::Attempted {
+                        reminder: notification.reminder,
+                        occurrence: notification.occurrence,
+                    });
+                    if sink.deliver(&notification).await.is_err() {
+                        observer.on_event(DeliveryEvent::Failed {
+                            reminder: notification.reminder,
+                            occurrence: notification.occurrence,
+                        });
+                    } else {
+                        observer.on_event(DeliveryEvent::Delivered {
+                            reminder: notification.reminder,
+                            occurrence: notification.occurrence,
+                        });
                     }
                 }
-                // Withdrawal failures are logged, never surfaced (the
-                // in-app notification is the source of truth).
+                // Withdrawal failures are observed as best-effort,
+                // never surfaced (the in-app notification is the
+                // source of truth).
                 NotifierMessage::Withdraw {
                     reminder,
                     occurrence,
                 } => {
-                    if let Err(err) = sink.withdraw(&reminder, &occurrence).await {
-                        tracing::debug!(
-                            ?err,
-                            reminder = %reminder.text_form(),
-                            "toast withdrawal failed"
-                        );
+                    if sink.withdraw(&reminder, &occurrence).await.is_err() {
+                        observer.on_event(DeliveryEvent::WithdrawFailed {
+                            reminder,
+                            occurrence,
+                        });
+                    } else {
+                        observer.on_event(DeliveryEvent::Withdrawn {
+                            reminder,
+                            occurrence,
+                        });
                     }
                 }
             }
@@ -446,7 +578,11 @@ mod tests {
 
         let sink = Arc::new(CollectingSink::default());
         let (tx, rx) = tokio::sync::mpsc::channel(NOTIFIER_CAPACITY);
-        let consumer = spawn_notifier(rx, Arc::clone(&sink) as Arc<dyn NotificationSink>);
+        let consumer = spawn_notifier(
+            rx,
+            Arc::clone(&sink) as Arc<dyn NotificationSink>,
+            no_op_observer(),
+        );
         tx.send(NotifierMessage::Fire(notification(ReminderAnchor::Task(
             TaskId::from_uuid(uuid::Uuid::from_u128(9)),
         ))))
@@ -533,7 +669,11 @@ mod tests {
             deliveries: std::sync::atomic::AtomicUsize::new(0),
         });
         let (tx, rx) = tokio::sync::mpsc::channel(NOTIFIER_CAPACITY);
-        let consumer = spawn_notifier(rx, Arc::clone(&sink) as Arc<dyn NotificationSink>);
+        let consumer = spawn_notifier(
+            rx,
+            Arc::clone(&sink) as Arc<dyn NotificationSink>,
+            no_op_observer(),
+        );
         let fire = |u: u128| {
             NotifierMessage::Fire(notification(ReminderAnchor::Task(TaskId::from_uuid(
                 uuid::Uuid::from_u128(u),
@@ -548,5 +688,253 @@ mod tests {
         assert_eq!(sink.calls.load(Ordering::SeqCst), 2);
         assert_eq!(sink.failures.load(Ordering::SeqCst), 1);
         assert_eq!(sink.deliveries.load(Ordering::SeqCst), 1);
+    }
+
+    /// The seam-test observer: forwards every event into an unbounded
+    /// channel, so a test joins the consumer and drains the stream
+    /// (channels + join, no sleeps).
+    #[derive(Debug)]
+    struct CollectingObserver(tokio::sync::mpsc::UnboundedSender<DeliveryEvent>);
+
+    impl DeliveryObserver for CollectingObserver {
+        fn on_event(&self, event: DeliveryEvent) {
+            let _ = self.0.send(event);
+        }
+    }
+
+    fn collecting_observer() -> (
+        Arc<dyn DeliveryObserver>,
+        tokio::sync::mpsc::UnboundedReceiver<DeliveryEvent>,
+    ) {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        (Arc::new(CollectingObserver(tx)), rx)
+    }
+
+    fn fire_of(u: u128) -> NotifierMessage {
+        NotifierMessage::Fire(notification(ReminderAnchor::Task(TaskId::from_uuid(
+            uuid::Uuid::from_u128(u),
+        ))))
+    }
+
+    fn expected(
+        event: impl FnOnce(ReminderRef, DateTime<Utc>) -> DeliveryEvent,
+        u: u128,
+    ) -> DeliveryEvent {
+        event(
+            ReminderRef::Default(TaskId::from_uuid(uuid::Uuid::from_u128(u))),
+            FIRED_AT,
+        )
+    }
+
+    fn attempted(r: ReminderRef, o: DateTime<Utc>) -> DeliveryEvent {
+        DeliveryEvent::Attempted {
+            reminder: r,
+            occurrence: o,
+        }
+    }
+
+    fn delivered(r: ReminderRef, o: DateTime<Utc>) -> DeliveryEvent {
+        DeliveryEvent::Delivered {
+            reminder: r,
+            occurrence: o,
+        }
+    }
+
+    fn failed(r: ReminderRef, o: DateTime<Utc>) -> DeliveryEvent {
+        DeliveryEvent::Failed {
+            reminder: r,
+            occurrence: o,
+        }
+    }
+
+    fn withdrawn(r: ReminderRef, o: DateTime<Utc>) -> DeliveryEvent {
+        DeliveryEvent::Withdrawn {
+            reminder: r,
+            occurrence: o,
+        }
+    }
+
+    fn withdraw_failed(r: ReminderRef, o: DateTime<Utc>) -> DeliveryEvent {
+        DeliveryEvent::WithdrawFailed {
+            reminder: r,
+            occurrence: o,
+        }
+    }
+
+    #[tokio::test]
+    async fn the_consumer_emits_attempt_then_delivered_for_a_landing_fire() {
+        let (observer, mut events) = collecting_observer();
+        let (tx, rx) = tokio::sync::mpsc::channel(NOTIFIER_CAPACITY);
+        let consumer = spawn_notifier(rx, Arc::new(LogSink), observer);
+        tx.send(fire_of(11)).await.expect("fire send");
+        drop(tx);
+        consumer.await.expect("consumer joins");
+        let mut seen = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            seen.push(event);
+        }
+        assert_eq!(
+            seen,
+            vec![expected(attempted, 11), expected(delivered, 11),]
+        );
+    }
+
+    #[tokio::test]
+    async fn the_consumer_emits_attempt_then_failed_for_a_refusing_sink() {
+        // The first fire errs, the second lands: exactly one
+        // Attempted→Failed bracket, then Attempted→Delivered — and the
+        // consumer survives (the never-fatal contract, re-pinned
+        // through the seam).
+        struct RefusingSink {
+            calls: std::sync::atomic::AtomicUsize,
+        }
+        impl NotificationSink for RefusingSink {
+            fn deliver<'a>(
+                &'a self,
+                _: &'a Notification,
+            ) -> Pin<Box<dyn Future<Output = Result<(), NotifyError>> + Send + 'a>> {
+                Box::pin(async move {
+                    if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                        return Err(NotifyError);
+                    }
+                    Ok(())
+                })
+            }
+            fn withdraw<'a>(
+                &'a self,
+                _: &'a ReminderRef,
+                _: &'a chrono::DateTime<chrono::Utc>,
+            ) -> Pin<Box<dyn Future<Output = Result<(), NotifyError>> + Send + 'a>> {
+                Box::pin(async move { Ok(()) })
+            }
+        }
+        impl std::fmt::Debug for RefusingSink {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("RefusingSink")
+            }
+        }
+
+        let (observer, mut events) = collecting_observer();
+        let (tx, rx) = tokio::sync::mpsc::channel(NOTIFIER_CAPACITY);
+        let consumer = spawn_notifier(
+            rx,
+            Arc::new(RefusingSink {
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            }),
+            observer,
+        );
+        tx.send(fire_of(12)).await.expect("first send");
+        tx.send(fire_of(13)).await.expect("second send");
+        drop(tx);
+        consumer.await.expect("consumer survives a failed delivery");
+        let mut seen = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            seen.push(event);
+        }
+        assert_eq!(
+            seen,
+            vec![
+                expected(attempted, 12),
+                expected(failed, 12),
+                expected(attempted, 13),
+                expected(delivered, 13),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn withdraw_outcomes_are_observed_as_best_effort() {
+        struct WithdrawSink {
+            fail: bool,
+        }
+        impl NotificationSink for WithdrawSink {
+            fn deliver<'a>(
+                &'a self,
+                _: &'a Notification,
+            ) -> Pin<Box<dyn Future<Output = Result<(), NotifyError>> + Send + 'a>> {
+                Box::pin(async move { Ok(()) })
+            }
+            fn withdraw<'a>(
+                &'a self,
+                _: &'a ReminderRef,
+                _: &'a chrono::DateTime<chrono::Utc>,
+            ) -> Pin<Box<dyn Future<Output = Result<(), NotifyError>> + Send + 'a>> {
+                Box::pin(async move { if self.fail { Err(NotifyError) } else { Ok(()) } })
+            }
+        }
+        impl std::fmt::Debug for WithdrawSink {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("WithdrawSink")
+            }
+        }
+
+        let (observer, mut events) = collecting_observer();
+        let (tx, rx) = tokio::sync::mpsc::channel(NOTIFIER_CAPACITY);
+        let consumer = spawn_notifier(rx, Arc::new(WithdrawSink { fail: false }), observer);
+        tx.send(NotifierMessage::Withdraw {
+            reminder: ReminderRef::Default(TaskId::from_uuid(uuid::Uuid::from_u128(14))),
+            occurrence: FIRED_AT,
+        })
+        .await
+        .expect("withdraw send");
+        drop(tx);
+        consumer.await.expect("consumer joins");
+        let mut seen = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            seen.push(event);
+        }
+        assert_eq!(seen, vec![expected(withdrawn, 14)]);
+
+        // The failing close surfaces WithdrawFailed — and moves no
+        // delivery health (withdraw is best-effort by contract).
+        let (observer, mut events) = collecting_observer();
+        let (tx, rx) = tokio::sync::mpsc::channel(NOTIFIER_CAPACITY);
+        let consumer = spawn_notifier(rx, Arc::new(WithdrawSink { fail: true }), observer);
+        tx.send(NotifierMessage::Withdraw {
+            reminder: ReminderRef::Default(TaskId::from_uuid(uuid::Uuid::from_u128(15))),
+            occurrence: FIRED_AT,
+        })
+        .await
+        .expect("withdraw send");
+        drop(tx);
+        consumer.await.expect("consumer joins");
+        let mut seen = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            seen.push(event);
+        }
+        assert_eq!(seen, vec![expected(withdraw_failed, 15)]);
+
+        let (health_tx, health_rx) = tokio::sync::watch::channel(DeliveryHealth::default());
+        let tracker = HealthTracker::new(health_tx);
+        tracker.apply(&expected(withdraw_failed, 15));
+        assert!(!health_rx.borrow().degraded());
+    }
+
+    #[test]
+    fn health_tracker_transitions_degraded_on_failure_and_clears_on_success() {
+        let (health_tx, health_rx) = tokio::sync::watch::channel(DeliveryHealth::default());
+        let tracker = HealthTracker::new(health_tx);
+        assert!(!health_rx.borrow().degraded());
+        tracker.apply(&expected(attempted, 16));
+        tracker.apply(&expected(failed, 16));
+        {
+            let health = health_rx.borrow();
+            assert!(health.degraded());
+            assert_eq!(health.consecutive_failures, 1);
+        }
+        tracker.apply(&expected(attempted, 16));
+        tracker.apply(&expected(delivered, 16));
+        {
+            let health = health_rx.borrow();
+            assert!(!health.degraded());
+            assert_eq!(health.consecutive_failures, 0);
+        }
+    }
+
+    #[test]
+    fn no_op_observer_is_a_no_op() {
+        // The seam's optionality: the default observer swallows the
+        // stream without effect.
+        NoopObserver.on_event(expected(attempted, 17));
     }
 }

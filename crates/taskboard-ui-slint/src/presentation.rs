@@ -26,6 +26,46 @@ use taskboard_domain::{
 /// (the tunable horizon is recorded backlog debt).
 pub const DUE_SOON_HORIZON: TimeDelta = TimeDelta::hours(24);
 
+/// The OS-delivery health snapshot (round-3 D31, chunk 7): the
+/// delivery seam's observed attempt/outcome tally, app-owned and
+/// pushed to the UI over a `tokio::sync::watch` — defined here
+/// (presentation-side) so the app actor and the dumb UI share one
+/// ui-safe shape with no app→domain detour. Wall-clock telemetry,
+/// never engine state.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DeliveryHealth {
+    pub last_attempt: Option<DateTime<Utc>>,
+    pub last_success: Option<DateTime<Utc>>,
+    pub last_failure: Option<DateTime<Utc>>,
+    pub consecutive_failures: u32,
+}
+
+impl DeliveryHealth {
+    /// The chip's visibility rule: degraded iff the last attempt
+    /// failed (a later success clears it — litmus-safe: strictly
+    /// better delivery can only clear the surface).
+    #[must_use]
+    pub fn degraded(&self) -> bool {
+        matches!(self.last_failure, Some(f) if self.last_success.is_none_or(|s| f > s))
+    }
+}
+
+/// The degraded chip's sentence (never asserted in tests — only the
+/// visibility edge is): states the failure and names the in-app
+/// surface as the fallback, the same honest ceiling as the boot
+/// diagnosis.
+pub const DELIVERY_CHIP_TEXT: &str = "desktop toast delivery failing — reminders surface in-app";
+
+/// The delivery chip's pure mapping (the `settings_status` totality
+/// discipline): `Some` (visible) iff the health is degraded, `None`
+/// (absent) while healthy — and never timer-cleared: the chip clears
+/// when the next attempt succeeds, a state of the world, not a
+/// message.
+#[must_use]
+pub fn delivery_chip(health: &DeliveryHealth) -> Option<String> {
+    health.degraded().then(|| DELIVERY_CHIP_TEXT.to_owned())
+}
+
 /// The due classification vocabulary (slint-free; `models` maps it
 /// 1:1 onto the generated enum for markup conditionals).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -920,6 +960,25 @@ mod tests {
     /// feature-gated; these tests need only epoch stamps).
     fn epoch() -> DateTime<Utc> {
         taskboard_domain::BoardClocks::epoch()
+    }
+
+    #[test]
+    fn the_delivery_chip_maps_degraded_health_to_visible() {
+        let mut health = DeliveryHealth::default();
+        // Healthy (never attempted): the chip is absent.
+        assert!(delivery_chip(&health).is_none());
+        // A failure after no success: degraded, visible, non-empty.
+        health.last_attempt = Some(epoch());
+        health.last_failure = Some(epoch());
+        let chip = delivery_chip(&health).expect("degraded health shows the chip");
+        assert_ne!(chip, "");
+        // A later success clears it — strictly better delivery can
+        // only clear the surface (the litmus rule).
+        health.last_success = Some(epoch() + TimeDelta::seconds(1));
+        assert!(delivery_chip(&health).is_none());
+        // A failure NEWER than the last success degrades again.
+        health.last_failure = Some(epoch() + TimeDelta::seconds(2));
+        assert!(delivery_chip(&health).is_some());
     }
 
     fn task_clocks() -> TaskClocks {

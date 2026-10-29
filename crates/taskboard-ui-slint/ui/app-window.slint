@@ -173,6 +173,11 @@ export component AppWindow inherits Window {
     in-out property <bool> tracking-chip-visible: false;
     in-out property <string> tracking-chip;
     in-out property <bool> tracking-chip-action-visible: false;
+    // The OS-delivery health chip (round-3 chunk 7, D31): visible
+    // while the last delivery attempt failed (a later success clears
+    // it model-side — a state of the world, never a timer).
+    in-out property <bool> delivery-chip-visible: false;
+    in-out property <string> delivery-chip;
     // The jump-to search palette (#348): the model rows arrive ranked,
     // anchor-filtered, and capped from the Rust pass.
     in-out property <bool> palette-open: false;
@@ -401,6 +406,8 @@ export component AppWindow inherits Window {
                 tracking-chip-visible: root.tracking-chip-visible;
                 tracking-chip: root.tracking-chip;
                 tracking-chip-action-visible: root.tracking-chip-action-visible;
+                delivery-chip-visible: root.delivery-chip-visible;
+                delivery-chip: root.delivery-chip;
                 snooze-clicked(i) => root.banner-snooze-clicked(i);
                 mute-clicked(i) => root.banner-mute-clicked(i);
                 row-activated(i) => root.banner-row-activated(i);
