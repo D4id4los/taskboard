@@ -5560,10 +5560,15 @@ fn the_custom_offset_field_stretches_into_the_presets_row() {
 #[test]
 fn the_control_walk_reaches_fields_buttons_and_the_picker() {
     let (fixture, mut state) = fixture::journey_state();
-    let due = chrono::Utc.with_ymd_and_hms(2030, 1, 31, 0, 0, 0).unwrap();
+    // The walk's subject: one NavNextItem focuses stack "a"'s FIRST
+    // task, so the due is seeded there — the picker opens anchored on
+    // it (today's fallback would be wall-clock-dependent). January
+    // 2030 starts on a Tuesday: one leading blank puts the 30th at
+    // flat grid index 30 on every calendar day.
+    let due = chrono::Utc.with_ymd_and_hms(2030, 1, 30, 0, 0, 0).unwrap();
     state
         .tasks
-        .get_mut(&fixture.task1)
+        .get_mut(&fixture.task0)
         .expect("fixture task")
         .duedate = Some(due);
     support::driver::run(
@@ -5607,9 +5612,10 @@ fn the_control_walk_reaches_fields_buttons_and_the_picker() {
                 }
                 None
             };
-            // January 2030 opens on a Tuesday: one Monday-first leading
-            // blank, so the 31st sits at flat index 31.
-            assert_eq!(cursor_index(&harness), Some(31), "the due anchors");
+            // The seeded due is January 30, 2030: one Monday-first
+            // leading blank (the month opens on a Tuesday) puts the
+            // 30th at flat index 30.
+            assert_eq!(cursor_index(&harness), Some(30), "the due anchors");
 
             // The walk enters the picker: Down-in-field hands focus
             // to the grid (the chunk-3 focus-on-mount seam) and the
@@ -5626,7 +5632,7 @@ fn the_control_walk_reaches_fields_buttons_and_the_picker() {
             // the cursor one day (January 2030 stays on-grid).
             harness.press(ActionId::PickerRight);
             harness.driver.advance_time(0);
-            assert_eq!(cursor_index(&harness), Some(32), "one day forward");
+            assert_eq!(cursor_index(&harness), Some(31), "one day forward");
 
             // The context never masks: Escape resolves ModeNormal
             // from ViInsert — the editor's clean close.
