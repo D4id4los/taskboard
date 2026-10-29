@@ -17,6 +17,7 @@ use support::driver::{DriverOptions, JourneyDriver, SlintDriver};
 use support::fake_engine::FakeEngine;
 use support::fixture;
 use support::guard::{Guard, Verb};
+use support::health::detached_health;
 
 use arc_swap::ArcSwap;
 use slint::ComponentHandle as _;
@@ -8233,13 +8234,4 @@ fn a_task_notification_row_keeps_all_four_buttons() {
             assert!(harness.driver.find_by_label("Cancel timer").is_none());
         },
     );
-}
-
-/// A detached delivery-health receiver (its sender dropped): the
-/// hand-over the mount tests that don't exercise the health lane use.
-fn detached_health()
--> tokio::sync::watch::Receiver<taskboard_ui_slint::presentation::DeliveryHealth> {
-    let (_tx, rx) =
-        tokio::sync::watch::channel(taskboard_ui_slint::presentation::DeliveryHealth::default());
-    rx
 }

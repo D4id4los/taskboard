@@ -11,6 +11,7 @@ mod support;
 use support::driver::{DriverOptions, JourneyDriver, SlintDriver};
 use support::fixture;
 use support::golden_compare::Rgba8Image;
+use support::health::detached_health;
 
 use std::sync::Arc;
 
@@ -806,13 +807,4 @@ fn the_backend_picker_renders_two_segments_with_only_nextcloud_enabled() {
             ));
         },
     );
-}
-
-/// A detached delivery-health receiver (its sender dropped): the
-/// hand-over the mount tests that don't exercise the health lane use.
-fn detached_health()
--> tokio::sync::watch::Receiver<taskboard_ui_slint::presentation::DeliveryHealth> {
-    let (_tx, rx) =
-        tokio::sync::watch::channel(taskboard_ui_slint::presentation::DeliveryHealth::default());
-    rx
 }

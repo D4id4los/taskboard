@@ -149,6 +149,7 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use support::driver::JourneyDriver as _;
+use support::health::detached_health;
 use taskboard_domain::{AppState, StateCommand};
 use taskboard_ui_slint::actions::ActionId;
 use taskboard_ui_slint::{UiHandle, UiSettings, mount};
@@ -636,13 +637,4 @@ fn a_compact_stack_switch_remounts_the_viewport_cleanly() {
             );
         },
     );
-}
-
-/// A detached delivery-health receiver (its sender dropped): the
-/// hand-over the mount tests that don't exercise the health lane use.
-fn detached_health()
--> tokio::sync::watch::Receiver<taskboard_ui_slint::presentation::DeliveryHealth> {
-    let (_tx, rx) =
-        tokio::sync::watch::channel(taskboard_ui_slint::presentation::DeliveryHealth::default());
-    rx
 }
