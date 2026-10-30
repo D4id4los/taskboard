@@ -339,6 +339,8 @@ fn o3_error_kinds_cover_every_variant() {
             CommandError::AmbiguousReminderRule { .. } => "ambiguous-reminder-rule",
             CommandError::UnknownAdhocAlarm(_) => "unknown-adhoc-alarm",
             CommandError::AmbiguousAdhocAlarm { .. } => "ambiguous-adhoc-alarm",
+            CommandError::UnknownTimeEntry { .. } => "unknown-time-entry",
+            CommandError::AmbiguousTimeEntry { .. } => "ambiguous-time-entry",
             CommandError::NoStacks => "no-stacks",
             CommandError::AmbiguousBoard { .. } => "ambiguous-board",
             CommandError::SyncFailed(_) => "sync-failed",
@@ -425,6 +427,12 @@ fn o3_error_kinds_cover_every_variant() {
             name: "gama".to_owned(),
         },
         CommandError::SessionOnly,
+        CommandError::UnknownTimeEntry {
+            selector: "fff0".to_owned(),
+        },
+        CommandError::AmbiguousTimeEntry {
+            candidates: vec!["a".to_owned(), "b".to_owned()],
+        },
     ];
     for err in &samples {
         assert_eq!(err.error_kind(), expected(err), "{err}");

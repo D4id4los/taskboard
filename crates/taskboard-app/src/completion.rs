@@ -1116,7 +1116,8 @@ mod tests {
 
         // Word 0: groups + flat verbs + REPL exits; refusals excluded.
         for verb in [
-            "boards", "stacks", "tasks", "labels", "timers", "sync", "status", "exit", "quit",
+            "boards", "stacks", "tasks", "labels", "timers", "track", "export", "sync", "status",
+            "exit", "quit",
         ] {
             assert!(
                 spec.offered_verbs.iter().any(|v| v == verb),
@@ -1192,6 +1193,10 @@ mod tests {
             ),
             ("labels", vec!["add", "delete", "edit", "list"]),
             ("timers", vec!["add", "list", "cancel"]),
+            (
+                "track",
+                vec!["adjust", "delete", "list", "log", "start", "status", "stop"],
+            ),
         ] {
             let walked = spec.groups.get(group).expect("group walked");
             for sub in subs {
@@ -1241,6 +1246,26 @@ mod tests {
             kinds(["timers", "cancel"]),
             &[Kind::None],
             "no dynamic alarm completion (the D17 static-tokens ruling)"
+        );
+        assert_eq!(
+            kinds(["track", "start"]),
+            &[Kind::Tasks],
+            "the start selector matches resolve_task (a title is offered iff it would resolve)"
+        );
+        assert_eq!(
+            kinds(["track", "log"]),
+            &[Kind::Tasks],
+            "the log selector matches resolve_task"
+        );
+        assert_eq!(
+            kinds(["track", "adjust"]),
+            &[Kind::None],
+            "no dynamic entry-id completion (the D17 static-tokens ruling)"
+        );
+        assert_eq!(
+            kinds(["track", "delete"]),
+            &[Kind::None],
+            "no dynamic entry-id completion (the D17 static-tokens ruling)"
         );
 
         // Value flags.

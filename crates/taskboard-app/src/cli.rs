@@ -117,6 +117,37 @@ pub enum Command {
         #[command(subcommand)]
         cmd: TimersCmd,
     },
+    /// Time tracking over the in-process core (D-T14): start/stop the
+    /// running timer, log retroactive blocks, adjust/delete history
+    /// (ADR 0017 — the open entry *is* the timer; nothing ticks).
+    Track {
+        #[command(subcommand)]
+        cmd: TrackCmd,
+    },
+    /// Export time entries to stdout as data (D-T15): CSV by default,
+    /// JSON optional. Pipes are the contract — no file writing, no
+    /// clipboard — and the payload deliberately bypasses the `--json`
+    /// receipt envelope (the recorded D-T15 exception).
+    Export {
+        /// Output format (csv by default).
+        #[arg(long, value_enum)]
+        format: Option<ExportFormat>,
+        /// Only entries starting on/after this UTC date (YYYY-MM-DD).
+        #[arg(long, value_parser = parse_date_flag)]
+        since: Option<chrono::NaiveDate>,
+        /// Only entries starting before the day after this UTC date —
+        /// inclusive of the named day (YYYY-MM-DD).
+        #[arg(long, value_parser = parse_date_flag)]
+        until: Option<chrono::NaiveDate>,
+        /// Only entries of this task (uuid | unique ≥8-char uuid
+        /// prefix | exact live title).
+        #[arg(long)]
+        task: Option<String>,
+        /// Only entries whose task's stack belongs to this board
+        /// (exact uuid | exact title among the live boards).
+        #[arg(long)]
+        board: Option<String>,
+    },
     /// Delete the stored Nextcloud credentials (and, under the auto
     /// backend, the config's server/user keys). Idempotent; the board
     /// binding and local db are untouched.
@@ -784,6 +815,151 @@ pub enum TimersCmd {
     Cancel {
         /// The alarm selector.
         selector: String,
+    },
+}
+
+/// The export payload format. `Csv` is the default; a malformed value
+/// is a clap usage error (exit 2) — the `FindType` `ValueEnum`
+/// precedent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum ExportFormat {
+    /// RFC-4180 CSV with a header row (the default).
+    #[default]
+    Csv,
+    /// A single-line JSON array of entry objects (`jq` is the
+    /// consumer).
+    Json,
+}
+
+/// Span-stamp grammar (the `parse_due` shape minus `none`): RFC-3339
+/// with an explicit offset (normalized to UTC) or bare `YYYY-MM-DD`
+/// (that date's midnight UTC). No `none` — a span boundary is never
+/// "clear" (there is no payload that reopens an entry, ADR 0017) — and
+/// no bare `HH:MM` (D-TC7: a time-only boundary is day-ambiguous; its
+/// wake-up-rollover reading is exactly wrong for retroactive history).
+fn parse_span_stamp(raw: &str) -> Result<chrono::DateTime<chrono::Utc>, String> {
+    chrono::DateTime::parse_from_rfc3339(raw)
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+        .or_else(|_| {
+            chrono::NaiveDate::parse_from_str(raw, "%Y-%m-%d").map(|date| {
+                date.and_hms_opt(0, 0, 0)
+                    .expect("midnight is valid")
+                    .and_utc()
+            })
+        })
+        .map_err(|_| {
+            "expected RFC-3339 with an offset (2026-10-24T09:00:00Z) or YYYY-MM-DD".to_owned()
+        })
+}
+
+/// Strict `YYYY-MM-DD` — the UTC-day filter grammar of `track list
+/// --since` and `export --since/--until`. A malformed value is a clap
+/// usage error (exit 2).
+fn parse_date_flag(raw: &str) -> Result<chrono::NaiveDate, String> {
+    chrono::NaiveDate::parse_from_str(raw, "%Y-%m-%d").map_err(|_| "expected YYYY-MM-DD".to_owned())
+}
+
+#[test]
+fn parse_span_stamp_normalizes_to_utc_and_rejects_bare_times() {
+    let stamped = parse_span_stamp("2026-10-24T11:00:00+02:00").expect("explicit offset");
+    let expected = chrono::DateTime::parse_from_rfc3339("2026-10-24T09:00:00Z")
+        .expect("the same instant in UTC")
+        .with_timezone(&chrono::Utc);
+    assert_eq!(stamped, expected, "the offset normalizes to UTC");
+    let bare = parse_span_stamp("2026-10-24").expect("bare date");
+    let midnight = chrono::NaiveDate::from_ymd_opt(2026, 10, 24)
+        .and_then(|d| d.and_hms_opt(0, 0, 0))
+        .expect("valid midnight")
+        .and_utc();
+    assert_eq!(bare, midnight, "a bare date is that midnight UTC");
+    // No `none`, no bare time-of-day: both are usage errors.
+    for bad in ["none", "09:30", "tomorrow", "", "2026-10-24T09:00:00"] {
+        assert!(parse_span_stamp(bad).is_err(), "{bad} must be rejected");
+    }
+}
+
+#[test]
+fn parse_date_flag_is_strict_ymd() {
+    let date = parse_date_flag("2026-10-24").expect("ymd");
+    assert_eq!(chrono::NaiveDate::from_ymd_opt(2026, 10, 24), Some(date));
+    for bad in ["none", "2026-10-24T09:00:00Z", "24.10.2026", ""] {
+        assert!(parse_date_flag(bad).is_err(), "{bad} must be rejected");
+    }
+}
+
+/// `track` subcommands: the time-tracking family (D-T14).
+#[derive(Debug, Subcommand)]
+pub enum TrackCmd {
+    /// Start tracking a live task: whatever runs closes at the
+    /// engine-stamped now, a fresh open entry is minted (title
+    /// snapshotted). Idempotent when this task is already tracked.
+    Start {
+        /// The task (uuid | unique ≥8-char uuid prefix | exact title).
+        task: String,
+    },
+    /// Close every open entry at the engine-stamped now. Nothing open
+    /// is the typed no-op.
+    Stop,
+    /// The open entries (newest-first) plus the tracked-today total
+    /// over the `[preferences] day_start_time` window — spanning
+    /// entries contribute only their in-window part (the pure
+    /// projection; rows are never physically split).
+    Status,
+    /// Time entries in canonical `(start, id)` order.
+    List {
+        /// Only entries of this live task.
+        #[arg(long)]
+        task: Option<String>,
+        /// Only entries starting on/after this UTC date (YYYY-MM-DD).
+        #[arg(long, value_parser = parse_date_flag)]
+        since: Option<chrono::NaiveDate>,
+    },
+    /// Log a retroactive, closed block: `--for <dur>` (ending now) or
+    /// `--from/--to` absolute stamps — exactly one mode. An inverted
+    /// or empty span is the typed `invalid-span` failure (the
+    /// planner's law, not clap's).
+    Log {
+        /// The task (uuid | unique ≥8-char uuid prefix | exact title).
+        task: String,
+        /// Length of the block ending now (`30s|5m|1h30m|2d`); must be
+        /// positive. Exactly one of `--for`/`--from --to`.
+        #[arg(
+            long,
+            name = "for",
+            required_unless_present_all = ["from", "to"],
+            conflicts_with_all = ["from", "to"],
+            value_parser = parse_before_flag
+        )]
+        for_: Option<chrono::TimeDelta>,
+        /// Span start (RFC-3339 with an explicit offset, or YYYY-MM-DD
+        /// = midnight UTC). Requires `--to`.
+        #[arg(long, requires = "to", value_parser = parse_span_stamp)]
+        from: Option<chrono::DateTime<chrono::Utc>>,
+        /// Span end, strictly after `--from`. Requires `--from`.
+        #[arg(long, requires = "from", value_parser = parse_span_stamp)]
+        to: Option<chrono::DateTime<chrono::Utc>>,
+    },
+    /// Adjust an entry's span. Each flag is a *change mask*: omitted =
+    /// unchanged; there is deliberately no way to clear an end (a
+    /// history edit can never resurrect a running timer, ADR 0017).
+    /// A zero-flag adjust is the typed no-op.
+    Adjust {
+        /// The entry (uuid | unique ≥8-char uuid prefix).
+        entry: String,
+        /// New span start.
+        #[arg(long, value_parser = parse_span_stamp)]
+        start: Option<chrono::DateTime<chrono::Utc>>,
+        /// New span end (stamping one on an open entry closes it).
+        #[arg(long, value_parser = parse_span_stamp)]
+        end: Option<chrono::DateTime<chrono::Utc>>,
+    },
+    /// Delete one entry — explicit id, no confirmation. Repeats are
+    /// the typed no-op (an unknown id is *not* terminal, unlike
+    /// `timers cancel`: a synced tombstone may have folded the row
+    /// already).
+    Delete {
+        /// The entry (uuid | unique ≥8-char uuid prefix).
+        entry: String,
     },
 }
 
