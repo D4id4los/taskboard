@@ -152,6 +152,35 @@ pub enum CommandError {
     /// `plan_command` arm.
     #[error("command is routed by the journal wrapper")]
     EngineRouted,
+    /// The undo line is empty — there is no head to undo (ADR 0019).
+    #[error("nothing to undo")]
+    NothingToUndo,
+    /// The undo line has no redo target at or beyond the head
+    /// (ADR 0019, the D5 editor rule).
+    #[error("nothing to redo")]
+    NothingToRedo,
+    /// The head's entry is typed not undoable — refuse and name the
+    /// reason, never skip (R-U6).
+    #[error("the head command is not undoable")]
+    TargetNotUndoable(crate::journal::NotUndoableReason),
+    /// A later write touched a field the chosen inverse restores — the
+    /// watermark diverged. Refuse-and-name, never force-apply (R-U7).
+    #[error("the target is no longer invertible")]
+    TargetNoLongerInvertible {
+        /// The entity whose clock diverged.
+        entity: crate::journal::JournalEntity,
+        /// The divergent clocked field.
+        field: crate::journal::UndoField,
+    },
+    /// `CreateStack`'s undo found the created stack occupied: the tasks
+    /// created or moved in since carry no pre-image stamps — presence,
+    /// not clock divergence, so it refuses typed instead of cascading
+    /// (ADR 0019 §3 row 7).
+    #[error("the undo target has dependents")]
+    UndoTargetHasDependents {
+        /// The occupied stack.
+        stack: StackId,
+    },
 }
 
 /// Typed receipt of an accepted command.
@@ -282,6 +311,17 @@ pub enum CommandOutcome {
     },
     /// Accepted, redundant repeat: nothing changed, nothing persisted.
     NoOp,
+    /// The command undid the journal entry with this id (the durable
+    /// receipt — ADR 0019 §7; the label lives in the `UndoView`).
+    Undone {
+        /// The undone entry.
+        entry: crate::ids::JournalId,
+    },
+    /// The command redid the journal entry with this id.
+    Redone {
+        /// The redone entry.
+        entry: crate::ids::JournalId,
+    },
     /// The command resurrected the named tombstoned task (the journal's
     /// `RestoreTask` inverse instrument, ADR 0019 §11).
     TaskRestored {
