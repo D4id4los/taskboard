@@ -967,9 +967,10 @@ pub fn prune_absent_cards(
 }
 
 /// Builds one card's overlay `TaskEntry` from the task's current local
-/// truth (chunk 4's D11 overlay assembly): the three always-app keys as
-/// `{v, clock}` full-send writes out of the task's values + `TaskClocks`
-/// slots, and `scheduled` only while `!native_scheduled` (the D-V2
+/// truth (chunk 4's D11 overlay assembly): the three always-app keys and
+/// `recur` (no native lane — always a document write) as `{v, clock}`
+/// full-send writes out of the task's values + `TaskClocks` slots, and
+/// `scheduled` only while `!native_scheduled` (the D-V2
 /// emission gating — the decision is the caller's, the transform stays
 /// version-blind data).
 #[must_use]
@@ -997,6 +998,17 @@ pub fn task_entry_for(task: &crate::entities::Task, native_scheduled: bool) -> T
         TaskFieldWrite {
             value: urgency,
             clock: task.clocks.urgency,
+        },
+    );
+    // Recurrence has no native Deck lane (design fact 11): the rule is
+    // always a document write. `None` serializes as the typed clear —
+    // an ordinary write on the remote side, never a tombstone.
+    let recur = ModeledValue::Recur(task.recur.clone());
+    fields.insert(
+        "recur".to_owned(),
+        TaskFieldWrite {
+            value: recur,
+            clock: task.clocks.recur,
         },
     );
     if !native_scheduled {
@@ -1992,9 +2004,9 @@ mod tests {
 
     #[test]
     fn task_entry_builds_full_send_writes_from_values_and_clocks() {
-        let task = task_fixture();
+        let mut task = task_fixture();
         let entry = task_entry_for(&task, false);
-        assert_eq!(entry.fields.len(), 4);
+        assert_eq!(entry.fields.len(), 5);
         assert_eq!(
             entry.fields["effort"],
             TaskFieldWrite {
@@ -2006,10 +2018,60 @@ mod tests {
             entry.fields["scheduled"].value,
             ModeledValue::Scheduled(Some(task.scheduled.unwrap()))
         );
-        // Native ownership: the scheduled key is not emitted.
+        // Native ownership: the scheduled key is not emitted; recur (no
+        // native lane) still is.
         let native = task_entry_for(&task, true);
-        assert_eq!(native.fields.len(), 3);
+        assert_eq!(native.fields.len(), 4);
         assert!(!native.fields.contains_key("scheduled"));
+        assert!(native.fields.contains_key("recur"));
+        // A dateless-of-rule task emits the typed clear.
+        assert_eq!(
+            native.fields["recur"],
+            TaskFieldWrite {
+                value: ModeledValue::Recur(None),
+                clock: task.clocks.recur,
+            }
+        );
+        // A task holding a rule emits the rule verbatim under its clock.
+        let rule = crate::recur::RecurRule {
+            series: crate::ids::SeriesId::from_uuid(uuid::Uuid::from_u128(7)),
+            anchor: chrono::NaiveDate::from_ymd_opt(2026, 3, 1).unwrap(),
+            pattern: crate::recur::RecurPattern::Daily {
+                every: crate::recur::EveryDays::new(2).unwrap(),
+            },
+            bound: crate::recur::RecurBound::None,
+            continued_from: None,
+        };
+        task.recur = Some(rule.clone());
+        task.clocks.recur = ts(2_000);
+        let entry = task_entry_for(&task, false);
+        assert_eq!(
+            entry.fields["recur"],
+            TaskFieldWrite {
+                value: ModeledValue::Recur(Some(rule)),
+                clock: ts(2_000),
+            }
+        );
+    }
+
+    // Property 8's row half: the emitted recur write survives a full
+    // serde round-trip through the row envelope losslessly.
+    proptest! {
+        #![proptest_config(crate::test_support::proptest_config(256))]
+        #[test]
+        fn recur_rows_round_trip_through_serde_losslessly(
+            rule in crate::test_support::recur_rule_strategy(),
+        ) {
+            let mut task = task_fixture();
+            task.recur = Some(rule.clone());
+            task.clocks.recur = ts(3_000);
+            let entry = task_entry_for(&task, false);
+            let encoded = serde_json::to_value(&entry.fields["recur"]).unwrap();
+            let decoded = decode_field_write("recur", &encoded)
+                .expect("a well-formed recur write always decodes");
+            assert_eq!(decoded.value, ModeledValue::Recur(Some(rule)));
+            assert_eq!(decoded.clock, ts(3_000));
+        }
     }
 
     #[test]

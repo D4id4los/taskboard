@@ -571,7 +571,6 @@ pub fn merge_task(
 ///   nothing and touches no index (R3 stays snapshot-only). The card
 ///   stamp (`remote_seen` / the entity stamp) is never read — the two
 ///   clock domains stay disjoint.
-#[allow(dead_code)] // the fold call site lands in commit 3 (chunk 4's pipeline)
 pub(crate) fn fold_task_app_data(
     merged: &mut Task,
     local: &Task,
@@ -603,6 +602,12 @@ pub(crate) fn fold_task_app_data(
                 write.clock,
                 local.clocks.urgency,
             ),
+            "recur" => (
+                intent.recur,
+                matches!(write.value, crate::appdata::ModeledValue::Recur(_)),
+                write.clock,
+                local.clocks.recur,
+            ),
             "scheduled" => (
                 intent.scheduled,
                 matches!(write.value, crate::appdata::ModeledValue::Scheduled(_)),
@@ -633,6 +638,10 @@ pub(crate) fn fold_task_app_data(
                 "scheduled" => {
                     merged.scheduled = local.scheduled;
                     merged.clocks.scheduled = l;
+                }
+                "recur" => {
+                    merged.recur.clone_from(&local.recur);
+                    merged.clocks.recur = l;
                 }
                 _ => unreachable!("matched above"),
             }
@@ -1208,6 +1217,80 @@ pub fn rebind_task_to_survivor(local: &Task, survivor: &RemoteTask) -> Task {
         "task rebound to the surviving card"
     );
     rebinded
+}
+
+/// One series-twin group's verdict (§3.6, D-C7): the older-created task
+/// survives, every other member of the group is doomed (neutralized as
+/// a ref-less tombstone by the applying pass).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SeriesTwinCollapse {
+    /// The group's survivor — the minimum `TaskId`, and v7 ids are
+    /// time-ordered, so the minimum is the older-created task.
+    pub survivor: TaskId,
+    /// Every non-survivor member, ascending.
+    pub doomed: Vec<TaskId>,
+}
+
+/// The fold-time dedup predicate (§3.6, property 7): groups live, open,
+/// recur-bearing tasks by `(rule.series, reference local date)`; any
+/// group with ≥ 2 members is a spawn race. Pure, total, injected data
+/// only. The reference date derives through [`crate::recur::
+/// roll_reference_date`] — the roll's exact derivation, one date
+/// vocabulary — and a dateless task is unkeyed: it joins no group and
+/// can never trigger. Output is group-key ascending, deterministic
+/// under input order.
+#[must_use]
+pub fn detect_series_twins(
+    tasks: &BTreeMap<TaskId, Task>,
+    day: crate::days::DayCalendar,
+) -> Vec<SeriesTwinCollapse> {
+    use std::collections::BTreeMap as Groups;
+    let mut groups: Groups<(crate::ids::SeriesId, chrono::NaiveDate), Vec<TaskId>> = Groups::new();
+    for (id, task) in tasks {
+        // Structural membership only: live, open, recur-bearing. A done
+        // task is a settled occurrence; a tombstoned one no longer
+        // exists — neither is ever a twin candidate (D-5's false-
+        // positive class, kept out structurally).
+        if !task.is_live() || task.done.is_some() {
+            continue;
+        }
+        let Some(rule) = &task.recur else {
+            continue;
+        };
+        let Some(date) = crate::recur::roll_reference_date(task, day) else {
+            continue; // dateless: unkeyed (never groupable)
+        };
+        groups.entry((rule.series, date)).or_default().push(*id);
+    }
+    groups
+        .into_values()
+        .filter_map(|mut members| {
+            if members.len() < 2 {
+                return None;
+            }
+            members.sort_unstable();
+            let survivor = members[0];
+            let doomed = members[1..].to_vec();
+            Some(SeriesTwinCollapse { survivor, doomed })
+        })
+        .collect()
+}
+
+/// The fold-time series dedup's survivor merge (§3.6): the survivor
+/// absorbs the doomed twin field-wise under LWW clocks (ties to the
+/// doomed row — the pair-merge's read-result convention), label
+/// memberships OR-set fold key-by-key — and keeps its own identity and
+/// binding trio: the first spawn owns any remote history the race
+/// window could not have (D-5c).
+#[must_use]
+pub fn series_survivor_merge(survivor: &Task, doomed: &Task) -> Task {
+    let mut merged = crate::reconcile::merge_task_pair(survivor, doomed);
+    // `merge_task_pair` fixes the binding from its *bound* argument (the
+    // doomed row here); the survivor's own remote history persists.
+    merged.remote = survivor.remote;
+    merged.remote_seen = survivor.remote_seen;
+    merged.remote_baseline.clone_from(&survivor.remote_baseline);
+    merged
 }
 
 /// R9a/R9b — unconditional echo adoption after a create/update push. The
@@ -5008,6 +5091,390 @@ mod duplicate_reconcile_tests {
         assert!(
             changes.upserts.iter().all(|upsert| upsert.id == local_id),
             "the older tombstone and the skips report nothing"
+        );
+    }
+
+    // ---- DR-6/3: the recur fold arm + the series-twin dedup ----------
+
+    use crate::appdata::{ModeledValue, TaskEntry, TaskFieldWrite};
+    use crate::pipeline::PendingTaskIntent;
+
+    fn fw(value: ModeledValue, clock_secs: i64) -> TaskFieldWrite {
+        TaskFieldWrite {
+            value,
+            clock: ts(clock_secs),
+        }
+    }
+
+    fn recur_rule(series_seed: u128) -> crate::recur::RecurRule {
+        crate::recur::RecurRule {
+            series: crate::ids::SeriesId::from_uuid(uuid::Uuid::from_u128(series_seed)),
+            anchor: chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap(),
+            pattern: crate::recur::RecurPattern::Daily {
+                every: crate::recur::EveryDays::new(1).unwrap(),
+            },
+            bound: crate::recur::RecurBound::None,
+            continued_from: None,
+        }
+    }
+
+    /// UTC-midnight window calendar: `ts(secs)` instants land on plain
+    /// 1970 dates, so fixtures read as `(day, hour)` pairs.
+    fn day_utc() -> crate::days::DayCalendar {
+        crate::days::DayCalendar {
+            day_start_time: chrono::NaiveTime::MIN,
+            offset: chrono::FixedOffset::east_opt(0).unwrap(),
+        }
+    }
+
+    /// A twin candidate: id `id_seed` (v7 order = u128 order), the
+    /// series' rule, scheduled at `day` 1970-01-02 (or dateless), open
+    /// or done, live or tombstoned.
+    fn twin(
+        id_seed: u128,
+        series_seed: u128,
+        scheduled: Option<i64>,
+        done: bool,
+        deleted: bool,
+    ) -> Task {
+        let mut task = crate::merge_testutil::bound_task(0);
+        task.id = TaskId::from(uuid::Uuid::from_u128(id_seed));
+        task.remote = None;
+        task.recur = Some(recur_rule(series_seed));
+        task.scheduled = scheduled.map(ts);
+        task.done = done.then(|| ts(BASE + 100));
+        task.deleted = deleted;
+        task
+    }
+
+    const DAY1: i64 = 86_400; // 1970-01-02, UTC
+    const DAY2: i64 = 2 * 86_400;
+
+    #[test]
+    fn fold_adopts_a_newer_document_recur_rule_and_clear() {
+        let mut merged = bound_task(1);
+        let local = bound_task(1);
+        let rule = recur_rule(7);
+        let entry = TaskEntry {
+            fields: [(
+                "recur".to_owned(),
+                fw(ModeledValue::Recur(Some(rule.clone())), BASE + 500),
+            )]
+            .into(),
+            unmodeled: std::collections::BTreeMap::new(),
+        };
+        fold_task_app_data(
+            &mut merged,
+            &local,
+            &entry,
+            PendingTaskIntent::default(),
+            false,
+        );
+        assert_eq!(merged.recur, Some(rule));
+        assert_eq!(merged.clocks.recur, ts(BASE + 500));
+
+        // A `null` write with a newer clock is the typed clear — an
+        // ordinary write competing by the same rule.
+        let local = merged.clone();
+        let entry = TaskEntry {
+            fields: [(
+                "recur".to_owned(),
+                fw(ModeledValue::Recur(None), BASE + 600),
+            )]
+            .into(),
+            unmodeled: std::collections::BTreeMap::new(),
+        };
+        fold_task_app_data(
+            &mut merged,
+            &local,
+            &entry,
+            PendingTaskIntent::default(),
+            false,
+        );
+        assert_eq!(merged.recur, None);
+        assert_eq!(merged.clocks.recur, ts(BASE + 600));
+    }
+
+    #[test]
+    fn fold_keeps_a_newer_local_recur_rule() {
+        let mut local = bound_task(1);
+        local.recur = Some(recur_rule(7));
+        local.clocks.recur = ts(BASE + 600);
+        let mut merged = local.clone();
+        let entry = TaskEntry {
+            fields: [(
+                "recur".to_owned(),
+                fw(ModeledValue::Recur(Some(recur_rule(8))), BASE + 500),
+            )]
+            .into(),
+            unmodeled: std::collections::BTreeMap::new(),
+        };
+        fold_task_app_data(
+            &mut merged,
+            &local,
+            &entry,
+            PendingTaskIntent::default(),
+            false,
+        );
+        assert_eq!(merged.recur, Some(recur_rule(7)));
+        assert_eq!(merged.clocks.recur, ts(BASE + 600));
+    }
+
+    #[test]
+    fn fold_guarded_recur_copies_local_value_and_clock() {
+        let mut local = bound_task(1);
+        local.recur = Some(recur_rule(7));
+        local.clocks.recur = ts(BASE + 400);
+        let mut merged = local.clone();
+        let entry = TaskEntry {
+            fields: [(
+                "recur".to_owned(),
+                fw(ModeledValue::Recur(Some(recur_rule(8))), BASE + 900),
+            )]
+            .into(),
+            unmodeled: std::collections::BTreeMap::new(),
+        };
+        let intent = PendingTaskIntent {
+            recur: true,
+            ..PendingTaskIntent::default()
+        };
+        fold_task_app_data(&mut merged, &local, &entry, intent, false);
+        assert_eq!(merged.recur, Some(recur_rule(7)));
+        assert_eq!(merged.clocks.recur, ts(BASE + 400), "the clock copies too");
+    }
+
+    #[test]
+    fn fold_recur_absence_never_resurrects_a_locally_cleared_rule() {
+        // A truncated view (the recur key missing) writes nothing: a
+        // locally cleared rule stays cleared.
+        let mut local = bound_task(1);
+        local.recur = Some(recur_rule(7));
+        local.clocks.recur = ts(BASE + 100);
+        let mut merged = local.clone();
+        let entry = TaskEntry {
+            fields: [(
+                "effort".to_owned(),
+                fw(
+                    ModeledValue::Effort(Some(crate::entities::Effort::new(1))),
+                    BASE + 900,
+                ),
+            )]
+            .into(),
+            unmodeled: std::collections::BTreeMap::new(),
+        };
+        fold_task_app_data(
+            &mut merged,
+            &local,
+            &entry,
+            PendingTaskIntent::default(),
+            false,
+        );
+        assert_eq!(merged.recur, Some(recur_rule(7)));
+        assert_eq!(merged.clocks.recur, ts(BASE + 100));
+    }
+
+    #[test]
+    fn series_twins_same_series_same_date_collapse_older_id_survives() {
+        let tasks = BTreeMap::from([
+            (
+                TaskId::from(uuid::Uuid::from_u128(10)),
+                twin(10, 1, Some(DAY1), false, false),
+            ),
+            (
+                TaskId::from(uuid::Uuid::from_u128(5)),
+                twin(5, 1, Some(DAY1), false, false),
+            ),
+        ]);
+        let verdicts = detect_series_twins(&tasks, day_utc());
+        assert_eq!(
+            verdicts,
+            vec![SeriesTwinCollapse {
+                survivor: TaskId::from(uuid::Uuid::from_u128(5)),
+                doomed: vec![TaskId::from(uuid::Uuid::from_u128(10))],
+            }]
+        );
+    }
+
+    #[test]
+    fn series_twin_near_misses_never_trigger() {
+        let id = |n: u128| TaskId::from(uuid::Uuid::from_u128(n));
+        // Same series, different dates (the reopen-while-successor-lives
+        // shape): no verdict.
+        let tasks = BTreeMap::from([
+            (id(1), twin(1, 1, Some(DAY1), false, false)),
+            (id(2), twin(2, 1, Some(DAY2), false, false)),
+        ]);
+        assert_eq!(detect_series_twins(&tasks, day_utc()), Vec::new());
+        // Same date, different series: no verdict.
+        let tasks = BTreeMap::from([
+            (id(1), twin(1, 1, Some(DAY1), false, false)),
+            (id(2), twin(2, 2, Some(DAY1), false, false)),
+        ]);
+        assert_eq!(detect_series_twins(&tasks, day_utc()), Vec::new());
+        // One done member: no verdict.
+        let tasks = BTreeMap::from([
+            (id(1), twin(1, 1, Some(DAY1), false, false)),
+            (id(2), twin(2, 1, Some(DAY1), true, false)),
+        ]);
+        assert_eq!(detect_series_twins(&tasks, day_utc()), Vec::new());
+        // One tombstoned member: no verdict.
+        let tasks = BTreeMap::from([
+            (id(1), twin(1, 1, Some(DAY1), false, false)),
+            (id(2), twin(2, 1, Some(DAY1), false, true)),
+        ]);
+        assert_eq!(detect_series_twins(&tasks, day_utc()), Vec::new());
+        // Both dateless (unkeyed): no verdict.
+        let tasks = BTreeMap::from([
+            (id(1), twin(1, 1, None, false, false)),
+            (id(2), twin(2, 1, None, false, false)),
+        ]);
+        assert_eq!(detect_series_twins(&tasks, day_utc()), Vec::new());
+        // A plain non-recur task with the same title-ish shape: never.
+        let mut plain = twin(3, 1, Some(DAY1), false, false);
+        plain.recur = None;
+        let tasks = BTreeMap::from([
+            (id(1), twin(1, 1, Some(DAY1), false, false)),
+            (id(3), plain),
+        ]);
+        assert_eq!(detect_series_twins(&tasks, day_utc()), Vec::new());
+    }
+
+    /// A duedate-only twin shares the key through the roll's exact
+    /// derivation (scheduled-else-duedate) — a mutant reading only
+    /// `scheduled` fails here.
+    #[test]
+    fn series_twin_key_reads_duedate_when_scheduled_is_absent() {
+        let id = |n: u128| TaskId::from(uuid::Uuid::from_u128(n));
+        let mut a = twin(1, 1, None, false, false);
+        let mut b = twin(2, 1, None, false, false);
+        a.duedate = Some(ts(DAY1));
+        b.duedate = Some(ts(DAY1));
+        let tasks = BTreeMap::from([(id(1), a), (id(2), b)]);
+        assert_eq!(detect_series_twins(&tasks, day_utc()).len(), 1);
+    }
+
+    proptest! {
+        #![proptest_config(crate::test_support::proptest_config(256))]
+
+        /// Property 7, no-twin half: whenever no two open live recur
+        /// tasks share `(series, date)`, the predicate returns nothing —
+        /// for arbitrary mixes of done, tombstoned, dateless, and
+        /// non-recur rows. Dates are unique per row by construction, so
+        /// no group can reach size 2 whatever the series ids do.
+        #[test]
+        fn detect_series_twins_is_a_noop_without_a_twin(
+            rules in proptest::collection::vec(crate::test_support::recur_rule_strategy(), 1..5),
+            times_of_day in proptest::collection::vec(0_u32..86_400, 1..5),
+            flags in proptest::collection::vec((proptest::bool::ANY, proptest::bool::ANY), 1..5),
+        ) {
+            let tasks: BTreeMap<TaskId, Task> = rules
+                .into_iter()
+                .zip(times_of_day)
+                .zip(flags)
+                .enumerate()
+                .map(|(index, ((rule, seconds), (done, deleted)))| {
+                    let date = chrono::NaiveDate::from_ymd_opt(2026, 1, 1)
+                        .unwrap()
+                        .checked_add_signed(
+                            chrono::TimeDelta::try_days(i64::try_from(index).unwrap()).unwrap(),
+                        )
+                        .unwrap();
+                    let instant = day_utc().instant(
+                        date,
+                        chrono::NaiveTime::MIN
+                            + chrono::TimeDelta::try_seconds(i64::from(seconds)).unwrap(),
+                    );
+                    let mut task = crate::merge_testutil::bound_task(0);
+                    task.id =
+                        TaskId::from(uuid::Uuid::from_u128(u128::try_from(index).unwrap() + 1));
+                    task.remote = None;
+                    task.recur = Some(rule);
+                    task.scheduled = Some(instant);
+                    task.done = done.then(|| ts(BASE));
+                    task.deleted = deleted;
+                    (task.id, task)
+                })
+                .collect();
+            prop_assert_eq!(detect_series_twins(&tasks, day_utc()), Vec::new());
+        }
+
+        /// Property 7, permutation half: twin groups of arbitrary size,
+        /// shuffled in the input map — the verdict set is identical
+        /// every shuffle; the survivor is the minimum id, the doomed
+        /// list the rest ascending.
+        #[test]
+        fn series_twin_survivorship_is_permutation_invariant(
+            group_seeds in proptest::collection::vec(any::<u128>(), 1..4),
+            sizes in proptest::collection::vec(2_u32..5_u32, 1..4),
+            shuffle in proptest::collection::vec(any::<u64>(), 24),
+        ) {
+            let date = chrono::NaiveDate::from_ymd_opt(2026, 5, 4).unwrap();
+            let instant = day_utc().instant(date, chrono::NaiveTime::MIN);
+            let mut members: Vec<Task> = Vec::new();
+            let mut id_seed: u128 = 1;
+            for (group, size) in group_seeds.into_iter().zip(sizes) {
+                for _ in 0..size {
+                    let mut task = twin(id_seed, group, Some(DAY1), false, false);
+                    task.scheduled = Some(instant);
+                    members.push(task);
+                    id_seed += 1;
+                }
+            }
+            // Deterministic shuffle: stable sort by the generated keys.
+            let mut order: Vec<usize> = (0..members.len()).collect();
+            order.sort_by_key(|&i| shuffle[i % shuffle.len()]);
+            let shuffled: BTreeMap<TaskId, Task> =
+                order.iter().map(|&i| (members[i].id, members[i].clone())).collect();
+            let verdicts = detect_series_twins(&shuffled, day_utc());
+            let sorted: BTreeMap<TaskId, Task> =
+                members.iter().map(|t| (t.id, t.clone())).collect();
+            prop_assert_eq!(&verdicts, &detect_series_twins(&sorted, day_utc()));
+            for verdict in &verdicts {
+                prop_assert!(verdict.doomed.windows(2).all(|w| w[0] < w[1]));
+                prop_assert!(verdict.survivor < verdict.doomed[0]);
+            }
+        }
+    }
+
+    #[test]
+    fn series_survivor_merge_keeps_identity_and_binding_and_lwws_fields() {
+        let mut survivor = twin(1, 1, Some(DAY1), false, false);
+        survivor.remote = Some(crate::merge_testutil::card_ref(1, 50));
+        survivor.remote_seen = Some(ts(BASE));
+        survivor.remote_baseline = Some(crate::entities::RemoteTaskBaseline::of(
+            &crate::merge_testutil::remote_task(1, 50, BASE),
+        ));
+        survivor.effort = Some(crate::entities::Effort::new(3));
+        survivor.clocks.effort = ts(BASE + 600); // survivor's newer effort wins
+        let mut doomed = twin(2, 1, Some(DAY1), false, false);
+        doomed.remote = Some(crate::merge_testutil::card_ref(1, 51));
+        doomed.title = "doomed's newer title".to_owned();
+        doomed.clocks.title = ts(BASE + 500); // doomed's newer title wins
+        doomed.label_memberships.insert(
+            crate::ids::LabelId::from(uuid::Uuid::from_u128(9)),
+            crate::entities::MembershipState::Added { at: ts(BASE + 500) },
+        );
+
+        let merged = series_survivor_merge(&survivor, &doomed);
+        assert_eq!(merged.id, survivor.id);
+        assert_eq!(
+            merged.remote, survivor.remote,
+            "the survivor's card persists"
+        );
+        assert_eq!(merged.remote_seen, survivor.remote_seen);
+        assert_eq!(merged.remote_baseline, survivor.remote_baseline);
+        assert_eq!(merged.title, doomed.title);
+        assert_eq!(merged.clocks.title, ts(BASE + 500));
+        assert_eq!(merged.effort, Some(crate::entities::Effort::new(3)));
+        assert_eq!(merged.clocks.effort, ts(BASE + 600));
+        assert!(
+            matches!(
+                merged
+                    .label_memberships
+                    .get(&crate::ids::LabelId::from(uuid::Uuid::from_u128(9))),
+                Some(crate::entities::MembershipState::Added { .. })
+            ),
+            "the label membership OR-folds onto the survivor"
         );
     }
 }
