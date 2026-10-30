@@ -32,7 +32,7 @@ jobs:
       - name: Install system deps (keyring sync-secret-service links libdbus-1)
         run: |
           sudo apt-get update && sudo apt-get install -y \
-            libdbus-1-dev pkg-config \
+            libdbus-1-dev libasound2-dev pkg-config \
             libgl1-mesa-dev libegl1-mesa-dev libxkbcommon-dev libwayland-dev \
             libfontconfig1-dev
 
@@ -94,7 +94,7 @@ jobs:
       - name: Install system deps (keyring sync-secret-service links libdbus-1)
         run: |
           sudo apt-get update && sudo apt-get install -y \
-            libdbus-1-dev pkg-config \
+            libdbus-1-dev libasound2-dev pkg-config \
             libgl1-mesa-dev libegl1-mesa-dev libxkbcommon-dev libwayland-dev \
             libfontconfig1-dev
 
@@ -162,7 +162,7 @@ jobs:
       - name: Install system deps (keyring sync-secret-service links libdbus-1)
         run: |
           sudo apt-get update && sudo apt-get install -y \
-            libdbus-1-dev pkg-config \
+            libdbus-1-dev libasound2-dev pkg-config \
             libgl1-mesa-dev libegl1-mesa-dev libxkbcommon-dev libwayland-dev \
             libfontconfig1-dev
 
@@ -202,7 +202,7 @@ jobs:
         # compile.
         run: |
           sudo apt-get update && sudo apt-get install -y \
-            libdbus-1-dev pkg-config \
+            libdbus-1-dev libasound2-dev pkg-config \
             libgl1-mesa-dev libegl1-mesa-dev libxkbcommon-dev libwayland-dev \
             libfontconfig1-dev
       - name: Run MCP Smoke
@@ -230,7 +230,7 @@ jobs:
       - name: Install system deps (keyring sync-secret-service links libdbus-1)
         run: |
           sudo apt-get update && sudo apt-get install -y \
-            libdbus-1-dev pkg-config \
+            libdbus-1-dev libasound2-dev pkg-config \
             libgl1-mesa-dev libegl1-mesa-dev libxkbcommon-dev libwayland-dev \
             libfontconfig1-dev
 

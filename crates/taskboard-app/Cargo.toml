@@ -49,6 +49,9 @@ serde_json.workspace = true
 # Desktop toast notifications ([reminders] sink = "desktop"; the D-R10
 # stack ruling) — pinned once in [workspace.dependencies].
 notify-rust.workspace = true
+# Owned alarm audio for the escalation driver (DR-3/4 / D-I10) —
+# pinned once in [workspace.dependencies].
+rodio.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
 http-body-util.workspace = true
