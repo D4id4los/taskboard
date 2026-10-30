@@ -659,3 +659,100 @@ async fn e10_a_wedged_daemon_times_out_typed_under_the_override() {
     let envelope: serde_json::Value = serde_json::from_str(last).expect("error envelope");
     assert_eq!(envelope["error"]["kind"], "ipc-timeout");
 }
+
+/// T16 (DR-5/3): the `track` family and the `export` verb over the
+/// socket — mutations execute in the daemon's engine (the D-TC1 lane
+/// pin, end-to-end), receipts relay byte-shaped as the one-shot prints
+/// them, and the raw export payload rides the byte-verbatim relay
+/// unchanged (the D-TC10/D-T15 exception under ADR 0012 — no relay
+/// change). The export comparison filters to closed, fixed-stamp rows
+/// (`--task`), so the byte equality is wall-clock-blind.
+#[tokio::test]
+async fn t16_track_and_export_over_the_relay() {
+    let install = Install::new("t16-track");
+    let mut daemon = install.spawn_daemon();
+    install.wait_ready().await;
+
+    // Seed through the relayed verbs: a board, a stack, two tasks.
+    for command in [
+        &["boards", "create", "seed board"][..],
+        &["stacks", "add", "seed stack"][..],
+        &["tasks", "add", "--stack", "seed stack", "log work"][..],
+        &["tasks", "add", "--stack", "seed stack", "relay work"][..],
+    ] {
+        let (code, out, err) = install.run(command);
+        assert_eq!(code, Some(0), "{command:?} over ipc: {out} {err}");
+    }
+
+    // A fixed-stamp retroactive log through the socket: the receipt is
+    // the typed JSON payload with the verbatim span.
+    let (code, out, err) = install.run(&[
+        "--json",
+        "track",
+        "log",
+        "log work",
+        "--from",
+        "2026-04-01T08:00:00Z",
+        "--to",
+        "2026-04-01T09:30:00Z",
+    ]);
+    assert_eq!(code, Some(0), "{out} {err}");
+    let receipt: serde_json::Value = serde_json::from_str(out.trim()).expect("log receipt json");
+    assert_eq!(receipt["entry"]["task_title"], "log work");
+    assert_eq!(receipt["entry"]["start"], "2026-04-01T08:00:00Z");
+    assert_eq!(receipt["entry"]["end"], "2026-04-01T09:30:00Z");
+    assert_eq!(receipt["entry"]["duration_seconds"], 5400);
+
+    // Start the second task through the socket: the daemon's engine
+    // owns the open entry; status over the same socket sees it.
+    let (code, out, err) = install.run(&["--json", "track", "start", "relay work"]);
+    assert_eq!(code, Some(0), "{out} {err}");
+    let receipt: serde_json::Value = serde_json::from_str(out.trim()).expect("start receipt json");
+    assert_eq!(receipt["started"], serde_json::Value::Bool(true));
+    assert_eq!(receipt["entry"]["task_title"], "relay work");
+    let (code, out, _) = install.run(&["--json", "track", "status"]);
+    assert_eq!(code, Some(0));
+    let view: serde_json::Value = serde_json::from_str(out.trim()).expect("status json");
+    assert_eq!(view["open"].as_array().expect("open rows").len(), 1);
+    assert_eq!(view["open"][0]["task_title"], "relay work");
+
+    // Close through the socket: the stop lands in the same engine.
+    let (code, out, err) = install.run(&["--json", "track", "stop"]);
+    assert_eq!(code, Some(0), "{out} {err}");
+    let receipt: serde_json::Value = serde_json::from_str(out.trim()).expect("stop receipt json");
+    assert_eq!(receipt["stopped"], serde_json::Value::Bool(true));
+    assert_eq!(receipt["entries"].as_array().expect("closed rows").len(), 1);
+
+    // Export through the socket, filtered to the closed fixed-stamp
+    // task: raw CSV payload on stdout, exit 0 — the envelope exception.
+    let (code, served, err) = install.run(&["export", "--format", "csv", "--task", "log work"]);
+    assert_eq!(code, Some(0), "{err}");
+    assert!(
+        served.starts_with("entry_id,task_id,task_title,start,end,duration_seconds\n"),
+        "the raw CSV header rides stdout verbatim"
+    );
+    assert_eq!(served.lines().count(), 2, "one closed row");
+    assert!(served.contains("2026-04-01T08:00:00+00:00"));
+
+    // Daemon down: the in-process fallback export is byte-identical
+    // (the transport auto-routing is invisible; closed rows are
+    // wall-clock-blind).
+    let (code, _, _) = install.run(&["daemon", "stop"]);
+    assert_eq!(code, Some(0));
+    wait_until(
+        || {
+            let (_, out, _) = install.run(&["--json", "status"]);
+            out.contains("\"daemon\":false")
+        },
+        "daemon stopped",
+    )
+    .await;
+    let _ = daemon.0.kill();
+
+    let (code, fallback, err) = install.run(&["export", "--format", "csv", "--task", "log work"]);
+    assert_eq!(code, Some(0), "{err}");
+    assert_eq!(
+        served, fallback,
+        "the export payload is byte-identical across the socket and in-process lanes"
+    );
+}
