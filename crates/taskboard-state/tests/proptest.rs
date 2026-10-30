@@ -234,7 +234,7 @@ proptest! {
             .collect();
 
         let app = AppState {
-            undo: taskboard_domain::UndoView::default(),
+            undo: taskboard_domain::UndoView::derive(&persisted.journal),
             boards: persisted.boards.clone(),
             stacks: persisted.stacks.clone(),
             tasks: persisted.tasks.clone(),
@@ -660,7 +660,7 @@ fn drive_sequence(steps: &[Step]) -> Result<(), TestCaseError> {
                 &mut disk_derived.sync,
             );
             let disk_projection = AppState {
-                undo: taskboard_domain::UndoView::default(),
+                undo: taskboard_domain::UndoView::derive(&disk_derived.journal),
                 boards: disk_derived.boards,
                 stacks: disk_derived.stacks,
                 tasks: disk_derived.tasks,

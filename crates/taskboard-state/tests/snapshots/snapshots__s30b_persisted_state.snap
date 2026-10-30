@@ -63,8 +63,8 @@ tasks:
       deleted: "1970-01-01T10:01:00Z"
     remote_seen: ~
     remote_baseline: ~
-  00000000-0000-0000-0000-000000000006:
-    id: 00000000-0000-0000-0000-000000000006
+  00000000-0000-0000-0000-000000000007:
+    id: 00000000-0000-0000-0000-000000000007
     remote: ~
     title: second thought
     description: ""
@@ -105,9 +105,9 @@ outbox:
     op:
       CreateTask: 00000000-0000-0000-0000-000000000003
     queued_at: "1970-01-01T10:01:00Z"
-  - op_id: 00000000-0000-0000-0000-000000000007
+  - op_id: 00000000-0000-0000-0000-000000000008
     op:
-      CreateTask: 00000000-0000-0000-0000-000000000006
+      CreateTask: 00000000-0000-0000-0000-000000000007
     queued_at: "1970-01-01T10:02:00Z"
 validators: {}
 sync:
@@ -138,5 +138,91 @@ habits:
   habits: {}
   log: {}
 journal:
-  entries: []
-  head: ~
+  entries:
+    - id: 00000000-0000-0000-0000-000000000006
+      parent: ~
+      command:
+        CaptureTask:
+          title: first thought
+          board: ~
+      facts:
+        PreImages:
+          images:
+            - Board:
+                id: 00000000-0000-0000-0000-000000000001
+                before: ~
+            - Stack:
+                id: 00000000-0000-0000-0000-000000000002
+                before: ~
+            - Task:
+                id: 00000000-0000-0000-0000-000000000003
+                before: ~
+          watermark:
+            - - Board: 00000000-0000-0000-0000-000000000001
+              - Board:
+                  title: "1970-01-01T10:01:00Z"
+                  color: "1970-01-01T10:01:00Z"
+                  archived: "1970-01-01T10:01:00Z"
+                  deleted: "1970-01-01T10:01:00Z"
+            - - Stack: 00000000-0000-0000-0000-000000000002
+              - Stack:
+                  title: "1970-01-01T10:01:00Z"
+                  order: "1970-01-01T10:01:00Z"
+                  deleted: "1970-01-01T10:01:00Z"
+            - - Task: 00000000-0000-0000-0000-000000000003
+              - Task:
+                  clocks:
+                    title: "1970-01-01T10:01:00Z"
+                    description: "1970-01-01T10:01:00Z"
+                    duedate: "1970-01-01T10:01:00Z"
+                    scheduled: "1970-01-01T10:01:00Z"
+                    done: "1970-01-01T10:01:00Z"
+                    position: "1970-01-01T10:01:00Z"
+                    effort: "1970-01-01T10:01:00Z"
+                    importance: "1970-01-01T10:01:00Z"
+                    urgency: "1970-01-01T10:01:00Z"
+                    recur: "1970-01-01T10:01:00Z"
+                    archived: "1970-01-01T10:01:00Z"
+                    deleted: "1970-01-01T10:01:00Z"
+                  memberships: {}
+      ops:
+        - 00000000-0000-0000-0000-000000000004
+        - 00000000-0000-0000-0000-000000000005
+      pushed: false
+      board: ~
+      created_at: "1970-01-01T10:01:00Z"
+    - id: 00000000-0000-0000-0000-000000000009
+      parent: 00000000-0000-0000-0000-000000000006
+      command:
+        CaptureTask:
+          title: second thought
+          board: ~
+      facts:
+        PreImages:
+          images:
+            - Task:
+                id: 00000000-0000-0000-0000-000000000007
+                before: ~
+          watermark:
+            - - Task: 00000000-0000-0000-0000-000000000007
+              - Task:
+                  clocks:
+                    title: "1970-01-01T10:02:00Z"
+                    description: "1970-01-01T10:02:00Z"
+                    duedate: "1970-01-01T10:02:00Z"
+                    scheduled: "1970-01-01T10:02:00Z"
+                    done: "1970-01-01T10:02:00Z"
+                    position: "1970-01-01T10:02:00Z"
+                    effort: "1970-01-01T10:02:00Z"
+                    importance: "1970-01-01T10:02:00Z"
+                    urgency: "1970-01-01T10:02:00Z"
+                    recur: "1970-01-01T10:02:00Z"
+                    archived: "1970-01-01T10:02:00Z"
+                    deleted: "1970-01-01T10:02:00Z"
+                  memberships: {}
+      ops:
+        - 00000000-0000-0000-0000-000000000008
+      pushed: false
+      board: ~
+      created_at: "1970-01-01T10:02:00Z"
+  head: 00000000-0000-0000-0000-000000000009

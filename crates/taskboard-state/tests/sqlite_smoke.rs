@@ -317,3 +317,89 @@ async fn reloaded_rule_never_refires_a_delivered_occurrence() {
         "a delivered occurrence never re-fires after reload: {firings:?}"
     );
 }
+
+/// The undo line over the real stack (ADR 0019): one create + one undo
+/// through the full engine↔storage↔sqlite route; a second boot hydrates
+/// the moved head (R-U10's v1 contract, end to end).
+#[cfg_attr(miri, ignore)] // tempdir mkdir + sqlite FFI (environment gate)
+#[tokio::test]
+async fn i2_undo_line_survives_a_restart_over_sqlite() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("taskboard.db");
+
+    // First boot: board seed, one stack create, one undo.
+    let entry_id = {
+        let repo = taskboard_storage_sqlite::open(
+            &db_path,
+            taskboard_domain::ConnectorId::from("nextcloud"),
+        )
+        .await
+        .expect("db opens");
+        let (storage, storage_join) = taskboard_storage_sqlite::spawn_storage_actor(Arc::new(repo));
+        let repo_port: Arc<dyn TaskRepository> = Arc::new(storage);
+        repo_port
+            .apply(vec![taskboard_domain::PersistenceAction::UpsertBoard(
+                seeded_board(),
+            )])
+            .await
+            .expect("board seeded");
+        let (sync_out, _sync_in) = tokio::sync::mpsc::channel::<SyncCommand>(8);
+        let (report_tx, report_rx) = tokio::sync::mpsc::channel::<SyncReport>(8);
+        let (system_tx, system_rx) = tokio::sync::broadcast::channel::<SystemEvent>(8);
+        let (notifier, _notifications) = tokio::sync::mpsc::channel::<NotifierMessage>(64);
+        let (engine, engine_join) = spawn_state_engine(
+            repo_port,
+            Arc::new(CountingIds::new()),
+            FixedClock::new(T0),
+            sync_out,
+            report_rx,
+            system_tx.clone(),
+            system_rx,
+            notifier,
+            ReminderEngineConfig::disabled(),
+            taskboard_state::DayRollConfig::disabled(),
+        )
+        .await
+        .expect("engine boots");
+        let CommandOutcome::CreatedStack(_stack_id) = engine
+            .execute(StateCommand::CreateStack {
+                board: seeded_board().id,
+                title: "todo".into(),
+                order: 1,
+            })
+            .await
+            .expect("accepted")
+        else {
+            panic!("wrong receipt");
+        };
+        let outcome = engine.execute(StateCommand::Undo).await.expect("accepted");
+        let CommandOutcome::Undone { entry } = outcome else {
+            panic!("wrong receipt: {outcome:?}");
+        };
+        engine.flush().await;
+        system_tx.send(SystemEvent::Shutdown).expect("broadcast");
+        drop(report_tx);
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(60), engine_join)
+            .await
+            .expect("engine drain completes");
+        drop(storage_join);
+        entry
+    };
+
+    // Second boot: the stack is tombstoned, the journal carries the
+    // entry, and the head sits on the pre-undo node (the empty line).
+    let repo =
+        taskboard_storage_sqlite::open(&db_path, taskboard_domain::ConnectorId::from("nextcloud"))
+            .await
+            .expect("db reopens");
+    let hydrated = repo.load().await.expect("load");
+    let stack = hydrated.stacks.values().next().expect("stack row");
+    assert!(stack.deleted, "the undo landed durably");
+    assert_eq!(hydrated.journal.entries.len(), 1);
+    assert_eq!(
+        hydrated.journal.head, None,
+        "the head moved off the only entry: the empty line survives restarts"
+    );
+    // The undone entry is still queryable by receipt (the tree stays).
+    assert_eq!(hydrated.journal.entries[0].id, entry_id);
+}

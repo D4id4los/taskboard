@@ -71,5 +71,65 @@ habits:
       count: 2
       clock: "1970-01-01T10:04:00Z"
 journal:
-  entries: []
-  head: ~
+  entries:
+    - id: 00000000-0000-0000-0000-000000000002
+      parent: ~
+      command:
+        CreateHabit:
+          board: 00000000-0000-0000-0000-000000000001
+          title: meditate
+          target:
+            PerDay: 3
+      facts:
+        NotUndoable: HabitSurface
+      ops: []
+      pushed: false
+      board: 00000000-0000-0000-0000-000000000001
+      created_at: "1970-01-01T10:01:00Z"
+    - id: 00000000-0000-0000-0000-000000000003
+      parent: 00000000-0000-0000-0000-000000000002
+      command:
+        LogHabit:
+          habit: 00000000-0000-0000-0000-000000000001
+      facts:
+        NotUndoable: HabitSurface
+      ops: []
+      pushed: false
+      board: 00000000-0000-0000-0000-000000000001
+      created_at: "1970-01-01T10:02:00Z"
+    - id: 00000000-0000-0000-0000-000000000004
+      parent: 00000000-0000-0000-0000-000000000003
+      command:
+        AdjustHabitLog:
+          habit: 00000000-0000-0000-0000-000000000001
+          window: 1969-12-31
+          count: 2
+      facts:
+        NotUndoable: HabitSurface
+      ops: []
+      pushed: false
+      board: 00000000-0000-0000-0000-000000000001
+      created_at: "1970-01-01T10:03:00Z"
+    - id: 00000000-0000-0000-0000-000000000005
+      parent: 00000000-0000-0000-0000-000000000004
+      command:
+        LogHabit:
+          habit: 00000000-0000-0000-0000-000000000001
+      facts:
+        NotUndoable: HabitSurface
+      ops: []
+      pushed: false
+      board: 00000000-0000-0000-0000-000000000001
+      created_at: "1970-01-01T10:04:00Z"
+    - id: 00000000-0000-0000-0000-000000000006
+      parent: 00000000-0000-0000-0000-000000000005
+      command:
+        DeleteHabit:
+          habit: 00000000-0000-0000-0000-000000000001
+      facts:
+        NotUndoable: HabitSurface
+      ops: []
+      pushed: false
+      board: 00000000-0000-0000-0000-000000000001
+      created_at: "1970-01-01T10:05:00Z"
+  head: 00000000-0000-0000-0000-000000000006

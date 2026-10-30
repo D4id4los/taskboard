@@ -30,8 +30,8 @@ stacks:
       order: "1970-01-01T10:01:00Z"
       deleted: "1970-01-01T10:01:00Z"
     remote_seen: ~
-  00000000-0000-0000-0000-00000000000a:
-    id: 00000000-0000-0000-0000-00000000000a
+  00000000-0000-0000-0000-000000000010:
+    id: 00000000-0000-0000-0000-000000000010
     remote: ~
     board: 00000000-0000-0000-0000-000000000001
     title: doing
@@ -44,18 +44,18 @@ stacks:
       deleted: "1970-01-01T10:07:00Z"
     remote_seen: ~
 tasks:
-  00000000-0000-0000-0000-000000000003:
-    id: 00000000-0000-0000-0000-000000000003
+  00000000-0000-0000-0000-000000000004:
+    id: 00000000-0000-0000-0000-000000000004
     remote: ~
     title: write report
     description: draft the Q4 report
     duedate: "1970-01-02T10:00:00Z"
     scheduled: ~
     done: "1970-01-01T10:04:00Z"
-    stack: 00000000-0000-0000-0000-00000000000a
+    stack: 00000000-0000-0000-0000-000000000010
     order: 9
     label_memberships:
-      00000000-0000-0000-0000-000000000007:
+      00000000-0000-0000-0000-00000000000b:
         Added:
           at: "1970-01-01T10:06:00Z"
     effort: ~
@@ -80,8 +80,8 @@ tasks:
     remote_seen: ~
     remote_baseline: ~
 labels:
-  00000000-0000-0000-0000-000000000007:
-    id: 00000000-0000-0000-0000-000000000007
+  00000000-0000-0000-0000-00000000000b:
+    id: 00000000-0000-0000-0000-00000000000b
     remote: ~
     board: 00000000-0000-0000-0000-000000000001
     title: urgent
@@ -97,13 +97,13 @@ outbox:
     op:
       CreateStack: 00000000-0000-0000-0000-000000000001
     queued_at: "1970-01-01T10:01:00Z"
-  - op_id: 00000000-0000-0000-0000-000000000008
+  - op_id: 00000000-0000-0000-0000-00000000000c
     op:
-      CreateLabel: 00000000-0000-0000-0000-000000000007
+      CreateLabel: 00000000-0000-0000-0000-00000000000b
     queued_at: "1970-01-01T10:05:00Z"
-  - op_id: 00000000-0000-0000-0000-00000000000b
+  - op_id: 00000000-0000-0000-0000-000000000011
     op:
-      CreateStack: 00000000-0000-0000-0000-00000000000a
+      CreateStack: 00000000-0000-0000-0000-000000000010
     queued_at: "1970-01-01T10:07:00Z"
 validators: {}
 sync:
@@ -134,5 +134,455 @@ habits:
   habits: {}
   log: {}
 journal:
-  entries: []
-  head: ~
+  entries:
+    - id: 00000000-0000-0000-0000-000000000003
+      parent: ~
+      command:
+        CreateStack:
+          board: 00000000-0000-0000-0000-000000000001
+          title: todo
+          order: 1
+      facts:
+        PreImages:
+          images:
+            - Stack:
+                id: 00000000-0000-0000-0000-000000000001
+                before: ~
+          watermark:
+            - - Stack: 00000000-0000-0000-0000-000000000001
+              - Stack:
+                  title: "1970-01-01T10:01:00Z"
+                  order: "1970-01-01T10:01:00Z"
+                  deleted: "1970-01-01T10:01:00Z"
+      ops:
+        - 00000000-0000-0000-0000-000000000002
+      pushed: false
+      board: 00000000-0000-0000-0000-000000000001
+      created_at: "1970-01-01T10:01:00Z"
+    - id: 00000000-0000-0000-0000-000000000006
+      parent: 00000000-0000-0000-0000-000000000003
+      command:
+        CreateTask:
+          title: write report
+          stack: 00000000-0000-0000-0000-000000000001
+          order: 1
+      facts:
+        PreImages:
+          images:
+            - Task:
+                id: 00000000-0000-0000-0000-000000000004
+                before: ~
+          watermark:
+            - - Task: 00000000-0000-0000-0000-000000000004
+              - Task:
+                  clocks:
+                    title: "1970-01-01T10:02:00Z"
+                    description: "1970-01-01T10:02:00Z"
+                    duedate: "1970-01-01T10:02:00Z"
+                    scheduled: "1970-01-01T10:02:00Z"
+                    done: "1970-01-01T10:02:00Z"
+                    position: "1970-01-01T10:02:00Z"
+                    effort: "1970-01-01T10:02:00Z"
+                    importance: "1970-01-01T10:02:00Z"
+                    urgency: "1970-01-01T10:02:00Z"
+                    recur: "1970-01-01T10:02:00Z"
+                    archived: "1970-01-01T10:02:00Z"
+                    deleted: "1970-01-01T10:02:00Z"
+                  memberships: {}
+      ops:
+        - 00000000-0000-0000-0000-000000000005
+      pushed: false
+      board: 00000000-0000-0000-0000-000000000001
+      created_at: "1970-01-01T10:02:00Z"
+    - id: 00000000-0000-0000-0000-000000000008
+      parent: 00000000-0000-0000-0000-000000000006
+      command:
+        UpdateTask:
+          id: 00000000-0000-0000-0000-000000000004
+          changes:
+            title: ~
+            description: draft the Q4 report
+            duedate: "1970-01-02T10:00:00Z"
+            archived: ~
+      facts:
+        PreImages:
+          images:
+            - Task:
+                id: 00000000-0000-0000-0000-000000000004
+                before:
+                  id: 00000000-0000-0000-0000-000000000004
+                  remote: ~
+                  title: write report
+                  description: ""
+                  duedate: ~
+                  scheduled: ~
+                  done: ~
+                  stack: 00000000-0000-0000-0000-000000000001
+                  order: 1
+                  label_memberships: {}
+                  effort: ~
+                  importance: ~
+                  urgency: ~
+                  recur: ~
+                  archived: false
+                  deleted: false
+                  clocks:
+                    title: "1970-01-01T10:02:00Z"
+                    description: "1970-01-01T10:02:00Z"
+                    duedate: "1970-01-01T10:02:00Z"
+                    scheduled: "1970-01-01T10:02:00Z"
+                    done: "1970-01-01T10:02:00Z"
+                    position: "1970-01-01T10:02:00Z"
+                    effort: "1970-01-01T10:02:00Z"
+                    importance: "1970-01-01T10:02:00Z"
+                    urgency: "1970-01-01T10:02:00Z"
+                    recur: "1970-01-01T10:02:00Z"
+                    archived: "1970-01-01T10:02:00Z"
+                    deleted: "1970-01-01T10:02:00Z"
+                  remote_seen: ~
+                  remote_baseline: ~
+          watermark:
+            - - Task: 00000000-0000-0000-0000-000000000004
+              - Task:
+                  clocks:
+                    title: "1970-01-01T10:02:00Z"
+                    description: "1970-01-01T10:03:00Z"
+                    duedate: "1970-01-01T10:03:00Z"
+                    scheduled: "1970-01-01T10:02:00Z"
+                    done: "1970-01-01T10:02:00Z"
+                    position: "1970-01-01T10:02:00Z"
+                    effort: "1970-01-01T10:02:00Z"
+                    importance: "1970-01-01T10:02:00Z"
+                    urgency: "1970-01-01T10:02:00Z"
+                    recur: "1970-01-01T10:02:00Z"
+                    archived: "1970-01-01T10:02:00Z"
+                    deleted: "1970-01-01T10:02:00Z"
+                  memberships: {}
+      ops:
+        - 00000000-0000-0000-0000-000000000007
+      pushed: false
+      board: 00000000-0000-0000-0000-000000000001
+      created_at: "1970-01-01T10:03:00Z"
+    - id: 00000000-0000-0000-0000-00000000000a
+      parent: 00000000-0000-0000-0000-000000000008
+      command:
+        SetTaskDone:
+          id: 00000000-0000-0000-0000-000000000004
+          done: true
+      facts:
+        PreImages:
+          images:
+            - Task:
+                id: 00000000-0000-0000-0000-000000000004
+                before:
+                  id: 00000000-0000-0000-0000-000000000004
+                  remote: ~
+                  title: write report
+                  description: draft the Q4 report
+                  duedate: "1970-01-02T10:00:00Z"
+                  scheduled: ~
+                  done: ~
+                  stack: 00000000-0000-0000-0000-000000000001
+                  order: 1
+                  label_memberships: {}
+                  effort: ~
+                  importance: ~
+                  urgency: ~
+                  recur: ~
+                  archived: false
+                  deleted: false
+                  clocks:
+                    title: "1970-01-01T10:02:00Z"
+                    description: "1970-01-01T10:03:00Z"
+                    duedate: "1970-01-01T10:03:00Z"
+                    scheduled: "1970-01-01T10:02:00Z"
+                    done: "1970-01-01T10:02:00Z"
+                    position: "1970-01-01T10:02:00Z"
+                    effort: "1970-01-01T10:02:00Z"
+                    importance: "1970-01-01T10:02:00Z"
+                    urgency: "1970-01-01T10:02:00Z"
+                    recur: "1970-01-01T10:02:00Z"
+                    archived: "1970-01-01T10:02:00Z"
+                    deleted: "1970-01-01T10:02:00Z"
+                  remote_seen: ~
+                  remote_baseline: ~
+          watermark:
+            - - Task: 00000000-0000-0000-0000-000000000004
+              - Task:
+                  clocks:
+                    title: "1970-01-01T10:02:00Z"
+                    description: "1970-01-01T10:03:00Z"
+                    duedate: "1970-01-01T10:03:00Z"
+                    scheduled: "1970-01-01T10:02:00Z"
+                    done: "1970-01-01T10:04:00Z"
+                    position: "1970-01-01T10:02:00Z"
+                    effort: "1970-01-01T10:02:00Z"
+                    importance: "1970-01-01T10:02:00Z"
+                    urgency: "1970-01-01T10:02:00Z"
+                    recur: "1970-01-01T10:02:00Z"
+                    archived: "1970-01-01T10:02:00Z"
+                    deleted: "1970-01-01T10:02:00Z"
+                  memberships: {}
+      ops:
+        - 00000000-0000-0000-0000-000000000009
+      pushed: false
+      board: 00000000-0000-0000-0000-000000000001
+      created_at: "1970-01-01T10:04:00Z"
+    - id: 00000000-0000-0000-0000-00000000000d
+      parent: 00000000-0000-0000-0000-00000000000a
+      command:
+        CreateLabel:
+          board: 00000000-0000-0000-0000-000000000001
+          title: urgent
+          color: ff0000
+      facts:
+        PreImages:
+          images:
+            - Label:
+                id: 00000000-0000-0000-0000-00000000000b
+                before: ~
+          watermark:
+            - - Label: 00000000-0000-0000-0000-00000000000b
+              - Label:
+                  title: "1970-01-01T10:05:00Z"
+                  color: "1970-01-01T10:05:00Z"
+                  deleted: "1970-01-01T10:05:00Z"
+      ops:
+        - 00000000-0000-0000-0000-00000000000c
+      pushed: false
+      board: 00000000-0000-0000-0000-000000000001
+      created_at: "1970-01-01T10:05:00Z"
+    - id: 00000000-0000-0000-0000-00000000000f
+      parent: 00000000-0000-0000-0000-00000000000d
+      command:
+        AssignLabel:
+          task: 00000000-0000-0000-0000-000000000004
+          label: 00000000-0000-0000-0000-00000000000b
+      facts:
+        PreImages:
+          images:
+            - Task:
+                id: 00000000-0000-0000-0000-000000000004
+                before:
+                  id: 00000000-0000-0000-0000-000000000004
+                  remote: ~
+                  title: write report
+                  description: draft the Q4 report
+                  duedate: "1970-01-02T10:00:00Z"
+                  scheduled: ~
+                  done: "1970-01-01T10:04:00Z"
+                  stack: 00000000-0000-0000-0000-000000000001
+                  order: 1
+                  label_memberships: {}
+                  effort: ~
+                  importance: ~
+                  urgency: ~
+                  recur: ~
+                  archived: false
+                  deleted: false
+                  clocks:
+                    title: "1970-01-01T10:02:00Z"
+                    description: "1970-01-01T10:03:00Z"
+                    duedate: "1970-01-01T10:03:00Z"
+                    scheduled: "1970-01-01T10:02:00Z"
+                    done: "1970-01-01T10:04:00Z"
+                    position: "1970-01-01T10:02:00Z"
+                    effort: "1970-01-01T10:02:00Z"
+                    importance: "1970-01-01T10:02:00Z"
+                    urgency: "1970-01-01T10:02:00Z"
+                    recur: "1970-01-01T10:02:00Z"
+                    archived: "1970-01-01T10:02:00Z"
+                    deleted: "1970-01-01T10:02:00Z"
+                  remote_seen: ~
+                  remote_baseline: ~
+          watermark:
+            - - Task: 00000000-0000-0000-0000-000000000004
+              - Task:
+                  clocks:
+                    title: "1970-01-01T10:02:00Z"
+                    description: "1970-01-01T10:03:00Z"
+                    duedate: "1970-01-01T10:03:00Z"
+                    scheduled: "1970-01-01T10:02:00Z"
+                    done: "1970-01-01T10:04:00Z"
+                    position: "1970-01-01T10:02:00Z"
+                    effort: "1970-01-01T10:02:00Z"
+                    importance: "1970-01-01T10:02:00Z"
+                    urgency: "1970-01-01T10:02:00Z"
+                    recur: "1970-01-01T10:02:00Z"
+                    archived: "1970-01-01T10:02:00Z"
+                    deleted: "1970-01-01T10:02:00Z"
+                  memberships:
+                    00000000-0000-0000-0000-00000000000b:
+                      Added:
+                        at: "1970-01-01T10:06:00Z"
+      ops:
+        - 00000000-0000-0000-0000-00000000000e
+      pushed: false
+      board: 00000000-0000-0000-0000-000000000001
+      created_at: "1970-01-01T10:06:00Z"
+    - id: 00000000-0000-0000-0000-000000000012
+      parent: 00000000-0000-0000-0000-00000000000f
+      command:
+        CreateStack:
+          board: 00000000-0000-0000-0000-000000000001
+          title: doing
+          order: 2
+      facts:
+        PreImages:
+          images:
+            - Stack:
+                id: 00000000-0000-0000-0000-000000000010
+                before: ~
+          watermark:
+            - - Stack: 00000000-0000-0000-0000-000000000010
+              - Stack:
+                  title: "1970-01-01T10:07:00Z"
+                  order: "1970-01-01T10:07:00Z"
+                  deleted: "1970-01-01T10:07:00Z"
+      ops:
+        - 00000000-0000-0000-0000-000000000011
+      pushed: false
+      board: 00000000-0000-0000-0000-000000000001
+      created_at: "1970-01-01T10:07:00Z"
+    - id: 00000000-0000-0000-0000-000000000014
+      parent: 00000000-0000-0000-0000-000000000012
+      command:
+        MoveTask:
+          id: 00000000-0000-0000-0000-000000000004
+          stack: 00000000-0000-0000-0000-000000000010
+          order: 9
+      facts:
+        PreImages:
+          images:
+            - Task:
+                id: 00000000-0000-0000-0000-000000000004
+                before:
+                  id: 00000000-0000-0000-0000-000000000004
+                  remote: ~
+                  title: write report
+                  description: draft the Q4 report
+                  duedate: "1970-01-02T10:00:00Z"
+                  scheduled: ~
+                  done: "1970-01-01T10:04:00Z"
+                  stack: 00000000-0000-0000-0000-000000000001
+                  order: 1
+                  label_memberships:
+                    00000000-0000-0000-0000-00000000000b:
+                      Added:
+                        at: "1970-01-01T10:06:00Z"
+                  effort: ~
+                  importance: ~
+                  urgency: ~
+                  recur: ~
+                  archived: false
+                  deleted: false
+                  clocks:
+                    title: "1970-01-01T10:02:00Z"
+                    description: "1970-01-01T10:03:00Z"
+                    duedate: "1970-01-01T10:03:00Z"
+                    scheduled: "1970-01-01T10:02:00Z"
+                    done: "1970-01-01T10:04:00Z"
+                    position: "1970-01-01T10:02:00Z"
+                    effort: "1970-01-01T10:02:00Z"
+                    importance: "1970-01-01T10:02:00Z"
+                    urgency: "1970-01-01T10:02:00Z"
+                    recur: "1970-01-01T10:02:00Z"
+                    archived: "1970-01-01T10:02:00Z"
+                    deleted: "1970-01-01T10:02:00Z"
+                  remote_seen: ~
+                  remote_baseline: ~
+          watermark:
+            - - Task: 00000000-0000-0000-0000-000000000004
+              - Task:
+                  clocks:
+                    title: "1970-01-01T10:02:00Z"
+                    description: "1970-01-01T10:03:00Z"
+                    duedate: "1970-01-01T10:03:00Z"
+                    scheduled: "1970-01-01T10:02:00Z"
+                    done: "1970-01-01T10:04:00Z"
+                    position: "1970-01-01T10:08:00Z"
+                    effort: "1970-01-01T10:02:00Z"
+                    importance: "1970-01-01T10:02:00Z"
+                    urgency: "1970-01-01T10:02:00Z"
+                    recur: "1970-01-01T10:02:00Z"
+                    archived: "1970-01-01T10:02:00Z"
+                    deleted: "1970-01-01T10:02:00Z"
+                  memberships:
+                    00000000-0000-0000-0000-00000000000b:
+                      Added:
+                        at: "1970-01-01T10:06:00Z"
+      ops:
+        - 00000000-0000-0000-0000-000000000013
+      pushed: false
+      board: 00000000-0000-0000-0000-000000000001
+      created_at: "1970-01-01T10:08:00Z"
+    - id: 00000000-0000-0000-0000-000000000015
+      parent: 00000000-0000-0000-0000-000000000014
+      command:
+        DeleteTask:
+          id: 00000000-0000-0000-0000-000000000004
+      facts:
+        PreImages:
+          images:
+            - Task:
+                id: 00000000-0000-0000-0000-000000000004
+                before:
+                  id: 00000000-0000-0000-0000-000000000004
+                  remote: ~
+                  title: write report
+                  description: draft the Q4 report
+                  duedate: "1970-01-02T10:00:00Z"
+                  scheduled: ~
+                  done: "1970-01-01T10:04:00Z"
+                  stack: 00000000-0000-0000-0000-000000000010
+                  order: 9
+                  label_memberships:
+                    00000000-0000-0000-0000-00000000000b:
+                      Added:
+                        at: "1970-01-01T10:06:00Z"
+                  effort: ~
+                  importance: ~
+                  urgency: ~
+                  recur: ~
+                  archived: false
+                  deleted: false
+                  clocks:
+                    title: "1970-01-01T10:02:00Z"
+                    description: "1970-01-01T10:03:00Z"
+                    duedate: "1970-01-01T10:03:00Z"
+                    scheduled: "1970-01-01T10:02:00Z"
+                    done: "1970-01-01T10:04:00Z"
+                    position: "1970-01-01T10:08:00Z"
+                    effort: "1970-01-01T10:02:00Z"
+                    importance: "1970-01-01T10:02:00Z"
+                    urgency: "1970-01-01T10:02:00Z"
+                    recur: "1970-01-01T10:02:00Z"
+                    archived: "1970-01-01T10:02:00Z"
+                    deleted: "1970-01-01T10:02:00Z"
+                  remote_seen: ~
+                  remote_baseline: ~
+          watermark:
+            - - Task: 00000000-0000-0000-0000-000000000004
+              - Task:
+                  clocks:
+                    title: "1970-01-01T10:02:00Z"
+                    description: "1970-01-01T10:03:00Z"
+                    duedate: "1970-01-01T10:03:00Z"
+                    scheduled: "1970-01-01T10:02:00Z"
+                    done: "1970-01-01T10:04:00Z"
+                    position: "1970-01-01T10:08:00Z"
+                    effort: "1970-01-01T10:02:00Z"
+                    importance: "1970-01-01T10:02:00Z"
+                    urgency: "1970-01-01T10:02:00Z"
+                    recur: "1970-01-01T10:02:00Z"
+                    archived: "1970-01-01T10:02:00Z"
+                    deleted: "1970-01-01T10:09:00Z"
+                  memberships:
+                    00000000-0000-0000-0000-00000000000b:
+                      Added:
+                        at: "1970-01-01T10:06:00Z"
+      ops: []
+      pushed: false
+      board: 00000000-0000-0000-0000-000000000001
+      created_at: "1970-01-01T10:09:00Z"
+  head: 00000000-0000-0000-0000-000000000015

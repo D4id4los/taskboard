@@ -2194,3 +2194,127 @@ async fn s45b_adjust_second_window_and_tombstone() {
     };
     s.snap("s45b");
 }
+
+// ---- S-series: the undo line (ADR 0019) ---------------------------------
+
+/// s50: undo restores the pre-image values and moves the persisted head;
+/// the disk contract carries the journal.
+#[cfg_attr(miri, ignore)]
+#[tokio::test]
+async fn s50_undo_restores_and_moves_the_head() {
+    let mut s = Scenario::start().await;
+    let board = s.board_id();
+    s.run(StateCommand::CreateStack {
+        board,
+        title: "stack".into(),
+        order: 1,
+    })
+    .await;
+    s.run(StateCommand::CreateTask {
+        title: "undo me".into(),
+        stack: *s
+            .handle
+            .shared_state()
+            .load()
+            .stacks
+            .keys()
+            .next()
+            .expect("stack"),
+        order: 1,
+    })
+    .await;
+    s.run(StateCommand::UpdateTask {
+        id: *s
+            .handle
+            .shared_state()
+            .load()
+            .tasks
+            .keys()
+            .next()
+            .expect("task"),
+        changes: taskboard_domain::TaskChanges {
+            title: Some("renamed".into()),
+            ..taskboard_domain::TaskChanges::default()
+        },
+    })
+    .await;
+    // Undo the rename: the pre-image value rides back, the head moves
+    // without a new node (the persisted `head` field is the pin).
+    s.run(StateCommand::Undo).await;
+    s.snap("s50");
+}
+
+/// s51: redo re-applies the forward intent as a fresh edit.
+#[cfg_attr(miri, ignore)]
+#[tokio::test]
+async fn s51_redo_reapplies_forward() {
+    let mut s = Scenario::start().await;
+    let board = s.board_id();
+    s.run(StateCommand::CreateStack {
+        board,
+        title: "stack".into(),
+        order: 1,
+    })
+    .await;
+    let stack = *s
+        .handle
+        .shared_state()
+        .load()
+        .stacks
+        .keys()
+        .next()
+        .expect("stack");
+    s.run(StateCommand::CreateTask {
+        title: "redo me".into(),
+        stack,
+        order: 1,
+    })
+    .await;
+    s.run(StateCommand::Undo).await;
+    s.run(StateCommand::Redo).await;
+    s.snap("s51");
+}
+
+/// s52: a `NotUndoable` head still journals (the line records it; undo
+/// refuses typed — R-U6 — and the head never moves).
+#[cfg_attr(miri, ignore)]
+#[tokio::test]
+async fn s52_a_not_undoable_head_journals_and_refuses() {
+    let mut s = Scenario::start().await;
+    let board = s.board_id();
+    s.run(StateCommand::CreateStack {
+        board,
+        title: "stack".into(),
+        order: 1,
+    })
+    .await;
+    let stack = *s
+        .handle
+        .shared_state()
+        .load()
+        .stacks
+        .keys()
+        .next()
+        .expect("stack");
+    s.run(StateCommand::CreateTask {
+        title: "t".into(),
+        stack,
+        order: 1,
+    })
+    .await;
+    let task = *s
+        .handle
+        .shared_state()
+        .load()
+        .tasks
+        .keys()
+        .next()
+        .expect("task");
+    // The mute is reminder-surface ephemera: journaled NotUndoable.
+    s.run(StateCommand::SetTaskRemindersMuted { task, muted: true })
+        .await;
+    // The refusal: the snapshot pins the untouched journal (the head
+    // never moved) plus the still-can_undo projection.
+    let _rejected = s.run_raw(StateCommand::Undo).await;
+    s.snap("s52");
+}
