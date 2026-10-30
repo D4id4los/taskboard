@@ -1,0 +1,74 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The alarm insistence's always-on-top window (DR-3/4, D-I9.2): a
+// dumb presentation client over the derived awaiting-alarm rows —
+// `no-frame` + `always-on-top` are Window properties whose documented
+// semantics are "on window managers supporting it"; on Wayland both
+// no-op by construction (no focus steal is a requirement there; the
+// re-toast + sound + this row list still escalate). One row per
+// awaiting alarm occurrence: the title snapshot and the elapsed
+// phrase, with Dismiss / Snooze / Cancel — the D-P11 anchor-aware
+// shape (an alarm anchor has no task: no Done, no Mute). The command
+// targets are Rust-side (index-keyed, the notification surface's
+// convention); the buttons dispatch the existing engine commands.
+
+import { Theme } from "theme.slint";
+import { IconButton, IconKind } from "widgets/icon-button.slint";
+import { ListRow } from "widgets/list-row.slint";
+
+export struct AlarmRowModel {
+    title: string,
+    phrase: string,
+}
+
+export component AlarmWindow inherits Window {
+    no-frame: true;
+    always-on-top: true;
+    title: "taskboard — alarm";
+    width: Theme.space-15 * 4; // ~384 px at scale 1: the alarm card's fixed width
+    height: rows.length * Theme.space-8 + Theme.space-8;
+    background: Theme.background;
+
+    in-out property <[AlarmRowModel]> rows;
+    callback dismiss(int);
+    callback snooze(int);
+    callback cancel(int);
+
+    VerticalLayout {
+        padding-left: Theme.space-4;
+        padding-right: Theme.space-4;
+        padding-top: Theme.space-2;
+        padding-bottom: Theme.space-2;
+        spacing: Theme.space-1;
+
+        for row[row-index] in root.rows: HorizontalLayout {
+            spacing: Theme.space-2;
+
+            row-info := ListRow {
+                horizontal-stretch: 1;
+                text: row.title;
+                meta: row.phrase;
+            }
+            VerticalLayout {
+                IconButton {
+                    icon: IconKind.check;
+                    label: "Dismiss notification";
+                    clicked => root.dismiss(row-index);
+                }
+            }
+            VerticalLayout {
+                IconButton {
+                    icon: IconKind.snooze;
+                    label: "Snooze alarm";
+                    clicked => root.snooze(row-index);
+                }
+            }
+            VerticalLayout {
+                IconButton {
+                    icon: IconKind.remove;
+                    label: "Cancel alarm";
+                    clicked => root.cancel(row-index);
+                }
+            }
+        }
+    }
+}

@@ -17,8 +17,8 @@ use std::collections::BTreeSet;
 
 use chrono::{DateTime, NaiveTime, TimeDelta, Utc};
 use taskboard_domain::{
-    AppState, Board, BoardId, Effort, ReminderRef, SidecarHealth, Stack, StackId, SyncPhase, Task,
-    TaskId,
+    AdhocAlarmId, AppState, Board, BoardId, Effort, ReminderRef, SidecarHealth, Stack, StackId,
+    SyncPhase, Task, TaskId,
 };
 
 /// The due-soon window (design §4): a presentation constant, not
@@ -945,6 +945,81 @@ pub fn move_hint(state: &AppState, target: StackId) -> String {
 #[must_use]
 pub fn live_board(state: &AppState) -> Option<&Board> {
     live_boards(state).into_iter().next()
+}
+
+// -- the alarm window (DR-3/4, D-I9.2) -------------------------------
+
+/// The alarm window's snooze postpone: a fixed presentation constant —
+/// the same default the notification surface's snooze flow lands on;
+/// per-run pickers are a non-goal (the stage-1 fence).
+pub const ALARM_WINDOW_SNOOZE: TimeDelta = TimeDelta::try_minutes(10).expect("non-zero constant");
+
+/// One awaiting alarm-insistent occurrence, the alarm window's row:
+/// identity for the button commands plus the carried title snapshot.
+/// Deliberately not [`NotificationRow`] — the anchor-card filter and
+/// affordance table differ; each surface keeps one derivation over the
+/// same domain function, nothing second-evaluates.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AlarmRow {
+    /// The adhoc alarm (the Cancel command's target).
+    pub alarm: AdhocAlarmId,
+    /// The reminder ref the dismiss and snooze commands carry.
+    pub reminder: ReminderRef,
+    /// The effective occurrence that fired.
+    pub occurrence: DateTime<Utc>,
+    /// The title snapshot the domain view assembled (the alarm label)
+    /// — carried, never re-derived.
+    pub title: String,
+}
+
+/// The alarm window's rows for `now` (D-I9.2): the domain's own
+/// `active_notifications` filtered one step to the alarm-insistent
+/// payloads — the escalation driver's awaiting set,
+/// presentation-shaped. Canonical `(occurrence, reminder)` order.
+#[must_use]
+pub fn alarm_window_rows(
+    state: &AppState,
+    defaults: &taskboard_domain::ReminderDefaults,
+    now: DateTime<Utc>,
+) -> Vec<AlarmRow> {
+    taskboard_domain::active_notifications(&state.tasks, &state.reminders, defaults, now)
+        .into_iter()
+        .filter_map(|note| {
+            if note.insistence != taskboard_domain::Insistence::Alarm {
+                return None;
+            }
+            // An alarm-insistent payload is always alarm-anchored (the
+            // implicit default reminder is always `Normal`, D-I3) —
+            // unreachable by derivation, total by the filter_map.
+            let taskboard_domain::ReminderAnchor::Alarm(alarm) = note.anchor else {
+                return None;
+            };
+            Some(AlarmRow {
+                alarm,
+                reminder: note.reminder,
+                occurrence: note.occurrence,
+                title: note.title,
+            })
+        })
+        .collect()
+}
+
+/// The open/closed predicate: open iff the awaiting set is not empty.
+#[must_use]
+pub fn alarm_window_open(rows: &[AlarmRow]) -> bool {
+    !rows.is_empty()
+}
+
+/// The attention edge: request when the set GAINED an occurrence (a
+/// row identity absent from the previous pass). Identity is the
+/// `(reminder, occurrence)` pair — the ladder memory's key.
+#[must_use]
+pub fn attention_due(rows: &[AlarmRow], previous: &[AlarmRow]) -> bool {
+    rows.iter().any(|row| {
+        !previous
+            .iter()
+            .any(|prev| prev.reminder == row.reminder && prev.occurrence == row.occurrence)
+    })
 }
 
 #[cfg(test)]
@@ -2038,6 +2113,71 @@ mod tests {
         let past = notification_phrase(now - TimeDelta::hours(2), now);
         assert!(past.starts_with("fired ") && past.ends_with(" ago"));
         assert_ne!(past, notification_phrase(now - TimeDelta::hours(3), now));
+    }
+
+    #[test]
+    fn alarm_window_rows_follow_the_domain_view_filtered_to_alarm() {
+        let now = Utc::now();
+        let id = taskboard_domain::AdhocAlarmId::from_uuid(uuid::Uuid::now_v7());
+        let mut state = AppState::default();
+        let mut tea = alarm(id, "tea", now - TimeDelta::minutes(1));
+        tea.insistence = taskboard_domain::Insistence::Alarm;
+        state.reminders.alarms.insert(id, tea);
+        // A normal-insistence alarm alongside: filtered out.
+        let normal = taskboard_domain::AdhocAlarmId::from_uuid(uuid::Uuid::now_v7());
+        state
+            .reminders
+            .alarms
+            .insert(normal, alarm(normal, "quiet", now - TimeDelta::minutes(1)));
+        // Both delivered (awaiting).
+        deliver_alarm(&mut state, id, now - TimeDelta::minutes(1));
+        deliver_alarm(&mut state, normal, now - TimeDelta::minutes(1));
+
+        let rows = alarm_window_rows(&state, &defaults(), now);
+        assert_eq!(rows.len(), 1, "only the alarm-insistent row survives");
+        assert_eq!(rows[0].alarm, id);
+        assert_eq!(rows[0].title, "tea");
+        assert_eq!(
+            rows[0].reminder,
+            ReminderRef::Adhoc(id),
+            "the commands carry the reminder ref"
+        );
+        assert!(alarm_window_open(&rows));
+
+        // A dismissed alarm leaves the set.
+        state
+            .reminders
+            .dismissals
+            .insert(taskboard_domain::ReminderDismissal {
+                reminder: ReminderRef::Adhoc(id),
+                occurrence: now - TimeDelta::minutes(1),
+                dismissed_at: now,
+            });
+        let rows = alarm_window_rows(&state, &defaults(), now);
+        assert_eq!(rows.len(), 0, "dismissed is gone for good");
+        assert!(!alarm_window_open(&rows));
+    }
+
+    #[test]
+    fn attention_is_the_gained_edge() {
+        let a = AlarmRow {
+            alarm: taskboard_domain::AdhocAlarmId::from_uuid(uuid::Uuid::now_v7()),
+            reminder: ReminderRef::Default(TaskId::from_uuid(uuid::Uuid::now_v7())),
+            occurrence: Utc::now(),
+            title: "a".into(),
+        };
+        let mut b = a.clone();
+        b.alarm = taskboard_domain::AdhocAlarmId::from_uuid(uuid::Uuid::now_v7());
+        b.occurrence = Utc::now();
+
+        let a_slice = std::slice::from_ref(&a);
+        assert!(attention_due(a_slice, &[]), "empty -> non-empty gains");
+        assert!(!attention_due(a_slice, a_slice), "same set: no edge");
+        assert!(attention_due(&[a.clone(), b], a_slice), "b is new");
+        assert!(
+            !attention_due(&[], a_slice),
+            "drained: the window closes, no attention"
+        );
     }
 
     fn defaults() -> taskboard_domain::ReminderDefaults {
