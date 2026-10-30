@@ -883,3 +883,99 @@ pub fn mutation_receipt(state: &AppState, task: &Task) -> MutationReceipt {
         labels: row.labels,
     }
 }
+
+/// One tracking-entry projection — the six machine columns the whole
+/// `track` family and `export` speak. `end: None` IS the open marker
+/// (the running timer, ADR 0017); `duration_seconds` is derived at
+/// projection time from the `now` the projection was built with
+/// (clamped ≥ 0), so a receipt is state truth, never a stale echo.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct TrackEntryRow {
+    /// Local entry uuid.
+    pub entry_id: String,
+    /// Tracked task's local uuid.
+    pub task_id: String,
+    /// The task's title, snapshotted immutably at start.
+    pub task_title: String,
+    /// Span start.
+    pub start: DateTime<Utc>,
+    /// Span end; `None` = open = the running timer.
+    pub end: Option<DateTime<Utc>>,
+    /// Derived at projection time (clamped ≥ 0).
+    pub duration_seconds: u64,
+}
+
+/// The `export` row type: the same six columns by alias — the JSON
+/// object shape is the contract, not the type name.
+pub type ExportRow = TrackEntryRow;
+
+/// The `track start` receipt. `started: false` is the idempotent
+/// repeat (this task's open entry already exists) — the receipt then
+/// carries that entry, read back from the published snapshot.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct TrackStartReceipt {
+    /// `false` = the idempotent repeat, nothing changed.
+    pub started: bool,
+    /// The open entry (fresh on `started`, the existing one on the
+    /// repeat).
+    pub entry: TrackEntryRow,
+    /// The open entries the start closed, by uuid (empty on a repeat).
+    pub closed: Vec<String>,
+}
+
+/// The `track stop` receipt. `stopped: false` is the nothing-open
+/// no-op with no rows.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct TrackStopReceipt {
+    /// `false` = nothing was open, nothing changed.
+    pub stopped: bool,
+    /// The closed rows, post-stamp.
+    pub entries: Vec<TrackEntryRow>,
+}
+
+/// The `track log` receipt: the freshly minted closed entry.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct TrackLogReceipt {
+    /// The logged entry (span state truth, not an input echo).
+    pub entry: TrackEntryRow,
+}
+
+/// The `track adjust` receipt. `changed: false` is the zero-flag (or
+/// unchanged-mask) no-op carrying the current row.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct TrackAdjustReceipt {
+    /// `false` = the mask named only unchanged values.
+    pub changed: bool,
+    /// The adjusted entry (the current one on a no-op).
+    pub entry: TrackEntryRow,
+}
+
+/// The `track delete` receipt. `deleted: false` is the honest repeat
+/// no-op (the domain's accepted-absent ruling) — *not*
+/// terminal-by-deletion.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct TrackDeleteReceipt {
+    /// The addressed entry's uuid.
+    pub entry_id: String,
+    /// `false` = the id named no entry; nothing changed.
+    pub deleted: bool,
+}
+
+/// The `track status` view: every open entry (newest-first — the
+/// transient double-open state is shown honestly) plus the
+/// tracked-today total over the `[preferences] day_start_time` window.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct TrackStatusView {
+    /// The open entries, newest-first.
+    pub open: Vec<TrackEntryRow>,
+    /// The tracked-today total, whole seconds (the in-window parts
+    /// only — spanning entries contribute their clipped segment).
+    pub tracked_today_seconds: u64,
+}
+
+/// The `track list` payload: rows in canonical `(start, id)` order.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct TrackListView {
+    /// The entry rows.
+    pub entries: Vec<TrackEntryRow>,
+}

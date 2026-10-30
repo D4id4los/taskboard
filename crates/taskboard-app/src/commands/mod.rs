@@ -27,6 +27,7 @@ pub mod status;
 pub mod sync;
 pub mod tasks;
 pub mod timers;
+pub mod track;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -220,6 +221,23 @@ pub enum CommandError {
     #[error("timer selector matches several alarms — pass one of {}", candidates.join(" | "))]
     AmbiguousAdhocAlarm {
         /// The matched alarms' full uuids.
+        candidates: Vec<String>,
+    },
+    /// No time entry matches the selector (the app-side selector
+    /// resolution miss — the *domain*
+    /// `CommandError::UnknownTimeEntry(TimeEntryId)` keeps its own kind
+    /// via `domain_error_kind`; this variant only serves resolution
+    /// before a command is built).
+    #[error("no time entry matches {selector:?}")]
+    UnknownTimeEntry {
+        /// The rejected selector, verbatim.
+        selector: String,
+    },
+    /// The entry selector matches several entries; carries their full
+    /// uuids (deterministic entry-id order).
+    #[error("entry selector matches several entries — pass one of {}", candidates.join(" | "))]
+    AmbiguousTimeEntry {
+        /// The matched entries' full uuids.
         candidates: Vec<String>,
     },
     /// There is no stack to target.
@@ -446,6 +464,8 @@ impl CommandError {
             Self::AmbiguousReminderRule { .. } => "ambiguous-reminder-rule",
             Self::UnknownAdhocAlarm(_) => "unknown-adhoc-alarm",
             Self::AmbiguousAdhocAlarm { .. } => "ambiguous-adhoc-alarm",
+            Self::UnknownTimeEntry { .. } => "unknown-time-entry",
+            Self::AmbiguousTimeEntry { .. } => "ambiguous-time-entry",
             Self::NoStacks => "no-stacks",
             Self::AmbiguousBoard { .. } => "ambiguous-board",
             Self::SyncFailed(_) => "sync-failed",
@@ -504,11 +524,13 @@ impl CommandError {
             | Self::UnknownStack(sel)
             | Self::UnknownLabel(sel)
             | Self::UnknownReminderRule(sel)
-            | Self::UnknownAdhocAlarm(sel) => Some(sel.clone()),
+            | Self::UnknownAdhocAlarm(sel)
+            | Self::UnknownTimeEntry { selector: sel } => Some(sel.clone()),
             Self::AmbiguousTask { candidates }
             | Self::AmbiguousStack { candidates }
             | Self::AmbiguousReminderRule { candidates }
             | Self::AmbiguousAdhocAlarm { candidates }
+            | Self::AmbiguousTimeEntry { candidates }
             | Self::AmbiguousBoard { candidates } => Some(candidates.join(", ")),
             Self::SyncFailed(kind) => Some(output::sync_error_kind(*kind).to_owned()),
             Self::IpcVersion { server_v } => Some(server_v.to_string()),
@@ -1102,6 +1124,32 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
             }
             None => unreachable!("clap requires exactly one of --in/--at on timers add"),
         },
+        Command::Track { cmd } => match track::collapse(cmd) {
+            Some(invocation) => {
+                track::track_command(&mut ctx.io, ctx.config_path.clone(), invocation).await
+            }
+            None => unreachable!("clap requires exactly one log mode (--for | --from --to)"),
+        },
+        Command::Export {
+            format,
+            since,
+            until,
+            task,
+            board,
+        } => {
+            track::export_command(
+                &mut ctx.io,
+                ctx.config_path.clone(),
+                track::ExportQuery {
+                    format,
+                    since,
+                    until,
+                    task,
+                    board,
+                },
+            )
+            .await
+        }
         Command::Tasks {
             cmd: TasksCmd::Label { task, label },
         } => run_mutation(
@@ -1485,6 +1533,35 @@ pub async fn dispatch_line(
             Some(invocation) => timers::timers_line(app, io, invocation).await,
             None => unreachable!("clap requires exactly one of --in/--at on timers add"),
         },
+        Command::Track { cmd } => match track::collapse(cmd) {
+            Some(invocation) => {
+                track::track_line(
+                    app,
+                    session.session_config().resolved_day_calendar(),
+                    io,
+                    invocation,
+                )
+                .await
+            }
+            None => unreachable!("clap requires exactly one log mode (--for | --from --to)"),
+        },
+        Command::Export {
+            format,
+            since,
+            until,
+            task,
+            board,
+        } => track::export_line(
+            app,
+            io,
+            &track::ExportQuery {
+                format,
+                since,
+                until,
+                task,
+                board,
+            },
+        ),
         Command::Capture { title, board } => emit_result(
             io,
             capture::capture_on(app, title, board.as_deref()).await,
@@ -1913,6 +1990,14 @@ pub fn route_for_ipc(command: &Command) -> IpcRoute {
         | Command::Labels { .. }
         | Command::Tasks { .. }
         | Command::Timers { .. }
+        // Every tracking mutation must land in the process that owns
+        // the engine: a one-shot local boot would open an entry and
+        // orphan the intent at exit — the timers precedent routes
+        // identically. Export reads the same engine state; splitting
+        // the read off onto a local boot would report a *different*
+        // database's history when a daemon serves the db (D-TC1).
+        | Command::Track { .. }
+        | Command::Export { .. }
         | Command::Find { .. }
         // Capture rides the mutation lane (boot-local over the core,
         // like the task verbs).
@@ -2074,6 +2159,7 @@ mod ipc_routing_tests {
     /// client-side; core verbs prefer a daemon; the operator verbs only
     /// talk to one. Exhaustive — the compiler forces future verbs here.
     #[test]
+    #[allow(clippy::too_many_lines)] // one row per command family; the list IS the table
     fn the_routing_table_picks_lanes_per_command() {
         let local = [
             Command::Connect {
@@ -2163,6 +2249,21 @@ mod ipc_routing_tests {
                 query: "needle".to_owned(),
                 kind: None,
                 limit: None,
+            },
+            Command::Timers {
+                cmd: crate::cli::TimersCmd::List {},
+            },
+            Command::Track {
+                cmd: crate::cli::TrackCmd::Start {
+                    task: "t".to_owned(),
+                },
+            },
+            Command::Export {
+                format: None,
+                since: None,
+                until: None,
+                task: None,
+                board: None,
             },
             Command::Sync {
                 no_wait: false,
