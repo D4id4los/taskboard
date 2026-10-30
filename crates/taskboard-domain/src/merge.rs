@@ -1219,6 +1219,10 @@ pub fn rebind_task_to_survivor(local: &Task, survivor: &RemoteTask) -> Task {
     rebinded
 }
 
+/// The fold-time series dedup's rule tag (§3.6, D-C7): one traced fact
+/// per applied collapse, never a broadcast — the spawn race is ours.
+pub(crate) const RULE_R_RECUR_DUP: &str = "R-recur-dup";
+
 /// One series-twin group's verdict (§3.6, D-C7): the older-created task
 /// survives, every other member of the group is doomed (neutralized as
 /// a ref-less tombstone by the applying pass).
