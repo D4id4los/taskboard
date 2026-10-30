@@ -132,6 +132,16 @@ getrandom = "0.4"
 # exact version is committed via Cargo.lock (Q12).
 notify-rust = { version = "4.18.2", default-features = false, features = ["z-with-tokio"] }
 
+# Owned alarm audio (taskboard-app, DR-3/4 / D-I10 — stack approval
+# GRANTED 2026-10-26). Minimal no-decode feature set, verified against
+# rodio 0.23.0's published feature graph 2026-10-29: `playback` pulls
+# cpal (output) alone; `recording`, `dither`/`noise` and the five
+# symphonia decode formats (flac/mp3/mp4/vorbis/wav) stay out — the
+# chime is synthesized in code (`buffer::SamplesBuffer` is an
+# unconditional API). Pin discipline: the exact version is committed
+# via Cargo.lock (Q12).
+rodio = { version = "0.23.0", default-features = false, features = ["playback"] }
+
 # Error handling
 thiserror = "2"
 color-eyre = "0.6"
