@@ -10,6 +10,26 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 ### Added
 
+- Reminder escalation (DR-3 chunk 4, #477): the `alarm` insistence rung
+  now insists. An app-layer escalation driver beside the notifier keeps
+  every un-dismissed `alarm` occurrence in the user's face while it
+  awaits — a re-toast at +1 min and every 2 min after (withdraw-then-
+  deliver through the existing sink port, so the toast replaces instead
+  of stacking), and one global synthesized chime (rodio, no decode
+  features, samples generated in code) starting at +1 min and repeating
+  every 30 s, ramping 30%→100% over 5 minutes and capping there.
+  Sound exists only in Desktop mode with the desktop sink resolved and
+  lives behind one `ChimeSink` seam; any audio failure degrades to
+  visual-only — logged, never fatal. Alarm payloads mark the desktop
+  toast platform-critical (urgency hint, payload data only). The
+  desktop, non-kiosk UI mounts a small always-on-top alarm window
+  listing the awaiting occurrences with Dismiss / Snooze / Cancel, and
+  requests user attention on new occurrences — never focus: on
+  window managers that refuse the hint (Wayland) the window and
+  attention channels no-op by construction and the re-toast, sound,
+  and in-app rows still escalate. Kiosk installs keep the banner-only
+  surface.
+
 - Reminder OS-delivery observability (GUI review round 3, chunk 7,
   #474's delivery half): the notifier consumer now emits typed
   delivery events (attempted / delivered / failed / withdrawn /
