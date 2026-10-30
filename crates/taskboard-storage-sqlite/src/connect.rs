@@ -1275,4 +1275,63 @@ mod tests {
         );
         repo.close().await;
     }
+
+    /// A pre-0016 database (no `command_journal` tables) upgrades
+    /// cleanly: the migration re-applies as two plain `CREATE TABLE`s
+    /// plus the head metadata row, and `load()` folds the empty tables
+    /// into the default `JournalState` (the upgrade pin — the empty
+    /// line then accepts writes).
+    #[tokio::test]
+    async fn migration_0016_upgrades_a_pre_journal_database() {
+        let file = tempfile::Builder::new().suffix(".db").tempfile().unwrap();
+        let raw = SqlitePool::connect(&format!("sqlite://{}?mode=rwc", file.path().display()))
+            .await
+            .expect("raw connect");
+        // Simulate a pre-0016 database: run the shipped migrations, strip
+        // the 0016 artifacts and their bookkeeping row. Purely additive —
+        // no dependent objects to strip with it.
+        sqlx::migrate!("./migrations")
+            .run(&raw)
+            .await
+            .expect("migrate");
+        sqlx::query("DROP TABLE command_journal")
+            .execute(&raw)
+            .await
+            .expect("strip command_journal");
+        sqlx::query("DROP TABLE command_journal_head")
+            .execute(&raw)
+            .await
+            .expect("strip command_journal_head");
+        sqlx::query("DELETE FROM _sqlx_migrations WHERE version = 16")
+            .execute(&raw)
+            .await
+            .expect("strip bookkeeping");
+        raw.close().await;
+
+        let repo = open(file.path(), test_connector())
+            .await
+            .expect("migrating open");
+        let raw = sqlx::sqlite::SqliteConnectOptions::new().filename(file.path());
+        let pool = sqlx::SqlitePool::connect_with(raw).await.expect("raw pool");
+        let head_rows: Vec<(Option<String>,)> =
+            sqlx::query_as("SELECT id FROM command_journal_head")
+                .fetch_all(&pool)
+                .await
+                .expect("head table");
+        let journal_rows: i64 = sqlx::query_scalar("SELECT count(*) FROM command_journal")
+            .fetch_one(&pool)
+            .await
+            .expect("journal table");
+        pool.close().await;
+        assert_eq!(head_rows.len(), 1, "exactly one head metadata row");
+        assert!(head_rows[0].0.is_none(), "the upgraded head is NULL");
+        assert_eq!(journal_rows, 0, "the upgraded journal is empty");
+        let state = repo.load().await.expect("load");
+        assert_eq!(
+            state.journal,
+            taskboard_domain::JournalState::default(),
+            "the empty tables fold into the default journal state"
+        );
+        repo.close().await;
+    }
 }
