@@ -391,6 +391,7 @@ fn raw_app_state_strategy() -> impl Strategy<Value = AppState> {
             }
 
             AppState {
+                undo: crate::journal::UndoView::default(),
                 boards,
                 stacks,
                 tasks,
@@ -508,6 +509,7 @@ pub fn persisted_state_strategy() -> impl Strategy<Value = PersistedState> {
                 }
                 let _ = pending_ops;
                 PersistedState {
+                    journal: crate::journal::JournalState::default(),
                     boards: state.boards,
                     stacks: state.stacks,
                     tasks: state.tasks,

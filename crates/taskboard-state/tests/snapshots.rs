@@ -170,9 +170,17 @@ impl Scenario {
         );
         assert_eq!(app.tracking, persisted.tracking, "memory ≡ disk: tracking");
         assert_sync_stored(&app.sync, &persisted.sync);
+        // The undo projection is derived from the persisted journal —
+        // derive-and-compare pins the derivation (ADR 0019).
+        assert_eq!(
+            app.undo,
+            taskboard_domain::UndoView::derive(&persisted.journal),
+            "memory ≡ disk: undo projection"
+        );
         assert_yaml_snapshot!(format!("{scenario}_persisted_state"), &persisted);
         let tail = PublishedTail {
             sync: &app.sync,
+            undo: &app.undo,
             last_updated: app.last_updated,
         };
         assert_yaml_snapshot!(format!("{scenario}_published_tail"), &tail);
@@ -186,6 +194,7 @@ impl Scenario {
 #[derive(serde::Serialize)]
 struct PublishedTail<'a> {
     sync: &'a taskboard_domain::SyncStates,
+    undo: &'a taskboard_domain::UndoView,
     last_updated: Option<chrono::DateTime<chrono::Utc>>,
 }
 

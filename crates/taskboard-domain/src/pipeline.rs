@@ -1398,6 +1398,10 @@ pub fn apply_sync_report(
         // ride chunk DR-6/6's sidecar sections; both carry through
         // untouched.
         habits: current.habits.clone(),
+        // The undo projection is derived from the persisted journal at
+        // publish (core.rs); the pipeline's working copy carries the
+        // current one through untouched.
+        undo: current.undo.clone(),
         sync,
         // Sync ingestion is an engine mutation from a foreign source:
         // stamp it like a local command would be.
@@ -1607,6 +1611,10 @@ pub fn apply_push_report(
         // ride chunk DR-6/6's sidecar sections; both carry through
         // untouched.
         habits: current.habits.clone(),
+        // The undo projection is derived from the persisted journal at
+        // publish (core.rs); the pipeline's working copy carries the
+        // current one through untouched.
+        undo: current.undo.clone(),
         sync,
         last_updated: Some(now),
     };

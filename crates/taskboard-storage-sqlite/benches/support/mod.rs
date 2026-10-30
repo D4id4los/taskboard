@@ -322,6 +322,7 @@ pub fn build_fixture(n: usize) -> Fixture {
     let mut sync = SyncStates::new();
     sync.set_stored(board.id, SyncPhase::Idle, Some(ts(4_000_000)));
     let state = PersistedState {
+        journal: taskboard_domain::journal::JournalState::default(),
         boards: BTreeMap::from([(board.id, board.clone())]),
         stacks: stacks.iter().map(|s| (s.id, s.clone())).collect(),
         tasks: tasks.iter().map(|t| (t.id, t.clone())).collect(),

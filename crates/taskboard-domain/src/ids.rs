@@ -80,6 +80,12 @@ local_id!(
     /// family exists for the `RecurRule.continued_from` seam).
     HabitId
 );
+local_id!(
+    /// Local identity of a journal entry (`UUIDv7`, generated
+    /// client-side; time-ordered so the undo line's `created_at`/`id`
+    /// tie-break stays stable across devices).
+    JournalId
+);
 
 macro_rules! remote_id {
     ($(#[$doc:meta])* $name:ident) => {

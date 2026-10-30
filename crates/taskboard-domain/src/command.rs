@@ -145,6 +145,13 @@ pub enum CommandError {
         /// The offending window.
         window: WindowStart,
     },
+    /// An engine-routed command (`Undo`/`Redo`) reached the ordinary
+    /// catalogue — unreachable through the journal wrapper, which plans
+    /// them itself before `plan_command` sees them (ADR 0019). The arm
+    /// exists for totality: every `StateCommand` arm has a
+    /// `plan_command` arm.
+    #[error("command is routed by the journal wrapper")]
+    EngineRouted,
 }
 
 /// Typed receipt of an accepted command.
@@ -275,6 +282,12 @@ pub enum CommandOutcome {
     },
     /// Accepted, redundant repeat: nothing changed, nothing persisted.
     NoOp,
+    /// The command resurrected the named tombstoned task (the journal's
+    /// `RestoreTask` inverse instrument, ADR 0019 §11).
+    TaskRestored {
+        /// The resurrected task.
+        id: TaskId,
+    },
     /// Sync request accepted; the engine forwards it to the sync actor.
     SyncRequested,
 }
@@ -2321,6 +2334,54 @@ pub fn plan_command(
                 outcome: CommandOutcome::Applied,
             })
         }
+        StateCommand::RestoreTask { id, resurrect } => {
+            // Precondition order (ADR 0019 §11): existence → tombstone →
+            // outbox scan. A live target is the accepted no-op (the
+            // terminal-repeat discipline); the resurrect write restores
+            // the pre-image values verbatim with a fresh tombstone clock
+            // (the R5 merge-rule field shape).
+            let stored = existing_task(app, *id)?;
+            if !stored.deleted {
+                return Ok(CommandPlan {
+                    actions: Vec::new(),
+                    outcome: CommandOutcome::NoOp,
+                });
+            }
+            let mut restored = (**resurrect).clone();
+            restored.id = *id;
+            restored.deleted = false;
+            restored.clocks.deleted = now;
+            let mut actions = Vec::new();
+            // Case 1 — pending delete op: pure retraction, no new op
+            // (the server never knew).
+            let pending_delete = outbox
+                .iter()
+                .find(|pending| {
+                    matches!(pending.op, crate::outbox::LocalOp::DeleteTask(t) if t == *id)
+                })
+                .map(|pending| pending.op_id);
+            if let Some(op_id) = pending_delete {
+                actions.push(PersistenceAction::FailOp(op_id));
+                actions.push(PersistenceAction::UpsertTask(restored));
+            } else if stored.remote.is_some() {
+                // Case 2 — pushed delete: Deck undelete is re-POST; the
+                // restored task re-binds to a fresh remote card id
+                // (identity churn is the honest price, D-U2).
+                actions.push(PersistenceAction::UpsertTask(restored));
+                actions.push(enqueue(crate::outbox::LocalOp::CreateTask(*id), ids, now));
+            } else {
+                // Case 3 — unbound, never pushed: local resurrect.
+                actions.push(PersistenceAction::UpsertTask(restored));
+            }
+            Ok(CommandPlan {
+                actions,
+                outcome: CommandOutcome::TaskRestored { id: *id },
+            })
+        }
+        // Engine-routed commands: the journal wrapper plans these before
+        // the catalogue sees them; a direct dispatch is a typed
+        // rejection (the totality arm, ADR 0019).
+        StateCommand::Undo | StateCommand::Redo => Err(CommandError::EngineRouted),
         StateCommand::RequestSync => Ok(CommandPlan {
             actions: Vec::new(),
             outcome: CommandOutcome::SyncRequested,
@@ -2632,6 +2693,7 @@ mod tests {
         let board_id = BoardId::from(uuid::Uuid::from_u128(u128::from(BOARD)));
         let stack_id = StackId::from(uuid::Uuid::from_u128(u128::from(STACK)));
         let app = AppState {
+            undo: crate::journal::UndoView::default(),
             boards: [(
                 board_id,
                 crate::entities::Board {
@@ -4439,6 +4501,7 @@ mod tests {
     fn unbound_board_state() -> AppState {
         let board_id = BoardId::from(uuid::Uuid::from_u128(u128::from(BOARD)));
         let mut app = AppState {
+            undo: crate::journal::UndoView::default(),
             boards: [(
                 board_id,
                 crate::entities::Board {
@@ -5837,6 +5900,7 @@ mod tests {
         // reminder facts: nothing to repair.
         let board_id = BoardId::from(uuid::Uuid::from_u128(u128::from(BOARD)));
         let app = AppState {
+            undo: crate::journal::UndoView::default(),
             boards: [(
                 board_id,
                 crate::entities::Board {
@@ -8404,6 +8468,7 @@ mod proptests {
             command in state_command_strategy(),
         ) {
             let app: AppState = AppState {
+                undo: crate::journal::UndoView::default(),
                 boards: persisted.boards.clone(),
                 stacks: persisted.stacks.clone(),
                 tasks: persisted.tasks.clone(),
@@ -8519,6 +8584,7 @@ mod proptests {
             board in crate::test_support::board_id_strategy(),
         ) {
             let app: AppState = AppState {
+                undo: crate::journal::UndoView::default(),
                 boards: persisted.boards.clone(),
                 stacks: persisted.stacks.clone(),
                 tasks: persisted.tasks.clone(),
