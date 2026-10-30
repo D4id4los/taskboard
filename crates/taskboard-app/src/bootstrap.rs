@@ -371,6 +371,7 @@ pub struct App {
     storage: StorageHandle,
     storage_join: JoinHandle<()>,
     engine_join: JoinHandle<()>,
+    escalation_join: JoinHandle<()>,
     notifier_join: JoinHandle<()>,
     /// The all-down network authority's hooks (DF-7): the attach/
     /// detach registry hooks and the broadcast sender for its global
@@ -554,6 +555,7 @@ impl App {
             storage,
             storage_join,
             engine_join,
+            escalation_join,
             notifier_join,
             authority_join,
             authority: _,
@@ -604,6 +606,18 @@ impl App {
 
         let engine_budget_hit = join_bounded(engine_join, timeout, "state engine").await;
 
+        // The driver exits on the engine broadcast's close (D-10): the
+        // engine task's senders died with its join above, and this drop
+        // closes the channel — the parked driver's park answers
+        // `Closed` and it exits before the bounded join below (which
+        // only bounds a wedged task).
+        drop(engine);
+
+        // By here the engine broadcast is closed; the parked driver has
+        // already exited.
+        let escalation_budget_hit =
+            join_bounded(escalation_join, timeout, "escalation driver").await;
+
         // The consumer exits on its own once the engine's exit closed
         // the channel; the bounded join only bounds a wedged sink.
         let notifier_budget_hit = join_bounded(notifier_join, timeout, "notifier").await;
@@ -616,7 +630,10 @@ impl App {
         tracing::info!(actor_aborted, "shutdown complete");
         ShutdownOutcome {
             actor_aborted,
-            budget_hit: authority_budget_hit | engine_budget_hit | notifier_budget_hit,
+            budget_hit: authority_budget_hit
+                | engine_budget_hit
+                | escalation_budget_hit
+                | notifier_budget_hit,
         }
     }
 }
@@ -626,8 +643,8 @@ impl App {
 pub struct ShutdownOutcome {
     /// The sync actor was aborted at the timeout instead of joining.
     pub actor_aborted: bool,
-    /// Any other bounded join (authority, state engine, notifier)
-    /// aborted at the timeout instead of joining.
+    /// Any other bounded join (authority, state engine, escalation
+    /// driver, notifier) aborted at the timeout instead of joining.
     pub budget_hit: bool,
 }
 
@@ -1016,6 +1033,7 @@ async fn bootstrap_with_modules(
     // the consumer's observation stream: the tracker tallies, the UI
     // drains the receiver half (the status-bar chip's lane).
     let (health_tx, delivery_health) = watch::channel(DeliveryHealth::default());
+    let escalation_sink = std::sync::Arc::clone(&notifier_sink);
     let notifier_join = crate::notifications::spawn_notifier(
         notifications,
         notifier_sink,
@@ -1050,6 +1068,26 @@ async fn bootstrap_with_modules(
             return Err(err.into());
         }
     };
+
+    // The escalation driver (DR-3/4, D-I5): process glue beside the
+    // notifier — reads the published-state ArcSwap, acts through the
+    // same sink and its own audio seam. Subscribed *before* the
+    // connector loop, so no `StateUpdated` can race its first park.
+    // Audio constructs only when the mode is Desktop AND the resolved
+    // sink is Desktop (D-9); a failed open degrades to visual-only,
+    // logged once, never fatal (D-8).
+    let reminder_cfg = config.reminder_engine_config();
+    let audio_allowed = config.app.mode == crate::config::AppMode::Desktop
+        && crate::notifications::resolve_sink(config.reminders.sink, config.app.mode)
+            == crate::notifications::SinkKind::Desktop;
+    let escalation_join = crate::escalation::spawn_escalation_driver(
+        engine.shared_state(),
+        reminder_cfg.defaults,
+        escalation_sink,
+        crate::escalation::mount_chime(audio_allowed, crate::escalation::RodioChime::open),
+        engine.subscribe(),
+        Arc::new(taskboard_domain::SystemClock),
+    );
 
     // The registry loop (the N=2 exit criterion's seam): one module per
     // configured connector, each spawning over its own command pair. The
@@ -1108,7 +1146,9 @@ async fn bootstrap_with_modules(
                     sync_commands,
                     system,
                     reports,
+                    engine.clone(),
                     engine_join,
+                    escalation_join,
                     authority_join,
                     timeout,
                     storage,
@@ -1151,6 +1191,7 @@ async fn bootstrap_with_modules(
         storage,
         storage_join,
         engine_join,
+        escalation_join,
         notifier_join,
         authority,
         authority_join,
@@ -1172,7 +1213,9 @@ async fn unwind_after_module_failure(
     sync_commands: mpsc::Sender<SyncCommand>,
     system: broadcast::Sender<SystemEvent>,
     reports: mpsc::Sender<SyncReport>,
+    engine: EngineHandle,
     engine_join: JoinHandle<()>,
+    escalation_join: JoinHandle<()>,
     authority_join: JoinHandle<()>,
     timeout: Duration,
     storage: StorageHandle,
@@ -1187,6 +1230,10 @@ async fn unwind_after_module_failure(
     drop(reports);
     join_bounded(authority_join, timeout, "authority").await;
     join_bounded(engine_join, timeout, "state engine").await;
+    // The handle is the last EngineSignal sender clone: dropping it
+    // closes the driver's broadcast (D-10) before its bounded join.
+    drop(engine);
+    join_bounded(escalation_join, timeout, "escalation driver").await;
     drop(storage);
     if let Err(join_err) = storage_join.await {
         tracing::warn!(?join_err, "storage actor join failed");

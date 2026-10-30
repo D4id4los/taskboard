@@ -111,9 +111,10 @@ impl NotificationSink for LogSink {
 /// hands it to the platform notification service. All DBus/session
 /// discovery, per-platform quirks, timeouts, and the app identity
 /// live here — the port and its other implementors stay OS-free.
-/// Passive toasts only (D-R12): no actions, no sound, no urgency
-/// hints, the platform's default timeout — interactive snooze stays
-/// in-app. A failed delivery logs the backend cause and surfaces the
+/// Passive toasts except for one payload-driven datum (D-I9.1): an
+/// `alarm`-insistent notification is marked platform-critical
+/// (`urgency`); no actions, no sink-side sound, the platform's default
+/// timeout — interactive snooze stays in-app (#444 fence). A failed delivery logs the backend cause and surfaces the
 /// port's [`NotifyError`] — never retried, never fallback-sent
 /// (D-R13).
 ///
@@ -180,6 +181,14 @@ impl NotificationSink for DesktopSink {
                 .appname(payload.appname)
                 .summary(&payload.summary)
                 .body(&payload.body);
+            if payload.critical {
+                // D-I9.1: the value expression is per-target (notify-rust
+                // carries the three platform `urgency()` overloads).
+                #[cfg(target_os = "macos")]
+                toast.urgency(notify_rust::InterruptionLevel::Critical);
+                #[cfg(not(target_os = "macos"))]
+                toast.urgency(notify_rust::Urgency::Critical);
+            }
             // The anchor rides in the payload (the `Notification`
             // already carries it) and is rendered nowhere — ready for
             // #203's click-through.
@@ -256,6 +265,9 @@ struct ToastPayload {
     summary: String,
     body: String,
     appname: &'static str,
+    /// D-I9.1: the insistence snapshot marks the payload
+    /// platform-critical — the sink's only urgency surface.
+    critical: bool,
 }
 
 /// The pure payload mapping (D-R3 of the stage-1 plan): data-in,
@@ -278,6 +290,7 @@ fn toast_payload(notification: &Notification, now: DateTime<Utc>) -> ToastPayloa
         summary: notification.title.clone(),
         body,
         appname: "taskboard",
+        critical: notification.insistence == taskboard_domain::Insistence::Alarm,
     }
 }
 
@@ -517,6 +530,28 @@ mod tests {
         assert_eq!(payload.summary, "ship it");
         assert_eq!(payload.appname, "taskboard");
         assert_ne!(payload.body, "");
+    }
+
+    #[test]
+    fn alarm_insistence_marks_the_payload_critical() {
+        let mut note = notification(ReminderAnchor::Alarm(AdhocAlarmId::from_uuid(
+            uuid::Uuid::from_u128(5),
+        )));
+        note.insistence = taskboard_domain::Insistence::Alarm;
+        assert!(toast_payload(&note, FIRED_AT).critical);
+    }
+
+    #[test]
+    fn normal_insistence_keeps_the_default_urgency() {
+        assert!(
+            !toast_payload(
+                &notification(ReminderAnchor::Task(TaskId::from_uuid(
+                    uuid::Uuid::from_u128(4)
+                ))),
+                FIRED_AT
+            )
+            .critical
+        );
     }
 
     #[test]
