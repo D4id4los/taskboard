@@ -41,7 +41,10 @@ Two snapshot-based alternatives were rejected then and stay rejected:
    (=MarkJournalPushed=, flipped in the same batch as the completing
    =CompleteOp= — the R-U9 post-pass) undo and redo are *new edits*:
    fresh plans, fresh stamps, own ops — never a remote take-back
-   (ADR 0007).
+   (ADR 0007). A redo whose re-planned intent enqueues fresh ops flips
+   the target's flag in its own batch: a redo is a new edit *always*,
+   so a later undo can never retract ops the server is about to
+   receive.
 
 3. *Observation machinery is untouchable* (D-U3, R-U12). Undo never
    rewinds =remote_seen=, =remote_baseline=, validators, or any
