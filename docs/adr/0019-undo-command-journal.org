@@ -1,0 +1,126 @@
+#+title: ADR 0019: The Undo Command Journal — Plan-Time Pre-Images, Inverse Synthesis, and the Linear v1 Line
+- *Date:* 2026-10-30
+- *Status:* Accepted (chunk undo/1 — journal substrate, synthesis, engine — lands with this ADR; surfaces are undo/2, #510)
+- *Depends on:* ADR 0006 (the single-advance interpret loop — amended in place, dated), ADR 0004 (LWW over per-field write clocks), ADR 0007 (push-first sync, no remote take-back)
+- *Carriers:* #509 (this chunk), #510 (surfaces), #176 (the undo umbrella); the deferred families #353–#357
+
+* Context
+
+ADR 0006's consequence section says "the engine has no undo path".
+The 2026-10-19 design round (D-U1…D-U5, all accepted) reversed that
+ruling with a shape that does not fight the architecture, and the
+2026-10-26 implementation round (R-U6…R-U12) settled its mechanics.
+Two snapshot-based alternatives were rejected then and stay rejected:
+
+- *Whole-state snapshots* — they fight the per-field LWW clocks (a
+  restored snapshot would rewind observation stamps), carry no causal
+  structure (nothing names *what* is being undone), and cost
+  whole-state clones per command.
+- *Restore-in-place rollback* — a second write stream that breaks the
+  single-advance rule (ADR 0006): memory would advance by something
+  the database never persisted.
+
+* Decision
+
+1. *Journal intents + plan-time pre-images in the command's own batch*
+   (D-U1). Every accepted *effective* mutating command appends one
+   =RecordJournal= entry to its own persistence batch — the batch the
+   engine interprets into memory, so memory ≡ disk holds by
+   construction and no rollback path exists. The entry carries the
+   verbatim intent, the touched entities' pre-images (captured after
+   planning, from the pre-state, by an arm-agnostic pass over the
+   plan's upserts — =plan_command='s catalogue is untouched; the
+   wrapper =plan_journaled_command= is the seam), the post-write clock
+   stamps (the invertibility watermark), and the batch's enqueued op
+   ids. The empty-batch rule makes "accepted mutating command"
+   mechanical: an accepted no-op journals nothing.
+
+2. *The pushed-edit rule is hard* (D-U2). Before the push boundary
+   (an entry's ops still pending, =pushed = false=) undo *retracts*:
+   =FailOp= the entry's ops — the server never knew. Past the boundary
+   (=MarkJournalPushed=, flipped in the same batch as the completing
+   =CompleteOp= — the R-U9 post-pass) undo and redo are *new edits*:
+   fresh plans, fresh stamps, own ops — never a remote take-back
+   (ADR 0007).
+
+3. *Observation machinery is untouchable* (D-U3, R-U12). Undo never
+   rewinds =remote_seen=, =remote_baseline=, validators, or any
+   sync bookkeeping: restored values carry fresh write clocks only.
+   The watermark's checked fields are exactly the chosen inverse's
+   write set (per-arm, not "all stamped fields"), which keeps an
+   unrelated entry adjust or a push echo's rebinding from refusing a
+   legitimate undo.
+
+4. *Journal the tree, expose a line* (D-U4). Entries carry
+   =parent = head-at-plan-time= from day one; v1 exposes the linear
+   line: =Undo=/=Redo= ride =EngineEnvelope::Execute= (no new envelope,
+   channel, or actor; =EngineSignal= stays =Copy=-only), and
+   =AppState.undo: UndoView= is the memory-only projection. Redo
+   follows the head's greatest child by =(created_at, id)= —
+   stateless, deterministic, editor-equivalent in every v1-reachable
+   case; a new edit after undos forks and retires the old branch's
+   redo path. =Undo=/=Redo= write no nodes — they move the persisted
+   head in their own batch (=MoveJournalHead=, D4), so the line
+   survives restarts (R-U10: the head cannot be derived).
+
+5. *v1 scope* (D-U5): 13 undoable arms (12 fully + =CreateStack=
+   refuse-if-occupied); =DeleteTask= undoes through the new
+   =RestoreTask= verb (three cases: pending-op retraction with no new
+   op / pushed re-POST with remote identity churn, honestly / local
+   resurrect); =SetTaskDone= undoes the flag only — its side effects
+   (the spawn successor, the closed entries, the dismissals, the
+   suppressed recur clear) are one-way facts. Refusals are typed and
+   name themselves: =NothingToUndo=, =TargetNotUndoable(reason)=
+   (refuse-and-name, never skip — R-U6), =TargetNoLongerInvertible=
+   (the watermark diverged — refuse-and-name, never force-apply,
+   R-U7), =UndoTargetHasDependents=. Retention is an apply-side
+   eviction (R-U11): oldest-first *leaves* beyond a 1000-entry cap and
+   a 90-day floor, one pure decision shared by the memory arm and the
+   sqlite mirror — a pruned head reports =NothingToUndo=, the ruled
+   graceful degradation.
+
+6. *The classification lockstep.* Two exhaustive, no-wildcard
+   =match=es over =StateCommand= (record-time classification, undo-time
+   synthesis) are the compile-time contract: a new arm fails the build
+   until it gets a row. v1 classifies 13 arms undoable and 30 typed
+   =NotUndoable= by family (restore-class #356, board ceremony #357,
+   reminder surface #354, and the post-design tracking/habit surfaces,
+   scope-closed); =RequestSync= is never journaled. The
+   mechanically-invertible rows among the non-undoable (board
+   rename/color/archive, adhoc alarms, =LogTime=, =AdjustTimeEntry=,
+   the habit editors) are recorded, not scheduled — v2 widening
+   material (decision D20).
+
+* Chunk-level settlements (the stage-1 plan's D1–D20, normative)
+
+- Migration *0016* =0016_command_journal.sql= (the dispatch's 0015 was
+  taken at this base; DR-6/6 renumbers to 0017 at its rebase) — scalar
+  columns + one JSON payload =({command, facts, ops})=; =ops= ride the
+  payload because they must survive restarts for the pushed-edit rule
+  (a D13 + deviation); the head is a dedicated one-row metadata table
+  (D12); hydration =ORDER BY rowid=, never by TEXT stamps.
+- =RestoreTask= rides the command (D10) — self-contained,
+  =plan_command= stays journal-free.
+- The watermark carries full per-entity clock structs (D8); the
+  refusal payload names entity + field.
+- =IdGenerator= widens with =new_journal_id()= (D18) — every journaled
+  command consumes one id at the only sanctioned seam.
+- =EngineSignal= stays single-variant =Copy= (E-15 stays dodged); no
+  new envelope/channel/actor (R-U10 freedom, decision D3: R-U10's
+  head-moves-without-a-node supersedes the 2026-10-19 sketch's
+  "undo is a journal node").
+
+* Consequences
+
+- Correctness still rests on ordering, not rollback: the journal joins
+  the single-advance rule as batch actions; ADR 0006's forbidden
+  refactor (reordering apply/interpret) stays forbidden, now with the
+  journal on both sides.
+- The redo of a spawned completion double-spawns (redo re-runs the
+  full =SetTaskDone= arm): accepted v1 semantics — a redo is a new
+  edit; the surfaces chunk's copy starts from the honest behavior.
+- The journal costs whole-entity pre-images × 1000 cap: a few MB worst
+  case — the cap is the kiosk-budget knob.
+- Branch-picking UI, per-board line scoping, and the
+  mechanically-invertible arm widenings are v2 (#353–#357), additive by
+  the tree shape.

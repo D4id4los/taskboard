@@ -103,6 +103,12 @@ actor owns cycle coalescing.
 
 - The engine has no undo path: correctness rests on ordering, not
   rollback. Reordering apply/interpret is the one forbidden refactor.
+  *(Amended 2026-10-30, ADR 0019: the undo command journal rides the
+  single-advance rule — =RecordJournal=/=MoveJournalHead=/=MarkJournalPushed=
+  are ordinary batch actions on the same applied-and-interpreted batch;
+  ordering, not rollback, remains the correctness story. The sentence
+  above stands for what it always meant: there is no second write
+  stream and no restore path.)*
 - =plan_command= and =apply_sync_report= together form the complete
   transition surface; both are pure, Miri- and mutation-tested in the
   domain crate.

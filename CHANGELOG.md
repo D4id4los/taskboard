@@ -10,6 +10,16 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 ### Added
 
+- Undo v1, engine contract (ADR 0019, #509): every accepted mutating
+  command journals an undo entry (the verbatim intent, pre-images, and
+  invertibility watermark) inside its own persistence batch, so the
+  undo line is durable and survives restarts. The engine gains the
+  `Undo`/`Redo` commands (13 command families undoable in v1, typed
+  refusals naming why the rest are not), a `RestoreTask` verb (the
+  delete-undo instrument: pending-delete retraction, pushed re-POST,
+  local resurrect), retention bounded at 1000 entries / 90 days, and
+  storage migration `0016_command_journal` (two additive tables).
+  User-facing surfaces (CLI verbs, toasts) land with chunk undo/2.
 - Reminder escalation (DR-3 chunk 4, #477): the `alarm` insistence rung
   now insists. An app-layer escalation driver beside the notifier keeps
   every un-dismissed `alarm` occurrence in the user's face while it
