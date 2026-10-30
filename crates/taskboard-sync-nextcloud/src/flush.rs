@@ -122,6 +122,7 @@ pub(crate) fn board_has_local_app_data(
                 || task.importance.is_some()
                 || task.urgency.is_some()
                 || (!native_scheduled && task.scheduled.is_some())
+                || task.recur.is_some() // no native lane — always document content
                 || rules.values().any(|rule| rule.task == task.id))
     }) || entries
         .values()
@@ -502,6 +503,7 @@ fn task_has_app_data(
         || task.importance.is_some()
         || task.urgency.is_some()
         || (!features.card_startdate && task.scheduled.is_some())
+        || task.recur.is_some() // recurrence has no native lane — always document content
         || rules.values().any(|rule| rule.task == task.id)
 }
 
@@ -740,5 +742,52 @@ mod tests {
             board,
             false
         ));
+    }
+
+    /// A recurrence rule is document content (no native Deck lane): a
+    /// board whose only app-data is a task's recur rule fires the lazy
+    /// gate, so the overlay row — which `task_entry_for` emits with the
+    /// rule under its clock — actually reaches the wire.
+    #[test]
+    fn a_recur_only_board_fires_the_appdata_clause() {
+        let (mut tasks, stacks, task_id) = fixture(false);
+        tasks.get_mut(&task_id).unwrap().recur = Some(taskboard_domain::recur::RecurRule {
+            series: taskboard_domain::ids::SeriesId::from_uuid(uuid::Uuid::from_u128(7)),
+            anchor: chrono::NaiveDate::from_ymd_opt(2026, 3, 1).unwrap(),
+            pattern: taskboard_domain::recur::RecurPattern::Daily {
+                every: taskboard_domain::recur::EveryDays::new(1).unwrap(),
+            },
+            bound: taskboard_domain::recur::RecurBound::None,
+            continued_from: None,
+        });
+        let tables = EntityTables {
+            tasks: &tasks,
+            stacks: &stacks,
+            labels: empty_labels(),
+            boards: empty_boards(),
+        };
+        let board = BoardId::from(uuid::Uuid::from_u128(1));
+        let empty: BTreeMap<TimeEntryId, TimeEntry> = BTreeMap::new();
+        assert!(
+            has_flush_work(
+                None,
+                &AppDataEvidence::Absent,
+                tables,
+                &BTreeMap::new(),
+                &empty,
+                ts(10_000_000),
+                board,
+                false
+            ),
+            "the recur-only board grows its anchor"
+        );
+        assert!(
+            task_has_app_data(
+                &tasks[&task_id],
+                &BTreeMap::new(),
+                taskboard_domain::capabilities::DeckFeatures::CONSERVATIVE
+            ),
+            "the rebuild scope picks the recur-bearing task"
+        );
     }
 }
