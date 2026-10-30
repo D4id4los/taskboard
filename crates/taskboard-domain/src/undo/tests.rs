@@ -608,16 +608,7 @@ fn undo_of_pushed_delete_reposts_as_a_create() {
     h.disk.journal.entries.last_mut().unwrap().pushed = true;
     h.sync();
     let outbox_before = h.disk.outbox.len();
-    let undo_plan = h.exec_plan(&StateCommand::Undo).expect("undone");
-    eprintln!("DBG pushed: {}", h.journal.entries.last().unwrap().pushed);
-    eprintln!(
-        "DBG actions: {:?}",
-        undo_plan
-            .actions
-            .iter()
-            .map(|a| format!("{a:?}"))
-            .collect::<Vec<_>>()
-    );
+    h.exec_plan(&StateCommand::Undo).expect("undone");
     let after = &h.disk.tasks[&task];
     assert!(!after.deleted);
     // A pushed delete undoes as a new edit: the re-POST create op.
@@ -835,6 +826,38 @@ fn a_new_edit_after_undos_forks_and_the_old_redo_path_dies() {
         Err(CommandError::NothingToRedo)
     ));
     assert_eq!(h.disk.tasks[&task].title, "three");
+}
+
+#[test]
+fn a_redo_that_reenqueues_crosses_the_push_boundary() {
+    let mut h = Harness::new();
+    let board = h.board();
+    let stack = h.stack(board);
+    h.task(stack, "t");
+    // Undo the create (retraction), then redo: the re-planned create
+    // mints a fresh task and enqueues a fresh op — the redo's writes
+    // are heading to the server, so its batch must flip the entry's
+    // flag past the push boundary (a redo is a new edit, always).
+    h.exec(&StateCommand::Undo).expect("undone");
+    let redo_plan = h.exec_plan(&StateCommand::Redo).expect("redone");
+    assert!(
+        redo_plan
+            .actions
+            .iter()
+            .any(|action| matches!(action, PersistenceAction::EnqueueOp(_)))
+    );
+    let target = h.journal.entries.last().unwrap().id;
+    assert!(
+        redo_plan.actions.iter().any(|action| matches!(
+            action,
+            PersistenceAction::MarkJournalPushed(id) if *id == target
+        )),
+        "the re-enqueueing redo carries its own boundary flip"
+    );
+    assert!(
+        h.journal.entry(target).is_some_and(|entry| entry.pushed),
+        "the flag survives in the applied journal"
+    );
 }
 
 #[test]

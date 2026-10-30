@@ -500,6 +500,16 @@ pub fn plan_redo(
     }
     let plan = plan_command(app, outbox, &target.command, ids, defaults, day, now)?;
     let mut actions = plan.actions;
+    // A redo that enqueues is a push-boundary crossing (D-U2: redo is a
+    // new edit, *always* — its fresh ops ride the outbox to the server).
+    // Flip the target's flag in the same batch, or a later undo would
+    // "retract" an entry whose ops the server is about to receive.
+    if actions
+        .iter()
+        .any(|action| matches!(action, PersistenceAction::EnqueueOp(_)))
+    {
+        actions.push(PersistenceAction::MarkJournalPushed(target.id));
+    }
     actions.push(PersistenceAction::MoveJournalHead(Some(target.id)));
     Ok(CommandPlan {
         actions,
