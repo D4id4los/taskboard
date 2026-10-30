@@ -22,6 +22,7 @@ use std::time::Duration;
 use taskboard_domain::test_support::{CountingIds, InMemoryRepository};
 use taskboard_domain::{
     AppState, Clock, CommandOutcome, SyncCommand, SyncPhase, SyncReport, SystemEvent,
+    TaskRepository,
 };
 use taskboard_state::spawn_state_engine;
 use taskboard_sync_nextcloud::{DeckClient, SyncActorConfig, spawn_sync_actor};
@@ -1192,4 +1193,206 @@ async fn i7_a_strangers_twin_card_adopts_without_a_create_in_scope() {
                 .is_some_and(|t| t.remote.is_none())
     })
     .await;
+}
+
+// ---- DR-6/3: adopt an occurrence card, learn the series ----------------
+
+/// The reserved anchor title the document lane scans for.
+const ANCHOR_TITLE: &str = "[taskboard] app-data";
+
+/// I8: an occurrence card adopts as an ordinary task, and the other
+/// device's sidecar document teaches it the series — the recur fact
+/// rides the existing per-task appdata row (no new section). The fold
+/// lands on the cycle *after* the adoption (§5b resolves cards through
+/// the binding map, and a fresh adoption binds at §5) — the second nudge
+/// pins that convergence, plus the repo persistence and the lane's
+/// idempotence. No `SystemEvent` anywhere on the path.
+#[tokio::test(start_paused = true)]
+#[allow(clippy::too_many_lines)] // the mounts and the seed are the journey
+async fn i8_adopting_an_occurrence_card_learns_its_series() {
+    use taskboard_domain::appdata::{
+        APPDATA_FORMAT, AppDataDocument, AppDataSections, ModeledValue, TaskEntry, TaskFieldWrite,
+    };
+    use taskboard_domain::ids::{RemoteBoardId, SeriesId};
+    use taskboard_domain::recur::{EveryDays, RecurBound, RecurPattern, RecurRule};
+
+    let server = Arc::new(start_server().await);
+    let rule = RecurRule {
+        series: SeriesId::from_uuid(uuid(300)),
+        anchor: chrono::NaiveDate::from_ymd_opt(2026, 3, 1).unwrap(),
+        pattern: RecurPattern::Daily {
+            every: EveryDays::new(2).unwrap(),
+        },
+        bound: RecurBound::None,
+        continued_from: None,
+    };
+    // The document the other device flushed: the occurrence card's row
+    // carries the rule under its write clock. Built through the real
+    // document types — this is the JSON shape the flush uploads.
+    let document = AppDataDocument {
+        format: APPDATA_FORMAT,
+        board: RemoteBoardId(BOARD),
+        sections: AppDataSections {
+            tasks: Some(
+                [(
+                    "56".to_owned(),
+                    TaskEntry {
+                        fields: [(
+                            "recur".to_owned(),
+                            TaskFieldWrite {
+                                value: ModeledValue::Recur(Some(rule.clone())),
+                                clock: ts(T + 500),
+                            },
+                        )]
+                        .into(),
+                        unmodeled: std::collections::BTreeMap::new(),
+                    },
+                )]
+                .into(),
+            ),
+            ..Default::default()
+        },
+        unknown: std::collections::BTreeMap::new(),
+    };
+
+    // The pull: the anchor card (bound below) + the occurrence card.
+    let anchor_card = serde_json::json!({
+        "id": 55, "title": ANCHOR_TITLE, "stackId": STACK, "type": "plain",
+        "order": 0, "lastModified": T, "labels": [], "archived": false,
+        "duedate": null, "done": null
+    });
+    mount_pull(
+        &server,
+        serde_json::json!([anchor_card, card_json(56, "water the plants")]),
+    )
+    .await;
+    // The anchor detail carries the reserved-filename attachment; the
+    // download serves the document.
+    let detail = serde_json::json!({
+        "id": 55, "title": ANCHOR_TITLE, "stackId": STACK, "type": "plain",
+        "order": 0, "lastModified": T, "labels": [], "archived": false,
+        "duedate": null, "done": null,
+        "attachments": [{
+            "id": 11, "type": "deck_file", "cardId": 55,
+            "createdAt": T, "lastModified": T, "deletedAt": 0,
+            "extendedData": {
+                "fileName": "taskboard-appdata.json", "filesize": 25,
+                "mimetype": "application/json", "mtime": T
+            }
+        }]
+    });
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/index.php/apps/deck/api/v1.0/boards/{BOARD}/stacks/{STACK}/cards/55"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(detail))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/index.php/apps/deck/api/v1.0/boards/{BOARD}/stacks/{STACK}/cards/55/attachments/11"
+        )))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(serde_json::to_string(&document).unwrap()),
+        )
+        .mount(&server)
+        .await;
+    // The sidecar lane probes Deck's capabilities.
+    Mock::given(method("GET"))
+        .and(path("/ocs/v2.php/cloud/capabilities"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "ocs": {
+                "meta": { "statuscode": 200 },
+                "data": {
+                    "version": { "major": 33 },
+                    "capabilities": { "deck": { "version": "1.19.0" } },
+                },
+            }
+        })))
+        .mount(&server)
+        .await;
+
+    // The seed: bound board/stack + the anchor task bound to card 55.
+    // No recur state anywhere.
+    let mut state = seeded_state();
+    state.tasks.insert(
+        taskboard_domain::TaskId::from(uuid(100)),
+        taskboard_domain::Task {
+            id: taskboard_domain::TaskId::from(uuid(100)),
+            remote: Some(taskboard_domain::RemoteCardRef {
+                board: RemoteBoardId(BOARD),
+                stack: taskboard_domain::RemoteStackId(STACK),
+                card: taskboard_domain::RemoteCardId(55),
+            }),
+            title: ANCHOR_TITLE.into(),
+            description: String::new(),
+            duedate: None,
+            scheduled: None,
+            done: None,
+            stack: taskboard_domain::StackId::from(uuid(2)),
+            order: 0,
+            label_memberships: std::collections::BTreeMap::new(),
+            effort: None,
+            importance: None,
+            urgency: None,
+            recur: None,
+            archived: false,
+            deleted: false,
+            clocks: taskboard_domain::TaskClocks {
+                title: ts(T),
+                description: ts(T),
+                duedate: ts(T),
+                scheduled: ts(T),
+                done: ts(T),
+                position: ts(T),
+                effort: ts(T),
+                importance: ts(T),
+                urgency: ts(T),
+                recur: ts(T),
+                archived: ts(T),
+                deleted: ts(T),
+            },
+            remote_seen: Some(ts(T)),
+            remote_baseline: None,
+        },
+    );
+    let clock: Arc<dyn Clock> = Arc::new(SteppingClock::new(ts(T + 1000), 1));
+    let stack = boot(server, state, clock).await;
+    let (commands, _actor) = spawn_actor(&stack);
+    wait_subscribed(&stack.system_tx).await;
+    let mut events_rx = stack.system_tx.subscribe();
+
+    // Cycle 1: the occurrence card adopts as its own task.
+    nudge_cycle(&commands).await;
+    eventually(&stack.engine, |app| {
+        app.tasks
+            .values()
+            .any(|t| t.title == "water the plants" && t.remote.is_some())
+    })
+    .await;
+
+    // Cycle 2: the document folds — the adopted task learns the series.
+    nudge_cycle(&commands).await;
+    eventually(&stack.engine, |app| {
+        app.tasks
+            .values()
+            .any(|t| t.title == "water the plants" && t.recur.as_ref() == Some(&rule))
+    })
+    .await;
+
+    // The engine's published state and the repository agree (the fold's
+    // batch persisted through the real apply path).
+    let persisted = stack.repo.load().await.expect("repo load");
+    assert!(
+        persisted
+            .tasks
+            .values()
+            .any(|t| t.recur.as_ref() == Some(&rule))
+    );
+
+    // Honesty: the whole journey broadcast nothing.
+    assert!(
+        events_rx.try_recv().is_err(),
+        "the document lane never broadcasts"
+    );
 }

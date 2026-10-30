@@ -1458,3 +1458,46 @@ async fn a_batch_carrying_upsert_then_delete_for_one_entry_lands_the_delete() {
     );
     repo.close().await;
 }
+
+/// The recur row's SQL-boundary round-trip (chunk DR-6/3's storage pin):
+/// a task carrying a rule + its write clock survives a full close/reopen
+/// through the real codec, byte-equal on both the value and the clock.
+#[tokio::test]
+async fn recur_rows_survive_a_close_reopen_through_the_real_codec() {
+    use taskboard_domain::ids::SeriesId;
+    use taskboard_domain::recur::{EveryDays, RecurBound, RecurPattern, RecurRule};
+
+    let mut db = common::FileDb::new().await;
+    let repo = db.repo();
+    let b = board(12);
+    let s = stack(3, &b);
+    let mut t = task(2, &s, BTreeMap::default());
+    t.recur = Some(RecurRule {
+        series: SeriesId::from_uuid(uuid::Uuid::from_u128(7)),
+        anchor: chrono::NaiveDate::from_ymd_opt(2026, 3, 1).unwrap(),
+        pattern: RecurPattern::Daily {
+            every: EveryDays::new(2).unwrap(),
+        },
+        bound: RecurBound::None,
+        continued_from: None,
+    });
+    t.clocks.recur = ts(900);
+    repo.apply(vec![
+        PersistenceAction::UpsertBoard(b),
+        PersistenceAction::UpsertStack(s),
+        PersistenceAction::UpsertTask(t.clone()),
+    ])
+    .await
+    .expect("seed the recur row");
+
+    db.reopen().await;
+    let loaded = db.repo().load().await.expect("load");
+    let back = loaded.tasks.get(&t.id).expect("the task survives");
+    assert_eq!(back.recur, t.recur, "the rule decodes byte-equal");
+    assert_eq!(
+        back.clocks.recur,
+        ts(900),
+        "the write clock decodes byte-equal"
+    );
+    db.close().await;
+}
