@@ -38,6 +38,7 @@ pub mod find;
 pub mod habit;
 pub mod idgen;
 pub mod ids;
+pub mod journal;
 pub mod merge;
 pub mod messages;
 pub mod outbox;
@@ -91,9 +92,14 @@ pub use habit::{
 };
 pub use idgen::{IdGenerator, UuidV7Generator};
 pub use ids::{
-    AdhocAlarmId, BoardId, ConnectorId, HabitId, LabelId, ReminderRuleId, RemoteBoardBinding,
-    RemoteBoardId, RemoteCardId, RemoteCardRef, RemoteLabelId, RemoteLabelRef, RemoteStackId,
-    RemoteStackRef, SeriesId, StackId, TaskId, TimeEntryId,
+    AdhocAlarmId, BoardId, ConnectorId, HabitId, JournalId, LabelId, ReminderRuleId,
+    RemoteBoardBinding, RemoteBoardId, RemoteCardId, RemoteCardRef, RemoteLabelId, RemoteLabelRef,
+    RemoteStackId, RemoteStackRef, SeriesId, StackId, TaskId, TimeEntryId,
+};
+pub use journal::{
+    EntityStamps, JOURNAL_AGE_FLOOR, JOURNAL_CAP, JournalEntity, JournalEntry, JournalState,
+    NotUndoableReason, PreImage, UNDO_RECENT_WINDOW, UndoFacts, UndoField, UndoLabel, UndoView,
+    UndoWatermark, command_label, evict_journal, evict_journal_ids,
 };
 pub use merge::{
     RuleFoldChanges, adopt_board_if_newer, adopt_label_after_push, adopt_remote_board,

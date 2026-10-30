@@ -45,6 +45,10 @@ pub struct AppState {
     /// Current sync status, keyed per board (the surfaces read the
     /// `aggregate()` fold).
     pub sync: SyncStates,
+    /// The derived undo projection (ADR 0019) — memory-only like
+    /// `last_updated`: derived from the persisted [`crate::journal::
+    /// JournalState`] at every publish, never persisted itself.
+    pub undo: crate::journal::UndoView,
     /// Time of the last engine mutation from ANY source (local command or
     /// sync ingestion), stamped via the injected `Clock`.
     pub last_updated: Option<DateTime<Utc>>,

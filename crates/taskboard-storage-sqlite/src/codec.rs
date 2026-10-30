@@ -468,8 +468,43 @@ pub(crate) fn remote_col(raw: u64) -> i64 {
     i64::try_from(raw).unwrap_or(i64::MAX)
 }
 
+/// The journal entry's JSON payload (D13): the command and the undo
+/// facts ride one blob; the scalars are columns. Serde round-trip pinned
+/// by a storage test; a decode failure is typed `Corrupted` at the repo.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct JournalPayload {
+    pub command: taskboard_domain::messages::StateCommand,
+    pub facts: taskboard_domain::journal::UndoFacts,
+    /// The entry's enqueued op ids, in batch order (the pushed-edit
+    /// rule's data — must survive restarts, so it rides the blob next
+    /// to the facts; a D13 + deviation recorded in the chunk report).
+    #[serde(default)]
+    pub ops: Vec<taskboard_domain::OpId>,
+}
+
+/// Encodes one journal entry's `{ command, facts }` payload.
+pub(crate) fn journal_payload_to_json(
+    command: &taskboard_domain::messages::StateCommand,
+    facts: &taskboard_domain::journal::UndoFacts,
+    ops: &[taskboard_domain::OpId],
+) -> String {
+    serde_json::to_string(&JournalPayload {
+        command: command.clone(),
+        facts: facts.clone(),
+        ops: ops.to_vec(),
+    })
+    .expect("journal payload serializes")
+}
+
+/// Decodes a journal payload; `None` on any malformed JSON or shape
+/// (typed `Corrupted` at the repository — corruption, not data).
+pub(crate) fn journal_payload_from_json(raw: &str) -> Option<JournalPayload> {
+    serde_json::from_str(raw).ok()
+}
+
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     use taskboard_domain::ids::{RemoteBoardId, RemoteCardId, RemoteLabelId, RemoteStackId};

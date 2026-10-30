@@ -413,6 +413,29 @@ pub enum StateCommand {
         /// Habit to delete.
         habit: HabitId,
     },
+    /// Undo the line head's journaled command (ADR 0019). Engine-routed:
+    /// the journal wrapper plans it (`plan_undo`) before the ordinary
+    /// catalogue sees it — a direct dispatch is a typed rejection, not a
+    /// silent fall-through. The undo line survives restarts.
+    Undo,
+    /// Redo the head's most recent child (greatest `(created_at, id)` —
+    /// the D5 editor rule). Engine-routed symmetric to [`StateCommand::Undo`].
+    Redo,
+    /// Resurrect one tombstoned task from a journal pre-image — the
+    /// inverse *instrument* of `DeleteTask`'s undo (ADR 0019 §11), not a
+    /// v1 user surface. Three cases: pending delete op ⇒ retraction
+    /// (`FailOp`, no new op — the server never knew); pushed delete ⇒
+    /// resurrect with a fresh create op (Deck undelete is re-POST;
+    /// remote identity churns, honestly); never-pushed unbound ⇒ local
+    /// resurrect. A live target is the accepted no-op; an unknown id is
+    /// a typed rejection.
+    RestoreTask {
+        /// The tombstoned task to resurrect.
+        id: TaskId,
+        /// The pre-image entity the journal recorded at delete time; its
+        /// values ride back verbatim, only the tombstone clock refreshes.
+        resurrect: Box<crate::entities::Task>,
+    },
     /// User-visible refresh request; the engine forwards it to the sync
     /// actor.
     RequestSync,

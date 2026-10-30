@@ -103,6 +103,10 @@ pub struct PersistedState {
     pub tracking: crate::tracking::TrackingState,
     /// Habit trackers and their count log (DR-6/5).
     pub habits: crate::habit::HabitState,
+    /// The undo journal (ADR 0019): the tree of journaled commands and
+    /// the persisted line head (R-U10 — the head moves on undo/redo
+    /// without a new node, so it cannot be derived).
+    pub journal: crate::journal::JournalState,
 }
 
 impl From<PersistedState> for AppState {
@@ -116,6 +120,7 @@ impl From<PersistedState> for AppState {
             tracking: persisted.tracking,
             habits: persisted.habits,
             sync: persisted.sync,
+            undo: crate::journal::UndoView::derive(&persisted.journal),
             last_updated: None,
         }
     }
@@ -255,6 +260,23 @@ pub enum PersistenceAction {
     /// itself (identity, binding, clocks, `remote_seen`) and the sync
     /// status survive. The `ResetBoard` repair's single bulk action.
     ClearBoardContent(crate::ids::BoardId),
+    /// Append one journal entry and move the head onto it (ADR 0019):
+    /// the journaled command's own batch carries this action, appended
+    /// last — the applied batch and the interpreted batch stay identical
+    /// (the single-advance rule). The apply arm runs the R-U11 retention
+    /// eviction (the sqlite twin mirrors it with the same pure helper —
+    /// D11).
+    RecordJournal(crate::journal::JournalEntry),
+    /// Flip one entry's pushed flag to `true` (idempotent by
+    /// construction — the double-apply is pinned). Emitted by the
+    /// engine's R-U9 post-pass when a completed push completed one of
+    /// the entry's ops: the exact pushed-edit boundary signal
+    /// (D-U2/D-U3).
+    MarkJournalPushed(crate::ids::JournalId),
+    /// Move the persisted line head (R-U10: undo/redo write no nodes —
+    /// they move the head in their own batch, so the line survives
+    /// restarts). `None` is legal (the emptied line).
+    MoveJournalHead(Option<crate::ids::JournalId>),
 }
 
 /// Applies a batch of [`PersistenceAction`]s to a [`PersistedState`] —
@@ -531,6 +553,39 @@ pub fn apply_actions(state: &mut PersistedState, actions: &[PersistenceAction]) 
                                 .map(|r| r.board)
                     }
                 });
+            }
+            PersistenceAction::RecordJournal(entry) => {
+                // Replace-or-append by id (an idempotent replay parity
+                // with the sqlite INSERT .. ON CONFLICT), then the head
+                // moves onto the entry.
+                match state.journal.entries.iter_mut().find(|e| e.id == entry.id) {
+                    Some(slot) => *slot = entry.clone(),
+                    None => state.journal.entries.push(entry.clone()),
+                }
+                state.journal.head = Some(entry.id);
+                // R-U11 retention: the same pure helper the sqlite mirror
+                // runs inside its record transaction (memory ≡ disk).
+                let evicted =
+                    crate::journal::evict_journal(&state.journal.entries, entry.created_at);
+                if !evicted.is_empty() {
+                    state.journal.entries.retain(|e| !evicted.contains(&e.id));
+                    // A pruned line reports `NothingToUndo` — the ruled
+                    // graceful degradation (only reachable in degenerate
+                    // shapes; the incoming entry is never its own leaf).
+                    if state.journal.head.is_some_and(|h| evicted.contains(&h)) {
+                        state.journal.head = None;
+                    }
+                }
+            }
+            PersistenceAction::MarkJournalPushed(id) => {
+                // Idempotent by construction: an absent entry (evicted)
+                // or an already-pushed one both leave the line untouched.
+                if let Some(entry) = state.journal.entries.iter_mut().find(|e| e.id == *id) {
+                    entry.pushed = true;
+                }
+            }
+            PersistenceAction::MoveJournalHead(head) => {
+                state.journal.head = *head;
             }
         }
     }

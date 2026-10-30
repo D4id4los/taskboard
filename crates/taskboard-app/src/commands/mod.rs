@@ -569,6 +569,9 @@ fn domain_error_kind(err: &taskboard_domain::CommandError) -> &'static str {
         D::InvalidSpan => "invalid-span",
         D::UnknownHabit(_) | D::HabitDeleted(_) => "unknown-habit",
         D::InvalidHabitWindow { .. } => "invalid-habit-window",
+        // The undo line's refusals arrive in commit undo/1's second
+        // wave; `EngineRouted` is the catalogue's totality arm.
+        D::EngineRouted => "engine-routed",
     }
 }
 

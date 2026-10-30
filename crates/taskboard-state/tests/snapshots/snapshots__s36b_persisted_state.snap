@@ -129,3 +129,6 @@ tracking:
 habits:
   habits: {}
   log: {}
+journal:
+  entries: []
+  head: ~

@@ -759,6 +759,31 @@ impl SqliteTaskRepository {
                 .await
                 .map_err(|e| stmt_error(&e))?;
 
+        // Runtime-checked queries, the habit-tables precedent: the
+        // prepared-cache macros cannot see a migration this chunk itself
+        // ships until `cargo sqlx prepare` runs against it.
+        // (id, parent, created_at, pushed, board, payload) — the lean
+        // hydration row; a `query!` macro cannot see this chunk's own
+        // migration until `cargo sqlx prepare` runs against it.
+        type JournalRow = (String, Option<String>, String, bool, Option<String>, String);
+        let journal_rows: Vec<JournalRow> = sqlx::query_as(
+            r"SELECT id, parent, created_at, pushed, board, payload
+               FROM command_journal ORDER BY rowid",
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| stmt_error(&e))?;
+
+        let journal_head_row: Vec<(Option<String>,)> =
+            sqlx::query_as(r"SELECT id FROM command_journal_head")
+                .fetch_all(&mut *tx)
+                .await
+                .map_err(|e| stmt_error(&e))?;
+        let journal_head: Option<Option<String>> = journal_head_row.into_iter().next().map(|r| r.0);
+        let Some(journal_head) = journal_head else {
+            return Err(RepositoryError::Corrupted);
+        };
+
         let time_entry_rows = sqlx::query_as!(
             TimeEntryRow,
             r#"SELECT entry_id, task_id, task_title,
@@ -886,6 +911,45 @@ impl SqliteTaskRepository {
             alarms,
         };
 
+        // The journal hydrates in insertion order (rowid = chronological;
+        // the convention forbids ORDER BY on TEXT stamps) plus the
+        // persisted head (R-U10). Empty rows decode to the default —
+        // the upgrade-pinned shape.
+        let mut journal_entries = Vec::with_capacity(journal_rows.len());
+        for (id, parent, created_at, pushed, board, payload) in &journal_rows {
+            let id = taskboard_domain::JournalId::from(decode::uuid(id)?);
+            let parent = parent
+                .as_deref()
+                .map(decode::uuid)
+                .transpose()?
+                .map(taskboard_domain::JournalId::from);
+            let board = board
+                .as_deref()
+                .map(decode::uuid)
+                .transpose()?
+                .map(taskboard_domain::BoardId::from);
+            let created_at: DateTime<Utc> =
+                created_at.parse().map_err(|_| RepositoryError::Corrupted)?;
+            let payload =
+                codec::journal_payload_from_json(payload).ok_or(RepositoryError::Corrupted)?;
+            journal_entries.push(taskboard_domain::JournalEntry {
+                id,
+                parent,
+                command: payload.command,
+                facts: payload.facts,
+                ops: payload.ops,
+                pushed: *pushed,
+                board,
+                created_at,
+            });
+        }
+
+        let head = journal_head
+            .as_deref()
+            .map(decode::uuid)
+            .transpose()?
+            .map(taskboard_domain::JournalId::from);
+
         let mut state = PersistedState {
             boards,
             stacks,
@@ -896,9 +960,15 @@ impl SqliteTaskRepository {
             sync,
             reminders,
             tracking,
-            // Chunk DR-6/6's migration (0016) hydrates both maps; the
-            // empty default is the honest shape until that codec exists.
+            // Chunk DR-6/6's migration (0017 — renumbered at its rebase
+            // after undo/1 took 0016, dispatch §2 rule 3) hydrates both
+            // maps; the empty default is the honest shape until that
+            // codec exists.
             habits: taskboard_domain::HabitState::default(),
+            journal: taskboard_domain::JournalState {
+                entries: journal_entries,
+                head,
+            },
         };
         // The per-board projection is derived, never stored: stored rows
         // carry phase/last_success, `pending_ops` is attributed from the
@@ -993,6 +1063,13 @@ async fn execute_batch(
     // that migration lands.
     let mut habit_upserts = Vec::new();
     let mut habit_log_rows = Vec::new();
+    // ADR 0019 (undo/1): the three journal buckets — appends (each with
+    // the D11 eviction mirror), head moves, flag flips. The journal
+    // references op ids by value only (no FK constraints; the eviction
+    // order owns integrity).
+    let mut journal_appends = Vec::new();
+    let mut journal_pushed = Vec::new();
+    let mut journal_head_moves = Vec::new();
     for action in actions {
         match action {
             PersistenceAction::UpsertBoard(board) => boards.push(board),
@@ -1031,6 +1108,9 @@ async fn execute_batch(
             PersistenceAction::RecordHabitLog(key, entry) => {
                 habit_log_rows.push((key, entry));
             }
+            PersistenceAction::RecordJournal(entry) => journal_appends.push(entry),
+            PersistenceAction::MarkJournalPushed(id) => journal_pushed.push(*id),
+            PersistenceAction::MoveJournalHead(head) => journal_head_moves.push(*head),
         }
     }
 
@@ -1809,6 +1889,101 @@ async fn execute_batch(
             .map_err(|e| stmt_error(&e))?;
         }
         tracing::trace!(task = ?task, muted, "task reminders muted toggled");
+    }
+
+    // Journal partitions (ADR 0019), in the fixed order after the
+    // existing ones: appends (the D11 eviction mirror runs inside the
+    // same transaction), head moves, flag flips. The idempotence
+    // contract mirrors `apply_actions`: an append replaces by id, a flag
+    // flip is an unconditional `SET pushed = 1`, a head move is one
+    // single-row `UPDATE`.
+    for entry in journal_appends {
+        sqlx::query(
+            r"INSERT INTO command_journal (id, parent, created_at, pushed, board, payload)
+                   VALUES (?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET
+                       parent = excluded.parent,
+                       created_at = excluded.created_at,
+                       pushed = excluded.pushed,
+                       board = excluded.board,
+                       payload = excluded.payload",
+        )
+        .bind(codec::uuid_to_text(entry.id.as_uuid()))
+        .bind(entry.parent.map(|p| codec::uuid_to_text(p.as_uuid())))
+        .bind(entry.created_at.to_rfc3339())
+        .bind(entry.pushed)
+        .bind(entry.board.map(|b| codec::uuid_to_text(b.as_uuid())))
+        .bind(codec::journal_payload_to_json(
+            &entry.command,
+            &entry.facts,
+            &entry.ops,
+        ))
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| stmt_error(&e))?;
+        // The record action's head move (apply-arm parity: append +
+        // head := entry.id).
+        sqlx::query(r"UPDATE command_journal_head SET id = ?")
+            .bind(codec::uuid_to_text(entry.id.as_uuid()))
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| stmt_error(&e))?;
+        tracing::trace!(entry = ?entry.id, "journal entry recorded");
+        // The D11 eviction mirror: the same pure decision the memory
+        // apply arm ran, over the table's lean columns, inside this
+        // transaction — a pruned journal stays pruned across `load()`.
+        let rows: Vec<(String, Option<String>, String)> =
+            sqlx::query_as(r"SELECT id, parent, created_at FROM command_journal")
+                .fetch_all(&mut *tx)
+                .await
+                .map_err(|e| stmt_error(&e))?;
+        let line: Vec<(
+            taskboard_domain::JournalId,
+            Option<taskboard_domain::JournalId>,
+            DateTime<Utc>,
+        )> = rows
+            .iter()
+            .filter_map(|(id, parent, created_at)| {
+                let id = taskboard_domain::JournalId::from(decode::uuid(id).ok()?);
+                let parent = parent
+                    .as_deref()
+                    .map(decode::uuid)
+                    .transpose()
+                    .ok()?
+                    .map(taskboard_domain::JournalId::from);
+                let created_at: DateTime<Utc> = created_at.parse().ok()?;
+                Some((id, parent, created_at))
+            })
+            .collect();
+        if line.len() == rows.len() {
+            let evicted = taskboard_domain::evict_journal_ids(&line, entry.created_at);
+            for id in evicted {
+                sqlx::query(r"DELETE FROM command_journal WHERE id = ?")
+                    .bind(codec::uuid_to_text(id.as_uuid()))
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| stmt_error(&e))?;
+                tracing::trace!(entry = ?id, "journal entry evicted");
+            }
+        }
+    }
+
+    for id in journal_pushed {
+        sqlx::query(r"UPDATE command_journal SET pushed = 1 WHERE id = ?")
+            .bind(codec::uuid_to_text(id.as_uuid()))
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| stmt_error(&e))?;
+        tracing::trace!(entry = ?id, "journal entry marked pushed");
+    }
+
+    for head in journal_head_moves {
+        sqlx::query(r"UPDATE command_journal_head SET id = ?")
+            .bind(head.map(|h| codec::uuid_to_text(h.as_uuid())))
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| stmt_error(&e))?;
+        tracing::trace!(?head, "journal head moved");
     }
 
     Ok(())

@@ -58,7 +58,8 @@ use uuid::Uuid;
 
 use crate::idgen::IdGenerator;
 use crate::ids::{
-    AdhocAlarmId, BoardId, HabitId, LabelId, ReminderRuleId, StackId, TaskId, TimeEntryId,
+    AdhocAlarmId, BoardId, HabitId, JournalId, LabelId, ReminderRuleId, StackId, TaskId,
+    TimeEntryId,
 };
 use crate::outbox::OpId;
 
@@ -113,6 +114,10 @@ impl IdGenerator for CountingIds {
 
     fn new_habit_id(&self) -> HabitId {
         HabitId::from(Uuid::from_u128(self.next()))
+    }
+
+    fn new_journal_id(&self) -> JournalId {
+        JournalId::from(Uuid::from_u128(self.next()))
     }
 
     fn new_op_id(&self) -> OpId {

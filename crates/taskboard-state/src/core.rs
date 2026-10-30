@@ -84,6 +84,7 @@ impl EngineCore {
             tracking: self.state.tracking.clone(),
             habits: self.state.habits.clone(),
             sync,
+            undo: taskboard_domain::UndoView::derive(&self.state.journal),
             last_updated: self.last_updated,
         }
     }

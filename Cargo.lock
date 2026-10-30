@@ -6919,6 +6919,7 @@ dependencies = [
  "chrono",
  "criterion",
  "proptest",
+ "serde",
  "serde_json",
  "sqlx",
  "taskboard-domain",
