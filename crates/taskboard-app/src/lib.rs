@@ -38,6 +38,7 @@ pub mod config;
 pub mod connections;
 mod connector_ceremonies;
 pub mod connectors;
+mod escalation;
 pub mod ipc;
 pub mod lockfile;
 pub mod migration;
