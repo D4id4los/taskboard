@@ -96,6 +96,13 @@ impl EngineCore {
         &self.state.outbox
     }
 
+    /// The persisted undo journal (the journal wrapper's line input and
+    /// the R-U9 post-pass's entry map).
+    #[must_use]
+    pub fn journal(&self) -> &taskboard_domain::JournalState {
+        &self.state.journal
+    }
+
     /// The stored sync status row of one board (phase + last success feed
     /// the status-transition decisions); `None` = no stored row.
     #[must_use]

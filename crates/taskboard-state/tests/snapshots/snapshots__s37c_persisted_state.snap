@@ -167,5 +167,85 @@ habits:
   habits: {}
   log: {}
 journal:
-  entries: []
-  head: ~
+  entries:
+    - id: 00000000-0000-0000-0000-000000000003
+      parent: ~
+      command:
+        SetTaskDone:
+          id: 00000000-0000-0000-0000-000000000258
+          done: true
+      facts:
+        PreImages:
+          images:
+            - Task:
+                id: 00000000-0000-0000-0000-000000000258
+                before:
+                  id: 00000000-0000-0000-0000-000000000258
+                  remote: ~
+                  title: water the plants
+                  description: the balcony ones
+                  duedate: ~
+                  scheduled: "2026-06-15T09:00:00Z"
+                  done: ~
+                  stack: 00000000-0000-0000-0000-0000000001f4
+                  order: 1
+                  label_memberships:
+                    00000000-0000-0000-0000-0000000001fe:
+                      Added:
+                        at: "2026-06-15T00:00:00Z"
+                  effort: 600
+                  importance: high
+                  urgency: low
+                  recur:
+                    series: 00000000-0000-0000-0000-000000002328
+                    anchor: 2026-06-01
+                    pattern:
+                      Daily:
+                        every: 1
+                    bound:
+                      Count: 2
+                    continued_from: ~
+                  archived: false
+                  deleted: false
+                  clocks:
+                    title: "2026-06-15T00:00:00Z"
+                    description: "2026-06-15T00:00:00Z"
+                    duedate: "2026-06-15T00:00:00Z"
+                    scheduled: "2026-06-15T00:00:00Z"
+                    done: "2026-06-15T00:00:00Z"
+                    position: "2026-06-15T00:00:00Z"
+                    effort: "2026-06-15T00:00:00Z"
+                    importance: "2026-06-15T00:00:00Z"
+                    urgency: "2026-06-15T00:00:00Z"
+                    recur: "2026-06-15T00:00:00Z"
+                    archived: "2026-06-15T00:00:00Z"
+                    deleted: "2026-06-15T00:00:00Z"
+                  remote_seen: ~
+                  remote_baseline: ~
+          watermark:
+            - - Task: 00000000-0000-0000-0000-000000000258
+              - Task:
+                  clocks:
+                    title: "2026-06-15T00:00:00Z"
+                    description: "2026-06-15T00:00:00Z"
+                    duedate: "2026-06-15T00:00:00Z"
+                    scheduled: "2026-06-15T00:00:00Z"
+                    done: "1970-01-01T10:01:00Z"
+                    position: "2026-06-15T00:00:00Z"
+                    effort: "2026-06-15T00:00:00Z"
+                    importance: "2026-06-15T00:00:00Z"
+                    urgency: "2026-06-15T00:00:00Z"
+                    recur: "1970-01-01T10:01:00Z"
+                    archived: "2026-06-15T00:00:00Z"
+                    deleted: "2026-06-15T00:00:00Z"
+                  memberships:
+                    00000000-0000-0000-0000-0000000001fe:
+                      Added:
+                        at: "2026-06-15T00:00:00Z"
+      ops:
+        - 00000000-0000-0000-0000-000000000001
+        - 00000000-0000-0000-0000-000000000002
+      pushed: false
+      board: 00000000-0000-0000-0000-000000000001
+      created_at: "1970-01-01T10:01:00Z"
+  head: 00000000-0000-0000-0000-000000000003

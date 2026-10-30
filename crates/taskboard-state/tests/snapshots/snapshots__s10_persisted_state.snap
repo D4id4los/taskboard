@@ -51,5 +51,116 @@ habits:
   habits: {}
   log: {}
 journal:
-  entries: []
-  head: ~
+  entries:
+    - id: 00000000-0000-0000-0000-000000000002
+      parent: ~
+      command:
+        CreateBoard:
+          title: repair
+          color: 3366cc
+      facts:
+        NotUndoable: BoardCeremony
+      ops: []
+      pushed: false
+      board: ~
+      created_at: "1970-01-01T10:01:00Z"
+    - id: 00000000-0000-0000-0000-000000000005
+      parent: 00000000-0000-0000-0000-000000000002
+      command:
+        CreateStack:
+          board: 00000000-0000-0000-0000-000000000001
+          title: todo
+          order: 1
+      facts:
+        PreImages:
+          images:
+            - Stack:
+                id: 00000000-0000-0000-0000-000000000003
+                before: ~
+          watermark:
+            - - Stack: 00000000-0000-0000-0000-000000000003
+              - Stack:
+                  title: "1970-01-01T10:02:00Z"
+                  order: "1970-01-01T10:02:00Z"
+                  deleted: "1970-01-01T10:02:00Z"
+      ops:
+        - 00000000-0000-0000-0000-000000000004
+      pushed: false
+      board: 00000000-0000-0000-0000-000000000001
+      created_at: "1970-01-01T10:02:00Z"
+    - id: 00000000-0000-0000-0000-000000000008
+      parent: 00000000-0000-0000-0000-000000000005
+      command:
+        CreateTask:
+          title: doomed
+          stack: 00000000-0000-0000-0000-000000000003
+          order: 1
+      facts:
+        PreImages:
+          images:
+            - Task:
+                id: 00000000-0000-0000-0000-000000000006
+                before: ~
+          watermark:
+            - - Task: 00000000-0000-0000-0000-000000000006
+              - Task:
+                  clocks:
+                    title: "1970-01-01T10:03:00Z"
+                    description: "1970-01-01T10:03:00Z"
+                    duedate: "1970-01-01T10:03:00Z"
+                    scheduled: "1970-01-01T10:03:00Z"
+                    done: "1970-01-01T10:03:00Z"
+                    position: "1970-01-01T10:03:00Z"
+                    effort: "1970-01-01T10:03:00Z"
+                    importance: "1970-01-01T10:03:00Z"
+                    urgency: "1970-01-01T10:03:00Z"
+                    recur: "1970-01-01T10:03:00Z"
+                    archived: "1970-01-01T10:03:00Z"
+                    deleted: "1970-01-01T10:03:00Z"
+                  memberships: {}
+      ops:
+        - 00000000-0000-0000-0000-000000000007
+      pushed: false
+      board: 00000000-0000-0000-0000-000000000001
+      created_at: "1970-01-01T10:03:00Z"
+    - id: 00000000-0000-0000-0000-00000000000b
+      parent: 00000000-0000-0000-0000-000000000008
+      command:
+        AddReminderRule:
+          task: 00000000-0000-0000-0000-000000000006
+          offset:
+            - 0
+            - 0
+          insistence: normal
+      facts:
+        NotUndoable: ReminderSurface
+      ops:
+        - 00000000-0000-0000-0000-00000000000a
+      pushed: false
+      board: 00000000-0000-0000-0000-000000000001
+      created_at: "1970-01-01T10:04:00Z"
+    - id: 00000000-0000-0000-0000-00000000000c
+      parent: 00000000-0000-0000-0000-00000000000b
+      command:
+        BindBoard:
+          board: 00000000-0000-0000-0000-000000000001
+          remote: 77
+          connector: nextcloud
+      facts:
+        NotUndoable: BoardCeremony
+      ops: []
+      pushed: false
+      board: 00000000-0000-0000-0000-000000000001
+      created_at: "1970-01-01T10:05:00Z"
+    - id: 00000000-0000-0000-0000-00000000000d
+      parent: 00000000-0000-0000-0000-00000000000c
+      command:
+        ResetBoard:
+          board: 00000000-0000-0000-0000-000000000001
+      facts:
+        NotUndoable: BoardCeremony
+      ops: []
+      pushed: false
+      board: 00000000-0000-0000-0000-000000000001
+      created_at: "1970-01-01T10:07:00Z"
+  head: 00000000-0000-0000-0000-00000000000d

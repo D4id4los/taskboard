@@ -29,7 +29,7 @@ use taskboard_domain::{
     NotifierMessage, PersistedState, PersistenceAction, ReminderFiring, RepositoryError,
     SidecarHealth, StateCommand, SyncCommand, SyncCounters, SyncPhase, SyncStateReader, SyncStates,
     SyncStatus, SystemEvent, TaskRepository, ValidatorKey, apply_push_report, apply_sync_report,
-    notifications_for, plan_command, plan_day_rolls,
+    journal_push_marks, notifications_for, plan_day_rolls, plan_journaled_command,
 };
 
 use crate::config::{DayRollConfig, ReminderEngineConfig};
@@ -646,9 +646,10 @@ async fn execute_command(
         return;
     }
 
-    let plan = match plan_command(
+    let plan = match plan_journaled_command(
         &core.app(),
         core.outbox(),
+        core.journal(),
         &command,
         ids,
         reminder_defaults,
@@ -901,6 +902,16 @@ async fn ingest_sync_report(
             (batch, deltas, Vec::new())
         }
     };
+
+    // The R-U9 post-pass (ADR 0019): every completed push flips its
+    // owning journal entries' pushed flag in the same batch — the
+    // applied batch and the interpreted batch stay identical, and the
+    // flip is crash-consistent with the completion it annotates.
+    let marks = journal_push_marks(core.journal(), &actions);
+    let mut actions = actions;
+    if !marks.is_empty() {
+        actions.extend(marks);
+    }
 
     if actions.is_empty() {
         // A no-change cycle (fast path, nothing merged): the counters

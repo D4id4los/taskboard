@@ -31,8 +31,8 @@ stacks:
       deleted: "1970-01-01T10:01:00Z"
     remote_seen: ~
 tasks:
-  00000000-0000-0000-0000-000000000003:
-    id: 00000000-0000-0000-0000-000000000003
+  00000000-0000-0000-0000-000000000004:
+    id: 00000000-0000-0000-0000-000000000004
     remote: ~
     title: task 0 (renamed offline)
     description: ""
@@ -63,8 +63,8 @@ tasks:
       deleted: "1970-01-01T10:02:00Z"
     remote_seen: ~
     remote_baseline: ~
-  00000000-0000-0000-0000-000000000005:
-    id: 00000000-0000-0000-0000-000000000005
+  00000000-0000-0000-0000-000000000007:
+    id: 00000000-0000-0000-0000-000000000007
     remote: ~
     title: task 1
     description: ""
@@ -95,8 +95,8 @@ tasks:
       deleted: "1970-01-01T10:03:00Z"
     remote_seen: ~
     remote_baseline: ~
-  00000000-0000-0000-0000-000000000007:
-    id: 00000000-0000-0000-0000-000000000007
+  00000000-0000-0000-0000-00000000000a:
+    id: 00000000-0000-0000-0000-00000000000a
     remote: ~
     title: task 2
     description: ""
@@ -133,25 +133,25 @@ outbox:
     op:
       CreateStack: 00000000-0000-0000-0000-000000000001
     queued_at: "1970-01-01T10:01:00Z"
-  - op_id: 00000000-0000-0000-0000-000000000004
+  - op_id: 00000000-0000-0000-0000-000000000005
     op:
-      CreateTask: 00000000-0000-0000-0000-000000000003
+      CreateTask: 00000000-0000-0000-0000-000000000004
     queued_at: "1970-01-01T10:02:00Z"
-  - op_id: 00000000-0000-0000-0000-000000000006
-    op:
-      CreateTask: 00000000-0000-0000-0000-000000000005
-    queued_at: "1970-01-01T10:03:00Z"
   - op_id: 00000000-0000-0000-0000-000000000008
     op:
       CreateTask: 00000000-0000-0000-0000-000000000007
+    queued_at: "1970-01-01T10:03:00Z"
+  - op_id: 00000000-0000-0000-0000-00000000000b
+    op:
+      CreateTask: 00000000-0000-0000-0000-00000000000a
     queued_at: "1970-01-01T10:04:00Z"
-  - op_id: 00000000-0000-0000-0000-000000000009
+  - op_id: 00000000-0000-0000-0000-00000000000d
     op:
-      UpdateTask: 00000000-0000-0000-0000-000000000003
+      UpdateTask: 00000000-0000-0000-0000-000000000004
     queued_at: "1970-01-01T10:05:00Z"
-  - op_id: 00000000-0000-0000-0000-00000000000a
+  - op_id: 00000000-0000-0000-0000-00000000000f
     op:
-      UpdateTask: 00000000-0000-0000-0000-000000000005
+      UpdateTask: 00000000-0000-0000-0000-000000000007
     queued_at: "1970-01-01T10:06:00Z"
 validators: {}
 sync:
@@ -182,5 +182,267 @@ habits:
   habits: {}
   log: {}
 journal:
-  entries: []
-  head: ~
+  entries:
+    - id: 00000000-0000-0000-0000-000000000003
+      parent: ~
+      command:
+        CreateStack:
+          board: 00000000-0000-0000-0000-000000000001
+          title: inbox
+          order: 1
+      facts:
+        PreImages:
+          images:
+            - Stack:
+                id: 00000000-0000-0000-0000-000000000001
+                before: ~
+          watermark:
+            - - Stack: 00000000-0000-0000-0000-000000000001
+              - Stack:
+                  title: "1970-01-01T10:01:00Z"
+                  order: "1970-01-01T10:01:00Z"
+                  deleted: "1970-01-01T10:01:00Z"
+      ops:
+        - 00000000-0000-0000-0000-000000000002
+      pushed: false
+      board: 00000000-0000-0000-0000-000000000001
+      created_at: "1970-01-01T10:01:00Z"
+    - id: 00000000-0000-0000-0000-000000000006
+      parent: 00000000-0000-0000-0000-000000000003
+      command:
+        CreateTask:
+          title: task 0
+          stack: 00000000-0000-0000-0000-000000000001
+          order: 0
+      facts:
+        PreImages:
+          images:
+            - Task:
+                id: 00000000-0000-0000-0000-000000000004
+                before: ~
+          watermark:
+            - - Task: 00000000-0000-0000-0000-000000000004
+              - Task:
+                  clocks:
+                    title: "1970-01-01T10:02:00Z"
+                    description: "1970-01-01T10:02:00Z"
+                    duedate: "1970-01-01T10:02:00Z"
+                    scheduled: "1970-01-01T10:02:00Z"
+                    done: "1970-01-01T10:02:00Z"
+                    position: "1970-01-01T10:02:00Z"
+                    effort: "1970-01-01T10:02:00Z"
+                    importance: "1970-01-01T10:02:00Z"
+                    urgency: "1970-01-01T10:02:00Z"
+                    recur: "1970-01-01T10:02:00Z"
+                    archived: "1970-01-01T10:02:00Z"
+                    deleted: "1970-01-01T10:02:00Z"
+                  memberships: {}
+      ops:
+        - 00000000-0000-0000-0000-000000000005
+      pushed: false
+      board: 00000000-0000-0000-0000-000000000001
+      created_at: "1970-01-01T10:02:00Z"
+    - id: 00000000-0000-0000-0000-000000000009
+      parent: 00000000-0000-0000-0000-000000000006
+      command:
+        CreateTask:
+          title: task 1
+          stack: 00000000-0000-0000-0000-000000000001
+          order: 1
+      facts:
+        PreImages:
+          images:
+            - Task:
+                id: 00000000-0000-0000-0000-000000000007
+                before: ~
+          watermark:
+            - - Task: 00000000-0000-0000-0000-000000000007
+              - Task:
+                  clocks:
+                    title: "1970-01-01T10:03:00Z"
+                    description: "1970-01-01T10:03:00Z"
+                    duedate: "1970-01-01T10:03:00Z"
+                    scheduled: "1970-01-01T10:03:00Z"
+                    done: "1970-01-01T10:03:00Z"
+                    position: "1970-01-01T10:03:00Z"
+                    effort: "1970-01-01T10:03:00Z"
+                    importance: "1970-01-01T10:03:00Z"
+                    urgency: "1970-01-01T10:03:00Z"
+                    recur: "1970-01-01T10:03:00Z"
+                    archived: "1970-01-01T10:03:00Z"
+                    deleted: "1970-01-01T10:03:00Z"
+                  memberships: {}
+      ops:
+        - 00000000-0000-0000-0000-000000000008
+      pushed: false
+      board: 00000000-0000-0000-0000-000000000001
+      created_at: "1970-01-01T10:03:00Z"
+    - id: 00000000-0000-0000-0000-00000000000c
+      parent: 00000000-0000-0000-0000-000000000009
+      command:
+        CreateTask:
+          title: task 2
+          stack: 00000000-0000-0000-0000-000000000001
+          order: 2
+      facts:
+        PreImages:
+          images:
+            - Task:
+                id: 00000000-0000-0000-0000-00000000000a
+                before: ~
+          watermark:
+            - - Task: 00000000-0000-0000-0000-00000000000a
+              - Task:
+                  clocks:
+                    title: "1970-01-01T10:04:00Z"
+                    description: "1970-01-01T10:04:00Z"
+                    duedate: "1970-01-01T10:04:00Z"
+                    scheduled: "1970-01-01T10:04:00Z"
+                    done: "1970-01-01T10:04:00Z"
+                    position: "1970-01-01T10:04:00Z"
+                    effort: "1970-01-01T10:04:00Z"
+                    importance: "1970-01-01T10:04:00Z"
+                    urgency: "1970-01-01T10:04:00Z"
+                    recur: "1970-01-01T10:04:00Z"
+                    archived: "1970-01-01T10:04:00Z"
+                    deleted: "1970-01-01T10:04:00Z"
+                  memberships: {}
+      ops:
+        - 00000000-0000-0000-0000-00000000000b
+      pushed: false
+      board: 00000000-0000-0000-0000-000000000001
+      created_at: "1970-01-01T10:04:00Z"
+    - id: 00000000-0000-0000-0000-00000000000e
+      parent: 00000000-0000-0000-0000-00000000000c
+      command:
+        UpdateTask:
+          id: 00000000-0000-0000-0000-000000000004
+          changes:
+            title: task 0 (renamed offline)
+            description: ~
+            archived: ~
+      facts:
+        PreImages:
+          images:
+            - Task:
+                id: 00000000-0000-0000-0000-000000000004
+                before:
+                  id: 00000000-0000-0000-0000-000000000004
+                  remote: ~
+                  title: task 0
+                  description: ""
+                  duedate: ~
+                  scheduled: ~
+                  done: ~
+                  stack: 00000000-0000-0000-0000-000000000001
+                  order: 0
+                  label_memberships: {}
+                  effort: ~
+                  importance: ~
+                  urgency: ~
+                  recur: ~
+                  archived: false
+                  deleted: false
+                  clocks:
+                    title: "1970-01-01T10:02:00Z"
+                    description: "1970-01-01T10:02:00Z"
+                    duedate: "1970-01-01T10:02:00Z"
+                    scheduled: "1970-01-01T10:02:00Z"
+                    done: "1970-01-01T10:02:00Z"
+                    position: "1970-01-01T10:02:00Z"
+                    effort: "1970-01-01T10:02:00Z"
+                    importance: "1970-01-01T10:02:00Z"
+                    urgency: "1970-01-01T10:02:00Z"
+                    recur: "1970-01-01T10:02:00Z"
+                    archived: "1970-01-01T10:02:00Z"
+                    deleted: "1970-01-01T10:02:00Z"
+                  remote_seen: ~
+                  remote_baseline: ~
+          watermark:
+            - - Task: 00000000-0000-0000-0000-000000000004
+              - Task:
+                  clocks:
+                    title: "1970-01-01T10:05:00Z"
+                    description: "1970-01-01T10:02:00Z"
+                    duedate: "1970-01-01T10:02:00Z"
+                    scheduled: "1970-01-01T10:02:00Z"
+                    done: "1970-01-01T10:02:00Z"
+                    position: "1970-01-01T10:02:00Z"
+                    effort: "1970-01-01T10:02:00Z"
+                    importance: "1970-01-01T10:02:00Z"
+                    urgency: "1970-01-01T10:02:00Z"
+                    recur: "1970-01-01T10:02:00Z"
+                    archived: "1970-01-01T10:02:00Z"
+                    deleted: "1970-01-01T10:02:00Z"
+                  memberships: {}
+      ops:
+        - 00000000-0000-0000-0000-00000000000d
+      pushed: false
+      board: 00000000-0000-0000-0000-000000000001
+      created_at: "1970-01-01T10:05:00Z"
+    - id: 00000000-0000-0000-0000-000000000010
+      parent: 00000000-0000-0000-0000-00000000000e
+      command:
+        SetTaskDone:
+          id: 00000000-0000-0000-0000-000000000007
+          done: true
+      facts:
+        PreImages:
+          images:
+            - Task:
+                id: 00000000-0000-0000-0000-000000000007
+                before:
+                  id: 00000000-0000-0000-0000-000000000007
+                  remote: ~
+                  title: task 1
+                  description: ""
+                  duedate: ~
+                  scheduled: ~
+                  done: ~
+                  stack: 00000000-0000-0000-0000-000000000001
+                  order: 1
+                  label_memberships: {}
+                  effort: ~
+                  importance: ~
+                  urgency: ~
+                  recur: ~
+                  archived: false
+                  deleted: false
+                  clocks:
+                    title: "1970-01-01T10:03:00Z"
+                    description: "1970-01-01T10:03:00Z"
+                    duedate: "1970-01-01T10:03:00Z"
+                    scheduled: "1970-01-01T10:03:00Z"
+                    done: "1970-01-01T10:03:00Z"
+                    position: "1970-01-01T10:03:00Z"
+                    effort: "1970-01-01T10:03:00Z"
+                    importance: "1970-01-01T10:03:00Z"
+                    urgency: "1970-01-01T10:03:00Z"
+                    recur: "1970-01-01T10:03:00Z"
+                    archived: "1970-01-01T10:03:00Z"
+                    deleted: "1970-01-01T10:03:00Z"
+                  remote_seen: ~
+                  remote_baseline: ~
+          watermark:
+            - - Task: 00000000-0000-0000-0000-000000000007
+              - Task:
+                  clocks:
+                    title: "1970-01-01T10:03:00Z"
+                    description: "1970-01-01T10:03:00Z"
+                    duedate: "1970-01-01T10:03:00Z"
+                    scheduled: "1970-01-01T10:03:00Z"
+                    done: "1970-01-01T10:06:00Z"
+                    position: "1970-01-01T10:03:00Z"
+                    effort: "1970-01-01T10:03:00Z"
+                    importance: "1970-01-01T10:03:00Z"
+                    urgency: "1970-01-01T10:03:00Z"
+                    recur: "1970-01-01T10:03:00Z"
+                    archived: "1970-01-01T10:03:00Z"
+                    deleted: "1970-01-01T10:03:00Z"
+                  memberships: {}
+      ops:
+        - 00000000-0000-0000-0000-00000000000f
+      pushed: false
+      board: 00000000-0000-0000-0000-000000000001
+      created_at: "1970-01-01T10:06:00Z"
+  head: 00000000-0000-0000-0000-000000000010

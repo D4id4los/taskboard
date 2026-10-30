@@ -18,8 +18,12 @@ sync:
     features:
       card_startdate: false
 undo:
-  can_undo: false
+  can_undo: true
   can_redo: false
-  head_label: ~
-  recent: []
+  head_label: Capture task
+  recent:
+    - id: 00000000-0000-0000-0000-000000000009
+      label: Capture task
+    - id: 00000000-0000-0000-0000-000000000006
+      label: Capture task
 last_updated: "1970-01-01T10:02:00Z"
