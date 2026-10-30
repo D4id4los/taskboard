@@ -41,7 +41,12 @@ taskboard-ui-slint = { path = "crates/taskboard-ui-slint" }
 # femtovg + software renderers with runtime fallback, accessibility).
 # Pin discipline: the exact version is committed via Cargo.lock (Q12);
 # slint and slint-build move together on every bump.
-slint = "1.18.1"
+# `unstable-winit-030` (DR-3/4, D-6): the alarm window's
+# request-user-attention channel rides slint's own winit-030 re-export —
+# never `focus_window`; no direct winit dependency enters any manifest.
+# Named unstable by slint: a slint bump that breaks the accessor
+# degrades that one channel to a structural no-op, never the build.
+slint = { version = "1.18.1", features = ["unstable-winit-030"] }
 # Companion build-time crate for slint::include_modules!() codegen.
 slint-build = "1.18.1"
 # Dev-only testing harness for the UI crate (design §8.1/Q8; internal,

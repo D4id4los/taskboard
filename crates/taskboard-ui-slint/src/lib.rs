@@ -199,6 +199,27 @@ pub struct UiHandle {
     /// field owns the timer's lifetime alongside the window.
     #[allow(dead_code)]
     rotation_timer: std::rc::Rc<slint::Timer>,
+    /// The alarm-window lanes (DR-3/4, D-I9.2): the lazily mounted
+    /// second window, its last row set (the attention edge's previous
+    /// state), and the derivation defaults. `None` under the kiosk
+    /// profile — the appliance gets none of it (the R3.5.3 fence).
+    alarm: Option<std::rc::Rc<AlarmLanes>>,
+}
+
+/// The alarm window's mount-time state (see [`UiHandle::alarm`]).
+struct AlarmLanes {
+    /// The lazily built window (hidden until the pass opens it) — the
+    /// pass owns the lifetime; an idle mount grows no window at all.
+    window: std::cell::RefCell<Option<AlarmWindow>>,
+    /// The command sender the window's buttons dispatch through.
+    commands: mpsc::Sender<StateCommand>,
+    /// The last pass's rows (the gained-edge's previous state) — shared
+    /// with the button callbacks (the index→row map) and the pass.
+    rows: std::rc::Rc<std::cell::RefCell<Vec<presentation::AlarmRow>>>,
+
+    /// The derivation defaults injected at hand-over (the same
+    /// consumers contract as the notification surface's).
+    defaults: taskboard_domain::ReminderDefaults,
 }
 
 // -- test seams (the lib flow/buffer harnesses; never shipped) ------
@@ -254,6 +275,20 @@ pub fn mount(
     // The status line's auto-clear driver (r2 D28): created at mount
     // beside the tooltip delay (the same lifetime pattern), handed to
     // the adapter — the choke point arms it, the mock clock fires it.
+    // The alarm window (DR-3/4, D-I9.2): mounted lazily iff NOT kiosk —
+    // the appliance's banner-only fence (R3.5.3); daemon mode mounts no
+    // UI at all (this function never runs there). It rides the same
+    // command sender the adapter holds, cloned before `install` moves
+    // its clone.
+    let alarm = if settings.kiosk {
+        None
+    } else {
+        let commands = commands.clone();
+        Some(std::rc::Rc::new(install_alarm_lanes(
+            commands,
+            settings.reminder_defaults,
+        )))
+    };
     let status_timer = std::rc::Rc::new(slint::Timer::default());
     // The kiosk rotation's dwell timer (K13): the same lifetime
     // pattern — created unconditionally, armed by `install` only when
@@ -288,6 +323,7 @@ pub fn mount(
         tooltip_timer,
         status_timer,
         rotation_timer,
+        alarm,
     };
     start_repaint_driver(&handle, signals, system);
     // The first paint is a refresh, not a timer wait (D1's
@@ -394,6 +430,38 @@ fn place_tooltip(window: &AppWindow, tip_size: &std::cell::Cell<Option<(f32, f32
 /// dimension.
 pub const TOOLTIP_DELAY_MS: u64 = 600;
 
+/// Wires the alarm lanes (the window itself is built lazily by the
+/// first pass): the button callbacks dispatch the existing engine
+/// commands onto the same sender the adapter holds (D-I8's reuse
+/// ruling; no new commands, a mouse-only surface). A stray index
+/// degrades to a no-op.
+fn install_alarm_lanes(
+    commands: mpsc::Sender<StateCommand>,
+    defaults: taskboard_domain::ReminderDefaults,
+) -> AlarmLanes {
+    AlarmLanes {
+        window: std::cell::RefCell::new(None),
+        commands,
+        rows: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
+        defaults,
+    }
+}
+
+/// The attention channel (D-6): request — never focus. The types come
+/// through slint's own `unstable-winit-030` re-export (no direct winit
+/// dependency enters any manifest); a non-winit backend fails
+/// `has_winit_window` and the channel no-ops structurally.
+fn request_attention(window: &AlarmWindow) {
+    use slint::winit_030::{WinitWindowAccessor, winit};
+    let slint_window = window.window();
+    if !slint_window.has_winit_window() {
+        return;
+    }
+    slint_window.with_winit_window(|w| {
+        w.request_user_attention(Some(winit::window::UserAttentionType::Critical));
+    });
+}
+
 /// Starts the D1 repaint driver: a repeating slint `Timer` on the
 /// slint thread that drains the engine-signal and system-event
 /// receivers (non-blocking; `Lagged` counts as changed — chunk 1's
@@ -406,6 +474,8 @@ fn start_repaint_driver(
 ) {
     let weak = handle.window.as_weak();
     let adapter = Rc::clone(&handle.adapter);
+    let alarm = handle.alarm.clone();
+    let state = Arc::clone(&handle.state);
     let minute = std::cell::Cell::new(None::<i64>);
     handle.timer.start(
         slint::TimerMode::Repeated,
@@ -461,10 +531,12 @@ fn start_repaint_driver(
             // The settings reply drain (D25b): the non-blocking poll
             // under the same cadence — a settled reply refreshes.
             adapter.borrow_mut().drain_setting_replies(&window);
+            let mut minute_boundary = false;
             let wall_minute = chrono::Utc::now().timestamp() / 60;
             if minute.get() != Some(wall_minute) {
                 minute.set(Some(wall_minute));
                 dirty = true;
+                minute_boundary = true;
             }
             // The notice's expiry rides the same cadence tick's wall
             // clock (no UI-held timer); the push is cheap enough to
@@ -473,8 +545,123 @@ fn start_repaint_driver(
             if dirty {
                 adapter.borrow_mut().refresh(&window);
             }
+            // The alarm pass (D-I9.2) rides the driver's two existing
+            // wake branches: a state change (dirty) or the wall-minute
+            // boundary (time passage for the elapsed phrases + the
+            // level-triggered attention re-assert).
+            if (dirty || minute_boundary)
+                && let Some(lanes) = alarm.as_ref()
+            {
+                run_alarm_pass(lanes, &state, minute_boundary);
+            }
         },
     );
+}
+
+/// The repaint driver's alarm half, detached from `UiHandle` so the
+/// closure can hold cheap clones: derive + open/hide + attention (see
+/// the mount tests, which drive it directly).
+fn run_alarm_pass(
+    lanes: &std::rc::Rc<AlarmLanes>,
+    state: &Arc<ArcSwap<AppState>>,
+    minute_boundary: bool,
+) {
+    let now = chrono::Utc::now();
+    let rows = presentation::alarm_window_rows(&state.load(), &lanes.defaults, now);
+    let gained = presentation::attention_due(&rows, &lanes.rows.borrow());
+    if presentation::alarm_window_open(&rows) {
+        // Lazy build (the mount grows no window until an alarm waits):
+        // the pass runs on the slint thread, so construction is legal
+        // here. A failed build degrades that channel to a no-op pass —
+        // logged, never fatal.
+        let built = match lanes.window.borrow_mut().take() {
+            Some(window) => Some(window),
+            None => match AlarmWindow::new() {
+                Ok(window) => {
+                    install_alarm_callbacks(&window, &lanes.commands, &lanes.rows);
+                    Some(window)
+                }
+                Err(err) => {
+                    tracing::warn!(%err, "alarm window: construction failed (visual-only)");
+                    None
+                }
+            },
+        };
+        let Some(window) = built else {
+            *lanes.rows.borrow_mut() = rows;
+            return;
+        };
+        let model: Vec<AlarmRowModel> = rows
+            .iter()
+            .map(|row| AlarmRowModel {
+                title: row.title.clone().into(),
+                phrase: presentation::notification_phrase(row.occurrence, now).into(),
+            })
+            .collect();
+        window.set_rows(slint::ModelRc::new(slint::VecModel::from(model)));
+        if let Err(err) = window.show() {
+            tracing::warn!(%err, "alarm window: show failed");
+        }
+        if gained || minute_boundary {
+            request_attention(&window);
+        }
+        // Held again: the pass owns the lifetime.
+        *lanes.window.borrow_mut() = Some(window);
+    } else if let Some(window) = lanes.window.borrow_mut().take()
+        && let Err(err) = window.hide()
+    {
+        tracing::warn!(%err, "alarm window: hide failed");
+        // Dropped: a drained set tears the window down again.
+    }
+    *lanes.rows.borrow_mut() = rows;
+}
+
+/// The alarm window's button callbacks: index-keyed over the shared
+/// rows cell, each dispatching exactly one engine command (D-I8). A
+/// full inbox degrades to a logged drop, never a panic.
+fn install_alarm_callbacks(
+    window: &AlarmWindow,
+    commands: &mpsc::Sender<StateCommand>,
+    rows: &std::rc::Rc<std::cell::RefCell<Vec<presentation::AlarmRow>>>,
+) {
+    /// Resolves a button index to its row (a stray index degrades to a
+    /// no-op), then dispatches one command; a full inbox logs the drop.
+    fn on_row(
+        rows: &std::rc::Rc<std::cell::RefCell<Vec<presentation::AlarmRow>>>,
+        sender: &mpsc::Sender<StateCommand>,
+        action: &'static str,
+        command: impl Fn(&presentation::AlarmRow) -> StateCommand + 'static,
+    ) -> impl Fn(i32) + 'static {
+        let sink = std::rc::Rc::clone(rows);
+        let sender = sender.clone();
+        move |index| {
+            let Ok(index) = usize::try_from(index) else {
+                return;
+            };
+            let Some(row) = sink.borrow().get(index).cloned() else {
+                return;
+            };
+            if let Err(err) = sender.try_send(command(&row)) {
+                tracing::warn!(%err, "alarm window: {action} command dropped");
+            }
+        }
+    }
+    window.on_dismiss(on_row(rows, commands, "dismiss", |row| {
+        StateCommand::DismissReminder {
+            reminder: row.reminder,
+            occurrence: row.occurrence,
+        }
+    }));
+    window.on_snooze(on_row(rows, commands, "snooze", |row| {
+        StateCommand::SnoozeReminder {
+            reminder: row.reminder,
+            occurrence: row.occurrence,
+            postpone: presentation::ALARM_WINDOW_SNOOZE,
+        }
+    }));
+    window.on_cancel(on_row(rows, commands, "cancel", |row| {
+        StateCommand::CancelAdhocAlarm { alarm: row.alarm }
+    }));
 }
 
 impl UiHandle {
@@ -796,6 +983,130 @@ mod mount_tests {
                 responsive.get_current_breakpoint(),
                 Breakpoint::Regular,
                 "no-measurement widths fall back to the default breakpoint"
+            );
+        });
+    }
+
+    /// A waiting-alarm state: one alarm-insistent adhoc alarm, fired
+    /// and delivered one wall-minute before `now`.
+    fn awaiting_alarm_state(state: &Arc<ArcSwap<AppState>>) -> taskboard_domain::AdhocAlarmId {
+        use taskboard_domain::{
+            AdhocAlarm, AdhocAlarmId, Insistence, ReminderDelivery, ReminderRef,
+        };
+        let id = AdhocAlarmId::from_uuid(uuid::Uuid::now_v7());
+        let fire = chrono::Utc::now() - chrono::TimeDelta::minutes(1);
+        let mut next = Arc::unwrap_or_clone(state.load_full());
+        next.reminders.alarms.insert(
+            id,
+            AdhocAlarm {
+                insistence: Insistence::Alarm,
+                id,
+                label: "tea".to_owned(),
+                fire_at: fire,
+                created_at: fire - chrono::TimeDelta::hours(1),
+            },
+        );
+        next.reminders.deliveries.insert(ReminderDelivery {
+            reminder: ReminderRef::Adhoc(id),
+            occurrence: fire,
+            delivered_at: fire,
+        });
+        state.store(Arc::new(next));
+        id
+    }
+
+    /// DR-3/4 (D-I9.2): the desktop mount carries the alarm lanes; the
+    /// kiosk profile gets none of it (the banner-only fence, R3.5.3).
+    #[test]
+    fn the_alarm_lanes_mount_iff_not_kiosk() {
+        on_slint_thread(|| {
+            let (state, signals, system, commands, requests_tx, _requests_rx, health) = handover();
+            let handle = mount(
+                state,
+                signals,
+                system,
+                commands,
+                requests_tx,
+                UiSettings::default(),
+                health,
+            )
+            .expect("mount succeeds on the null platform");
+            assert!(handle.alarm.is_some(), "the desktop mount has lanes");
+
+            let (state, signals, system, commands, requests_tx, _requests_rx, health) = handover();
+            let handle = mount(
+                state,
+                signals,
+                system,
+                commands,
+                requests_tx,
+                UiSettings {
+                    kiosk: true,
+                    ..UiSettings::default()
+                },
+                health,
+            )
+            .expect("mount succeeds on the null platform");
+            assert!(handle.alarm.is_none(), "the kiosk mount has no lanes");
+        });
+    }
+
+    /// The pass over a non-empty awaiting set: the window opens with
+    /// the row model pushed; over an empty set it closes. Both on the
+    /// testing backend (the `ProbeWindow` precedent), structural only.
+    #[test]
+    fn the_alarm_pass_opens_and_pushes_rows_and_closes() {
+        on_slint_thread(|| {
+            let (state, signals, system, commands, requests_tx, _requests_rx, health) = handover();
+            let handle = mount(
+                Arc::clone(&state),
+                signals,
+                system,
+                commands,
+                requests_tx,
+                UiSettings::default(),
+                health,
+            )
+            .expect("mount succeeds on the null platform");
+            let lanes = handle.alarm.as_ref().expect("desktop lanes").clone();
+
+            // Empty state: the pass runs and no window even exists yet
+            // (the lazy build grows nothing while idle).
+            run_alarm_pass(&lanes, &state, false);
+            assert!(lanes.window.borrow().is_none());
+
+            // An awaiting alarm: the window builds, opens, and the row
+            // model carries the row.
+            awaiting_alarm_state(&state);
+            run_alarm_pass(&lanes, &state, false);
+            let (visible, rows) = {
+                let held = lanes.window.borrow();
+                let window = held.as_ref().expect("the window built");
+                (
+                    window.window().is_visible(),
+                    slint::Model::row_count(&window.get_rows()),
+                )
+            };
+            assert!(visible, "open iff the set is non-empty");
+            assert_eq!(rows, 1);
+
+            // A second pass over the same set: still open (idempotent).
+            run_alarm_pass(&lanes, &state, false);
+            assert!(
+                lanes
+                    .window
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|w| w.window().is_visible()),
+                "the pass keeps the window"
+            );
+
+            // Drained: closed and torn down again.
+            state.store(Arc::new(AppState::default()));
+            run_alarm_pass(&lanes, &state, false);
+            assert!(
+                lanes.window.borrow().is_none(),
+                "a drained set tears the window down"
             );
         });
     }
