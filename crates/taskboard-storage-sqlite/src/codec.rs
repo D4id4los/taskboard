@@ -477,7 +477,7 @@ pub(crate) struct JournalPayload {
     pub facts: taskboard_domain::journal::UndoFacts,
     /// The entry's enqueued op ids, in batch order (the pushed-edit
     /// rule's data — must survive restarts, so it rides the blob next
-    /// to the facts; a D13 + deviation recorded in the chunk report).
+    /// to the facts; a D13 deviation, recorded in ADR 0019).
     #[serde(default)]
     pub ops: Vec<taskboard_domain::OpId>,
 }

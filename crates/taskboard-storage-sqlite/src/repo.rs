@@ -1963,6 +1963,13 @@ async fn execute_batch(
                     .execute(&mut *tx)
                     .await
                     .map_err(|e| stmt_error(&e))?;
+                // Apply-arm parity: a head the eviction pruned reports
+                // `NothingToUndo` after the next boot, too.
+                sqlx::query(r"UPDATE command_journal_head SET id = NULL WHERE id = ?")
+                    .bind(codec::uuid_to_text(id.as_uuid()))
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| stmt_error(&e))?;
                 tracing::trace!(entry = ?id, "journal entry evicted");
             }
         }
