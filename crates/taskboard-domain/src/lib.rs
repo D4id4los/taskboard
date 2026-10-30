@@ -51,6 +51,7 @@ pub mod reminders;
 pub mod remote;
 pub mod state;
 pub mod tracking;
+pub mod undo;
 
 /// Kani bounded-model-checking harnesses (compiled only under Kani's
 /// own rustc driver — never by tests, clippy, or coverage).
@@ -144,3 +145,4 @@ pub use state::{
     aggregate_rows, attributed_board, derive_sidecar_health, derive_sync_states,
 };
 pub use tracking::{ClosedSpan, SpanRejected, TimeEntry, TrackingState, tracked_in_window};
+pub use undo::{journal_push_marks, plan_journaled_command, plan_redo, plan_undo, pre_images};
