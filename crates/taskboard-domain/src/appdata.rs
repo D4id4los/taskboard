@@ -2074,6 +2074,49 @@ mod tests {
         }
     }
 
+    // Property 8's whole-chain half: rule → local task → emitted overlay
+    // row → serde wire form → the document parser's key dispatch → the
+    // sidecar fold — lossless for generated rules.
+    proptest! {
+        #![proptest_config(crate::test_support::proptest_config(256))]
+        #[test]
+        fn recur_survives_the_whole_emit_encode_decode_fold_chain(
+            rule in crate::test_support::recur_rule_strategy(),
+        ) {
+            let mut task = task_fixture();
+            task.recur = Some(rule.clone());
+            task.clocks.recur = ts(4_000);
+            // Emit: the overlay builder's full-send write.
+            let entry = task_entry_for(&task, false);
+            // Encode: the wire shape the flush uploads.
+            let encoded = serde_json::to_value(&entry).unwrap();
+            // Decode: the document parser's per-key dispatch on the row.
+            let fields = encoded["fields"].as_object().expect("row object");
+            let decoded = decode_field_write("recur", &fields["recur"])
+                .expect("a well-formed recur write always decodes");
+            // Fold: doc clock == local clock (ties to the document — the
+            // read result must land).
+            let mut merged = task.clone();
+            let folded_entry = TaskEntry {
+                fields: [(
+                    "recur".to_owned(),
+                    decoded,
+                )]
+                .into(),
+                unmodeled: BTreeMap::new(),
+            };
+            crate::merge::fold_task_app_data(
+                &mut merged,
+                &task,
+                &folded_entry,
+                crate::pipeline::PendingTaskIntent::default(),
+                false,
+            );
+            assert_eq!(merged.recur, Some(rule));
+            assert_eq!(merged.clocks.recur, ts(4_000));
+        }
+    }
+
     #[test]
     fn rules_entry_builds_live_entries_keyed_by_uuid() {
         let task = task_fixture();

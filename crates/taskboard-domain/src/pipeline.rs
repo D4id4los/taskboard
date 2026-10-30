@@ -441,6 +441,7 @@ pub fn apply_sync_report(
     connector: &crate::ids::ConnectorId,
     app_data: &crate::messages::AppDataEvidence,
     features: crate::capabilities::DeckFeatures,
+    day: crate::days::DayCalendar,
 ) -> (
     AppState,
     Vec<PersistenceAction>,
@@ -1024,6 +1025,102 @@ pub fn apply_sync_report(
                 tracking_actions.push(PersistenceAction::DeleteTimeEntry(entry_id));
             }
         }
+    }
+
+    // ---- 5c. Series fold dedup (§3.6, D-C7, rule R-recur-dup) --------
+    // Position: after §5b (a twin adopted this cycle learns its rule
+    // through the fold — detecting earlier misses the canonical
+    // adoption-cycle race) and before §6 (the neutralized rows are
+    // ref-less by then, so R3's bound-ref listing never sees their stale
+    // bindings; the doomed cards' presence is decided by the
+    // ref-deletes, not by R3). §4b and §5c are disjoint trigger classes:
+    // §4b needs this device's create signature, §5c needs only two local
+    // rows sharing `(series, reference date)` — the late-discovered race
+    // is exactly §5c's case.
+    for verdict in crate::merge::detect_series_twins(&tasks, day) {
+        let (series, date, original) = {
+            let before = &tasks[&verdict.survivor];
+            (
+                before.recur.as_ref().map(|rule| rule.series),
+                crate::recur::roll_reference_date(before, day),
+                before.clone(),
+            )
+        };
+        let mut survivor = original.clone();
+        let mut ref_deletes = 0usize;
+        let mut settled_ops = 0usize;
+        for doomed_id in &verdict.doomed {
+            let doomed = tasks[doomed_id].clone();
+            let merged = crate::merge::series_survivor_merge(&survivor, &doomed);
+            if merged != survivor {
+                survivor = merged;
+            }
+            // The ref-less tombstone (the `reconcile` neutralization
+            // shape, the doomed row as the bound argument) with the
+            // tombstone clock floored at `now`: it LWW-wins every older
+            // copy of the row.
+            let mut absorbed = crate::reconcile::neutralized_task(&survivor, &doomed);
+            absorbed.clocks.deleted = absorbed.clocks.deleted.max(now);
+            tasks.insert(*doomed_id, absorbed);
+            // The card stops existing server-side, so no later pull can
+            // re-adopt the twin (the cross-cycle suppression; within the
+            // drain window a re-adoption re-collapses — the pass is
+            // stateless and idempotent, DEC-8).
+            if let Some(r) = doomed.remote {
+                dup_enqueues.push(PersistenceAction::EnqueueOp(PendingOp {
+                    op_id: ids.new_op_id(),
+                    op: LocalOp::DeleteRemoteCard {
+                        board: board_id,
+                        card: r,
+                    },
+                    queued_at: now,
+                }));
+                ref_deletes += 1;
+            }
+            // Every pending op targeting the doomed twin is resolved,
+            // never rejected: `false` would dead-letter and stamp the
+            // board `Failed` (DEC-6), and the op's effect must never
+            // exist. No read-boundary guard (DEC-7): the doom verdict is
+            // a permanent state-level decision — a create op queued
+            // after `read_at` that survived would mint the twin's card
+            // next cycle and restart the race. Ops a push outcome
+            // already settled keep their wire truth.
+            for other in outbox {
+                if !op_results.contains_key(&other.op_id) && op_targets_task(&other.op, *doomed_id)
+                {
+                    op_results.insert(other.op_id, true);
+                    settled_ops += 1;
+                }
+            }
+        }
+        let changed = survivor != original;
+        if changed {
+            // Lane ops for the survivor, unconditionally on change
+            // (DEC-10): the lanes' push planners full-send and coalesce.
+            dup_enqueues.push(PersistenceAction::EnqueueOp(PendingOp {
+                op_id: ids.new_op_id(),
+                op: LocalOp::UpdateTask(survivor.id),
+                queued_at: now,
+            }));
+            dup_enqueues.push(PersistenceAction::EnqueueOp(PendingOp {
+                op_id: ids.new_op_id(),
+                op: LocalOp::UpdateAppData(survivor.id),
+                queued_at: now,
+            }));
+            tasks.insert(survivor.id, survivor);
+        }
+        // One applied-verdict trace per group, typed fields only (the
+        // grouping itself is pure and silent). No `SystemEvent`, no UI.
+        tracing::debug!(
+            rule = crate::merge::RULE_R_RECUR_DUP,
+            series = ?series,
+            date = ?date,
+            survivor = ?verdict.survivor,
+            doomed = verdict.doomed.len(),
+            ref_deletes,
+            settled_ops,
+            "recurring-series twin collapse applied"
+        );
     }
 
     // ---- 6. Presence reconciliation (R3) ----------------------------
@@ -1902,6 +1999,15 @@ fn cascade_board(
 
 #[cfg(test)]
 mod tests {
+
+    /// The UTC-midnight calendar every pipeline test injects (plain
+    /// offset dates; the dedup key never consults the window start).
+    fn test_day() -> crate::days::DayCalendar {
+        crate::days::DayCalendar {
+            day_start_time: chrono::NaiveTime::MIN,
+            offset: chrono::FixedOffset::east_opt(0).expect("zero is a valid offset"),
+        }
+    }
     use super::*;
     use crate::merge_testutil::*;
     use crate::reminders::Insistence;
@@ -2141,6 +2247,7 @@ mod tests {
             &crate::test_support::test_connector(),
             evidence,
             features,
+            test_day(),
         )
     }
 
@@ -2647,6 +2754,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &AppDataEvidence::Absent,
             DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
         assert_eq!(app.habits, expected, "a sync cycle never touches habits");
     }
@@ -2673,6 +2781,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         let merged = app.0.tasks.values().next().unwrap();
@@ -2737,6 +2846,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         let merged = app.0.tasks.values().next().unwrap();
@@ -2796,6 +2906,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         let merged = app.0.tasks.values().next().unwrap();
@@ -2835,6 +2946,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         assert!(
@@ -2871,6 +2983,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         let merged = app.0.tasks.values().next().unwrap();
@@ -2895,6 +3008,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         let merged = app.0.tasks.values().next().unwrap();
@@ -2925,6 +3039,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         let merged = app.0.tasks.values().next().unwrap();
@@ -2950,6 +3065,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         let merged = app.0.tasks.values().next().unwrap();
@@ -2989,6 +3105,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         let merged = app.0.tasks.values().next().unwrap();
@@ -3028,7 +3145,8 @@ mod tests {
                 &crate::test_support::test_connector(),
                 &crate::messages::AppDataEvidence::Absent,
                 crate::capabilities::DeckFeatures::CONSERVATIVE,
-            );
+
+                test_day());
 
             let merged = app.0.tasks.values().next().unwrap();
             prop_assert!(!merged.deleted);
@@ -3055,6 +3173,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
         let create: PendingOp = actions
             .iter()
@@ -3103,6 +3222,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
         let merged = final_state.tasks.values().next().unwrap();
         assert!(merged.deleted, "the episode is over: synced delete wins");
@@ -3140,6 +3260,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
         let merged_task = app.0.tasks.values().next().unwrap();
         assert!(merged_task.deleted, "stack tombstone cascades to its tasks");
@@ -3165,6 +3286,7 @@ mod tests {
             &crate::ids::ConnectorId::from("beta"),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         assert_eq!(app.0.boards.len(), 2, "adoption, not a merge");
@@ -3226,6 +3348,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
         assert!(
             app.1
@@ -3260,6 +3383,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         assert_eq!(
@@ -3299,6 +3423,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         let merged = app.0.tasks.values().next().unwrap();
@@ -3333,6 +3458,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
         assert_eq!(
             app.0.sync.aggregate().pending_ops,
@@ -3357,6 +3483,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
         assert_eq!(
             app.0.sync.aggregate().pending_ops,
@@ -3409,6 +3536,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         let adopted_label = app
@@ -3452,6 +3580,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
         let second_state = app_into_state(&first);
         let second = apply_sync_report(
@@ -3465,6 +3594,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         assert!(
@@ -3512,6 +3642,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         let state_after = app_into_state(&app);
@@ -3550,6 +3681,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         // R9a echo adoption applies to create/update pushes only; a move
@@ -3597,6 +3729,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         let state_after = app_into_state(&app);
@@ -3653,6 +3786,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         assert!(
@@ -3697,6 +3831,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         assert!(
@@ -3778,6 +3913,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         assert!(
@@ -3829,6 +3965,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
         assert_eq!(
             app.0.stacks[&stack_id].title, "locally newer",
@@ -3864,6 +4001,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         assert_eq!(
@@ -3933,6 +4071,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         assert!(
@@ -4362,7 +4501,7 @@ mod tests {
                     &app, &state.outbox, &snapshot, &pushes, DateTime::<chrono::Utc>::MAX_UTC, &CountingIds::default(), now,
                 &crate::test_support::test_connector(),
                     &crate::messages::AppDataEvidence::Absent,
-    crate::capabilities::DeckFeatures::CONSERVATIVE);
+    crate::capabilities::DeckFeatures::CONSERVATIVE, test_day());
                 prop_assert_eq!(pushed_state, full_state);
                 prop_assert_eq!(pushed_actions, full_actions);
             }
@@ -4481,6 +4620,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         let merged = app.0.tasks.get(&task_id).expect("same local task");
@@ -4565,6 +4705,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         let task_id = task_by_card(&state, 1).id;
@@ -4616,6 +4757,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         let merged = &app.0.stacks[stack_id];
@@ -4658,6 +4800,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         let merged = &app.0.labels[&label_id];
@@ -4712,6 +4855,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         assert!(app.0.stacks[&stack_id].deleted);
@@ -4761,6 +4905,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         assert!(app.0.stacks[&stack_id].deleted);
@@ -4818,6 +4963,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         assert!(app.0.tasks[&task_id].deleted);
@@ -4868,6 +5014,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         assert!(app.0.tasks[&task_id].deleted);
@@ -4918,6 +5065,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         let merged = &app.0.stacks[&stack_id];
@@ -4944,6 +5092,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         let merged = &app.0.labels[&label_id];
@@ -4984,6 +5133,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         let (final_state, actions, _events) = app;
@@ -5046,6 +5196,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         assert!(app.0.boards.values().all(|b| b.deleted));
@@ -5089,6 +5240,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         let task_id = task_by_card(&state, 1).id;
@@ -5125,6 +5277,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         let state_after = app_into_state(&app);
@@ -5158,6 +5311,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
         assert!(
             first
@@ -5187,6 +5341,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
         let adopted = second
             .tasks
@@ -5225,6 +5380,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         let draft = app
@@ -5261,6 +5417,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         let adopted = app
@@ -5294,6 +5451,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         let adopted = app
@@ -5326,6 +5484,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         assert!(
@@ -5355,6 +5514,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         assert_eq!(app.0.labels[&label_id].title, "label 7 renamed");
@@ -5382,6 +5542,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         // Deliberately not `assert!(app.1.is_empty())`: CI's newer stable
@@ -5522,6 +5683,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         // No ghost entity was fabricated into state; every ghost op is
@@ -5557,11 +5719,11 @@ mod tests {
             let a = apply_sync_report(&state, &[], &snap, &[], DateTime::<chrono::Utc>::MAX_UTC, &CountingIds::default(), ts(20_000),
                 &crate::test_support::test_connector(),
                 &crate::messages::AppDataEvidence::Absent,
-    crate::capabilities::DeckFeatures::CONSERVATIVE);
+    crate::capabilities::DeckFeatures::CONSERVATIVE, test_day());
             let b = apply_sync_report(&state, &[], &snap, &[], DateTime::<chrono::Utc>::MAX_UTC, &CountingIds::default(), ts(20_000),
                 &crate::test_support::test_connector(),
                 &crate::messages::AppDataEvidence::Absent,
-    crate::capabilities::DeckFeatures::CONSERVATIVE);
+    crate::capabilities::DeckFeatures::CONSERVATIVE, test_day());
             prop_assert_eq!(a.0.tasks, b.0.tasks);
         }
         }
@@ -5597,6 +5759,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         let state_after = app_into_state(&app);
@@ -5641,6 +5804,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         let state_after = app_into_state(&app);
@@ -5684,6 +5848,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         let state_after = app_into_state(&app);
@@ -5719,6 +5884,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         let state_after = app_into_state(&app);
@@ -5758,6 +5924,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         let state_after = app_into_state(&app);
@@ -5799,6 +5966,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         let merged = app.0.stacks[&local.id].clone();
@@ -5838,6 +6006,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         let merged = app.0.stacks[&local.id].clone();
@@ -5877,6 +6046,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         let merged = app.0.boards[&local.id].clone();
@@ -5916,6 +6086,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         let merged = &app.0.labels[&label_id];
@@ -6135,6 +6306,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         assert!(
@@ -6185,6 +6357,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         let final_state = app_into_state(&app);
@@ -6251,6 +6424,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         let merged = &app.0.tasks[&task_id];
@@ -6303,6 +6477,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         let final_state = app_into_state(&app);
@@ -6350,6 +6525,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         let final_state = app_into_state(&app);
@@ -6393,6 +6569,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         let merged = &app.0.stacks[&local.id];
@@ -6426,6 +6603,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         let merged = &app.0.labels[&local.id];
@@ -6465,6 +6643,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         let final_state = app_into_state(&app);
@@ -6502,6 +6681,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         assert_eq!(
@@ -6535,6 +6715,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         assert_eq!(
@@ -6566,6 +6747,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         assert_eq!(
@@ -6607,6 +6789,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         assert_eq!(
@@ -6646,6 +6829,7 @@ mod tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
         );
 
         assert_eq!(
@@ -6771,6 +6955,310 @@ mod tests {
                 .any(|action| matches!(action, PersistenceAction::UpsertTimeEntry(_))),
         );
     }
+
+    // ---- DR-6/3: §5c — the series fold dedup through the pipeline ----
+
+    /// A bound, open, recur-bearing twin candidate: id `id_seed` (the
+    /// u128 order *is* the v7 creation order), card `card`, scheduled on
+    /// 1970-01-02 (the UTC day every test calendar reads).
+    fn series_twin(id_seed: u128, series_seed: u128, card: u64, scheduled: Option<i64>) -> Task {
+        let mut task = bound_task(0);
+        task.id = crate::ids::TaskId::from(uuid::Uuid::from_u128(id_seed));
+        task.remote = Some(card_ref(1, card));
+        task.remote_seen = Some(ts(BASE));
+        task.title = format!("twin {id_seed}");
+        task.recur = Some(crate::recur::RecurRule {
+            series: crate::ids::SeriesId::from_uuid(uuid::Uuid::from_u128(series_seed)),
+            anchor: chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap(),
+            pattern: crate::recur::RecurPattern::Daily {
+                every: crate::recur::EveryDays::new(1).unwrap(),
+            },
+            bound: crate::recur::RecurBound::None,
+            continued_from: None,
+        });
+        task.scheduled = scheduled.map(ts);
+        task
+    }
+
+    fn day1() -> i64 {
+        86_400 // 1970-01-02, UTC midnight calendar
+    }
+
+    fn twin_state(older: Task, newer: Task) -> AppState {
+        let mut state = base_state(older);
+        state.tasks.insert(newer.id, newer);
+        state
+    }
+
+    fn run_sync(
+        state: &AppState,
+        outbox: &[PendingOp],
+        snapshot: &RemoteBoardSnapshot,
+    ) -> (
+        AppState,
+        Vec<PersistenceAction>,
+        Vec<crate::messages::SystemEvent>,
+    ) {
+        apply_sync_report(
+            state,
+            outbox,
+            snapshot,
+            &[],
+            ts(BASE),
+            &CountingIds::default(),
+            ts(BASE + 3_600),
+            &crate::test_support::test_connector(),
+            &AppDataEvidence::Absent,
+            DeckFeatures::CONSERVATIVE,
+            test_day(),
+        )
+    }
+
+    fn enqueued_ops(actions: &[PersistenceAction]) -> Vec<LocalOp> {
+        actions
+            .iter()
+            .filter_map(|action| match action {
+                PersistenceAction::EnqueueOp(pending) => Some(pending.op),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// T-5a/T-5f: the canonical late race — both twins long-bound with
+    /// independent clocks, no create signature anywhere. §4b structurally
+    /// cannot fire; §5c collapses once: the older-created survivor
+    /// absorbs the doomed twin field-wise, the twin is neutralized as a
+    /// ref-less tombstone, its card is ref-deleted, the survivor's lanes
+    /// re-arm, and no `SystemEvent` rides the collapse.
+    #[test]
+    fn the_series_race_collapses_to_the_older_created_survivor() {
+        let mut older = series_twin(100, 7, 10, Some(day1()));
+        let mut newer = series_twin(200, 7, 20, Some(day1()));
+        // The doomed twin's newer title and label must win the merge;
+        // the survivor's newer effort must stand.
+        newer.title = "the doomed twin's newer title".to_owned();
+        newer.clocks.title = ts(BASE + 200);
+        newer.label_memberships.insert(
+            crate::ids::LabelId::from(uuid::Uuid::from_u128(9)),
+            crate::entities::MembershipState::Added { at: ts(BASE + 50) },
+        );
+        older.effort = Some(crate::entities::Effort::new(3));
+        older.clocks.effort = ts(BASE + 300);
+        let state = twin_state(older, newer);
+        let snap = single_stack_snapshot(
+            vec![remote_task(1, 10, BASE), remote_task(1, 20, BASE)],
+            BASE,
+        );
+
+        let (app, actions, events) = run_sync(&state, &[], &snap);
+
+        assert!(events.is_empty(), "the collapse is tracing-only");
+        let survivor = app
+            .tasks
+            .get(&crate::ids::TaskId::from(uuid::Uuid::from_u128(100)))
+            .unwrap();
+        assert!(!survivor.deleted);
+        assert_eq!(survivor.title, "the doomed twin's newer title");
+        assert_eq!(survivor.clocks.title, ts(BASE + 200));
+        assert_eq!(survivor.effort, Some(crate::entities::Effort::new(3)));
+        assert!(
+            matches!(
+                survivor
+                    .label_memberships
+                    .get(&crate::ids::LabelId::from(uuid::Uuid::from_u128(9))),
+                Some(crate::entities::MembershipState::Added { .. })
+            ),
+            "the doomed twin's label OR-folds onto the survivor"
+        );
+        assert_eq!(
+            survivor.remote,
+            Some(card_ref(1, 10)),
+            "the survivor keeps its own binding trio"
+        );
+
+        let doomed = app
+            .tasks
+            .get(&crate::ids::TaskId::from(uuid::Uuid::from_u128(200)))
+            .unwrap();
+        assert!(doomed.deleted, "the twin is neutralized");
+        assert_eq!(doomed.remote, None, "the tombstone is ref-less");
+        assert_eq!(doomed.remote_seen, None);
+        assert_eq!(doomed.remote_baseline, None);
+        assert_eq!(
+            doomed.clocks.deleted,
+            ts(BASE + 3_600),
+            "the tombstone clock floors at now"
+        );
+
+        let board = crate::ids::BoardId::from(uuid::Uuid::from_u128(800));
+        let ops = enqueued_ops(&actions);
+        assert!(
+            ops.contains(&LocalOp::DeleteRemoteCard {
+                board,
+                card: card_ref(1, 20),
+            }),
+            "the doomed card is ref-deleted: {ops:?}"
+        );
+        let doomed_id = crate::ids::TaskId::from(uuid::Uuid::from_u128(200));
+        let survivor_id = crate::ids::TaskId::from(uuid::Uuid::from_u128(100));
+        assert!(
+            ops.contains(&LocalOp::UpdateTask(survivor_id))
+                && ops.contains(&LocalOp::UpdateAppData(survivor_id)),
+            "the survivor's lanes re-arm: {ops:?}"
+        );
+        assert!(
+            !ops.iter()
+                .any(|op| matches!(op, LocalOp::UpdateTask(t) if *t == doomed_id)
+                    || matches!(op, LocalOp::UpdateAppData(t) if *t == doomed_id)),
+            "the doomed twin's lanes never re-arm"
+        );
+    }
+
+    /// T-5b: the unbound arm — the survivor is the adopted remote twin,
+    /// the doomed row has a pending `CreateTask` and no card. The op
+    /// completes `true` (the board phase stays `Idle`), the row
+    /// neutralizes without a ref-delete.
+    #[test]
+    fn the_dominated_twin_s_pending_create_completes_without_a_failure_stamp() {
+        let older = series_twin(100, 7, 10, Some(day1()));
+        let mut newer = series_twin(200, 7, 20, Some(day1()));
+        newer.remote = None; // the race's unbound half: created offline, push pending
+        newer.remote_seen = None;
+        let doomed_id = newer.id;
+        let state = twin_state(older, newer);
+        let create_op = PendingOp {
+            op_id: OpId(uuid::Uuid::from_u128(555)),
+            op: LocalOp::CreateTask(doomed_id),
+            queued_at: ts(BASE),
+        };
+        let snap = single_stack_snapshot(vec![remote_task(1, 10, BASE)], BASE);
+
+        let (app, actions, events) = run_sync(&state, &[create_op], &snap);
+
+        assert_eq!(*events, []);
+        let doomed = app
+            .tasks
+            .get(&crate::ids::TaskId::from(uuid::Uuid::from_u128(200)))
+            .unwrap();
+        assert!(doomed.deleted && doomed.remote.is_none());
+        let ops = enqueued_ops(&actions);
+        let board = crate::ids::BoardId::from(uuid::Uuid::from_u128(800));
+        assert!(
+            !ops.iter()
+                .any(|op| matches!(op, LocalOp::DeleteRemoteCard { .. })),
+            "no card to delete: {ops:?}"
+        );
+        assert!(
+            actions.contains(&PersistenceAction::CompleteOp(OpId(uuid::Uuid::from_u128(
+                555
+            )))),
+            "the collapse-resolved create completes true"
+        );
+        assert!(
+            !actions.contains(&PersistenceAction::FailOp(OpId(uuid::Uuid::from_u128(555)))),
+            "never a dead letter"
+        );
+        let row = app.sync.get(board).expect("the bound board has a sync row");
+        assert!(
+            !matches!(row.phase, crate::state::SyncPhase::Failed { .. }),
+            "the board never stamps Failed"
+        );
+    }
+
+    /// T-5c/T-5d: the false-positive fences through the full pipeline —
+    /// same series different dates (the reopen-while-successor-lives
+    /// shape), same date different series, a done twin, a dateless pair.
+    /// Zero structural effects anywhere.
+    #[test]
+    fn the_dedup_fences_hold_through_the_full_pipeline() {
+        let id = |n: u128| crate::ids::TaskId::from(uuid::Uuid::from_u128(n));
+        let scenarios: Vec<(Task, Task)> = vec![
+            // Reopened occurrence + its successor: same series, other day.
+            (
+                series_twin(100, 7, 10, Some(day1())),
+                series_twin(200, 7, 20, Some(day1() + 86_400)),
+            ),
+            // Same day, different series.
+            (
+                series_twin(100, 7, 10, Some(day1())),
+                series_twin(200, 8, 20, Some(day1())),
+            ),
+            // One done twin.
+            {
+                let mut t = series_twin(200, 7, 20, Some(day1()));
+                t.done = Some(ts(BASE + 10));
+                (series_twin(100, 7, 10, Some(day1())), t)
+            },
+            // Dateless pair (unkeyed).
+            (series_twin(100, 7, 10, None), series_twin(200, 7, 20, None)),
+        ];
+        for (older, newer) in scenarios {
+            let state = twin_state(older, newer);
+            let snap = single_stack_snapshot(
+                vec![remote_task(1, 10, BASE), remote_task(1, 20, BASE)],
+                BASE,
+            );
+            let (app, actions, events) = run_sync(&state, &[], &snap);
+            assert_eq!(*events, []);
+            assert!(
+                enqueued_ops(&actions).is_empty(),
+                "no lane ops without a twin"
+            );
+            for id_seed in [100_u128, 200] {
+                let before = state.tasks.get(&id(id_seed)).unwrap();
+                let after = app.tasks.get(&id(id_seed)).unwrap();
+                assert_eq!(before, after, "task {id_seed} untouched");
+            }
+        }
+    }
+
+    /// T-5g: idempotence — a second cycle over the same world collapses
+    /// nothing (the neutralized twin is no longer a candidate), and a
+    /// re-adopted doomed card (the ref-delete still in flight) collapses
+    /// again to the same survivor.
+    #[test]
+    fn the_pass_is_idempotent_and_self_healing_over_re_adoption() {
+        let older = series_twin(100, 7, 10, Some(day1()));
+        let newer = series_twin(200, 7, 20, Some(day1()));
+        let state = twin_state(older, newer);
+        let snap = single_stack_snapshot(
+            vec![remote_task(1, 10, BASE), remote_task(1, 20, BASE)],
+            BASE,
+        );
+        let (app, _actions, _events) = run_sync(&state, &[], &snap);
+
+        // Cycle 2: the tombstoned twin is invisible.
+        let (app2, actions2, _) = run_sync(&app, &[], &snap);
+        assert!(enqueued_ops(&actions2).is_empty(), "no second collapse");
+        assert!(
+            app2.tasks
+                .get(&crate::ids::TaskId::from(uuid::Uuid::from_u128(200)))
+                .unwrap()
+                .deleted
+        );
+
+        // Re-adoption: the doomed card re-pulled while the ref-delete
+        // drains — the row is bound and open again; the same survivor
+        // wins and the pass fires once more.
+        let mut readopted = series_twin(200, 7, 20, Some(day1()));
+        readopted.title = "the doomed twin's newer title".to_owned();
+        let mut state3 = app2.clone();
+        state3.tasks.insert(readopted.id, readopted.clone());
+        let (app3, actions3, _) = run_sync(&state3, &[], &snap);
+        let survivor = app3
+            .tasks
+            .get(&crate::ids::TaskId::from(uuid::Uuid::from_u128(100)))
+            .unwrap();
+        assert_eq!(survivor.title, "the doomed twin's newer title");
+        assert!(app3.tasks.get(&readopted.id).unwrap().deleted);
+        let board = crate::ids::BoardId::from(uuid::Uuid::from_u128(800));
+        assert!(
+            enqueued_ops(&actions3).contains(&LocalOp::DeleteRemoteCard {
+                board,
+                card: card_ref(1, 20),
+            })
+        );
+    }
 }
 
 #[cfg(test)]
@@ -6784,6 +7272,15 @@ mod duplicate_reconcile_tests {
     use super::*;
     use crate::merge_testutil::*;
     use uuid::Uuid;
+
+    /// The UTC-midnight calendar every pipeline test injects (plain
+    /// offset dates; the dedup key never consults the window start).
+    fn test_day() -> crate::days::DayCalendar {
+        crate::days::DayCalendar {
+            day_start_time: chrono::NaiveTime::MIN,
+            offset: chrono::FixedOffset::east_opt(0).expect("zero is a valid offset"),
+        }
+    }
 
     const NOW: i64 = BASE + 30;
 
@@ -6827,6 +7324,7 @@ mod duplicate_reconcile_tests {
             &crate::test_support::test_connector(),
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::NATIVE,
+            test_day(),
         )
     }
 
@@ -6920,6 +7418,64 @@ mod duplicate_reconcile_tests {
             |a| matches!(a, PersistenceAction::CompleteOp(id) if *id == OpId(Uuid::from_u128(700)))
         ));
         assert_eq!(app.sync.aggregate().phase, crate::state::SyncPhase::Idle);
+        assert_eq!(*events, []);
+    }
+
+    /// T-5e: the composition pin — a recur-bearing race twin with a
+    /// create signature collapses in §4b (the rebind + `CompleteOp`
+    /// path); §5c fires nothing afterward. The two passes are disjoint
+    /// by trigger class: after §4b only one open task carries the key.
+    #[test]
+    fn a_crash_window_twin_collapses_in_4b_and_the_series_pass_stays_silent() {
+        let day1 = 86_400; // 1970-01-02, UTC
+        let mut a = twin(1, 900, BASE + 10);
+        a.scheduled = Some(ts(day1)); // content-equal clause 4 under NATIVE
+        let mut task = {
+            let mut task = bound_task(800);
+            task.remote = None;
+            task.remote_seen = None;
+            task
+        };
+        task.recur = Some(crate::recur::RecurRule {
+            series: crate::ids::SeriesId::from_uuid(uuid::Uuid::from_u128(7)),
+            anchor: chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap(),
+            pattern: crate::recur::RecurPattern::Daily {
+                every: crate::recur::EveryDays::new(1).unwrap(),
+            },
+            bound: crate::recur::RecurBound::None,
+            continued_from: None,
+        });
+        task.scheduled = Some(ts(day1));
+        let state = base_state(task);
+        let create_op = PendingOp {
+            op_id: OpId(Uuid::from_u128(700)),
+            op: LocalOp::CreateTask(TaskId::from(Uuid::from_u128(800))),
+            queued_at: ts(BASE),
+        };
+        let (app, actions, events) = run(
+            &state,
+            &[create_op],
+            &single_stack_snapshot(vec![a.clone()], BASE),
+            &[],
+        );
+
+        // §4b fired: the rebind + the create completing true.
+        assert_eq!(app.tasks.len(), 1, "exactly one survivor");
+        let merged = app.tasks.get(&TaskId::from(Uuid::from_u128(800))).unwrap();
+        assert_eq!(merged.remote, Some(a.id));
+        assert!(actions.iter().any(
+            |action| matches!(action, PersistenceAction::CompleteOp(id) if *id == OpId(Uuid::from_u128(700)))
+        ));
+        // §5c stayed silent: no ref-delete, no survivor lane op, no event.
+        assert_eq!(enqueued_ref_deletes(&actions), []);
+        assert!(
+            !actions.iter().any(|action| matches!(
+                action,
+                PersistenceAction::EnqueueOp(pending)
+                    if matches!(pending.op, LocalOp::UpdateTask(_) | LocalOp::UpdateAppData(_))
+            )),
+            "the series pass never re-arms lanes without a twin"
+        );
         assert_eq!(*events, []);
     }
 

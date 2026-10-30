@@ -468,6 +468,7 @@ async fn run_loop(
                         &metrics,
                         &system_out,
                         report,
+                        day_roll.calendar,
                     )
                     .await;
                 }
@@ -738,6 +739,7 @@ fn forward_sync_now(sync_outs: &mut Vec<mpsc::Sender<SyncCommand>>) -> bool {
 }
 
 #[allow(clippy::too_many_lines)] // one report, three arms; the arms ARE the design
+#[allow(clippy::too_many_arguments)] // the injected seams ARE the constructor
 async fn ingest_sync_report(
     core: &mut EngineCore,
     shared: &Arc<ArcSwap<AppState>>,
@@ -751,6 +753,7 @@ async fn ingest_sync_report(
     metrics: &EngineMetrics,
     system_out: &broadcast::WeakSender<SystemEvent>,
     report: taskboard_domain::SyncReport,
+    day: taskboard_domain::days::DayCalendar,
 ) {
     tracing::debug!("sync report ingested");
     let now = clock.now();
@@ -776,6 +779,7 @@ async fn ingest_sync_report(
                 &connector,
                 &app_data,
                 features,
+                day,
             );
             // The pipeline's broadcast verdicts (R3's resurrect is the
             // only producer today): upgrade-or-drop like the storage
