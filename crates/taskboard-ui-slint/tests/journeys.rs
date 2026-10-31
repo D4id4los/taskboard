@@ -899,6 +899,96 @@ fn a_mouse_row_invocation_routes_and_closes() {
     );
 }
 
+/// Undo v1 surfaces (undo/2, ADR 0019) — J-1: the undo rows grey from
+/// the published `UndoView`: an empty line renders both rows disabled;
+/// a published `can_undo`/`can_redo` view enables them while the menu
+/// holds (the models pass rebuilds the greying map on refresh).
+#[test]
+fn the_undo_rows_grey_from_the_published_undo_view() {
+    let (_fixture, mut state) = fixture::golden_state();
+    // golden_state carries the default (empty-line) view already; make
+    // it explicit, then the live view for the second phase.
+    state.undo = taskboard_domain::UndoView::default();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mounted_state = state.clone();
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::AppMenu);
+            harness.driver.advance_time(0); // instantiate the menu tree
+
+            let row_state = |harness: &Harness, action: &str| {
+                let entries = keyboard(harness).get_menu_entries();
+                (0..entries.row_count())
+                    .map(|i| entries.row_data(i).expect("row"))
+                    .find(|row| row.action == action)
+                    .expect("the row renders on the root page")
+                    .enabled
+            };
+            assert!(
+                !row_state(&harness, "app.undo") && !row_state(&harness, "app.redo"),
+                "an empty line greys both rows"
+            );
+
+            // The engine publishes a live view; the open menu re-greys.
+            // (The published snapshot is the one this test mounted —
+            // nothing else has written — so the local clone is it.)
+            let mut live = mounted_state;
+            live.undo = taskboard_domain::UndoView {
+                can_undo: true,
+                can_redo: true,
+                head_label: None,
+                recent: vec![],
+            };
+            harness.engine.replace_state(live, &harness.handle);
+            harness.driver.advance_time(0);
+            assert!(
+                row_state(&harness, "app.undo") && row_state(&harness, "app.redo"),
+                "a live view enables both rows while the menu holds"
+            );
+            harness.assert_commands(&[]);
+        },
+    );
+}
+
+/// Undo v1 surfaces (undo/2, ADR 0019) — J-2: invoking the rows sends
+/// the target-free engine verbs through the fire-and-forget command
+/// boundary (the dumb-client pin at the UI edge).
+#[test]
+fn invoking_the_undo_rows_sends_the_engine_verbs() {
+    let (_fixture, mut state) = fixture::golden_state();
+    state.undo = taskboard_domain::UndoView {
+        can_undo: true,
+        can_redo: true,
+        head_label: None,
+        recent: vec![],
+    };
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::AppMenu);
+            harness.driver.advance_time(0);
+
+            harness.driver.click_by_label("Undo");
+            harness.driver.advance_time(0);
+            harness.assert_commands(&[StateCommand::Undo]);
+
+            // The menu closed on the routed click (the mouse-row
+            // contract); reopen for the redo row.
+            harness.press(ActionId::AppMenu);
+            harness.driver.advance_time(0);
+            harness.driver.click_by_label("Redo");
+            harness.driver.advance_time(0);
+            harness.assert_commands(&[StateCommand::Redo]);
+        },
+    );
+}
+
 /// F1/D1 — the hamburger is a stateful toggle and every open shows
 /// the same entries: open → second click closes → third click opens a
 /// model equal to the first open's (row count + per-row action ids,

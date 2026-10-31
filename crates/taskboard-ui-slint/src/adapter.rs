@@ -283,6 +283,12 @@ impl Adapter {
                 focused.is_some() && !tracking_live,
             ),
             (ActionId::TaskTrackStop, tracking_live),
+            // Undo v1 surfaces (undo/2, ADR 0019): availability reads
+            // the published `UndoView` (memory-only, derived at every
+            // publish) — the whole v1 binding. A `NotUndoable` head
+            // still shows `can_undo` (R-U6 refuses at planning, typed).
+            (ActionId::AppUndo, state.undo.can_undo),
+            (ActionId::AppRedo, state.undo.can_redo),
         ])
     }
 
