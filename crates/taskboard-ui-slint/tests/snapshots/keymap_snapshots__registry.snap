@@ -25,18 +25,18 @@ expression: rows
   contexts:
     - global
   category: application
-  enabled: false
+  enabled: true
   menu_rank: 30
-  description: "Undoes the last change. Not yet available — tracked as backlog #356."
+  description: Undoes the last change. A change the server already received is undone by a new compensating change; the line head that cannot be undone is refused and named.
   menu_group: ~
 - id: app.redo
   label: Redo
   contexts:
     - global
   category: application
-  enabled: false
+  enabled: true
   menu_rank: 40
-  description: "Re-applies the last undone change. Not yet available — tracked as backlog #353."
+  description: Re-applies the last undone change as a new edit. Content the server deleted is re-created as a new remote card.
   menu_group: ~
 - id: app.settings
   label: Open settings

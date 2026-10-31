@@ -339,6 +339,13 @@ impl ActionRouter {
             // Application (enabled in chunk 2).
             ActionId::AppExit => DispatchOutcome::UiEffect(UiEffect::Exit),
             ActionId::AppMenu => DispatchOutcome::UiEffect(UiEffect::OpenMenu),
+            // Undo v1 surfaces (ADR 0019, undo/2): target-free engine
+            // verbs — availability greys from the published `UndoView`
+            // (the adapter's `entry_states`), and the engine refuses
+            // typed when the line cannot serve the verb. The dumb-client
+            // pin: the router emits a `StateCommand`, nothing else.
+            ActionId::AppUndo => DispatchOutcome::Command(StateCommand::Undo),
+            ActionId::AppRedo => DispatchOutcome::Command(StateCommand::Redo),
             // Menu cursor (D3).
             ActionId::MenuNext => DispatchOutcome::UiEffect(UiEffect::MenuNext),
             ActionId::MenuPrevious => DispatchOutcome::UiEffect(UiEffect::MenuPrevious),
@@ -532,9 +539,11 @@ impl ActionRouter {
             ActionId::StackNarrower => DispatchOutcome::UiEffect(UiEffect::StackNarrower),
             // Round-1 chunk 3 (D28b): the settings opener is live.
             ActionId::AppSettings => DispatchOutcome::UiEffect(UiEffect::OpenSettings),
-            // Reserved (§5.8) — the only disabled rows left (D6).
+            // Reserved (§5.8) — PaletteSearch opens the palette; the
+            // only disabled row left (D6) is AppHelp (the undo rows
+            // dispatch at the top of the match).
             ActionId::PaletteSearch => DispatchOutcome::UiEffect(UiEffect::OpenPalette),
-            ActionId::AppUndo | ActionId::AppRedo | ActionId::AppHelp => DispatchOutcome::Disabled,
+            ActionId::AppHelp => DispatchOutcome::Disabled,
         }
     }
 }
@@ -890,9 +899,12 @@ mod tests {
     #[test]
     fn disabled_actions_are_absorbed_even_with_focus() {
         let ctx = ctx(true);
-        for id in [ActionId::AppUndo, ActionId::AppRedo, ActionId::AppHelp] {
-            assert_eq!(ActionRouter::dispatch(id, &ctx), DispatchOutcome::Disabled);
-        }
+        // AppHelp is the only disabled row left (the undo rows flipped
+        // live in undo/2).
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::AppHelp, &ctx),
+            DispatchOutcome::Disabled
+        );
         // CaptureQuick flipped live (chunk 10, D-V6): it yields the
         // capture effect now, focus or not. PaletteSearch flipped the
         // same way (chunk 9).
@@ -904,6 +916,25 @@ mod tests {
             ActionRouter::dispatch(ActionId::CaptureQuick, &ctx),
             DispatchOutcome::UiEffect(UiEffect::BeginCapture)
         );
+    }
+
+    /// Undo v1 surfaces (undo/2, ADR 0019): the two rows dispatch the
+    /// target-free engine verbs — no `NoTarget` case exists, so the
+    /// outcome is focus-independent (the engine's typed refusals are
+    /// the only "no", D-4).
+    #[test]
+    fn app_undo_and_redo_dispatch_the_engine_verbs() {
+        for focused in [false, true] {
+            let ctx = ctx(focused);
+            assert_eq!(
+                ActionRouter::dispatch(ActionId::AppUndo, &ctx),
+                DispatchOutcome::Command(StateCommand::Undo)
+            );
+            assert_eq!(
+                ActionRouter::dispatch(ActionId::AppRedo, &ctx),
+                DispatchOutcome::Command(StateCommand::Redo)
+            );
+        }
     }
 
     /// T22 — the UI-internal effect table.

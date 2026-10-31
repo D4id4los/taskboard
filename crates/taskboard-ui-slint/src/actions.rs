@@ -439,9 +439,9 @@ pub const REGISTRY: &[ActionEntry] = &[
         label: "Undo",
         contexts: GLOBAL,
         category: Category::Application,
-        enabled: false,
+        enabled: true,
         menu_rank: 30,
-        description: "Undoes the last change. Not yet available — tracked as backlog #356.",
+        description: "Undoes the last change. A change the server already received is undone by a new compensating change; the line head that cannot be undone is refused and named.",
         menu_group: None,
     },
     ActionEntry {
@@ -449,9 +449,9 @@ pub const REGISTRY: &[ActionEntry] = &[
         label: "Redo",
         contexts: GLOBAL,
         category: Category::Application,
-        enabled: false,
+        enabled: true,
         menu_rank: 40,
-        description: "Re-applies the last undone change. Not yet available — tracked as backlog #353.",
+        description: "Re-applies the last undone change as a new edit. Content the server deleted is re-created as a new remote card.",
         menu_group: None,
     },
     ActionEntry {
@@ -1280,19 +1280,29 @@ mod tests {
     /// disabled rows; this test locks the bit).
     #[test]
     fn reserved_globals_are_present_and_disabled() {
-        for id in [
-            ActionId::AppUndo,
-            ActionId::AppRedo,
-            // CaptureQuick left this set in the daily-driver round
-            // (D-V6's flip): the enabled bit and the BeginCapture arm
-            // are pinned by the router tests and the registry snapshot.
-            // AppSettings left it in round-1 chunk 3 (D28b).
-            ActionId::AppHelp,
-        ] {
-            let row = entry(id);
-            assert!(!row.enabled, "{} must read disabled", row.id);
-            assert_eq!(row.contexts, GLOBAL);
-        }
+        // AppUndo and AppRedo left this set in the undo-surfaces flip
+        // (undo/2): their enabled bits are pinned by
+        // `undo_and_redo_rows_are_enabled_and_global`, the dispatch arms
+        // by the router tests, and the dynamic greying by the adapter's
+        // `entry_states`. CaptureQuick left it in the daily-driver
+        // round (D-V6's flip); AppSettings left it in round-1 chunk 3
+        // (D28b).
+        let row = entry(ActionId::AppHelp);
+        assert!(!row.enabled, "{} must read disabled", row.id);
+        assert_eq!(row.contexts, GLOBAL);
+    }
+
+    /// Undo v1 surfaces (undo/2, ADR 0019): the two rows are live,
+    /// global, and stay in their order-stable quick-row rank slots.
+    #[test]
+    fn undo_and_redo_rows_are_enabled_and_global() {
+        let undo = entry(ActionId::AppUndo);
+        let redo = entry(ActionId::AppRedo);
+        assert!(undo.enabled);
+        assert!(redo.enabled);
+        assert_eq!(undo.contexts, GLOBAL);
+        assert_eq!(redo.contexts, GLOBAL);
+        assert_eq!((undo.menu_rank, redo.menu_rank), (30, 40));
     }
 
     /// Post-flip (chunk-3 D6): the *only* disabled rows are the
@@ -1348,6 +1358,6 @@ mod tests {
     /// The reserved set as data for the post-flip diff (the original
     /// test's list, kept in one place).
     fn reserved_globals_are_present_and_disabled_set() -> std::collections::BTreeSet<ActionId> {
-        std::collections::BTreeSet::from([ActionId::AppUndo, ActionId::AppRedo, ActionId::AppHelp])
+        std::collections::BTreeSet::from([ActionId::AppHelp])
     }
 }
