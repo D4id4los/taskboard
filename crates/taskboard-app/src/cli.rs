@@ -124,6 +124,13 @@ pub enum Command {
         #[command(subcommand)]
         cmd: TrackCmd,
     },
+    /// Habit trackers (DR-6/6): add/list/log/adjust/update/rm over the
+    /// in-process core. Trackers are board-scoped today-view items;
+    /// `anchor_time` is a display chip and never an ordering input.
+    Habits {
+        #[command(subcommand)]
+        cmd: HabitsCmd,
+    },
     /// Export time entries to stdout as data (D-T15): CSV by default,
     /// JSON optional. Pipes are the contract — no file writing, no
     /// clipboard — and the payload deliberately bypasses the `--json`
@@ -859,6 +866,42 @@ fn parse_date_flag(raw: &str) -> Result<chrono::NaiveDate, String> {
     chrono::NaiveDate::parse_from_str(raw, "%Y-%m-%d").map_err(|_| "expected YYYY-MM-DD".to_owned())
 }
 
+/// A positive quota (`--daily/--weekly/--monthly [N]`): zero-quota is
+/// unrepresentable in the domain, so the parse rejects it as a usage
+/// error (the mint's law surfaced at the CLI boundary).
+fn parse_quota_flag(raw: &str) -> Result<u32, String> {
+    let n: u32 = raw.parse().map_err(|_| "expected a count".to_owned())?;
+    if n == 0 {
+        return Err("the count must be at least 1".to_owned());
+    }
+    Ok(n)
+}
+
+/// `HH:MM[:SS]` — the anchor-chip grammar.
+fn parse_time_of_day_flag(raw: &str) -> Result<chrono::NaiveTime, String> {
+    chrono::NaiveTime::parse_from_str(raw, "%H:%M:%S")
+        .or_else(|_| chrono::NaiveTime::parse_from_str(raw, "%H:%M"))
+        .map_err(|_| "expected HH:MM or HH:MM:SS".to_owned())
+}
+
+/// `--at <HH:MM[:SS]>` / `--at none` — the chip's change-mask value.
+fn parse_anchor_edit(raw: &str) -> Result<AnchorEdit, String> {
+    if raw.eq_ignore_ascii_case("none") {
+        return Ok(AnchorEdit::Clear);
+    }
+    parse_time_of_day_flag(raw).map(AnchorEdit::Set)
+}
+
+/// `--continued-from <series uuid>` / `--continued-from none`.
+fn parse_seam_edit(raw: &str) -> Result<SeamEdit, String> {
+    if raw.eq_ignore_ascii_case("none") {
+        return Ok(SeamEdit::Unlink);
+    }
+    let uuid =
+        uuid::Uuid::parse_str(raw).map_err(|_| "expected a series uuid or 'none'".to_owned())?;
+    Ok(SeamEdit::Link(taskboard_domain::SeriesId::from(uuid)))
+}
+
 #[test]
 fn parse_span_stamp_normalizes_to_utc_and_rejects_bare_times() {
     let stamped = parse_span_stamp("2026-10-24T11:00:00+02:00").expect("explicit offset");
@@ -961,6 +1004,162 @@ pub enum TrackCmd {
         /// The entry (uuid | unique ≥8-char uuid prefix).
         entry: String,
     },
+}
+
+/// `habits` subcommands (D-12's six verbs). The target grammar
+/// `--daily/--weekly/--monthly [N]` mirrors the `tasks repeat` family:
+/// exactly one flag, the count defaulting to 1 (zero-quota is
+/// unrepresentable — the [`taskboard_domain::NonZeroCount`] mint).
+#[derive(Debug, Subcommand)]
+pub enum HabitsCmd {
+    /// Add a tracker to a board (appended last in manual order).
+    Add {
+        /// The display title.
+        title: String,
+        /// Count per day window (default 1).
+        #[arg(
+            long,
+            value_name = "N",
+            num_args = 0..=1,
+            default_missing_value = "1",
+            required_unless_present_any = ["weekly", "monthly"],
+            conflicts_with_all = ["weekly", "monthly"],
+            value_parser = parse_quota_flag
+        )]
+        daily: Option<u32>,
+        /// Count per ISO week (default 1).
+        #[arg(
+            long,
+            value_name = "N",
+            num_args = 0..=1,
+            default_missing_value = "1",
+            conflicts_with_all = ["monthly"],
+            value_parser = parse_quota_flag
+        )]
+        weekly: Option<u32>,
+        /// Count per calendar month (default 1).
+        #[arg(
+            long,
+            value_name = "N",
+            num_args = 0..=1,
+            default_missing_value = "1",
+            value_parser = parse_quota_flag
+        )]
+        monthly: Option<u32>,
+        /// Target board (uuid); the single live board when omitted.
+        #[arg(long, value_parser = parse_board_id)]
+        board: Option<taskboard_domain::BoardId>,
+        /// The display anchor chip (`HH:MM[:SS]`) — presentation only,
+        /// never an ordering input.
+        #[arg(long, value_parser = parse_time_of_day_flag)]
+        at: Option<chrono::NaiveTime>,
+    },
+    /// The board's trackers in stored manual `(order, id)` order, with
+    /// current-window progress and streak (the conversion seam unions a
+    /// linked series' completed members).
+    List {
+        /// Target board (uuid); the single live board when omitted.
+        #[arg(long, value_parser = parse_board_id)]
+        board: Option<taskboard_domain::BoardId>,
+    },
+    /// +1 into today's window (surplus logs are first-class). The
+    /// receipt names the window the increment landed in and the
+    /// post-increment count — a surplus repair is user-visible, never
+    /// silent.
+    Log {
+        /// The habit (uuid | unique ≥8-char uuid prefix | exact live
+        /// title).
+        habit: String,
+    },
+    /// Explicit count correction for one window (`YYYY-MM-DD`, the
+    /// canonical period start of the habit's current target kind). A
+    /// non-canonical window is the typed `invalid-habit-window`
+    /// refusal, never a clap refusal.
+    Adjust {
+        /// The habit (uuid | prefix | exact live title).
+        habit: String,
+        /// The window's period-start date (YYYY-MM-DD).
+        #[arg(long, value_parser = parse_date_flag)]
+        window: chrono::NaiveDate,
+        /// The corrected count (0 is legal — an audited emptying).
+        #[arg(long)]
+        count: u32,
+    },
+    /// Edit a tracker's fields. Each flag is a change mask: omitted =
+    /// unchanged; a zero-flag update is the typed no-op. `--order`
+    /// routes `MoveHabit` (the manual reorder — the UI computes
+    /// midpoints, this verb stores the absolute value).
+    Update {
+        /// The habit (uuid | prefix | exact live title).
+        habit: String,
+        /// New title.
+        #[arg(long)]
+        title: Option<String>,
+        /// New per-day quota.
+        #[arg(
+            long,
+            value_name = "N",
+            num_args = 0..=1,
+            default_missing_value = "1",
+            conflicts_with_all = ["weekly", "monthly"],
+            value_parser = parse_quota_flag
+        )]
+        daily: Option<u32>,
+        /// New per-week quota.
+        #[arg(
+            long,
+            value_name = "N",
+            num_args = 0..=1,
+            default_missing_value = "1",
+            conflicts_with_all = ["monthly"],
+            value_parser = parse_quota_flag
+        )]
+        weekly: Option<u32>,
+        /// New per-month quota.
+        #[arg(
+            long,
+            value_name = "N",
+            num_args = 0..=1,
+            default_missing_value = "1",
+            value_parser = parse_quota_flag
+        )]
+        monthly: Option<u32>,
+        /// New anchor chip (`HH:MM[:SS]`), or `none` to clear it.
+        #[arg(long, value_parser = parse_anchor_edit)]
+        at: Option<AnchorEdit>,
+        /// Absolute manual-order slot (the `MoveHabit` semantics).
+        #[arg(long)]
+        order: Option<i64>,
+        /// Link the §4.7 conversion seam (series uuid), or `none` to
+        /// unlink. The read-side streak/history views union the link.
+        #[arg(long, value_parser = parse_seam_edit)]
+        continued_from: Option<SeamEdit>,
+    },
+    /// Delete a tracker (tombstone; the log outlives it — history stays
+    /// queryable, and the receipt names the surviving row count).
+    Rm {
+        /// The habit (uuid | prefix | exact live title).
+        habit: String,
+    },
+}
+
+/// The `habits update --at` value: a time-of-day, or `none` (clear).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnchorEdit {
+    /// Set the chip.
+    Set(chrono::NaiveTime),
+    /// Clear the chip.
+    Clear,
+}
+
+/// The `habits update --continued-from` value: a series uuid, or
+/// `none` (unlink).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeamEdit {
+    /// Link the series.
+    Link(taskboard_domain::SeriesId),
+    /// Unlink.
+    Unlink,
 }
 
 /// `config` subcommands.

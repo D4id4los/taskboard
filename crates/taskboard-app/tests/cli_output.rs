@@ -341,6 +341,8 @@ fn o3_error_kinds_cover_every_variant() {
             CommandError::AmbiguousAdhocAlarm { .. } => "ambiguous-adhoc-alarm",
             CommandError::UnknownTimeEntry { .. } => "unknown-time-entry",
             CommandError::AmbiguousTimeEntry { .. } => "ambiguous-time-entry",
+            CommandError::UnknownHabit { .. } => "unknown-habit",
+            CommandError::AmbiguousHabit { .. } => "ambiguous-habit",
             CommandError::NoStacks => "no-stacks",
             CommandError::AmbiguousBoard { .. } => "ambiguous-board",
             CommandError::SyncFailed(_) => "sync-failed",
