@@ -554,6 +554,24 @@ expression: rows
   menu_rank: 180
   description: "Stops the running timer, closing its open time entry."
   menu_group: task
+- id: habit.log
+  label: Log habit
+  contexts:
+    - global
+  category: task
+  enabled: true
+  menu_rank: 190
+  description: "+1 the addressed tracker's current window (surplus logs are first-class)."
+  menu_group: ~
+- id: habit.move
+  label: Reorder habit
+  contexts:
+    - global
+  category: task
+  enabled: true
+  menu_rank: 200
+  description: Moves the addressed tracker to the reorder slot (the stored manual order).
+  menu_group: ~
 - id: picker.left
   label: Picker cursor left
   contexts:
