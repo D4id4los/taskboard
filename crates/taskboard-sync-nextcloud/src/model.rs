@@ -382,15 +382,26 @@ where
 
 /// The 1.17.5 create/update echo carries the stored filename under
 /// `extendedData.info.filename` with no `fileName` key (measured);
-/// 1.19.0 carries `fileName` directly. Normalizing at *both* decode
-/// paths means every decoded [`ExtendedData`] answers
+/// 1.19.0 carries `fileName` directly; 1.19.1 listings carry no
+/// `fileName` and split the stored name across `info.basename` (full,
+/// incl. extension) and `info.filename` (basename *without* extension,
+/// PHP pathinfo semantics — tier records §F-A). Normalizing at *both*
+/// decode paths means every decoded [`ExtendedData`] answers
 /// `.file_name` with the stored filename regardless of the server's
-/// echo shape — consumers never branch on the version.
+/// echo shape — consumers never branch on the version. When `fileName`
+/// is absent or empty, the ranked fallback takes the first non-empty of
+/// `info.basename`, then `info.filename`; a present `fileName` is never
+/// overwritten.
 fn normalize_file_name(mut data: ExtendedData) -> ExtendedData {
     if data.file_name.is_empty()
         && let Some(info) = &data.info
     {
-        data.file_name = info.file_name.clone();
+        let ranked = if info.basename.is_empty() {
+            &info.file_name
+        } else {
+            &info.basename
+        };
+        data.file_name = ranked.clone();
     }
     data
 }
@@ -424,6 +435,13 @@ pub struct ExtendedData {
 pub struct ExtensionInfo {
     #[serde(default, rename = "filename")]
     pub file_name: String,
+    /// The full stored filename *including* extension — Deck 1.19.1's
+    /// listings carry it (measured, tier records §F-A); PHP pathinfo
+    /// semantics, where `filename` is the basename *without* extension.
+    /// Deliberate leniency: absent on the measured 1.17.5 create echo,
+    /// where the stored name rides `filename` instead.
+    #[serde(default, rename = "basename", skip_serializing_if = "String::is_empty")]
+    pub basename: String,
 }
 
 /// Deck serializes some empty collections as `null` (e.g. a stack's
