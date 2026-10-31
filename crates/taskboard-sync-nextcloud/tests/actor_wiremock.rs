@@ -47,6 +47,7 @@ fn cfg() -> SyncActorConfig {
         // Every LWW-participating stamp the actor mints is `T + 1000` —
         // after every fixture stamp, preserving the real-clock orderings.
         clock: Arc::new(FixedClock(ts(T + 1000))),
+        day: taskboard_state::DayRollConfig::disabled().calendar,
     }
 }
 
@@ -956,6 +957,7 @@ async fn a14_rate_limited_poll_waits_the_advertised_retry_after() {
         backoff_initial: Duration::from_millis(100),
         backoff_max: Duration::from_secs(30),
         clock: Arc::new(FixedClock(ts(T + 1000))),
+        day: taskboard_state::DayRollConfig::disabled().calendar,
     };
     let server = start_server().await;
     let limited = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -3164,6 +3166,48 @@ mod flush_seed {
     /// rule, one Default-ref dismissal (device-local — must never reach
     /// the wire), and the queued `UpdateAppData` op the dismiss command
     /// enqueued (design D-8).
+    /// A habit-only seed: one live tracker of the board, one in-window
+    /// log row, and the task-less `FlushBoardAppData` trigger queued —
+    /// no task app-data anywhere (DR-6/6's D-H9 vocabulary).
+    pub(crate) fn repo_with_habit_flush_work() -> Arc<InMemoryRepository> {
+        let mut state = PersistedState::default();
+        state.boards.insert(bound_board().id, bound_board());
+        let habit = taskboard_domain::Habit {
+            id: taskboard_domain::ids::HabitId::from(uuid(60)),
+            board: taskboard_domain::BoardId::from(uuid(1)),
+            title: "water".to_owned(),
+            target: taskboard_domain::HabitTarget::PerDay(
+                taskboard_domain::NonZeroCount::new(3).unwrap(),
+            ),
+            order: 0,
+            anchor_time: None,
+            clocks: taskboard_domain::HabitClocks::all(ts(T + 10)),
+            continued_from: None,
+            deleted: false,
+        };
+        let habit_id = habit.id;
+        state.habits.habits.insert(habit.id, habit);
+        // The device-local "today" under the hermetic UTC-midnight
+        // calendar is T's UTC date; that window's row is in retention.
+        let today = chrono::DateTime::from_timestamp(T, 0).unwrap().date_naive();
+        state.habits.log.insert(
+            taskboard_domain::HabitLogKey {
+                habit: habit_id,
+                window: taskboard_domain::WindowStart::from_stored(today),
+            },
+            taskboard_domain::HabitLogEntry {
+                count: 1,
+                clock: ts(T + 20),
+            },
+        );
+        state.outbox.push(PendingOp {
+            op_id: OpId(uuid(999)),
+            op: LocalOp::FlushBoardAppData(taskboard_domain::BoardId::from(uuid(1))),
+            queued_at: ts(T + 30),
+        });
+        Arc::new(InMemoryRepository::with_state(state))
+    }
+
     pub(crate) fn repo_with_dismissal_flush_work() -> Arc<InMemoryRepository> {
         let mut state = flush_work_state(false, true, false);
         let task_id = taskboard_domain::TaskId::from(uuid(100));
@@ -3831,6 +3875,80 @@ async fn f20_dismissal_rows_flush_rule_ref_only_through_the_document() {
     );
     assert!(!full.contains("default:"), "{full}");
     assert!(!full.contains("alarm:"), "{full}");
+}
+
+/// DR-6/6's roaming journey: a habit and its log row roam to a second
+/// device through the sidecar ALONE — the trigger is the task-less
+/// `FlushBoardAppData` op, the uploaded document carries the `habits`
+/// and `habit-log` sections, and zero card bodies exist for habits
+/// (the D-C9 fence at the wire: no `tasks`-section content at all, the
+/// seed carrying no task app-data).
+#[tokio::test(start_paused = true)]
+async fn f21_habit_and_log_roam_through_the_sidecar_alone() {
+    let server = start_server().await;
+    mount_capabilities(&server, Some("1.19.0")).await;
+    mount_standard_pull(
+        &server,
+        serde_json::json!([sidecar::anchor_card_json(sidecar::CARD, T)]),
+    )
+    .await;
+    sidecar::mount_detail(&server, sidecar::CARD, false).await;
+    sidecar::mount_download(&server, sidecar::document_json(BOARD, 1), 200).await;
+    flush_seed::mount_content_put(&server, 200).await;
+
+    let mut actor = spawn(&server, flush_seed::repo_with_habit_flush_work());
+    let report = nudge_and_report(&mut actor).await;
+    let SyncReport::Completed { pushes, .. } = report else {
+        panic!("expected a Completed report");
+    };
+    assert!(
+        pushes.iter().any(|outcome| {
+            outcome.op == OpId(uuid(999))
+                && matches!(outcome.result, PushResult::Applied { echo: None })
+        }),
+        "the task-less flush trigger completes: {pushes:?}"
+    );
+    let requests = server.received_requests().await.unwrap();
+    let put = requests
+        .iter()
+        .find(|r| r.url.path().contains("/attachment/deck_file:"))
+        .unwrap();
+    let raw = String::from_utf8_lossy(&put.body);
+    let json_start = raw.find("{\"format\"").unwrap();
+    let mut de = serde_json::Deserializer::from_str(&raw[json_start..]);
+    let body: serde_json::Value = serde::Deserialize::deserialize(&mut de).unwrap();
+    let habits = body["sections"]["habits"]
+        .as_object()
+        .expect("the habits section rode the flush");
+    let habit_uuid = uuid(60).to_string();
+
+    let row = &habits[&habit_uuid];
+    assert_eq!(row["title"], "water", "the live definition roams");
+    assert_eq!(row["order"], 0);
+    assert!(
+        row["clocks"]["title"].is_string(),
+        "the five embedded clocks ride the row: {row}"
+    );
+    let today = chrono::DateTime::from_timestamp(T, 0).unwrap().date_naive();
+    let log = body["sections"]["habit-log"]
+        .as_object()
+        .expect("the habit-log section rode the flush");
+    let key = format!("{habit_uuid}|{today}");
+    assert_eq!(log[&key]["count"], 1, "the in-window row roams: {log:?}");
+    assert!(log[&key]["clock"].is_string());
+    // The D-C9 fence: no card body *for habits* anywhere. The base
+    // document's unrelated card-55 content relays untouched (the union's
+    // additivity), and the habit UUID is confined to its board-level
+    // sections — it never enters a card-keyed one.
+    let tasks = body["sections"]["tasks"].to_string();
+    assert!(
+        !tasks.contains(&habit_uuid),
+        "the habit identity never enters the card-keyed sections: {tasks}"
+    );
+    assert_eq!(
+        body["sections"]["tasks"]["55"]["fields"]["effort"]["v"], 900,
+        "the base document's card content relays untouched"
+    );
 }
 
 /// F5: a transport-class upload failure strands — zero outcomes, the

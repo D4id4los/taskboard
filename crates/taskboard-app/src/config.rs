@@ -1210,6 +1210,9 @@ impl AppConfig {
             // Stateless: engine and actor read one wall source. A fresh
             // Arc of the zero-sized clock is that same source.
             clock: std::sync::Arc::new(taskboard_domain::SystemClock),
+            // The same calendar the engine's day roll runs on (the one
+            // validated vocabulary — no second local-date concept).
+            day: self.resolved_day_calendar(),
         }
     }
 
