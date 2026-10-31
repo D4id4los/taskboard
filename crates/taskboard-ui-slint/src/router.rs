@@ -303,6 +303,15 @@ pub struct DispatchCtx {
     /// invocation already addresses the focused task; `NoTarget` when
     /// neither is set).
     pub track_target: Option<TaskId>,
+    /// The habits row's habit (DR-6/6, D-P13): set by the adapter when
+    /// a row's +1 affordance activates; `habit.log` routes from it
+    /// (`NoTarget` without one).
+    pub habit_target: Option<taskboard_domain::HabitId>,
+    /// The reorder's resolved move (DR-6/6): set by the adapter when a
+    /// reorder affordance activates — the habit plus the drop slot's
+    /// floor-midpoint order computed from the row source; `habit.move`
+    /// routes from it (`NoTarget` without one).
+    pub habit_move: Option<(taskboard_domain::HabitId, i64)>,
     /// Whether the focused task is done (round 2, D19): the reopen
     /// verb's enablement gate — `task.reopen` routes only for a
     /// focused *completed* task (the `task.complete` machinery
@@ -405,6 +414,19 @@ impl ActionRouter {
             },
             ActionId::TimerCancel => match ctx.timer_target {
                 Some(alarm) => DispatchOutcome::Command(StateCommand::CancelAdhocAlarm { alarm }),
+                None => DispatchOutcome::NoTarget,
+            },
+            // The habit verbs (DR-6/6, D-P13): +1 from the row target;
+            // the reorder from the adapter-resolved (habit, order) —
+            // the UI computes midpoints, the planner stamps the value.
+            ActionId::HabitLog => match ctx.habit_target {
+                Some(habit) => DispatchOutcome::Command(StateCommand::LogHabit { habit }),
+                None => DispatchOutcome::NoTarget,
+            },
+            ActionId::HabitMove => match ctx.habit_move {
+                Some((habit, order)) => {
+                    DispatchOutcome::Command(StateCommand::MoveHabit { habit, order })
+                }
                 None => DispatchOutcome::NoTarget,
             },
             // The tracking verbs (DR-5/4, D-T16): Start routes from the
@@ -534,6 +556,8 @@ mod tests {
             timer_draft: None,
             timer_target: None,
             track_target: None,
+            habit_target: None,
+            habit_move: None,
             day_window: None,
             focused_task_done: false,
         }
@@ -624,6 +648,34 @@ mod tests {
             ActionRouter::dispatch(ActionId::TaskTrackStart, &both),
             DispatchOutcome::Command(StateCommand::StartTracking { task }),
             "the notification row's target is table addressing, not focus"
+        );
+    }
+
+    /// DR-6/6 — the habit verbs route exact typed commands from their
+    /// row targets; a target-less dispatch is the honest `NoTarget`
+    /// (the menu can never invoke them — section-scoped entries).
+    #[test]
+    fn habit_verbs_route_from_their_row_targets() {
+        let habit = taskboard_domain::HabitId::from_uuid(Uuid::now_v7());
+        let mut plus = ctx(true);
+        plus.habit_target = Some(habit);
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::HabitLog, &plus),
+            DispatchOutcome::Command(StateCommand::LogHabit { habit })
+        );
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::HabitLog, &ctx(true)),
+            DispatchOutcome::NoTarget
+        );
+        let mut move_ctx = ctx(true);
+        move_ctx.habit_move = Some((habit, 15));
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::HabitMove, &move_ctx),
+            DispatchOutcome::Command(StateCommand::MoveHabit { habit, order: 15 })
+        );
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::HabitMove, &ctx(true)),
+            DispatchOutcome::NoTarget
         );
     }
 

@@ -27,7 +27,7 @@ use crate::view_state::{DateField, Flow, ViewState};
 use crate::{
     AppWindow, BannerRowModel, BoardBarModel, BoardModel, BoardSegmentModel,
     Breakpoint as SlintBreakpoint, DecorationKind, DragState, DueDayModel, DueKind as SlintDueKind,
-    FlowHintModel, NotificationRowModel, PaletteRowModel, Responsive, RuleRowModel,
+    FlowHintModel, HabitRowModel, NotificationRowModel, PaletteRowModel, Responsive, RuleRowModel,
     StackColumnModel, StackDetailModel, SyncBadgeModel, SyncPhaseUi, TaskCardModel, TaskDecoration,
     TaskDetailModel, Theme, TimerRowModel, TodayModel, TodayRowModel, TodaySectionModel, Tone,
     View,
@@ -79,6 +79,10 @@ pub struct IdTables {
     /// like the notifications table — the cancel seam's resolution
     /// base; empty on kiosk.
     pub timers: Vec<taskboard_domain::AdhocAlarmId>,
+    /// The habits section's live habits (DR-6/6): id-indexed in the
+    /// stored manual `(order, id)` order — the plus/reorder seams'
+    /// resolution base; renders on kiosk too (rows are passive).
+    pub habits: Vec<taskboard_domain::HabitId>,
     /// The task-detail view's reminder rules in id order (chunk 6,
     /// D12): the rule-list row indices resolve against this pass.
     pub task_rules: Vec<ReminderRuleId>,
@@ -220,6 +224,9 @@ pub struct PushModels {
     /// The timers section's persistent row handle (DR-3/3): the same
     /// diff pattern — stable identity across refreshes.
     timers: Option<Rc<VecModel<TimerRowModel>>>,
+    /// The habits section's persistent row handle (DR-6/6): the same
+    /// diff pattern.
+    habits: Option<Rc<VecModel<HabitRowModel>>>, // generated from compositions/habits.slint
     /// The palette's persistent row handle (chunk 9): diffed per
     /// keystroke — a fresh `VecModel` per push would regress the
     /// stable-identity invariant (r2 D9).
@@ -483,6 +490,45 @@ fn push_timers(
     )
 }
 
+/// The habits section (DR-6/6, §4.6): the active board's tracker rows.
+/// No kiosk model gate (D-P13): the rows render on the appliance —
+/// only the section's actions gate (`habits-editing-visible`). Returns
+/// the diff's mutation count.
+#[allow(clippy::too_many_arguments)] // the pass-shaped parameter list, like `push`
+fn push_habits(
+    window: &AppWindow,
+    state: &AppState,
+    board: Option<taskboard_domain::BoardId>,
+    now: DateTime<Utc>,
+    calendar: taskboard_domain::DayCalendar,
+    kiosk: bool,
+    tables: &mut IdTables,
+    models: &mut PushModels,
+) -> usize {
+    let rows: Vec<presentation::HabitRow> = board
+        .map(|board| presentation::habit_rows(state, board, now, calendar))
+        .unwrap_or_default();
+    tables.habits = rows.iter().map(|row| row.habit).collect();
+    let shown: Vec<HabitRowModel> = rows
+        .iter()
+        .map(|row| HabitRowModel {
+            title: SharedString::from(row.title.clone()),
+            progress: SharedString::from(presentation::habit_progress_phrase(row)),
+            streak: i32::try_from(row.streak).unwrap_or(i32::MAX),
+            chip: SharedString::from(row.chip.map_or(String::new(), |chip| chip.to_string())),
+            met: row.met,
+        })
+        .collect();
+    window.set_habits_editing_visible(presentation::habit_editing_visible(kiosk));
+    push_rows(
+        &mut models.habits,
+        |rc| {
+            window.set_habits_model(rc);
+        },
+        &shown,
+    )
+}
+
 /// The in-app notification surface (R3 chunk C, design D-10/D-6): the
 /// derived-at-read rows pushed onto the persistent surface model. The
 /// kiosk gate lives HERE (R3.5.3, banner-only appliance mode): the
@@ -677,6 +723,16 @@ pub fn push(
         state,
         reminder_defaults,
         now,
+        kiosk,
+        &mut tables,
+        models,
+    );
+    mutations += push_habits(
+        window,
+        state,
+        vs.board(),
+        now,
+        calendar,
         kiosk,
         &mut tables,
         models,

@@ -1,0 +1,99 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The habits section (DR-6/6, §4.6): the today view's trackers — one
+// progress row per live habit ("water 3/8"), a +1 affordance, and the
+// row's reorder pair (the keyboard/affordance fallback of the drag
+// plan: both dispatch the same `MoveHabit` midpoint law; the drop
+// slot's free interval is computed Rust-side from the row source).
+// Renders on kiosk too (D-P13: passive progress visibility IS the
+// section's point) — only the actions are gated (D-T16: the gate
+// empties the ACTION, never the model; `habits-editing-visible` is
+// false on kiosk and the buttons never mount).
+
+import { Theme, Typography, RoleText, Tone } from "../theme.slint";
+import { IconButton, IconKind } from "../widgets/icon-button.slint";
+import { ListRow } from "../widgets/list-row.slint";
+
+// One tracker row: the progress phrase is a presentation-side
+// derivation from `count`/`quota`; `met` restyles only — the +1
+// never disables at/after quota (surplus logs are first-class).
+export struct HabitRowModel {
+    title: string,
+    progress: string,
+    streak: int,
+    chip: string,
+    met: bool,
+}
+
+export component HabitsSection inherits Rectangle {
+    in property <[HabitRowModel]> habits;
+    // The edit affordances' mount gate (D-P13/D-T16): false on kiosk —
+    // the rows render, the actions do not.
+    in property <bool> editing-visible;
+    callback plus-clicked(int);
+    // The reorder's drop slot (row, slot): Rust computes the floor
+    // midpoint of the slot's free interval and dispatches MoveHabit.
+    callback reorder-asked(int, int);
+
+    background: transparent;
+    accessible-role: AccessibleRole.region;
+    accessible-label: "Habits";
+
+    min-height: section-layout.preferred-height;
+    max-height: section-layout.preferred-height;
+
+    section-layout := VerticalLayout {
+        vertical-stretch: 0;
+        spacing: Theme.space-1;
+
+        HorizontalLayout {
+            spacing: Theme.space-2;
+            RoleText {
+                role: Typography.caption;
+                text: "Habits";
+                vertical-alignment: center;
+            }
+            RoleText {
+                role: Typography.caption;
+                text-color: Theme.text-secondary;
+                text: root.habits.length;
+                vertical-alignment: center;
+            }
+        }
+
+        for row[row-index] in root.habits: HorizontalLayout {
+            spacing: Theme.space-2;
+
+            list := ListRow {
+                horizontal-stretch: 1;
+                text: row.title;
+                meta: row.progress
+                    + (row.chip != "" ? "  @" + row.chip : "")
+                    + (row.streak > 0 ? "  🔥" + row.streak : "");
+                tone: row.met ? Tone.success : Tone.neutral;
+            }
+            if (root.editing-visible): VerticalLayout {
+                IconButton {
+                    icon: IconKind.chevron-left;
+                    tone: Tone.neutral;
+                    label: "Move habit up";
+                    clicked => root.reorder-asked(row-index, row-index - 1);
+                }
+                IconButton {
+                    icon: IconKind.chevron-right;
+                    tone: Tone.neutral;
+                    label: "Move habit down";
+                    clicked => root.reorder-asked(row-index, row-index + 1);
+                }
+                IconButton {
+                    icon: IconKind.plus;
+                    tone: Tone.success;
+                    label: "Log habit";
+                    // Surplus logs are first-class: the button never
+                    // disables at/after quota (D-P14); `met` restyled
+                    // the row instead.
+                    clicked => root.plus-clicked(row-index);
+                }
+            }
+        }
+    }
+}

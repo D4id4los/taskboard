@@ -20,6 +20,7 @@ import { ScrollPageHint } from "../scroll-page.slint";
 import { TaskCard, TaskCardModel } from "../widgets/task-card.slint";
 import { EmptyState } from "../widgets/empty-state.slint";
 import { TimersSection, TimerRowModel } from "../compositions/timers.slint";
+import { HabitsSection, HabitRowModel } from "../compositions/habits.slint";
 
 export struct TodayRowModel {
     card: TaskCardModel,
@@ -64,6 +65,14 @@ export component TodayView inherits FocusScope {
     // `false` keeps the form's text (an absorbed parse miss).
     callback timers-create-accepted(string, string) -> bool;
     callback timers-form-edited();
+    // The habits section (DR-6/6, §4.6): after the timers block,
+    // above the task sections (D-P18). Renders whenever the active
+    // board has live habits — on kiosk too (passive progress
+    // visibility IS the point; only the actions gate).
+    in property <[HabitRowModel]> habits;
+    in property <bool> habits-editing-visible;
+    callback habits-plus-clicked(int);
+    callback habits-reorder-asked(int, int);
 
     focus-on-tab-navigation: true;
     accessible-role: AccessibleRole.region;
@@ -104,6 +113,15 @@ export component TodayView inherits FocusScope {
                     cancel-clicked(r) => root.timers-cancel-clicked(r);
                     create-accepted(label, when) => root.timers-create-accepted(label, when);
                     form-edited() => root.timers-form-edited();
+                }
+                // The habits section (D-P18): timers, then habits, then
+                // the task sections.
+                if (root.habits.length > 0): HabitsSection {
+                    vertical-stretch: 0;
+                    habits: root.habits;
+                    editing-visible: root.habits-editing-visible;
+                    plus-clicked(r) => root.habits-plus-clicked(r);
+                    reorder-asked(row, slot) => root.habits-reorder-asked(row, slot);
                 }
                 if (root.today.empty): EmptyState {
                     text: "Nothing due today";
