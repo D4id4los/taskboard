@@ -959,6 +959,8 @@ pub fn apply_sync_report(
         std::collections::BTreeSet<crate::reminders::ReminderDismissal>,
     > = None;
     let mut tracking_actions: Vec<PersistenceAction> = Vec::new();
+    let mut habit_actions: Vec<PersistenceAction> = Vec::new();
+    let mut folded_habits: Option<crate::habit::HabitState> = None;
     let mut folded_tracking: Option<crate::tracking::TrackingState> = None;
     if let crate::messages::AppDataEvidence::Document(document) = app_data {
         let task_intents = pending_task_intents(outbox, read_at);
@@ -1025,6 +1027,25 @@ pub fn apply_sync_report(
             }
             for entry_id in changes.deletes {
                 tracking_actions.push(PersistenceAction::DeleteTimeEntry(entry_id));
+            }
+        }
+        // The habit folds are board-level too: once per document, right
+        // after the time-entries fold (§5b's order). Both sections fold
+        // against the same copy-on-write state; no card map is needed —
+        // habits carry no card hop at all.
+        if document.sections.habits.is_some() || document.sections.habit_log.is_some() {
+            let habits = folded_habits.get_or_insert_with(|| current.habits.clone());
+            if let Some(rows) = &document.sections.habits {
+                let changes = crate::merge::fold_habits(habits, rows, board_id);
+                for habit in changes.upserts {
+                    habit_actions.push(PersistenceAction::UpsertHabit(habit));
+                }
+            }
+            if let Some(rows) = &document.sections.habit_log {
+                let changes = crate::merge::fold_habit_log(habits, rows);
+                for (key, entry) in changes.records {
+                    habit_actions.push(PersistenceAction::RecordHabitLog(key, entry));
+                }
             }
         }
     }
@@ -1342,6 +1363,7 @@ pub fn apply_sync_report(
     actions.extend(rule_actions);
     actions.extend(dismissal_actions);
     actions.extend(tracking_actions);
+    actions.extend(habit_actions);
     // R3's resurrect creates ride last: the re-planning decided in
     // section 6, the batch materializes here. The duplicate collapse's
     // ref-deletes ride beside them (same shape: decided mid-pass,
@@ -1396,10 +1418,10 @@ pub fn apply_sync_report(
             ..current.reminders.clone()
         },
         tracking: folded_tracking.unwrap_or_else(|| current.tracking.clone()),
-        // No habit data enters the sync path: definitions and log rows
-        // ride chunk DR-6/6's sidecar sections; both carry through
-        // untouched.
-        habits: current.habits.clone(),
+        // Definitions and log rows ride their own sidecar sections; a
+        // document carrying them folds into this copy (§5b), an absent
+        // one carries the local truth through untouched.
+        habits: folded_habits.unwrap_or_else(|| current.habits.clone()),
         // The undo projection is derived from the persisted journal at
         // publish (core.rs); the pipeline's working copy carries the
         // current one through untouched.
@@ -2226,6 +2248,39 @@ mod tests {
         AppDataEvidence::Document(Box::new(doc))
     }
 
+    fn document_with_habit_sections(
+        habits: &[(uuid::Uuid, crate::appdata::HabitRecord)],
+        log: &[(crate::habit::HabitLogKey, crate::appdata::HabitLogRecord)],
+    ) -> AppDataEvidence {
+        let mut doc = match document_with_dismissals(&[], None, None) {
+            AppDataEvidence::Document(doc) => *doc,
+            _ => unreachable!("document_with_dismissals always builds a Document"),
+        };
+        doc.sections.habits = Some(
+            habits
+                .iter()
+                .map(|(uuid, row)| (uuid.to_string(), row.clone()))
+                .collect(),
+        );
+        doc.sections.habit_log = Some(
+            log.iter()
+                .map(|(key, row)| (key.wire_form(), row.clone()))
+                .collect(),
+        );
+        AppDataEvidence::Document(Box::new(doc))
+    }
+
+    fn wire_live_habit(clock: i64) -> crate::appdata::HabitRecord {
+        crate::appdata::HabitRecord::Live {
+            title: "roamed".to_owned(),
+            target: crate::habit::HabitTarget::PerDay(crate::habit::NonZeroCount::new(3).unwrap()),
+            order: 4,
+            anchor_time: None,
+            clocks: crate::habit::HabitClocks::all(ts(clock)),
+            continued_from: None,
+        }
+    }
+
     fn wire_entry(task: Option<&str>, clock: i64) -> crate::appdata::TimeEntryRecord {
         crate::appdata::TimeEntryRecord::Entry {
             task: task.map(str::to_owned),
@@ -2708,12 +2763,98 @@ mod tests {
     }
 
     #[test]
-    fn the_sync_and_push_reports_carry_the_habits_section_through() {
-        // A sync/push cycle rebuilds the published state from the
-        // report; the habits section has no lane in either cycle yet
-        // (chunk DR-6/6's sidecar sections) — it must carry through
-        // untouched, exactly like tracking. A default here would wipe
-        // every tracker and the whole log on every cycle.
+    fn a_document_carrying_habit_rows_folds_them_and_one_without_carries_through() {
+        // §5b, D-16's reworked pin: the SYNC half folds the two habit
+        // sidecar sections (the new semantics); the PUSH half below
+        // stays a pin for the permanent rule — a push cycle never folds,
+        // because it *is* the overlay's source.
+        let task = bound_task(1);
+        let mut state = base_state(task);
+        let habit = crate::habit::Habit {
+            id: crate::ids::HabitId::from(uuid::Uuid::from_u128(700)),
+            board: *state.boards.keys().next().unwrap(),
+            title: "meditate".into(),
+            target: crate::habit::HabitTarget::PerDay(crate::habit::NonZeroCount::new(3).unwrap()),
+            order: 0,
+            anchor_time: None,
+            clocks: crate::habit::HabitClocks::all(ts(BASE)),
+            continued_from: None,
+            deleted: false,
+        };
+        let key = crate::habit::HabitLogKey {
+            habit: habit.id,
+            window: crate::habit::WindowStart::of_period(
+                crate::habit::PeriodKind::Day,
+                chrono::NaiveDate::from_ymd_opt(2026, 10, 28).unwrap(),
+            ),
+        };
+        state.habits.habits.insert(habit.id, habit.clone());
+        state.habits.log.insert(
+            key,
+            crate::habit::HabitLogEntry {
+                count: 2,
+                clock: ts(BASE),
+            },
+        );
+
+        // A document without the sections carries everything through.
+        let snap = single_stack_snapshot(vec![remote_task(1, 1, BASE)], BASE);
+        let (app, actions, _events) = fold_report(
+            &state,
+            &[],
+            &snap,
+            &AppDataEvidence::Absent,
+            DeckFeatures::CONSERVATIVE,
+            BASE,
+        );
+        assert_eq!(app.habits, state.habits, "no sections, no fold");
+        assert!(actions.iter().all(|a| !matches!(
+            a,
+            PersistenceAction::UpsertHabit(_) | PersistenceAction::RecordHabitLog(..)
+        )),);
+
+        // A document carrying a newer definition and a newer log row
+        // folds both into the state and emits the persistence actions.
+        let remote_id = uuid::Uuid::from_u128(701);
+        let evidence = document_with_habit_sections(
+            &[(remote_id, wire_live_habit(BASE + 500))],
+            &[(
+                key,
+                crate::appdata::HabitLogRecord::Entry {
+                    count: 6,
+                    clock: ts(BASE + 400),
+                },
+            )],
+        );
+        let (app, actions, _events) = fold_report(
+            &state,
+            &[],
+            &snap,
+            &evidence,
+            DeckFeatures::CONSERVATIVE,
+            BASE,
+        );
+        let roamed = &app.habits.habits[&crate::ids::HabitId::from(remote_id)];
+        assert_eq!(roamed.title, "roamed", "the newer definition adopted");
+        assert_eq!(
+            roamed.board,
+            *state.boards.keys().next().unwrap(),
+            "the fold stamps the locally-bound board"
+        );
+        assert_eq!(app.habits.log[&key].count, 6, "the newer log row adopted");
+        assert!(actions.iter().any(|a| matches!(a,
+            PersistenceAction::UpsertHabit(h) if h.id == crate::ids::HabitId::from(remote_id))));
+        assert!(actions.iter().any(|a| matches!(a,
+            PersistenceAction::RecordHabitLog(k, e) if *k == key && e.count == 6)));
+        // The local habit the document does not name stands untouched.
+        assert_eq!(app.habits.habits[&habit.id], habit);
+    }
+
+    #[test]
+    fn a_push_cycle_never_folds_the_habit_sections() {
+        // The permanent rule (D-16's kept half): a push cycle IS the
+        // overlay's source — its reports carry the habit state through
+        // untouched; a default here would wipe every tracker.
         let task = bound_task(1);
         let mut state = base_state(task);
         let habit = crate::habit::Habit {
@@ -2743,7 +2884,6 @@ mod tests {
             },
         );
         let expected = state.habits.clone();
-
         let (pushed, _actions) = apply_push_report(
             &state,
             &[],
@@ -2754,22 +2894,6 @@ mod tests {
             DeckFeatures::NATIVE,
         );
         assert_eq!(pushed.habits, expected, "a push cycle never touches habits");
-
-        let snap = single_stack_snapshot(vec![remote_task(1, 1, BASE)], BASE);
-        let (app, _actions, _events) = apply_sync_report(
-            &state,
-            &[],
-            &snap,
-            &[],
-            ts(BASE),
-            &CountingIds::default(),
-            ts(BASE + 3_600),
-            &crate::test_support::test_connector(),
-            &AppDataEvidence::Absent,
-            DeckFeatures::CONSERVATIVE,
-            test_day(),
-        );
-        assert_eq!(app.habits, expected, "a sync cycle never touches habits");
     }
 
     #[test]

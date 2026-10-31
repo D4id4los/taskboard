@@ -927,6 +927,173 @@ pub fn fold_time_entries(
     changes
 }
 
+/// The typed deltas one [`fold_habits`] pass produced (the
+/// [`TrackingFoldChanges`] pattern).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct HabitFoldChanges {
+    /// Habits adopted wholesale, or tombstoned locally.
+    pub upserts: Vec<crate::habit::Habit>,
+}
+
+/// The sidecar document fold for the board-level `habits` section
+/// (DR-6 §4.5, recipe step 8 — the [`fold_time_entries`] shape). Keyed
+/// by the habit UUID; per-row LWW on the **effective clock** (the
+/// `max` of the five embedded clocks, the union's competition clock):
+///
+/// - A live `Live` row adopts **wholesale** (all fields, all five
+///   clocks) iff its effective clock is strictly newer than local's;
+///   equal/older leaves local standing. Adoption **resurrects** a
+///   locally-deleted habit — the wire emits `Live` only for a live
+///   habit, so the row is the sender's liveness claim (the union's
+///   newer-live-beats-older-tombstone property, fold side). A
+///   locally-unknown habit adopts
+///   the row verbatim with `board` = the document's locally-bound board
+///   (the fold stamps it — no `board` rides the wire, D-H11).
+/// - A `Tombstone` tombstones a **live** local habit iff strictly newer
+///   than its `clocks.deleted`; an already-deleted local never
+///   re-stamps; an unknown habit ignores it entirely — no shell
+///   materialization (D-H6: a bare tombstone carries nothing to adopt).
+/// - [`crate::appdata::HabitRecord::Verbatim`] rows never fold.
+pub fn fold_habits(
+    habits: &mut crate::habit::HabitState,
+    rows: &std::collections::BTreeMap<String, crate::appdata::HabitRecord>,
+    board: crate::ids::BoardId,
+) -> HabitFoldChanges {
+    let mut changes = HabitFoldChanges::default();
+    for (key, row) in rows {
+        let Ok(uuid) = uuid::Uuid::parse_str(key) else {
+            continue; // an unparseable key is not an identity
+        };
+        let id = crate::ids::HabitId::from(uuid);
+        match row {
+            crate::appdata::HabitRecord::Live {
+                title,
+                target,
+                order,
+                anchor_time,
+                clocks,
+                continued_from,
+            } => {
+                let crate::appdata::HabitRecord::Live {
+                    clocks: row_clocks, ..
+                } = row
+                else {
+                    unreachable!("the outer match arm is Live");
+                };
+                let row_clock = effective_clock_of(row_clocks);
+                match habits.habits.get_mut(&id) {
+                    Some(local) if row_clock > effective_clock(local) => {
+                        local.title.clone_from(title);
+                        local.target = *target;
+                        local.order = *order;
+                        local.anchor_time = *anchor_time;
+                        local.clocks = *clocks;
+                        // Wholesale adoption resurrects: the wire emits a
+                        // `Live` row only for a live habit, so the row IS
+                        // the sender's liveness claim (the union's
+                        // newer-live-beats-older-tombstone property, fold
+                        // side).
+                        local.deleted = false;
+                        changes.upserts.push(local.clone());
+                    }
+                    Some(_) => {} // local stands (equal/older)
+                    None => {
+                        let adopted = crate::habit::Habit {
+                            id,
+                            board,
+                            title: title.clone(),
+                            target: *target,
+                            order: *order,
+                            anchor_time: *anchor_time,
+                            clocks: *clocks,
+                            continued_from: *continued_from,
+                            deleted: false,
+                        };
+                        habits.habits.insert(id, adopted.clone());
+                        changes.upserts.push(adopted);
+                    }
+                }
+            }
+            crate::appdata::HabitRecord::Tombstone { clock } => {
+                if let Some(local) = habits.habits.get_mut(&id)
+                    && local.is_live()
+                    && *clock > local.clocks.deleted
+                {
+                    local.deleted = true;
+                    local.clocks.deleted = *clock;
+                    changes.upserts.push(local.clone());
+                }
+            }
+            crate::appdata::HabitRecord::Verbatim(_) => {}
+        }
+    }
+    changes
+}
+
+/// A habit's competition clock — the same effective clock the union
+/// competes rows on (`max` of the five embedded clocks; the tombstone
+/// slot is one of them, so a tombstoned local's delete time defends).
+fn effective_clock(habit: &crate::habit::Habit) -> chrono::DateTime<chrono::Utc> {
+    effective_clock_of(&habit.clocks)
+}
+
+fn effective_clock_of(clocks: &crate::habit::HabitClocks) -> chrono::DateTime<chrono::Utc> {
+    clocks
+        .title
+        .max(clocks.target)
+        .max(clocks.order)
+        .max(clocks.anchor_time)
+        .max(clocks.deleted)
+}
+
+/// The typed deltas one [`fold_habit_log`] pass produced.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct HabitLogFoldChanges {
+    /// Log rows adopted or overwritten.
+    pub records: Vec<(crate::habit::HabitLogKey, crate::habit::HabitLogEntry)>,
+}
+
+/// The sidecar document fold for the board-level `habit-log` section
+/// (§4.5). Keyed by [`crate::habit::HabitLogKey::wire_form`]; per-key
+/// LWW on the row clock:
+///
+/// - a locally-absent key adopts the row; a local row strictly older
+///   adopts **wholesale** — a lower count with a newer clock is a
+///   legitimate audited correction from another device; equal/older
+///   leaves local standing (the storage layer's SQL guard and
+///   `apply_actions` are independently LWW — belt and braces);
+/// - **no habit-existence check** (D-H6): orphan facts import and are
+///   analytically inert (no projection reads keys of unknown habits),
+///   retention-bounded, and honest — the log outlives the tracker;
+/// - [`crate::appdata::HabitLogRecord::Verbatim`] rows never fold.
+pub fn fold_habit_log(
+    habits: &mut crate::habit::HabitState,
+    rows: &std::collections::BTreeMap<String, crate::appdata::HabitLogRecord>,
+) -> HabitLogFoldChanges {
+    let mut changes = HabitLogFoldChanges::default();
+    for (key, row) in rows {
+        let crate::appdata::HabitLogRecord::Entry { count, clock } = row else {
+            continue; // verbatim content never folds
+        };
+        let Some(parsed) = crate::habit::HabitLogKey::parse_wire_form(key) else {
+            continue;
+        };
+        let adopt = match habits.log.get(&parsed) {
+            None => true,
+            Some(local) => *clock > local.clock,
+        };
+        if adopt {
+            let entry = crate::habit::HabitLogEntry {
+                count: *count,
+                clock: *clock,
+            };
+            habits.log.insert(parsed, entry);
+            changes.records.push((parsed, entry));
+        }
+    }
+    changes
+}
+
 /// R3 — observed remote absence of a bound card: delete-wins fallback.
 /// The tombstone's write time is the *observation* time (`observed_at`,
 /// i.e. "now" passed in by the engine); the remote binding is cleared.
@@ -5480,5 +5647,319 @@ mod duplicate_reconcile_tests {
             ),
             "the label membership OR-folds onto the survivor"
         );
+    }
+}
+
+#[cfg(test)]
+mod habit_fold_tests {
+    use super::*;
+    use crate::appdata::{HabitLogRecord, HabitRecord};
+    use crate::habit::{
+        Habit, HabitClocks, HabitLogEntry, HabitLogKey, HabitState, HabitTarget, NonZeroCount,
+        WindowStart,
+    };
+    use crate::ids::{BoardId, HabitId};
+    use chrono::TimeZone;
+
+    fn ts(secs: i64) -> chrono::DateTime<chrono::Utc> {
+        chrono::Utc.timestamp_opt(secs, 0).unwrap()
+    }
+
+    fn habit(raw: u128, board: u128, stamp: i64, deleted: bool) -> Habit {
+        Habit {
+            id: HabitId::from(uuid::Uuid::from_u128(raw)),
+            board: BoardId::from(uuid::Uuid::from_u128(board)),
+            title: format!("habit {raw}"),
+            target: HabitTarget::PerDay(NonZeroCount::new(3).unwrap()),
+            order: 0,
+            anchor_time: None,
+            clocks: HabitClocks::all(ts(stamp)),
+            continued_from: None,
+            deleted,
+        }
+    }
+
+    fn live_row(stamp: i64, title: &str) -> HabitRecord {
+        HabitRecord::Live {
+            title: title.to_owned(),
+            target: HabitTarget::PerDay(NonZeroCount::new(3).unwrap()),
+            order: 1,
+            anchor_time: None,
+            clocks: HabitClocks::all(ts(stamp)),
+            continued_from: None,
+        }
+    }
+
+    fn key(habit_raw: u128, d: chrono::NaiveDate) -> HabitLogKey {
+        HabitLogKey {
+            habit: HabitId::from(uuid::Uuid::from_u128(habit_raw)),
+            window: WindowStart::of_period(crate::habit::PeriodKind::Day, d),
+        }
+    }
+
+    fn date(y: i32, m: u32, d: u32) -> chrono::NaiveDate {
+        chrono::NaiveDate::from_ymd_opt(y, m, d).unwrap()
+    }
+
+    #[test]
+    fn fold_habits_adopts_wholesale_only_when_strictly_newer() {
+        let local = habit(1, 800, 100, false);
+        let mut state = HabitState {
+            habits: [(local.id, local.clone())].into_iter().collect(),
+            log: std::collections::BTreeMap::new(),
+        };
+        let board = BoardId::from(uuid::Uuid::from_u128(800));
+        // Equal effective clock: local stands.
+        let rows = [(
+            local.id.as_uuid().to_string(),
+            live_row(100, "same instant"),
+        )]
+        .into_iter()
+        .collect();
+        let changes = fold_habits(&mut state, &rows, board);
+        assert!(changes.upserts.is_empty(), "local stands");
+        assert_eq!(state.habits[&local.id].title, local.title);
+        // Strictly newer: the row wins wholesale (order included).
+        let rows = [(
+            local.id.as_uuid().to_string(),
+            live_row(200, "renamed remotely"),
+        )]
+        .into_iter()
+        .collect();
+        let changes = fold_habits(&mut state, &rows, board);
+        assert_eq!(changes.upserts.len(), 1);
+        let adopted = &state.habits[&local.id];
+        assert_eq!(adopted.title, "renamed remotely");
+        assert_eq!(adopted.order, 1, "the whole row adopts, clocks included");
+        assert_eq!(adopted.clocks.title, ts(200));
+    }
+
+    #[test]
+    fn an_unknown_habit_adopts_with_the_document_board_stamped() {
+        let mut state = HabitState::default();
+        let remote_habit = habit(2, 999, 100, false); // a foreign board on the wire row
+        let rows = [(
+            remote_habit.id.as_uuid().to_string(),
+            live_row(100, "roamed"),
+        )]
+        .into_iter()
+        .collect();
+        let board = BoardId::from(uuid::Uuid::from_u128(800));
+        let changes = fold_habits(&mut state, &rows, board);
+        assert_eq!(changes.upserts.len(), 1);
+        assert_eq!(
+            state.habits[&remote_habit.id].board, board,
+            "the fold stamps the locally-bound board"
+        );
+    }
+
+    #[test]
+    fn tombstones_follow_the_strictly_newer_live_only_rule() {
+        let local = habit(1, 800, 100, false);
+        let board = BoardId::from(uuid::Uuid::from_u128(800));
+        let uuid_text = local.id.as_uuid().to_string();
+        // Newer tombstone over a live habit: deleted, stamped.
+        let mut state = HabitState {
+            habits: [(local.id, local.clone())].into_iter().collect(),
+            log: std::collections::BTreeMap::new(),
+        };
+        let rows = [(
+            uuid_text.clone(),
+            crate::appdata::HabitRecord::Tombstone { clock: ts(300) },
+        )]
+        .into_iter()
+        .collect();
+        let changes = fold_habits(&mut state, &rows, board);
+        assert_eq!(changes.upserts.len(), 1);
+        assert!(state.habits[&local.id].deleted);
+        assert_eq!(state.habits[&local.id].clocks.deleted, ts(300));
+        // An older tombstone over the same: nothing.
+        let mut state = HabitState {
+            habits: [(local.id, habit(1, 800, 500, false))]
+                .into_iter()
+                .collect(),
+            log: std::collections::BTreeMap::new(),
+        };
+        let rows = [(
+            uuid_text.clone(),
+            crate::appdata::HabitRecord::Tombstone { clock: ts(300) },
+        )]
+        .into_iter()
+        .collect();
+        let changes = fold_habits(&mut state, &rows, board);
+        assert!(changes.upserts.is_empty(), "local stands");
+        assert!(!state.habits[&local.id].deleted);
+        // An already-deleted local never re-stamps.
+        let mut state = HabitState {
+            habits: [(local.id, habit(1, 800, 100, true))].into_iter().collect(),
+            log: std::collections::BTreeMap::new(),
+        };
+        let rows = [(
+            uuid_text.clone(),
+            crate::appdata::HabitRecord::Tombstone { clock: ts(900) },
+        )]
+        .into_iter()
+        .collect();
+        let changes = fold_habits(&mut state, &rows, board);
+        assert!(changes.upserts.is_empty(), "local stands");
+        assert_eq!(state.habits[&local.id].clocks.deleted, ts(100));
+        // An unknown habit's tombstone materializes no shell.
+        let mut state = HabitState::default();
+        let changes = fold_habits(&mut state, &rows, board);
+        assert!(changes.upserts.is_empty(), "local stands");
+        assert!(state.habits.is_empty());
+    }
+
+    #[test]
+    fn a_newer_live_row_resurrects_a_locally_deleted_habit() {
+        // The union's resurrection-safe property (T-3), fold side: the
+        // wire emits `Live` only for a live habit, so a strictly-newer
+        // Live row over a deleted local adopts wholesale — deleted
+        // included.
+        let local = habit(1, 800, 100, true);
+        let mut state = HabitState {
+            habits: [(local.id, local)].into_iter().collect(),
+            log: std::collections::BTreeMap::new(),
+        };
+        let board = BoardId::from(uuid::Uuid::from_u128(800));
+        let id = state.habits.keys().copied().next().unwrap();
+        let rows = [(id.as_uuid().to_string(), live_row(300, "back"))]
+            .into_iter()
+            .collect();
+        let changes = fold_habits(&mut state, &rows, board);
+        assert_eq!(changes.upserts.len(), 1);
+        let adopted = &state.habits[&id];
+        assert!(!adopted.deleted, "wholesale adoption resurrects");
+        assert_eq!(adopted.title, "back");
+        assert_eq!(
+            adopted.clocks.deleted,
+            ts(300),
+            "the row's clocks adopt too"
+        );
+        // An equal/older Live row leaves the tombstone standing.
+        let deleted_local = habit(1, 800, 400, true);
+        let mut state = HabitState {
+            habits: [(deleted_local.id, deleted_local)].into_iter().collect(),
+            log: std::collections::BTreeMap::new(),
+        };
+        let id = state.habits.keys().copied().next().unwrap();
+        let rows = [(id.as_uuid().to_string(), live_row(300, "older"))]
+            .into_iter()
+            .collect();
+        let changes = fold_habits(&mut state, &rows, board);
+        assert!(changes.upserts.is_empty(), "local stands");
+        assert!(state.habits[&id].deleted);
+    }
+
+    #[test]
+    fn fold_habit_log_adopts_newer_and_imports_orphans() {
+        let mut state = HabitState::default();
+        let k = key(1, date(2026, 10, 26));
+        let rows = [(
+            k.wire_form(),
+            HabitLogRecord::Entry {
+                count: 4,
+                clock: ts(200),
+            },
+        )]
+        .into_iter()
+        .collect();
+        let changes = fold_habit_log(&mut state, &rows);
+        assert_eq!(changes.records.len(), 1);
+        assert_eq!(state.log[&k].count, 4);
+        // Orphan facts import — the log outlives the tracker (D-H6).
+        let orphan = key(99, date(2026, 10, 26));
+        let rows = [(
+            orphan.wire_form(),
+            HabitLogRecord::Entry {
+                count: 1,
+                clock: ts(210),
+            },
+        )]
+        .into_iter()
+        .collect();
+        let changes = fold_habit_log(&mut state, &rows);
+        assert_eq!(changes.records.len(), 1);
+        assert_eq!(state.log[&orphan].count, 1);
+        // A lower count with a newer clock is an audited correction: it roams.
+        let rows = [(
+            k.wire_form(),
+            HabitLogRecord::Entry {
+                count: 0,
+                clock: ts(300),
+            },
+        )]
+        .into_iter()
+        .collect();
+        let changes = fold_habit_log(&mut state, &rows);
+        assert_eq!(changes.records.len(), 1);
+        assert_eq!(state.log[&k].count, 0);
+        // Equal/older: local stands.
+        let rows = [(
+            k.wire_form(),
+            HabitLogRecord::Entry {
+                count: 9,
+                clock: ts(300),
+            },
+        )]
+        .into_iter()
+        .collect();
+        let changes = fold_habit_log(&mut state, &rows);
+        assert!(changes.records.is_empty(), "local stands");
+        assert_eq!(state.log[&k].count, 0);
+    }
+
+    #[test]
+    fn both_folds_are_invariant_under_row_order_and_converge() {
+        let board = BoardId::from(uuid::Uuid::from_u128(800));
+        let a = habit(1, 800, 100, false);
+        let b = habit(2, 800, 100, false);
+        let row_a = (a.id.as_uuid().to_string(), live_row(300, "a newer"));
+        let row_b = (b.id.as_uuid().to_string(), live_row(200, "b newer"));
+        let ka = key(1, date(2026, 10, 26));
+        let kb = key(2, date(2026, 10, 26));
+        let log_a = (
+            ka.wire_form(),
+            HabitLogRecord::Entry {
+                count: 5,
+                clock: ts(400),
+            },
+        );
+        let log_b = (
+            kb.wire_form(),
+            HabitLogRecord::Entry {
+                count: 6,
+                clock: ts(410),
+            },
+        );
+        let fold = |rows: Vec<&(String, HabitRecord)>, logs: Vec<&(String, HabitLogRecord)>| {
+            let mut state = HabitState {
+                habits: [(a.id, a.clone()), (b.id, b.clone())].into_iter().collect(),
+                log: [
+                    (
+                        ka,
+                        HabitLogEntry {
+                            count: 1,
+                            clock: ts(100),
+                        },
+                    ),
+                    (
+                        kb,
+                        HabitLogEntry {
+                            count: 2,
+                            clock: ts(100),
+                        },
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            };
+            fold_habits(&mut state, &rows.into_iter().cloned().collect(), board);
+            fold_habit_log(&mut state, &logs.into_iter().cloned().collect());
+            state
+        };
+        let one = fold(vec![&row_a, &row_b], vec![&log_a, &log_b]);
+        let two = fold(vec![&row_b, &row_a], vec![&log_b, &log_a]);
+        assert_eq!(one, two, "the fold totals are order-independent (LWW)");
     }
 }

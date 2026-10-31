@@ -1267,7 +1267,6 @@ mod seam_tests {
         Some(d) => d,
         None => panic!(),
     };
-    const NOW_STAMP: i64 = 1_792_204_800; // 2026-10-28T00:00:00Z-ish; walk uses grace only
 
     fn now() -> DateTime<Utc> {
         crate::days::window_start(
@@ -1308,12 +1307,8 @@ mod seam_tests {
     fn one_completed_series_member_at_the_break_extends_the_streak_by_one() {
         let habit = linked_habit(Some(7));
         let yesterday = period_before(PeriodKind::Day, TODAY);
-        let mut log = BTreeMap::new();
-        met_on(&mut log, &habit, TODAY);
-        // Yesterday missed — the walk breaks there (its grace is closed
-        // at now() + 24 h? now is 6 h into today, yesterday's window
-        // ended at today's start; grace ends 24 h later — still open).
-        // Use a two-days-back miss to have a closed break period.
+        // Yesterday's grace is closed at `at` (30 h into today), so the
+        // two-days-back miss is the walk's break period.
         let miss = period_before(PeriodKind::Day, yesterday);
         let at = crate::days::window_start(
             TODAY,
@@ -1400,6 +1395,5 @@ mod seam_tests {
             habit_streak_unioned(&habit, &log, &tasks, at, day()),
             streak(&habit, &log, at, day()),
         );
-        let _ = NOW_STAMP;
     }
 }
