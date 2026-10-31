@@ -746,12 +746,12 @@ mod d {
             .execute(taskboard_domain::StateCommand::UpdateTask {
                 id: task,
                 changes: taskboard_domain::TaskChanges {
+                    // `None` in TaskChanges means "no change": the clear
+                    // must wrap Some(None), mirroring the scheduled arm.
                     effort: match field {
-                        Field::Effort => value.map(|secs| {
-                            Some(taskboard_domain::entities::Effort::new(
-                                u64::try_from(secs).unwrap(),
-                            ))
-                        }),
+                        Field::Effort => Some(value.map(|secs| {
+                            taskboard_domain::entities::Effort::new(u64::try_from(secs).unwrap())
+                        })),
                         Field::Scheduled => None,
                     },
                     scheduled: match field {
