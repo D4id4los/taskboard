@@ -600,6 +600,28 @@ mod tests {
     }
 
     #[test]
+    fn attachments_list_1_19_1_fixture_decodes_stored_name() {
+        // Measured Deck 1.19.1 listing shape (tier records §F-A): no
+        // `extendedData.fileName`; `info.filename` is the basename
+        // *without* extension (PHP pathinfo semantics) and `info.basename`
+        // carries the full stored name. The decoded `file_name` must be
+        // the stored filename — the anchor scan compares it against the
+        // reserved name, so the extension-less fold re-creates the anchor.
+        let attachments: Vec<Attachment> =
+            crate::client::decode_envelope(&fixture("attachments_list_1_19_1.json")).unwrap();
+        assert_eq!(attachments.len(), 1);
+        let extended = attachments[0].extended_data.as_ref().unwrap();
+        assert_eq!(extended.file_name, "taskboard-appdata.json");
+        // The string `data` payload is the same fact.
+        assert_eq!(
+            attachments[0].data.as_ref().unwrap().file_name,
+            "taskboard-appdata.json"
+        );
+        assert_eq!(extended.size, 278);
+        assert_eq!(extended.mimetype, "application/json");
+    }
+
+    #[test]
     fn attachment_create_fixture_decodes_the_mutation_shapes() {
         // Recorded shape of a real-server create response (D1 spike §3.2):
         // `data` is the stored filename as a plain string, the size rides

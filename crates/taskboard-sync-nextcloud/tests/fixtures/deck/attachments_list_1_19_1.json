@@ -1,0 +1,21 @@
+[
+  {
+    "id": 8,
+    "cardId": 5,
+    "type": "deck_file",
+    "createdAt": 1769900500,
+    "createdBy": "taskboard-it",
+    "deletedAt": 0,
+    "data": "taskboard-appdata.json",
+    "extendedData": {
+      "filesize": 278,
+      "mimetype": "application/json",
+      "info": {
+        "dirname": ".",
+        "basename": "taskboard-appdata.json",
+        "extension": "json",
+        "filename": "taskboard-appdata"
+      }
+    }
+  }
+]
