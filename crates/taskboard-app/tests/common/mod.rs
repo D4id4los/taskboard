@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::Path;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use taskboard_app::secrets::{AppPassword, CredentialError, CredentialStore};
@@ -157,6 +157,29 @@ impl Drop for EnvOverride {
 #[derive(Debug, Default)]
 pub struct FakeCredentialStore {
     entries: Mutex<HashMap<(String, String), String>>,
+}
+
+/// A store that would fail any touch: standalone never consults it.
+#[must_use]
+pub fn forbidden_store() -> Arc<dyn CredentialStore> {
+    Arc::new(FakeCredentialStore::default())
+}
+
+/// A standalone config over a tempdir db: no server, no username —
+/// the fresh-install shape.
+#[must_use]
+pub fn standalone_config(dir: &Path, db: &str) -> taskboard_app::config::AppConfig {
+    taskboard_app::config::AppConfig {
+        nextcloud: taskboard_app::config::NextcloudSection {
+            server_url: None,
+            username: None,
+            credential_store: taskboard_app::config::CredentialStoreKind::Keyring,
+        },
+        storage: taskboard_app::config::StorageSection {
+            db_path: Some(dir.join(db)),
+        },
+        ..taskboard_app::config::AppConfig::default()
+    }
 }
 
 impl FakeCredentialStore {

@@ -14,33 +14,11 @@ use taskboard_app::cli::{Cli, Command, TimersCmd};
 use taskboard_app::commands::output::{TimerAddReceipt, TimerCancelReceipt, TimersList};
 use taskboard_app::commands::timers::{self, TimersInvocation};
 use taskboard_app::commands::{BasicSession, CommandError, CommandIo, dispatch_line};
-use taskboard_app::config::{AppConfig, CredentialStoreKind};
-use taskboard_app::secrets::CredentialStore;
+use taskboard_app::config::AppConfig;
 
 mod common;
 
-use common::tempdir;
-
-/// A standalone config over a tempdir db: no server, no username — the
-/// fresh-install shape.
-fn standalone_config(dir: &std::path::Path, db: &str) -> AppConfig {
-    AppConfig {
-        nextcloud: taskboard_app::config::NextcloudSection {
-            server_url: None,
-            username: None,
-            credential_store: CredentialStoreKind::Keyring,
-        },
-        storage: taskboard_app::config::StorageSection {
-            db_path: Some(dir.join(db)),
-        },
-        ..AppConfig::default()
-    }
-}
-
-/// A store that would fail any touch: standalone never consults it.
-fn forbidden_store() -> Arc<dyn CredentialStore> {
-    Arc::new(common::FakeCredentialStore::default())
-}
+use common::{forbidden_store, standalone_config, tempdir};
 
 /// The `timers list` payload over a fresh boot (the persistence read).
 async fn list(config: &AppConfig) -> TimersList {
