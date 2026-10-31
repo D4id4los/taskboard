@@ -10,6 +10,22 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 ### Added
 
+- Habit trackers, storage/sync/surfaces round (DR-6/6, #503): the
+  tracker family roams and surfaces. Sidecar sections `habits` and
+  `habit-log` (per-row LWW unions with ties to the overlay, deletion
+  tombstones competing on the effective clock, verbatim relay for
+  unknown shapes) under the 180-day wire retention — the document is
+  bounded, the local database never drops history. A task-less
+  `FlushBoardAppData` trigger joins the document lane (habit writes
+  key no card); `prune_absent_cards` stays blind to the board-level
+  keys. Storage migration `0017_habit_trackers` hydrates both maps;
+  the sync fold imports definitions and log facts (orphan log rows
+  import inert — the log outlives its tracker); the CLI gains the
+  `taskboard habits add/list/log/adjust/update/rm` family, and the
+  today view gains the Habits section (stored manual order, +1 and
+  reorder affordances, progress and streak rows — the streak unions a
+  linked recurring series' completed members through the §4.7
+  conversion seam).
 - Undo v1, engine contract (ADR 0019, #509): every accepted mutating
   command journals an undo entry (the verbatim intent, pre-images, and
   invertibility watermark) inside its own persistence batch, so the
