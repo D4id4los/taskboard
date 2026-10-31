@@ -1,20 +1,22 @@
 # [Report] Stage 2 — anchor filename fallback (chunk 1.1, backlog round 2)
 
 - **Date**: 2026-10-31
-- **Branch**: `fix/anchor-filename-fallback` @ `d8901479` (worktree
-  `../taskboard-WT-fix-anchor-filename-fallback`; stage 3 ships)
+- **Branch**: `fix/anchor-filename-fallback` @ `cdf3e11c` at stage-2
+  handoff (worktree `../taskboard-WT-fix-anchor-filename-fallback`;
+  stage 3 ships — commit ids above follow the stage-3 rebase onto
+  `origin/main` @ `5bf90c63`)
 - **Plan**: `.artifacts/plans/2026-10-31-anchor-filename-fallback-plan.md`
 - **Issues**: #448 + #447 + #449 implemented; rider #282 verified
   (stays open); #436 untouched (closes on the lane re-run).
 - **Commits** (each standalone, in order):
-  1. `688b51f2` test(sync-nextcloud): pin the measured Deck 1.19.1 attachment listing shape (RED — reproduced the #448 fold)
-  2. `c98783d1` fix(sync-nextcloud): rank the attachment filename fallback fileName → info.basename → info.filename (GREEN)
-  3. `fc72c5ac` test(sync-nextcloud): the ranked fallback keeps the 1.17.5 echo and a present fileName winning
-  4. `a6374c65` test(sync-nextcloud): the 1.19.1 listing shape confirms the anchor through the actor scan (wiremock S-pin a34b)
-  5. `4f03d9a1` test(sync-nextcloud): C1/C2 assert the anchor is adopted exactly once
-  6. `32ee3e95` feat(sync-nextcloud): durable flush-ladder tracing + the C4 capture harness
-  7. `c4490e01` test(sync-nextcloud): the C1 cleared-field write actually clears the effort (fixture-only)
-  8. `d8901479` test(sync-nextcloud): probe Deck's write answers on a deleted board (#282)
+  1. `91400150` test(sync-nextcloud): pin the measured Deck 1.19.1 attachment listing shape (RED — reproduced the #448 fold)
+  2. `4b477432` fix(sync-nextcloud): rank the attachment filename fallback fileName → info.basename → info.filename (GREEN)
+  3. `a9725d6e` test(sync-nextcloud): the ranked fallback keeps the 1.17.5 echo and a present fileName winning
+  4. `c0d691aa` test(sync-nextcloud): the 1.19.1 listing shape confirms the anchor through the actor scan (wiremock S-pin a34b)
+  5. `96e34469` test(sync-nextcloud): C1/C2 assert the anchor is adopted exactly once
+  6. `b81c81b8` feat(sync-nextcloud): durable flush-ladder tracing + the C4 capture harness
+  7. `c8e83ce6` test(sync-nextcloud): the C1 cleared-field write actually clears the effort (fixture-only)
+  8. `cdf3e11c` test(sync-nextcloud): probe Deck's write answers on a deleted board (#282)
 - **Zero-unrelated-production-diff statement**: the only production files
   touched are `crates/taskboard-sync-nextcloud/src/model.rs` (the
   `ExtensionInfo.basename` field + the ranked fallback) and
@@ -141,7 +143,7 @@ board's own dead stack. #282 stays open.
 
 ## 5. Deviations
 
-1. **One extra commit beyond the plan's sequence** (`c4490e01`): the
+1. **One extra commit beyond the plan's sequence** (`c8e83ce6`): the
    first green C1 run exposed a latent **fixture** bug — `set_field`
    mapped a clear (`value=None`) to `TaskChanges.effort = None`, which
    the engine reads as "no change", so the cleared-field write queued
@@ -179,7 +181,7 @@ sequence — **all green**:
 
 ## 7. Handoff to stage 3
 
-- Branch `fix/anchor-filename-fallback` @ `d8901479`, worktree left in
+- Branch `fix/anchor-filename-fallback` @ `cdf3e11c`, worktree left in
   place; both docker tiers up (default :8370, gate :8371, env blocks
   reproducible via `scripts/nextcloud_it_setup.sh up` per §1).
 - Stage 3 posts the tier records: PR (branch → `main`), evidence
