@@ -359,12 +359,14 @@ pub fn attributed_board(
     labels: &BTreeMap<LabelId, Label>,
 ) -> Option<BoardId> {
     match op {
-        LocalOp::UpdateBoard(board) | LocalOp::DeleteBoard(board) => Some(*board),
-        // Ref-deletes carry their attribution board (the #150 collapse
-        // enqueues them under the cycle's board).
-        LocalOp::DeleteRemoteCard { board, .. } | LocalOp::DeleteRemoteStack { board, .. } => {
-            Some(*board)
-        }
+        // Board ops, ref-deletes (the #150 collapse enqueues them under
+        // the cycle's board), and the task-less flush trigger carry
+        // their attribution board exactly.
+        LocalOp::UpdateBoard(board)
+        | LocalOp::DeleteBoard(board)
+        | LocalOp::DeleteRemoteCard { board, .. }
+        | LocalOp::DeleteRemoteStack { board, .. }
+        | LocalOp::FlushBoardAppData(board) => Some(*board),
         LocalOp::CreateStack(stack)
         | LocalOp::RenameStack(stack)
         | LocalOp::MoveStack(stack)

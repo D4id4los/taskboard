@@ -517,7 +517,10 @@ pub fn apply_actions(state: &mut PersistedState, actions: &[PersistenceAction]) 
                 state.outbox.retain(|entry| {
                     let doomed = match entry.op {
                         crate::outbox::LocalOp::UpdateBoard(id)
-                        | crate::outbox::LocalOp::DeleteBoard(id) => id == *board,
+                        | crate::outbox::LocalOp::DeleteBoard(id)
+                        // A wiped board's flush trigger dies with it (the
+                        // document rebuilds from the wiped state).
+                        | crate::outbox::LocalOp::FlushBoardAppData(id) => id == *board,
                         crate::outbox::LocalOp::CreateTask(id)
                         | crate::outbox::LocalOp::UpdateTask(id)
                         | crate::outbox::LocalOp::MoveTask(id)

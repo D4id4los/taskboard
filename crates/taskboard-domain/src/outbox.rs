@@ -79,6 +79,14 @@ pub enum LocalOp {
     /// side-effects enqueue it for each touched task; the flush lane
     /// consumes the board's coalesced ops.
     UpdateAppData(TaskId),
+    /// Flush one board's sidecar document (D-H9): habit writes have no
+    /// task to key an [`LocalOp::UpdateAppData`] op — this is the
+    /// board-level lane's trigger, carried board attribution like the
+    /// ref-deletes. The flush uploads the whole merged document, so a
+    /// stale or duplicated trigger is harmless bookkeeping, never a
+    /// delta; coalesces with any `UpdateAppData` ops of the same board
+    /// into the ONE flush group.
+    FlushBoardAppData(crate::ids::BoardId),
 }
 
 /// An outbox entry: which operation, when it was queued.
@@ -100,11 +108,13 @@ impl LocalOp {
     #[must_use]
     pub fn owning_board(&self, entities: &EntityTables<'_>) -> Option<BoardId> {
         match *self {
-            Self::UpdateBoard(board) | Self::DeleteBoard(board) => Some(board),
-            // Ref-deletes attribute exactly: they carry their board.
-            Self::DeleteRemoteCard { board, .. } | Self::DeleteRemoteStack { board, .. } => {
-                Some(board)
-            }
+            // Board ops, ref-deletes (#150), and the task-less flush
+            // trigger attribute exactly: they carry their board.
+            Self::UpdateBoard(board)
+            | Self::DeleteBoard(board)
+            | Self::DeleteRemoteCard { board, .. }
+            | Self::DeleteRemoteStack { board, .. }
+            | Self::FlushBoardAppData(board) => Some(board),
             Self::CreateStack(stack)
             | Self::RenameStack(stack)
             | Self::MoveStack(stack)
@@ -151,7 +161,9 @@ pub fn op_targets_task(op: &LocalOp, task: TaskId) -> bool {
         | LocalOp::DeleteBoard(_)
         // Ref-deletes target no local task by construction.
         | LocalOp::DeleteRemoteCard { .. }
-        | LocalOp::DeleteRemoteStack { .. } => false,
+        | LocalOp::DeleteRemoteStack { .. }
+        // The flush trigger is board-scoped: no task is addressed.
+        | LocalOp::FlushBoardAppData(_) => false,
     }
 }
 
@@ -365,6 +377,20 @@ mod tests {
             "a task whose stack row is gone has no owner"
         );
         assert_eq!(LocalOp::MoveTask(missing).owning_board(&t), None);
+    }
+
+    #[test]
+    fn the_flush_trigger_owns_its_board_and_targets_no_task() {
+        let board = BoardId::from(Uuid::from_u128(1));
+        let empty: BTreeMap<TaskId, Task> = BTreeMap::new();
+        let stacks: BTreeMap<StackId, Stack> = BTreeMap::new();
+        let labels: BTreeMap<LabelId, Label> = BTreeMap::new();
+        let boards: BTreeMap<BoardId, Board> = BTreeMap::new();
+        let t = tables(&empty, &stacks, &labels, &boards);
+        let op = LocalOp::FlushBoardAppData(board);
+        // No entity graph: the board rides the op itself.
+        assert_eq!(op.owning_board(&t), Some(board));
+        assert!(!op_targets_task(&op, TaskId::from(Uuid::from_u128(9))));
     }
 
     #[test]

@@ -511,6 +511,16 @@ fn flush_ops(
         .collect()
 }
 
+/// The board-level flush trigger every accepted habit write rides
+/// (D-H9): habits have no task to key an `UpdateAppData` op, so the
+/// board-carried `FlushBoardAppData` op is the sidecar lane's trigger.
+/// The flush uploads the whole merged document, so a duplicate trigger
+/// (a no-op edit that still planned an upsert, say) is harmless
+/// bookkeeping — enqueued unconditionally with the persistence action.
+fn board_flush(board: BoardId, ids: &dyn IdGenerator, now: DateTime<Utc>) -> PersistenceAction {
+    enqueue(LocalOp::FlushBoardAppData(board), ids, now)
+}
+
 /// How many completions attribute to `series`: every row carrying the
 /// series and a done stamp, **including soft-deleted rows** — a
 /// completion happened; deleting the card later must not extend the
@@ -1544,7 +1554,10 @@ pub fn plan_command(
                 outbox
                     .iter()
                     .filter(|pending| match pending.op {
-                        LocalOp::UpdateBoard(id) | LocalOp::DeleteBoard(id) => id == board_id,
+                        LocalOp::UpdateBoard(id)
+                        | LocalOp::DeleteBoard(id)
+                        // The task-less flush trigger is board-scoped.
+                        | LocalOp::FlushBoardAppData(id) => id == board_id,
                         LocalOp::CreateTask(id)
                         | LocalOp::UpdateTask(id)
                         | LocalOp::MoveTask(id)
@@ -1601,7 +1614,9 @@ pub fn plan_command(
                 .map(|l| l.id)
                 .collect();
             let board_ops = outbox.iter().any(|pending| match pending.op {
-                LocalOp::UpdateBoard(id) | LocalOp::DeleteBoard(id) => id == board_id,
+                LocalOp::UpdateBoard(id)
+                | LocalOp::DeleteBoard(id)
+                | LocalOp::FlushBoardAppData(id) => id == board_id,
                 LocalOp::CreateTask(id)
                 | LocalOp::UpdateTask(id)
                 | LocalOp::MoveTask(id)
@@ -2238,10 +2253,11 @@ pub fn plan_command(
                 continued_from: None,
                 deleted: false,
             };
-            // No outbox op (D-H9): the board-level sidecar flush
-            // vocabulary is chunk 6's.
             Ok(CommandPlan {
-                actions: vec![PersistenceAction::UpsertHabit(habit)],
+                actions: vec![
+                    PersistenceAction::UpsertHabit(habit),
+                    board_flush(*board, ids, now),
+                ],
                 outcome: CommandOutcome::HabitCreated(id),
             })
         }
@@ -2278,7 +2294,10 @@ pub fn plan_command(
                 return Ok(no_op());
             }
             Ok(CommandPlan {
-                actions: vec![PersistenceAction::UpsertHabit(updated)],
+                actions: vec![
+                    PersistenceAction::UpsertHabit(updated),
+                    board_flush(stored.board, ids, now),
+                ],
                 outcome: CommandOutcome::Applied,
             })
         }
@@ -2291,7 +2310,10 @@ pub fn plan_command(
             updated.order = *order;
             updated.clocks.order = now;
             Ok(CommandPlan {
-                actions: vec![PersistenceAction::UpsertHabit(updated)],
+                actions: vec![
+                    PersistenceAction::UpsertHabit(updated),
+                    board_flush(habit.board, ids, now),
+                ],
                 outcome: CommandOutcome::Applied,
             })
         }
@@ -2305,10 +2327,10 @@ pub fn plan_command(
             let key = HabitLogKey { habit: *id, window };
             let count = app.habits.log.get(&key).map_or(0, |entry| entry.count) + 1;
             Ok(CommandPlan {
-                actions: vec![PersistenceAction::RecordHabitLog(
-                    key,
-                    HabitLogEntry { count, clock: now },
-                )],
+                actions: vec![
+                    PersistenceAction::RecordHabitLog(key, HabitLogEntry { count, clock: now }),
+                    board_flush(habit.board, ids, now),
+                ],
                 outcome: CommandOutcome::HabitLogged {
                     habit: *id,
                     window,
@@ -2342,13 +2364,16 @@ pub fn plan_command(
             // The audited fresh stamp: the correction is newest-write
             // under LWW by construction.
             Ok(CommandPlan {
-                actions: vec![PersistenceAction::RecordHabitLog(
-                    key,
-                    HabitLogEntry {
-                        count: *count,
-                        clock: now,
-                    },
-                )],
+                actions: vec![
+                    PersistenceAction::RecordHabitLog(
+                        key,
+                        HabitLogEntry {
+                            count: *count,
+                            clock: now,
+                        },
+                    ),
+                    board_flush(habit.board, ids, now),
+                ],
                 outcome: CommandOutcome::HabitLogAdjusted {
                     habit: *id,
                     window: *window,
@@ -2368,9 +2393,14 @@ pub fn plan_command(
             updated.clocks.deleted = now;
             // The log is never touched — history outlives the tracker.
             // Resurrection-safe on sync by the LWW clocks (the fold is
-            // chunk 6's). No outbox op (D-H9).
+            // chunk 6's). The deletion roams through the board flush
+            // (D-H9); the tombstone row rides the overlay forever
+            // (definitions carry no retention).
             Ok(CommandPlan {
-                actions: vec![PersistenceAction::UpsertHabit(updated)],
+                actions: vec![
+                    PersistenceAction::UpsertHabit(updated),
+                    board_flush(habit.board, ids, now),
+                ],
                 outcome: CommandOutcome::Applied,
             })
         }
@@ -7801,10 +7831,18 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(plan.actions.len(), 1, "exactly the upsert — no op (D-H9)");
+        // The upsert plus its board flush trigger (D-H9) — zero card ops.
+        assert_eq!(plan.actions.len(), 2);
         let PersistenceAction::UpsertHabit(habit) = &plan.actions[0] else {
             panic!("wrong action");
         };
+        assert!(matches!(
+            &plan.actions[1],
+            PersistenceAction::EnqueueOp(crate::outbox::PendingOp {
+                op: LocalOp::FlushBoardAppData(_),
+                ..
+            })
+        ));
         assert_eq!(habit.order, 0, "append on an empty board");
         assert_eq!(habit.clocks, crate::habit::HabitClocks::all(now()));
         assert_eq!(habit.anchor_time, None);
@@ -8337,7 +8375,20 @@ mod tests {
         );
         // Count 0 is a legal correction; the row stays, honestly clocked.
         let plan = run_at(&app, &outbox, &adjust_cmd(yesterday, 0), ts(T0 + 240)).unwrap();
-        assert_eq!(plan.actions.len(), 1, "an emptied window keeps its row");
+        assert!(
+            matches!(&plan.actions[0], PersistenceAction::RecordHabitLog(_, entry) if entry.count == 0),
+            "an emptied window keeps its row"
+        );
+        assert!(
+            matches!(
+                &plan.actions[1],
+                PersistenceAction::EnqueueOp(crate::outbox::PendingOp {
+                    op: LocalOp::FlushBoardAppData(_),
+                    ..
+                })
+            ),
+            "the correction roams through the board flush"
+        );
         // Same count: the accepted no-op (no clock churn).
         let repeat = run_at(&app, &outbox, &adjust_cmd(today, 5), ts(T0 + 300)).unwrap();
         assert_eq!(repeat, no_op());
@@ -8393,7 +8444,11 @@ mod tests {
         )
         .unwrap();
         assert_eq!(plan.outcome, CommandOutcome::Applied);
-        assert_eq!(plan.actions.len(), 1, "the tombstone upsert, nothing else");
+        assert_eq!(
+            plan.actions.len(),
+            2,
+            "the tombstone upsert plus the flush trigger"
+        );
         let PersistenceAction::UpsertHabit(tombstone) = &plan.actions[0] else {
             panic!("wrong action");
         };
@@ -8410,9 +8465,10 @@ mod tests {
     }
 
     #[test]
-    fn habit_commands_plan_zero_outbox_ops() {
-        // D-H9's lane fence, pinned structurally: no habit arm enqueues
-        // anything in this chunk.
+    fn habit_commands_plan_zero_card_ops() {
+        // D-C9's lane fence, pinned structurally: no habit arm ever
+        // enters a card push/pull path — the only outbox op a habit
+        // command plans is the board-carried flush trigger (D-H9).
         let (app, outbox) = habit_app(crate::habit::HabitTarget::PerDay(
             crate::habit::NonZeroCount::new(1).unwrap(),
         ));
@@ -8448,12 +8504,16 @@ mod tests {
         ];
         for command in &commands {
             let plan = run(&app, &outbox, command).unwrap();
-            assert!(
-                plan.actions
-                    .iter()
-                    .all(|a| !matches!(a, PersistenceAction::EnqueueOp(_))),
-                "no outbox op in this chunk: {command:?}"
-            );
+            for action in &plan.actions {
+                let PersistenceAction::EnqueueOp(pending) = action else {
+                    continue;
+                };
+                assert!(
+                    matches!(pending.op, LocalOp::FlushBoardAppData(_)),
+                    "a habit command planned a non-flush op: {command:?} → {:?}",
+                    pending.op
+                );
+            }
         }
     }
 }
@@ -8494,8 +8554,11 @@ mod proptests {
                 tasks.contains_key(task) && labels.contains_key(label)
             }
             LocalOp::UpdateBoard(id) | LocalOp::DeleteBoard(id) => boards.contains_key(id),
-            // A ref-delete's target is remote; nothing to check locally.
-            LocalOp::DeleteRemoteCard { .. } | LocalOp::DeleteRemoteStack { .. } => true,
+            // A ref-delete's target is remote; nothing to check
+            // locally. So is the board-carried flush trigger's.
+            LocalOp::DeleteRemoteCard { .. }
+            | LocalOp::DeleteRemoteStack { .. }
+            | LocalOp::FlushBoardAppData(_) => true,
         }
     }
 
