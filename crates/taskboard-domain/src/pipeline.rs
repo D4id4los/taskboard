@@ -2198,6 +2198,8 @@ mod tests {
                 reminder_rules: rules_map,
                 dismissals: dismissals_map,
                 time_entries: None,
+                habits: None,
+                habit_log: None,
                 unknown: std::collections::BTreeMap::new(),
             },
             unknown: std::collections::BTreeMap::new(),

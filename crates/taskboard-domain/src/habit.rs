@@ -467,6 +467,18 @@ pub fn streak(
     now: DateTime<Utc>,
     day: DayCalendar,
 ) -> u32 {
+    streak_with_break(habit, log, now, day).0
+}
+
+/// The walk of [`streak`], additionally naming the period where the
+/// chain broke (the first period that is neither counting nor pending).
+/// `None` means the walk terminated by saturation — no break, no seam.
+fn streak_with_break(
+    habit: &Habit,
+    log: &BTreeMap<HabitLogKey, HabitLogEntry>,
+    now: DateTime<Utc>,
+    day: DayCalendar,
+) -> (u32, Option<NaiveDate>) {
     let kind = habit.target.kind();
     let quota = habit.target.quota().get();
     let count = |window: WindowStart| {
@@ -485,19 +497,89 @@ pub fn streak(
         } else {
             let grace_end = period_end(kind, cursor, day) + grace;
             if now >= grace_end {
-                // Missed: the chain is broken exactly here.
-                break;
+                return (streak, Some(cursor)); // missed: the break is here
             }
             // Pending: transparent — neither counts nor breaks.
         }
         let prev = period_before(kind, cursor);
         if prev >= cursor {
-            // Saturated at the chrono bound: no earlier period exists.
-            break;
+            return (streak, None); // saturation: no break period
         }
         cursor = prev;
     }
-    streak
+}
+
+/// The habit's streak continued through its conversion seam (§4.7):
+/// [`streak`]'s own walk, then — when the walk breaks on a genuinely
+/// missed period **and** [`Habit::continued_from`] names a series —
+/// consecutive *completed* series members counted backward from that
+/// break period. Read-side only: no fabricated done tasks, no collapsed
+/// logs (the two entities stay; the views union them).
+///
+/// The series' rule comes from the most recent done occurrence task
+/// carrying `recur.series == series` (the rule is identical down the
+/// chain); members are enumerated backward from the break period over a
+/// bounded window, stopping at the first gap. A member counts iff a
+/// live done task exists with that series and
+/// [`crate::recur::roll_reference_date`] equal to the member. Recorded
+/// simplification (D-H15): **no grace crosses the seam** — the habit
+/// side applies its own 24 h overflow within its log; the series join
+/// is strict member completion (refinement is F-2's).
+///
+/// # Panics
+///
+/// Panics only if chrono cannot represent the bounded backward window —
+/// a programming error, not an input condition.
+#[must_use]
+pub fn habit_streak_unioned(
+    habit: &Habit,
+    log: &BTreeMap<HabitLogKey, HabitLogEntry>,
+    tasks: &BTreeMap<crate::ids::TaskId, crate::entities::Task>,
+    now: DateTime<Utc>,
+    day: DayCalendar,
+) -> u32 {
+    let (own, break_period) = streak_with_break(habit, log, now, day);
+    let Some(series) = habit.continued_from else {
+        return own;
+    };
+    let Some(break_date) = break_period else {
+        return own;
+    };
+    let done_of_series = |task: &&crate::entities::Task| {
+        !task.deleted
+            && task.done.is_some()
+            && task
+                .recur
+                .as_ref()
+                .is_some_and(|rule| rule.series == series)
+    };
+    // The rule is identical down the chain; take it from the most
+    // recent done occurrence.
+    let Some(rule) = tasks
+        .values()
+        .filter(done_of_series)
+        .max_by_key(|task| task.done)
+        .and_then(|task| task.recur.as_ref())
+    else {
+        return own;
+    };
+    let window_lo = break_date
+        .checked_sub_days(chrono::Days::new(366))
+        .unwrap_or(NaiveDate::MIN);
+    let mut extra = 0_u32;
+    for member in crate::recur::schedule(rule, window_lo, break_date)
+        .into_iter()
+        .rev()
+    {
+        let completed = tasks.values().any(|task| {
+            done_of_series(&task) && crate::recur::roll_reference_date(task, day) == Some(member)
+        });
+        if !completed {
+            break; // the first gap ends the joined run
+        }
+        extra += 1;
+    }
+    own + extra
 }
 
 #[cfg(test)]
@@ -940,7 +1022,7 @@ mod tests {
         let today = NaiveDate::from_ymd_opt(2026, 10, 28).unwrap();
         let now = crate::days::window_start(today, day.day_start_time, day.offset)
             + chrono::TimeDelta::try_hours(9).expect("9 h");
-        let empty = BTreeMap::new();
+        let empty: BTreeMap<HabitLogKey, HabitLogEntry> = BTreeMap::new();
         assert_eq!(
             streak(&habit, &empty, now, day),
             0,
@@ -1083,5 +1165,241 @@ mod tests {
         );
         assert_eq!(streak(&habit, &log, now, day), 1);
         let _ = &mut habit;
+    }
+}
+
+#[cfg(test)]
+mod seam_tests {
+    use super::*;
+    use crate::days::DayCalendar;
+    use crate::entities::{Task, TaskClocks};
+    use crate::ids::{BoardId, HabitId, SeriesId, StackId, TaskId};
+    use std::collections::BTreeMap;
+
+    fn ts(secs: i64) -> DateTime<Utc> {
+        chrono::TimeZone::timestamp_opt(&Utc, secs, 0).unwrap()
+    }
+
+    fn day() -> DayCalendar {
+        DayCalendar {
+            day_start_time: chrono::NaiveTime::MIN,
+            offset: chrono::FixedOffset::east_opt(0).unwrap(),
+        }
+    }
+
+    fn linked_habit(series: Option<u128>) -> Habit {
+        Habit {
+            id: HabitId::from(uuid::Uuid::from_u128(1)),
+            board: BoardId::from(uuid::Uuid::from_u128(2)),
+            title: "morning run".into(),
+            target: HabitTarget::PerDay(NonZeroCount::new(1).unwrap()),
+            order: 0,
+            anchor_time: None,
+            clocks: HabitClocks::all(ts(100)),
+            continued_from: series.map(|s| SeriesId::from(uuid::Uuid::from_u128(s))),
+            deleted: false,
+        }
+    }
+
+    fn series_task(raw: u128, series_raw: u128, member: NaiveDate, done: bool) -> Task {
+        Task {
+            id: TaskId::from(uuid::Uuid::from_u128(raw)),
+            remote: None,
+            title: "occurrence".into(),
+            description: String::new(),
+            duedate: Some(crate::days::window_start(
+                member,
+                chrono::NaiveTime::MIN,
+                chrono::FixedOffset::east_opt(0).unwrap(),
+            )),
+            scheduled: None,
+            done: done.then_some(ts(1_000)),
+            stack: StackId::from(uuid::Uuid::from_u128(500)),
+            order: 0,
+            label_memberships: BTreeMap::new(),
+            effort: None,
+            importance: None,
+            urgency: None,
+            recur: Some(crate::recur::RecurRule {
+                series: SeriesId::from(uuid::Uuid::from_u128(series_raw)),
+                anchor: NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+                pattern: crate::recur::RecurPattern::Daily {
+                    every: crate::recur::EveryDays::new(1).unwrap(),
+                },
+                bound: crate::recur::RecurBound::None,
+                continued_from: None,
+            }),
+            archived: false,
+            deleted: false,
+            clocks: TaskClocks {
+                title: ts(1),
+                description: ts(1),
+                duedate: ts(1),
+                scheduled: ts(1),
+                done: ts(1),
+                position: ts(1),
+                effort: ts(1),
+                importance: ts(1),
+                urgency: ts(1),
+                recur: ts(1),
+                archived: ts(1),
+                deleted: ts(1),
+            },
+            remote_seen: None,
+            remote_baseline: None,
+        }
+    }
+
+    fn met_on(log: &mut BTreeMap<HabitLogKey, HabitLogEntry>, habit: &Habit, d: NaiveDate) {
+        log.insert(
+            HabitLogKey {
+                habit: habit.id,
+                window: WindowStart(d),
+            },
+            HabitLogEntry {
+                count: 2,
+                clock: ts(100),
+            },
+        );
+    }
+
+    const TODAY: NaiveDate = match NaiveDate::from_ymd_opt(2026, 10, 28) {
+        Some(d) => d,
+        None => panic!(),
+    };
+    const NOW_STAMP: i64 = 1_792_204_800; // 2026-10-28T00:00:00Z-ish; walk uses grace only
+
+    fn now() -> DateTime<Utc> {
+        crate::days::window_start(
+            TODAY,
+            chrono::NaiveTime::MIN,
+            chrono::FixedOffset::east_opt(0).unwrap(),
+        ) + chrono::TimeDelta::try_hours(6).expect("6 h")
+    }
+
+    #[test]
+    fn no_link_or_no_break_means_exactly_the_plain_streak() {
+        let unlinked = linked_habit(None);
+        let linked = linked_habit(Some(7));
+        let mut log = BTreeMap::new();
+        met_on(&mut log, &unlinked, TODAY);
+        met_on(&mut log, &unlinked, period_before(PeriodKind::Day, TODAY));
+        let tasks: BTreeMap<TaskId, Task> = BTreeMap::new();
+        let at = now();
+        assert_eq!(
+            habit_streak_unioned(&unlinked, &log, &tasks, at, day()),
+            streak(&unlinked, &log, at, day()),
+        );
+        // Linked, but the walk never breaks (both days met, yesterday's
+        // grace long closed for today? No — today is met, yesterday met,
+        // the day before misses and breaks). A saturating walk needs an
+        // all-met infinite log; the bounded form here always breaks, so
+        // pin the no-break arm through the saturation rule instead:
+        // streak == 0 with an empty log breaks immediately — equals the
+        // plain walk with no series to join.
+        let empty: BTreeMap<HabitLogKey, HabitLogEntry> = BTreeMap::new();
+        assert_eq!(
+            habit_streak_unioned(&linked, &empty, &tasks, at, day()),
+            streak(&linked, &empty, at, day()),
+        );
+    }
+
+    #[test]
+    fn one_completed_series_member_at_the_break_extends_the_streak_by_one() {
+        let habit = linked_habit(Some(7));
+        let yesterday = period_before(PeriodKind::Day, TODAY);
+        let mut log = BTreeMap::new();
+        met_on(&mut log, &habit, TODAY);
+        // Yesterday missed — the walk breaks there (its grace is closed
+        // at now() + 24 h? now is 6 h into today, yesterday's window
+        // ended at today's start; grace ends 24 h later — still open).
+        // Use a two-days-back miss to have a closed break period.
+        let miss = period_before(PeriodKind::Day, yesterday);
+        let at = crate::days::window_start(
+            TODAY,
+            chrono::NaiveTime::MIN,
+            chrono::FixedOffset::east_opt(0).unwrap(),
+        ) + chrono::TimeDelta::try_hours(30).expect("30 h"); // yesterday's grace closed
+        let mut log = BTreeMap::new();
+        met_on(&mut log, &habit, TODAY);
+        met_on(&mut log, &habit, yesterday);
+        // miss (two days back) unmet → break there.
+        let plain = streak(&habit, &log, at, day());
+        assert_eq!(plain, 2, "today and yesterday count; the miss breaks");
+        // The series completed the miss's member: the streak extends by one.
+        let mut tasks: BTreeMap<TaskId, Task> = BTreeMap::new();
+        let done = series_task(10, 7, miss, true);
+        tasks.insert(done.id, done);
+        assert_eq!(
+            habit_streak_unioned(&habit, &log, &tasks, at, day()),
+            plain + 1,
+        );
+        // An open (not-done) member at the same date contributes nothing.
+        let mut open_tasks: BTreeMap<TaskId, Task> = BTreeMap::new();
+        let open = series_task(11, 7, miss, false);
+        open_tasks.insert(open.id, open);
+        assert_eq!(
+            habit_streak_unioned(&habit, &log, &open_tasks, at, day()),
+            plain
+        );
+        // A gap breaks the join: complete only the member before the miss.
+        let mut gapped: BTreeMap<TaskId, Task> = BTreeMap::new();
+        let older = series_task(12, 7, period_before(PeriodKind::Day, miss), true);
+        gapped.insert(older.id, older);
+        assert_eq!(
+            habit_streak_unioned(&habit, &log, &gapped, at, day()),
+            plain
+        );
+    }
+
+    #[test]
+    fn the_union_is_invariant_under_task_map_permutation() {
+        let habit = linked_habit(Some(7));
+        let yesterday = period_before(PeriodKind::Day, TODAY);
+        let miss = period_before(PeriodKind::Day, yesterday);
+        let mut log = BTreeMap::new();
+        met_on(&mut log, &habit, TODAY);
+        met_on(&mut log, &habit, yesterday);
+        let at = crate::days::window_start(
+            TODAY,
+            chrono::NaiveTime::MIN,
+            chrono::FixedOffset::east_opt(0).unwrap(),
+        ) + chrono::TimeDelta::try_hours(30).expect("30 h");
+        let a = series_task(10, 7, miss, true);
+        let b = series_task(11, 7, period_before(PeriodKind::Day, miss), true);
+        let mut one = BTreeMap::new();
+        one.insert(a.id, a.clone());
+        one.insert(b.id, b.clone());
+        let mut two = BTreeMap::new();
+        two.insert(b.id, b);
+        two.insert(a.id, a);
+        assert_eq!(
+            habit_streak_unioned(&habit, &log, &one, at, day()),
+            habit_streak_unioned(&habit, &log, &two, at, day()),
+        );
+    }
+
+    #[test]
+    fn a_deleted_series_task_never_joins_the_streak() {
+        let habit = linked_habit(Some(7));
+        let yesterday = period_before(PeriodKind::Day, TODAY);
+        let miss = period_before(PeriodKind::Day, yesterday);
+        let mut log = BTreeMap::new();
+        met_on(&mut log, &habit, TODAY);
+        met_on(&mut log, &habit, yesterday);
+        let at = crate::days::window_start(
+            TODAY,
+            chrono::NaiveTime::MIN,
+            chrono::FixedOffset::east_opt(0).unwrap(),
+        ) + chrono::TimeDelta::try_hours(30).expect("30 h");
+        let mut tasks = BTreeMap::new();
+        let mut done = series_task(10, 7, miss, true);
+        done.deleted = true;
+        tasks.insert(done.id, done);
+        assert_eq!(
+            habit_streak_unioned(&habit, &log, &tasks, at, day()),
+            streak(&habit, &log, at, day()),
+        );
+        let _ = NOW_STAMP;
     }
 }

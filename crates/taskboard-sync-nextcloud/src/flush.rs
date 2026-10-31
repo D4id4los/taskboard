@@ -302,6 +302,11 @@ pub(crate) async fn run_flush(ctx: FlushCtx<'_>) -> FlushVerdict {
             reminder_rules: (!overlay_rules.is_empty()).then_some(overlay_rules),
             dismissals: (!overlay_dismissals.is_empty()).then_some(overlay_dismissals),
             time_entries: (!overlay_time.is_empty()).then_some(overlay_time),
+            // The habit sections join the overlay with DR-6/6's flush
+            // wiring; the registry's new fields carry no content until
+            // then.
+            habits: None,
+            habit_log: None,
             unknown: BTreeMap::new(),
         },
         unknown: BTreeMap::new(),
