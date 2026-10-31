@@ -728,6 +728,57 @@ mod d {
         }
     }
 
+    /// The #282 probe body: create board + stack → delete board → one
+    /// write per queued-op kind against the dead board id. Each call
+    /// must answer with a typed outcome (an `Ok` payload or a typed
+    /// `DeckError` variant — both are measured facts; pinning either
+    /// would be a "today's behavior" pin). The concrete answers are
+    /// recorded in the stage-2 report as evidence.
+    pub(crate) async fn probe_dead_board_write_answers(client: &DeckClient) {
+        let board = retry(|| async {
+            client
+                .create_board(&run_id(), &DeckColor::from_hex("00c2e0").unwrap())
+                .await
+        })
+        .await
+        .expect("probe board created");
+        let stack = retry(|| async { client.create_stack(board.id, "col", 0).await })
+            .await
+            .expect("probe stack created");
+        retry(|| async { client.delete_board(board.id).await })
+            .await
+            .expect("board deleted");
+
+        let card = client
+            .create_card(
+                board.id,
+                stack.id,
+                &NewCard {
+                    title: run_id(),
+                    order: Some(0),
+                    description: None,
+                    duedate: None,
+                    startdate: None,
+                    kind: None,
+                },
+            )
+            .await;
+        let stack_write = client.create_stack(board.id, &run_id(), 0).await;
+        let label = client
+            .create_label(board.id, &run_id(), &DeckColor::from_hex("00ff00").unwrap())
+            .await;
+        for (kind, answer) in [
+            ("create_card", card.map(|_| ())),
+            ("create_stack", stack_write.map(|_| ())),
+            ("create_label", label.map(|_| ())),
+        ] {
+            match answer {
+                Ok(()) => eprintln!("PROBE dead-board write kind={kind} outcome=Ok"),
+                Err(err) => eprintln!("PROBE dead-board write kind={kind} variant={err:?}"),
+            }
+        }
+    }
+
     #[derive(Clone, Copy, PartialEq)]
     enum Field {
         Effort,
@@ -1070,6 +1121,23 @@ async fn it_nextcloud_docker_deck1175_startdate_unsupported() {
         return;
     };
     with_deadline(startdate_unsupported_on_deck1175(&deck_client(&cfg)))
+        .await
+        .expect("test must finish within the live deadline");
+}
+
+/// The #282 rider: a typed-error wire probe of Deck's write answers on a
+/// *deleted* board — one write of each queued-op kind the dead-board
+/// drain concern names (card = the task-op proxy, stack, label). Asserts
+/// only typed decodability (whichever `DeckError` variant answers —
+/// pinning today's 403-vs-404 would be a "today's behavior" pin); the
+/// concrete variants are recorded in the stage-2 report as evidence.
+#[tokio::test]
+#[ignore = "requires the dockerized Nextcloud tier (scripts/nextcloud_it_setup.sh up)"]
+async fn it_nextcloud_docker_probe_dead_board_write_answers() {
+    let Some(cfg) = live_docker_config() else {
+        return;
+    };
+    with_deadline(d::probe_dead_board_write_answers(&deck_client(&cfg)))
         .await
         .expect("test must finish within the live deadline");
 }
