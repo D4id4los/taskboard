@@ -1501,3 +1501,92 @@ async fn recur_rows_survive_a_close_reopen_through_the_real_codec() {
     );
     db.close().await;
 }
+
+// ---- Habit trackers (DR-6/6) -------------------------------------------------
+
+/// The habit codec (T-13): clocks, target, anchor chip, seam link, and
+/// tombstone all survive a full close/reopen byte-equal.
+#[tokio::test]
+async fn habit_rows_survive_a_close_reopen_including_the_tombstone() {
+    let mut db = common::FileDb::new().await;
+    let repo = db.repo();
+    let b = board(11);
+    let live = taskboard_domain::Habit {
+        id: taskboard_domain::ids::HabitId::from(uuid::Uuid::from_u128(60)),
+        board: b.id,
+        title: "water".into(),
+        target: taskboard_domain::HabitTarget::PerWeek(
+            taskboard_domain::NonZeroCount::new(4).unwrap(),
+        ),
+        order: 4,
+        anchor_time: Some(chrono::NaiveTime::from_hms_opt(7, 30, 0).unwrap()),
+        clocks: taskboard_domain::HabitClocks {
+            title: ts(100),
+            target: ts(110),
+            order: ts(120),
+            anchor_time: ts(130),
+            deleted: ts(140),
+        },
+        continued_from: Some(taskboard_domain::ids::SeriesId::from(
+            uuid::Uuid::from_u128(99),
+        )),
+        deleted: false,
+    };
+    let mut gone = live.clone();
+    gone.id = taskboard_domain::ids::HabitId::from(uuid::Uuid::from_u128(61));
+    gone.deleted = true;
+    repo.apply(vec![
+        PersistenceAction::UpsertBoard(b),
+        PersistenceAction::UpsertHabit(live.clone()),
+        PersistenceAction::UpsertHabit(gone.clone()),
+    ])
+    .await
+    .expect("apply");
+    db.reopen().await;
+    let loaded = db.repo().load().await.expect("load");
+    assert_eq!(loaded.habits.habits.get(&live.id), Some(&live));
+    assert_eq!(loaded.habits.habits.get(&gone.id), Some(&gone));
+    db.close().await;
+}
+
+/// The log LWW guard is exercised at the SQL layer: a batch whose
+/// `RecordHabitLog` carries a strictly older clock leaves the newer row.
+#[tokio::test]
+async fn an_older_clock_habit_log_batch_never_overwrites_the_newer_row() {
+    let repo = open_memory(taskboard_domain::ConnectorId::from("nextcloud"))
+        .await
+        .expect("open");
+    let key = taskboard_domain::HabitLogKey {
+        habit: taskboard_domain::ids::HabitId::from(uuid::Uuid::from_u128(60)),
+        window: taskboard_domain::WindowStart::of_period(
+            taskboard_domain::PeriodKind::Day,
+            chrono::NaiveDate::from_ymd_opt(2026, 10, 28).unwrap(),
+        ),
+    };
+    repo.apply(vec![PersistenceAction::RecordHabitLog(
+        key,
+        taskboard_domain::HabitLogEntry {
+            count: 5,
+            clock: ts(500),
+        },
+    )])
+    .await
+    .expect("apply newer");
+    // A strictly older batch row: the SQL guard keeps local.
+    repo.apply(vec![PersistenceAction::RecordHabitLog(
+        key,
+        taskboard_domain::HabitLogEntry {
+            count: 1,
+            clock: ts(400),
+        },
+    )])
+    .await
+    .expect("apply older");
+    let loaded = repo.load().await.expect("load");
+    assert_eq!(
+        loaded.habits.log.get(&key).map(|e| (e.count, e.clock)),
+        Some((5, ts(500))),
+        "the older row never overwrites"
+    );
+    repo.close().await;
+}

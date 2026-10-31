@@ -519,6 +519,92 @@ fn decode_reminder_rule(
     ))
 }
 
+/// Decodes one `habits` row into its [`Habit`]. `target` decodes
+/// through the mint's strict serde (a stored 0 cannot exist — corruption
+/// if it does); `anchor_time` is the "HH:MM:SS" TEXT form, `NULL` = no
+/// chip; every clock is RFC 3339 TEXT.
+type HabitRow = (
+    String,         // habit_id
+    String,         // board_id
+    String,         // title
+    String,         // target (serde_json)
+    i64,            // sort_order
+    Option<String>, // anchor_time
+    String,         // ck_title
+    String,         // ck_target
+    String,         // ck_order
+    String,         // ck_anchor_time
+    String,         // ck_deleted
+    bool,           // deleted
+    Option<String>, // continued_from
+);
+
+fn decode_habit(
+    row: &HabitRow,
+) -> Result<(taskboard_domain::ids::HabitId, taskboard_domain::Habit), RepositoryError> {
+    let (
+        habit_id,
+        board_id,
+        title,
+        target,
+        sort_order,
+        anchor_time,
+        ck_title,
+        ck_target,
+        ck_order,
+        ck_anchor_time,
+        ck_deleted,
+        deleted,
+        continued_from,
+    ) = row;
+    let id = taskboard_domain::ids::HabitId::from(
+        codec::uuid_from_text(habit_id).map_err(|_| RepositoryError::Corrupted)?,
+    );
+    let board = taskboard_domain::BoardId::from(
+        codec::uuid_from_text(board_id).map_err(|_| RepositoryError::Corrupted)?,
+    );
+    let target: taskboard_domain::HabitTarget =
+        serde_json::from_str(target).map_err(|_| RepositoryError::Corrupted)?;
+    let order = *sort_order;
+    let anchor_time = match anchor_time {
+        None => None,
+        Some(text) => Some(
+            chrono::NaiveTime::parse_from_str(text, "%H:%M:%S")
+                .map_err(|_| RepositoryError::Corrupted)?,
+        ),
+    };
+    let clock = |text: &String| -> Result<DateTime<Utc>, RepositoryError> {
+        text.parse().map_err(|_| RepositoryError::Corrupted)
+    };
+    let clocks = taskboard_domain::HabitClocks {
+        title: clock(ck_title)?,
+        target: clock(ck_target)?,
+        order: clock(ck_order)?,
+        anchor_time: clock(ck_anchor_time)?,
+        deleted: clock(ck_deleted)?,
+    };
+    let continued_from = continued_from
+        .as_deref()
+        .map(codec::uuid_from_text)
+        .transpose()
+        .map_err(|_| RepositoryError::Corrupted)?
+        .map(taskboard_domain::ids::SeriesId::from);
+    Ok((
+        id,
+        taskboard_domain::Habit {
+            id,
+            board,
+            title: title.clone(),
+            target,
+            order,
+            anchor_time,
+            clocks,
+            continued_from,
+            deleted: *deleted,
+        },
+    ))
+}
+
 fn decode_time_entry(row: &TimeEntryRow) -> Result<(TimeEntryId, TimeEntry), RepositoryError> {
     // Strict on load, tolerant on the wire: SQLite rows are
     // trusted-written (validated at their originating planner, ADR
@@ -797,6 +883,25 @@ impl SqliteTaskRepository {
         .await
         .map_err(|e| stmt_error(&e))?;
 
+        let habit_rows: Vec<HabitRow> = sqlx::query_as(
+            r"SELECT habit_id, board_id, title, target, sort_order, anchor_time,
+                      ck_title, ck_target, ck_order, ck_anchor_time, ck_deleted, deleted,
+                      continued_from
+               FROM habits ORDER BY habit_id",
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| stmt_error(&e))?;
+
+        type HabitLogRow = (String, String, i64, String);
+        let habit_log_rows: Vec<HabitLogRow> = sqlx::query_as(
+            r"SELECT habit_id, window_start, count, clock FROM habit_log
+               ORDER BY habit_id, window_start",
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| stmt_error(&e))?;
+
         let mut boards = BTreeMap::new();
         for row in board_rows {
             let board = decode_board(row, &self.default_connector)?;
@@ -960,11 +1065,33 @@ impl SqliteTaskRepository {
             sync,
             reminders,
             tracking,
-            // Chunk DR-6/6's migration (0017 — renumbered at its rebase
-            // after undo/1 took 0016, dispatch §2 rule 3) hydrates both
-            // maps; the empty default is the honest shape until that
-            // codec exists.
-            habits: taskboard_domain::HabitState::default(),
+            habits: {
+                let mut habits = taskboard_domain::HabitState::default();
+                for row in &habit_rows {
+                    let (id, habit) = decode_habit(row)?;
+                    habits.habits.insert(id, habit);
+                }
+                for (habit_id, window_start, count, clock) in &habit_log_rows {
+                    let habit = taskboard_domain::ids::HabitId::from(
+                        codec::uuid_from_text(habit_id).map_err(|_| RepositoryError::Corrupted)?,
+                    );
+                    let date = chrono::NaiveDate::parse_from_str(window_start, "%Y-%m-%d")
+                        .map_err(|_| RepositoryError::Corrupted)?;
+                    // D-H12's decode seam: the stored date decodes
+                    // as-is, never floored (former-kind synced rows).
+                    let key = taskboard_domain::HabitLogKey {
+                        habit,
+                        window: taskboard_domain::WindowStart::from_stored(date),
+                    };
+                    let count = u32::try_from(*count).map_err(|_| RepositoryError::Corrupted)?;
+                    let clock: DateTime<Utc> =
+                        clock.parse().map_err(|_| RepositoryError::Corrupted)?;
+                    habits
+                        .log
+                        .insert(key, taskboard_domain::HabitLogEntry { count, clock });
+                }
+                habits
+            },
             journal: taskboard_domain::JournalState {
                 entries: journal_entries,
                 head,
@@ -1057,10 +1184,9 @@ async fn execute_batch(
     let mut entry_upserts = Vec::new();
     let mut entry_deletes = Vec::new();
     // R-11 (DR-6/5), the tracking precedent: the no-wildcard rule's tax
-    // for the habit family. Runtime-checked `sqlx::query` because the
-    // `habits`/`habit_log` tables arrive with chunk DR-6/6's migration
-    // (0016); no producer emits these actions on the real repo until
-    // that migration lands.
+    // for the habit family. The tables ship with 0017 in this tree, so
+    // the queries run through the prepared-cache macros like every
+    // other lane.
     let mut habit_upserts = Vec::new();
     let mut habit_log_rows = Vec::new();
     // ADR 0019 (undo/1): the three journal buckets — appends (each with
@@ -1405,8 +1531,8 @@ async fn execute_batch(
     }
 
     for habit in habit_upserts {
-        sqlx::query(
-            r"INSERT INTO habits (habit_id, board_id, title, target, sort_order, anchor_time,
+        sqlx::query!(
+            r#"INSERT INTO habits (habit_id, board_id, title, target, sort_order, anchor_time,
                          ck_title, ck_target, ck_order, ck_anchor_time, ck_deleted, deleted,
                          continued_from)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -1422,21 +1548,19 @@ async fn execute_batch(
                        ck_anchor_time = excluded.ck_anchor_time,
                        ck_deleted = excluded.ck_deleted,
                        deleted = excluded.deleted,
-                       continued_from = excluded.continued_from",
-        )
-        .bind(codec::uuid_to_text(habit.id.as_uuid()))
-        .bind(codec::uuid_to_text(habit.board.as_uuid()))
-        .bind(&habit.title)
-        .bind(serde_json::to_string(&habit.target).expect("target serializes"))
-        .bind(habit.order)
-        .bind(habit.anchor_time.map(|t| t.to_string()))
-        .bind(habit.clocks.title.to_rfc3339())
-        .bind(habit.clocks.target.to_rfc3339())
-        .bind(habit.clocks.order.to_rfc3339())
-        .bind(habit.clocks.anchor_time.to_rfc3339())
-        .bind(habit.clocks.deleted.to_rfc3339())
-        .bind(habit.deleted)
-        .bind(
+                       continued_from = excluded.continued_from"#,
+            codec::uuid_to_text(habit.id.as_uuid()),
+            codec::uuid_to_text(habit.board.as_uuid()),
+            habit.title,
+            serde_json::to_string(&habit.target).expect("target serializes"),
+            habit.order,
+            habit.anchor_time.map(|t| t.to_string()),
+            habit.clocks.title.to_rfc3339(),
+            habit.clocks.target.to_rfc3339(),
+            habit.clocks.order.to_rfc3339(),
+            habit.clocks.anchor_time.to_rfc3339(),
+            habit.clocks.deleted.to_rfc3339(),
+            habit.deleted,
             habit
                 .continued_from
                 .map(|s| codec::uuid_to_text(s.as_uuid())),
@@ -1447,18 +1571,21 @@ async fn execute_batch(
         tracing::trace!(habit = ?habit.id, "habit upserted");
     }
     for (key, entry) in habit_log_rows {
-        sqlx::query(
-            r"INSERT INTO habit_log (habit_id, window_start, count, clock)
+        // The LWW guard lives in the SQL: a strictly-older batch row
+        // never overwrites; equal/older keeps local (belt to the fold's
+        // braces).
+        sqlx::query!(
+            r#"INSERT INTO habit_log (habit_id, window_start, count, clock)
                    VALUES (?, ?, ?, ?)
                    ON CONFLICT(habit_id, window_start) DO UPDATE SET
                        count = excluded.count,
                        clock = excluded.clock
-                   WHERE excluded.clock > habit_log.clock",
+                   WHERE excluded.clock > habit_log.clock"#,
+            codec::uuid_to_text(key.habit.as_uuid()),
+            key.window.as_date().to_string(),
+            i64::from(entry.count),
+            entry.clock.to_rfc3339(),
         )
-        .bind(codec::uuid_to_text(key.habit.as_uuid()))
-        .bind(key.window.as_date().to_string())
-        .bind(i64::from(entry.count))
-        .bind(entry.clock.to_rfc3339())
         .execute(&mut *tx)
         .await
         .map_err(|e| stmt_error(&e))?;

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO habits (habit_id, board_id, title, target, sort_order, anchor_time,\n                         ck_title, ck_target, ck_order, ck_anchor_time, ck_deleted, deleted,\n                         continued_from)\n                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)\n                   ON CONFLICT(habit_id) DO UPDATE SET\n                       board_id = excluded.board_id,\n                       title = excluded.title,\n                       target = excluded.target,\n                       sort_order = excluded.sort_order,\n                       anchor_time = excluded.anchor_time,\n                       ck_title = excluded.ck_title,\n                       ck_target = excluded.ck_target,\n                       ck_order = excluded.ck_order,\n                       ck_anchor_time = excluded.ck_anchor_time,\n                       ck_deleted = excluded.ck_deleted,\n                       deleted = excluded.deleted,\n                       continued_from = excluded.continued_from",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 13
+    },
+    "nullable": []
+  },
+  "hash": "ee6de485af31f879cb27fc8e9c6ce526ca586b5cb2e0eeaa098c48aed3ade684"
+}

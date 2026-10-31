@@ -341,3 +341,80 @@ async fn report_ingestion_flips_the_pushed_flag_at_the_boundary() {
     );
     let _ = LocalOp::CreateStack(stack); // the op family under test
 }
+
+/// Fact 16's DR-6/6 verification, against undo/1's landed ruling: the
+/// habit surface is deliberately **not undoable**
+/// (`NotUndoableReason::HabitSurface`), so there is no op retraction to
+/// mirror. The pin is that the flush trigger still rides the journal
+/// entry generically (the pushed-boundary machinery stays op-id-aware
+/// of it) while `Undo` refuses the surface typed — the stage-1 plan's
+/// "undo retracts/keeps the pending flush op exactly as for task ops"
+/// premise mis-stated undo/1's catalogue and is recorded as a deviation.
+#[tokio::test]
+async fn a_habit_log_journals_its_flush_trigger_but_stays_not_undoable() {
+    let mut rig = Rig::start().await;
+    let board = rig
+        .state()
+        .boards
+        .keys()
+        .next()
+        .copied()
+        .expect("seed board");
+    let outcome = rig
+        .run(StateCommand::CreateHabit {
+            board,
+            title: "water".into(),
+            target: taskboard_domain::HabitTarget::PerDay(
+                taskboard_domain::NonZeroCount::new(3).unwrap(),
+            ),
+        })
+        .await
+        .expect("accepted");
+    let habit = match outcome {
+        CommandOutcome::HabitCreated(id) => id,
+        other => panic!("expected HabitCreated, got {other:?}"),
+    };
+    rig.run(StateCommand::LogHabit { habit })
+        .await
+        .expect("accepted");
+    // The journal entry carries the flush trigger as its op — the
+    // pushed-boundary machinery sees it like any op id.
+    let entry = {
+        let persisted = rig.repo.snapshot();
+        let entry = persisted.journal.entries.last().expect("journaled").clone();
+        assert_eq!(entry.ops.len(), 1, "one flush trigger per habit write");
+        entry
+    };
+    let persisted = rig.repo.snapshot();
+    assert!(
+        persisted
+            .outbox
+            .iter()
+            .any(|pending| pending.op_id == entry.ops[0]
+                && matches!(pending.op, LocalOp::FlushBoardAppData(_))),
+        "the pending trigger is the board flush"
+    );
+    // The surface is fenced typed, exactly as undo/1 pinned it.
+    let err = rig
+        .run(StateCommand::Undo)
+        .await
+        .expect_err("the habit surface is not undoable");
+    assert!(
+        matches!(
+            err,
+            ExecuteError::Rejected(taskboard_domain::CommandError::TargetNotUndoable(
+                taskboard_domain::NotUndoableReason::HabitSurface
+            ))
+        ),
+        "typed refusal: {err:?}"
+    );
+    // And the refused undo touched nothing.
+    let after = rig.repo.snapshot();
+    assert!(
+        after
+            .outbox
+            .iter()
+            .any(|pending| pending.op_id == entry.ops[0]),
+        "the refused undo retracts nothing"
+    );
+}

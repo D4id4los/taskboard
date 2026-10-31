@@ -199,9 +199,95 @@ mod tests {
             .fetch_one(&raw)
             .await
             .expect("migration bookkeeping");
-        assert_eq!(applied, 16, "each shipped migration recorded exactly once");
+        assert_eq!(applied, 17, "each shipped migration recorded exactly once");
         raw.close().await;
         second.close().await;
+    }
+
+    /// A pre-0017 database (no `habits`/`habit_log` tables) upgrades
+    /// cleanly: the migration re-applies as two plain `CREATE TABLE`s,
+    /// `load()` folds the empty tables into the default `HabitState`
+    /// (the upgrade pin — the empty line then accepts writes and a
+    /// round-trip through a reopen is faithful).
+    #[tokio::test]
+    async fn migration_0017_upgrades_a_pre_habit_database() {
+        let file = tempfile::Builder::new().suffix(".db").tempfile().unwrap();
+        let raw = SqlitePool::connect(&format!("sqlite://{}?mode=rwc", file.path().display()))
+            .await
+            .expect("raw connect");
+        // Simulate a pre-0017 database: run the shipped migrations,
+        // strip the 0017 artifacts and their bookkeeping row.
+        sqlx::migrate!("./migrations")
+            .run(&raw)
+            .await
+            .expect("migrate");
+        sqlx::query("DROP TABLE habit_log")
+            .execute(&raw)
+            .await
+            .expect("strip habit_log");
+        sqlx::query("DROP TABLE habits")
+            .execute(&raw)
+            .await
+            .expect("strip habits");
+        sqlx::query("DELETE FROM _sqlx_migrations WHERE version = 17")
+            .execute(&raw)
+            .await
+            .expect("strip bookkeeping");
+        raw.close().await;
+
+        let repo = open(file.path(), test_connector())
+            .await
+            .expect("migrating open");
+        let state = repo.load().await.expect("load");
+        assert_eq!(
+            state.habits,
+            taskboard_domain::HabitState::default(),
+            "an upgraded database folds into the default habit state"
+        );
+        // The empty line accepts writes and the batch round-trips.
+        let habit = taskboard_domain::Habit {
+            id: taskboard_domain::ids::HabitId::from(uuid::Uuid::from_u128(1)),
+            board: taskboard_domain::BoardId::from(uuid::Uuid::from_u128(2)),
+            title: "water".to_owned(),
+            target: taskboard_domain::HabitTarget::PerDay(
+                taskboard_domain::NonZeroCount::new(3).unwrap(),
+            ),
+            order: 0,
+            anchor_time: Some(chrono::NaiveTime::from_hms_opt(7, 30, 0).unwrap()),
+            clocks: taskboard_domain::HabitClocks::all(
+                chrono::TimeZone::timestamp_opt(&chrono::Utc, 100, 0).unwrap(),
+            ),
+            continued_from: Some(taskboard_domain::ids::SeriesId::from(
+                uuid::Uuid::from_u128(3),
+            )),
+            deleted: false,
+        };
+        let key = taskboard_domain::HabitLogKey {
+            habit: habit.id,
+            window: taskboard_domain::WindowStart::of_period(
+                taskboard_domain::PeriodKind::Day,
+                chrono::NaiveDate::from_ymd_opt(2026, 10, 28).unwrap(),
+            ),
+        };
+        repo.apply(vec![
+            taskboard_domain::PersistenceAction::UpsertHabit(habit.clone()),
+            taskboard_domain::PersistenceAction::RecordHabitLog(
+                key,
+                taskboard_domain::HabitLogEntry {
+                    count: 2,
+                    clock: chrono::TimeZone::timestamp_opt(&chrono::Utc, 200, 0).unwrap(),
+                },
+            ),
+        ])
+        .await
+        .expect("apply on the upgraded line");
+        repo.close().await;
+
+        let reopened = open(file.path(), test_connector()).await.expect("reopen");
+        let state = reopened.load().await.expect("load");
+        assert_eq!(state.habits.habits[&habit.id], habit);
+        assert_eq!(state.habits.log[&key].count, 2, "the log row round-trips");
+        reopened.close().await;
     }
 
     /// A pre-0002 database (no `ck_title`) upgrades cleanly: the epoch
