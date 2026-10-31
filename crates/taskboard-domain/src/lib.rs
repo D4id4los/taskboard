@@ -68,11 +68,12 @@ pub(crate) mod merge_testutil;
 
 pub use appdata::{
     ANCHOR_CARD_TITLE, APPDATA_FORMAT, AppDataDocument, AppDataSections, DismissalEntry,
-    DismissalsEntry, MODELED_TASK_FIELD_KEYS, ModeledValue, RuleEntry, RulesEntry,
-    TRACKING_SYNC_RETENTION_DAYS, TaskEntry, TaskFieldWrite, TimeEntryRecord,
-    derive_rule_tombstones, derive_time_entry_tombstones, dismissal_wire_key, dismissals_entry_for,
-    lane_gc_old_time_entries, lane_gc_scheduled, modeled_key, prune_absent_cards, rules_entry_for,
-    task_entry_for, time_entries_for, union,
+    DismissalsEntry, HABIT_LOG_SYNC_RETENTION_DAYS, HabitLogRecord, HabitRecord,
+    MODELED_TASK_FIELD_KEYS, ModeledValue, RuleEntry, RulesEntry, TRACKING_SYNC_RETENTION_DAYS,
+    TaskEntry, TaskFieldWrite, TimeEntryRecord, derive_rule_tombstones,
+    derive_time_entry_tombstones, dismissal_wire_key, dismissals_entry_for, habit_log_for,
+    habits_for, lane_gc_old_habit_log, lane_gc_old_time_entries, lane_gc_scheduled, modeled_key,
+    prune_absent_cards, rules_entry_for, task_entry_for, time_entries_for, union,
 };
 pub use capabilities::{DeckFeatures, flags_for};
 pub use clock::{Clock, SystemClock};
@@ -88,8 +89,8 @@ pub use entities::{
 pub use find::{MatchQuality, SearchHit, SearchTarget, find};
 pub use habit::{
     Habit, HabitClocks, HabitLogEntry, HabitLogKey, HabitState, HabitTarget, InvalidHabitTarget,
-    NonZeroCount, PeriodKind, WindowStart, log_window, period_after, period_before, period_end,
-    period_start, streak,
+    NonZeroCount, PeriodKind, WindowStart, habit_streak_unioned, log_window, period_after,
+    period_before, period_end, period_start, streak,
 };
 pub use idgen::{IdGenerator, UuidV7Generator};
 pub use ids::{

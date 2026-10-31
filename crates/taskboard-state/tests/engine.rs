@@ -2720,6 +2720,8 @@ async fn folded_synced_dismissal_withdraws_the_toast() {
         format: taskboard_domain::appdata::APPDATA_FORMAT,
         board: RemoteBoardId(42),
         sections: AppDataSections {
+            habits: None,
+            habit_log: None,
             tasks: None,
             reminder_rules: None,
             time_entries: None,

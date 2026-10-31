@@ -1233,6 +1233,8 @@ async fn i8_adopting_an_occurrence_card_learns_its_series() {
         format: APPDATA_FORMAT,
         board: RemoteBoardId(BOARD),
         sections: AppDataSections {
+            habits: None,
+            habit_log: None,
             tasks: Some(
                 [(
                     "56".to_owned(),

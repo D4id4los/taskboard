@@ -89,6 +89,18 @@ pub struct AppDataSections {
         skip_serializing_if = "Option::is_none"
     )]
     pub time_entries: Option<BTreeMap<String, TimeEntryRecord>>,
+    /// Board-level habit tracker definitions, keyed by the habit UUID
+    /// string (DR-6 §4.5, D-C9) — the `RuleEntry` row pattern. Like
+    /// `time_entries`, the keys are not card ids: history (and the
+    /// deletion tombstones) outlive any card, so `prune_absent_cards`
+    /// must never see them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub habits: Option<BTreeMap<String, HabitRecord>>,
+    /// Board-level habit count facts, keyed by
+    /// [`crate::habit::HabitLogKey::wire_form`] (§4.5) — set-union facts
+    /// with row-clock LWW, under the 180-day wire retention (D-H14).
+    #[serde(rename = "habit-log", default, skip_serializing_if = "Option::is_none")]
+    pub habit_log: Option<BTreeMap<String, HabitLogRecord>>,
     /// Unknown sections: carried verbatim.
     #[serde(flatten, default, skip_serializing_if = "BTreeMap::is_empty")]
     pub unknown: BTreeMap<String, Value>,
@@ -708,6 +720,202 @@ impl Serialize for TimeEntryRecord {
     }
 }
 
+/// One board's habit tracker definition, or its deletion tombstone, or a
+/// shape this version does not model (preserved verbatim, never folded —
+/// D-S2's materialization rule). Board-level section keyed by the habit
+/// UUID (DR-6 §4.5); the document belongs to one remote board, so no
+/// `board` rides the wire (D-H11 — the fold stamps the locally-bound
+/// board).
+#[derive(Debug, Clone, PartialEq)]
+pub enum HabitRecord {
+    /// `{ "title": str, "target": HabitTarget, "order": i64,
+    /// "anchor_time": "HH:MM:SS"|null, "clocks": HabitClocks,
+    /// "continued_from": uuid|null }` — the whole row, all five
+    /// embedded clocks riding it (they are the row's competition data).
+    Live {
+        title: String,
+        target: crate::habit::HabitTarget,
+        order: i64,
+        anchor_time: Option<chrono::NaiveTime>,
+        clocks: crate::habit::HabitClocks,
+        continued_from: Option<crate::ids::SeriesId>,
+    },
+    /// `{ "deleted": true, "clock": rfc3339 }` — deletion roams forever
+    /// (D-H10): tombstone rows are tiny and must reach late-adopting
+    /// devices, so definitions carry **no retention**.
+    Tombstone { clock: DateTime<Utc> },
+    /// A shape this version does not model: preserved verbatim.
+    Verbatim(Value),
+}
+
+impl HabitRecord {
+    /// The row's competition clock: the **effective clock** — `max` of
+    /// the five embedded clocks for a `Live` row, the tombstone's clock
+    /// otherwise; `None` for verbatim content (which the union never
+    /// orders against).
+    #[must_use]
+    pub fn competition_clock(&self) -> Option<DateTime<Utc>> {
+        match self {
+            Self::Live { clocks, .. } => Some(
+                clocks
+                    .title
+                    .max(clocks.target)
+                    .max(clocks.order)
+                    .max(clocks.anchor_time)
+                    .max(clocks.deleted),
+            ),
+            Self::Tombstone { clock } => Some(*clock),
+            Self::Verbatim(_) => None,
+        }
+    }
+
+    /// Decodes one habit row; an unmodelable shape stays `Verbatim`
+    /// with the original value (never an error — one malformed row
+    /// demotes, the document never fails).
+    fn deserialize_verbatim(raw: Value) -> Self {
+        let Value::Object(map) = &raw else {
+            return Self::Verbatim(raw);
+        };
+        if map.get("deleted") == Some(&Value::Bool(true)) {
+            if let Ok(clock) = serde_json::from_value(map["clock"].clone()) {
+                return Self::Tombstone { clock };
+            }
+            return Self::Verbatim(raw);
+        }
+        let anchor_time = match map.get("anchor_time") {
+            None | Some(Value::Null) => Some(None),
+            Some(value) => serde_json::from_value(value.clone()).ok().map(Some),
+        };
+        let continued_from = match map.get("continued_from") {
+            None | Some(Value::Null) => Some(None),
+            Some(value) => serde_json::from_value(value.clone()).ok().map(Some),
+        };
+        if let (
+            Ok(title),
+            Ok(target),
+            Ok(order),
+            Some(anchor_time),
+            Ok(clocks),
+            Some(continued_from),
+        ) = (
+            serde_json::from_value(map.get("title").cloned().unwrap_or(Value::Null)),
+            // The strict target decode is load-bearing: the mint rejects
+            // a stored 0, so a non-decoding target demotes the row.
+            serde_json::from_value(map.get("target").cloned().unwrap_or(Value::Null)),
+            serde_json::from_value(map.get("order").cloned().unwrap_or(Value::Null)),
+            anchor_time,
+            serde_json::from_value(map.get("clocks").cloned().unwrap_or(Value::Null)),
+            continued_from,
+        ) {
+            return Self::Live {
+                title,
+                target,
+                order,
+                anchor_time,
+                clocks,
+                continued_from,
+            };
+        }
+        Self::Verbatim(raw)
+    }
+}
+
+impl<'de> Deserialize<'de> for HabitRecord {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // The tolerant boundary: any shape this version does not model
+        // decodes as `Verbatim`, never a document failure.
+        Ok(Self::deserialize_verbatim(Value::deserialize(
+            deserializer,
+        )?))
+    }
+}
+
+impl Serialize for HabitRecord {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Live {
+                title,
+                target,
+                order,
+                anchor_time,
+                clocks,
+                continued_from,
+            } => serde_json::json!({
+                "title": title,
+                "target": target,
+                "order": order,
+                "anchor_time": anchor_time,
+                "clocks": clocks,
+                "continued_from": continued_from,
+            })
+            .serialize(serializer),
+            Self::Tombstone { clock } => {
+                serde_json::json!({ "deleted": true, "clock": clock }).serialize(serializer)
+            }
+            Self::Verbatim(value) => value.serialize(serializer),
+        }
+    }
+}
+
+/// One habit log row's document shape, or a shape this version does not
+/// model (preserved verbatim). **No tombstone arm** (D-H5): no command
+/// deletes a log row (`DeleteHabit` keeps the log — the log outlives the
+/// tracker), so nothing can emit one; a future delete shape decodes as
+/// `Verbatim` and relays — the documented leniency boundary, never a
+/// decode failure.
+#[derive(Debug, Clone, PartialEq)]
+pub enum HabitLogRecord {
+    /// `{ "count": u32, "clock": rfc3339 }` — the row's LWW clock; the
+    /// `(habit, window)` identity lives in the map key.
+    Entry { count: u32, clock: DateTime<Utc> },
+    /// A shape this version does not model: preserved verbatim.
+    Verbatim(Value),
+}
+
+impl HabitLogRecord {
+    /// The row's write clock; `None` for verbatim content (which the
+    /// union therefore never orders against a clocked row).
+    #[must_use]
+    pub fn clock(&self) -> Option<DateTime<Utc>> {
+        match self {
+            Self::Entry { clock, .. } => Some(*clock),
+            Self::Verbatim(_) => None,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for HabitLogRecord {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // The tolerant boundary: any shape this version does not model
+        // — a future `{"deleted": true}` row included — decodes as
+        // `Verbatim`, never a document failure.
+        let raw = Value::deserialize(deserializer)?;
+        if let Value::Object(map) = &raw
+            && let (Some(Ok(count)), Some(Ok(clock))) = (
+                map.get("count")
+                    .map(|v| serde_json::from_value::<u32>(v.clone())),
+                map.get("clock")
+                    .map(|v| serde_json::from_value::<DateTime<Utc>>(v.clone())),
+            )
+            && !map.contains_key("deleted")
+        {
+            return Ok(Self::Entry { count, clock });
+        }
+        Ok(Self::Verbatim(raw))
+    }
+}
+
+impl Serialize for HabitLogRecord {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Entry { count, clock } => {
+                serde_json::json!({ "count": count, "clock": clock }).serialize(serializer)
+            }
+            Self::Verbatim(value) => value.serialize(serializer),
+        }
+    }
+}
+
 /// The dismissal row's wire key: `"<rule uuid>|<rfc3339 occurrence>"`.
 /// Neither component can contain `|` (a UUID is hex+dashes, rfc3339 is
 /// digits/punct), so the encoding is injective.
@@ -797,6 +1005,26 @@ pub fn union(base: &AppDataDocument, overlay: &AppDataDocument) -> AppDataDocume
             (Some(b), Some(o)) => {
                 let mut merged = b.clone();
                 union_time_entries(&mut merged, o);
+                Some(merged)
+            }
+            (Some(b), None) => Some(b.clone()),
+            (None, Some(o)) => Some(o.clone()),
+            (None, None) => None,
+        },
+        habits: match (&base.sections.habits, &overlay.sections.habits) {
+            (Some(b), Some(o)) => {
+                let mut merged = b.clone();
+                union_habits(&mut merged, o);
+                Some(merged)
+            }
+            (Some(b), None) => Some(b.clone()),
+            (None, Some(o)) => Some(o.clone()),
+            (None, None) => None,
+        },
+        habit_log: match (&base.sections.habit_log, &overlay.sections.habit_log) {
+            (Some(b), Some(o)) => {
+                let mut merged = b.clone();
+                union_habit_log(&mut merged, o);
                 Some(merged)
             }
             (Some(b), None) => Some(b.clone()),
@@ -920,6 +1148,58 @@ fn union_time_entries(
                 // Verbatim content is never ordered against a clocked
                 // row: whichever side holds it keeps the slot.
                 (TimeEntryRecord::Verbatim(_), _) | (_, TimeEntryRecord::Verbatim(_)) => None,
+                (b, o) => match (b.clock(), o.clock()) {
+                    (Some(bc), Some(oc)) if bc > oc => None,
+                    _ => Some(o.clone()),
+                },
+            },
+        };
+        if let Some(winner) = winner {
+            base.insert(key.clone(), winner);
+        }
+    }
+}
+
+/// Per-row effective-clock LWW over the `habits` section (DR-6 §4.5):
+/// a `Live` row competes on the `max` of its five embedded clocks, a
+/// tombstone on its own clock — a delete after any edit wins, a newer
+/// edit resurrects. Deliberately the [`union_time_entries`] flavor
+/// (D-T11): **equal clocks resolve to the overlay** — the flush's
+/// just-stamped local writes must win the pull-side tie. Verbatim shapes
+/// are never ordered against and never displaced.
+fn union_habits(base: &mut BTreeMap<String, HabitRecord>, overlay: &BTreeMap<String, HabitRecord>) {
+    for (key, overlay_row) in overlay {
+        let winner = match base.get(key) {
+            None => Some(overlay_row.clone()),
+            Some(base_row) => match (base_row, overlay_row) {
+                (HabitRecord::Verbatim(_), _) | (_, HabitRecord::Verbatim(_)) => None,
+                (b, o) => match (b.competition_clock(), o.competition_clock()) {
+                    (Some(bc), Some(oc)) if bc > oc => None,
+                    _ => Some(o.clone()),
+                },
+            },
+        };
+        if let Some(winner) = winner {
+            base.insert(key.clone(), winner);
+        }
+    }
+}
+
+/// Per-row LWW on the row clock over the `habit-log` section (§4.5):
+/// whole-row LWW that degenerates to set-union in practice (one write
+/// site per key per device — the planner's fresh `now`). Equal clocks
+/// resolve to the overlay, the [`union_time_entries`] flavor. Verbatim
+/// shapes — a future delete row included — are never ordered against
+/// and never displaced.
+fn union_habit_log(
+    base: &mut BTreeMap<String, HabitLogRecord>,
+    overlay: &BTreeMap<String, HabitLogRecord>,
+) {
+    for (key, overlay_row) in overlay {
+        let winner = match base.get(key) {
+            None => Some(overlay_row.clone()),
+            Some(base_row) => match (base_row, overlay_row) {
+                (HabitLogRecord::Verbatim(_), _) | (_, HabitLogRecord::Verbatim(_)) => None,
                 (b, o) => match (b.clock(), o.clock()) {
                     (Some(bc), Some(oc)) if bc > oc => None,
                     _ => Some(o.clone()),
@@ -1291,6 +1571,127 @@ pub fn derive_time_entry_tombstones(
             (!local.contains_key(&id)).then(|| (key.clone(), TimeEntryRecord::Tombstone { clock }))
         })
         .collect()
+}
+
+/// The habit-log wire retention in days (design §4.5, mirroring DR-5's
+/// D-T13 ruling): a named constant, never a config knob. The overlay
+/// builder and the lane GC filter by this one window so an aged row is
+/// never re-emitted and the union cannot resurrect it. **The local
+/// database never drops history** — this constant bounds the document
+/// only.
+pub const HABIT_LOG_SYNC_RETENTION_DAYS: i64 = 180;
+
+/// `today − HABIT_LOG_SYNC_RETENTION_DAYS` in the **local-date
+/// vocabulary** (D-H8): a row's window date at or after this boundary is
+/// in retention; the boundary itself is inside. Saturates at
+/// [`chrono::NaiveDate::MIN`] (the `period_before` leniency).
+fn habit_log_cutoff(today: chrono::NaiveDate) -> chrono::NaiveDate {
+    today
+        .checked_sub_days(chrono::Days::new(
+            u64::try_from(HABIT_LOG_SYNC_RETENTION_DAYS).expect("positive constant"),
+        ))
+        .unwrap_or(chrono::NaiveDate::MIN)
+}
+
+/// Builds the flush overlay's `habits` section from the local habit
+/// state (DR-6 §4.5, D-H10): **every** habit of `board`, live rows as
+/// [`HabitRecord::Live`] and tombstoned rows as
+/// [`HabitRecord::Tombstone { clock: clocks.deleted }`] — definitions
+/// carry no retention, because deletions must roam forever so
+/// late-adopting devices learn them. Foreign-board habits never emit.
+#[must_use]
+pub fn habits_for(
+    habits: &BTreeMap<crate::ids::HabitId, crate::habit::Habit>,
+    board: crate::ids::BoardId,
+) -> BTreeMap<String, HabitRecord> {
+    habits
+        .values()
+        .filter(|habit| habit.board == board)
+        .map(|habit| {
+            let row = if habit.is_live() {
+                HabitRecord::Live {
+                    title: habit.title.clone(),
+                    target: habit.target,
+                    order: habit.order,
+                    anchor_time: habit.anchor_time,
+                    clocks: habit.clocks,
+                    continued_from: habit.continued_from,
+                }
+            } else {
+                HabitRecord::Tombstone {
+                    clock: habit.clocks.deleted,
+                }
+            };
+            (habit.id.as_uuid().to_string(), row)
+        })
+        .collect()
+}
+
+/// Builds the flush overlay's `habit-log` section from the local habit
+/// state (§4.5). The emission filter is fail-closed by construction:
+/// a log row emits only if
+///
+/// - its habit **exists locally** (an orphaned fact never emits —
+///   `ClearBoardContent` fallout included);
+/// - that habit's `board == board` (other boards' facts are not this
+///   document's);
+/// - the window is **in retention**: `window.as_date() >= today − 180 d`
+///   (D-H14 — aged rows are never re-emitted; overlay and lane GC agree
+///   on the one window, so the union cannot resurrect them).
+#[must_use]
+pub fn habit_log_for(
+    habits: &BTreeMap<crate::ids::HabitId, crate::habit::Habit>,
+    log: &BTreeMap<crate::habit::HabitLogKey, crate::habit::HabitLogEntry>,
+    board: crate::ids::BoardId,
+    today: chrono::NaiveDate,
+) -> BTreeMap<String, HabitLogRecord> {
+    let cutoff = habit_log_cutoff(today);
+    log.iter()
+        .filter(|(key, _)| {
+            habits
+                .get(&key.habit)
+                .is_some_and(|habit| habit.board == board)
+                && key.window.as_date() >= cutoff
+        })
+        .map(|(key, entry)| {
+            (
+                key.wire_form(),
+                HabitLogRecord::Entry {
+                    count: entry.count,
+                    clock: entry.clock,
+                },
+            )
+        })
+        .collect()
+}
+
+/// The flush's habit-log lane GC (D-H14, the `lane_gc_old_time_entries`
+/// shape): strips section rows whose window date — parsed from the map
+/// key — falls before the retention boundary. `Verbatim` rows pass
+/// untouched (never ordered against), and so does a clocked row whose
+/// key does not parse: we cannot date it, and stripping it would forge
+/// a deletion the union could not resurrect. An emptied section becomes
+/// `None`. **Wire-only**: nothing here or anywhere else deletes a local
+/// row.
+#[must_use]
+pub fn lane_gc_old_habit_log(
+    document: &AppDataDocument,
+    today: chrono::NaiveDate,
+) -> AppDataDocument {
+    let mut gc = document.clone();
+    if let Some(section) = gc.sections.habit_log.take() {
+        let cutoff = habit_log_cutoff(today);
+        let kept: BTreeMap<String, HabitLogRecord> = section
+            .into_iter()
+            .filter(|(key, row)| match row {
+                HabitLogRecord::Verbatim(_) => true,
+                HabitLogRecord::Entry { .. } => crate::habit::HabitLogKey::parse_wire_form(key)
+                    .is_none_or(|parsed| parsed.window.as_date() >= cutoff),
+            })
+            .collect();
+        gc.sections.habit_log = (!kept.is_empty()).then_some(kept);
+    }
+    gc
 }
 
 #[cfg(test)]
@@ -3557,6 +3958,453 @@ mod tests {
                     "the card names a board-bound task"
                 );
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod habit_section_tests {
+    use super::*;
+    use crate::habit::{
+        Habit, HabitClocks, HabitLogEntry, HabitLogKey, HabitTarget, NonZeroCount, WindowStart,
+    };
+    use crate::ids::{BoardId, HabitId};
+    use proptest::prelude::*;
+    use std::collections::BTreeSet;
+
+    fn ts(secs: i64) -> DateTime<Utc> {
+        chrono::TimeZone::timestamp_opt(&Utc, secs, 0).unwrap()
+    }
+
+    fn habit(raw: u128, board: u128, deleted: bool, stamp: i64) -> Habit {
+        Habit {
+            id: HabitId::from(uuid::Uuid::from_u128(raw)),
+            board: BoardId::from(uuid::Uuid::from_u128(board)),
+            title: format!("habit {raw}"),
+            target: HabitTarget::PerDay(NonZeroCount::new(3).unwrap()),
+            order: 0,
+            anchor_time: None,
+            clocks: HabitClocks::all(ts(stamp)),
+            continued_from: None,
+            deleted,
+        }
+    }
+
+    fn live_row(stamp: i64) -> HabitRecord {
+        HabitRecord::Live {
+            title: "water".to_owned(),
+            target: HabitTarget::PerDay(NonZeroCount::new(3).unwrap()),
+            order: 0,
+            anchor_time: None,
+            clocks: HabitClocks::all(ts(stamp)),
+            continued_from: None,
+        }
+    }
+
+    fn key(habit_raw: u128, date: chrono::NaiveDate) -> HabitLogKey {
+        HabitLogKey {
+            habit: HabitId::from(uuid::Uuid::from_u128(habit_raw)),
+            window: WindowStart::of_period(crate::habit::PeriodKind::Day, date),
+        }
+    }
+
+    fn date(y: i32, m: u32, d: u32) -> chrono::NaiveDate {
+        chrono::NaiveDate::from_ymd_opt(y, m, d).unwrap()
+    }
+
+    fn document(board: u64, sections: AppDataSections) -> AppDataDocument {
+        AppDataDocument {
+            format: APPDATA_FORMAT,
+            board: RemoteBoardId(board),
+            sections,
+            unknown: BTreeMap::new(),
+        }
+    }
+
+    // ---- T-1: section serde ------------------------------------------------
+
+    #[test]
+    fn the_habit_sections_ride_the_envelope_under_their_modeled_keys() {
+        let sections = AppDataSections {
+            habits: Some(
+                [(uuid::Uuid::from_u128(1).to_string(), live_row(100))]
+                    .into_iter()
+                    .collect(),
+            ),
+            habit_log: Some(
+                [(
+                    key(1, date(2026, 10, 28)).wire_form(),
+                    HabitLogRecord::Entry {
+                        count: 2,
+                        clock: ts(100),
+                    },
+                )]
+                .into_iter()
+                .collect(),
+            ),
+            ..AppDataSections::default()
+        };
+        let json = serde_json::to_string(&document(7, sections)).unwrap();
+        assert!(json.contains(r#""habits""#), "the definitions key is exact");
+        assert!(json.contains(r#""habit-log""#), "the log key is exact");
+        let back: AppDataDocument = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.sections.habits.as_ref().unwrap().len(), 1);
+        assert_eq!(back.sections.habit_log.as_ref().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_malformed_live_body_demotes_to_verbatim_and_never_fails_the_document() {
+        let raw = format!(
+            r#"{{"format":1,"board":7,"sections":{{"habits":{{"{}":{{"title":42}}}}}}}}"#,
+            uuid::Uuid::from_u128(1)
+        );
+        let doc: AppDataDocument = serde_json::from_str(&raw).expect("the document never fails");
+        let row = &doc.sections.habits.as_ref().unwrap()[&uuid::Uuid::from_u128(1).to_string()];
+        assert!(matches!(row, HabitRecord::Verbatim(_)));
+    }
+
+    #[test]
+    fn a_future_deleted_log_row_decodes_verbatim_the_leniency_boundary() {
+        // D-H5: no command deletes a log row, so no tombstone arm exists;
+        // a future delete shape must relay, never fail.
+        let row: HabitLogRecord =
+            serde_json::from_str(r#"{"deleted": true, "clock": "2026-10-28T00:00:00Z"}"#).unwrap();
+        assert!(matches!(row, HabitLogRecord::Verbatim(_)));
+    }
+
+    #[test]
+    fn board_level_habit_keys_are_invisible_to_prune_absent_cards() {
+        // R-9's structural pin: pruning against an EMPTY present set
+        // empties every card-keyed section but loses nothing from the
+        // two board-level ones — a future arm that starts pruning board
+        // keys fails here loudly.
+        let habit_uuid = uuid::Uuid::from_u128(1).to_string();
+        let sections = AppDataSections {
+            tasks: Some(
+                [("55".to_owned(), TaskEntry::default())]
+                    .into_iter()
+                    .collect(),
+            ),
+            habits: Some([(habit_uuid.clone(), live_row(100))].into_iter().collect()),
+            habit_log: Some(
+                [(
+                    key(1, date(2026, 10, 28)).wire_form(),
+                    HabitLogRecord::Entry {
+                        count: 2,
+                        clock: ts(100),
+                    },
+                )]
+                .into_iter()
+                .collect(),
+            ),
+            ..AppDataSections::default()
+        };
+        let pruned = prune_absent_cards(&document(7, sections), &BTreeSet::new());
+        assert!(pruned.sections.tasks.is_none(), "card-keyed sections empty");
+        assert_eq!(
+            pruned.sections.habits.as_ref().unwrap().get(&habit_uuid),
+            Some(&live_row(100)),
+            "habit definitions outlive everything"
+        );
+        assert_eq!(pruned.sections.habit_log.as_ref().unwrap().len(), 1);
+    }
+
+    // ---- T-2: union (P-1) ---------------------------------------------------
+
+    #[test]
+    fn union_habits_newer_whole_row_wins_and_ties_resolve_to_the_overlay() {
+        let uuid = uuid::Uuid::from_u128(1).to_string();
+        let base: BTreeMap<String, HabitRecord> =
+            [(uuid.clone(), live_row(100))].into_iter().collect();
+        let mut overlay = BTreeMap::new();
+        let mut older = live_row(100);
+        if let HabitRecord::Live { title, clocks, .. } = &mut older {
+            *title = "renamed".to_owned();
+            clocks.title = ts(200); // effective clock 200 > 100
+            let _ = clocks;
+        }
+        overlay.insert(uuid.clone(), older);
+        let mut merged = base.clone();
+        union_habits(&mut merged, &overlay);
+        assert!(
+            matches!(&merged[&uuid], HabitRecord::Live { title, .. } if title == "renamed"),
+            "the newer effective clock wins whole-row"
+        );
+        // Exact tie: overlay wins (the D-T11 flush-side ruling).
+        let mut overlay_tie = BTreeMap::new();
+        let mut tied = live_row(100);
+        if let HabitRecord::Live { title, .. } = &mut tied {
+            *title = "tied".to_owned();
+            // clocks all at 100: the effective clock ties the base's.
+        }
+        overlay_tie.insert(uuid.clone(), tied);
+        let mut merged_tie = base.clone();
+        union_habits(&mut merged_tie, &overlay_tie);
+        assert!(
+            matches!(&merged_tie[&uuid], HabitRecord::Live { title, .. } if title == "tied"),
+            "ties resolve to the overlay"
+        );
+    }
+
+    #[test]
+    fn union_habit_log_is_row_lww_with_overlay_ties() {
+        let k = key(1, date(2026, 10, 28)).wire_form();
+        let base: BTreeMap<String, HabitLogRecord> = [(
+            k.clone(),
+            HabitLogRecord::Entry {
+                count: 3,
+                clock: ts(200),
+            },
+        )]
+        .into_iter()
+        .collect();
+        let mut overlay = BTreeMap::new();
+        overlay.insert(
+            k.clone(),
+            HabitLogRecord::Entry {
+                count: 5,
+                clock: ts(100),
+            },
+        );
+        let mut merged = base.clone();
+        union_habit_log(&mut merged, &overlay);
+        assert!(
+            matches!(&merged[&k], HabitLogRecord::Entry { count: 3, .. }),
+            "the strictly-newer base row stands"
+        );
+        let mut overlay_newer = BTreeMap::new();
+        overlay_newer.insert(
+            k.clone(),
+            HabitLogRecord::Entry {
+                count: 7,
+                clock: ts(300),
+            },
+        );
+        union_habit_log(&mut merged, &overlay_newer);
+        assert!(
+            matches!(&merged[&k], HabitLogRecord::Entry { count: 7, .. }),
+            "the newer overlay row wins"
+        );
+    }
+
+    // ---- T-3: tombstone races (P-2) ------------------------------------------
+
+    #[test]
+    fn tombstone_and_live_rows_compete_by_the_effective_clock_both_directions() {
+        let uuid = uuid::Uuid::from_u128(1).to_string();
+        // A delete after an edit wins.
+        let base = [(uuid.clone(), live_row(100))].into_iter().collect();
+        let mut overlay = BTreeMap::new();
+        overlay.insert(uuid.clone(), HabitRecord::Tombstone { clock: ts(300) });
+        let mut merged = base;
+        union_habits(&mut merged, &overlay);
+        assert!(matches!(&merged[&uuid], HabitRecord::Tombstone { .. }));
+
+        // A later-dated live row resurrects over an older tombstone.
+        let base = [(uuid.clone(), HabitRecord::Tombstone { clock: ts(100) })]
+            .into_iter()
+            .collect();
+        let mut overlay = BTreeMap::new();
+        overlay.insert(uuid.clone(), live_row(200));
+        let mut merged = base;
+        union_habits(&mut merged, &overlay);
+        assert!(matches!(&merged[&uuid], HabitRecord::Live { .. }));
+
+        // An effective-clock tie between tombstone and live: overlay wins.
+        let base = [(uuid.clone(), live_row(100))].into_iter().collect();
+        let mut overlay = BTreeMap::new();
+        overlay.insert(uuid.clone(), HabitRecord::Tombstone { clock: ts(100) });
+        let mut merged = base;
+        union_habits(&mut merged, &overlay);
+        assert!(matches!(&merged[&uuid], HabitRecord::Tombstone { .. }));
+    }
+
+    // ---- T-4: verbatim relay (P-4) -------------------------------------------
+
+    #[test]
+    fn verbatim_rows_survive_union_and_a_full_serde_round_trip_value_identically() {
+        let uuid = uuid::Uuid::from_u128(1).to_string();
+        let k = key(1, date(2026, 10, 28)).wire_form();
+        let verbatim_habit = serde_json::json!({ "exotic": [1, 2, { "shape": true }] });
+        let verbatim_log = serde_json::json!({ "future": {"deleted": true, "extra": 9} });
+        let base = document(
+            7,
+            AppDataSections {
+                habits: Some(
+                    [(uuid.clone(), HabitRecord::Verbatim(verbatim_habit.clone()))]
+                        .into_iter()
+                        .collect(),
+                ),
+                habit_log: Some(
+                    [(k.clone(), HabitLogRecord::Verbatim(verbatim_log.clone()))]
+                        .into_iter()
+                        .collect(),
+                ),
+                ..AppDataSections::default()
+            },
+        );
+        // Overlay carries clocked rows for the same keys — the verbatim
+        // slots stay untouched (never ordered against), unknown keys
+        // extend additively.
+        let overlay = document(
+            7,
+            AppDataSections {
+                habits: Some([(uuid.clone(), live_row(900))].into_iter().collect()),
+                habit_log: Some(
+                    [(
+                        key(2, date(2026, 10, 29)).wire_form(),
+                        HabitLogRecord::Entry {
+                            count: 1,
+                            clock: ts(900),
+                        },
+                    )]
+                    .into_iter()
+                    .collect(),
+                ),
+                ..AppDataSections::default()
+            },
+        );
+        let merged = union(&base, &overlay);
+        assert_eq!(
+            merged.sections.habits.as_ref().unwrap().get(&uuid),
+            Some(&HabitRecord::Verbatim(verbatim_habit)),
+        );
+        assert_eq!(merged.sections.habits.as_ref().unwrap().len(), 1);
+        assert_eq!(
+            merged.sections.habit_log.as_ref().unwrap().get(&k),
+            Some(&HabitLogRecord::Verbatim(verbatim_log)),
+        );
+        assert_eq!(merged.sections.habit_log.as_ref().unwrap().len(), 2);
+        let json = serde_json::to_string(&merged).unwrap();
+        let back: AppDataDocument = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, merged, "the relay is value-identical through serde");
+    }
+
+    // ---- T-5b: habits_for ------------------------------------------------------
+
+    #[test]
+    fn habits_for_emits_live_and_tombstoned_definitions_of_one_board_only() {
+        let mine = habit(1, 800, false, 100);
+        let gone = habit(2, 800, true, 200);
+        let foreign = habit(3, 900, false, 300);
+        let board = BoardId::from(uuid::Uuid::from_u128(800));
+        let emitted = habits_for(
+            &[
+                (mine.id, mine.clone()),
+                (gone.id, gone.clone()),
+                (foreign.id, foreign),
+            ]
+            .into_iter()
+            .collect(),
+            board,
+        );
+        assert_eq!(
+            emitted.len(),
+            2,
+            "definitions carry no retention; foreign never emits"
+        );
+        assert_eq!(
+            emitted.get(&mine.id.as_uuid().to_string()),
+            Some(&HabitRecord::Live {
+                title: mine.title.clone(),
+                target: mine.target,
+                order: mine.order,
+                anchor_time: mine.anchor_time,
+                clocks: mine.clocks,
+                continued_from: mine.continued_from,
+            })
+        );
+        assert_eq!(
+            emitted.get(&gone.id.as_uuid().to_string()),
+            Some(&HabitRecord::Tombstone { clock: ts(200) })
+        );
+    }
+
+    // ---- T-5: retention agreement (P-4) ----------------------------------------
+
+    fn in_window(date: chrono::NaiveDate, today: chrono::NaiveDate) -> bool {
+        date >= today
+            .checked_sub_days(chrono::Days::new(
+                u64::try_from(HABIT_LOG_SYNC_RETENTION_DAYS).unwrap(),
+            ))
+            .unwrap_or(chrono::NaiveDate::MIN)
+    }
+
+    proptest! {
+        #![proptest_config(proptest::test_runner::Config::with_cases(64))]
+
+        #[test]
+        fn the_retention_window_is_one_window_across_emission_union_and_gc(
+            (habit, offsets, today, age_base) in crate::test_support::habit_strategy()
+                .prop_flat_map(|habit| (
+                    Just(habit),
+                    proptest::collection::vec(-400_i64..=10, 0..12),
+                    crate::test_support::naive_date_strategy(),
+                    -400_i64..=10,
+                )),
+        ) {
+            let board = habit.board;
+            let raw = u128::from_be_bytes(habit.id.as_uuid().into_bytes());
+            let mut log = BTreeMap::new();
+            for (i, offset) in offsets.iter().enumerate() {
+                let d = today
+                    .checked_add_signed(chrono::TimeDelta::try_days(*offset).unwrap())
+                    .unwrap();
+                log.insert(
+                    key(raw, d),
+                    HabitLogEntry { count: u32::try_from(i + 1).unwrap(), clock: ts(100) },
+                );
+            }
+            let emitted = habit_log_for(&[(habit.id, habit.clone())].into(), &log, board, today);
+            let expected: Vec<String> = log
+                .iter()
+                .filter(|(k, _)| in_window(k.window.as_date(), today))
+                .map(|(k, _)| k.wire_form())
+                .collect();
+            let got: Vec<String> = emitted.keys().cloned().collect();
+            prop_assert_eq!(got.len(), expected.len(), "emission is exactly the in-window set");
+            for k in &expected {
+                prop_assert!(emitted.contains_key(k), "every in-window row emits");
+            }
+            // Aged base rows union in but the lane GC strips them; the
+            // converged document is exactly the in-window set.
+            let aged_d = today
+                .checked_add_signed(chrono::TimeDelta::try_days(age_base).unwrap())
+                .unwrap();
+            let aged_key = key(raw, aged_d);
+            let mut base_log = emitted.clone();
+            base_log.insert(
+                aged_key.wire_form(),
+                HabitLogRecord::Entry { count: 9, clock: ts(50) },
+            );
+            let base = document(
+                7,
+                AppDataSections {
+                    habit_log: (!base_log.is_empty()).then_some(base_log),
+                    ..AppDataSections::default()
+                },
+            );
+            let overlay = document(
+                7,
+                AppDataSections {
+                    habit_log: (!emitted.is_empty()).then_some(emitted.clone()),
+                    ..AppDataSections::default()
+                },
+            );
+            let merged = lane_gc_old_habit_log(&union(&base, &overlay), today);
+            let converged = merged.sections.habit_log.unwrap_or_default();
+            for k in converged.keys() {
+                let parsed = HabitLogKey::parse_wire_form(k);
+                prop_assert!(
+                    matches!(&converged[k], HabitLogRecord::Verbatim(_))
+                        || parsed.is_some_and(|p| in_window(p.window.as_date(), today)),
+                    "no aged row survives the converged document"
+                );
+            }
+            // The asymmetry (D-H14) is structural: every function in the
+            // chain takes the local maps by reference and returns fresh
+            // documents — no wire GC can reach local truth. Pinned by the
+            // borrow checker, not by a runtime assertion.
         }
     }
 }
