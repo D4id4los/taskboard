@@ -189,6 +189,13 @@ pub(crate) struct Adapter {
     /// default-open (the text field keeps focus), `true` on the
     /// Down-in-field stroke — consumed by the next push.
     picker_focus_on_mount: bool,
+    /// The last snapshot the derive+diff materialized onto the models
+    /// (the unchanged-refresh guard, #463): `Some` after every derived
+    /// pass. `Arc::ptr_eq` against the fresh load ⇒ the models already
+    /// carry this exact snapshot — the pass's expensive half would be
+    /// a no-op. A miss (the engine republished identical values) costs
+    /// one wasted pass, never a stale UI.
+    last_derived: Option<Arc<AppState>>,
     /// The id tables of the last refresh pass (D2): index → id.
     tables: IdTables,
     /// The persistent model handles of this window (r2 D9): the
@@ -239,6 +246,11 @@ pub(crate) struct Adapter {
     /// The exit-effect counter (the §6 component-test seam: journeys
     /// assert the quit request without killing the platform).
     pub(crate) quit_requests: usize,
+    /// The test seam (#463's pin): derive+diff passes executed since
+    /// install. The guard's contract in one integer — incremented only
+    /// where `models::push` is about to run.
+    #[cfg(test)]
+    pub(crate) derive_passes: usize,
     /// The control walk's re-entrancy flag (round-3 D25): held while
     /// the synthetic traversal event is in flight, so the injected
     /// `Tab` rejects out of `intercept-key` before the callback even
@@ -413,7 +425,8 @@ impl Adapter {
                 self.open_due_picker(window, true);
             } else {
                 self.picker_focus_on_mount = true;
-                self.refresh(window);
+                // The one-shot flag is a derive input the push consumes — forced.
+                self.refresh_forced(window);
             }
             return true;
         }
@@ -549,7 +562,9 @@ impl Adapter {
                     self.shell.apply(&UiEffect::SetMode(*mode), 0);
                     mode_changed = true;
                 }
-                FlowOutcome::RefreshNow => self.refresh(window),
+                // The view machine's re-derive verdict: forced — the
+                // derive inputs are adapter-side, the pointer is not.
+                FlowOutcome::RefreshNow => self.refresh_forced(window),
                 FlowOutcome::StackWidthsChanged => {
                     // The persist-now signal (round-1 D21): the full
                     // per-board snapshot over the request lane,
@@ -597,40 +612,42 @@ impl Adapter {
         crate::view_state::DayCtx { now, window }
     }
 
-    /// The D1 refresh: reconcile, then one full re-derive of the
-    /// display models from the current snapshot (lock-free load) and
-    /// a fresh id tables pass. Deterministic, timer-free; the repaint
-    /// timer and the tests call this.
+    /// The D1 refresh, guarded (#463): the derive+diff half
+    /// (reconcile, `models::push`, the live-menu re-grey) runs only
+    /// when the loaded snapshot is not the one the models already
+    /// carry. The cheap half — the §8 buffer wipe and the settings
+    /// push — runs on every call: flows can end without outcomes, and
+    /// the settings rows fold the liveness map and the settled
+    /// replies, none of which live in the state Arc.
+    ///
+    /// Invariant for future callers: anything the derive reads that is
+    /// NOT the state Arc (`view_state`, shell, keymap, due/picker state,
+    /// the wall clock) must reach this method via [`Self::refresh_forced`]
+    /// or behind a state change — the audit table in
+    /// `.artifacts/plans/2026-10-31-unchanged-refresh-guard-plan.md` §5
+    /// is the reference classification.
     pub(crate) fn refresh(&mut self, window: &AppWindow) {
-        self.sync_view_context();
-        let state = self.state.load();
-        self.view_state.reconcile(&state);
-        // §8 (W-SM-c): the date editor's buffers never outlive the
-        // flow — non-empty ⇔ `Flow::EditDate` armed. Every outcome
-        // path and settle flows through here, so this is the one
-        // wipe point (commit, discard, leaving-settle and
-        // reconcile-drop all end the flow before this read). The D11
-        // buffer seeding happens inside the armed window (the begin
-        // seam, before `apply_outcomes`).
-        if !matches!(self.view_state.flow(), Flow::EditDate { .. }) {
-            self.due_buffer.clear();
-            self.due_echo.clear();
-            self.due_picker = None;
-            // The picker dies with the flow (§8): the grid cannot hold
-            // focus any more, so the `DatePicker` context disarms
-            // here as well as through the focus seam — a missed
-            // focus-loss on unmount can never leave the context armed
-            // over the next editor (R-C's exactness).
-            self.shell.date_picker_grid = false;
-            window.global::<KeyboardState>().set_date_picker_grid(false);
+        let state = self.state.load_full();
+        let unchanged = self
+            .last_derived
+            .as_ref()
+            .is_some_and(|derived| Arc::ptr_eq(derived, &state));
+        if unchanged {
+            self.enforce_due_buffer_invariant(window);
+            self.push_settings(window);
+            return;
         }
-        debug_assert!(
-            matches!(self.view_state.flow(), Flow::EditDate { .. })
-                || (self.due_buffer.is_empty()
-                    && self.due_echo.is_empty()
-                    && self.due_picker.is_none()),
-            "the date editor's buffers outlived the flow"
-        );
+        self.refresh_forced(window);
+    }
+
+    /// The unguarded D1 pass: reconcile + full re-derive + the cheap
+    /// tail. Every caller whose inputs moved outside the state Arc
+    /// calls this directly (the plan §5 audit's forced set).
+    pub(crate) fn refresh_forced(&mut self, window: &AppWindow) {
+        self.sync_view_context();
+        let state = self.state.load_full();
+        self.view_state.reconcile(&state);
+        self.enforce_due_buffer_invariant(window);
         let chain = self.shell.chain();
         let day = self.day_ctx();
         let due = crate::models::DueEditorPush {
@@ -642,6 +659,10 @@ impl Adapter {
         };
         // The grid-focus flag is one-shot: consumed by this push.
         self.picker_focus_on_mount = false;
+        #[cfg(test)]
+        {
+            self.derive_passes += 1;
+        }
         self.tables = crate::models::push(
             window,
             &state,
@@ -670,6 +691,38 @@ impl Adapter {
             self.sync_menu_models(window);
         }
         self.push_settings(window);
+        // The pass materialized: close the cache only now — a
+        // re-entrant pass before this line would see the stale cache
+        // and derive again, never skip a needed pass.
+        self.last_derived = Some(state);
+    }
+
+    /// §8 (W-SM-c): the date editor's buffers never outlive the flow —
+    /// non-empty ⇔ `Flow::EditDate` armed. Runs on every pass, guarded
+    /// or forced: a flow can end without outcomes (the modal settle)
+    /// or without a state change, and the wipe must fire regardless
+    /// (the one implementation, so the `debug_assert` guards both
+    /// paths).
+    fn enforce_due_buffer_invariant(&mut self, window: &AppWindow) {
+        if !matches!(self.view_state.flow(), Flow::EditDate { .. }) {
+            self.due_buffer.clear();
+            self.due_echo.clear();
+            self.due_picker = None;
+            // The picker dies with the flow (§8): the grid cannot hold
+            // focus any more, so the `DatePicker` context disarms
+            // here as well as through the focus seam — a missed
+            // focus-loss on unmount can never leave the context armed
+            // over the next editor (R-C's exactness).
+            self.shell.date_picker_grid = false;
+            window.global::<KeyboardState>().set_date_picker_grid(false);
+        }
+        debug_assert!(
+            matches!(self.view_state.flow(), Flow::EditDate { .. })
+                || (self.due_buffer.is_empty()
+                    && self.due_echo.is_empty()
+                    && self.due_picker.is_none()),
+            "the date editor's buffers outlived the flow"
+        );
     }
 
     /// Whether the window is at the compact breakpoint (D17).
@@ -2171,8 +2224,10 @@ impl Adapter {
             }
         }
         if drained {
-            self.push_settings(window);
-            self.refresh(window);
+            // The keymap swap / reply settle are derive inputs outside
+            // the state Arc — forced. `refresh_forced` ends in
+            // `push_settings`, so no separate push here.
+            self.refresh_forced(window);
         }
     }
 
@@ -2988,6 +3043,9 @@ pub(crate) fn install(
         rotation_timer,
         rotation_fire: Rc::new(|| {}), // replaced below, before any fire can happen
         quit_requests: 0,
+        last_derived: None,
+        #[cfg(test)]
+        derive_passes: 0,
         notice: None,
         delivery_health,
     }));
@@ -3286,7 +3344,7 @@ fn install_stack_width_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>)
         let stored =
             u32::try_from((f64::from(rendered) / scale).round() as i64).unwrap_or(rendered);
         a.view_state.set_stack_width(board, stack, stored);
-        a.refresh(&window);
+        a.refresh_forced(&window);
     });
     let release = Rc::clone(adapter);
     let release_weak = window.as_weak();
@@ -4419,7 +4477,7 @@ fn install_due_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         };
         let mut a = toggle.borrow_mut();
         if a.due_picker.take().is_some() {
-            a.refresh(&window);
+            a.refresh_forced(&window);
         } else {
             a.open_due_picker(&window, false);
         }
@@ -4452,7 +4510,7 @@ fn install_due_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         // Outside click: drop the picker only — the editor and its
         // flow stay armed, the buffer intact (round-3 D10).
         if a.due_picker.take().is_some() {
-            a.refresh(&window);
+            a.refresh_forced(&window);
         }
     });
 
@@ -4546,7 +4604,7 @@ impl Adapter {
             K::TimeBack => picker.step_time(-1),
             K::TimeForward => picker.step_time(1),
         }
-        self.refresh(window);
+        self.refresh_forced(window);
     }
 }
 
@@ -4575,7 +4633,7 @@ impl Adapter {
             chrono::Utc::now().date_naive(),
             anchor,
         ));
-        self.refresh(window);
+        self.refresh_forced(window);
     }
 }
 
@@ -4640,7 +4698,7 @@ fn install_banner_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         };
         a.view_state.set_focused(Some(banner_row.task));
         a.reminder_target = Some(banner_row.target);
-        a.refresh(&window);
+        a.refresh_forced(&window);
     });
 
     let snooze = Rc::clone(adapter);
@@ -5128,28 +5186,40 @@ fn install_settings_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
 /// change invalidates it — D12 rule 1). The writes land in the
 /// view-state machine — the shell's seam fields are derived from it
 /// on every route (D6); the component tests use this seam now.
+///
+/// A view-context write is a derive input outside the state Arc, so
+/// `set_view_context` ends in a forced pass (the unchanged-refresh
+/// guard's invariant, #463) — the surfaced rows are material before
+/// the caller's next read.
 impl crate::UiHandle {
     pub fn set_view_context(&self, view: Option<ContextId>) {
-        let mut adapter = self.adapter.borrow_mut();
-        if let Some(view) = view {
-            let mapped = match view {
-                ContextId::Today => crate::view_state::ViewId::Today,
-                ContextId::Board => crate::view_state::ViewId::Board,
-                ContextId::StackDetail => crate::view_state::ViewId::StackDetail,
-                ContextId::TaskDetail => crate::view_state::ViewId::TaskDetail,
-                ContextId::Settings => crate::view_state::ViewId::Settings,
+        let mapped = match view {
+            None => {
+                self.adapter.borrow_mut().resolver.reset();
+                return;
+            }
+            Some(ContextId::Today) => crate::view_state::ViewId::Today,
+            Some(ContextId::Board) => crate::view_state::ViewId::Board,
+            Some(ContextId::StackDetail) => crate::view_state::ViewId::StackDetail,
+            Some(ContextId::TaskDetail) => crate::view_state::ViewId::TaskDetail,
+            Some(ContextId::Settings) => crate::view_state::ViewId::Settings,
+            // A non-routable context leaves the adapter untouched —
+            // no resolver reset, no derive.
+            Some(
                 ContextId::Global
                 | ContextId::Menu
                 | ContextId::Palette
                 | ContextId::DatePicker
                 | ContextId::ViNormal
-                | ContextId::ViInsert => {
-                    return;
-                }
-            };
+                | ContextId::ViInsert,
+            ) => return,
+        };
+        {
+            let mut adapter = self.adapter.borrow_mut();
             adapter.view_state.set_view(mapped);
+            adapter.resolver.reset();
         }
-        adapter.resolver.reset();
+        self.force_derive();
     }
 
     pub fn set_focused_entities(
@@ -5157,7 +5227,23 @@ impl crate::UiHandle {
         focused_task: Option<TaskId>,
         _focused_stack: Option<StackId>,
     ) {
+        // Deliberately no forced pass (the `set_view_context` half
+        // forces): the seam plants a focus target for the keystroke
+        // grammar to read from the view-state machine directly — the
+        // grammar's consumers never re-read it from a derived pass,
+        // and a derive's `reconcile` would drop a focus the state
+        // snapshot cannot confirm.
         let mut adapter = self.adapter.borrow_mut();
         adapter.view_state.set_focused(focused_task);
+    }
+}
+
+impl crate::UiHandle {
+    /// One unguarded derive pass over the current window (the seam
+    /// tail; the forced verb behind the handle's borrow discipline).
+    fn force_derive(&self) {
+        if let Some(window) = self.window().as_weak().upgrade() {
+            self.adapter.borrow_mut().refresh_forced(&window);
+        }
     }
 }

@@ -543,7 +543,15 @@ fn start_repaint_driver(
             // run unconditionally.
             adapter.borrow_mut().push_notice(&window);
             if dirty {
-                adapter.borrow_mut().refresh(&window);
+                if minute_boundary {
+                    // The wall clock moved, the state pointer did not —
+                    // the time-derived rows (badges, due-soon, day
+                    // window) need the full derive regardless of the
+                    // unchanged-refresh guard (#463).
+                    adapter.borrow_mut().refresh_forced(&window);
+                } else {
+                    adapter.borrow_mut().refresh(&window);
+                }
             }
             // The alarm pass (D-I9.2) rides the driver's two existing
             // wake branches: a state change (dirty) or the wall-minute
@@ -666,8 +674,10 @@ fn install_alarm_callbacks(
 
 impl UiHandle {
     /// The D1 refresh: a deterministic, timer-free full re-derive
-    /// pass over the current state snapshot. The repaint timer calls
-    /// this; tests may call it directly.
+    /// pass over the current state snapshot — guarded (#463): an
+    /// unchanged snapshot skips the derive+diff, the cheap wipe and
+    /// settings tail still run. The repaint timer calls this; tests
+    /// may call it directly.
     pub fn refresh(&self) {
         if let Some(window) = self.window.as_weak().upgrade() {
             self.adapter.borrow_mut().refresh(&window);
