@@ -2750,8 +2750,37 @@ mod sidecar {
         detail.to_string()
     }
 
+    /// The Deck 1.19.1 listing's `extendedData` shape (tier records
+    /// §F-A): no `fileName`; `info` carries `basename` (the full stored
+    /// name) and `filename` (basename *without* extension, PHP pathinfo
+    /// semantics) plus the tolerated unknown keys.
+    pub(crate) fn detail_json_1_19_1(card: u64, stamp: i64) -> String {
+        let mut detail = anchor_card_json(card, stamp);
+        detail["attachments"] = serde_json::json!([{
+            "id": ATTACHMENT, "type": "deck_file", "cardId": card,
+            "createdAt": stamp, "lastModified": stamp,
+            "deletedAt": 0,
+            "data": FILENAME,
+            "extendedData": {
+                "filesize": 278,
+                "mimetype": "application/json",
+                "info": {
+                    "dirname": ".",
+                    "basename": FILENAME,
+                    "extension": "json",
+                    "filename": "taskboard-appdata"
+                }
+            }
+        }]);
+        detail.to_string()
+    }
+
     /// Mounts the card-detail GET (the bound-card refresh's read).
     pub(crate) async fn mount_detail(server: &MockServer, card: u64, deleted: bool) {
+        mount_detail_body(server, card, detail_json(card, super::T, deleted)).await;
+    }
+
+    pub(crate) async fn mount_detail_body(server: &MockServer, card: u64, body: String) {
         Mock::given(method("GET"))
             .and(path(format!(
                 "/index.php/apps/deck/api/v1.0/boards/{}/stacks/{}/cards/{}",
@@ -2759,11 +2788,7 @@ mod sidecar {
                 super::STACK,
                 card
             )))
-            .respond_with(ResponseTemplate::new(200).set_body_string(detail_json(
-                card,
-                super::T,
-                deleted,
-            )))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body))
             .mount(server)
             .await;
     }
@@ -2849,6 +2874,39 @@ async fn a34_document_evidence_travels_on_the_report() {
             taskboard_domain::entities::Effort::new(900)
         ))
     );
+}
+
+/// S-1b: the Deck 1.19.1 listing shape (no `fileName`, `info.filename`
+/// extension-less, `info.basename` the full stored name) confirms the
+/// anchor through the ranked filename fallback — the same full actor
+/// cycle as S-1, deterministically, without docker (#448).
+#[tokio::test(start_paused = true)]
+async fn a34b_the_1_19_1_listing_shape_confirms_the_anchor() {
+    let server = start_server().await;
+    mount_capabilities(&server, Some("1.19.1")).await;
+    mount_standard_pull(
+        &server,
+        serde_json::json!([sidecar::anchor_card_json(sidecar::CARD, T)]),
+    )
+    .await;
+    sidecar::mount_detail_body(
+        &server,
+        sidecar::CARD,
+        sidecar::detail_json_1_19_1(sidecar::CARD, T),
+    )
+    .await;
+    sidecar::mount_download(&server, sidecar::document_json(BOARD, 1), 200).await;
+
+    let mut actor = spawn(&server, sidecar::repo_with_bound_anchor());
+    let report = nudge_and_report(&mut actor).await;
+    let SyncReport::Completed { app_data, .. } = report else {
+        panic!("expected a Completed report");
+    };
+    let taskboard_domain::AppDataEvidence::Document(document) = app_data else {
+        panic!("expected Document evidence, got {app_data:?}");
+    };
+    assert_eq!(document.board, RemoteBoardId(BOARD));
+    assert_eq!(sidecar::download_hits(&server).await, 1);
 }
 
 /// S-2: no anchor-titled card ⇒ `Absent`, and not a single attachment
