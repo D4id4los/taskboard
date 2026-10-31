@@ -19,6 +19,7 @@ use crate::router::{Mode, UiEffect};
 use crate::test_platform::on_slint_thread;
 use crate::view_state::Flow;
 use crate::{UiHandle, UiSettings};
+use slint::{ComponentHandle as _, Model as _};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
@@ -1051,4 +1052,135 @@ mod buffer_invariants {
             assert!(!adapter.borrow().width_drag_armed());
         });
     }
+}
+
+// -- the unchanged-refresh guard (#463) --------------------------------
+//
+// The pin seam is the adapter's `derive_passes` counter (incremented
+// only where `models::push` is about to run): typed, deterministic,
+// zero timing. One behavior, one test, lowest layer — no journey
+// duplicates these.
+
+fn guard_rig(state: AppState, settings: UiSettings) -> Rig {
+    let state = Arc::new(arc_swap::ArcSwap::from_pointee(state));
+    let (commands_tx, commands_rx) = mpsc::channel(64);
+    let (requests_tx, _requests_rx) = mpsc::channel(16);
+    let (_health_tx, health) =
+        tokio::sync::watch::channel(crate::presentation::DeliveryHealth::default());
+    let handle = mount(
+        state,
+        dummy_receiver(),
+        dummy_receiver(),
+        commands_tx,
+        requests_tx,
+        settings,
+        health,
+    )
+    .expect("mount succeeds on the null platform");
+    Rig {
+        handle,
+        commands_rx,
+    }
+}
+
+/// T1 — the load-bearing pin: an unchanged second refresh executes no
+/// derive+diff pass; a publish derives; an identical-values republish
+/// (a guard miss) costs exactly one wasted pass, never staleness.
+#[test]
+fn the_guard_skips_the_derive_while_the_snapshot_is_unchanged() {
+    on_slint_thread(|| {
+        let rig = guard_rig(AppState::default(), UiSettings::default());
+        // Step 1: mount's first-frame pass derives from the `None` cache.
+        assert_eq!(rig.adapter().borrow().derive_passes, 1);
+        // Step 2: the unchanged second refresh is skipped.
+        rig.handle.refresh();
+        assert_eq!(rig.adapter().borrow().derive_passes, 1);
+        // Step 3: a publish (a new Arc) derives.
+        rig.handle.test_state().store(Arc::new(AppState {
+            last_updated: Some(chrono::Utc::now()),
+            ..AppState::default()
+        }));
+        rig.handle.refresh();
+        assert_eq!(rig.adapter().borrow().derive_passes, 2);
+        // Step 4: unchanged again — skipped.
+        rig.handle.refresh();
+        assert_eq!(rig.adapter().borrow().derive_passes, 2);
+        // Step 5: an identical-values republish is a guard miss — one
+        // wasted pass, never a stale UI (the issue's own contract).
+        rig.handle.test_state().store(Arc::new(AppState::default()));
+        rig.handle.refresh();
+        assert_eq!(rig.adapter().borrow().derive_passes, 3);
+    });
+}
+
+/// T2 — the forced verb bypasses the cache on an unchanged snapshot.
+#[test]
+fn a_forced_refresh_derives_on_an_unchanged_snapshot() {
+    on_slint_thread(|| {
+        let rig = guard_rig(AppState::default(), UiSettings::default());
+        let adapter = rig.adapter();
+        assert_eq!(adapter.borrow().derive_passes, 1);
+        adapter.borrow_mut().refresh_forced(rig.handle.window());
+        assert_eq!(adapter.borrow().derive_passes, 2);
+    });
+}
+
+/// T3 — a view intent derives on an unchanged snapshot through the
+/// production entrance: the flow machine's `RefreshNow` verdict forces
+/// the pass, and the derive actually materializes (`board_create_open`
+/// is set only by `models::push`).
+#[test]
+fn a_view_intent_derives_on_an_unchanged_snapshot() {
+    on_slint_thread(|| {
+        let (state, _fx) = fixture();
+        let rig = guard_rig(state, UiSettings::default());
+        let adapter = rig.adapter();
+        assert_eq!(adapter.borrow().derive_passes, 1);
+        adapter
+            .borrow_mut()
+            .interpret_for_test(rig.handle.window(), UiEffect::BoardCreate);
+        assert_eq!(adapter.borrow().derive_passes, 2);
+        assert!(
+            rig.handle.window().get_board_create_open(),
+            "the derive materialized the create field onto the models"
+        );
+    });
+}
+
+/// T4 — the guarded skip's cheap tail still pushes the settings
+/// liveness: a connector episode flips the row's status enum without a
+/// derive pass.
+#[test]
+fn an_unchanged_refresh_still_pushes_the_settings_liveness() {
+    on_slint_thread(|| {
+        let rig = guard_rig(
+            AppState::default(),
+            UiSettings {
+                connectors: vec![crate::requests::ConnectorInfo {
+                    name: "nextcloud".into(),
+                    server_url: "https://c.example".into(),
+                    username: "alice".into(),
+                }],
+                ..UiSettings::default()
+            },
+        );
+        let row_status = |rig: &Rig| {
+            rig.handle
+                .window()
+                .global::<crate::SettingsModel>()
+                .get_rows()
+                .row_data(0)
+                .expect("the connector row is pushed")
+                .status
+        };
+        assert_eq!(row_status(&rig), crate::SettingsRowStatus::Idle);
+        assert_eq!(rig.adapter().borrow().derive_passes, 1);
+        rig.handle
+            .observe_connector_episode(&taskboard_domain::SystemEvent::ConnectorLost(
+                taskboard_domain::ConnectorId::from("nextcloud"),
+            ));
+        assert_eq!(row_status(&rig), crate::SettingsRowStatus::Down);
+        // The liveness delivery provably did not need the derive.
+        assert_eq!(rig.adapter().borrow().derive_passes, 1);
+    });
 }
