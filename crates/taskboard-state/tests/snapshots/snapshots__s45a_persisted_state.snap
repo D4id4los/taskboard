@@ -1,5 +1,6 @@
 ---
 source: crates/taskboard-state/tests/snapshots.rs
+assertion_line: 180
 expression: "&persisted"
 ---
 boards:
@@ -19,13 +20,21 @@ boards:
 stacks: {}
 tasks: {}
 labels: {}
-outbox: []
+outbox:
+  - op_id: 00000000-0000-0000-0000-000000000002
+    op:
+      FlushBoardAppData: 00000000-0000-0000-0000-000000000001
+    queued_at: "1970-01-01T10:01:00Z"
+  - op_id: 00000000-0000-0000-0000-000000000004
+    op:
+      FlushBoardAppData: 00000000-0000-0000-0000-000000000001
+    queued_at: "1970-01-01T10:02:00Z"
 validators: {}
 sync:
   00000000-0000-0000-0000-000000000001:
     phase: Idle
     last_success: ~
-    pending_ops: 0
+    pending_ops: 2
     counters:
       cycles: 0
       pushes: 0
@@ -69,7 +78,7 @@ habits:
       clock: "1970-01-01T10:02:00Z"
 journal:
   entries:
-    - id: 00000000-0000-0000-0000-000000000002
+    - id: 00000000-0000-0000-0000-000000000003
       parent: ~
       command:
         CreateHabit:
@@ -79,19 +88,21 @@ journal:
             PerDay: 3
       facts:
         NotUndoable: HabitSurface
-      ops: []
+      ops:
+        - 00000000-0000-0000-0000-000000000002
       pushed: false
       board: 00000000-0000-0000-0000-000000000001
       created_at: "1970-01-01T10:01:00Z"
-    - id: 00000000-0000-0000-0000-000000000003
-      parent: 00000000-0000-0000-0000-000000000002
+    - id: 00000000-0000-0000-0000-000000000005
+      parent: 00000000-0000-0000-0000-000000000003
       command:
         LogHabit:
           habit: 00000000-0000-0000-0000-000000000001
       facts:
         NotUndoable: HabitSurface
-      ops: []
+      ops:
+        - 00000000-0000-0000-0000-000000000004
       pushed: false
       board: 00000000-0000-0000-0000-000000000001
       created_at: "1970-01-01T10:02:00Z"
-  head: 00000000-0000-0000-0000-000000000003
+  head: 00000000-0000-0000-0000-000000000005

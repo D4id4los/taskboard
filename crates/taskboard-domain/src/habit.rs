@@ -133,6 +133,16 @@ impl WindowStart {
     pub const fn as_date(self) -> NaiveDate {
         self.0
     }
+
+    /// The decode seam (D-H12): a stored or synced window date decodes
+    /// **as-is**, never floored — flooring here would silently rewrite
+    /// former-kind synced facts. Canonicality is the write path's law
+    /// (command-path keys mint through [`WindowStart::of_period`]);
+    /// decoded non-canonical rows stay analytically inert instead.
+    #[must_use]
+    pub const fn from_stored(date: NaiveDate) -> Self {
+        Self(date)
+    }
 }
 
 /// The habit's per-field LWW write clocks (the §4.1 clock list,

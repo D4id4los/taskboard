@@ -6,7 +6,7 @@ sync:
   00000000-0000-0000-0000-000000000001:
     phase: Idle
     last_success: ~
-    pending_ops: 0
+    pending_ops: 2
     counters:
       cycles: 0
       pushes: 0
@@ -22,8 +22,8 @@ undo:
   can_redo: false
   head_label: Log habit
   recent:
-    - id: 00000000-0000-0000-0000-000000000003
+    - id: 00000000-0000-0000-0000-000000000005
       label: Log habit
-    - id: 00000000-0000-0000-0000-000000000002
+    - id: 00000000-0000-0000-0000-000000000003
       label: Create habit
 last_updated: "1970-01-01T10:02:00Z"
