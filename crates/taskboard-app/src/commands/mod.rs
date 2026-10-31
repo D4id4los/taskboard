@@ -17,6 +17,7 @@ pub mod capture;
 pub mod config;
 pub mod connect;
 pub mod find;
+pub mod habits;
 pub mod labels;
 pub mod logout;
 pub mod output;
@@ -238,6 +239,20 @@ pub enum CommandError {
     #[error("entry selector matches several entries — pass one of {}", candidates.join(" | "))]
     AmbiguousTimeEntry {
         /// The matched entries' full uuids.
+        candidates: Vec<String>,
+    },
+    /// No habit matches the selector (exact uuid | ≥8-char prefix |
+    /// exact live title).
+    #[error("no habit matches {selector:?}")]
+    UnknownHabit {
+        /// The rejected selector, verbatim.
+        selector: String,
+    },
+    /// The habit selector matches several live habits; carries their
+    /// full uuids (deterministic habit-id order).
+    #[error("habit selector matches several habits — pass one of {}", candidates.join(" | "))]
+    AmbiguousHabit {
+        /// The matched habits' full uuids.
         candidates: Vec<String>,
     },
     /// There is no stack to target.
@@ -466,6 +481,8 @@ impl CommandError {
             Self::AmbiguousAdhocAlarm { .. } => "ambiguous-adhoc-alarm",
             Self::UnknownTimeEntry { .. } => "unknown-time-entry",
             Self::AmbiguousTimeEntry { .. } => "ambiguous-time-entry",
+            Self::UnknownHabit { .. } => "unknown-habit",
+            Self::AmbiguousHabit { .. } => "ambiguous-habit",
             Self::NoStacks => "no-stacks",
             Self::AmbiguousBoard { .. } => "ambiguous-board",
             Self::SyncFailed(_) => "sync-failed",
@@ -1138,6 +1155,10 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
             }
             None => unreachable!("clap requires exactly one log mode (--for | --from --to)"),
         },
+        Command::Habits { cmd } => {
+            habits::habits_command(&mut ctx.io, ctx.config_path.clone(), habits::collapse(cmd))
+                .await
+        }
         Command::Export {
             format,
             since,
@@ -1553,6 +1574,7 @@ pub async fn dispatch_line(
             }
             None => unreachable!("clap requires exactly one log mode (--for | --from --to)"),
         },
+        Command::Habits { cmd } => habits::habits_line(app, io, habits::collapse(cmd)).await,
         Command::Export {
             format,
             since,
@@ -2005,6 +2027,10 @@ pub fn route_for_ipc(command: &Command) -> IpcRoute {
         // the read off onto a local boot would report a *different*
         // database's history when a daemon serves the db (D-TC1).
         | Command::Track { .. }
+        // The habit family joins the mutation lane: a one-shot local
+        // boot would write a *different* database's data when a daemon
+        // serves the db (the D-TC1 argument verbatim).
+        | Command::Habits { .. }
         | Command::Export { .. }
         | Command::Find { .. }
         // Capture rides the mutation lane (boot-local over the core,
@@ -2264,6 +2290,11 @@ mod ipc_routing_tests {
             Command::Track {
                 cmd: crate::cli::TrackCmd::Start {
                     task: "t".to_owned(),
+                },
+            },
+            Command::Habits {
+                cmd: crate::cli::HabitsCmd::Log {
+                    habit: "h".to_owned(),
                 },
             },
             Command::Export {

@@ -979,3 +979,95 @@ pub struct TrackListView {
     /// The entry rows.
     pub entries: Vec<TrackEntryRow>,
 }
+
+// ---- The `habits` family (DR-6/6) -------------------------------------------
+
+/// One habit tracker row (the CLI list columns and the today-view row
+/// source agree on the shape): progress and streak are state truth,
+/// the chip is presentation-only, `met` restyles but never disables.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct HabitRow {
+    /// The habit's local uuid.
+    pub habit_id: String,
+    /// Display title.
+    pub title: String,
+    /// The quota phrase (`3/day`).
+    pub target_phrase: String,
+    /// The current window's stored count.
+    pub count: u32,
+    /// The quota (≥ 1).
+    pub quota: u32,
+    /// The streak (the conversion seam unioned in).
+    pub streak: u32,
+    /// The display chip; never an ordering input.
+    pub chip: Option<chrono::NaiveTime>,
+    /// The restyle flag (`count >= quota`); the +1 stays enabled.
+    pub met: bool,
+}
+
+/// The `habits add` receipt: the row read back from the published
+/// snapshot (`None` only on an outcome-contract violation, which the
+/// seam refuses before constructing the receipt — the `Option` keeps
+/// the type total for the renderer).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct HabitAddReceipt {
+    /// The minted habit row.
+    pub habit: Option<HabitRow>,
+}
+
+/// The `habits list` view: rows in stored manual `(order, id)` order.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct HabitListView {
+    /// The rows.
+    pub habits: Vec<HabitRow>,
+}
+
+/// The `habits log` receipt: the window the increment landed in and
+/// the *stored* post-increment count (a surplus repair is visible),
+/// plus the outcome's reported value for the contract pin.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct HabitLogReceipt {
+    /// The habit's uuid.
+    pub habit_id: String,
+    /// The window's period-start date.
+    pub window: chrono::NaiveDate,
+    /// The stored row count after the increment.
+    pub count: u32,
+    /// The outcome's reported count (equals `count` by construction).
+    pub reported: u32,
+}
+
+/// The `habits adjust` receipt (the same shape as the log receipt).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct HabitAdjustReceipt {
+    /// The habit's uuid.
+    pub habit_id: String,
+    /// The corrected window's period-start date.
+    pub window: chrono::NaiveDate,
+    /// The stored row count after the correction.
+    pub count: u32,
+    /// The requested count.
+    pub reported: u32,
+}
+
+/// The `habits update` receipt. `changed: false` is the zero-flag (or
+/// unchanged-mask) no-op carrying the current row.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct HabitUpdateReceipt {
+    /// `false` = the mask named only unchanged values.
+    pub changed: bool,
+    /// The updated row.
+    pub habit: Option<HabitRow>,
+}
+
+/// The `habits rm` receipt: the tombstone plus the surviving log-row
+/// count — history outlives the tracker, structurally.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct HabitDeleteReceipt {
+    /// The addressed habit's uuid.
+    pub habit_id: String,
+    /// `false` = the repeat no-op (already tombstoned).
+    pub deleted: bool,
+    /// The log rows that remain queryable.
+    pub log_rows: usize,
+}
