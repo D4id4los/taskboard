@@ -11,6 +11,9 @@
 #      merged into origin/main and that have no uncommitted changes — a
 #      worktree whose branch carries any commit absent from origin/main
 #      (or that sits on a primary branch, or is locked) is never touched;
+#      a branch whose commits exist nowhere but this machine (no
+#      origin/<branch> ref AND HEAD not contained in origin/main) is
+#      kept as never pushed;
 #   2. deletes target/llvm-cov-target from surviving worktrees (the
 #      coverage tree is spent once lcov.info exists; separate from the
 #      incremental cache, so nothing else is invalidated) — skipped when
@@ -25,6 +28,20 @@
 # rm -rf by pattern match. Every failure (fetch, enumeration, per-entry
 # git calls, df) is contained: the ONLY nonzero exit is the final floor
 # test (free space below floor, or unmeasurable, which counts as below).
+#
+# The never-pushed spare errs toward KEEP by design: a deliberately
+# abandoned scratch branch — never pushed, with or without unique
+# commits — is pruned by hand (`git worktree remove --force`, then
+# `git branch -D`), not by the doctor; the doctor is not its tool.
+#
+# Known limitation: a worktree that is never pushed, has zero commits,
+# a clean tree, and sits strictly below the *fetched* origin/main tip
+# is indistinguishable from a landed-PR leftover whose remote ref was
+# pruned, and is removed. Mitigations: the tip guard covers the
+# same-tip window; uncommitted or untracked files make removal refused
+# (KEEP); commit as the first action after creating a worktree. A
+# scratch worktree in that state is pruned by hand (see the
+# never-pushed stance above).
 #
 # Env overrides:
 #   WORKTREE_DOCTOR_ROOT       anchor checkout (default: this repo root)
@@ -94,7 +111,11 @@ for wt in "${WORKTREES[@]}"; do
     continue
   fi
   if ! git -C "$ROOT" merge-base --is-ancestor "$head_commit" "$origin_main" 2>/dev/null; then
-    echo "KEEP   (in flight):           $wt"
+    if git -C "$ROOT" show-ref --verify --quiet "refs/remotes/origin/$branch" 2>/dev/null; then
+      echo "KEEP   (in flight):           $wt"
+    else
+      echo "KEEP   (never pushed — local-only branch): $wt"
+    fi
     continue
   fi
   # Re-check liveness immediately before removal: status was sampled
