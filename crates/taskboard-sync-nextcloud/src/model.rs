@@ -718,6 +718,44 @@ mod tests {
         let bare: Attachment =
             serde_json::from_str(r#"{"id": 1, "extendedData": {"size": 5}}"#).unwrap();
         assert_eq!(bare.extended_data.as_ref().unwrap().file_name, "");
+
+        // 1.19.1's listing: no `fileName`, `info` carrying both
+        // `basename` (full stored name) and `filename` (no extension) —
+        // the basename rank wins (#448).
+        let modern_listing: Attachment = serde_json::from_str(
+            r#"{"id": 1, "extendedData": {"filesize": 278,
+                 "info": {"dirname": ".", "basename": "taskboard-appdata.json",
+                          "extension": "json", "filename": "taskboard-appdata"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            modern_listing.extended_data.as_ref().unwrap().file_name,
+            "taskboard-appdata.json"
+        );
+
+        // A present `fileName` is never overwritten by `info.basename` —
+        // the fallback only fires on an empty `fileName`.
+        let both_present: Attachment = serde_json::from_str(
+            r#"{"id": 1, "extendedData": {"fileName": "actual.json",
+                 "info": {"basename": "other.json", "filename": "other"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            both_present.extended_data.as_ref().unwrap().file_name,
+            "actual.json"
+        );
+
+        // An empty `basename` falls through to `filename` — the recorded
+        // 1.17.5 echo-with-info shape keeps its name verbatim.
+        let empty_basename: Attachment = serde_json::from_str(
+            r#"{"id": 1, "extendedData":
+                {"info": {"basename": "", "filename": "sidecar_v1.json"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            empty_basename.extended_data.as_ref().unwrap().file_name,
+            "sidecar_v1.json"
+        );
     }
 
     #[test]
