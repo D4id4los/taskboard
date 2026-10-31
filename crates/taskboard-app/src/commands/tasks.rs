@@ -17,7 +17,8 @@ use taskboard_domain::{
 
 use crate::commands::CommandError;
 use crate::commands::output::{
-    DueContext, MutationReceipt, StackGroup, SyncStatusView, TaskList, mutation_receipt, task_row,
+    DueContext, JournalReceipt, JournalVerb, MutationReceipt, StackGroup, SyncStatusView, TaskList,
+    mutation_receipt, task_row,
 };
 use crate::config::AppConfig;
 use crate::secrets::CredentialStore;
@@ -725,4 +726,97 @@ pub fn render_text_receipt(receipt: &MutationReceipt) -> String {
         let _ = write!(line, " [{}]", receipt.labels.join(", "));
     }
     line
+}
+
+/// The human-readable undo/redo receipt: the label when the published
+/// window still carries it, the bare entry uuid otherwise (text is UX,
+/// never asserted).
+#[must_use]
+pub fn render_text_undo(receipt: &JournalReceipt) -> String {
+    let verb = match receipt.verb {
+        JournalVerb::Undo => "undone",
+        JournalVerb::Redo => "redone",
+    };
+    match &receipt.label {
+        Some(label) => format!("{verb} \"{label}\" ({})", receipt.entry),
+        None => format!("{verb} {}", receipt.entry),
+    }
+}
+
+/// Undoes the last change (the journal line head, ADR 0019); the
+/// engine's typed refusals (`NothingToUndo`, `TargetNotUndoable`, …)
+/// pass through untouched.
+///
+/// # Errors
+///
+/// [`CommandError`] — typed, see the variant docs.
+pub async fn undo(
+    config: AppConfig,
+    store: Arc<dyn CredentialStore>,
+) -> Result<JournalReceipt, CommandError> {
+    with_core(config, store, async |app| undo_on(app).await).await
+}
+
+/// Redoes the last undone change (the head's newest child, ADR 0019).
+///
+/// # Errors
+///
+/// [`CommandError`] — typed, see the variant docs.
+pub async fn redo(
+    config: AppConfig,
+    store: Arc<dyn CredentialStore>,
+) -> Result<JournalReceipt, CommandError> {
+    with_core(config, store, async |app| redo_on(app).await).await
+}
+
+/// The receipt for a journal verb: the outcome's entry id plus the
+/// best-effort label from the published `UndoView.recent` window (the
+/// just-touched entry is the most recently appended one, so it is
+/// in-window in every reachable v1 case — the `Option` keeps the type
+/// total without coupling to window arithmetic).
+fn journal_receipt(
+    app: &crate::App,
+    verb: JournalVerb,
+    entry: taskboard_domain::JournalId,
+) -> JournalReceipt {
+    let state = app.engine.shared_state().load_full();
+    let label = state
+        .undo
+        .recent
+        .iter()
+        .find(|l| l.id == entry)
+        .map(|l| l.label.clone());
+    JournalReceipt {
+        verb,
+        entry: entry.as_uuid().to_string(),
+        label,
+    }
+}
+
+/// The `tasks undo` step on a booted core (the REPL/session seam).
+///
+/// # Errors
+///
+/// [`CommandError`] — typed, see the variant docs.
+pub(crate) async fn undo_on(app: &crate::App) -> Result<JournalReceipt, CommandError> {
+    match app.engine.execute(StateCommand::Undo).await? {
+        taskboard_domain::CommandOutcome::Undone { entry } => {
+            Ok(journal_receipt(app, JournalVerb::Undo, entry))
+        }
+        _ => unreachable!("Undo plans into Undone and typed refusals only"),
+    }
+}
+
+/// The `tasks redo` step on a booted core (the REPL/session seam).
+///
+/// # Errors
+///
+/// [`CommandError`] — typed, see the variant docs.
+pub(crate) async fn redo_on(app: &crate::App) -> Result<JournalReceipt, CommandError> {
+    match app.engine.execute(StateCommand::Redo).await? {
+        taskboard_domain::CommandOutcome::Redone { entry } => {
+            Ok(journal_receipt(app, JournalVerb::Redo, entry))
+        }
+        _ => unreachable!("Redo plans into Redone and typed refusals only"),
+    }
 }

@@ -1366,6 +1366,13 @@ pub enum TasksCmd {
     /// (`--off`). Exactly one mode per line; the anchor is the task's
     /// scheduled/duedate local date, else today.
     Repeat(RepeatArgs),
+    /// Undo the last change (the journal line head, ADR 0019). Refuses
+    /// typed when the line is empty, the head is not undoable, or a
+    /// later write diverged. Zero flags: the line has no selectors.
+    Undo,
+    /// Redo the last undone change (the head's newest child, ADR 0019).
+    /// Zero flags: the line has no selectors.
+    Redo,
 }
 
 #[cfg(test)]

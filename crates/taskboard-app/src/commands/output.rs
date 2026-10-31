@@ -447,6 +447,31 @@ pub struct TaskDeleteReceipt {
     pub title: String,
 }
 
+/// Which journal verb a [`JournalReceipt`] answers for.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum JournalVerb {
+    /// `tasks undo`.
+    Undo,
+    /// `tasks redo`.
+    Redo,
+}
+
+/// The `tasks undo`/`tasks redo` receipt: the journal entry the verb
+/// landed on (the durable receipt, ADR 0019 §7) plus the entry's
+/// display label when the published `UndoView` window still carries it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct JournalReceipt {
+    /// Which verb produced this receipt.
+    pub verb: JournalVerb,
+    /// The journal entry's uuid (the durable id).
+    pub entry: String,
+    /// The entry's label from the published `UndoView.recent` window;
+    /// `None` = outside the window (the bare uuid is the honest
+    /// fallback, not an error).
+    pub label: Option<String>,
+}
+
 /// One row of `tasks remind --list`. `before` is the canonical text
 /// form (`"10m"`, `"0s"`) — the *config* string stays raw, the
 /// projection is canonical.

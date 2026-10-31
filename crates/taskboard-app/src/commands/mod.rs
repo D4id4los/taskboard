@@ -533,6 +533,32 @@ impl CommandError {
             }
             Self::UnknownBoard(id) => Some(id.to_string()),
             Self::UnknownConnector { name } => Some(name.clone()),
+            Self::Engine(err)
+                if matches!(
+                    &**err,
+                    taskboard_state::ExecuteError::Rejected(
+                        taskboard_domain::CommandError::TargetNotUndoable(_)
+                            | taskboard_domain::CommandError::TargetNoLongerInvertible { .. }
+                            | taskboard_domain::CommandError::UndoTargetHasDependents { .. },
+                    )
+                ) =>
+            {
+                let taskboard_state::ExecuteError::Rejected(rejected) = &**err else {
+                    unreachable!("guarded above")
+                };
+                match rejected {
+                    taskboard_domain::CommandError::TargetNotUndoable(reason) => {
+                        Some(not_undoable_reason_kind(*reason).to_owned())
+                    }
+                    taskboard_domain::CommandError::TargetNoLongerInvertible { entity, field } => {
+                        Some(format!("{} {}", journal_entity_id(*entity), undo_field_kind(*field)))
+                    }
+                    taskboard_domain::CommandError::UndoTargetHasDependents { stack } => {
+                        Some(stack.as_uuid().to_string())
+                    }
+                    _ => unreachable!("guarded above"),
+                }
+            }
             Self::BoardAlreadyBound { board, current } => {
                 Some(format!("{board} (bound remote {current})"))
             }
@@ -594,6 +620,54 @@ fn domain_error_kind(err: &taskboard_domain::CommandError) -> &'static str {
         D::TargetNotUndoable(_) => "target-not-undoable",
         D::TargetNoLongerInvertible { .. } => "target-not-invertible",
         D::UndoTargetHasDependents { .. } => "undo-target-has-dependents",
+    }
+}
+
+/// The kebab discriminators of the undo refusals' payload enums (the
+/// `--json` detail field names structural facts a script can branch
+/// on — ids and enum kinds, never prose; ADR 0019's typed surface).
+fn not_undoable_reason_kind(reason: taskboard_domain::NotUndoableReason) -> &'static str {
+    use taskboard_domain::NotUndoableReason as R;
+    match reason {
+        R::RestoreClass => "restore-class",
+        R::BoardCeremony => "board-ceremony",
+        R::ReminderSurface => "reminder-surface",
+        R::TrackingSurface => "tracking-surface",
+        R::HabitSurface => "habit-surface",
+    }
+}
+
+fn undo_field_kind(field: taskboard_domain::UndoField) -> &'static str {
+    use taskboard_domain::UndoField as F;
+    match field {
+        F::Title => "title",
+        F::Description => "description",
+        F::Duedate => "duedate",
+        F::Scheduled => "scheduled",
+        F::Done => "done",
+        F::Position => "position",
+        F::Effort => "effort",
+        F::Importance => "importance",
+        F::Urgency => "urgency",
+        F::Recur => "recur",
+        F::Archived => "archived",
+        F::Deleted => "deleted",
+        F::Order => "order",
+        F::Color => "color",
+        F::Membership => "membership",
+        F::UpdatedAt => "updated-at",
+    }
+}
+
+fn journal_entity_id(entity: taskboard_domain::JournalEntity) -> String {
+    use taskboard_domain::JournalEntity as E;
+    match entity {
+        E::Board(id) => id.as_uuid().to_string(),
+        E::Stack(id) => id.as_uuid().to_string(),
+        E::Task(id) => id.as_uuid().to_string(),
+        E::Label(id) => id.as_uuid().to_string(),
+        E::Habit(id) => id.as_uuid().to_string(),
+        E::TimeEntry(id) => id.as_uuid().to_string(),
     }
 }
 
@@ -1128,6 +1202,24 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
             }
             None => unreachable!("the outer match selected the Repeat arm"),
         },
+        Command::Tasks {
+            cmd: TasksCmd::Undo,
+        } => run_core(
+            &mut ctx.io,
+            ctx.config_path.clone(),
+            tasks::render_text_undo,
+            move |config, store| async move { tasks::undo(config, store).await },
+        )
+        .await,
+        Command::Tasks {
+            cmd: TasksCmd::Redo,
+        } => run_core(
+            &mut ctx.io,
+            ctx.config_path.clone(),
+            tasks::render_text_undo,
+            move |config, store| async move { tasks::redo(config, store).await },
+        )
+        .await,
         Command::Find {
             query,
             kind,
@@ -1905,6 +1997,8 @@ async fn tasks_line(
             Some(invocation) => repeat::repeat_line(app, io, invocation).await,
             None => unreachable!("the outer match selected the Repeat arm"),
         },
+        TasksCmd::Undo => emit_result(io, tasks::undo_on(app).await, tasks::render_text_undo),
+        TasksCmd::Redo => emit_result(io, tasks::redo_on(app).await, tasks::render_text_undo),
         TasksCmd::Label { task, label } => emit_result(
             io,
             tasks::label_on(app, &task, &label, |t, l| StateCommand::AssignLabel {
@@ -2264,6 +2358,16 @@ mod ipc_routing_tests {
                     title: "t".to_owned(),
                     stack: None,
                 },
+            },
+            // The undo verbs inherit the `Command::Tasks` wildcard's
+            // `IpcOrLocal` lane (ADR 0012, structural); the pins make
+            // the inheritance guarded — a future split of the wildcard
+            // arm cannot silently drop them off the mutation lane.
+            Command::Tasks {
+                cmd: TasksCmd::Undo,
+            },
+            Command::Tasks {
+                cmd: TasksCmd::Redo,
             },
             Command::Tasks {
                 cmd: TasksCmd::Repeat(crate::cli::RepeatArgs {
