@@ -169,13 +169,19 @@ pub(crate) fn has_flush_work(
     native_scheduled: bool,
 ) -> bool {
     if group.is_some() {
+        tracing::debug!(
+            board = %board.as_uuid(),
+            verdict = true,
+            clause = "group queued",
+            "flush work gate"
+        );
         return true;
     }
     let rebuild_trigger = matches!(
         evidence,
         AppDataEvidence::Absent | AppDataEvidence::Unreadable(AppDataUnreadable::ForeignBoard)
     );
-    rebuild_trigger
+    let verdict = rebuild_trigger
         && board_has_local_app_data(
             tables,
             rules,
@@ -185,7 +191,14 @@ pub(crate) fn has_flush_work(
             now,
             board,
             native_scheduled,
-        )
+        );
+    let clause = if rebuild_trigger {
+        "rebuild trigger"
+    } else {
+        "idle"
+    };
+    tracing::debug!(board = %board.as_uuid(), verdict, clause, "flush work gate");
+    verdict
 }
 
 /// Runs the flush (D11). Call sites: the sync actor's cycle, after
@@ -208,7 +221,15 @@ pub(crate) async fn run_flush(ctx: FlushCtx<'_>) -> FlushVerdict {
                 unknown: BTreeMap::new(),
             }
         }
-        AppDataEvidence::Unreadable(_) => return FlushVerdict::Idle,
+        AppDataEvidence::Unreadable(_) => {
+            tracing::debug!(
+                board = ctx.target.get(),
+                verdict = "Idle",
+                clause = "unreadable evidence fence",
+                "flush verdict"
+            );
+            return FlushVerdict::Idle;
+        }
     };
 
     // ---- overlay assembly -------------------------------------------
@@ -376,8 +397,10 @@ pub(crate) async fn run_flush(ctx: FlushCtx<'_>) -> FlushVerdict {
 
     // ---- the upload ladder (per anchor_action) ------------------------
     let Some(ladder) = ladder_for(ctx.action) else {
+        tracing::debug!(board = ctx.target.get(), verdict = "Idle", clause = "no ladder for action", action = ?ctx.action, "flush verdict");
         return FlushVerdict::Idle;
     };
+    tracing::debug!(board = ctx.target.get(), action = ?ctx.action, ?ladder, "flush ladder resolved");
     let upload_result = match ladder {
         Ladder::Use(location) => upload_onto(&ctx, &location, &upload, false).await,
         Ladder::RestoreThenReplace(location) => {
@@ -423,7 +446,7 @@ pub(crate) async fn run_flush(ctx: FlushCtx<'_>) -> FlushVerdict {
             _ => None,
         })
         .collect();
-    match upload_result {
+    let verdict = match upload_result {
         Ok(Some(stamp)) => FlushVerdict::Applied {
             outcomes: resolved_members
                 .iter()
@@ -475,7 +498,9 @@ pub(crate) async fn run_flush(ctx: FlushCtx<'_>) -> FlushVerdict {
                 }
             }
         }
-    }
+    };
+    tracing::debug!(board = ctx.target.get(), ?verdict, "flush verdict");
+    verdict
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -487,6 +512,7 @@ struct RemoteCardLocation {
 
 /// The upload ladder (per `anchor_action`): which wire steps land the
 /// assembled document.
+#[derive(Debug, Clone, Copy)]
 enum Ladder {
     /// Replace the live carrier's content.
     Use(RemoteCardLocation),
@@ -568,6 +594,7 @@ async fn upload_onto(
     upload: &AttachmentUpload,
     fresh_card: bool,
 ) -> Result<Option<AttachmentStamp>, DeckError> {
+    let step = if fresh_card { "upload" } else { "replace" };
     let attachment = if fresh_card {
         ctx.client
             .upload_attachment(
@@ -586,8 +613,19 @@ async fn upload_onto(
                 upload,
             )
             .await
-    }?;
-    Ok(attachment_stamp(&attachment))
+    }
+    .map_err(|err| {
+        tracing::debug!(board = ctx.target.get(), step, %err, "flush ladder step failed");
+        err
+    })?;
+    let stamp = attachment_stamp(&attachment);
+    tracing::debug!(
+        board = ctx.target.get(),
+        step,
+        stamped = stamp.is_some(),
+        "flush ladder step landed"
+    );
+    Ok(stamp)
 }
 
 /// The Create ladder: `creation_target` (the first live stack at last
@@ -621,12 +659,33 @@ async fn upload_with_create(
                 kind: None,
             },
         )
-        .await?;
+        .await
+        .map_err(|err| {
+            tracing::debug!(board = ctx.target.get(), step = "create_card", %err, "flush ladder step failed");
+            err
+        })?;
+    tracing::debug!(
+        board = ctx.target.get(),
+        card = created.id,
+        step = "create_card",
+        "flush ladder step landed"
+    );
     let attachment = ctx
         .client
         .upload_attachment(ctx.target.get(), stack.get(), created.id, upload)
-        .await?;
-    Ok(attachment_stamp(&attachment))
+        .await
+        .map_err(|err| {
+            tracing::debug!(board = ctx.target.get(), step = "upload", %err, "flush ladder step failed");
+            err
+        })?;
+    let stamp = attachment_stamp(&attachment);
+    tracing::debug!(
+        board = ctx.target.get(),
+        step = "upload",
+        stamped = stamp.is_some(),
+        "flush ladder step landed"
+    );
+    Ok(stamp)
 }
 
 fn attachment_stamp(attachment: &crate::model::Attachment) -> Option<AttachmentStamp> {
