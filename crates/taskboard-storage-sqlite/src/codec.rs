@@ -161,6 +161,7 @@ pub fn op_kind_to_text(op: &LocalOp) -> &'static str {
         LocalOp::UnassignLabel(_, _) => "unassign_label",
         LocalOp::UpdateBoard(_) => "update_board",
         LocalOp::UpdateAppData(_) => "update_app_data",
+        LocalOp::FlushBoardAppData(_) => "flush_board_app_data",
         LocalOp::DeleteBoard(_) => "delete_board",
         LocalOp::DeleteRemoteCard { .. } => "delete_remote_card",
         LocalOp::DeleteRemoteStack { .. } => "delete_remote_stack",
@@ -215,22 +216,19 @@ pub(crate) fn op_to_columns(op: &LocalOp) -> OpColumns {
             label_id: Some(label),
             board_id: None,
         },
-        LocalOp::UpdateBoard(board) | LocalOp::DeleteBoard(board) => OpColumns {
+        // Board ops, ref-deletes, and the task-less flush trigger
+        // attribute through their local board; the ref-deletes' remote
+        // ref itself rides `op_payload` (no local-id column can hold it).
+        LocalOp::UpdateBoard(board)
+        | LocalOp::DeleteBoard(board)
+        | LocalOp::DeleteRemoteCard { board, .. }
+        | LocalOp::DeleteRemoteStack { board, .. }
+        | LocalOp::FlushBoardAppData(board) => OpColumns {
             task_id: None,
             stack_id: None,
             label_id: None,
             board_id: Some(board),
         },
-        // Ref-deletes attribute through their local board; the remote
-        // ref itself rides `op_payload` (no local-id column can hold it).
-        LocalOp::DeleteRemoteCard { board, .. } | LocalOp::DeleteRemoteStack { board, .. } => {
-            OpColumns {
-                task_id: None,
-                stack_id: None,
-                label_id: None,
-                board_id: Some(board),
-            }
-        }
     }
 }
 
@@ -289,6 +287,7 @@ pub fn op_from_columns(
         )),
         "update_board" => Ok(LocalOp::UpdateBoard(parse_id::<BoardId>(board_id)?)),
         "update_app_data" => Ok(LocalOp::UpdateAppData(parse_id(task_id)?)),
+        "flush_board_app_data" => Ok(LocalOp::FlushBoardAppData(parse_id::<BoardId>(board_id)?)),
         "delete_board" => Ok(LocalOp::DeleteBoard(parse_id::<BoardId>(board_id)?)),
         // Ref-deletes (#150): the local board stays a column, the remote
         // ref decodes strictly from the payload (missing or undecodable
@@ -553,6 +552,7 @@ mod tests {
             LocalOp::UpdateBoard(taskboard_domain::ids::BoardId::from(id(9))),
             LocalOp::DeleteBoard(taskboard_domain::ids::BoardId::from(id(9))),
             LocalOp::UpdateAppData(taskboard_domain::ids::TaskId::from(id(3))),
+            LocalOp::FlushBoardAppData(taskboard_domain::ids::BoardId::from(id(9))),
         ];
         for op in ops {
             let cols = op_to_columns(&op);

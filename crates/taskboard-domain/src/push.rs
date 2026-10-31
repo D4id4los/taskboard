@@ -413,6 +413,11 @@ pub fn plan_pushes(outbox: &[PendingOp], entities: EntityTables<'_>) -> Vec<Push
                     document_ops.push((board, idx, entry));
                 }
             }
+            // The task-less flush trigger (D-H9): its board rides the
+            // op — no entity-graph resolution can strand it.
+            LocalOp::FlushBoardAppData(board) => {
+                document_ops.push((board, idx, entry));
+            }
         }
     }
 
@@ -1199,6 +1204,38 @@ mod tests {
         );
         assert_eq!(groups[0].primary, OpId(uuid(101)));
         assert_eq!(groups[0].subsumed, vec![OpId(uuid(100))]);
+    }
+
+    #[test]
+    fn habit_flush_triggers_coalesce_with_app_data_ops_into_one_document_group() {
+        let board = crate::ids::BoardId::from(uuid(900)); // stack_row's board
+        let stack = stack_id(2);
+        let task = task_id(3);
+        let stacks = BTreeMap::from([(stack, stack_row(2))]);
+        let tasks = BTreeMap::from([(task, bound_task_fixture(3, stack))]);
+        let t = tables(&tasks, &stacks, &EMPTY_LABELS);
+        let ops = vec![
+            op(10, LocalOp::FlushBoardAppData(board)),
+            op(11, LocalOp::UpdateAppData(task)),
+            op(12, LocalOp::FlushBoardAppData(board)),
+            op(13, LocalOp::UpdateAppData(task)),
+        ];
+        let groups = plan_pushes(&ops, t);
+        let doc_groups: Vec<&PushGroup> = groups
+            .iter()
+            .filter(|g| matches!(g.target, PushTarget::Document(_)))
+            .collect();
+        assert_eq!(doc_groups.len(), 1, "one board, ONE flush group");
+        // The partition property: every op id appears exactly once.
+        let mut seen: Vec<Uuid> = vec![doc_groups[0].primary.0];
+        seen.extend(doc_groups[0].subsumed.iter().map(|o| o.0));
+        seen.sort();
+        let mut expected: Vec<Uuid> = ops.iter().map(|o| o.op_id.0).collect();
+        expected.sort();
+        assert_eq!(seen, expected, "every op id exactly once, none lost");
+        // The document group still ranks strictly last.
+        let last = groups.last().unwrap();
+        assert!(matches!(last.target, PushTarget::Document(_)));
     }
 
     #[test]

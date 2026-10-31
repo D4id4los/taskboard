@@ -159,7 +159,9 @@ fn pending_task_intents(
             | LocalOp::DeleteBoard(_)
             // Ref-deletes target no local task — no intent to guard.
             | LocalOp::DeleteRemoteCard { .. }
-            | LocalOp::DeleteRemoteStack { .. } => continue,
+            | LocalOp::DeleteRemoteStack { .. }
+            // The flush trigger is board-scoped likewise.
+            | LocalOp::FlushBoardAppData(_) => continue,
             // Filtered by the guard arm above; the compiler cannot see it.
             LocalOp::UpdateAppData(_) => unreachable!("handled above"),
         });
@@ -1716,6 +1718,7 @@ fn apply_push_outcomes(
                     | LocalOp::UnassignLabel(..)
                     | LocalOp::UpdateBoard(_)
                     | LocalOp::UpdateAppData(_)
+                    | LocalOp::FlushBoardAppData(_)
                     | LocalOp::DeleteBoard(_) => {}
                 }
                 match echo {
@@ -1892,7 +1895,7 @@ fn apply_push_outcomes(
                 // even then, a missing document group must never tombstone
                 // its task. Chunk 4's document-group completion owns the
                 // real semantics; this arm is match totality only.
-                LocalOp::UpdateAppData(_) => {
+                LocalOp::UpdateAppData(_) | LocalOp::FlushBoardAppData(_) => {
                     op_results.insert(outcome.op, true);
                 }
             },
