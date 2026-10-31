@@ -169,6 +169,13 @@ pub(crate) struct Adapter {
     /// next `task.track-start` dispatch, then cleared (one-shot, the
     /// timer-target precedent).
     track_target: Option<taskboard_domain::TaskId>,
+    /// The habits row's habit (DR-6/6, D-P13): consumed by the next
+    /// `habit.log` dispatch, then cleared (one-shot, the timer-target
+    /// precedent).
+    habit_target: Option<taskboard_domain::HabitId>,
+    /// The reorder's resolved (habit, order) (DR-6/6): consumed by the
+    /// next `habit.move` dispatch, then cleared.
+    habit_move: Option<(taskboard_domain::HabitId, i64)>,
     /// The date editor's live state (r2 D25/R-d, round-3 D8): the
     /// typed buffer, its echo, and the picker cursor/month/time —
     /// adapter-owned so a refresh push can never reset them. A commit
@@ -456,6 +463,8 @@ impl Adapter {
         ctx.timer_draft = self.timer_draft.take();
         ctx.timer_target = self.timer_target.take();
         ctx.track_target = self.track_target.take();
+        ctx.habit_target = self.habit_target.take();
+        ctx.habit_move = self.habit_move.take();
         // The today window rides every dispatch (chunk 10 D4): state-
         // derived from the held pair, never consumed.
         ctx.day_window = Some(self.day_ctx().window);
@@ -2949,6 +2958,8 @@ pub(crate) fn install(
         timer_draft: None,
         timer_target: None,
         track_target: None,
+        habit_target: None,
+        habit_move: None,
         walk_reentry: Rc::clone(&walk_flag),
         tables: IdTables::default(),
         models: crate::models::PushModels::default(),
@@ -3140,7 +3151,74 @@ fn install_view_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     install_notification_seams(window, adapter);
     install_timer_seams(window, adapter);
     install_tracking_seams(window, adapter);
+    install_habit_seams(window, adapter);
     install_settings_seams(window, adapter);
+}
+
+/// The habits section's seams (DR-6/6, D-P13): the +1 resolves the
+/// `IdTables.habits` index (stale index → no-op, the notification-row
+/// guard shape) and routes `habit.log`; the reorder resolves the drop
+/// slot's free interval over the same row source the section renders
+/// (what you see is what reorders) and routes `habit.move` with the
+/// floor-midpoint order — the UI computes midpoints, the planner
+/// stamps.
+fn install_habit_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
+    let plus = Rc::clone(adapter);
+    let plus_weak = window.as_weak();
+    window.on_habits_plus_clicked(move |index| {
+        let Some(window) = plus_weak.upgrade() else {
+            return;
+        };
+        let mut a = plus.borrow_mut();
+        let Some(habit) = a
+            .tables
+            .habits
+            .get(usize::try_from(index).unwrap_or(usize::MAX))
+            .copied()
+        else {
+            return; // a stale index degrades to a no-op
+        };
+        a.habit_target = Some(habit);
+        a.route(&window, ActionId::HabitLog);
+    });
+
+    let reorder = Rc::clone(adapter);
+    let reorder_weak = window.as_weak();
+    window.on_habits_reorder_asked(move |row, slot| {
+        let Some(window) = reorder_weak.upgrade() else {
+            return;
+        };
+        let mut a = reorder.borrow_mut();
+        let Some(&habit) = a
+            .tables
+            .habits
+            .get(usize::try_from(row).unwrap_or(usize::MAX))
+        else {
+            return; // a stale index degrades to a no-op
+        };
+        let Some(habit_row) = a.state.load().habits.habits.get(&habit).cloned() else {
+            return;
+        };
+        // The same row source the section renders: the board's live
+        // habits in stored `(order, id)` order; the drop slot's free
+        // interval brackets it.
+        let board = habit_row.board;
+        let mut orders: Vec<i64> = a
+            .state
+            .load()
+            .habits
+            .habits
+            .values()
+            .filter(|h| h.is_live() && h.board == board)
+            .map(|h| h.order)
+            .collect();
+        orders.sort_unstable();
+        let slot = usize::try_from(slot.max(0)).unwrap_or(usize::MAX);
+        let prev = slot.checked_sub(1).and_then(|i| orders.get(i).copied());
+        let next = orders.get(slot).copied();
+        a.habit_move = Some((habit, crate::presentation::habit_drop_order(prev, next)));
+        a.route(&window, ActionId::HabitMove);
+    });
 }
 
 /// The column resize drag seams (round-1 D17): press captures the

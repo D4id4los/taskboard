@@ -3028,3 +3028,247 @@ mod recur_badge_tests {
         );
     }
 }
+
+// ---- The habits section (DR-6/6, §4.6) --------------------------------------
+
+/// One today-view tracker row (the row source the section model and
+/// the id table build from): the same shape the CLI's list projection
+/// speaks — count/quota/streak derive from the domain functions, the
+/// chip is presentation-only, `met` restyles but never disables.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HabitRow {
+    /// The habit's id (the id table's entry).
+    pub habit: taskboard_domain::HabitId,
+    /// Display title.
+    pub title: String,
+    /// The quota phrase (`3/day`).
+    pub target_phrase: String,
+    /// The current window's stored count.
+    pub count: u32,
+    /// The quota (≥ 1).
+    pub quota: u32,
+    /// The streak (the conversion seam unioned in).
+    pub streak: u32,
+    /// The display chip; in no ordering path anywhere (D-C13).
+    pub chip: Option<chrono::NaiveTime>,
+    /// The restyle flag.
+    pub met: bool,
+}
+
+/// The today view's habit rows (pure): the active board's **live**
+/// habits in stored manual `(order, id)` order (D-C13 — the negative
+/// `anchor_time` property extends to this layer), the count read from
+/// the current window's row, the streak the domain walk unioned
+/// through the conversion seam.
+#[must_use]
+pub fn habit_rows(
+    state: &taskboard_domain::AppState,
+    board: taskboard_domain::BoardId,
+    now: DateTime<Utc>,
+    day: taskboard_domain::DayCalendar,
+) -> Vec<HabitRow> {
+    let today = day.today(now);
+    let mut live: Vec<&taskboard_domain::Habit> = state
+        .habits
+        .habits
+        .values()
+        .filter(|h| h.is_live() && h.board == board)
+        .collect();
+    live.sort_by_key(|h| (h.order, h.id));
+    live.iter()
+        .map(|habit| {
+            let window = taskboard_domain::WindowStart::of_period(habit.target.kind(), today);
+            let key = taskboard_domain::HabitLogKey {
+                habit: habit.id,
+                window,
+            };
+            let count = state.habits.log.get(&key).map_or(0, |e| e.count);
+            let quota = habit.target.quota().get();
+            HabitRow {
+                habit: habit.id,
+                title: habit.title.clone(),
+                target_phrase: habit_target_phrase(habit.target),
+                count,
+                quota,
+                streak: taskboard_domain::habit_streak_unioned(
+                    habit,
+                    &state.habits.log,
+                    &state.tasks,
+                    now,
+                    day,
+                ),
+                chip: habit.anchor_time,
+                met: count >= quota,
+            }
+        })
+        .collect()
+}
+
+/// The quota phrase (`3/day`, `1/week`, `12/month`).
+#[must_use]
+pub fn habit_target_phrase(target: taskboard_domain::HabitTarget) -> String {
+    use taskboard_domain::PeriodKind;
+    let unit = match target.kind() {
+        PeriodKind::Day => "day",
+        PeriodKind::Week => "week",
+        PeriodKind::Month => "month",
+    };
+    format!("{}/{}", target.quota().get(), unit)
+}
+
+/// The row's progress phrase ("water 5/8"): a presentation-side
+/// derivation from the stored `count`/`quota` — never a state column.
+#[must_use]
+pub fn habit_progress_phrase(row: &HabitRow) -> String {
+    format!("{}/{}", row.count, row.quota)
+}
+
+/// The kiosk gate (D-P13/D-T16): the gate empties the ACTION, never
+/// the model — the rows render on the appliance (passive progress
+/// visibility IS the section's point), the +1/reorder affordances do
+/// not.
+#[must_use]
+pub const fn habit_editing_visible(kiosk: bool) -> bool {
+    !kiosk
+}
+
+/// The reorder's drop-slot order: the **floor midpoint of the drop
+/// slot's free interval** over the row source's orders (the
+/// `insertion_order_after` convention, D-C13 — the UI computes
+/// midpoints, the planner stamps the absolute value). `prev`/`next`
+/// are the orders bracketing the slot (`None` at either end).
+#[must_use]
+pub fn habit_drop_order(prev: Option<i64>, next: Option<i64>) -> i64 {
+    match (prev, next) {
+        (None, None) => 0,
+        (None, Some(next)) => next - 1,
+        (Some(prev), None) => prev + 1,
+        (Some(prev), Some(next)) => prev + (next - prev) / 2,
+    }
+}
+
+#[cfg(test)]
+mod habit_section_tests {
+    use super::*;
+    use chrono::TimeZone as _;
+    use taskboard_domain::{
+        AppState, Habit, HabitClocks, HabitLogEntry, HabitLogKey, HabitTarget, NonZeroCount,
+        PeriodKind, WindowStart,
+    };
+
+    fn ts(secs: i64) -> DateTime<Utc> {
+        chrono::Utc.timestamp_opt(secs, 0).unwrap()
+    }
+
+    fn day() -> taskboard_domain::DayCalendar {
+        taskboard_domain::DayCalendar {
+            day_start_time: chrono::NaiveTime::MIN,
+            offset: chrono::FixedOffset::east_opt(0).unwrap(),
+        }
+    }
+
+    fn habit(raw: u128, board: u128, order: i64, chip: Option<chrono::NaiveTime>) -> Habit {
+        Habit {
+            id: taskboard_domain::ids::HabitId::from(uuid::Uuid::from_u128(raw)),
+            board: taskboard_domain::BoardId::from(uuid::Uuid::from_u128(board)),
+            title: format!("habit {raw}"),
+            target: HabitTarget::PerDay(NonZeroCount::new(3).unwrap()),
+            order,
+            anchor_time: chip,
+            clocks: HabitClocks::all(ts(100)),
+            continued_from: None,
+            deleted: false,
+        }
+    }
+
+    /// T-18: stored `(order, id)` order; the `anchor_time` perturbation
+    /// negative property at the presentation layer; the kiosk gate
+    /// empties the actions, not the rows.
+    #[test]
+    fn habit_rows_render_stored_order_and_kiosk_gates_the_actions_only() {
+        let board = taskboard_domain::BoardId::from(uuid::Uuid::from_u128(2));
+        let mut state = AppState::default();
+        let a = habit(1, 2, 5, None);
+        let mut b = habit(
+            2,
+            2,
+            9,
+            Some(chrono::NaiveTime::from_hms_opt(7, 0, 0).unwrap()),
+        );
+        b.title = "b".into();
+        let foreign = habit(3, 3, 0, None);
+        for h in [b, foreign, a.clone()] {
+            state.habits.habits.insert(h.id, h);
+        }
+        let now = ts(1_700_000_000);
+        let rows = habit_rows(&state, board, now, day());
+        assert_eq!(
+            rows.iter().map(|r| r.title.as_str()).collect::<Vec<_>>(),
+            vec!["habit 1", "b"],
+            "stored (order, id) ascending; the foreign board never renders"
+        );
+        // The negative pin: perturbing anchor_time leaves the row order
+        // and every rendered field but the chip unchanged.
+        let mut perturbed = state.clone();
+        let mut chiped = a.clone();
+        chiped.anchor_time = Some(chrono::NaiveTime::from_hms_opt(23, 59, 0).unwrap());
+        perturbed.habits.habits.insert(chiped.id, chiped);
+        let chip_rows = habit_rows(&perturbed, board, now, day());
+        for (x, y) in rows.iter().zip(chip_rows.iter()) {
+            assert_eq!(x.title, y.title);
+            assert_eq!(x.count, y.count);
+            assert_eq!(x.streak, y.streak);
+            assert_eq!(x.met, y.met);
+        }
+        assert!(chip_rows[0].chip.is_some());
+        // The count derives from the domain row read (0 — nothing logged).
+        assert_eq!(rows[0].count, 0);
+        assert!(!rows[0].met);
+        // The kiosk gate empties the actions, never the rows.
+        assert!(habit_editing_visible(false));
+        assert!(!habit_editing_visible(true));
+        assert_eq!(habit_rows(&state, board, now, day()).len(), 2);
+    }
+
+    /// T-18 (continued): count/quota/streak/met derive from the domain
+    /// functions — a logged window moves the count and `met`.
+    #[test]
+    fn habit_rows_derive_progress_from_the_domain_row() {
+        let board = taskboard_domain::BoardId::from(uuid::Uuid::from_u128(2));
+        let mut state = AppState::default();
+        let a = habit(1, 2, 0, None);
+        let today = day().today(ts(1_700_000_000));
+        state.habits.habits.insert(a.id, a.clone());
+        state.habits.log.insert(
+            HabitLogKey {
+                habit: a.id,
+                window: WindowStart::of_period(PeriodKind::Day, today),
+            },
+            HabitLogEntry {
+                count: 3,
+                clock: ts(200),
+            },
+        );
+        let rows = habit_rows(&state, board, ts(1_700_000_000), day());
+        assert_eq!(rows[0].count, 3);
+        assert_eq!(rows[0].quota, 3);
+        assert!(rows[0].met);
+        assert_eq!(rows[0].streak, 1, "today is met: the walk counts it");
+        assert_eq!(habit_progress_phrase(&rows[0]), "3/3");
+    }
+
+    /// T-19 (the order law): the drop slot's floor midpoint — one law
+    /// with the CLI's `--order` path at the planner.
+    #[test]
+    fn habit_drop_order_takes_the_floor_midpoint_of_the_free_interval() {
+        assert_eq!(habit_drop_order(None, None), 0);
+        assert_eq!(habit_drop_order(None, Some(10)), 9);
+        assert_eq!(habit_drop_order(Some(10), None), 11);
+        assert_eq!(habit_drop_order(Some(10), Some(20)), 15);
+        assert_eq!(
+            habit_drop_order(Some(10), Some(11)),
+            10,
+            "a tied gap floors to the lower bound"
+        );
+    }
+}

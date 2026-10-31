@@ -223,6 +223,12 @@ pub enum ActionId {
     TimerCancel,
     TaskTrackStart,
     TaskTrackStop,
+    // The habit verbs (DR-6/6, D-P13): section-scoped like the
+    // timers' seams — pointer-driven, no preset bindings; dispatch-time
+    // gating only (the kiosk gate empties the affordances, the
+    // planner's idempotent NoOps own the refusals).
+    HabitLog,
+    HabitMove,
     MenuNext,
     MenuPrevious,
     MenuInvoke,
@@ -298,6 +304,8 @@ impl ActionId {
             Self::TimerCancel => "timer.cancel",
             Self::TaskTrackStart => "task.track-start",
             Self::TaskTrackStop => "task.track-stop",
+            Self::HabitLog => "habit.log",
+            Self::HabitMove => "habit.move",
             Self::MenuNext => "menu.next",
             Self::MenuPrevious => "menu.previous",
             Self::MenuInvoke => "menu.invoke",
@@ -953,6 +961,30 @@ pub const REGISTRY: &[ActionEntry] = &[
         description: "Stops the running timer, closing its open time entry.",
         menu_group: Some(MenuGroup::Task),
     },
+    ActionEntry {
+        id: ActionId::HabitLog,
+        label: "Log habit",
+        contexts: GLOBAL,
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 190,
+        description: "+1 the addressed tracker's current window (surplus logs are first-class).",
+        // Section-scoped (R-11): the row's own affordance is the only
+        // invocation — the menu surface is untouched, like the plan's
+        // "menu/keymap: nothing" ruling.
+        menu_group: None,
+    },
+    ActionEntry {
+        id: ActionId::HabitMove,
+        label: "Reorder habit",
+        contexts: GLOBAL,
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 200,
+        description: "Moves the addressed tracker to the reorder slot (the stored manual order).",
+        // Section-scoped (see HabitLog).
+        menu_group: None,
+    },
     // The picker keys (round-3 D25): the date grid's ten hardcoded
     // key codes as registry rows — the DatePicker context carries
     // them exactly while the grid holds focus. The time steppers
@@ -1190,6 +1222,8 @@ mod tests {
             ActionId::TimerCancel,
             ActionId::TaskTrackStart,
             ActionId::TaskTrackStop,
+            ActionId::HabitLog,
+            ActionId::HabitMove,
             ActionId::MenuNext,
             ActionId::MenuPrevious,
             ActionId::MenuInvoke,

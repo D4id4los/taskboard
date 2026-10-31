@@ -111,6 +111,8 @@ impl KeymapShell {
             timer_draft: None,
             timer_target: None,
             track_target: None,
+            habit_target: None,
+            habit_move: None,
             day_window: None,
             focused_task_done: self.focused_task_done,
         }

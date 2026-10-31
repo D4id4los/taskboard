@@ -17,6 +17,7 @@ import { Toolbar } from "compositions/toolbar.slint";
 import { StatusBar, SyncBadgeModel, BannerRowModel, FlowHintModel } from "compositions/status-bar.slint";
 import { NotificationSurface, NotificationRowModel } from "compositions/notification-surface.slint";
 import { TimerRowModel } from "compositions/timers.slint";
+import { HabitRowModel } from "compositions/habits.slint";
 import { BoardView, BoardModel } from "views/board-view.slint";
 import { BoardBarModel, BoardSegmentModel } from "compositions/board-bar.slint";
 import { StackView, StackDetailModel } from "views/stack-view.slint";
@@ -163,6 +164,10 @@ export component AppWindow inherits Window {
     // model and forces the visibility flags false model-side.
     in-out property <bool> timers-visible: false;
     in-out property <[TimerRowModel]> timers-model;
+    // The habits section (DR-6/6): the active board's tracker rows —
+    // rendering is not kiosk-gated, the affordances are.
+    in-out property <[HabitRowModel]> habits-model;
+    in-out property <bool> habits-editing-visible: false;
     in-out property <int> timers-awaiting: 0;
     in-out property <bool> timers-chip-visible: false;
     in-out property <string> timers-chip;
@@ -305,6 +310,10 @@ export component AppWindow inherits Window {
                 timers-cancel-clicked(r) => root.timers-cancel-clicked(r);
                 timers-create-accepted(label, when) => root.timers-create-accepted(label, when);
                 timers-form-edited() => root.timers-form-edited();
+                habits: root.habits-model;
+                habits-editing-visible: root.habits-editing-visible;
+                habits-plus-clicked(r) => root.habits-plus-clicked(r);
+                habits-reorder-asked(row, slot) => root.habits-reorder-asked(row, slot);
             }
             if (root.current-view == View.stack-detail): StackView {
                 stack: root.stack-model;
@@ -796,6 +805,8 @@ export component AppWindow inherits Window {
     // TimerCreate from the parsed draft; cancel dispatches
     // TimerCancel from the row table; the chip click focuses today.
     pure callback timers-cancel-clicked(int);
+    pure callback habits-plus-clicked(int);
+    pure callback habits-reorder-asked(int, int);
     pure callback timers-create-accepted(string, string) -> bool;
     pure callback timers-form-edited();
     pure callback timers-chip-clicked();
