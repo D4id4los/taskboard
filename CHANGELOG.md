@@ -188,6 +188,17 @@ The workspace carries a single global version (see `docs/architecture.org`);
 
 ### Fixed
 
+- The Nextcloud sync now adopts the appdata anchor on Deck 1.19.1+
+  instead of re-creating it every cycle (#448, #447, #449). Deck's
+  1.19.1 attachment listings carry no `extendedData.fileName` and
+  split the stored name across `info.basename` (with extension) and
+  `info.filename` (PHP pathinfo: without), so the anchor scan folded
+  the extension-less name, never matched the reserved
+  `taskboard-appdata.json`, and the appdata anchor accumulated as
+  unconfirmed candidates. The attachment-filename decode fallback is
+  now ranked `fileName → info.basename → info.filename` — a present
+  `fileName` is never overwritten, and the measured 1.17.5/1.19.0
+  echo shapes decode byte-for-byte as before.
 - The GUI's flow state machine no longer traps the board (round-3
   GUI review, findings F7/F8/F9/F10/F18): clicking out of an empty
   create row settles it instead of leaving the app keyboard-stuck;
