@@ -149,6 +149,30 @@ pub fn duration_bucket(delta: TimeDelta) -> DurationBucket {
     DurationBucket::Days(u32::try_from(hours / 24).unwrap_or(u32::MAX))
 }
 
+/// The direction of a scheduled start relative to now — the only place
+/// the sign comparison for `scheduled_phrase` lives (issue #458: the
+/// direction is a typed value, the wording consumes it). Deliberate
+/// leniency at the mint: `of(TimeDelta::zero())` yields `Future`, but
+/// zero never reaches the mint — the `Now` bucket arm renders first
+/// and never consults the direction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Direction {
+    Future,
+    Past,
+}
+
+impl Direction {
+    /// Total: the sign of the delta; zero's `Future` is unreachable
+    /// past the `Now` arm (see the type doc).
+    fn of(delta: TimeDelta) -> Self {
+        if delta < TimeDelta::zero() {
+            Self::Past
+        } else {
+            Self::Future
+        }
+    }
+}
+
 /// The ` · HH:MM` time suffix (round 3 D9/F15): empty for an absent
 /// or midnight instant — a midnight instant renders exactly the
 /// date-only shape it always did — else the UTC wall-clock time. One
@@ -205,14 +229,18 @@ pub fn scheduled_phrase(scheduled: Option<DateTime<Utc>>, now: DateTime<Utc>) ->
     let suffix = at_time_suffix(Some(scheduled));
     let delta = scheduled - now;
     let bucket = duration_bucket(delta.abs());
-    match (delta < TimeDelta::zero(), bucket) {
+    // The `Now` arm never consults the direction (the zero delta never
+    // reaches `Direction::of`'s comparison semantically — its unused
+    // `Future` value is discarded with the arm's wildcard).
+    let direction = Direction::of(delta);
+    match (direction, bucket) {
         (_, DurationBucket::Now) => format!("starts now{suffix}"),
-        (false, DurationBucket::Minutes(n)) => format!("starts in {n}m{suffix}"),
-        (false, DurationBucket::Hours(n)) => format!("starts in {n}h{suffix}"),
-        (false, DurationBucket::Days(n)) => format!("starts in {n}d{suffix}"),
-        (true, DurationBucket::Minutes(n)) => format!("started {n}m ago{suffix}"),
-        (true, DurationBucket::Hours(n)) => format!("started {n}h ago{suffix}"),
-        (true, DurationBucket::Days(n)) => format!("started {n}d ago{suffix}"),
+        (Direction::Future, DurationBucket::Minutes(n)) => format!("starts in {n}m{suffix}"),
+        (Direction::Future, DurationBucket::Hours(n)) => format!("starts in {n}h{suffix}"),
+        (Direction::Future, DurationBucket::Days(n)) => format!("starts in {n}d{suffix}"),
+        (Direction::Past, DurationBucket::Minutes(n)) => format!("started {n}m ago{suffix}"),
+        (Direction::Past, DurationBucket::Hours(n)) => format!("started {n}h ago{suffix}"),
+        (Direction::Past, DurationBucket::Days(n)) => format!("started {n}d ago{suffix}"),
     }
 }
 
@@ -2202,6 +2230,27 @@ mod tests {
         assert_ne!(future, "", "the future phrase renders");
         assert_ne!(past, "", "the past phrase renders");
         assert_ne!(future, past, "the direction is carried at one bucket");
+    }
+
+    #[test]
+    fn direction_partition_is_typed() {
+        // Issue #458: the direction is a typed value; the sign
+        // comparison is pinned per bucket class with matches!-class
+        // assertions — no text anywhere (AGENTS §5).
+        for delta in [
+            TimeDelta::try_minutes(2).unwrap(),
+            TimeDelta::try_hours(2).unwrap(),
+            TimeDelta::try_days(2).unwrap(),
+        ] {
+            assert!(
+                matches!(Direction::of(delta), Direction::Future),
+                "a later start is Future"
+            );
+            assert!(
+                matches!(Direction::of(-delta), Direction::Past),
+                "an earlier start is Past"
+            );
+        }
     }
 
     #[test]
