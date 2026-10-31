@@ -35,7 +35,20 @@ The workspace carries a single global version (see `docs/architecture.org`);
   delete-undo instrument: pending-delete retraction, pushed re-POST,
   local resurrect), retention bounded at 1000 entries / 90 days, and
   storage migration `0016_command_journal` (two additive tables).
-  User-facing surfaces (CLI verbs, toasts) land with chunk undo/2.
+  User-facing surfaces (CLI verbs, toasts) land in the same release.
+- Undo v1, surfaces (#510): the `taskboard tasks undo` / `tasks redo`
+  verbs (REPL and the daemon socket inherit; receipts name the landed
+  journal entry, `--json` refusals stay typed end to end —
+  `nothing-to-undo/redo`, `target-not-undoable`,
+  `target-not-invertible` with the divergent entity + field in the
+  detail) and the desktop UI's Undo/Redo rows go live: keyboard
+  Ctrl+Z / Ctrl+Shift+Z (plus the emacs and vi preset strokes) now
+  dispatch the engine verbs, the menu rows grey from the published
+  undo view, and the row descriptions state the honest semantics — a
+  pushed change is undone by a new compensating change, and redo
+  re-applies as a new edit (content the server deleted is re-created
+  as a new remote card, never the "same" one). Toast copy for the
+  refusal/redo surfaces lands with the toast-host work (#444).
 - Reminder escalation (DR-3 chunk 4, #477): the `alarm` insistence rung
   now insists. An app-layer escalation driver beside the notifier keeps
   every un-dismissed `alarm` occurrence in the user's face while it
