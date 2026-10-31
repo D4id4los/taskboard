@@ -657,6 +657,42 @@ mod d {
                 .expect("B adopted the task")
         }
 
+        /// The adopted-not-re-created guard: exactly one anchor-titled
+        /// card on the board, carrying exactly one reserved-filename
+        /// attachment. A decode-gap regression re-creates the anchor
+        /// (unconfirmed candidates accumulate); this pins the count.
+        async fn assert_anchor_adopted_exactly_once(&self) {
+            const RESERVED: &str = "taskboard-appdata.json";
+            let stacks =
+                retry(|| async { self.client.stacks(self.board, StackFilter::Active).await })
+                    .await
+                    .expect("server listing");
+            let anchors: Vec<_> = stacks
+                .iter()
+                .flat_map(|s| &s.cards)
+                .filter(|c| c.title == taskboard_domain::ANCHOR_CARD_TITLE)
+                .collect();
+            assert_eq!(anchors.len(), 1, "one anchor card, not re-created");
+            let anchor = anchors[0];
+            let detail = retry(|| async {
+                self.client
+                    .card(self.board, anchor.stack_id, anchor.id)
+                    .await
+            })
+            .await
+            .expect("anchor detail");
+            let carried = detail
+                .attachments
+                .iter()
+                .filter(|att| {
+                    att.extended_data
+                        .as_ref()
+                        .is_some_and(|d| d.file_name == RESERVED)
+                })
+                .count();
+            assert_eq!(carried, 1, "one reserved-name attachment on the anchor");
+        }
+
         async fn anchor_exists_on_server(&self) -> bool {
             let stacks =
                 retry(|| async { self.client.stacks(self.board, StackFilter::Active).await })
@@ -748,6 +784,7 @@ mod d {
         })
         .await
         .expect("the anchor appears within the deadline");
+        c.assert_anchor_adopted_exactly_once().await;
 
         // B folds the effort.
         let b_task = c.b_task();
@@ -785,6 +822,17 @@ mod d {
         };
         c.a.sync_now().await;
         // A's flush carries the rule; B adopts it under the same UUID.
+        tokio::time::timeout(super::common::LIVE_DEADLINE, async {
+            loop {
+                if c.anchor_exists_on_server().await {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            }
+        })
+        .await
+        .expect("the anchor appears within the deadline");
+        c.assert_anchor_adopted_exactly_once().await;
         let b_task = c.b_task();
         eventually(&c.b, |app| {
             app.reminders
