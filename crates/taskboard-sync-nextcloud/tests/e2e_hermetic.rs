@@ -49,6 +49,7 @@ fn cfg(clock: Arc<dyn Clock>) -> SyncActorConfig {
         backoff_initial: Duration::from_millis(100),
         backoff_max: Duration::from_millis(400),
         clock,
+        day: taskboard_state::DayRollConfig::disabled().calendar,
     }
 }
 

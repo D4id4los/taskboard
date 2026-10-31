@@ -26,6 +26,10 @@ fn cfg() -> SyncActorConfig {
         // The docker tier runs against a real server: real timing is the
         // subject, injected explicitly through the seam.
         clock: Arc::new(taskboard_domain::SystemClock),
+        day: taskboard_domain::days::DayCalendar {
+            day_start_time: chrono::NaiveTime::MIN,
+            offset: chrono::FixedOffset::east_opt(0).unwrap(),
+        },
     }
 }
 

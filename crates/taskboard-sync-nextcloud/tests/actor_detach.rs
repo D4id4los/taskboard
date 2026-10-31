@@ -44,6 +44,7 @@ async fn d1_detach_stops_the_actor_after_the_queued_cycle() {
         backoff_initial: Duration::from_secs(1),
         backoff_max: Duration::from_secs(1),
         clock: Arc::new(FixedClock(ts(T + 1000))),
+        day: taskboard_state::DayRollConfig::disabled().calendar,
     };
     let join = spawn_sync_actor(
         taskboard_domain::ConnectorId::from("nextcloud"),

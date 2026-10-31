@@ -58,6 +58,10 @@ pub struct SyncActorConfig {
     /// seam the engine runs on. Production injects `SystemClock`; the
     /// hermetic suites a fixed clock.
     pub clock: Arc<dyn Clock>,
+    /// The injected day calendar (the D-F6 vocabulary, the same one the
+    /// engine's day roll runs on): the habit-log wire retention's
+    /// "today" is a device-local date, never a second timezone concept.
+    pub day: taskboard_domain::DayCalendar,
 }
 
 /// Spawns the sync actor onto the current runtime.
@@ -112,6 +116,10 @@ pub struct SyncActorConfig {
 ///     backoff_initial: Duration::from_secs(5),
 ///     backoff_max: Duration::from_secs(300),
 ///     clock: Arc::new(SystemClock),
+///     day: taskboard_domain::days::DayCalendar {
+///         day_start_time: chrono::NaiveTime::MIN,
+///         offset: chrono::FixedOffset::east_opt(0).unwrap(),
+///     },
 /// };
 /// let actor = spawn_sync_actor(
 ///     taskboard_domain::ConnectorId::from("nextcloud"),
@@ -636,6 +644,8 @@ async fn cycle(
             tables,
             &persisted.reminders.rules,
             &persisted.tracking.entries,
+            &persisted.habits,
+            cfg.day.today(read_at),
             read_at,
             *board_id,
             st.features.card_startdate,
@@ -667,6 +677,9 @@ async fn cycle(
                     rules: &persisted.reminders.rules,
                     dismissals: &persisted.reminders.dismissals,
                     entries: &persisted.tracking.entries,
+                    habits: &persisted.habits,
+                    board: *board_id,
+                    today: cfg.day.today(read_at),
                 })
                 .await;
                 match verdict {
