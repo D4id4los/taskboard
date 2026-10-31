@@ -67,8 +67,22 @@ impl taskboard_domain::Clock for SteppingClock {
     }
 }
 
+/// Session-only trace capture (the C4 triage harness): with
+/// `TASKBOARD_IT_TRACE=1`, installs a fmt subscriber on stderr honoring
+/// `RUST_LOG` (e.g. `RUST_LOG=taskboard_sync_nextcloud=debug`). A no-op
+/// otherwise, and inert when a subscriber is already installed.
+pub(crate) fn init_trace() {
+    if std::env::var("TASKBOARD_IT_TRACE").as_deref() == Ok("1") {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .with_writer(std::io::stderr)
+            .try_init();
+    }
+}
+
 /// Reads Tier 2 docker-tier credentials; `None` when any is unset.
 pub(crate) fn live_docker_config() -> Option<LiveCfg> {
+    init_trace();
     read_cfg("TASKBOARD_IT_DOCKER")
 }
 
@@ -77,6 +91,7 @@ pub(crate) fn live_docker_config() -> Option<LiveCfg> {
 /// exported under the `TASKBOARD_IT_DOCKER_DECK1175` prefix); `None` when
 /// unset — skip, never fail.
 pub(crate) fn live_docker_deck1175_config() -> Option<LiveCfg> {
+    init_trace();
     read_cfg("TASKBOARD_IT_DOCKER_DECK1175")
 }
 
