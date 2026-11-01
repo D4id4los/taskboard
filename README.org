@@ -575,6 +575,23 @@ unix, and self-heals after a crashed daemon (ADR 0012). A systemd
 comment block at the top is the install guide; =daemon stop= and
 =systemctl --user stop taskboard= are both graceful.
 
+The IPC surface is optional (minimal-image hardening, #194): =[ipc]
+enabled = false= in the config — or =taskboard daemon --no-ipc= for
+one run (the flag wins over the file) — boots the daemon core without
+binding the socket. Everything else is unchanged: the instance lock,
+sync, reminders, and the optional =[web]= dashboard all run. What
+degrades is every IPC client: =status= reports ={daemon: false}= (exit
+0), =daemon stop= fails with the typed =no-daemon= error (exit 1), and
+one-shot verbs fall back to the in-process boot and hit
+=instance-locked= while the daemon runs. A no-ipc daemon stops on a
+signal only — =daemon stop= has no socket to reach it on.
+
+#+begin_src toml
+[ipc]
+# enabled = true                # the default: bind the per-db socket
+# client_read_timeout_secs = 45 # one-shot client read budget override
+#+end_src
+
 =logout= deletes the stored app password and — under the auto backend
 — clears the config's server/user keys, returning the install to
 stand-alone (an explicit =backend = "nextcloud"= stays as written; the

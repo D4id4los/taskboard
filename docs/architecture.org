@@ -641,6 +641,11 @@ dependency hierarchies.
    =NoDaemon=/=IpcTransport=/=IpcVersion= failures; =route_for_ipc=
    picks each verb's transport lane (Local / IpcOrLocal / IpcOnly) and
    =status=/=daemon stop= are the operator verbs over the wire.
+   The socket is optional: =[ipc] enabled= (or =daemon --no-ipc=,
+   #194) skips =spawn_server= and the daemon runs lock + actors + web
+   with no command surface; the operator verbs degrade to their typed
+   no-socket outcomes and the kiosk headless fallback inherits the
+   same shape.
    =ui= (ADR 0015, ADR 0016): the GUI lifecycle — D4 bare-invocation
    routing (=mode = "desktop"= boots the Slint GUI regardless of TTY;
    =AppMode= is frontend selection, so only =Daemon=+TTY falls to

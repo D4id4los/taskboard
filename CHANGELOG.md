@@ -18,6 +18,14 @@ The workspace carries a single global version (see `docs/architecture.org`);
   no row). `StartTracking`/`StopTracking` stay structurally
   non-invertible and `LogHabit` stays lossy to invert; the journal's
   pre-image shapes widened additively (no storage migration).
+- IPC disable knob (#194): `[ipc] enabled = false` in the config — or
+  `taskboard daemon --no-ipc` for one run — boots the daemon core
+  without binding the per-database socket. The instance lock, the
+  actors, and the optional web dashboard are unchanged, while `status`
+  degrades to the client-side no-daemon view (exit 0), `daemon stop`
+  fails typed `no-daemon` (exit 1), and one-shot verbs hit
+  `instance-locked` against the running core; a signal is the only
+  stop. Default stays enabled; existing configs are untouched.
 - Habit trackers, storage/sync/surfaces round (DR-6/6, #503): the
   tracker family roams and surfaces. Sidecar sections `habits` and
   `habit-log` (per-row LWW unions with ties to the overlay, deletion
