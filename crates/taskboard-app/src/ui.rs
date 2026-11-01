@@ -241,6 +241,9 @@ pub fn resolve_ui_settings(
         // Overwritten by the lifecycle from the engine config right
         // after this returns (the kiosk/connectors/boards precedent).
         reminder_defaults: taskboard_domain::ReminderDefaults::default(),
+        // The window-geometry restore value (#412): wired to the
+        // `[ui.window_geometry]` mint by the config-lane commit.
+        window_geometry: None,
     };
     (settings, built.findings)
 }
