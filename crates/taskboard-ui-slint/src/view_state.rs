@@ -21,7 +21,7 @@ use taskboard_domain::{
 use crate::actions::ContextId;
 use crate::presentation::{live_board, live_boards, stacks_in_board};
 use crate::router::Mode;
-use crate::widths::{STACK_WIDTH_DEFAULT_PX, STACK_WIDTH_MIN_PX, STACK_WIDTH_STEP_PX, clamp_width};
+use crate::widths::{STACK_WIDTH_READABILITY_MIN_PX, STACK_WIDTH_STEP_PX};
 
 /// The pass's time bundle (chunk 10 D4): the fresh `now` and the
 /// `day_window` pair the adapter derives from its held
@@ -1152,9 +1152,10 @@ impl ViewState {
 
     /// The keyboard resize verb (round-1 D18): resolves the target
     /// stack (focused → selected → first, `create_target_stack`'s
-    /// Board-view resolution), seeds an absent entry at
-    /// [`STACK_WIDTH_DEFAULT_PX`], applies ±[`STACK_WIDTH_STEP_PX`]
-    /// clamped to `[STACK_WIDTH_MIN_PX, ceiling]`, and returns
+    /// Board-view resolution), seeds an absent entry at the
+    /// readability floor [`STACK_WIDTH_READABILITY_MIN_PX`], applies
+    /// ±[`STACK_WIDTH_STEP_PX`] clamped to
+    /// `[STACK_WIDTH_READABILITY_MIN_PX, ceiling]`, and returns
     /// `[StackWidthsChanged, RefreshNow]` — or `Vec::new()` when there
     /// is no stack to address.
     pub fn resize_focused_stack(
@@ -1171,9 +1172,12 @@ impl ViewState {
         };
         let base = self
             .stack_width(board, target)
-            .unwrap_or(STACK_WIDTH_DEFAULT_PX);
+            .unwrap_or(STACK_WIDTH_READABILITY_MIN_PX);
         let requested = i64::from(base) + i64::from(direction) * i64::from(STACK_WIDTH_STEP_PX);
-        let next = clamp_width(requested, STACK_WIDTH_MIN_PX, ceiling);
+        let floor = i64::from(STACK_WIDTH_READABILITY_MIN_PX);
+        let next = requested.clamp(floor, i64::from(ceiling).max(floor));
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let next = next as u32;
         self.set_stack_width(board, target, next);
         vec![FlowOutcome::StackWidthsChanged, FlowOutcome::RefreshNow]
     }
@@ -3554,8 +3558,10 @@ mod tests {
         );
         assert_eq!(
             vs.stack_width(board, s0),
-            Some(crate::widths::STACK_WIDTH_DEFAULT_PX + crate::widths::STACK_WIDTH_STEP_PX),
-            "an auto column seeds at DEFAULT, then steps"
+            Some(
+                crate::widths::STACK_WIDTH_READABILITY_MIN_PX + crate::widths::STACK_WIDTH_STEP_PX
+            ),
+            "an unseeded column floors at the readability minimum, then steps"
         );
 
         // Narrower clamps at the readable floor.
@@ -3564,7 +3570,7 @@ mod tests {
         }
         assert_eq!(
             vs.stack_width(board, s0),
-            Some(crate::widths::STACK_WIDTH_MIN_PX),
+            Some(crate::widths::STACK_WIDTH_READABILITY_MIN_PX),
             "narrowing clamps at the min"
         );
 
@@ -3598,7 +3604,9 @@ mod tests {
         let board = vs.board().expect("board");
         assert_eq!(
             vs.stack_width(board, s1),
-            Some(crate::widths::STACK_WIDTH_DEFAULT_PX + crate::widths::STACK_WIDTH_STEP_PX),
+            Some(
+                crate::widths::STACK_WIDTH_READABILITY_MIN_PX + crate::widths::STACK_WIDTH_STEP_PX
+            ),
             "the selected stack was addressed"
         );
 
@@ -3606,7 +3614,7 @@ mod tests {
         vs.activate_card(a, s0);
         vs.resize_focused_stack(&state, 1, ceiling);
         assert!(
-            vs.stack_width(board, s0).unwrap_or(0) > crate::widths::STACK_WIDTH_DEFAULT_PX,
+            vs.stack_width(board, s0).unwrap_or(0) > crate::widths::STACK_WIDTH_READABILITY_MIN_PX,
             "the focused stack was addressed"
         );
 
@@ -3661,19 +3669,22 @@ mod tests {
         let mut widths: BTreeMap<BoardId, BTreeMap<StackId, u32>> = BTreeMap::new();
         widths.insert(
             b1,
-            BTreeMap::from([(sa, 96), (sb, crate::widths::STACK_WIDTH_MIN_PX + 80)]),
+            BTreeMap::from([
+                (sa, 96),
+                (sb, crate::widths::STACK_WIDTH_READABILITY_MIN_PX + 80),
+            ]),
         );
         vs.seed_stack_widths(widths);
         vs.reconcile(&state);
 
         assert_eq!(
             vs.stack_width(b1, sa),
-            Some(crate::widths::STACK_WIDTH_MIN_PX),
+            Some(crate::widths::STACK_WIDTH_READABILITY_MIN_PX),
             "the legacy 96-px entry healed at load"
         );
         assert_eq!(
             vs.stack_width(b1, sb),
-            Some(crate::widths::STACK_WIDTH_MIN_PX + 80),
+            Some(crate::widths::STACK_WIDTH_READABILITY_MIN_PX + 80),
             "an above-floor entry is untouched"
         );
     }

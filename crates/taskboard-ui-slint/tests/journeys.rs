@@ -1632,22 +1632,22 @@ fn keyboard_resize_steps_clamps_and_requests_persistence() {
             harness.press(ActionId::StackWider);
             assert_eq!(
                 harness.column_width_px(0),
-                280.0 + 32.0,
-                "the first keyboard step seeds DEFAULT and adds STEP (scale 1)"
+                120.0 + 32.0,
+                "the first keyboard step floors at the readability minimum and adds STEP (scale 1)"
             );
-            expect_snapshot(&harness, 312);
+            expect_snapshot(&harness, 152);
 
             harness.press(ActionId::StackNarrower);
-            assert_eq!(harness.column_width_px(0), 280.0, "back to the seed");
-            expect_snapshot(&harness, 280);
+            assert_eq!(harness.column_width_px(0), 120.0, "back to the floor seed");
+            expect_snapshot(&harness, 120);
 
             // Narrowing clamps at the readable floor and keeps
             // reporting the clamped snapshot.
             for step in 1..=8u32 {
                 harness.press(ActionId::StackNarrower);
-                let expected = 280u32
+                let expected = 152u32
                     .saturating_sub(32 * step)
-                    .max(taskboard_ui_slint::widths::STACK_WIDTH_MIN_PX);
+                    .max(taskboard_ui_slint::widths::STACK_WIDTH_READABILITY_MIN_PX);
                 // px values, far below f32's mantissa reach.
                 #[allow(clippy::cast_precision_loss)]
                 let expected_px = expected as f32;
@@ -1783,7 +1783,7 @@ fn stored_widths_fill_the_window_as_floors() {
                 .pop()
                 .expect("the add-column affordance is mounted");
             #[allow(clippy::cast_precision_loss)]
-            let floor = taskboard_ui_slint::widths::STACK_WIDTH_MIN_PX as f32; // at scale 1
+            let floor = taskboard_ui_slint::widths::STACK_WIDTH_READABILITY_MIN_PX as f32; // at scale 1
             let mut total = add_col.size().width;
             for title in ["a", "b"] {
                 let column = harness

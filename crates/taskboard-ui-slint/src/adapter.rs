@@ -739,9 +739,9 @@ impl Adapter {
     /// window width minus the *other* live columns' effective minimums
     /// (user width if set, else the floor) minus the row's fixed
     /// furniture (one `space-3` gap per inter-column boundary plus the
-    /// add-column affordance's `space-6 + space-2`), via the pure
-    /// [`crate::widths::width_ceiling`]. All values are rendered slint
-    /// px — the space `window-w` and the drag deltas share.
+    /// add-column affordance's `space-6 + space-2`). All values are
+    /// rendered slint px — the space `window-w` and the drag deltas
+    /// share.
     fn stack_width_ceiling(&self, state: &AppState, window: &AppWindow) -> u32 {
         let target = self.view_state.keyboard_resize_target(state);
         self.stack_width_ceiling_excluding(state, window, target)
@@ -756,7 +756,7 @@ impl Adapter {
         window: &AppWindow,
         excluded: Option<StackId>,
     ) -> u32 {
-        use crate::widths::{STACK_WIDTH_MIN_PX, width_ceiling};
+        use crate::widths::STACK_WIDTH_READABILITY_MIN_PX;
         // The furniture tokens are Theme constants — logical px scaled
         // by the root multiplier the window already carries (reading
         // `base-scale`, not slint lengths).
@@ -780,7 +780,7 @@ impl Adapter {
                     * f64::from(
                         board
                             .and_then(|board| self.view_state.stack_width(board, *stack))
-                            .unwrap_or(STACK_WIDTH_MIN_PX),
+                            .unwrap_or(STACK_WIDTH_READABILITY_MIN_PX),
                     );
                 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
                 u64::from(effective.max(0.0) as u32)
@@ -790,11 +790,12 @@ impl Adapter {
         let window_w = (f64::from(window.get_window_w()).max(0.0)) as u32;
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let chrome_px = chrome.max(0.0) as u32;
-        width_ceiling(
-            window_w,
-            u32::try_from(others).unwrap_or(u32::MAX),
-            chrome_px,
-        )
+        let room = i64::from(window_w)
+            - i64::from(u32::try_from(others).unwrap_or(u32::MAX))
+            - i64::from(chrome_px);
+        u32::try_from(room)
+            .unwrap_or(0)
+            .max(STACK_WIDTH_READABILITY_MIN_PX)
     }
 
     /// The per-kind settle, adapter side (round-3 W-SM-b, plan §2):
@@ -3343,16 +3344,18 @@ fn install_stack_width_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>)
             return;
         };
         let scale = f64::from(window.global::<crate::Theme>().get_base_scale()).max(0.001);
-        let min_rendered = f64::from(crate::widths::STACK_WIDTH_MIN_PX) * scale;
+        let min_rendered = f64::from(crate::widths::STACK_WIDTH_READABILITY_MIN_PX) * scale;
         let ceiling = a.stack_width_ceiling_excluding(&a.state.load(), &window, Some(stack));
         let ceiling_rendered = f64::from(ceiling);
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let requested_px = (f64::from(base) + f64::from(delta)) as i64;
+        #[allow(clippy::cast_possible_truncation)] // a px value
+        let floor = min_rendered as i64;
+        #[allow(clippy::cast_possible_truncation)] // a px value
+        let max_px = (ceiling_rendered.max(min_rendered)) as i64;
+        let rendered = requested_px.clamp(floor, max_px).max(0);
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let min_px = min_rendered as u32;
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let max_px = ceiling_rendered as u32;
-        let rendered = crate::widths::clamp_width(requested_px, min_px, max_px);
+        let rendered = rendered as u32;
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let stored =
             u32::try_from((f64::from(rendered) / scale).round() as i64).unwrap_or(rendered);
