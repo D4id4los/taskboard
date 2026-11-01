@@ -656,6 +656,9 @@ fn undo_field_kind(field: taskboard_domain::UndoField) -> &'static str {
         F::Color => "color",
         F::Membership => "membership",
         F::UpdatedAt => "updated-at",
+        F::HabitTarget => "habit-target",
+        F::HabitAnchorTime => "habit-anchor-time",
+        F::HabitLogCount => "habit-log-count",
     }
 }
 
@@ -668,6 +671,7 @@ fn journal_entity_id(entity: taskboard_domain::JournalEntity) -> String {
         E::Label(id) => id.as_uuid().to_string(),
         E::Habit(id) => id.as_uuid().to_string(),
         E::TimeEntry(id) => id.as_uuid().to_string(),
+        E::HabitLog(key) => key.wire_form(),
     }
 }
 

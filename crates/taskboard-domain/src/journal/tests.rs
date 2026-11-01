@@ -231,6 +231,7 @@ fn fixture_task() -> crate::entities::Task {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)] // the widened fixture rows ARE the test
 fn journal_entry_round_trips_through_serde_all_facts_variants() {
     let ids = CountingIds::new();
     let mut task = fixture_task();
@@ -259,15 +260,50 @@ fn journal_entry_round_trips_through_serde_all_facts_variants() {
                 id: crate::ids::StackId::from_uuid(ids.new_stack_id().as_uuid()),
                 before: None,
             },
+            PreImage::HabitLogRow {
+                key: crate::habit::HabitLogKey {
+                    habit: crate::ids::HabitId::from_uuid(ids.new_habit_id().as_uuid()),
+                    window: crate::habit::WindowStart::from_stored(
+                        chrono::NaiveDate::from_ymd_opt(2026, 11, 1).unwrap(),
+                    ),
+                },
+                before: Some(crate::habit::HabitLogEntry {
+                    count: 2,
+                    clock: ts(100),
+                }),
+            },
+            PreImage::HabitLogRow {
+                key: crate::habit::HabitLogKey {
+                    habit: crate::ids::HabitId::from_uuid(ids.new_habit_id().as_uuid()),
+                    window: crate::habit::WindowStart::from_stored(
+                        chrono::NaiveDate::from_ymd_opt(2026, 11, 2).unwrap(),
+                    ),
+                },
+                before: None,
+            },
         ],
         watermark: UndoWatermark(
-            [(
-                JournalEntity::Task(task.id),
-                EntityStamps::Task {
-                    clocks: task.clocks,
-                    memberships: task.label_memberships.clone(),
-                },
-            )]
+            [
+                (
+                    JournalEntity::Task(task.id),
+                    EntityStamps::Task {
+                        clocks: task.clocks,
+                        memberships: task.label_memberships.clone(),
+                    },
+                ),
+                (
+                    JournalEntity::HabitLog(crate::habit::HabitLogKey {
+                        habit: crate::ids::HabitId::from_uuid(ids.new_habit_id().as_uuid()),
+                        window: crate::habit::WindowStart::from_stored(
+                            chrono::NaiveDate::from_ymd_opt(2026, 11, 3).unwrap(),
+                        ),
+                    }),
+                    EntityStamps::HabitLog(crate::habit::HabitLogEntry {
+                        count: 5,
+                        clock: ts(150),
+                    }),
+                ),
+            ]
             .into_iter()
             .collect(),
         ),
@@ -290,6 +326,16 @@ fn journal_entry_round_trips_through_serde_all_facts_variants() {
         let json = serde_json::to_string(&entry).unwrap();
         let back: JournalEntry = serde_json::from_str(&json).unwrap();
         assert_eq!(back, entry);
+    }
+    // The new UndoField variants (error-payload vocabulary) round-trip.
+    for field in [
+        UndoField::HabitTarget,
+        UndoField::HabitAnchorTime,
+        UndoField::HabitLogCount,
+    ] {
+        let json = serde_json::to_string(&field).unwrap();
+        let back: UndoField = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, field);
     }
 }
 

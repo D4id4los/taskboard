@@ -142,19 +142,93 @@ fn record_entry(
         | StateCommand::CancelAdhocAlarm { .. } => {
             UndoFacts::NotUndoable(NotUndoableReason::ReminderSurface)
         }
-        StateCommand::StartTracking { .. }
-        | StateCommand::StopTracking
-        | StateCommand::LogTime { .. }
-        | StateCommand::AdjustTimeEntry { .. }
-        | StateCommand::DeleteTimeEntry { .. } => {
+        // ---- the undo v2 tracking/habit widening (#555, §3 rows
+        // 35′–42′; three record-time dynamic rules per §6/§7) ----------
+        StateCommand::LogTime { .. }
+        | StateCommand::CreateHabit { .. }
+        | StateCommand::MoveHabit { .. } => UndoFacts::PreImages {
+            images: pre_images(app, actions),
+            watermark: watermark_of(actions),
+        },
+        StateCommand::AdjustTimeEntry { id, .. } => {
+            // D23/§7.1: an adjust that stamps an end onto an open entry
+            // is inexpressible to invert — the change mask structurally
+            // cannot clear an end (ADR 0017 §4), so refuse-and-name at
+            // record time instead of journaling facts the verb cannot
+            // deliver on.
+            let closes_open_entry = matches!(
+                actions
+                    .iter()
+                    .find(|action| matches!(action, PersistenceAction::UpsertTimeEntry(entry) if entry.id == *id)),
+                Some(PersistenceAction::UpsertTimeEntry(entry)) if entry.end.is_some()
+            ) && app
+                .tracking
+                .entries
+                .get(id)
+                .is_some_and(|entry| entry.end.is_none());
+            if closes_open_entry {
+                UndoFacts::NotUndoable(NotUndoableReason::TrackingSurface)
+            } else {
+                UndoFacts::PreImages {
+                    images: pre_images(app, actions),
+                    watermark: watermark_of(actions),
+                }
+            }
+        }
+        StateCommand::UpdateHabit { changes, .. } => {
+            // D25/§7.3: the conversion seam carries no clock slot
+            // (D-H7a), so a seam-addressed edit has nothing to
+            // watermark against — the whole edit refuses, never a
+            // partial restore with the seam left unrestored.
+            if changes.continued_from.is_some() {
+                UndoFacts::NotUndoable(NotUndoableReason::HabitSurface)
+            } else {
+                UndoFacts::PreImages {
+                    images: pre_images(app, actions),
+                    watermark: watermark_of(actions),
+                }
+            }
+        }
+        StateCommand::AdjustHabitLog { habit, window, .. } => {
+            // D24/§7.2: an adjust onto a window with no pre-existing row
+            // is lossy to invert — the `count: 0` inverse would forge an
+            // explicit count-0 row where the pre-state had none (the
+            // exact stored-fact lossiness that keeps `LogHabit`
+            // excluded). Pre row present (any count, 0 included)
+            // inverts exactly.
+            let key = crate::habit::HabitLogKey {
+                habit: *habit,
+                window: *window,
+            };
+            if app.habits.log.contains_key(&key) {
+                UndoFacts::PreImages {
+                    images: pre_images(app, actions),
+                    watermark: watermark_of(actions),
+                }
+            } else {
+                UndoFacts::NotUndoable(NotUndoableReason::HabitSurface)
+            }
+        }
+        // ---- the exclusions stay, reasons restated (§4) ----------------
+        StateCommand::StartTracking { .. } | StateCommand::StopTracking => {
+            // Structurally non-invertible (ADR 0017): the inverse would
+            // have to re-open closed entries — no command expresses
+            // that. Also dismissal side effects (D-T5).
             UndoFacts::NotUndoable(NotUndoableReason::TrackingSurface)
         }
-        StateCommand::CreateHabit { .. }
-        | StateCommand::UpdateHabit { .. }
-        | StateCommand::MoveHabit { .. }
-        | StateCommand::LogHabit { .. }
-        | StateCommand::AdjustHabitLog { .. }
-        | StateCommand::DeleteHabit { .. } => {
+        StateCommand::DeleteTimeEntry { .. } => {
+            // No un-delete verb exists (`LogTime` mints fresh ids);
+            // restore-class shape (#356 family).
+            UndoFacts::NotUndoable(NotUndoableReason::TrackingSurface)
+        }
+        StateCommand::LogHabit { .. } => {
+            // Lossy to invert: a pre-log absent window would become an
+            // explicit count-0 row — a different stored fact; no
+            // log-row delete action exists.
+            UndoFacts::NotUndoable(NotUndoableReason::HabitSurface)
+        }
+        StateCommand::DeleteHabit { .. } => {
+            // No `RestoreHabit` verb; tombstone-only delete.
             UndoFacts::NotUndoable(NotUndoableReason::HabitSurface)
         }
         // Never journaled (the wrapper routes Undo/Redo; RequestSync
@@ -256,7 +330,9 @@ fn touched_board(app: &AppState, command: &StateCommand) -> Option<crate::ids::B
 /// upserts, with the entity's state *before* the batch (`before: None`
 /// = a create). Walks the plan's `Upsert*` actions against the
 /// pre-state — arm-agnostic, so cascades are captured for free (D19:
-/// `Record*` rows and deletes carry no pre-image in v1).
+/// `RecordReminderDismissal` rows and deletes carry no pre-image; a
+/// `RecordHabitLog` row does since the undo v2 widening #555 — the log
+/// map lives outside the habit entity).
 #[must_use]
 pub fn pre_images(app: &AppState, actions: &[PersistenceAction]) -> Vec<PreImage> {
     let mut seen = BTreeSet::new();
@@ -305,6 +381,13 @@ pub fn pre_images(app: &AppState, actions: &[PersistenceAction]) -> Vec<PreImage
                     before: app.tracking.entries.get(&entity.id).cloned().map(Box::new),
                 },
             ),
+            PersistenceAction::RecordHabitLog(key, _) => (
+                JournalEntity::HabitLog(*key),
+                PreImage::HabitLogRow {
+                    key: *key,
+                    before: app.habits.log.get(key).copied(),
+                },
+            ),
             _ => continue,
         };
         if seen.insert(key) {
@@ -349,6 +432,9 @@ fn watermark_of(actions: &[PersistenceAction]) -> UndoWatermark {
                 JournalEntity::TimeEntry(entry.id),
                 EntityStamps::TimeEntry(entry.updated_at),
             ),
+            PersistenceAction::RecordHabitLog(key, post) => {
+                (JournalEntity::HabitLog(*key), EntityStamps::HabitLog(*post))
+            }
             _ => continue,
         };
         if seen.insert(key) {
