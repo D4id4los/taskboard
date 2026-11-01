@@ -38,7 +38,7 @@ use taskboard_domain::{StateCommand, SyncErrorKind};
 use taskboard_sync_nextcloud::DeckError;
 
 use crate::bootstrap::BootstrapError;
-use crate::cli::{BoardsCmd, Command, LabelsCmd, StacksCmd, TasksCmd};
+use crate::cli::{BoardsCmd, Command, LabelEditFlags, LabelsCmd, StacksCmd, TasksCmd};
 use crate::config::{AppConfig, CredentialStoreKind};
 use crate::secrets::{CredentialError, CredentialStore};
 
@@ -1060,8 +1060,7 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
             cmd:
                 LabelsCmd::Edit {
                     label,
-                    title,
-                    color,
+                    flags: LabelEditFlags { title, color },
                 },
         } => {
             run_core(
@@ -1147,31 +1146,9 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
             .await
         }
         Command::Tasks {
-            cmd:
-                TasksCmd::Edit {
-                    task,
-                    title,
-                    description,
-                    due,
-                    scheduled,
-                    effort,
-                    importance,
-                    urgency,
-                    archive,
-                    unarchive,
-                },
+            cmd: TasksCmd::Edit { task, flags },
         } => {
-            let changes = task_changes(
-                title,
-                description,
-                due,
-                scheduled,
-                effort,
-                importance,
-                urgency,
-                archive,
-                unarchive,
-            );
+            let changes = task_changes(&flags);
             run_mutation(&mut ctx.io, ctx.config_path.clone(), move |config, store| async move {
                 tasks::edit(config, store, &task, changes).await
             })
@@ -1517,49 +1494,49 @@ async fn sync_command(
 /// `DueSpec::Clear` becomes `Some(None)` (the clear-vs-untouched
 /// distinction), the wrapper flag types (`Option<Option<_>>`) map by
 /// identity, `--archive`/`--unarchive` are mutually exclusive (clap).
-#[allow(clippy::too_many_arguments)]
-fn task_changes(
-    title: Option<String>,
-    description: Option<String>,
-    due: Option<crate::cli::DueSpec>,
-    scheduled: Option<crate::cli::DueSpec>,
-    effort: Option<crate::cli::EffortSpec>,
-    importance: Option<crate::cli::ImportanceSpec>,
-    urgency: Option<crate::cli::UrgencySpec>,
-    archive: bool,
-    unarchive: bool,
-) -> taskboard_domain::TaskChanges {
-    taskboard_domain::TaskChanges {
+fn task_changes(flags: &crate::cli::TaskEditFlags) -> taskboard_domain::TaskChanges {
+    let crate::cli::TaskEditFlags {
         title,
         description,
-        duedate: due.map(|spec| match spec {
+        due,
+        scheduled,
+        effort,
+        importance,
+        urgency,
+        archive,
+        unarchive,
+    } = flags;
+    taskboard_domain::TaskChanges {
+        title: title.clone(),
+        description: description.clone(),
+        duedate: due.clone().map(|spec| match spec {
             crate::cli::DueSpec::Set(dt) => Some(dt),
             crate::cli::DueSpec::Clear => None,
         }),
-        scheduled: scheduled.map(|spec| match spec {
+        scheduled: scheduled.clone().map(|spec| match spec {
             crate::cli::DueSpec::Set(dt) => Some(dt),
             crate::cli::DueSpec::Clear => None,
         }),
         // The spec enums share `DueSpec`'s shape: `Clear` becomes
         // `Some(None)` (clear-and-stamp), `Set` becomes `Some(Some(_))`
         // (set-and-stamp), an absent flag stays `None` (untouched).
-        effort: effort.map(|spec| match spec {
+        effort: effort.clone().map(|spec| match spec {
             crate::cli::EffortSpec::Set(e) => Some(e),
             crate::cli::EffortSpec::Clear => None,
         }),
-        importance: importance.map(|spec| match spec {
+        importance: importance.clone().map(|spec| match spec {
             crate::cli::ImportanceSpec::Set(level) => Some(level),
             crate::cli::ImportanceSpec::Clear => None,
         }),
-        urgency: urgency.map(|spec| match spec {
+        urgency: urgency.clone().map(|spec| match spec {
             crate::cli::UrgencySpec::Set(level) => Some(level),
             crate::cli::UrgencySpec::Clear => None,
         }),
         recur: None,
-        archived: if archive {
+        archived: if *archive {
             Some(true)
         } else {
-            unarchive.then_some(false)
+            (*unarchive).then_some(false)
         },
     }
 }
@@ -1904,8 +1881,7 @@ async fn labels_line(app: &crate::App, cmd: LabelsCmd, io: &mut CommandIo<'_>) -
         }
         LabelsCmd::Edit {
             label,
-            title,
-            color,
+            flags: LabelEditFlags { title, color },
         } => emit_result(
             io,
             labels::edit_on(app, &label, title, color).await,
@@ -1957,29 +1933,8 @@ async fn tasks_line(
             tasks::move_on(app, &task, stack.as_deref(), board.as_deref(), order).await,
             tasks::render_text_receipt,
         ),
-        TasksCmd::Edit {
-            task,
-            title,
-            description,
-            due,
-            scheduled,
-            effort,
-            importance,
-            urgency,
-            archive,
-            unarchive,
-        } => {
-            let changes = task_changes(
-                title,
-                description,
-                due,
-                scheduled,
-                effort,
-                importance,
-                urgency,
-                archive,
-                unarchive,
-            );
+        TasksCmd::Edit { task, flags } => {
+            let changes = task_changes(&flags);
             emit_result(
                 io,
                 tasks::edit_on(app, &task, changes).await,
@@ -2474,24 +2429,21 @@ mod connector_resolution_tests {
 
 #[cfg(test)]
 mod task_field_mapping_tests {
-    use crate::cli::{DueSpec, EffortSpec, ImportanceSpec, UrgencySpec};
+    use crate::cli::{DueSpec, EffortSpec, ImportanceSpec, TaskEditFlags, UrgencySpec};
     use crate::commands::task_changes;
     use taskboard_domain::{Effort, Importance, Urgency};
 
     #[test]
     fn the_field_flags_map_onto_their_changeset_slots() {
         let due = chrono::Utc::now();
-        let changes = task_changes(
-            None,
-            None,
-            Some(DueSpec::Set(due)),
-            Some(DueSpec::Clear),
-            Some(EffortSpec::Set(Effort::new(5400))),
-            Some(ImportanceSpec::Clear),
-            Some(UrgencySpec::Set(Urgency::High)),
-            false,
-            false,
-        );
+        let changes = task_changes(&TaskEditFlags {
+            due: Some(DueSpec::Set(due)),
+            scheduled: Some(DueSpec::Clear),
+            effort: Some(EffortSpec::Set(Effort::new(5400))),
+            importance: Some(ImportanceSpec::Clear),
+            urgency: Some(UrgencySpec::Set(Urgency::High)),
+            ..TaskEditFlags::default()
+        });
         assert_eq!(changes.duedate, Some(Some(due)));
         assert_eq!(changes.scheduled, Some(None), "--scheduled none clears");
         assert_eq!(changes.effort, Some(Some(Effort::new(5400))));
@@ -2506,23 +2458,17 @@ mod task_field_mapping_tests {
 
     #[test]
     fn absent_flags_are_untouched_slots() {
-        let changes = task_changes(None, None, None, None, None, None, None, false, false);
+        let changes = task_changes(&TaskEditFlags::default());
         assert_eq!(changes, taskboard_domain::TaskChanges::default());
     }
 
     #[test]
     fn importance_maps_the_distinct_type() {
-        let changes = task_changes(
-            None,
-            None,
-            None,
-            None,
-            None,
-            Some(ImportanceSpec::Set(Importance::VeryLow)),
-            None,
-            true,
-            false,
-        );
+        let changes = task_changes(&TaskEditFlags {
+            importance: Some(ImportanceSpec::Set(Importance::VeryLow)),
+            archive: true,
+            ..TaskEditFlags::default()
+        });
         assert_eq!(changes.importance, Some(Some(Importance::VeryLow)));
         assert_eq!(changes.urgency, None, "urgency is a distinct slot");
         assert_eq!(changes.archived, Some(true));

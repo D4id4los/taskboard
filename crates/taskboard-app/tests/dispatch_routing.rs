@@ -8,7 +8,9 @@
 
 mod common;
 
-use taskboard_app::cli::{BoardsCmd, Command, ConfigCmd, LabelsCmd, StacksCmd, TasksCmd};
+use taskboard_app::cli::{
+    BoardsCmd, Command, ConfigCmd, LabelEditFlags, LabelsCmd, StacksCmd, TaskEditFlags, TasksCmd,
+};
 use taskboard_app::commands::{CommandCtx, CommandIo, dispatch};
 
 use common::{env_lock, remove_env, tempdir};
@@ -219,15 +221,10 @@ async fn tasks_edit_routes_a_failed_credential_load_to_exit_one() {
         Command::Tasks {
             cmd: TasksCmd::Edit {
                 task: "x".to_owned(),
-                title: Some("t".to_owned()),
-                description: None,
-                due: None,
-                scheduled: None,
-                effort: None,
-                importance: None,
-                urgency: None,
-                archive: false,
-                unarchive: false,
+                flags: TaskEditFlags {
+                    title: Some("t".to_owned()),
+                    ..TaskEditFlags::default()
+                },
             },
         },
         ctx(dir.path(), &mut out, &mut err),
@@ -367,8 +364,10 @@ async fn labels_edit_routes_a_failed_credential_load_to_exit_one() {
         Command::Labels {
             cmd: LabelsCmd::Edit {
                 label: "l".to_owned(),
-                title: Some("t".to_owned()),
-                color: None,
+                flags: LabelEditFlags {
+                    title: Some("t".to_owned()),
+                    color: None,
+                },
             },
         },
         ctx(dir.path(), &mut out, &mut err),
@@ -608,8 +607,10 @@ async fn one_shot_core_verbs_route_success_end_to_end() {
     run!(Command::Labels {
         cmd: LabelsCmd::Edit {
             label: "urgent".to_owned(),
-            title: Some("critical".to_owned()),
-            color: Some("0000ff".to_owned()),
+            flags: LabelEditFlags {
+                title: Some("critical".to_owned()),
+                color: Some("0000ff".to_owned()),
+            },
         },
     });
     run!(Command::Tasks {
@@ -655,15 +656,10 @@ async fn one_shot_core_verbs_route_success_end_to_end() {
     run!(Command::Tasks {
         cmd: TasksCmd::Edit {
             task: "t2".to_owned(),
-            title: Some("t2-renamed".to_owned()),
-            description: None,
-            due: None,
-            scheduled: None,
-            effort: None,
-            importance: None,
-            urgency: None,
-            archive: false,
-            unarchive: false,
+            flags: TaskEditFlags {
+                title: Some("t2-renamed".to_owned()),
+                ..TaskEditFlags::default()
+            },
         },
     });
     run!(Command::Tasks {

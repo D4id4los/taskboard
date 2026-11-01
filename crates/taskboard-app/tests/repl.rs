@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use tokio::sync::mpsc;
 
-use taskboard_app::cli::{BoardsCmd, Command, StacksCmd, TasksCmd};
+use taskboard_app::cli::{BoardsCmd, Command, LabelEditFlags, StacksCmd, TaskEditFlags, TasksCmd};
 use taskboard_app::commands::{CommandIo, boards, dispatch_line, tasks};
 use taskboard_app::config::{AppConfig, CredentialStoreKind};
 use taskboard_app::lockfile::InstanceLock;
@@ -926,8 +926,10 @@ async fn r12_session_arms_route_success_end_to_end() {
                 Command::Labels {
                     cmd: taskboard_app::cli::LabelsCmd::Edit {
                         label: "urgent".to_owned(),
-                        title: Some("critical".to_owned()),
-                        color: Some("0000ff".to_owned()),
+                        flags: LabelEditFlags {
+                            title: Some("critical".to_owned()),
+                            color: Some("0000ff".to_owned()),
+                        },
                     },
                 },
                 &mut io,
@@ -1024,15 +1026,10 @@ async fn r12_session_arms_route_success_end_to_end() {
                 Command::Tasks {
                     cmd: TasksCmd::Edit {
                         task: "t2".to_owned(),
-                        title: Some("t2-renamed".to_owned()),
-                        description: None,
-                        due: None,
-                        scheduled: None,
-                        effort: None,
-                        importance: None,
-                        urgency: None,
-                        archive: false,
-                        unarchive: false,
+                        flags: TaskEditFlags {
+                            title: Some("t2-renamed".to_owned()),
+                            ..TaskEditFlags::default()
+                        },
                     },
                 },
                 &mut io,
@@ -1054,19 +1051,17 @@ async fn r12_session_arms_route_success_end_to_end() {
                 Command::Tasks {
                     cmd: TasksCmd::Edit {
                         task: "t2-renamed".to_owned(),
-                        title: None,
-                        description: None,
-                        due: None,
-                        scheduled: Some(taskboard_app::cli::DueSpec::Set(start)),
-                        effort: Some(taskboard_app::cli::EffortSpec::Set(
-                            taskboard_domain::Effort::new(5400)
-                        )),
-                        importance: Some(taskboard_app::cli::ImportanceSpec::Set(
-                            taskboard_domain::Importance::High
-                        )),
-                        urgency: Some(taskboard_app::cli::UrgencySpec::Clear),
-                        archive: false,
-                        unarchive: false,
+                        flags: TaskEditFlags {
+                            scheduled: Some(taskboard_app::cli::DueSpec::Set(start)),
+                            effort: Some(taskboard_app::cli::EffortSpec::Set(
+                                taskboard_domain::Effort::new(5400)
+                            )),
+                            importance: Some(taskboard_app::cli::ImportanceSpec::Set(
+                                taskboard_domain::Importance::High
+                            )),
+                            urgency: Some(taskboard_app::cli::UrgencySpec::Clear),
+                            ..TaskEditFlags::default()
+                        },
                     },
                 },
                 &mut io,
