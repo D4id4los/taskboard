@@ -31,6 +31,20 @@ The workspace carries a single global version (see `docs/architecture.org`);
   pressed. Dividers move exactly the two columns at their boundary;
   the keyboard `stack.wider`/`stack.narrower` verbs join the same
   pair model (the last column steps against its left neighbour).
+- Vendored Lucide icon set (GUI review round 4, D9–D12): the UI's
+  icons are now monochrome Lucide SVGs (ISC, vendored verbatim at the
+  upstream 1.66.0 tag under
+  `crates/taskboard-ui-slint/ui/assets/icons/` with the license file)
+  tinted via `Image.colorize` behind the closed `IconKind` enum — no
+  icon font, offline-embedded (D19 as amended). The drawn per-kind
+  geometry blocks in the icon button die; the vocabulary grows by
+  `dismiss` (the circled x — "Dismiss notification" and "Mark task
+  done" now render distinct icons), `timer`, `link`, `link-off`,
+  `chevron-down`, and `pencil` for the round's upcoming surfaces; the
+  status bar's hand-drawn tracking stop square renders the shared
+  glyph. Assets ride the compile-time embed; the release binary's
+  delta is recorded in the chunk report.
+
 - Undo v2 widening, tracking/habit arms (#555): undo now covers time-log
   and habit bookkeeping — `LogTime` (undo deletes the minted entry),
   `AdjustTimeEntry` (unless it closes an open entry), `CreateHabit`
