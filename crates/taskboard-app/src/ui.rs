@@ -241,9 +241,15 @@ pub fn resolve_ui_settings(
         // Overwritten by the lifecycle from the engine config right
         // after this returns (the kiosk/connectors/boards precedent).
         reminder_defaults: taskboard_domain::ReminderDefaults::default(),
-        // The window-geometry restore value (#412): wired to the
-        // `[ui.window_geometry]` mint by the config-lane commit.
-        window_geometry: None,
+        // The window-geometry restore value (#412): the raw table
+        // mints here (the fallible `WindowGeometry::new`) — a refused
+        // value hands `None` through and never blocks UI start (the
+        // lenient-read contract; the `UiScale` expect-shape is
+        // deliberately NOT copied — geometry's mint is fallible by
+        // design).
+        window_geometry: ui.window_geometry.and_then(|raw| {
+            taskboard_ui_slint::geometry::WindowGeometry::new(raw.x, raw.y, raw.width, raw.height)
+        }),
     };
     (settings, built.findings)
 }
@@ -631,6 +637,7 @@ mod keymap_resolution_tests {
         // conflict with the preset — plus one valid override.
         let ui = crate::config::UiSection {
             scale: 1.25,
+            window_geometry: None,
             stack_widths: BTreeMap::new(),
             keymap: KeymapSection {
                 preset: KeymapPreset::Standard,
@@ -751,6 +758,79 @@ mod keymap_resolution_tests {
                 .and_then(|s| s.get(&stack)),
             Some(&240u32)
         );
+    }
+
+    /// T6 — the lenient read at the hand-over (#412): a valid table
+    /// hands a minted `Some`; degenerate dimensions (a zero width, an
+    /// absurd `2^40` height) hand `None` — and the call still returns
+    /// (a hostile geometry never blocks UI start, Q15/D3).
+    #[test]
+    fn resolve_mints_the_window_geometry_leniently() {
+        let geometry = crate::config::WindowGeometryTable {
+            x: -1920,
+            y: 0,
+            width: 1366,
+            height: 768,
+        };
+        let (settings, _) = resolve_ui_settings(
+            &crate::config::UiSection {
+                window_geometry: Some(geometry),
+                ..crate::config::UiSection::default()
+            },
+            (
+                chrono::NaiveTime::MIN,
+                chrono::FixedOffset::east_opt(0).expect("zero"),
+            ),
+        );
+        let minted = settings.window_geometry.expect("the valid table mints");
+        assert_eq!(
+            (minted.x(), minted.y(), minted.width(), minted.height()),
+            (-1920, 0, 1366, 768),
+            "the mint carries the stored values verbatim"
+        );
+
+        for hostile in [
+            crate::config::WindowGeometryTable {
+                x: 0,
+                y: 0,
+                width: 0,
+                height: 100,
+            },
+            crate::config::WindowGeometryTable {
+                x: 0,
+                y: 0,
+                width: 100,
+                height: 1 << 40,
+            },
+            crate::config::WindowGeometryTable {
+                x: i64::from(i32::MAX) + 1,
+                y: 0,
+                width: 100,
+                height: 100,
+            },
+        ] {
+            let (settings, _) = resolve_ui_settings(
+                &crate::config::UiSection {
+                    window_geometry: Some(hostile),
+                    ..crate::config::UiSection::default()
+                },
+                (
+                    chrono::NaiveTime::MIN,
+                    chrono::FixedOffset::east_opt(0).expect("zero"),
+                ),
+            );
+            assert_eq!(settings.window_geometry, None, "a hostile table hands None");
+        }
+
+        // Absent: `None`, same as refused.
+        let (settings, _) = resolve_ui_settings(
+            &crate::config::UiSection::default(),
+            (
+                chrono::NaiveTime::MIN,
+                chrono::FixedOffset::east_opt(0).expect("zero"),
+            ),
+        );
+        assert_eq!(settings.window_geometry, None);
     }
 
     /// A1 (r2 D32) — the board-selector resolution over a hand-built

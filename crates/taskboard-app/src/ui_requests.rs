@@ -2,12 +2,23 @@
 
 //! The UI → app request lane's app half (round-1 D21): the debounced
 //! forwarder that persists device-local stack column widths into the
-//! `[ui.stack_widths]` config subtree. Single-owner rule (R6): this
-//! task owns every write of that subtree — no other code path touches
-//! it. Every error is logged and swallowed: the UI's widths live on in
+//! `[ui.stack_widths]` config subtree and the device-local
+//! main-window geometry into `[ui.window_geometry]` (#412).
+//! Single-owner rule (R6, extended): this task owns every write of
+//! both subtrees — no other code path touches them; one flush is one
+//! atomic read-merge-write over the whole document, and every
+//! in-process settings write runs on this same task, so daemon-side
+//! writers never race each other. Every error is logged and swallowed:
+//! the UI's widths live on in
 //! the view state, the next received request retries the whole
 //! read-merge-write, and the forwarder never blocks or crashes the UI
 //! (D8) — it only ever holds owned maps, never a lock across `.await`.
+//! Residual constraint: `connect`/`login`/`logout` are terminal-bound
+//! ceremonies (the IPC server refuses them), so a one-shot CLI process
+//! rewriting the document while the daemon flushes is the one
+//! read-merge-write window no lock covers — pre-existing since D21
+//! (the `stack_widths` flush carried it); its worst case is a lost
+//! update of one side, never a torn file (the write is rename-atomic).
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -20,6 +31,7 @@ use tokio::task::JoinHandle;
 use taskboard_domain::{AppState, BoardId, ConnectorId, RemoteBoardId, StateCommand};
 use taskboard_state::{EngineHandle, ExecuteError};
 use taskboard_sync_nextcloud::DeckClient;
+use taskboard_ui_slint::geometry::WindowGeometry;
 use taskboard_ui_slint::requests::{
     ConnectionProfile, ConnectionTarget, ConnectionsSnapshot, ConnectorInfo, Field, InvalidKind,
     KeymapUpdate, SettingsError, UiRequest,
@@ -67,53 +79,82 @@ pub struct ConnectionWorkspace {
 }
 
 /// Spawns the UI request forwarder: width snapshots merge into the
-/// pending map and debounce into one config flush (chunk 2's path,
-/// byte-for-byte semantics); every settings request is handled
-/// immediately — one-shot actions with replies are never debounced,
-/// including ones arriving inside a width quiet window (plan D3).
-/// On channel close (the UI side dropped) one final flush lands a
-/// resize sent right before quit, then the task exits. The caller owns
-/// the handle's retirement.
+/// pending map, geometry snapshots replace the pending rect (latest
+/// wins), and both debounce into one config flush (chunk 2's path,
+/// byte-for-byte semantics — one document per flush, D7); every
+/// settings request is handled immediately — one-shot actions with
+/// replies are never debounced, including ones arriving inside a
+/// quiet window (plan D3). On channel close (the UI side dropped) one
+/// final flush lands a change sent right before quit, then the task
+/// exits. The caller owns the handle's retirement.
 pub fn spawn_ui_request_forwarder(
     mut requests: mpsc::Receiver<UiRequest>,
     state: Arc<ArcSwap<AppState>>,
     workspace: ConnectionWorkspace,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        let mut pending: BTreeMap<uuid::Uuid, BTreeMap<uuid::Uuid, u32>> = BTreeMap::new();
+        let mut pending_widths: BTreeMap<uuid::Uuid, BTreeMap<uuid::Uuid, u32>> = BTreeMap::new();
+        let mut pending_geometry: Option<WindowGeometry> = None;
         loop {
             let Some(request) = requests.recv().await else {
-                flush(&mut pending, &workspace.config_write_path, &state.load());
+                flush(
+                    &mut pending_widths,
+                    &mut pending_geometry,
+                    &workspace.config_write_path,
+                    &state.load(),
+                );
                 tracing::info!("ui request channel closed; forwarder exiting");
                 return;
             };
             match request {
                 UiRequest::StackWidthsChanged { board, widths } => {
-                    merge_widths(board, widths, &mut pending);
-                    // The debounce quiet window: a late width snapshot
-                    // merges and restarts it; a settings request is
-                    // executed on the spot (never debounced); close
-                    // flushes; elapsed falls through to the flush.
-                    loop {
-                        match tokio::time::timeout(UI_REQUEST_DEBOUNCE, requests.recv()).await {
-                            Ok(Some(UiRequest::StackWidthsChanged { board, widths })) => {
-                                merge_widths(board, widths, &mut pending);
-                            }
-                            Ok(Some(settings)) => {
-                                handle_settings(settings, &workspace).await;
-                            }
-                            Ok(None) => {
-                                flush(&mut pending, &workspace.config_write_path, &state.load());
-                                tracing::info!("ui request channel closed; forwarder exiting");
-                                return;
-                            }
-                            Err(_elapsed) => break,
-                        }
-                    }
-                    flush(&mut pending, &workspace.config_write_path, &state.load());
+                    merge_widths(board, widths, &mut pending_widths);
                 }
-                settings => handle_settings(settings, &workspace).await,
+                UiRequest::WindowGeometryChanged { geometry } => {
+                    // Latest wins: a capture burst collapses to the
+                    // last rect (the full-snapshot semantics).
+                    pending_geometry = Some(geometry);
+                }
+                settings => {
+                    handle_settings(settings, &workspace).await;
+                    continue;
+                }
             }
+            // The debounce quiet window (both debounced lanes): a
+            // late debounced request merges and restarts it; a
+            // settings request is executed on the spot (never
+            // debounced); close flushes; elapsed falls through to the
+            // flush.
+            loop {
+                match tokio::time::timeout(UI_REQUEST_DEBOUNCE, requests.recv()).await {
+                    Ok(Some(UiRequest::StackWidthsChanged { board, widths })) => {
+                        merge_widths(board, widths, &mut pending_widths);
+                    }
+                    Ok(Some(UiRequest::WindowGeometryChanged { geometry })) => {
+                        pending_geometry = Some(geometry);
+                    }
+                    Ok(Some(settings)) => {
+                        handle_settings(settings, &workspace).await;
+                    }
+                    Ok(None) => {
+                        flush(
+                            &mut pending_widths,
+                            &mut pending_geometry,
+                            &workspace.config_write_path,
+                            &state.load(),
+                        );
+                        tracing::info!("ui request channel closed; forwarder exiting");
+                        return;
+                    }
+                    Err(_elapsed) => break,
+                }
+            }
+            flush(
+                &mut pending_widths,
+                &mut pending_geometry,
+                &workspace.config_write_path,
+                &state.load(),
+            );
         }
     })
 }
@@ -171,34 +212,55 @@ fn prune_widths(
 }
 
 /// The flush: prune, then one read-merge-write over the config
-/// overlay. Errors are warned and swallowed — the pending map is
-/// dropped either way; the next received request re-sends the full
-/// snapshot.
+/// overlay covering both pending subtrees (D7 — one document, one
+/// atomic write, the R6 single-writer discipline). Errors are warned
+/// and swallowed — the pending state is dropped either way; the next
+/// received request re-sends the full snapshot.
 fn flush(
-    pending: &mut BTreeMap<uuid::Uuid, BTreeMap<uuid::Uuid, u32>>,
+    pending_widths: &mut BTreeMap<uuid::Uuid, BTreeMap<uuid::Uuid, u32>>,
+    pending_geometry: &mut Option<WindowGeometry>,
     config_write_path: &std::path::Path,
     state: &AppState,
 ) {
-    if pending.is_empty() {
+    let had_widths = !pending_widths.is_empty();
+    if !had_widths && pending_geometry.is_none() {
         return; // nothing was ever received: no write at all
     }
-    let pruned = prune_widths(pending, state);
-    pending.clear();
-    if let Err(err) = overlay_stack_widths(config_write_path, &pruned) {
-        tracing::warn!(error = %err, "stack-widths overlay write failed; the next event retries");
+    // `None` widths = the subtree stays untouched this flush (a
+    // geometry-only change must not remove or prune the widths); an
+    // `Some(empty)` prune result still removes the subtree (no husk).
+    let pruned = if had_widths {
+        let pruned = prune_widths(pending_widths, state);
+        pending_widths.clear();
+        Some(pruned)
+    } else {
+        None
+    };
+    let geometry = pending_geometry.take();
+    if let Err(err) = overlay_ui(config_write_path, pruned.as_ref(), geometry.as_ref()) {
+        tracing::warn!(error = %err, "ui-config overlay write failed; the next event retries");
     }
 }
 
-/// Merges the pruned widths into the `[ui.stack_widths]` subtree of
-/// the config file via `toml_edit` (comments, formatting, and every
-/// other table preserved by construction; comments *inside* the
-/// subtree are machine territory). An empty map *removes* the subtree
-/// instead — no empty husk. The whole-document write is atomic
-/// (temp + rename; the file's mode is preserved, a created file is
-/// owner-only).
+/// The widths-only overlay wrapper: the single-subtree path the
+/// overlay tests drive (the forwarder itself always goes through
+/// [`overlay_ui`], so a flush stays one document).
+#[cfg(test)]
 fn overlay_stack_widths(
     path: &std::path::Path,
     widths: &BTreeMap<uuid::Uuid, BTreeMap<uuid::Uuid, u32>>,
+) -> std::io::Result<()> {
+    overlay_ui(path, Some(widths), None)
+}
+
+/// The one-document overlay (D7): applies the pending subtrees —
+/// `None` leaves a subtree untouched — and writes the whole document
+/// once, atomically. Comments, formatting, and every unrelated table
+/// are preserved by construction (`toml_edit`).
+fn overlay_ui(
+    path: &std::path::Path,
+    widths: Option<&BTreeMap<uuid::Uuid, BTreeMap<uuid::Uuid, u32>>>,
+    geometry: Option<&WindowGeometry>,
 ) -> std::io::Result<()> {
     let mut doc = crate::config::overlay_document(path)?;
     let ui = doc
@@ -208,6 +270,21 @@ fn overlay_stack_widths(
         .ok_or_else(|| {
             std::io::Error::new(std::io::ErrorKind::InvalidData, "[ui] is not a table")
         })?;
+    if let Some(widths) = widths {
+        apply_stack_widths(ui, widths)?;
+    }
+    if let Some(geometry) = geometry {
+        apply_window_geometry(ui, geometry);
+    }
+    crate::config::write_config_atomic(path, doc.to_string().as_str())
+}
+
+/// The `[ui.stack_widths]` subtree applier (the overlay's width half,
+/// byte-for-byte the pre-#412 body).
+fn apply_stack_widths(
+    ui: &mut toml_edit::Table,
+    widths: &BTreeMap<uuid::Uuid, BTreeMap<uuid::Uuid, u32>>,
+) -> std::io::Result<()> {
     if widths.is_empty() {
         ui.remove("stack_widths");
     } else {
@@ -232,7 +309,19 @@ fn overlay_stack_widths(
             subtree.insert(&board.to_string(), toml_edit::Item::Table(board_table));
         }
     }
-    crate::config::write_config_atomic(path, doc.to_string().as_str())
+    Ok(())
+}
+
+/// The `[ui.window_geometry]` subtree applier (#412): the four
+/// physical-pixel cells of the pending rect. No liveness prune —
+/// nothing in the engine state can invalidate a window rect.
+fn apply_window_geometry(ui: &mut toml_edit::Table, geometry: &WindowGeometry) {
+    let mut subtree = toml_edit::Table::new();
+    subtree.insert("x", toml_edit::value(i64::from(geometry.x())));
+    subtree.insert("y", toml_edit::value(i64::from(geometry.y())));
+    subtree.insert("width", toml_edit::value(i64::from(geometry.width())));
+    subtree.insert("height", toml_edit::value(i64::from(geometry.height())));
+    ui.insert("window_geometry", toml_edit::Item::Table(subtree));
 }
 
 /// The bounded, offline-first settle after a settings save (the boot
@@ -245,8 +334,8 @@ const SAVE_SETTLE: std::time::Duration = std::time::Duration::from_secs(5);
 /// undone by a failed reply.
 async fn handle_settings(request: UiRequest, workspace: &ConnectionWorkspace) {
     match request {
-        UiRequest::StackWidthsChanged { .. } => {
-            unreachable!("width snapshots take the debounce path")
+        UiRequest::StackWidthsChanged { .. } | UiRequest::WindowGeometryChanged { .. } => {
+            unreachable!("width and geometry snapshots take the debounce path")
         }
         UiRequest::TestConnection { target, reply } => {
             let outcome = test_connection(workspace, &target).await;
@@ -1331,6 +1420,153 @@ mod tests {
         forwarder.await.expect("forwarder joins cleanly");
         assert!(!path.exists(), "no write at all when nothing was received");
     }
+    // -- the geometry lane (T7/T8) -------------------------------------------
+
+    fn geometry(x: i64, y: i64, w: i64, h: i64) -> WindowGeometry {
+        WindowGeometry::new(x, y, w, h).expect("sane test rect")
+    }
+
+    /// T7 — two geometry snapshots inside the quiet window collapse
+    /// into one write carrying the last rect; the flush lands on
+    /// quiet-window elapse and on channel close.
+    #[tokio::test]
+    async fn geometry_requests_debounce_into_one_write_of_the_latest_rect() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("taskboard.toml");
+        std::fs::write(&path, "[ui]\nscale = 1.0\n").expect("seed");
+        let (state, _, _, _) = fixture_state();
+        let (tx, rx) = ui_request_channel();
+        let forwarder = spawn_ui_request_forwarder(
+            rx,
+            Arc::new(ArcSwap::from_pointee(state)),
+            test_workspace(path.clone()).await,
+        );
+        tokio::time::pause();
+
+        tx.try_send(UiRequest::WindowGeometryChanged {
+            geometry: geometry(10, 20, 800, 600),
+        })
+        .expect("capacity holds");
+        tx.try_send(UiRequest::WindowGeometryChanged {
+            geometry: geometry(30, 40, 1024, 768),
+        })
+        .expect("capacity holds");
+        // Inside the quiet window: nothing written yet.
+        tokio::time::advance(
+            UI_REQUEST_DEBOUNCE
+                .checked_sub(std::time::Duration::from_millis(1))
+                .expect("positive"),
+        )
+        .await;
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            !std::fs::read_to_string(&path)
+                .expect("read")
+                .contains("window_geometry"),
+            "the window has not elapsed"
+        );
+        // The window elapses: exactly the last rect lands.
+        tokio::time::advance(UI_REQUEST_DEBOUNCE + std::time::Duration::from_millis(1)).await;
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+        let doc = std::fs::read_to_string(&path)
+            .expect("read")
+            .parse::<toml_edit::DocumentMut>()
+            .expect("parses");
+        let subtree = doc["ui"]["window_geometry"].as_table().expect("subtree");
+        assert_eq!(
+            subtree.get("x").and_then(toml_edit::Item::as_integer),
+            Some(30)
+        );
+        assert_eq!(
+            subtree.get("width").and_then(toml_edit::Item::as_integer),
+            Some(1024)
+        );
+
+        // A change sent right before quit still lands (the close flush).
+        tx.try_send(UiRequest::WindowGeometryChanged {
+            geometry: geometry(-500, 0, 800, 600),
+        })
+        .expect("capacity holds");
+        drop(tx);
+        forwarder.await.expect("forwarder joins cleanly");
+        let doc = std::fs::read_to_string(&path)
+            .expect("read")
+            .parse::<toml_edit::DocumentMut>()
+            .expect("parses");
+        assert_eq!(
+            doc["ui"]["window_geometry"]["x"].as_integer(),
+            Some(-500),
+            "the close flush landed"
+        );
+    }
+
+    /// T8 — a geometry flush preserves comments and unrelated tables
+    /// byte-for-byte, and one flush carrying widths *and* geometry
+    /// writes both subtrees in one document (the R6 single-writer
+    /// discipline, D7).
+    #[tokio::test]
+    async fn one_flush_covers_both_subtrees_and_preserves_the_document() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("taskboard.toml");
+        std::fs::write(
+            &path,
+            "# operator comment\n[ui]\nscale = 1.5\n[nextcloud]\n# keep me\nserver_url = \"https://x\"\n",
+        )
+        .expect("seed");
+        let (state, board, stack_a, _) = fixture_state();
+        let (tx, rx) = ui_request_channel();
+        let forwarder = spawn_ui_request_forwarder(
+            rx,
+            Arc::new(ArcSwap::from_pointee(state)),
+            test_workspace(path.clone()).await,
+        );
+        tokio::time::pause();
+
+        // One width snapshot and one geometry snapshot, debounced
+        // together into one flush.
+        tx.try_send(UiRequest::StackWidthsChanged {
+            board: BoardId::from_uuid(board),
+            widths: vec![(StackId::from_uuid(stack_a), 240)],
+        })
+        .expect("capacity holds");
+        tx.try_send(UiRequest::WindowGeometryChanged {
+            geometry: geometry(-1920, 0, 1366, 768),
+        })
+        .expect("capacity holds");
+        tokio::time::advance(UI_REQUEST_DEBOUNCE + std::time::Duration::from_millis(1)).await;
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+        drop(tx);
+        forwarder.await.expect("forwarder joins cleanly");
+
+        let written = std::fs::read_to_string(&path).expect("read");
+        assert!(written.contains("# operator comment"));
+        assert!(written.contains("# keep me"), "unrelated comments survive");
+        assert!(written.contains("scale = 1.5"));
+        let doc = written.parse::<toml_edit::DocumentMut>().expect("parses");
+        let geometry = doc["ui"]["window_geometry"]
+            .as_table()
+            .expect("geometry subtree");
+        assert_eq!(
+            geometry.get("x").and_then(toml_edit::Item::as_integer),
+            Some(-1920)
+        );
+        assert_eq!(
+            geometry.get("height").and_then(toml_edit::Item::as_integer),
+            Some(768)
+        );
+        assert_eq!(
+            doc["ui"]["stack_widths"][&board.to_string()][&stack_a.to_string()].as_integer(),
+            Some(240),
+            "both subtrees landed from the same flush"
+        );
+    }
+
     // -- A10: the mapping tables ------------------------------------------
 
     /// A10 — every reachable `CommandError` class from the extracted
