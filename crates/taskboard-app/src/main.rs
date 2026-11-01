@@ -453,11 +453,11 @@ async fn daemon_lifecycle(
 /// The shared headless boot (ADR 0016): resolve the credential store,
 /// bootstrap the core (boot failures reported typed, the `--json`
 /// envelope on stderr — `instance-locked` included), start the
-/// system-event logger, and spawn the per-database IPC socket. One
-/// core, N frontends (ADR 0008): the socket serves every core verb
-/// while the lifecycle runs. `what` names the lifecycle in the
-/// serving log line. The daemon lifecycle and the kiosk appliance
-/// both enter here.
+/// system-event logger, and — unless `[ipc] enabled = false` skipped
+/// it — spawn the per-database IPC socket. One core, N frontends
+/// (ADR 0008): the socket serves every core verb while the lifecycle
+/// runs. `what` names the lifecycle in the serving log line. The
+/// daemon lifecycle and the kiosk appliance both enter here.
 async fn boot_and_serve(
     config: AppConfig,
     config_path: Option<std::path::PathBuf>,
@@ -465,7 +465,7 @@ async fn boot_and_serve(
     what: &'static str,
 ) -> color_eyre::Result<(
     Arc<App>,
-    taskboard_app::ipc::server::IpcServerHandle,
+    Option<taskboard_app::ipc::server::IpcServerHandle>,
     Option<taskboard_app::web::DashboardServerHandle>,
 )> {
     let store = taskboard_app::secrets::resolve_credential_store(
@@ -485,22 +485,35 @@ async fn boot_and_serve(
 
     let _logger = taskboard_app::bootstrap::spawn_system_event_logger(&app.system);
 
-    let session = Arc::new(BasicSession {
-        config: app.config.clone(),
-        store,
-        config_path: AppConfig::config_path(config_path),
-    });
-    let server =
+    // The IPC gate (`[ipc] enabled`, the #194 knob): the ONLY
+    // conditional step in the boot — the core, the instance lock, the
+    // actors, and the optional `[web]` dashboard below run either way.
+    let server = if app.config.ipc.enabled {
+        let session = Arc::new(BasicSession {
+            config: app.config.clone(),
+            store,
+            config_path: AppConfig::config_path(config_path),
+        });
         match taskboard_app::ipc::server::spawn_server(app.clone(), session, app.config.db_path())
             .await
         {
-            Ok(server) => server,
+            Ok(server) => Some(server),
             Err(err) => return Err(err.into()),
-        };
-    tracing::info!(
-        db = %app.config.db_path().display(),
-        "{what} serving commands over ipc"
-    );
+        }
+    } else {
+        None
+    };
+    if server.is_some() {
+        tracing::info!(
+            db = %app.config.db_path().display(),
+            "{what} serving commands over ipc"
+        );
+    } else {
+        tracing::info!(
+            db = %app.config.db_path().display(),
+            "{what} running with ipc disabled; no command surface"
+        );
+    }
     // The web kiosk dashboard (K11): opt-in through `[web]`, spawned
     // beside the IPC socket — the decode rules were enforced at config
     // load, the token ceremony and the LAN-bind refusal live in the
@@ -532,7 +545,7 @@ async fn boot_and_serve(
 /// escalates instead of re-initiating (the machine owns the counting).
 async fn serve_and_shutdown(
     app: Arc<App>,
-    server: taskboard_app::ipc::server::IpcServerHandle,
+    server: Option<taskboard_app::ipc::server::IpcServerHandle>,
     web: Option<taskboard_app::web::DashboardServerHandle>,
     signals: &mut taskboard_app::signals::LifecycleSignals,
 ) -> color_eyre::Result<()> {
@@ -540,7 +553,15 @@ async fn serve_and_shutdown(
         () = taskboard_app::signals::changed_or_never(&mut signals.begin_drain) => {
             tracing::info!("shutdown signal received");
         }
-        () = server.stopped() => {
+        // `daemon stop` cannot arrive on a disabled socket (nothing
+        // serves it), so the None arm is `pending`: the only exit is
+        // the signal ladder's rung 1.
+        () = async {
+            match server.as_ref() {
+                Some(server) => server.stopped().await,
+                None => std::future::pending::<()>().await,
+            }
+        } => {
             tracing::info!("shutdown requested over ipc");
             let _ = signals.stop_request.send(());
         }
@@ -591,7 +612,7 @@ fn forced_exit(escalate: &mut tokio::sync::watch::Receiver<taskboard_app::signal
 /// clean drain.
 async fn drain_and_shutdown(
     app: Arc<App>,
-    server: taskboard_app::ipc::server::IpcServerHandle,
+    server: Option<taskboard_app::ipc::server::IpcServerHandle>,
     web: Option<taskboard_app::web::DashboardServerHandle>,
     signals: &mut taskboard_app::signals::LifecycleSignals,
 ) -> color_eyre::Result<()> {
@@ -604,7 +625,12 @@ async fn drain_and_shutdown(
             // wedged peer must never hold the daemon's shutdown hostage)
             // and the refcount is released either way. The dashboard's
             // drain rides the same budget as the IPC socket's.
-            let ipc_hit = server.join(shutdown_timeout).await;
+            let ipc_hit = match server {
+                Some(server) => server.join(shutdown_timeout).await,
+                // An absent server contributes no degraded hit — the
+                // literal shape the web arm has one line below.
+                None => false,
+            };
             let web_hit = match web {
                 Some(web) => web.join(shutdown_timeout).await,
                 None => false,
@@ -637,6 +663,39 @@ async fn drain_and_shutdown(
     let _ = signals.progress.send(());
     taskboard_app::bootstrap::exit_if_degraded(outcome, ipc_hit || web_hit);
     Ok(())
+}
+
+/// The kiosk appliance's exit watcher (Q2): the ladder's rung 1 and
+/// `daemon stop` both quit the event loop; window close is the third
+/// exit and needs no arm — it ends `run` directly. On a disabled
+/// socket `daemon stop` cannot arrive, so the stop arm is `pending`:
+/// signals + window close remain. The retry matters here exactly as in
+/// `run_desktop`: a stop racing the boot window (before `run` starts
+/// the loop) is otherwise silently lost.
+fn spawn_kiosk_exit_watcher(
+    stop_rx: Option<tokio::sync::watch::Receiver<bool>>,
+    mut begin_drain: tokio::sync::watch::Receiver<()>,
+    stop_feed: tokio::sync::watch::Sender<()>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        tokio::select! {
+            () = taskboard_app::signals::changed_or_never(&mut begin_drain) => {
+                tracing::info!("shutdown signal received");
+            }
+            () = async {
+                match stop_rx {
+                    Some(rx) => {
+                        taskboard_app::ipc::server::IpcServerHandle::stopped_from(rx).await;
+                    }
+                    None => std::future::pending::<()>().await,
+                }
+            } => {
+                tracing::info!("shutdown requested over ipc");
+                let _ = stop_feed.send(());
+            }
+        }
+        taskboard_app::ui::quit_until_accepted().await;
+    })
 }
 
 /// The kiosk appliance lifecycle (ADR 0016, Q1/Q2/Q3): boot the daemon
@@ -784,24 +843,13 @@ async fn run_kiosk(
             // stop` both quit the event loop; window close is the third
             // exit and needs no arm — it ends `run` directly. Clone
             // halves; the owning `signals` stays with the drain tail.
-            let stop_rx = server.stopped_receiver();
-            let mut begin_drain = signals.begin_drain.clone();
-            let stop_feed = signals.stop_request.clone();
-            let watcher = tokio::spawn(async move {
-                tokio::select! {
-                    () = taskboard_app::signals::changed_or_never(&mut begin_drain) => {
-                        tracing::info!("shutdown signal received");
-                    }
-                    () = taskboard_app::ipc::server::IpcServerHandle::stopped_from(stop_rx) => {
-                        tracing::info!("shutdown requested over ipc");
-                        let _ = stop_feed.send(());
-                    }
-                }
-                // The retry matters here exactly as in `run_desktop`:
-                // a stop racing the boot window (before `run` starts
-                // the loop) is otherwise silently lost.
-                taskboard_app::ui::quit_until_accepted().await;
-            });
+            let watcher = spawn_kiosk_exit_watcher(
+                server
+                    .as_ref()
+                    .map(taskboard_app::ipc::server::IpcServerHandle::stopped_receiver),
+                signals.begin_drain.clone(),
+                signals.stop_request.clone(),
+            );
 
             let run_result = taskboard_ui_slint::run(handle);
 
