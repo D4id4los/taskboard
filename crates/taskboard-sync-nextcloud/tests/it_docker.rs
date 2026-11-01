@@ -1065,7 +1065,7 @@ async fn it_nextcloud_docker_sync_echo_idempotence() {
 #[ignore = "requires the pinned Deck 1.17.5 gate tier (nextcloud_it_setup.sh with DECK_VERSION=v1.17.5)"]
 async fn it_nextcloud_docker_deck1175_scheduled_fallback_convergence() {
     let Some(cfg) = live_docker_deck1175_config() else {
-        return; // honest skip: the gate tier runs locally, CI does not wire it
+        return; // honest skip (locally; CI wires it as the workflow's floor leg)
     };
     with_deadline(d::scheduled_fallback_convergence(&cfg))
         .await
@@ -1098,8 +1098,10 @@ async fn it_nextcloud_docker_startdate_round_trip() {
 /// fixtures, run against a second instance pinned to
 /// `DECK_VERSION=v1.17.5` + `TASKBOARD_IT_NC_IMAGE=nextcloud:33-apache`,
 /// credentials under the `TASKBOARD_IT_DOCKER_DECK1175` prefix. Unset ⇒
-/// skip, never fail; the gate run happens locally against the pinned
-/// instance (CI does not wire the variant).
+/// skip, never fail; the gate run happens against the pinned instance —
+/// locally per the invocation in `docs/testing_strategy.org` §8, and in
+/// CI as the weekly `.github/workflows/nextcloud-integration.yml`
+/// matrix's `floor` leg.
 #[tokio::test]
 #[ignore = "requires the pinned Deck 1.17.5 gate tier (nextcloud_it_setup.sh with DECK_VERSION=v1.17.5)"]
 async fn it_nextcloud_docker_deck1175_attachment_content_lifecycle() {

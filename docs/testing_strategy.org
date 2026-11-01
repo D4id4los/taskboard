@@ -172,8 +172,9 @@ invocation.
   =occ user:add-app-password= — =app-password:assign= on newer releases)
   so this tier exercises the production auth path. CI runs the tier
   under the =it_nextcloud_docker= test-name filter.
-- *Tier 2 variant — the Deck 1.17.5 gate instance (local + CI-able;
-  CI wiring deliberately not wired as of 2026-10-22).* The compose
+- *Tier 2 variant — the Deck 1.17.5 gate instance (local + CI; wired
+  to CI since 2026-11-01 as the `floor` leg of the weekly
+  =.github/workflows/nextcloud-integration.yml= matrix).* The compose
   file interpolates the image (=TASKBOARD_IT_NC_IMAGE=) and the setup
   script pins the Deck release (=DECK_VERSION=, installed from the
   official =nextcloud-releases= GitHub tarball and verified via
@@ -185,9 +186,9 @@ invocation.
   scripts/nextcloud_it_setup.sh up
   #+end_src
   The =…_deck1175_*= fixtures carry the same =it_nextcloud_docker=
-  substring (the CI filter picks them up with zero workflow edits)
-  and skip when =TASKBOARD_IT_DOCKER_DECK1175_*​= is unset — the gate
-  run happens locally against the pinned instance. Rationale and
+  substring (the CI `floor` leg's filter selects exactly these) and
+  skip when =TASKBOARD_IT_DOCKER_DECK1175_*​= is unset — locally, the
+  gate run is the invocation above against the pinned instance. Rationale and
   ruling: the 2026-10-22 characterization pass measured two Deck
   1.17.5 divergences and the connector adapts to them via a
   capability probe (see the known-server matrix below and
