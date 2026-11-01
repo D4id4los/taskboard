@@ -44,7 +44,10 @@
 //! `debug` events carry rule verdicts as typed facts (rule tags, outcome
 //! discriminants, booleans, ids, timestamps — never prose). Unchanged-
 //! remote fast paths are silent by design. Tests never assert this text
-//! (AGENTS §5); the events are behavior-neutral by construction.
+//! (AGENTS §5); the events are behavior-neutral by construction. The
+//! rule-tag vocabulary — every rule's tag and emission shape, including
+//! R2's deliberate silence and the R7/R8 ride-along — is documented at
+//! the rule-tag consts block below.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -63,6 +66,34 @@ use crate::remote::{
 
 /// Rule tags for the conflict-policy `tracing` events: single
 /// definitions, because tests are forbidden from asserting log text.
+///
+/// The tag vocabulary, rule by rule (the mapping the events above rely
+/// on):
+///
+/// - **R1** (adoption): a remote entity with no local row is adopted
+///   (`adopt_*`, or deferred when its stack has no local binding).
+/// - **R2 — the quiet rule**: a local-only (never-pushed) entity is
+///   untouched by the merge; no code path emits a verdict event for it
+///   (it manifests as the pipeline skipping the merge for unbound
+///   rows). No const, by design — a rule with no emission site gets no
+///   tag.
+/// - **R3** (delete-wins): an observed remote absence tombstones the
+///   local row (cards) or LWW-resolves against the local tombstone
+///   clock (boards/stacks/labels).
+/// - **R4** (per-field LWW) is the *task*-scoped per-field umbrella:
+///   one debug event per merged task carries every field verdict as
+///   typed booleans. It is also the ride-along for two rules without
+///   dedicated events: **R7** (label sets) manifests as
+///   `labels_remote_adds`/`labels_remote_removes` and **R8** (composite
+///   position) as `position_remote_wins` on that same event.
+/// - **R5** (resurrection): a remote edit of a locally deleted task.
+/// - **R6** (pull-side entity merge): bound stack/board merges log
+///   here, with their own per-field verdict booleans.
+/// - **R9** (push echo): server echoes of our own writes are adopted
+///   unconditionally.
+/// - **`R-dup`** (#150) and **`R-recur-dup`** (§3.6): the crash-window
+///   duplicate reconcile and the series-twin collapse — traced, never
+///   broadcast; `R-recur-dup` is emitted by [`crate::pipeline`].
 pub(crate) const RULE_R1: &str = "R1";
 pub(crate) const RULE_R3: &str = "R3";
 pub(crate) const RULE_R4: &str = "R4";
