@@ -8325,3 +8325,152 @@ fn a_task_notification_row_keeps_all_four_buttons() {
         },
     );
 }
+
+// ---- R4-F6 (r4 design D2): a right-click outside an open overlay
+// closes it — every full-window dismissal layer carries the same
+// right-down arm the left-click `clicked` seam already has.
+
+/// The menu layer: a right-press off the panel dismisses, typed via
+/// `KeyboardState.menu-open` (the outside-left-click journey's twin).
+#[test]
+fn a_right_press_outside_dismisses_the_menu() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.set_window_size(1000, 900);
+            harness.press(ActionId::AppMenu);
+            harness.driver.advance_time(0);
+            assert!(keyboard(&harness).get_menu_open());
+            harness.driver.right_press_at(10.0, 450.0);
+            assert!(
+                !keyboard(&harness).get_menu_open(),
+                "the right-down closed the menu"
+            );
+        },
+    );
+}
+
+/// The palette layer: the typed `palette-open` bit falls on a
+/// right-press in the corner (the centered panel never reaches it).
+#[test]
+fn a_right_press_outside_dismisses_the_palette() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.set_window_size(1000, 900);
+            harness.press(ActionId::PaletteSearch);
+            harness.driver.advance_time(0);
+            assert!(harness.handle.window().get_palette_open());
+            harness.driver.right_press_at(990.0, 890.0);
+            assert!(
+                !harness.handle.window().get_palette_open(),
+                "the right-down closed the palette"
+            );
+        },
+    );
+}
+
+/// The capture layer: the typed `capture-open` bit falls on a
+/// right-press in the corner (the centered modal never reaches it).
+#[test]
+fn a_right_press_outside_dismisses_the_capture_overlay() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.set_window_size(1000, 900);
+            harness.press(ActionId::CaptureQuick);
+            harness.driver.advance_time(0);
+            assert!(harness.handle.window().get_capture_open());
+            harness.driver.right_press_at(990.0, 890.0);
+            assert!(
+                !harness.handle.window().get_capture_open(),
+                "the right-down closed the capture overlay"
+            );
+        },
+    );
+}
+
+/// The date-picker layer: the typed `date-picker-open` bit falls on a
+/// right-press far from the anchored panel.
+#[test]
+fn a_right_press_outside_dismisses_the_date_picker() {
+    let (fixture, mut state) = fixture::journey_state();
+    let due = chrono::Utc.with_ymd_and_hms(2030, 1, 30, 0, 0, 0).unwrap();
+    state
+        .tasks
+        .get_mut(&fixture.task0)
+        .expect("fixture task")
+        .duedate = Some(due);
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: false,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavNextView);
+            harness.press(ActionId::NavNextView);
+            harness.driver.click_by_label("Edit due date");
+            harness.driver.advance_time(0);
+            assert!(harness.handle.window().get_task_model().date_picker_open);
+            harness.driver.set_window_size(1000, 900);
+            harness.driver.right_press_at(990.0, 890.0);
+            assert!(
+                !harness.handle.window().get_task_model().date_picker_open,
+                "the right-down closed the picker"
+            );
+        },
+    );
+}
+
+/// The guard half of D2: the dismissal layer eats the right-press —
+/// the menu closes AND no context menu opens behind it (the layer is
+/// hit-tested before every context seam beneath it). The press lands
+/// on stack a's bare body (well below the cards, and left of the
+/// right-aligned menu panel, which keeps absorbing its own hits).
+#[test]
+fn a_right_press_on_the_bare_board_closes_the_menu_and_opens_nothing() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.set_window_size(1000, 900);
+            let header = harness
+                .driver
+                .find_all_by_label("a")
+                .into_iter()
+                .find(support::driver::Element::is_accessible_button)
+                .expect("the stack-a header button is present");
+            let pos = header.absolute_position();
+            harness.press(ActionId::AppMenu);
+            harness.driver.advance_time(0);
+            assert!(keyboard(&harness).get_menu_open());
+            #[allow(clippy::cast_precision_loss)]
+            let bare_x = pos.x + 10.0;
+            harness.driver.right_press_at(bare_x, 700.0);
+            assert!(
+                !keyboard(&harness).get_menu_open(),
+                "the layer's right-down closed the menu"
+            );
+            assert!(
+                !keyboard(&harness).get_menu_pointer_anchored(),
+                "no context menu opened behind the dismissal"
+            );
+        },
+    );
+}
