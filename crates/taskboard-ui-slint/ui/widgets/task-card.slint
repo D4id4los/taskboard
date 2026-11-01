@@ -157,6 +157,11 @@ export component TaskCard inherits Rectangle {
         }
 
         VerticalLayout {
+            // The text column claims the card's surplus (r4 D1):
+            // without the stretch an elided title's one-glyph layout
+            // minimum absorbs every squeeze and the chips starve the
+            // title to a bare "…".
+            horizontal-stretch: 1;
             padding-left: Theme.space-2;
             padding-right: Theme.space-2;
             padding-top: Theme.space-1;
@@ -168,6 +173,10 @@ export component TaskCard inherits Rectangle {
                 text-color: root.model.done ? Theme.text-secondary : Theme.text-primary;
                 text: root.model.title;
                 overflow: elide;
+                // The elide floor (r4 D1): defeats the ellipsis-glyph
+                // minimum squeeze — the title elides only at the
+                // card's right edge.
+                min-width: Theme.card-title-min-width;
             }
 
             // Secondary decoration: the due chip stays at every breakpoint
