@@ -203,43 +203,43 @@ fn string_model(values: &[String]) -> ModelRc<SharedString> {
 /// leg). One instance per mounted window, owned by the `Adapter`.
 #[derive(Default)]
 pub struct PushModels {
-    bar_segments: Option<Rc<VecModel<BoardSegmentModel>>>,
-    columns: Option<Rc<VecModel<StackColumnModel>>>,
+    bar_segments: MirroredRows<BoardSegmentModel>,
+    columns: MirroredRows<StackColumnModel>,
     /// The per-column card models, keyed by the column's stack (the
     /// board's columns and the stack-detail list address them by
     /// stack).
-    column_tasks: BTreeMap<StackId, Rc<VecModel<TaskCardModel>>>,
+    column_tasks: BTreeMap<StackId, MirroredRows<TaskCardModel>>,
     /// Per-card decoration models keyed by the task.
     /// `TaskCardModel` compares its `decorations` field by handle
     /// identity (the pinned Slint's `ModelRc` `PartialEq`), so a
     /// fresh model per card per pass would dirty every card and
     /// degrade the diff to a full `set_row_data` cascade.
-    card_decorations: BTreeMap<TaskId, Rc<VecModel<TaskDecoration>>>,
-    detail_tasks: Option<Rc<VecModel<TaskCardModel>>>,
-    task_rules: Option<Rc<VecModel<RuleRowModel>>>,
-    task_rule_presets: Option<Rc<VecModel<SharedString>>>,
-    banner: Option<Rc<VecModel<BannerRowModel>>>,
+    card_decorations: BTreeMap<TaskId, MirroredRows<TaskDecoration>>,
+    detail_tasks: MirroredRows<TaskCardModel>,
+    task_rules: MirroredRows<RuleRowModel>,
+    task_rule_presets: MirroredRows<SharedString>,
+    banner: MirroredRows<BannerRowModel>,
     /// The notification surface's persistent row handle (R3 chunk C).
-    notifications: Option<Rc<VecModel<NotificationRowModel>>>,
+    notifications: MirroredRows<NotificationRowModel>,
     /// The timers section's persistent row handle (DR-3/3): the same
     /// diff pattern — stable identity across refreshes.
-    timers: Option<Rc<VecModel<TimerRowModel>>>,
+    timers: MirroredRows<TimerRowModel>,
     /// The habits section's persistent row handle (DR-6/6): the same
     /// diff pattern.
-    habits: Option<Rc<VecModel<HabitRowModel>>>, // generated from compositions/habits.slint
+    habits: MirroredRows<HabitRowModel>, // generated from compositions/habits.slint
     /// The palette's persistent row handle (chunk 9): diffed per
     /// keystroke — a fresh `VecModel` per push would regress the
     /// stable-identity invariant (r2 D9).
-    palette: Option<Rc<VecModel<PaletteRowModel>>>,
+    palette: MirroredRows<PaletteRowModel>,
     /// The today view's per-section row handles (chunk 10 D7): fixed
     /// to the four display sections — a rollover refresh must not
     /// re-instantiate the cards (the r2 D9 discipline).
-    today_sections: [Option<Rc<VecModel<TodayRowModel>>>; 4],
-    today: Option<Rc<VecModel<TodaySectionModel>>>,
-    settings_rows: Option<Rc<VecModel<crate::ConnectionRow>>>,
+    today_sections: [MirroredRows<TodayRowModel>; 4],
+    today: MirroredRows<TodaySectionModel>,
+    settings_rows: MirroredRows<crate::ConnectionRow>,
     /// The board-selector's persistent row handle (r2 D32): the same
     /// diff pattern — stable identity across refreshes.
-    settings_boards: Option<Rc<VecModel<crate::SettingsBoardRow>>>,
+    settings_boards: MirroredRows<crate::SettingsBoardRow>,
     hints: HintModels,
     /// The tasks whose decoration models the current pass touched
     /// (cleared at pass start) — the prune set for
@@ -253,13 +253,41 @@ pub struct PushModels {
 /// diff keeps their refresh cost at zero.
 #[derive(Default)]
 struct HintModels {
-    toolbar_menu: Option<Rc<VecModel<SharedString>>>,
-    nav_back: Option<Rc<VecModel<SharedString>>>,
-    board_segment: Option<Rc<VecModel<SharedString>>>,
-    task_card: Option<Rc<VecModel<SharedString>>>,
-    stack_header: Option<Rc<VecModel<SharedString>>>,
-    stack_create: Option<Rc<VecModel<SharedString>>>,
-    task_create: Option<Rc<VecModel<SharedString>>>,
+    toolbar_menu: MirroredRows<SharedString>,
+    nav_back: MirroredRows<SharedString>,
+    board_segment: MirroredRows<SharedString>,
+    task_card: MirroredRows<SharedString>,
+    stack_header: MirroredRows<SharedString>,
+    stack_create: MirroredRows<SharedString>,
+    task_create: MirroredRows<SharedString>,
+}
+
+/// The persistent model handle of one surface plus its Rust-side
+/// mirror (#464): the diff compares desired rows against the mirror
+/// slice — never against the model (`Model::row_data` returns by
+/// value: a full clone per compared row) — fires `set_row_data` only
+/// where the row differs, and updates model and mirror per mutation.
+/// The mirror is push-pass-private: slint never sees it, the handle
+/// escapes only by shared clone, and the fields are private to this
+/// module — mutating a live model outside [`Self::diff`] does not
+/// compile. The pair is one slot: the map values are the pair too,
+/// so every `retain` prunes handle and mirror with the same
+/// membership decision, and a fresh pair starts empty on both sides
+/// in lockstep with the fresh (empty) model.
+struct MirroredRows<T> {
+    model: Option<Rc<VecModel<T>>>,
+    mirror: Vec<T>,
+}
+
+/// No derived `T: Default` bound — `Option` and `Vec` default
+/// unconditionally.
+impl<T> Default for MirroredRows<T> {
+    fn default() -> Self {
+        Self {
+            model: None,
+            mirror: Vec::new(),
+        }
+    }
 }
 
 /// Applies `desired` onto the persistent model through a positional
@@ -270,28 +298,74 @@ struct HintModels {
 /// applies as in-place binding updates with zero re-instantiation
 /// (the repetition-probe pins), and reorders are user-move-scale,
 /// not refresh-scale.
-pub(crate) fn diff_rows<T: PartialEq + Clone + 'static>(
+///
+/// The comparison runs against `mirror` — the model's exact content
+/// (#464): `Model::row_data` returns by value, so reading the model
+/// per compared row would clone every current row, unchanged ones
+/// included. Model and mirror are updated per mutation, in the same
+/// statement, and can therefore never disagree unless a live model is
+/// mutated outside this function — which the privacy fence on
+/// [`MirroredRows`] makes not compile outside this module and the
+/// debug witness below turns into a loud panic inside it.
+fn diff_rows<T: PartialEq + Clone + 'static>(
+    mirror: &mut Vec<T>,
     model: &VecModel<T>,
     desired: &[T],
 ) -> usize {
+    debug_assert_eq!(
+        mirror.len(),
+        model.row_count(),
+        "mirror/model divergence: a live model was mutated outside the diff"
+    );
     let mut mutations = 0;
-    let current = model.row_count();
+    let current = mirror.len();
     let common = current.min(desired.len());
     for (i, row) in desired[..common].iter().enumerate() {
-        if model.row_data(i).as_ref() != Some(row) {
+        if mirror[i] != *row {
             model.set_row_data(i, row.clone());
+            mirror[i] = row.clone();
             mutations += 1;
         }
     }
-    for _ in desired.len()..current {
+    while mirror.len() > desired.len() {
         model.remove(desired.len());
+        mirror.pop();
         mutations += 1;
     }
     for row in &desired[common..] {
         model.push(row.clone());
+        mirror.push(row.clone());
         mutations += 1;
     }
     mutations
+}
+
+impl<T: PartialEq + Clone + 'static> MirroredRows<T> {
+    /// The `push_rows` shape: get-or-create the handle, installing it
+    /// into its property exactly once via `install`, then diff.
+    fn push(&mut self, install: impl FnOnce(ModelRc<T>), desired: &[T]) -> usize {
+        let model = self.model.get_or_insert_with(|| {
+            let model = Rc::new(VecModel::default());
+            install(ModelRc::from(model.clone()));
+            model
+        });
+        diff_rows(&mut self.mirror, model, desired)
+    }
+
+    /// The direct diff sites: get-or-create the handle (a fresh slot
+    /// starts empty on both sides — model and mirror in lockstep),
+    /// then diff.
+    fn diff(&mut self, desired: &[T]) -> usize {
+        let model = self.model.get_or_insert_with(Rc::default);
+        diff_rows(&mut self.mirror, model, desired)
+    }
+
+    /// The struct-embedding sites' shared clone of the handle (the
+    /// inner `tasks`/`rows`/`segments` models): create the model on
+    /// first touch, hand out a shared `Rc` clone.
+    fn handle_or_insert_with(&mut self) -> Rc<VecModel<T>> {
+        self.model.get_or_insert_with(Rc::default).clone()
+    }
 }
 
 /// The palette row pass (#348, chunk 9): rank the open query through
@@ -406,16 +480,11 @@ fn palette_meta(state: &AppState, target: SearchTarget) -> String {
 /// its window property exactly once via `install`), then diff
 /// `desired` onto it; returns the mutation count.
 fn push_rows<T: PartialEq + Clone + 'static>(
-    slot: &mut Option<Rc<VecModel<T>>>,
+    slot: &mut MirroredRows<T>,
     install: impl FnOnce(ModelRc<T>),
     desired: &[T],
 ) -> usize {
-    let model = slot.get_or_insert_with(|| {
-        let model = Rc::new(VecModel::default());
-        install(ModelRc::from(model.clone()));
-        model
-    });
-    diff_rows(model, desired)
+    slot.push(install, desired)
 }
 
 /// The due editor's pushed state (r2 D25): the adapter owns the
@@ -640,8 +709,8 @@ pub fn push(
             .unwrap_or(0),
     )
     .unwrap_or(i32::MAX);
-    let segments_handle = models.bar_segments.get_or_insert_with(Rc::default).clone();
-    let mut mutations = diff_rows(&segments_handle, &segments);
+    let segments_handle = models.bar_segments.handle_or_insert_with();
+    let mut mutations = models.bar_segments.diff(&segments);
     // The struct re-assignment runs every pass — its `selected` scalar
     // must stay live; the unchanged segments handle makes it a
     // renderer no-op for the repetition (the repetition-probe pins).
@@ -934,7 +1003,11 @@ fn push_board(
         let stack = &state.stacks[stack_id];
         let tasks = state.tasks_in_stack(*stack_id);
         let mut task_ids = Vec::with_capacity(tasks.len());
-        let cards_handle = models.column_tasks.entry(*stack_id).or_default().clone();
+        let cards_handle = models
+            .column_tasks
+            .entry(*stack_id)
+            .or_default()
+            .handle_or_insert_with();
         let mut cards: Vec<TaskCardModel> = Vec::with_capacity(tasks.len());
         // The anchor card is hidden from list surfaces (DDF-5): filtered
         // once, before the loop, so cards and the id table stay in sync.
@@ -951,7 +1024,11 @@ fn push_board(
                 decorations_model(models, task, tracked_task, calendar, now),
             ));
         }
-        mutations += diff_rows(&cards_handle, &cards);
+        mutations += models
+            .column_tasks
+            .get_mut(stack_id)
+            .expect("just inserted above")
+            .diff(&cards);
         tables.board_tasks.push(task_ids);
         columns.push(StackColumnModel {
             title: SharedString::from(stack.title.clone()),
@@ -977,7 +1054,7 @@ fn push_board(
             },
         });
     }
-    mutations += diff_rows(models.columns.get_or_insert_with(Rc::default), &columns);
+    mutations += models.columns.diff(&columns);
     // The board create/rename fields' window-level slot (r2 D21).
     window.set_board_create_open(matches!(flow, Flow::CreateBoard));
     // The pointer drag's window bits (r2 chunk-8 D-D): the ghost's
@@ -1013,7 +1090,7 @@ fn push_board(
         // The persistent columns handle: the struct re-assignment is a
         // renderer no-op for the repetition while the scalar fields
         // stay live (the repetition-probe pins).
-        stacks: ModelRc::from(models.columns.clone().expect("just inserted")),
+        stacks: ModelRc::from(models.columns.handle_or_insert_with()),
         // The stack-create flow's visible field (usability D7).
         stack_create_open: matches!(flow, Flow::CreateStack),
         // The true selection (r2 D4): None flattens to −1 — the
@@ -1089,8 +1166,8 @@ fn decorations_model(
 ) -> ModelRc<TaskDecoration> {
     let slot = models.card_decorations.entry(task.id).or_default();
     models.pass_tasks.insert(task.id);
-    diff_rows(slot, &field_decorations(task, tracked_task, calendar, now));
-    ModelRc::from(slot.clone())
+    slot.diff(&field_decorations(task, tracked_task, calendar, now));
+    ModelRc::from(slot.handle_or_insert_with())
 }
 
 /// The stack-detail model over the snapshotted subject (D7/D22).
@@ -1111,7 +1188,7 @@ fn push_stack_detail(
         .map(|stack| state.tasks_in_stack(stack))
         .unwrap_or_default();
     let tracked_task = presentation::tracking_open_task(state);
-    let detail_handle = models.detail_tasks.get_or_insert_with(Rc::default).clone();
+    let detail_handle = models.detail_tasks.handle_or_insert_with();
     let mut detail_rows: Vec<TaskCardModel> = Vec::with_capacity(tasks.len());
     // The same single-pass anchor filter as `push_board` (DDF-5).
     for task in &tasks {
@@ -1127,7 +1204,7 @@ fn push_stack_detail(
             decorations_model(models, task, tracked_task, calendar, now),
         ));
     }
-    let mutations = diff_rows(&detail_handle, &detail_rows);
+    let mutations = models.detail_tasks.diff(&detail_rows);
     window.set_stack_model(StackDetailModel {
         title: SharedString::from(
             vs.subject_stack()
@@ -1242,10 +1319,10 @@ fn push_task_detail(
         .unwrap_or_default();
     let date_grid = slint::ModelRc::new(slint::VecModel::from(due_grid_rows));
 
-    let presets_handle = models.task_rule_presets.get_or_insert_with(Rc::default);
-    let mut mutations = diff_rows(presets_handle, &preset_rows);
-    let rules_handle = models.task_rules.get_or_insert_with(Rc::default);
-    mutations += diff_rows(rules_handle, &rule_rows);
+    let presets_handle = models.task_rule_presets.handle_or_insert_with();
+    let mut mutations = models.task_rule_presets.diff(&preset_rows);
+    let rules_handle = models.task_rules.handle_or_insert_with();
+    mutations += models.task_rules.diff(&rule_rows);
     window.set_task_model(TaskDetailModel {
         title: SharedString::from(subject.map_or(String::new(), |t| t.title.clone())),
         stack_title: SharedString::from(
@@ -1561,9 +1638,7 @@ fn push_today(
     let mut today_tasks: Vec<taskboard_domain::TaskId> = Vec::new();
     let mut section_rows = tables.today_section_rows;
     for (index, (ids, label)) in display.iter().enumerate() {
-        let handle = models.today_sections[index]
-            .get_or_insert_with(Rc::default)
-            .clone();
+        let handle = models.today_sections[index].handle_or_insert_with();
         let mut rows: Vec<TodayRowModel> = Vec::with_capacity(ids.len());
         let mut filtered: Vec<taskboard_domain::TaskId> = Vec::with_capacity(ids.len());
         for id in *ids {
@@ -1599,7 +1674,7 @@ fn push_today(
                 )),
             });
         }
-        mutations += diff_rows(&handle, &rows);
+        mutations += models.today_sections[index].diff(&rows);
         section_rows[index] = filtered.len();
         // All four sections always push (the model arity is fixed —
         // the repetition-probe discipline); the empty groups COLLAPSE
@@ -1614,8 +1689,8 @@ fn push_today(
     // arity — but the discipline keeps the map honest).
     tables.today_tasks = today_tasks;
     tables.today_section_rows = section_rows;
-    let sections_handle = models.today.get_or_insert_with(Rc::default).clone();
-    mutations += diff_rows(&sections_handle, &section_models);
+    let sections_handle = models.today.handle_or_insert_with();
+    mutations += models.today.diff(&section_models);
     window.set_today_model(TodayModel {
         sections: ModelRc::from(sections_handle.clone()),
         empty: tables.today_tasks.is_empty(),
@@ -1826,27 +1901,43 @@ mod tests {
         );
     }
 
+    /// The test-side read-back (allowed — the acceptance bans reads in
+    /// the *diff path*, not in tests): the model's rows as a `Vec`.
+    fn rows_of<T: Clone + 'static>(model: &VecModel<T>) -> Vec<T> {
+        (0..model.row_count())
+            .map(|i| model.row_data(i).expect("row in range"))
+            .collect()
+    }
+
     /// D9 — the diff primitive: positional compare, truncate, append;
     /// the mutation counts are the transport's budget log.
     #[test]
     fn diff_rows_mutates_exactly_the_differing_rows() {
+        let mut mirror = vec![1, 2, 3];
         let model = VecModel::from(vec![1, 2, 3]);
         // Equal rows → zero mutations.
-        assert_eq!(diff_rows(&model, &[1, 2, 3]), 0);
+        assert_eq!(diff_rows(&mut mirror, &model, &[1, 2, 3]), 0);
         // One changed row → one mutation, in place.
-        assert_eq!(diff_rows(&model, &[1, 9, 3]), 1);
+        assert_eq!(diff_rows(&mut mirror, &model, &[1, 9, 3]), 1);
         assert_eq!(model.row_data(1), Some(9));
         // Append → one; shrinking back → one removal.
-        assert_eq!(diff_rows(&model, &[1, 9, 3, 4]), 1);
-        assert_eq!(diff_rows(&model, &[1, 9, 3]), 1);
-        assert_eq!(diff_rows(&model, &[1]), 2);
+        assert_eq!(diff_rows(&mut mirror, &model, &[1, 9, 3, 4]), 1);
+        assert_eq!(diff_rows(&mut mirror, &model, &[1, 9, 3]), 1);
+        assert_eq!(diff_rows(&mut mirror, &model, &[1]), 2);
         assert_eq!(model.row_count(), 1);
         // A mid-list reorder is a positional set cascade over the
         // suffix — the accepted transport shape (in-place updates).
+        let mut reordered_mirror = vec![1, 2, 3, 4];
         let reordered = VecModel::from(vec![1, 2, 3, 4]);
-        assert_eq!(diff_rows(&reordered, &[1, 3, 2, 4]), 2);
+        assert_eq!(
+            diff_rows(&mut reordered_mirror, &reordered, &[1, 3, 2, 4]),
+            2
+        );
         assert_eq!(reordered.row_data(1), Some(3));
         assert_eq!(reordered.row_data(2), Some(2));
+        // The mirror tracked every mutation in lockstep (#464).
+        assert_eq!(mirror, rows_of(&model));
+        assert_eq!(reordered_mirror, rows_of(&reordered));
     }
 
     /// D9's column rule: a `StackColumnModel` row whose scalars and
@@ -1863,9 +1954,10 @@ mod tests {
             initial_title: "a".into(),
             width_px: 0.0,
         };
+        let mut mirror = vec![column.clone()];
         let model = VecModel::from(vec![column.clone()]);
         assert_eq!(
-            diff_rows(&model, std::slice::from_ref(&column)),
+            diff_rows(&mut mirror, &model, std::slice::from_ref(&column)),
             0,
             "unchanged refresh"
         );
@@ -1875,12 +1967,22 @@ mod tests {
             title: "b".into(),
             ..column.clone()
         };
-        assert_eq!(diff_rows(&model, std::slice::from_ref(&retitle)), 1);
+        assert_eq!(
+            diff_rows(&mut mirror, &model, std::slice::from_ref(&retitle)),
+            1
+        );
         let rebound = StackColumnModel {
             tasks: ModelRc::new(VecModel::default()),
             ..retitle
         };
-        assert_eq!(diff_rows(&model, &[rebound]), 1, "a fresh handle rebinds");
+        assert_eq!(
+            diff_rows(&mut mirror, &model, &[rebound]),
+            1,
+            "a fresh handle rebinds"
+        );
+        // The mirror tracked every mutation in lockstep (#464).
+        assert_eq!(mirror.len(), model.row_count());
+        assert_eq!(mirror, rows_of(&model));
     }
 
     /// D9 — an unchanged card (same title, phrases, emphasis, and the
@@ -1900,9 +2002,10 @@ mod tests {
         let now = epoch();
         let sets = DueSets::default();
         let build = || task_card_model(&t, &sets, &vs, now, ModelRc::from(decorations.clone()));
+        let mut mirror = vec![build()];
         let model = VecModel::from(vec![build()]);
         assert_eq!(
-            diff_rows(&model, &[build()]),
+            diff_rows(&mut mirror, &model, &[build()]),
             0,
             "same pass inputs, same handle"
         );
@@ -1920,7 +2023,69 @@ mod tests {
                 epoch(),
             ))),
         );
-        assert_eq!(diff_rows(&model, &[fresh]), 1);
+        assert_eq!(diff_rows(&mut mirror, &model, &[fresh]), 1);
+        // The mirror tracked every mutation in lockstep (#464).
+        assert_eq!(mirror.len(), model.row_count());
+        assert_eq!(mirror, rows_of(&model));
+    }
+
+    /// #464 — the fresh-slot pin: a new `MirroredRows` installs its
+    /// model exactly once, starts empty on both sides, and the mirror
+    /// tracks every diff mutation in lockstep (an untracked mirror
+    /// would re-report every row as a mutation on the second push).
+    #[test]
+    fn a_fresh_slot_installs_once_and_diffs_in_lockstep() {
+        let mut slot = MirroredRows::default();
+        let installs = std::cell::Cell::new(0usize);
+        let count = |_: ModelRc<i32>| installs.set(installs.get() + 1);
+        let once = |_: ModelRc<i32>| panic!("the model installs exactly once");
+
+        assert_eq!(slot.push(count, &[1, 2, 3]), 3, "fresh slot appends all");
+        assert_eq!(installs.get(), 1);
+        assert_eq!(
+            slot.push(once, &[1, 2, 3]),
+            0,
+            "the tracked mirror makes the identical push zero-mutation"
+        );
+        assert_eq!(slot.push(once, &[1, 9, 3]), 1, "one changed row");
+        let handle = slot.handle_or_insert_with();
+        assert_eq!(handle.row_data(1), Some(9));
+        // The struct-embedding sites' contract: the same `Rc` handle
+        // every time, the one that was installed.
+        assert!(Rc::ptr_eq(&handle, &slot.handle_or_insert_with()));
+    }
+
+    /// #464 — the mirror tracks truncation and append in lockstep:
+    /// grow, shrink to a prefix, re-grow with changed tail rows —
+    /// exactly the tail mutations each time, and a follow-up identical
+    /// push is zero (the model/mirror lockstep pin).
+    #[test]
+    fn the_mirror_tracks_truncation_and_append_in_lockstep() {
+        let mut slot = MirroredRows::default();
+        let once = |_: ModelRc<i32>| panic!("the model installs exactly once");
+        assert_eq!(slot.push(|_| {}, &[1, 2]), 2);
+        assert_eq!(slot.push(once, &[1, 2, 3, 4]), 2, "append the tail");
+        assert_eq!(slot.push(once, &[1]), 3, "truncate the tail");
+        let handle = slot.handle_or_insert_with();
+        assert_eq!(handle.row_count(), 1);
+        assert_eq!(handle.row_data(0), Some(1));
+        assert_eq!(slot.push(once, &[1, 5, 6]), 2, "the two tail rows");
+        assert_eq!(slot.push(once, &[1, 5, 6]), 0, "lockstep holds");
+        assert_eq!(handle.row_data(1), Some(5));
+        assert_eq!(handle.row_data(2), Some(6));
+    }
+
+    /// #464's divergence witness (the plan's D7): a live model mutated
+    /// behind the mirror — the exact rogue-site shape — panics at the
+    /// next diff in debug builds instead of corrupting every later
+    /// diff silently.
+    #[test]
+    #[should_panic(expected = "mirror/model divergence")]
+    fn a_diverged_mirror_panics_at_the_next_diff() {
+        let mut slot = MirroredRows::<i32>::default();
+        slot.push(|_| {}, &[1, 2]);
+        slot.handle_or_insert_with().push(3);
+        slot.diff(&[1, 2, 3]);
     }
 
     // -- the palette row pipeline (#348, chunk 9) -----------------------
@@ -2203,6 +2368,65 @@ mod tests {
                 let due_section = today.sections.row_data(2).expect("section");
                 assert_eq!(due_section.count, 0, "the due section emptied");
                 assert!(second.today_tasks.contains(&ids[2]));
+            });
+        }
+
+        /// #464 — the prune pin: `column_tasks` (and
+        /// `card_decorations`, via `pass_tasks`) retain the mirror and
+        /// the handle as one map value, so the one `retain` cannot
+        /// split their membership and a returning stack comes back as
+        /// a fresh pair — empty on both sides, rebuilt through the
+        /// normal diff.
+        #[test]
+        fn a_pruned_column_slot_returns_as_a_fresh_pair() {
+            on_slint_thread(|| {
+                let board_id = taskboard_domain::BoardId::from_uuid(uuid::Uuid::now_v7());
+                let sa = StackId::from_uuid(uuid::Uuid::now_v7());
+                let sb = StackId::from_uuid(uuid::Uuid::now_v7());
+                let mut state = AppState::default();
+                state.boards.insert(board_id, board(board_id, "alpha"));
+                let mut second = stack(sb, board_id);
+                second.order = 1;
+                state.stacks.insert(sa, stack(sa, board_id));
+                state.stacks.insert(sb, second);
+                let one = TaskId::from_uuid(uuid::Uuid::now_v7());
+                state.tasks.insert(one, task(one, sa, "one"));
+                let two = TaskId::from_uuid(uuid::Uuid::now_v7());
+                state.tasks.insert(two, task(two, sb, "two"));
+
+                let window = crate::AppWindow::new().expect("window on the testing backend");
+                let mut vs = ViewState::default();
+                let _ = vs.select_board(&state, board_id);
+                let mut models = PushModels::default();
+                push_pass(&window, &state, &vs, day(31_563_600), false, &mut models);
+                push_pass(&window, &state, &vs, day(31_563_600), false, &mut models);
+                assert_eq!(models.column_tasks.len(), 2);
+                assert_eq!(models.card_decorations.len(), 2);
+
+                // The second stack drops: one retain prunes the pair.
+                state.stacks.get_mut(&sb).expect("live stack").deleted = true;
+                push_pass(&window, &state, &vs, day(31_563_600), false, &mut models);
+                assert_eq!(models.column_tasks.len(), 1);
+                assert!(models.column_tasks.contains_key(&sa));
+
+                // It returns: a fresh pair, rebuilt through the diff.
+                state.stacks.get_mut(&sb).expect("live stack").deleted = false;
+                push_pass(&window, &state, &vs, day(31_563_600), false, &mut models);
+                assert_eq!(models.column_tasks.len(), 2);
+                let board_model = window.get_board_model();
+                assert_eq!(board_model.stacks.row_count(), 2);
+                let returning = board_model.stacks.row_data(1).expect("returning column");
+                assert_eq!(returning.tasks.row_count(), 1);
+                let card = returning.tasks.row_data(0).expect("returning card");
+                assert_eq!(card.title.to_string(), "two");
+
+                // Companion: a task vanishing from every surface leaves
+                // `card_decorations` without its pair (the `pass_tasks`
+                // retain, now pruning pairs).
+                state.tasks.get_mut(&two).expect("live task").deleted = true;
+                push_pass(&window, &state, &vs, day(31_563_600), false, &mut models);
+                assert!(!models.card_decorations.contains_key(&two));
+                assert!(models.card_decorations.contains_key(&one));
             });
         }
     }
