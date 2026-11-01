@@ -281,6 +281,154 @@ fn pre_images_capture_creates_and_overwrites() {
     assert_eq!(pre.title, "t");
 }
 
+fn habit_target() -> crate::habit::HabitTarget {
+    crate::habit::HabitTarget::PerDay(crate::habit::NonZeroCount::new(1).expect("valid quota"))
+}
+
+#[test]
+fn log_time_capture_journals_the_minted_entry_id_and_pre_absence() {
+    let mut h = Harness::new();
+    let board = h.board();
+    let stack = h.stack(board);
+    let task = h.task(stack, "t");
+    h.exec(&StateCommand::LogTime {
+        task,
+        start: ts(400),
+        end: ts(500),
+    })
+    .expect("logged");
+    let entry = h.journal.entries.last().unwrap();
+    let UndoFacts::PreImages { images, .. } = &entry.facts else {
+        panic!("LogTime journals PreImages");
+    };
+    // The minted id is journaled — there is no other source for it.
+    let minted = *h.disk.tracking.entries.keys().next().expect("entry row");
+    assert_eq!(
+        images.iter().find_map(|image| match image {
+            PreImage::TimeEntry { id, before, .. } => Some((*id, before.is_none())),
+            _ => None,
+        }),
+        Some((minted, true)),
+        "the minted id rides the entry with before: None"
+    );
+}
+
+#[test]
+fn record_habit_log_capture_carries_the_pre_row_and_post_stamp() {
+    let mut h = Harness::new();
+    let board = h.board();
+    let habit = {
+        match h
+            .exec(&StateCommand::CreateHabit {
+                board,
+                title: "habit".into(),
+                target: habit_target(),
+            })
+            .expect("created")
+        {
+            CommandOutcome::HabitCreated(id) => id,
+            other => panic!("expected HabitCreated, got {other:?}"),
+        }
+    };
+    // Seed the window row (via LogHabit — itself excluded, but the row
+    // it writes is the adjust's pre-image source).
+    h.exec(&StateCommand::LogHabit { habit })
+        .expect("seeded the row");
+    let key = *h.disk.habits.log.keys().next().expect("log row");
+    let pre_row = h.disk.habits.log[&key];
+    let seed_len = h.journal.entries.len();
+    // An adjust onto the existing window: undoable, capture walks
+    // `RecordHabitLog`.
+    h.exec(&StateCommand::AdjustHabitLog {
+        habit,
+        window: key.window,
+        count: 5,
+    })
+    .expect("adjusted");
+    let entry = h.journal.entries.last().unwrap();
+    assert_eq!(h.journal.entries.len(), seed_len + 1);
+    let UndoFacts::PreImages { images, watermark } = &entry.facts else {
+        panic!("an existing-window adjust journals PreImages");
+    };
+    assert_eq!(
+        images.iter().find_map(|image| match image {
+            PreImage::HabitLogRow { key: k, before } => Some((*k, *before)),
+            _ => None,
+        }),
+        Some((key, Some(pre_row))),
+        "the pre row rides the entry"
+    );
+    let post_row = h.disk.habits.log[&key];
+    assert_eq!(
+        watermark.0.get(&JournalEntity::HabitLog(key)),
+        Some(&EntityStamps::HabitLog(post_row)),
+        "the post-write row is the watermark stamp"
+    );
+    // The no-op repeat (identical count) journals nothing.
+    let before_len = h.journal.entries.len();
+    h.exec(&StateCommand::AdjustHabitLog {
+        habit,
+        window: key.window,
+        count: 5,
+    })
+    .expect("accepted no-op");
+    assert_eq!(h.journal.entries.len(), before_len);
+}
+
+#[test]
+fn widened_noop_repeats_journal_nothing() {
+    let mut h = Harness::new();
+    let board = h.board();
+    let stack = h.stack(board);
+    let task = h.task(stack, "t");
+    let habit = {
+        match h
+            .exec(&StateCommand::CreateHabit {
+                board,
+                title: "habit".into(),
+                target: habit_target(),
+            })
+            .expect("created")
+        {
+            CommandOutcome::HabitCreated(id) => id,
+            other => panic!("expected HabitCreated, got {other:?}"),
+        }
+    };
+    let order = h.disk.habits.habits[&habit].order;
+    let entry_id = {
+        h.exec(&StateCommand::LogTime {
+            task,
+            start: ts(400),
+            end: ts(500),
+        })
+        .expect("logged");
+        *h.disk.tracking.entries.keys().next().expect("entry row")
+    };
+    let (entry_start, entry_end) = {
+        let stored = &h.disk.tracking.entries[&entry_id];
+        (stored.start, stored.end)
+    };
+    let before = h.journal.entries.len();
+    h.exec(&StateCommand::MoveHabit { habit, order })
+        .expect("accepted no-op");
+    h.exec(&StateCommand::AdjustTimeEntry {
+        id: entry_id,
+        start: Some(entry_start),
+        end: entry_end,
+    })
+    .expect("accepted no-op");
+    h.exec(&StateCommand::UpdateHabit {
+        habit,
+        changes: crate::messages::HabitChanges::default(),
+    })
+    .expect("accepted no-op");
+    assert_eq!(
+        h.journal.entries.len(),
+        before,
+        "identical-order/unchanged-mask repeats plan empty batches"
+    );
+}
+
 // ---- the synthesis catalogue -------------------------------------------
 
 #[test]
@@ -692,29 +840,27 @@ fn not_undoable_heads_refuse_and_name_the_reason() {
     ));
     // The refusal must not move the head: undo the snooze refuses, the
     // prior entry stays reachable.
-    // Tracking surface (StopTracking with nothing open is a NoOp — use
-    // a LogTime instead).
-    h.exec(&StateCommand::LogTime {
-        task,
-        start: ts(400),
-        end: ts(500),
-    })
-    .expect("logged");
+    // Tracking surface (StartTracking: structurally non-invertible per
+    // ADR 0017; LogTime/CreateHabit joined the undoable catalogue in
+    // #555 — the representatives moved with them, D30).
+    h.exec(&StateCommand::StartTracking { task })
+        .expect("started");
     assert!(matches!(
         h.exec(&StateCommand::Undo),
         Err(CommandError::TargetNotUndoable(
             NotUndoableReason::TrackingSurface
         ))
     ));
-    // Habit surface.
+    // Habit surface (LogHabit: lossy to invert; CreateHabit is undoable
+    // now, so it is seeded first and simply becomes part of the line).
     h.exec(&StateCommand::CreateHabit {
         board,
         title: "habit".into(),
-        target: crate::habit::HabitTarget::PerDay(
-            crate::habit::NonZeroCount::new(1).expect("valid quota"),
-        ),
+        target: habit_target(),
     })
     .expect("created");
+    let habit = *h.disk.habits.habits.keys().next().expect("habit row");
+    h.exec(&StateCommand::LogHabit { habit }).expect("logged");
     assert!(matches!(
         h.exec(&StateCommand::Undo),
         Err(CommandError::TargetNotUndoable(

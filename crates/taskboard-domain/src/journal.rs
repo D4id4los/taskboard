@@ -105,12 +105,18 @@ pub enum NotUndoableReason {
     /// Reminder-surface ephemera are cheap to redo by hand (#354):
     /// snoozes, mutes, dismissals, rule edits, adhoc alarms.
     ReminderSurface,
-    /// Tracking verbs are post-design surface with a scope-closed v1
-    /// (decision D17); `StartTracking`/`StopTracking` are additionally
-    /// structurally non-invertible (no command re-opens a closed entry).
+    /// Tracking verbs whose inverse is structurally inexpressible:
+    /// `StartTracking`/`StopTracking` (no command re-opens a closed
+    /// entry — ADR 0017), `DeleteTimeEntry` (restore-class), and an
+    /// `AdjustTimeEntry` that closes an entry (the change mask cannot
+    /// clear a stamped end; D23).
     TrackingSurface,
-    /// Habit verbs are post-design surface with a scope-closed v1
-    /// (decision D17); `LogHabit` is additionally lossy to invert.
+    /// Habit verbs whose inverse is lossy or unwatermarkable:
+    /// `LogHabit` (a pre-log absent window would become an explicit
+    /// count-0 row — a different stored fact), `DeleteHabit`
+    /// (restore-class), an absent-window `AdjustHabitLog` (same
+    /// lossiness; D24), and an `UpdateHabit` addressing the conversion
+    /// seam (no clock slot to watermark against; D25).
     HabitSurface,
 }
 
@@ -142,6 +148,14 @@ pub enum PreImage {
     TimeEntry {
         id: TimeEntryId,
         before: Option<Box<TimeEntry>>,
+    },
+    /// One habit-log window row's pre-image. `before: None` = the window
+    /// had no row — unreachable in a journaled-undoable entry (an
+    /// absent-window `AdjustHabitLog` refuses at record time; D24) but
+    /// kept for the enum's `before` convention.
+    HabitLogRow {
+        key: crate::habit::HabitLogKey,
+        before: Option<crate::habit::HabitLogEntry>,
     },
 }
 
@@ -175,6 +189,9 @@ pub enum JournalEntity {
     Label(LabelId),
     Habit(HabitId),
     TimeEntry(TimeEntryId),
+    /// One habit-log window row (appended last — `Ord` is declaration
+    /// order; a new kind never reshuffles existing keys).
+    HabitLog(crate::habit::HabitLogKey),
 }
 
 /// The post-write clock set of one touched entity (full structs, D8;
@@ -192,6 +209,9 @@ pub enum EntityStamps {
     Label(LabelClocks),
     Habit(HabitClocks),
     TimeEntry(DateTime<Utc>),
+    /// The post-write log row (count AND clock compared as a whole —
+    /// any later write to the window moves the clock and refuses).
+    HabitLog(crate::habit::HabitLogEntry),
 }
 
 /// One divergent clocked field, named by a refusal (the toast payload;
@@ -214,6 +234,13 @@ pub enum UndoField {
     Color,
     Membership,
     UpdatedAt,
+    /// The habit target's write clock (`HabitClocks.target`).
+    HabitTarget,
+    /// The habit anchor chip's write clock (`HabitClocks.anchor_time`).
+    HabitAnchorTime,
+    /// The log window row's count (the row's whole `(count, clock)` shape
+    /// is compared — the field names the refused scope).
+    HabitLogCount,
 }
 
 /// The persisted undo line (R-U10): the entries in append order
