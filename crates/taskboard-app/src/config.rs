@@ -92,8 +92,9 @@ pub struct AppConfig {
     /// its off default so pin-less configs serialize unchanged.
     #[serde(default, skip_serializing_if = "WebSection::is_default")]
     pub web: WebSection,
-    /// IPC client deadlines. Skipped when at its default so pin-less
-    /// configs serialize unchanged.
+    /// IPC client deadlines plus the daemon's socket toggle (`[ipc]
+    /// enabled`). Skipped when at its default so pin-less configs
+    /// serialize unchanged.
     #[serde(default, skip_serializing_if = "IpcSection::is_default")]
     pub ipc: IpcSection,
     /// Device-local user preferences. Never synced (no document key,
@@ -604,13 +605,30 @@ pub const DEFAULT_WEB_REFRESH_SECS: u64 = 30;
 /// feature — refused, never clamped.
 pub const WEB_REFRESH_MIN_SECS: u64 = 5;
 
-/// `[ipc]`: the one-shot CLI client's daemon-facing deadlines (ADR 0012,
-/// amended 2026-10-27). The table's absence is today's derived budget —
+/// `[ipc]`: the daemon's IPC surface plus the one-shot CLI client's
+/// daemon-facing deadlines (ADR 0012, amended 2026-10-27). The table's
+/// absence is today's behaviour — socket bound, derived budget — and
 /// the struct's `Default` is the absent-table placeholder that keeps
 /// section-less configs byte-identical on serialization.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct IpcSection {
+    /// Binds the per-database IPC socket at daemon boot (ADR 0012).
+    /// Defaults to `true` — every existing install keeps serving;
+    /// `enabled = false` (or `daemon --no-ipc`) skips exactly
+    /// `spawn_server`: the core, the instance lock, the actors, and
+    /// the optional `[web]` dashboard are unchanged, while `status`
+    /// reports the lock-holder pid with `daemon: false` (exit 0),
+    /// `daemon stop` fails typed `no-daemon` (exit 1), and one-shot
+    /// verbs fall back to the in-process boot (`instance-locked`
+    /// against the running core). The disabled daemon stops on a
+    /// signal only. Skipped when on so the absent-table placeholder
+    /// serializes to nothing.
+    #[serde(
+        default = "default_ipc_enabled",
+        skip_serializing_if = "ipc_enabled_is_on"
+    )]
+    pub enabled: bool,
     /// Overrides the derived client read budget **wholesale**: every
     /// covered request waits exactly this many seconds for the daemon's
     /// answer, instead of the verb's `--timeout-secs` + margin (or the
@@ -627,14 +645,33 @@ pub struct IpcSection {
     pub client_read_timeout_secs: Option<u64>,
 }
 
+impl Default for IpcSection {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            client_read_timeout_secs: None,
+        }
+    }
+}
+
 impl IpcSection {
     /// The absent-table test behind `skip_serializing_if`: the
-    /// placeholder serializes to nothing, so a config without `[ipc]`
-    /// renders unchanged.
+    /// placeholder (socket on, no override) serializes to nothing, so
+    /// a config without `[ipc]` renders unchanged.
     #[must_use]
     pub fn is_default(&self) -> bool {
-        self.client_read_timeout_secs.is_none()
+        *self == Self::default()
     }
+}
+
+fn default_ipc_enabled() -> bool {
+    true
+}
+
+// serde's `skip_serializing_if` demands the `fn(&T) -> bool` shape.
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn ipc_enabled_is_on(enabled: &bool) -> bool {
+    *enabled
 }
 
 /// The `[reminders] default_before` grammar (one definition site, shared
@@ -2657,11 +2694,45 @@ mod tests {
     #[test]
     fn ipc_section_absent_serializes_nothing_and_decodes_default() {
         let config = decode("[app]\nmode = 'daemon'\n").expect("decodes");
+        assert!(config.ipc.enabled, "the absent table leaves the socket on");
         assert_eq!(config.ipc.client_read_timeout_secs, None);
         // The serialization fence: a section-less config renders without
         // any `ipc` key (the `web` precedent).
         let value = serde_json::to_value(IpcSection::default()).expect("serializes");
         assert_eq!(value, serde_json::json!({}));
+    }
+
+    #[test]
+    fn ipc_section_enabled_false_decodes_and_serializes() {
+        let config = decode("[ipc]\nenabled = false\n").expect("decodes");
+        assert!(!config.ipc.enabled);
+        assert!(
+            !config.ipc.is_default(),
+            "the opt-out is not the placeholder"
+        );
+        let value = serde_json::to_value(config.ipc).expect("serializes");
+        assert_eq!(value, serde_json::json!({"enabled": false}));
+    }
+
+    #[test]
+    fn ipc_section_enabled_true_round_trips_to_nothing() {
+        // An explicit default is indistinguishable from absence — the
+        // rewrite law (a section-less config renders unchanged) pinned
+        // on its positive side.
+        let config = decode("[ipc]\nenabled = true\n").expect("decodes");
+        assert!(config.ipc.is_default());
+        let value = serde_json::to_value(config.ipc).expect("serializes");
+        assert_eq!(value, serde_json::json!({}));
+    }
+
+    #[test]
+    fn ipc_section_default_is_enabled() {
+        // Guards the hand-written `Default` against a future re-derive:
+        // a derived default would silently mint `enabled: false` for
+        // every absent-table install.
+        let default = IpcSection::default();
+        assert!(default.enabled);
+        assert_eq!(default.client_read_timeout_secs, None);
     }
 
     #[test]
@@ -2672,6 +2743,7 @@ mod tests {
         let config = decode("[ipc]\nclient_read_timeout_secs = 0\n").expect("decodes");
         assert_eq!(config.ipc.client_read_timeout_secs, Some(0));
         let value = serde_json::to_value(IpcSection {
+            enabled: true,
             client_read_timeout_secs: Some(45),
         })
         .expect("ser");
