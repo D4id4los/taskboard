@@ -895,3 +895,65 @@ mod recur_codec_tests {
         assert_eq!(recur_from_text(""), None);
     }
 }
+
+#[cfg(test)]
+mod journal_payload_tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    fn uuid(raw: u128) -> Uuid {
+        Uuid::from_u128(raw)
+    }
+
+    use taskboard_domain::habit::{HabitLogEntry, HabitLogKey, WindowStart};
+    use taskboard_domain::ids::HabitId;
+    use taskboard_domain::journal::{
+        EntityStamps, JournalEntity, PreImage, UndoFacts, UndoWatermark,
+    };
+
+    /// The widened undo-v2 shapes ride the payload blob (D22's
+    /// serde-additive widening): a storage round-trip over a
+    /// journaled-undoable `AdjustHabitLog` entry.
+    #[test]
+    fn journal_payload_round_trips_the_habit_log_shapes() {
+        let habit = HabitId::from(uuid(20));
+        let key = HabitLogKey {
+            habit,
+            window: WindowStart::from_stored(chrono::NaiveDate::from_ymd_opt(2026, 11, 1).unwrap()),
+        };
+        let command = taskboard_domain::messages::StateCommand::AdjustHabitLog {
+            habit,
+            window: key.window,
+            count: 5,
+        };
+        let facts = UndoFacts::PreImages {
+            images: vec![PreImage::HabitLogRow {
+                key,
+                before: Some(HabitLogEntry {
+                    count: 1,
+                    clock: chrono::Utc.timestamp_opt(100, 0).unwrap(),
+                }),
+            }],
+            watermark: UndoWatermark(
+                [(
+                    JournalEntity::HabitLog(key),
+                    EntityStamps::HabitLog(HabitLogEntry {
+                        count: 5,
+                        clock: chrono::Utc.timestamp_opt(150, 0).unwrap(),
+                    }),
+                )]
+                .into_iter()
+                .collect(),
+            ),
+        };
+        let ops = vec![taskboard_domain::OpId(uuid(30))];
+        let json = journal_payload_to_json(&command, &facts, &ops);
+        let back = journal_payload_from_json(&json).expect("decodes");
+        assert!(matches!(
+            back.command,
+            taskboard_domain::messages::StateCommand::AdjustHabitLog { .. }
+        ));
+        assert_eq!(back.facts, facts);
+        assert_eq!(back.ops, ops);
+    }
+}
