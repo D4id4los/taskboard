@@ -806,8 +806,8 @@ impl Adapter {
     /// public cancel, [`Self::teardown_runtime_drag`]). One taxonomy
     /// for all three trigger families — L1 focus loss, L2 pointer
     /// seams, the leaving effects — so they cannot diverge.
-    /// Idempotent on `Flow::None`; returns whether a flow settled.
-    fn settle_flow(&mut self, window: &AppWindow, state: &taskboard_domain::AppState) -> bool {
+    /// Idempotent on `Flow::None`.
+    fn settle_flow(&mut self, window: &AppWindow, state: &taskboard_domain::AppState) {
         // §8: the settle step owns the gesture buffers — they are
         // flow-independent by construction, and a leaving effect
         // unmounts the surfaces that would consume them (the release
@@ -817,7 +817,7 @@ impl Adapter {
         self.scale_drag = None;
         let flow = self.view_state.flow().clone();
         if matches!(flow, Flow::None) {
-            return false;
+            return;
         }
         let was_drag = matches!(flow, Flow::DragMove { .. });
         let was_date = matches!(flow, Flow::EditDate { .. });
@@ -829,7 +829,6 @@ impl Adapter {
         if was_drag {
             Self::teardown_runtime_drag(window);
         }
-        true
     }
 
     /// The leaving rule (D9, factored out of the table): a view
@@ -1551,9 +1550,8 @@ impl Adapter {
                 // one-level re-dispatch (the `InvokeSelected`
                 // precedent, `router.rs`). The settle-nothing skip is
                 // retired (r4 D4b): `resolve_conflict` early-returns
-                // on `Flow::None` and `settle_flow` returns `false`
-                // nowhere else, so the gate was provably dead — and
-                // it was the only shape that could silently eat a
+                // on `Flow::None`, so the gate was provably dead —
+                // and it was the only shape that could silently eat a
                 // re-dispatch if the kept-arm set ever shifted.
                 self.settle_flow(window, state);
                 self.interpret(window, effect);
