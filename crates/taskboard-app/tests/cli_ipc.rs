@@ -46,6 +46,23 @@ impl Install {
         self.dir.path().join("taskboard.sock")
     }
 
+    /// The instance-lock sidecar (`<db>.lock`; `taskboard.db` →
+    /// `taskboard.lock`).
+    fn lock(&self) -> std::path::PathBuf {
+        self.dir.path().join("taskboard.lock")
+    }
+
+    /// Appends raw toml rows to the fixture config (the knob tests'
+    /// `[ipc]`/`[web]` tables).
+    fn append_config(&self, extra: &str) {
+        use std::io::Write as _;
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(self.config())
+            .expect("open config");
+        write!(file, "{extra}").expect("append config rows");
+    }
+
     /// Spawns `taskboard daemon` (output swallowed; a full pipe would
     /// deadlock a chatty daemon).
     fn spawn_daemon(&self) -> Child {
@@ -754,5 +771,142 @@ async fn t16_track_and_export_over_the_relay() {
     assert_eq!(
         served, fallback,
         "the export payload is byte-identical across the socket and in-process lanes"
+    );
+}
+
+/// The `--json` error envelope's typed kind (the E3 mechanism): the
+/// last non-empty stderr line parses as JSON and names `kind`.
+fn envelope_kind(err: &str) -> serde_json::Value {
+    let last = err
+        .lines()
+        .rev()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("");
+    let envelope: serde_json::Value = serde_json::from_str(last).expect("error envelope");
+    envelope["error"]["kind"].clone()
+}
+
+/// E11 (the #194 knob, config side): `[ipc] enabled = false` boots the
+/// full core — the lock sidecar exists, the `[web]` dashboard serves —
+/// but the socket never does, and every IPC client degrades to its
+/// typed no-socket outcome: `status` observes (exit 0, `daemon: false`,
+/// the lock-holder pid), `daemon stop` fails typed `no-daemon` (exit 1)
+/// without stopping the daemon, one-shot verbs hit `instance-locked`
+/// against the running core, and a SIGTERM is the clean stop (exit 0).
+#[tokio::test]
+#[cfg(unix)]
+#[allow(clippy::too_many_lines)] // one degradation journey, sequential rows
+async fn e11_ipc_disabled_by_config_degrades_every_surface() {
+    use nix::sys::signal::{Signal, kill};
+    use nix::unistd::Pid;
+
+    let install = Install::new("e11");
+    // The `[web]` row is the readiness instrument: the dashboard binds
+    // strictly after the ipc gate inside boot_and_serve, and the
+    // lifecycle watcher installs one function-call later — "HTTP
+    // answers" implies "the gate was evaluated and the watcher is
+    // armed" (the socket-side `"daemon":true` poll can never fire on
+    // this path by construction).
+    install.append_config("[ipc]\nenabled = false\n[web]\nenabled = true\n");
+    let mut daemon = install.spawn_daemon();
+    wait_until(
+        || std::net::TcpStream::connect("127.0.0.1:8787").is_ok(),
+        "the web dashboard binds (post-gate readiness)",
+    )
+    .await;
+
+    // The socket sibling never exists.
+    assert!(
+        !install.socket().exists(),
+        "a disabled daemon must not bind the ipc socket"
+    );
+
+    // `status`: exit 0 (an observation) and the existing `no_daemon`
+    // view byte pin — `daemon: false` with no pid key (the view's
+    // contract: absent in no_daemon answers, preserving the
+    // `{"daemon": false}` shape; the lock sidecar's holder pid is a
+    // human-output diagnostic, not a JSON field).
+    let (code, out, _) = install.run(&["--json", "status"]);
+    assert_eq!(code, Some(0));
+    let view: serde_json::Value = serde_json::from_str(out.trim()).expect("status json");
+    assert_eq!(view["daemon"], serde_json::Value::Bool(false));
+    assert!(view.get("pid").is_none(), "no_daemon carries no pid key");
+
+    // `daemon stop`: typed `no-daemon`, exit 1 — and the daemon stays
+    // alive (the degradation's headline fact).
+    let (code, _, err) = install.run(&["--json", "daemon", "stop"]);
+    assert_eq!(code, Some(1), "{err}");
+    assert_eq!(envelope_kind(&err), "no-daemon");
+    assert!(
+        daemon.0.try_wait().expect("poll daemon").is_none(),
+        "the refused stop must not kill the daemon"
+    );
+
+    // A one-shot core verb falls back in-process and meets the held
+    // lock: typed `instance-locked`, exit 1.
+    let (code, _, err) = install.run(&["--json", "tasks", "list"]);
+    assert_eq!(code, Some(1), "{err}");
+    assert_eq!(envelope_kind(&err), "instance-locked");
+
+    // The tail: SIGTERM is the clean stop — rung 1 fires, the drain
+    // finds no server to join, the owned shutdown exits 0.
+    kill(Pid::from_raw(daemon.0.id().cast_signed()), Signal::SIGTERM).expect("signal the daemon");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let stop_code = loop {
+        if let Some(status) = daemon.0.try_wait().expect("poll daemon") {
+            break status.code();
+        }
+        assert!(Instant::now() < deadline, "daemon did not exit on SIGTERM");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert_eq!(
+        stop_code,
+        Some(0),
+        "the signal-initiated drain is a clean exit (the ladder is untouched)"
+    );
+    assert!(
+        !install.socket().exists(),
+        "the socket still never existed after the clean stop"
+    );
+    let _ = daemon; // reaped above
+}
+
+/// E12 (the flag > file precedence pin): the file says
+/// `[ipc] enabled = true`, the flag says `--no-ipc` — the socket never
+/// binds and `daemon stop` is typed `no-daemon` against the live core.
+#[tokio::test]
+#[cfg(unix)]
+async fn e12_no_ipc_flag_overrides_an_enabled_file() {
+    let install = Install::new("e12");
+    install.append_config("[ipc]\nenabled = true\n");
+    let mut daemon = binary_command()
+        .args(["--config", install.config().as_str()])
+        .arg("daemon")
+        .arg("--no-ipc")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map(Child)
+        .expect("spawn daemon");
+
+    // Readiness: the lock sidecar exists (no signal is sent in this
+    // test, so the lock-to-watcher window is irrelevant — the pinned
+    // facts are time-independent on the disabled path).
+    wait_until(
+        || install.lock().exists(),
+        "the no-ipc daemon acquires the instance lock",
+    )
+    .await;
+
+    assert!(
+        !install.socket().exists(),
+        "the flag must suppress the socket despite the enabled file"
+    );
+    let (code, _, err) = install.run(&["--json", "daemon", "stop"]);
+    assert_eq!(code, Some(1), "{err}");
+    assert_eq!(envelope_kind(&err), "no-daemon");
+    assert!(
+        daemon.0.try_wait().expect("poll daemon").is_none(),
+        "the daemon survives the refused stop"
     );
 }
