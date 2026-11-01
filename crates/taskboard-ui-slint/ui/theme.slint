@@ -73,6 +73,14 @@ export global Theme {
     // builtin tableview's 10 px pattern, one theme home).
     out property <length> resize-handle-width: 10px * base-scale;
 
+    // The icon glyph's edge (r4 D10): the square every vendored SVG
+    // renders in — Lucide's 24-grid at the icon-button's inner glyph
+    // footprint (the drawn Path blocks' space-3 edge). A named token,
+    // not space-3 reuse: the edge is a glyph-metric rather than a
+    // spacing step, and every icon consumer (button, status bar,
+    // later chunks) shares it.
+    out property <length> icon-size: 12px * base-scale;
+
     // ---- Radii & focus ------------------------------------------------
     out property <length> radius-small: 4px * base-scale;
     out property <length> radius-medium: 8px * base-scale;
