@@ -9,19 +9,19 @@
   connections). No code in this commit.
 - **Origin**:
   `.artifacts/plans/2026-11-01-gui-review-round4-plan.md` — findings
-  R4-F1…F29 (§1), recorded decisions §2 (decisions 1–4 PROPOSED,
-  pending the user's confirmation; decisions 5–6 decided), designs
+  R4-F1…F29 (§1), recorded decisions §2 (all six confirmed — 1–4 by
+  the user, 2026-11-01), designs
   §3 (D1–D40), testing §4, inventory §5, slicing §6, risks §7,
   bookkeeping §8 — normative. Round-3 plans remain background
   (`2026-10-26-gui-review-round3-plan.md` + its dispatch plan for the
   shared execution model style).
-- **Status**: READY — pending the user's acceptance of the design
-  round (same branch) **and** the four §2 decisions. Decision gates:
-  chunk 3 needs §2.1 (icon set), chunk 7's D26 needs §2.3 (time
-  picker), chunk 8 needs §2.2 (reminder semantics), chunks 9/10 need
-  §2.4 (backlog absorption). Chunks 1, 2, 4, 5, 6, 11 are
-  decision-free and dispatchable on the design round's merge in the
-  order below.
+- **Status**: READY — the design round and all four §2 decisions are
+  accepted by the user (2026-11-01: Lucide SVGs; at/in task
+  reminders; hybrid time combobox; backlog absorption). The backlog
+  round-2 plan amendment (dropping its chunks 2.5/3.4) landed in the
+  same docs branch. All 11 chunks are dispatchable in the order
+  below; the per-chunk DECISION GATE lines in the prompts pass by
+  construction and remain as tripwires.
 
 ## 1. Chunks & ordering
 
@@ -50,12 +50,11 @@ STOP and report. Parallel lanes permitted on the user's direction
 chunks 3, 7, 8, 9, 10 — a stage-1 agent finding its §2 decision
 unconfirmed in the origin doc STOPs and reports.
 
-**Backlog queue coordination** (binding, origin §2 decision 4):
-backlog round-2 chunks 2.5 (#352) and 3.4 (#490/#491) are absorbed by
-chunks 9/10 here and must not be dispatched from the backlog plan; if
-the user redirected decision 4 to the gated-deferral alternative, the
-origin doc's §6 gates (not this table) are normative. All other
-backlog round-2 chunks stand; `models.rs` rebase friction with the
+**Backlog queue coordination** (binding, origin §2 decision 4,
+confirmed): backlog round-2 chunks 2.5 (#352) and 3.4 (#490/#491)
+are absorbed by chunks 9/10 here and must not be dispatched from the
+backlog plan (its 2026-11-01 amendment — same docs branch — records
+the absorption); all other backlog round-2 chunks stand; `models.rs` rebase friction with the
 render lane (2.1/4.1) is expected — standard rebase dance.
 
 **Dispatch mechanics**: one agent session per prompt, in order

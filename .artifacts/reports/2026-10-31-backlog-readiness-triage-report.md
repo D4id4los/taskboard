@@ -6,6 +6,11 @@
   issue into **ready now** vs. **should wait**, with dependencies and
   a suggested dispatch shape. Commissioned for the user's review
   ahead of an implementation plan; no code, no tracker changes.
+- **Amendment (2026-11-01)**: two of the commissioned picks — #352
+  (timers surface) and #490/#491 (tracked-time surfaces) — were
+  absorbed into GUI review round 4 (chunks 9/10) per that round's
+  confirmed §2 decision 4; the backlog round-2 dispatch plan's
+  amendment records the details.
 - **Method**: open-issue set diffed against the 2026-10-25 triage
   (124 → 110 open; 42 closed, 26 new); bodies of all 26 new issues
   read in full; the 335 commits on `main` since `90c947c` reviewed for
