@@ -412,14 +412,14 @@ async fn run_loop(
                         &mut core,
                         &shared,
                         &signals,
-                        (
-                            &repo,
-                            ids.as_ref(),
-                            clock.as_ref(),
-                            &mut sync_outs,
-                            &system_out,
-                            &notifier,
-                        ),
+                        Seams {
+                            repo: &repo,
+                            ids: ids.as_ref(),
+                            clock: clock.as_ref(),
+                            sync_outs: &mut sync_outs,
+                            system_out: &system_out,
+                            notifier: &notifier,
+                        },
                         &metrics,
                         &reminder_cfg.defaults,
                         day_roll.calendar,
@@ -459,12 +459,12 @@ async fn run_loop(
                         &mut core,
                         &shared,
                         &signals,
-                        (
-                            &repo,
-                            ids.as_ref(),
-                            clock.as_ref(),
-                            &notifier,
-                        ),
+                        IngestSeams {
+                            repo: &repo,
+                            ids: ids.as_ref(),
+                            clock: clock.as_ref(),
+                            notifier: &notifier,
+                        },
                         &metrics,
                         &system_out,
                         report,
@@ -562,7 +562,12 @@ async fn run_loop(
                         &mut core,
                         &shared,
                         &signals,
-                        (&repo, clock.as_ref(), &system_out, &notifier),
+                        TickSeams {
+                            repo: &repo,
+                            clock: clock.as_ref(),
+                            system_out: &system_out,
+                            notifier: &notifier,
+                        },
                         &metrics,
                         &reminder_cfg,
                         &mut storage_failing,
@@ -574,7 +579,12 @@ async fn run_loop(
                         &mut core,
                         &shared,
                         &signals,
-                        (&repo, ids.as_ref(), clock.as_ref(), &system_out),
+                        DaySeams {
+                            repo: &repo,
+                            ids: ids.as_ref(),
+                            clock: clock.as_ref(),
+                            system_out: &system_out,
+                        },
                         &metrics,
                         &day_roll,
                         &mut last_roll,
@@ -602,22 +612,22 @@ fn publish(
     let _ = signals.send(EngineSignal::StateUpdated);
 }
 
-/// The seams tuple: `(repo, ids, clock, sync_outs, system_out, notifier)`.
-type Seams<'a> = (
-    &'a Arc<dyn TaskRepository>,
-    &'a dyn IdGenerator,
-    &'a dyn Clock,
-    &'a mut Vec<mpsc::Sender<SyncCommand>>,
-    &'a broadcast::WeakSender<SystemEvent>,
-    &'a mpsc::Sender<NotifierMessage>,
-);
+/// The command path's injected seams.
+struct Seams<'a> {
+    repo: &'a Arc<dyn TaskRepository>,
+    ids: &'a dyn IdGenerator,
+    clock: &'a dyn Clock,
+    sync_outs: &'a mut Vec<mpsc::Sender<SyncCommand>>,
+    system_out: &'a broadcast::WeakSender<SystemEvent>,
+    notifier: &'a mpsc::Sender<NotifierMessage>,
+}
 
 #[allow(clippy::too_many_arguments)] // the seams + receipt + metrics are the context
 async fn execute_command(
     core: &mut EngineCore,
     shared: &Arc<ArcSwap<AppState>>,
     signals: &broadcast::Sender<EngineSignal>,
-    (repo, ids, clock, sync_outs, system_out, notifier): Seams<'_>,
+    seams: Seams<'_>,
     metrics: &EngineMetrics,
     reminder_defaults: &taskboard_domain::ReminderDefaults,
     day: taskboard_domain::DayCalendar,
@@ -625,6 +635,14 @@ async fn execute_command(
     reply: Option<oneshot::Sender<Result<CommandOutcome, ExecuteError>>>,
     storage_failing: &mut bool,
 ) {
+    let Seams {
+        repo,
+        ids,
+        clock,
+        sync_outs,
+        system_out,
+        notifier,
+    } = seams;
     tracing::debug!("command received");
     let now = clock.now();
 
@@ -745,17 +763,18 @@ async fn ingest_sync_report(
     core: &mut EngineCore,
     shared: &Arc<ArcSwap<AppState>>,
     signals: &broadcast::Sender<EngineSignal>,
-    (repo, ids, clock, notifier): (
-        &Arc<dyn TaskRepository>,
-        &dyn IdGenerator,
-        &dyn Clock,
-        &mpsc::Sender<NotifierMessage>,
-    ),
+    seams: IngestSeams<'_>,
     metrics: &EngineMetrics,
     system_out: &broadcast::WeakSender<SystemEvent>,
     report: taskboard_domain::SyncReport,
     day: taskboard_domain::days::DayCalendar,
 ) {
+    let IngestSeams {
+        repo,
+        ids,
+        clock,
+        notifier,
+    } = seams;
     tracing::debug!("sync report ingested");
     let now = clock.now();
     let (actions, deltas, _system_events) = match report {
@@ -1129,13 +1148,29 @@ fn note_storage_failure(
     *storage_failing = true;
 }
 
-/// The tick-path seams tuple: `(repo, clock, system_out, notifier)`.
-type TickSeams<'a> = (
-    &'a Arc<dyn TaskRepository>,
-    &'a dyn Clock,
-    &'a broadcast::WeakSender<SystemEvent>,
-    &'a mpsc::Sender<NotifierMessage>,
-);
+/// The report-ingest path's seams.
+struct IngestSeams<'a> {
+    repo: &'a Arc<dyn TaskRepository>,
+    ids: &'a dyn IdGenerator,
+    clock: &'a dyn Clock,
+    notifier: &'a mpsc::Sender<NotifierMessage>,
+}
+
+/// The day roll's seams.
+struct DaySeams<'a> {
+    repo: &'a Arc<dyn TaskRepository>,
+    ids: &'a dyn IdGenerator,
+    clock: &'a dyn Clock,
+    system_out: &'a broadcast::WeakSender<SystemEvent>,
+}
+
+/// The reminder tick's seams.
+struct TickSeams<'a> {
+    repo: &'a Arc<dyn TaskRepository>,
+    clock: &'a dyn Clock,
+    system_out: &'a broadcast::WeakSender<SystemEvent>,
+    notifier: &'a mpsc::Sender<NotifierMessage>,
+}
 
 /// One reminder tick, shaped like [`ingest_sync_report`]: read the clock
 /// once, evaluate the pure firings, persist the delivery markers, and
@@ -1146,11 +1181,17 @@ async fn reminder_tick(
     core: &mut EngineCore,
     shared: &Arc<ArcSwap<AppState>>,
     signals: &broadcast::Sender<EngineSignal>,
-    (repo, clock, system_out, notifier): TickSeams<'_>,
+    seams: TickSeams<'_>,
     metrics: &EngineMetrics,
     cfg: &ReminderEngineConfig,
     storage_failing: &mut bool,
 ) {
+    let TickSeams {
+        repo,
+        clock,
+        system_out,
+        notifier,
+    } = seams;
     let now = clock.now();
     let firings = core.due_reminder_firings(&cfg.defaults, now);
     if firings.is_empty() {
@@ -1184,17 +1225,18 @@ async fn day_tick(
     core: &mut EngineCore,
     shared: &Arc<ArcSwap<AppState>>,
     signals: &broadcast::Sender<EngineSignal>,
-    (repo, ids, clock, system_out): (
-        &Arc<dyn TaskRepository>,
-        &dyn IdGenerator,
-        &dyn Clock,
-        &broadcast::WeakSender<SystemEvent>,
-    ),
+    seams: DaySeams<'_>,
     metrics: &EngineMetrics,
     cfg: &DayRollConfig,
     last_roll: &mut Option<NaiveDate>,
     storage_failing: &mut bool,
 ) {
+    let DaySeams {
+        repo,
+        ids,
+        clock,
+        system_out,
+    } = seams;
     let now = clock.now();
     let today = cfg.calendar.today(now);
     if *last_roll == Some(today) {
