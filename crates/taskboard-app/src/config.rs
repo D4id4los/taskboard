@@ -390,6 +390,33 @@ pub struct UiSection {
     /// clamp.
     #[serde(default = "default_due_soon_days")]
     pub due_soon_days: u32,
+    /// The device-local main-window geometry (#412): the last normal
+    /// (non-maximized, non-fullscreen) window rect in physical pixels,
+    /// restored at mount. Written only by the UI request forwarder
+    /// (the single-writer rule extended); a refused value mints to
+    /// `None` at the hand-over and never blocks UI start. Skipped when
+    /// absent so geometry-less configs serialize unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_geometry: Option<WindowGeometryTable>,
+}
+
+/// The raw serde shape of `[ui.window_geometry]` (#412): four
+/// physical-pixel integers. `i64` cells so `config print` echoes
+/// stored values verbatim and no legitimate value trips decode; the
+/// semantic validation (degenerate dims, oversized values) lives in
+/// the UI crate's `WindowGeometry::new` mint at the hand-over — this
+/// struct is deliberately shape-only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WindowGeometryTable {
+    /// The top-left corner's x, physical pixels (may be negative).
+    pub x: i64,
+    /// The top-left corner's y, physical pixels (may be negative).
+    pub y: i64,
+    /// The window width, physical pixels.
+    pub width: i64,
+    /// The window height, physical pixels.
+    pub height: i64,
 }
 
 impl Default for UiSection {
@@ -399,6 +426,7 @@ impl Default for UiSection {
             keymap: KeymapSection::default(),
             stack_widths: BTreeMap::new(),
             due_soon_days: default_due_soon_days(),
+            window_geometry: None,
         }
     }
 }
@@ -1703,6 +1731,64 @@ mod tests {
             serialized.get("stack_widths").is_none(),
             "the default section serializes without the key"
         );
+    }
+
+    /// T5 — the `window_geometry` table round-trips verbatim,
+    /// including a negative position (left-of-primary geography).
+    #[test]
+    fn ui_window_geometry_round_trips_with_negative_positions() {
+        let toml = "[ui.window_geometry]\nx = -1920\ny = 0\nwidth = 1366\nheight = 768\n";
+        let round: AppConfig = Figment::from(Serialized::defaults(AppConfig::default()))
+            .merge(Toml::string(toml))
+            .extract()
+            .expect("the geometry table decodes");
+        assert_eq!(
+            round.ui.window_geometry,
+            Some(crate::config::WindowGeometryTable {
+                x: -1920,
+                y: 0,
+                width: 1366,
+                height: 768
+            })
+        );
+
+        // The serializing half: a present key serializes back as the
+        // four integer cells.
+        let serialized = serde_json::to_value(round.ui).expect("serialize");
+        let geometry = serialized.get("window_geometry").expect("present");
+        assert_eq!(geometry.get("width"), Some(&serde_json::json!(1366)));
+        assert_eq!(geometry.get("x"), Some(&serde_json::json!(-1920)));
+    }
+
+    /// T5 — old configs parse unchanged: an absent key is `None`, and
+    /// the default section serializes without the key (no husk).
+    #[test]
+    fn ui_window_geometry_absent_key_is_none_and_serializes_to_nothing() {
+        let round: AppConfig = Figment::from(Serialized::defaults(AppConfig::default()))
+            .merge(Toml::string("[ui]\nscale = 1.5\n"))
+            .extract()
+            .expect("a geometry-less config decodes");
+        assert_eq!(round.ui.window_geometry, None, "old configs parse");
+
+        let serialized = serde_json::to_value(AppConfig::default().ui).expect("serialize");
+        assert!(
+            serialized.get("window_geometry").is_none(),
+            "the default section serializes without the key"
+        );
+    }
+
+    /// T5 — an unknown key inside the geometry table is a decode
+    /// error (the `deny_unknown_fields` shape discipline).
+    #[test]
+    fn ui_window_geometry_unknown_key_is_a_decode_error() {
+        let result: Result<AppConfig, _> = Figment::from(
+            Serialized::defaults(AppConfig::default()),
+        )
+        .merge(Toml::string(
+            "[ui.window_geometry]\nx = 0\ny = 0\nwidth = 100\nheight = 100\nmaximized = true\n",
+        ))
+        .extract();
+        assert!(result.is_err(), "the hostile table refuses");
     }
 
     #[test]

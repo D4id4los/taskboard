@@ -154,10 +154,17 @@ pub struct KeymapUpdate {
 pub enum UiRequest {
     /// The full per-board stack-width snapshot (round-1 D21):
     /// idempotent under re-send — the app forwarder replaces that
-    /// board's entry wholesale. Debounced (the one lane exception).
+    /// board's entry wholesale. Debounced (a lane exception).
     StackWidthsChanged {
         board: BoardId,
         widths: Vec<(StackId, u32)>,
+    },
+    /// The full main-window geometry snapshot (#412): idempotent under
+    /// re-send — the forwarder keeps the latest rect (a burst
+    /// collapses to the last). Debounced, riding the widths lane (the
+    /// two lane exceptions).
+    WindowGeometryChanged {
+        geometry: crate::geometry::WindowGeometry,
     },
     /// Verifies an existing row's stored secret against its server
     /// (DEV-3: a row test must not require retyping a password).
