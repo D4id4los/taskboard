@@ -39,6 +39,19 @@ export enum IconKind {
     play,
     // The stop-tracking affordance (DR-5/4, D-T16): a stop square.
     stop,
+    // r4 D11 growth: the notification-dismiss affordance (F1) — an
+    // X-in-circle, distinct from done's check.
+    dismiss,
+    // The countdown-timer affordance (chunk 9's setter): a stopwatch.
+    timer,
+    // The connected indicator (chunk 11's connections dropdown).
+    link,
+    // The not-connected indicator (chunk 11): the open chain link.
+    link-off,
+    // The dropdown affordance (chunk 11's shared dropdown).
+    chevron-down,
+    // The edit affordance (chunks 5/6): a pencil.
+    pencil,
 }
 
 export component Icon inherits Image {
@@ -66,5 +79,11 @@ export component Icon inherits Image {
         : kind == IconKind.check                ? @image-url("../assets/icons/check.svg")
         : kind == IconKind.play                 ? @image-url("../assets/icons/play.svg")
         : kind == IconKind.stop                 ? @image-url("../assets/icons/square.svg")
+        : kind == IconKind.dismiss              ? @image-url("../assets/icons/circle-x.svg")
+        : kind == IconKind.timer                ? @image-url("../assets/icons/timer.svg")
+        : kind == IconKind.link                 ? @image-url("../assets/icons/link.svg")
+        : kind == IconKind.link-off             ? @image-url("../assets/icons/unlink.svg")
+        : kind == IconKind.chevron-down         ? @image-url("../assets/icons/chevron-down.svg")
+        : kind == IconKind.pencil               ? @image-url("../assets/icons/pencil.svg")
         : @image-url("../assets/icons/triangle-alert.svg");
 }

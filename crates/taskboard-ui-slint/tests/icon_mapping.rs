@@ -99,25 +99,13 @@ fn every_mapped_asset_exists() {
 }
 
 /// Every vendored SVG is referenced by the mapping — no dead vendored
-/// files ride in the binary. The 6 files minted for the r4 growth
-/// kinds (dismiss/timer/link/link-off/chevron-down/pencil) are pinned
-/// as the exact pending set — they cost nothing until their enum rows
-/// land (the same commit removes this list and the exception).
+/// files ride in the binary.
 #[test]
 fn every_vendored_asset_is_mapped() {
-    const PENDING_GROWTH_KINDS: [&str; 6] = [
-        "circle-x.svg",
-        "timer.svg",
-        "link.svg",
-        "unlink.svg",
-        "chevron-down.svg",
-        "pencil.svg",
-    ];
     let referenced = referenced_assets();
     for asset in vendored_assets() {
         assert!(
-            referenced.iter().any(|name| name == &asset)
-                || PENDING_GROWTH_KINDS.contains(&asset.as_str()),
+            referenced.iter().any(|name| name == &asset),
             "vendored asset {asset} is never mapped — a dead file"
         );
     }
