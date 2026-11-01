@@ -34,8 +34,6 @@ pub(crate) fn repo_error(err: &sqlx::Error) -> RepositoryError {
             | sqlx::error::ErrorKind::CheckViolation => RepositoryError::Corrupted,
             // Other database errors (syntax, RAISE-triggered aborts, …)
             // are not integrity verdicts about the stored data.
-            // Non-exhaustive upstream enum: everything else (syntax,
-            // RAISE-triggered aborts, …) is not an integrity verdict.
             _ => RepositoryError::Unavailable,
         },
         _ => RepositoryError::Unavailable,
