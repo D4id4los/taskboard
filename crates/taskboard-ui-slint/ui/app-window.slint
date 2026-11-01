@@ -280,6 +280,7 @@ export component AppWindow inherits Window {
                 switcher-activated(c) => root.board-switcher-activated(c);
                 header-context(c, x, y) => root.board-header-context-requested(c, x, y);
                 body-context(c, x, y) => root.board-body-context-requested(c, x, y);
+                body-activated(c) => root.board-body-activated(c);
                 task-done-toggled(c, r) => root.board-task-done-toggled(c, r);
                 rename-committed(c, t) => root.board-stack-rename-committed(c, t);
                 rename-edited(c, t) => root.board-stack-rename-edited(c, t);
@@ -733,6 +734,9 @@ export component AppWindow inherits Window {
     // The stack card's bare-surface right-click (r3 D4): the header
     // seam's body twin — one shared adapter body.
     pure callback board-body-context-requested(int, float, float);
+    // The bare body's left-click select (r4 D3): the header seam's
+    // body twin — one shared adapter body.
+    pure callback board-body-activated(int);
     // The done checkbox's toggle (r3 D6): (column, task) — the
     // adapter resolves the id tables and raw-sends the toggled
     // SetTaskDone (the notification Done button's precedent: the

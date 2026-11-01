@@ -56,6 +56,8 @@ export component BoardView inherits FocusScope {
     callback header-context(int, float, float);
     // The stack card's bare-surface right-click (r3 D4).
     callback body-context(int, float, float);
+    // The bare body's left-click select (r4 D3).
+    callback body-activated(int);
     // The done checkbox's toggle (r3 D6).
     callback task-done-toggled(int, int);
     // The stack-rename field of one column (r2 D21).
@@ -127,6 +129,7 @@ export component BoardView inherits FocusScope {
                 switcher-activated(c) => root.switcher-activated(c);
                 header-context(c, x, y) => root.header-context(c, x, y);
                 body-context(c, x, y) => root.body-context(c, x, y);
+                body-activated(c) => root.body-activated(c);
                 task-done-toggled(c, r) => root.task-done-toggled(c, r);
                 rename-committed(c, t) => root.rename-committed(c, t);
                 rename-edited(c, t) => root.rename-edited(c, t);
