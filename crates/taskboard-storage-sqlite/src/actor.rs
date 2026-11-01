@@ -78,8 +78,8 @@ impl StorageHandle {
 }
 
 /// Spawns the actor loop onto the current runtime; returns the handle and
-/// the task's `JoinHandle` (the future Phase 5 bootstrap awaits it for a
-/// clean shutdown once all handles are dropped).
+/// the task's `JoinHandle` (the bootstrap drops the last handle and awaits
+/// it for a clean shutdown — `taskboard-app`'s bootstrap, `bootstrap.rs`).
 #[must_use]
 pub fn spawn_storage_actor(repo: Arc<SqliteTaskRepository>) -> (StorageHandle, JoinHandle<()>) {
     let (tx, mut rx) = mpsc::channel::<StorageCommand>(64);

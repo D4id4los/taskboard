@@ -678,7 +678,7 @@ impl SqliteTaskRepository {
     }
 
     #[tracing::instrument(skip(self), err)]
-    #[allow(clippy::too_many_lines)] // eight SELECTs; the length is the schema's
+    #[allow(clippy::too_many_lines)] // one SELECT per table; the length is the schema's
     async fn load_inner(&self) -> Result<PersistedState, RepositoryError> {
         // One read transaction around all SELECTs: the single pooled
         // connection would otherwise be released between queries, and a
