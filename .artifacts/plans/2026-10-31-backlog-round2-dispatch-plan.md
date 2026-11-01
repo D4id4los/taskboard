@@ -2,8 +2,9 @@
 
 - **Date**: 2026-10-31
 - **Kind**: dispatch plan — three-stage agent prompts (planning →
-  implementation → review) for the **27** chunks of the commissioned
-  backlog round 2, grouped into **6 batches**. Chunks within a batch
+  implementation → review) for the **25** chunks of the commissioned
+  backlog round 2 (27 commissioned; **two absorbed 2026-11-01** — see
+  the amendment below), grouped into **6 batches**. Chunks within a batch
   are parallel-safe under the lane rules of §1 and dispatch greedily
   in listed order; batches are sequential (a batch begins when every
   PR of the previous batch is merged). **Every chunk carries its
@@ -29,6 +30,14 @@
   (`.artifacts/reports/2026-10-26-bench-view-pinned-remeasure-report.md`)
   for the render lane, and the v0.1.0 audit crate/theme reports for
   the cleanup chunks.
+- **Amendment (2026-11-01)**: the user's GUI review round 4
+  (`.artifacts/plans/2026-11-01-gui-review-round4-plan.md`, §2
+  decision 4, confirmed) **absorbs chunks 2.5 (#352) and 3.4
+  (#490/#491)** into that round's chunks 9 (`feat/ui-r4-timer-surfaces`)
+  and 10 (`feat/ui-r4-tracking-surfaces`). Both rows below and both
+  chunk sections are struck — **do not dispatch them from this plan**;
+  the issues close via the round-4 chunks. Batch counts drop to four
+  (batch 2) and five (batch 3); no other gate or lane changes.
 - **Status**: **READY** — batch 1 is dispatchable immediately. One
   chunk is a **resume** (#480: its stage-1 plan is landed on `main`
   as `1fec235a`; its stage-2 implementation commit `44c1fa71` sits
@@ -68,11 +77,11 @@
 | 2 | 2.2 | #270 + #271 | `chore/audit-cleanups-domain-state` | domain naming/rule-consts/is_noop; state fake/Seams cleanups (re-verified) | M |
 | 2 | 2.3 | #272 + #273 | `chore/audit-cleanups-storage-sync` | storage small fixes; sync naming (re-verified) | M |
 | 2 | 2.4 | #412 | `feat/window-geometry-persistence` | main-window geometry survives restarts | M |
-| 2 | 2.5 | #352 | `feat/timers-alarm-surface` | timers composition + fired-alarm ack surface per DR-3 | M |
+| 2 | ~~2.5~~ | #352 | ~~`feat/timers-alarm-surface`~~ | **ABSORBED (2026-11-01) into GUI review round 4 chunk 9 — do not dispatch** | — |
 | 3 | 3.1 | #462 (+ rider #536) | `fix/kiosk-board-i16-overflow` | board virtualisation/clip kills the i16 panic; shared upstream slint report | M |
 | 3 | 3.2 | #401 | `feat/appdata-unreadable-split` | `AppDataUnreadable` 4xx/5xx evidence split | S |
 | 3 | 3.3 | #201 | `feat/delivery-proof-pruning` | age-based pruning of delivery rows at record time | S/M |
-| 3 | 3.4 | #490 + #491 | `feat/tracked-time-surfaces` | today "Tracked" totals section; task-detail entry history | M |
+| 3 | ~~3.4~~ | #490 + #491 | ~~`feat/tracked-time-surfaces`~~ | **ABSORBED (2026-11-01) into GUI review round 4 chunk 10 — do not dispatch** | — |
 | 3 | 3.5 | #493 + #495 | `feat/respite-break-reminders` | respite entry kind; tracked-duration break reminders riding it | M |
 | 3 | 3.6 | #276 + #279 + #280 | `chore/app-hardening-contracts` | app cleanups; shutdown hardening bundle; pin publish-order + IPC match (re-verified) | M |
 | 4 | 4.1 | #461 | `perf/ui-today-virtualisation` | Today section lists via the #373 ListView mechanism + anchor-on-removal | M |
@@ -89,7 +98,7 @@ within a batch):**
    refresh/diff mechanics — 1.3 (#463), 2.1 (#464), 3.1 (#462),
    4.1 (#461) — are strictly serial, in that order; the batch table
    already spreads them one per batch. Chunks that merely *add* new
-   push sections (#352, #490/#491, #496, #214) may run beside the
+   push sections (#496, #214) may run beside the
    lane but must expect rebase friction in `models.rs` and follow
    the §2 rebase dance.
 2. **UI territory rule (soft).** Two ui-slint chunks may share a
@@ -782,7 +791,7 @@ You are the stage-3 REVIEW agent for chunk 1.10 of backlog round 2 (branch test/
 Report: verdict, per-leg dispositions, findings, fixes, PR URL, green checks, worktree removed. Never merge; never touch main.
 ```
 
-## 4. Batch 2 (five parallel chunks; begins when batch 1 fully merges)
+## 4. Batch 2 (four parallel chunks; begins when batch 1 fully merges — 2.5 absorbed 2026-11-01)
 
 ### Chunk 2.1 — row-diff mirror (#464) (`perf/ui-row-diff-mirror`) — gate: 1.3 merged
 
@@ -1019,69 +1028,23 @@ You are the stage-3 REVIEW agent for chunk 2.4 of backlog round 2 (branch feat/w
 Report: verdict, findings, fixes, PR URL, green checks, issue closed, worktree removed. Never merge; never touch main.
 ```
 
-### Chunk 2.5 — timers & alarms surface (#352) (`feat/timers-alarm-surface`) — gate: 1.3 merged; normative: the DR-3 plan
+### Chunk 2.5 — ~~timers & alarms surface (#352)~~ — ABSORBED (2026-11-01)
 
-- **Covers** (normative): #352 + the DR-3 plan's timers rulings — the
-  thin-client timers composition: active alarms with remaining time
-  (the overdue-banner clock precedent), fired-not-yet-acknowledged
-  alarms with snooze/cancel affordances dispatching the existing
-  `SnoozeReminder`/`CancelAdhocAlarm` commands through the action
-  layer, and a creation affordance using the `--in`/`--at` duration
-  grammar. The escalation/alarm-window half already landed (DR-3/4,
-  commit `112bb6b5`) — stage 1 confirms remaining scope against the
-  DR-3 plan so nothing double-lands. Territory: today/chrome (§1
-  lane 2); expect `models.rs` rebase friction with the render lane.
-- **Acceptance**: the timers list renders live state only
-  (`AppState.reminders.alarms`); ack affordances dispatch existing
-  commands (no new command surface); creation matches the CLI's
-  duration grammar; kiosk banner untouched (task-only by contract);
-  goldens/journeys updated; CHANGELOG entry.
+**Do not dispatch.** The user's GUI review round 4 confirmed
+absorbing this chunk (round-4 plan §2 decision 4): its scope — the
+#352 remainder table (active-timers list, fired-ack affordances,
+creation affordance, countdown display) plus the round-4 timer
+findings (mouse setter widget, per-second countdown + ISO fire
+time) — is owned end-to-end by round-4 **chunk 9**
+(`feat/ui-r4-timer-surfaces`,
+`.artifacts/plans/2026-11-01-gui-review-round4-implementation-dispatch-plan.md`
+§10). Issue #352 closes via that chunk. The original three prompts
+were removed with the 2026-11-01 amendment commit (they live in git history
+  (`git show 5bf90c63:.artifacts/plans/2026-10-31-backlog-round2-dispatch-plan.md`)
+  if ever needed); dispatching this chunk from
+here would double-land the round-4 surface.
 
-**Prompt 2.5.a (planning):**
-
-```text
-You are the stage-1 PLANNING agent for chunk 2.5 of backlog round 2 ("timers and alarms surface", branch feat/timers-alarm-surface) in /home/viktoria/src/taskboard.
-
-GATE first: git fetch origin --prune and verify chunk 1.3's PR (#463) is merged into origin/main. If not: STOP and report.
-
-1. Read AGENTS.md, GitHub issue #352 (normative), and the DR-3 plan .artifacts/plans/2026-10-26-reminders-surface-pair-design-round-plan.md (the timers rulings — D-R9's scope and whatever the round ruled about this surface; the escalation/alarm-window half already landed, so enumerate what REMAINS: the active-timers list, the fired-ack affordances beyond the landed alarm window, the creation affordance).
-2. Read the seams: crates/taskboard-domain/src/reminders.rs (ReminderState.alarms — the BTreeMap of AdhocAlarm {id, label, fire_at, created_at}, the snooze chain, fired-ness as delivery set-membership), the landed escalation driver + alarm window (what surface already exists — do not rebuild it), the overdue banner's remaining-time clock precedent (the UI's own repaint timer), the action layer's SnoozeReminder/CancelAdhocAlarm dispatch, the CLI's timers add --in/--at grammar (the creation affordance must match it), today-view.slint + models.rs push paths (territory: today/chrome), and the kiosk banner contract (task-only).
-3. Run scripts/worktree-doctor.sh from /home/viktoria/src/taskboard first (nonzero exit = below the disk floor: STOP and report), then: git worktree add -b feat/timers-alarm-surface ../taskboard-WT-feat-timers-alarm-surface off main.
-4. Write a detailed TDD-first plan at .artifacts/plans/2026-10-31-timers-alarm-surface-plan.md: the remaining-scope table (what the DR-3/4 landing already covers vs. what this chunk adds), the composition shape (list rows: label, remaining time, snooze/cancel affordances), the remaining-time mechanism (UI-side clock + repaint per the banner precedent; time-dependent tests pause/advance, never sleep), the creation affordance (grammar parity with the CLI --in/--at; where it dispatches), the kiosk gate decision (the banner is task-only by contract — decide whether this surface hides on kiosk per the DR-5/4 precedent), the new push function's home in models.rs (expect rebase friction with the render lane — keep the hunk isolated), and the test catalogue (component journeys + goldens). Resolve every open question with a recorded decision.
-5. Commit it as: docs(plan): timers and alarms surface. Do not implement; do not push.
-
-Report: plan path, the remaining-scope table, decisions, risks.
-```
-
-**Prompt 2.5.b (implementation):**
-
-```text
-You are the stage-2 IMPLEMENTATION agent for chunk 2.5 of backlog round 2 ("timers and alarms surface").
-
-1. Read AGENTS.md, issue #352, the DR-3 plan, the dispatch plan §1/§2/§4 chunk 2.5, and the stage-1 plan in ../taskboard-WT-feat-timers-alarm-surface (branch feat/timers-alarm-surface). Recreate the worktree on that branch if missing.
-2. Implement exactly per the approved plan, TDD, every commit standalone: the composition, its push function, the affordance dispatches, the creation affordance. Hard rules: the surface renders STATE ONLY (AppState.reminders.alarms and delivery membership — no local timers-of-truth, no nagging policy in the UI: the dumb-client line is the SRP boundary); every affordance dispatches an EXISTING command (SnoozeReminder/CancelAdhocAlarm — a new command variant is a deviation to report, never make); the creation affordance's grammar matches the CLI's exactly (one parser's semantics, not two); time-dependent tests use pause/advance; the kiosk banner file untouched.
-3. Update goldens/journeys per the plan; CHANGELOG: one feature entry.
-4. Run the full gate suite from AGENTS.md §10 and make it green (fmt, clippy -D warnings, nextest, doc tests, deny, llvm-cov sequence with quarantine + rm).
-5. No push, no PR. Never push to or merge main.
-
-Report: per-gate results, any deviation from the plan and why.
-```
-
-**Prompt 2.5.c (review):**
-
-```text
-You are the stage-3 REVIEW agent for chunk 2.5 of backlog round 2 (branch feat/timers-alarm-surface).
-
-1. Read AGENTS.md, issue #352, the DR-3 plan, the dispatch plan §1/§2/§4 (code-quality mandate applies), and the stage-1 plan; review the full branch diff after rebasing onto origin/main per §2 step 3.
-2. Functional focus — this chunk's traps: double-landing (the alarm window landed already — the diff must not rebuild it; check the remaining-scope table against the actual hunks); the remaining-time display derives from state + the injected clock (a UI-side wall-clock read is a finding — the banner precedent is DIRECT-JUSTIFIED display-only, match its exact pattern or improve on it); fired-but-unacked state comes from delivery membership (a local "fired" flag is a divergence); the kiosk gate matches the plan's decision; models.rs hunks stay isolated enough to rebase over the render lane without semantic conflicts.
-3. Re-run the full gate suite yourself; any failure is a finding.
-4. Fix findings on the branch (amend/reword). Ship per §2 step 3 (push, PR titled feat(ui-slint): the timers and alarms surface, checks green, mergeStateStatus CLEAN).
-5. Teardown per §2 step 3. Close #352 with a self-contained comment (the remaining-scope table + what landed).
-
-Report: verdict, findings, fixes, PR URL, green checks, issue closed, worktree removed. Never merge; never touch main.
-```
-
-## 5. Batch 3 (six parallel chunks; begins when batch 2 fully merges)
+## 5. Batch 3 (five parallel chunks; begins when batch 2 fully merges — 3.4 absorbed 2026-11-01)
 
 ### Chunk 3.1 — kiosk board i16 overflow (#462, rider #536) (`fix/kiosk-board-i16-overflow`) — gate: 2.1 merged (render lane)
 
@@ -1259,65 +1222,22 @@ You are the stage-3 REVIEW agent for chunk 3.3 of backlog round 2 (branch feat/d
 
 Report: verdict, findings, fixes, PR URL, green checks, issue closed, worktree removed. Never merge; never touch main.
 ```
-### Chunk 3.4 — tracked-time surfaces (#490 + #491) (`feat/tracked-time-surfaces`) — gates: 2.1, 2.5 merged
+### Chunk 3.4 — ~~tracked-time surfaces (#490 + #491)~~ — ABSORBED (2026-11-01)
 
-- **Covers** (normative): #490 — a today-view "Tracked" section:
-  per-task tracked-today totals and the day total, derived from time
-  entries via the DR-5 `tracked_in_window` pure projection (spanning
-  entries split at the `[preferences] day_start_time` window
-  boundary); follows the today-view section pattern; empty section
-  collapses. #491 — a per-task entry-history list inside the task
-  detail view (start/end/duration rows) with adjust/delete
-  affordances dispatching `AdjustTimeEntry`/`DeleteTimeEntry`
-  (until now CLI-only). Normative: the DR-5 plan's D-T rulings.
-- **Acceptance**: totals derived purely (projection unit + property
-  tests; window-boundary splits pinned); affordances dispatch
-  existing commands only; kiosk gate per the DR-5 UI precedent;
-  goldens/journeys; CHANGELOG.
-
-**Prompt 3.4.a (planning):**
-
-```text
-You are the stage-1 PLANNING agent for chunk 3.4 of backlog round 2 ("tracked-time surfaces", branch feat/tracked-time-surfaces) in /home/viktoria/src/taskboard.
-
-GATES first: git fetch origin --prune and verify BOTH chunk 2.1's (#464) and chunk 2.5's (#352) PRs are merged into origin/main. If either is not: STOP and report.
-
-1. Read AGENTS.md, GitHub issues #490 and #491 (normative), and the DR-5 plan .artifacts/plans/2026-10-26-time-tracking-design-round-plan.md (the UI-scope ruling that fenced these; the D-T rulings; the tracked_in_window projection's contract).
-2. Read the seams: the tracked_in_window pure projection in the domain (its signature, the day_start_time window split), the today-view section pattern (Overdue/Scheduled/Due/Done in push_today + today-view.slint — the section to imitate), the task detail view's rows pattern, the AdjustTimeEntry/DeleteTimeEntry commands (the affordances dispatch these — verify their payload shapes), the tracking chip/affordances landed in DR-5/4 (the kiosk gate precedent), and models.rs's detail/today push paths (expect render-lane rebase friction; keep hunks isolated).
-3. Run scripts/worktree-doctor.sh from /home/viktoria/src/taskboard first (nonzero exit = below the disk floor: STOP and report), then: git worktree add -b feat/tracked-time-surfaces ../taskboard-WT-feat-tracked-time-surfaces off main.
-4. Write a detailed TDD-first plan at .artifacts/plans/2026-10-31-tracked-time-surfaces-plan.md: the Tracked section's row model and its derivation (pure projection per task + the day total; the window-boundary split cases enumerated and pinned), the detail history list (row shape, adjust/delete affordances → existing commands), the empty-state collapse (both surfaces), the kiosk gate decision per the DR-5/4 precedent, and the test catalogue (projection property tests + boundary pins, component journeys, goldens). Two territories in one chunk (today + detail): keep the projection shared and pure, both surfaces thin. Resolve every open question with a recorded decision.
-5. Commit it as: docs(plan): tracked-time surfaces. Do not implement; do not push.
-
-Report: plan path, decisions, risks, estimated diff size.
-```
-
-**Prompt 3.4.b (implementation):**
-
-```text
-You are the stage-2 IMPLEMENTATION agent for chunk 3.4 of backlog round 2 ("tracked-time surfaces").
-
-1. Read AGENTS.md, issues #490/#491, the DR-5 plan, the dispatch plan §1/§2/§5 chunk 3.4, and the stage-1 plan in ../taskboard-WT-feat-tracked-time-surfaces (branch feat/tracked-time-surfaces). Recreate the worktree on that branch if missing.
-2. Implement exactly per the approved plan, TDD, every commit standalone: the projection extensions (pure, property-tested — window splits pinned at the day_start_time boundary including a spanning entry), then the Tracked section, then the detail history list. Hard rules: every affordance dispatches an EXISTING command (AdjustTimeEntry/DeleteTimeEntry — no new command surface); the UI renders state only (dumb-client line); time-dependent tests pause/advance; the kiosk gate matches the plan's decision.
-3. Update goldens/journeys per the plan; CHANGELOG: one feature entry.
-4. Run the full gate suite from AGENTS.md §10 and make it green (fmt, clippy -D warnings, nextest, doc tests, deny, llvm-cov sequence with quarantine + rm).
-5. No push, no PR. Never push to or merge main.
-
-Report: per-gate results, any deviation from the plan and why.
-```
-
-**Prompt 3.4.c (review):**
-
-```text
-You are the stage-3 REVIEW agent for chunk 3.4 of backlog round 2 (branch feat/tracked-time-surfaces).
-
-1. Read AGENTS.md, issues #490/#491, the DR-5 plan, the dispatch plan §1/§2/§5 (code-quality mandate applies), and the stage-1 plan; review the full branch diff after rebasing onto origin/main per §2 step 3.
-2. Functional focus — this chunk's traps: the window-split projection is where silent wrongness lives (a spanning entry split at day_start_time must sum correctly across both windows — the property tests must cover the boundary from both sides, midnight-inclusive vs -exclusive per the landed day-window semantics); totals must derive from ENTRIES, not a parallel tally (one source of truth); the detail affordances' dispatch payloads match the commands' expectations (an adjust that silently no-ops is a finding); no nagging or auto-start logic anywhere.
-3. Re-run the full gate suite yourself; any failure is a finding.
-4. Fix findings on the branch (amend/reword). Ship per §2 step 3 (push, PR titled feat(ui-slint): the tracked-time surfaces, checks green, mergeStateStatus CLEAN).
-5. Teardown per §2 step 3. Close #490 and #491 with self-contained comments.
-
-Report: verdict, findings, fixes, PR URL, green checks, issues closed, worktree removed. Never merge; never touch main.
-```
+**Do not dispatch.** The user's GUI review round 4 confirmed
+absorbing this chunk (round-4 plan §2 decision 4): its scope — the
+today "Tracked" totals section (#490) and the task-detail
+entry-history list with adjust/delete affordances (#491) — plus the
+round-4 tracking findings (add/edit records UI over
+`LogTime`/`AdjustTimeEntry`/`DeleteTimeEntry`, seconds-precision
+totals, full mouse/keyboard support) is owned end-to-end by round-4
+**chunk 10** (`feat/ui-r4-tracking-surfaces`,
+`.artifacts/plans/2026-11-01-gui-review-round4-implementation-dispatch-plan.md`
+§11). Issues #490 and #491 close via that chunk. The original three
+prompts were removed with the 2026-11-01 amendment commit (they live
+in git history — `git show 5bf90c63:.artifacts/plans/2026-10-31-backlog-round2-dispatch-plan.md` —
+  if ever needed); dispatching this
+chunk from here would double-land the round-4 surface.
 
 ### Chunk 3.5 — respite + break reminders (#493 + #495) (`feat/respite-break-reminders`) — gate: 2.2 merged
 
@@ -1810,9 +1730,12 @@ Report: verdict, findings, fixes, PR URL, green checks, issue closed, worktree r
   stays open) · 1.3→#463 · 1.4→#458 · 1.5→#450 · 1.6→#194 ·
   1.7→#407 · 1.8→#116 · 1.9→#555 · 1.10→#521, #524, #549
   (+ dispositions #287/#336/#384) · 2.1→#464 · 2.2→#270, #271 ·
-  2.3→#272, #273 · 2.4→#412 · 2.5→#352 · 3.1→#462, #536 · 3.2→#401 ·
-  3.3→#201 · 3.4→#490, #491 · 3.5→#493, #495 · 3.6→#276, #279, #280 ·
+  2.3→#272, #273 · 2.4→#412 · 3.1→#462, #536 · 3.2→#401 ·
+  3.3→#201 · 3.5→#493, #495 · 3.6→#276, #279, #280 ·
   4.1→#461 · 4.2→#492 · 4.3→#350 · 5.1→#496 · 5.2→#275 · 6.1→#214.
+  (2.5→#352 and 3.4→#490, #491 left this plan in the 2026-11-01
+  amendment — absorbed into GUI review round 4 chunks 9/10, which
+  own those closures.)
 - **Already executed (2026-10-31, before this plan)**: the F-133
   Option A ruling recorded on #480; hygiene closures #166, #231,
   #210; milestones `remediation-wave-1`, `wave-kiosk`,

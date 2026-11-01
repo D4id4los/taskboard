@@ -1,9 +1,12 @@
 # [Plan] GUI Review Round 4 — Fix Round (board surface & column resizing, icon assets, hover machinery, task-view layout & focus, date/time entry, task reminders, timer surfaces, tracking surfaces, settings connections)
 
 - **Date**: 2026-11-01
-- **Status**: PROPOSED — written from the user's 2026-11-01 GUI review
-  round 4 (29 findings, R4-F1…R4-F29 below) plus **four recorded
-  decisions pending the user's confirmation** (§2). Companion dispatch
+- **Status**: ACCEPTED — written from the user's 2026-11-01 GUI review
+  round 4 (29 findings, R4-F1…R4-F29 below); **all four §2 decisions
+  were confirmed by the user on 2026-11-01** (1: Lucide SVGs;
+  2: at/in task reminders; 3: hybrid time combobox; 4: backlog
+  absorption — the backlog round-2 plan amendment landed in the same
+  docs branch). Companion dispatch
   plan: `.artifacts/plans/2026-11-01-gui-review-round4-implementation-dispatch-plan.md`
   — **11 chunks**, serial default with named parallel lanes.
 - **Scope**: `taskboard-ui-slint` (most chunks) + `taskboard-domain` /
@@ -107,7 +110,7 @@
     combinable with the board-view board-selector dropdown issue
     (#411).
 
-## 2. Recorded decisions (PROPOSED — the user confirms or redirects at review; each names its alternative)
+## 2. Recorded decisions (all CONFIRMED by the user, 2026-11-01; alternatives remain recorded for history)
 
 1. **Icon sourcing (F1)** — **vendor ~30–60 monochrome Lucide SVGs
    (ISC) into `ui/assets/icons/` and render them through a thin
@@ -160,9 +163,9 @@
    window half already landed; stage 1 enumerates what's left against
    the DR-3 rulings), chunk 10 owns the tracked-time surfaces
    (#491 task-detail entry history + editor; #490 today totals rides
-   along). Bookkeeping: after the user confirms, a small docs commit
-   amends the backlog round-2 dispatch plan to drop chunks 2.5/3.4
-   with pointers here; issues #352/#490/#491 close via chunks 9/10.
+   along). Bookkeeping: the backlog round-2 dispatch plan is amended
+   (same docs branch, 2026-11-01) to drop chunks 2.5/3.4 with
+   pointers here; issues #352/#490/#491 close via chunks 9/10.
    Alternative recorded: keep the backlog queue and gate round-4
    chunks 9/10 on those merges (deferred deltas only) — rejected as
    it serializes two plans over the same files and delays the user's
@@ -730,10 +733,9 @@ Serial default 1 → 11. Gates: 2 on 1 (board files); 6 and 7 on 5
 (task-view files); 8 on 6 (insert engagement); 9 and 10 on 7 (time
 combobox) and on 3 (icons); 11 on 3 (icons). Independent pairs (may
 run as parallel lanes on the user's direction, worktree budget
-permitting): 3 ∥ 4; 11 ∥ 5–8; 9 ∥ 10 after their gates. Chunks 1–5
-carry no §2 decision risk except 3 (decision 1); chunks 8 (decision
-2), 9/10 (decision 4), and 7's D26 (decision 3) are gated on the
-user's confirmation of those decisions at plan review.
+permitting): 3 ∥ 4; 11 ∥ 5–8; 9 ∥ 10 after their gates. All §2
+decisions are confirmed (2026-11-01); every chunk is dispatchable in
+the order above.
 
 ## 7. Risks
 
@@ -760,11 +762,10 @@ user's confirmation of those decisions at plan review.
   storage migration 0018): the backlog dispatch's migration fence
   (only one migration-carrying chunk in flight; next free number)
   binds; rebase friction with backlog 3.5/1.9/4.2 expected.
-- **R6 Absorbing backlog 2.5/3.4 (§2 decision 4) leaves the backlog
-  plan stale** until the amendment commit lands — the dispatch plan's
-  bookkeeping owns it; if the user redirects to the gated-deferral
-  alternative, chunks 9/10 re-scope to deltas and the gates flip to
-  the backlog merges.
+- **R6 Absorbing backlog 2.5/3.4 (§2 decision 4)** is confirmed
+  (2026-11-01) and the backlog-plan amendment lands with this
+  round's docs branch; chunks 9/10 own those surfaces outright —
+  no cross-plan gating, no double-landing window.
 - **R7 Per-second ticking on kiosk-class hardware**: the condition is
   mounted-surface-gated (kiosk pins today's minute-only behaviour);
   stage 1 of chunk 5 records the measured repaint cost at 1 Hz on
@@ -777,8 +778,10 @@ user's confirmation of those decisions at plan review.
   (chunk 9, D34), #490 + #491 (chunk 10, D35–D37), #411 (chunk 11,
   D40 — if its full scope lands; else annotated).
 - **Amends**: the backlog round-2 dispatch plan loses chunks 2.5/3.4
-  (a docs commit after the user confirms §2 decision 4; pointer to
-  this round's chunks 9/10).
+  (landed with this plan's docs branch, 2026-11-01 — struck rows,
+  absorbed sections, batch counts 4/5; pointers to this round's
+  chunks 9/10); the triage report's commissioning record carries a
+  one-line amendment note.
 - **Stays open, untouched**: #210/#489 (card play/pause — the
   tracking badge fence holds), #444, #463/#464 (perf lane), #412
   (window geometry — chunk 11 must not collide; stage 1 checks
