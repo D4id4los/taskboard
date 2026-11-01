@@ -486,7 +486,11 @@ dependency hierarchies.
    touching a query or migration. Dependencies: see the crate's
    =Cargo.toml=.
 
-5. *taskboard-ui-slint* — The Slint presentation layer (ADR 0015). The
+5. *taskboard-ui-slint* — The Slint presentation layer (ADR 0015).
+   The =widgets= layer renders icons as vendored monochrome Lucide
+   SVGs (ISC, =ui/assets/icons/=) tinted via =Image.colorize= behind
+   the closed =IconKind= enum; no icon font (D19 as amended by
+   GUI-review round 4 §2 decision 1, 2026-11-01). The
    module map: =theme= (the token module — colour/text-role/spacing
    globals with closed text roles — plus the bundled tri-licensed
    fonts with runtime registration), =actions= + =keymap= +

@@ -9,6 +9,7 @@ import { Badge } from "../widgets/badge.slint";
 import { StatusDot } from "../widgets/status-dot.slint";
 import { ListRow } from "../widgets/list-row.slint";
 import { IconButton, IconKind } from "../widgets/icon-button.slint";
+import { Icon } from "../widgets/icon.slint";
 import { KbdHint } from "../widgets/kbd-hint.slint";
 
 // The sync badge model (D11): the phase enum plus the pending depth;
@@ -316,14 +317,15 @@ export component StatusBar inherits Rectangle {
                     background: stop-touch.has-hover || stop-touch.pressed
                         ? Theme.surface-hover
                         : transparent;
-                    // The stop square (geometric, D19 — no icon font):
-                    // the IconKind.stop glyph's shape.
-                    Rectangle {
+                    // The stop square (D19 as amended by round-4 §2
+                    // decision 1): the shared IconKind.stop glyph —
+                    // the last hand-drawn duplicate in the status bar
+                    // dies with the r4 icon-assets chunk.
+                    Icon {
                         x: (parent.width - self.width) / 2;
                         y: (parent.height - self.height) / 2;
-                        width: Theme.space-2 + Theme.focus-ring-width;
-                        height: Theme.space-2 + Theme.focus-ring-width;
-                        background: Theme.text-primary;
+                        kind: IconKind.stop;
+                        colorize: Theme.text-primary;
                     }
                 }
             }
