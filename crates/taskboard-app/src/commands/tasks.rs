@@ -474,10 +474,11 @@ pub(crate) async fn label_on(
     Ok(mutation_receipt(&state, task))
 }
 
-/// Edits a task's fields (sparse changeset). A zero-flag edit is a
-/// typed no-op (`no_op`, exit 0) — no clap group enforces a flag
-/// minimum; a repeated identical edit is likewise an accepted no-op
-/// (`NoOp`, exit 0).
+/// Edits a task's fields (sparse changeset). The CLI refuses the
+/// zero-flag invocation at the parse boundary (the `task-edit-flags`
+/// clap group); an empty changeset arriving programmatically is still
+/// a typed no-op (`no_op`, exit 0), and a repeated identical edit is
+/// likewise an accepted no-op (`NoOp`, exit 0).
 ///
 /// # Errors
 ///

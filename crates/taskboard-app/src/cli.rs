@@ -1173,6 +1173,23 @@ pub enum ConfigCmd {
     Path,
 }
 
+/// The `labels edit` flags: at least one is required per line —
+/// clap-enforced by the `label-edit-flags` arg group (`required =
+/// true`, `multiple = true`). The positional label selector stays
+/// outside the group: a variant-level group would let it satisfy the
+/// requirement (`clap_derive` groups all variant arguments, positionals
+/// included).
+#[derive(Debug, Default, clap::Args)]
+#[group(id = "label-edit-flags", required = true, multiple = true)]
+pub struct LabelEditFlags {
+    /// New title.
+    #[arg(long)]
+    pub title: Option<String>,
+    /// New color (six hex digits).
+    #[arg(long, value_parser = parse_color)]
+    pub color: Option<String>,
+}
+
 /// `labels` subcommands.
 #[derive(Debug, Subcommand)]
 pub enum LabelsCmd {
@@ -1197,18 +1214,57 @@ pub enum LabelsCmd {
     Edit {
         /// The label (uuid | exact title).
         label: String,
-        /// New title.
-        #[arg(long)]
-        title: Option<String>,
-        /// New color (six hex digits).
-        #[arg(long, value_parser = parse_color)]
-        color: Option<String>,
+        #[command(flatten)]
+        flags: LabelEditFlags,
     },
     /// Delete a label (detaches it from all tasks; idempotent).
     Delete {
         /// The label (uuid | exact title).
         label: String,
     },
+}
+
+/// The `tasks edit` field flags: at least one is required per line —
+/// clap-enforced by the `task-edit-flags` arg group (`required =
+/// true`, `multiple = true`). The positional task selector stays
+/// outside the group (see [`LabelEditFlags`] for why).
+#[derive(Debug, Default, clap::Args)]
+#[group(id = "task-edit-flags", required = true, multiple = true)]
+pub struct TaskEditFlags {
+    /// New title.
+    #[arg(long)]
+    pub title: Option<String>,
+    /// New description.
+    #[arg(long)]
+    pub description: Option<String>,
+    /// RFC-3339 with an explicit offset (normalized to UTC),
+    /// YYYY-MM-DD (midnight UTC), or `none` (clears). Due dates
+    /// are stored and displayed in UTC only; offset-less
+    /// timestamps are refused.
+    #[arg(long, value_parser = parse_due)]
+    pub due: Option<DueSpec>,
+    /// Scheduled start — the `--due` vocabulary (RFC-3339,
+    /// YYYY-MM-DD, or `none` clears). One parser, two flags.
+    #[arg(long, value_parser = parse_due)]
+    pub scheduled: Option<DueSpec>,
+    /// Effort estimate — bare digits = minutes, `s`/`m`/`h`
+    /// components compose (`1h30m`), `none` clears.
+    #[arg(long, value_parser = parse_effort)]
+    pub effort: Option<EffortSpec>,
+    /// Importance level (`very-low|low|normal|high|very-high`;
+    /// `none` clears).
+    #[arg(long, value_parser = parse_importance)]
+    pub importance: Option<ImportanceSpec>,
+    /// Urgency level (`very-low|low|normal|high|very-high`; `none`
+    /// clears).
+    #[arg(long, value_parser = parse_urgency)]
+    pub urgency: Option<UrgencySpec>,
+    /// Archive the task.
+    #[arg(long, conflicts_with = "unarchive")]
+    pub archive: bool,
+    /// Unarchive the task.
+    #[arg(long)]
+    pub unarchive: bool,
 }
 
 /// `tasks` subcommands.
@@ -1256,44 +1312,12 @@ pub enum TasksCmd {
         #[arg(long)]
         order: Option<i64>,
     },
-    /// Edit task fields (a zero-flag edit is a typed no-op).
+    /// Edit task fields (at least one flag required).
     Edit {
         /// The task (uuid | unique ≥8-char uuid prefix | exact title).
         task: String,
-        /// New title.
-        #[arg(long)]
-        title: Option<String>,
-        /// New description.
-        #[arg(long)]
-        description: Option<String>,
-        /// RFC-3339 with an explicit offset (normalized to UTC),
-        /// YYYY-MM-DD (midnight UTC), or `none` (clears). Due dates
-        /// are stored and displayed in UTC only; offset-less
-        /// timestamps are refused.
-        #[arg(long, value_parser = parse_due)]
-        due: Option<DueSpec>,
-        /// Scheduled start — the `--due` vocabulary (RFC-3339,
-        /// YYYY-MM-DD, or `none` clears). One parser, two flags.
-        #[arg(long, value_parser = parse_due)]
-        scheduled: Option<DueSpec>,
-        /// Effort estimate — bare digits = minutes, `s`/`m`/`h`
-        /// components compose (`1h30m`), `none` clears.
-        #[arg(long, value_parser = parse_effort)]
-        effort: Option<EffortSpec>,
-        /// Importance level (`very-low|low|normal|high|very-high`;
-        /// `none` clears).
-        #[arg(long, value_parser = parse_importance)]
-        importance: Option<ImportanceSpec>,
-        /// Urgency level (`very-low|low|normal|high|very-high`; `none`
-        /// clears).
-        #[arg(long, value_parser = parse_urgency)]
-        urgency: Option<UrgencySpec>,
-        /// Archive the task.
-        #[arg(long, conflicts_with = "unarchive")]
-        archive: bool,
-        /// Unarchive the task.
-        #[arg(long)]
-        unarchive: bool,
+        #[command(flatten)]
+        flags: TaskEditFlags,
     },
     /// Delete (tombstone) a task; no confirmation (scripting-first —
     /// repeats are idempotent, the tombstone is permanent).
@@ -1379,6 +1403,23 @@ pub enum TasksCmd {
 mod tests {
     use super::*;
     use clap::Parser as _;
+    use clap::error::ErrorKind as ClapErrorKind;
+
+    #[test]
+    fn zero_flag_tasks_edit_is_a_clap_usage_error() {
+        let err = Cli::try_parse_from(["taskboard", "tasks", "edit", "draft"])
+            .expect_err("a zero-flag edit is rejected at the parse boundary");
+        assert_eq!(err.kind(), ClapErrorKind::MissingRequiredArgument);
+        assert!(err.use_stderr(), "a usage error exits nonzero");
+    }
+
+    #[test]
+    fn zero_flag_labels_edit_is_a_clap_usage_error() {
+        let err = Cli::try_parse_from(["taskboard", "labels", "edit", "urgent"])
+            .expect_err("a zero-flag edit is rejected at the parse boundary");
+        assert_eq!(err.kind(), ClapErrorKind::MissingRequiredArgument);
+        assert!(err.use_stderr(), "a usage error exits nonzero");
+    }
 
     #[test]
     fn parse_due_accepts_rfc3339_bare_date_and_none() {
@@ -1569,6 +1610,112 @@ mod tests {
     }
 
     #[test]
+    fn a_single_flag_satisfies_the_edit_group_on_each_arm() {
+        let cli = Cli::try_parse_from(["taskboard", "tasks", "edit", "draft", "--title", "t"])
+            .expect("one field flag satisfies the group");
+        let Some(Command::Tasks {
+            cmd: TasksCmd::Edit { flags, .. },
+        }) = cli.command
+        else {
+            panic!("expected tasks edit");
+        };
+        assert_eq!(flags.title.as_deref(), Some("t"));
+
+        let cli = Cli::try_parse_from(["taskboard", "tasks", "edit", "draft", "--archive"])
+            .expect("a bare bool flag counts as a group member");
+        let Some(Command::Tasks {
+            cmd: TasksCmd::Edit { flags, .. },
+        }) = cli.command
+        else {
+            panic!("expected tasks edit");
+        };
+        assert!(flags.archive);
+
+        let cli =
+            Cli::try_parse_from(["taskboard", "labels", "edit", "urgent", "--color", "0f0f0f"])
+                .expect("one parser-backed flag satisfies the group");
+        let Some(Command::Labels {
+            cmd: LabelsCmd::Edit { flags, .. },
+        }) = cli.command
+        else {
+            panic!("expected labels edit");
+        };
+        assert_eq!(flags.color.as_deref(), Some("0f0f0f"));
+    }
+
+    #[test]
+    fn an_edit_naming_every_flag_together_still_parses() {
+        // `multiple = true`: any number of members together is legal.
+        // `--unarchive` is necessarily omitted — it conflicts with
+        // `--archive` (a member-level rule orthogonal to group arity).
+        let cli = Cli::try_parse_from([
+            "taskboard",
+            "tasks",
+            "edit",
+            "draft",
+            "--title",
+            "t",
+            "--description",
+            "d",
+            "--due",
+            "2026-11-02",
+            "--scheduled",
+            "2026-11-02",
+            "--effort",
+            "1h",
+            "--importance",
+            "high",
+            "--urgency",
+            "low",
+            "--archive",
+        ])
+        .expect("all non-conflicting members together parse");
+        let Some(Command::Tasks {
+            cmd: TasksCmd::Edit { task, flags },
+        }) = cli.command
+        else {
+            panic!("expected tasks edit");
+        };
+        assert_eq!(task, "draft");
+        assert!(flags.archive);
+        assert!(matches!(flags.due, Some(DueSpec::Set(_))));
+
+        let cli = Cli::try_parse_from([
+            "taskboard",
+            "labels",
+            "edit",
+            "urgent",
+            "--title",
+            "t",
+            "--color",
+            "0f0f0f",
+        ])
+        .expect("both label flags together parse");
+        let Some(Command::Labels {
+            cmd: LabelsCmd::Edit { flags, .. },
+        }) = cli.command
+        else {
+            panic!("expected labels edit");
+        };
+        assert_eq!(flags.title.as_deref(), Some("t"));
+        assert_eq!(flags.color.as_deref(), Some("0f0f0f"));
+    }
+
+    #[test]
+    fn the_edit_group_keeps_the_archive_unarchive_conflict() {
+        let err = Cli::try_parse_from([
+            "taskboard",
+            "tasks",
+            "edit",
+            "draft",
+            "--archive",
+            "--unarchive",
+        ])
+        .expect_err("the member-level conflict survives the group");
+        assert_eq!(err.kind(), ClapErrorKind::ArgumentConflict);
+    }
+
+    #[test]
     fn the_field_flags_land_on_the_edit_arm() {
         let cli = Cli::try_parse_from([
             "taskboard",
@@ -1588,10 +1735,14 @@ mod tests {
         let Some(Command::Tasks {
             cmd:
                 TasksCmd::Edit {
-                    scheduled,
-                    effort,
-                    importance,
-                    urgency,
+                    flags:
+                        TaskEditFlags {
+                            scheduled,
+                            effort,
+                            importance,
+                            urgency,
+                            ..
+                        },
                     ..
                 },
         }) = cli.command
@@ -1633,10 +1784,14 @@ mod tests {
         let Some(Command::Tasks {
             cmd:
                 TasksCmd::Edit {
-                    scheduled,
-                    effort,
-                    importance,
-                    urgency,
+                    flags:
+                        TaskEditFlags {
+                            scheduled,
+                            effort,
+                            importance,
+                            urgency,
+                            ..
+                        },
                     ..
                 },
         }) = cli.command
