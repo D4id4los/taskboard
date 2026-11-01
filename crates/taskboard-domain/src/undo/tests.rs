@@ -429,6 +429,626 @@ fn widened_noop_repeats_journal_nothing() {
     );
 }
 
+// ---- the widened round-trips (#555: verb → undo → pre-state → redo) -----
+
+#[test]
+fn log_time_round_trips() {
+    let mut h = Harness::new();
+    let board = h.board();
+    let stack = h.stack(board);
+    let task = h.task(stack, "t");
+    let logged = h
+        .exec(&StateCommand::LogTime {
+            task,
+            start: ts(400),
+            end: ts(500),
+        })
+        .expect("logged");
+    let CommandOutcome::TimeLogged { entry } = logged else {
+        panic!("expected TimeLogged");
+    };
+    let entry_ops = h.journal.entries.last().unwrap().ops.clone();
+    let plan = h.exec_plan(&StateCommand::Undo).expect("undone");
+    // Retraction: the un-pushed entry's op fails, nothing enqueues.
+    let fails: Vec<_> = plan
+        .actions
+        .iter()
+        .filter_map(|action| match action {
+            PersistenceAction::FailOp(op) => Some(*op),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(fails, entry_ops);
+    assert!(
+        !plan
+            .actions
+            .iter()
+            .any(|action| matches!(action, PersistenceAction::EnqueueOp(_)))
+    );
+    assert!(
+        !h.disk.tracking.entries.contains_key(&entry.id),
+        "the undo deleted the created entry"
+    );
+    // Redo re-mints: a fresh id, the same intent.
+    h.exec(&StateCommand::Redo).expect("redone");
+    let fresh = h
+        .disk
+        .tracking
+        .entries
+        .values()
+        .next()
+        .expect("re-minted entry");
+    assert_ne!(fresh.id, entry.id, "the old id stays retired");
+    assert_eq!(
+        (fresh.task, fresh.start, fresh.end),
+        (entry.task, entry.start, entry.end)
+    );
+    assert_eq!(fresh.task_title, entry.task_title);
+}
+
+#[test]
+fn adjust_time_entry_round_trips_on_a_closed_entry() {
+    let mut h = Harness::new();
+    let board = h.board();
+    let stack = h.stack(board);
+    let task = h.task(stack, "t");
+    h.exec(&StateCommand::LogTime {
+        task,
+        start: ts(400),
+        end: ts(500),
+    })
+    .expect("logged");
+    let entry_id = *h.disk.tracking.entries.keys().next().expect("entry");
+    let pre = h.disk.tracking.entries[&entry_id].clone();
+    h.exec(&StateCommand::AdjustTimeEntry {
+        id: entry_id,
+        start: Some(ts(420)),
+        end: Some(ts(560)),
+    })
+    .expect("adjusted");
+    h.exec(&StateCommand::Undo).expect("undone");
+    let after = &h.disk.tracking.entries[&entry_id];
+    assert_eq!((after.start, after.end), (pre.start, pre.end));
+    assert_eq!(after.updated_at, ts(h.now), "fresh write clock");
+    // Redo re-applies the exact forward mask.
+    h.exec(&StateCommand::Redo).expect("redone");
+    let after = &h.disk.tracking.entries[&entry_id];
+    assert_eq!((after.start, after.end), (ts(420), Some(ts(560))));
+}
+
+#[test]
+fn adjust_open_entry_start_round_trips_and_stays_open() {
+    let mut h = Harness::new();
+    let board = h.board();
+    let stack = h.stack(board);
+    let task = h.task(stack, "t");
+    h.exec(&StateCommand::StartTracking { task })
+        .expect("started (journals NotUndoable, mints the open entry)");
+    let entry_id = h
+        .disk
+        .tracking
+        .entries
+        .values()
+        .find(|entry| entry.end.is_none())
+        .expect("open entry")
+        .id;
+    let pre_start = h.disk.tracking.entries[&entry_id].start;
+    h.exec(&StateCommand::AdjustTimeEntry {
+        id: entry_id,
+        start: Some(ts(600)),
+        end: None,
+    })
+    .expect("adjusted");
+    h.exec(&StateCommand::Undo).expect("undone");
+    let after = &h.disk.tracking.entries[&entry_id];
+    assert_eq!(after.start, pre_start);
+    assert!(
+        after.end.is_none(),
+        "a start-only adjust of an open entry undoes without closing"
+    );
+}
+
+#[test]
+fn create_habit_round_trips() {
+    let mut h = Harness::new();
+    let board = h.board();
+    let created = h
+        .exec(&StateCommand::CreateHabit {
+            board,
+            title: "meditate".into(),
+            target: habit_target(),
+        })
+        .expect("created");
+    let CommandOutcome::HabitCreated(habit) = created else {
+        panic!("expected HabitCreated");
+    };
+    h.exec(&StateCommand::Undo).expect("undone");
+    assert!(
+        h.disk.habits.habits[&habit].deleted,
+        "the undo tombstoned the created habit"
+    );
+    // Redo re-mints at the appended order (the old id stays retired).
+    h.exec(&StateCommand::Redo).expect("redone");
+    let fresh = h
+        .disk
+        .habits
+        .habits
+        .values()
+        .find(|row| row.is_live())
+        .expect("re-minted habit");
+    assert_ne!(fresh.id, habit);
+    assert_eq!((fresh.title.as_str(), fresh.board), ("meditate", board));
+}
+
+#[test]
+fn update_habit_round_trips_over_all_three_clocked_fields() {
+    let mut h = Harness::new();
+    let board = h.board();
+    let habit = {
+        match h
+            .exec(&StateCommand::CreateHabit {
+                board,
+                title: "meditate".into(),
+                target: habit_target(),
+            })
+            .expect("created")
+        {
+            CommandOutcome::HabitCreated(id) => id,
+            other => panic!("expected HabitCreated, got {other:?}"),
+        }
+    };
+    // Give the habit a chip first, so the big edit's anchor-clear is a
+    // Some→None round-trip (the double-option discipline).
+    h.exec(&StateCommand::UpdateHabit {
+        habit,
+        changes: crate::messages::HabitChanges {
+            anchor_time: Some(Some(chrono::NaiveTime::from_hms_opt(7, 0, 0).unwrap())),
+            ..Default::default()
+        },
+    })
+    .expect("chip set");
+    let pre = h.disk.habits.habits[&habit].clone();
+    let week = crate::habit::HabitTarget::PerWeek(
+        crate::habit::NonZeroCount::new(2).expect("valid quota"),
+    );
+    h.exec(&StateCommand::UpdateHabit {
+        habit,
+        changes: crate::messages::HabitChanges {
+            title: Some("meditate 2".into()),
+            target: Some(week),
+            // `Some(None)` clears the chip.
+            anchor_time: Some(None),
+            ..Default::default()
+        },
+    })
+    .expect("edited");
+    h.exec(&StateCommand::Undo).expect("undone");
+    let after = &h.disk.habits.habits[&habit];
+    assert_eq!(after.title, pre.title);
+    assert_eq!(after.target, pre.target);
+    assert_eq!(after.anchor_time, pre.anchor_time);
+    assert_eq!(after.clocks.title, ts(h.now), "fresh clocks on restore");
+    // Redo re-applies the exact forward changeset.
+    h.exec(&StateCommand::Redo).expect("redone");
+    let after = &h.disk.habits.habits[&habit];
+    assert_eq!(after.title, "meditate 2");
+    assert_eq!(after.target, week);
+    assert_eq!(after.anchor_time, None);
+}
+
+#[test]
+fn move_habit_round_trips_restoring_the_pre_image_order() {
+    let mut h = Harness::new();
+    let board = h.board();
+    let habit = {
+        match h
+            .exec(&StateCommand::CreateHabit {
+                board,
+                title: "habit".into(),
+                target: habit_target(),
+            })
+            .expect("created")
+        {
+            CommandOutcome::HabitCreated(id) => id,
+            other => panic!("expected HabitCreated, got {other:?}"),
+        }
+    };
+    let pre_order = h.disk.habits.habits[&habit].order;
+    h.exec(&StateCommand::MoveHabit { habit, order: 42 })
+        .expect("moved");
+    // The pre-image itself carries the pre order position (never the
+    // payload of any later edit).
+    let UndoFacts::PreImages { images, .. } = &h.journal.entries.last().unwrap().facts else {
+        panic!("MoveHabit journals PreImages");
+    };
+    let Some(PreImage::Habit {
+        before: Some(pre), ..
+    }) = images
+        .iter()
+        .find(|image| matches!(image, PreImage::Habit { id, .. } if *id == habit))
+    else {
+        panic!("the move captured the pre entity");
+    };
+    assert_eq!(pre.order, pre_order);
+    h.exec(&StateCommand::Undo).expect("undone");
+    let after = &h.disk.habits.habits[&habit];
+    assert_eq!(after.order, pre_order, "the pre-image's order restored");
+    assert_eq!(after.clocks.order, ts(h.now), "fresh order clock");
+    h.exec(&StateCommand::Redo).expect("redone");
+    assert_eq!(h.disk.habits.habits[&habit].order, 42);
+}
+
+#[test]
+fn adjust_habit_log_round_trips() {
+    let mut h = Harness::new();
+    let board = h.board();
+    let habit = {
+        match h
+            .exec(&StateCommand::CreateHabit {
+                board,
+                title: "habit".into(),
+                target: habit_target(),
+            })
+            .expect("created")
+        {
+            CommandOutcome::HabitCreated(id) => id,
+            other => panic!("expected HabitCreated, got {other:?}"),
+        }
+    };
+    // Seed the window row (1) — the seeding verbs are excluded arms;
+    // they only lay the state the adjust under test edits.
+    h.exec(&StateCommand::LogHabit { habit })
+        .expect("seeded count 1");
+    let key = *h.disk.habits.log.keys().next().expect("log row");
+    let pre_row = h.disk.habits.log[&key];
+    h.exec(&StateCommand::AdjustHabitLog {
+        habit,
+        window: key.window,
+        count: 5,
+    })
+    .expect("adjusted");
+    h.exec(&StateCommand::Undo).expect("undone");
+    let after = h.disk.habits.log[&key];
+    assert_eq!(after.count, pre_row.count, "the pre count restored");
+    assert_eq!(after.clock, ts(h.now), "fresh row clock; the row stays");
+    h.exec(&StateCommand::Redo).expect("redone");
+    assert_eq!(h.disk.habits.log[&key].count, 5);
+}
+
+#[test]
+fn log_time_undo_after_task_delete_still_deletes_the_entry() {
+    let mut h = Harness::new();
+    let board = h.board();
+    let stack = h.stack(board);
+    let task = h.task(stack, "t");
+    h.exec(&StateCommand::LogTime {
+        task,
+        start: ts(400),
+        end: ts(500),
+    })
+    .expect("logged");
+    let entry_id = *h.disk.tracking.entries.keys().next().expect("entry");
+    h.exec(&StateCommand::DeleteTask { id: task })
+        .expect("task deleted");
+    // The delete's undo pops first (resurrect), then the log-time undo
+    // proceeds: entry-only resolution (R-10) — a deleted task never
+    // blocks history editing.
+    h.exec(&StateCommand::Undo).expect("the delete undoes");
+    h.exec(&StateCommand::Undo).expect("the log time undoes");
+    assert!(
+        !h.disk.tracking.entries.contains_key(&entry_id),
+        "the entry deleted despite the task's tombstone history"
+    );
+}
+
+#[test]
+fn create_habit_undo_after_log_keeps_the_log() {
+    let mut h = Harness::new();
+    let board = h.board();
+    let habit = {
+        match h
+            .exec(&StateCommand::CreateHabit {
+                board,
+                title: "habit".into(),
+                target: habit_target(),
+            })
+            .expect("created")
+        {
+            CommandOutcome::HabitCreated(id) => id,
+            other => panic!("expected HabitCreated, got {other:?}"),
+        }
+    };
+    h.exec(&StateCommand::LogHabit { habit })
+        .expect("logged (excluded arm — the row lands)");
+    assert_eq!(h.disk.habits.log.len(), 1);
+    // Park the head on the create entry — the line state a v2 branch
+    // picker could produce (the tree is queryable, D-U4; the fixture
+    // seam the occupancy test uses too).
+    let create_entry = h
+        .journal
+        .entries
+        .iter()
+        .find(|entry| matches!(entry.command, StateCommand::CreateHabit { .. }))
+        .unwrap()
+        .id;
+    apply_actions(
+        &mut h.disk,
+        &[PersistenceAction::MoveJournalHead(Some(create_entry))],
+    );
+    h.sync();
+    h.exec(&StateCommand::Undo).expect("the create undoes");
+    // D26: no occupancy guard — the log map outlives the tombstone.
+    assert!(h.disk.habits.habits[&habit].deleted);
+    assert_eq!(
+        h.disk.habits.log.len(),
+        1,
+        "the log row survives the create-undo untouched"
+    );
+}
+
+// ---- the record-time dynamic refusals (§7) ------------------------------
+
+#[test]
+fn an_adjust_that_closes_an_open_entry_journals_not_undoable() {
+    let mut h = Harness::new();
+    let board = h.board();
+    let stack = h.stack(board);
+    let task = h.task(stack, "t");
+    h.exec(&StateCommand::StartTracking { task })
+        .expect("started");
+    let entry_id = h
+        .disk
+        .tracking
+        .entries
+        .values()
+        .find(|entry| entry.end.is_none())
+        .expect("open entry")
+        .id;
+    let before = h.journal.entries.len();
+    let closing_end = ts(h.now + 60);
+    h.exec(&StateCommand::AdjustTimeEntry {
+        id: entry_id,
+        start: None,
+        end: Some(closing_end),
+    })
+    .expect("accepted (the adjust itself is legal)");
+    let entry = h.journal.entries.last().unwrap();
+    assert_eq!(
+        entry.facts,
+        UndoFacts::NotUndoable(NotUndoableReason::TrackingSurface),
+        "the close is refused at record time (D23)"
+    );
+    let head = h.journal.head;
+    assert!(matches!(
+        h.exec(&StateCommand::Undo),
+        Err(CommandError::TargetNotUndoable(
+            NotUndoableReason::TrackingSurface
+        ))
+    ));
+    assert_eq!(h.journal.head, head, "the refusal never moved the head");
+    assert_eq!(h.journal.entries.len(), before + 1);
+    assert!(
+        h.disk.tracking.entries[&entry_id].end.is_some(),
+        "the closed end stands"
+    );
+}
+
+#[test]
+fn an_absent_window_adjust_journals_not_undoable() {
+    let mut h = Harness::new();
+    let board = h.board();
+    let habit = {
+        match h
+            .exec(&StateCommand::CreateHabit {
+                board,
+                title: "habit".into(),
+                target: habit_target(),
+            })
+            .expect("created")
+        {
+            CommandOutcome::HabitCreated(id) => id,
+            other => panic!("expected HabitCreated, got {other:?}"),
+        }
+    };
+    let absent = crate::habit::WindowStart::of_period(
+        crate::habit::PeriodKind::Day,
+        chrono::NaiveDate::from_ymd_opt(2026, 10, 26).unwrap(),
+    );
+    h.exec(&StateCommand::AdjustHabitLog {
+        habit,
+        window: absent,
+        count: 3,
+    })
+    .expect("accepted (the backfill itself is legal)");
+    let entry = h.journal.entries.last().unwrap();
+    assert_eq!(
+        entry.facts,
+        UndoFacts::NotUndoable(NotUndoableReason::HabitSurface),
+        "the absent window refuses at record time (D24)"
+    );
+    let head = h.journal.head;
+    assert!(matches!(
+        h.exec(&StateCommand::Undo),
+        Err(CommandError::TargetNotUndoable(
+            NotUndoableReason::HabitSurface
+        ))
+    ));
+    assert_eq!(h.journal.head, head);
+}
+
+#[test]
+fn a_seam_addressed_update_journals_not_undoable_for_the_whole_edit() {
+    let mut h = Harness::new();
+    let board = h.board();
+    let habit = {
+        match h
+            .exec(&StateCommand::CreateHabit {
+                board,
+                title: "habit".into(),
+                target: habit_target(),
+            })
+            .expect("created")
+        {
+            CommandOutcome::HabitCreated(id) => id,
+            other => panic!("expected HabitCreated, got {other:?}"),
+        }
+    };
+    // Mixed with a clocked change: the whole edit refuses, not just the
+    // seam field — a partial restore would print "Undone" over an
+    // unrestored field (D25).
+    h.exec(&StateCommand::UpdateHabit {
+        habit,
+        changes: crate::messages::HabitChanges {
+            title: Some("renamed".into()),
+            continued_from: Some(Some(crate::ids::SeriesId::from_uuid(
+                uuid::Uuid::from_u128(0x5e),
+            ))),
+            ..Default::default()
+        },
+    })
+    .expect("accepted");
+    let entry = h.journal.entries.last().unwrap();
+    assert_eq!(
+        entry.facts,
+        UndoFacts::NotUndoable(NotUndoableReason::HabitSurface),
+    );
+    let head = h.journal.head;
+    assert!(matches!(
+        h.exec(&StateCommand::Undo),
+        Err(CommandError::TargetNotUndoable(
+            NotUndoableReason::HabitSurface
+        ))
+    ));
+    assert_eq!(h.journal.head, head);
+    assert_eq!(
+        h.disk.habits.habits[&habit].title, "renamed",
+        "the accepted edit stands"
+    );
+}
+
+// ---- the watermark refusals over the new scopes (§11.4) -----------------
+
+#[test]
+fn a_created_habit_edited_since_refuses_the_undo_field_named() {
+    let mut h = Harness::new();
+    let board = h.board();
+    let habit = {
+        match h
+            .exec(&StateCommand::CreateHabit {
+                board,
+                title: "habit".into(),
+                target: habit_target(),
+            })
+            .expect("created")
+        {
+            CommandOutcome::HabitCreated(id) => id,
+            other => panic!("expected HabitCreated, got {other:?}"),
+        }
+    };
+    h.exec(&StateCommand::UpdateHabit {
+        habit,
+        changes: crate::messages::HabitChanges {
+            title: Some("renamed".into()),
+            ..Default::default()
+        },
+    })
+    .expect("edited");
+    // The first undo pops the edit (restoring the title with a fresh
+    // clock — the create entry's recorded mint stamps have diverged).
+    h.exec(&StateCommand::Undo).expect("the edit undoes");
+    let err = h.exec(&StateCommand::Undo).expect_err("refused");
+    assert!(matches!(
+        err,
+        CommandError::TargetNoLongerInvertible {
+            field: UndoField::Title,
+            ..
+        }
+    ));
+    assert!(
+        h.disk.habits.habits[&habit].is_live(),
+        "state untouched by the refusal"
+    );
+}
+
+#[test]
+fn a_logged_entry_adjusted_since_refuses_the_log_time_undo() {
+    let mut h = Harness::new();
+    let board = h.board();
+    let stack = h.stack(board);
+    let task = h.task(stack, "t");
+    h.exec(&StateCommand::LogTime {
+        task,
+        start: ts(400),
+        end: ts(500),
+    })
+    .expect("logged");
+    let entry_id = *h.disk.tracking.entries.keys().next().expect("entry");
+    h.exec(&StateCommand::AdjustTimeEntry {
+        id: entry_id,
+        start: None,
+        end: Some(ts(560)),
+    })
+    .expect("adjusted");
+    h.exec(&StateCommand::Undo).expect("the adjust undoes");
+    let err = h.exec(&StateCommand::Undo).expect_err("refused");
+    assert!(matches!(
+        err,
+        CommandError::TargetNoLongerInvertible {
+            field: UndoField::UpdatedAt,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn a_log_window_written_since_refuses_the_older_adjust_undo() {
+    let mut h = Harness::new();
+    let board = h.board();
+    let habit = {
+        match h
+            .exec(&StateCommand::CreateHabit {
+                board,
+                title: "habit".into(),
+                target: habit_target(),
+            })
+            .expect("created")
+        {
+            CommandOutcome::HabitCreated(id) => id,
+            other => panic!("expected HabitCreated, got {other:?}"),
+        }
+    };
+    h.exec(&StateCommand::LogHabit { habit })
+        .expect("seeded count 1");
+    let key = *h.disk.habits.log.keys().next().expect("log row");
+    h.exec(&StateCommand::AdjustHabitLog {
+        habit,
+        window: key.window,
+        count: 5,
+    })
+    .expect("first adjust");
+    h.exec(&StateCommand::AdjustHabitLog {
+        habit,
+        window: key.window,
+        count: 7,
+    })
+    .expect("second adjust");
+    // The first undo pops the newest adjust (its own stamps stand).
+    h.exec(&StateCommand::Undo)
+        .expect("the newest adjust undoes");
+    assert_eq!(h.disk.habits.log[&key].count, 5);
+    // The older adjust's recorded post-row has diverged (the restore
+    // wrote a fresh clock) — refuse, the v1 covered-field-edit echo.
+    let err = h.exec(&StateCommand::Undo).expect_err("refused");
+    assert!(matches!(
+        err,
+        CommandError::TargetNoLongerInvertible {
+            field: UndoField::HabitLogCount,
+            ..
+        }
+    ));
+    assert_eq!(h.disk.habits.log[&key].count, 5, "state untouched");
+}
+
 // ---- the synthesis catalogue -------------------------------------------
 
 #[test]

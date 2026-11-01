@@ -220,7 +220,14 @@ journal:
           start: "1969-12-31T10:00:00Z"
           end: "1969-12-31T12:00:00Z"
       facts:
-        NotUndoable: TrackingSurface
+        PreImages:
+          images:
+            - TimeEntry:
+                id: 00000000-0000-0000-0000-00000000000c
+                before: ~
+          watermark:
+            - - TimeEntry: 00000000-0000-0000-0000-00000000000c
+              - TimeEntry: "1970-01-01T10:05:00Z"
       ops:
         - 00000000-0000-0000-0000-00000000000d
       pushed: false
