@@ -160,6 +160,12 @@ pub enum MaterializedOp {
 
 impl MaterializedOp {
     /// Whether the group materializes no client call at all.
+    ///
+    /// Test-only: no production path consumes the predicate (the
+    /// executor matches on `MaterializedOp` directly; match totality
+    /// keeps the `Noop` arm), so the shipped surface stays lean while
+    /// the inline tests keep the mutation pin (true *and* false case).
+    #[cfg(test)]
     #[must_use]
     pub const fn is_noop(&self) -> bool {
         matches!(self, Self::Noop)
@@ -1685,6 +1691,15 @@ mod tests {
                 .materialized,
             MaterializedOp::UpdateBoard { .. }
         ));
+        assert!(
+            !groups
+                .iter()
+                .find(|g| g.target == PushTarget::Board(bound_id))
+                .expect("bound group")
+                .materialized
+                .is_noop(),
+            "a bound live board materializes a client call"
+        );
         assert!(
             groups
                 .iter()
