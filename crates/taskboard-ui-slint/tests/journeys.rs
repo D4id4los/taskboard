@@ -1594,6 +1594,113 @@ fn stack_create_has_a_visible_click_equal_flow() {
     );
 }
 
+/// R4 D6 (dispatch acceptance (a)/(e)) — a divider between two of
+/// four columns redistributes space between exactly those two: every
+/// non-adjacent column's edge is bit-stable while the dragged boundary
+/// moves.
+#[test]
+fn divider_drag_moves_exactly_two_neighbouring_columns() {
+    let (stacks, state) = fixture::golden_state_with_stacks(4);
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            let window = harness.handle.window();
+            // A deterministic row: 1000 − the chrome (2·space-3 side
+            // padding + four space-3 gaps + the 40 px affordance) =
+            // 888 rendered px, four equal shares of 222 at scale 1.
+            harness.driver.set_window_size(1000, 800);
+            for column in 0..4 {
+                assert_eq!(
+                    harness.column_width_px(column),
+                    222.0,
+                    "the four columns seed at equal shares"
+                );
+            }
+
+            // Drag the middle boundary (between columns 1 and 2) by
+            // +100: column 1 takes +δ, column 2 −δ, columns 0 and 3
+            // never move (the non-adjacent isolation, four columns).
+            window.invoke_board_stack_width_press(1);
+            window.invoke_board_stack_width_drag(1, 100.0);
+            window.invoke_board_stack_width_release(1);
+            assert_eq!(
+                harness.column_width_px(0),
+                222.0,
+                "the left far column is bit-stable"
+            );
+            assert_eq!(
+                harness.column_width_px(3),
+                222.0,
+                "the right far column is bit-stable"
+            );
+            assert_eq!(harness.column_width_px(1), 322.0);
+            assert_eq!(harness.column_width_px(2), 122.0);
+
+            // The released row re-resolves stably: a fresh refresh
+            // does not move any edge.
+            harness.handle.refresh();
+            assert_eq!(harness.column_width_px(0), 222.0);
+            assert_eq!(harness.column_width_px(1), 322.0);
+            assert_eq!(harness.column_width_px(2), 122.0);
+            assert_eq!(harness.column_width_px(3), 222.0);
+            let _ = stacks;
+        },
+    );
+}
+
+/// R4 D7/decision 6 (dispatch acceptance (c), the add half) — a board
+/// with partial stored widths rebalances when a stack joins: the
+/// absent entries seed at the equal share and the row re-fits
+/// proportionally over all columns, without any gesture.
+#[test]
+fn stored_widths_rebalance_when_a_stack_joins() {
+    let (stacks, state) = fixture::golden_state_with_stacks(3);
+    let board = *state.boards.keys().next().expect("fixture board");
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            // The device-local overlay carries only the first stack's
+            // width — the other two are absent entries (a downlevel
+            // config, or a stack created after the last snapshot).
+            let settings = taskboard_ui_slint::UiSettings {
+                stack_widths: std::collections::BTreeMap::from([(
+                    board.as_uuid(),
+                    std::collections::BTreeMap::from([(stacks[0].as_uuid(), 500u32)]),
+                )]),
+                ..taskboard_ui_slint::UiSettings::default()
+            };
+            let mut harness = Harness::mount_with_settings(SlintDriver::default(), state, settings);
+            harness.driver.set_window_size(1000, 800);
+
+            // The row (900 rendered px) re-fits over the stored basis
+            // and the two equal-share seeds: every column positive, at
+            // or above its content minimum, summing to the row; the
+            // stored column narrows and the newcomers land near the
+            // average share (± the fit's rounding).
+            let widths: Vec<f32> = (0..3).map(|c| harness.column_width_px(c)).collect();
+            let total: f32 = widths.iter().sum();
+            for width in &widths {
+                assert!(*width >= 120.0, "every column ≥ its minimum, got {width}");
+            }
+            assert!((total - 900.0).abs() <= 2.0, "the row fills: {total}");
+            assert!(widths[0] < 500.0, "the stored basis gave up slack");
+            assert!(
+                (widths[1] - widths[2]).abs() <= 2.0,
+                "the two absent-seeded columns land together"
+            );
+            assert!(
+                harness.drain_requests().is_empty(),
+                "a passive rebalance never persists"
+            );
+        },
+    );
+}
+
 /// Round-1 chunk 2 (D18, T-10), adapted to the r4 pair model (D8) —
 /// the keyboard resize journey: wider steps the focused column against
 /// its neighbour (which seesaws), narrowing clamps at the content

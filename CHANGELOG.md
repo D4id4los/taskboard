@@ -10,6 +10,14 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 ### Added
 
+- Full-height divider handles between board columns (#556 round-4
+  chunk 2): the column resize handle leaves the header row and
+  straddles every column boundary — grab anywhere along the edge
+  (the table-editor hit model), with an `ew-resize` cursor and a
+  focus-ring accent line at hover that holds full opacity while
+  pressed. Dividers move exactly the two columns at their boundary;
+  the keyboard `stack.wider`/`stack.narrower` verbs join the same
+  pair model (the last column steps against its left neighbour).
 - Undo v2 widening, tracking/habit arms (#555): undo now covers time-log
   and habit bookkeeping — `LogTime` (undo deletes the minted entry),
   `AdjustTimeEntry` (unless it closes an open entry), `CreateHabit`
@@ -125,6 +133,21 @@ The workspace carries a single global version (see `docs/architecture.org`);
 
 ### Changed
 
+- Column widths redistribute instead of stretch (#556 round-4 chunk
+  2): every column renders an explicit resolved width that always
+  sums to the row — a divider drag moves exactly the two columns at
+  the boundary (clamped at content minimums, the boundary sticking),
+  a window resize distributes the delta proportionally over the
+  stored bases, and a stack joining or leaving re-fits the row the
+  same way. Column minimums are now content-derived (header title
+  estimate + chrome, floored at 120 px — down from the blind 160 px
+  floor), and the `−1` auto sentinel is gone: a never-touched board
+  renders equal shares. Pressing a divider materializes the resolved
+  row, so a board's first resize gesture persists widths for all of
+  its live stacks (the lane's full-snapshot contract); the app-side
+  debounce and the `StackWidthsChanged` shape are unchanged. The
+  degenerate Σ-minimums-over-viewport case clips at the window
+  bounds (no scrollbar).
 - `tasks edit` and `labels edit` reject a zero-flag invocation at the
   CLI parse boundary (#407): the previously silent fall-through typed
   the empty changeset as a `no_op` receipt with exit 0, despite the

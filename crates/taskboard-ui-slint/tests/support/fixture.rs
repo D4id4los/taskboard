@@ -307,6 +307,34 @@ pub fn golden_state() -> (Fixture, AppState) {
     )
 }
 
+/// The n-stack clean board (r4 chunk 2, the plan's
+/// `golden_state_with_stacks`): one board, `n` stacks titled "a", "b",
+/// "c", … with one task each — the divider journeys' ≥3-column
+/// fixture (the two-stack `golden_state` cannot pin "exactly two
+/// neighbouring columns move").
+#[must_use]
+pub fn golden_state_with_stacks(n: usize) -> (Vec<StackId>, AppState) {
+    debug_assert!((1..=8).contains(&n), "the fixture titles run 'a'..'h'");
+    let board_id = BoardId::from_uuid(uuid::Uuid::now_v7());
+    let mut state = AppState::default();
+    state.boards.insert(board_id, board(board_id));
+    let mut stacks = Vec::with_capacity(n);
+    for i in 0..n {
+        let index = i64::try_from(i).expect("fixture stack index fits");
+        let letter = u32::try_from(i)
+            .ok()
+            .and_then(|i| char::from_u32(u32::from(b'a') + i))
+            .expect("the fixture titles run 'a'..");
+        let title = letter.to_string();
+        let id = StackId::from_uuid(uuid::Uuid::now_v7());
+        state.stacks.insert(id, stack(id, board_id, &title, index));
+        let task_id = TaskId::from_uuid(uuid::Uuid::now_v7());
+        state.tasks.insert(task_id, task(task_id, id, 0));
+        stacks.push(id);
+    }
+    (stacks, state)
+}
+
 /// The deterministic board ids and the second board's stack of
 /// `two_board_state` (board one < board two, so board one seeds).
 #[derive(Debug, Clone, Copy)]
