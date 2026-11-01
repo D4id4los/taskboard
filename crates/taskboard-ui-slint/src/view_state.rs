@@ -21,7 +21,6 @@ use taskboard_domain::{
 use crate::actions::ContextId;
 use crate::presentation::{live_board, live_boards, stacks_in_board};
 use crate::router::Mode;
-use crate::widths::{STACK_WIDTH_READABILITY_MIN_PX, STACK_WIDTH_STEP_PX};
 
 /// The pass's time bundle (chunk 10 D4): the fresh `now` and the
 /// `day_window` pair the adapter derives from its held
@@ -242,6 +241,23 @@ pub enum FlowOutcome {
 pub enum FocusEdge {
     First,
     Last,
+}
+
+/// The keyboard step's inputs (r4 D8): the resolved board row plus
+/// the scaled step and the conversion scale — the adapter gathers them
+/// from the window (an input outside the view state, §1.1's one
+/// conversion rule).
+pub struct RowStep<'a> {
+    /// The tables-order stack ids.
+    pub stacks: &'a [StackId],
+    /// The resolved rendered widths (Σ == the row width).
+    pub widths: &'a [u32],
+    /// The content minimums, rendered px.
+    pub mins: &'a [u32],
+    /// The rendered step (`STACK_WIDTH_STEP_PX × scale`).
+    pub step: i64,
+    /// The base-scale for the rendered→logical write-back.
+    pub scale: f64,
 }
 
 /// The pure view state (D7).
@@ -1150,19 +1166,20 @@ impl ViewState {
             .or_else(|| self.stack_ids(state).first().copied())
     }
 
-    /// The keyboard resize verb (round-1 D18): resolves the target
-    /// stack (focused → selected → first, `create_target_stack`'s
-    /// Board-view resolution), seeds an absent entry at the
-    /// readability floor [`STACK_WIDTH_READABILITY_MIN_PX`], applies
-    /// ±[`STACK_WIDTH_STEP_PX`] clamped to
-    /// `[STACK_WIDTH_READABILITY_MIN_PX, ceiling]`, and returns
-    /// `[StackWidthsChanged, RefreshNow]` — or `Vec::new()` when there
-    /// is no stack to address.
+    /// The keyboard resize verb (r4 D8): resolves the target stack
+    /// (focused → selected → first, `keyboard_resize_target`), steps
+    /// its boundary against the neighbour via the pure
+    /// [`crate::widths::step_column`] — the last column steals from
+    /// its *left* neighbour — and materializes the stepped row into
+    /// the overlay (the press path's one-code-path rule, plan §7.2).
+    /// Returns `[StackWidthsChanged, RefreshNow]`, or `Vec::new()` when
+    /// there is no stack, no row position, or no boundary to move (a
+    /// one-column board is inert).
     pub fn resize_focused_stack(
         &mut self,
         state: &AppState,
         direction: i32,
-        ceiling: u32,
+        row: &crate::view_state::RowStep<'_>,
     ) -> Vec<FlowOutcome> {
         let Some(target) = self.keyboard_resize_target(state) else {
             return Vec::new();
@@ -1170,15 +1187,18 @@ impl ViewState {
         let Some(board) = self.board else {
             return Vec::new();
         };
-        let base = self
-            .stack_width(board, target)
-            .unwrap_or(STACK_WIDTH_READABILITY_MIN_PX);
-        let requested = i64::from(base) + i64::from(direction) * i64::from(STACK_WIDTH_STEP_PX);
-        let floor = i64::from(STACK_WIDTH_READABILITY_MIN_PX);
-        let next = requested.clamp(floor, i64::from(ceiling).max(floor));
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let next = next as u32;
-        self.set_stack_width(board, target, next);
+        let Some(index) = row.stacks.iter().position(|stack| *stack == target) else {
+            return Vec::new();
+        };
+        let next = crate::widths::step_column(row.widths, index, direction, row.step, row.mins);
+        if next.len() < 2 {
+            return Vec::new();
+        }
+        for (stack, &width) in row.stacks.iter().zip(&next) {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let stored = (f64::from(width) / row.scale).round() as i64;
+            self.set_stack_width(board, *stack, u32::try_from(stored).unwrap_or(u32::MAX));
+        }
         vec![FlowOutcome::StackWidthsChanged, FlowOutcome::RefreshNow]
     }
 
@@ -3540,81 +3560,110 @@ mod tests {
 
     // -- stack column widths (round-1 D16) ---------------------------------
 
-    /// T-3 — the keyboard semantics: an auto column seeds at
-    /// DEFAULT ± STEP, the ends clamp at min/ceiling, and every step
-    /// emits `[StackWidthsChanged, RefreshNow]`.
+    /// T-3 (r4 D8) — the keyboard semantics: the step moves the
+    /// boundary (the neighbour seesaws), the floor clamps at the
+    /// content minimum with the neighbour absorbing the rest, the
+    /// pair ceiling holds both minimums, and every step emits
+    /// `[StackWidthsChanged, RefreshNow]`.
     #[test]
-    fn resize_focused_stack_seeds_steps_and_clamps() {
-        let (state, board, [s0, _], [a, ..]) = fixture();
+    fn resize_focused_stack_steps_the_pair_and_clamps() {
+        use crate::widths::step_column;
+
+        fn row<'a>(stacks: &'a [StackId], mins: &'a [u32], widths: &'a [u32]) -> RowStep<'a> {
+            RowStep {
+                stacks,
+                widths,
+                mins,
+                step: i64::from(crate::widths::STACK_WIDTH_STEP_PX),
+                scale: 1.0,
+            }
+        }
+        let (state, board, [s0, s1], [a, ..]) = fixture();
         let mut vs = ViewState::new();
         vs.reconcile(&state);
         vs.activate_card(a, s0);
 
-        let ceiling = 1_000u32;
-        let outcomes = vs.resize_focused_stack(&state, 1, ceiling);
+        let stacks = [s0, s1];
+        let mins = [120u32, 120];
+        let mut widths = vec![456u32, 456];
+
+        let outcomes = vs.resize_focused_stack(&state, 1, &row(&stacks, &mins, &widths));
         assert_eq!(
             outcomes,
             vec![FlowOutcome::StackWidthsChanged, FlowOutcome::RefreshNow]
         );
+        widths = step_column(&widths, 0, 1, 32, &mins);
         assert_eq!(
             vs.stack_width(board, s0),
-            Some(
-                crate::widths::STACK_WIDTH_READABILITY_MIN_PX + crate::widths::STACK_WIDTH_STEP_PX
-            ),
-            "an unseeded column floors at the readability minimum, then steps"
+            Some(488),
+            "exact step arithmetic"
+        );
+        assert_eq!(
+            vs.stack_width(board, s1),
+            Some(424),
+            "the neighbour seesaws"
         );
 
-        // Narrower clamps at the readable floor.
+        // Narrowing clamps at the content minimum; the neighbour takes
+        // the rest of the row.
         for _ in 0..20 {
-            vs.resize_focused_stack(&state, -1, ceiling);
+            vs.resize_focused_stack(&state, -1, &row(&stacks, &mins, &widths));
+            widths = step_column(&widths, 0, -1, 32, &mins);
         }
-        assert_eq!(
-            vs.stack_width(board, s0),
-            Some(crate::widths::STACK_WIDTH_READABILITY_MIN_PX),
-            "narrowing clamps at the min"
-        );
+        assert_eq!(vs.stack_width(board, s0), Some(120), "the floor clamps");
+        assert_eq!(vs.stack_width(board, s1), Some(792), "sum preserved");
 
-        // Wider clamps at the given ceiling.
+        // Widening past the neighbour's minimum sticks (the pair
+        // ceiling), but the step still emits its outcome pair.
         for _ in 0..60 {
-            vs.resize_focused_stack(&state, 1, ceiling);
+            vs.resize_focused_stack(&state, 1, &row(&stacks, &mins, &widths));
+            widths = step_column(&widths, 0, 1, 32, &mins);
         }
-        assert_eq!(vs.stack_width(board, s0), Some(ceiling));
+        assert_eq!(vs.stack_width(board, s0), Some(792));
+        assert_eq!(vs.stack_width(board, s1), Some(120));
+        let outcomes = vs.resize_focused_stack(&state, 1, &row(&stacks, &mins, &widths));
+        assert_eq!(
+            outcomes,
+            vec![FlowOutcome::StackWidthsChanged, FlowOutcome::RefreshNow],
+            "a clamped step still reports the snapshot"
+        );
     }
 
     /// T-3 — target resolution: focused → selected → first; inert
-    /// without any stack.
+    /// without any stack and on a one-column board (no boundary).
     #[test]
     fn resize_targets_focused_then_selected_then_first_and_is_inert_without_stacks() {
-        let (state, _, [s0, s1], [a, ..]) = fixture();
+        use crate::widths::step_column;
+        let (state, board, [s0, s1], [a, ..]) = fixture();
         let mut vs = ViewState::new();
         vs.reconcile(&state);
-        let ceiling = 1_000u32;
+        let stacks = [s0, s1];
+        let mins = [120u32, 120];
+        let widths = [456u32, 456];
+        let row = RowStep {
+            stacks: &stacks,
+            widths: &widths,
+            mins: &mins,
+            step: 32,
+            scale: 1.0,
+        };
 
         // No focus, no selection: the first stack.
-        vs.resize_focused_stack(&state, 1, ceiling);
+        vs.resize_focused_stack(&state, 1, &row);
         assert_eq!(vs.selected_stack(), None);
-        assert!(
-            vs.stack_width(vs.board().expect("board"), s0).is_some(),
-            "the first stack was addressed"
-        );
+        assert_eq!(vs.stack_width(board, s0), Some(488));
 
         // Selection wins over first.
         vs.select_stack(&state, s1);
-        vs.resize_focused_stack(&state, 1, ceiling);
-        let board = vs.board().expect("board");
-        assert_eq!(
-            vs.stack_width(board, s1),
-            Some(
-                crate::widths::STACK_WIDTH_READABILITY_MIN_PX + crate::widths::STACK_WIDTH_STEP_PX
-            ),
-            "the selected stack was addressed"
-        );
+        vs.resize_focused_stack(&state, 1, &row);
+        assert_eq!(vs.stack_width(board, s1), Some(488), "the selected stack");
 
         // Focus wins over selection.
         vs.activate_card(a, s0);
-        vs.resize_focused_stack(&state, 1, ceiling);
-        assert!(
-            vs.stack_width(board, s0).unwrap_or(0) > crate::widths::STACK_WIDTH_READABILITY_MIN_PX,
+        vs.resize_focused_stack(&state, -1, &row);
+        assert_eq!(
+            vs.stack_width(board, s0),
+            Some(step_column(&widths, 0, -1, 32, &mins)[0]),
             "the focused stack was addressed"
         );
 
@@ -3622,7 +3671,25 @@ mod tests {
         let mut empty = ViewState::new();
         let bare = AppState::default();
         empty.reconcile(&bare);
-        assert_eq!(empty.resize_focused_stack(&bare, 1, ceiling), Vec::new());
+        assert_eq!(empty.resize_focused_stack(&bare, 1, &row), Vec::new());
+
+        // A one-column board has no boundary: inert, nothing written.
+        let (one_stack_state, _, [only, ..], _) = fixture();
+        let mut one = ViewState::new();
+        one.reconcile(&one_stack_state);
+        let single = [only];
+        let one_row = RowStep {
+            stacks: &single,
+            widths: &[600],
+            mins: &mins[..1],
+            step: 32,
+            scale: 1.0,
+        };
+        assert_eq!(
+            one.resize_focused_stack(&one_stack_state, 1, &one_row),
+            Vec::new()
+        );
+        assert_eq!(one.stack_width(board, only), None, "nothing written");
     }
 
     /// T-4 — the restart-apply half: seeding lands, the snapshot reads

@@ -1594,11 +1594,13 @@ fn stack_create_has_a_visible_click_equal_flow() {
     );
 }
 
-/// Round-1 chunk 2 (D18, T-10) — the keyboard resize journey: wider
-/// steps the model's rendered width by the scaled step, narrower clamps
-/// at the readable floor, and every step's full-snapshot request
-/// reaches the lane typed (exactly the `StackWidthsChanged` payloads,
-/// latest snapshot wins).
+/// Round-1 chunk 2 (D18, T-10), adapted to the r4 pair model (D8) —
+/// the keyboard resize journey: wider steps the focused column against
+/// its neighbour (which seesaws), narrowing clamps at the content
+/// minimum with the neighbour absorbing the rest, and every step's
+/// full-snapshot request reaches the lane typed (exactly the
+/// `StackWidthsChanged` payloads; the materialized overlay persists
+/// both columns — the lane's full-snapshot contract).
 #[test]
 fn keyboard_resize_steps_clamps_and_requests_persistence() {
     let (fixture, state) = fixture::journey_state();
@@ -1610,56 +1612,78 @@ fn keyboard_resize_steps_clamps_and_requests_persistence() {
         move |_driver| {
             let mut harness = Harness::mount(SlintDriver::default(), state);
 
+            // A deterministic row: 1000 − the chrome (2·space-3 side
+            // padding + two space-3 gaps + the 40 px affordance) = 912
+            // rendered px, two equal shares of 456 at scale 1.
+            harness.driver.set_window_size(1000, 800);
+            assert_eq!(harness.column_width_px(0), 456.0, "equal-share seed");
+            assert_eq!(harness.column_width_px(1), 456.0, "equal-share seed");
+
             // One full-snapshot request per key press, drained per
-            // step (the lane is drop-on-full by design — the journey
-            // never gives it a reason to drop).
-            let expect_snapshot = |harness: &Harness, width: u32| {
-                let requests = harness.drain_requests();
-                assert_eq!(requests.len(), 1, "one request per key press");
-                assert!(
-                    matches!(
-                        &requests[0],
-                        taskboard_ui_slint::requests::UiRequest::StackWidthsChanged {
-                            board: payload_board,
-                            widths,
-                        } if *payload_board == board
-                            && widths.as_slice() == [(fixture.stack_a, width)]
-                    ),
-                    "the typed snapshot carries the model's width"
-                );
-            };
+            // step; the materialized overlay carries both columns, so
+            // the matcher is order-insensitive (BTreeMap key order).
+            let expect_snapshot =
+                |harness: &Harness, expected: [(taskboard_domain::StackId, u32); 2]| {
+                    let requests = harness.drain_requests();
+                    assert_eq!(requests.len(), 1, "one request per key press");
+                    let taskboard_ui_slint::requests::UiRequest::StackWidthsChanged {
+                        board: payload_board,
+                        widths,
+                    } = &requests[0]
+                    else {
+                        panic!("the typed snapshot reached the lane");
+                    };
+                    assert_eq!(payload_board, &board);
+                    let mut got = widths.clone();
+                    got.sort_by_key(|(stack, _)| *stack);
+                    let mut want = expected.to_vec();
+                    want.sort_by_key(|(stack, _)| *stack);
+                    assert_eq!(got, want, "the typed snapshot carries the row");
+                };
 
             harness.press(ActionId::StackWider);
             assert_eq!(
                 harness.column_width_px(0),
-                120.0 + 32.0,
-                "the first keyboard step floors at the readability minimum and adds STEP (scale 1)"
+                488.0,
+                "the first step takes 32 from the neighbour (scale 1)"
             );
-            expect_snapshot(&harness, 152);
+            assert_eq!(harness.column_width_px(1), 424.0, "the neighbour seesaws");
+            expect_snapshot(&harness, [(fixture.stack_a, 488), (fixture.stack_b, 424)]);
 
             harness.press(ActionId::StackNarrower);
-            assert_eq!(harness.column_width_px(0), 120.0, "back to the floor seed");
-            expect_snapshot(&harness, 120);
+            assert_eq!(harness.column_width_px(0), 456.0, "back to the share");
+            assert_eq!(harness.column_width_px(1), 456.0);
+            expect_snapshot(&harness, [(fixture.stack_a, 456), (fixture.stack_b, 456)]);
 
-            // Narrowing clamps at the readable floor and keeps
-            // reporting the clamped snapshot.
-            for step in 1..=8u32 {
+            // Narrowing clamps at the content minimum (120 for the
+            // short fixture titles) and keeps reporting the clamped
+            // snapshot; the neighbour absorbs the rest of the row.
+            for step in 1..=12u32 {
                 harness.press(ActionId::StackNarrower);
-                let expected = 152u32
+                let width = 456u32
                     .saturating_sub(32 * step)
                     .max(taskboard_ui_slint::widths::STACK_WIDTH_READABILITY_MIN_PX);
                 // px values, far below f32's mantissa reach.
                 #[allow(clippy::cast_precision_loss)]
-                let expected_px = expected as f32;
+                let expected_px = width as f32;
                 assert_eq!(harness.column_width_px(0), expected_px);
-                expect_snapshot(&harness, expected);
+                #[allow(clippy::cast_precision_loss)]
+                let neighbour = (912 - width) as f32;
+                assert_eq!(harness.column_width_px(1), neighbour);
+                expect_snapshot(
+                    &harness,
+                    [(fixture.stack_a, width), (fixture.stack_b, 912 - width)],
+                );
             }
         },
     );
 }
-/// Round-1 chunk 2 (D17, T-11) — the mouse drag journey: press
-/// captures the pre-drag base, drag re-renders live (clamped), a stale
-/// column index is absorbed, and exactly one request lands on release.
+/// Round-1 chunk 2 (D17, T-11), adapted to the r4 divider model —
+/// the mouse drag journey: press materializes the row and captures the
+/// boundary, drag re-renders live (the pair at the boundary moves,
+/// clamped at both content minimums), a stale column index is
+/// absorbed, and exactly one request lands on release carrying both
+/// columns.
 #[test]
 fn drag_seam_resizes_live_and_persists_on_release() {
     let (fixture, state) = fixture::journey_state();
@@ -1669,15 +1693,22 @@ fn drag_seam_resizes_live_and_persists_on_release() {
             headless_renderer: true,
         },
         move |_driver| {
-            let harness = Harness::mount(SlintDriver::default(), state);
+            let mut harness = Harness::mount(SlintDriver::default(), state);
             let window = harness.handle.window();
+            // A deterministic row: 912 rendered px, two shares of 456.
+            harness.driver.set_window_size(1000, 800);
 
-            window.invoke_board_stack_width_press(0, 300.0);
+            window.invoke_board_stack_width_press(0);
             window.invoke_board_stack_width_drag(0, -50.0);
             assert_eq!(
                 harness.column_width_px(0),
-                250.0,
-                "the column re-rendered live at base + delta"
+                406.0,
+                "the left column re-rendered live at base + delta"
+            );
+            assert_eq!(
+                harness.column_width_px(1),
+                506.0,
+                "the right neighbour takes exactly −δ"
             );
             assert!(
                 harness.drain_requests().is_empty(),
@@ -1687,21 +1718,25 @@ fn drag_seam_resizes_live_and_persists_on_release() {
             // A stale index (tables moved between press and tick) is
             // absorbed silently.
             window.invoke_board_stack_width_drag(9, 500.0);
-            assert_eq!(harness.column_width_px(0), 250.0, "stale tick ignored");
+            assert_eq!(harness.column_width_px(0), 406.0, "stale tick ignored");
 
             window.invoke_board_stack_width_release(0);
             let requests = harness.drain_requests();
             assert_eq!(requests.len(), 1, "exactly one request on release");
-            assert!(
-                matches!(
-                    &requests[0],
-                    taskboard_ui_slint::requests::UiRequest::StackWidthsChanged {
-                        board: payload_board,
-                        widths,
-                    } if *payload_board == board
-                        && widths.as_slice() == [(fixture.stack_a, 250u32)]
-                ),
-                "the release snapshot carries the dragged width"
+            let taskboard_ui_slint::requests::UiRequest::StackWidthsChanged {
+                board: payload_board,
+                widths,
+            } = &requests[0]
+            else {
+                panic!("the typed snapshot reached the lane");
+            };
+            assert_eq!(payload_board, &board);
+            let mut got = widths.clone();
+            got.sort_by_key(|(stack, _)| *stack);
+            assert_eq!(
+                got,
+                vec![(fixture.stack_a, 406), (fixture.stack_b, 506)],
+                "the release snapshot carries both boundary columns"
             );
 
             // Release without a press is inert (no request).
@@ -1711,24 +1746,31 @@ fn drag_seam_resizes_live_and_persists_on_release() {
     );
 }
 
-/// Round-1 chunk 2 (D16, T-12) — the auto-board guarantee: a
-/// never-resized board pushes the `−1.0` sentinel on every column and
-/// refreshes alone never emit a persistence request (the goldens'
-/// auto-layout proof's journey half).
+/// Round-1 chunk 2 (D16, T-12), adapted to the r4 explicit-width row
+/// (chunk-2 plan §5) — a never-resized board pushes positive
+/// equal-share widths on every column (the rendered image of the old
+/// stretch-equal distribution; the −1.0 sentinel is gone) and
+/// refreshes alone never emit a persistence request.
 #[test]
-fn never_resized_board_pushes_auto_widths_and_no_requests() {
+fn never_resized_board_pushes_positive_widths_and_no_requests() {
     let (_fixture, state) = fixture::golden_state();
     support::driver::run(
         DriverOptions {
             headless_renderer: true,
         },
         move |_driver| {
-            let harness = Harness::mount(SlintDriver::default(), state);
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            // A deterministic row: 912 rendered px over two columns.
+            harness.driver.set_window_size(1000, 800);
             let board_model = harness.handle.window().get_board_model();
-            for column in 0..board_model.stacks.row_count() {
-                assert!(
-                    harness.column_width_px(column) <= 0.0,
-                    "column {column} stays auto"
+            let count = board_model.stacks.row_count();
+            assert!(count >= 2);
+            for column in 0..count {
+                let width = harness.column_width_px(column);
+                assert!(width > 0.0, "column {column} pushes a positive width");
+                assert_eq!(
+                    width, 456.0,
+                    "every column carries its equal share of the row"
                 );
             }
             harness.handle.refresh();
@@ -1741,12 +1783,15 @@ fn never_resized_board_pushes_auto_widths_and_no_requests() {
     );
 }
 
-/// R2 D1 (T-4) — stored widths are floors, never pins: after dragging
-/// column 0 down to its floor, a window resize still distributes the
-/// row's full width (every column ≥ its stored floor, Σ columns +
-/// the add-column affordance + gaps == window width within rounding).
+/// R4 D5/decision 6 (dispatch acceptance (c)) — a window resize
+/// distributes the delta proportionally over the stored bases: drag
+/// column 0 down to its content minimum, enlarge the window, and every
+/// column grows; the resolved row sums to the window minus the chrome
+/// (2·space-3 side padding + two space-3 gaps + the 40 px affordance
+/// at scale 1 = 88 px — the corrected arithmetic the code now
+/// matches).
 #[test]
-fn stored_widths_fill_the_window_as_floors() {
+fn window_resize_distributes_delta_proportionally() {
     let (_fixture, state) = fixture::journey_state();
     support::driver::run(
         DriverOptions {
@@ -1757,54 +1802,32 @@ fn stored_widths_fill_the_window_as_floors() {
             let window = harness.handle.window();
             harness.driver.set_window_size(1000, 800);
 
-            // Drag column 0 to its readable floor (the seam's press
-            // base is the rendered width; the delta clamps at min).
-            window.invoke_board_stack_width_press(0, 500.0);
+            // Drag column 0 to its content minimum (the divider's
+            // press materializes; the delta clamps at the pair's
+            // minimums).
+            window.invoke_board_stack_width_press(0);
             window.invoke_board_stack_width_drag(0, -500.0);
             window.invoke_board_stack_width_release(0);
-            assert!(
-                harness.drain_requests().iter().any(|request| {
-                    matches!(
-                        request,
-                        taskboard_ui_slint::requests::UiRequest::StackWidthsChanged { .. }
-                    )
-                }),
-                "the drag persisted"
+            assert_eq!(
+                harness.column_width_px(0),
+                120.0,
+                "the dragged column clamps at its content minimum"
             );
+            assert_eq!(harness.column_width_px(1), 792.0, "the row still sums");
 
-            // A wider window fills: the stored width holds only as the
-            // column's floor, the surplus redistributes.
+            // A wider window fills: the delta distributes
+            // proportionally over the bases (120/792 of 912).
             harness.driver.set_window_size(1500, 900);
-            // The a11y items of one column (list + header button)
-            // share the column's width; the titles are the addresses.
-            let add_col = harness
-                .driver
-                .find_all_by_id("BoardLayout::add-col-hit")
-                .pop()
-                .expect("the add-column affordance is mounted");
-            #[allow(clippy::cast_precision_loss)]
-            let floor = taskboard_ui_slint::widths::STACK_WIDTH_READABILITY_MIN_PX as f32; // at scale 1
-            let mut total = add_col.size().width;
-            for title in ["a", "b"] {
-                let column = harness
-                    .driver
-                    .find_by_label(title)
-                    .unwrap_or_else(|| panic!("column {title} is addressable"));
-                let width = column.size().width;
-                assert!(
-                    width >= floor,
-                    "no column renders below its stored floor, got {width}"
-                );
-                total += width;
-            }
-            // Two inter-column gaps (space-3 = 12 px at scale 1), the
-            // row's side strip padding (r2 D35, another 2 × 12), plus
-            // the trailing add-column counted above; ±1 px of physical
-            // rounding.
-            let expected = 1500.0 - 4.0 * 12.0;
+            let w0 = harness.column_width_px(0);
+            let w1 = harness.column_width_px(1);
+            assert!(w0 > 120.0, "the min-basis column grows too, got {w0}");
+            assert!(w1 > 792.0, "the wide column keeps its lead, got {w1}");
+            // Σ widths == 1500 − 88 chrome (±1 px of physical
+            // rounding).
+            let total = w0 + w1;
             assert!(
-                (total - expected).abs() <= 1.0,
-                "the columns row fills the window: {total} vs {expected}"
+                (total - 1412.0).abs() <= 1.0,
+                "the resolved row fills the window: {total} vs 1412"
             );
         },
     );
@@ -4104,16 +4127,18 @@ fn the_drag_survives_interleaved_refreshes_and_engine_changes() {
         move |_driver| {
             let mut harness = Harness::mount(SlintDriver::default(), state.clone());
             let window = harness.handle.window();
+            // A deterministic row: 912 rendered px, two shares of 456.
+            harness.driver.set_window_size(1000, 800);
 
-            window.invoke_board_stack_width_press(0, 300.0);
+            window.invoke_board_stack_width_press(0);
             window.invoke_board_stack_width_drag(0, -20.0);
-            assert_eq!(harness.column_width_px(0), 280.0, "first tick");
+            assert_eq!(harness.column_width_px(0), 436.0, "first tick");
             harness.handle.refresh();
             window.invoke_board_stack_width_drag(0, -30.0);
             assert_eq!(
                 harness.column_width_px(0),
-                270.0,
-                "the refresh did not disturb the drag"
+                426.0,
+                "the refresh did not disturb the drag (delta stays absolute)"
             );
 
             // A concurrent engine change: a new task joins stack b.
@@ -4162,7 +4187,7 @@ fn the_drag_survives_interleaved_refreshes_and_engine_changes() {
             window.invoke_board_stack_width_drag(0, -40.0);
             assert_eq!(
                 harness.column_width_px(0),
-                260.0,
+                416.0,
                 "the engine change did not disturb the drag"
             );
             assert!(
@@ -4173,14 +4198,21 @@ fn the_drag_survives_interleaved_refreshes_and_engine_changes() {
             window.invoke_board_stack_width_release(0);
             let requests = harness.drain_requests();
             assert_eq!(requests.len(), 1, "exactly one request on release");
-            assert!(matches!(
-                &requests[0],
-                taskboard_ui_slint::requests::UiRequest::StackWidthsChanged {
-                    board: payload_board,
-                    widths,
-                } if *payload_board == board
-                    && widths.as_slice() == [(fixture.stack_a, 260u32)]
-            ));
+            let taskboard_ui_slint::requests::UiRequest::StackWidthsChanged {
+                board: payload_board,
+                widths,
+            } = &requests[0]
+            else {
+                panic!("the typed snapshot reached the lane");
+            };
+            assert_eq!(payload_board, &board);
+            let mut got = widths.clone();
+            got.sort_by_key(|(stack, _)| *stack);
+            assert_eq!(
+                got,
+                vec![(fixture.stack_a, 416), (fixture.stack_b, 496)],
+                "the release snapshot carries the materialized row"
+            );
         },
     );
 }

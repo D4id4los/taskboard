@@ -268,7 +268,7 @@ export component AppWindow inherits Window {
                 stack-header-hint: root.stack-header-hint;
                 stack-create-hint: root.stack-create-hint;
                 task-create-hint: root.task-create-hint;
-                stack-width-press(c, w) => root.board-stack-width-press(c, w);
+                stack-width-press(c) => root.board-stack-width-press(c);
                 stack-width-drag(c, d) => root.board-stack-width-drag(c, d);
                 stack-width-release(c) => root.board-stack-width-release(c);
                 board-bar-activated(i) => root.board-bar-segment-activated(i);
@@ -708,7 +708,7 @@ export component AppWindow inherits Window {
     // The right-click context menu seams (round-1 D13).
     pure callback board-task-context-requested(int, int, float, float);
     // The column resize drag seams (round-1 D17).
-    pure callback board-stack-width-press(int, float);
+    pure callback board-stack-width-press(int);
     pure callback board-stack-width-drag(int, float);
     pure callback board-stack-width-release(int);
     pure callback stack-task-context-requested(int, float, float);

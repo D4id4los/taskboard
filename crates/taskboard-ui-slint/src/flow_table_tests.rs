@@ -1041,11 +1041,11 @@ mod buffer_invariants {
             let (state, fx) = fixture();
             let rig = rig(state);
             let adapter = rig.adapter();
-            let [s0, _s1] = fx.stacks;
+            let [s0, s1] = fx.stacks;
 
             // A live width gesture survives a refresh (the r2
             // interleaved-refresh survival pin's buffer half).
-            adapter.borrow_mut().arm_width_drag(s0);
+            adapter.borrow_mut().arm_width_drag(s0, s1);
             adapter.borrow_mut().refresh(rig.handle.window());
             assert!(adapter.borrow().width_drag_armed());
 
