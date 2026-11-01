@@ -33,7 +33,7 @@ strictly to these dependency boundaries:
 - `taskboard-state`: The State Engine actor. **Rule:** processes incoming
   commands and updates local state. Sole source of truth for application
   state; owns the write side of `ArcSwap<AppState>`.
-- `taskboard-sync-nextcloud`: Nextcloud REST/WebDAV API actor.
+- `taskboard-sync-nextcloud`: Nextcloud Deck REST API actor.
 - `taskboard-storage-sqlite`: Local disk caching actor using `sqlx`.
 - `taskboard-ui-slint`: Swappable UI layer. **Rule:** cannot depend on IO
   crates; presentation logic only.
