@@ -104,6 +104,7 @@ impl KeymapShell {
         crate::router::DispatchCtx {
             focused_task: self.focused_task,
             focused_stack: self.focused_stack,
+            create_target: None,
             reminder_target: None,
             board_target: None,
             rule_target: None,
@@ -181,7 +182,7 @@ impl KeymapShell {
             | UiEffect::ScrollUp
             | UiEffect::ScrollDown
             | UiEffect::PickerKey(_)
-            | UiEffect::BeginCreate
+            | UiEffect::BeginCreate { .. }
             | UiEffect::BeginCreateStack
             | UiEffect::Activate
             | UiEffect::RequestMove

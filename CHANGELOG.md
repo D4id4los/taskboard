@@ -214,6 +214,18 @@ The workspace carries a single global version (see `docs/architecture.org`);
 
 ### Fixed
 
+- Board surface repairs (GUI review round 4): the task card's title
+  fills the card to its right edge, eliding only there (previously
+  column-width squeezes collapsed it to a bare ellipsis); a
+  right-click outside an open menu, palette, capture overlay, or date
+  picker now closes it (the click was previously swallowed); a
+  left-click on a column's empty body selects that stack (like
+  clicking its header); and one click on a column's Add-task ghost
+  opens the create field in that column and selects it — including
+  under an open rename/create flow (the first click was previously
+  eaten by the ghost's focus overlay and the target could diverge
+  from the clicked column; Ctrl+O's keyboard behaviour is unchanged).
+
 - The Nextcloud sync now adopts the appdata anchor on Deck 1.19.1+
   instead of re-creating it every cycle (#448, #447, #449). Deck's
   1.19.1 attachment listings carry no `extendedData.fileName` and

@@ -150,7 +150,7 @@ fn key_of(effect: &UiEffect) -> EK {
         UiEffect::NextView => EK::NextView,
         UiEffect::PrevView => EK::PrevView,
         UiEffect::FocusBoard => EK::FocusBoard,
-        UiEffect::BeginCreate => EK::BeginCreate,
+        UiEffect::BeginCreate { .. } => EK::BeginCreate,
         UiEffect::BeginCreateStack => EK::BeginCreateStack,
         UiEffect::Activate => EK::Activate,
         UiEffect::RequestMove => EK::RequestMove,
@@ -607,7 +607,12 @@ fn all_effects(fx: &Fixture) -> Vec<UiEffect> {
         UiEffect::NextView,
         UiEffect::PrevView,
         UiEffect::FocusBoard,
-        UiEffect::BeginCreate,
+        // Both payloads run the whole matrix (r4 D4): the driver
+        // pins payload-blindness by construction, not convention.
+        UiEffect::BeginCreate { target: None },
+        UiEffect::BeginCreate {
+            target: Some(fx.stacks[1]),
+        },
         UiEffect::BeginCreateStack,
         UiEffect::Activate,
         UiEffect::RequestMove,

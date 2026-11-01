@@ -145,6 +145,10 @@ pub(crate) struct Adapter {
     menu_chain: Vec<ContextId>,
     /// The open menu's anchor (round-1 D13).
     menu_anchor: MenuAnchor,
+    /// The Add-task ghost's clicked stack (r4 D4); consumed by the
+    /// next `task.create` dispatch, then cleared (one-shot, the
+    /// `reminder_target` precedent).
+    create_target: Option<StackId>,
     /// The banner row target set by row activation (D4); consumed by
     /// the next snooze/mute dispatch, then cleared (one-shot).
     reminder_target: Option<ReminderTarget>,
@@ -471,6 +475,7 @@ impl Adapter {
     /// One action through the router (design §5 pipeline's last hop).
     pub(crate) fn route(&mut self, window: &AppWindow, id: ActionId) {
         let mut ctx = self.shell.dispatch_ctx();
+        ctx.create_target = self.create_target.take();
         ctx.reminder_target = self.reminder_target;
         self.reminder_target = None;
         ctx.board_target = self.board_target;
@@ -1048,7 +1053,7 @@ impl Adapter {
                 Flow::None,
                 effect @ (UiEffect::Activate
                 | UiEffect::RequestMove
-                | UiEffect::BeginCreate
+                | UiEffect::BeginCreate { .. }
                 | UiEffect::BeginCreateStack),
             ) => self.interpret_begin(effect, &state),
             // -- no flow: the pure view-state defaults (the arms the
@@ -1373,6 +1378,12 @@ impl Adapter {
             UiEffect::Activate => self.view_state.activate_focused(state),
             UiEffect::RequestMove => self.view_state.start_move(state),
             UiEffect::BeginCreateStack => self.view_state.begin_create_stack(state),
+            // The ghost's clicked column (r4 D4): the payload wins.
+            UiEffect::BeginCreate {
+                target: Some(stack),
+            } => self.view_state.begin_create(stack),
+            // The keyboard's route: focused → selected → first,
+            // byte-identical (r4 D4 acceptance e).
             _ => match self.view_state.create_target_stack(state) {
                 Some(stack) => self.view_state.begin_create(stack),
                 None => Vec::new(),
@@ -1538,11 +1549,14 @@ impl Adapter {
                 // Settle per the flow's kind rule, then re-run the
                 // effect once against the settled state — bounded
                 // one-level re-dispatch (the `InvokeSelected`
-                // precedent, `router.rs`), guarded on the settle
-                // having actually changed the flow.
-                if self.settle_flow(window, state) {
-                    self.interpret(window, effect);
-                }
+                // precedent, `router.rs`). The settle-nothing skip is
+                // retired (r4 D4b): `resolve_conflict` early-returns
+                // on `Flow::None` and `settle_flow` returns `false`
+                // nowhere else, so the gate was provably dead — and
+                // it was the only shape that could silently eat a
+                // re-dispatch if the kept-arm set ever shifted.
+                self.settle_flow(window, state);
+                self.interpret(window, effect);
             }
         }
     }
@@ -1684,7 +1698,7 @@ impl Adapter {
             | UiEffect::ControlPrev
             | UiEffect::ScrollUp
             | UiEffect::ScrollDown
-            | UiEffect::BeginCreate
+            | UiEffect::BeginCreate { .. }
             | UiEffect::BeginCreateStack
             | UiEffect::BeginTitleEdit
             | UiEffect::Activate
@@ -3008,6 +3022,7 @@ pub(crate) fn install(
         root_entries: Vec::new(),
         menu_chain: Vec::new(),
         menu_anchor: MenuAnchor::Hamburger,
+        create_target: None,
         reminder_target: None,
         due_buffer: String::new(),
         due_echo: String::new(),
@@ -4033,6 +4048,13 @@ fn install_board_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         let mut a = ghost.borrow_mut();
         select_column(&mut a, &window, column);
         settle_pointer_conflict(&mut a, &window);
+        // The clicked column IS the create target (r4 D4): resolved
+        // through the id tables (the D2 index-only convention — a
+        // stale index yields `None`, never a wrong stack), so field
+        // placement and selection can never diverge.
+        if let Ok(index) = usize::try_from(column) {
+            a.create_target = a.tables.stack_ids.get(index).copied();
+        }
         a.route(&window, ActionId::TaskCreate);
     });
 
