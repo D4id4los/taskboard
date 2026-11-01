@@ -841,16 +841,7 @@ async fn ingest_sync_report(
                     let current = core.sync_status(*board);
                     PersistenceAction::UpsertSyncStatus(
                         *board,
-                        SyncStatus {
-                            phase: SyncPhase::Failed { last_error: kind },
-                            last_success: current.and_then(|row| row.last_success),
-                            // The memory-only fields (counters, sidecar,
-                            // features) are never persisted; the verdict
-                            // row carries the last derived values over.
-                            sidecar: current.map_or(SidecarHealth::default(), |row| row.sidecar),
-                            features: current.map_or(DeckFeatures::default(), |row| row.features),
-                            ..SyncStatus::default()
-                        },
+                        sync_status_action(current, SyncPhase::Failed { last_error: kind }),
                     )
                 })
                 .collect::<Vec<PersistenceAction>>();
@@ -1081,14 +1072,7 @@ async fn go_offline(
             let current = core.sync_status(board);
             PersistenceAction::UpsertSyncStatus(
                 board,
-                SyncStatus {
-                    phase: SyncPhase::Offline,
-                    last_success: current.and_then(|row| row.last_success),
-                    // Memory-only fields carry over (see above).
-                    sidecar: current.map_or(SidecarHealth::default(), |row| row.sidecar),
-                    features: current.map_or(DeckFeatures::default(), |row| row.features),
-                    ..SyncStatus::default()
-                },
+                sync_status_action(current, SyncPhase::Offline),
             )
         })
         .collect();
@@ -1105,6 +1089,22 @@ async fn go_offline(
             core.record_offline_episode(*board);
         }
         publish(core, shared, signals, metrics);
+    }
+}
+
+/// The verdict row a failed/offline transition persists for one bound
+/// board: the phase flips; `last_success`, the sidecar health, and the
+/// probed features carry over from the current row; the memory-only
+/// fields (`counters`) stay at their defaults — `EngineCore::app`
+/// overlays them from the live rows, and the storage codec never
+/// persists them.
+fn sync_status_action(current: Option<&SyncStatus>, phase: SyncPhase) -> SyncStatus {
+    SyncStatus {
+        phase,
+        last_success: current.and_then(|row| row.last_success),
+        sidecar: current.map_or(SidecarHealth::default(), |row| row.sidecar),
+        features: current.map_or(DeckFeatures::default(), |row| row.features),
+        ..SyncStatus::default()
     }
 }
 
