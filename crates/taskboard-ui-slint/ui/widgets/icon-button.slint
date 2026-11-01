@@ -1,39 +1,20 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // The icon-button primitive (L1, §4.4): a small square button
-// carrying a geometric icon (D19 — no icon font; shapes composed from
-// primitives, coloured Tone→Semantic). A FocusScope overlay makes it
-// a real tab stop (D15); its keyboard "activation" is the routed
-// action's own binding (§7.1's equivalence — the action layer owns
-// keys).
+// carrying an icon (D19 as amended by round-4 §2 decision 1,
+// 2026-11-01: vendored monochrome Lucide SVGs tinted via
+// `Image.colorize`; the no-icon-font clause stands; the `IconKind`
+// vocabulary gate remains the single closed set). A FocusScope
+// overlay makes it a real tab stop (D15); its keyboard "activation"
+// is the routed action's own binding (§7.1's equivalence — the
+// action layer owns keys).
 
 import { Theme, Semantic, Tone } from "../theme.slint";
 import { TooltipState } from "tooltip.slint";
+import { Icon, IconKind } from "icon.slint";
 
-// The closed icon vocabulary (D19): grows only with a theme decision
-// — `plus` joined for the usability pass's New-stack buttons.
-export enum IconKind {
-    menu,
-    snooze,
-    mute,
-    warn,
-    plus,
-    // The back affordance (round-1 D12): a left chevron.
-    chevron-left,
-    // The remove affordance (chunk 6, D12): an x.
-    remove,
-    // The time-step-back affordance (round-3 D9): a minus bar.
-    minus,
-    // The month-next affordance (r2 D25): a right chevron.
-    chevron-right,
-    // The picker-toggle affordance (r2 D25): a calendar.
-    calendar,
-    // The done affordance (R3 chunk C): a check mark.
-    check,
-    // The start-tracking affordance (DR-5/4, D-T16): a play triangle.
-    play,
-    // The stop-tracking affordance (DR-5/4, D-T16): a stop square.
-    stop,
-}
+// The vocabulary's home moved with the renderer (r4 D10); this
+// re-export keeps every call-site import unchanged.
+export { IconKind }
 
 export component IconButton inherits Rectangle {
     in property <IconKind> icon: IconKind.menu;
@@ -101,211 +82,9 @@ export component IconButton inherits Rectangle {
             : Semantic.offline
         }
 
-        if (root.icon == IconKind.menu): VerticalLayout {
-            spacing: Theme.space-1 / 2;
-            Rectangle { vertical-stretch: 1; min-height: Theme.space-1 / 2; background: icon-box.icon-color(); }
-            Rectangle { vertical-stretch: 1; min-height: Theme.space-1 / 2; background: icon-box.icon-color(); }
-            Rectangle { vertical-stretch: 1; min-height: Theme.space-1 / 2; background: icon-box.icon-color(); }
-        }
-
-        if (root.icon == IconKind.snooze): VerticalLayout {
-            // A clock: ring + hands, centered.
-            clock-ring := Rectangle {
-                vertical-stretch: 1;
-                min-height: Theme.space-4;
-                border-radius: self.height / 2;
-                border-width: Theme.focus-ring-width;
-                border-color: icon-box.icon-color();
-                Rectangle {
-                    x: clock-ring.width / 2 - Theme.space-1 / 2;
-                    y: Theme.space-1;
-                    width: Theme.space-1 / 2;
-                    height: Theme.space-2;
-                    background: icon-box.icon-color();
-                }
-                Rectangle {
-                    x: clock-ring.width / 2 - Theme.space-1 / 2;
-                    y: clock-ring.height / 2 - Theme.space-1 / 2;
-                    width: Theme.space-2;
-                    height: Theme.space-1 / 2;
-                    background: icon-box.icon-color();
-                }
-            }
-        }
-
-        if (root.icon == IconKind.minus): VerticalLayout {
-            Rectangle {
-                vertical-stretch: 1;
-                min-height: Theme.space-1 / 2;
-                max-height: Theme.space-1 / 2;
-                background: icon-box.icon-color();
-            }
-        }
-
-        if (root.icon == IconKind.mute): VerticalLayout {
-            // A bell silhouette: dome + base.
-            spacing: Theme.space-1 / 2;
-            Rectangle {
-                vertical-stretch: 7;
-                min-height: Theme.space-1;
-                border-radius: self.height / 2;
-                background: icon-box.icon-color();
-            }
-            Rectangle {
-                vertical-stretch: 1;
-                min-height: Theme.space-1 / 2;
-                background: icon-box.icon-color();
-            }
-        }
-
-        if (root.icon == IconKind.warn): VerticalLayout {
-            // The warning glyph: an exclamation mark.
-            spacing: Theme.space-1 / 2;
-            Rectangle { vertical-stretch: 4; min-height: Theme.space-2; background: icon-box.icon-color(); }
-            Rectangle { vertical-stretch: 1; min-height: Theme.space-1 / 2; background: icon-box.icon-color(); }
-        }
-
-        if (root.icon == IconKind.chevron-left): VerticalLayout {
-            // A left chevron: one polyline stroke (geometric, D19).
-            Rectangle {
-                vertical-stretch: 1;
-                min-height: Theme.space-4;
-                Path {
-                    // space-3: the 12-px design grid square the
-                    // chevron polyline is drawn in.
-                    width: Theme.space-3;
-                    height: Theme.space-3;
-                    commands: "M 8 1 L 2 6 L 8 11";
-                    stroke: icon-box.icon-color();
-                    stroke-width: Theme.focus-ring-width;
-                    fill: transparent;
-                    viewbox-width: 12;
-                    viewbox-height: 12;
-                }
-            }
-        }
-
-        if (root.icon == IconKind.remove): VerticalLayout {
-            // An x: two crossing diagonal strokes (geometric, D19).
-            Rectangle {
-                vertical-stretch: 1;
-                min-height: Theme.space-4;
-                Path {
-                    width: Theme.space-3;
-                    height: Theme.space-3;
-                    commands: "M 2 2 L 10 10 M 10 2 L 2 10";
-                    stroke: icon-box.icon-color();
-                    stroke-width: Theme.focus-ring-width;
-                    fill: transparent;
-                    viewbox-width: 12;
-                    viewbox-height: 12;
-                }
-            }
-        }
-
-        if (root.icon == IconKind.chevron-right): VerticalLayout {
-            // The month-next chevron: the left chevron mirrored
-            // (geometric, D19).
-            Rectangle {
-                vertical-stretch: 1;
-                min-height: Theme.space-4;
-                Path {
-                    width: Theme.space-3;
-                    height: Theme.space-3;
-                    commands: "M 4 1 L 10 6 L 4 11";
-                    stroke: icon-box.icon-color();
-                    stroke-width: Theme.focus-ring-width;
-                    fill: transparent;
-                    viewbox-width: 12;
-                    viewbox-height: 12;
-                }
-            }
-        }
-
-        if (root.icon == IconKind.calendar): VerticalLayout {
-            // A calendar: closed page box, two binding tabs, a header
-            // rule (geometric, D19).
-            Rectangle {
-                vertical-stretch: 1;
-                min-height: Theme.space-4;
-                Path {
-                    width: Theme.space-3;
-                    height: Theme.space-3;
-                    commands: "M 1 3 L 11 3 L 11 11 L 1 11 Z M 3 1 L 3 4 M 9 1 L 9 4 M 1 6 L 11 6";
-                    stroke: icon-box.icon-color();
-                    stroke-width: Theme.focus-ring-width;
-                    fill: transparent;
-                    viewbox-width: 12;
-                    viewbox-height: 12;
-                }
-            }
-        }
-
-        if (root.icon == IconKind.check): VerticalLayout {
-            // A check mark: one polyline stroke (geometric, D19).
-            Rectangle {
-                vertical-stretch: 1;
-                min-height: Theme.space-4;
-                Path {
-                    width: Theme.space-3;
-                    height: Theme.space-3;
-                    commands: "M 2 6 L 5 9 L 10 3";
-                    stroke: icon-box.icon-color();
-                    stroke-width: Theme.focus-ring-width;
-                    fill: transparent;
-                    viewbox-width: 12;
-                    viewbox-height: 12;
-                }
-            }
-        }
-
-        if (root.icon == IconKind.play): VerticalLayout {
-            // A play triangle: one filled polygon (geometric, D19).
-            Rectangle {
-                vertical-stretch: 1;
-                min-height: Theme.space-4;
-                Path {
-                    width: Theme.space-3;
-                    height: Theme.space-3;
-                    commands: "M 2 1 L 11 6 L 2 11 Z";
-                    fill: icon-box.icon-color();
-                    viewbox-width: 12;
-                    viewbox-height: 12;
-                }
-            }
-        }
-
-        if (root.icon == IconKind.stop): VerticalLayout {
-            // A stop square: one filled rectangle (geometric, D19).
-            Rectangle {
-                vertical-stretch: 1;
-                min-height: Theme.space-4;
-                Path {
-                    width: Theme.space-3;
-                    height: Theme.space-3;
-                    commands: "M 2 2 L 10 2 L 10 10 L 2 10 Z";
-                    fill: icon-box.icon-color();
-                    viewbox-width: 12;
-                    viewbox-height: 12;
-                }
-            }
-        }
-
-        if (root.icon == IconKind.plus): Rectangle {
-            // A plus: one horizontal and one vertical bar crossing
-            // centred (geometric, D19 — no icon font).
-            Rectangle {
-                y: (parent.height - self.height) / 2;
-                width: 100%;
-                height: Theme.focus-ring-width;
-                background: icon-box.icon-color();
-            }
-            Rectangle {
-                x: (parent.width - self.width) / 2;
-                height: 100%;
-                width: Theme.focus-ring-width;
-                background: icon-box.icon-color();
-            }
+        Icon {
+            kind: root.icon;
+            colorize: icon-color();
         }
     }
 

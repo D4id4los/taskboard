@@ -1,0 +1,70 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The icon renderer (r4 D10): the closed IconKind vocabulary mapped
+// to vendored monochrome Lucide SVGs, tinted via Image.colorize
+// (D19 as amended by round-4 §2 decision 1, 2026-11-01; the
+// no-icon-font clause stands; this enum remains the single closed
+// set). Assets are compile-time embedded (@image-url; slint-build
+// embeds all resources) — offline kiosk-safe, no runtime loading.
+// Growth rule (unchanged): one recorded theme decision = one enum
+// row + one vendored file + one mapping arm.
+
+import { Theme } from "../theme.slint";
+
+// The closed icon vocabulary (D19): grows only with a theme decision.
+export enum IconKind {
+    menu,
+    // The reminder affordance: a clock.
+    snooze,
+    // The mute affordance: a bell (no slash — the state rides tone).
+    mute,
+    // The warning glyph: the canonical triangle-! (recorded r4
+    // deviation from the drawn bare-!, which had no Lucide
+    // equivalent).
+    warn,
+    // `plus` joined for the usability pass's New-stack buttons.
+    plus,
+    // The back affordance (round-1 D12): a left chevron.
+    chevron-left,
+    // The remove affordance (chunk 6, D12): an x.
+    remove,
+    // The time-step-back affordance (round-3 D9): a minus bar.
+    minus,
+    // The month-next affordance (r2 D25): a right chevron.
+    chevron-right,
+    // The picker-toggle affordance (r2 D25): a calendar.
+    calendar,
+    // The done affordance (R3 chunk C): a check mark.
+    check,
+    // The start-tracking affordance (DR-5/4, D-T16): a play triangle.
+    play,
+    // The stop-tracking affordance (DR-5/4, D-T16): a stop square.
+    stop,
+}
+
+export component Icon inherits Image {
+    in property <IconKind> kind: IconKind.menu;
+    width: Theme.icon-size;
+    height: Theme.icon-size;
+    // Lucide ships stroke="currentColor" — resvg resolves that to
+    // black, invisible on the dark theme. The default tint is the
+    // neutral icon tone so a caller that forgets still renders.
+    colorize: Theme.text-secondary;
+    // The total mapping, one arm per vocabulary row; the terminal
+    // else is the warn asset — the loud fallback: a future kind added
+    // without an arm visibly renders the warning glyph in dev and
+    // goldens instead of silently vanishing.
+    source: kind == IconKind.menu               ? @image-url("../assets/icons/menu.svg")
+        : kind == IconKind.snooze               ? @image-url("../assets/icons/clock.svg")
+        : kind == IconKind.mute                 ? @image-url("../assets/icons/bell.svg")
+        : kind == IconKind.warn                 ? @image-url("../assets/icons/triangle-alert.svg")
+        : kind == IconKind.plus                 ? @image-url("../assets/icons/plus.svg")
+        : kind == IconKind.chevron-left         ? @image-url("../assets/icons/chevron-left.svg")
+        : kind == IconKind.remove               ? @image-url("../assets/icons/x.svg")
+        : kind == IconKind.minus                ? @image-url("../assets/icons/minus.svg")
+        : kind == IconKind.chevron-right        ? @image-url("../assets/icons/chevron-right.svg")
+        : kind == IconKind.calendar             ? @image-url("../assets/icons/calendar.svg")
+        : kind == IconKind.check                ? @image-url("../assets/icons/check.svg")
+        : kind == IconKind.play                 ? @image-url("../assets/icons/play.svg")
+        : kind == IconKind.stop                 ? @image-url("../assets/icons/square.svg")
+        : @image-url("../assets/icons/triangle-alert.svg");
+}
