@@ -62,6 +62,13 @@ export global Theme {
     // settings-row / metadata-cell minimum.
     out property <length> space-15: 96px * base-scale;
 
+    // The task-card title's elide floor (r4 D1): ≈12 characters of
+    // Typography.body — Inter's average lowercase advance at 14 px is
+    // ≈0.5 em ≈ 7 px, 12 × 7 = 84. A readability floor for the elide,
+    // not a measurement; role-independent (a done card's caption role
+    // gets the same layout floor).
+    out property <length> card-title-min-width: 84px * base-scale;
+
     // The column resize handle's hit-target width (round-1 D17; the
     // builtin tableview's 10 px pattern, one theme home).
     out property <length> resize-handle-width: 10px * base-scale;
