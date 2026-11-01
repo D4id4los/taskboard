@@ -20,9 +20,11 @@ pub enum DeckError {
     /// Network-level failure (connection refused, DNS, TLS, timeout).
     #[error("transport failure")]
     Transport(#[from] reqwest::Error),
-    /// The response body could not be decoded as the expected OCS JSON.
-    #[error("unexpected response payload")]
-    Envelope(#[from] serde_json::Error),
+    /// A JSON failure in either direction: a request body could not be
+    /// serialized, or a response body could not be decoded as the
+    /// expected OCS JSON.
+    #[error("json encode/decode failure")]
+    Json(#[from] serde_json::Error),
     /// Authentication failed (HTTP 401).
     #[error("authentication failed")]
     Unauthorized,

@@ -319,7 +319,7 @@ async fn malformed_json_maps_to_envelope_error() {
         .await;
 
     let err = client_for(&server).boards().await.unwrap_err();
-    assert!(matches!(err, DeckError::Envelope(_)));
+    assert!(matches!(err, DeckError::Json(_)));
 }
 
 #[tokio::test]
@@ -336,7 +336,7 @@ async fn non_json_content_type_maps_to_envelope_error() {
         .await;
 
     let err = client_for(&server).boards().await.unwrap_err();
-    assert!(matches!(err, DeckError::Envelope(_)));
+    assert!(matches!(err, DeckError::Json(_)));
 }
 
 #[tokio::test]

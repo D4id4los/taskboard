@@ -146,7 +146,7 @@ pub struct PushCtx {
 ///
 /// `Ok(None)` means transport-classified (`Transport`, exhausted
 /// `RateLimited`/`Unavailable`): the caller aborts the cycle and emits no
-/// outcome for this or any later group. `Envelope` on a write is a *2xx
+/// outcome for this or any later group. `Json` on a write is a *2xx
 /// status whose body failed to decode* — the write landed, so it maps to
 /// `Applied { echo: None }` exactly like the endpoints that return no
 /// usable body at all.
@@ -171,7 +171,7 @@ pub fn classify_push(err: &DeckError, ctx: PushCtx) -> Option<PushResult> {
             rejected(SyncErrorKind::Server)
         }
         // 2xx body that failed to decode: the write succeeded.
-        DeckError::Envelope(_) => Some(PushResult::Applied { echo: None }),
+        DeckError::Json(_) => Some(PushResult::Applied { echo: None }),
         DeckError::RateLimited { .. } | DeckError::Unavailable | DeckError::Transport(_) => None,
         // The client is constructed once at boot; an invalid base URL can
         // never surface mid-cycle. Classified conservatively as a server
@@ -185,7 +185,7 @@ pub fn classify_push(err: &DeckError, ctx: PushCtx) -> Option<PushResult> {
 
 /// Classifies a read failure into the deck-agnostic cycle-failure kind
 /// (phase 4 plan §5.4). Transport-class errors (including exhausted
-/// retries) map to `Network`; a read `Envelope` failure means the server
+/// retries) map to `Network`; a read `Json` failure means the server
 /// answered 2xx with undecodable data — a server problem, not a network
 /// one.
 #[must_use]
@@ -196,7 +196,7 @@ pub fn classify_read(err: &DeckError) -> SyncErrorKind {
         }
         DeckError::Unauthorized => SyncErrorKind::Auth,
         DeckError::Forbidden => SyncErrorKind::Forbidden,
-        DeckError::BadRequest | DeckError::Envelope(_) | DeckError::NotFound => {
+        DeckError::BadRequest | DeckError::Json(_) | DeckError::NotFound => {
             SyncErrorKind::Server
         }
         DeckError::Conflict
@@ -554,9 +554,9 @@ mod tests {
             assert!(classify_push(&err, existing).is_none(), "{err:?}");
         }
         // 2xx decode failure on a write: the write landed.
-        let envelope = DeckError::Envelope(serde_json::from_str::<Card>("{bad").unwrap_err());
+        let decode_failure = DeckError::Json(serde_json::from_str::<Card>("{bad").unwrap_err());
         assert!(matches!(
-            classify_push(&envelope, existing),
+            classify_push(&decode_failure, existing),
             Some(PushResult::Applied { echo: None })
         ));
         // 404 on an existing entity: gone; on a create: not pushable.
@@ -620,9 +620,9 @@ mod tests {
             classify_read(&DeckError::Forbidden),
             SyncErrorKind::Forbidden
         );
-        let envelope = DeckError::Envelope(serde_json::from_str::<Card>("{bad").unwrap_err());
+        let decode_failure = DeckError::Json(serde_json::from_str::<Card>("{bad").unwrap_err());
         assert_eq!(
-            classify_read(&envelope),
+            classify_read(&decode_failure),
             SyncErrorKind::Server,
             "a 2xx read whose body fails to decode is a server problem"
         );

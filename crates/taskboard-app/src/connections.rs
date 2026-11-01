@@ -81,7 +81,7 @@ fn deck_variant(err: &DeckError) -> &'static str {
         DeckError::InvalidBaseUrl => "InvalidBaseUrl",
         DeckError::InvalidUpload => "InvalidUpload",
         DeckError::Transport(_) => "Transport",
-        DeckError::Envelope(_) => "Envelope",
+        DeckError::Json(_) => "Json",
         DeckError::Unauthorized => "Unauthorized",
         DeckError::Forbidden => "Forbidden",
         DeckError::NotFound => "NotFound",

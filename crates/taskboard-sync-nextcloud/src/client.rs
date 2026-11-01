@@ -1238,7 +1238,7 @@ impl DeckClient {
             )
             .await;
         let result = outcome.map(|_| ()).or_else(|err| match err {
-            DeckError::Envelope(_) => Ok(()),
+            DeckError::Json(_) => Ok(()),
             other => Err(other),
         });
         match &result {
@@ -1784,7 +1784,7 @@ mod tests {
     #[test]
     fn envelope_decode_rejects_malformed() {
         let res: Result<serde_json::Value, _> = decode_envelope(br#"{"ocs": {"meta": {}"#);
-        assert!(matches!(res, Err(DeckError::Envelope(_))));
+        assert!(matches!(res, Err(DeckError::Json(_))));
     }
 
     #[test]

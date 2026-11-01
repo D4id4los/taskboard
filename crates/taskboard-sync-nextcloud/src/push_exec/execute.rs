@@ -698,7 +698,7 @@ impl<'a> PushExecutor<'a> {
         let updated = match self.client.update_card(card_ref.board.get(), &body).await {
             Ok(updated) => updated,
             // A 2xx write whose echo failed to decode still landed.
-            Err(DeckError::Envelope(_)) => fetched.clone(),
+            Err(DeckError::Json(_)) => fetched.clone(),
             Err(err) => {
                 return classify(
                     group,
