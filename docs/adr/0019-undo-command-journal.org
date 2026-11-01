@@ -94,6 +94,14 @@ Two snapshot-based alternatives were rejected then and stay rejected:
    the habit editors) are recorded, not scheduled — v2 widening
    material (decision D20).
 
+   *2026-11-01 amendment (chunk #555):* the mechanically-invertible
+   tracking/habit rows joined the undoable catalogue — =LogTime=,
+   =AdjustTimeEntry= (unless it closes an entry), =CreateHabit=,
+   =UpdateHabit= (unless the conversion seam is addressed),
+   =MoveHabit=, =AdjustHabitLog= (unless the window row was absent);
+   =StartTracking= / =StopTracking= / =LogHabit= and the delete verbs
+   stay excluded with their recorded reasons.
+
 * Chunk-level settlements (the stage-1 plan's D1–D20, normative)
 
 - Migration *0016* =0016_command_journal.sql= (the dispatch's 0015 was
