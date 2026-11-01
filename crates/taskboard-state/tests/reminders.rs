@@ -18,9 +18,7 @@ use std::time::Duration;
 
 use taskboard_domain::NotifierMessage;
 use taskboard_domain::idgen::IdGenerator as _;
-use taskboard_domain::persistence::{
-    BoxFuture, PersistedState, PersistenceAction, RepositoryError, TaskRepository,
-};
+use taskboard_domain::persistence::{PersistedState, TaskRepository};
 use taskboard_domain::test_support::{CountingIds, InMemoryRepository};
 use taskboard_domain::{
     AdhocWhen, AppState, Board, CommandOutcome, EngineSignal, Notification, ReminderAnchor,
@@ -31,47 +29,7 @@ use taskboard_state::{EngineHandle, ReminderEngineConfig, spawn_state_engine};
 
 mod common;
 
-use common::{FixedClock, T0, ts};
-
-/// Fails the first `failures` applies, then delegates (the engine.rs
-/// `FlakyRepository`, local to this suite's durable-then-notify pin).
-#[derive(Debug)]
-struct FlakyRepository {
-    inner: InMemoryRepository,
-    remaining_failures: std::sync::atomic::AtomicU32,
-}
-
-impl FlakyRepository {
-    fn new(failures: u32, state: PersistedState) -> Self {
-        Self {
-            inner: InMemoryRepository::with_state(state),
-            remaining_failures: std::sync::atomic::AtomicU32::new(failures),
-        }
-    }
-}
-
-impl TaskRepository for FlakyRepository {
-    fn load(&self) -> BoxFuture<'_, Result<PersistedState, RepositoryError>> {
-        self.inner.load()
-    }
-
-    fn apply(&self, actions: Vec<PersistenceAction>) -> BoxFuture<'_, Result<(), RepositoryError>> {
-        Box::pin(async move {
-            let should_fail = self
-                .remaining_failures
-                .try_update(
-                    std::sync::atomic::Ordering::SeqCst,
-                    std::sync::atomic::Ordering::SeqCst,
-                    |n| (n > 0).then(|| n - 1),
-                )
-                .is_ok();
-            if should_fail {
-                return Err(RepositoryError::Unavailable);
-            }
-            self.inner.apply(actions).await
-        })
-    }
-}
+use common::{FixedClock, FlakyRepository, T0, ts};
 
 /// The enabled tick config used by the R-series: a 1 s cadence (many
 /// ticks per advance window) and an at-due implicit default.

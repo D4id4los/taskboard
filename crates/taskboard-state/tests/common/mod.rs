@@ -112,3 +112,61 @@ pub fn stranger_board_id() -> taskboard_domain::BoardId {
     }
     ids.new_board_id()
 }
+
+/// Fails the first `failures` applies with `Unavailable`, then delegates —
+/// non-mutating on failure, matching transactional reality.
+#[derive(Debug)]
+pub struct FlakyRepository {
+    inner: taskboard_domain::test_support::InMemoryRepository,
+    remaining_failures: std::sync::atomic::AtomicU32,
+}
+
+impl FlakyRepository {
+    pub fn new(failures: u32, state: PersistedState) -> Self {
+        Self {
+            inner: taskboard_domain::test_support::InMemoryRepository::with_state(state),
+            remaining_failures: std::sync::atomic::AtomicU32::new(failures),
+        }
+    }
+
+    /// Re-arms the failure injector (the edge-trigger test walks the
+    /// fail -> recover -> fail cycle).
+    pub fn rearm(&self, failures: u32) {
+        self.remaining_failures
+            .store(failures, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+impl taskboard_domain::persistence::TaskRepository for FlakyRepository {
+    fn load(
+        &self,
+    ) -> taskboard_domain::persistence::BoxFuture<
+        '_,
+        Result<PersistedState, taskboard_domain::persistence::RepositoryError>,
+    > {
+        self.inner.load()
+    }
+
+    fn apply(
+        &self,
+        actions: Vec<taskboard_domain::persistence::PersistenceAction>,
+    ) -> taskboard_domain::persistence::BoxFuture<
+        '_,
+        Result<(), taskboard_domain::persistence::RepositoryError>,
+    > {
+        Box::pin(async move {
+            let should_fail = self
+                .remaining_failures
+                .try_update(
+                    std::sync::atomic::Ordering::SeqCst,
+                    std::sync::atomic::Ordering::SeqCst,
+                    |n| (n > 0).then(|| n - 1),
+                )
+                .is_ok();
+            if should_fail {
+                return Err(taskboard_domain::persistence::RepositoryError::Unavailable);
+            }
+            self.inner.apply(actions).await
+        })
+    }
+}
