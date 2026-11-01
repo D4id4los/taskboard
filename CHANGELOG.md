@@ -117,6 +117,16 @@ The workspace carries a single global version (see `docs/architecture.org`);
 
 ### Changed
 
+- `tasks edit` and `labels edit` reject a zero-flag invocation at the
+  CLI parse boundary (#407): the previously silent fall-through typed
+  the empty changeset as a `no_op` receipt with exit 0, despite the
+  docstrings claiming an at-least-one-flag contract. A clap
+  `required = true, multiple = true` arg group over each arm's flags
+  (positional selector outside the group) now makes the bare
+  `taskboard tasks edit <task>` / `labels edit <label>` a usage error;
+  any flag combination of one or more parses as before, and an empty
+  changeset arriving programmatically is still the engine's typed
+  no-op.
 - Navigation, palette and menu curation round (GUI review round 3,
   chunk 6): the toolbar grows a Board | Today view switcher whose
   clicks route the same actions as the keyboard, with the pushed
