@@ -8474,3 +8474,82 @@ fn a_right_press_on_the_bare_board_closes_the_menu_and_opens_nothing() {
         },
     );
 }
+
+// ---- R4-F7 (r4 design D3): a left-click on a column's bare body
+// selects the stack — the body seam's left-click twin of the header.
+
+/// The empty stack: a left-click on its bare body selects it — the
+/// exact state the header journey pins (selected stack moved to the
+/// clicked column).
+#[test]
+fn a_body_left_click_on_an_empty_stack_selects_it() {
+    let (fixture, mut state) = fixture::golden_state();
+    let stack_b = fixture.stack_b;
+    state.tasks.retain(|_, task| task.stack != stack_b);
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.set_window_size(1000, 800);
+            assert_eq!(
+                harness.handle.window().get_board_model().selected_stack,
+                -1,
+                "a fresh mount pushes no selection"
+            );
+            let header = harness
+                .driver
+                .find_all_by_label("b")
+                .into_iter()
+                .find(support::driver::Element::is_accessible_button)
+                .expect("the stack-b header button is present");
+            let pos = header.absolute_position();
+            let size = header.size();
+            #[allow(clippy::cast_precision_loss)]
+            let (x, y) = (pos.x + size.width / 2.0, pos.y + size.height * 3.0);
+            harness.driver.click_at(x, y);
+            assert_eq!(
+                harness.handle.window().get_board_model().selected_stack,
+                1,
+                "the body click selected stack b"
+            );
+        },
+    );
+}
+
+/// The populated stack: a click below the last card (the pass-through
+/// region) selects the stack and focuses its first card.
+#[test]
+fn a_body_left_click_below_the_last_card_selects_and_focuses() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.set_window_size(1000, 800);
+            let header = harness
+                .driver
+                .find_all_by_label("b")
+                .into_iter()
+                .find(support::driver::Element::is_accessible_button)
+                .expect("the stack-b header button is present");
+            let pos = header.absolute_position();
+            #[allow(clippy::cast_precision_loss)]
+            let (x, y) = (pos.x + 10.0, pos.y + 250.0);
+            harness.driver.click_at(x, y);
+            assert_eq!(
+                harness.handle.window().get_board_model().selected_stack,
+                1,
+                "the below-last-card click selected stack b"
+            );
+            assert_eq!(
+                harness.emphasized_card(),
+                Some((1, 0)),
+                "the stack's first card is focused"
+            );
+        },
+    );
+}

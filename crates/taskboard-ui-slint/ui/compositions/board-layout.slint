@@ -96,6 +96,10 @@ export component BoardLayout inherits Rectangle {
     // stack's whole body, a populated stack's space below the last
     // card — routed to the same stack context menu as the header.
     callback body-context(int, float, float);
+    // The bare body's left-click (r4 D3): selects the column's stack
+    // — the header-activated seam's body twin; only the bare surface
+    // (no card, no field) falls through to it.
+    callback body-activated(int);
     // The done checkbox's toggle (r3 D6): (column, task) — the
     // adapter resolves the id tables and flips the model bit.
     callback task-done-toggled(int, int);
@@ -305,6 +309,11 @@ export component BoardLayout inherits Rectangle {
                     body-hit := TouchArea {
                         width: 100%;
                         height: 100%;
+                        // The left-click select (r4 D3): symmetric with
+                        // the header's clicked seam; bare surface only
+                        // (cards, fields and the ghost are hit-tested
+                        // first and keep their clicks).
+                        clicked => root.body-activated(column-index);
                         pointer-event(event) => {
                             if (event.kind == PointerEventKind.down
                                     && event.button == PointerEventButton.right) {

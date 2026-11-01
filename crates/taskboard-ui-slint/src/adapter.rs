@@ -3732,28 +3732,53 @@ fn focus_today_row(
     Some(task)
 }
 
+/// The stack-context arm, shared by the header and the body seams
+/// (r3 D4) so they cannot drift: resolve the column's stack, apply
+/// the selection outcomes, open the stack menu at the pointer.
+/// Stale indices are absorbed silently (the tables guard).
+fn open_stack_context(a: &mut Adapter, window: &AppWindow, column: i32, x: f32, y: f32) {
+    let Ok(column) = usize::try_from(column) else {
+        return;
+    };
+    let Some(stack) = a.tables.stack_ids.get(column).copied() else {
+        return;
+    };
+    let state = a.state.load_full();
+    let outcomes = a.view_state.select_stack(&state, stack);
+    a.apply_outcomes(window, &outcomes);
+    a.open_context_menu(window, x, y, menu::STACK_CONTEXT);
+}
+
+/// The stack card's bare-surface body seams (r3 D4 / r4 D3): the
+/// right-down context arm and the left-click select arm — one home so
+/// they cannot drift from the header's pair.
+fn install_body_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
+    let body = Rc::clone(adapter);
+    let body_weak = window.as_weak();
+    window.on_board_body_context_requested(move |column, x, y| {
+        let Some(window) = body_weak.upgrade() else {
+            return;
+        };
+        let mut a = body.borrow_mut();
+        open_stack_context(&mut a, &window, column, x, y);
+    });
+    let body_click = Rc::clone(adapter);
+    let body_click_weak = window.as_weak();
+    window.on_board_body_activated(move |column| {
+        let Some(window) = body_click_weak.upgrade() else {
+            return;
+        };
+        let mut a = body_click.borrow_mut();
+        select_column(&mut a, &window, column);
+    });
+}
+
 /// The r2 D21 object-context seams: right-click selects first (the
 /// card precedent), then opens the object's context menu at the
 /// pointer. A right-clicked non-selected board-bar segment switches
 /// to that board — "the menu addresses what you clicked" (the
 /// recorded semantics). Stale indices are absorbed silently.
 fn install_object_context_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
-    // The stack context arm, shared by the header and the body seams
-    // (r3 D4) so they cannot drift: resolve the column's stack, apply
-    // the selection outcomes, open the stack menu at the pointer.
-    // Stale indices are absorbed silently (the tables guard).
-    fn open_stack_context(a: &mut Adapter, window: &AppWindow, column: i32, x: f32, y: f32) {
-        let Ok(column) = usize::try_from(column) else {
-            return;
-        };
-        let Some(stack) = a.tables.stack_ids.get(column).copied() else {
-            return;
-        };
-        let state = a.state.load_full();
-        let outcomes = a.view_state.select_stack(&state, stack);
-        a.apply_outcomes(window, &outcomes);
-        a.open_context_menu(window, x, y, menu::STACK_CONTEXT);
-    }
     // The stack header (the regular header and the compact switcher's
     // segments share the callback).
     let header = Rc::clone(adapter);
@@ -3765,16 +3790,9 @@ fn install_object_context_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter
         let mut a = header.borrow_mut();
         open_stack_context(&mut a, &window, column, x, y);
     });
-    // The stack card's bare surface (r3 D4): the identical arm.
-    let body = Rc::clone(adapter);
-    let body_weak = window.as_weak();
-    window.on_board_body_context_requested(move |column, x, y| {
-        let Some(window) = body_weak.upgrade() else {
-            return;
-        };
-        let mut a = body.borrow_mut();
-        open_stack_context(&mut a, &window, column, x, y);
-    });
+    // The stack card's bare surface (r3 D4): context on right-down,
+    // select on left-click (r4 D3) — the two body seams, one home.
+    install_body_seams(window, adapter);
     // The board-bar segment.
     let segment = Rc::clone(adapter);
     let segment_weak = window.as_weak();
