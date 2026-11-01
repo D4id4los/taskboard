@@ -100,7 +100,11 @@ async fn run(mut cli: Cli, raw_argv: Vec<String>) -> color_eyre::Result<()> {
     // (the review-2026-10-11 regression: a `take()` inside the guard
     // swallowed it and a TTY then opened the REPL).
     let bare_invocation = cli.command.is_none();
-    let daemon_run = matches!(cli.command, Some(Command::Daemon { cmd: None }));
+    let daemon_run = matches!(cli.command, Some(Command::Daemon { cmd: None, .. }));
+    // The `--no-ipc` override (`[ipc] enabled = false` as a flag): a
+    // presence, extracted once before the `take()` — only the daemon
+    // *run* arm applies it, at the fall-through below (flag > file).
+    let daemon_no_ipc = matches!(&cli.command, Some(Command::Daemon { no_ipc: true, .. }));
     if let Some(command) = cli.command.take()
         && !daemon_run
     {
@@ -110,14 +114,7 @@ async fn run(mut cli: Cli, raw_argv: Vec<String>) -> color_eyre::Result<()> {
         // daemon's process. Handled before the transport routing; the
         // lane table pins it `Local` (never relayed).
         if matches!(command, Command::Gui) {
-            let config = match taskboard_app::migration::load_migrated(cli.config.clone()) {
-                Ok(config) => config,
-                Err(err) => {
-                    std::process::exit(i32::from(report(cli.json, &CommandError::from(err))))
-                }
-            };
-            let config_write_path = AppConfig::write_path(cli.config.clone());
-            return taskboard_app::ui::run_desktop(config, config_write_path).await;
+            return run_gui_verb(cli.config.clone(), cli.json).await;
         }
         // Transport auto-routing (ADR 0012): silent in both human and
         // JSON modes — the observable contract (exit code, stdout
@@ -132,6 +129,7 @@ async fn run(mut cli: Cli, raw_argv: Vec<String>) -> color_eyre::Result<()> {
                     Command::Status => status_command(cli.config.take(), cli.json).await,
                     Command::Daemon {
                         cmd: Some(DaemonCmd::Stop),
+                        ..
                     } => daemon_stop_command(cli.config.take(), cli.json).await,
                     // `daemon` with no subcommand is the run arm above.
                     _ => unreachable!("the IpcOnly lanes are status and daemon stop"),
@@ -241,7 +239,42 @@ async fn run(mut cli: Cli, raw_argv: Vec<String>) -> color_eyre::Result<()> {
         Ok(config) => config,
         Err(err) => std::process::exit(i32::from(report(cli.json, &CommandError::from(err)))),
     };
-    daemon_lifecycle(config, cli.config, cli.json).await
+    daemon_lifecycle(
+        apply_no_ipc_override(config, daemon_no_ipc),
+        cli.config,
+        cli.json,
+    )
+    .await
+}
+
+/// The explicit `gui` verb: frontend selection, not a command to relay
+/// or dispatch (a relay would try to open the window in the daemon's
+/// process — the lane table pins it `Local`, never relayed). Loads the
+/// config and opens the desktop window in this process.
+async fn run_gui_verb(
+    config_path: Option<std::path::PathBuf>,
+    json: bool,
+) -> color_eyre::Result<()> {
+    let config = match taskboard_app::migration::load_migrated(config_path.clone()) {
+        Ok(config) => config,
+        Err(err) => std::process::exit(i32::from(report(json, &CommandError::from(err)))),
+    };
+    let config_write_path = AppConfig::write_path(config_path);
+    taskboard_app::ui::run_desktop(config, config_write_path).await
+}
+
+/// The `--no-ipc` precedence mechanics: the file key is already decoded
+/// (default `true` when the table is absent); the flag unconditionally
+/// overwrites it after the load. There is no `--ipc` re-enable — the
+/// flag is a presence, and the file is the place for "on".
+fn apply_no_ipc_override(config: AppConfig, no_ipc: bool) -> AppConfig {
+    if no_ipc {
+        let mut config = config;
+        config.ipc.enabled = false;
+        config
+    } else {
+        config
+    }
 }
 
 /// Relays the daemon's rendered answer and exits with its code — the
