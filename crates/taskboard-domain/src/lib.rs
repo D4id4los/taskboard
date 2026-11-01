@@ -23,8 +23,15 @@
 //! ([`persistence`]) with the shared batch semantics ([`apply_actions`]),
 //! messages ([`messages`]), local command semantics ([`command`]),
 //! conflict-policy algebra ([`merge`]) and its fixed-order composition
-//! ([`pipeline`]), reminders ([`reminders`]), day boundaries
-//! ([`days`]), recurring-series rules ([`recur`]).
+//! ([`pipeline`]), push planning ([`push`]), the sidecar app-data
+//! document ([`appdata`]), probed server capabilities ([`capabilities`]),
+//! fuzzy title search ([`find`](mod@crate::find)), habit trackers
+//! ([`habit`]), the undo
+//! journal substrate ([`journal`]), the title reconcile pass
+//! ([`reconcile`]), time tracking ([`tracking`]), the undo planning
+//! layer ([`undo`]), reminders ([`reminders`]), day boundaries
+//! ([`days`]), recurring-series rules ([`recur`]). The private `verify`
+//! module holds the kani bounded-model harnesses.
 
 #![forbid(unsafe_code)]
 
