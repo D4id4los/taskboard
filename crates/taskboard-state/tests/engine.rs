@@ -30,54 +30,9 @@ use taskboard_state::{
 
 mod common;
 
-use common::{FixedClock, T0, seed_board_state, seed_bound_board_state, test_validators, ts};
-
-/// Fails the first `failures` applies with `Unavailable`, then delegates —
-/// non-mutating on failure, matching transactional reality.
-#[derive(Debug)]
-struct FlakyRepository {
-    inner: InMemoryRepository,
-    remaining_failures: std::sync::atomic::AtomicU32,
-}
-
-impl FlakyRepository {
-    fn new(failures: u32) -> Self {
-        Self {
-            inner: InMemoryRepository::with_state(seed_board_state("board")),
-            remaining_failures: std::sync::atomic::AtomicU32::new(failures),
-        }
-    }
-
-    /// Re-arms the failure injector (the edge-trigger test walks the
-    /// fail -> recover -> fail cycle).
-    fn rearm(&self, failures: u32) {
-        self.remaining_failures
-            .store(failures, std::sync::atomic::Ordering::SeqCst);
-    }
-}
-
-impl TaskRepository for FlakyRepository {
-    fn load(&self) -> BoxFuture<'_, Result<PersistedState, RepositoryError>> {
-        self.inner.load()
-    }
-
-    fn apply(&self, actions: Vec<PersistenceAction>) -> BoxFuture<'_, Result<(), RepositoryError>> {
-        Box::pin(async move {
-            let should_fail = self
-                .remaining_failures
-                .try_update(
-                    std::sync::atomic::Ordering::SeqCst,
-                    std::sync::atomic::Ordering::SeqCst,
-                    |n| (n > 0).then(|| n - 1),
-                )
-                .is_ok();
-            if should_fail {
-                return Err(RepositoryError::Unavailable);
-            }
-            self.inner.apply(actions).await
-        })
-    }
-}
+use common::{
+    FixedClock, FlakyRepository, T0, seed_board_state, seed_bound_board_state, test_validators, ts,
+};
 
 /// Delegates to an in-memory repository and records every applied batch —
 /// the observation seam for "append nothing" assertions (the domain fake
@@ -706,7 +661,7 @@ async fn a8_shutdown_drains_then_exits_when_reports_close() {
 #[tokio::test]
 async fn a9_storage_failure_reverts_nothing_and_recovers() {
     let h = spawn(Spawner {
-        repo: Arc::new(FlakyRepository::new(1)),
+        repo: Arc::new(FlakyRepository::new(1, seed_board_state("board"))),
         ..Spawner::default()
     })
     .await;
@@ -755,7 +710,7 @@ async fn a9_storage_failure_reverts_nothing_and_recovers() {
 /// successful persistence.
 #[tokio::test]
 async fn a17_storage_failed_is_edge_triggered_per_epoch() {
-    let repo = Arc::new(FlakyRepository::new(1));
+    let repo = Arc::new(FlakyRepository::new(1, seed_board_state("board")));
     let h = spawn(Spawner {
         repo: repo.clone() as Arc<dyn TaskRepository>,
         ..Spawner::default()
@@ -1796,7 +1751,7 @@ async fn engine_exits_when_all_sources_close() {
 /// engine answers the failure with `Storage`, then recovers.
 #[tokio::test]
 async fn storage_failed_is_silent_after_the_last_external_producer_dies() {
-    let repo = Arc::new(FlakyRepository::new(1));
+    let repo = Arc::new(FlakyRepository::new(1, seed_board_state("board")));
     let h = spawn(Spawner {
         repo: repo.clone() as Arc<dyn TaskRepository>,
         ..Spawner::default()
@@ -3123,13 +3078,10 @@ async fn storage_failure_defers_the_roll_until_it_heals() {
     // the watermark did not advance — the healed next tick rolls the
     // same day.
     let clock = FixedClock::new(DAY0);
-    let repo = Arc::new(FlakyRepository {
-        inner: InMemoryRepository::with_state(seed_series_state(
-            Some(DAY0 - 86_400 + 32_400),
-            None,
-        )),
-        remaining_failures: std::sync::atomic::AtomicU32::new(1),
-    });
+    let repo = Arc::new(FlakyRepository::new(
+        1,
+        seed_series_state(Some(DAY0 - 86_400 + 32_400), None),
+    ));
     let (system_tx, boot_rx) = tokio::sync::broadcast::channel::<SystemEvent>(8);
     // Subscribe before the spawn, and keep a strong sender alive: the
     // engine holds the seam only as a `WeakSender`, so the test owns the
