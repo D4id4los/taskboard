@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 38bf3a34211eec332e916333f5b9e9de3090665ba1e898e4181994c12192e05c # shrinks to widths = [1, 1, 1, 1, 245], boundary = 3, delta = -1, mins = [0, 0, 0, 0, 0, 0]
+cc b39f6d4996b03f97e7dc9e3bb4daf44debfe9237df2d34b2d0ea7ce9eefcf3d7 # shrinks to (row_w, stored, mins) = (1, [None, None], [1, 2]), extra = 4
+cc bec2ee987009cd371c541212183ffcdc9e5652c3f5dd9de11c673a2f603b435e # shrinks to (row_w, stored, mins) = (26, [None, Some(48)], [5, 22])
