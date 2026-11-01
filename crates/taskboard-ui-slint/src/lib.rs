@@ -24,6 +24,7 @@ pub mod adapter;
 pub mod board_presets;
 pub mod due_edit;
 pub mod fonts;
+pub mod geometry;
 pub mod keymap;
 pub mod menu;
 pub mod models;
@@ -111,6 +112,13 @@ pub struct UiSettings {
     /// contract, nothing reads config mid-flight. Defaults to the
     /// presentation constant (the pre-config behaviour).
     pub due_soon_horizon: chrono::TimeDelta,
+    /// The device-local main-window geometry (#412): the minted
+    /// restore value (`None` = today's default placement — a refused
+    /// or absent stored value never blocks UI start). The mount
+    /// applies it to the OS window on the desktop profile only; the
+    /// kiosk hand-over carries it too but the fullscreen arm owns the
+    /// window (the structural bypass, D6).
+    pub window_geometry: Option<geometry::WindowGeometry>,
     /// The kiosk display-mode rotation (K13, issue #363): minted
     /// app-side from the validated `[kiosk.rotation]` table — the
     /// hand-over carries typed values only. `None` is no rotation:
@@ -126,6 +134,7 @@ impl Default for UiSettings {
             startup: adapter::StartupWarnings::default(),
             kiosk: false,
             kiosk_rotation: None,
+            window_geometry: None,
             stack_widths: BTreeMap::new(),
             connectors: Vec::new(),
             boards: Vec::new(),
