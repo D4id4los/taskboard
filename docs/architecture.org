@@ -411,8 +411,14 @@ dependency hierarchies.
    channels, publishing, and sequencing only. Dependencies: see the
    crate's =Cargo.toml=.
 
-3. *taskboard-sync-nextcloud* — The sync actor (ADR 0007): a scheduled
-   cycle that reads the engine's persisted state through the domain's
+3. *taskboard-sync-nextcloud* — The sync actor (ADR 0007): roughly
+   two-fifths of the crate (3 100 of 8 200 production src lines) is a
+   general Deck wire client (=client.rs= plus =model.rs=, =color.rs=,
+   =ocs.rs=, =backoff.rs=, =error.rs=: boards/stacks/cards/labels/
+   attachments CRUD with its own hermetic contract tier), which the
+   actor half consumes through that surface; the actor half is a
+   scheduled cycle that reads the engine's persisted state through the
+   domain's
    =SyncStateReader= port (never direct SQL, ADR 0005), pushes the
    coalesced outbox via the pure =plan_pushes= planner + push executor
    (binding overlay, fetch-before-write, typed error classification;

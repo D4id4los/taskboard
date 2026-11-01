@@ -6,7 +6,7 @@ rust-version.workspace = true
 authors.workspace = true
 repository.workspace = true
 license = "MIT OR Apache-2.0"
-description = "Nextcloud WebDAV/REST synchronization client actor for taskboard"
+description = "Nextcloud Deck REST synchronization client actor for taskboard"
 
 [dependencies]
 taskboard-domain.workspace = true
