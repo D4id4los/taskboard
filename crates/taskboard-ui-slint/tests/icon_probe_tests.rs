@@ -25,7 +25,7 @@ const CELL: u32 = 44;
 const PITCH: u32 = 48;
 const ORIGIN: u32 = 8;
 const WINDOW_WIDTH: u32 = 392;
-const WINDOW_HEIGHT: u32 = 224;
+const WINDOW_HEIGHT: u32 = 372;
 
 // The probe's expected tints and backgrounds — the theme palette
 // values `tests/icon_probe.slint` names (the tone map's outputs in
@@ -230,6 +230,33 @@ fn p4_the_button_box_interior_carries_the_glyph() {
         let rect = (8, 172, 32, 32);
         let count = glyph_pixels(snapshot, rect, TINTS_ROW_A[0], BACKGROUND);
         assert!(count > 0, "the inlined button box renders no glyph pixels");
+    });
+}
+
+/// P6 — the kinds wall: every vendored asset decodes and colorizes —
+/// one cell per file (the plan §1 mapping-table order, 8 cells per
+/// row), each carrying glyph pixels. A blank cell means that asset
+/// fails to decode or tint.
+#[test]
+fn p6_every_vendored_asset_renders_glyph_pixels() {
+    run_probe(|_window, snapshot| {
+        let wall_rows: [u32; 3] = [224, 272, 320];
+        let counts_per_row = [8usize, 8, 3];
+        let mut index = 0usize;
+        for (row, y) in wall_rows.iter().enumerate() {
+            for column in 0..counts_per_row[row] {
+                #[allow(clippy::cast_possible_truncation)] // the wall grid
+                let rect = cell_rect(column as u32, *y);
+                let count = ink_pixels(snapshot, rect, BACKGROUND);
+                assert!(
+                    count > 0,
+                    "kind-wall cell {index} (row {row}, column {column}): \
+                     no glyph ink — the asset fails to decode or tint"
+                );
+                index += 1;
+            }
+        }
+        assert_eq!(index, 19, "the wall covers the whole vendored set");
     });
 }
 

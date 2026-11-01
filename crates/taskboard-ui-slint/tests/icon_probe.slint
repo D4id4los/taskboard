@@ -5,7 +5,10 @@
 // post-swap icon-box shape, (ii) as a tone ladder — all 8 `Tone`s of
 // the tone map on `Theme.background`, plus the neutral hover-lift pair
 // on both `Theme.background` and `Theme.surface-raised` — and
-// (iii) at three sizes (0.5/1.0/3.0 × the icon edge). The cell grid
+// (iii) at three sizes (0.5/1.0/3.0 × the icon edge), plus (iv) the
+// kinds wall: one cell per vendored asset — every file's decode +
+// colorize evidence in one image (the vocabulary wall the review can
+// eyeball). The cell grid
 // is absolutely positioned; `icon_probe_tests.rs` mirrors the same
 // grid in base-px constants (CELL 44, PITCH 48, ORIGIN 8, rows at
 // y 8/60/112, the button box at (8, 172) — `Theme` is at its
@@ -23,6 +26,7 @@ component ProbeCell inherits Rectangle {
     in property <color> cell-bg;
     in property <color> tint;
     in property <length> edge: Theme.space-3;
+    in property <image> source: @image-url("../ui/assets/icons/check.svg");
     width: Theme.space-7 - Theme.space-1;
     height: Theme.space-7 - Theme.space-1;
     background: cell-bg;
@@ -32,7 +36,7 @@ component ProbeCell inherits Rectangle {
         y: (parent.height - self.height) / 2;
         width: edge;
         height: edge;
-        source: @image-url("../ui/assets/icons/check.svg");
+        source: parent.source;
         colorize: tint;
     }
 }
@@ -59,7 +63,7 @@ component ButtonBoxCell inherits Rectangle {
 
 export component IconProbeWindow inherits Window {
     width: Theme.space-7 * 8 + Theme.space-2;
-    height: Theme.space-7 * 4 + Theme.space-2 * 4;
+    height: Theme.space-7 * 7 + Theme.space-5 + Theme.space-3;
     background: Theme.background;
 
     // Row A (y = space-2): the tone ladder — the 8 `Tone`s of the
@@ -91,4 +95,30 @@ export component IconProbeWindow inherits Window {
     // Row D (y = space-7 * 3 + space-5 + space-1): the inlined
     // post-swap button box.
     ButtonBoxCell { x: Theme.space-2; y: Theme.space-7 * 3 + Theme.space-5 + Theme.space-1; }
+
+    // The kinds wall (y = space-7 * 4 + space-2 * 4 onward): one cell
+    // per vendored asset, in the plan §1 mapping-table order. The
+    // mapping totality test (commit 3) pins the enum↔file pairing;
+    // this wall is each file's decode + tint evidence.
+    ProbeCell { x: Theme.space-2;                   y: Theme.space-7 * 4 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; source: @image-url("../ui/assets/icons/menu.svg"); }
+    ProbeCell { x: Theme.space-2 + Theme.space-7;     y: Theme.space-7 * 4 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; source: @image-url("../ui/assets/icons/clock.svg"); }
+    ProbeCell { x: Theme.space-2 + Theme.space-7 * 2; y: Theme.space-7 * 4 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; source: @image-url("../ui/assets/icons/bell.svg"); }
+    ProbeCell { x: Theme.space-2 + Theme.space-7 * 3; y: Theme.space-7 * 4 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; source: @image-url("../ui/assets/icons/triangle-alert.svg"); }
+    ProbeCell { x: Theme.space-2 + Theme.space-7 * 4; y: Theme.space-7 * 4 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; source: @image-url("../ui/assets/icons/plus.svg"); }
+    ProbeCell { x: Theme.space-2 + Theme.space-7 * 5; y: Theme.space-7 * 4 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; source: @image-url("../ui/assets/icons/chevron-left.svg"); }
+    ProbeCell { x: Theme.space-2 + Theme.space-7 * 6; y: Theme.space-7 * 4 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; source: @image-url("../ui/assets/icons/x.svg"); }
+    ProbeCell { x: Theme.space-2 + Theme.space-7 * 7; y: Theme.space-7 * 4 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; source: @image-url("../ui/assets/icons/minus.svg"); }
+
+    ProbeCell { x: Theme.space-2;                   y: Theme.space-7 * 5 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; source: @image-url("../ui/assets/icons/chevron-right.svg"); }
+    ProbeCell { x: Theme.space-2 + Theme.space-7;     y: Theme.space-7 * 5 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; source: @image-url("../ui/assets/icons/calendar.svg"); }
+    ProbeCell { x: Theme.space-2 + Theme.space-7 * 2; y: Theme.space-7 * 5 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; source: @image-url("../ui/assets/icons/check.svg"); }
+    ProbeCell { x: Theme.space-2 + Theme.space-7 * 3; y: Theme.space-7 * 5 + Theme.space-2; cell-bg: Theme.background; tint: Theme.text-secondary; source: @image-url("../ui/assets/icons/play.svg"); }
+    ProbeCell { x: Theme.space-2 + Theme.space-7 * 4; y: Theme.space-7 * 5 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; source: @image-url("../ui/assets/icons/square.svg"); }
+    ProbeCell { x: Theme.space-2 + Theme.space-7 * 5; y: Theme.space-7 * 5 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; source: @image-url("../ui/assets/icons/circle-x.svg"); }
+    ProbeCell { x: Theme.space-2 + Theme.space-7 * 6; y: Theme.space-7 * 5 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; source: @image-url("../ui/assets/icons/timer.svg"); }
+    ProbeCell { x: Theme.space-2 + Theme.space-7 * 7; y: Theme.space-7 * 5 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; source: @image-url("../ui/assets/icons/link.svg"); }
+
+    ProbeCell { x: Theme.space-2;                   y: Theme.space-7 * 6 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; source: @image-url("../ui/assets/icons/unlink.svg"); }
+    ProbeCell { x: Theme.space-2 + Theme.space-7;     y: Theme.space-7 * 6 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; source: @image-url("../ui/assets/icons/chevron-down.svg"); }
+    ProbeCell { x: Theme.space-2 + Theme.space-7 * 2; y: Theme.space-7 * 6 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; source: @image-url("../ui/assets/icons/pencil.svg"); }
 }
