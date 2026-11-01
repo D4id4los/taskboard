@@ -852,22 +852,57 @@ fn push_chrome(
     mutations
 }
 
-/// The per-column `width-px` model value (round-1 D16): the user-set
-/// stored logical px converted to rendered px (`× base-scale`), or the
-/// `−1.0` auto sentinel — never-resized boards push the sentinel on
-/// every column, so the markup's conditional clamps never engage.
-#[must_use]
-pub fn stack_width_px(
-    board: Option<BoardId>,
-    stack: StackId,
-    vs: &ViewState,
-    base_scale: f32,
-) -> f32 {
-    let stored = board.and_then(|board| vs.stack_width(board, stack));
-    match stored {
-        #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
-        Some(px) => px as f32 * base_scale.max(0.0),
-        None => -1.0,
+/// The resolved board row (r4 D5, chunk-2 plan §1.2): the live stacks,
+/// their content minimums and their resolved rendered widths — Σ
+/// widths == the row width whenever the minimums fit. One assembly,
+/// three readers (the models push, the drag press, the keyboard
+/// route); no second derivation.
+pub(crate) struct BoardRow {
+    /// The tables-order stack ids.
+    pub stacks: Vec<StackId>,
+    /// The resolved rendered px per column, Σ == row width.
+    pub widths: Vec<u32>,
+    /// The content minimums, rendered px (§4).
+    pub mins: Vec<u32>,
+}
+
+/// Assembles the board row (r4 D5): the row width is the window width
+/// minus the chrome derived from the Theme globals — the row's 2·
+/// space-3 side padding, the n inter-child gaps (n columns plus the
+/// add-column affordance), and the affordance's space-6 + space-2 —
+/// floored at 0. Stored widths are logical px, converted ×scale here
+/// (the one conversion rule, chunk-2 plan §1.1).
+pub(crate) fn board_row(window: &AppWindow, state: &AppState, vs: &ViewState) -> BoardRow {
+    let theme = window.global::<Theme>();
+    let scale = f64::from(theme.get_base_scale());
+    let stacks = vs.stack_ids(state);
+    let count = stacks.len();
+    let space_3 = f64::from(theme.get_space_3());
+    let affordance = f64::from(theme.get_space_6()) + f64::from(theme.get_space_2());
+    #[allow(clippy::cast_precision_loss)] // a column count
+    let chrome = 2.0 * space_3 + space_3 * count as f64 + affordance;
+    let row_w = (f64::from(window.get_window_w()) - chrome).max(0.0);
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let row_w = row_w as u32;
+    let stored: Vec<Option<u32>> = stacks
+        .iter()
+        .map(|stack| vs.board().and_then(|board| vs.stack_width(board, *stack)))
+        .collect();
+    let mins: Vec<u32> = stacks
+        .iter()
+        .map(|stack| {
+            let chars = state
+                .stacks
+                .get(stack)
+                .map_or(0, |stack| stack.title.chars().count());
+            crate::widths::content_min_px(chars, scale)
+        })
+        .collect();
+    let widths = crate::widths::resolve_row(row_w, &stored, &mins);
+    BoardRow {
+        stacks,
+        widths,
+        mins,
     }
 }
 
@@ -888,11 +923,14 @@ fn push_board(
     models: &mut PushModels,
 ) -> usize {
     let flow = vs.flow().clone();
-    let scale = window.global::<Theme>().get_base_scale();
     let tracked_task = presentation::tracking_open_task(state);
+    // The resolved explicit-width row (r4 D5): one assembly, pushed
+    // column by column below. Its reads (Theme scale, window width)
+    // live inside `board_row`.
+    let row = board_row(window, state, vs);
     let mut mutations = 0;
     let mut columns: Vec<StackColumnModel> = Vec::with_capacity(stack_ids.len());
-    for stack_id in stack_ids {
+    for (column_index, stack_id) in stack_ids.iter().enumerate() {
         let stack = &state.stacks[stack_id];
         let tasks = state.tasks_in_stack(*stack_id);
         let mut task_ids = Vec::with_capacity(tasks.len());
@@ -929,7 +967,14 @@ fn push_board(
             // mount-only rule — the field reads it at init).
             rename_open: matches!(&flow, Flow::RenameStack { stack } if stack == stack_id),
             initial_title: SharedString::from(stack.title.clone()),
-            width_px: stack_width_px(vs.board(), *stack_id, vs, scale),
+            // The resolved rendered width of this column for this pass
+            // (r4 D5) — always ≥ its content minimum, never a sentinel.
+            // A px value, far below f32's mantissa reach.
+            width_px: {
+                #[allow(clippy::cast_precision_loss)]
+                let px = row.widths[column_index] as f32;
+                px
+            },
         });
     }
     mutations += diff_rows(models.columns.get_or_insert_with(Rc::default), &columns);
@@ -1641,30 +1686,6 @@ mod tests {
         assert_eq!(tables.board_task(column, row), Some((stack0, b)));
     }
 
-    /// T-5 — the model sentinel: a set column carries the scaled user
-    /// width, an unset one the `−1.0` auto sentinel (the goldens'
-    /// auto-layout guarantee rides on it).
-    #[test]
-    fn stack_width_px_scales_set_columns_and_sends_the_auto_sentinel() {
-        let board = BoardId::from_uuid(uuid::Uuid::now_v7());
-        let set = StackId::from_uuid(uuid::Uuid::now_v7());
-        let unset = StackId::from_uuid(uuid::Uuid::now_v7());
-        let mut vs = ViewState::default();
-        vs.set_stack_width(board, set, 240);
-        assert_eq!(stack_width_px(Some(board), set, &vs, 2.0), 480.0);
-        assert_eq!(stack_width_px(Some(board), unset, &vs, 2.0), -1.0);
-        assert_eq!(
-            stack_width_px(None, set, &vs, 2.0),
-            -1.0,
-            "no board, no width"
-        );
-        assert_eq!(
-            stack_width_px(Some(board), set, &vs, 0.5),
-            120.0,
-            "sub-unity scales shrink the rendered value"
-        );
-    }
-
     fn task() -> Task {
         Task {
             id: TaskId::from_uuid(uuid::Uuid::now_v7()),
@@ -1840,7 +1861,7 @@ mod tests {
             create_open: false,
             rename_open: false,
             initial_title: "a".into(),
-            width_px: -1.0,
+            width_px: 0.0,
         };
         let model = VecModel::from(vec![column.clone()]);
         assert_eq!(

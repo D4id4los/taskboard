@@ -38,7 +38,7 @@ export component BoardView inherits FocusScope {
     // (r3 D3).
     in property <[string]> task-create-hint;
     // The drag seams (round-1 D17), threaded window → view → layout.
-    callback stack-width-press(int, float);
+    callback stack-width-press(int);
     callback stack-width-drag(int, float);
     callback stack-width-release(int);
     callback board-bar-activated(int);
@@ -117,7 +117,7 @@ export component BoardView inherits FocusScope {
                 stack-header-hint: root.stack-header-hint;
                 stack-create-hint: root.stack-create-hint;
                 task-create-hint: root.task-create-hint;
-                stack-width-press(c, w) => root.stack-width-press(c, w);
+                stack-width-press(c) => root.stack-width-press(c);
                 stack-width-drag(c, d) => root.stack-width-drag(c, d);
                 stack-width-release(c) => root.stack-width-release(c);
                 board-bar-activated(i) => root.board-bar-activated(i);

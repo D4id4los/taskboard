@@ -68,11 +68,10 @@ export struct StackColumnModel {
     // the seeded buffer (the mount-only initial-text rule).
     rename-open: bool,
     initial-title: string,
-    // The user-set rendered column width (round-1 D16); ≤ 0 = auto —
-    // the conditional layout clamps below never engage and the column
-    // keeps the untouched distribution (the goldens' auto-layout
-    // guarantee). Rust-authoritative: pushed by the models, never
-    // owned by a slint binding during a drag.
+    // The resolved rendered width of this column for this pass (r4
+    // D5) — always ≥ its content minimum, never a sentinel.
+    // Rust-authoritative: pushed by the models, never owned by a slint
+    // binding during a drag.
     width-px: length,
 }
 
@@ -126,11 +125,12 @@ export component BoardLayout inherits Rectangle {
     // The task.create binding hint for the add-task ghost tooltips
     // (r3 D3).
     in property <[string]> task-create-hint;
-    // The drag seams (round-1 D17): press captures the pre-drag base
-    // width, drag reports the absolute delta since press (idempotent
+    // The divider seams (r4 D6): press materializes the resolved row
+    // and captures the boundary (addressed by its left column's
+    // index), drag reports the absolute delta since press (idempotent
     // against dropped events), release persists. Button-agnostic — a
     // dedicated handle cannot conflict with card clicks.
-    callback stack-width-press(int, float);
+    callback stack-width-press(int);
     callback stack-width-drag(int, float);
     callback stack-width-release(int);
     // The pointer drag-to-move seams (r2 chunk-8, D-E/D-F): a card's
@@ -289,13 +289,12 @@ export component BoardLayout inherits Rectangle {
                     return event.proposed-action;
                 }
                 // The layout constraints live on the DropArea (the
-                // row's child); the card fills it (D1's floor, the
-                // solver perturbation caution — unchanged semantics).
-                min-width: column.width-px > 0 * Theme.space-1
-                    ? column.width-px
-                    : 0 * Theme.space-1;
-                horizontal-stretch: 1;
-                max-width: root.width;
+                // row's child); the card fills it. The explicit width
+                // (r4 D5): the row renders resolved pixel widths that
+                // sum to the row — the stretch machinery dies on this
+                // row, so a divider drag moves exactly the two columns
+                // at the boundary.
+                width: column.width-px;
                 card := Rectangle {
                     width: 100%;
                     height: 100%;
@@ -394,32 +393,6 @@ export component BoardLayout inherits Rectangle {
                                             self.width, self.height);
                                     } else {
                                         TooltipState.unhover();
-                                    }
-                                }
-                            }
-                            // The column resize handle (round-1 D17): the builtin
-                            // tableview's exact pattern — a 10 px-wide TouchArea
-                            // with the ew-resize cursor at the column's right
-                            // edge (the inter-column gap visually belongs to
-                            // it). Full header height.
-                            resize-handle := TouchArea {
-                                x: parent.width - self.width;
-                                width: Theme.resize-handle-width;
-                                height: 100%;
-                                mouse-cursor: ew-resize;
-                                pointer-event(event) => {
-                                    if (event.kind == PointerEventKind.down) {
-                                        root.stack-width-press(column-index,
-                                            column-body.width / 1px);
-                                    }
-                                    if (event.kind == PointerEventKind.up) {
-                                        root.stack-width-release(column-index);
-                                    }
-                                }
-                                moved => {
-                                    if (self.pressed) {
-                                        root.stack-width-drag(column-index,
-                                            (self.mouse-x - self.pressed-x) / 1px);
                                     }
                                 }
                             }
@@ -634,6 +607,52 @@ export component BoardLayout inherits Rectangle {
                                     glyph-color: add-task-hit.has-hover ? Theme.text-primary : Theme.text-secondary;
                                 }
                             }
+                        }
+                    }
+                }
+                // The boundary divider (r4 D6): one full-height handle
+                // per boundary (none after the last column), straddling
+                // the edge — the tableview hit model (Excel/Calc,
+                // Explorer/Dolphin): grab anywhere along the column
+                // edge, not just the header row. Declared after `card`
+                // so it hit-tests first; the 5 px strip overlays the
+                // card surface's right edge, so card clicks there start
+                // a resize (the recorded Excel-parity trade — preferred
+                // over pixel-precise header aiming). No tooltip and no
+                // tab stop (recorded deviation, chunk-2 plan §2): the
+                // operation is fully keyboard-owned through
+                // stack.wider/stack.narrower on the focused column —
+                // the divider is a pointer accelerator over an existing
+                // accessible verb. A child TouchArea hit-tests before
+                // the `DropArea` parent, so card drag-to-move keeps
+                // working everywhere else (D-H untouched).
+                if (column-index < root.stacks.length - 1): divider := TouchArea {
+                    x: parent.width - self.width / 2;
+                    width: Theme.resize-handle-width;
+                    height: 100%;
+                    mouse-cursor: ew-resize;
+                    // The affordance line (chunk-2 plan §2): the D15
+                    // focus-ring token reuse — visible at hover, full
+                    // opacity while pressed (the min-stick reads).
+                    Rectangle {
+                        x: (parent.width - self.width) / 2;
+                        width: 2px * Theme.base-scale;
+                        height: 100%;
+                        background: Semantic.focus-ring;
+                        opacity: divider.pressed ? 1.0 : (divider.has-hover ? 0.6 : 0.0);
+                    }
+                    pointer-event(event) => {
+                        if (event.kind == PointerEventKind.down) {
+                            root.stack-width-press(column-index);
+                        }
+                        if (event.kind == PointerEventKind.up) {
+                            root.stack-width-release(column-index);
+                        }
+                    }
+                    moved => {
+                        if (self.pressed) {
+                            root.stack-width-drag(column-index,
+                                (self.mouse-x - self.pressed-x) / 1px);
                         }
                     }
                 }

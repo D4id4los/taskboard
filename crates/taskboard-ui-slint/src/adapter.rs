@@ -206,11 +206,13 @@ pub(crate) struct Adapter {
     /// refresh pass diffs the desired rows onto them, so unchanged
     /// refreshes notify nothing.
     models: crate::models::PushModels,
-    /// The active column drag (round-1 D17): the dragged stack and the
-    /// pre-drag base width in rendered px, captured at press. The
-    /// drag deltas are absolute since press — idempotent against
-    /// dropped events.
-    width_drag: Option<(StackId, f32)>,
+    /// The active column drag (r4 D6): the boundary's left and right
+    /// stacks plus the pre-drag base width of the left column in
+    /// rendered px, captured at press (the press materializes the
+    /// resolved row, so the base is the sum-exact anchor). The drag
+    /// deltas are absolute since press — idempotent against dropped
+    /// events.
+    width_drag: Option<(StackId, StackId, f32)>,
     /// The active scale-slider gesture (r2 D29): the pre-gesture
     /// base-scale — the revert point. Mirrors `width_drag`.
     scale_drag: Option<f64>,
@@ -735,69 +737,6 @@ impl Adapter {
         window.global::<Responsive>().get_current_breakpoint() == Breakpoint::Compact
     }
 
-    /// The keyboard resize's rendered-px ceiling (round-1 D18): the
-    /// window width minus the *other* live columns' effective minimums
-    /// (user width if set, else the floor) minus the row's fixed
-    /// furniture (one `space-3` gap per inter-column boundary plus the
-    /// add-column affordance's `space-6 + space-2`). All values are
-    /// rendered slint px — the space `window-w` and the drag deltas
-    /// share.
-    fn stack_width_ceiling(&self, state: &AppState, window: &AppWindow) -> u32 {
-        let target = self.view_state.keyboard_resize_target(state);
-        self.stack_width_ceiling_excluding(state, window, target)
-    }
-
-    /// [`Self::stack_width_ceiling`] over an explicit excluded column
-    /// (the drag path excludes the dragged column, which need not be
-    /// the keyboard target).
-    fn stack_width_ceiling_excluding(
-        &self,
-        state: &AppState,
-        window: &AppWindow,
-        excluded: Option<StackId>,
-    ) -> u32 {
-        use crate::widths::STACK_WIDTH_READABILITY_MIN_PX;
-        // The furniture tokens are Theme constants — logical px scaled
-        // by the root multiplier the window already carries (reading
-        // `base-scale`, not slint lengths).
-        let scale = f64::from(window.global::<crate::Theme>().get_base_scale());
-        let stack_ids = self.view_state.stack_ids(state);
-        let board = self.view_state.board();
-        let count = stack_ids.len();
-        let gaps = count.saturating_sub(1);
-        #[allow(clippy::cast_precision_loss)] // a px sum, far below f64 mantissa reach
-        let chrome: f64 = scale * (12.0 * gaps as f64 + 32.0 + 8.0);
-        let others: u64 = stack_ids
-            .iter()
-            .filter(|stack| Some(**stack) != excluded)
-            .map(|stack| {
-                // The stored widths are logical px — the same
-                // `× base-scale` conversion the model push applies
-                // (`stack_width_px`); everything in this sum is
-                // rendered px, like `window_w` and `chrome`.
-                #[allow(clippy::cast_precision_loss)] // a px value
-                let effective = scale
-                    * f64::from(
-                        board
-                            .and_then(|board| self.view_state.stack_width(board, *stack))
-                            .unwrap_or(STACK_WIDTH_READABILITY_MIN_PX),
-                    );
-                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-                u64::from(effective.max(0.0) as u32)
-            })
-            .sum();
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let window_w = (f64::from(window.get_window_w()).max(0.0)) as u32;
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let chrome_px = chrome.max(0.0) as u32;
-        let room = i64::from(window_w)
-            - i64::from(u32::try_from(others).unwrap_or(u32::MAX))
-            - i64::from(chrome_px);
-        u32::try_from(room)
-            .unwrap_or(0)
-            .max(STACK_WIDTH_READABILITY_MIN_PX)
-    }
-
     /// The per-kind settle, adapter side (round-3 W-SM-b, plan §2):
     /// the pure [`ViewState::settle_flow`] rule applied, plus the
     /// adapter-owned attachments — the due picker dies with the due
@@ -905,8 +844,8 @@ impl Adapter {
 
     #[cfg(test)]
     #[allow(dead_code)]
-    pub(crate) fn arm_width_drag(&mut self, stack: StackId) {
-        self.width_drag = Some((stack, 100.0));
+    pub(crate) fn arm_width_drag(&mut self, left: StackId, right: StackId) {
+        self.width_drag = Some((left, right, 100.0));
     }
 
     #[cfg(test)]
@@ -1086,9 +1025,23 @@ impl Adapter {
                 } else {
                     -1
                 };
-                let ceiling = self.stack_width_ceiling(&state, window);
-                self.view_state
-                    .resize_focused_stack(&state, direction, ceiling)
+                // The resolved row plus the scaled step (r4 D8): the
+                // same assembly the models push reads — one derivation.
+                let row = crate::models::board_row(window, &state, &self.view_state);
+                let scale = f64::from(window.global::<crate::Theme>().get_base_scale()).max(0.001);
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let step = (f64::from(crate::widths::STACK_WIDTH_STEP_PX) * scale).round() as i64;
+                self.view_state.resize_focused_stack(
+                    &state,
+                    direction,
+                    &crate::view_state::RowStep {
+                        stacks: &row.stacks,
+                        widths: &row.widths,
+                        mins: &row.mins,
+                        step,
+                        scale,
+                    },
+                )
             }
             // Round 2 (D17/D20): the stack wrap-walk and the first/last
             // jumps — pure view state, the BoardNext precedent.
@@ -3184,6 +3137,7 @@ pub(crate) fn install(
         // unscaled Rust mapping lands in the `Responsive` global
         // (widths `<= 0` are ignored inside the mapping — the null
         // platform reports 0×0).
+        let adapter = Rc::clone(&adapter);
         let weak = window.as_weak();
         window.on_window_width_changed(move |width: f32| {
             let Some(window) = weak.upgrade() else {
@@ -3194,6 +3148,15 @@ pub(crate) fn install(
             window
                 .global::<crate::Responsive>()
                 .set_current_breakpoint(breakpoint);
+            // The explicit-width row re-resolves on every window width
+            // change (r4 D5): the pushed numbers go stale the moment
+            // the window moves a pixel, and `refresh()`'s `Arc::ptr_eq`
+            // guard cannot see width changes — the input lives outside
+            // the state Arc, exactly the forced set's charter. One
+            // forced diff pass per width event during a live window
+            // drag; the diff carries only `width_px` scalars (the
+            // kiosk's window never resizes in service).
+            adapter.borrow_mut().refresh_forced(&window);
         });
     }
     install_view_seams(window, &adapter);
@@ -3299,27 +3262,53 @@ fn install_habit_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     });
 }
 
-/// The column resize drag seams (round-1 D17): press captures the
-/// pre-drag base width against the addressed stack, drag clamps
-/// base+delta into the live bounds and re-renders (the models push the
-/// new width), release persists the full snapshot over the request
-/// lane. A stale column index against an older tables pass is absorbed
-/// silently (the `board_target` precedent).
+/// The column resize divider seams (r4 D6): press materializes the
+/// resolved row into the view-state overlay and captures the boundary
+/// (left stack, right stack, rendered base of the left column), drag
+/// moves exactly the pair at the boundary (the pure
+/// [`crate::widths::drag_boundary`]) and re-renders, release persists
+/// the full snapshot over the request lane. A stale column index
+/// against an older tables pass is absorbed silently (the
+/// `board_target` precedent).
 fn install_stack_width_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     let press = Rc::clone(adapter);
     let press_weak = window.as_weak();
-    window.on_board_stack_width_press(move |column, base| {
-        if press_weak.upgrade().is_none() {
+    window.on_board_stack_width_press(move |column| {
+        let Some(window) = press_weak.upgrade() else {
             return;
-        }
+        };
         let Ok(column) = usize::try_from(column) else {
             return;
         };
         let mut a = press.borrow_mut();
-        let Some(stack) = a.tables.stack_ids.get(column).copied() else {
+        let Some(&left) = a.tables.stack_ids.get(column) else {
             return;
         };
-        a.width_drag = Some((stack, base));
+        let Some(board) = a.view_state.board() else {
+            return;
+        };
+        let row = crate::models::board_row(&window, &a.state.load(), &a.view_state);
+        // A boundary needs a right column; the last column has no
+        // divider (the markup's conditional hides it anyway).
+        let Some(&right) = row.stacks.get(column + 1) else {
+            return;
+        };
+        let scale = f64::from(window.global::<crate::Theme>().get_base_scale()).max(0.001);
+        // Press materializes the resolved row into the view-state
+        // overlay (chunk-2 plan §7.2): from here the gesture runs on a
+        // total, sum-exact basis — untouched columns cannot wiggle
+        // mid-gesture and the released boundary cannot jump when the
+        // next derive re-fits the row. View-state only; release still
+        // sends the lane's one request.
+        for (stack, &width) in row.stacks.iter().zip(&row.widths) {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let stored = (f64::from(width) / scale).round() as i64;
+            a.view_state
+                .set_stack_width(board, *stack, u32::try_from(stored).unwrap_or(u32::MAX));
+        }
+        #[allow(clippy::cast_possible_truncation)] // a px value
+        let base = f64::from(row.widths[column]) as f32;
+        a.width_drag = Some((left, right, base));
     });
     let drag = Rc::clone(adapter);
     let drag_weak = window.as_weak();
@@ -3331,35 +3320,40 @@ fn install_stack_width_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>)
             return;
         };
         let mut a = drag.borrow_mut();
-        let Some((stack, base)) = a.width_drag else {
+        let Some((left, right, base)) = a.width_drag else {
             return;
         };
         // A tables pass that reordered the columns makes the index
         // stale: only proceed when it still addresses the dragged
-        // stack.
-        if a.tables.stack_ids.get(column) != Some(&stack) {
+        // boundary's left column (the right StackId rides in the
+        // buffer and needs no re-check against the row below).
+        if a.tables.stack_ids.get(column) != Some(&left) {
             return;
         }
         let Some(board) = a.view_state.board() else {
             return;
         };
+        let row = crate::models::board_row(&window, &a.state.load(), &a.view_state);
+        let Some(boundary) = row.stacks.iter().position(|stack| *stack == left) else {
+            return;
+        };
+        if row.stacks.get(boundary + 1) != Some(&right) {
+            return;
+        }
+        let requested = f64::from(base) + f64::from(delta);
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let d = (requested - f64::from(row.widths[boundary])).round() as i64;
+        let next = crate::widths::drag_boundary(&row.widths, boundary, d, &row.mins);
         let scale = f64::from(window.global::<crate::Theme>().get_base_scale()).max(0.001);
-        let min_rendered = f64::from(crate::widths::STACK_WIDTH_READABILITY_MIN_PX) * scale;
-        let ceiling = a.stack_width_ceiling_excluding(&a.state.load(), &window, Some(stack));
-        let ceiling_rendered = f64::from(ceiling);
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let requested_px = (f64::from(base) + f64::from(delta)) as i64;
-        #[allow(clippy::cast_possible_truncation)] // a px value
-        let floor = min_rendered as i64;
-        #[allow(clippy::cast_possible_truncation)] // a px value
-        let max_px = (ceiling_rendered.max(min_rendered)) as i64;
-        let rendered = requested_px.clamp(floor, max_px).max(0);
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let rendered = rendered as u32;
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let stored =
-            u32::try_from((f64::from(rendered) / scale).round() as i64).unwrap_or(rendered);
-        a.view_state.set_stack_width(board, stack, stored);
+        for index in [boundary, boundary + 1] {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let stored = (f64::from(next[index]) / scale).round() as i64;
+            a.view_state.set_stack_width(
+                board,
+                row.stacks[index],
+                u32::try_from(stored).unwrap_or(u32::MAX),
+            );
+        }
         a.refresh_forced(&window);
     });
     let release = Rc::clone(adapter);
