@@ -443,6 +443,15 @@ export component AppWindow inherits Window {
                 width: 100%;
                 height: 100%;
                 clicked => root.date-picker-dismiss-requested();
+                // The right-click dismissal (r4 D2): `clicked` never
+                // fires for a right-button release, so the layer arms
+                // on the down half — the card's pointer-event idiom.
+                pointer-event(event) => {
+                    if (event.kind == PointerEventKind.down
+                            && event.button == PointerEventButton.right) {
+                        root.date-picker-dismiss-requested();
+                    }
+                }
             }
             if (root.current-view == View.task-detail
                     && root.task-model.date-picker-open): DatePicker {
@@ -478,6 +487,14 @@ export component AppWindow inherits Window {
             height: 100%;
             init => TooltipState.unhover();
             clicked => root.menu-dismiss-requested();
+            // The right-click dismissal (r4 D2): the card's
+            // pointer-event idiom, closing on the down half.
+            pointer-event(event) => {
+                if (event.kind == PointerEventKind.down
+                        && event.button == PointerEventButton.right) {
+                    root.menu-dismiss-requested();
+                }
+            }
         }
 
         // The generated menu host (§5.9): keyed to the shell's menu
@@ -571,6 +588,14 @@ export component AppWindow inherits Window {
             width: 100%;
             height: 100%;
             clicked => root.palette-dismiss-requested();
+            // The right-click dismissal (r4 D2): the card's
+            // pointer-event idiom, closing on the down half.
+            pointer-event(event) => {
+                if (event.kind == PointerEventKind.down
+                        && event.button == PointerEventButton.right) {
+                    root.palette-dismiss-requested();
+                }
+            }
         }
         if (root.capture-open): TouchArea {
             // The modal scrim: an outside click discards-and-closes
@@ -578,6 +603,14 @@ export component AppWindow inherits Window {
             width: 100%;
             height: 100%;
             clicked => root.capture-dismiss-requested();
+            // The right-click dismissal (r4 D2): the card's
+            // pointer-event idiom, closing on the down half.
+            pointer-event(event) => {
+                if (event.kind == PointerEventKind.down
+                        && event.button == PointerEventButton.right) {
+                    root.capture-dismiss-requested();
+                }
+            }
         }
         if (root.capture-open): CaptureOverlay {
             width: min(root.width - 2 * Theme.space-2, 560px * Theme.base-scale);
