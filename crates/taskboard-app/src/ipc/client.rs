@@ -424,6 +424,7 @@ mod tests {
         assert_eq!(
             verb_timeout_secs(&crate::cli::Command::Daemon {
                 cmd: Some(crate::cli::DaemonCmd::Stop),
+                no_ipc: false,
             }),
             None,
         );

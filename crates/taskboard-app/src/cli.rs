@@ -188,6 +188,13 @@ pub enum Command {
     Daemon {
         #[command(subcommand)]
         cmd: Option<DaemonCmd>,
+        /// Boot the core without binding the IPC socket (`[ipc] enabled
+        /// = false` as a flag; the flag wins over the file). Only the
+        /// run arm reads it — `daemon stop --no-ipc` parses and ignores
+        /// it (a stop never spawns a server). `global` so the flag is
+        /// accepted after the subcommand too, where it is inert.
+        #[arg(long, global = true)]
+        no_ipc: bool,
     },
     /// Run the desktop UI in this process: explicit frontend selection
     /// (the `daemon` verb's mirror) — boots the core and opens the
@@ -1513,6 +1520,47 @@ mod tests {
             panic!("expected timers add");
         };
         assert_eq!(insistence, Some(taskboard_domain::Insistence::Alarm));
+    }
+
+    #[test]
+    fn daemon_no_ipc_flag_parses() {
+        let Cli {
+            command: Some(Command::Daemon { cmd: None, no_ipc }),
+            ..
+        } = Cli::try_parse_from(["taskboard", "daemon", "--no-ipc"])
+            .expect("the flag parses — the run arm stays the run arm")
+        else {
+            panic!("expected bare daemon");
+        };
+        assert!(no_ipc);
+        let Cli {
+            command: Some(Command::Daemon { no_ipc, .. }),
+            ..
+        } = Cli::try_parse_from(["taskboard", "daemon"]).expect("bare daemon parses")
+        else {
+            panic!("expected daemon");
+        };
+        assert!(!no_ipc);
+    }
+
+    #[test]
+    fn daemon_stop_accepts_no_ipc() {
+        // The accept-and-ignore contract is parseable surface: a stop
+        // never spawns a server, so the flag is inert there — but it
+        // must parse, not become a usage error.
+        let Cli {
+            command:
+                Some(Command::Daemon {
+                    cmd: Some(DaemonCmd::Stop),
+                    no_ipc,
+                }),
+            ..
+        } = Cli::try_parse_from(["taskboard", "daemon", "stop", "--no-ipc"])
+            .expect("stop --no-ipc parses")
+        else {
+            panic!("expected daemon stop");
+        };
+        assert!(no_ipc);
     }
 
     #[test]

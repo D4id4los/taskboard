@@ -2280,6 +2280,7 @@ mod ipc_routing_tests {
             Command::Status,
             Command::Daemon {
                 cmd: Some(DaemonCmd::Stop),
+                no_ipc: false,
             },
         ];
         for command in &ipc_only {
