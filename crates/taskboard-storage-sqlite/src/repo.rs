@@ -218,7 +218,10 @@ fn decode_adhoc_alarm(row: &AdhocAlarmRow) -> Result<AdhocAlarm, RepositoryError
 /// Decode helpers shared by the row mappers; every failure becomes
 /// [`RepositoryError::Corrupted`] (plan decision 10/12).
 mod decode {
-    use super::{RepositoryError, Uuid, codec};
+    use super::{
+        ConnectorId, RemoteBoardBinding, RemoteBoardId, RemoteCardId, RemoteCardRef, RemoteLabelId,
+        RemoteLabelRef, RemoteStackId, RemoteStackRef, RepositoryError, Uuid, codec,
+    };
 
     pub(crate) fn uuid(raw: &str) -> Result<Uuid, RepositoryError> {
         codec::uuid_from_text(raw).map_err(|_| RepositoryError::Corrupted)
@@ -226,6 +229,71 @@ mod decode {
 
     pub(crate) fn remote_opt(cols: &[Option<i64>]) -> Result<Option<Vec<u64>>, RepositoryError> {
         codec::remote_columns_present_or_none(cols).map_err(|_| RepositoryError::Corrupted)
+    }
+
+    /// The optional remote binding from the board's remote-id column:
+    /// all-NULL → `None`; any arity other than the ref's exact width —
+    /// or a mixed NULL/NOT-NULL row, or a negative id — is corruption.
+    pub(crate) fn remote_board(
+        cols: &[Option<i64>],
+        connector: Option<String>,
+        default_connector: &ConnectorId,
+    ) -> Result<Option<RemoteBoardBinding>, RepositoryError> {
+        match remote_opt(cols)?.as_deref() {
+            None => Ok(None),
+            Some([b]) => Ok(Some(RemoteBoardBinding {
+                // NULL tag ⇒ the spawn-time default (DF-4's resolution
+                // home); a non-NULL tag naming an unconfigured connector
+                // decodes as-is (D-3) — the owning actor simply never
+                // finds the board.
+                connector: connector.map_or_else(|| default_connector.clone(), ConnectorId::from),
+                board: RemoteBoardId(*b),
+            })),
+            Some(_) => Err(RepositoryError::Corrupted),
+        }
+    }
+
+    /// See [`remote_board`].
+    pub(crate) fn remote_stack(
+        cols: &[Option<i64>],
+    ) -> Result<Option<RemoteStackRef>, RepositoryError> {
+        match remote_opt(cols)?.as_deref() {
+            None => Ok(None),
+            Some([b, s]) => Ok(Some(RemoteStackRef {
+                board: RemoteBoardId(*b),
+                stack: RemoteStackId(*s),
+            })),
+            Some(_) => Err(RepositoryError::Corrupted),
+        }
+    }
+
+    /// See [`remote_board`].
+    pub(crate) fn remote_card(
+        cols: &[Option<i64>],
+    ) -> Result<Option<RemoteCardRef>, RepositoryError> {
+        match remote_opt(cols)?.as_deref() {
+            None => Ok(None),
+            Some([b, s, c]) => Ok(Some(RemoteCardRef {
+                board: RemoteBoardId(*b),
+                stack: RemoteStackId(*s),
+                card: RemoteCardId(*c),
+            })),
+            Some(_) => Err(RepositoryError::Corrupted),
+        }
+    }
+
+    /// See [`remote_board`].
+    pub(crate) fn remote_label(
+        cols: &[Option<i64>],
+    ) -> Result<Option<RemoteLabelRef>, RepositoryError> {
+        match remote_opt(cols)?.as_deref() {
+            None => Ok(None),
+            Some([b, l]) => Ok(Some(RemoteLabelRef {
+                board: RemoteBoardId(*b),
+                label: RemoteLabelId(*l),
+            })),
+            Some(_) => Err(RepositoryError::Corrupted),
+        }
     }
 
     pub(crate) fn importance(
@@ -270,15 +338,7 @@ fn stmt_error(err: &sqlx::Error) -> RepositoryError {
 
 fn decode_board(row: BoardRow, default_connector: &ConnectorId) -> Result<Board, RepositoryError> {
     let id = decode::uuid(&row.id)?;
-    let remote = decode::remote_opt(&[row.remote_board_id])?.map(|nums| RemoteBoardBinding {
-        // NULL tag ⇒ the spawn-time default (DF-4's resolution home); a
-        // non-NULL tag naming an unconfigured connector decodes as-is
-        // (D-3) — the owning actor simply never finds the board.
-        connector: row
-            .connector
-            .map_or_else(|| default_connector.clone(), ConnectorId::from),
-        board: RemoteBoardId(nums[0]),
-    });
+    let remote = decode::remote_board(&[row.remote_board_id], row.connector, default_connector)?;
     Ok(Board {
         id: BoardId::from(id),
         remote,
@@ -299,12 +359,7 @@ fn decode_board(row: BoardRow, default_connector: &ConnectorId) -> Result<Board,
 fn decode_stack(row: StackRow) -> Result<Stack, RepositoryError> {
     let id = decode::uuid(&row.id)?;
     let board = decode::uuid(&row.board)?;
-    let remote = decode::remote_opt(&[row.remote_board_id, row.remote_stack_id])?.map(|nums| {
-        RemoteStackRef {
-            board: RemoteBoardId(nums[0]),
-            stack: RemoteStackId(nums[1]),
-        }
-    });
+    let remote = decode::remote_stack(&[row.remote_board_id, row.remote_stack_id])?;
     Ok(Stack {
         id: StackId::from(id),
         remote,
@@ -339,13 +394,7 @@ fn decode_task(
     let id = decode::uuid(&row.id)?;
     let stack = decode::uuid(&row.stack)?;
     let remote =
-        decode::remote_opt(&[row.remote_board_id, row.remote_stack_id, row.remote_card_id])?.map(
-            |nums| RemoteCardRef {
-                board: RemoteBoardId(nums[0]),
-                stack: RemoteStackId(nums[1]),
-                card: RemoteCardId(nums[2]),
-            },
-        );
+        decode::remote_card(&[row.remote_board_id, row.remote_stack_id, row.remote_card_id])?;
     let label_memberships: BTreeMap<LabelId, taskboard_domain::entities::MembershipState> =
         label_sets
             .get(&id)
@@ -440,12 +489,7 @@ fn decode_task(
 fn decode_label(row: LabelRow) -> Result<Label, RepositoryError> {
     let id = decode::uuid(&row.id)?;
     let board = decode::uuid(&row.board)?;
-    let remote = decode::remote_opt(&[row.remote_board_id, row.remote_label_id])?.map(|nums| {
-        RemoteLabelRef {
-            board: RemoteBoardId(nums[0]),
-            label: RemoteLabelId(nums[1]),
-        }
-    });
+    let remote = decode::remote_label(&[row.remote_board_id, row.remote_label_id])?;
     Ok(Label {
         id: LabelId::from(id),
         remote,
@@ -2121,4 +2165,67 @@ async fn execute_batch(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod remote_decode_tests {
+    use super::decode;
+    use taskboard_domain::ids::ConnectorId;
+    use taskboard_domain::persistence::RepositoryError;
+
+    #[test]
+    fn all_null_remote_columns_decode_as_unset() {
+        assert!(
+            decode::remote_board(&[None], None, &ConnectorId::from("c1"))
+                .unwrap()
+                .is_none()
+        );
+        assert!(decode::remote_stack(&[None, None]).unwrap().is_none());
+        assert!(decode::remote_card(&[None, None, None]).unwrap().is_none());
+        assert!(decode::remote_label(&[None, None]).unwrap().is_none());
+    }
+
+    #[test]
+    fn exact_arity_remote_columns_decode_the_ref() {
+        let board = decode::remote_board(&[Some(7)], None, &ConnectorId::from("c1"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(board.board, taskboard_domain::ids::RemoteBoardId(7));
+        let stack = decode::remote_stack(&[Some(1), Some(2)]).unwrap().unwrap();
+        assert_eq!(stack.stack, taskboard_domain::ids::RemoteStackId(2));
+        let card = decode::remote_card(&[Some(1), Some(2), Some(3)])
+            .unwrap()
+            .unwrap();
+        assert_eq!(card.card, taskboard_domain::ids::RemoteCardId(3));
+        let label = decode::remote_label(&[Some(1), Some(4)]).unwrap().unwrap();
+        assert_eq!(label.label, taskboard_domain::ids::RemoteLabelId(4));
+    }
+
+    #[test]
+    fn under_arity_remote_columns_are_corrupted_not_a_panic() {
+        assert_eq!(
+            decode::remote_stack(&[Some(1)]).unwrap_err(),
+            RepositoryError::Corrupted
+        );
+        assert_eq!(
+            decode::remote_card(&[Some(1), Some(2)]).unwrap_err(),
+            RepositoryError::Corrupted
+        );
+        assert_eq!(
+            decode::remote_label(&[Some(1)]).unwrap_err(),
+            RepositoryError::Corrupted
+        );
+    }
+
+    #[test]
+    fn over_arity_remote_columns_are_corrupted_not_ignored() {
+        assert_eq!(
+            decode::remote_board(&[Some(1), Some(2)], None, &ConnectorId::from("c1")).unwrap_err(),
+            RepositoryError::Corrupted
+        );
+        assert_eq!(
+            decode::remote_card(&[Some(1), Some(2), Some(3), Some(4)]).unwrap_err(),
+            RepositoryError::Corrupted
+        );
+    }
 }
