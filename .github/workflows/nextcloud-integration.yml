@@ -9,7 +9,18 @@ name: Nextcloud Integration
 # Execution"; this workflow adds live-server verification on demand
 # (dispatch during sync-actor development) and weekly (upstream drift).
 # If per-PR coverage ever becomes worth it again, mirror the pinned
-# image into GHCR instead of re-adding the Hub pull.
+# images into GHCR instead of re-adding the Hub pull.
+#
+# The weekly run is a two-leg version matrix (issue #116):
+#   - stable: nextcloud:35-apache + app-store Deck latest — the drift
+#     detector for the current pair (the full default docker surface).
+#   - floor: nextcloud:33-apache + Deck pinned v1.17.5 — the oldest
+#     supported pair the project promises to serve (the Tier 3 live
+#     deployment); runs the characterized 1.17.5 gate surface, keeping
+#     the capability-seam adaptation from rotting.
+# Legs are separate GitHub-hosted runners, so they cannot share Docker
+# resources; `fail-fast: false` keeps one leg's failure from cancelling
+# the other, and each check-run name carries its leg.
 
 on:
   schedule:
@@ -25,9 +36,25 @@ env:
 
 jobs:
   nextcloud-it:
-    name: Nextcloud Integration (docker)
+    name: Nextcloud Integration (docker) — ${{ matrix.leg }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - leg: stable
+            nc_image: nextcloud:35-apache
+            deck_version: ""
+            export_prefix: TASKBOARD_IT_DOCKER
+            sync_filter: test(it_nextcloud_docker)
+            run_app_journeys: true
+          - leg: floor
+            nc_image: nextcloud:33-apache
+            deck_version: v1.17.5
+            export_prefix: TASKBOARD_IT_DOCKER_DECK1175
+            sync_filter: test(it_nextcloud_docker_deck1175)
+            run_app_journeys: false
     steps:
       - uses: actions/checkout@v7
 
@@ -44,19 +71,26 @@ jobs:
           tool: nextest
 
       - name: Start dockerized Nextcloud (Deck, test user, app password)
+        env:
+          TASKBOARD_IT_NC_IMAGE: ${{ matrix.nc_image }}
+          DECK_VERSION: ${{ matrix.deck_version }}
+          EXPORT_PREFIX: ${{ matrix.export_prefix }}
         run: scripts/nextcloud_it_setup.sh up --ci
 
       - name: Docker-tier integration tests (sync actor)
         # --no-tests=fail guards the filter silently matching nothing.
         run: >
           cargo nextest run -p taskboard-sync-nextcloud --run-ignored only
-          -E 'test(it_nextcloud_docker)' --no-tests=fail
+          -E '${{ matrix.sync_filter }}' --no-tests=fail
 
       - name: Docker-tier integration tests (app daemon + CLI journeys)
         # Phase 5 daemon journey + Phase 6 J-series (the real binary:
         # login/select/add/sync against the same dockerized server); the
         # filter matches both, and nextest builds the bin for
-        # CARGO_BIN_EXE_taskboard.
+        # CARGO_BIN_EXE_taskboard. Stable leg only: the journey harness
+        # reads the default TASKBOARD_IT_DOCKER_* credentials and its
+        # expectations target the current pair.
+        if: matrix.run_app_journeys
         run: >
           cargo nextest run -p taskboard-app --run-ignored only
           -E 'test(it_nextcloud_docker)' --no-tests=fail
