@@ -8553,3 +8553,173 @@ fn a_body_left_click_below_the_last_card_selects_and_focuses() {
         },
     );
 }
+
+// ---- R4-F8 (r4 design D4): one physical click on a column's
+// Add-task ghost opens the create field in THAT column and selects it
+// — the targeting carried by the effect payload, not by selection
+// ordering. The journeys below are the F8 harness: physical
+// press+release delivery (`click_at`), never the a11y seam.
+
+fn ghost_centre(harness: &Harness, index: usize) -> (f32, f32) {
+    let ghost = harness
+        .driver
+        .find_all_by_label("Add task")
+        .into_iter()
+        .nth(index)
+        .expect("the column's ghost is present");
+    let pos = ghost.absolute_position();
+    let size = ghost.size();
+    #[allow(clippy::cast_precision_loss)]
+    (pos.x + size.width / 2.0, pos.y + size.height / 2.0)
+}
+
+/// (a/b) Under `Flow::None`, one physical click on a non-active
+/// column's ghost opens the create row in that column and moves the
+/// selection there — one click, not two.
+#[test]
+fn one_ghost_click_opens_the_create_field_in_the_clicked_column() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.set_window_size(1000, 800);
+            let (x, y) = ghost_centre(&harness, 1);
+            harness.driver.click_at(x, y);
+            let stacks = harness.handle.window().get_board_model().stacks;
+            assert!(
+                stacks.row_data(1).expect("column b").create_open,
+                "one click opened the create row in stack b"
+            );
+            assert_eq!(
+                harness.handle.window().get_board_model().selected_stack,
+                1,
+                "the clicked column is selected"
+            );
+        },
+    );
+}
+
+/// (c) Under a foreign flow (a stack rename armed on stack a), the
+/// ghost click settles the flow and opens in the clicked column —
+/// settle-then-run with no eaten click.
+#[test]
+fn a_ghost_click_under_a_foreign_flow_settles_and_opens_in_the_clicked_column() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.set_window_size(1000, 800);
+            // Arm the foreign flow on stack a (the keyboard route).
+            harness
+                .driver
+                .find_all_by_label("a")
+                .into_iter()
+                .find(support::driver::Element::is_accessible_button)
+                .expect("stack a's header")
+                .invoke_default_action();
+            harness.press(ActionId::StackRename);
+            harness.driver.advance_time(0);
+            let stacks = harness.handle.window().get_board_model().stacks;
+            assert!(
+                stacks.row_data(0).expect("column a").rename_open,
+                "the rename flow is armed on stack a"
+            );
+            let (x, y) = ghost_centre(&harness, 1);
+            harness.driver.click_at(x, y);
+            let stacks = harness.handle.window().get_board_model().stacks;
+            assert!(
+                !stacks.row_data(0).expect("column a").rename_open,
+                "the foreign flow settled"
+            );
+            assert!(
+                stacks.row_data(1).expect("column b").create_open,
+                "the create row opened in the clicked column"
+            );
+        },
+    );
+}
+
+/// (d) With another column's create field open and focused, the ghost
+/// click settles that flow and opens the clicked column's field.
+#[test]
+fn a_ghost_click_replaces_another_columns_open_create_field() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.set_window_size(1000, 800);
+            harness
+                .driver
+                .find_all_by_label("a")
+                .into_iter()
+                .find(support::driver::Element::is_accessible_button)
+                .expect("stack a's header")
+                .invoke_default_action();
+            harness.press(ActionId::TaskCreate);
+            harness.driver.advance_time(0);
+            let stacks = harness.handle.window().get_board_model().stacks;
+            assert!(stacks.row_data(0).expect("column a").create_open);
+            let (x, y) = ghost_centre(&harness, 1);
+            harness.driver.click_at(x, y);
+            let stacks = harness.handle.window().get_board_model().stacks;
+            assert!(
+                !stacks.row_data(0).expect("column a").create_open,
+                "the old create flow settled"
+            );
+            assert!(
+                stacks.row_data(1).expect("column b").create_open,
+                "the clicked column's field opened"
+            );
+        },
+    );
+}
+
+/// (e) Ctrl+O is unchanged: with no selection the field opens in the
+/// first stack; with a selection, in the selected stack.
+#[test]
+fn task_create_without_a_click_targets_the_selection_chain() {
+    let (fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.set_window_size(1000, 800);
+            // No selection: the first stack.
+            harness.press(ActionId::TaskCreate);
+            let stacks = harness.handle.window().get_board_model().stacks;
+            assert!(
+                stacks.row_data(0).expect("column a").create_open,
+                "no selection falls through to the first stack"
+            );
+            // A fresh mount, selection on stack b: the selected stack.
+            let (_fixture, state) = fixture::golden_state();
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.set_window_size(1000, 800);
+            harness
+                .driver
+                .find_all_by_label("b")
+                .into_iter()
+                .find(support::driver::Element::is_accessible_button)
+                .expect("stack b's header")
+                .invoke_default_action();
+            harness.press(ActionId::TaskCreate);
+            let stacks = harness.handle.window().get_board_model().stacks;
+            assert!(
+                stacks.row_data(1).expect("column b").create_open,
+                "the selected stack wins"
+            );
+            let _ = fixture;
+        },
+    );
+}

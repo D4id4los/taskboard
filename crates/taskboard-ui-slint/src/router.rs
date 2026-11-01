@@ -89,8 +89,15 @@ pub enum UiEffect {
     /// adapter state and refreshes; the date flow is Insert and the
     /// picker's own seams own the commit funnel.
     PickerKey(crate::due_edit::DatePickerKey),
-    /// Open the inline create row.
-    BeginCreate,
+    /// Open the inline create row. The target is the clicked column's
+    /// stack (r4 D4) — `None` falls through to the keyboard's
+    /// focused → selected → first resolution, byte-identical. The
+    /// payload changes only *where* the flow opens, never the
+    /// (flow → flow-after) outcome, so the settle matrix stays
+    /// payload-blind (the `BoardSelect(_)` precedent).
+    BeginCreate {
+        target: Option<StackId>,
+    },
     /// Open the inline create row for a new stack on the live board
     /// (works on an empty board — no target stack needed).
     BeginCreateStack,
@@ -217,7 +224,9 @@ impl UiEffect {
             | Self::BoardCreate
             | Self::BoardDelete
             | Self::BoardRename => EffectClass::Lifecycle,
-            Self::BeginCreate | Self::BeginCreateStack | Self::RequestMove => EffectClass::Begin,
+            Self::BeginCreate { .. } | Self::BeginCreateStack | Self::RequestMove => {
+                EffectClass::Begin
+            }
             Self::OpenPalette => EffectClass::OpenPalette,
             Self::BeginCapture => EffectClass::BeginCapture,
             Self::Activate | Self::SetMode(_) => EffectClass::Edit,
@@ -267,6 +276,11 @@ pub struct TimerDraft {
 pub struct DispatchCtx {
     pub focused_task: Option<TaskId>,
     pub focused_stack: Option<StackId>,
+    /// The Add-task ghost's clicked column (r4 D4): set by the adapter
+    /// when a ghost is clicked; `task.create` routes its
+    /// `BeginCreate` payload from it (a keyboard dispatch carries
+    /// none — the selection chain decides).
+    pub create_target: Option<StackId>,
     /// The banner row's concrete reminder target (D4): set by the
     /// adapter when a banner row is activated; snooze/mute route from
     /// it (`NoTarget` without one).
@@ -485,7 +499,9 @@ impl ActionRouter {
             )),
             ActionId::NavNextItem => DispatchOutcome::UiEffect(UiEffect::FocusNext),
             ActionId::NavPrevItem => DispatchOutcome::UiEffect(UiEffect::FocusPrev),
-            ActionId::TaskCreate => DispatchOutcome::UiEffect(UiEffect::BeginCreate),
+            ActionId::TaskCreate => DispatchOutcome::UiEffect(UiEffect::BeginCreate {
+                target: ctx.create_target,
+            }),
             ActionId::StackCreate => DispatchOutcome::UiEffect(UiEffect::BeginCreateStack),
             ActionId::TaskEdit => DispatchOutcome::UiEffect(UiEffect::Activate),
             ActionId::TaskTitleEdit => DispatchOutcome::UiEffect(UiEffect::BeginTitleEdit),
@@ -558,6 +574,7 @@ mod tests {
         DispatchCtx {
             focused_task: task.then(|| TaskId::from_uuid(Uuid::now_v7())),
             focused_stack: None,
+            create_target: None,
             reminder_target: None,
             board_target: None,
             rule_target: None,
@@ -816,7 +833,7 @@ mod tests {
             (ActionId::NavFocusBoard, UiEffect::FocusBoard),
             (ActionId::NavNextItem, UiEffect::FocusNext),
             (ActionId::NavPrevItem, UiEffect::FocusPrev),
-            (ActionId::TaskCreate, UiEffect::BeginCreate),
+            (ActionId::TaskCreate, UiEffect::BeginCreate { target: None }),
             (ActionId::StackCreate, UiEffect::BeginCreateStack),
             (ActionId::TaskEdit, UiEffect::Activate),
             (ActionId::TaskTitleEdit, UiEffect::BeginTitleEdit),
