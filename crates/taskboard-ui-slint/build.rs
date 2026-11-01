@@ -67,4 +67,21 @@ fn main() {
     )
     .expect("walk probe compilation failed");
     println!("cargo:rerun-if-changed={}", walk_source.display());
+
+    // The icon colorize probe (r4 chunk 3): the vendored-SVG +
+    // `Image.colorize` runtime evidence, same include shape. The
+    // assets dir is a tracked dependency: an asset swap must rebuild
+    // every composition that embeds it.
+    let icon_source = manifest.join("tests/icon_probe.slint");
+    slint_build::compile_with_output_path(
+        &icon_source,
+        out.join("icon_probe.rs"),
+        slint_build::CompilerConfiguration::new().with_debug_info(true),
+    )
+    .expect("icon probe compilation failed");
+    println!("cargo:rerun-if-changed={}", icon_source.display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        manifest.join("ui/assets/icons").display()
+    );
 }

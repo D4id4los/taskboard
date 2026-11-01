@@ -1,0 +1,94 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The icon colorize probe (r4 chunk 3, plan §3): the R2 gate's
+// runtime evidence that `Image.colorize` tints a vendored SVG. One
+// asset (`check.svg`) rendered (i) through a copy of the icon-button's
+// post-swap icon-box shape, (ii) as a tone ladder — all 8 `Tone`s of
+// the tone map on `Theme.background`, plus the neutral hover-lift pair
+// on both `Theme.background` and `Theme.surface-raised` — and
+// (iii) at three sizes (0.5/1.0/3.0 × the icon edge). The cell grid
+// is absolutely positioned; `icon_probe_tests.rs` mirrors the same
+// grid in base-px constants (CELL 44, PITCH 48, ORIGIN 8, rows at
+// y 8/60/112, the button box at (8, 172) — `Theme` is at its
+// base-scale default of 1.0 in the probe window, so token arithmetic
+// equals those base-px values). Keep the two in step. This pre-swap
+// copy inlines the post-swap rendering (an `Image` + `colorize`)
+// because the swap hasn't landed yet; the kinds wall (commit 2) and
+// the migration (commit 3) build on this evidence.
+
+import { Theme, Semantic } from "../ui/theme.slint";
+
+// One probe cell: the asset tinted with `tint` on `cell-bg`, centred
+// at the requested edge length.
+component ProbeCell inherits Rectangle {
+    in property <color> cell-bg;
+    in property <color> tint;
+    in property <length> edge: Theme.space-3;
+    width: Theme.space-7 - Theme.space-1;
+    height: Theme.space-7 - Theme.space-1;
+    background: cell-bg;
+
+    Image {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: edge;
+        height: edge;
+        source: @image-url("../ui/assets/icons/check.svg");
+        colorize: tint;
+    }
+}
+
+// The icon-button's post-swap icon-box shape inlined: the space-6
+// square with the space-2 padding and a fixed-edge `Image`, exactly
+// the geometry the migration lands (plan §2.3).
+component ButtonBoxCell inherits Rectangle {
+    width: Theme.space-6;
+    height: Theme.space-6;
+    background: transparent;
+
+    VerticalLayout {
+        padding: Theme.space-2;
+
+        Image {
+            width: Theme.space-3;
+            height: Theme.space-3;
+            source: @image-url("../ui/assets/icons/check.svg");
+            colorize: Theme.text-secondary;
+        }
+    }
+}
+
+export component IconProbeWindow inherits Window {
+    width: Theme.space-7 * 8 + Theme.space-2;
+    height: Theme.space-7 * 4 + Theme.space-2 * 4;
+    background: Theme.background;
+
+    // Row A (y = space-2): the tone ladder — the 8 `Tone`s of the
+    // icon-button's `icon-color()` map, in enum order.
+    ProbeCell { x: Theme.space-2;              y: Theme.space-2;             cell-bg: Theme.background; tint: Theme.text-secondary; }
+    ProbeCell { x: Theme.space-2 + Theme.space-7;     y: Theme.space-2;      cell-bg: Theme.background; tint: Theme.text-primary; }
+    ProbeCell { x: Theme.space-2 + Theme.space-7 * 2; y: Theme.space-2;      cell-bg: Theme.background; tint: Semantic.success; }
+    ProbeCell { x: Theme.space-2 + Theme.space-7 * 3; y: Theme.space-2;      cell-bg: Theme.background; tint: Semantic.warning; }
+    ProbeCell { x: Theme.space-2 + Theme.space-7 * 4; y: Theme.space-2;      cell-bg: Theme.background; tint: Semantic.danger; }
+    ProbeCell { x: Theme.space-2 + Theme.space-7 * 5; y: Theme.space-2;      cell-bg: Theme.background; tint: Semantic.overdue; }
+    ProbeCell { x: Theme.space-2 + Theme.space-7 * 6; y: Theme.space-2;      cell-bg: Theme.background; tint: Semantic.sync-active; }
+    ProbeCell { x: Theme.space-2 + Theme.space-7 * 7; y: Theme.space-2;      cell-bg: Theme.background; tint: Semantic.offline; }
+
+    // Row B (y = space-7 + space-3): the neutral hover-lift pair
+    // (text-secondary → text-primary) on both the window background
+    // and a raised surface — the tone map's light/dark extremes.
+    ProbeCell { x: Theme.space-2;              y: Theme.space-7 + Theme.space-3; cell-bg: Theme.background; tint: Theme.text-secondary; }
+    ProbeCell { x: Theme.space-2 + Theme.space-7;     y: Theme.space-7 + Theme.space-3; cell-bg: Theme.background; tint: Theme.text-primary; }
+    ProbeCell { x: Theme.space-2 + Theme.space-7 * 2; y: Theme.space-7 + Theme.space-3; cell-bg: Theme.surface-raised; tint: Theme.text-secondary; }
+    ProbeCell { x: Theme.space-2 + Theme.space-7 * 3; y: Theme.space-7 + Theme.space-3; cell-bg: Theme.surface-raised; tint: Theme.text-primary; }
+
+    // Row C (y = space-7 * 2 + space-4): the crispness extremes —
+    // 0.5× (space-1 + space-1/2), 1.0× (space-3), 3.0×
+    // (space-7 − space-3) the icon edge.
+    ProbeCell { x: Theme.space-2;              y: Theme.space-7 * 2 + Theme.space-4; cell-bg: Theme.background; tint: Theme.text-secondary; edge: Theme.space-1 + Theme.space-1 / 2; }
+    ProbeCell { x: Theme.space-2 + Theme.space-7;     y: Theme.space-7 * 2 + Theme.space-4; cell-bg: Theme.background; tint: Theme.text-secondary; }
+    ProbeCell { x: Theme.space-2 + Theme.space-7 * 2; y: Theme.space-7 * 2 + Theme.space-4; cell-bg: Theme.background; tint: Theme.text-secondary; edge: Theme.space-7 - Theme.space-3; }
+
+    // Row D (y = space-7 * 3 + space-5 + space-1): the inlined
+    // post-swap button box.
+    ButtonBoxCell { x: Theme.space-2; y: Theme.space-7 * 3 + Theme.space-5 + Theme.space-1; }
+}
