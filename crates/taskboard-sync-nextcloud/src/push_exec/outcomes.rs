@@ -8,6 +8,11 @@ use crate::mapping::{self, PushCtx};
 
 /// What one group's execution produced: the outcomes to report, or the
 /// transport failure that aborted the cycle.
+///
+/// One letter apart from the domain's per-op [`PushOutcome`]: that type
+/// is one operation's result inside the [`Outcomes`](Self::Outcomes) vec; `GroupOutcome`
+/// is the per-group bookkeeping around the whole group (deferred, or
+/// aborted with the landed evidence).
 #[derive(Debug, Clone, PartialEq)]
 pub enum GroupOutcome {
     /// Outcomes for (at least) the group's primary op. An empty vec means

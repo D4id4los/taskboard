@@ -203,6 +203,10 @@ pub fn resolve_label(
 }
 
 /// A pushed operation's outcome, as reported by the sync actor.
+///
+/// Grouped per push group by the sync actor's `GroupOutcome`
+/// (`taskboard-sync-nextcloud`) — per-group abort/landed bookkeeping
+/// around these per-op results.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PushOutcome {
     /// The outbox op this outcome belongs to.
