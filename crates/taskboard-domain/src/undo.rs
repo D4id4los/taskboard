@@ -632,6 +632,25 @@ enum InverseClass {
     UpdateLabel,
     /// `AssignLabel`/`UnassignLabel`: the membership stamp.
     Membership,
+    /// `LogTime`: undo deletes the created entry; the checked scope is
+    /// the minted entry's `updated_at` (its one clock covers the span
+    /// and the title snapshot — D27).
+    CreatedTimeEntry,
+    /// `AdjustTimeEntry`: inverse mask diffed pre vs current; the
+    /// entry's `updated_at` covers both mask fields.
+    AdjustTimeEntry,
+    /// `CreateHabit`: undo tombstones the created habit; the checked
+    /// scope is the four content clocks (`deleted` excluded, matching
+    /// the `CreatedTask` scope — D27).
+    CreatedHabit,
+    /// `UpdateHabit`: inverse changeset from the pre-image diff over
+    /// the three clocked content fields (`continued_from` never — D25).
+    UpdateHabit,
+    /// `MoveHabit`: the order clock.
+    MoveHabit,
+    /// `AdjustHabitLog`: the touched window's post-write row compared
+    /// as a whole (count AND clock).
+    AdjustHabitLog,
 }
 
 /// The §3 classification of a journaled command — the narrow extract of
@@ -655,6 +674,12 @@ impl JournalEntry {
             StateCommand::AssignLabel { .. } | StateCommand::UnassignLabel { .. } => {
                 Ok(InverseClass::Membership)
             }
+            StateCommand::LogTime { .. } => Ok(InverseClass::CreatedTimeEntry),
+            StateCommand::AdjustTimeEntry { .. } => Ok(InverseClass::AdjustTimeEntry),
+            StateCommand::CreateHabit { .. } => Ok(InverseClass::CreatedHabit),
+            StateCommand::UpdateHabit { .. } => Ok(InverseClass::UpdateHabit),
+            StateCommand::MoveHabit { .. } => Ok(InverseClass::MoveHabit),
+            StateCommand::AdjustHabitLog { .. } => Ok(InverseClass::AdjustHabitLog),
             // NotUndoable heads refuse before the class is consulted;
             // every other arm is unreachable here (the wrapper only
             // journals the arms above). The engine-routed/no-op arms
@@ -680,14 +705,8 @@ impl JournalEntry {
             | StateCommand::CancelAdhocAlarm { .. }
             | StateCommand::StartTracking { .. }
             | StateCommand::StopTracking
-            | StateCommand::LogTime { .. }
-            | StateCommand::AdjustTimeEntry { .. }
             | StateCommand::DeleteTimeEntry { .. }
-            | StateCommand::CreateHabit { .. }
-            | StateCommand::UpdateHabit { .. }
-            | StateCommand::MoveHabit { .. }
             | StateCommand::LogHabit { .. }
-            | StateCommand::AdjustHabitLog { .. }
             | StateCommand::DeleteHabit { .. }
             | StateCommand::Undo
             | StateCommand::Redo
@@ -1025,6 +1044,219 @@ fn synthesize_undo(
             } else {
                 Ok(StateCommand::AssignLabel { task, label })
             }
+        }
+        InverseClass::CreatedTimeEntry => {
+            // Undo deletes the created entry: the minted id comes from
+            // the journal entry — there is no other source for it (the
+            // stage-3 trap). The checked scope: the entry's `updated_at`
+            // (any later adjust refuses — the CreatedTask
+            // content-stamp precedent).
+            let Some(id) = images.iter().find_map(|image| match image {
+                PreImage::TimeEntry {
+                    id, before: None, ..
+                } => Some(*id),
+                _ => None,
+            }) else {
+                return Err(CommandError::NothingToUndo);
+            };
+            let entity = JournalEntity::TimeEntry(id);
+            let Some(EntityStamps::TimeEntry(recorded)) = watermark.0.get(&entity) else {
+                return Err(refuse(entity, UndoField::UpdatedAt));
+            };
+            let Some(current) = app.tracking.entries.get(&id) else {
+                return Err(refuse(entity, UndoField::UpdatedAt));
+            };
+            if current.updated_at != *recorded {
+                return Err(refuse(entity, UndoField::UpdatedAt));
+            }
+            Ok(StateCommand::DeleteTimeEntry { id })
+        }
+        InverseClass::AdjustTimeEntry => {
+            let Some(pre) = images.iter().find_map(|image| match image {
+                PreImage::TimeEntry {
+                    before: Some(entry),
+                    ..
+                } => Some(entry.as_ref()),
+                _ => None,
+            }) else {
+                return Err(CommandError::NothingToUndo);
+            };
+            let entity = JournalEntity::TimeEntry(pre.id);
+            let Some(EntityStamps::TimeEntry(recorded)) = watermark.0.get(&entity) else {
+                return Err(refuse(entity, UndoField::UpdatedAt));
+            };
+            let Some(current) = app.tracking.entries.get(&pre.id) else {
+                return Err(refuse(entity, UndoField::UpdatedAt));
+            };
+            // One stamp covers both mask fields (the entry's single
+            // clock). A `pre.end: None` divergence is unreachable here:
+            // an adjust that closed an open entry never journals
+            // PreImages (D23 refuses at record time).
+            if current.updated_at != *recorded {
+                return Err(refuse(entity, UndoField::UpdatedAt));
+            }
+            Ok(StateCommand::AdjustTimeEntry {
+                id: pre.id,
+                start: (pre.start != current.start).then_some(pre.start),
+                end: if pre.end == current.end {
+                    None
+                } else {
+                    pre.end
+                },
+            })
+        }
+        InverseClass::CreatedHabit => {
+            // Undo tombstones the created habit. No occupancy guard
+            // (D26): `DeleteHabit` cascades nothing — the log map
+            // outlives the tombstone by construction. The checked
+            // scope: the four content clocks; any later editor of any
+            // refuses field-named.
+            let Some(id) = images.iter().find_map(|image| match image {
+                PreImage::Habit {
+                    id, before: None, ..
+                } => Some(*id),
+                _ => None,
+            }) else {
+                return Err(CommandError::NothingToUndo);
+            };
+            let entity = JournalEntity::Habit(id);
+            let Some(EntityStamps::Habit(clocks)) = watermark.0.get(&entity) else {
+                return Err(refuse(entity, UndoField::Title));
+            };
+            let Some(current) = app.habits.habits.get(&id) else {
+                return Err(refuse(entity, UndoField::Title));
+            };
+            let content = [
+                (clocks.title, current.clocks.title, UndoField::Title),
+                (clocks.target, current.clocks.target, UndoField::HabitTarget),
+                (clocks.order, current.clocks.order, UndoField::Order),
+                (
+                    clocks.anchor_time,
+                    current.clocks.anchor_time,
+                    UndoField::HabitAnchorTime,
+                ),
+            ];
+            for (recorded, now_clock, field) in content {
+                if recorded != now_clock {
+                    return Err(refuse(entity, field));
+                }
+            }
+            Ok(StateCommand::DeleteHabit { habit: id })
+        }
+        InverseClass::UpdateHabit => {
+            let Some(pre) = images.iter().find_map(|image| match image {
+                PreImage::Habit {
+                    before: Some(habit),
+                    ..
+                } => Some(habit.as_ref()),
+                _ => None,
+            }) else {
+                return Err(CommandError::NothingToUndo);
+            };
+            let Some(current) = app.habits.habits.get(&pre.id) else {
+                return Err(refuse(JournalEntity::Habit(pre.id), UndoField::Title));
+            };
+            // Per-field diff with per-field clock checks — the
+            // `task_changes_from_pre` shape over the three clocked
+            // content fields. `continued_from` is outside the write set
+            // and the check (D25): a seam-addressed edit never journals
+            // PreImages, and the diff never touches the seam.
+            let entity = JournalEntity::Habit(pre.id);
+            let check = |field: UndoField,
+                         get: fn(&crate::habit::HabitClocks) -> chrono::DateTime<chrono::Utc>|
+             -> Result<(), CommandError> {
+                let Some(EntityStamps::Habit(clocks)) = watermark.0.get(&entity) else {
+                    return Err(CommandError::TargetNoLongerInvertible { entity, field });
+                };
+                if get(&current.clocks) == get(clocks) {
+                    Ok(())
+                } else {
+                    Err(CommandError::TargetNoLongerInvertible { entity, field })
+                }
+            };
+            let mut changes = crate::messages::HabitChanges::default();
+            if pre.title != current.title {
+                check(UndoField::Title, |clocks| clocks.title)?;
+                changes.title = Some(pre.title.clone());
+            }
+            if pre.target != current.target {
+                check(UndoField::HabitTarget, |clocks| clocks.target)?;
+                changes.target = Some(pre.target);
+            }
+            if pre.anchor_time != current.anchor_time {
+                // The double-option round-trip: a cleared chip
+                // re-clears; a set chip restores.
+                check(UndoField::HabitAnchorTime, |clocks| clocks.anchor_time)?;
+                changes.anchor_time = Some(pre.anchor_time);
+            }
+            Ok(StateCommand::UpdateHabit {
+                habit: pre.id,
+                changes,
+            })
+        }
+        InverseClass::MoveHabit => {
+            let Some(pre) = images.iter().find_map(|image| match image {
+                PreImage::Habit {
+                    before: Some(habit),
+                    ..
+                } => Some(habit.as_ref()),
+                _ => None,
+            }) else {
+                return Err(CommandError::NothingToUndo);
+            };
+            let entity = JournalEntity::Habit(pre.id);
+            let Some(EntityStamps::Habit(clocks)) = watermark.0.get(&entity) else {
+                return Err(refuse(entity, UndoField::Order));
+            };
+            let Some(current) = app.habits.habits.get(&pre.id) else {
+                return Err(refuse(entity, UndoField::Order));
+            };
+            // The pre order position comes from the pre-image entity,
+            // never from the command payload.
+            if current.clocks.order != clocks.order {
+                return Err(refuse(entity, UndoField::Order));
+            }
+            Ok(StateCommand::MoveHabit {
+                habit: pre.id,
+                order: pre.order,
+            })
+        }
+        InverseClass::AdjustHabitLog => {
+            // The key comes from the stored command payload; the pre
+            // count from the journal entry's `PreImage::HabitLogRow` —
+            // never from the change payload (the pre-image-fidelity
+            // hazard). The guard compares the post-write row as a
+            // whole: any later write to the window (another adjust; a
+            // `LogHabit` landing there) moved the clock and refuses.
+            let Some((habit, window)) = (match &entry.command {
+                StateCommand::AdjustHabitLog { habit, window, .. } => Some((*habit, *window)),
+                _ => None,
+            }) else {
+                return Err(CommandError::NothingToUndo);
+            };
+            let key = crate::habit::HabitLogKey { habit, window };
+            let Some(recorded_pre) = images.iter().find_map(|image| match image {
+                PreImage::HabitLogRow {
+                    before: Some(row), ..
+                } => Some(*row),
+                _ => None,
+            }) else {
+                // Unreachable for a journaled-undoable adjust (D24 —
+                // absent windows refuse at record time); defensive.
+                return Err(CommandError::NothingToUndo);
+            };
+            let entity = JournalEntity::HabitLog(key);
+            let Some(EntityStamps::HabitLog(recorded_post)) = watermark.0.get(&entity) else {
+                return Err(refuse(entity, UndoField::HabitLogCount));
+            };
+            if app.habits.log.get(&key) != Some(recorded_post) {
+                return Err(refuse(entity, UndoField::HabitLogCount));
+            }
+            Ok(StateCommand::AdjustHabitLog {
+                habit,
+                window,
+                count: recorded_pre.count,
+            })
         }
     }
 }
