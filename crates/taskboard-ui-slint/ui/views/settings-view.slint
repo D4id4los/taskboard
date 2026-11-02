@@ -281,7 +281,6 @@ export component SettingsView inherits FocusScope {
     // initialised — the mount pass is the fresh echo/validity pass.
     callback view-mounted();
     callback field-edited(int, string);
-    callback field-committed();
     callback save-clicked(string, string, string, string);
     callback test-clicked(int);
     callback remove-clicked(int);
@@ -579,9 +578,6 @@ export component SettingsView inherits FocusScope {
             edited(i, t) => {
                 root.field-edited(i, t);
             }
-            committed() => {
-                root.field-committed();
-            }
         }
         LabeledField {
             label: "Server";
@@ -594,9 +590,6 @@ export component SettingsView inherits FocusScope {
             edited(i, t) => {
                 root.field-edited(i, t);
             }
-            committed() => {
-                root.field-committed();
-            }
         }
         LabeledField {
             label: "Username";
@@ -608,9 +601,6 @@ export component SettingsView inherits FocusScope {
             error-text: SettingsModel.error-username;
             edited(i, t) => {
                 root.field-edited(i, t);
-            }
-            committed() => {
-                root.field-committed();
             }
         }
         password-field := LabeledField {
@@ -625,9 +615,6 @@ export component SettingsView inherits FocusScope {
             error-text: SettingsModel.error-password;
             edited(i, t) => {
                 root.field-edited(i, t);
-            }
-            committed() => {
-                root.field-committed();
             }
         }
         // Save carries click-through (r2 D34, F21): every click

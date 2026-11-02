@@ -1,0 +1,30 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The editing-facts singleton (r4 D20): the cross-view focus facts
+// the key path consults. Declared in its own globals file (the
+// drag-state / settings-facts precedent) so neither the text-field
+// primitive nor a view owns cross-view state.
+
+// Mounted TextFields whose inner input holds slint focus. +1 on
+// gain, −1 on loss; the adapter resets to 0 at the seams where a
+// focused field can unmount without a loss event (flow ends, view
+// swaps, modal opens). A count, not a bool: focus moving field A →
+// field B fires the two `changed` handlers in unspecified order, and
+// the count is order-independent where a bool can land B's `true`
+// before A's `false` and stick.
+//
+// The shell consults the count at the one key doorway (the capture
+// handler): count > 0 masks the view context via the insert chain —
+// any focused text field commits its own Return, in every view, with
+// zero per-mount wiring.
+export global EditingFacts {
+    in-out property <int> text-focus-count: 0;
+    // The task view's closed-cell activation stops (r4 D18): the
+    // same count discipline; > 0 reserves bare Return/Space for the
+    // focused cell's own key handler ahead of the preset bindings.
+    in-out property <int> activation-focus-count: 0;
+    // The adapter's reset seams (unmounts that fire no loss event)
+    // zero the counts and bump this generation; a publishing widget
+    // that sees a newer generation re-baselines its latch instead of
+    // paying a stale decrement into the fresh counts.
+    in-out property <int> generation: 0;
+}

@@ -415,6 +415,18 @@ impl Adapter {
     /// The capture-phase entry point (D18): slint event → `Stroke` →
     /// resolver. Accepts iff the resolver consumed the stroke;
     /// `Unhandled` rejects so delivery continues (Tab traversal).
+    ///
+    /// The D20 pulls run here, before the resolver feed, because every
+    /// keystroke re-reads the editing-facts singleton (Slint globals
+    /// do not notify Rust — pull-at-intercept is self-healing by
+    /// construction): a focused text field engages insert mode, a
+    /// fieldless insert disengages — and never under an armed flow or
+    /// the picker grid: the flow outcomes own their mode transitions
+    /// (a flow arms Insert before its field mounts and holds it to the
+    /// settle, the grid phase holds it while the *field* lost focus to
+    /// the grid; flipping Normal there would hand Escape to vi's
+    /// move-cancel instead of the clean close). The engage pull's
+    /// idempotence against the flow outcomes is the convergence.
     fn intercept(
         &mut self,
         window: &AppWindow,
@@ -427,6 +439,21 @@ impl Adapter {
         let Some(stroke) = to_stroke(text, modifiers) else {
             return false;
         };
+        {
+            let facts = window.global::<crate::EditingFacts>();
+            let text_focus = facts.get_text_focus_count();
+            if text_focus > 0 && self.shell.mode != Mode::Insert {
+                self.shell.apply(&UiEffect::SetMode(Mode::Insert), 0);
+                self.sync(window);
+            } else if text_focus == 0
+                && self.shell.mode == Mode::Insert
+                && !self.shell.date_picker_grid
+                && matches!(self.view_state.flow(), Flow::None)
+            {
+                self.shell.apply(&UiEffect::SetMode(Mode::Normal), 0);
+                self.sync(window);
+            }
+        }
         // The date editor's Down-in-field opens the picker focused
         // (r2 D25; round-3 D10): consumed here, ahead of the
         // resolver, so the insert-mode chain never has to bind it.
@@ -651,8 +678,27 @@ impl Adapter {
         // held slint focus; the active view scope takes it back (the
         // §7.3 journey caught the keyboard dead-end).
         if matches!(self.view_state.flow(), Flow::None) {
+            // The D20 reset seam 1 (flow ends): the funnel that drives
+            // `refocus_view` is where a focused field unmounts — the
+            // runtime never fires its loss event, so the counts would
+            // stick and mask the shell forever.
+            Self::reset_editing_facts(window);
             window.invoke_refocus_view();
         }
+    }
+
+    /// The D20 reset seams (see the flow-end call): both counts to 0
+    /// wherever the tree changes without delivering loss events. A
+    /// field that mounts focused re-publishes on its init focus grab,
+    /// so a reset never strands an engaged field.
+    fn reset_editing_facts(window: &AppWindow) {
+        let facts = window.global::<crate::EditingFacts>();
+        facts.set_text_focus_count(0);
+        facts.set_activation_focus_count(0);
+        // The generation bump tells every live publisher the counts
+        // were re-baselined, so its next focus event re-syncs its
+        // latch instead of paying a stale decrement.
+        facts.set_generation(facts.get_generation() + 1);
     }
 
     /// The injected day-boundary vocabulary ([`Self::day_ctx`]'s
@@ -1698,6 +1744,7 @@ impl Adapter {
         // (focus steps, scrolls, the walk) survive by construction;
         // the structural walk test pins the partition.
         let before = self.view_state.view_identity();
+        let palette_before = self.shell.palette;
         match effect {
             UiEffect::Exit => {
                 self.quit_requests += 1;
@@ -1712,6 +1759,10 @@ impl Adapter {
                 // The menu is the modal context now (r2 D13): no tip
                 // survives the open.
                 Self::dismiss_tooltip(window);
+                // The D20 reset seam 3 (modal opens): the reservation
+                // and the mask must not outlive the surface that
+                // armed them.
+                Self::reset_editing_facts(window);
                 // The projection is computed for the pre-menu chain
                 // (the active context's actions, §5.9); the menu
                 // context itself masks the chain once open (D11).
@@ -1837,6 +1888,15 @@ impl Adapter {
         // over, without the mounted view moving).
         if self.view_state.view_identity() != before {
             Self::dismiss_tooltip(window);
+            // The D20 reset seam 2 (view swaps): the same unmount
+            // hazard as the flow end, one enumerate-once tail.
+            Self::reset_editing_facts(window);
+        }
+        if self.shell.palette && !palette_before {
+            // The D20 reset seam 3's palette leg: the modal surface
+            // refocuses its own field (which re-publishes); the armed
+            // facts must not outlive what armed them.
+            Self::reset_editing_facts(window);
         }
     }
 
@@ -2614,9 +2674,9 @@ impl Adapter {
         });
     }
 
-    /// Mirrors one edited field into the draft (the buffer precedent);
-    /// engages insert mode once — the D18 text-input contract (a
-    /// focused field must receive printables untouched).
+    /// Mirrors one edited field into the draft (the buffer precedent).
+    /// Insert engagement is the D20 focus fact now — the field's
+    /// focused publish masks the chain; this seam only mirrors.
     pub(crate) fn settings_field_edited(&mut self, field: usize, text: &str, window: &AppWindow) {
         let target = match field {
             0 => &mut self.settings.draft.name,
@@ -2627,7 +2687,7 @@ impl Adapter {
                 // pushed model (the draft never renders it back).
                 self.settings.draft.password.clear();
                 self.settings.draft.password.push_str(text);
-                self.settings_field_insert_engage(window);
+                self.push_settings(window);
                 return;
             }
             4 => {
@@ -2636,33 +2696,14 @@ impl Adapter {
                 // input; a concurrent slider preview must not clobber
                 // it (writer point 2 gates on its presence).
                 self.settings.scale_draft = Some(text.to_owned());
-                self.settings_field_insert_engage(window);
+                self.push_settings(window);
                 return;
             }
             _ => return,
         };
         target.clear();
         target.push_str(text);
-        self.settings_field_insert_engage(window);
-    }
-
-    fn settings_field_insert_engage(&mut self, window: &AppWindow) {
-        if self.shell.mode != crate::router::Mode::Insert {
-            self.shell
-                .apply(&UiEffect::SetMode(crate::router::Mode::Insert), 0);
-            self.sync(window);
-        }
         self.push_settings(window);
-    }
-
-    /// Leaves the insert engagement (a field commit): back to Normal
-    /// so the settings chain resolves again.
-    pub(crate) fn settings_field_committed(&mut self, window: &AppWindow) {
-        if self.shell.mode == crate::router::Mode::Insert {
-            self.shell
-                .apply(&UiEffect::SetMode(crate::router::Mode::Normal), 0);
-            self.sync(window);
-        }
     }
 
     /// The Save seam: mirror the final field texts (the commit
@@ -2677,7 +2718,6 @@ impl Adapter {
         username: &str,
         password: &str,
     ) {
-        self.settings_field_committed(window);
         let draft = ConnectionDraft {
             name: name.to_owned(),
             server_url: server.to_owned(),
@@ -2951,7 +2991,6 @@ impl Adapter {
     /// The scale commit seam (field, Return-authoritative): live-apply
     /// first, then persist over the lane; an `Err` reply reverts (D9).
     pub(crate) fn settings_scale_committed(&mut self, window: &AppWindow, text: &str) {
-        self.settings_field_committed(window);
         if self.settings.pending.is_some() {
             self.set_settings_outcome(window, SettingsOutcome::Rejected, None);
             return;
@@ -4955,27 +4994,6 @@ fn send_toggled_done(adapter: &Adapter, task: taskboard_domain::TaskId) {
     });
 }
 
-impl Adapter {
-    /// The timers form's insert engagement (DR-3/3): the permanently
-    /// mounted fields must never feed the Normal-mode chain (Space is
-    /// task.complete there) — the settings fields' engage precedent.
-    fn timers_form_engage(&mut self, window: &AppWindow) {
-        if self.shell.mode != Mode::Insert {
-            self.shell.apply(&UiEffect::SetMode(Mode::Insert), 0);
-            self.sync(window);
-        }
-    }
-
-    /// Leaves the engagement (a committed form): back to Normal so
-    /// the chain resolves again (the settings commit precedent).
-    fn timers_form_committed(&mut self, window: &AppWindow) {
-        if self.shell.mode == Mode::Insert {
-            self.shell.apply(&UiEffect::SetMode(Mode::Normal), 0);
-            self.sync(window);
-        }
-    }
-}
-
 /// The timers surface's seams (DR-3/3, D-I8): the form's commit
 /// parses the grammar at the seam (the rule-add absorbed-miss
 /// convention) and routes; the section's cancel resolves the
@@ -5009,17 +5027,7 @@ fn install_timer_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
             when,
         });
         a.route(&window, ActionId::TimerCreate);
-        a.timers_form_committed(&window);
         true
-    });
-
-    let edited = Rc::clone(adapter);
-    let edited_weak = window.as_weak();
-    window.on_timers_form_edited(move || {
-        let Some(window) = edited_weak.upgrade() else {
-            return;
-        };
-        edited.borrow_mut().timers_form_engage(&window);
     });
 
     let cancel = Rc::clone(adapter);
@@ -5341,14 +5349,6 @@ fn install_settings_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
                 return;
             };
             adapter.borrow_mut().settings_preset_picked(&window, index);
-        });
-    }
-    {
-        let adapter = Rc::clone(adapter);
-        let weak = window.as_weak();
-        window.on_settings_field_committed(move || {
-            let Some(window) = weak.upgrade() else { return };
-            adapter.borrow_mut().settings_field_committed(&window);
         });
     }
     {
