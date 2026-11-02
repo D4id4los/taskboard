@@ -4326,3 +4326,852 @@ async fn a18_sync_actor_stamps_come_from_the_injected_clock_when_skewed() {
     assert_eq!(snapshot.board.deleted_at, Some(ts(T - 3600)));
     assert_eq!(snapshot.board.last_modified, ts(T));
 }
+
+// ---- chunk 4.3: the cross-board sidecar repair (#350, T12–T17) ---------
+// The pins observe the wire and report surface only: uploaded document
+// content, request hits, and report payloads — never actor internals.
+
+/// Two boards (42 origin, 43 destination) on one connector, each with
+/// its own anchor carrier; card 500 has moved 42 → 43.
+mod migrate_seed {
+    use super::*;
+
+    pub(crate) const BETA: u64 = 43;
+    pub(crate) const BETA_STACK: u64 = 70;
+    pub(crate) const ORIGIN_ANCHOR: u64 = 55;
+    pub(crate) const ORIGIN_PLAIN: u64 = 56;
+    pub(crate) const DEST_ANCHOR: u64 = 65;
+    pub(crate) const MOVED: u64 = 500;
+    pub(crate) const ORIGIN_ATTACHMENT: u64 = 11;
+    pub(crate) const DEST_ATTACHMENT: u64 = 21;
+    /// The moved card's rule UUID in the origin document.
+    pub(crate) const RULE_KEY: &str = "00000000-0000-0000-0000-00000000abc1";
+    /// The stamp every content-write response reports (and the anchor
+    /// details advertise, so the follow-up cycle is a cache hit).
+    pub(crate) const WRITE_STAMP: i64 = T + 100;
+    pub(crate) const WRITE_SIZE: i64 = 42;
+
+    /// The origin board's document: the moved card's entry in all three
+    /// card-keyed sections, with a verbatim unmodeled key.
+    pub(crate) fn origin_document_json() -> String {
+        serde_json::json!({
+            "format": 1, "board": BOARD,
+            "sections": {
+                "tasks": { "500": { "fields": {
+                    "effort": { "v": 900, "clock": "2026-01-01T00:00:00Z" }
+                }, "note": "hand-typed" } },
+                "reminder-rules": { "500": { "rules": {
+                    RULE_KEY: {
+                        "offset": -300, "created": "2026-01-01T00:00:00Z",
+                        "clock": "2026-01-01T00:05:00Z", "insistence": "normal" }
+                } } },
+                "dismissals": { "500": { "dismissals": {
+                    "00000000-0000-0000-0000-00000000abc1|2026-01-01T08:00:00Z": {
+                        "dismissed_at": "2026-01-01T08:00:01Z" }
+                } } }
+            }
+        })
+        .to_string()
+    }
+
+    /// The destination board's own (empty) document.
+    pub(crate) fn destination_document_json() -> String {
+        serde_json::json!({ "format": 1, "board": BETA, "sections": {} }).to_string()
+    }
+
+    /// The two-board pull: 42's and 43's listings carry their own cards,
+    /// 304-filling from warm validators on the follow-up pass.
+    pub(crate) async fn mount_two_board_pull(
+        server: &MockServer,
+        cards_42: serde_json::Value,
+        cards_43: serde_json::Value,
+    ) {
+        let cards_42 = std::sync::Arc::new(cards_42);
+        let cards_43 = std::sync::Arc::new(cards_43);
+        let responder = move |req: &wiremock::Request| {
+            let warm = req
+                .headers
+                .get("If-None-Match")
+                .is_some_and(|v| v.to_str().unwrap_or("").contains("gen-1"));
+            if warm {
+                return ResponseTemplate::new(304).insert_header("ETag", "\"gen-1\"");
+            }
+            let p = req.url.path().to_string();
+            let beta = p.contains("/boards/43");
+            let body = if p.ends_with("/stacks/archived") {
+                "[]".to_string()
+            } else if p.ends_with("/stacks") {
+                serde_json::json!([{
+                    "id": if beta { BETA_STACK } else { STACK },
+                    "title": if beta { "beta col" } else { "alpha col" },
+                    "boardId": if beta { BETA } else { BOARD },
+                    "order": 0, "lastModified": T, "deletedAt": 0,
+                    "archived": false,
+                    "cards": serde_json::Value::clone(if beta { &cards_43 } else { &cards_42 })
+                }])
+                .to_string()
+            } else if p.ends_with("/boards") {
+                serde_json::json!([
+                    { "id": BOARD, "title": "alpha board", "color": "00ff00",
+                      "lastModified": T, "deletedAt": 0, "archived": false,
+                      "labels": [] },
+                    { "id": BETA, "title": "beta board", "color": "0000ff",
+                      "lastModified": T, "deletedAt": 0, "archived": false,
+                      "labels": [] }
+                ])
+                .to_string()
+            } else {
+                serde_json::json!({
+                    "id": if beta { BETA } else { BOARD },
+                    "title": if beta { "beta board" } else { "alpha board" },
+                    "color": if beta { "0000ff" } else { "00ff00" },
+                    "lastModified": T, "deletedAt": 0,
+                    "archived": false, "labels": []
+                })
+                .to_string()
+            };
+            ResponseTemplate::new(200)
+                .insert_header("ETag", "\"gen-1\"")
+                .set_body_string(body)
+        };
+        for p in [
+            "/index.php/apps/deck/api/v1.0/boards".to_string(),
+            format!("/index.php/apps/deck/api/v1.0/boards/{BOARD}"),
+            format!("/index.php/apps/deck/api/v1.0/boards/{BETA}"),
+            format!("/index.php/apps/deck/api/v1.0/boards/{BOARD}/stacks"),
+            format!("/index.php/apps/deck/api/v1.0/boards/{BETA}/stacks"),
+            format!("/index.php/apps/deck/api/v1.0/boards/{BOARD}/stacks/archived"),
+            format!("/index.php/apps/deck/api/v1.0/boards/{BETA}/stacks/archived"),
+        ] {
+            Mock::given(method("GET"))
+                .and(path(p))
+                .respond_with(responder.clone())
+                .mount(server)
+                .await;
+        }
+    }
+
+    /// The standard pull of *only* the destination board (T15's shape).
+    pub(crate) async fn mount_beta_only_pull(server: &MockServer, cards_43: serde_json::Value) {
+        mount_two_board_pull(server, serde_json::json!([]), cards_43).await;
+    }
+
+    fn detail(card: u64, stack: u64, attachment: u64, stamp: i64, filesize: i64) -> String {
+        let mut detail = serde_json::json!({
+            "id": card, "title": sidecar::TITLE,
+            "stackId": stack, "type": "plain",
+            "order": 0, "lastModified": stamp, "labels": [], "archived": false,
+            "duedate": null, "done": null
+        });
+        detail["attachments"] = serde_json::json!([{
+            "id": attachment, "type": "deck_file", "cardId": card,
+            "createdAt": stamp, "lastModified": stamp, "deletedAt": 0,
+            "extendedData": {
+                "fileName": sidecar::FILENAME, "filesize": filesize,
+                "mimetype": "application/json", "mtime": stamp
+            }
+        }]);
+        detail.to_string()
+    }
+
+    /// The anchor detail with a write-stamped attachment, so a cycle
+    /// after a landed flush is a metadata cache hit.
+    pub(crate) async fn mount_anchor_detail(server: &MockServer, beta: bool) {
+        let (card, stack, attachment) = if beta {
+            (DEST_ANCHOR, BETA_STACK, DEST_ATTACHMENT)
+        } else {
+            (ORIGIN_ANCHOR, STACK, ORIGIN_ATTACHMENT)
+        };
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/index.php/apps/deck/api/v1.0/boards/{}/stacks/{}/cards/{}",
+                if beta { BETA } else { BOARD },
+                stack,
+                card
+            )))
+            .respond_with(ResponseTemplate::new(200).set_body_string(detail(
+                card,
+                stack,
+                attachment,
+                WRITE_STAMP,
+                WRITE_SIZE,
+            )))
+            .mount(server)
+            .await;
+    }
+
+    /// A plain bound card's detail refresh (no attachments — not an
+    /// anchor candidate).
+    pub(crate) async fn mount_plain_detail(server: &MockServer, board: u64, card: u64) {
+        let stack = if board == BOARD { STACK } else { BETA_STACK };
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/index.php/apps/deck/api/v1.0/boards/{board}/stacks/{stack}/cards/{card}"
+            )))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(
+                    serde_json::json!({
+                        "id": card, "title": "a bound card", "stackId": stack,
+                        "type": "plain", "order": 1, "lastModified": T,
+                        "labels": [], "archived": false, "duedate": null, "done": null
+                    })
+                    .to_string(),
+                ),
+            )
+            .mount(server)
+            .await;
+    }
+
+    pub(crate) async fn mount_download(server: &MockServer, beta: bool, body: String, status: u16) {
+        let (board, stack, card, attachment) = if beta {
+            (BETA, BETA_STACK, DEST_ANCHOR, DEST_ATTACHMENT)
+        } else {
+            (BOARD, STACK, ORIGIN_ANCHOR, ORIGIN_ATTACHMENT)
+        };
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/index.php/apps/deck/api/v1.0/boards/{board}/stacks/{stack}/cards/{card}/attachments/{attachment}"
+            )))
+            .respond_with(ResponseTemplate::new(status).set_body_string(body))
+            .mount(server)
+            .await;
+    }
+
+    pub(crate) async fn mount_content_put(server: &MockServer, beta: bool, status: u16) {
+        let (card, attachment) = if beta {
+            (DEST_ANCHOR, DEST_ATTACHMENT)
+        } else {
+            (ORIGIN_ANCHOR, ORIGIN_ATTACHMENT)
+        };
+        Mock::given(method("POST"))
+            .and(path(format!(
+                "/index.php/apps/deck/cards/{card}/attachment/deck_file:{attachment}"
+            )))
+            .respond_with(
+                ResponseTemplate::new(status).set_body_string(
+                    serde_json::json!({
+                        "id": attachment, "type": "deck_file", "cardId": card,
+                        "createdAt": WRITE_STAMP, "lastModified": WRITE_STAMP,
+                        "deletedAt": 0,
+                        "extendedData": {
+                            "fileName": sidecar::FILENAME, "filesize": WRITE_SIZE,
+                            "mimetype": "application/json", "mtime": WRITE_STAMP
+                        }
+                    })
+                    .to_string(),
+                ),
+            )
+            .mount(server)
+            .await;
+    }
+
+    /// Both boards bound, warm validators; `reverse` puts board 43 first
+    /// in the pass (T17's cold-cache shape). `flush_work` adds a bound
+    /// card-56 task on 42 with app-data and a queued `UpdateAppData` op
+    /// (T14's origin-flush shape); `beta_flush_work` the same on 43's
+    /// carrier card (T16's fenced-work shape).
+    pub(crate) async fn repo(
+        reverse: bool,
+        flush_work: bool,
+        beta_flush_work: bool,
+    ) -> Arc<InMemoryRepository> {
+        let mut state = PersistedState::default();
+        let mut origin = bound_board();
+        let mut beta = bound_board();
+        if reverse {
+            beta.id = taskboard_domain::BoardId::from(uuid(1));
+            origin.id = taskboard_domain::BoardId::from(uuid(9));
+        } else {
+            origin.id = taskboard_domain::BoardId::from(uuid(1));
+            beta.id = taskboard_domain::BoardId::from(uuid(9));
+        }
+        origin.remote = Some(taskboard_domain::RemoteBoardBinding {
+            connector: ConnectorId::from("nextcloud"),
+            board: RemoteBoardId(BOARD),
+        });
+        beta.remote = Some(taskboard_domain::RemoteBoardBinding {
+            connector: ConnectorId::from("nextcloud"),
+            board: RemoteBoardId(43),
+        });
+        state.boards.insert(origin.id, origin.clone());
+        state.boards.insert(beta.id, beta.clone());
+        let beta_local_id = beta.id;
+        let mut alpha_stack = bound_stack(2, STACK);
+        alpha_stack.board = origin.id;
+        state.stacks.insert(alpha_stack.id, alpha_stack);
+        let mut beta_stack = bound_stack(3, BETA_STACK);
+        beta_stack.remote = Some(taskboard_domain::RemoteStackRef {
+            board: RemoteBoardId(43),
+            stack: taskboard_domain::RemoteStackId(BETA_STACK),
+        });
+        beta_stack.board = beta_local_id;
+        state.stacks.insert(beta_stack.id, beta_stack);
+
+        let bound_task = |raw: u128, stack_local: u128, board: u64, stack: u64, card: u64| {
+            let (mut task, _) = draft(raw, stack_local, "a bound card");
+            task.remote = Some(taskboard_domain::RemoteCardRef {
+                board: RemoteBoardId(board),
+                stack: taskboard_domain::RemoteStackId(stack),
+                card: taskboard_domain::RemoteCardId(card),
+            });
+            task.remote_seen = Some(ts(T));
+            task
+        };
+        if flush_work {
+            let mut task = bound_task(200, 2, BOARD, STACK, ORIGIN_PLAIN);
+            task.effort = Some(taskboard_domain::entities::Effort::new(300));
+            task.clocks.effort = ts(T + 10);
+            state.tasks.insert(task.id, task);
+            state.outbox.push(PendingOp {
+                op_id: OpId(uuid(201)),
+                op: LocalOp::UpdateAppData(taskboard_domain::TaskId::from(uuid(200))),
+                queued_at: ts(T + 30),
+            });
+        }
+        if beta_flush_work {
+            let mut task = bound_task(300, 3, 43, BETA_STACK, DEST_ANCHOR);
+            task.effort = Some(taskboard_domain::entities::Effort::new(300));
+            task.clocks.effort = ts(T + 10);
+            state.tasks.insert(task.id, task);
+            state.outbox.push(PendingOp {
+                op_id: OpId(uuid(301)),
+                op: LocalOp::UpdateAppData(taskboard_domain::TaskId::from(uuid(300))),
+                queued_at: ts(T + 30),
+            });
+        }
+        let repo = Arc::new(InMemoryRepository::with_state(state));
+        for key in [
+            taskboard_domain::ValidatorKey::Boards,
+            taskboard_domain::ValidatorKey::Stacks(RemoteBoardId(BOARD)),
+            taskboard_domain::ValidatorKey::ArchivedStacks(RemoteBoardId(BOARD)),
+            taskboard_domain::ValidatorKey::Stacks(RemoteBoardId(43)),
+            taskboard_domain::ValidatorKey::ArchivedStacks(RemoteBoardId(43)),
+        ] {
+            InMemoryRepository::apply(
+                repo.as_ref(),
+                vec![taskboard_domain::PersistenceAction::UpsertValidators(
+                    key,
+                    taskboard_domain::SyncValidators {
+                        etag: Some("\"gen-1\"".into()),
+                        last_modified: None,
+                    },
+                )],
+            )
+            .await
+            .expect("seed validators");
+        }
+        repo
+    }
+
+    /// One full pass over both boards: the two per-board reports, in
+    /// arrival order.
+    pub(crate) async fn pass(actor: &mut Actor) -> (SyncReport, SyncReport) {
+        actor
+            .commands
+            .send(SyncCommand::SyncNow)
+            .await
+            .expect("commands channel open");
+        let first = next_report(actor).await;
+        let second = next_report(actor).await;
+        (first, second)
+    }
+
+    /// The document JSON a multipart content-write carries (the file
+    /// part's balanced object starting at `{"format"`).
+    pub(crate) fn uploaded_document(bytes: &[u8]) -> serde_json::Value {
+        let body = String::from_utf8_lossy(bytes);
+        let start = body
+            .find("{\"format\"")
+            .expect("the document JSON rides the multipart body");
+        let rest = &body[start..];
+        let mut depth = 0usize;
+        let mut end = rest.len();
+        let mut in_string = false;
+        let mut escaped = false;
+        for (i, ch) in rest.char_indices() {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            match ch {
+                '\\' if in_string => escaped = true,
+                '"' => in_string = !in_string,
+                '{' if !in_string => depth += 1,
+                '}' if !in_string => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = i + 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        serde_json::from_str(&rest[..end]).expect("the uploaded document parses")
+    }
+
+    /// The destination board's content-write request, if any landed.
+    pub(crate) async fn destination_write(server: &MockServer) -> Option<wiremock::Request> {
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|r| {
+                r.method == "POST"
+                    && r.url
+                        .path()
+                        .contains(&format!("/cards/{DEST_ANCHOR}/attachment/"))
+            })
+    }
+
+    /// The origin board's content-write request, if any landed.
+    pub(crate) async fn origin_write(server: &MockServer) -> Option<wiremock::Request> {
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|r| {
+                r.method == "POST"
+                    && r.url
+                        .path()
+                        .contains(&format!("/cards/{ORIGIN_ANCHOR}/attachment/"))
+            })
+    }
+
+    pub(crate) async fn download_count(server: &MockServer) -> usize {
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|r| r.url.path().contains("/attachments/"))
+            .count()
+    }
+}
+
+use migrate_seed as seed;
+
+/// T12 — the both-boards-one-connector pin: board 43's flush migrates
+/// card 500's entries from board 42's cached document, and the uploaded
+/// destination document carries them **serde-value-equal** to the
+/// origin's — clocks byte-identical (hard rule: a reset clock would
+/// re-open LWW races). Board 42 receives no write.
+#[tokio::test(start_paused = true)]
+async fn t12_the_cross_board_move_migrates_the_entry_between_two_owned_boards() {
+    let server = start_server().await;
+    mount_capabilities(&server, Some("1.19.0")).await;
+    seed::mount_two_board_pull(
+        &server,
+        serde_json::json!([{
+            "id": seed::ORIGIN_ANCHOR, "title": sidecar::TITLE, "stackId": STACK,
+            "type": "plain", "order": 0, "lastModified": T, "labels": [],
+            "archived": false, "duedate": null, "done": null
+        }]),
+        serde_json::json!([{
+            "id": seed::DEST_ANCHOR, "title": sidecar::TITLE, "stackId": seed::BETA_STACK,
+            "type": "plain", "order": 0, "lastModified": T, "labels": [],
+            "archived": false, "duedate": null, "done": null
+        }, {
+            "id": seed::MOVED, "title": "moved card", "stackId": seed::BETA_STACK,
+            "type": "plain", "order": 1, "lastModified": T, "labels": [],
+            "archived": false, "duedate": null, "done": null
+        }]),
+    )
+    .await;
+    seed::mount_anchor_detail(&server, false).await;
+    seed::mount_anchor_detail(&server, true).await;
+    seed::mount_download(&server, false, seed::origin_document_json(), 200).await;
+    seed::mount_download(&server, true, seed::destination_document_json(), 200).await;
+    seed::mount_content_put(&server, true, 200).await;
+
+    let mut actor = spawn(&server, seed::repo(false, false, false).await);
+    let (first, second) = seed::pass(&mut actor).await;
+    assert!(matches!(first, SyncReport::Completed { .. }));
+    let SyncReport::Completed { snapshot, .. } = second else {
+        panic!("expected the destination board's Completed report");
+    };
+    assert_eq!(snapshot.board.id, RemoteBoardId(43));
+
+    let origin_doc: serde_json::Value =
+        serde_json::from_str(&seed::origin_document_json()).unwrap();
+    let request = seed::destination_write(&server)
+        .await
+        .expect("the migration write landed");
+    assert!(
+        seed::origin_write(&server).await.is_none(),
+        "the origin board receives no write"
+    );
+    let uploaded = seed::uploaded_document(&request.body);
+    assert_eq!(
+        uploaded["sections"]["tasks"]["500"], origin_doc["sections"]["tasks"]["500"],
+        "the migrated task entry is a structural clone — clocks byte-identical"
+    );
+    assert_eq!(
+        uploaded["sections"]["reminder-rules"]["500"],
+        origin_doc["sections"]["reminder-rules"]["500"],
+        "the migrated rules entry is a structural clone"
+    );
+    assert_eq!(
+        uploaded["sections"]["dismissals"]["500"], origin_doc["sections"]["dismissals"]["500"],
+        "the migrated dismissals entry is a structural clone"
+    );
+}
+
+/// T13 — the idempotence pin, continuing T12's actor: the second pass
+/// performs zero attachment writes and zero downloads (the migrated
+/// clocks sit in the destination base, so the strictly-newer predicate
+/// finds nothing; the metadata caches hold for both boards).
+#[tokio::test(start_paused = true)]
+async fn t13_a_second_cycle_finds_nothing_to_migrate() {
+    let server = start_server().await;
+    mount_capabilities(&server, Some("1.19.0")).await;
+    seed::mount_two_board_pull(
+        &server,
+        serde_json::json!([{
+            "id": seed::ORIGIN_ANCHOR, "title": sidecar::TITLE, "stackId": STACK,
+            "type": "plain", "order": 0, "lastModified": T, "labels": [],
+            "archived": false, "duedate": null, "done": null
+        }]),
+        serde_json::json!([{
+            "id": seed::DEST_ANCHOR, "title": sidecar::TITLE, "stackId": seed::BETA_STACK,
+            "type": "plain", "order": 0, "lastModified": T, "labels": [],
+            "archived": false, "duedate": null, "done": null
+        }, {
+            "id": seed::MOVED, "title": "moved card", "stackId": seed::BETA_STACK,
+            "type": "plain", "order": 1, "lastModified": T, "labels": [],
+            "archived": false, "duedate": null, "done": null
+        }]),
+    )
+    .await;
+    seed::mount_anchor_detail(&server, false).await;
+    seed::mount_anchor_detail(&server, true).await;
+    seed::mount_download(&server, false, seed::origin_document_json(), 200).await;
+    seed::mount_download(&server, true, seed::destination_document_json(), 200).await;
+    seed::mount_content_put(&server, true, 200).await;
+
+    let mut actor = spawn(&server, seed::repo(false, false, false).await);
+    let (first, second) = seed::pass(&mut actor).await;
+    assert!(matches!(first, SyncReport::Completed { .. }));
+    assert!(matches!(second, SyncReport::Completed { .. }));
+    assert!(
+        seed::destination_write(&server).await.is_some(),
+        "pass 1 migrates"
+    );
+
+    let writes_after_pass_1 = flush_seed::write_hits(&server).await.len();
+    let downloads_after_pass_1 = seed::download_count(&server).await;
+    let (third, fourth) = seed::pass(&mut actor).await;
+    assert!(matches!(third, SyncReport::Completed { .. }));
+    assert!(matches!(fourth, SyncReport::Completed { .. }));
+    assert_eq!(
+        flush_seed::write_hits(&server).await.len(),
+        writes_after_pass_1,
+        "the second pass finds nothing to migrate"
+    );
+    assert_eq!(
+        seed::download_count(&server).await,
+        downloads_after_pass_1,
+        "the second pass re-downloads nothing"
+    );
+}
+
+/// T14 — the copy-then-GC pin: board 42's own flush (a queued op on
+/// another 42-task) evicts card 500's entry into the reservoir *and*
+/// replaces 42's cache; the destination's migration still finds the
+/// entry — reservoir-sourced — and a follow-up pass finds nothing.
+#[tokio::test(start_paused = true)]
+async fn t14_the_gc_evicted_entry_still_migrates_from_the_reservoir() {
+    let server = start_server().await;
+    mount_capabilities(&server, Some("1.19.0")).await;
+    seed::mount_two_board_pull(
+        &server,
+        serde_json::json!([{
+            "id": seed::ORIGIN_ANCHOR, "title": sidecar::TITLE, "stackId": STACK,
+            "type": "plain", "order": 0, "lastModified": T, "labels": [],
+            "archived": false, "duedate": null, "done": null
+        }, {
+            "id": seed::ORIGIN_PLAIN, "title": "a bound card", "stackId": STACK,
+            "type": "plain", "order": 1, "lastModified": T, "labels": [],
+            "archived": false, "duedate": null, "done": null
+        }]),
+        serde_json::json!([{
+            "id": seed::DEST_ANCHOR, "title": sidecar::TITLE, "stackId": seed::BETA_STACK,
+            "type": "plain", "order": 0, "lastModified": T, "labels": [],
+            "archived": false, "duedate": null, "done": null
+        }, {
+            "id": seed::MOVED, "title": "moved card", "stackId": seed::BETA_STACK,
+            "type": "plain", "order": 1, "lastModified": T, "labels": [],
+            "archived": false, "duedate": null, "done": null
+        }]),
+    )
+    .await;
+    seed::mount_anchor_detail(&server, false).await;
+    seed::mount_plain_detail(&server, BOARD, seed::ORIGIN_PLAIN).await;
+    seed::mount_anchor_detail(&server, true).await;
+    seed::mount_download(&server, false, seed::origin_document_json(), 200).await;
+    seed::mount_download(&server, true, seed::destination_document_json(), 200).await;
+    seed::mount_content_put(&server, false, 200).await;
+    seed::mount_content_put(&server, true, 200).await;
+
+    let mut actor = spawn(&server, seed::repo(false, true, false).await);
+    let (first, second) = seed::pass(&mut actor).await;
+    // Board 42's flush landed its own op…
+    let SyncReport::Completed {
+        snapshot: origin_snapshot,
+        pushes,
+        ..
+    } = first
+    else {
+        panic!("expected the origin board's Completed report");
+    };
+    assert_eq!(origin_snapshot.board.id, RemoteBoardId(BOARD));
+    assert!(
+        pushes.iter().any(|outcome| {
+            outcome.op == taskboard_domain::OpId(uuid(201))
+                && matches!(outcome.result, PushResult::Applied { echo: None })
+        }),
+        "the origin flush completed its op: {pushes:?}"
+    );
+    // …and board 43 still migrates card 500's entry — from the
+    // reservoir, because 42's Applied verdict replaced the cache with
+    // the pruned document in the very same pass.
+    let SyncReport::Completed {
+        snapshot: beta_snapshot,
+        ..
+    } = second
+    else {
+        panic!("expected the destination board's Completed report");
+    };
+    assert_eq!(beta_snapshot.board.id, RemoteBoardId(43));
+    let origin_doc: serde_json::Value =
+        serde_json::from_str(&seed::origin_document_json()).unwrap();
+    let request = seed::destination_write(&server)
+        .await
+        .expect("the reservoir-sourced migration landed");
+    let uploaded = seed::uploaded_document(&request.body);
+    assert_eq!(
+        uploaded["sections"]["tasks"]["500"], origin_doc["sections"]["tasks"]["500"],
+        "the GC-evicted entry still migrates with unchanged clocks"
+    );
+
+    // The follow-up pass: the reservoir was consumed on success — board
+    // 42's own queued flush op re-fires (this harness's repo never
+    // completes ops; f01's property), but the destination's migration
+    // finds nothing and writes nothing.
+    let dest_writes_after_pass_1 = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| {
+            r.url
+                .path()
+                .contains(&format!("/cards/{}/attachment/", seed::DEST_ANCHOR))
+        })
+        .count();
+    let (third, fourth) = seed::pass(&mut actor).await;
+    assert!(matches!(third, SyncReport::Completed { .. }));
+    assert!(matches!(fourth, SyncReport::Completed { .. }));
+    let dest_writes_after_pass_2 = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| {
+            r.url
+                .path()
+                .contains(&format!("/cards/{}/attachment/", seed::DEST_ANCHOR))
+        })
+        .count();
+    assert_eq!(
+        dest_writes_after_pass_2, dest_writes_after_pass_1,
+        "the reservoir was consumed: the second pass re-migrates nothing"
+    );
+}
+
+/// T15 — the degradation pin: only board 43 bound, no sibling documents
+/// anywhere — the cycle completes, evidence unchanged, no migration
+/// write, no failure (a missing sibling is exactly today's behavior).
+#[tokio::test(start_paused = true)]
+async fn t15_a_missing_sibling_degrades_to_todays_adoption() {
+    let server = start_server().await;
+    mount_capabilities(&server, Some("1.19.0")).await;
+    seed::mount_beta_only_pull(
+        &server,
+        serde_json::json!([{
+            "id": seed::DEST_ANCHOR, "title": sidecar::TITLE, "stackId": seed::BETA_STACK,
+            "type": "plain", "order": 0, "lastModified": T, "labels": [],
+            "archived": false, "duedate": null, "done": null
+        }, {
+            "id": seed::MOVED, "title": "moved card", "stackId": seed::BETA_STACK,
+            "type": "plain", "order": 1, "lastModified": T, "labels": [],
+            "archived": false, "duedate": null, "done": null
+        }]),
+    )
+    .await;
+    seed::mount_anchor_detail(&server, true).await;
+    seed::mount_download(&server, true, seed::destination_document_json(), 200).await;
+
+    // Only board 43 is persisted; the repo builder's origin row is
+    // absent — rebuild the state by hand.
+    let mut state = PersistedState::default();
+    let mut beta = bound_board();
+    beta.id = taskboard_domain::BoardId::from(uuid(1));
+    beta.remote = Some(taskboard_domain::RemoteBoardBinding {
+        connector: ConnectorId::from("nextcloud"),
+        board: RemoteBoardId(43),
+    });
+    let beta_local_id = beta.id;
+    state.boards.insert(beta.id, beta);
+    let mut beta_stack = bound_stack(3, seed::BETA_STACK);
+    beta_stack.remote = Some(taskboard_domain::RemoteStackRef {
+        board: RemoteBoardId(43),
+        stack: taskboard_domain::RemoteStackId(seed::BETA_STACK),
+    });
+    beta_stack.board = beta_local_id;
+    state.stacks.insert(beta_stack.id, beta_stack);
+    let repo = Arc::new(InMemoryRepository::with_state(state));
+
+    let mut actor = spawn(&server, repo);
+    let report = nudge_and_report(&mut actor).await;
+    let SyncReport::Completed {
+        snapshot, app_data, ..
+    } = report
+    else {
+        panic!("the cycle completes with a missing sibling");
+    };
+    assert_eq!(snapshot.board.id, RemoteBoardId(43));
+    assert!(
+        matches!(app_data, taskboard_domain::AppDataEvidence::Document(_)),
+        "evidence unchanged: the destination document is the read it was"
+    );
+    assert!(
+        flush_seed::write_hits(&server).await.is_empty(),
+        "no migration write: the fragment contributes nothing"
+    );
+}
+
+/// T16 — the unreadable-destination fence composes: board 43's document
+/// download fails (a queued flush op proves work existed), yet there is
+/// no flush attempt, no write, and the cycle still completes — the
+/// migration adds no new failure surface (D5).
+#[tokio::test(start_paused = true)]
+async fn t16_an_unreadable_destination_document_suppresses_the_migration() {
+    let server = start_server().await;
+    mount_capabilities(&server, Some("1.19.0")).await;
+    seed::mount_two_board_pull(
+        &server,
+        serde_json::json!([{
+            "id": seed::ORIGIN_ANCHOR, "title": sidecar::TITLE, "stackId": STACK,
+            "type": "plain", "order": 0, "lastModified": T, "labels": [],
+            "archived": false, "duedate": null, "done": null
+        }]),
+        serde_json::json!([{
+            "id": seed::DEST_ANCHOR, "title": sidecar::TITLE, "stackId": seed::BETA_STACK,
+            "type": "plain", "order": 0, "lastModified": T, "labels": [],
+            "archived": false, "duedate": null, "done": null
+        }, {
+            "id": seed::MOVED, "title": "moved card", "stackId": seed::BETA_STACK,
+            "type": "plain", "order": 1, "lastModified": T, "labels": [],
+            "archived": false, "duedate": null, "done": null
+        }]),
+    )
+    .await;
+    seed::mount_anchor_detail(&server, false).await;
+    seed::mount_anchor_detail(&server, true).await;
+    seed::mount_download(&server, false, seed::origin_document_json(), 200).await;
+    seed::mount_download(&server, true, String::new(), 500).await;
+    seed::mount_content_put(&server, true, 200).await;
+
+    let mut actor = spawn(&server, seed::repo(false, false, true).await);
+    let (first, second) = seed::pass(&mut actor).await;
+    assert!(matches!(first, SyncReport::Completed { .. }));
+    let SyncReport::Completed {
+        snapshot, app_data, ..
+    } = second
+    else {
+        panic!("the cycle completes despite the failed download");
+    };
+    assert_eq!(snapshot.board.id, RemoteBoardId(43));
+    assert!(
+        matches!(
+            app_data,
+            taskboard_domain::AppDataEvidence::Unreadable(
+                taskboard_domain::AppDataUnreadable::ServerFault
+            )
+        ),
+        "typed failure, no silence: {app_data:?}"
+    );
+    assert!(
+        flush_seed::write_hits(&server).await.is_empty(),
+        "no flush attempt: the fence swallows the queued op and the migration"
+    );
+    // The op stays queued (the engine owns completion; the stranded op
+    // simply never reported Applied).
+}
+
+/// T17 — the cold-cache consequence (D3), pinned as a contract: a fresh
+/// actor whose destination cycles before the origin's first ingest
+/// migrates nothing in pass 1 and converges in pass 2.
+#[tokio::test(start_paused = true)]
+async fn t17_a_cold_cache_converges_on_the_next_full_pass() {
+    let server = start_server().await;
+    mount_capabilities(&server, Some("1.19.0")).await;
+    seed::mount_two_board_pull(
+        &server,
+        serde_json::json!([{
+            "id": seed::ORIGIN_ANCHOR, "title": sidecar::TITLE, "stackId": STACK,
+            "type": "plain", "order": 0, "lastModified": T, "labels": [],
+            "archived": false, "duedate": null, "done": null
+        }]),
+        serde_json::json!([{
+            "id": seed::DEST_ANCHOR, "title": sidecar::TITLE, "stackId": seed::BETA_STACK,
+            "type": "plain", "order": 0, "lastModified": T, "labels": [],
+            "archived": false, "duedate": null, "done": null
+        }, {
+            "id": seed::MOVED, "title": "moved card", "stackId": seed::BETA_STACK,
+            "type": "plain", "order": 1, "lastModified": T, "labels": [],
+            "archived": false, "duedate": null, "done": null
+        }]),
+    )
+    .await;
+    seed::mount_anchor_detail(&server, false).await;
+    seed::mount_anchor_detail(&server, true).await;
+    seed::mount_download(&server, false, seed::origin_document_json(), 200).await;
+    seed::mount_download(&server, true, seed::destination_document_json(), 200).await;
+    seed::mount_content_put(&server, true, 200).await;
+
+    // `reverse`: board 43 cycles first — before board 42's document has
+    // ever been ingested.
+    let mut actor = spawn(&server, seed::repo(true, false, false).await);
+    let (first, second) = seed::pass(&mut actor).await;
+    let SyncReport::Completed {
+        snapshot: beta_snapshot,
+        ..
+    } = first
+    else {
+        panic!("expected the destination board's Completed report");
+    };
+    assert_eq!(beta_snapshot.board.id, RemoteBoardId(43));
+    assert!(matches!(second, SyncReport::Completed { .. }));
+    assert!(
+        seed::destination_write(&server).await.is_none(),
+        "pass 1 migrates nothing: the sibling cache is cold"
+    );
+
+    let (third, fourth) = seed::pass(&mut actor).await;
+    assert!(matches!(third, SyncReport::Completed { .. }));
+    assert!(matches!(fourth, SyncReport::Completed { .. }));
+    let origin_doc: serde_json::Value =
+        serde_json::from_str(&seed::origin_document_json()).unwrap();
+    let request = seed::destination_write(&server)
+        .await
+        .expect("pass 2 converges: the warm cache migrates");
+    let uploaded = seed::uploaded_document(&request.body);
+    assert_eq!(
+        uploaded["sections"]["tasks"]["500"], origin_doc["sections"]["tasks"]["500"],
+        "the pass-2 migration is the same structural clone"
+    );
+}
