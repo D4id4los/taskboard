@@ -54,6 +54,36 @@
 //!   iterations = the honest worst case; the last iteration rides
 //!   along for warm-up vs steady-state separation), never hidden.
 //!
+//! What N measures after virtualisation (#461, chunk 4.1): N still
+//! seeds the fixture and still drives the **model-side** extent — a
+//! state-changing refresh derives and diffs all N rows per section
+//! (`push_today` is deliberately uncapped: a cap would hide rows from
+//! the keyboard walk and is a user-visible policy with no mandate).
+//! Since the #463 unchanged-snapshot guard, the `refresh/{n}` lane
+//! itself measures the guarded no-op path (its routine never changes
+//! state), so it reads the guard's cost, not the derive+diff — the
+//! derive's N-cost is the draw lanes' unmeasured setup, as for the
+//! partial flips. The **draw**
+//! lanes raster a viewport-scale scene at every N: since #511 mounted
+//! the `ListView` mechanism on the board columns and the four Today
+//! sections, draw cost is decoupled from list extent (reference
+//! numbers in the stage-2 report §4 of
+//! `.artifacts/reports/2026-10-26-listview-virtualisation-stage2-report.md`:
+//! today draw-full 19.9 → 1.44 ms and draw-partial 903 → 5.75 ms at
+//! N = 10 000, every draw lane N-independent). The partial flip stays
+//! the removal class on Today (the flip's 2024 stamp falls outside the
+//! done-today window, so the target leaves the Overdue list) and the
+//! in-place class on the board. No live unvirtualised lane is kept
+//! (recorded decision, #461 stage-1 plan D-4): the detection duty a
+//! live eager lane would carry is carried by the structural
+//! engagement probes (`the_today_sections_virtualise` and the
+//! ListView-contract probes in `tests/virtualisation.rs` — a silent
+//! de-virtualisation fails a named test loudly), and the magnitude
+//! duty by the recorded pre/post baselines above; an eager Today lane
+//! would be dead markup shipping in the binary, and a size-scaled
+//! viewport is physically impossible at N = 10 000 (past the i16
+//! pixel ceiling, #462).
+//!
 //! No GL/llvmpipe path anywhere: the software renderer is pure CPU
 //! over a caller buffer (`slint::platform::software_renderer`, the
 //! linuxkms production path). No tracing subscriber is installed
