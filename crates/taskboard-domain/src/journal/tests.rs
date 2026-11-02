@@ -209,6 +209,7 @@ fn fixture_task() -> crate::entities::Task {
         importance: None,
         urgency: None,
         recur: None,
+        kind: crate::entities::TaskKind::Standard,
         archived: false,
         deleted: false,
         clocks: crate::entities::TaskClocks {
@@ -222,6 +223,7 @@ fn fixture_task() -> crate::entities::Task {
             importance: ts(100),
             urgency: ts(100),
             recur: ts(100),
+            kind: ts(100),
             archived: ts(100),
             deleted: ts(100),
         },

@@ -530,6 +530,14 @@ pub struct TaskChanges {
         skip_serializing_if = "Option::is_none"
     )]
     pub recur: Option<Option<crate::recur::RecurRule>>,
+    /// New task kind; `Some(None)` resets to the `Standard` default,
+    /// `None` = untouched.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub kind: Option<Option<crate::entities::TaskKind>>,
     /// New archived flag.
     pub archived: Option<bool>,
 }

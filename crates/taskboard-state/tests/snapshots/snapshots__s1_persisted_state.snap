@@ -62,6 +62,7 @@ tasks:
     importance: ~
     urgency: ~
     recur: ~
+    kind: standard
     archived: false
     deleted: true
     clocks:
@@ -75,6 +76,7 @@ tasks:
       importance: "1970-01-01T10:02:00Z"
       urgency: "1970-01-01T10:02:00Z"
       recur: "1970-01-01T10:02:00Z"
+      kind: "1970-01-01T10:02:00Z"
       archived: "1970-01-01T10:02:00Z"
       deleted: "1970-01-01T10:09:00Z"
     remote_seen: ~
@@ -187,6 +189,7 @@ journal:
                     importance: "1970-01-01T10:02:00Z"
                     urgency: "1970-01-01T10:02:00Z"
                     recur: "1970-01-01T10:02:00Z"
+                    kind: "1970-01-01T10:02:00Z"
                     archived: "1970-01-01T10:02:00Z"
                     deleted: "1970-01-01T10:02:00Z"
                   memberships: {}
@@ -225,6 +228,7 @@ journal:
                   importance: ~
                   urgency: ~
                   recur: ~
+                  kind: standard
                   archived: false
                   deleted: false
                   clocks:
@@ -238,6 +242,7 @@ journal:
                     importance: "1970-01-01T10:02:00Z"
                     urgency: "1970-01-01T10:02:00Z"
                     recur: "1970-01-01T10:02:00Z"
+                    kind: "1970-01-01T10:02:00Z"
                     archived: "1970-01-01T10:02:00Z"
                     deleted: "1970-01-01T10:02:00Z"
                   remote_seen: ~
@@ -256,6 +261,7 @@ journal:
                     importance: "1970-01-01T10:02:00Z"
                     urgency: "1970-01-01T10:02:00Z"
                     recur: "1970-01-01T10:02:00Z"
+                    kind: "1970-01-01T10:02:00Z"
                     archived: "1970-01-01T10:02:00Z"
                     deleted: "1970-01-01T10:02:00Z"
                   memberships: {}
@@ -290,6 +296,7 @@ journal:
                   importance: ~
                   urgency: ~
                   recur: ~
+                  kind: standard
                   archived: false
                   deleted: false
                   clocks:
@@ -303,6 +310,7 @@ journal:
                     importance: "1970-01-01T10:02:00Z"
                     urgency: "1970-01-01T10:02:00Z"
                     recur: "1970-01-01T10:02:00Z"
+                    kind: "1970-01-01T10:02:00Z"
                     archived: "1970-01-01T10:02:00Z"
                     deleted: "1970-01-01T10:02:00Z"
                   remote_seen: ~
@@ -321,6 +329,7 @@ journal:
                     importance: "1970-01-01T10:02:00Z"
                     urgency: "1970-01-01T10:02:00Z"
                     recur: "1970-01-01T10:02:00Z"
+                    kind: "1970-01-01T10:02:00Z"
                     archived: "1970-01-01T10:02:00Z"
                     deleted: "1970-01-01T10:02:00Z"
                   memberships: {}
@@ -379,6 +388,7 @@ journal:
                   importance: ~
                   urgency: ~
                   recur: ~
+                  kind: standard
                   archived: false
                   deleted: false
                   clocks:
@@ -392,6 +402,7 @@ journal:
                     importance: "1970-01-01T10:02:00Z"
                     urgency: "1970-01-01T10:02:00Z"
                     recur: "1970-01-01T10:02:00Z"
+                    kind: "1970-01-01T10:02:00Z"
                     archived: "1970-01-01T10:02:00Z"
                     deleted: "1970-01-01T10:02:00Z"
                   remote_seen: ~
@@ -410,6 +421,7 @@ journal:
                     importance: "1970-01-01T10:02:00Z"
                     urgency: "1970-01-01T10:02:00Z"
                     recur: "1970-01-01T10:02:00Z"
+                    kind: "1970-01-01T10:02:00Z"
                     archived: "1970-01-01T10:02:00Z"
                     deleted: "1970-01-01T10:02:00Z"
                   memberships:
@@ -475,6 +487,7 @@ journal:
                   importance: ~
                   urgency: ~
                   recur: ~
+                  kind: standard
                   archived: false
                   deleted: false
                   clocks:
@@ -488,6 +501,7 @@ journal:
                     importance: "1970-01-01T10:02:00Z"
                     urgency: "1970-01-01T10:02:00Z"
                     recur: "1970-01-01T10:02:00Z"
+                    kind: "1970-01-01T10:02:00Z"
                     archived: "1970-01-01T10:02:00Z"
                     deleted: "1970-01-01T10:02:00Z"
                   remote_seen: ~
@@ -506,6 +520,7 @@ journal:
                     importance: "1970-01-01T10:02:00Z"
                     urgency: "1970-01-01T10:02:00Z"
                     recur: "1970-01-01T10:02:00Z"
+                    kind: "1970-01-01T10:02:00Z"
                     archived: "1970-01-01T10:02:00Z"
                     deleted: "1970-01-01T10:02:00Z"
                   memberships:
@@ -545,6 +560,7 @@ journal:
                   importance: ~
                   urgency: ~
                   recur: ~
+                  kind: standard
                   archived: false
                   deleted: false
                   clocks:
@@ -558,6 +574,7 @@ journal:
                     importance: "1970-01-01T10:02:00Z"
                     urgency: "1970-01-01T10:02:00Z"
                     recur: "1970-01-01T10:02:00Z"
+                    kind: "1970-01-01T10:02:00Z"
                     archived: "1970-01-01T10:02:00Z"
                     deleted: "1970-01-01T10:02:00Z"
                   remote_seen: ~
@@ -576,6 +593,7 @@ journal:
                     importance: "1970-01-01T10:02:00Z"
                     urgency: "1970-01-01T10:02:00Z"
                     recur: "1970-01-01T10:02:00Z"
+                    kind: "1970-01-01T10:02:00Z"
                     archived: "1970-01-01T10:02:00Z"
                     deleted: "1970-01-01T10:09:00Z"
                   memberships:

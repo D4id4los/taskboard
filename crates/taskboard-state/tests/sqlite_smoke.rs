@@ -172,6 +172,7 @@ fn due_rule_seed() -> Vec<taskboard_domain::PersistenceAction> {
         importance: None,
         urgency: None,
         recur: None,
+        kind: taskboard_domain::entities::TaskKind::Standard,
 
         archived: false,
         deleted: false,
@@ -186,6 +187,7 @@ fn due_rule_seed() -> Vec<taskboard_domain::PersistenceAction> {
             importance: common::ts(T0),
             urgency: common::ts(T0),
             recur: common::ts(T0),
+            kind: common::ts(T0),
 
             archived: common::ts(T0),
             deleted: common::ts(T0),

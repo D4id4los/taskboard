@@ -228,6 +228,8 @@ pub enum UndoField {
     Importance,
     Urgency,
     Recur,
+    /// The tracker task kind (`TaskClocks.kind`, issue #492).
+    Kind,
     Archived,
     Deleted,
     Order,

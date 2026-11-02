@@ -98,6 +98,7 @@ fn app_with(features: DeckFeatures) -> AppState {
         importance: None,
         urgency: None,
         recur: None,
+        kind: taskboard_domain::entities::TaskKind::Standard,
 
         archived: false,
         deleted: false,
@@ -112,6 +113,7 @@ fn app_with(features: DeckFeatures) -> AppState {
             importance: ts(0),
             urgency: ts(0),
             recur: ts(0),
+            kind: ts(0),
 
             archived: ts(0),
             deleted: ts(0),
@@ -157,6 +159,7 @@ fn changes_for(field: &str) -> Option<TaskChanges> {
             };
             changes.recur = Some(Some(rule));
         }
+        "kind" => changes.kind = Some(Some(taskboard_domain::entities::TaskKind::Tracker)),
         // `done` rides SetTaskDone, `position` MoveTask, `labels` the
         // assign/unassign verbs, `deleted` DeleteTask (the native
         // routables chunk 1's engine tests already pin).
@@ -332,6 +335,7 @@ fn every_taskchanges_slot_is_manifest_covered() {
         importance: Some(None),
         urgency: Some(None),
         recur: None,
+        kind: None,
 
         archived: Some(true),
     };

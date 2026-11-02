@@ -2638,6 +2638,7 @@ async fn folded_synced_dismissal_withdraws_the_toast() {
             importance: None,
             urgency: None,
             recur: None,
+            kind: taskboard_domain::entities::TaskKind::Standard,
 
             archived: false,
             deleted: false,
@@ -2652,6 +2653,7 @@ async fn folded_synced_dismissal_withdraws_the_toast() {
                 importance: ts(T0),
                 urgency: ts(T0),
                 recur: ts(T0),
+                kind: ts(T0),
 
                 archived: ts(T0),
                 deleted: ts(T0),
@@ -2914,6 +2916,7 @@ fn seed_series_state(scheduled: Option<i64>, duedate: Option<i64>) -> PersistedS
             importance: None,
             urgency: None,
             recur: Some(daily_rule()),
+            kind: taskboard_domain::entities::TaskKind::Standard,
             archived: false,
             deleted: false,
             clocks: taskboard_domain::TaskClocks {
@@ -2927,6 +2930,7 @@ fn seed_series_state(scheduled: Option<i64>, duedate: Option<i64>) -> PersistedS
                 importance: day(DAY0),
                 urgency: day(DAY0),
                 recur: day(DAY0),
+                kind: day(DAY0),
                 archived: day(DAY0),
                 deleted: day(DAY0),
             },
@@ -3269,5 +3273,208 @@ async fn completing_a_recurring_head_spawns_over_the_live_engine() {
         repo.snapshot().tasks.get(&successor.id).map(|t| t.done),
         Some(None),
         "the successor is durable"
+    );
+}
+
+// ---- the tracker task kind (backlog round 2 chunk 4.2, #492) ------
+
+/// A tracker task on the harness board: stack + task, converted via
+/// the kind edit (the same route the surfaces drive).
+async fn tracker_task(h: &Harness) -> taskboard_domain::TaskId {
+    let board = h.board_id();
+    let stack = match h
+        .handle
+        .execute(StateCommand::CreateStack {
+            board,
+            title: "s".into(),
+            order: 1,
+        })
+        .await
+        .expect("accepted")
+    {
+        CommandOutcome::CreatedStack(id) => id,
+        other => panic!("wrong receipt: {other:?}"),
+    };
+    let task = match h
+        .handle
+        .execute(StateCommand::CreateTask {
+            title: "meditate".into(),
+            stack,
+            order: 1,
+        })
+        .await
+        .expect("accepted")
+    {
+        CommandOutcome::CreatedTask(id) => id,
+        other => panic!("wrong receipt: {other:?}"),
+    };
+    h.handle
+        .execute(StateCommand::UpdateTask {
+            id: task,
+            changes: taskboard_domain::messages::TaskChanges {
+                kind: Some(Some(taskboard_domain::entities::TaskKind::Tracker)),
+                ..Default::default()
+            },
+        })
+        .await
+        .expect("accepted");
+    task
+}
+
+#[tokio::test]
+async fn the_engine_surfaces_the_tracker_rejection_typed() {
+    let h = harness().await;
+    let task = tracker_task(&h).await;
+    let outcome = h
+        .handle
+        .execute(StateCommand::SetTaskDone {
+            id: task,
+            done: true,
+        })
+        .await;
+    match outcome {
+        Err(taskboard_state::ExecuteError::Rejected(
+            taskboard_domain::CommandError::TrackerTaskNotDoneable(got),
+        )) => assert_eq!(got, task),
+        other => panic!("expected typed rejection, got {other:?}"),
+    }
+    // Reopen intent stays the accepted no-op across the boundary.
+    let outcome = h
+        .handle
+        .execute(StateCommand::SetTaskDone {
+            id: task,
+            done: false,
+        })
+        .await
+        .expect("accepted");
+    assert!(matches!(
+        outcome,
+        CommandOutcome::NoOp | CommandOutcome::Applied
+    ));
+}
+
+/// Seeds a pre-kind state: one board, one stack, one task — everything
+/// at the epoch clock, `kind: Standard` (what a fresh pre-0019 database
+/// looks like hydrated).
+fn pre_kind_seed_state() -> taskboard_domain::PersistedState {
+    let board = taskboard_domain::BoardId::from(uuid::Uuid::from_u128(1));
+    let stack = taskboard_domain::StackId::from(uuid::Uuid::from_u128(2));
+    let task_id = taskboard_domain::TaskId::from(uuid::Uuid::from_u128(3));
+    let ts = taskboard_domain::BoardClocks::epoch();
+    let mut state = taskboard_domain::PersistedState::default();
+    state.boards.insert(
+        board,
+        taskboard_domain::Board {
+            id: board,
+            remote: None,
+            title: "b".into(),
+            color: taskboard_domain::Color::new("0082c9"),
+            archived: false,
+            deleted: false,
+            clocks: taskboard_domain::BoardClocks {
+                title: ts,
+                color: ts,
+                archived: ts,
+                deleted: ts,
+            },
+            remote_seen: None,
+        },
+    );
+    state.stacks.insert(
+        stack,
+        taskboard_domain::Stack {
+            id: stack,
+            remote: None,
+            board,
+            title: "s".into(),
+            order: 1,
+            archived: false,
+            deleted: false,
+            clocks: taskboard_domain::StackClocks {
+                title: ts,
+                order: ts,
+                deleted: ts,
+            },
+            remote_seen: None,
+        },
+    );
+    state.tasks.insert(
+        task_id,
+        taskboard_domain::Task {
+            id: task_id,
+            remote: None,
+            title: "t".into(),
+            description: String::new(),
+            duedate: None,
+            scheduled: None,
+            done: None,
+            stack,
+            order: 1,
+            label_memberships: std::collections::BTreeMap::default(),
+            effort: None,
+            importance: None,
+            urgency: None,
+            recur: None,
+            kind: taskboard_domain::entities::TaskKind::Standard,
+            archived: false,
+            deleted: false,
+            clocks: taskboard_domain::TaskClocks {
+                title: ts,
+                description: ts,
+                duedate: ts,
+                scheduled: ts,
+                done: ts,
+                position: ts,
+                effort: ts,
+                importance: ts,
+                urgency: ts,
+                recur: ts,
+                kind: ts,
+                archived: ts,
+                deleted: ts,
+            },
+            remote_seen: None,
+            remote_baseline: None,
+        },
+    );
+    state
+}
+
+/// Rewinds a serialized snapshot to its pre-kind shape: strips every
+/// `kind` key, wherever serde chose to nest it.
+fn strip_kind_keys(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            map.remove("kind");
+            for (_, v) in map.iter_mut() {
+                strip_kind_keys(v);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for v in items.iter_mut() {
+                strip_kind_keys(v);
+            }
+        }
+        _ => {}
+    }
+}
+
+#[test]
+fn an_old_state_snapshot_without_kinds_decodes() {
+    // A pre-kind snapshot JSON blob (every task/clock without the
+    // `kind` keys) decodes with every task `Standard` and its kind
+    // clock "never locally written" — the restart-compat pin.
+    let mut blob = serde_json::to_value(pre_kind_seed_state()).expect("the snapshot serializes");
+    strip_kind_keys(&mut blob);
+    let decoded: taskboard_domain::PersistedState =
+        serde_json::from_value(blob).expect("a pre-kind snapshot decodes");
+    let task_id = taskboard_domain::TaskId::from(uuid::Uuid::from_u128(3));
+    assert_eq!(
+        decoded.tasks[&task_id].kind,
+        taskboard_domain::entities::TaskKind::Standard
+    );
+    assert_eq!(
+        decoded.tasks[&task_id].clocks.kind,
+        taskboard_domain::BoardClocks::epoch()
     );
 }

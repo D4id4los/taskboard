@@ -420,6 +420,7 @@ mod today_tests {
             importance: None,
             urgency: None,
             recur: None,
+            kind: crate::entities::TaskKind::Standard,
 
             archived: false,
             deleted: false,
@@ -434,6 +435,7 @@ mod today_tests {
                 importance: stamp(100),
                 urgency: stamp(100),
                 recur: stamp(100),
+                kind: stamp(100),
 
                 archived: stamp(100),
                 deleted: stamp(100),

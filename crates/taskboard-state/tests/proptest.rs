@@ -101,6 +101,7 @@ fn arbitrary_action() -> impl Strategy<Value = PersistenceAction> {
             importance: None,
             urgency: None,
             recur: None,
+            kind: taskboard_domain::entities::TaskKind::Standard,
 
             archived: false,
             deleted: false,
@@ -115,6 +116,7 @@ fn arbitrary_action() -> impl Strategy<Value = PersistenceAction> {
                 importance: ts(1),
                 urgency: ts(1),
                 recur: ts(1),
+                kind: ts(1),
 
                 archived: ts(1),
                 deleted: ts(1),
@@ -440,6 +442,7 @@ fn coherent_seed() -> (PersistedState, StackId, TaskId, taskboard_domain::LabelI
         importance: None,
         urgency: None,
         recur: None,
+        kind: taskboard_domain::entities::TaskKind::Standard,
 
         archived: false,
         deleted: false,
@@ -454,6 +457,7 @@ fn coherent_seed() -> (PersistedState, StackId, TaskId, taskboard_domain::LabelI
             importance: ts(1),
             urgency: ts(1),
             recur: ts(1),
+            kind: ts(1),
 
             archived: ts(1),
             deleted: ts(1),

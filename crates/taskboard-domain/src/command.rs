@@ -133,6 +133,13 @@ pub enum CommandError {
     /// A user-authored span must satisfy `end > start`.
     #[error("time span must be positive")]
     InvalidSpan,
+    /// The target is a tracker task (issue #492): completing it is not
+    /// a state transition the kind admits — the verb is rejected typed
+    /// at the boundary, before any plan (and therefore any cascade)
+    /// exists. Reopening (`done: false`) is untouched: a tracker task
+    /// is never done, so it idempotence-no-ops exactly as before.
+    #[error("tracker tasks cannot be done")]
+    TrackerTaskNotDoneable(TaskId),
     /// No habit with this id exists.
     #[error("unknown habit")]
     UnknownHabit(HabitId),
@@ -805,6 +812,7 @@ pub fn plan_command(
                 importance: None,
                 urgency: None,
                 recur: None,
+                kind: crate::entities::TaskKind::Standard,
 
                 archived: false,
                 deleted: false,
@@ -919,6 +927,7 @@ pub fn plan_command(
                 importance: None,
                 urgency: None,
                 recur: None,
+                kind: crate::entities::TaskKind::Standard,
 
                 archived: false,
                 deleted: false,
@@ -976,6 +985,10 @@ pub fn plan_command(
                 updated.recur.clone_from(recur);
                 updated.clocks.recur = now;
             }
+            if let Some(kind) = changes.kind {
+                updated.kind = kind.unwrap_or_default();
+                updated.clocks.kind = now;
+            }
             if let Some(archived) = changes.archived {
                 updated.archived = archived;
                 updated.clocks.archived = now;
@@ -996,6 +1009,7 @@ pub fn plan_command(
                 || changes.importance.is_some()
                 || changes.urgency.is_some()
                 || changes.recur.is_some()
+                || changes.kind.is_some()
                 || (changes.scheduled.is_some() && !features.card_startdate);
             let mut actions = vec![PersistenceAction::UpsertTask(updated)];
             if native_native {
@@ -1011,6 +1025,14 @@ pub fn plan_command(
         }
         StateCommand::SetTaskDone { id, done } => {
             let task = live_task(app, *id)?;
+            // The tracker gate (issue #492): the rejection precedes the
+            // plan — every done-triggered cascade lives downstream of
+            // plan assembly, so one early typed return makes them all
+            // inert by ordering. Reopening falls through to the
+            // idempotence no-op below.
+            if *done && task.kind == crate::entities::TaskKind::Tracker {
+                return Err(CommandError::TrackerTaskNotDoneable(*id));
+            }
             if task.done.is_some() == *done {
                 return Ok(no_op());
             }
@@ -2689,6 +2711,7 @@ fn all_task_clocks(now: DateTime<Utc>) -> TaskClocks {
         importance: now,
         urgency: now,
         recur: now,
+        kind: now,
 
         archived: now,
         deleted: now,
@@ -2759,6 +2782,7 @@ mod tests {
             importance: ts(secs),
             urgency: ts(secs),
             recur: ts(secs),
+            kind: ts(secs),
 
             archived: ts(secs),
             deleted: ts(secs),
@@ -2785,6 +2809,7 @@ mod tests {
             importance: None,
             urgency: None,
             recur: None,
+            kind: crate::entities::TaskKind::Standard,
 
             archived: false,
             deleted: false,
@@ -8919,6 +8944,225 @@ mod tests {
                     pending.op
                 );
             }
+        }
+    }
+    // ---- The tracker task kind (backlog round 2 chunk 4.2, #492) ------
+
+    /// The tracker fixture: the base task with `kind: Tracker` and the
+    /// maximum done-blast radius — a recur rule, a running entry, and a
+    /// due-anchored reminder rule with a live occurrence. The rejection
+    /// test asserts every enumerated cascade path is inert against it.
+    fn tracker_with_max_blast_radius() -> (AppState, Vec<PendingOp>) {
+        let (mut app, outbox) = base();
+        {
+            let task = app.tasks.get_mut(&task_id()).unwrap();
+            task.kind = crate::entities::TaskKind::Tracker;
+            task.recur = Some(crate::recur::RecurRule {
+                series: crate::ids::SeriesId::from_uuid(uuid::Uuid::from_u128(7)),
+                anchor: chrono::NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+                pattern: crate::recur::RecurPattern::Daily {
+                    every: crate::recur::EveryDays::new(1).unwrap(),
+                },
+                bound: crate::recur::RecurBound::None,
+                continued_from: None,
+            });
+            task.duedate = Some(ts(T0 - 3_600));
+        }
+        let entry = tracked_entry(1, task_id(), T0 - 900, None);
+        let app = with_entry(app, entry);
+        (app, outbox)
+    }
+
+    #[test]
+    fn set_task_done_on_tracker_is_a_typed_rejection() {
+        let (app, outbox) = tracker_with_max_blast_radius();
+        let err = run(
+            &app,
+            &outbox,
+            &StateCommand::SetTaskDone {
+                id: task_id(),
+                done: true,
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            CommandError::TrackerTaskNotDoneable(id)
+            if id == task_id()
+        ));
+    }
+
+    #[test]
+    fn the_rejection_precedes_the_plan_itself() {
+        // Cascade-table rows 1-8 in one behavior: every done-triggered
+        // cascade lives in the `CommandPlan`, and a rejected intent
+        // returns no plan at all — the typed error is the entire
+        // effect. The no-journal pin rides the undo layer (the engine
+        // journals executed plans, not intents).
+        let (app, outbox) = tracker_with_max_blast_radius();
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::SetTaskDone {
+                id: task_id(),
+                done: true,
+            },
+        );
+        assert!(matches!(
+            plan.unwrap_err(),
+            CommandError::TrackerTaskNotDoneable(_)
+        ));
+    }
+
+    #[test]
+    fn reopen_intent_on_a_tracker_is_the_accepted_no_op() {
+        let (app, outbox) = tracker_with_max_blast_radius();
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::SetTaskDone {
+                id: task_id(),
+                done: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(plan.outcome, CommandOutcome::NoOp);
+        assert_eq!(plan.actions, [] as [PersistenceAction; 0]);
+    }
+
+    #[test]
+    fn update_task_kind_edits_stamps_and_routes_to_the_app_lane() {
+        let (app, outbox) = base();
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::UpdateTask {
+                id: task_id(),
+                changes: TaskChanges {
+                    kind: Some(Some(crate::entities::TaskKind::Tracker)),
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap();
+        assert_eq!(plan.outcome, CommandOutcome::Applied);
+        let PersistenceAction::UpsertTask(updated) = &plan.actions[0] else {
+            panic!("first action must be the upsert");
+        };
+        assert_eq!(updated.kind, crate::entities::TaskKind::Tracker);
+        assert_eq!(updated.clocks.kind, now());
+        // The app lane carries the kind (no native Deck lane).
+        assert!(plan.actions.iter().any(|action| matches!(
+            action,
+            PersistenceAction::EnqueueOp(op)
+                if matches!(op.op, LocalOp::UpdateAppData(id) if id == task_id())
+        )));
+        assert!(plan.actions.iter().all(|action| match action {
+            PersistenceAction::EnqueueOp(op) => !matches!(op.op, LocalOp::UpdateTask(_)),
+            PersistenceAction::UpsertTask(_) => true,
+            other => panic!("unexpected action {other:?}"),
+        }));
+        // The reset write: `Some(None)` lands the `Standard` default.
+        let reset = run(
+            &app,
+            &outbox,
+            &StateCommand::UpdateTask {
+                id: task_id(),
+                changes: TaskChanges {
+                    kind: Some(None),
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap();
+        let PersistenceAction::UpsertTask(updated) = &reset.actions[0] else {
+            panic!("first action must be the upsert");
+        };
+        assert_eq!(updated.kind, crate::entities::TaskKind::Standard);
+    }
+
+    #[test]
+    fn task_json_without_kind_decodes_standard() {
+        // Old snapshots / journal payloads carry no `kind` key; the
+        // serde default folds `Standard` and the missing clock slot
+        // folds "never locally written".
+        let json = serde_json::json!({
+            "id": uuid::Uuid::from_u128(1),
+            "remote": null,
+            "title": "old card",
+            "description": "",
+            "duedate": null,
+            "scheduled": null,
+            "done": null,
+            "stack": uuid::Uuid::from_u128(2),
+            "order": 0,
+            "label_memberships": {},
+            "effort": null,
+            "importance": null,
+            "urgency": null,
+            "recur": null,
+            "archived": false,
+            "deleted": false,
+            "clocks": {
+                "title": "2026-01-01T00:00:00Z",
+                "description": "2026-01-01T00:00:00Z",
+                "duedate": "2026-01-01T00:00:00Z",
+                "scheduled": "2026-01-01T00:00:00Z",
+                "done": "2026-01-01T00:00:00Z",
+                "position": "2026-01-01T00:00:00Z",
+                "effort": "2026-01-01T00:00:00Z",
+                "importance": "2026-01-01T00:00:00Z",
+                "urgency": "2026-01-01T00:00:00Z",
+                "recur": "2026-01-01T00:00:00Z",
+                "archived": "2026-01-01T00:00:00Z",
+                "deleted": "2026-01-01T00:00:00Z"
+            },
+            "remote_seen": null,
+            "remote_baseline": null
+        });
+        let decoded: Task = serde_json::from_value(json).unwrap();
+        assert_eq!(decoded.kind, crate::entities::TaskKind::Standard);
+        assert_eq!(decoded.clocks.kind, crate::entities::BoardClocks::epoch());
+    }
+
+    #[test]
+    fn tracking_verbs_are_untouched_on_a_tracker_task() {
+        // The feature's point: Start/Stop plan exactly as on a Standard
+        // task — the kind gates the done verb only.
+        let (app, outbox) = base();
+        let mut tracker = app.tasks[&task_id()].clone();
+        tracker.kind = crate::entities::TaskKind::Tracker;
+        let mut tracker_app = app.clone();
+        tracker_app.tasks.insert(tracker.id, tracker);
+
+        for app_state in [&app, &tracker_app] {
+            let plan = run(
+                app_state,
+                &outbox,
+                &StateCommand::StartTracking {
+                    task: task_id(),
+                    kind: crate::tracking::TimeEntryKind::Work,
+                },
+            )
+            .unwrap();
+            let CommandOutcome::TrackingStarted { entry, closed } = &plan.outcome else {
+                panic!("wrong receipt");
+            };
+            assert_eq!(closed.as_slice(), []);
+            assert_eq!(entry.task, task_id());
+            assert_eq!(entry_upserts(&plan).len(), 1);
+            assert_eq!(flush_targets(&plan), vec![task_id()]);
+
+            let with_running = with_entry(
+                app_state.clone(),
+                tracked_entry(9, task_id(), T0 - 60, None),
+            );
+            let plan = run(&with_running, &outbox, &StateCommand::StopTracking).unwrap();
+            let CommandOutcome::TrackingStopped { entries } = &plan.outcome else {
+                panic!("wrong receipt");
+            };
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].end, Some(now()));
         }
     }
 }

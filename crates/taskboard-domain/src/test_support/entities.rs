@@ -36,6 +36,7 @@ pub fn task_clocks_strategy() -> impl Strategy<Value = TaskClocks> {
             importance: im,
             urgency: ur,
             recur: ur,
+            kind: ur,
 
             archived: a,
             deleted: del,
@@ -173,6 +174,7 @@ pub fn task_strategy() -> impl Strategy<Value = Task> {
                 importance,
                 urgency,
                 recur: None,
+                kind: crate::entities::TaskKind::Standard,
                 archived,
                 deleted,
                 clocks,

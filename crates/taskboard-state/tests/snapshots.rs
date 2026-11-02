@@ -332,6 +332,7 @@ async fn s1_fresh_boot_authoring() {
             importance: None,
             urgency: None,
             recur: None,
+            kind: None,
 
             archived: None,
         },
@@ -1164,6 +1165,7 @@ fn seed_fired_rule_state() -> taskboard_domain::PersistedState {
         importance: None,
         urgency: None,
         recur: None,
+        kind: taskboard_domain::entities::TaskKind::Standard,
 
         archived: false,
         deleted: false,
@@ -1178,6 +1180,7 @@ fn seed_fired_rule_state() -> taskboard_domain::PersistedState {
             importance: ts(T0),
             urgency: ts(T0),
             recur: ts(T0),
+            kind: ts(T0),
 
             archived: ts(T0),
             deleted: ts(T0),
@@ -1440,6 +1443,7 @@ fn seed_series_state(
         importance: Some(taskboard_domain::entities::Importance::High),
         urgency: Some(taskboard_domain::entities::Urgency::Low),
         recur: Some(daily_rule(bound)),
+        kind: taskboard_domain::entities::TaskKind::Standard,
         archived: false,
         deleted: false,
         clocks: taskboard_domain::TaskClocks {
@@ -1453,6 +1457,7 @@ fn seed_series_state(
             importance: ts(SERIES_T0),
             urgency: ts(SERIES_T0),
             recur: ts(SERIES_T0),
+            kind: ts(SERIES_T0),
             archived: ts(SERIES_T0),
             deleted: ts(SERIES_T0),
         },
@@ -1574,6 +1579,7 @@ async fn s37c_count_bound_final_completion() {
         recur: Some(daily_rule(taskboard_domain::RecurBound::Count(
             taskboard_domain::recur::OccurrenceCount::new(2).unwrap(),
         ))),
+        kind: taskboard_domain::entities::TaskKind::Standard,
         archived: false,
         deleted: false,
         clocks: taskboard_domain::TaskClocks {
@@ -1587,6 +1593,7 @@ async fn s37c_count_bound_final_completion() {
             importance: ts(SERIES_T0 - 86_400),
             urgency: ts(SERIES_T0 - 86_400),
             recur: ts(SERIES_T0 - 86_400),
+            kind: ts(SERIES_T0 - 86_400),
             archived: ts(SERIES_T0 - 86_400),
             deleted: ts(SERIES_T0 - 86_400),
         },
@@ -1823,6 +1830,7 @@ fn bound_card_seed(unsynced: bool) -> taskboard_domain::PersistedState {
         importance: None,
         urgency: None,
         recur: None,
+        kind: taskboard_domain::entities::TaskKind::Standard,
         archived: false,
         deleted: false,
         clocks: TaskClocks {
@@ -1836,6 +1844,7 @@ fn bound_card_seed(unsynced: bool) -> taskboard_domain::PersistedState {
             importance: ts(T0),
             urgency: ts(T0),
             recur: ts(T0),
+            kind: ts(T0),
             archived: ts(T0),
             deleted: ts(T0),
         },
