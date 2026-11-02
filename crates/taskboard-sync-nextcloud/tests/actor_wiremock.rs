@@ -2929,15 +2929,18 @@ async fn a35_no_anchor_is_absent_silence() {
     assert_eq!(sidecar::download_hits(&server).await, 0);
 }
 
-/// S-3: every `Unreadable` variant triggers typed — Decode
-/// (undecodable body), `FormatTooNew`, `ForeignBoard` — and none of them
-/// fails the cycle.
+/// S-3: every `Unreadable` variant triggers typed — the decode-path
+/// forms (Decode, `FormatTooNew`, `ForeignBoard`) mounted at 200, and
+/// the download-path forms (`AccessDenied` via 403, `ServerFault` via
+/// 500, issue #401's split) — and none of them fails the cycle.
 #[tokio::test(start_paused = true)]
 async fn a36_unreadable_variants_travel_typed() {
-    for (body, expected) in [
-        ("{not json".to_owned(), "Decode"),
-        (sidecar::document_json(BOARD, 99), "FormatTooNew"),
-        (sidecar::document_json(43, 1), "ForeignBoard"),
+    for (body, status, expected) in [
+        ("{not json".to_owned(), 200, "Decode"),
+        (sidecar::document_json(BOARD, 99), 200, "FormatTooNew"),
+        (sidecar::document_json(43, 1), 200, "ForeignBoard"),
+        (String::new(), 403, "AccessDenied"),
+        (String::new(), 500, "ServerFault"),
     ] {
         let server = start_server().await;
         mount_capabilities(&server, Some("1.19.0")).await;
@@ -2947,7 +2950,7 @@ async fn a36_unreadable_variants_travel_typed() {
         )
         .await;
         sidecar::mount_detail(&server, sidecar::CARD, false).await;
-        sidecar::mount_download(&server, body, 200).await;
+        sidecar::mount_download(&server, body, status).await;
 
         let mut actor = spawn(&server, sidecar::repo_with_bound_anchor());
         let report = nudge_and_report(&mut actor).await;
@@ -2967,6 +2970,12 @@ async fn a36_unreadable_variants_travel_typed() {
             (taskboard_domain::AppDataEvidence::Unreadable(v), "ForeignBoard") => {
                 matches!(v, taskboard_domain::AppDataUnreadable::ForeignBoard)
             }
+            (taskboard_domain::AppDataEvidence::Unreadable(v), "AccessDenied") => {
+                matches!(v, taskboard_domain::AppDataUnreadable::AccessDenied)
+            }
+            (taskboard_domain::AppDataEvidence::Unreadable(v), "ServerFault") => {
+                matches!(v, taskboard_domain::AppDataUnreadable::ServerFault)
+            }
             _ => false,
         };
         assert!(matches_variant, "expected {expected}, got {app_data:?}");
@@ -2975,8 +2984,9 @@ async fn a36_unreadable_variants_travel_typed() {
     }
 }
 
-/// S-4: a failing download never fails the cycle — `Unreadable(Transport)`
-/// travels, the report still completes.
+/// S-4: a failing download never fails the cycle — a typed unreadable
+/// reason travels (`ServerFault` for the 500, issue #401's split), the
+/// report still completes.
 #[tokio::test(start_paused = true)]
 async fn a37_download_failure_folds_nothing_and_still_completes() {
     let server = start_server().await;
@@ -2997,7 +3007,7 @@ async fn a37_download_failure_folds_nothing_and_still_completes() {
     assert!(matches!(
         app_data,
         taskboard_domain::AppDataEvidence::Unreadable(
-            taskboard_domain::AppDataUnreadable::Transport
+            taskboard_domain::AppDataUnreadable::ServerFault
         )
     ));
     assert!(
@@ -3677,7 +3687,7 @@ async fn f11_transport_fence_no_upload() {
     assert!(matches!(
         app_data,
         taskboard_domain::AppDataEvidence::Unreadable(
-            taskboard_domain::AppDataUnreadable::Transport
+            taskboard_domain::AppDataUnreadable::ServerFault
         )
     ));
     assert!(pushes.is_empty(), "no outcomes for the flush ops");
@@ -3793,6 +3803,119 @@ async fn f14_foreign_board_replaces_with_rebuild() {
         body.contains("\"board\":42"),
         "the rebuild re-encodes for our own board, not the foreign key"
     );
+}
+
+/// F11's access-denied sibling (issue #401): a 403 download (after the
+/// immediate, non-retried rejection) strands loudly — typed
+/// `AccessDenied` evidence, ZERO upload requests, the cycle completes,
+/// the flush ops stay queued.
+#[tokio::test(start_paused = true)]
+async fn f22_access_denied_fence_no_upload() {
+    let server = start_server().await;
+    mount_capabilities(&server, Some("1.19.0")).await;
+    mount_standard_pull(
+        &server,
+        serde_json::json!([sidecar::anchor_card_json(sidecar::CARD, T)]),
+    )
+    .await;
+    sidecar::mount_detail(&server, sidecar::CARD, false).await;
+    sidecar::mount_download(&server, String::new(), 403).await;
+    flush_seed::mount_content_put(&server, 200).await;
+
+    let mut actor = spawn(&server, flush_seed::repo_with_flush_work(true, true, false));
+    let report = nudge_and_report(&mut actor).await;
+    let SyncReport::Completed {
+        pushes, app_data, ..
+    } = report
+    else {
+        panic!("the cycle completes despite the download failure");
+    };
+    assert!(matches!(
+        app_data,
+        taskboard_domain::AppDataEvidence::Unreadable(
+            taskboard_domain::AppDataUnreadable::AccessDenied
+        )
+    ));
+    assert!(pushes.is_empty(), "no outcomes for the flush ops");
+    assert!(
+        flush_seed::write_hits(&server).await.is_empty(),
+        "a document we could not read is never re-encoded"
+    );
+}
+
+/// F11's server-fault sibling (issue #401): the same fence with the
+/// typed evidence now `ServerFault`.
+#[tokio::test(start_paused = true)]
+async fn f23_server_fault_fence_no_upload() {
+    let server = start_server().await;
+    mount_capabilities(&server, Some("1.19.0")).await;
+    mount_standard_pull(
+        &server,
+        serde_json::json!([sidecar::anchor_card_json(sidecar::CARD, T)]),
+    )
+    .await;
+    sidecar::mount_detail(&server, sidecar::CARD, false).await;
+    sidecar::mount_download(&server, String::new(), 500).await;
+    flush_seed::mount_content_put(&server, 200).await;
+
+    let mut actor = spawn(&server, flush_seed::repo_with_flush_work(true, true, false));
+    let report = nudge_and_report(&mut actor).await;
+    let SyncReport::Completed {
+        pushes, app_data, ..
+    } = report
+    else {
+        panic!("the cycle completes despite the download failure");
+    };
+    assert!(matches!(
+        app_data,
+        taskboard_domain::AppDataEvidence::Unreadable(
+            taskboard_domain::AppDataUnreadable::ServerFault
+        )
+    ));
+    assert_eq!(pushes, Vec::new());
+    assert_eq!(flush_seed::write_hits(&server).await, Vec::<String>::new());
+}
+
+/// A failure form never populates the document cache (issue #401's
+/// invariant, per new form): two cycles against a 403 download produce
+/// exactly two content GETs — the second cycle re-downloads, nothing
+/// was cached.
+#[tokio::test(start_paused = true)]
+async fn f24_failure_form_never_populates_the_cache() {
+    let server = start_server().await;
+    mount_capabilities(&server, Some("1.19.0")).await;
+    mount_standard_pull(
+        &server,
+        serde_json::json!([sidecar::anchor_card_json(sidecar::CARD, T)]),
+    )
+    .await;
+    sidecar::mount_detail(&server, sidecar::CARD, false).await;
+    // 403 is not retryable: one GET per cycle.
+    sidecar::mount_download(&server, String::new(), 403).await;
+
+    let mut actor = spawn(&server, sidecar::repo_with_bound_anchor());
+    let first = nudge_and_report(&mut actor).await;
+    assert!(matches!(
+        first,
+        SyncReport::Completed {
+            app_data: taskboard_domain::AppDataEvidence::Unreadable(
+                taskboard_domain::AppDataUnreadable::AccessDenied
+            ),
+            ..
+        }
+    ));
+    actor.commands.send(SyncCommand::SyncNow).await.unwrap();
+    let second = next_report(&mut actor).await;
+    assert!(matches!(
+        second,
+        SyncReport::Completed {
+            app_data: taskboard_domain::AppDataEvidence::Unreadable(
+                taskboard_domain::AppDataUnreadable::AccessDenied
+            ),
+            ..
+        }
+    ));
+    assert_eq!(sidecar::download_hits(&server).await, 2);
 }
 
 /// D11's scope rule when a rebuild trigger and a queued group coexist:
