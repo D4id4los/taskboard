@@ -1263,29 +1263,49 @@ async fn unwind_after_module_failure(
     }
 }
 
+/// The system-event logger's loop, observer-parameterized: every event
+/// received (a `Lagged` backlog is skipped with a warning and the loop
+/// *continues* — a resumed stream with a noted gap beats losing the rest
+/// of uptime's observability to an early exit) is handed to `observe`.
+/// The production observer logs via `tracing`; tests pass a recording
+/// closure.
+async fn log_system_events(
+    events: &mut broadcast::Receiver<SystemEvent>,
+    observe: &mut impl FnMut(SystemEvent),
+) -> Option<()> {
+    loop {
+        match events.recv().await {
+            Ok(event) => observe(event),
+            Err(broadcast::error::RecvError::Lagged(missed)) => {
+                tracing::warn!(
+                    missed,
+                    "system event backlog overflowed; resuming past the gap"
+                );
+            }
+            Err(broadcast::error::RecvError::Closed) => return Some(()),
+        }
+    }
+}
+
 /// Subscribes to the system broadcast and logs every event — the
 /// daemon-side observability for `StorageFailed` (warn) and the network
-/// events (info). Exits on channel close or a `Lagged` backlog; the
-/// Phase 7 UI banner is the real consumer.
+/// events (info). Continues past a `Lagged` backlog (resuming from the
+/// oldest retained event); exits only on channel close. The UI crate's
+/// system subscription (mounted per lifecycle) is the events' real
+/// consumer; this logger is the daemon-side observability tail.
 #[must_use]
 pub fn spawn_system_event_logger(
     system: &broadcast::Sender<SystemEvent>,
 ) -> tokio::task::JoinHandle<()> {
     let mut events = system.subscribe();
     tokio::spawn(async move {
-        loop {
-            match events.recv().await {
-                Ok(SystemEvent::StorageFailed) => {
-                    tracing::warn!("persistence failed; state unchanged (StorageFailed)");
-                }
-                Ok(event) => tracing::info!(?event, "system event"),
-                Err(broadcast::error::RecvError::Lagged(missed)) => {
-                    tracing::warn!(missed, "system event backlog overflowed");
-                    return;
-                }
-                Err(broadcast::error::RecvError::Closed) => return,
+        let _ = log_system_events(&mut events, &mut |event| match event {
+            SystemEvent::StorageFailed => {
+                tracing::warn!("persistence failed; state unchanged (StorageFailed)");
             }
-        }
+            event => tracing::info!(?event, "system event"),
+        })
+        .await;
     })
 }
 
@@ -2228,5 +2248,47 @@ mod flush_budget_tests {
         })
         .await
         .expect("the flush test stayed inside its outer deadline");
+    }
+}
+
+#[cfg(test)]
+mod system_logger_tests {
+    use super::*;
+    use std::sync::Mutex as StdMutex;
+
+    /// F9-06: the logger continues past a `Lagged` backlog — the events
+    /// sent *after* the overflow still reach the observer. Red against
+    /// the old exit-on-first-Lagged shape (the observer never saw the
+    /// post-gap event); the typed `SystemEvent`s are the assertion, no
+    /// text matching.
+    #[tokio::test]
+    async fn the_system_logger_resumes_past_a_lagged_backlog() {
+        let (system, _) = broadcast::channel::<SystemEvent>(1);
+        let mut events = system.subscribe();
+
+        // Fill the buffer exactly, drain it from the test's own
+        // receiver so the logger's receiver is the only subscriber.
+        system.send(SystemEvent::Shutdown).expect("sent");
+        events.recv().await.expect("drained");
+
+        // Overflow the capacity-1 buffer: the logger's next recv is a
+        // `Lagged`, then it resyncs onto the retained newest event.
+        system.send(SystemEvent::NetworkLost).ok();
+        system.send(SystemEvent::NetworkRestored).ok();
+        drop(system); // close the channel so the loop can finish
+
+        let observed: StdMutex<Vec<SystemEvent>> = StdMutex::new(Vec::new());
+        // Guarded so a regression to a hang fails instead of stalling.
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            log_system_events(&mut events, &mut |event| {
+                observed.lock().expect("poisoned").push(event);
+            }),
+        )
+        .await
+        .expect("the logger loop terminated");
+
+        let seen = observed.into_inner().expect("poisoned");
+        assert_eq!(seen, vec![SystemEvent::NetworkRestored]);
     }
 }
