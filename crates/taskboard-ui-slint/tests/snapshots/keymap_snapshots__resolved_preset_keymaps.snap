@@ -556,10 +556,10 @@ expression: rows
           action: nav.next-control
         - sequence:
             - Ctrl+n
-          action: nav.next-item
+          action: nav.next-control
         - sequence:
             - Ctrl+p
-          action: nav.prev-item
+          action: nav.prev-control
         - sequence:
             - Alt+v
           action: view.scroll-up
@@ -577,6 +577,12 @@ expression: rows
         - sequence:
             - Ctrl+f
           action: nav.next-control
+        - sequence:
+            - Ctrl+n
+          action: nav.next-control
+        - sequence:
+            - Ctrl+p
+          action: nav.prev-control
         - sequence:
             - Alt+v
           action: view.scroll-up
