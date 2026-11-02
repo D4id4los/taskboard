@@ -1049,6 +1049,46 @@ mod tests {
         )
     }
 
+    /// F9-05's restored behavior: the forwarder's natural close path
+    /// lands the debounced width flush — a width change sent right
+    /// before the UI side dropped persists at close, without waiting
+    /// for (or needing) a debounce window. This is the flush the old
+    /// abort-at-quit skipped.
+    #[tokio::test]
+    async fn the_close_path_flushes_a_width_sent_right_before_quit() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = dir.path().join("taskboard.toml");
+        std::fs::write(&config, "[ui]\nscale = 1.0\n").expect("seed");
+        let workspace = test_workspace(config.clone()).await;
+        // Live entities in the state: the flush prunes widths against
+        // the published projection, so a boardless state would drop the
+        // width as dead (the fixture makes the flush observable).
+        let (state, board, stack_a, _stack_b) = fixture_state();
+        let board = BoardId::from_uuid(board);
+        let stack_a = StackId::from_uuid(stack_a);
+        let (tx, rx) = ui_request_channel();
+        let forwarder =
+            spawn_ui_request_forwarder(rx, Arc::new(ArcSwap::from_pointee(state)), workspace);
+
+        tx.try_send(UiRequest::StackWidthsChanged {
+            board,
+            widths: vec![(stack_a, 240)],
+        })
+        .expect("capacity holds");
+        drop(tx); // quit: the UI side goes away
+        forwarder.await.expect("forwarder joins cleanly");
+
+        let written = std::fs::read_to_string(&config).expect("read back");
+        assert!(
+            written.contains("stack_widths"),
+            "the close flush landed the widths subtree"
+        );
+        assert!(
+            written.contains(&stack_a.as_uuid().to_string()),
+            "the width survived to the flushed document"
+        );
+    }
+
     // -- prune (T-16) ------------------------------------------------------
 
     #[test]

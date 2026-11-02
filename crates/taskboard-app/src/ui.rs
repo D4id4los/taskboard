@@ -8,6 +8,8 @@
 //! the UI's command channel into the state engine; the desktop entry
 //! lifecycle lands in this module too.
 
+use std::time::Duration;
+
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
@@ -374,6 +376,32 @@ pub async fn quit_until_accepted() {
     }
 }
 
+/// Retires a forwarder after the UI event loop is gone: awaits its
+/// natural close-drain under a budget, aborting only a wedged task.
+/// Returns whether the join had to abort (≤capacity intents lost —
+/// bounded and signaled, never silent). The abort at the budget is
+/// load-bearing beyond the intents: the forwarder holds an
+/// `EngineHandle` clone, so a forwarder left running past the retire
+/// would keep the engine's inbox open and wedge the shutdown drain
+/// after it.
+async fn retire_forwarder(mut join: JoinHandle<()>, budget: Duration, what: &str) -> bool {
+    match tokio::time::timeout(budget, &mut join).await {
+        Ok(join_result) => {
+            if let Err(err) = join_result
+                && err.is_panic()
+            {
+                tracing::error!(%what, "forwarder panicked; resumed");
+            }
+            false
+        }
+        Err(_elapsed) => {
+            tracing::warn!(%what, "forwarder did not drain within its retire budget");
+            join.abort();
+            true
+        }
+    }
+}
+
 /// The desktop entry (`taskboard gui`): boots the core, mounts the
 /// window, and run the slint event loop **on the process main thread**
 /// (we are inside `block_on`; the multi-thread runtime's workers keep
@@ -459,8 +487,28 @@ pub async fn run_desktop(
     let run_result = taskboard_ui_slint::run(handle);
 
     exit_watcher.abort();
-    forwarder.abort();
-    request_forwarder.abort();
+    // F9-05: retire, don't abort outright. The queued intents are user
+    // mutations; each forwarder's `while recv` loop *is* a drain once
+    // the UI-side senders die with the event loop, and the request
+    // forwarder's close path lands the debounced width flush an
+    // unconditional abort skipped. A wedged forwarder is aborted at
+    // the budget (the fact is warned — a silent ≤capacity-intent loss
+    // is the shape this replaced; warn-only, not folded into the exit
+    // decision, per the recorded plan decision). The two retires run
+    // concurrently so the added exit latency is bounded at one budget,
+    // not two — the event-loop teardown must stay invisible to a
+    // supervisor.
+    let retire_budget = Duration::from_secs(app.config.app.shutdown_timeout_secs);
+    let (command_aborted, request_aborted) = tokio::join!(
+        retire_forwarder(forwarder, retire_budget, "ui command forwarder"),
+        retire_forwarder(request_forwarder, retire_budget, "ui request forwarder"),
+    );
+    if command_aborted {
+        tracing::warn!("ui command forwarder aborted at its retire budget");
+    }
+    if request_aborted {
+        tracing::warn!("ui request forwarder aborted at its retire budget");
+    }
     // The GUI tail's escalate arm needs nothing from `App` (the owned
     // `shutdown` flushes first — the salvage obligation is satisfied
     // or in flight), so there is no ownership trap on this surface.
@@ -514,6 +562,49 @@ mod tests {
                 order: 2,
             },
         ]
+    }
+
+    /// F9-05: retiring a forwarder drains the queued intents (the
+    /// natural close-drain), and reports *no* abort when the channel
+    /// closes cleanly — the abort the retire replaced discarded the
+    /// queue.
+    #[tokio::test]
+    async fn retiring_the_forwarder_drains_the_queued_intents_without_aborting() {
+        let sink = FakeSink::default();
+        let commands = sample_commands();
+        let (tx, rx) = mpsc::channel::<StateCommand>(UI_COMMAND_CAPACITY);
+        let forwarder = spawn_ui_command_forwarder(rx, sink.clone());
+
+        for command in &commands {
+            tx.send(command.clone())
+                .await
+                .expect("channel has capacity");
+        }
+        drop(tx); // the UI side going away is what makes the drain finite
+
+        let aborted = retire_forwarder(forwarder, std::time::Duration::from_secs(30), "test").await;
+        assert!(!aborted, "a clean close-drain never hits the budget");
+
+        let collected = sink.0.lock().expect("sink lock").clone();
+        assert_eq!(collected, commands, "every queued intent landed, in order");
+    }
+
+    /// F9-05's backstop: a forwarder whose UI-side sender never dies
+    /// (a mounted component outliving the event loop, e.g. the MCP
+    /// harness) cannot close-drain, so the retire must abort the task
+    /// at the budget — a left-running forwarder holds an
+    /// `EngineHandle` and would wedge the engine's shutdown drain
+    /// after it. Paused time: the budget expiry is virtual-clock
+    /// deterministic.
+    #[tokio::test(start_paused = true)]
+    async fn a_wedged_forwarder_is_aborted_at_its_retire_budget() {
+        let sink = FakeSink::default();
+        let (_tx, rx) = mpsc::channel::<StateCommand>(UI_COMMAND_CAPACITY);
+        let forwarder = spawn_ui_command_forwarder(rx, sink.clone());
+        // `_tx` is deliberately kept: no close-drain can ever arrive.
+
+        let aborted = retire_forwarder(forwarder, Duration::from_secs(5), "test").await;
+        assert!(aborted, "a wedged forwarder must hit the retire budget");
     }
 
     #[tokio::test]
