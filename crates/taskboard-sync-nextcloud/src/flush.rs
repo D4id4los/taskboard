@@ -208,7 +208,9 @@ pub(crate) fn has_flush_work(
 #[allow(clippy::too_many_lines)] // one ladder, one outcome table; splitting hides the fence rows
 pub(crate) async fn run_flush(ctx: FlushCtx<'_>) -> FlushVerdict {
     // The fold/flush fences: a document we could not read must never be
-    // re-encoded (D-S7: Transport/Decode/FormatTooNew strand loudly).
+    // re-encoded (D-S7: every Unreadable form — Transport, AccessDenied,
+    // ServerFault, Decode, FormatTooNew — strands loudly; the residual
+    // arm below denies future forms too).
     let base = match ctx.evidence {
         AppDataEvidence::Document(document) => (**document).clone(),
         AppDataEvidence::Absent | AppDataEvidence::Unreadable(AppDataUnreadable::ForeignBoard) => {

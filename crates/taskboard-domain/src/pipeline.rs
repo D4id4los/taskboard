@@ -2721,6 +2721,41 @@ mod tests {
         assert_eq!(row.sidecar, crate::state::SidecarHealth::Healthy);
     }
 
+    /// The download-split forms fold nothing too, and the row carries
+    /// the typed reason (`derive_sidecar_health` is a total
+    /// pass-through — one representative form guards the wiring).
+    #[test]
+    fn access_denied_evidence_folds_nothing_and_carries_the_row() {
+        let task = bound_task(1);
+        let mut state = base_state(task);
+        let task_id = task_by_card(&state, 1).id;
+        let mut seeded = state.tasks.get(&task_id).unwrap().clone();
+        seeded.effort = Some(crate::entities::Effort::new(7));
+        seeded.clocks.effort = ts(BASE);
+        state.tasks.insert(task_id, seeded);
+        let snap = single_stack_snapshot(vec![remote_task(1, 1, BASE)], BASE);
+        let (app, _actions, _events) = fold_report(
+            &state,
+            &[],
+            &snap,
+            &AppDataEvidence::Unreadable(crate::messages::AppDataUnreadable::AccessDenied),
+            DeckFeatures::CONSERVATIVE,
+            BASE + 3_600,
+        );
+        assert_eq!(
+            task_by_card(&app, 1).effort,
+            Some(crate::entities::Effort::new(7)),
+            "the fold-local app value survives"
+        );
+        let row = app.sync.get(*state.boards.keys().next().unwrap()).unwrap();
+        assert_eq!(
+            row.sidecar,
+            crate::state::SidecarHealth::Unreadable(
+                crate::messages::AppDataUnreadable::AccessDenied
+            )
+        );
+    }
+
     #[test]
     fn a_failed_push_report_folds_nothing() {
         // The `Failed` path's fold ban: apply_push_report has no

@@ -653,13 +653,15 @@ async fn cycle(
         if has_work {
             let action = anchor::anchor_action(&discovery, true);
             let read_evidence = &app_data;
-            let attempt = !matches!(
+            // The flush's read-succeeded allow-list (default-deny): a
+            // future unreadable form lands in `attempt = false` by
+            // construction — the write side may never act on evidence
+            // it could not read (D-S7's fence).
+            let attempt = matches!(
                 read_evidence,
-                AppDataEvidence::Unreadable(
-                    AppDataUnreadable::Transport
-                        | AppDataUnreadable::Decode
-                        | AppDataUnreadable::FormatTooNew { .. }
-                )
+                AppDataEvidence::Document(_)
+                    | AppDataEvidence::Absent
+                    | AppDataEvidence::Unreadable(AppDataUnreadable::ForeignBoard)
             );
             if attempt {
                 let verdict = flush::run_flush(flush::FlushCtx {
@@ -923,7 +925,7 @@ async fn sidecar_evidence(
                 "sidecar document download failed; folding nothing this cycle"
             );
             Ok((
-                AppDataEvidence::Unreadable(AppDataUnreadable::Transport),
+                AppDataEvidence::Unreadable(mapping::classify_download_evidence(&err)),
                 discovery,
                 details,
             ))
