@@ -361,8 +361,12 @@ dependency hierarchies.
    =AddReminderRule= / =RemoveReminderRule= / =ClearReminderRules=
    (=SetReminderRule= retired; N-rule additive); and
    =SyncReport::Completed= carries =app_data: AppDataEvidence=
-   (=Document | Absent | Unreadable{FormatTooNew|Transport|Decode|
-   ForeignBoard}=) per board. The purity sentence stands: the sidecar
+   (=Document | Absent | Unreadable{FormatTooNew|Transport|
+   AccessDenied|ServerFault|Decode|ForeignBoard}=) per board; the three
+   download-failure classes split by operator action — =Transport=
+   self-heals by retrying, =AccessDenied= wants credentials/sharing
+   fixed, =ServerFault= is manual-restore territory. The purity
+   sentence stands: the sidecar
    codec is pure serde + pure functions (=serde_json= for verbatim
    preservation is its only new dependency).
 
