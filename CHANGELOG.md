@@ -322,6 +322,25 @@ The workspace carries a single global version (see `docs/architecture.org`);
 
 ### Fixed
 
+- The task detail's interactive surface is fully keyboard-operable
+  (GUI review round 4, F12/F24/F26): every closed cell (title, due
+  date, start date, description) and reminder preset chip is a real
+  tab stop with a visible focus ring, activated by bare Return/Space
+  under every keymap preset — under emacs, Return on a focused cell
+  opens that cell's editor instead of hijacking to the title flow,
+  and under vi, Space never toggles the done state over a focused
+  cell. The emacs C-n/C-p chords join the control walk on the task
+  detail and in settings (the board's task/stack walk is untouched),
+  and the control walk itself works again: its synthetic Tab
+  re-injection was silently dropped re-entrantly and every keyless
+  dispatch re-grabbed the window's key scope, so the walk never
+  moved. A focused text field now masks the view context systemically
+  (the field widget publishes the fact), so preset-bound Return never
+  hijacks mid-typing in any view — the reminder field's Enter commits
+  the offset; the checkmark stays equivalent to Return. Every closed
+  cell and preset chip arms its hover tooltip (label, description,
+  and hint keys where the action is bound).
+
 - Hover machinery repairs (GUI review round 4, chunk 4): a tooltip
   with an empty description no longer renders a phantom empty line
   (the description and shortcut rows are now mounted only when their

@@ -141,6 +141,10 @@ export component TaskView inherits FocusScope {
     // projections pushed per refresh — never hand-written.
     in property <[string]> task-done-hint;
     in property <[string]> task-track-hint;
+    // The closed title's walk/activation binding (r4 D21): the
+    // projection the title cell's tip arms with — empty where the
+    // action is unbound (vi).
+    in property <[string]> task-title-edit-hint;
     // The rule-list composition's seams (chunk 6, D12): forwarded to
     // the window, resolved against the id tables there.
     callback rule-remove-clicked(int);
@@ -390,7 +394,28 @@ export component TaskView inherits FocusScope {
                     }
                     title-touch := TouchArea {
                         mouse-cursor: MouseCursor.pointer;
-                        clicked => { root.title-edit-opened(); }
+                        // The tooltip arm (blanket rule a): the cell's
+                        // a11y strings verbatim, the activation
+                        // binding projected per refresh.
+                        changed has-hover => {
+                            if (self.has-hover) {
+                                TooltipState.hover(
+                                    "Edit title",
+                                    "Arms the title editor for the viewed task.",
+                                    root.task-title-edit-hint,
+                                    self.absolute-position.x,
+                                    self.absolute-position.y,
+                                    self.width,
+                                    self.height,
+                                );
+                            } else {
+                                TooltipState.unhover();
+                            }
+                        }
+                        clicked => {
+                            TooltipState.unhover();
+                            root.title-edit-opened();
+                        }
                     }
                 }
                 // The tracking verbs (r4 D16c, F11): moved here from
@@ -462,7 +487,25 @@ export component TaskView inherits FocusScope {
                         }
                         due-touch := TouchArea {
                             mouse-cursor: MouseCursor.pointer;
-                            clicked => { root.due-edit-opened(); }
+                            changed has-hover => {
+                                if (self.has-hover) {
+                                    TooltipState.hover(
+                                        "Edit due date",
+                                        "Opens the due-date editor.",
+                                        [],
+                                        self.absolute-position.x,
+                                        self.absolute-position.y,
+                                        self.width,
+                                        self.height,
+                                    );
+                                } else {
+                                    TooltipState.unhover();
+                                }
+                            }
+                            clicked => {
+                                TooltipState.unhover();
+                                root.due-edit-opened();
+                            }
                         }
                         RoleText {
                             role: Typography.mono;
@@ -506,7 +549,25 @@ export component TaskView inherits FocusScope {
                         }
                         scheduled-touch := TouchArea {
                             mouse-cursor: MouseCursor.pointer;
-                            clicked => { root.scheduled-edit-opened(); }
+                            changed has-hover => {
+                                if (self.has-hover) {
+                                    TooltipState.hover(
+                                        "Edit start date",
+                                        "Opens the start-date editor.",
+                                        [],
+                                        self.absolute-position.x,
+                                        self.absolute-position.y,
+                                        self.width,
+                                        self.height,
+                                    );
+                                } else {
+                                    TooltipState.unhover();
+                                }
+                            }
+                            clicked => {
+                                TooltipState.unhover();
+                                root.scheduled-edit-opened();
+                            }
                         }
                         RoleText {
                             role: Typography.mono;
@@ -642,7 +703,25 @@ export component TaskView inherits FocusScope {
                     }
                     description-touch := TouchArea {
                         mouse-cursor: MouseCursor.pointer;
-                        clicked => { root.description-edit-opened(); }
+                        changed has-hover => {
+                            if (self.has-hover) {
+                                TooltipState.hover(
+                                    "Edit description",
+                                    "Opens the description editor.",
+                                    [],
+                                    self.absolute-position.x,
+                                    self.absolute-position.y,
+                                    self.width,
+                                    self.height,
+                                );
+                            } else {
+                                TooltipState.unhover();
+                            }
+                        }
+                        clicked => {
+                            TooltipState.unhover();
+                            root.description-edit-opened();
+                        }
                     }
                 }
                 if (root.task.description-edit-open): TextField {

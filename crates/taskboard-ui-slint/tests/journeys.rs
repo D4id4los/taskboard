@@ -1570,6 +1570,98 @@ fn the_task_view_header_and_summary_elements_arm_their_tooltips() {
     );
 }
 
+/// r4 D21 (F26, acceptance e) — the hover sweep over the chunk's new
+/// interactive elements: the four closed cells and the preset chips
+/// arm the generalized tooltip (label + description, hint keys where
+/// bound), hover shows it after the delay, and moving away hides it.
+/// The field sites' arm is the recorded plan-vs-runtime finding: the
+/// inner `TextInput` accepts its own hover moves, so a sibling
+/// `TouchArea` cannot coexist with the caret (see the slice report).
+#[test]
+fn every_task_view_cell_and_chip_carries_its_info_tip() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.set_window_size(1000, 900);
+            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::TaskEdit);
+            harness.driver.advance_time(0);
+            assert_eq!(harness.handle.window().get_current_view(), View::TaskDetail);
+
+            // The structural inventory: one distinct tip spot per cell
+            // trigger and four chip triggers (the settings sweep's
+            // distinct-geometry mechanism — the id query reports the
+            // touch subtree too).
+            let distinct_spots = |harness: &Harness, id: &str| -> usize {
+                let mut spots: Vec<(f32, f32)> = harness
+                    .driver
+                    .find_all_by_id(id)
+                    .iter()
+                    .map(|tip| {
+                        let p = tip.absolute_position();
+                        (p.x, p.y)
+                    })
+                    .collect();
+                spots.sort_by(|a, b| a.partial_cmp(b).expect("no NaN positions"));
+                spots.dedup();
+                spots.len()
+            };
+            for id in [
+                "TaskView::title-touch",
+                "TaskView::due-touch",
+                "TaskView::scheduled-touch",
+                "TaskView::description-touch",
+            ] {
+                assert_eq!(
+                    distinct_spots(&harness, id),
+                    1,
+                    "exactly one tip trigger at {id}"
+                );
+            }
+            assert_eq!(
+                distinct_spots(&harness, "PresetChip::touch"),
+                4,
+                "each preset chip carries its own tip trigger"
+            );
+
+            // The functional legs: hover arms the delay and shows the
+            // panel with a populated description; moving away hides.
+            let cell = |harness: &Harness, label: &str| {
+                let element = harness
+                    .driver
+                    .find_by_label(label)
+                    .unwrap_or_else(|| panic!("{label} is addressable"));
+                let pos = element.absolute_position();
+                let size = element.size();
+                (pos.x + size.width / 2.0, pos.y + size.height / 2.0)
+            };
+            for label in ["Edit title", "Edit due date", "5m"] {
+                let (x, y) = cell(&harness, label);
+                harness.driver.hover_at(x, y);
+                assert!(
+                    tooltip_state(&harness).get_pending(),
+                    "{label}'s hover armed the delay"
+                );
+                harness.driver.advance_time(600);
+                assert!(tooltip_state(&harness).get_visible(), "{label} showed");
+                assert_ne!(
+                    tooltip_state(&harness).get_description(),
+                    "",
+                    "{label}'s description slot is populated"
+                );
+                harness.driver.hover_at(4.0, 4.0);
+                harness.driver.advance_time(0);
+                assert!(!tooltip_state(&harness).get_pending());
+                assert!(!tooltip_state(&harness).get_visible());
+            }
+        },
+    );
+}
+
 /// D22 — the compact add-stack affordance: at the compact width the
 /// relocated trailing button opens the same stack-create flow (the
 /// click equivalent of stack.create, §7.1).
