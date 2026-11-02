@@ -8876,3 +8876,265 @@ fn task_create_without_a_click_targets_the_selection_chain() {
         },
     );
 }
+
+// -- r4 chunk 4 (D14): the dismiss journeys ------------------------------
+//
+// The structural walk pins the routing table; these five pin the
+// user-facing transitions through the real seams (hover scan, delay
+// fire, the production dispatch paths).
+
+/// The F14 repro verbatim: hover a task card, let the delay fire, then
+/// activate the focused card into the task view — the tooltip is gone.
+/// (Pre-fix: the ghost tip rode the board→task transition.)
+#[test]
+fn a_tooltip_does_not_survive_activating_the_hovered_task() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.set_window_size(1000, 900);
+            // Arm on the first card (the established hover-scan
+            // pattern), and seed the card focus the activation needs.
+            let card = harness
+                .driver
+                .find_by_label("task-0")
+                .expect("the first card is addressable");
+            let pos = card.absolute_position();
+            let size = card.size();
+            let mut armed = false;
+            let mut y = pos.y + 2.0;
+            while y < pos.y + size.height - 2.0 {
+                harness.driver.hover_at(pos.x + size.width / 2.0, y);
+                harness.driver.advance_time(0);
+                if tooltip_state(&harness).get_pending() {
+                    armed = true;
+                    break;
+                }
+                y += 4.0;
+            }
+            assert!(armed, "the card hover armed the trigger");
+            harness.driver.advance_time(600);
+            assert!(
+                tooltip_state(&harness).get_visible(),
+                "the tip went visible"
+            );
+
+            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::TaskEdit);
+            harness.driver.advance_time(0);
+            assert_eq!(
+                current_view(&harness),
+                View::TaskDetail,
+                "the activation mounted the task view"
+            );
+            let tooltip = tooltip_state(&harness);
+            assert!(
+                !tooltip.get_visible() && !tooltip.get_pending() && !tooltip.get_placed(),
+                "the activation dismissed the tooltip"
+            );
+        },
+    );
+}
+
+/// The inbox jump: a visible tip does not survive `ViewInbox` — the
+/// `OpenInbox` effect was missing from the old leaving set entirely.
+#[test]
+fn a_tooltip_does_not_survive_the_inbox_jump() {
+    let (fixture, mut state) = fixture::two_board_state();
+    // The Inbox board: the jump's target (the exact-title adoption).
+    if let Some(board) = state.boards.get_mut(&fixture.board_two) {
+        board.title = "Inbox".to_owned();
+    }
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.set_window_size(1000, 900);
+            let card = harness
+                .driver
+                .find_by_label("task-0")
+                .expect("the first card is addressable");
+            let pos = card.absolute_position();
+            let size = card.size();
+            harness
+                .driver
+                .hover_at(pos.x + size.width / 2.0, pos.y + size.height / 2.0);
+            harness.driver.advance_time(600);
+            assert!(
+                tooltip_state(&harness).get_visible(),
+                "the tip went visible"
+            );
+
+            // ViewInbox is bound in no preset (the D19 record): the
+            // mouse path is the toolbar's inbox chip — a bare
+            // TouchArea, so the coordinate click seam drives it.
+            let chip = harness
+                .driver
+                .find_by_label("Go to inbox")
+                .expect("the inbox chip is addressable");
+            let cpos = chip.absolute_position();
+            let csize = chip.size();
+            harness
+                .driver
+                .click_at(cpos.x + csize.width / 2.0, cpos.y + csize.height / 2.0);
+            harness.driver.advance_time(0);
+            assert_eq!(
+                current_view(&harness),
+                View::StackDetail,
+                "the inbox jump mounted the stack detail"
+            );
+            let tooltip = tooltip_state(&harness);
+            assert!(
+                !tooltip.get_visible() && !tooltip.get_pending() && !tooltip.get_placed(),
+                "the inbox jump dismissed the tooltip"
+            );
+        },
+    );
+}
+
+/// The palette invoke: a visible tip armed on the board does not
+/// survive the palette's Return-jump across boards —
+/// `apply_palette_invoke` lands in the choke point through
+/// `InvokeSelected` (the tooltip is armed via the state global: the
+/// palette row's own hover geometry is not this journey's seam).
+#[test]
+fn a_tooltip_does_not_survive_the_palette_invoke() {
+    let (fixture, mut state) = fixture::two_board_state();
+    let id = TaskId::from_uuid(uuid::Uuid::now_v7());
+    let mut needle = state.tasks.values().next().expect("fixture task").clone();
+    needle.id = id;
+    needle.stack = fixture.stack_c;
+    needle.order = 5;
+    needle.title = "zebra needle".to_owned();
+    state.tasks.insert(id, needle);
+
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.set_window_size(1000, 900);
+            // Arm a visible tip while the board view is mounted.
+            tooltip_state(&harness).invoke_hover(
+                "armed".into(),
+                "".into(),
+                slint::ModelRc::default(),
+                500.0,
+                300.0,
+                32.0,
+                32.0,
+            );
+            harness.driver.advance_time(600);
+            assert!(
+                tooltip_state(&harness).get_visible(),
+                "the tip went visible"
+            );
+
+            // The palette round-trip: one unique cross-board hit,
+            // Return jumps (the `menu.invoke` → `InvokeSelected` →
+            // `apply_palette_invoke` path).
+            harness.press(ActionId::PaletteSearch);
+            harness.type_text("zebra needle");
+            harness.stroke(parse("Return").expect("return"));
+            harness.driver.advance_time(0);
+            assert_eq!(
+                harness.handle.window().get_board_bar_model().selected,
+                1,
+                "the jump selected board two"
+            );
+            let tooltip = tooltip_state(&harness);
+            assert!(
+                !tooltip.get_visible() && !tooltip.get_pending() && !tooltip.get_placed(),
+                "the palette invoke dismissed the tooltip"
+            );
+        },
+    );
+}
+
+/// The ghost: a visible tip on the add-task ghost does not survive
+/// the click that opens the create field — the hovered `TouchArea`
+/// itself unmounts (the ghost case; the identity tuple does not move).
+#[test]
+fn a_tooltip_does_not_survive_the_ghost_click() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.set_window_size(1000, 900);
+            let ghost = harness
+                .driver
+                .find_by_label("Add task")
+                .expect("the add-task ghost is addressable");
+            let pos = ghost.absolute_position();
+            let size = ghost.size();
+            harness
+                .driver
+                .hover_at(pos.x + size.width / 2.0, pos.y + size.height / 2.0);
+            harness.driver.advance_time(600);
+            assert!(
+                tooltip_state(&harness).get_visible(),
+                "the tip went visible"
+            );
+
+            harness.driver.click_by_label("Add task");
+            harness.driver.advance_time(0);
+            let tooltip = tooltip_state(&harness);
+            assert!(
+                !tooltip.get_visible() && !tooltip.get_pending() && !tooltip.get_placed(),
+                "the ghost click dismissed the tooltip"
+            );
+        },
+    );
+}
+
+/// The kiosk flip (J-K rider): a visible tip does not survive the
+/// rotation's view swap — the flip happens outside `apply_effect`
+/// entirely, so it carries its own dismiss.
+#[test]
+fn a_tooltip_does_not_survive_a_kiosk_flip() {
+    let (_fixture, state, _walked) = fixture::today_overdue_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness =
+                Harness::mount_with_settings(SlintDriver::default(), state, rotation_settings());
+            assert_eq!(current_view(&harness), View::Board);
+            // Arm on the first card of the board view.
+            let card = harness
+                .driver
+                .find_by_label("task-0")
+                .expect("the first card is addressable");
+            let pos = card.absolute_position();
+            let size = card.size();
+            harness
+                .driver
+                .hover_at(pos.x + size.width / 2.0, pos.y + size.height / 2.0);
+            harness.driver.advance_time(600);
+            assert!(
+                tooltip_state(&harness).get_visible(),
+                "the tip went visible"
+            );
+
+            // The dwell fires the flip (J-K1's boundary: 30 s).
+            harness.driver.advance_time(30_000);
+            harness.driver.advance_time(0);
+            assert_eq!(current_view(&harness), View::Today, "the flip fired");
+            let tooltip = tooltip_state(&harness);
+            assert!(
+                !tooltip.get_visible() && !tooltip.get_pending() && !tooltip.get_placed(),
+                "the kiosk flip dismissed the tooltip"
+            );
+        },
+    );
+}
