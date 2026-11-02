@@ -10,6 +10,19 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 ### Added
 
+- Typed download-failure evidence split (#401): a sidecar document
+  download that the server refuses or answers with a fault no longer
+  reports the generic `transport` reason — `status --json` now carries
+  `access_denied` (401/403: fix credentials or the card's sharing) or
+  `server_fault` (immediate 5xx, or a 400/409/412 rejection:
+  manual-restore territory) on the board's sidecar row, and the UI
+  badge tags match (`access-denied`, `server-fault`). Transport-class
+  failures (connection, DNS/TLS, timeout, exhausted 429/503 retries,
+  404) still report `transport`. Additive: state persisted by older
+  builds still loads; state written by this build carrying a new
+  reason fails to load on an older one (typed corruption; the next
+  successful cycle rewrites it).
+
 - Main-window geometry persists across restarts (#412): the desktop
   window's last normal (non-maximized, non-fullscreen) position/size
   is captured debounced from the repaint tick and restored — clamped
