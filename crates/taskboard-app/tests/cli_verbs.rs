@@ -1712,6 +1712,7 @@ mod ceremonies {
             importance: None,
             urgency: None,
             recur: None,
+            kind: taskboard_domain::entities::TaskKind::Standard,
 
             archived: false,
             deleted: false,
@@ -1726,6 +1727,7 @@ mod ceremonies {
                 importance: stamp,
                 urgency: stamp,
                 recur: stamp,
+                kind: stamp,
 
                 archived: stamp,
                 deleted: stamp,

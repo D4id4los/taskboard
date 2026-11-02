@@ -617,6 +617,7 @@ fn domain_error_kind(err: &taskboard_domain::CommandError) -> &'static str {
         D::InvalidSnoozePostpone => "invalid-snooze-postpone",
         D::UnknownTimeEntry(_) => "unknown-time-entry",
         D::InvalidSpan => "invalid-span",
+        D::TrackerTaskNotDoneable(_) => "tracker-not-doneable",
         D::UnknownHabit(_) | D::HabitDeleted(_) => "unknown-habit",
         D::InvalidHabitWindow { .. } => "invalid-habit-window",
         // The undo line's refusals are their own surface family
@@ -657,6 +658,7 @@ fn undo_field_kind(field: taskboard_domain::UndoField) -> &'static str {
         F::Importance => "importance",
         F::Urgency => "urgency",
         F::Recur => "recur",
+        F::Kind => "kind",
         F::Archived => "archived",
         F::Deleted => "deleted",
         F::Order => "order",
@@ -1516,6 +1518,7 @@ fn task_changes(flags: &crate::cli::TaskEditFlags) -> taskboard_domain::TaskChan
         effort,
         importance,
         urgency,
+        kind,
         archive,
         unarchive,
     } = flags;
@@ -1546,6 +1549,10 @@ fn task_changes(flags: &crate::cli::TaskEditFlags) -> taskboard_domain::TaskChan
             crate::cli::UrgencySpec::Clear => None,
         }),
         recur: None,
+        kind: kind.clone().map(|spec| match spec {
+            crate::cli::TaskKindSpec::Set(value) => Some(value),
+            crate::cli::TaskKindSpec::Clear => None,
+        }),
         archived: if *archive {
             Some(true)
         } else {
