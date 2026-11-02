@@ -118,6 +118,13 @@ pub(crate) struct Adapter {
     /// occurrence — held, never re-read from config (the `day_start`
     /// consumers contract).
     reminder_defaults: taskboard_domain::ReminderDefaults,
+    /// The per-second tick's display-changes-per-second condition
+    /// (r4 D17, decision 5): true only while a mounted surface's
+    /// displayed value moves with the wall second. Computed once per
+    /// derive in [`Self::compute_seconds_surfaces_active`]; the
+    /// repaint driver consults it per tick. Kiosk is structurally and
+    /// explicitly excluded.
+    pub(crate) seconds_surfaces_active: bool,
     /// pub(crate) for the walk-guard test seam only (the shell's
     /// view context is the guard test's chain input).
     #[cfg(test)]
@@ -667,6 +674,40 @@ impl Adapter {
         crate::view_state::DayCtx { now, window }
     }
 
+    /// The per-second tick's single gate (r4 D17, §2 decision 5): the
+    /// one place that decides whether any mounted surface's displayed
+    /// value changes with the wall second. **This function is the
+    /// single tick channel** — chunks 8/9 (countdown rows) extend THIS
+    /// term; never introduce a second tick channel.
+    ///
+    /// D17's term today: the mounted task view's subject holds any
+    /// open entry — only then does the displayed total change per
+    /// second (a foreign task's open entry does not move the row). The
+    /// verb button may show Start during the transient double-open
+    /// while the subject's older open entry still accrues — the tick
+    /// follows the arithmetic truth, the button follows the D-T8
+    /// display pick; recorded.
+    ///
+    /// Kiosk exclusion, three layers: (a) structural — kiosk pins the
+    /// view to Board, the task view never mounts; (b) the explicit
+    /// `!self.kiosk` term — freezes the decision even if kiosk view
+    /// gating ever changes; (c) the driver only consults the wall
+    /// second while this flag holds. Layer (b) is the test-pinned one.
+    fn compute_seconds_surfaces_active(&mut self, state: &AppState) {
+        let mut active = false;
+        if !self.kiosk
+            && self.view_state.view() == crate::view_state::ViewId::TaskDetail
+            && let Some(subject) = self.view_state.subject_task()
+            && state
+                .tracking
+                .open_entries()
+                .any(|entry| entry.task == subject)
+        {
+            active = true;
+        }
+        self.seconds_surfaces_active = active;
+    }
+
     /// The D1 refresh, guarded (#463): the derive+diff half
     /// (reconcile, `models::push`, the live-menu re-grey) runs only
     /// when the loaded snapshot is not the one the models already
@@ -702,6 +743,9 @@ impl Adapter {
         self.sync_view_context();
         let state = self.state.load_full();
         self.view_state.reconcile(&state);
+        // After the reconcile — the reconciled view-state is what the
+        // term reads.
+        self.compute_seconds_surfaces_active(&state);
         self.enforce_due_buffer_invariant(window);
         let chain = self.shell.chain();
         let day = self.day_ctx();
@@ -3078,6 +3122,7 @@ pub(crate) fn install(
         due_soon_horizon,
         kiosk,
         reminder_defaults,
+        seconds_surfaces_active: false,
         shell: KeymapShell::default(),
         resolver: KeymapResolver::new(),
         view_state: {

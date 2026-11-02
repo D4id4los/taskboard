@@ -531,7 +531,9 @@ fn observe_current_monitor_rect(
 /// slint thread that drains the engine-signal and system-event
 /// receivers (non-blocking; `Lagged` counts as changed — chunk 1's
 /// recorded semantics), detects the wall-minute boundary (the
-/// reminders §7 time repaint), and refreshes when anything fired.
+/// reminders §7 time repaint) and the wall-second boundary (r4 D17's
+/// per-second tick, gated on [`adapter::Adapter`]'s
+/// `seconds_surfaces_active`), and refreshes when anything fired.
 fn start_repaint_driver(
     handle: &UiHandle,
     mut signals: broadcast::Receiver<EngineSignal>,
@@ -542,17 +544,22 @@ fn start_repaint_driver(
     let alarm = handle.alarm.clone();
     let state = Arc::clone(&handle.state);
     let minute = std::cell::Cell::new(None::<i64>);
+    let second = SecondTick::default();
     handle.timer.start(
         slint::TimerMode::Repeated,
         std::time::Duration::from_millis(adapter::REPAINT_CADENCE_MS),
         move || {
             let Some(window) = weak.upgrade() else { return };
-            let mut dirty = false;
+            // The signal half of the old single `dirty` (r4 decision
+            // 5's restructure): receiver drains + delivery health.
+            // The time boundaries live separately so the per-second
+            // tick can never run the minute-cadence alarm pass.
+            let mut signal_dirty = false;
             loop {
                 match signals.try_recv() {
-                    Ok(_) => dirty = true,
+                    Ok(_) => signal_dirty = true,
                     Err(broadcast::error::TryRecvError::Lagged(_)) => {
-                        dirty = true;
+                        signal_dirty = true;
                         break;
                     }
                     Err(
@@ -570,10 +577,10 @@ fn start_repaint_driver(
                     // settings liveness map (round-1 D8).
                     Ok(event) => {
                         events.push(event);
-                        dirty = true;
+                        signal_dirty = true;
                     }
                     Err(broadcast::error::TryRecvError::Lagged(_)) => {
-                        dirty = true;
+                        signal_dirty = true;
                         break;
                     }
                     Err(
@@ -591,38 +598,51 @@ fn start_repaint_driver(
             // strictly better delivery only clears the surface, so a
             // missed tick can never strand a stale failure chip).
             if adapter.borrow_mut().drain_delivery_health(&window) {
-                dirty = true;
+                signal_dirty = true;
             }
             // The settings reply drain (D25b): the non-blocking poll
             // under the same cadence — a settled reply refreshes.
             adapter.borrow_mut().drain_setting_replies(&window);
+            // One clock read per tick feeds both boundaries (r4
+            // decision 5). The second boundary fires only while the
+            // adapter's `seconds_surfaces_active` gate holds; the cell
+            // tracks the wall second regardless, so the first active
+            // second after re-activation fires immediately.
             let mut minute_boundary = false;
-            let wall_minute = chrono::Utc::now().timestamp() / 60;
+            let now = chrono::Utc::now();
+            let wall_minute = now.timestamp() / 60;
             if minute.get() != Some(wall_minute) {
                 minute.set(Some(wall_minute));
-                dirty = true;
                 minute_boundary = true;
             }
+            let second_boundary =
+                second.crossed(adapter.borrow().seconds_surfaces_active, now.timestamp());
+            let time_boundary = minute_boundary || second_boundary;
             // The notice's expiry rides the same cadence tick's wall
             // clock (no UI-held timer); the push is cheap enough to
             // run unconditionally.
             adapter.borrow_mut().push_notice(&window);
-            if dirty {
-                if minute_boundary {
+            if signal_dirty || time_boundary {
+                if time_boundary {
                     // The wall clock moved, the state pointer did not —
                     // the time-derived rows (badges, due-soon, day
-                    // window) need the full derive regardless of the
-                    // unchanged-refresh guard (#463).
+                    // window, D17's summary total) need the full derive
+                    // regardless of the unchanged-refresh guard (#463):
+                    // the total derives from (state, now) and `now` is
+                    // outside the state Arc.
                     adapter.borrow_mut().refresh_forced(&window);
                 } else {
                     adapter.borrow_mut().refresh(&window);
                 }
             }
             // The alarm pass (D-I9.2) rides the driver's two existing
-            // wake branches: a state change (dirty) or the wall-minute
-            // boundary (time passage for the elapsed phrases + the
-            // level-triggered attention re-assert).
-            if (dirty || minute_boundary)
+            // wake branches: a state change (signal_dirty) or the
+            // wall-minute boundary (time passage for the elapsed
+            // phrases + the level-triggered attention re-assert). The
+            // per-second tick is deliberately NOT a branch — its
+            // cadence is minute-level + signals; a 1 Hz alarm pass
+            // would be the restructure's regression.
+            if (signal_dirty || minute_boundary)
                 && let Some(lanes) = alarm.as_ref()
             {
                 run_alarm_pass(lanes, &state, minute_boundary);
@@ -635,6 +655,77 @@ fn start_repaint_driver(
             adapter.borrow_mut().capture_window_geometry(&window);
         },
     );
+}
+
+/// The wall-second boundary detector (r4 D17, §2 decision 5): an
+/// extracted, unit-testable cell — no new slint `Timer`, no UI-held
+/// timer state. The driver polls it at [`adapter::REPAINT_CADENCE_MS`].
+#[derive(Default)]
+pub(crate) struct SecondTick(std::cell::Cell<Option<i64>>);
+
+impl SecondTick {
+    /// True exactly on the tick where the wall second changed **while
+    /// `active`**. The cell tracks the wall second even while
+    /// inactive, so the activation tick itself never refires the
+    /// current second (the opening refresh just pushed the value) and
+    /// the first boundary that arrives while active fires at once —
+    /// no stale-second skip.
+    fn crossed(&self, active: bool, wall_second: i64) -> bool {
+        let changed = self.0.get() != Some(wall_second);
+        if changed {
+            self.0.set(Some(wall_second));
+        }
+        active && changed
+    }
+}
+
+#[cfg(test)]
+mod second_tick_tests {
+    use super::SecondTick;
+
+    /// A6 — a 100 ms poll sequence over synthetic wall seconds: fires
+    /// exactly once per second while active, never while inactive,
+    /// and immediately on the first active second after
+    /// re-activation (no stale-second skip). The same boundary is
+    /// what routes the driver's `refresh_forced`; the alarm pass's
+    /// exclusion of the second boundary is the restructure's pinned
+    /// shape (`signal_dirty || minute_boundary` — review-enforced).
+    #[test]
+    fn the_second_tick_fires_once_per_second_never_while_inactive_and_on_reactivation() {
+        // Ten polls per wall second, five seconds, active: one fire
+        // per second (the very first poll fires — no cell history).
+        let tick = SecondTick::default();
+        let mut fires = 0;
+        for second in 0..5i64 {
+            for sub in 0..10 {
+                let wall = second * 10 + sub;
+                if tick.crossed(true, wall / 10) {
+                    fires += 1;
+                }
+            }
+        }
+        assert_eq!(fires, 5, "exactly one fire per wall second");
+
+        // Inactive: crossings are absorbed, never fire.
+        let tick = SecondTick::default();
+        assert!(!tick.crossed(false, 0));
+        assert!(!tick.crossed(false, 0));
+        assert!(!tick.crossed(false, 1));
+
+        // Re-activation: the cell kept tracking while inactive, so
+        // the activation tick itself does not refire the current
+        // second (the opening refresh already pushed it); the first
+        // boundary that arrives while active fires at once.
+        assert!(
+            !tick.crossed(true, 1),
+            "the activation tick never refires the current second"
+        );
+        assert!(
+            tick.crossed(true, 2),
+            "the first active boundary fires immediately"
+        );
+        assert!(!tick.crossed(true, 2), "the same second never fires twice");
+    }
 }
 
 /// The repaint driver's alarm half, detached from `UiHandle` so the
