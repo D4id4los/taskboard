@@ -39,9 +39,12 @@ const BACKUP_SUFFIX: &str = ".bak-legacy";
 /// never credentials. Relocated here from `ui_requests` so the
 /// migration log honours the same rule (plan §1).
 pub(crate) fn url_host(url: &str) -> &str {
-    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
-    let rest = rest.split(['/', '?', '#']).next().unwrap_or(rest);
-    rest.rsplit_once('@').map_or(rest, |(_, host)| host)
+    // The grammar split is the sync crate's shared `authority_of` (the
+    // F8-09 fold); the @-strip stays local (log-safety policy).
+    let (_, authority) = taskboard_sync_nextcloud::client::authority_of(url);
+    authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host)
 }
 
 /// The pure trigger + transform over the parsed config document: all

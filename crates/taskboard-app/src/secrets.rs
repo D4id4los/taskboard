@@ -231,8 +231,11 @@ impl CredentialStore for EnvCredentialStore {
 /// stands in for the host.
 #[must_use]
 pub fn credential_key(server: &str, username: &str) -> String {
-    let rest = server.split_once("://").map_or(server, |(_, r)| r);
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    // The grammar split is the sync crate's shared `authority_of` (the
+    // F8-09 fold — this was a hand-rolled fork of the same split); the
+    // @/port stripping and the trimmed-input fallback stay local (that
+    // is credential-key semantics, not URL grammar).
+    let (_, authority) = taskboard_sync_nextcloud::client::authority_of(server);
     let with_port = authority.rsplit_once('@').map_or(authority, |(_, a)| a);
     let host = with_port.rsplit_once(':').map_or(with_port, |(h, _)| h);
     let host = if host.trim().is_empty() {
