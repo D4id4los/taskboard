@@ -632,8 +632,21 @@ pub enum AppDataUnreadable {
         /// The document's too-new format version.
         format: u32,
     },
-    /// The content download failed (transport class, after retries).
+    /// The content download failed with a transport-class error
+    /// (connection, DNS/TLS, timeout) or a rate-limit/service-unavailable
+    /// budget exhausted after retries — self-heals by retrying. Also the
+    /// conservative fallback for download outcomes nothing else
+    /// classifies.
     Transport,
+    /// The server refused the download: 401 (credential rejected) or
+    /// 403 (the account cannot read the attachment). Retrying cannot
+    /// self-heal until credentials or the ACL change; the lane stays
+    /// fold-only.
+    AccessDenied,
+    /// The server answered the download with a persistent fault: an
+    /// immediate 5xx, or a 4xx rejection that is neither auth nor
+    /// access (400/409/412). The runbook's manual-restore territory.
+    ServerFault,
     /// The body is not decodable (corrupt JSON, missing envelope keys).
     Decode,
     /// The decoded `board` is not the cycling board (rode in on a moved
@@ -797,5 +810,38 @@ mod tests {
         let json = serde_json::to_string(&SyncCommand::Detach).expect("serialize");
         let back: SyncCommand = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back, SyncCommand::Detach);
+    }
+
+    /// Persisted-state compatibility for the unreadable evidence enum
+    /// (issue #401): rows written by a pre-split build (only the four
+    /// original variant names) still decode, and the two download-split
+    /// variants round-trip losslessly.
+    #[test]
+    fn unreadable_evidence_old_rows_decode_and_new_round_trip() {
+        for name in ["Transport", "Decode", "ForeignBoard"] {
+            let json = format!(r#"{{"Unreadable":"{name}"}}"#);
+            let health: crate::state::SidecarHealth =
+                serde_json::from_str(&json).expect("old row decodes");
+            assert!(matches!(health, crate::state::SidecarHealth::Unreadable(_)));
+        }
+        // FormatTooNew carries its payload on both sides of the wire.
+        let too_new: crate::state::SidecarHealth =
+            serde_json::from_str(r#"{"Unreadable":{"FormatTooNew":{"format":99}}}"#)
+                .expect("old row decodes");
+        assert_eq!(
+            too_new,
+            crate::state::SidecarHealth::Unreadable(AppDataUnreadable::FormatTooNew { format: 99 })
+        );
+        for variant in [
+            AppDataUnreadable::AccessDenied,
+            AppDataUnreadable::ServerFault,
+        ] {
+            let json = serde_json::to_string(&crate::state::SidecarHealth::Unreadable(variant))
+                .expect("serialize");
+            assert_eq!(
+                serde_json::from_str::<crate::state::SidecarHealth>(&json).expect("deserialize"),
+                crate::state::SidecarHealth::Unreadable(variant)
+            );
+        }
     }
 }

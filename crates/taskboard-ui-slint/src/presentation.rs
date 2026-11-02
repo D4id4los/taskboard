@@ -320,6 +320,8 @@ pub fn sidecar_caption(health: SidecarHealth) -> String {
         SidecarHealth::Unreadable(reason) => {
             let tag = match reason {
                 taskboard_domain::AppDataUnreadable::Transport => "transport",
+                taskboard_domain::AppDataUnreadable::AccessDenied => "access-denied",
+                taskboard_domain::AppDataUnreadable::ServerFault => "server-fault",
                 taskboard_domain::AppDataUnreadable::Decode => "decode",
                 taskboard_domain::AppDataUnreadable::ForeignBoard => "foreign-board",
                 taskboard_domain::AppDataUnreadable::FormatTooNew { .. } => unreachable!(),
@@ -2370,6 +2372,8 @@ mod tests {
         assert!(too_new.contains('2'), "the too-new format rides along");
         for reason in [
             taskboard_domain::AppDataUnreadable::Transport,
+            taskboard_domain::AppDataUnreadable::AccessDenied,
+            taskboard_domain::AppDataUnreadable::ServerFault,
             taskboard_domain::AppDataUnreadable::Decode,
             taskboard_domain::AppDataUnreadable::ForeignBoard,
         ] {

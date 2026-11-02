@@ -271,6 +271,14 @@ pub fn sidecar_view(health: taskboard_domain::SidecarHealth) -> Option<SidecarHe
             reason: "transport".to_owned(),
             format: None,
         },
+        taskboard_domain::AppDataUnreadable::AccessDenied => SidecarHealthView {
+            reason: "access_denied".to_owned(),
+            format: None,
+        },
+        taskboard_domain::AppDataUnreadable::ServerFault => SidecarHealthView {
+            reason: "server_fault".to_owned(),
+            format: None,
+        },
         taskboard_domain::AppDataUnreadable::Decode => SidecarHealthView {
             reason: "decode".to_owned(),
             format: None,
@@ -1095,4 +1103,45 @@ pub struct HabitDeleteReceipt {
     pub deleted: bool,
     /// The log rows that remain queryable.
     pub log_rows: usize,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use taskboard_domain::AppDataUnreadable;
+
+    /// The `sidecar.reason` strings are the typed CLI wire contract:
+    /// every unreadable form projects a distinct snake-case value
+    /// (structural, matched by value — never message text).
+    #[test]
+    fn sidecar_view_projects_every_reason_typed() {
+        let reason = |r| {
+            sidecar_view(taskboard_domain::SidecarHealth::Unreadable(r))
+                .expect("unreadable projects Some")
+        };
+        assert!(sidecar_view(taskboard_domain::SidecarHealth::Healthy).is_none());
+        assert_eq!(
+            reason(AppDataUnreadable::FormatTooNew { format: 7 }),
+            SidecarHealthView {
+                reason: "format_too_new".to_owned(),
+                format: Some(7),
+            }
+        );
+        for (r, expected) in [
+            (AppDataUnreadable::Transport, "transport"),
+            (AppDataUnreadable::AccessDenied, "access_denied"),
+            (AppDataUnreadable::ServerFault, "server_fault"),
+            (AppDataUnreadable::Decode, "decode"),
+            (AppDataUnreadable::ForeignBoard, "foreign_board"),
+        ] {
+            assert_eq!(
+                reason(r),
+                SidecarHealthView {
+                    reason: expected.to_owned(),
+                    format: None,
+                },
+                "{r:?}"
+            );
+        }
+    }
 }
