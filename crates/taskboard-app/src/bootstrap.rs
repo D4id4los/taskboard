@@ -79,6 +79,11 @@ use crate::secrets::{CredentialError, CredentialStore};
 /// `NetworkRestored`, the per-connector `ConnectorLost`/`Restored`
 /// episodes, `Shutdown`).
 pub const SYSTEM_BROADCAST_CAPACITY: usize = 64;
+
+/// The join budget for the boot-unwind storage join (the bootstrap
+/// failure tail): a generous bound on an actor that should drain and
+/// exit the moment its inbox closes.
+const BOOT_FAILURE_JOIN_BUDGET: Duration = Duration::from_secs(10);
 /// Channel capacity of the sync-command inbox (`SyncNow` nudges; "full"
 /// already means "coalesced").
 pub const SYNC_COMMAND_CAPACITY: usize = 32;
@@ -629,16 +634,17 @@ impl App {
 
         tracing::info!("shutdown: stopping the storage actor");
         drop(storage);
-        if let Err(join_err) = storage_join.await {
-            tracing::warn!(?join_err, "storage actor join failed");
-        }
+        // Bounded like its five sibling joins (F9-03): a wedged storage
+        // actor is exactly as much a degraded drain as a wedged notifier.
+        let storage_budget_hit = join_bounded(storage_join, timeout, "storage actor").await;
         tracing::info!(actor_aborted, "shutdown complete");
         ShutdownOutcome {
             actor_aborted,
             budget_hit: authority_budget_hit
                 | engine_budget_hit
                 | escalation_budget_hit
-                | notifier_budget_hit,
+                | notifier_budget_hit
+                | storage_budget_hit,
         }
     }
 }
@@ -649,7 +655,8 @@ pub struct ShutdownOutcome {
     /// The sync actor was aborted at the timeout instead of joining.
     pub actor_aborted: bool,
     /// Any other bounded join (authority, state engine, escalation
-    /// driver, notifier) aborted at the timeout instead of joining.
+    /// driver, notifier, storage actor) aborted at the timeout instead
+    /// of joining.
     pub budget_hit: bool,
 }
 
@@ -1067,9 +1074,15 @@ async fn bootstrap_with_modules(
         Err(err) => {
             // Cleanup: dropping the storage handle closes the actor's
             // inbox; the actor drains and exits. Nothing else spawned.
+            // The join is bounded like every other actor join (F9-03);
+            // the budget fact is logged only — a failed boot surfaces
+            // typed through the returned BootstrapError and carries no
+            // degraded-drain exit-code contract.
             tracing::error!(?err, "bootstrap failed: engine did not start");
             drop(storage);
-            let _ = storage_join.await;
+            if join_bounded(storage_join, BOOT_FAILURE_JOIN_BUDGET, "storage actor").await {
+                tracing::warn!("boot-unwind storage join hit its budget");
+            }
             return Err(err.into());
         }
     };
