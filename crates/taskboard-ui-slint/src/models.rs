@@ -260,6 +260,10 @@ struct HintModels {
     stack_header: MirroredRows<SharedString>,
     stack_create: MirroredRows<SharedString>,
     task_create: MirroredRows<SharedString>,
+    // The task view's header hints (r4 D16b/D16c): the done checkbox's
+    // and the tracking button's binding projections.
+    task_done: MirroredRows<SharedString>,
+    task_track: MirroredRows<SharedString>,
 }
 
 /// The persistent model handle of one surface plus its Rust-side
@@ -921,6 +925,43 @@ fn push_chrome(
             window.set_task_create_hint(rc);
         },
         &rows(ActionId::TaskCreate),
+    );
+    // The task view's header hints (r4 D16b/D16c): the verb the
+    // surface currently offers — TaskComplete while the subject is
+    // open, TaskReopen while done; TaskTrackStart/TaskTrackStop with
+    // the tracking button. Empty while the task view is not mounted
+    // (the nav_back projection's shape; `vs` + `state` are both in
+    // scope here).
+    let detail_subject = (view == crate::view_state::ViewId::TaskDetail)
+        .then(|| vs.subject_task())
+        .flatten();
+    let done_action = detail_subject
+        .and_then(|task| state.tasks.get(&task))
+        .map(|task| {
+            if task.done.is_some() {
+                ActionId::TaskReopen
+            } else {
+                ActionId::TaskComplete
+            }
+        });
+    mutations += push_rows(
+        &mut models.hints.task_done,
+        |rc| {
+            window.set_task_done_hint(rc);
+        },
+        &done_action.map(rows).unwrap_or_default(),
+    );
+    let track_action =
+        presentation::detail_tracking_verb(state, detail_subject).map(|verb| match verb {
+            presentation::TrackDetail::Start => ActionId::TaskTrackStart,
+            presentation::TrackDetail::Stop => ActionId::TaskTrackStop,
+        });
+    mutations += push_rows(
+        &mut models.hints.task_track,
+        |rc| {
+            window.set_task_track_hint(rc);
+        },
+        &track_action.map(rows).unwrap_or_default(),
     );
     mutations
 }

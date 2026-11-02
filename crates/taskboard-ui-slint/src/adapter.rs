@@ -5090,6 +5090,33 @@ fn install_tracking_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         };
         stop.borrow_mut().route(&window, ActionId::TaskTrackStop);
     });
+
+    // The task view's done checkbox (r4 D16b/F15): raw-send the
+    // toggled SetTaskDone over the VIEW'S SUBJECT — deliberately not
+    // the registry route (`TaskComplete`/`TaskReopen` act on the
+    // focused task; the cycle's fallback subjects
+    // `first_task_of(subject_stack)` when focus is empty, so the
+    // subject is not guaranteed focused — the card checkbox's recorded
+    // reason, adapted to the view). A stale/dead subject degrades to a
+    // no-op (the index-seam precedent). No
+    // `settle_pointer_conflict`: the board checkbox settles because
+    // the board owns the capture-settle lane; the view's other clicks
+    // don't settle and neither does this one.
+    let done = Rc::clone(adapter);
+    let done_weak = window.as_weak();
+    window.on_task_done_toggled(move || {
+        if done_weak.upgrade().is_none() {
+            return;
+        }
+        let a = done.borrow_mut();
+        let Some(task) = a.view_state.subject_task() else {
+            return;
+        };
+        if !a.state.load().tasks.contains_key(&task) {
+            return;
+        }
+        send_toggled_done(&a, task);
+    });
 }
 
 /// The notification surface's seams (R3 chunk C, design D-10): each

@@ -1522,6 +1522,54 @@ fn an_add_task_ghost_hover_arms_the_tooltip() {
     );
 }
 
+/// r4 D16/D17 (blanket rule a) — the task view's header row and
+/// summary elements arm their tooltips on hover: the done checkbox,
+/// the tracking button, and the summary value each arm with a
+/// populated description and dismiss on leave. Label content is
+/// never asserted.
+#[test]
+fn the_task_view_header_and_summary_elements_arm_their_tooltips() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.set_window_size(1000, 900);
+            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::TaskEdit);
+            assert_eq!(harness.handle.window().get_current_view(), View::TaskDetail);
+
+            for label in ["Mark task done", "Start tracking", "Tracked time total"] {
+                let element = harness
+                    .driver
+                    .find_by_label(label)
+                    .unwrap_or_else(|| panic!("{label} is addressable"));
+                let pos = element.absolute_position();
+                let size = element.size();
+                harness
+                    .driver
+                    .hover_at(pos.x + size.width / 2.0, pos.y + size.height / 2.0);
+                assert!(
+                    tooltip_state(&harness).get_pending(),
+                    "{label}'s hover armed the delay"
+                );
+                harness.driver.advance_time(600);
+                assert!(tooltip_state(&harness).get_visible(), "{label} showed");
+                assert_ne!(
+                    tooltip_state(&harness).get_description(),
+                    "",
+                    "{label}'s description slot is populated"
+                );
+                harness.driver.hover_at(4.0, 4.0);
+                assert!(!tooltip_state(&harness).get_pending());
+                assert!(!tooltip_state(&harness).get_visible());
+            }
+        },
+    );
+}
+
 /// D22 — the compact add-stack affordance: at the compact width the
 /// relocated trailing button opens the same stack-create flow (the
 /// click equivalent of stack.create, §7.1).

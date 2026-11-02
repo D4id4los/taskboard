@@ -27,8 +27,8 @@ export struct TaskDetailModel {
     tracked-total: string,
     done: bool,
     // The tracking verbs (DR-5/4, D-TU6): exactly one true while a
-    // subject exists, both false without — the button beside the
-    // State cell.
+    // subject exists, both false without — the buttons at the header
+    // row's right end (r4 D16c).
     can-track-start: bool,
     can-track-stop: bool,
     description: string,
@@ -76,6 +76,14 @@ export component TaskView inherits FocusScope {
     // over the focused task (the subject IS the focused task).
     callback task-track-start-clicked();
     callback task-track-stop-clicked();
+    // The done checkbox (r4 D16b): raw-sends the toggled SetTaskDone
+    // over the VIEW'S SUBJECT — the adapter seam resolves it (the
+    // subject is not guaranteed focused; the cycle's fallback).
+    callback task-done-toggled();
+    // The header row's hint projections (r4 D16b/D16c): keymap
+    // projections pushed per refresh — never hand-written.
+    in property <[string]> task-done-hint;
+    in property <[string]> task-track-hint;
     // The rule-list composition's seams (chunk 6, D12): forwarded to
     // the window, resolved against the id tables there.
     callback rule-remove-clicked(int);
@@ -154,12 +162,14 @@ export component TaskView inherits FocusScope {
         VerticalLayout {
             spacing: Theme.space-3;
 
-            // The header (round-1 D12): the back button left of the
-            // title block — the click equivalent of nav.focus-board
-            // (§7.1), described and hinted by the generalized trigger.
+            // The header row (r4 D16a): one content-height row — back
+            // inline with the title (F9), the done checkbox left of
+            // it (F15/D16b), tracking at the right end (F11/D16c). No
+            // stretch anywhere: the phantom rows of the old back-row +
+            // trailing-spacer shape are gone by construction (the
+            // description is THE flexible element, D16d).
             HorizontalLayout {
                 spacing: Theme.space-3;
-                alignment: start;
                 IconButton {
                     icon: IconKind.chevron-left;
                     label: "Back to board";
@@ -167,45 +177,149 @@ export component TaskView inherits FocusScope {
                     hint-keys: root.nav-back-hint;
                     clicked => root.back-clicked();
                 }
-            }
-            // The title row (round-3 W-SM-d, F26): the field leaves
-            // the back-button row's centered column and stretches to
-            // the detail body's full width — the display RoleText
-            // already elides full-width, and the field must match
-            // (the geometry pin: field width ≈ body width).
-            if (root.task.edit-open): title-field := TextField {
-                placeholder: "Task title";
-                label: "Task title";
-                commit-affordance: true;
-                initial-text: root.task.initial-text;
-                selected-on-focus: true;
-                accepted(text) => root.title-committed(text);
-                edited(text) => root.title-edited(text);
-                focus-lost() => root.text-flow-focus-lost();
-            }
-            if (!root.task.edit-open): title-display := Rectangle {
-                border-radius: Theme.radius-small;
-                horizontal-stretch: 1;
-                accessible-role: AccessibleRole.button;
-                accessible-label: "Edit title";
-                accessible-description: "Arms the title editor for the viewed task.";
-                accessible-action-default => { root.title-edit-opened(); }
-                // The hover surface first (z-under the text): the
-                // due-cell grammar's hover affordance.
-                if (title-touch.has-hover): Rectangle {
-                    background: Theme.surface-raised;
+                // The done checkbox (r4 D16b, F15): the card
+                // checkbox's state-less anatomy — it renders the
+                // model's done flag only, no local checked state
+                // anywhere, so it cannot desync (the refresh push is
+                // the single writer) — with the view's closed-cell
+                // grammar: the FocusScope overlay makes it a real tab
+                // stop with Return/Space activation, the hover surface
+                // and the tooltip arm ride the TouchArea. It stays
+                // mounted while the title flow is open: doneness is
+                // independent of the title buffer.
+                done-box := Rectangle {
+                    width: Theme.space-4;
+                    height: Theme.space-4;
+                    y: (parent.height - self.height) / 2;
                     border-radius: Theme.radius-small;
+                    border-width: Theme.focus-ring-width;
+                    border-color: done-focus.has-focus
+                        ? Semantic.focus-ring
+                        : root.task.done ? Semantic.success : Theme.text-secondary;
+                    // The hover surface first (z-under the box fill):
+                    // the closed cells' hover grammar.
+                    if (done-touch.has-hover): Rectangle {
+                        background: Theme.surface-hover;
+                        border-radius: Theme.radius-small;
+                    }
+                    done-focus := FocusScope {
+                        width: 100%;
+                        height: 100%;
+                        focus-on-tab-navigation: true;
+                        accessible-role: AccessibleRole.checkbox;
+                        // The done/undone verb pair (the card's
+                        // presentation literals, reused verbatim so
+                        // the a11y tree and click_by_label agree
+                        // across surfaces).
+                        accessible-label: root.task.done ? "Mark task not done" : "Mark task done";
+                        accessible-action-default => { root.task-done-toggled(); }
+                        key-pressed(event) => {
+                            if (event.text == Key.Return || event.text == " ") {
+                                root.task-done-toggled();
+                                accept
+                            } else {
+                                reject
+                            }
+                        }
+                    }
+                    if (root.task.done): Path {
+                        width: Theme.space-4 - 2 * Theme.space-1;
+                        height: Theme.space-4 - 2 * Theme.space-1;
+                        x: (parent.width - self.width) / 2;
+                        y: (parent.height - self.height) / 2;
+                        commands: "M 2 6 L 5 9 L 10 3";
+                        stroke: Semantic.success;
+                        stroke-width: Theme.focus-ring-width;
+                        fill: transparent;
+                        viewbox-width: 12;
+                        viewbox-height: 12;
+                    }
+                    done-touch := TouchArea {
+                        mouse-cursor: MouseCursor.pointer;
+                        // The tooltip arm (blanket rule a): the same
+                        // verb pair the a11y layer reads.
+                        changed has-hover => {
+                            if (self.has-hover) {
+                                TooltipState.hover(
+                                    root.task.done ? "Mark task not done" : "Mark task done",
+                                    "Toggles the task's done state.",
+                                    root.task-done-hint,
+                                    self.absolute-position.x,
+                                    self.absolute-position.y,
+                                    self.width,
+                                    self.height,
+                                );
+                            } else {
+                                TooltipState.unhover();
+                            }
+                        }
+                        clicked => {
+                            TooltipState.unhover();
+                            root.task-done-toggled();
+                        }
+                    }
                 }
-                RoleText {
-                    role: Typography.title;
-                    text: root.task.title;
-                    overflow: elide;
-                    width: parent.width - 2 * Theme.space-2;
-                    x: Theme.space-2;
+                // The title cell (r4 D16a): the display/field pair
+                // mounts in one cell, the field stretches to the row's
+                // leftover width (the display's own horizontal-stretch,
+                // shared). The checkbox and tracking button stay
+                // mounted around it while editing.
+                if (root.task.edit-open): title-field := TextField {
+                    placeholder: "Task title";
+                    label: "Task title";
+                    commit-affordance: true;
+                    initial-text: root.task.initial-text;
+                    selected-on-focus: true;
+                    horizontal-stretch: 1;
+                    accepted(text) => root.title-committed(text);
+                    edited(text) => root.title-edited(text);
+                    focus-lost() => root.text-flow-focus-lost();
                 }
-                title-touch := TouchArea {
-                    mouse-cursor: MouseCursor.pointer;
-                    clicked => { root.title-edit-opened(); }
+                if (!root.task.edit-open): title-display := Rectangle {
+                    border-radius: Theme.radius-small;
+                    horizontal-stretch: 1;
+                    accessible-role: AccessibleRole.button;
+                    accessible-label: "Edit title";
+                    accessible-description: "Arms the title editor for the viewed task.";
+                    accessible-action-default => { root.title-edit-opened(); }
+                    // The hover surface first (z-under the text): the
+                    // due-cell grammar's hover affordance.
+                    if (title-touch.has-hover): Rectangle {
+                        background: Theme.surface-raised;
+                        border-radius: Theme.radius-small;
+                    }
+                    RoleText {
+                        role: Typography.title;
+                        text: root.task.title;
+                        overflow: elide;
+                        width: parent.width - 2 * Theme.space-2;
+                        x: Theme.space-2;
+                    }
+                    title-touch := TouchArea {
+                        mouse-cursor: MouseCursor.pointer;
+                        clicked => { root.title-edit-opened(); }
+                    }
+                }
+                // The tracking verbs (r4 D16c, F11): moved here from
+                // the metadata row's State column — exactly one verb
+                // while a subject exists, at the header row's right
+                // end. The card badge stays fenced (#489); the summary
+                // row below carries D17's total.
+                if (root.task.can-track-start): IconButton {
+                    icon: IconKind.play;
+                    tone: Tone.info;
+                    label: "Start tracking";
+                    description: "Starts the timer for this task.";
+                    hint-keys: root.task-track-hint;
+                    clicked => root.task-track-start-clicked();
+                }
+                if (root.task.can-track-stop): IconButton {
+                    icon: IconKind.stop;
+                    tone: Tone.info;
+                    label: "Stop tracking";
+                    description: "Stops the timer running on this task.";
+                    hint-keys: root.task-track-hint;
+                    clicked => root.task-track-stop-clicked();
                 }
             }
 
@@ -314,29 +428,10 @@ export component TaskView inherits FocusScope {
                         text-color: Theme.text-secondary;
                         text: "State";
                     }
-                    HorizontalLayout {
-                        spacing: Theme.space-1;
-                        RoleText {
-                            role: Typography.body;
-                            text-color: root.task.done ? Semantic.success : Theme.text-primary;
-                            text: root.task.done ? "Completed" : "Open";
-                            vertical-alignment: center;
-                        }
-                        // The Start/Stop affordance (DR-5/4, D-TU6):
-                        // exactly one verb while a subject exists; no
-                        // elapsed text, no history (fenced #491).
-                        if (root.task.can-track-start): IconButton {
-                            icon: IconKind.play;
-                            tone: Tone.info;
-                            label: "Start tracking";
-                            clicked => root.task-track-start-clicked();
-                        }
-                        if (root.task.can-track-stop): IconButton {
-                            icon: IconKind.stop;
-                            tone: Tone.info;
-                            label: "Stop tracking";
-                            clicked => root.task-track-stop-clicked();
-                        }
+                    RoleText {
+                        role: Typography.body;
+                        text-color: root.task.done ? Semantic.success : Theme.text-primary;
+                        text: root.task.done ? "Completed" : "Open";
                     }
                 }
             }
@@ -356,6 +451,11 @@ export component TaskView inherits FocusScope {
                 }
                 Rectangle {
                     horizontal-stretch: 1;
+                    // The a11y presence (the value is data, not a
+                    // control): the addressable label the screen
+                    // reader and the element lookup read.
+                    accessible-role: AccessibleRole.text;
+                    accessible-label: "Tracked time total";
                     RoleText {
                         role: Typography.mono;
                         text: root.task.tracked-total;
