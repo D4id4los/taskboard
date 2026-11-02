@@ -270,7 +270,63 @@ pub const TASK_FIELDS: &[(&str, &[&str], FieldFamily)] = &[
     ("importance", &["importance"], FieldFamily::AppData),
     ("urgency", &["urgency"], FieldFamily::AppData),
     ("recur", &["recur"], FieldFamily::AppData),
+    ("kind", &["kind"], FieldFamily::AppData),
 ];
+
+/// What a task exists *for*: [`TaskKind::Standard`] is the completable
+/// default; [`TaskKind::Tracker`] marks a task that exists to be tracked
+/// (issue #492) — never "done" (the engine rejects the verb), with
+/// tracking fully live. Deliberately an enum, not a bool: the DR-5 §7
+/// reservation names *kind*s (plural, forward-extensible) and a second
+/// task-side bool would fork the fold/wire/storage plumbing per flag —
+/// the `TimeEntryKind` ruling verbatim.
+///
+/// # A1 note
+///
+/// A closed two-arm enum carries no invariant to guard — no fallible
+/// mint, no newtype. The leniency is explicit and at the edges: an
+/// unknown CLI text is a boundary parse rejection ([`TaskKind::
+/// parse_text_form`]), an unknown wire value demotes the field to
+/// unmodeled (the appdata codec), and an unknown storage text is
+/// `Corrupted` (local rows are trusted-written). Merge may adopt a
+/// remote `done` on a tracker task — that is data truth on a path that
+/// plans no commands (deliberate cross-version leniency, D-6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum TaskKind {
+    /// An ordinary, completable card — the default and the
+    /// overwhelming case.
+    #[default]
+    Standard,
+    /// A tracked, never-completed card. The marker is data plus one
+    /// engine gate (the `SetTaskDone` rejection); every other verb —
+    /// edit, move, archive, delete, track, remind — is unchanged.
+    Tracker,
+}
+
+impl TaskKind {
+    /// Parses the serde unit name (`"standard"` / `"tracker"`) — the
+    /// same text the storage column and the wire value store. The clap
+    /// value-parser seam delegates here; an unknown kind is a boundary
+    /// parse rejection, never a domain error variant.
+    #[must_use]
+    pub fn parse_text_form(raw: &str) -> Option<Self> {
+        match raw {
+            "standard" => Some(Self::Standard),
+            "tracker" => Some(Self::Tracker),
+            _ => None,
+        }
+    }
+
+    /// The canonical text form (the serde unit name).
+    #[must_use]
+    pub const fn text_form(self) -> &'static str {
+        match self {
+            Self::Standard => "standard",
+            Self::Tracker => "tracker",
+        }
+    }
+}
 
 /// Per-field write timestamps of a [`Task`] (decision: per-field LWW).
 ///
@@ -298,10 +354,22 @@ pub struct TaskClocks {
     pub urgency: DateTime<Utc>,
     /// Write time of `recur`.
     pub recur: DateTime<Utc>,
+    /// Write time of `kind` (the tracker task kind, issue #492).
+    /// Default-off decode: old serialized payloads (state snapshots,
+    /// journal pre-images) carry no `kind` clock and decode as "never
+    /// locally written" — bit-identical to a freshly migrated storage
+    /// row's epoch column default.
+    #[serde(default = "kind_clock_default")]
+    pub kind: DateTime<Utc>,
     /// Write time of `archived`.
     pub archived: DateTime<Utc>,
     /// Write time of the tombstone (`deleted`).
     pub deleted: DateTime<Utc>,
+}
+
+/// The decode default for a pre-kind payload's `kind` clock.
+fn kind_clock_default() -> DateTime<Utc> {
+    BoardClocks::epoch()
 }
 
 /// Per-field write timestamps of a [`Stack`].
@@ -521,6 +589,11 @@ pub struct Task {
     pub urgency: Option<Urgency>,
     /// The recurring-series rule; `None` = a plain, non-recurring task.
     pub recur: Option<RecurRule>,
+    /// What the task exists *for* (issue #492). Default-off: old
+    /// serialized tasks (snapshots, journal payloads) decode
+    /// [`TaskKind::Standard`].
+    #[serde(default)]
+    pub kind: TaskKind,
     /// Archived flag.
     pub archived: bool,
     /// Tombstone flag; `clocks.deleted` is the tombstone's write time.

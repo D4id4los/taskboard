@@ -380,6 +380,7 @@ fn raw_app_state_strategy() -> impl Strategy<Value = AppState> {
                         importance: None,
                         urgency: None,
                         recur: None,
+                        kind: crate::entities::TaskKind::Standard,
 
                         archived: row.archived,
                         deleted: row.deleted,

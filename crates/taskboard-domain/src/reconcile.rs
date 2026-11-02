@@ -426,6 +426,11 @@ pub fn merge_task_pair(local: &Task, bound: &Task) -> Task {
         } else {
             local.recur.clone()
         },
+        kind: if bc.kind >= lc.kind {
+            bound.kind
+        } else {
+            local.kind
+        },
         archived: if bc.archived >= lc.archived {
             bound.archived
         } else {
@@ -443,6 +448,7 @@ pub fn merge_task_pair(local: &Task, bound: &Task) -> Task {
             importance: lc.importance.max(bc.importance),
             urgency: lc.urgency.max(bc.urgency),
             recur: lc.recur.max(bc.recur),
+            kind: lc.kind.max(bc.kind),
             archived: lc.archived.max(bc.archived),
             deleted: lc.deleted.max(bc.deleted),
         },
@@ -580,6 +586,7 @@ mod tests {
             importance: None,
             urgency: None,
             recur: None,
+            kind: crate::entities::TaskKind::Standard,
 
             archived: false,
             deleted: false,
@@ -594,6 +601,7 @@ mod tests {
                 importance: ts(100),
                 urgency: ts(100),
                 recur: ts(100),
+                kind: ts(100),
 
                 archived: ts(100),
                 deleted: ts(100),
@@ -1059,6 +1067,7 @@ mod proptests {
             importance: None,
             urgency: None,
             recur: None,
+            kind: crate::entities::TaskKind::Standard,
 
             archived: false,
             deleted: false,
@@ -1073,6 +1082,7 @@ mod proptests {
                 importance: ts(100),
                 urgency: ts(100),
                 recur: ts(100),
+                kind: ts(100),
 
                 archived: ts(100),
                 deleted: ts(100),
@@ -1428,6 +1438,7 @@ mod proptest_strategies {
                     importance: None,
                     urgency: None,
                     recur: None,
+                    kind: crate::entities::TaskKind::Standard,
 
                     archived: false,
                     deleted: false,
@@ -1449,6 +1460,7 @@ mod proptest_strategies {
                             importance: lab,
                             urgency: lab,
                             recur: lab,
+                            kind: lab,
 
                             archived: arc,
                             deleted: del,
@@ -1468,6 +1480,7 @@ mod proptest_strategies {
                             importance: lab + chrono::TimeDelta::try_seconds(7).unwrap(),
                             urgency: lab + chrono::TimeDelta::try_seconds(7).unwrap(),
                             recur: lab + chrono::TimeDelta::try_seconds(7).unwrap(),
+                            kind: lab + chrono::TimeDelta::try_seconds(7).unwrap(),
 
                             archived: arc + chrono::TimeDelta::try_seconds(7).unwrap(),
                             deleted: del + chrono::TimeDelta::try_seconds(7).unwrap(),

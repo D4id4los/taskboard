@@ -848,6 +848,7 @@ mod tests {
             importance: t,
             urgency: t,
             recur: t,
+            kind: t,
 
             archived: t,
             deleted: t,
@@ -888,6 +889,7 @@ mod tests {
             importance: None,
             urgency: None,
             recur: None,
+            kind: crate::entities::TaskKind::Standard,
 
             archived: false,
             deleted: false,
@@ -1355,6 +1357,7 @@ mod tests {
             importance: None,
             urgency: None,
             recur: None,
+            kind: crate::entities::TaskKind::Standard,
 
             archived: false,
             deleted: false,

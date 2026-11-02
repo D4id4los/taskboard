@@ -56,6 +56,7 @@ tasks:
           every: 1
       bound: None
       continued_from: ~
+    kind: standard
     archived: false
     deleted: false
     clocks:
@@ -69,6 +70,7 @@ tasks:
       importance: "1970-01-01T10:01:00Z"
       urgency: "1970-01-01T10:01:00Z"
       recur: "1970-01-01T10:01:00Z"
+      kind: "1970-01-01T10:01:00Z"
       archived: "1970-01-01T10:01:00Z"
       deleted: "1970-01-01T10:01:00Z"
     remote_seen: ~
@@ -98,6 +100,7 @@ tasks:
           every: 1
       bound: None
       continued_from: ~
+    kind: standard
     archived: false
     deleted: false
     clocks:
@@ -111,6 +114,7 @@ tasks:
       importance: "2026-06-15T00:00:00Z"
       urgency: "2026-06-15T00:00:00Z"
       recur: "2026-06-15T00:00:00Z"
+      kind: "2026-06-15T00:00:00Z"
       archived: "2026-06-15T00:00:00Z"
       deleted: "2026-06-15T00:00:00Z"
     remote_seen: ~
@@ -234,6 +238,7 @@ journal:
                         every: 1
                     bound: None
                     continued_from: ~
+                  kind: standard
                   archived: false
                   deleted: false
                   clocks:
@@ -247,6 +252,7 @@ journal:
                     importance: "2026-06-15T00:00:00Z"
                     urgency: "2026-06-15T00:00:00Z"
                     recur: "2026-06-15T00:00:00Z"
+                    kind: "2026-06-15T00:00:00Z"
                     archived: "2026-06-15T00:00:00Z"
                     deleted: "2026-06-15T00:00:00Z"
                   remote_seen: ~
@@ -268,6 +274,7 @@ journal:
                     importance: "1970-01-01T10:01:00Z"
                     urgency: "1970-01-01T10:01:00Z"
                     recur: "1970-01-01T10:01:00Z"
+                    kind: "1970-01-01T10:01:00Z"
                     archived: "1970-01-01T10:01:00Z"
                     deleted: "1970-01-01T10:01:00Z"
                   memberships:
@@ -287,6 +294,7 @@ journal:
                     importance: "2026-06-15T00:00:00Z"
                     urgency: "2026-06-15T00:00:00Z"
                     recur: "2026-06-15T00:00:00Z"
+                    kind: "2026-06-15T00:00:00Z"
                     archived: "2026-06-15T00:00:00Z"
                     deleted: "2026-06-15T00:00:00Z"
                   memberships:

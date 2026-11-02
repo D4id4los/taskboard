@@ -2097,6 +2097,7 @@ fn restore_task_of_an_unknown_id_is_typed() {
             importance: None,
             urgency: None,
             recur: None,
+            kind: crate::entities::TaskKind::Standard,
             archived: false,
             deleted: true,
             clocks: crate::entities::TaskClocks {
@@ -2110,6 +2111,7 @@ fn restore_task_of_an_unknown_id_is_typed() {
                 importance: ts(1),
                 urgency: ts(1),
                 recur: ts(1),
+                kind: ts(1),
                 archived: ts(1),
                 deleted: ts(1),
             },
@@ -2118,6 +2120,91 @@ fn restore_task_of_an_unknown_id_is_typed() {
         }),
     });
     assert!(matches!(err, Err(CommandError::UnknownTask(_))));
+}
+
+// ---- the tracker task kind (backlog round 2 chunk 4.2, #492) ------
+
+#[test]
+fn undo_restores_a_kind_edit_and_the_watermark_names_it() {
+    let mut h = Harness::new();
+    let board = h.board();
+    let stack = h.stack(board);
+    let task = h.task(stack, "t");
+    h.exec(&StateCommand::UpdateTask {
+        id: task,
+        changes: crate::messages::TaskChanges {
+            kind: Some(Some(crate::entities::TaskKind::Tracker)),
+            ..Default::default()
+        },
+    })
+    .expect("converted");
+    h.exec(&StateCommand::Undo).expect("the kind edit undoes");
+    assert_eq!(
+        h.disk.tasks[&task].kind,
+        crate::entities::TaskKind::Standard,
+        "the kind restores"
+    );
+    // The watermark names the field: a kind clock diverged since the
+    // recorded write refuses typed, with `Kind` in the payload.
+    let mut diverged = h.disk.clone();
+    let entry = diverged.tasks.get_mut(&task).unwrap();
+    entry.kind = crate::entities::TaskKind::Tracker;
+    entry.clocks.kind = ts(1_002_000);
+    h.disk = diverged;
+    h.sync();
+    let err = h.exec(&StateCommand::Undo).expect_err("refused");
+    assert!(matches!(
+        err,
+        CommandError::TargetNoLongerInvertible {
+            field: UndoField::Kind,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn undo_refuses_to_recomplete_a_tracker_typed() {
+    // done → reopen → convert → undo: the inverse replans the reopen
+    // as a fresh completion of a now-tracker task — the engine gate
+    // applies uniformly, so the undo refuses typed and the line
+    // keeps its head (a second undo refuses the same way; nothing
+    // was popped).
+    let mut h = Harness::new();
+    let board = h.board();
+    let stack = h.stack(board);
+    let task = h.task(stack, "t");
+    h.exec(&StateCommand::SetTaskDone {
+        id: task,
+        done: true,
+    })
+    .expect("done");
+    h.exec(&StateCommand::SetTaskDone {
+        id: task,
+        done: false,
+    })
+    .expect("reopened");
+    h.exec(&StateCommand::UpdateTask {
+        id: task,
+        changes: crate::messages::TaskChanges {
+            kind: Some(Some(crate::entities::TaskKind::Tracker)),
+            ..Default::default()
+        },
+    })
+    .expect("converted");
+    let entries_before = h.journal.entries.len();
+    let head_before = h.journal.head;
+    let err = h.exec(&StateCommand::Undo).expect_err("refused");
+    assert!(matches!(
+        err,
+        CommandError::TrackerTaskNotDoneable(id) if id == task
+    ));
+    assert_eq!(h.journal.entries.len(), entries_before);
+    assert_eq!(h.journal.head, head_before, "the head keeps its line");
+    assert_eq!(
+        h.disk.tasks[&task].kind,
+        crate::entities::TaskKind::Tracker,
+        "state untouched by the refusal"
+    );
 }
 
 // ---- the property: same-verb lines undo all the way back ------------------
@@ -2228,4 +2315,5 @@ proptest::proptest! {
             "the head did not move past the pop"
         );
     }
+
 }

@@ -87,6 +87,7 @@ pub(crate) fn clocks_at(t: i64) -> TaskClocks {
         importance: ts(t),
         urgency: ts(t),
         recur: ts(t),
+        kind: ts(t),
 
         archived: ts(t),
         deleted: ts(t),
@@ -126,6 +127,7 @@ pub(crate) fn bound_task(card: u64) -> Task {
         importance: None,
         urgency: None,
         recur: None,
+        kind: crate::entities::TaskKind::Standard,
 
         archived: false,
         deleted: false,

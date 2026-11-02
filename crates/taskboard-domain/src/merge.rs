@@ -245,6 +245,7 @@ pub fn adopt_remote_task(remote: &RemoteTask, id: TaskId, ctx: &RemoteIndex) -> 
         importance: None,
         urgency: None,
         recur: None,
+        kind: crate::entities::TaskKind::Standard,
 
         archived: remote.archived,
         deleted: false,
@@ -266,6 +267,7 @@ fn clocks_from(ts: DateTime<Utc>) -> crate::entities::TaskClocks {
         importance: ts,
         urgency: ts,
         recur: ts,
+        kind: ts,
 
         archived: ts,
         deleted: ts,
@@ -639,6 +641,12 @@ pub(crate) fn fold_task_app_data(
                 write.clock,
                 local.clocks.recur,
             ),
+            "kind" => (
+                intent.kind,
+                matches!(write.value, crate::appdata::ModeledValue::Kind(_)),
+                write.clock,
+                local.clocks.kind,
+            ),
             "scheduled" => (
                 intent.scheduled,
                 matches!(write.value, crate::appdata::ModeledValue::Scheduled(_)),
@@ -653,29 +661,7 @@ pub(crate) fn fold_task_app_data(
             // next fold's comparison must see the local write's
             // recency (a failed flush must not let a remote write
             // adopt one cycle late).
-            match key.as_str() {
-                "effort" => {
-                    merged.effort = local.effort;
-                    merged.clocks.effort = l;
-                }
-                "importance" => {
-                    merged.importance = local.importance;
-                    merged.clocks.importance = l;
-                }
-                "urgency" => {
-                    merged.urgency = local.urgency;
-                    merged.clocks.urgency = l;
-                }
-                "scheduled" => {
-                    merged.scheduled = local.scheduled;
-                    merged.clocks.scheduled = l;
-                }
-                "recur" => {
-                    merged.recur.clone_from(&local.recur);
-                    merged.clocks.recur = l;
-                }
-                _ => unreachable!("matched above"),
-            }
+            copy_local_field(merged, local, key, l);
             continue;
         }
         if !doc_wins {
@@ -684,28 +670,71 @@ pub(crate) fn fold_task_app_data(
         if d < l {
             continue; // local stands; `merged` already holds it.
         }
-        let clock = std::cmp::max(l, d);
-        match &write.value {
-            crate::appdata::ModeledValue::Effort(value) => {
-                merged.effort = *value;
-                merged.clocks.effort = clock;
-            }
-            crate::appdata::ModeledValue::Importance(value) => {
-                merged.importance = *value;
-                merged.clocks.importance = clock;
-            }
-            crate::appdata::ModeledValue::Urgency(value) => {
-                merged.urgency = *value;
-                merged.clocks.urgency = clock;
-            }
-            crate::appdata::ModeledValue::Recur(value) => {
-                merged.recur.clone_from(value);
-                merged.clocks.recur = clock;
-            }
-            crate::appdata::ModeledValue::Scheduled(value) => {
-                merged.scheduled = *value;
-                merged.clocks.scheduled = clock;
-            }
+        adopt_document_field(merged, &write.value, std::cmp::max(l, d));
+    }
+}
+
+/// The guard's copy-over: the *local* value and clock win verbatim.
+fn copy_local_field(merged: &mut Task, local: &Task, key: &str, l: chrono::DateTime<Utc>) {
+    match key {
+        "effort" => {
+            merged.effort = local.effort;
+            merged.clocks.effort = l;
+        }
+        "importance" => {
+            merged.importance = local.importance;
+            merged.clocks.importance = l;
+        }
+        "urgency" => {
+            merged.urgency = local.urgency;
+            merged.clocks.urgency = l;
+        }
+        "scheduled" => {
+            merged.scheduled = local.scheduled;
+            merged.clocks.scheduled = l;
+        }
+        "recur" => {
+            merged.recur.clone_from(&local.recur);
+            merged.clocks.recur = l;
+        }
+        "kind" => {
+            merged.kind = local.kind;
+            merged.clocks.kind = l;
+        }
+        _ => unreachable!("only modeled keys reach here"),
+    }
+}
+
+/// The adoption arm: the document value lands under the fold clock.
+fn adopt_document_field(
+    merged: &mut Task,
+    value: &crate::appdata::ModeledValue,
+    clock: chrono::DateTime<Utc>,
+) {
+    match value {
+        crate::appdata::ModeledValue::Effort(value) => {
+            merged.effort = *value;
+            merged.clocks.effort = clock;
+        }
+        crate::appdata::ModeledValue::Importance(value) => {
+            merged.importance = *value;
+            merged.clocks.importance = clock;
+        }
+        crate::appdata::ModeledValue::Urgency(value) => {
+            merged.urgency = *value;
+            merged.clocks.urgency = clock;
+        }
+        crate::appdata::ModeledValue::Recur(value) => {
+            merged.recur.clone_from(value);
+            merged.clocks.recur = clock;
+        }
+        crate::appdata::ModeledValue::Kind(value) => {
+            merged.kind = value.unwrap_or_default();
+            merged.clocks.kind = clock;
+        }
+        crate::appdata::ModeledValue::Scheduled(value) => {
+            merged.scheduled = *value;
+            merged.clocks.scheduled = clock;
         }
     }
 }
@@ -1564,6 +1593,7 @@ pub fn adopt_task_after_push(
         importance: None,
         urgency: None,
         recur: None,
+        kind: crate::entities::TaskKind::Standard,
 
         archived: echo.archived,
         deleted: false,
@@ -1578,6 +1608,7 @@ pub fn adopt_task_after_push(
             importance: max_ts(local.clocks.importance, lm),
             urgency: max_ts(local.clocks.urgency, lm),
             recur: max_ts(local.clocks.recur, lm),
+            kind: max_ts(local.clocks.recur, lm),
             archived: max_ts(local.clocks.archived, lm),
             deleted: max_ts(local.clocks.deleted, lm),
         },
@@ -2543,6 +2574,7 @@ mod tests {
                 importance: below,
                 urgency: below,
                 recur: below,
+                kind: below,
                 archived: below,
                 deleted: below,
             };
@@ -4913,6 +4945,7 @@ mod duplicate_reconcile_tests {
             importance: None,
             urgency: None,
             recur: None,
+            kind: crate::entities::TaskKind::Standard,
             archived: false,
             deleted: false,
             clocks: TaskClocks {
@@ -4926,6 +4959,7 @@ mod duplicate_reconcile_tests {
                 importance: ts(BASE),
                 urgency: ts(BASE),
                 recur: ts(BASE),
+                kind: ts(BASE),
                 archived: ts(BASE),
                 deleted: ts(BASE),
             },
@@ -5595,6 +5629,97 @@ mod duplicate_reconcile_tests {
         fold_task_app_data(&mut merged, &local, &entry, intent, false);
         assert_eq!(merged.recur, Some(recur_rule(7)));
         assert_eq!(merged.clocks.recur, ts(BASE + 400), "the clock copies too");
+    }
+
+    // ---- The tracker task kind fold (#492) ----------------------------
+
+    fn kind_write(kind: Option<crate::entities::TaskKind>, clock_secs: i64) -> TaskEntry {
+        TaskEntry {
+            fields: [("kind".to_owned(), fw(ModeledValue::Kind(kind), clock_secs))].into(),
+            unmodeled: std::collections::BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn fold_adopts_newer_document_kind() {
+        let mut merged = bound_task(1);
+        let local = bound_task(1);
+        let entry = kind_write(Some(crate::entities::TaskKind::Tracker), BASE + 500);
+        fold_task_app_data(
+            &mut merged,
+            &local,
+            &entry,
+            PendingTaskIntent::default(),
+            false,
+        );
+        assert_eq!(merged.kind, crate::entities::TaskKind::Tracker);
+        assert_eq!(merged.clocks.kind, ts(BASE + 500));
+    }
+
+    #[test]
+    fn fold_guard_protects_a_pending_kind_write() {
+        let mut local = bound_task(1);
+        local.kind = crate::entities::TaskKind::Tracker;
+        local.clocks.kind = ts(BASE + 400);
+        let mut merged = local.clone();
+        // A newer document write the flush cycle never saw must not
+        // clobber the queued kind edit.
+        let entry = kind_write(Some(crate::entities::TaskKind::Standard), BASE + 900);
+        let intent = PendingTaskIntent {
+            kind: true,
+            ..PendingTaskIntent::default()
+        };
+        fold_task_app_data(&mut merged, &local, &entry, intent, false);
+        assert_eq!(merged.kind, crate::entities::TaskKind::Tracker);
+        assert_eq!(merged.clocks.kind, ts(BASE + 400), "the clock copies too");
+    }
+
+    #[test]
+    fn older_document_kind_loses_the_clock_race() {
+        let mut local = bound_task(1);
+        local.kind = crate::entities::TaskKind::Tracker;
+        local.clocks.kind = ts(BASE + 600);
+        let mut merged = local.clone();
+        let entry = kind_write(Some(crate::entities::TaskKind::Standard), BASE + 500);
+        fold_task_app_data(
+            &mut merged,
+            &local,
+            &entry,
+            PendingTaskIntent::default(),
+            false,
+        );
+        assert_eq!(merged.kind, crate::entities::TaskKind::Tracker);
+        assert_eq!(merged.clocks.kind, ts(BASE + 600));
+    }
+
+    #[test]
+    fn a_pre_kind_document_folds_as_standard() {
+        // A document without the `kind` key never writes the field:
+        // absence is not deletion, and a local tracker keeps its kind.
+        let mut local = bound_task(1);
+        local.kind = crate::entities::TaskKind::Tracker;
+        local.clocks.kind = ts(BASE + 100);
+        let mut merged = local.clone();
+        let entry = TaskEntry {
+            fields: [(
+                "effort".to_owned(),
+                fw(
+                    ModeledValue::Effort(Some(crate::entities::Effort::new(1))),
+                    BASE + 900,
+                ),
+            )]
+            .into(),
+            unmodeled: std::collections::BTreeMap::new(),
+        };
+        fold_task_app_data(
+            &mut merged,
+            &local,
+            &entry,
+            PendingTaskIntent::default(),
+            false,
+        );
+        assert_eq!(merged.kind, crate::entities::TaskKind::Tracker);
+        assert_eq!(merged.clocks.kind, ts(BASE + 100));
     }
 
     #[test]

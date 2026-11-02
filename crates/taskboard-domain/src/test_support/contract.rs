@@ -86,6 +86,7 @@ pub async fn assert_task_repository_contract_async<R: TaskRepository>(repo: &R) 
         importance: None,
         urgency: None,
         recur: None,
+        kind: crate::entities::TaskKind::Standard,
 
         archived: false,
         deleted: false,
@@ -548,6 +549,7 @@ fn clock_at(secs: i64) -> TaskClocks {
         importance: t,
         urgency: t,
         recur: t,
+        kind: t,
 
         archived: t,
         deleted: t,

@@ -40,8 +40,14 @@ pub const ANCHOR_CARD_TITLE: &str = "[taskboard] app-data";
 /// the subject of the manifest lockstep assertion: [`crate::entities::
 /// TASK_FIELDS`]' `AppData` rows plus `scheduled` (the Native row whose
 /// sync lane is dynamic per D-V2; the lane decision never lives here).
-pub const MODELED_TASK_FIELD_KEYS: &[&str] =
-    &["effort", "importance", "urgency", "recur", "scheduled"];
+pub const MODELED_TASK_FIELD_KEYS: &[&str] = &[
+    "effort",
+    "importance",
+    "urgency",
+    "recur",
+    "kind",
+    "scheduled",
+];
 
 /// A per-board sidecar document.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -223,6 +229,9 @@ pub enum ModeledValue {
     Importance(Option<Importance>),
     Urgency(Option<Urgency>),
     Recur(Option<RecurRule>),
+    /// The tracker task kind (issue #492); `None` = a reset to the
+    /// `Standard` default — an ordinary write, never a tombstone.
+    Kind(Option<crate::entities::TaskKind>),
     Scheduled(Option<DateTime<Utc>>),
 }
 
@@ -234,6 +243,7 @@ pub fn modeled_key(value: &ModeledValue) -> &'static str {
         ModeledValue::Importance(_) => "importance",
         ModeledValue::Urgency(_) => "urgency",
         ModeledValue::Recur(_) => "recur",
+        ModeledValue::Kind(_) => "kind",
         ModeledValue::Scheduled(_) => "scheduled",
     }
 }
@@ -264,6 +274,9 @@ fn encode_modeled(value: &ModeledValue) -> Value {
         }),
         ModeledValue::Recur(rule) => rule.as_ref().map_or(Value::Null, |r| {
             serde_json::to_value(r).unwrap_or(Value::Null)
+        }),
+        ModeledValue::Kind(kind) => kind.map_or(Value::Null, |k| {
+            serde_json::to_value(k).unwrap_or(Value::Null)
         }),
         ModeledValue::Scheduled(dt) => dt.map_or(Value::Null, |d| {
             serde_json::to_value(d).unwrap_or(Value::Null)
@@ -296,6 +309,11 @@ fn decode_modeled(key: &str, v: &Value) -> Option<ModeledValue> {
                 .then(|| serde_json::from_value(v.clone()).ok())
                 .flatten(),
         ),
+        "kind" => ModeledValue::Kind(
+            (v != &Value::Null)
+                .then(|| serde_json::from_value(v.clone()).ok())
+                .flatten(),
+        ),
         "scheduled" => ModeledValue::Scheduled(
             (v != &Value::Null)
                 .then(|| serde_json::from_value(v.clone()).ok())
@@ -309,6 +327,7 @@ fn decode_modeled(key: &str, v: &Value) -> Option<ModeledValue> {
         ModeledValue::Importance(e) => e.is_some(),
         ModeledValue::Urgency(e) => e.is_some(),
         ModeledValue::Recur(e) => e.is_some(),
+        ModeledValue::Kind(e) => e.is_some(),
         ModeledValue::Scheduled(e) => e.is_some(),
     };
     if v != &Value::Null && !decoded_shape {
@@ -1318,6 +1337,17 @@ pub fn task_entry_for(task: &crate::entities::Task, native_scheduled: bool) -> T
             clock: task.clocks.recur,
         },
     );
+    // The task kind (issue #492) has no native Deck lane either: the
+    // write is always emitted, `Standard` as the typed reset — an
+    // ordinary write on the remote side, never a tombstone.
+    let kind = ModeledValue::Kind(Some(task.kind));
+    fields.insert(
+        "kind".to_owned(),
+        TaskFieldWrite {
+            value: kind,
+            clock: task.clocks.kind,
+        },
+    );
     if !native_scheduled {
         let scheduled = ModeledValue::Scheduled(task.scheduled);
         fields.insert(
@@ -1871,6 +1901,46 @@ mod tests {
     }
 
     #[test]
+    fn the_kind_key_decodes_reset_typed_and_demotes_unknown_values() {
+        // `null` is the typed reset to `Standard`; the unit names decode
+        // typed; an unknown text demotes the field to unmodeled — the
+        // document never fails (D-S2's materialization rule).
+        let reset: TaskEntry = serde_json::from_value(serde_json::json!({
+            "fields": { "kind": { "v": null, "clock": "2026-01-01T00:00:00Z" } }
+        }))
+        .unwrap();
+        assert_eq!(
+            reset.fields["kind"].value,
+            ModeledValue::Kind(None),
+            "null decodes the reset write"
+        );
+        let typed: TaskEntry = serde_json::from_value(serde_json::json!({
+            "fields": { "kind": { "v": "tracker", "clock": "2026-01-01T00:00:00Z" } }
+        }))
+        .unwrap();
+        assert_eq!(
+            typed.fields["kind"].value,
+            ModeledValue::Kind(Some(crate::entities::TaskKind::Tracker))
+        );
+        let bogus: TaskEntry = serde_json::from_value(serde_json::json!({
+            "fields": { "kind": { "v": "bogus", "clock": "2026-01-01T00:00:00Z" } }
+        }))
+        .unwrap();
+        assert!(bogus.fields.is_empty());
+        assert!(
+            bogus.unmodeled.contains_key("fields"),
+            "an unknown kind value demotes verbatim"
+        );
+        // The wire key round-trips through the envelope losslessly.
+        let write = TaskFieldWrite {
+            value: ModeledValue::Kind(Some(crate::entities::TaskKind::Tracker)),
+            clock: "2026-01-01T00:00:00Z".parse().expect("fixed instant"),
+        };
+        let encoded = serde_json::to_value(&write).unwrap();
+        assert_eq!(encoded["v"], serde_json::json!("tracker"));
+    }
+
+    #[test]
     fn the_recur_key_decodes_into_its_typed_arm_and_clears_via_null() {
         let rule_json = serde_json::json!({
             "series": "018f0000-0000-7000-8000-000000000001",
@@ -2366,7 +2436,7 @@ mod tests {
         let mut sorted_modeled = MODELED_TASK_FIELD_KEYS.to_vec();
         sorted_modeled.sort_unstable();
         assert_eq!(sorted_modeled, sorted_expected);
-        assert_eq!(MODELED_TASK_FIELD_KEYS.len(), 5);
+        assert_eq!(MODELED_TASK_FIELD_KEYS.len(), 6);
 
         // `scheduled` is a manifest Native row (the dynamic lane) and
         // never an AppData row.
@@ -2411,6 +2481,7 @@ mod tests {
             importance: Some(Importance::High),
             urgency: None,
             recur: None,
+            kind: crate::entities::TaskKind::Standard,
 
             archived: false,
             deleted: false,
@@ -2425,6 +2496,7 @@ mod tests {
                 importance: t(1_300),
                 urgency: t(1_400),
                 recur: t(1_400),
+                kind: t(1_400),
 
                 archived: t(1_000),
                 deleted: t(1_000),
@@ -2438,7 +2510,7 @@ mod tests {
     fn task_entry_builds_full_send_writes_from_values_and_clocks() {
         let mut task = task_fixture();
         let entry = task_entry_for(&task, false);
-        assert_eq!(entry.fields.len(), 5);
+        assert_eq!(entry.fields.len(), 6);
         assert_eq!(
             entry.fields["effort"],
             TaskFieldWrite {
@@ -2450,12 +2522,13 @@ mod tests {
             entry.fields["scheduled"].value,
             ModeledValue::Scheduled(Some(task.scheduled.unwrap()))
         );
-        // Native ownership: the scheduled key is not emitted; recur (no
-        // native lane) still is.
+        // Native ownership: the scheduled key is not emitted; recur and
+        // kind (no native lanes) still are.
         let native = task_entry_for(&task, true);
-        assert_eq!(native.fields.len(), 4);
+        assert_eq!(native.fields.len(), 5);
         assert!(!native.fields.contains_key("scheduled"));
         assert!(native.fields.contains_key("recur"));
+        assert!(native.fields.contains_key("kind"));
         // A dateless-of-rule task emits the typed clear.
         assert_eq!(
             native.fields["recur"],

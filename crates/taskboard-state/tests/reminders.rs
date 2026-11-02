@@ -92,6 +92,7 @@ fn seeded_task_state(duedate_secs: i64) -> (PersistedState, taskboard_domain::Ta
         importance: None,
         urgency: None,
         recur: None,
+        kind: taskboard_domain::entities::TaskKind::Standard,
 
         archived: false,
         deleted: false,
@@ -106,6 +107,7 @@ fn seeded_task_state(duedate_secs: i64) -> (PersistedState, taskboard_domain::Ta
             importance: ts(T0),
             urgency: ts(T0),
             recur: ts(T0),
+            kind: ts(T0),
 
             archived: ts(T0),
             deleted: ts(T0),

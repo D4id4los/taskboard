@@ -109,6 +109,7 @@ pub(crate) struct PendingTaskIntent {
     pub(crate) importance: bool,
     pub(crate) urgency: bool,
     pub(crate) recur: bool,
+    pub(crate) kind: bool,
     /// The D-S6 rules flag: a deliberate non-clock member (rules carry
     /// their own embedded write clocks, not `TaskClocks`).
     pub(crate) reminder_rules: bool,
@@ -137,6 +138,7 @@ fn pending_task_intents(
             p.importance = true;
             p.urgency = true;
             p.recur = true;
+            p.kind = true;
             p.scheduled = true;
             p.reminder_rules = true;
             continue;
@@ -2076,6 +2078,7 @@ mod tests {
             importance: e,
             urgency: e,
             recur: e,
+            kind: e,
 
             archived: e,
             deleted: e,
@@ -2107,6 +2110,7 @@ mod tests {
             importance: true,
             urgency: true,
             recur: true,
+            kind: false,
             reminder_rules: true,
             deleted: true,
         };
@@ -2133,6 +2137,7 @@ mod tests {
             importance: Some(Some(crate::entities::Importance::Low)),
             urgency: Some(Some(crate::entities::Urgency::Low)),
             recur: None,
+            kind: None,
 
             archived: Some(false),
         };

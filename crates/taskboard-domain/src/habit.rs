@@ -1239,6 +1239,7 @@ mod seam_tests {
                 bound: crate::recur::RecurBound::None,
                 continued_from: None,
             }),
+            kind: crate::entities::TaskKind::Standard,
             archived: false,
             deleted: false,
             clocks: TaskClocks {
@@ -1252,6 +1253,7 @@ mod seam_tests {
                 importance: ts(1),
                 urgency: ts(1),
                 recur: ts(1),
+                kind: ts(1),
                 archived: ts(1),
                 deleted: ts(1),
             },

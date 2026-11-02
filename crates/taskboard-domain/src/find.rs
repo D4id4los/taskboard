@@ -260,6 +260,7 @@ mod tests {
             importance: None,
             urgency: None,
             recur: None,
+            kind: crate::entities::TaskKind::Standard,
 
             archived: false,
             deleted: false,
@@ -274,6 +275,7 @@ mod tests {
                 importance: epoch(),
                 urgency: epoch(),
                 recur: epoch(),
+                kind: epoch(),
 
                 archived: epoch(),
                 deleted: epoch(),

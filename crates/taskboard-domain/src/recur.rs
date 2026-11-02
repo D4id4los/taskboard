@@ -2244,6 +2244,7 @@ mod next_occurrence_tests {
             importance: None,
             urgency: None,
             recur: None,
+            kind: crate::entities::TaskKind::Standard,
             archived: false,
             deleted: false,
             clocks: TaskClocks {
@@ -2257,6 +2258,7 @@ mod next_occurrence_tests {
                 importance: ts(0),
                 urgency: ts(0),
                 recur: ts(0),
+                kind: ts(0),
                 archived: ts(0),
                 deleted: ts(0),
             },

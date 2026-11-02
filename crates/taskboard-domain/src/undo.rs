@@ -812,6 +812,7 @@ fn synthesize_undo(
                 (clocks.importance, current.importance, UndoField::Importance),
                 (clocks.urgency, current.urgency, UndoField::Urgency),
                 (clocks.recur, current.recur, UndoField::Recur),
+                (clocks.kind, current.kind, UndoField::Kind),
                 (clocks.archived, current.archived, UndoField::Archived),
             ];
             for (recorded, now_clock, field) in content {
@@ -1349,6 +1350,10 @@ fn task_changes_from_pre(
     if pre.archived != current.archived {
         check(UndoField::Archived, |clocks| clocks.archived)?;
         changes.archived = Some(pre.archived);
+    }
+    if pre.kind != current.kind {
+        check(UndoField::Kind, |clocks| clocks.kind)?;
+        changes.kind = Some(Some(pre.kind));
     }
     Ok(changes)
 }
