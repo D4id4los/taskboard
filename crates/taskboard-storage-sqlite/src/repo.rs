@@ -10,17 +10,17 @@ use taskboard_domain::entities::{
     Board, BoardClocks, Color, Label, LabelClocks, Stack, StackClocks, Task, TaskClocks,
 };
 use taskboard_domain::ids::{
-    AdhocAlarmId, BoardId, ConnectorId, LabelId, ReminderRuleId, RemoteBoardBinding, RemoteBoardId,
-    RemoteCardId, RemoteCardRef, RemoteLabelId, RemoteLabelRef, RemoteStackId, RemoteStackRef,
-    StackId, TaskId, TimeEntryId,
+    AdhocAlarmId, BoardId, BreakRuleId, ConnectorId, LabelId, ReminderRuleId, RemoteBoardBinding,
+    RemoteBoardId, RemoteCardId, RemoteCardRef, RemoteLabelId, RemoteLabelRef, RemoteStackId,
+    RemoteStackRef, StackId, TaskId, TimeEntryId,
 };
 use taskboard_domain::outbox::{OpId, PendingOp};
 use taskboard_domain::persistence::{
     BoxFuture, PersistedState, PersistenceAction, RepositoryError, SyncValidators, TaskRepository,
 };
 use taskboard_domain::reminders::{
-    AdhocAlarm, ReminderDelivery, ReminderDismissal, ReminderOffset, ReminderRef, ReminderRule,
-    ReminderSnoozeKey, ReminderState,
+    AdhocAlarm, BreakRule, ReminderDelivery, ReminderDismissal, ReminderOffset, ReminderRef,
+    ReminderRule, ReminderSnoozeKey, ReminderState,
 };
 use taskboard_domain::state::{SyncPhase, SyncStates, derive_sync_states};
 use taskboard_domain::tracking::TimeEntry;
@@ -196,6 +196,16 @@ struct TimeEntryRow {
     end: Option<DateTime<Utc>>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
+    kind: String,
+}
+
+/// Raw `break_rules` row (0018; device-local reminder rules).
+struct BreakRuleRow {
+    rule_id: String,
+    label: String,
+    threshold_seconds: i64,
+    insistence: String,
+    created_at: DateTime<Utc>,
 }
 
 /// Raw `reminder_dismissals` row.
@@ -210,6 +220,19 @@ fn decode_adhoc_alarm(row: &AdhocAlarmRow) -> Result<AdhocAlarm, RepositoryError
         id: AdhocAlarmId::from(decode::uuid(&row.alarm_id)?),
         label: row.label.clone(),
         fire_at: row.fire_at,
+        insistence: decode::insistence(&row.insistence)?,
+        created_at: row.created_at,
+    })
+}
+
+fn decode_break_rule(row: &BreakRuleRow) -> Result<BreakRule, RepositoryError> {
+    let threshold = chrono::TimeDelta::try_seconds(row.threshold_seconds)
+        .and_then(|dur| taskboard_domain::tracking::WorkThreshold::try_new(dur).ok())
+        .ok_or(RepositoryError::Corrupted)?;
+    Ok(BreakRule {
+        id: BreakRuleId::from(decode::uuid(&row.rule_id)?),
+        label: row.label.clone(),
+        threshold,
         insistence: decode::insistence(&row.insistence)?,
         created_at: row.created_at,
     })
@@ -312,6 +335,12 @@ mod decode {
         raw: &str,
     ) -> Result<taskboard_domain::reminders::Insistence, RepositoryError> {
         codec::insistence_from_text(raw).ok_or(RepositoryError::Corrupted)
+    }
+
+    pub(crate) fn time_entry_kind(
+        raw: &str,
+    ) -> Result<taskboard_domain::tracking::TimeEntryKind, RepositoryError> {
+        codec::time_entry_kind_from_text(raw).ok_or(RepositoryError::Corrupted)
     }
 
     pub(crate) fn recur(raw: &str) -> Result<taskboard_domain::recur::RecurRule, RepositoryError> {
@@ -666,10 +695,11 @@ fn decode_time_entry(row: &TimeEntryRow) -> Result<(TimeEntryId, TimeEntry), Rep
             end: row.end,
             created_at: row.created_at,
             updated_at: row.updated_at,
-            // Migration 0018 (the respite column) is the next lane's
-            // landing; until it exists every stored row predates the
-            // kind and decodes default-off.
-            kind: taskboard_domain::tracking::TimeEntryKind::Work,
+            // Strict decode (the 0013 rule): a corrupt enum is a
+            // corrupted database, never a defaulted value. Migration
+            // 0018's `DEFAULT 'work'` backfill is what makes every
+            // pre-0018 row read `Work` (the local default-off decode).
+            kind: decode::time_entry_kind(&row.kind)?,
         },
     ))
 }
@@ -842,6 +872,16 @@ impl SqliteTaskRepository {
         .await
         .map_err(|e| stmt_error(&e))?;
 
+        let break_rule_rows = sqlx::query_as!(
+            BreakRuleRow,
+            r#"SELECT rule_id, label, threshold_seconds, insistence,
+                      created_at as "created_at: DateTime<Utc>"
+               FROM break_rules ORDER BY rule_id"#
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| stmt_error(&e))?;
+
         let reminder_delivery_rows = sqlx::query_as!(
             ReminderDeliveryRow,
             r#"SELECT reminder,
@@ -924,7 +964,8 @@ impl SqliteTaskRepository {
                       start as "start: DateTime<Utc>",
                       end as "end: DateTime<Utc>",
                       created_at as "created_at: DateTime<Utc>",
-                      updated_at as "updated_at: DateTime<Utc>"
+                      updated_at as "updated_at: DateTime<Utc>",
+                      kind
                FROM time_entries ORDER BY entry_id"#
         )
         .fetch_all(&mut *tx)
@@ -1055,14 +1096,17 @@ impl SqliteTaskRepository {
             let (id, entry) = decode_time_entry(&row)?;
             tracking.entries.insert(id, entry);
         }
+        let mut break_rules = std::collections::BTreeMap::new();
+        for row in &break_rule_rows {
+            let rule = decode_break_rule(row)?;
+            break_rules.insert(rule.id, rule);
+        }
         let reminders = ReminderState {
             rules,
             deliveries,
             dismissals,
             snoozes,
-            // Migration 0018 (the break-rule table) is the next
-            // commit's lane; until then the map stays empty on load.
-            break_rules: std::collections::BTreeMap::new(),
+            break_rules,
             muted,
             alarms,
         };
@@ -1225,6 +1269,8 @@ async fn execute_batch(
     let mut rule_deletes = Vec::new();
     let mut alarm_upserts = Vec::new();
     let mut alarm_deletes = Vec::new();
+    let mut break_rule_upserts = Vec::new();
+    let mut break_rule_deletes = Vec::new();
     let mut deliveries = Vec::new();
     let mut delivery_prunes = Vec::new();
     let mut dismissals = Vec::new();
@@ -1271,12 +1317,8 @@ async fn execute_batch(
             PersistenceAction::DeleteReminderRule(rule_id) => rule_deletes.push(rule_id),
             PersistenceAction::UpsertAdhocAlarm(alarm) => alarm_upserts.push(alarm),
             PersistenceAction::DeleteAdhocAlarm(alarm_id) => alarm_deletes.push(alarm_id),
-            // The break-rule persistence lane lands with migration 0018
-            // (the next commit); until that table exists these batch as
-            // no-ops. In-memory state is advanced by apply_actions
-            // regardless, and nothing persists a break rule before the
-            // `breaks` CLI surface exists (also that lane).
-            PersistenceAction::UpsertBreakRule(_) | PersistenceAction::DeleteBreakRule(_) => {}
+            PersistenceAction::UpsertBreakRule(rule) => break_rule_upserts.push(rule),
+            PersistenceAction::DeleteBreakRule(rule_id) => break_rule_deletes.push(*rule_id),
             PersistenceAction::RecordReminderDelivery(delivery) => deliveries.push(delivery),
             PersistenceAction::RecordReminderDismissal(dismissal) => dismissals.push(dismissal),
             PersistenceAction::RecordReminderSnooze(snooze) => snoozes.push(snooze),
@@ -1558,15 +1600,16 @@ async fn execute_batch(
     // mirrors `apply_actions`' sequential last-write-wins semantics.
     for entry in entry_upserts {
         sqlx::query!(
-            r#"INSERT INTO time_entries (entry_id, task_id, task_title, start, end, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)
+            r#"INSERT INTO time_entries (entry_id, task_id, task_title, start, end, created_at, updated_at, kind)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(entry_id) DO UPDATE SET
                        task_id = excluded.task_id,
                        task_title = excluded.task_title,
                        start = excluded.start,
                        end = excluded.end,
                        created_at = excluded.created_at,
-                       updated_at = excluded.updated_at"#,
+                       updated_at = excluded.updated_at,
+                       kind = excluded.kind"#,
             codec::uuid_to_text(entry.id.as_uuid()),
             codec::uuid_to_text(entry.task.as_uuid()),
             entry.task_title,
@@ -1574,6 +1617,7 @@ async fn execute_batch(
             entry.end.map(|end| end.to_rfc3339()),
             entry.created_at.to_rfc3339(),
             entry.updated_at.to_rfc3339(),
+            codec::time_entry_kind_to_text(entry.kind),
         )
         .execute(&mut *tx)
         .await
@@ -1589,6 +1633,41 @@ async fn execute_batch(
         .await
         .map_err(|e| stmt_error(&e))?;
         tracing::trace!(entry = ?entry_id, "time entry deleted");
+    }
+
+    // R-11's sibling (0018): the break-rule writes, the 0008
+    // adhoc-alarms conventions. Deletes run after upserts so a batch
+    // carrying both for one id mirrors `apply_actions`' sequential
+    // last-write-wins semantics.
+    for rule in break_rule_upserts {
+        sqlx::query!(
+            r#"INSERT INTO break_rules (rule_id, label, threshold_seconds, insistence, created_at)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(rule_id) DO UPDATE SET
+                       label = excluded.label,
+                       threshold_seconds = excluded.threshold_seconds,
+                       insistence = excluded.insistence,
+                       created_at = excluded.created_at"#,
+            codec::uuid_to_text(rule.id.as_uuid()),
+            rule.label,
+            rule.threshold.as_duration().num_seconds(),
+            codec::insistence_to_text(rule.insistence),
+            rule.created_at.to_rfc3339(),
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| stmt_error(&e))?;
+        tracing::trace!(rule = ?rule.id, "break rule upserted");
+    }
+    for rule_id in break_rule_deletes {
+        sqlx::query!(
+            r#"DELETE FROM break_rules WHERE rule_id = ?"#,
+            codec::uuid_to_text(rule_id.as_uuid())
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| stmt_error(&e))?;
+        tracing::trace!(rule = ?rule_id, "break rule deleted");
     }
 
     for habit in habit_upserts {

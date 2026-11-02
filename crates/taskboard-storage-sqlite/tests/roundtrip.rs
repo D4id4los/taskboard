@@ -1687,3 +1687,234 @@ async fn an_older_clock_habit_log_batch_never_overwrites_the_newer_row() {
     );
     repo.close().await;
 }
+
+/// The respite upgrade pin (D-12): a pre-0018 `time_entries` row (no
+/// `kind` column) decodes `Work` after the migration's DEFAULT backfill
+/// — the local default-off decode — and `break_rules` loads empty.
+#[tokio::test]
+async fn pre_kind_entry_rows_decode_work_and_break_rules_load_empty() {
+    use taskboard_domain::ids::TimeEntryId;
+    use taskboard_domain::tracking::TimeEntryKind;
+
+    let mut db = common::FileDb::new().await;
+    let repo = db.repo();
+    let b = board(11);
+    let s = stack(2, &b);
+    let t = task(1, &s, BTreeMap::default());
+    repo.apply(vec![
+        PersistenceAction::UpsertBoard(b),
+        PersistenceAction::UpsertStack(s),
+        PersistenceAction::UpsertTask(t),
+    ])
+    .await
+    .expect("parents");
+    let raw = sqlx::sqlite::SqliteConnectOptions::new().filename(db.path());
+    let pool = sqlx::SqlitePool::connect_with(raw).await.expect("raw pool");
+    sqlx::query(
+        "INSERT INTO time_entries (entry_id, task_id, task_title, start, end, created_at, updated_at) \
+         VALUES ('00000000-0000-0000-0000-00000000003b', \
+                 '00000000-0000-0000-0000-000000000001', 'pre-kind row', \
+                 '1970-01-01T00:00:10+00:00', '1970-01-01T00:01:00+00:00', \
+                 '1970-01-01T00:00:16+00:00', '1970-01-01T00:00:17+00:00')",
+    )
+    .execute(&pool)
+    .await
+    .expect("raw entry insert");
+    pool.close().await;
+
+    let loaded = db.repo().load().await.expect("load");
+    let entry = loaded.tracking.entries[&TimeEntryId::from(uuid::Uuid::from_u128(0x3b))].clone();
+    assert_eq!(
+        entry.kind,
+        TimeEntryKind::Work,
+        "the backfill is the decode"
+    );
+    assert!(loaded.reminders.break_rules.is_empty());
+    db.close().await;
+}
+
+/// The kind column round-trips both rungs through write/reload, and a
+/// break-rule row (threshold seconds, insistence) does identically —
+/// the 0018 column/table conventions (stored TEXT = the serde unit
+/// name; INTEGER seconds; rfc3339 stamps).
+#[tokio::test]
+async fn entry_kind_and_break_rule_rows_round_trip_through_sqlite() {
+    use taskboard_domain::ids::BreakRuleId;
+    use taskboard_domain::reminders::{BreakRule, Insistence};
+    use taskboard_domain::tracking::{TimeEntryKind, WorkThreshold};
+
+    let mut db = common::FileDb::new().await;
+    let repo = db.repo();
+    let b = board(11);
+    let s = stack(2, &b);
+    let t = task(1, &s, BTreeMap::default());
+    let mut entry = time_entry(50, &t, false);
+    entry.kind = TimeEntryKind::Respite;
+    let rule = BreakRule {
+        id: BreakRuleId::from(uuid::Uuid::from_u128(60)),
+        label: "time for a break".into(),
+        threshold: WorkThreshold::try_new(chrono::TimeDelta::try_seconds(5_400).unwrap())
+            .expect("positive threshold"),
+        insistence: Insistence::Alarm,
+        created_at: ts(1_000),
+    };
+    repo.apply(vec![
+        PersistenceAction::UpsertBoard(b),
+        PersistenceAction::UpsertStack(s),
+        PersistenceAction::UpsertTask(t),
+        PersistenceAction::UpsertTimeEntry(entry.clone()),
+        PersistenceAction::UpsertBreakRule(rule.clone()),
+    ])
+    .await
+    .expect("apply");
+    let loaded = repo.load().await.expect("load");
+    assert_eq!(
+        loaded.tracking.entries[&entry.id].kind,
+        TimeEntryKind::Respite
+    );
+    assert_eq!(loaded.reminders.break_rules[&rule.id], rule, "round-trips");
+
+    // The delete arm removes the row only; the cascade already pruned
+    // the ref-matched suppression rows in the same batch (planner-side).
+    repo.apply(vec![PersistenceAction::DeleteBreakRule(rule.id)])
+        .await
+        .expect("delete");
+    let loaded = repo.load().await.expect("load");
+    assert!(loaded.reminders.break_rules.is_empty());
+    db.close().await;
+}
+
+/// The restart pin (D-14/ADR 0017): an open respite entry and a break
+/// rule persist; after a reload the evaluator derives the crossing from
+/// the rehydrated rows alone — the running break "resumes" because it
+/// never stopped, and the firing state is a pure derivation.
+#[tokio::test]
+async fn open_respite_and_break_rule_rehydrate_into_a_firing() {
+    use taskboard_domain::ids::BreakRuleId;
+    use taskboard_domain::reminders::{BreakRule, Insistence};
+    use taskboard_domain::tracking::{TimeEntryKind, WorkThreshold};
+
+    let mut db = common::FileDb::new().await;
+    let repo = db.repo();
+    let b = board(11);
+    let s = stack(2, &b);
+    let t = task(1, &s, BTreeMap::default());
+    // A closed respite (the streak boundary at its end), then the
+    // running work timer as an open row — both persisted entries.
+    let mut work = time_entry(80, &t, true);
+    work.start = ts(3_000);
+    work.end = None;
+    let mut running_break = time_entry(81, &t, false);
+    running_break.start = ts(1_000);
+    running_break.end = Some(ts(2_000));
+    running_break.kind = TimeEntryKind::Respite;
+    let rule = BreakRule {
+        id: BreakRuleId::from(uuid::Uuid::from_u128(82)),
+        label: "stretch".into(),
+        threshold: WorkThreshold::try_new(chrono::TimeDelta::try_seconds(60).unwrap())
+            .expect("positive threshold"),
+        insistence: Insistence::Normal,
+        created_at: ts(500),
+    };
+    repo.apply(vec![
+        PersistenceAction::UpsertBoard(b),
+        PersistenceAction::UpsertStack(s),
+        PersistenceAction::UpsertTask(t),
+        PersistenceAction::UpsertTimeEntry(work),
+        PersistenceAction::UpsertTimeEntry(running_break),
+        PersistenceAction::UpsertBreakRule(rule.clone()),
+    ])
+    .await
+    .expect("apply");
+
+    // "Restart": a fresh load, then the pure evaluation.
+    let loaded = repo.load().await.expect("load");
+    let firings = taskboard_domain::reminders::due_firings(
+        &loaded.tasks,
+        &loaded.tracking,
+        &loaded.reminders,
+        &taskboard_domain::reminders::ReminderDefaults::default(),
+        ts(4_000),
+    );
+    // The task fixture's own due-date default fires alongside; filter
+    // to the break family.
+    let break_firings: Vec<_> = firings
+        .iter()
+        .filter(|f| {
+            matches!(
+                f.reminder,
+                taskboard_domain::reminders::ReminderRef::Break(_)
+            )
+        })
+        .collect();
+    assert_eq!(
+        break_firings.len(),
+        1,
+        "the rehydrated state fires the crossing"
+    );
+    assert_eq!(
+        break_firings[0].reminder,
+        taskboard_domain::reminders::ReminderRef::Break(rule.id),
+        "the break rule survives the restart"
+    );
+    db.close().await;
+}
+
+/// A `Break`-ref delivery/dismissal/snooze rides the existing TEXT
+/// reminder columns via the `break:` text-form prefix — no schema
+/// change on the suppression tables (D-13) — and round-trips.
+#[tokio::test]
+async fn break_ref_suppression_rows_round_trip_through_sqlite() {
+    use taskboard_domain::ids::BreakRuleId;
+    use taskboard_domain::reminders::{
+        ReminderDelivery, ReminderDismissal, ReminderSnooze, ReminderSnoozeKey,
+    };
+
+    let mut db = common::FileDb::new().await;
+    let repo = db.repo();
+    let b = board(11);
+    let s = stack(2, &b);
+    let t = task(1, &s, BTreeMap::default());
+    let rule_id = BreakRuleId::from(uuid::Uuid::from_u128(70));
+    let reminder = taskboard_domain::reminders::ReminderRef::Break(rule_id);
+    let delivery = ReminderDelivery {
+        reminder,
+        occurrence: ts(5_000),
+        delivered_at: ts(5_001),
+    };
+    let dismissal = ReminderDismissal {
+        reminder,
+        occurrence: ts(5_000),
+        dismissed_at: ts(5_002),
+    };
+    let snooze = ReminderSnooze {
+        reminder,
+        occurrence: ts(5_000),
+        rescheduled_to: ts(9_000),
+    };
+    repo.apply(vec![
+        PersistenceAction::UpsertBoard(b),
+        PersistenceAction::UpsertStack(s),
+        PersistenceAction::UpsertTask(t),
+        PersistenceAction::RecordReminderDelivery(delivery),
+        PersistenceAction::RecordReminderDismissal(dismissal),
+        PersistenceAction::RecordReminderSnooze(snooze),
+    ])
+    .await
+    .expect("apply");
+    let loaded = repo.load().await.expect("load");
+    assert!(loaded.reminders.is_delivered(&reminder, &ts(5_000)));
+    assert!(loaded.reminders.is_dismissed(&reminder, &ts(5_000)));
+    assert_eq!(
+        loaded
+            .reminders
+            .snoozes
+            .get(&ReminderSnoozeKey {
+                reminder,
+                occurrence: ts(5_000)
+            })
+            .copied(),
+        Some(ts(9_000))
+    );
+    db.close().await;
+}

@@ -1,0 +1,74 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT rule_id, label, threshold_seconds, insistence,\n                      created_at as \"created_at: DateTime<Utc>\"\n               FROM break_rules ORDER BY rule_id",
+  "describe": {
+    "columns": [
+      {
+        "name": "rule_id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "break_rules",
+            "name": "rule_id"
+          }
+        }
+      },
+      {
+        "name": "label",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "break_rules",
+            "name": "label"
+          }
+        }
+      },
+      {
+        "name": "threshold_seconds",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "break_rules",
+            "name": "threshold_seconds"
+          }
+        }
+      },
+      {
+        "name": "insistence",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "break_rules",
+            "name": "insistence"
+          }
+        }
+      },
+      {
+        "name": "created_at: DateTime<Utc>",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "break_rules",
+            "name": "created_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "136d51882c4fac9313866d1a39209afc23c6c0f4465b173f322539fe7dab51ab"
+}

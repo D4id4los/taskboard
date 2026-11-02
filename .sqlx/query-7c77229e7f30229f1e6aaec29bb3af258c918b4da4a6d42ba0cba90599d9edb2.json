@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO time_entries (entry_id, task_id, task_title, start, end, created_at, updated_at, kind)\n                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)\n                   ON CONFLICT(entry_id) DO UPDATE SET\n                       task_id = excluded.task_id,\n                       task_title = excluded.task_title,\n                       start = excluded.start,\n                       end = excluded.end,\n                       created_at = excluded.created_at,\n                       updated_at = excluded.updated_at,\n                       kind = excluded.kind",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 8
+    },
+    "nullable": []
+  },
+  "hash": "7c77229e7f30229f1e6aaec29bb3af258c918b4da4a6d42ba0cba90599d9edb2"
+}

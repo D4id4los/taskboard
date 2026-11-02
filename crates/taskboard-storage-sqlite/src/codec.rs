@@ -84,6 +84,30 @@ pub fn insistence_to_text(level: taskboard_domain::reminders::Insistence) -> &'s
     }
 }
 
+/// The stored TEXT form of a time-entry kind: the domain enum's serde
+/// unit name (the same one-representation discipline as the insistence
+/// rungs).
+#[must_use]
+pub fn time_entry_kind_to_text(kind: taskboard_domain::tracking::TimeEntryKind) -> &'static str {
+    use taskboard_domain::tracking::TimeEntryKind::{Respite, Work};
+    match kind {
+        Work => "work",
+        Respite => "respite",
+    }
+}
+
+/// Parses the stored TEXT form back; `None` on an unknown kind (a
+/// corrupt local row is a corrupted database, never a clamped value).
+#[must_use]
+pub fn time_entry_kind_from_text(raw: &str) -> Option<taskboard_domain::tracking::TimeEntryKind> {
+    use taskboard_domain::tracking::TimeEntryKind::{Respite, Work};
+    match raw {
+        "work" => Some(Work),
+        "respite" => Some(Respite),
+        _ => None,
+    }
+}
+
 /// Parses the stored TEXT form back; `None` on an unknown rung.
 #[must_use]
 pub fn insistence_from_text(raw: &str) -> Option<taskboard_domain::reminders::Insistence> {
