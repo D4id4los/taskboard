@@ -5765,6 +5765,391 @@ fn a_parse_missed_custom_offset_clears_its_buffer() {
     );
 }
 
+// ---- r4 chunk 6 (D20): the focus-driven insert engagement --------------
+
+/// Click-focuses the element at `label`'s centre (a text input has no
+/// AT default action; the pointer press is the field's focus seam —
+/// the parse-miss journey's helper shape).
+fn click_field_centre(harness: &mut Harness, label: &str) {
+    let element = harness
+        .driver
+        .find_by_label(label)
+        .unwrap_or_else(|| panic!("the field {label:?} is present"));
+    let (x, y) = support::driver::centre(&element);
+    harness.driver.click_at(x, y);
+    // The focus-change notification (and so the D20 publish) rides
+    // the clock's handler pass.
+    harness.driver.advance_time(0);
+}
+
+/// The edited-facts singleton, read back through the generated global.
+fn text_focus(harness: &Harness) -> i32 {
+    harness
+        .handle
+        .window()
+        .global::<taskboard_ui_slint::EditingFacts>()
+        .get_text_focus_count()
+}
+
+/// r4 D20 — the Return-never-hijacks matrix (F24, plan §6.C): every
+/// preset against the four field sites. A focused text field masks
+/// the view context, so the preset-bound Return reaches the field's
+/// own commit — never arms a view flow. The emacs column is the F24
+/// repro verbatim (Return resolved `task.title-edit` mid-typing).
+#[test]
+#[allow(clippy::too_many_lines)] // the matrix's four field legs are the contract's length
+fn return_never_hijacks_on_a_focused_field_under_any_preset() {
+    let presets = [
+        (taskboard_ui_slint::keymap::Preset::Standard, "standard"),
+        (taskboard_ui_slint::keymap::Preset::Emacs, "emacs"),
+        (taskboard_ui_slint::keymap::Preset::Vi, "vi"),
+    ];
+    for (preset, name) in presets {
+        let settings = move || UiSettings {
+            keymap: taskboard_ui_slint::keymap::Keymap::from_preset(preset),
+            keymap_preset: preset,
+            ..UiSettings::default()
+        };
+
+        // -- the custom reminder offset field (the repro verbatim) --
+        let (fixture, state) = fixture::golden_state();
+        let task0 = fixture.task0;
+        support::driver::run(
+            DriverOptions {
+                headless_renderer: true,
+            },
+            move |_driver| {
+                let mut harness =
+                    Harness::mount_with_settings(SlintDriver::default(), state, settings());
+                press_preset(&mut harness, preset, ActionId::NavNextItem);
+                press_preset(&mut harness, preset, ActionId::TaskEdit);
+                harness.driver.advance_time(0);
+                click_field_centre(&mut harness, "Custom reminder offset");
+                harness.type_text("45m");
+                harness.stroke(parse("Return").expect("return"));
+                match harness.engine.drain().as_slice() {
+                    [StateCommand::AddReminderRule { task, offset, .. }] => {
+                        assert_eq!(*task, task0, "{name}: the subject's rule");
+                        assert_eq!(
+                            *offset,
+                            taskboard_domain::ReminderOffset::before(
+                                TimeDelta::try_minutes(-45).expect("-45m")
+                            )
+                            .expect("legal offset")
+                        );
+                    }
+                    other => panic!("{name}: the offset committed, got {other:?}"),
+                }
+                assert!(
+                    !harness.handle.window().get_task_model().edit_open,
+                    "{name}: no view flow armed over the field"
+                );
+                assert!(
+                    keyboard(&harness).get_vi_insert(),
+                    "{name}: the field's focus masks the chain"
+                );
+            },
+        );
+
+        // -- the title field --
+        let (_fixture, state) = fixture::golden_state();
+        support::driver::run(
+            DriverOptions {
+                headless_renderer: true,
+            },
+            move |_driver| {
+                let mut harness =
+                    Harness::mount_with_settings(SlintDriver::default(), state, settings());
+                press_preset(&mut harness, preset, ActionId::NavNextItem);
+                press_preset(&mut harness, preset, ActionId::TaskEdit);
+                harness.driver.advance_time(0);
+                harness.driver.click_by_label("Edit title");
+                harness.driver.advance_time(0);
+                harness.type_text("x");
+                harness.stroke(parse("Return").expect("return"));
+                assert!(
+                    !harness.handle.window().get_task_model().edit_open,
+                    "{name}: the commit closed the editor"
+                );
+                match harness.engine.drain().as_slice() {
+                    [StateCommand::UpdateTask { changes, .. }] => {
+                        assert_eq!(changes.title.as_deref(), Some("x"));
+                    }
+                    other => panic!("{name}: the title committed, got {other:?}"),
+                }
+            },
+        );
+
+        // -- the description field --
+        let (_fixture, state) = fixture::golden_state();
+        support::driver::run(
+            DriverOptions {
+                headless_renderer: true,
+            },
+            move |_driver| {
+                let mut harness =
+                    Harness::mount_with_settings(SlintDriver::default(), state, settings());
+                press_preset(&mut harness, preset, ActionId::NavNextItem);
+                press_preset(&mut harness, preset, ActionId::TaskEdit);
+                harness.driver.advance_time(0);
+                harness.driver.click_by_label("Edit description");
+                harness.driver.advance_time(0);
+                harness.type_text("hello");
+                harness.stroke(parse("Return").expect("return"));
+                assert!(
+                    !harness
+                        .handle
+                        .window()
+                        .get_task_model()
+                        .description_edit_open,
+                    "{name}: the commit closed the editor"
+                );
+                match harness.engine.drain().as_slice() {
+                    [StateCommand::UpdateTask { changes, .. }] => {
+                        assert_eq!(changes.description.as_deref(), Some("hello"));
+                    }
+                    other => panic!("{name}: the description committed, got {other:?}"),
+                }
+            },
+        );
+
+        // -- the today timers' timing field --
+        let (_fixture, state) = fixture::golden_state();
+        support::driver::run(
+            DriverOptions {
+                headless_renderer: true,
+            },
+            move |_driver| {
+                let mut harness =
+                    Harness::mount_with_settings(SlintDriver::default(), state, settings());
+                press_preset(&mut harness, preset, ActionId::ViewToday);
+                assert_eq!(current_view(&harness), View::Today);
+                click_field_centre(&mut harness, "Timer label");
+                harness.type_text("Tea");
+                click_field_centre(&mut harness, "Timer timing (in 10m or at 09:30)");
+                harness.type_text("in 3m");
+                harness.stroke(parse("Return").expect("return"));
+                match harness.engine.drain().as_slice() {
+                    [StateCommand::CreateAdhocAlarm { label, when, .. }] => {
+                        assert_eq!(label.as_str(), "Tea", "{name}");
+                        assert_eq!(
+                            *when,
+                            taskboard_domain::AdhocWhen::In(TimeDelta::minutes(3)),
+                            "{name}"
+                        );
+                    }
+                    other => panic!("{name}: the timer created, got {other:?}"),
+                }
+                assert_eq!(
+                    current_view(&harness),
+                    View::Today,
+                    "{name}: Return never hijacked into a task view"
+                );
+            },
+        );
+    }
+}
+
+/// r4 D20 — the palette exception (plan §3.5): the palette's own chain
+/// branch precedes the mode check, so Return is the jump under every
+/// preset — never a field commit, never a hijack.
+#[test]
+fn the_palette_return_jumps_under_every_preset() {
+    for (preset, name) in [
+        (taskboard_ui_slint::keymap::Preset::Standard, "standard"),
+        (taskboard_ui_slint::keymap::Preset::Emacs, "emacs"),
+        (taskboard_ui_slint::keymap::Preset::Vi, "vi"),
+    ] {
+        let (fixture, mut state) = fixture::two_board_state();
+        let id = TaskId::from_uuid(uuid::Uuid::now_v7());
+        let mut task = state.tasks.values().next().expect("fixture task").clone();
+        task.id = id;
+        task.stack = fixture.stack_c;
+        task.order = 5;
+        task.title = "zebra needle".to_owned();
+        state.tasks.insert(id, task);
+        support::driver::run(
+            DriverOptions {
+                headless_renderer: true,
+            },
+            move |_driver| {
+                let mut harness = Harness::mount_with_settings(
+                    SlintDriver::default(),
+                    state,
+                    UiSettings {
+                        keymap: taskboard_ui_slint::keymap::Keymap::from_preset(preset),
+                        keymap_preset: preset,
+                        ..UiSettings::default()
+                    },
+                );
+                press_preset(&mut harness, preset, ActionId::PaletteSearch);
+                assert!(
+                    harness.handle.window().get_palette_open(),
+                    "{name}: the palette opened"
+                );
+                harness.type_text("zebra needle");
+                harness.stroke(parse("Return").expect("return"));
+                assert!(
+                    !harness.handle.window().get_palette_open(),
+                    "{name}: the jump closed the palette"
+                );
+                assert_eq!(
+                    harness.handle.window().get_board_bar_model().selected,
+                    1,
+                    "{name}: the jump selected the needle's board"
+                );
+                harness.assert_commands(&[]);
+            },
+        );
+    }
+}
+
+/// r4 D20 — the focus-engage deltas the per-mount seams could not
+/// do: the custom offset field's Space is a space once the field
+/// holds focus (vi's `task.complete` never toggles over an engaged
+/// field), and the whole engagement rides the click-focus — zero
+/// `edited` events involved anywhere.
+#[test]
+fn focus_alone_engages_and_reserves_the_field_strokes() {
+    let (fixture, state) = fixture::golden_state();
+    let task0 = fixture.task0;
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let preset = taskboard_ui_slint::keymap::Preset::Vi;
+            let mut harness = Harness::mount_with_settings(
+                SlintDriver::default(),
+                state,
+                UiSettings {
+                    keymap: taskboard_ui_slint::keymap::Keymap::from_preset(preset),
+                    keymap_preset: preset,
+                    ..UiSettings::default()
+                },
+            );
+            press_preset(&mut harness, preset, ActionId::NavNextItem);
+            press_preset(&mut harness, preset, ActionId::TaskEdit);
+            harness.driver.advance_time(0);
+
+            // Space over the click-focused field inserts, never
+            // toggles the subject's done state.
+            click_field_centre(&mut harness, "Custom reminder offset");
+            harness.type_text("4");
+            harness.stroke(parse("Space").expect("space"));
+            harness.type_text("5m");
+            let field = harness
+                .driver
+                .find_by_label("Custom reminder offset")
+                .expect("the field is mounted");
+            assert_eq!(
+                field.value().as_deref(),
+                Some("4 5m"),
+                "the Space reached the field's buffer"
+            );
+            harness.assert_commands(&[]);
+            assert!(
+                !harness.handle.window().get_task_model().done,
+                "the done state never toggled over the field"
+            );
+
+            // Return commits (the parse hit), still no done toggle:
+            // clear the spaced buffer the way a user retypes.
+            for _ in 0..4 {
+                harness.stroke(parse("Backspace").expect("backspace"));
+            }
+            harness.type_text("45m");
+            harness.stroke(parse("Return").expect("return"));
+            match harness.engine.drain().as_slice() {
+                [StateCommand::AddReminderRule { task, .. }] => assert_eq!(*task, task0),
+                other => panic!("the offset committed, got {other:?}"),
+            }
+        },
+    );
+}
+
+/// r4 D20 — the count lifecycle over the generated global: the
+/// publish rides focus (click alone), the A→B transition stays at one
+/// through the unspecified handler order, the flow end resets both
+/// legs, and the view bindings resolve again after the unmask (the
+/// emacs Return re-arms the title — the unmask pin).
+#[test]
+fn the_editing_facts_count_lifecycle_tracks_focus() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let preset = taskboard_ui_slint::keymap::Preset::Emacs;
+            let mut harness = Harness::mount_with_settings(
+                SlintDriver::default(),
+                state,
+                UiSettings {
+                    keymap: taskboard_ui_slint::keymap::Keymap::from_preset(preset),
+                    keymap_preset: preset,
+                    ..UiSettings::default()
+                },
+            );
+            press_preset(&mut harness, preset, ActionId::NavNextItem);
+            press_preset(&mut harness, preset, ActionId::TaskEdit);
+            harness.driver.advance_time(0);
+
+            // Gain: the click alone publishes.
+            harness.driver.click_by_label("Edit title");
+            harness.driver.advance_time(0);
+            assert_eq!(text_focus(&harness), 1, "the focused field published");
+
+            // The empty commit closes the flow: the flow-end reset
+            // zeroes the count and the insert mirror.
+            for _ in 0..7 {
+                harness.stroke(parse("Backspace").expect("backspace"));
+            }
+            harness.stroke(parse("Return").expect("return"));
+            harness.driver.advance_time(0);
+            assert!(
+                !harness.handle.window().get_task_model().edit_open,
+                "the empty commit closed the editor"
+            );
+            assert_eq!(text_focus(&harness), 0, "the flow end reset the count");
+            assert!(
+                !keyboard(&harness).get_vi_insert(),
+                "the unmask dropped the insert mirror"
+            );
+
+            // Unmask: the view chain resolves again — emacs Return
+            // re-arms the title editor (the field re-publishes).
+            harness.stroke(parse("Return").expect("return"));
+            harness.driver.advance_time(0);
+            assert!(
+                harness.handle.window().get_task_model().edit_open,
+                "the unmasked Return resolved the view binding"
+            );
+
+            // A→B: the armed title flow settles through Escape, then
+            // the due editor's field mounts and publishes — the count
+            // tracks each field's own focus, never a stranded state.
+            harness.stroke(parse("Escape").expect("escape"));
+            harness.driver.advance_time(0);
+            harness.driver.click_by_label("Edit due date");
+            harness.driver.advance_time(0);
+            assert!(
+                harness.handle.window().get_task_model().due_open,
+                "the due click armed the editor"
+            );
+            assert!(
+                text_focus(&harness) >= 1,
+                "the newly mounted editor field published"
+            );
+
+            // Escape settles the flow; the reset seam zeroes again.
+            harness.stroke(parse("Escape").expect("escape"));
+            harness.driver.advance_time(0);
+            assert_eq!(text_focus(&harness), 0, "the settle reset the count");
+        },
+    );
+}
+
 /// R2 D24 — the preset chips carry the design's padding tokens: each
 /// chip's painted width is at least the space-6 floor at scale 1.0
 /// (the label no longer touches the chip edges).

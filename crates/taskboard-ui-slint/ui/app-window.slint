@@ -43,12 +43,13 @@ import { TextField, FieldValidity } from "widgets/text-field.slint";
 export { FieldValidity }
 import { MenuPanelFacts, DatePickerFacts } from "menu-facts.slint";
 import { SettingsScrollFacts } from "settings-facts.slint";
+import { EditingFacts } from "editing-facts.slint";
 import { AlarmWindow, AlarmRowModel } from "alarm-window.slint";
 export { AlarmWindow, AlarmRowModel }
 
 // Re-export the globals so the generated Rust module exposes them
 // (mount/adapter read/write them through the generated accessors).
-export { Theme, Typography, Semantic, Responsive, TooltipState, MenuPanelFacts, SettingsScrollFacts, DragState, FocusScrollHint, ScrollPageHint }
+export { Theme, Typography, Semantic, Responsive, TooltipState, MenuPanelFacts, SettingsScrollFacts, DragState, FocusScrollHint, ScrollPageHint, EditingFacts }
 export { BoardBarModel, BoardSegmentModel }
 
 export enum KeyFeedback {
@@ -140,7 +141,6 @@ export component AppWindow inherits Window {
     // The settings seams (round-1 chunk 3, D6.6/D7/D9).
     callback settings-back-clicked();
     callback settings-field-edited(int, string);
-    callback settings-field-committed();
     callback settings-save-clicked(string, string, string, string);
     callback settings-test-clicked(int);
     callback settings-remove-clicked(int);
@@ -314,7 +314,6 @@ export component AppWindow inherits Window {
                 timers-awaiting: root.timers-awaiting;
                 timers-cancel-clicked(r) => root.timers-cancel-clicked(r);
                 timers-create-accepted(label, when) => root.timers-create-accepted(label, when);
-                timers-form-edited() => root.timers-form-edited();
                 habits: root.habits-model;
                 habits-editing-visible: root.habits-editing-visible;
                 habits-plus-clicked(r) => root.habits-plus-clicked(r);
@@ -334,7 +333,6 @@ export component AppWindow inherits Window {
                 back-clicked() => root.settings-back-clicked();
                 view-mounted() => root.settings-view-mounted();
                 field-edited(f, t) => root.settings-field-edited(f, t);
-                field-committed() => root.settings-field-committed();
                 save-clicked(n, s, u, p) => root.settings-save-clicked(n, s, u, p);
                 test-clicked(i) => root.settings-test-clicked(i);
                 remove-clicked(i) => root.settings-remove-clicked(i);
@@ -856,6 +854,5 @@ export component AppWindow inherits Window {
     pure callback habits-plus-clicked(int);
     pure callback habits-reorder-asked(int, int);
     pure callback timers-create-accepted(string, string) -> bool;
-    pure callback timers-form-edited();
     pure callback timers-chip-clicked();
 }

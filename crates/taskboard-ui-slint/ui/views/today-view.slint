@@ -64,7 +64,6 @@ export component TodayView inherits FocusScope {
     callback timers-cancel-clicked(int);
     // `false` keeps the form's text (an absorbed parse miss).
     callback timers-create-accepted(string, string) -> bool;
-    callback timers-form-edited();
     // The habits section (DR-6/6, §4.6): after the timers block,
     // above the task sections (D-P18). Renders whenever the active
     // board has live habits — on kiosk too (passive progress
@@ -112,7 +111,6 @@ export component TodayView inherits FocusScope {
                     timers-awaiting: root.timers-awaiting;
                     cancel-clicked(r) => root.timers-cancel-clicked(r);
                     create-accepted(label, when) => root.timers-create-accepted(label, when);
-                    form-edited() => root.timers-form-edited();
                 }
                 // The habits section (D-P18): timers, then habits, then
                 // the task sections.
