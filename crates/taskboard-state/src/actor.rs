@@ -599,17 +599,33 @@ async fn run_loop(
     tracing::info!("state engine stopped: all inbox sources closed");
 }
 
+/// The repaint-signal seam. `publish` is generic over this so a test can
+/// spy at the send point; production monomorphizes onto the broadcast
+/// sender at zero cost.
+trait SignalSink {
+    fn signal_updated(&self);
+}
+
+impl SignalSink for broadcast::Sender<EngineSignal> {
+    fn signal_updated(&self) {
+        let _ = self.send(EngineSignal::StateUpdated);
+    }
+}
+
 /// Publishes the core's projection and signals the repaint — swap first,
-/// signal after, so a waking UI reads fresh state.
-fn publish(
+/// signal after, so a waking UI reads fresh state. The order is pinned by
+/// `tests::publish_signals_only_after_the_swap_is_visible` (the spy sink
+/// observes the shared snapshot *at the send point*: a send-before-store
+/// reordering fails the test).
+fn publish<S: SignalSink>(
     core: &EngineCore,
     shared: &ArcSwap<AppState>,
-    signals: &broadcast::Sender<EngineSignal>,
+    sink: &S,
     metrics: &EngineMetrics,
 ) {
     shared.store(Arc::new(core.app()));
     metrics.count_signal();
-    let _ = signals.send(EngineSignal::StateUpdated);
+    sink.signal_updated();
 }
 
 /// The command path's injected seams.
@@ -1353,5 +1369,89 @@ async fn send_withdrawals(
         if notifier.send(message).await.is_err() {
             tracing::debug!("withdrawal dropped: no notifier consumer");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use taskboard_domain::test_support::CountingIds;
+
+    /// A fabricated `PersistedState` carrying one marker board with a
+    /// known title — the observable effect `publish` must swap in before
+    /// it signals.
+    fn marker_state(title: &str) -> PersistedState {
+        let ids = CountingIds::new();
+        let board = taskboard_domain::Board {
+            id: ids.new_board_id(),
+            remote: None,
+            title: title.into(),
+            color: taskboard_domain::Color::new("0000ff"),
+            archived: false,
+            deleted: false,
+            clocks: taskboard_domain::BoardClocks {
+                color: taskboard_domain::BoardClocks::epoch(),
+                archived: taskboard_domain::BoardClocks::epoch(),
+                deleted: taskboard_domain::BoardClocks::epoch(),
+                title: taskboard_domain::BoardClocks::epoch(),
+            },
+            remote_seen: None,
+        };
+        let mut state = PersistedState::default();
+        state.boards.insert(board.id, board);
+        state
+    }
+
+    /// A spy sink that, at the exact point `publish` would send the
+    /// repaint signal, reads the shared snapshot and records whether the
+    /// fabricated effect is already visible. This is the only
+    /// observation point that can distinguish the two orderings: a
+    /// subscriber woken by a real broadcast would race the runtime's
+    /// scheduling, but the spy runs inline — correct order ⇒ visible,
+    /// send-before-store ⇒ the store has not happened yet ⇒ not visible.
+    struct OrderSpy {
+        shared: Arc<ArcSwap<AppState>>,
+        marker_title: &'static str,
+        marker_visible_at_send: std::sync::Mutex<bool>,
+    }
+
+    impl SignalSink for OrderSpy {
+        fn signal_updated(&self) {
+            let visible = self
+                .shared
+                .load()
+                .boards
+                .values()
+                .any(|board| board.title == self.marker_title);
+            *self.marker_visible_at_send.lock().expect("poisoned") = visible;
+        }
+    }
+
+    /// #280 F9-07: the publish contract "swap first, signal after"
+    /// is compiler-pinned here, not by doc comment. If the body of
+    /// `publish` is reordered (send before store), the spy observes a
+    /// snapshot without the marker and this test fails — deterministically,
+    /// single-threaded, no clock.
+    #[test]
+    fn publish_signals_only_after_the_swap_is_visible() {
+        let title = "publish-order-pin";
+        let core = EngineCore::from_persisted(marker_state(title));
+        let shared = Arc::new(ArcSwap::from_pointee(AppState::from(
+            PersistedState::default(),
+        )));
+        let spy = OrderSpy {
+            shared: Arc::clone(&shared),
+            marker_title: "publish-order-pin",
+            marker_visible_at_send: std::sync::Mutex::new(false),
+        };
+        let metrics = EngineMetrics::default();
+
+        publish(&core, &shared, &spy, &metrics);
+
+        assert!(
+            *spy.marker_visible_at_send.lock().expect("poisoned"),
+            "the repaint signal was sent before the swapped snapshot became visible"
+        );
     }
 }
