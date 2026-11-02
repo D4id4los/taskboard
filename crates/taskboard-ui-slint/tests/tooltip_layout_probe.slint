@@ -1,0 +1,44 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The tooltip layout probe (r4 chunk 4, plan §2.2): the real
+// `TooltipPanel` (not a copy) inside a fixed frame, driven through the
+// four content states via the `TooltipState` global. The panel's own
+// size hand-off (`tip-width`/`tip-height` mirrors) is the geometry
+// oracle — no new measurement seam. A hidden one-line caption
+// reference (`one-line-height`) gives the caption-only expected
+// height: a tooltip with neither description nor keys must measure
+// exactly caption + padding — the D13 pin that hidden rows reserve no
+// layout space. `tooltip_layout_probe_tests.rs` mirrors the state
+// matrix; keep the two in step.
+
+import { Theme, Typography, RoleText } from "../ui/theme.slint";
+import { TooltipPanel, TooltipState } from "../ui/widgets/tooltip.slint";
+
+// Re-export so the generated Rust exposes the global to the probe
+// tests (the journeys reach the same global through the app window).
+export { TooltipState }
+
+export component TooltipLayoutProbeWindow inherits Window {
+    width: Theme.space-7 * 16;
+    height: Theme.space-7 * 10;
+    background: Theme.background;
+
+    panel := TooltipPanel {
+        window-width: root.width;
+    }
+
+    // The one-line reference: the same caption role and wrap at the
+    // panel's content width — its preferred height is the panel's
+    // expected content height when only the caption is mounted.
+    // Off-layout by construction (a direct child, never laid out);
+    // never visible.
+    caption-ref := RoleText {
+        role: Typography.caption;
+        text: TooltipState.text;
+        wrap: word-wrap;
+        width: panel.width - 2 * Theme.space-2;
+        visible: false;
+    }
+
+    out property <length> one-line-height: caption-ref.preferred-height;
+    out property <length> panel-content-pad: 2 * Theme.space-1;
+}
