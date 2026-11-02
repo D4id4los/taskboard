@@ -6903,6 +6903,7 @@ dependencies = [
  "insta",
  "proptest",
  "serde",
+ "serde_json",
  "taskboard-domain",
  "taskboard-storage-sqlite",
  "tempfile",
