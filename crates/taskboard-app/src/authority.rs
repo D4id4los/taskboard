@@ -146,10 +146,14 @@ impl AuthorityHandle {
 
 /// Spawns the authority task: subscribe → update set → maybe-emit, one
 /// level of abstraction per arm. Exits on `Shutdown`, channel close, or
-/// a `Lagged` backlog (a missed 64-event window means the counted truth
-/// is stale; the engine's per-connector arms keep working and the
-/// global edge degrades honestly — the system-event logger's
-/// convention).
+/// a `Lagged` backlog — on its own authority, not by analogy with any
+/// other subscriber: a missed 64-event window means the *counted*
+/// up/down set can no longer be trusted (an unobserved `ConnectorLost`
+/// may be baked into the gap), so resuming would publish a stale truth
+/// as if it were current; the engine's per-connector arms keep working
+/// and the global edge degrades honestly. The system-event logger makes
+/// the opposite choice deliberately — it observes, it does not count,
+/// so a noted gap costs it nothing.
 pub(crate) fn spawn_authority(
     handle: AuthorityHandle,
     mut events: broadcast::Receiver<SystemEvent>,
