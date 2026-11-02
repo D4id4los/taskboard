@@ -12,6 +12,7 @@ import { RuleList, RuleRowModel } from "../compositions/rule-list.slint";
 import { DueEditor } from "../compositions/due-editor.slint";
 import { DueDayModel } from "../compositions/date-picker.slint";
 import { DatePickerFacts } from "../menu-facts.slint";
+import { TooltipState } from "../widgets/tooltip.slint";
 
 // The task-detail model (D22).
 export struct TaskDetailModel {
@@ -20,6 +21,10 @@ export struct TaskDetailModel {
     due-phrase: string,
     due-kind: DueKind,
     scheduled-phrase: string,
+    // The subject's tracked-time total at second precision (r4 D17):
+    // the pushed phrase — the box renders the model only, the tick
+    // cadence is the adapter's seam.
+    tracked-total: string,
     done: bool,
     // The tracking verbs (DR-5/4, D-TU6): exactly one true while a
     // subject exists, both false without — the button beside the
@@ -331,6 +336,45 @@ export component TaskView inherits FocusScope {
                             tone: Tone.info;
                             label: "Stop tracking";
                             clicked => root.task-track-stop-clicked();
+                        }
+                    }
+                }
+            }
+
+            // The tracked-time summary row (r4 D17): the subject's
+            // total at second precision, its own full-width row under
+            // the facts. Refresh-static while no entry is open — the
+            // per-second tick is the adapter's seam (decision 5). The
+            // value carries a hover tip (blanket rule a); the row is
+            // not itself clickable.
+            HorizontalLayout {
+                spacing: Theme.space-3;
+                RoleText {
+                    role: Typography.caption;
+                    text-color: Theme.text-secondary;
+                    text: "Tracked";
+                }
+                Rectangle {
+                    horizontal-stretch: 1;
+                    RoleText {
+                        role: Typography.mono;
+                        text: root.task.tracked-total;
+                    }
+                    total-touch := TouchArea {
+                        changed has-hover => {
+                            if (self.has-hover) {
+                                TooltipState.hover(
+                                    root.task.tracked-total,
+                                    "Total tracked time on this task, including any running entry.",
+                                    [],
+                                    self.absolute-position.x,
+                                    self.absolute-position.y,
+                                    self.width,
+                                    self.height,
+                                );
+                            } else {
+                                TooltipState.unhover();
+                            }
                         }
                     }
                 }

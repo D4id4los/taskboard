@@ -1152,6 +1152,70 @@ fn a_view_intent_derives_on_an_unchanged_snapshot() {
     });
 }
 
+// -- the tracked-time summary row (r4 D17) ------------------------------
+
+/// A5 — with an open entry the task-detail model carries a non-empty
+/// total; once the entry closes, the value is refresh-static: a forced
+/// re-derive at a strictly later wall clock rewrites the identical
+/// phrase (the closed-entries sum; typed, zero timing — no sleeps).
+#[test]
+fn the_task_detail_model_carries_the_tracked_total_and_it_freezes_when_closed() {
+    on_slint_thread(|| {
+        let (mut state, fx) = fixture();
+        let [a_id, _b, _c] = fx.tasks;
+        let [s0, _s1] = fx.stacks;
+        let start = chrono::Utc::now();
+        let entry_id = taskboard_domain::TimeEntryId::from_uuid(uuid::Uuid::now_v7());
+        state.tracking.entries.insert(
+            entry_id,
+            taskboard_domain::TimeEntry {
+                id: entry_id,
+                task: a_id,
+                task_title: "task-0".to_owned(),
+                start,
+                end: None,
+                created_at: start,
+                updated_at: start,
+            },
+        );
+        let rig = rig(state);
+        let adapter = rig.adapter();
+        {
+            let mut a = adapter.borrow_mut();
+            // The view-state move is outside the state Arc — the #463
+            // audit routes it through the forced verb.
+            a.refresh_forced(rig.handle.window());
+            a.view_state.activate_card(a_id, s0);
+            a.view_state
+                .activate_focused(&rig.handle.test_state().load_full());
+            a.refresh_forced(rig.handle.window());
+        }
+        let ticking = rig.handle.window().get_task_model().tracked_total;
+        assert!(!ticking.is_empty(), "an open entry renders the total");
+
+        // Close the entry at a fixed end: the total becomes a closed
+        // sum, invariant under later `now`s.
+        let closed = {
+            let mut s = (*rig.handle.test_state().load_full()).clone();
+            let e = s.tracking.entries.get_mut(&entry_id).expect("entry");
+            e.end = Some(e.start + chrono::TimeDelta::seconds(120));
+            Arc::new(s)
+        };
+        rig.handle.test_state().store(closed);
+        adapter.borrow_mut().refresh(rig.handle.window());
+        let frozen = rig.handle.window().get_task_model().tracked_total;
+        assert!(!frozen.is_empty());
+        // A forced pass (a later wall clock behind it) rewrites the
+        // same value — the refresh-static contract.
+        adapter.borrow_mut().refresh_forced(rig.handle.window());
+        assert_eq!(
+            rig.handle.window().get_task_model().tracked_total,
+            frozen,
+            "a closed sum never moves with `now`"
+        );
+    });
+}
+
 /// T4 — the guarded skip's cheap tail still pushes the settings
 /// liveness: a connector episode flips the row's status enum without a
 /// derive pass.

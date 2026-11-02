@@ -1368,6 +1368,17 @@ fn push_task_detail(
         scheduled_phrase: SharedString::from(subject.map_or(String::new(), |t| {
             presentation::scheduled_phrase(t.scheduled, now)
         })),
+        // The tracked-time total (r4 D17): the phrase when a subject
+        // exists — an honest zero with no entries — empty without.
+        tracked_total: SharedString::from(
+            subject
+                .map(|t| {
+                    presentation::tracked_total_phrase(&presentation::tracked_total(
+                        state, t.id, now,
+                    ))
+                })
+                .unwrap_or_default(),
+        ),
         date_picker_open: due.picker.is_some(),
         date_caption: SharedString::from(
             due.picker
