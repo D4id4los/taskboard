@@ -264,6 +264,7 @@ struct HintModels {
     // and the tracking button's binding projections.
     task_done: MirroredRows<SharedString>,
     task_track: MirroredRows<SharedString>,
+    task_title_edit: MirroredRows<SharedString>,
 }
 
 /// The persistent model handle of one surface plus its Rust-side
@@ -951,19 +952,47 @@ fn push_chrome(
         },
         &done_action.map(rows).unwrap_or_default(),
     );
-    let track_action =
-        presentation::detail_tracking_verb(state, detail_subject).map(|verb| match verb {
-            presentation::TrackDetail::Start => ActionId::TaskTrackStart,
-            presentation::TrackDetail::Stop => ActionId::TaskTrackStop,
-        });
-    mutations += push_rows(
-        &mut models.hints.task_track,
+    let track_action = presentation::detail_tracking_verb(state, detail_subject);
+    mutations += push_track_hint(window, &mut models.hints, &rows, track_action);
+    mutations += push_title_edit_hint(window, &mut models.hints, &rows);
+    mutations
+}
+
+/// The header tracking verbs' hint projection (r4 D16c).
+fn push_track_hint(
+    window: &AppWindow,
+    hints: &mut HintModels,
+    rows: &dyn Fn(ActionId) -> Vec<SharedString>,
+    track_action: Option<presentation::TrackDetail>,
+) -> usize {
+    let track_action = track_action.map(|verb| match verb {
+        presentation::TrackDetail::Start => ActionId::TaskTrackStart,
+        presentation::TrackDetail::Stop => ActionId::TaskTrackStop,
+    });
+    push_rows(
+        &mut hints.task_track,
         |rc| {
             window.set_task_track_hint(rc);
         },
         &track_action.map(rows).unwrap_or_default(),
-    );
-    mutations
+    )
+}
+
+/// The closed title's activation binding (r4 D21): the view-chain
+/// projection, empty where the action is unbound (vi). The binding is
+/// view-context, not subject — pushed on every chrome pass.
+fn push_title_edit_hint(
+    window: &AppWindow,
+    hints: &mut HintModels,
+    rows: &dyn Fn(ActionId) -> Vec<SharedString>,
+) -> usize {
+    push_rows(
+        &mut hints.task_title_edit,
+        |rc| {
+            window.set_task_title_edit_hint(rc);
+        },
+        &rows(ActionId::TaskTitleEdit),
+    )
 }
 
 /// The resolved board row (r4 D5, chunk-2 plan §1.2): the live stacks,

@@ -138,6 +138,9 @@ export component AppWindow inherits Window {
     // keymap projections pushed per refresh).
     in-out property <[string]> task-done-hint;
     in-out property <[string]> task-track-hint;
+    // The closed title's activation binding (r4 D21; pushed per
+    // refresh — never hand-written).
+    in-out property <[string]> task-title-edit-hint;
     in-out property <View> current-view: View.board;
     // The settings seams (round-1 chunk 3, D6.6/D7/D9).
     callback settings-back-clicked();
@@ -351,6 +354,7 @@ export component AppWindow inherits Window {
                 task: root.task-model;
                 nav-back-hint: root.nav-back-hint;
                 task-done-hint: root.task-done-hint;
+                task-title-edit-hint: root.task-title-edit-hint;
                 task-track-hint: root.task-track-hint;
                 title-committed(t) => root.task-title-committed(t);
                 title-edited(t) => root.task-title-edited(t);

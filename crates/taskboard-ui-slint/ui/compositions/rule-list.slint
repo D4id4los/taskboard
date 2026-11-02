@@ -12,6 +12,7 @@ import { TextField } from "../widgets/text-field.slint";
 import { IconButton, IconKind } from "../widgets/icon-button.slint";
 import { EditingFacts } from "../editing-facts.slint";
 import { TaskViewWalkFacts } from "../walk-facts.slint";
+import { TooltipState } from "../widgets/tooltip.slint";
 
 // One rule row: the offset text form and the created stamp — display
 // strings only (D12: ids stay in the adapter's tables).
@@ -79,7 +80,27 @@ component PresetChip inherits Rectangle {
         }
     }
     touch := TouchArea {
-        clicked => { root.chip-clicked(root.chip-index); }
+        // The tooltip arm (blanket rule a): the chip's label is the
+        // a11y label verbatim.
+        changed has-hover => {
+            if (self.has-hover) {
+                TooltipState.hover(
+                    root.label,
+                    "Adds this reminder offset.",
+                    [],
+                    self.absolute-position.x,
+                    self.absolute-position.y,
+                    self.width,
+                    self.height,
+                );
+            } else {
+                TooltipState.unhover();
+            }
+        }
+        clicked => {
+            TooltipState.unhover();
+            root.chip-clicked(root.chip-index);
+        }
     }
     HorizontalLayout {
         padding-left: Theme.space-2;
