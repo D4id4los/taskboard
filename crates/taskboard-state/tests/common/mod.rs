@@ -170,3 +170,47 @@ impl taskboard_domain::persistence::TaskRepository for FlakyRepository {
         })
     }
 }
+
+/// Counts applies (the P-N quiet-tick pin): delegates everything to the
+/// in-memory interpreter, remembers how many batches landed.
+#[derive(Debug)]
+pub struct CountingRepository {
+    inner: taskboard_domain::test_support::InMemoryRepository,
+    applies: std::sync::atomic::AtomicU32,
+}
+
+impl CountingRepository {
+    pub fn new(state: PersistedState) -> Self {
+        Self {
+            inner: taskboard_domain::test_support::InMemoryRepository::with_state(state),
+            applies: std::sync::atomic::AtomicU32::new(0),
+        }
+    }
+
+    pub fn applies(&self) -> u32 {
+        self.applies.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl taskboard_domain::persistence::TaskRepository for CountingRepository {
+    fn load(
+        &self,
+    ) -> taskboard_domain::persistence::BoxFuture<
+        '_,
+        Result<PersistedState, taskboard_domain::persistence::RepositoryError>,
+    > {
+        self.inner.load()
+    }
+
+    fn apply(
+        &self,
+        actions: Vec<taskboard_domain::persistence::PersistenceAction>,
+    ) -> taskboard_domain::persistence::BoxFuture<
+        '_,
+        Result<(), taskboard_domain::persistence::RepositoryError>,
+    > {
+        self.applies
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.inner.apply(actions)
+    }
+}

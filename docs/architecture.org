@@ -408,7 +408,14 @@ dependency hierarchies.
    =AppDataEvidence=); op routing is driven from the =TASK_FIELDS=
    manifest (every manifest row routes through its declared lane); the
    tick runs the alarms pass over =AdhocAlarm=s and the settlement
-   prune after snooze compaction; and the =CaptureTask= handler
+   prune after snooze compaction; the tick also emits the age-bounded
+   stale-delivery sweep (issue #201: delivery rows no reader consults
+   whose occurrence is older than the domain's fixed 90-day horizon
+   are pruned via =PruneReminderDeliveries=, keeping a re-arming
+   task's per-device receipt set bounded — cascades handle deletion,
+   compaction and the sweep handle accumulation, engine-emitted data
+   interpreted by the dumb set difference both repositories
+   execute); and the =CaptureTask= handler
    resolves the app-global Inbox board (created/adopted unbound,
    canonical-first) or the board-directed Backlog. Command *semantics*
    (rejections, no-ops, cascades) live in the domain; this crate owns

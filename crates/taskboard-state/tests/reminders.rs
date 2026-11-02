@@ -21,15 +21,16 @@ use taskboard_domain::idgen::IdGenerator as _;
 use taskboard_domain::persistence::{PersistedState, TaskRepository};
 use taskboard_domain::test_support::{CountingIds, InMemoryRepository};
 use taskboard_domain::{
-    AdhocWhen, AppState, Board, CommandOutcome, EngineSignal, Notification, ReminderAnchor,
-    ReminderDefaults, ReminderOffset, ReminderRef, ReminderSnoozeKey, Stack, StackClocks,
-    StateCommand, SyncCommand, SyncReport, SystemEvent, Task, TaskClocks,
+    AdhocWhen, AppState, Board, CommandOutcome, EngineSignal, Insistence, Notification,
+    ReminderAnchor, ReminderDefaults, ReminderDelivery, ReminderOffset, ReminderRef, ReminderRule,
+    ReminderRuleId, ReminderSnoozeKey, Stack, StackClocks, StateCommand, SyncCommand, SyncReport,
+    SystemEvent, Task, TaskClocks,
 };
 use taskboard_state::{EngineHandle, ReminderEngineConfig, spawn_state_engine};
 
 mod common;
 
-use common::{FixedClock, FlakyRepository, T0, ts};
+use common::{CountingRepository, FixedClock, FlakyRepository, T0, ts};
 
 /// The enabled tick config used by the R-series: a 1 s cadence (many
 /// ticks per advance window) and an at-due implicit default.
@@ -1052,4 +1053,138 @@ async fn mark_done_dismissals_withdraw_too() {
             "exactly one withdraw for the single active occurrence"
         );
     }
+}
+
+// ---- The stale-delivery sweep (issue #201, P-L/P-M/P-N) -------------
+
+const DAY: i64 = 86_400;
+
+/// A live open task plus one at-due explicit rule; optional delivery
+/// rows seeded on the rule ref.
+fn seeded_rule_state(
+    duedate_secs: i64,
+    deliveries: &[ReminderDelivery],
+) -> (PersistedState, taskboard_domain::TaskId, ReminderRuleId) {
+    let (mut state, task_id) = seeded_task_state(duedate_secs);
+    let rule_id = ReminderRuleId::from(uuid::Uuid::from_u128(20));
+    state.reminders.rules.insert(
+        rule_id,
+        ReminderRule {
+            insistence: Insistence::Normal,
+            id: rule_id,
+            task: task_id,
+            offset: ReminderOffset::at_due(),
+            created_at: ts(T0),
+            updated_at: ts(T0),
+        },
+    );
+    for delivery in deliveries {
+        state.reminders.deliveries.insert(*delivery);
+    }
+    (state, task_id, rule_id)
+}
+
+/// P-L: a tick over a state holding a stale off-chain delivery emits the
+/// prune through the durable path — the aged row is gone from the
+/// repository and only the just-recorded firing row remains.
+#[cfg_attr(miri, ignore)]
+#[tokio::test(start_paused = true)]
+async fn the_tick_prunes_a_stale_off_chain_delivery() {
+    let old_occurrence = T0 - 100 * DAY;
+    let (mut state, _task_id, rule_id) = seeded_rule_state(T0 - 3_600, &[]);
+    state.reminders.deliveries.insert(ReminderDelivery {
+        reminder: ReminderRef::Rule(rule_id),
+        occurrence: ts(old_occurrence),
+        delivered_at: ts(old_occurrence + 60),
+    });
+    let repo = Arc::new(CountingRepository::new(state));
+    let h = spawn(Spawner {
+        repo: repo.clone(),
+        ..Spawner::default()
+    })
+    .await;
+
+    advance_both(&h.clock, 5).await;
+    h.handle.flush().await;
+
+    let loaded = repo.load().await.expect("load");
+    assert!(
+        !loaded
+            .reminders
+            .is_delivered(&ReminderRef::Rule(rule_id), &ts(old_occurrence)),
+        "the aged off-chain row is pruned"
+    );
+    assert_eq!(
+        loaded.reminders.deliveries.len(),
+        1,
+        "only the just-recorded firing row remains"
+    );
+    assert!(
+        loaded
+            .reminders
+            .is_delivered(&ReminderRef::Rule(rule_id), &ts(T0 - 3_600)),
+        "the effective occurrence's receipt is recorded"
+    );
+}
+
+/// P-M (the loop-killer at the engine tier): a stale *on-chain*
+/// delivery — consulted at the reminder's current effective occurrence —
+/// survives the tick: no prune emitted, no new fire, the row persists.
+#[cfg_attr(miri, ignore)]
+#[tokio::test(start_paused = true)]
+async fn a_consulted_stale_delivery_survives_the_tick() {
+    let occurrence = T0 - 100 * DAY;
+    let (mut state, _task_id, rule_id) = seeded_rule_state(occurrence, &[]);
+    state.reminders.deliveries.insert(ReminderDelivery {
+        reminder: ReminderRef::Rule(rule_id),
+        occurrence: ts(occurrence),
+        delivered_at: ts(occurrence + 60),
+    });
+    let repo = Arc::new(CountingRepository::new(state));
+    let mut h = spawn(Spawner {
+        repo: repo.clone(),
+        ..Spawner::default()
+    })
+    .await;
+
+    advance_both(&h.clock, 5).await;
+    h.handle.flush().await;
+
+    let loaded = repo.load().await.expect("load");
+    assert_eq!(
+        loaded.reminders.deliveries.len(),
+        1,
+        "the consulted receipt survives"
+    );
+    assert!(
+        loaded
+            .reminders
+            .is_delivered(&ReminderRef::Rule(rule_id), &ts(occurrence)),
+        "and it is the same row"
+    );
+    assert_eq!(
+        drain_notifications(&mut h.notifications),
+        [] as [Notification; 0],
+        "a delivered occurrence re-fires nothing"
+    );
+}
+
+/// P-N: a quiet tick — no firings, no stale rows — never touches the
+/// repository: the apply counter does not move.
+#[cfg_attr(miri, ignore)]
+#[tokio::test(start_paused = true)]
+async fn a_quiet_tick_never_touches_the_repository() {
+    // Due in the future, no deliveries seeded: every tick is quiet.
+    let (state, _, _) = seeded_rule_state(T0 + 3_600, &[]);
+    let repo = Arc::new(CountingRepository::new(state));
+    let h = spawn(Spawner {
+        repo: repo.clone(),
+        ..Spawner::default()
+    })
+    .await;
+
+    advance_both(&h.clock, 120).await; // 120 tick intervals
+    h.handle.flush().await;
+
+    assert_eq!(repo.applies(), 0, "a quiet tick persists nothing");
 }

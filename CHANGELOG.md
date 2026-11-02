@@ -23,6 +23,11 @@ The workspace carries a single global version (see `docs/architecture.org`);
   reason fails to load on an older one (typed corruption; the next
   successful cycle rewrites it).
 
+- Reminder delivery proofs older than 90 days are pruned automatically
+  (#201): the reminder tick sweeps delivery rows no reader consults
+  whose occurrence has aged past the domain's fixed horizon, keeping a
+  frequently re-armed task's receipt set bounded. Restoring a very old
+  due date may re-notify once before suppression self-heals.
 - Main-window geometry persists across restarts (#412): the desktop
   window's last normal (non-maximized, non-fullscreen) position/size
   is captured debounced from the repaint tick and restored — clamped
