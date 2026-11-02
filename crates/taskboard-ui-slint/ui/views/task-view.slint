@@ -498,7 +498,16 @@ export component TaskView inherits FocusScope {
             // on the checkmark; Escape's discard rides the action
             // layer; focus loss settles per the text-flow rule.
             // Markup rendering stays POST-1.0/R10.
+            //
+            // r4 D16d (F10): THE flexible element — the section (and
+            // both branches inside it) absorbs the view's leftover
+            // height; the old trailing spacer is gone. Every other
+            // row stays content-height. No max-line cap: growth is
+            // the layout stretch, not the content (the
+            // input.preferred-height binding stays fenced — the
+            // width-dependent cycle trap).
             VerticalLayout {
+                vertical-stretch: 1;
                 RoleText {
                     role: Typography.caption;
                     text-color: Theme.text-secondary;
@@ -507,6 +516,7 @@ export component TaskView inherits FocusScope {
                 if (!root.task.description-edit-open): description-display := Rectangle {
                     border-radius: Theme.radius-small;
                     horizontal-stretch: 1;
+                    vertical-stretch: 1;
                     accessible-role: AccessibleRole.button;
                     accessible-label: "Edit description";
                     accessible-description: "Opens the description editor.";
@@ -533,13 +543,12 @@ export component TaskView inherits FocusScope {
                     commit-affordance: true;
                     initial-text: root.task.description-initial;
                     horizontal-stretch: 1;
+                    vertical-stretch: 1;
                     accepted(text) => root.description-committed(text);
                     edited(text) => root.description-edited(text);
                     focus-lost() => root.text-flow-focus-lost();
                 }
             }
-
-            Rectangle { vertical-stretch: 1; }
         }
     }
 }
