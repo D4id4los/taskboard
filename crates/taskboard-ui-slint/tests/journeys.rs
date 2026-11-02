@@ -1574,9 +1574,10 @@ fn the_task_view_header_and_summary_elements_arm_their_tooltips() {
 /// interactive elements: the four closed cells and the preset chips
 /// arm the generalized tooltip (label + description, hint keys where
 /// bound), hover shows it after the delay, and moving away hides it.
-/// The field sites' arm is the recorded plan-vs-runtime finding: the
-/// inner `TextInput` accepts its own hover moves, so a sibling
-/// `TouchArea` cannot coexist with the caret (see the slice report).
+/// The field sites stay tip-less by a recorded plan-vs-runtime
+/// finding: the inner `TextInput` accepts its own hover moves, so a
+/// sibling `TouchArea` never hovers and one above breaks caret
+/// handling — no TouchArea-based tip can coexist with the field.
 #[test]
 fn every_task_view_cell_and_chip_carries_its_info_tip() {
     let (_fixture, state) = fixture::golden_state();
