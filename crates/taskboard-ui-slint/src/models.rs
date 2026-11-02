@@ -900,8 +900,12 @@ fn push_chrome(
         &rows(ActionId::StackWider),
     );
     // The add-column tooltip's hint (r2 D6): the stack.create binding
-    // — empty under emacs until chunk 3 binds it (the established
-    // empty-hint rendering applies).
+    // — bound in every shipped preset (the "empty under emacs" note
+    // was stale: chunk 3 bound it as `Ctrl+c s`; r4 chunk 4's E2
+    // enumeration pins the projection). The only chrome action bound
+    // in no preset is `board.select` — the board-segment hint above
+    // is the documented empty (the established empty-hint rendering
+    // applies; a fake chord is never shown, D19).
     mutations += push_rows(
         &mut models.hints.stack_create,
         |rc| {

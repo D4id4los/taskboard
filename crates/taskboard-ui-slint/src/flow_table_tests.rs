@@ -1549,3 +1549,82 @@ fn every_view_swapping_effect_dismisses_the_tooltip_and_every_preserving_effect_
         );
     });
 }
+
+// -- the first-frame hint projection (r4 chunk 4, D15/E1) ----------------
+
+/// The Tier-4 harness (the F4 investigation's E1): at first frame the
+/// seven chrome-tooltip hint models equal the keymap projection
+/// `first_binding_display(action, mount_chain)` computed independently
+/// from the preset — "hints present at start" at the seam level. Any
+/// diffing row would be H-a (chain masking at mount) named here; the
+/// empty projection is H-b's by-design record (the E2 enumeration
+/// pins it per preset). No text assertions on *content* — the models
+/// are compared structurally against the projection's own output.
+#[test]
+fn first_frame_hints_match_the_keymap_projection() {
+    use slint::{Model as _, SharedString};
+    let (state, _fx) = fixture();
+    // The mount touches the Slint thread's testing platform (the walk's
+    // rule): the backend exists only on that thread, headless CI
+    // included.
+    on_slint_thread(move || {
+        let rig = rig(state);
+        let adapter = rig.adapter();
+        let a = adapter.borrow();
+        // The chain the first-frame push projected with (the mount's own
+        // view context head — desktop default).
+        let chain = a.shell.chain();
+        let keymap = crate::keymap::Keymap::from_preset(crate::keymap::Preset::Standard);
+        let projection = |action: crate::actions::ActionId| -> Vec<SharedString> {
+            keymap
+                .first_binding_display(action, &chain)
+                .unwrap_or_default()
+                .iter()
+                .map(|stroke| SharedString::from(stroke.as_str()))
+                .collect()
+        };
+        let read = |model: &slint::ModelRc<SharedString>| -> Vec<SharedString> {
+            (0..model.row_count())
+                .map(|row| model.row_data(row).expect("hint row"))
+                .collect()
+        };
+        let window = rig.handle.window();
+        let rows = [
+            (
+                window.get_toolbar_menu_hint(),
+                projection(crate::actions::ActionId::AppMenu),
+            ),
+            (
+                window.get_nav_back_hint(),
+                projection(crate::actions::ActionId::NavFocusBoard),
+            ),
+            (
+                window.get_board_segment_hint(),
+                projection(crate::actions::ActionId::BoardSelect),
+            ),
+            (
+                window.get_task_card_hint(),
+                projection(crate::actions::ActionId::TaskEdit),
+            ),
+            (
+                window.get_stack_header_hint(),
+                projection(crate::actions::ActionId::StackWider),
+            ),
+            (
+                window.get_stack_create_hint(),
+                projection(crate::actions::ActionId::StackCreate),
+            ),
+            (
+                window.get_task_create_hint(),
+                projection(crate::actions::ActionId::TaskCreate),
+            ),
+        ];
+        for (index, (model, expected)) in rows.iter().enumerate() {
+            assert_eq!(
+                read(model),
+                *expected,
+                "hint model {index} differs from its keymap projection at first frame"
+            );
+        }
+    });
+}

@@ -275,7 +275,15 @@ The workspace carries a single global version (see `docs/architecture.org`);
   the ghost-create, palette, capture, and kiosk-rotation transitions
   dismiss explicitly. Previously a hover ghost rode the
   board→task-detail activation, the inbox jump, and palette invokes
-  into the new view.
+  into the new view. The "shortcut hints missing at start" review
+finding was investigated (GUI review round 4, chunk 4) and closed as
+by-design with recorded evidence: the hints are keymap projections
+present from the first frame (a new first-frame projection test pins
+it), the mount chain is never masked, and the only never-hinted
+element is the board segment — `board.select` is bound in no preset,
+so its tooltip honestly shows no shortcut keys (an enumeration test
+pins that empty set; a stale comment claiming the stack-create hint
+was unbound under emacs was corrected).
 - Board surface repairs (GUI review round 4): the task card's title
   fills the card to its right edge, eliding only there (previously
   column-width squeezes collapsed it to a bare ellipsis); a

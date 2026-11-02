@@ -114,3 +114,66 @@ fn resolved_preset_keymaps_are_documented() {
         .collect();
     assert_yaml_snapshot!("resolved_preset_keymaps", rows);
 }
+
+// -- r4 chunk 4, D15: the F4 investigation's seam records ---------------
+
+use taskboard_ui_slint::actions::ActionId;
+use taskboard_ui_slint::actions::ContextId;
+
+/// The projected-hint enumeration (E2): for every preset × every
+/// chrome-tooltip action × the board chain `[Board, ViNormal,
+/// Global]`, record which `(preset, action)` pairs project NO binding
+/// — the honest empty (D19: the hints are keymap projections; an
+/// unbound action shows no fake chord). Expected empty set today:
+/// exactly `(every preset, BoardSelect)` — the mouse-only board
+/// segment. A new binding flips this test deliberately (the plan's
+/// pin); the H-b "by-design emptiness" verdict's evidence of record.
+///
+/// The H-a mask evidence rides along: the presets' mask sets are
+/// exactly `{Menu, Palette}` — `ViNormal` never masks, so the mount
+/// chain hides nothing at first frame.
+#[test]
+fn projected_hint_bindings_per_preset() {
+    const CHROME_ACTIONS: [ActionId; 7] = [
+        ActionId::AppMenu,
+        ActionId::NavFocusBoard,
+        ActionId::BoardSelect,
+        ActionId::TaskEdit,
+        ActionId::StackWider,
+        ActionId::StackCreate,
+        ActionId::TaskCreate,
+    ];
+    let chain = [ContextId::Board, ContextId::ViNormal, ContextId::Global];
+    let mut empty: Vec<(&str, &str)> = Vec::new();
+    for preset in [Preset::Standard, Preset::Emacs, Preset::Vi] {
+        let keymap = Keymap::from_preset(preset);
+        // H-a: the board chain is unmasked on every shipped preset.
+        assert_eq!(
+            keymap.visible_chain(&chain),
+            chain,
+            "{}'s masks never cut the mount chain",
+            preset.name()
+        );
+        // The masks are exactly {Menu, Palette}: a walk into either
+        // stops there.
+        assert_eq!(keymap.visible_chain(&[ContextId::Menu]), [ContextId::Menu]);
+        assert_eq!(
+            keymap.visible_chain(&[ContextId::Palette]),
+            [ContextId::Palette]
+        );
+        for action in CHROME_ACTIONS {
+            if keymap.first_binding_display(action, &chain).is_none() {
+                empty.push((preset.name(), action.id()));
+            }
+        }
+    }
+    assert_eq!(
+        empty,
+        [
+            ("standard", "board.select"),
+            ("emacs", "board.select"),
+            ("vi", "board.select"),
+        ],
+        "the only unbound projected action is board.select, on every preset"
+    );
+}
