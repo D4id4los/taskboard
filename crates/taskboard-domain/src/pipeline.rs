@@ -2521,6 +2521,7 @@ mod tests {
         // occurrence — same pass, one derivation.
         let firings = crate::reminders::due_firings(
             &app.tasks,
+            &app.tracking,
             &app.reminders,
             &ReminderDefaults::default(),
             ts(BASE + 3_600),

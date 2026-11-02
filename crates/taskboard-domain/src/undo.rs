@@ -139,7 +139,9 @@ fn record_entry(
         | StateCommand::RemoveReminderRule { .. }
         | StateCommand::ClearReminderRules { .. }
         | StateCommand::CreateAdhocAlarm { .. }
-        | StateCommand::CancelAdhocAlarm { .. } => {
+        | StateCommand::CancelAdhocAlarm { .. }
+        | StateCommand::CreateBreakRule { .. }
+        | StateCommand::DeleteBreakRule { .. } => {
             UndoFacts::NotUndoable(NotUndoableReason::ReminderSurface)
         }
         // ---- the undo v2 tracking/habit widening (#555, §3 rows
@@ -315,6 +317,8 @@ fn touched_board(app: &AppState, command: &StateCommand) -> Option<crate::ids::B
         | StateCommand::RemoveReminderRule { .. }
         | StateCommand::CreateAdhocAlarm { .. }
         | StateCommand::CancelAdhocAlarm { .. }
+        | StateCommand::CreateBreakRule { .. }
+        | StateCommand::DeleteBreakRule { .. }
         | StateCommand::StopTracking => None,
         StateCommand::UpdateHabit { habit, .. }
         | StateCommand::MoveHabit { habit, .. }
@@ -703,6 +707,8 @@ impl JournalEntry {
             | StateCommand::ClearReminderRules { .. }
             | StateCommand::CreateAdhocAlarm { .. }
             | StateCommand::CancelAdhocAlarm { .. }
+            | StateCommand::CreateBreakRule { .. }
+            | StateCommand::DeleteBreakRule { .. }
             | StateCommand::StartTracking { .. }
             | StateCommand::StopTracking
             | StateCommand::DeleteTimeEntry { .. }

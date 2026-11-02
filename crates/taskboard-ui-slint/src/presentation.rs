@@ -475,24 +475,37 @@ pub fn notification_rows(
     defaults: &taskboard_domain::ReminderDefaults,
     now: DateTime<Utc>,
 ) -> Vec<NotificationRow> {
-    taskboard_domain::active_notifications(&state.tasks, &state.reminders, defaults, now)
-        .into_iter()
-        .filter(|note| match note.anchor {
-            taskboard_domain::ReminderAnchor::Task(task) => {
-                state.tasks.get(&task).is_none_or(|t| !is_anchor_task(t))
-            }
-            taskboard_domain::ReminderAnchor::Alarm(_) => true,
-        })
-        .map(|note| NotificationRow {
-            task: match note.anchor {
-                taskboard_domain::ReminderAnchor::Task(task) => Some(task),
-                taskboard_domain::ReminderAnchor::Alarm(_) => None,
-            },
-            reminder: note.reminder,
-            occurrence: note.occurrence,
-            title: note.title,
-        })
-        .collect()
+    taskboard_domain::active_notifications(
+        &state.tasks,
+        &state.tracking,
+        &state.reminders,
+        defaults,
+        now,
+    )
+    .into_iter()
+    .filter(|note| match note.anchor {
+        taskboard_domain::ReminderAnchor::Task(task) => {
+            state.tasks.get(&task).is_none_or(|t| !is_anchor_task(t))
+        }
+        // A break row has no card to filter (D-18): always shown, like
+        // an alarm row.
+        taskboard_domain::ReminderAnchor::Alarm(_) | taskboard_domain::ReminderAnchor::Break(_) => {
+            true
+        }
+    })
+    .map(|note| NotificationRow {
+        task: match note.anchor {
+            taskboard_domain::ReminderAnchor::Task(task) => Some(task),
+            // No Done/Mute target; Dismiss/Snooze carry the ref and
+            // occurrence themselves (the alarm-row precedent).
+            taskboard_domain::ReminderAnchor::Alarm(_)
+            | taskboard_domain::ReminderAnchor::Break(_) => None,
+        },
+        reminder: note.reminder,
+        occurrence: note.occurrence,
+        title: note.title,
+    })
+    .collect()
 }
 
 /// The active timer row's remaining-time phrase (D-I7): the
@@ -930,6 +943,17 @@ pub const fn awaiting_row_buttons(anchor: taskboard_domain::ReminderAnchor) -> A
             cancel: true,
             track_start: false,
         },
+        // A break row behaves like an alarm row for affordances: no
+        // task target, so no Done/Mute/Start; the insistence ladder
+        // applies as-is.
+        taskboard_domain::ReminderAnchor::Break(_) => AwaitingButtons {
+            dismiss: true,
+            done: false,
+            snooze: true,
+            mute: false,
+            cancel: false,
+            track_start: false,
+        },
     }
 }
 
@@ -1062,26 +1086,32 @@ pub fn alarm_window_rows(
     defaults: &taskboard_domain::ReminderDefaults,
     now: DateTime<Utc>,
 ) -> Vec<AlarmRow> {
-    taskboard_domain::active_notifications(&state.tasks, &state.reminders, defaults, now)
-        .into_iter()
-        .filter_map(|note| {
-            if note.insistence != taskboard_domain::Insistence::Alarm {
-                return None;
-            }
-            // An alarm-insistent payload is always alarm-anchored (the
-            // implicit default reminder is always `Normal`, D-I3) —
-            // unreachable by derivation, total by the filter_map.
-            let taskboard_domain::ReminderAnchor::Alarm(alarm) = note.anchor else {
-                return None;
-            };
-            Some(AlarmRow {
-                alarm,
-                reminder: note.reminder,
-                occurrence: note.occurrence,
-                title: note.title,
-            })
+    taskboard_domain::active_notifications(
+        &state.tasks,
+        &state.tracking,
+        &state.reminders,
+        defaults,
+        now,
+    )
+    .into_iter()
+    .filter_map(|note| {
+        if note.insistence != taskboard_domain::Insistence::Alarm {
+            return None;
+        }
+        // An alarm-insistent payload is always alarm-anchored (the
+        // implicit default reminder is always `Normal`, D-I3) —
+        // unreachable by derivation, total by the filter_map.
+        let taskboard_domain::ReminderAnchor::Alarm(alarm) = note.anchor else {
+            return None;
+        };
+        Some(AlarmRow {
+            alarm,
+            reminder: note.reminder,
+            occurrence: note.occurrence,
+            title: note.title,
         })
-        .collect()
+    })
+    .collect()
 }
 
 /// The open/closed predicate: open iff the awaiting set is not empty.
@@ -2729,8 +2759,8 @@ mod tests {
                         prop_assert!(state.reminders.rules.values().any(|r| r.task == row.task));
                     }
                     ReminderRef::Default(task) => prop_assert_eq!(task, row.task),
-                    ReminderRef::Adhoc(_) => {
-                        panic!("banner rows never carry alarm refs");
+                    ReminderRef::Adhoc(_) | ReminderRef::Break(_) => {
+                        panic!("banner rows never carry alarm or break refs");
                     }
                 }
             }

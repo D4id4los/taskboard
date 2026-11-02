@@ -70,6 +70,11 @@ local_id!(
     AdhocAlarmId
 );
 local_id!(
+    /// Local identity of a break rule (`UUIDv7`, generated client-side;
+    /// device-local — never synced, the `AdhocAlarmId` precedent).
+    BreakRuleId
+);
+local_id!(
     /// Local identity of a recurring series (`UUIDv7`, minted
     /// client-side; stable across the whole occurrence chain).
     SeriesId
@@ -283,6 +288,9 @@ mod tests {
             let alarm = AdhocAlarmId::from_uuid(raw);
             prop_assert_eq!(alarm.as_uuid(), raw);
             prop_assert_eq!(alarm, AdhocAlarmId::from(raw));
+            let break_rule = BreakRuleId::from_uuid(raw);
+            prop_assert_eq!(break_rule.as_uuid(), raw);
+            prop_assert_eq!(break_rule, BreakRuleId::from(raw));
             let entry = TimeEntryId::from_uuid(raw);
             prop_assert_eq!(entry.as_uuid(), raw);
             prop_assert_eq!(entry, TimeEntryId::from(raw));

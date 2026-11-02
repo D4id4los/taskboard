@@ -257,10 +257,16 @@ pub(crate) fn awaiting_alarms(
     defaults: &ReminderDefaults,
     now: DateTime<Utc>,
 ) -> Vec<Notification> {
-    taskboard_domain::active_notifications(&state.tasks, &state.reminders, defaults, now)
-        .into_iter()
-        .filter(|note| note.insistence == Insistence::Alarm)
-        .collect()
+    taskboard_domain::active_notifications(
+        &state.tasks,
+        &state.tracking,
+        &state.reminders,
+        defaults,
+        now,
+    )
+    .into_iter()
+    .filter(|note| note.insistence == Insistence::Alarm)
+    .collect()
 }
 
 // -- the pure ladder (D-I9) -------------------------------------------

@@ -372,6 +372,8 @@ mod tests {
                     ReminderRef::Rule(id) => prop_assert!(state.rules.contains_key(&id)),
                     ReminderRef::Default(task) => prop_assert!(tasks.contains_key(&task)),
                     ReminderRef::Adhoc(id) => prop_assert!(state.alarms.contains_key(&id)),
+                    // The fixture mints no break rules.
+                    ReminderRef::Break(id) => prop_assert!(state.break_rules.contains_key(&id)),
                 }
             }
             for dismissal in &state.dismissals {
@@ -379,6 +381,8 @@ mod tests {
                     ReminderRef::Rule(id) => prop_assert!(state.rules.contains_key(&id)),
                     ReminderRef::Default(task) => prop_assert!(tasks.contains_key(&task)),
                     ReminderRef::Adhoc(id) => prop_assert!(state.alarms.contains_key(&id)),
+                    // The fixture mints no break rules.
+                    ReminderRef::Break(id) => prop_assert!(state.break_rules.contains_key(&id)),
                 }
             }
             for key in state.snoozes.keys() {
@@ -386,6 +390,8 @@ mod tests {
                     ReminderRef::Rule(id) => prop_assert!(state.rules.contains_key(&id)),
                     ReminderRef::Default(task) => prop_assert!(tasks.contains_key(&task)),
                     ReminderRef::Adhoc(id) => prop_assert!(state.alarms.contains_key(&id)),
+                    // The fixture mints no break rules.
+                    ReminderRef::Break(id) => prop_assert!(state.break_rules.contains_key(&id)),
                 }
             }
             for task in &state.muted {

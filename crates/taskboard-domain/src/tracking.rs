@@ -236,8 +236,34 @@ pub fn work_in_window<'a>(
 /// fallible mint is the command-layer trust boundary — a zero or
 /// negative threshold can never enter a row (it would fire immediately
 /// and permanently).
+///
+/// Serde keeps the derived chrono tuple wire shape
+/// (`(seconds, nanoseconds)`) but mints through [`WorkThreshold::try_new`]:
+/// a corrupt tuple is a data error, never a clamped value (the
+/// `ReminderOffset` precedent — every persistence lane stores whole
+/// seconds, so the evaluated and persisted forms can never diverge).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct WorkThreshold(chrono::TimeDelta);
+
+impl Serialize for WorkThreshold {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        <(i64, i32) as Serialize>::serialize(
+            &(self.0.num_seconds(), self.0.subsec_nanos()),
+            serializer,
+        )
+    }
+}
+
+impl<'de> Deserialize<'de> for WorkThreshold {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let (secs, nanos) = <(i64, i32) as Deserialize>::deserialize(deserializer)?;
+        let nanos =
+            u32::try_from(nanos).map_err(|_| serde::de::Error::custom("invalid work threshold"))?;
+        let dur = chrono::TimeDelta::new(secs, nanos)
+            .ok_or_else(|| serde::de::Error::custom("TimeDelta out of bounds"))?;
+        Self::try_new(dur).map_err(|_| serde::de::Error::custom("invalid work threshold"))
+    }
+}
 
 /// The threshold predicate failed (≤ 0 or sub-second).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]

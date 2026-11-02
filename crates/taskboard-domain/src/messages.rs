@@ -303,6 +303,27 @@ pub enum StateCommand {
         /// The alarm to cancel.
         alarm: crate::ids::AdhocAlarmId,
     },
+    /// Create a break rule: fires when accumulated tracked work since
+    /// the last respite-marked entry reaches the threshold (issue
+    /// #495). Device-local — no sync op, no sidecar section. The
+    /// threshold rides the mint: a zero or negative value is
+    /// unrepresentable in the payload.
+    CreateBreakRule {
+        /// The notification title.
+        label: String,
+        /// The accumulated-work threshold.
+        threshold: crate::tracking::WorkThreshold,
+        /// How loudly the reminder insists (stamped at creation).
+        insistence: crate::reminders::Insistence,
+    },
+    /// Remove the named break rule (its deliveries, dismissals, and
+    /// snooze links are pruned by the persistence cascade). An unknown
+    /// id is a typed rejection — cancel deletes the row, so a repeat
+    /// targets nothing (the `CancelAdhocAlarm` law).
+    DeleteBreakRule {
+        /// The rule to remove.
+        id: crate::ids::BreakRuleId,
+    },
     /// Start tracking the named live task: every open entry closes at the
     /// engine-stamped `now` (the single-global intent — starting anywhere
     /// stops what any device left running), a fresh open entry is minted

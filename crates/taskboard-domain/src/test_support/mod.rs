@@ -108,6 +108,10 @@ impl IdGenerator for CountingIds {
         AdhocAlarmId::from(Uuid::from_u128(self.next()))
     }
 
+    fn new_break_rule_id(&self) -> crate::ids::BreakRuleId {
+        crate::ids::BreakRuleId::from(Uuid::from_u128(self.next()))
+    }
+
     fn new_label_id(&self) -> LabelId {
         LabelId::from(Uuid::from_u128(self.next()))
     }

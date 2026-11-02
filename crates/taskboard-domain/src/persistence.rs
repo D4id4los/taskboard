@@ -251,6 +251,12 @@ pub enum PersistenceAction {
     /// snooze links** (the `DeleteReminderRule` cascade shape):
     /// nothing can re-fire from a pruned map row.
     DeleteAdhocAlarm(crate::ids::AdhocAlarmId),
+    /// Insert or replace a break rule.
+    UpsertBreakRule(crate::reminders::BreakRule),
+    /// Remove a break rule **and prune its `Break`-ref deliveries,
+    /// dismissals, and snooze links** (the `remove_break_rule` cascade
+    /// shape): nothing can re-fire from a pruned map row.
+    DeleteBreakRule(crate::ids::BreakRuleId),
     /// Insert or replace a time entry.
     UpsertTimeEntry(crate::tracking::TimeEntry),
     /// Remove a time entry (the storage/roaming chunk derives the wire
@@ -386,6 +392,12 @@ pub fn apply_actions(state: &mut PersistedState, actions: &[PersistenceAction]) 
             }
             PersistenceAction::DeleteAdhocAlarm(id) => {
                 crate::reminders::remove_alarm(&mut state.reminders, *id);
+            }
+            PersistenceAction::UpsertBreakRule(rule) => {
+                state.reminders.break_rules.insert(rule.id, rule.clone());
+            }
+            PersistenceAction::DeleteBreakRule(id) => {
+                crate::reminders::remove_break_rule(&mut state.reminders, *id);
             }
             PersistenceAction::UpsertTimeEntry(entry) => {
                 state.tracking.entries.insert(entry.id, entry.clone());
@@ -1725,7 +1737,7 @@ mod tests {
         ) {
             let defaults = crate::reminders::ReminderDefaults { default_before: offset };
             let target = now + chrono::TimeDelta::try_minutes(10).unwrap();
-            let f1 = crate::reminders::due_firings(&app, &reminders, &defaults, now);
+            let f1 = crate::reminders::due_firings(&app, &crate::tracking::TrackingState::default(), &reminders, &defaults, now);
             let mut actions = Vec::new();
             let mut batch_snoozed = std::collections::BTreeSet::new();
             for (i, f) in f1.iter().enumerate() {
@@ -1763,7 +1775,7 @@ mod tests {
             let settled = &state.reminders;
 
             // (a) nothing fires again at `now`...
-            let f2 = crate::reminders::due_firings(&app, settled, &defaults, now);
+            let f2 = crate::reminders::due_firings(&app, &crate::tracking::TrackingState::default(), settled, &defaults, now);
             prop_assert!(f2.is_empty(), "settled occurrences must not refire");
             // (b) reminders THIS batch snoozed stay quiet below their
             // (now + 10 m) target. Only the batch's own links qualify as
@@ -1772,7 +1784,7 @@ mod tests {
             // target is legal (P7) — a reminder-identity proxy over all
             // links would forbid that legal fire.
             let probe = now + chrono::TimeDelta::try_minutes(9).unwrap();
-            let at_probe = crate::reminders::due_firings(&app, settled, &defaults, probe);
+            let at_probe = crate::reminders::due_firings(&app, &crate::tracking::TrackingState::default(), settled, &defaults, probe);
             prop_assert!(
                 at_probe
                     .iter()
@@ -1781,11 +1793,12 @@ mod tests {
             );
             // (c) muted tasks contribute zero task firings.
             let fired_tasks: std::collections::BTreeSet<_> =
-                crate::reminders::due_firings(&app, settled, &defaults, now + chrono::TimeDelta::try_minutes(20).unwrap())
+                crate::reminders::due_firings(&app, &crate::tracking::TrackingState::default(), settled, &defaults, now + chrono::TimeDelta::try_minutes(20).unwrap())
                     .into_iter()
                     .filter_map(|f| match f.anchor {
                         crate::reminders::ReminderAnchor::Task(t) => Some(t),
-                        crate::reminders::ReminderAnchor::Alarm(_) => None,
+                        crate::reminders::ReminderAnchor::Alarm(_)
+                        | crate::reminders::ReminderAnchor::Break(_) => None,
                     })
                     .collect();
             prop_assert!(fired_tasks.iter().all(|t| !settled.muted.contains(t)));
@@ -1825,15 +1838,15 @@ mod tests {
                 ..PersistedState::default()
             };
             apply_actions(&mut normalized, &[]);
-            let got_plain = crate::reminders::due_firings(&app, &reminders, &defaults, now);
+            let got_plain = crate::reminders::due_firings(&app, &crate::tracking::TrackingState::default(), &reminders, &defaults, now);
             let got_compacted =
-                crate::reminders::due_firings(&app, &normalized.reminders, &defaults, now);
+                crate::reminders::due_firings(&app, &crate::tracking::TrackingState::default(), &normalized.reminders, &defaults, now);
             prop_assert_eq!(got_plain, got_compacted);
             // The second reader (the resurrection hole): the in-app
             // surface must be equally untouched by the post-pass.
             prop_assert_eq!(
-                crate::reminders::active_notifications(&app, &reminders, &defaults, now),
-                crate::reminders::active_notifications(&app, &normalized.reminders, &defaults, now),
+                crate::reminders::active_notifications(&app, &crate::tracking::TrackingState::default(), &reminders, &defaults, now),
+                crate::reminders::active_notifications(&app, &crate::tracking::TrackingState::default(), &normalized.reminders, &defaults, now),
                 "compaction never changes the active surface",
             );
         }
@@ -1865,12 +1878,12 @@ mod tests {
             };
             apply_actions(&mut normalized, &[]);
             prop_assert_eq!(
-                crate::reminders::due_firings(&app, &dirty, &defaults, now),
-                crate::reminders::due_firings(&app, &normalized.reminders, &defaults, now)
+                crate::reminders::due_firings(&app, &crate::tracking::TrackingState::default(), &dirty, &defaults, now),
+                crate::reminders::due_firings(&app, &crate::tracking::TrackingState::default(), &normalized.reminders, &defaults, now)
             );
             prop_assert_eq!(
-                crate::reminders::active_notifications(&app, &dirty, &defaults, now),
-                crate::reminders::active_notifications(&app, &normalized.reminders, &defaults, now),
+                crate::reminders::active_notifications(&app, &crate::tracking::TrackingState::default(), &dirty, &defaults, now),
+                crate::reminders::active_notifications(&app, &crate::tracking::TrackingState::default(), &normalized.reminders, &defaults, now),
                 "compaction never changes the active surface",
             );
         }
@@ -1884,12 +1897,12 @@ mod tests {
         ) {
             let defaults = crate::reminders::ReminderDefaults { default_before: offset };
             let due_before: std::collections::BTreeSet<_> =
-                crate::reminders::due_firings(&app, &reminders, &defaults, now)
+                crate::reminders::due_firings(&app, &crate::tracking::TrackingState::default(), &reminders, &defaults, now)
                     .into_iter()
                     .map(|f| (f.reminder, f.occurrence))
                     .collect();
             let active_before: std::collections::BTreeSet<_> =
-                crate::reminders::active_notifications(&app, &reminders, &defaults, now)
+                crate::reminders::active_notifications(&app, &crate::tracking::TrackingState::default(), &reminders, &defaults, now)
                     .into_iter()
                     .map(|n| (n.reminder, n.occurrence))
                     .collect();
@@ -1899,12 +1912,12 @@ mod tests {
             };
             apply_actions(&mut after, &[]);
             let due_after: std::collections::BTreeSet<_> =
-                crate::reminders::due_firings(&app, &after.reminders, &defaults, now)
+                crate::reminders::due_firings(&app, &crate::tracking::TrackingState::default(), &after.reminders, &defaults, now)
                     .into_iter()
                     .map(|f| (f.reminder, f.occurrence))
                     .collect();
             let active_after: std::collections::BTreeSet<_> =
-                crate::reminders::active_notifications(&app, &after.reminders, &defaults, now)
+                crate::reminders::active_notifications(&app, &crate::tracking::TrackingState::default(), &after.reminders, &defaults, now)
                     .into_iter()
                     .map(|n| (n.reminder, n.occurrence))
                     .collect();
@@ -2018,7 +2031,14 @@ mod tests {
         let app: AppState = state.clone().into();
         let defaults = crate::reminders::ReminderDefaults::default();
         assert_eq!(
-            crate::reminders::due_firings(&app.tasks, &state.reminders, &defaults, ts(500)).len(),
+            crate::reminders::due_firings(
+                &app.tasks,
+                &state.tracking,
+                &state.reminders,
+                &defaults,
+                ts(500)
+            )
+            .len(),
             1
         );
         // ...and never after it: the batch `CancelAdhocAlarm` plans is
@@ -2037,8 +2057,13 @@ mod tests {
         );
         for now in [499, 500, 9_000, 10_000] {
             let app: AppState = state.clone().into();
-            let firings =
-                crate::reminders::due_firings(&app.tasks, &state.reminders, &defaults, ts(now));
+            let firings = crate::reminders::due_firings(
+                &app.tasks,
+                &state.tracking,
+                &state.reminders,
+                &defaults,
+                ts(now),
+            );
             assert!(
                 firings
                     .iter()
@@ -2177,6 +2202,7 @@ mod tests {
             assert!(
                 crate::reminders::due_firings(
                     &app.tasks,
+                    &state.tracking,
                     &state.reminders,
                     &crate::reminders::ReminderDefaults::default(),
                     ts(now)
@@ -2229,6 +2255,7 @@ mod tests {
         assert_eq!(
             crate::reminders::active_notifications(
                 &app.tasks,
+                &state.tracking,
                 &state.reminders,
                 &defaults,
                 ts(1_000)
@@ -2258,6 +2285,7 @@ mod tests {
         assert_eq!(
             crate::reminders::active_notifications(
                 &app.tasks,
+                &state.tracking,
                 &state.reminders,
                 &defaults,
                 ts(1_500)
@@ -2281,6 +2309,7 @@ mod tests {
         assert_eq!(
             crate::reminders::active_notifications(
                 &app.tasks,
+                &state.tracking,
                 &state.reminders,
                 &defaults,
                 ts(2_000)
@@ -2313,6 +2342,7 @@ mod tests {
             assert!(
                 crate::reminders::active_notifications(
                     &app.tasks,
+                    &state.tracking,
                     &state.reminders,
                     &defaults,
                     ts(now)
@@ -2371,6 +2401,7 @@ mod tests {
         assert_eq!(
             crate::reminders::due_firings(
                 &app.tasks,
+                &state.tracking,
                 &state.reminders,
                 &crate::reminders::ReminderDefaults::default(),
                 ts(1_500),
@@ -2400,6 +2431,7 @@ mod tests {
         assert_eq!(
             crate::reminders::active_notifications(
                 &app.tasks,
+                &state.tracking,
                 &state.reminders,
                 &crate::reminders::ReminderDefaults::default(),
                 ts(2_000),
@@ -2445,16 +2477,16 @@ mod tests {
             let mut pruned = reminders.clone();
             crate::reminders::prune_settled_alarms(&mut pruned);
             prop_assert_eq!(
-                crate::reminders::due_firings(&app, &reminders, &defaults, now),
-                crate::reminders::due_firings(&app, &pruned, &defaults, now),
+                crate::reminders::due_firings(&app, &crate::tracking::TrackingState::default(), &reminders, &defaults, now),
+                crate::reminders::due_firings(&app, &crate::tracking::TrackingState::default(), &pruned, &defaults, now),
                 "the prune never changes what fires",
             );
             // The second reader: a settled (delivered ∧ dismissed)
             // alarm contributes no active row, so removing it cannot
             // change the surface.
             prop_assert_eq!(
-                crate::reminders::active_notifications(&app, &reminders, &defaults, now),
-                crate::reminders::active_notifications(&app, &pruned, &defaults, now),
+                crate::reminders::active_notifications(&app, &crate::tracking::TrackingState::default(), &reminders, &defaults, now),
+                crate::reminders::active_notifications(&app, &crate::tracking::TrackingState::default(), &pruned, &defaults, now),
                 "the prune never changes the active surface",
             );
         }

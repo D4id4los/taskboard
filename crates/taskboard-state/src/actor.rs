@@ -1219,6 +1219,7 @@ async fn reminder_tick(
     // `now` advances).
     let stale = taskboard_domain::reminders::stale_deliveries(
         core.tasks(),
+        core.tracking(),
         core.reminders(),
         &cfg.defaults,
         now,

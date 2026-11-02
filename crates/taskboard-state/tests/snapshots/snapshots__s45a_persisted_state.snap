@@ -51,6 +51,7 @@ reminders:
   snoozes: {}
   muted: []
   alarms: {}
+  break_rules: {}
 tracking:
   entries: {}
 habits:

@@ -124,6 +124,7 @@ reminders:
   muted:
     - 00000000-0000-0000-0000-000000000258
   alarms: {}
+  break_rules: {}
 tracking:
   entries: {}
 habits:

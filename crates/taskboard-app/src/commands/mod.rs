@@ -606,6 +606,7 @@ fn domain_error_kind(err: &taskboard_domain::CommandError) -> &'static str {
         D::RemoteBoardInUse { .. } => "remote-board-in-use",
         D::UnknownReminderRule(_) => "unknown-reminder-rule",
         D::UnknownAdhocAlarm(_) => "unknown-adhoc-alarm",
+        D::UnknownBreakRule(_) => "unknown-break-rule",
         D::InvalidAdhocWhen => "invalid-adhoc-when",
         D::InvalidSnoozePostpone => "invalid-snooze-postpone",
         D::UnknownTimeEntry(_) => "unknown-time-entry",

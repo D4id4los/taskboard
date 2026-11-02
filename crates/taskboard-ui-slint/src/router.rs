@@ -400,7 +400,10 @@ impl ActionRouter {
                             muted: true,
                         })
                     }
-                    taskboard_domain::ReminderAnchor::Alarm(_) => DispatchOutcome::NoTarget,
+                    // Mute is task-shaped; an alarm or break anchor has
+                    // no task to mute.
+                    taskboard_domain::ReminderAnchor::Alarm(_)
+                    | taskboard_domain::ReminderAnchor::Break(_) => DispatchOutcome::NoTarget,
                 },
                 None => DispatchOutcome::NoTarget,
             },
