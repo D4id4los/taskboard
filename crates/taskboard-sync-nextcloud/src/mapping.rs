@@ -14,9 +14,9 @@ use std::collections::BTreeSet;
 use chrono::{DateTime, Utc};
 
 use taskboard_domain::{
-    CardShape, DeckFeatures, NewCardShape, PushResult, RemoteBoard, RemoteBoardId, RemoteCardRef,
-    RemoteEcho, RemoteLabel, RemoteLabelId, RemoteLabelRef, RemoteStack, RemoteStackId,
-    RemoteStackRef, RemoteTask, SyncErrorKind,
+    AppDataUnreadable, CardShape, DeckFeatures, NewCardShape, PushResult, RemoteBoard,
+    RemoteBoardId, RemoteCardRef, RemoteEcho, RemoteLabel, RemoteLabelId, RemoteLabelRef,
+    RemoteStack, RemoteStackId, RemoteStackRef, RemoteTask, SyncErrorKind,
 };
 
 use crate::client::{LabelChanges, NewCard, StackChanges};
@@ -206,6 +206,51 @@ pub fn classify_read(err: &DeckError) -> SyncErrorKind {
         // simply has to be classified for exhaustiveness.
         | DeckError::InvalidUpload
         | DeckError::InvalidBaseUrl => SyncErrorKind::Server,
+    }
+}
+
+/// Classifies an attachment-content download failure into the sidecar's
+/// typed unreadable evidence (D-S7's "Document download fails" fence row,
+/// split per issue #401). The evidence enum's `Transport` variant is the
+/// conservative default: any download outcome nothing here re-classifies
+/// stays `Transport` (self-heals by retrying) — the issue blesses that
+/// fallback. The match stays compiler-exhaustive with no wildcard arm, so
+/// a future `DeckError` variant is forced to decide here, like
+/// [`classify_push`] / [`classify_read`].
+#[must_use]
+pub fn classify_download_evidence(err: &DeckError) -> AppDataUnreadable {
+    match err {
+        // The self-healing conservative default (the issue blesses it):
+        // transport failures and exhausted retry budgets (429/503);
+        // `NotFound` — the tombstone race, where the attachment vanished
+        // between the detail scan and the content GET. Honest answer is
+        // "retry next cycle" — the next metadata scan sees the tombstone
+        // and the evidence becomes `Absent` on its own. (Not `Absent`
+        // here: that would wake the flush's rebuild arms against a
+        // vanishing carrier, forbidden by the read-modify-write fence.)
+        // The trailing pair is unreachable mid-cycle (the client is
+        // constructed once at boot) / upload-only validation.
+        DeckError::Transport(_)
+        | DeckError::RateLimited { .. }
+        | DeckError::Unavailable
+        | DeckError::NotFound
+        | DeckError::InvalidBaseUrl
+        | DeckError::InvalidUpload => AppDataUnreadable::Transport,
+        // Credentials or ACL rejected the download — retrying cannot
+        // self-heal until credentials or sharing change.
+        DeckError::Unauthorized | DeckError::Forbidden => AppDataUnreadable::AccessDenied,
+        // Persistent faults: an immediate 5xx, or 4xx rejections that
+        // are neither auth nor access — the runbook's manual-restore
+        // territory (`classify_read` maps 400 the same way).
+        DeckError::Server(_)
+        | DeckError::BadRequest
+        | DeckError::Conflict
+        | DeckError::PreconditionFailed => AppDataUnreadable::ServerFault,
+        // `send_bytes` never decodes a body, so this is unreachable on
+        // the download route today — but if the route ever gains
+        // envelope parsing, a 2xx-undecodable body is the `Decode`
+        // fence's exact subject, not a server fault.
+        DeckError::Json(_) => AppDataUnreadable::Decode,
     }
 }
 
@@ -625,6 +670,60 @@ mod tests {
             classify_read(&decode_failure),
             SyncErrorKind::Server,
             "a 2xx read whose body fails to decode is a server problem"
+        );
+    }
+
+    /// The download-evidence classification table (issue #401): one
+    /// row per `DeckError` variant, the 4xx/5xx split pinned at the
+    /// mapping boundary.
+    #[tokio::test]
+    async fn classify_download_evidence_maps_every_variant() {
+        let transport = || async {
+            DeckError::Transport(reqwest::get("http://127.0.0.1:1/").await.unwrap_err())
+        };
+        // Self-healing class: transport failures and exhausted retry
+        // budgets, plus 404 (the tombstone race — retry next cycle).
+        for err in [
+            transport().await,
+            DeckError::RateLimited { retry_after: None },
+            DeckError::Unavailable,
+            DeckError::NotFound,
+            DeckError::InvalidBaseUrl,
+            DeckError::InvalidUpload,
+        ] {
+            assert_eq!(
+                classify_download_evidence(&err),
+                AppDataUnreadable::Transport,
+                "{err:?}"
+            );
+        }
+        // Credentials/ACL rejections: fix access, not retry.
+        for err in [DeckError::Unauthorized, DeckError::Forbidden] {
+            assert_eq!(
+                classify_download_evidence(&err),
+                AppDataUnreadable::AccessDenied,
+                "{err:?}"
+            );
+        }
+        // Persistent faults: manual-restore territory.
+        for err in [
+            DeckError::Server(502),
+            DeckError::BadRequest,
+            DeckError::Conflict,
+            DeckError::PreconditionFailed,
+        ] {
+            assert_eq!(
+                classify_download_evidence(&err),
+                AppDataUnreadable::ServerFault,
+                "{err:?}"
+            );
+        }
+        // Unreachable on the byte route today; if the route ever
+        // decodes, a 2xx-undecodable body is the Decode fence.
+        let decode_failure = DeckError::Json(serde_json::from_str::<Card>("{bad").unwrap_err());
+        assert_eq!(
+            classify_download_evidence(&decode_failure),
+            AppDataUnreadable::Decode
         );
     }
 
