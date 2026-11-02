@@ -8,6 +8,24 @@ The workspace carries a single global version (see `docs/architecture.org`);
 `scripts/bump_version.sh <major|minor|patch>` cuts release entries.
 
 ## [Unreleased]
+### Fixed
+
+- Cross-board card moves no longer lose the sidecar-carried state
+  (#350): when a card moves between two boards the same connector
+  syncs, the destination board's flush now migrates the moved card's
+  document entries — the app-field family, reminder rules, and synced
+  dismissals — from the origin board's document, with the embedded
+  clocks carried over unchanged (no last-write-wins races re-open).
+  The migration survives the origin board's own background document
+  cleanup (entries evicted by the snapshot-absence GC stay available
+  as migration fuel until the repair lands), repeats harmlessly (a
+  second cycle finds nothing to migrate), and can never fail a sync:
+  a missing or unreadable sibling simply degrades to the previous
+  behavior. Still out of reach by construction: moves across servers
+  (no visibility), time-entry history (board-level by design), and a
+  concurrent edit racing the move within one poll interval;
+  convergence trails the move's adoption by one sync cycle.
+
 ### Added
 
 - Respite marking and break reminders (#493 + #495): time entries
