@@ -132,6 +132,10 @@ export component AppWindow inherits Window {
     // The task.create binding hint for the add-task ghost tooltips
     // (r3 D3).
     in-out property <[string]> task-create-hint;
+    // The task view's done/tracking header hints (r4 D16b/D16c;
+    // keymap projections pushed per refresh).
+    in-out property <[string]> task-done-hint;
+    in-out property <[string]> task-track-hint;
     in-out property <View> current-view: View.board;
     // The settings seams (round-1 chunk 3, D6.6/D7/D9).
     callback settings-back-clicked();
@@ -347,6 +351,8 @@ export component AppWindow inherits Window {
             if (root.current-view == View.task-detail): TaskView {
                 task: root.task-model;
                 nav-back-hint: root.nav-back-hint;
+                task-done-hint: root.task-done-hint;
+                task-track-hint: root.task-track-hint;
                 title-committed(t) => root.task-title-committed(t);
                 title-edited(t) => root.task-title-edited(t);
                 title-edit-opened() => root.task-title-edit-activated();
@@ -365,6 +371,7 @@ export component AppWindow inherits Window {
                 date-picker-toggled() => root.task-date-picker-toggled();
                 task-track-start-clicked() => root.task-track-start-clicked();
                 task-track-stop-clicked() => root.task-track-stop-clicked();
+                task-done-toggled() => root.task-done-toggled();
             }
 
             // The board create/rename fields (r2 D21): the
@@ -838,6 +845,10 @@ export component AppWindow inherits Window {
     pure callback tracking-chip-stop-clicked();
     pure callback task-track-start-clicked();
     pure callback task-track-stop-clicked();
+    // The task view's done checkbox (r4 D16b): raw-sends the toggled
+    // SetTaskDone over the view's subject (not the registry route —
+    // the subject is not guaranteed focused).
+    pure callback task-done-toggled();
     // The timers surface (DR-3/3, D-I8): create dispatches
     // TimerCreate from the parsed draft; cancel dispatches
     // TimerCancel from the row table; the chip click focuses today.

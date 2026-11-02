@@ -1343,6 +1343,210 @@ fn the_seconds_gate_stays_false_on_kiosk() {
     });
 }
 
+// -- the task view's header seams (r4 D16b/D16c) ------------------------
+
+/// Enters the task detail on `task` through the production path
+/// (activate + focused + the forced derive; the #463 rule).
+fn mount_task_detail(
+    rig: &Rig,
+    adapter: &std::rc::Rc<std::cell::RefCell<crate::adapter::Adapter>>,
+    task: TaskId,
+    stack: StackId,
+) {
+    let mut a = adapter.borrow_mut();
+    a.refresh_forced(rig.handle.window());
+    a.view_state.activate_card(task, stack);
+    a.view_state
+        .activate_focused(&rig.handle.test_state().load_full());
+    a.refresh_forced(rig.handle.window());
+}
+
+/// The boundary commands drained as values (the `drain` count's twin
+/// — the header seams' dispatch pins assert the exact commands).
+fn drained_commands(rig: &mut Rig) -> Vec<StateCommand> {
+    let mut out = Vec::new();
+    while let Ok(command) = rig.commands_rx.try_recv() {
+        out.push(command);
+    }
+    out
+}
+
+/// A3 — the view checkbox raw-sends the toggled `SetTaskDone` over the
+/// SUBJECT, both directions, and under a mis-focused board the
+/// command still names the subject (the raw-send rationale: the
+/// registry's complete/reopen act on the focused task; the checkbox
+/// must not).
+#[test]
+fn the_done_checkbox_sends_the_toggled_command_over_the_subject() {
+    on_slint_thread(|| {
+        let (state, fx) = fixture();
+        let mut rig = rig(state);
+        let adapter = rig.adapter();
+        let [a_id, b_id, _c] = fx.tasks;
+        let [s0, _s1] = fx.stacks;
+        mount_task_detail(&rig, &adapter, a_id, s0);
+
+        // Open subject: exactly one command, done: true, naming the
+        // subject.
+        rig.handle.window().invoke_task_done_toggled();
+        let drained = drained_commands(&mut rig);
+        assert!(
+            matches!(
+                drained.as_slice(),
+                [StateCommand::SetTaskDone { id, done: true }] if *id == a_id
+            ),
+            "the open subject's checkbox toggles done, got {drained:?}"
+        );
+
+        // Done subject: the inverse command. The checkbox holds no
+        // local state — the engine-side done fact decides.
+        {
+            let mut s = (*rig.handle.test_state().load_full()).clone();
+            let t = s.tasks.get_mut(&a_id).expect("task");
+            t.done = Some(chrono::Utc::now());
+            rig.handle.test_state().store(Arc::new(s));
+            adapter.borrow_mut().refresh_forced(rig.handle.window());
+        }
+        rig.handle.window().invoke_task_done_toggled();
+        let drained = drained_commands(&mut rig);
+        assert!(
+            matches!(
+                drained.as_slice(),
+                [StateCommand::SetTaskDone { id, done: false }] if *id == a_id
+            ),
+            "the done subject's checkbox toggles undone, got {drained:?}"
+        );
+
+        // Subject-addressing pin (D-TU5's shape): focus on ANOTHER
+        // card while the subject stays — the command must still name
+        // the subject, never the focused task.
+        {
+            let mut a = adapter.borrow_mut();
+            a.view_state.activate_card(b_id, s0);
+            a.refresh_forced(rig.handle.window());
+        }
+        rig.handle.window().invoke_task_done_toggled();
+        let drained = drained_commands(&mut rig);
+        assert!(
+            matches!(
+                drained.as_slice(),
+                [StateCommand::SetTaskDone { id, .. }] if *id == a_id
+            ),
+            "the checkbox addresses the subject, not the focus, got {drained:?}"
+        );
+    });
+}
+
+/// A4 — the moved header tracking buttons route their exact old
+/// commands over the subject (the move is markup-only; the seams
+/// follow the button).
+#[test]
+fn the_header_tracking_buttons_route_their_registry_commands() {
+    on_slint_thread(|| {
+        let (state, fx) = fixture();
+        let mut rig = rig(state);
+        let adapter = rig.adapter();
+        let [a_id, _b, _c] = fx.tasks;
+        let [s0, _s1] = fx.stacks;
+        mount_task_detail(&rig, &adapter, a_id, s0);
+
+        rig.handle.window().invoke_task_track_start_clicked();
+        let drained = drained_commands(&mut rig);
+        assert!(
+            matches!(
+                drained.as_slice(),
+                [StateCommand::StartTracking { task }] if *task == a_id
+            ),
+            "Start routes StartTracking over the subject, got {drained:?}"
+        );
+
+        rig.handle.window().invoke_task_track_stop_clicked();
+        let drained = drained_commands(&mut rig);
+        assert!(
+            matches!(drained.as_slice(), [StateCommand::StopTracking]),
+            "Stop routes StopTracking, got {drained:?}"
+        );
+    });
+}
+
+/// J4's harness-level pin — the header hint projections: empty while
+/// the task view is mounted under a keymap that binds neither verb in
+/// the TaskDetail-visible chain (the standard preset binds
+/// `task.complete` at Board/Today only); non-empty once the verbs are
+/// bound — vi carries `task.complete` in `ViNormal` (chain-visible at
+/// `TaskDetail`) and the `task.track-start` override is an add-new,
+/// landing in Global. Label content is never asserted.
+#[test]
+fn the_header_hint_projections_follow_the_mounted_verb() {
+    on_slint_thread(|| {
+        let (state, fx) = fixture();
+        let [a_id, _b, _c] = fx.tasks;
+        let [s0, _s1] = fx.stacks;
+
+        // Mounted, unbound verbs: both projections empty (the
+        // established empty-hint rendering).
+        let rig = rig(state);
+        let adapter = rig.adapter();
+        mount_task_detail(&rig, &adapter, a_id, s0);
+        assert_eq!(rig.handle.window().get_task_done_hint().row_count(), 0);
+        assert_eq!(rig.handle.window().get_task_track_hint().row_count(), 0);
+    });
+
+    on_slint_thread(|| {
+        // Bound verbs: both projections non-empty. The vi preset
+        // binds the done verb in ViNormal, chain-visible at the task
+        // detail; the track override is an add-new (Global).
+        let raw = crate::keymap::RawKeymap {
+            preset: crate::keymap::Preset::Vi,
+            overrides: BTreeMap::from([(
+                "task.track-start".to_owned(),
+                vec![vec!["Ctrl+Shift+t".to_owned()]],
+            )]),
+        };
+        let built = crate::keymap::build(&raw);
+        assert!(
+            built.findings.is_empty(),
+            "the synthetic binding survives validation"
+        );
+        let (state, fx) = fixture();
+        let [a_id, _b, _c] = fx.tasks;
+        let [s0, _s1] = fx.stacks;
+        let state = Arc::new(arc_swap::ArcSwap::from_pointee(state));
+        let (commands_tx, commands_rx) = mpsc::channel(64);
+        let (requests_tx, _requests_rx) = mpsc::channel(16);
+        let (_health_tx, health) =
+            tokio::sync::watch::channel(crate::presentation::DeliveryHealth::default());
+        let handle = mount(
+            state,
+            dummy_receiver(),
+            dummy_receiver(),
+            commands_tx,
+            requests_tx,
+            UiSettings {
+                keymap: built.keymap,
+                keymap_preset: crate::keymap::Preset::Vi,
+                ..UiSettings::default()
+            },
+            health,
+        )
+        .expect("mount succeeds on the null platform");
+        let rig = Rig {
+            handle,
+            commands_rx,
+        };
+        let adapter = rig.adapter();
+        mount_task_detail(&rig, &adapter, a_id, s0);
+        assert!(
+            rig.handle.window().get_task_done_hint().row_count() > 0,
+            "vi binds the done verb in the TaskDetail-visible chain"
+        );
+        assert!(
+            rig.handle.window().get_task_track_hint().row_count() > 0,
+            "the override binds the tracking verb (add-new lands in Global)"
+        );
+    });
+}
+
 /// T4 — the guarded skip's cheap tail still pushes the settings
 /// liveness: a connector episode flips the row's status enum without a
 /// derive pass.
