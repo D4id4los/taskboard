@@ -692,6 +692,100 @@ pub fn prune_settled_alarms(reminders: &mut ReminderState) {
     }
 }
 
+/// Age horizon for the delivery-proof sweep ([`stale_deliveries`]): an
+/// occurrence older than this is prunable once no reader consults its
+/// row. One definition site, deliberately not a config knob — issue
+/// #201 gates tuning on deployment table-size evidence that does not
+/// exist yet; a fixed literal cannot fail, so there is no fallible
+/// ceremony beyond the representability assert.
+/// # Panics
+/// Never: 90 days is within the representable range of `TimeDelta`
+/// (checked construction; the `expect` documents the invariant).
+#[must_use]
+pub fn delivery_prune_age() -> chrono::TimeDelta {
+    chrono::TimeDelta::try_days(90).expect("90 days is representable")
+}
+
+/// Delivery rows the evaluator can no longer consult whose occurrence is
+/// older than `horizon` — the engine's prune emission set (issue #201:
+/// a long-lived live task with a moving due date accumulates one row per
+/// re-arm forever; this sweep bounds the set). A row `(r, O)` is
+/// returned iff
+///
+/// - **age**: `O < now − horizon` — measured on the occurrence against a
+///   live cutoff, not on the row's birth: on-time fires have birth-age
+///   ≈ 0, so a birth-age rule would never prune the rows this sweep
+///   exists for, and
+/// - **unconsulted**: no reader output changes if the row vanishes.
+///   Both [`due_firings`] and [`active_notifications`] consult a
+///   delivery row only at `(reminder, current effective occurrence)`
+///   behind the eligibility gates — so unconsulted is exactly: the
+///   anchor fails its gates (missing/dead task, done, undated, muted;
+///   missing alarm row) **or** the current effective occurrence differs
+///   from `O`. A consulted row is never returned: the live occurrence's
+///   receipt survives unconditionally (the at-most-once guard).
+///
+/// Pure in `(state, now)` — the caller owns the clock read. With state
+/// fixed the returned set only grows as `now` advances (the age test
+/// only widens), which the engine's re-sweep-every-tick failure
+/// discipline rests on.
+#[must_use]
+pub fn stale_deliveries(
+    tasks: &BTreeMap<TaskId, Task>,
+    reminders: &ReminderState,
+    defaults: &ReminderDefaults,
+    now: DateTime<Utc>,
+    horizon: chrono::TimeDelta,
+) -> BTreeSet<ReminderDelivery> {
+    let unconsulted = |delivery: &ReminderDelivery| match delivery.reminder {
+        ReminderRef::Adhoc(id) => {
+            alarm_occurrence(reminders, id).is_none_or(|eff| eff != delivery.occurrence)
+        }
+        ReminderRef::Rule(id) => {
+            let task_id = reminders.rules.get(&id).map(|rule| rule.task);
+            unconsulted_task(delivery, task_id, tasks, reminders, defaults)
+        }
+        ReminderRef::Default(task_id) => {
+            unconsulted_task(delivery, Some(task_id), tasks, reminders, defaults)
+        }
+    };
+    let Some(cutoff) = now.checked_sub_signed(horizon) else {
+        // The cutoff underflows the representable range: nothing can be
+        // older than it.
+        return BTreeSet::new();
+    };
+    reminders
+        .deliveries
+        .iter()
+        .filter(|d| d.occurrence < cutoff)
+        .filter(|d| unconsulted(d))
+        .copied()
+        .collect()
+}
+
+/// The task-anchor half of the unconsulted test: the anchor must still
+/// resolve to a live, open, due-dated, unmuted task whose current
+/// effective occurrence is the row's occurrence (the [`due_firings`]
+/// gate parity). Any miss ⇒ the row is unconsulted.
+fn unconsulted_task(
+    delivery: &ReminderDelivery,
+    task_id: Option<TaskId>,
+    tasks: &BTreeMap<TaskId, Task>,
+    reminders: &ReminderState,
+    defaults: &ReminderDefaults,
+) -> bool {
+    let Some(task_id) = task_id else {
+        return true;
+    };
+    let Some(task) = tasks.get(&task_id) else {
+        return true;
+    };
+    if !is_remindable(task) || reminders.muted.contains(&task_id) {
+        return true;
+    }
+    reminders.effective_occurrence(&delivery.reminder, tasks, defaults) != Some(delivery.occurrence)
+}
+
 /// The instant an explicit rule fires at, given the task's current
 /// due date. `None` ⇔ no due date, or a fire instant outside the
 /// representable range (the evaluator is total on arbitrary input).
@@ -1398,7 +1492,8 @@ mod tests {
                         updated_at: now,
                     };
                     let r = ReminderRef::Rule(rule.id);
-                    reminders.rules.insert(rule.id, rule);
+                    let rule_id = rule.id;
+        reminders.rules.insert(rule_id, rule);
                     r
                 }
                 1 => ReminderRef::Default(task.id),
@@ -1605,6 +1700,249 @@ mod tests {
         }
     }
 
+    // ---- Stale-delivery sweep (issue #201) -----------------------------
+
+    fn horizon() -> chrono::TimeDelta {
+        chrono::TimeDelta::try_days(90).expect("90 days is representable")
+    }
+
+    fn rule_for(id: u128, task_id: TaskId, offset: ReminderOffset) -> ReminderRule {
+        ReminderRule {
+            insistence: Insistence::Normal,
+            id: ReminderRuleId::from(uuid::Uuid::from_u128(id)),
+            task: task_id,
+            offset,
+            created_at: ts(100),
+            updated_at: ts(100),
+        }
+    }
+
+    fn delivery_at(reminder: ReminderRef, occurrence: DateTime<Utc>) -> ReminderDelivery {
+        ReminderDelivery {
+            reminder,
+            occurrence,
+            delivered_at: occurrence,
+        }
+    }
+
+    /// P-A (the loop-guard pin): a stale *on-chain* delivery — task due
+    /// far in the past, fired, never dismissed, due date unmoved — is
+    /// NOT returned. Its row is the consulted receipt; pruning it would
+    /// re-open the fire gate every tick (the §3 loop of the plan).
+    #[test]
+    fn a_consulted_stale_delivery_is_never_stale() {
+        let now = ts(1_000 + 100 * 86_400); // occurrence ~100 days old
+        let task = live_task(1, Some(ts(1_000)), 0);
+        let rule = rule_for(10, task.id, ReminderOffset::at_due());
+        let tasks = BTreeMap::from([(task.id, task)]);
+        let mut reminders = ReminderState::default();
+        let rule_id = rule.id;
+        reminders.rules.insert(rule_id, rule);
+        let delivery = delivery_at(ReminderRef::Rule(rule_id), ts(1_000));
+        reminders.deliveries.insert(delivery);
+
+        let stale = stale_deliveries(
+            &tasks,
+            &reminders,
+            &ReminderDefaults::default(),
+            now,
+            horizon(),
+        );
+        assert!(!stale.contains(&delivery), "the consulted receipt survives");
+    }
+
+    /// P-B: a stale *off-chain* delivery — occurrence beyond the
+    /// horizon, due date since moved so the row is no longer the
+    /// consulted one — IS returned.
+    #[test]
+    fn an_unconsulted_stale_delivery_is_stale() {
+        let now = ts(100 * 86_400);
+        // Due date has moved 100 days forward: the old occurrence is off-chain.
+        let task = live_task(1, Some(ts(100 * 86_400)), 0);
+        let rule = rule_for(10, task.id, ReminderOffset::at_due());
+        let tasks = BTreeMap::from([(task.id, task)]);
+        let mut reminders = ReminderState::default();
+        let rule_id = rule.id;
+        reminders.rules.insert(rule_id, rule);
+        let delivery = delivery_at(ReminderRef::Rule(rule_id), ts(1_000));
+        reminders.deliveries.insert(delivery);
+
+        let stale = stale_deliveries(
+            &tasks,
+            &reminders,
+            &ReminderDefaults::default(),
+            now,
+            horizon(),
+        );
+        assert!(stale.contains(&delivery), "the off-chain row is prunable");
+    }
+
+    /// P-C: a *fresh* off-chain delivery (inside the horizon) is not
+    /// returned — the age gate holds even when the row is unconsulted.
+    #[test]
+    fn a_fresh_unconsulted_delivery_is_not_stale() {
+        let now = ts(10 * 86_400);
+        let task = live_task(1, Some(ts(20 * 86_400)), 0); // moved forward
+        let rule = rule_for(10, task.id, ReminderOffset::at_due());
+        let tasks = BTreeMap::from([(task.id, task)]);
+        let mut reminders = ReminderState::default();
+        let rule_id = rule.id;
+        reminders.rules.insert(rule_id, rule);
+        let delivery = delivery_at(ReminderRef::Rule(rule_id), ts(1_000));
+        reminders.deliveries.insert(delivery);
+
+        let stale = stale_deliveries(
+            &tasks,
+            &reminders,
+            &ReminderDefaults::default(),
+            now,
+            horizon(),
+        );
+        assert!(!stale.contains(&delivery), "inside the horizon");
+    }
+
+    /// P-D: a future occurrence's delivery is never returned, whatever
+    /// the chain position (the snoozed-forward receipt must survive).
+    #[test]
+    fn a_future_occurrence_delivery_is_never_stale() {
+        let now = ts(100 * 86_400);
+        let task = live_task(1, Some(ts(1_000)), 0);
+        let rule = rule_for(10, task.id, ReminderOffset::at_due());
+        let tasks = BTreeMap::from([(task.id, task)]);
+        let mut reminders = ReminderState::default();
+        let rule_id = rule.id;
+        reminders.rules.insert(rule_id, rule);
+        // Snoozed far forward: the effective occurrence is the future
+        // instant, the row's occurrence is the past link — the receipt
+        // sits at the future node and must survive.
+        reminders.snoozes.insert(
+            ReminderSnoozeKey {
+                reminder: ReminderRef::Rule(rule_id),
+                occurrence: ts(1_000),
+            },
+            ts(365 * 86_400),
+        );
+        let delivery = delivery_at(ReminderRef::Rule(rule_id), ts(365 * 86_400));
+        reminders.deliveries.insert(delivery);
+
+        let stale = stale_deliveries(
+            &tasks,
+            &reminders,
+            &ReminderDefaults::default(),
+            now,
+            horizon(),
+        );
+        assert!(!stale.contains(&delivery), "the future receipt survives");
+    }
+
+    /// P-E: a deleted task's `Default`-ref row is returned (the anchor
+    /// fails `is_remindable` — the `DeleteTask` residual the sweep ages
+    /// out; rules cascade separately).
+    #[test]
+    fn a_dead_task_residual_default_delivery_is_stale() {
+        let now = ts(100 * 86_400);
+        let mut task = live_task(1, Some(ts(1_000)), 0);
+        task.deleted = true;
+        let tasks = BTreeMap::from([(task.id, task)]);
+        let reminders = ReminderState::default();
+        let delivery = delivery_at(
+            ReminderRef::Default(TaskId::from(uuid::Uuid::from_u128(1))),
+            ts(1_000),
+        );
+        let mut reminders = reminders;
+        reminders.deliveries.insert(delivery);
+
+        let stale = stale_deliveries(
+            &tasks,
+            &reminders,
+            &ReminderDefaults::default(),
+            now,
+            horizon(),
+        );
+        assert!(stale.contains(&delivery), "the residual row is prunable");
+    }
+
+    /// P-F: rows whose anchor row is gone are returned — a delivery
+    /// naming a missing rule row, and one naming a missing alarm row
+    /// (`effective_occurrence` / `alarm_occurrence` → `None`).
+    #[test]
+    fn rows_with_a_missing_anchor_row_are_stale() {
+        let now = ts(100 * 86_400);
+        let tasks = BTreeMap::new();
+        let reminders = ReminderState::default();
+        let orphan_rule = delivery_at(
+            ReminderRef::Rule(ReminderRuleId::from(uuid::Uuid::from_u128(99))),
+            ts(1_000),
+        );
+        let orphan_alarm = delivery_at(
+            ReminderRef::Adhoc(crate::ids::AdhocAlarmId::from(uuid::Uuid::from_u128(98))),
+            ts(1_000),
+        );
+        let mut reminders = reminders;
+        reminders.deliveries.insert(orphan_rule);
+        reminders.deliveries.insert(orphan_alarm);
+
+        let stale = stale_deliveries(
+            &tasks,
+            &reminders,
+            &ReminderDefaults::default(),
+            now,
+            horizon(),
+        );
+        assert!(stale.contains(&orphan_rule), "missing rule row");
+        assert!(stale.contains(&orphan_alarm), "missing alarm row");
+    }
+
+    proptest! {
+    // P-G (unobservability, the property that makes the sweep
+    // behavior-preserving by construction): for arbitrary states,
+    // removing `stale_deliveries` from the delivery set leaves
+    // `due_firings` AND `active_notifications` unchanged.
+    #[test]
+    fn pruning_the_stale_set_is_unobservable_in_both_readers(
+        (tasks, reminders, defaults, now) in eval_input(),
+    ) {
+        let stale = stale_deliveries(&tasks, &reminders, &defaults, now, horizon());
+        let mut pruned = reminders.clone();
+        for delivery in &stale {
+            pruned.deliveries.remove(delivery);
+        }
+        assert_eq!(
+            due_firings(&tasks, &pruned, &defaults, now),
+            due_firings(&tasks, &reminders, &defaults, now),
+            "due_firings cannot observe the prune"
+        );
+        assert_eq!(
+            active_notifications(&tasks, &pruned, &defaults, now),
+            active_notifications(&tasks, &reminders, &defaults, now),
+            "active_notifications cannot observe the prune"
+        );
+    }
+
+    // P-H (monotonicity): with state fixed, advancing `now` never
+    // shrinks the returned set — the engine's re-sweep discipline rests
+    // on a lost batch being recovered by a later tick.
+    #[test]
+    fn advancing_now_never_shrinks_the_stale_set(
+        (tasks, reminders, defaults, now) in eval_input(),
+        delta_secs in 1_i64..86_400,
+    ) {
+        let Some(later) = now
+            .checked_add_signed(chrono::TimeDelta::try_seconds(delta_secs).unwrap())
+        else {
+            return Ok(());
+        };
+        let before = stale_deliveries(&tasks, &reminders, &defaults, now, horizon());
+        let after = stale_deliveries(&tasks, &reminders, &defaults, later, horizon());
+        for delivery in &before {
+            assert!(
+                after.contains(delivery),
+                "a row stale at {now} cannot turn fresh by {later}"
+            );
+        }
+    }
+    }
+
     #[test]
     fn offset_guard_accepts_non_positive_and_rejects_positive() {
         assert!(matches!(
@@ -1763,7 +2101,8 @@ mod tests {
         };
         let reminder = ReminderRef::Rule(rule.id);
         let mut reminders = ReminderState::default();
-        reminders.rules.insert(rule.id, rule);
+        let rule_id = rule.id;
+        reminders.rules.insert(rule_id, rule);
         let defaults = ReminderDefaults::default();
 
         // Fires at the due instant...
@@ -2245,7 +2584,8 @@ mod tests {
                 .map(|i| due + chrono::TimeDelta::try_hours(i).unwrap())
                 .collect();
             let mut reminders = ReminderState::default();
-            reminders.rules.insert(rule.id, rule);
+            let rule_id = rule.id;
+        reminders.rules.insert(rule_id, rule);
             for &(source, target) in &links {
                 reminders.snoozes.insert(
                     ReminderSnoozeKey {
@@ -2340,7 +2680,8 @@ mod tests {
                     task.id,
                     ts(100),
                 );
-                reminders.rules.insert(rule.id, rule);
+                let rule_id = rule.id;
+        reminders.rules.insert(rule_id, rule);
                 tasks.insert(task.id, task);
             }
             let defaults = ReminderDefaults::default();
@@ -2508,7 +2849,8 @@ mod tests {
                 "instant-exact at {instant}"
             );
             let mut reminders = ReminderState::default();
-            reminders.rules.insert(rule.id, rule);
+            let rule_id = rule.id;
+            reminders.rules.insert(rule_id, rule);
 
             let firings = due_firings(&tasks, &reminders, &ReminderDefaults::default(), instant);
             assert_eq!(firings.len(), 1, "exactly one firing at {instant}");
