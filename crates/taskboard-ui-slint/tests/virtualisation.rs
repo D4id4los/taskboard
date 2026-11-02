@@ -772,6 +772,95 @@ fn an_insertion_above_the_today_viewport_reflows_by_the_inserted_extent() {
     );
 }
 
+/// Anchor-on-removal above the viewport (#461 stage-1 plan D-2 case 1,
+/// pinned-actual): the catalogue's case 1 with a task that really sits
+/// in the Overdue section. The landed
+/// `a_removal_above_the_today_viewport_leaves_the_rows_resting` pin
+/// flips the fixture's task 0, whose order (0) makes it `done` by the
+/// fixture's every-10th pattern — it was never an Overdue row, so its
+/// flip inserts into Done-today (a separate, lower `ListView`) and pins
+/// nothing about this case. This pin flips the true Overdue head
+/// (order 3): the viewport's content offset is preserved (the page
+/// does not scroll, the header rests) while the live rows reflow
+/// **up** by exactly the removed row's extent — the slint 1.18.1
+/// `ListView` repeater is content-anchored, not row-anchored (the
+/// stage-1 plan D-2 "rows resting" statement was corrected to this
+/// pinned actual; see the stage-2 report's finding).
+#[test]
+fn a_true_removal_above_the_today_viewport_reflows_by_the_removed_extent() {
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: false,
+        },
+        |driver| {
+            let (handle, _engine, state) = mount_today(driver, 600);
+
+            // The removed row's extent, measured before the walk: the
+            // Overdue head (order 3) and its successor (order 6) both
+            // start on-screen.
+            let head = driver
+                .find_by_label(&bench_label(3))
+                .unwrap_or_else(|| panic!("the Overdue head renders"));
+            let successor = driver
+                .find_by_label(&bench_label(6))
+                .unwrap_or_else(|| panic!("the Overdue head's successor renders"));
+            let extent = successor.absolute_position().y - head.absolute_position().y;
+
+            // Drive the walk deep: the window ends far from the
+            // section head, so the removal is entirely above the
+            // viewport.
+            for _ in 0..30 {
+                handle.dispatch_action(ActionId::NavNextItem);
+                driver.advance_time(0);
+            }
+
+            let focused = driver
+                .find_by_label(&bench_label(87))
+                .unwrap_or_else(|| panic!("the walked-to card is live"));
+            let rest = focused.absolute_position();
+            let header = driver
+                .find_by_label("Overdue")
+                .unwrap_or_else(|| panic!("the Overdue section header renders"));
+            let header_rest = header.absolute_position();
+
+            // Flip the Overdue head's `done` to a fixed stamp outside
+            // today's window (the bench's pure-removal lever): a
+            // removal above the viewport, with no Done-section
+            // insertion to confound the geometry.
+            let mut next = (**state.load()).clone();
+            let first = next
+                .tasks
+                .values()
+                .find(|task| task.title == bench_label(3))
+                .expect("the fixture's oldest open overdue task")
+                .id;
+            next.tasks.get_mut(&first).expect("task").done =
+                Some(chrono::DateTime::from_timestamp(1_704_067_200, 0).expect("fixture stamp"));
+            state.store(Arc::new(next));
+            handle.refresh();
+            driver.advance_time(0);
+
+            let focused = driver
+                .find_by_label(&bench_label(87))
+                .unwrap_or_else(|| panic!("the focused card stays live across the removal"));
+            let shifted = rest.y - focused.absolute_position().y;
+            assert_eq!(
+                shifted, extent,
+                "the removal above the viewport reflows the live rows up by exactly the \
+                 removed row's extent (content-anchored viewport)"
+            );
+            let header = driver
+                .find_by_label("Overdue")
+                .unwrap_or_else(|| panic!("the Overdue section header stays"));
+            assert_eq!(
+                header_rest.y,
+                header.absolute_position().y,
+                "the removal must not scroll the page"
+            );
+        },
+    );
+}
+
 /// Compact stack-switch remount (r2 D8): switching stacks by keyboard
 /// re-mounts the single column's viewport cleanly — the new stack's
 /// head card renders at the rest position, the old stack's cards are
