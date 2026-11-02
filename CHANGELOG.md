@@ -10,6 +10,28 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 ### Added
 
+- Respite marking and break reminders (#493 + #495): time entries
+  gain a `kind` datum — `work` (the default) or `respite` — that
+  marks break activity. It roams as an additive wire-row field
+  (default-off decode; an unknown kind on a peer row demotes that row
+  to verbatim rather than silently downgrading it), persists through
+  the additive sqlite `kind` column (old databases upgrade in place;
+  every pre-existing row reads `work`), and is marked at the CLI:
+  `track start/log --kind respite` and `track adjust --kind` (the
+  retroactive re-marking of history). `track status`'s tracked-today
+  total is now work-only, and `export` carries the kind as a final
+  CSV/JSON column. On top of the marking ride the break reminders:
+  `taskboard breaks add --after 90m [--label …] [--insistence
+  normal|alarm]` creates a device-local rule that fires when
+  accumulated tracked work since the last respite-marked entry
+  crosses the threshold — riding the existing reminder tick,
+  notification surface, snooze chains, and dismissals unchanged. The
+  fired occurrence is the threshold-crossing instant, so at most one
+  firing lands per unbroken work streak; a respite re-arms it for the
+  next streak. Device-local by design: rules and their dismissals
+  never sync (every device evaluates crossings from shared entry
+  history, but only devices with the rule configured fire it).
+
 - Typed download-failure evidence split (#401): a sidecar document
   download that the server refuses or answers with a fault no longer
   reports the generic `transport` reason — `status --json` now carries

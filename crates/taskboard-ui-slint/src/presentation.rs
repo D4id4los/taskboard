@@ -1625,6 +1625,72 @@ mod tests {
         );
     }
 
+    /// A break row is shown, carries no task target (no Done/Mute
+    /// buttons), and its title is the domain-assembled rule-label
+    /// snapshot (D-18 — carried, never re-derived).
+    #[test]
+    fn notification_rows_render_a_break_row_without_a_task_target() {
+        use taskboard_domain::{
+            BreakRule, BreakRuleId, Insistence, ReminderDelivery, WorkThreshold,
+        };
+        let now = Utc::now();
+        let mut state = AppState::default();
+        let rule = BreakRule {
+            id: BreakRuleId::from_uuid(uuid::Uuid::now_v7()),
+            label: "time for a break".to_owned(),
+            threshold: WorkThreshold::try_new(TimeDelta::try_minutes(90).unwrap())
+                .expect("positive threshold"),
+            insistence: Insistence::Alarm,
+            created_at: now,
+        };
+        let reminder = ReminderRef::Break(rule.id);
+        // The crossing instant: the span opened 200m ago, the first
+        // 90m mark was touched 110m ago — that instant is the
+        // occurrence (D-8), so the delivery receipt keys on it.
+        let occurrence = now - TimeDelta::minutes(110);
+        state.reminders.break_rules.insert(rule.id, rule);
+        // 90m of unbroken tracked work in the history — the crossing is
+        // derived from the entries at read time.
+        let entry_id = taskboard_domain::TimeEntryId::from_uuid(uuid::Uuid::now_v7());
+        state.tracking.entries.insert(
+            entry_id,
+            taskboard_domain::TimeEntry {
+                id: entry_id,
+                task: TaskId::from_uuid(uuid::Uuid::now_v7()),
+                task_title: "work".to_owned(),
+                start: now - TimeDelta::minutes(200),
+                end: Some(now - TimeDelta::minutes(20)),
+                created_at: now - TimeDelta::minutes(200),
+                updated_at: now - TimeDelta::minutes(20),
+                kind: taskboard_domain::TimeEntryKind::Work,
+            },
+        );
+        state.reminders.deliveries.insert(ReminderDelivery {
+            reminder,
+            occurrence,
+            delivered_at: now,
+        });
+        let rows = notification_rows(&state, &defaults(), now);
+        assert_eq!(rows.len(), 1, "a break row is shown (no card to filter)");
+        assert_eq!(rows[0].task, None, "no Done/Mute target");
+        assert_eq!(rows[0].title, "time for a break", "the label snapshot");
+        assert_eq!(rows[0].reminder, reminder);
+        assert_eq!(rows[0].occurrence, occurrence);
+        // Dismissed: gone, the house law.
+        state
+            .reminders
+            .dismissals
+            .insert(taskboard_domain::ReminderDismissal {
+                reminder,
+                occurrence,
+                dismissed_at: now,
+            });
+        assert_eq!(
+            notification_rows(&state, &defaults(), now),
+            [] as [NotificationRow; 0]
+        );
+    }
+
     /// The anchor card never renders as a notification row (DDF-5, the
     /// banner precedent).
     #[test]

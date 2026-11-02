@@ -548,6 +548,38 @@ mod tests {
 
     // -- M1: the pure ladder ------------------------------------------
 
+    /// A break-anchored alarm note rides the ladder exactly like an
+    /// alarm note (D-10): the ladder keys on the insistence snapshot,
+    /// never on the anchor — no task affordance exists for a break row.
+    #[test]
+    fn a_break_anchored_alarm_note_rides_the_ladder() {
+        let rule = taskboard_domain::BreakRuleId::from_uuid(uuid::Uuid::now_v7());
+        let note = Notification {
+            insistence: Insistence::Alarm,
+            reminder: ReminderRef::Break(rule),
+            anchor: taskboard_domain::ReminderAnchor::Break(rule),
+            title: "time for a break".to_owned(),
+            occurrence: T0,
+        };
+        let notes = [note];
+        let mut memory = LadderMemory::default();
+        // The alarm rung's re-toast schedule is anchor-blind: identical
+        // instants for a break note and an alarm note.
+        let alarm_only = [alarm_note("tea", T0)];
+        let mut alarm_memory = LadderMemory::default();
+        for delta in [59_i64, 60, 61, 300, 600] {
+            let at = T0 + TimeDelta::seconds(delta);
+            let break_fire = escalation_step(&notes, &mut memory, at);
+            let alarm_fire = escalation_step(&alarm_only, &mut alarm_memory, at);
+            assert_eq!(
+                break_fire.actions.len(),
+                alarm_fire.actions.len(),
+                "the ladder is anchor-blind at +{delta}s"
+            );
+            assert_eq!(break_fire.next_due, alarm_fire.next_due);
+        }
+    }
+
     #[test]
     fn first_re_toast_opens_one_minute_after_the_occurrence() {
         let mut memory = LadderMemory::default();
