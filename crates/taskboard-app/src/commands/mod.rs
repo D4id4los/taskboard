@@ -38,7 +38,7 @@ use taskboard_domain::{StateCommand, SyncErrorKind};
 use taskboard_sync_nextcloud::DeckError;
 
 use crate::bootstrap::BootstrapError;
-use crate::cli::{BoardsCmd, Command, LabelEditFlags, LabelsCmd, StacksCmd, TasksCmd};
+use crate::cli::{BoardsCmd, Command, DaemonCmd, LabelEditFlags, LabelsCmd, StacksCmd, TasksCmd};
 use crate::config::{AppConfig, CredentialStoreKind};
 use crate::secrets::{CredentialError, CredentialStore};
 
@@ -2046,8 +2046,23 @@ pub enum IpcRoute {
     Local,
     /// Daemon when one serves the db, else in-process boot.
     IpcOrLocal,
-    /// Only meaningful against a running daemon.
-    IpcOnly,
+    /// Only meaningful against a running daemon. The lane carries the
+    /// verb: main's `IpcOnly` arm dispatches on the payload, so a new
+    /// `IpcOnly` verb must add a variant here *and* be handled in
+    /// main's verb match, or the binary does not compile — the dual
+    /// enumeration (a lane table plus a second, `unreachable!`-guarded
+    /// match) cannot drift.
+    IpcOnly(IpcOnlyVerb),
+}
+
+/// The verbs routed `IpcOnly` — the operator commands that are only
+/// meaningful against a running daemon.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IpcOnlyVerb {
+    /// `status` — the daemon's health/status report.
+    Status,
+    /// `daemon stop` — the graceful daemon shutdown request.
+    DaemonStop,
 }
 
 /// The per-`Command` routing table (pure; unit-pinned).
@@ -2064,10 +2079,20 @@ pub fn route_for_ipc(command: &Command) -> IpcRoute {
         // refactor that routes it onto the wire changes this pinned
         // lane.
         | Command::Gui
+        // `daemon` with no subcommand is the lifecycle run arm main
+        // intercepts before routing (`daemon_run`); pinning it `Local`
+        // keeps it off the wire — the same convention as `Gui`. A
+        // future `DaemonCmd` variant lands in neither `Daemon` arm and
+        // is a compile error: it must pick a lane deliberately.
+        | Command::Daemon { cmd: None, .. }
         | Command::Boards {
             cmd: BoardsCmd::List { .. },
         } => IpcRoute::Local,
-        Command::Status | Command::Daemon { .. } => IpcRoute::IpcOnly,
+        Command::Status => IpcRoute::IpcOnly(IpcOnlyVerb::Status),
+        Command::Daemon {
+            cmd: Some(DaemonCmd::Stop),
+            ..
+        } => IpcRoute::IpcOnly(IpcOnlyVerb::DaemonStop),
         Command::Boards { .. }
         | Command::Stacks { .. }
         | Command::Labels { .. }
@@ -2240,7 +2265,7 @@ pub(crate) fn resolve_live_board(
 #[cfg(test)]
 mod ipc_routing_tests {
     use crate::cli::{BoardsCmd, DaemonCmd, TasksCmd};
-    use crate::commands::{Command, IpcRoute, route_for_ipc};
+    use crate::commands::{Command, IpcOnlyVerb, IpcRoute, route_for_ipc};
 
     /// The transport lane table (ADR 0012 §2.1): pre-core verbs stay
     /// client-side; core verbs prefer a daemon; the operator verbs only
@@ -2266,6 +2291,13 @@ mod ipc_routing_tests {
             Command::Boards {
                 cmd: BoardsCmd::List { connector: None },
             },
+            // `daemon` with no subcommand is the lifecycle run arm main
+            // intercepts before routing; its lane is pinned `Local` —
+            // never relayed onto the wire (the gui precedent).
+            Command::Daemon {
+                cmd: None,
+                no_ipc: false,
+            },
         ];
         for command in &local {
             assert_eq!(route_for_ipc(command), IpcRoute::Local, "{command:?}");
@@ -2277,14 +2309,21 @@ mod ipc_routing_tests {
         assert_eq!(route_for_ipc(&Command::Gui), IpcRoute::Local);
 
         let ipc_only = [
-            Command::Status,
-            Command::Daemon {
-                cmd: Some(DaemonCmd::Stop),
-                no_ipc: false,
-            },
+            (Command::Status, IpcOnlyVerb::Status),
+            (
+                Command::Daemon {
+                    cmd: Some(DaemonCmd::Stop),
+                    no_ipc: false,
+                },
+                IpcOnlyVerb::DaemonStop,
+            ),
         ];
-        for command in &ipc_only {
-            assert_eq!(route_for_ipc(command), IpcRoute::IpcOnly, "{command:?}");
+        for (command, verb) in &ipc_only {
+            assert_eq!(
+                route_for_ipc(command),
+                IpcRoute::IpcOnly(*verb),
+                "{command:?}"
+            );
         }
 
         let ipc_or_local = [

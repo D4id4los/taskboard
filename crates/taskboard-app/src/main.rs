@@ -23,9 +23,9 @@ use clap::Parser as _;
 
 use taskboard_app::App;
 use taskboard_app::bootstrap::bootstrap;
-use taskboard_app::cli::{Cli, Command, DaemonCmd};
+use taskboard_app::cli::{Cli, Command};
 use taskboard_app::commands::{
-    BasicSession, CommandCtx, CommandError, IpcRoute, dispatch, report, route_for_ipc,
+    BasicSession, CommandCtx, CommandError, IpcOnlyVerb, IpcRoute, dispatch, report, route_for_ipc,
     verb_timeout_secs,
 };
 use taskboard_app::config::AppConfig;
@@ -124,15 +124,15 @@ async fn run(mut cli: Cli, raw_argv: Vec<String>) -> color_eyre::Result<()> {
         // that first awaits on the user's behalf.
         let mut cancel: Option<tokio::sync::watch::Receiver<u64>> = None;
         match route_for_ipc(&command) {
-            IpcRoute::IpcOnly => {
-                let code = match command {
-                    Command::Status => status_command(cli.config.take(), cli.json).await,
-                    Command::Daemon {
-                        cmd: Some(DaemonCmd::Stop),
-                        ..
-                    } => daemon_stop_command(cli.config.take(), cli.json).await,
-                    // `daemon` with no subcommand is the run arm above.
-                    _ => unreachable!("the IpcOnly lanes are status and daemon stop"),
+            IpcRoute::IpcOnly(verb) => {
+                // The verb is data from `route_for_ipc`: a new IpcOnly
+                // verb must extend `IpcOnlyVerb` and is then a compile
+                // error here until dispatched — no unreachable arm.
+                let code = match verb {
+                    IpcOnlyVerb::Status => status_command(cli.config.take(), cli.json).await,
+                    IpcOnlyVerb::DaemonStop => {
+                        daemon_stop_command(cli.config.take(), cli.json).await
+                    }
                 };
                 std::process::exit(i32::from(code));
             }
