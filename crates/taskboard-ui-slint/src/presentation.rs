@@ -691,6 +691,56 @@ pub fn detail_tracking_verb(state: &AppState, subject: Option<TaskId>) -> Option
     })
 }
 
+/// The task-view summary row's numeric reduction (r4 D17): the task's
+/// total tracked time at **second precision** — the parts ARE the
+/// precision contract, so the phrase glue needs no text pins.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TrackedTotal {
+    pub hours: u32,
+    pub minutes: u32,
+    pub seconds: u32,
+}
+
+/// The task's tracked-time total (r4 D17): Σ over the engine's
+/// `TimeEntry`s for `subject`, each [`taskboard_domain::TimeEntry::duration`]
+/// as of `now` — a **closed** entry contributes its span, an **open**
+/// one its elapsed-to-now (the running timer's accrual; D17's "incl.
+/// a running entry's elapsed"). `duration`'s zero-clamp keeps inverted
+/// skew spans out; `now` is data, nothing ticks. Pure, no UI types.
+#[must_use]
+pub fn tracked_total(state: &AppState, subject: TaskId, now: DateTime<Utc>) -> TrackedTotal {
+    let total_seconds: i64 = state
+        .tracking
+        .entries
+        .values()
+        .filter(|entry| entry.task == subject)
+        .map(|entry| entry.duration(now).num_seconds())
+        .sum();
+    let total_seconds = u64::try_from(total_seconds.max(0)).unwrap_or(u64::MAX);
+    TrackedTotal {
+        hours: u32::try_from(total_seconds / 3600).unwrap_or(u32::MAX),
+        minutes: u32::try_from((total_seconds % 3600) / 60).unwrap_or(u32::MAX),
+        seconds: u32::try_from(total_seconds % 60).unwrap_or(u32::MAX),
+    }
+}
+
+/// The summary's glue (r4 D17): zero-leading segments drop (hours,
+/// then minutes); seconds always render — "1h 23m 45s", "2m 5s", and
+/// the all-zero canonical "0s". Deterministic and diff-stable within
+/// a second; UX copy — tests assert structure, never wording.
+#[must_use]
+pub fn tracked_total_phrase(total: &TrackedTotal) -> String {
+    let mut segments = Vec::new();
+    if total.hours > 0 {
+        segments.push(format!("{}h", total.hours));
+    }
+    if total.hours > 0 || total.minutes > 0 {
+        segments.push(format!("{}m", total.minutes));
+    }
+    segments.push(format!("{}s", total.seconds));
+    segments.join(" ")
+}
+
 /// One active timer row (D-I7): the alarm plus its walked effective
 /// occurrence, carried so the push pass derives the countdown phrase
 /// once per refresh.
@@ -1973,6 +2023,206 @@ mod tests {
         assert_eq!(
             detail_tracking_verb(&state, Some(other)),
             Some(TrackDetail::Start)
+        );
+    }
+
+    /// r4 D17 — the summary reduction sums only the subject's entries;
+    /// another task's history is excluded.
+    #[test]
+    fn tracked_total_sums_only_the_subjects_entries() {
+        let now = Utc.with_ymd_and_hms(2026, 10, 28, 10, 0, 0).unwrap();
+        let subject = TaskId::from_uuid(uuid::Uuid::now_v7());
+        let other = TaskId::from_uuid(uuid::Uuid::now_v7());
+        let mut state = AppState::default();
+        let mint = |task: TaskId, start: DateTime<Utc>, end: Option<DateTime<Utc>>| {
+            let id = taskboard_domain::TimeEntryId::from_uuid(uuid::Uuid::now_v7());
+            (id, entry(id, task, "t", start, end))
+        };
+        let (id, e) = mint(
+            subject,
+            now - TimeDelta::minutes(30),
+            Some(now - TimeDelta::minutes(10)),
+        );
+        state.tracking.entries.insert(id, e);
+        let (id, e) = mint(other, now - TimeDelta::hours(5), Some(now));
+        state.tracking.entries.insert(id, e);
+
+        assert_eq!(
+            tracked_total(&state, subject, now),
+            TrackedTotal {
+                hours: 0,
+                minutes: 20,
+                seconds: 0,
+            },
+            "the other task's 5h entry is excluded"
+        );
+    }
+
+    /// r4 D17 — an open entry's elapsed-to-now lands in the parts
+    /// (the running timer's accrual).
+    #[test]
+    fn tracked_total_includes_an_open_entrys_elapsed() {
+        let start = Utc.with_ymd_and_hms(2026, 10, 28, 10, 0, 0).unwrap();
+        let now = start + TimeDelta::seconds(90);
+        let subject = TaskId::from_uuid(uuid::Uuid::now_v7());
+        let mut state = AppState::default();
+        let id = taskboard_domain::TimeEntryId::from_uuid(uuid::Uuid::now_v7());
+        state
+            .tracking
+            .entries
+            .insert(id, entry(id, subject, "t", start, None));
+
+        assert_eq!(
+            tracked_total(&state, subject, now),
+            TrackedTotal {
+                hours: 0,
+                minutes: 1,
+                seconds: 30,
+            },
+        );
+    }
+
+    /// r4 D17 — a degenerate/inverted span contributes zero (the
+    /// domain clamp, pinned through the helper); the total is never
+    /// negative.
+    #[test]
+    fn tracked_total_never_goes_negative_on_a_degenerate_span() {
+        let now = Utc.with_ymd_and_hms(2026, 10, 28, 10, 0, 0).unwrap();
+        let subject = TaskId::from_uuid(uuid::Uuid::now_v7());
+        let mut state = AppState::default();
+        let id = taskboard_domain::TimeEntryId::from_uuid(uuid::Uuid::now_v7());
+        // Inverted: start after the claimed end.
+        state.tracking.entries.insert(
+            id,
+            entry(id, subject, "t", now, Some(now - TimeDelta::hours(1))),
+        );
+
+        assert_eq!(
+            tracked_total(&state, subject, now),
+            TrackedTotal::default(),
+            "the clamp pins the span at zero"
+        );
+    }
+
+    /// r4 D17 — no entries at all is the honest zero.
+    #[test]
+    fn tracked_total_without_entries_is_the_zero() {
+        let now = Utc.with_ymd_and_hms(2026, 10, 28, 10, 0, 0).unwrap();
+        let subject = TaskId::from_uuid(uuid::Uuid::now_v7());
+        let state = AppState::default();
+        assert_eq!(tracked_total(&state, subject, now), TrackedTotal::default());
+    }
+
+    /// r4 D17 — the second-precision contract, numerically exact:
+    /// seconds survive the minute rounding.
+    #[test]
+    fn tracked_total_reduces_with_second_precision() {
+        let now = Utc.with_ymd_and_hms(2026, 10, 28, 10, 0, 0).unwrap();
+        let subject = TaskId::from_uuid(uuid::Uuid::now_v7());
+        let mut state = AppState::default();
+        let mint = |start: DateTime<Utc>, end: Option<DateTime<Utc>>| {
+            let id = taskboard_domain::TimeEntryId::from_uuid(uuid::Uuid::now_v7());
+            (id, entry(id, subject, "t", start, end))
+        };
+        // 3661 s = 1h 1m 1s.
+        let (id, e) = mint(now - TimeDelta::seconds(3661), Some(now));
+        state.tracking.entries.insert(id, e);
+        assert_eq!(
+            tracked_total(&state, subject, now),
+            TrackedTotal {
+                hours: 1,
+                minutes: 1,
+                seconds: 1,
+            },
+        );
+
+        // 59 s stays seconds; 90 s → 1m 30s.
+        let mut state = AppState::default();
+        let (id, e) = mint(now - TimeDelta::seconds(59), Some(now));
+        state.tracking.entries.insert(id, e);
+        let (id, e) = mint(
+            now - TimeDelta::seconds(90),
+            Some(now - TimeDelta::seconds(59)),
+        );
+        state.tracking.entries.insert(id, e);
+        assert_eq!(
+            tracked_total(&state, subject, now),
+            TrackedTotal {
+                hours: 0,
+                minutes: 1,
+                seconds: 30,
+            },
+        );
+    }
+
+    /// r4 D17 — the phrase glue: structural only (the numeric parts
+    /// carry the precision contract). Deterministic, non-empty for
+    /// every triple, the zero rendering distinct from 1 s, and the
+    /// segment count grows as parts enter.
+    #[test]
+    fn tracked_total_phrase_glue_is_deterministic_and_zero_canonical() {
+        let zero = TrackedTotal::default();
+        let one_second = TrackedTotal {
+            hours: 0,
+            minutes: 0,
+            seconds: 1,
+        };
+        assert_eq!(tracked_total_phrase(&zero), tracked_total_phrase(&zero));
+        assert_ne!(
+            tracked_total_phrase(&zero),
+            tracked_total_phrase(&one_second),
+            "the canonical zero is distinct from one second"
+        );
+        for total in [
+            zero,
+            one_second,
+            TrackedTotal {
+                hours: 0,
+                minutes: 2,
+                seconds: 5,
+            },
+            TrackedTotal {
+                hours: 1,
+                minutes: 23,
+                seconds: 45,
+            },
+        ] {
+            let phrase = tracked_total_phrase(&total);
+            assert_ne!(phrase, "", "every part triple renders non-empty");
+            assert_eq!(
+                tracked_total_phrase(&total),
+                phrase,
+                "the glue is deterministic"
+            );
+            assert!(
+                phrase.ends_with('s'),
+                "seconds always render (structural tail)"
+            );
+        }
+        // Segment count grows as parts enter (structural, not textual).
+        let segments = |phrase: &str| phrase.split(' ').count();
+        assert_eq!(
+            segments(&tracked_total_phrase(&one_second)),
+            1,
+            "sub-minute renders one segment"
+        );
+        assert_eq!(
+            segments(&tracked_total_phrase(&TrackedTotal {
+                hours: 0,
+                minutes: 2,
+                seconds: 5,
+            })),
+            2,
+            "a minute enters a segment"
+        );
+        assert_eq!(
+            segments(&tracked_total_phrase(&TrackedTotal {
+                hours: 1,
+                minutes: 23,
+                seconds: 45,
+            })),
+            3,
+            "an hour enters a segment"
         );
     }
 
