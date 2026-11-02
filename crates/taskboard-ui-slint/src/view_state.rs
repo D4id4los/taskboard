@@ -368,6 +368,21 @@ impl ViewState {
         self.view
     }
 
+    /// The identity of what the main view mounts (r4 chunk 4, the D14
+    /// dismiss seam): `(view, board, subject_stack, subject_task)`.
+    /// `focused_task`/`selected_stack` are deliberately *not* members
+    /// — a selection/focus step leaves every card mounted, and
+    /// dismissing on focus steps would kill tooltips during ordinary
+    /// pointer hover (the over-fire guard). Any effect whose
+    /// application changes this tuple swapped an anchor away; the
+    /// adapter's `apply_effect` choke point diffs it per pass.
+    #[must_use]
+    pub const fn view_identity(
+        &self,
+    ) -> (ViewId, Option<BoardId>, Option<StackId>, Option<TaskId>) {
+        (self.view, self.board, self.subject_stack, self.subject_task)
+    }
+
     /// The selected board (the refresh-time seed/repair keeps it live;
     /// `None` only with zero boards).
     #[must_use]
