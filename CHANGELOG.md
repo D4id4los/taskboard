@@ -10,6 +10,19 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 ### Added
 
+- Main-window geometry persists across restarts (#412): the desktop
+  window's last normal (non-maximized, non-fullscreen) position/size
+  is captured debounced from the repaint tick and restored — clamped
+  to the current monitor with an 80 px visibility strip, size never
+  altered — at the next mount. Stored device-locally in the
+  `[ui.window_geometry]` config table (written only by the UI request
+  forwarder's atomic read-merge-write; never synced, never in the
+  domain or the sidecar); a degenerate stored value silently falls
+  back to the default placement. Kiosk boots are structurally
+  bypassed — fullscreen owns the appliance's geometry. Known limits:
+  the final <500 ms of geometry changes before a SIGKILL are lost
+  (the debounce's quiet window), and on Wayland `set_position` is a
+  compositor no-op, so only the size restores there.
 - Full-height divider handles between board columns (#556 round-4
   chunk 2): the column resize handle leaves the header row and
   straddles every column boundary — grab anywhere along the edge
