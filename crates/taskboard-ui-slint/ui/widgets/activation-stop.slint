@@ -1,0 +1,62 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The task view's closed-cell activation stop (r4 D18): a full-size
+// FocusScope tab stop with the cell's a11y triple, bare Return/Space
+// activating the same seam the TouchArea clicks, and the focus ring
+// the parent cell's border renders from `has-focus`. The focus gain
+// publishes into EditingFacts' activation count (the reservation
+// arm's input) with the count latch/generation discipline — kept in
+// exactly one copy: the discipline is subtle (reset-seam
+// re-baselining against stale decrements), so no view re-derives it.
+
+import { EditingFacts } from "../editing-facts.slint";
+import { TaskViewWalkFacts } from "../walk-facts.slint";
+
+export component ActivationStop inherits FocusScope {
+    in property <string> stop-label;
+    in property <string> stop-description;
+    in property <int> stop-id;
+    callback activated();
+    focus-on-tab-navigation: true;
+    // Constant by runtime constraint (`accessible-role` rejects
+    // property bindings) — the checkbox stop (the done box) carries
+    // its own scope and re-states the latch verbatim.
+    accessible-role: AccessibleRole.button;
+    accessible-label: root.stop-label;
+    accessible-description: root.stop-description;
+    accessible-action-default => { root.activated(); }
+    key-pressed(event) => {
+        if ((event.text == Key.Return || event.text == " ")
+            && !event.modifiers.control
+            && !event.modifiers.alt
+            && !event.modifiers.shift
+            && !event.modifiers.meta) {
+            root.activated();
+            accept
+        } else {
+            reject
+        }
+    }
+    // The derived-property wrap is the walk probe's recorded idiom
+    // (P2): `changed` delivers on the wrapper, not on the built-in
+    // has-focus binding directly.
+    property <bool> focused: self.has-focus;
+    property <bool> activation-counted: false;
+    property <int> counted-generation: -1;
+    changed focused => {
+        if (self.focused) {
+            TaskViewWalkFacts.stop-id = root.stop-id;
+        }
+        if (self.counted-generation != EditingFacts.generation) {
+            // A reset seam re-baselined the counts: re-sync, never a
+            // stale decrement into them.
+            self.counted-generation = EditingFacts.generation;
+            self.activation-counted = self.focused;
+            if (self.focused) {
+                EditingFacts.activation-focus-count += 1;
+            }
+        } else if (self.focused != self.activation-counted) {
+            EditingFacts.activation-focus-count += self.focused ? 1 : -1;
+            self.activation-counted = self.focused;
+        }
+    }
+}
