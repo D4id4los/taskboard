@@ -258,6 +258,52 @@ fn the_board_compact_leg_virtualises() {
     );
 }
 
+/// The deep-board render pin (#462): at the recorded i16 crash scale
+/// — four columns × 650 rows = 2 600 tasks, the empirical bracket's
+/// panic point where the eager board's column geometry overflowed the
+/// software renderer's i16 pixel space — the virtualised board
+/// rasterizes a frame. The capture itself is the property: the former
+/// failure mode was a process abort inside the raster pass. The
+/// ×4 instance ratio is a failure detector on the eager shape, never
+/// a success ceiling, and the labelled head card rejects the
+/// degenerate "engaged but renders nothing" breakage. Regular leg
+/// only: the recorded backtrace is the regular leg's drop-zone
+/// repeater, and the compact leg's engagement is pinned above.
+#[test]
+fn a_board_beyond_the_i16_pixel_ceiling_renders() {
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        |driver| {
+            let (_handle, _engine) = mount_board(driver, 2600, 1366, 768);
+            let snapshot = driver.snapshot();
+            assert_eq!(
+                (snapshot.width, snapshot.height),
+                (1366, 768),
+                "renderer-presence contract: the headless software renderer \
+                 must capture the deep board at the exact window size"
+            );
+            let instances = driver.find_all_by_id("BoardLayout::drag-zone");
+            assert!(
+                !instances.is_empty(),
+                "the engaged board still renders its head cards"
+            );
+            assert!(
+                instances.len() * 4 < 2600,
+                "the board must stay viewport-scale at the crash scale, got \
+                 {} live cards of 2600 — the eager shape re-arms the #462 \
+                 i16 overflow",
+                instances.len()
+            );
+            assert!(
+                driver.find_by_label(&bench_label(0)).is_some(),
+                "the first card of column 0 renders at the crash scale"
+            );
+        },
+    );
+}
+
 /// Focus-into-view, board regular leg (D-5's acceptance semantics): a
 /// keyboard jump to the last card of the reading order makes the far
 /// off-viewport card live and fully visible. Guarded first: the card
