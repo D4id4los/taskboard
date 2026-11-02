@@ -373,6 +373,15 @@ was unbound under emacs was corrected).
   storage-truncation divergence that could re-fire a delivered
   reminder after a reload (#283 F11-03).
 
+- The kiosk board no longer aborts the process at large task counts
+  (#462): on the software renderer (the linuxkms kiosk surface) a
+  board accumulating ~2.5k+ tasks overflowed the renderer's i16
+  pixel space in the eager column geometry and panicked on the first
+  board render. The virtualised task lists (see the "Virtualised
+  task lists (#373)" entry) bound the live geometry to the viewport,
+  so deep boards render; a regression pin now guards the recorded
+  crash scale in CI.
+
 ### Added
 - Task view & dates round (round-3 GUI review, findings F13/F14/F15/
   F16/F17/F28/F29 and fold-ins #230/#228): the due cell reads
