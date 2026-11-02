@@ -2289,6 +2289,7 @@ mod tests {
             end: None,
             created: ts(clock - 2_000),
             clock: ts(clock),
+            kind: crate::tracking::TimeEntryKind::Work,
         }
     }
 

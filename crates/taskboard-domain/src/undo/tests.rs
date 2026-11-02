@@ -295,6 +295,7 @@ fn log_time_capture_journals_the_minted_entry_id_and_pre_absence() {
         task,
         start: ts(400),
         end: ts(500),
+        kind: crate::tracking::TimeEntryKind::Work,
     })
     .expect("logged");
     let entry = h.journal.entries.last().unwrap();
@@ -400,6 +401,7 @@ fn widened_noop_repeats_journal_nothing() {
             task,
             start: ts(400),
             end: ts(500),
+            kind: crate::tracking::TimeEntryKind::Work,
         })
         .expect("logged");
         *h.disk.tracking.entries.keys().next().expect("entry row")
@@ -415,6 +417,7 @@ fn widened_noop_repeats_journal_nothing() {
         id: entry_id,
         start: Some(entry_start),
         end: entry_end,
+        kind: None,
     })
     .expect("accepted no-op");
     h.exec(&StateCommand::UpdateHabit {
@@ -442,6 +445,7 @@ fn log_time_round_trips() {
             task,
             start: ts(400),
             end: ts(500),
+            kind: crate::tracking::TimeEntryKind::Work,
         })
         .expect("logged");
     let CommandOutcome::TimeLogged { entry } = logged else {
@@ -496,6 +500,7 @@ fn adjust_time_entry_round_trips_on_a_closed_entry() {
         task,
         start: ts(400),
         end: ts(500),
+        kind: crate::tracking::TimeEntryKind::Work,
     })
     .expect("logged");
     let entry_id = *h.disk.tracking.entries.keys().next().expect("entry");
@@ -504,6 +509,7 @@ fn adjust_time_entry_round_trips_on_a_closed_entry() {
         id: entry_id,
         start: Some(ts(420)),
         end: Some(ts(560)),
+        kind: None,
     })
     .expect("adjusted");
     h.exec(&StateCommand::Undo).expect("undone");
@@ -522,8 +528,11 @@ fn adjust_open_entry_start_round_trips_and_stays_open() {
     let board = h.board();
     let stack = h.stack(board);
     let task = h.task(stack, "t");
-    h.exec(&StateCommand::StartTracking { task })
-        .expect("started (journals NotUndoable, mints the open entry)");
+    h.exec(&StateCommand::StartTracking {
+        task,
+        kind: crate::tracking::TimeEntryKind::Work,
+    })
+    .expect("started (journals NotUndoable, mints the open entry)");
     let entry_id = h
         .disk
         .tracking
@@ -537,6 +546,7 @@ fn adjust_open_entry_start_round_trips_and_stays_open() {
         id: entry_id,
         start: Some(ts(600)),
         end: None,
+        kind: None,
     })
     .expect("adjusted");
     h.exec(&StateCommand::Undo).expect("undone");
@@ -725,6 +735,7 @@ fn log_time_undo_after_task_delete_still_deletes_the_entry() {
         task,
         start: ts(400),
         end: ts(500),
+        kind: crate::tracking::TimeEntryKind::Work,
     })
     .expect("logged");
     let entry_id = *h.disk.tracking.entries.keys().next().expect("entry");
@@ -794,8 +805,11 @@ fn an_adjust_that_closes_an_open_entry_journals_not_undoable() {
     let board = h.board();
     let stack = h.stack(board);
     let task = h.task(stack, "t");
-    h.exec(&StateCommand::StartTracking { task })
-        .expect("started");
+    h.exec(&StateCommand::StartTracking {
+        task,
+        kind: crate::tracking::TimeEntryKind::Work,
+    })
+    .expect("started");
     let entry_id = h
         .disk
         .tracking
@@ -810,6 +824,7 @@ fn an_adjust_that_closes_an_open_entry_journals_not_undoable() {
         id: entry_id,
         start: None,
         end: Some(closing_end),
+        kind: None,
     })
     .expect("accepted (the adjust itself is legal)");
     let entry = h.journal.entries.last().unwrap();
@@ -980,6 +995,7 @@ fn a_logged_entry_adjusted_since_refuses_the_log_time_undo() {
         task,
         start: ts(400),
         end: ts(500),
+        kind: crate::tracking::TimeEntryKind::Work,
     })
     .expect("logged");
     let entry_id = *h.disk.tracking.entries.keys().next().expect("entry");
@@ -987,6 +1003,7 @@ fn a_logged_entry_adjusted_since_refuses_the_log_time_undo() {
         id: entry_id,
         start: None,
         end: Some(ts(560)),
+        kind: None,
     })
     .expect("adjusted");
     h.exec(&StateCommand::Undo).expect("the adjust undoes");
@@ -1463,8 +1480,11 @@ fn not_undoable_heads_refuse_and_name_the_reason() {
     // Tracking surface (StartTracking: structurally non-invertible per
     // ADR 0017; LogTime/CreateHabit joined the undoable catalogue in
     // #555 — the representatives moved with them, D30).
-    h.exec(&StateCommand::StartTracking { task })
-        .expect("started");
+    h.exec(&StateCommand::StartTracking {
+        task,
+        kind: crate::tracking::TimeEntryKind::Work,
+    })
+    .expect("started");
     assert!(matches!(
         h.exec(&StateCommand::Undo),
         Err(CommandError::TargetNotUndoable(
@@ -1772,6 +1792,7 @@ fn every_arm_journals_entry_or_nothing() {
             task,
             start: ts(400),
             end: ts(500),
+            kind: crate::tracking::TimeEntryKind::Work,
         })
         .expect("logged");
         *h.disk.tracking.entries.keys().next().expect("entry row")
@@ -1895,17 +1916,22 @@ fn every_arm_journals_entry_or_nothing() {
             insistence: crate::reminders::Insistence::Normal,
         },
         StateCommand::CancelAdhocAlarm { alarm: alarm_id },
-        StateCommand::StartTracking { task },
+        StateCommand::StartTracking {
+            task,
+            kind: crate::tracking::TimeEntryKind::Work,
+        },
         StateCommand::StopTracking,
         StateCommand::LogTime {
             task,
             start: ts(600),
             end: ts(700),
+            kind: crate::tracking::TimeEntryKind::Work,
         },
         StateCommand::AdjustTimeEntry {
             id: entry_id,
             start: None,
             end: Some(ts(650)),
+            kind: None,
         },
         StateCommand::DeleteTimeEntry { id: entry_id },
         StateCommand::CreateHabit {

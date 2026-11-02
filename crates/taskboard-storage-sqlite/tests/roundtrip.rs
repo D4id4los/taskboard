@@ -1492,6 +1492,7 @@ fn time_entry(id: u128, task: &Task, open: bool) -> taskboard_domain::TimeEntry 
         end: open.then_some(ts(2_000)),
         created_at: ts(999),
         updated_at: ts(2_500),
+        kind: taskboard_domain::tracking::TimeEntryKind::Work,
     }
 }
 

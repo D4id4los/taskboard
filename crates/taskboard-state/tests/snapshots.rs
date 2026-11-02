@@ -1328,7 +1328,12 @@ async fn s36_tracking_rows_enter_the_disk_contract() {
     else {
         panic!("wrong receipt");
     };
-    let CommandOutcome::TrackingStarted { .. } = s.run(StateCommand::StartTracking { task }).await
+    let CommandOutcome::TrackingStarted { .. } = s
+        .run(StateCommand::StartTracking {
+            task,
+            kind: taskboard_domain::tracking::TimeEntryKind::Work,
+        })
+        .await
     else {
         panic!("wrong receipt");
     };
@@ -1339,6 +1344,7 @@ async fn s36_tracking_rows_enter_the_disk_contract() {
         task,
         start: ts(T0 - 86_400),
         end: ts(T0 - 79_200),
+        kind: taskboard_domain::tracking::TimeEntryKind::Work,
     })
     .await;
     s.snap("s36b");

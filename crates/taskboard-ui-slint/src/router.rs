@@ -456,7 +456,10 @@ impl ActionRouter {
             // and unconditional — nothing-open is the planner's total
             // NoOp, the engine owns the refusals.
             ActionId::TaskTrackStart => match ctx.track_target.or(ctx.focused_task) {
-                Some(task) => DispatchOutcome::Command(StateCommand::StartTracking { task }),
+                Some(task) => DispatchOutcome::Command(StateCommand::StartTracking {
+                    task,
+                    kind: taskboard_domain::tracking::TimeEntryKind::Work,
+                }),
                 None => DispatchOutcome::NoTarget,
             },
             ActionId::TaskTrackStop => DispatchOutcome::Command(StateCommand::StopTracking),
@@ -655,7 +658,10 @@ mod tests {
         empty.track_target = Some(task);
         assert_eq!(
             ActionRouter::dispatch(ActionId::TaskTrackStart, &empty),
-            DispatchOutcome::Command(StateCommand::StartTracking { task }),
+            DispatchOutcome::Command(StateCommand::StartTracking {
+                task,
+                kind: taskboard_domain::tracking::TimeEntryKind::Work
+            }),
             "the explicit target wins"
         );
 
@@ -663,7 +669,10 @@ mod tests {
         let focused_task = focused_ctx.focused_task.expect("set");
         assert_eq!(
             ActionRouter::dispatch(ActionId::TaskTrackStart, &focused_ctx),
-            DispatchOutcome::Command(StateCommand::StartTracking { task: focused_task }),
+            DispatchOutcome::Command(StateCommand::StartTracking {
+                task: focused_task,
+                kind: taskboard_domain::tracking::TimeEntryKind::Work
+            }),
             "the context menu's and detail button's focused-task path"
         );
 
@@ -672,7 +681,10 @@ mod tests {
         both.focused_task = Some(focused);
         assert_eq!(
             ActionRouter::dispatch(ActionId::TaskTrackStart, &both),
-            DispatchOutcome::Command(StateCommand::StartTracking { task }),
+            DispatchOutcome::Command(StateCommand::StartTracking {
+                task,
+                kind: taskboard_domain::tracking::TimeEntryKind::Work
+            }),
             "the notification row's target is table addressing, not focus"
         );
     }

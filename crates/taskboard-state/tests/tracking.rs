@@ -134,7 +134,10 @@ async fn t1_start_publishes_the_open_row_memory_equals_disk() {
 
     let outcome = h
         .handle
-        .execute(StateCommand::StartTracking { task })
+        .execute(StateCommand::StartTracking {
+            task,
+            kind: taskboard_domain::tracking::TimeEntryKind::Work,
+        })
         .await
         .expect("accepted");
     let CommandOutcome::TrackingStarted { entry, closed } = outcome else {
@@ -171,7 +174,10 @@ async fn t2_stop_stamps_and_publishes() {
     let h = spawn_over(repo, clock.clone()).await;
     let task = seed_task(&h).await;
     h.handle
-        .execute(StateCommand::StartTracking { task })
+        .execute(StateCommand::StartTracking {
+            task,
+            kind: taskboard_domain::tracking::TimeEntryKind::Work,
+        })
         .await
         .expect("accepted");
 
@@ -221,7 +227,10 @@ async fn t3_fresh_engine_over_the_same_repo_sees_the_running_entry() {
     let task = seed_task(&engine1).await;
     let CommandOutcome::TrackingStarted { entry, .. } = engine1
         .handle
-        .execute(StateCommand::StartTracking { task })
+        .execute(StateCommand::StartTracking {
+            task,
+            kind: taskboard_domain::tracking::TimeEntryKind::Work,
+        })
         .await
         .expect("accepted")
     else {

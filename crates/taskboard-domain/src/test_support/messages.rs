@@ -159,7 +159,10 @@ pub fn state_command_strategy() -> impl Strategy<Value = crate::messages::StateC
             }),
         super::task_id_strategy().prop_map(|task| StateCommand::ClearReminderRules { task }),
         // 5: tracking commands (DR-5/1)
-        super::task_id_strategy().prop_map(|task| StateCommand::StartTracking { task }),
+        super::task_id_strategy().prop_map(|task| StateCommand::StartTracking {
+            task,
+            kind: crate::tracking::TimeEntryKind::Work
+        }),
         Just(StateCommand::StopTracking),
         (
             super::task_id_strategy(),
@@ -174,6 +177,7 @@ pub fn state_command_strategy() -> impl Strategy<Value = crate::messages::StateC
                     task,
                     start,
                     end: start + chrono::TimeDelta::try_seconds(span).unwrap(),
+                    kind: crate::tracking::TimeEntryKind::Work,
                 }
             }),
         (
@@ -181,7 +185,12 @@ pub fn state_command_strategy() -> impl Strategy<Value = crate::messages::StateC
             prop::option::of(super::timestamp_strategy()),
             prop::option::of(super::timestamp_strategy()),
         )
-            .prop_map(|(id, start, end)| StateCommand::AdjustTimeEntry { id, start, end }),
+            .prop_map(|(id, start, end)| StateCommand::AdjustTimeEntry {
+                id,
+                start,
+                end,
+                kind: None
+            }),
         super::time_entry_id_strategy().prop_map(|id| StateCommand::DeleteTimeEntry { id }),
         // 1: sync request
         Just(StateCommand::RequestSync),

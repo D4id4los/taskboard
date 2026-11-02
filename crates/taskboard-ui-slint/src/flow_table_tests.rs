@@ -1176,6 +1176,7 @@ fn the_task_detail_model_carries_the_tracked_total_and_it_freezes_when_closed() 
                 end: None,
                 created_at: start,
                 updated_at: start,
+                kind: taskboard_domain::tracking::TimeEntryKind::Work,
             },
         );
         let rig = rig(state);
@@ -1233,6 +1234,7 @@ fn open_entry_on(state: &mut AppState, task: TaskId) {
             end: None,
             created_at: start,
             updated_at: start,
+            kind: taskboard_domain::tracking::TimeEntryKind::Work,
         },
     );
 }
@@ -1455,7 +1457,7 @@ fn the_header_tracking_buttons_route_their_registry_commands() {
         assert!(
             matches!(
                 drained.as_slice(),
-                [StateCommand::StartTracking { task }] if *task == a_id
+                [StateCommand::StartTracking { task, .. }] if *task == a_id
             ),
             "Start routes StartTracking over the subject, got {drained:?}"
         );

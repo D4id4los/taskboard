@@ -280,7 +280,7 @@ fn touched_board(app: &AppState, command: &StateCommand) -> Option<crate::ids::B
         | StateCommand::SetTaskRemindersMuted { task: id, .. }
         | StateCommand::AddReminderRule { task: id, .. }
         | StateCommand::ClearReminderRules { task: id }
-        | StateCommand::StartTracking { task: id }
+        | StateCommand::StartTracking { task: id, .. }
         | StateCommand::LogTime { task: id, .. }
         | StateCommand::AssignLabel { task: id, .. }
         | StateCommand::UnassignLabel { task: id, .. } => task_board(*id),
@@ -1103,6 +1103,7 @@ fn synthesize_undo(
                 } else {
                     pre.end
                 },
+                kind: None,
             })
         }
         InverseClass::CreatedHabit => {

@@ -476,6 +476,7 @@ async fn log_time_round_trips_through_the_engine() {
         task,
         start: common::ts(T0 - 3_600),
         end: common::ts(T0 - 1_800),
+        kind: taskboard_domain::tracking::TimeEntryKind::Work,
     })
     .await
     .expect("accepted");
@@ -544,6 +545,7 @@ async fn adjust_time_entry_round_trips_through_the_engine() {
         task,
         start: common::ts(T0 - 3_600),
         end: common::ts(T0 - 1_800),
+        kind: taskboard_domain::tracking::TimeEntryKind::Work,
     })
     .await
     .expect("accepted");
@@ -560,6 +562,7 @@ async fn adjust_time_entry_round_trips_through_the_engine() {
         id: entry_id,
         start: Some(common::ts(T0 - 2_400)),
         end: Some(common::ts(T0 - 900)),
+        kind: None,
     })
     .await
     .expect("accepted");
@@ -783,6 +786,7 @@ async fn a_pushed_log_time_undo_enqueues_instead_of_retracting() {
         task,
         start: common::ts(T0 - 3_600),
         end: common::ts(T0 - 1_800),
+        kind: taskboard_domain::tracking::TimeEntryKind::Work,
     })
     .await
     .expect("accepted");
@@ -851,10 +855,7 @@ async fn a_pushed_log_time_undo_enqueues_instead_of_retracting() {
         "a pushed undo enqueues the inverse as a new edit"
     );
     assert!(
-        !persisted
-            .outbox
-            .iter()
-            .any(|pending| pending.op_id == op_id),
+        !persisted.outbox.iter().any(|p| p.op_id == op_id),
         "no retraction: the completed op stays completed"
     );
     let app = rig.state();

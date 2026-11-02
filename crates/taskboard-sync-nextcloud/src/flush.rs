@@ -801,6 +801,7 @@ mod tests {
                 end: None,
                 created_at: start,
                 updated_at: start,
+                kind: taskboard_domain::tracking::TimeEntryKind::Work,
             },
         )
     }
