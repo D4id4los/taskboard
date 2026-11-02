@@ -1194,10 +1194,25 @@ async fn reminder_tick(
     } = seams;
     let now = clock.now();
     let firings = core.due_reminder_firings(&cfg.defaults, now);
-    if firings.is_empty() {
+    // Issue #201: the tick also emits the stale-delivery sweep —
+    // delivery rows no reader consults whose occurrence has aged past
+    // the horizon. The sweep rides the reminder tick (the same
+    // subsystem owns the facts, the clock read, and the cadence); a
+    // lost batch prunes nothing and re-sweeps next tick (the tick's
+    // failure discipline — with state fixed the stale set only grows as
+    // `now` advances).
+    let stale = taskboard_domain::reminders::stale_deliveries(
+        core.tasks(),
+        core.reminders(),
+        &cfg.defaults,
+        now,
+        taskboard_domain::reminders::delivery_prune_age(),
+    );
+    if firings.is_empty() && stale.is_empty() {
         return;
     }
-    let actions = delivery_batch(&firings, now);
+    let mut actions = stale_prune_batch(&stale);
+    actions.extend(delivery_batch(&firings, now));
     if let Err(err) = repo.apply(actions.clone()).await {
         // Nothing fires: the delivery marker was never durably recorded,
         // and memory never advanced either.
@@ -1278,6 +1293,21 @@ fn delivery_batch(
             })
         })
         .collect()
+}
+
+/// The sweep's batch slice: `[]` on a quiet sweep, one prune action
+/// naming the whole stale set otherwise (the batch prefix — the records
+/// of a firing tick land after it, in the same transaction).
+fn stale_prune_batch(
+    stale: &std::collections::BTreeSet<taskboard_domain::ReminderDelivery>,
+) -> Vec<PersistenceAction> {
+    if stale.is_empty() {
+        Vec::new()
+    } else {
+        vec![PersistenceAction::PruneReminderDeliveries(
+            stale.iter().copied().collect(),
+        )]
+    }
 }
 
 /// Outbound delivery, after the markers are durable. `send`, not
