@@ -179,9 +179,16 @@ warning (=sidecar.reason=, additive) and the UI's sidecar badge —
 with the format-too-new fence never re-encoding the document
 downstream. Device-local things never enter the document:
 =AdhocAlarm=s and the delivery/snooze/mute records stay in the
-local SQLite tables (0004/0008). Accepted limitation: a card moved
-between boards loses its app-side fields (the document is
-per-board; issue #350 tracks the repair).
+local SQLite tables (0004/0008). A card moved between boards is
+repaired at the transport: when a board's cycle snapshots a card it
+has no document entry for, its flush migrates the card-keyed sections
+from sibling-board documents the same connector owns (embedded clocks
+unchanged; the origin board's snapshot-absence GC then drops the old
+entry). Partial by construction: cross-server moves have no sibling
+to consult and are never repaired, a concurrent edit racing the move
+can still be lost within one poll interval, time-entry history stays
+on the origin board's document (board-level by design), and
+convergence trails adoption by one cycle.
 
 ** The kiosk appliance and its surfaces
 

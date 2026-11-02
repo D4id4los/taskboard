@@ -696,6 +696,23 @@ board**, full stop:
   repair is out of scope (backlog §8). Surfaced to the user session
   (§6).
 
+  **Amended 2026-11-02** (repaired): the repair landed — issue #350,
+  backlog round 2 chunk 4.3 (plan:
+  `.artifacts/plans/2026-10-31-sidecar-cross-board-repair-plan.md`).
+  The destination board's flush now migrates the card-keyed sections
+  (`tasks`, `reminder-rules`, `dismissals`) of a snapshot-listed card
+  from sibling-board documents the *same connector* owns (in-memory
+  sources: the last ingested document per board, plus the GC-eviction
+  reservoir so the origin's own flush cannot race the repair), with
+  embedded clocks unchanged. Coverage is **partial by construction**:
+  cross-server moves have no visibility and are never repaired; a
+  concurrent edit racing the move on another device can still be lost
+  within one poll interval (§7 R1); time-entry history does not
+  follow the card (its section is board-level by design and ages out
+  under the 180-day retention); convergence is one cycle behind
+  adoption (the ordinary echo cadence); and a fresh actor's first
+  pass migrates nothing until its siblings' documents are ingested.
+
 **DF conformance**: no cross-connector coordination, no registry
 entries, no routing — the document rides the per-board cycles the
 accepted design already defines. **Topology untouched (DF-10).**
