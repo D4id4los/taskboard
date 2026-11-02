@@ -117,6 +117,14 @@ pub enum Command {
         #[command(subcommand)]
         cmd: TimersCmd,
     },
+    /// Break-reminder rule verbs over the in-process core (#495): add
+    /// a rule firing after an unbroken tracked-work threshold, list,
+    /// remove. Device-local — never synced (the `timers` family's
+    /// exact situation).
+    Breaks {
+        #[command(subcommand)]
+        cmd: BreaksCmd,
+    },
     /// Time tracking over the in-process core (D-T14): start/stop the
     /// running timer, log retroactive blocks, adjust/delete history
     /// (ADR 0017 — the open entry *is* the timer; nothing ticks).
@@ -581,6 +589,25 @@ fn parse_insistence_flag(raw: &str) -> Result<taskboard_domain::Insistence, Stri
         .ok_or_else(|| "expected normal|alarm".to_owned())
 }
 
+/// Parses `--kind` over the time-entry kind vocabulary (`work` |
+/// `respite`). Anything unmatched is a clap usage error (exit 2) — a
+/// boundary parse rejection, never a domain error variant (the
+/// `parse_insistence_flag` shape).
+fn parse_kind_flag(raw: &str) -> Result<taskboard_domain::tracking::TimeEntryKind, String> {
+    taskboard_domain::tracking::TimeEntryKind::parse_text_form(raw)
+        .ok_or_else(|| "expected work|respite".to_owned())
+}
+
+/// The `breaks add --after` flag: the same `<int><unit>` grammar minted
+/// straight into the domain newtype — a zero or negative total is a clap
+/// usage error (exit 2) at this boundary, never a downstream panic (the
+/// `parse_kind_flag` shape).
+fn parse_after_flag(raw: &str) -> Result<taskboard_domain::WorkThreshold, String> {
+    taskboard_domain::WorkThreshold::parse_text_form(raw).map_err(|_| {
+        "expected a positive <int><unit> duration (s|m|h|d), e.g. 90m or 1h30m".to_owned()
+    })
+}
+
 /// The `tasks remind --before` flag: the same `[reminders]
 /// default_before` grammar ([`crate::config::parse_before`]). A
 /// malformed value is a clap usage error (exit 2), the `parse_due`
@@ -832,6 +859,38 @@ pub enum TimersCmd {
     },
 }
 
+/// `breaks` subcommands (#495): the break-rule family, the `timers`
+/// recipe over duration triggers.
+#[derive(Debug, Subcommand)]
+pub enum BreaksCmd {
+    /// Create a break rule: fires when accumulated tracked work since
+    /// the last respite-marked entry reaches `--after` (the crossing
+    /// instant is the occurrence; a respite re-arms).
+    Add {
+        /// The accumulated-work threshold (`30s|5m|1h30m|2d`); strictly
+        /// positive — a zero or negative value is a usage error here.
+        #[arg(long, value_parser = parse_after_flag)]
+        after: taskboard_domain::WorkThreshold,
+        /// The notification title. Defaults to the threshold phrase.
+        #[arg(long)]
+        label: Option<String>,
+        /// How loudly the reminder insists (`normal|alarm`).
+        #[arg(long, value_parser = parse_insistence_flag)]
+        insistence: Option<taskboard_domain::Insistence>,
+    },
+    /// List the break rules in canonical `(threshold, id)` order (pure
+    /// read).
+    List,
+    /// Remove a break rule (uuid | unique ≥8-char uuid prefix | unique
+    /// case-folded label prefix). Removal deletes the row and prunes
+    /// its deliveries/dismissals/snooze links, so a repeat is a typed
+    /// unknown-rule refusal (the `timers cancel` law).
+    Remove {
+        /// The rule selector.
+        selector: String,
+    },
+}
+
 /// The export payload format. `Csv` is the default; a malformed value
 /// is a clap usage error (exit 2) — the `FindType` `ValueEnum`
 /// precedent.
@@ -946,6 +1005,10 @@ pub enum TrackCmd {
     Start {
         /// The task (uuid | unique ≥8-char uuid prefix | exact title).
         task: String,
+        /// What the open entry counts as (`work|respite`): `--kind
+        /// respite` opens the *running break*. `work` when omitted.
+        #[arg(long, value_parser = parse_kind_flag)]
+        kind: Option<taskboard_domain::tracking::TimeEntryKind>,
     },
     /// Close every open entry at the engine-stamped now. Nothing open
     /// is the typed no-op.
@@ -988,6 +1051,10 @@ pub enum TrackCmd {
         /// Span end, strictly after `--from`. Requires `--from`.
         #[arg(long, requires = "from", value_parser = parse_span_stamp)]
         to: Option<chrono::DateTime<chrono::Utc>>,
+        /// What the block counts as (`work|respite`): `--kind respite`
+        /// logs a retroactive break block. `work` when omitted.
+        #[arg(long, value_parser = parse_kind_flag)]
+        kind: Option<taskboard_domain::tracking::TimeEntryKind>,
     },
     /// Adjust an entry's span. Each flag is a *change mask*: omitted =
     /// unchanged; there is deliberately no way to clear an end (a
@@ -1002,6 +1069,10 @@ pub enum TrackCmd {
         /// New span end (stamping one on an open entry closes it).
         #[arg(long, value_parser = parse_span_stamp)]
         end: Option<chrono::DateTime<chrono::Utc>>,
+        /// New kind (`work|respite`) — the retroactive marking/remarking
+        /// of history. Omitted = unchanged.
+        #[arg(long, value_parser = parse_kind_flag)]
+        kind: Option<taskboard_domain::tracking::TimeEntryKind>,
     },
     /// Delete one entry — explicit id, no confirmation. Repeats are
     /// the typed no-op (an unknown id is *not* terminal, unlike

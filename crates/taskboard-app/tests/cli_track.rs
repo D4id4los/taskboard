@@ -134,9 +134,11 @@ async fn seed_task_on_board(config: &AppConfig, title: &str, board_id: &str) -> 
 
 async fn run_start(config: &AppConfig, task: &str) -> TrackStartReceipt {
     match parse_track(&["track", "start", task]) {
-        TrackInvocation::Start { task } => track::start(config.clone(), forbidden_store(), &task)
-            .await
-            .expect("start boots"),
+        TrackInvocation::Start { task, kind } => {
+            track::start(config.clone(), forbidden_store(), &task, kind)
+                .await
+                .expect("start boots")
+        }
         _ => panic!("the argv selects start"),
     }
 }
@@ -154,8 +156,8 @@ async fn run_log(config: &AppConfig, argv: &[&str]) -> Result<TrackLogReceipt, C
     let mut cmdline = vec!["track", "log"];
     cmdline.extend_from_slice(argv);
     match parse_track(&cmdline) {
-        TrackInvocation::Log { task, mode } => {
-            track::log(config.clone(), forbidden_store(), &task, mode).await
+        TrackInvocation::Log { task, mode, kind } => {
+            track::log(config.clone(), forbidden_store(), &task, mode, kind).await
         }
         _ => panic!("the argv selects log"),
     }
@@ -165,9 +167,12 @@ async fn run_adjust(config: &AppConfig, argv: &[&str]) -> Result<TrackAdjustRece
     let mut cmdline = vec!["track", "adjust"];
     cmdline.extend_from_slice(argv);
     match parse_track(&cmdline) {
-        TrackInvocation::Adjust { entry, start, end } => {
-            track::adjust(config.clone(), forbidden_store(), &entry, start, end).await
-        }
+        TrackInvocation::Adjust {
+            entry,
+            start,
+            end,
+            kind,
+        } => track::adjust(config.clone(), forbidden_store(), &entry, start, end, kind).await,
         _ => panic!("the argv selects adjust"),
     }
 }
@@ -605,6 +610,7 @@ async fn t11_the_session_lane_routes_track_and_export() {
                 Command::Track {
                     cmd: TrackCmd::Start {
                         task: "session work".into(),
+                        kind: None,
                     },
                 },
                 0,
@@ -637,6 +643,7 @@ async fn t11_the_session_lane_routes_track_and_export() {
                         for_: Some(chrono::TimeDelta::try_minutes(20).unwrap()),
                         from: None,
                         to: None,
+                        kind: None,
                     },
                 },
                 0,
@@ -657,6 +664,7 @@ async fn t11_the_session_lane_routes_track_and_export() {
                         entry: "ffffffff".into(),
                         start: None,
                         end: None,
+                        kind: None,
                     },
                 },
                 // The unknown selector refuses: the typed exit code.
@@ -828,13 +836,13 @@ async fn t13_export_byte_goldens_through_a_real_boot() {
     // truth; the open row's end cell is empty and its duration is
     // numeric (accrued to the export instant).
     let csv = run_export(&config, &parse_export(&["export"])).await;
-    let header = "entry_id,task_id,task_title,start,end,duration_seconds\n";
+    let header = "entry_id,task_id,task_title,start,end,duration_seconds,kind\n";
     let closed_row_one = format!(
-        "{},{},\"pl\"\"ain nasty\ntitle\",2026-01-01T07:00:00+00:00,2026-01-01T09:00:00+00:00,7200\n",
+        "{},{},\"pl\"\"ain nasty\ntitle\",2026-01-01T07:00:00+00:00,2026-01-01T09:00:00+00:00,7200,work\n",
         log1.entry.entry_id, nasty_task
     );
     let closed_row_two = format!(
-        "{},{},open work,2026-01-02T09:00:00+00:00,2026-01-02T10:30:00+00:00,5400\n",
+        "{},{},open work,2026-01-02T09:00:00+00:00,2026-01-02T10:30:00+00:00,5400,work\n",
         log2.entry.entry_id, open_task
     );
     let open_prefix = format!(
@@ -854,8 +862,10 @@ async fn t13_export_byte_goldens_through_a_real_boot() {
     // first comma).
     let duration = open_tail
         .strip_prefix(',')
-        .and_then(|rest| rest.strip_suffix('\n'))
-        .unwrap_or_else(|| panic!("the open row ends with an empty end cell: {open_tail:?}"));
+        .and_then(|rest| rest.strip_suffix(",work\n"))
+        .unwrap_or_else(|| {
+            panic!("the open row ends with an empty end cell and the kind: {open_tail:?}")
+        });
     duration
         .parse::<u64>()
         .expect("the open duration is a numeric cell (accrued to the export instant)");
@@ -1084,4 +1094,203 @@ async fn t15_the_export_payload_bypasses_the_envelope() {
         stdout_text.trim_start().starts_with('{') && stdout_text.contains("\"entries\""),
         "the receipt payload is the JSON envelope shape, not raw data"
     );
+}
+
+// ---- The respite marking surface (D-3, #493) -----------------------------
+
+/// `track start --kind respite` opens the running break: the typed
+/// receipt carries the kind, and `track status` shows it honestly.
+#[tokio::test]
+async fn t_kind_start_respite_opens_a_running_break_and_status_shows_it() {
+    let dir = tempdir();
+    let config = standalone_config(dir.path(), "track-kind.db");
+    let task_id = seed_task(&config, "break task").await;
+
+    let cli = Cli::try_parse_from([
+        "taskboard",
+        "track",
+        "start",
+        "--kind",
+        "respite",
+        task_id.as_str(),
+    ])
+    .expect("the argv parses");
+    let Some(Command::Track { cmd }) = cli.command else {
+        panic!("the argv selects the track group");
+    };
+    let Some(TrackInvocation::Start { task, kind }) = track::collapse(cmd) else {
+        panic!("the argv selects start");
+    };
+    assert!(matches!(
+        kind,
+        taskboard_domain::tracking::TimeEntryKind::Respite
+    ));
+    let receipt = track::start(config.clone(), forbidden_store(), &task, kind)
+        .await
+        .expect("start boots");
+    assert!(matches!(
+        receipt.entry.kind,
+        taskboard_domain::tracking::TimeEntryKind::Respite
+    ));
+
+    // The kind survives a restart (the disk contract rides migration
+    // 0018's column).
+    let reread = track::list(config.clone(), forbidden_store(), None, None)
+        .await
+        .expect("list boots");
+    let open_rows: Vec<_> = reread
+        .entries
+        .iter()
+        .filter(|row| row.end.is_none())
+        .collect();
+    assert_eq!(open_rows.len(), 1);
+    assert!(matches!(
+        open_rows[0].kind,
+        taskboard_domain::tracking::TimeEntryKind::Respite
+    ));
+}
+
+/// `track log --kind respite` mints a respite-marked closed block.
+#[tokio::test]
+async fn t_kind_log_respite_marks_the_block() {
+    let dir = tempdir();
+    let config = standalone_config(dir.path(), "track-kind.db");
+    let task_id = seed_task(&config, "log break task").await;
+    let receipt = track::log(
+        config.clone(),
+        forbidden_store(),
+        &task_id,
+        track::LogMode::Span(ts(1_000), ts(2_000)),
+        taskboard_domain::tracking::TimeEntryKind::Respite,
+    )
+    .await
+    .expect("log boots");
+    assert!(matches!(
+        receipt.entry.kind,
+        taskboard_domain::tracking::TimeEntryKind::Respite
+    ));
+}
+
+/// `track adjust --kind` is the tri-state change mask: omitted =
+/// unchanged, a value re-marks history.
+#[tokio::test]
+async fn t_kind_adjust_change_mask_semantics() {
+    let dir = tempdir();
+    let config = standalone_config(dir.path(), "track-kind.db");
+    let task_id = seed_task(&config, "adjust break task").await;
+    let logged = track::log(
+        config.clone(),
+        forbidden_store(),
+        &task_id,
+        track::LogMode::Span(ts(1_000), ts(2_000)),
+        taskboard_domain::tracking::TimeEntryKind::Work,
+    )
+    .await
+    .expect("log boots");
+    let selector = &logged.entry.entry_id[..8];
+
+    // Kind-only edit: the span is unchanged, the kind re-marks.
+    let adjusted = track::adjust(
+        config.clone(),
+        forbidden_store(),
+        selector,
+        None,
+        None,
+        Some(taskboard_domain::tracking::TimeEntryKind::Respite),
+    )
+    .await
+    .expect("adjust boots");
+    assert!(adjusted.changed);
+    assert!(matches!(
+        adjusted.entry.kind,
+        taskboard_domain::tracking::TimeEntryKind::Respite
+    ));
+    assert_eq!(adjusted.entry.start, logged.entry.start);
+    assert_eq!(adjusted.entry.end, logged.entry.end);
+
+    // The unchanged mask (kind included) is the accepted no-op.
+    let noop = track::adjust(
+        config.clone(),
+        forbidden_store(),
+        selector,
+        None,
+        None,
+        Some(taskboard_domain::tracking::TimeEntryKind::Respite),
+    )
+    .await
+    .expect("adjust boots");
+    assert!(!noop.changed);
+}
+
+/// `track start --kind sabbatical` is a clap usage refusal (exit 2 at
+/// the parse boundary — structural: the collapse never sees it). The
+/// value parser is the trust boundary; the test pins it through the
+/// real clap surface.
+#[test]
+fn t_kind_unknown_value_is_a_parse_rejection() {
+    let err = Cli::try_parse_from([
+        "taskboard",
+        "track",
+        "start",
+        "--kind",
+        "sabbatical",
+        "some-task",
+    ])
+    .expect_err("an unknown kind is a clap usage error");
+    // Structural: a usage-class refusal (never a valid parse), i.e.
+    // the command can never reach the engine with an unknown kind.
+    assert!(
+        matches!(
+            err.kind(),
+            clap::error::ErrorKind::InvalidValue
+                | clap::error::ErrorKind::ValueValidation
+                | clap::error::ErrorKind::UnknownArgument
+        ),
+        "a usage-class refusal: {}",
+        err.kind()
+    );
+}
+
+/// `track status`'s tracked-today total is work-only through the CLI
+/// view (the D-11 pin end to end over a boot).
+#[tokio::test]
+async fn t_kind_status_tracked_today_excludes_respite() {
+    let dir = tempdir();
+    let config = standalone_config(dir.path(), "track-kind.db");
+    let task_id = seed_task(&config, "status break task").await;
+    // 1000s of work and 1000s of respite inside today's window (the
+    // spans anchor at now — the day window is calendar-relative).
+    let now = chrono::Utc::now();
+    let _ = track::log(
+        config.clone(),
+        forbidden_store(),
+        &task_id,
+        track::LogMode::Span(now - chrono::TimeDelta::try_seconds(2_000).unwrap(), now),
+        taskboard_domain::tracking::TimeEntryKind::Work,
+    )
+    .await
+    .expect("log work boots");
+    let _ = track::log(
+        config.clone(),
+        forbidden_store(),
+        &task_id,
+        track::LogMode::Span(
+            now - chrono::TimeDelta::try_seconds(4_000).unwrap(),
+            now - chrono::TimeDelta::try_seconds(3_000).unwrap(),
+        ),
+        taskboard_domain::tracking::TimeEntryKind::Respite,
+    )
+    .await
+    .expect("log respite boots");
+    let status = track::status(config.clone(), forbidden_store(), day_calendar())
+        .await
+        .expect("status boots");
+    assert_eq!(
+        status.tracked_today_seconds, 2_000,
+        "the 2_000s of work count; the respite block does not"
+    );
+}
+
+fn ts(secs: i64) -> chrono::DateTime<chrono::Utc> {
+    chrono::DateTime::from_timestamp(secs, 0).expect("valid instant")
 }

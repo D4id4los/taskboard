@@ -338,6 +338,7 @@ fn o3_error_kinds_cover_every_variant() {
             CommandError::UnknownReminderRule(_) => "unknown-reminder-rule",
             CommandError::AmbiguousReminderRule { .. } => "ambiguous-reminder-rule",
             CommandError::UnknownAdhocAlarm(_) => "unknown-adhoc-alarm",
+            CommandError::UnknownBreakRule(_) => "unknown-break-rule",
             CommandError::AmbiguousAdhocAlarm { .. } => "ambiguous-adhoc-alarm",
             CommandError::UnknownTimeEntry { .. } => "unknown-time-entry",
             CommandError::AmbiguousTimeEntry { .. } => "ambiguous-time-entry",

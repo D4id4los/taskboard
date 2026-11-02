@@ -101,7 +101,7 @@ pub use habit::{
 };
 pub use idgen::{IdGenerator, UuidV7Generator};
 pub use ids::{
-    AdhocAlarmId, BoardId, ConnectorId, HabitId, JournalId, LabelId, ReminderRuleId,
+    AdhocAlarmId, BoardId, BreakRuleId, ConnectorId, HabitId, JournalId, LabelId, ReminderRuleId,
     RemoteBoardBinding, RemoteBoardId, RemoteCardId, RemoteCardRef, RemoteLabelId, RemoteLabelRef,
     RemoteStackId, RemoteStackRef, SeriesId, StackId, TaskId, TimeEntryId,
 };
@@ -138,11 +138,11 @@ pub use recur::{
     schedule, series_reference_date,
 };
 pub use reminders::{
-    AdhocAlarm, AdhocWhen, Insistence, InvalidReminderOffset, Notification, NotifierMessage,
-    ReminderAnchor, ReminderDefaults, ReminderDelivery, ReminderDismissal, ReminderFiring,
-    ReminderOffset, ReminderRef, ReminderRule, ReminderSnooze, ReminderSnoozeKey, ReminderState,
-    active_notifications, alarm_occurrence, due_firings, due_soon, effective_occurrence,
-    notifications_for, occurrence_of, overdue_tasks, prune_settled_alarms,
+    AdhocAlarm, AdhocWhen, BreakRule, Insistence, InvalidReminderOffset, Notification,
+    NotifierMessage, ReminderAnchor, ReminderDefaults, ReminderDelivery, ReminderDismissal,
+    ReminderFiring, ReminderOffset, ReminderRef, ReminderRule, ReminderSnooze, ReminderSnoozeKey,
+    ReminderState, active_notifications, alarm_occurrence, due_firings, due_soon,
+    effective_occurrence, notifications_for, occurrence_of, overdue_tasks, prune_settled_alarms,
 };
 pub use remote::{
     BoardPullValidators, PushOutcome, PushResult, RemoteBoard, RemoteBoardSnapshot, RemoteEcho,
@@ -152,5 +152,8 @@ pub use state::{
     AppState, SidecarHealth, SyncCounters, SyncErrorKind, SyncPhase, SyncStates, SyncStatus,
     aggregate_rows, attributed_board, derive_sidecar_health, derive_sync_states,
 };
-pub use tracking::{ClosedSpan, SpanRejected, TimeEntry, TrackingState, tracked_in_window};
+pub use tracking::{
+    ClosedSpan, SpanRejected, TimeEntry, TimeEntryKind, TrackingState, WorkThreshold,
+    accumulated_work, break_crossing, tracked_in_window, work_in_window,
+};
 pub use undo::{journal_push_marks, plan_journaled_command, plan_redo, plan_undo, pre_images};

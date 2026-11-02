@@ -745,7 +745,7 @@ async fn t16_track_and_export_over_the_relay() {
     let (code, served, err) = install.run(&["export", "--format", "csv", "--task", "log work"]);
     assert_eq!(code, Some(0), "{err}");
     assert!(
-        served.starts_with("entry_id,task_id,task_title,start,end,duration_seconds\n"),
+        served.starts_with("entry_id,task_id,task_title,start,end,duration_seconds,kind\n"),
         "the raw CSV header rides stdout verbatim"
     );
     assert_eq!(served.lines().count(), 2, "one closed row");
