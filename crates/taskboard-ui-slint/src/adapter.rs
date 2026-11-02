@@ -821,10 +821,13 @@ impl Adapter {
 
     /// The leaving rule (D9, factored out of the table): a view
     /// switch by effect settles the flow through the same per-kind
-    /// rule every other trigger uses (round-3 R1–R3) and dismisses
-    /// the tooltip (r2 D13 — the anchor view is about to unmount).
+    /// rule every other trigger uses (round-3 R1–R3). Its r2 D13
+    /// dismiss half moved to the `apply_effect` choke point (r4
+    /// chunk 4, D14): this method's only caller is `interpret`'s
+    /// leaving block, itself only reached from `apply_effect`, so the
+    /// identity diff subsumes the dismiss on every path — one
+    /// mechanism, one site.
     fn settle_flows_on_leaving(&mut self, window: &AppWindow, state: &taskboard_domain::AppState) {
-        Self::dismiss_tooltip(window);
         self.settle_flow(window, state);
     }
 
@@ -836,6 +839,22 @@ impl Adapter {
     #[cfg(test)]
     pub(crate) fn interpret_for_test(&mut self, window: &AppWindow, effect: UiEffect) {
         self.interpret(window, effect);
+    }
+
+    /// The dismiss-walk harness (r4 chunk 4, D14's structural walk):
+    /// the tooltip seam lives on `apply_effect` — the choke point —
+    /// not on `interpret`, so the walk drives the full pass.
+    #[cfg(test)]
+    pub(crate) fn apply_effect_for_test(&mut self, window: &AppWindow, effect: UiEffect) {
+        self.apply_effect(window, effect);
+    }
+
+    /// The dismiss-walk harness, palette half: seeds the palette's
+    /// resolved row targets (the walk's `ShowTask`/`InvokeSelected`
+    /// preconditions).
+    #[cfg(test)]
+    pub(crate) fn test_seed_palette(&mut self, targets: Vec<taskboard_domain::SearchTarget>) {
+        self.tables.palette = targets;
     }
 
     /// The control walk's guard seam (round-3 D25): drives one Tab
@@ -1010,8 +1029,15 @@ impl Adapter {
                 UiEffect::SetMode(Mode::Normal) | UiEffect::Activate,
             ) => self.interpret_description(effect, &state),
             // -- quick capture (chunk 10 D8): the GLOBAL action, from
-            //    any flow — the XOR rule replaces without committing --
-            (_, UiEffect::BeginCapture) => self.view_state.begin_capture(),
+            //    any flow — the XOR rule replaces without committing.
+            //    The capture overlay is a modal takeover (r2 D13's own
+            //    rule sentence): the tip dies into it even though the
+            //    view identity may hold (the anchor stays mounted
+            //    under the overlay).
+            (_, UiEffect::BeginCapture) => {
+                Self::dismiss_tooltip(window);
+                self.view_state.begin_capture()
+            }
             // -- the capture commit/close (the palette's modal peer);
             //    NOT `interpret_edit` — capture's non-empty commit
             //    deliberately keeps the flow --
@@ -1028,7 +1054,13 @@ impl Adapter {
             // nothing (the field owns its printables).
             (Flow::EditDescription { .. }, UiEffect::SetMode(Mode::Insert)) => Vec::new(),
             // -- no flow: the intents begin things --
-            (Flow::None, UiEffect::OpenPalette) => self.view_state.open_palette(),
+            (Flow::None, UiEffect::OpenPalette) => {
+                // The palette is the second modal context (D8): the
+                // modal-takeover half of the r2 D13 rule — the tip
+                // dies into the overlay (the BeginCapture shape).
+                Self::dismiss_tooltip(window);
+                self.view_state.open_palette()
+            }
             // The title action with no flow (round-3 W-SM-d): arms
             // the viewed task's editor; inert without a viewed
             // subject (the matrix's "no subject" cell).
@@ -1042,7 +1074,19 @@ impl Adapter {
                 | UiEffect::RequestMove
                 | UiEffect::BeginCreate { .. }
                 | UiEffect::BeginCreateStack),
-            ) => self.interpret_begin(effect, &state),
+            ) => {
+                // The ghost case (r4 chunk 4, D14): the identity tuple
+                // does not move, but the hovered ghost itself unmounts
+                // by construction of the flow the begin opens — an
+                // explicit dismiss beside the flow's arming.
+                if matches!(
+                    effect,
+                    UiEffect::BeginCreate { .. } | UiEffect::BeginCreateStack
+                ) {
+                    Self::dismiss_tooltip(window);
+                }
+                self.interpret_begin(effect, &state)
+            }
             // -- no flow: the pure view-state defaults (the arms the
             //    resolver's settle-then-run re-dispatch resolves
             //    against; under a foreign flow the same effects
@@ -1121,9 +1165,10 @@ impl Adapter {
             ) => self.interpret_lifecycle(&flow, effect, &state),
             // Round-1 chunk 3 (D28b, D6.3): toggle semantics — the
             // menu row, `Ctrl+,`, and a second press all close an open
-            // settings surface.
+            // settings surface. No explicit dismiss: both toggle
+            // directions swap the mounted view, the identity diff at
+            // the choke point covers them (r4 chunk 4).
             (Flow::None, UiEffect::OpenSettings) => {
-                Self::dismiss_tooltip(window);
                 if self.view_state.view() == crate::view_state::ViewId::Settings {
                     self.view_state.close_settings()
                 } else {
@@ -1598,6 +1643,17 @@ impl Adapter {
 
     #[allow(clippy::too_many_lines)] // the effect application switch, kept flat
     fn apply_effect(&mut self, window: &AppWindow, effect: UiEffect) {
+        // The total-dismiss seam (r4 chunk 4, D14): an anchor that
+        // unmounts while hovered never fires `unhover` — the callback
+        // dies with the element. So the dismiss stops being a per-arm
+        // memory and becomes a property of the pass: snapshot the
+        // view identity at entry; if the pass swapped the mounted
+        // view, board, or subject, the tooltip is gone. No effect —
+        // present or future — can be forgotten, because there is
+        // nothing left to remember. Identity-preserving effects
+        // (focus steps, scrolls, the walk) survive by construction;
+        // the structural walk test pins the partition.
+        let before = self.view_state.view_identity();
         match effect {
             UiEffect::Exit => {
                 self.quit_requests += 1;
@@ -1728,6 +1784,15 @@ impl Adapter {
             | UiEffect::FocusToday
             | UiEffect::OpenInbox
             | UiEffect::BeginCapture => self.interpret(window, effect),
+        }
+        // The pass's tail: the identity diff decides (see the entry
+        // comment). The explicit dismisses below (the menu's
+        // modal-takeover, the ghost/modal takeovers) are idempotent
+        // under this — an explicit call names a non-identity reason
+        // (a hovered element that unmounts, or a modal that takes
+        // over, without the mounted view moving).
+        if self.view_state.view_identity() != before {
+            Self::dismiss_tooltip(window);
         }
     }
 
@@ -2290,6 +2355,11 @@ impl Adapter {
         let dwell = rotation.dwell();
         let state = self.state.load();
         let outcomes = self.view_state.enter_kiosk_mode(&state, mode);
+        // The kiosk flip swaps the mounted view outside `apply_effect`
+        // entirely (r4 chunk 4, D14's enumerate-once table row) — an
+        // explicit dismiss; cheap totality even though a passive kiosk
+        // display rarely hovers.
+        Self::dismiss_tooltip(window);
         let scroll = window.global::<crate::FocusScrollHint>();
         scroll.set_target_a(-1);
         scroll.set_target_b(-1);

@@ -1189,3 +1189,363 @@ fn an_unchanged_refresh_still_pushes_the_settings_liveness() {
         assert_eq!(rig.adapter().borrow().derive_passes, 1);
     });
 }
+
+// -- the total-dismiss walk (r4 chunk 4, D14) ----------------------------
+//
+// One test, two exhaustive lists — compile-enforced totality: the
+// `dismiss_class` match ranges over every `UiEffect` variant with no
+// wildcard (a new variant is a compile error until it is placed), and
+// the behavioural walk drives every listed effect through the real
+// `apply_effect` pass with an armed (pending) tooltip. Identity- or
+// anchor/modal-class effects must dismiss the tooltip; the explicit
+// survive set — the over-fire guard — must leave it armed. A
+// listed-survive effect that trips the identity diff fails here:
+// either the effect genuinely unmounts the anchor (move it to a
+// dismissal list — the AGENTS §5 "a new test failing can be a bug"
+// rule) or the identity tuple carries a spurious member.
+//
+// Recorded exclusion (the plan §3.3): a task deleted by a sync/engine
+// event unmounts an anchor through refresh/reconcile, not through an
+// effect — out of D14's scope; the next pointer movement re-arms or
+// dismisses naturally.
+
+/// The three dismiss classes of the walk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DismissClass {
+    /// The application swaps the mounted view, board, or subject: the
+    /// identity diff at the `apply_effect` choke point dismisses.
+    IdentitySwap,
+    /// The hovered anchor itself unmounts, or a modal context takes
+    /// over, without the identity moving: an explicit per-arm dismiss
+    /// (one mechanism, a named non-identity reason).
+    AnchorOrModal,
+    /// The explicit survive set — identity-preserving effects; the
+    /// choke point must not over-fire on them.
+    Survive,
+}
+
+/// The class of every effect. Exhaustive, no wildcard: adding a
+/// variant without a placement is a compile error.
+#[allow(clippy::too_many_lines)] // one placement table, kept flat
+fn dismiss_class(effect: &UiEffect) -> DismissClass {
+    match effect {
+        UiEffect::NextView
+        | UiEffect::PrevView
+        | UiEffect::FocusBoard
+        | UiEffect::FocusToday
+        | UiEffect::OpenInbox
+        | UiEffect::BoardNext
+        | UiEffect::BoardPrevious
+        | UiEffect::BoardSelect(_)
+        | UiEffect::Activate
+        | UiEffect::OpenSettings
+        | UiEffect::ShowTask
+        | UiEffect::InvokeSelected => DismissClass::IdentitySwap,
+        UiEffect::OpenMenu
+        | UiEffect::CloseMenu
+        | UiEffect::BeginCreate { .. }
+        | UiEffect::BeginCreateStack
+        | UiEffect::OpenPalette
+        | UiEffect::BeginCapture => DismissClass::AnchorOrModal,
+        UiEffect::Exit
+        | UiEffect::MenuBack
+        | UiEffect::MenuNext
+        | UiEffect::MenuPrevious
+        | UiEffect::SetMode(_)
+        | UiEffect::FocusNext
+        | UiEffect::FocusPrev
+        | UiEffect::FocusFirst
+        | UiEffect::FocusLast
+        | UiEffect::ControlNext
+        | UiEffect::ControlPrev
+        | UiEffect::ScrollUp
+        | UiEffect::ScrollDown
+        | UiEffect::StackNext
+        | UiEffect::StackPrev
+        | UiEffect::StackWider
+        | UiEffect::StackNarrower
+        | UiEffect::RequestMove
+        | UiEffect::CancelMove
+        | UiEffect::BeginTitleEdit
+        | UiEffect::PickerKey(_)
+        | UiEffect::StackDelete
+        | UiEffect::StackRename
+        | UiEffect::StackMove
+        | UiEffect::BoardCreate
+        | UiEffect::BoardDelete
+        | UiEffect::BoardRename => DismissClass::Survive,
+    }
+}
+
+/// The walk fixture: the base fixture plus a second board (carrying
+/// one task, the palette jumps' target) and an `Inbox` board (the
+/// `OpenInbox` row).
+fn walk_fixture() -> (AppState, Fixture, BoardId, TaskId) {
+    let (mut state, fx) = fixture();
+    let second = BoardId::from_uuid(uuid::Uuid::now_v7());
+    let now = BoardClocks::epoch();
+    state.boards.insert(
+        second,
+        Board {
+            id: second,
+            remote: None,
+            title: "second".to_owned(),
+            color: Color::new(""),
+            archived: false,
+            deleted: false,
+            clocks: BoardClocks {
+                title: now,
+                color: now,
+                archived: now,
+                deleted: now,
+            },
+            remote_seen: None,
+        },
+    );
+    let inbox = BoardId::from_uuid(uuid::Uuid::now_v7());
+    state.boards.insert(
+        inbox,
+        Board {
+            id: inbox,
+            remote: None,
+            title: "Inbox".to_owned(),
+            color: Color::new(""),
+            archived: false,
+            deleted: false,
+            clocks: BoardClocks {
+                title: now,
+                color: now,
+                archived: now,
+                deleted: now,
+            },
+            remote_seen: None,
+        },
+    );
+    // A stack and one task on the second board (the palette jump's
+    // cross-board retarget).
+    let stack = StackId::from_uuid(uuid::Uuid::now_v7());
+    state.stacks.insert(
+        stack,
+        Stack {
+            id: stack,
+            remote: None,
+            board: second,
+            title: "second-stack".to_owned(),
+            order: 0,
+            archived: false,
+            deleted: false,
+            clocks: StackClocks {
+                title: now,
+                order: now,
+                deleted: now,
+            },
+            remote_seen: None,
+        },
+    );
+    let task = TaskId::from_uuid(uuid::Uuid::now_v7());
+    let mut template = state.tasks.values().next().expect("fixture task").clone();
+    template.id = task;
+    template.stack = stack;
+    template.title = "second-task".to_owned();
+    state.tasks.insert(task, template);
+    (state, fx, second, task)
+}
+
+/// The walk's effect list: every variant exactly once per class
+/// (payloads chosen so the effect's precondition can be met). The
+/// totality tie: `dismiss_class` is compile-exhaustive, and the test
+/// asserts the list's per-variant classes match their list membership.
+fn walk_effects(fx: &Fixture, second: BoardId) -> Vec<UiEffect> {
+    vec![
+        // IdentitySwap
+        UiEffect::NextView,
+        UiEffect::PrevView,
+        UiEffect::FocusBoard,
+        UiEffect::FocusToday,
+        UiEffect::OpenInbox,
+        UiEffect::BoardNext,
+        UiEffect::BoardPrevious,
+        UiEffect::BoardSelect(second),
+        UiEffect::Activate,
+        UiEffect::OpenSettings,
+        UiEffect::ShowTask,
+        UiEffect::InvokeSelected,
+        // AnchorOrModal
+        UiEffect::OpenMenu,
+        UiEffect::CloseMenu,
+        UiEffect::BeginCreate { target: None },
+        UiEffect::BeginCreate {
+            target: Some(fx.stacks[1]),
+        },
+        UiEffect::BeginCreateStack,
+        UiEffect::OpenPalette,
+        UiEffect::BeginCapture,
+        // Survive
+        UiEffect::Exit,
+        UiEffect::MenuBack,
+        UiEffect::MenuNext,
+        UiEffect::MenuPrevious,
+        UiEffect::SetMode(Mode::Normal),
+        UiEffect::SetMode(Mode::Insert),
+        UiEffect::FocusNext,
+        UiEffect::FocusPrev,
+        UiEffect::FocusFirst,
+        UiEffect::FocusLast,
+        UiEffect::ControlNext,
+        UiEffect::ControlPrev,
+        UiEffect::ScrollUp,
+        UiEffect::ScrollDown,
+        UiEffect::StackNext,
+        UiEffect::StackPrev,
+        UiEffect::StackWider,
+        UiEffect::StackNarrower,
+        UiEffect::RequestMove,
+        UiEffect::CancelMove,
+        UiEffect::BeginTitleEdit,
+        UiEffect::PickerKey(crate::due_edit::DatePickerKey::Left),
+        UiEffect::StackDelete,
+        UiEffect::StackRename,
+        UiEffect::StackMove,
+        UiEffect::BoardCreate,
+        UiEffect::BoardDelete,
+        UiEffect::BoardRename,
+    ]
+}
+
+/// The arm: reset, reconcile, seed the Board view with a focused
+/// card, sync the view seam (the walk's traversal reads it), and arm
+/// a pending tooltip (the `hover()` arm — the delay never fires on
+/// the null platform's clock, `pending` is the observable).
+fn arm_walk_pass(adapter: &Rc<RefCell<crate::adapter::Adapter>>, rig: &Rig, fx: &Fixture) {
+    let mut a = adapter.borrow_mut();
+    a.test_reset();
+    let live = rig.handle.test_state();
+    a.view_state.reconcile(&live.load_full());
+    let [s0, _s1] = fx.stacks;
+    let [a_id, _b, _c] = fx.tasks;
+    a.view_state.activate_card(a_id, s0);
+    a.view_state.select_board(&live.load_full(), fx.board);
+    a.shell.view = Some(crate::actions::ContextId::Board);
+    rig.handle
+        .window()
+        .global::<crate::TooltipState>()
+        .invoke_hover(
+            "walk".into(),
+            "".into(),
+            slint::ModelRc::default(),
+            100.0,
+            100.0,
+            32.0,
+            32.0,
+        );
+    drop(a);
+    let armed = rig
+        .handle
+        .window()
+        .global::<crate::TooltipState>()
+        .get_pending();
+    assert!(armed, "the walk's tooltip armed");
+}
+
+/// The plan's per-effect preconditions: the palette flows arm with a
+/// resolved cross-board target, `FocusBoard` seeds the Today view (the
+/// Board→Board jump is the identity's no-op).
+fn seed_effect_precondition(
+    adapter: &Rc<RefCell<crate::adapter::Adapter>>,
+    rig: &Rig,
+    fx: &Fixture,
+    second: BoardId,
+    second_task: TaskId,
+    effect: &UiEffect,
+) {
+    let mut a = adapter.borrow_mut();
+    let live = rig.handle.test_state();
+    match effect {
+        UiEffect::ShowTask | UiEffect::InvokeSelected => {
+            *a.view_state.flow_mut() = Flow::Palette { selected: 0 };
+            a.test_seed_palette(vec![taskboard_domain::SearchTarget::Task(second_task)]);
+            a.shell.palette = true;
+        }
+        // The board steps don't wrap (the ends hold): stepping needs
+        // a neighbour — FocusBoard seeds off-Board, BoardPrevious
+        // seeds off the first canonical board (the walk fixture's
+        // `fx.board` is first).
+        UiEffect::FocusBoard => {
+            a.view_state.focus_today();
+        }
+        UiEffect::BoardPrevious => {
+            a.view_state.select_board(&live.load_full(), second);
+        }
+        _ => {}
+    }
+    drop(a);
+    let _ = fx;
+}
+
+#[test]
+#[allow(clippy::too_many_lines)] // one driver over the whole partition
+fn every_view_swapping_effect_dismisses_the_tooltip_and_every_preserving_effect_spares_it() {
+    on_slint_thread(|| {
+        let (state, fx, second, second_task) = walk_fixture();
+        let rig = rig(state);
+        let adapter = rig.adapter();
+        let effects = walk_effects(&fx, second);
+        // The totality tie: every listed row's class agrees with its
+        // list section (the list is ordered IdentitySwap, AnchorOrModal,
+        // Survive), and the section sizes are exact — a variant added
+        // to the enum fails the `dismiss_class` match; a variant
+        // added to a list without a matching placement (or left out)
+        // fails here.
+        let sections = [
+            (0, 12, DismissClass::IdentitySwap),
+            (12, 19, DismissClass::AnchorOrModal),
+            (19, effects.len(), DismissClass::Survive),
+        ];
+        for (start, end, class) in sections {
+            for effect in &effects[start..end] {
+                assert_eq!(
+                    dismiss_class(effect),
+                    class,
+                    "{effect:?} listed outside its placement's section"
+                );
+            }
+        }
+        let mut failures = Vec::new();
+        for effect in &effects {
+            arm_walk_pass(&adapter, &rig, &fx);
+            seed_effect_precondition(&adapter, &rig, &fx, second, second_task, effect);
+            let expected_dismiss = dismiss_class(effect) != DismissClass::Survive;
+            adapter
+                .borrow_mut()
+                .apply_effect_for_test(rig.handle.window(), *effect);
+            let pending = rig
+                .handle
+                .window()
+                .global::<crate::TooltipState>()
+                .get_pending();
+            let ok = if expected_dismiss { !pending } else { pending };
+            if !ok {
+                failures.push(format!(
+                    "{effect:?}: expected {} — tooltip {}",
+                    if expected_dismiss {
+                        "dismissed"
+                    } else {
+                        "armed"
+                    },
+                    if pending {
+                        "still pending"
+                    } else {
+                        "dismissed"
+                    }
+                ));
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "{} of {} walk rows off-partition:\n{}",
+            failures.len(),
+            effects.len(),
+            failures.join("\n")
+        );
+    });
+}
