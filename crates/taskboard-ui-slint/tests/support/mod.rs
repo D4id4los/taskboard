@@ -15,3 +15,4 @@ pub mod fixture;
 pub mod golden_compare;
 pub mod guard;
 pub mod health;
+pub mod pixel_probe;
