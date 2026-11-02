@@ -181,14 +181,19 @@ fn refresh_session_config(
             Ok(())
         }
         Err(err) => {
-            let _ = writeln!(
-                io.err,
-                "the session's config view could not be refreshed; exit and relaunch to pick up \
-                 the file"
-            );
+            let _ = writeln!(io.err, "{}", refresh_failure_guidance());
             Err(CommandError::from(err))
         }
     }
+}
+
+/// The stderr UX for a degenerate session-config refresh (the view is
+/// stale until a relaunch) — text-as-data per the nudge-warning shape
+/// (`connect::attach_nudge_warning` and family): named beside the
+/// ceremony it belongs to, written by that one ceremony site, never
+/// inline by a handler buried below the command layer.
+pub(crate) fn refresh_failure_guidance() -> &'static str {
+    "the session's config view could not be refreshed; exit and relaunch to pick up the file"
 }
 
 /// The session's default connector id off the refreshed config (the
