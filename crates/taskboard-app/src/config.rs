@@ -1385,7 +1385,10 @@ impl AppConfig {
 /// cycle. No loopback exemption (the flag is informational, not a gate).
 #[must_use]
 pub(crate) fn url_is_cleartext(raw: &str) -> bool {
-    matches!(raw.split_once("://"), Some(("http", _)))
+    matches!(
+        taskboard_sync_nextcloud::client::authority_of(raw).0,
+        Some("http")
+    )
 }
 
 /// The provider chain (binding, plan §4.1).
@@ -1406,17 +1409,15 @@ fn default_db_path() -> Option<PathBuf> {
 /// constructing a client: scheme http/https, a non-empty host, and no
 /// userinfo in the authority (F12-02 — reqwest never applies URL
 /// userinfo as auth, so a pasted credential could only leak). The
-/// sync crate parses the same string again at client construction, so
-/// a drift here fails closed (bootstrap's `Client` variant).
+/// grammar split is the sync crate's shared [`authority_of`] (the
+/// F8-09 fold — this was a hand-rolled fork of the same split); the
+/// sync crate parses the full URL again at client construction, so a
+/// drift here fails closed (bootstrap's `Client` variant).
 fn reqwest_host_ok(raw: &str) -> bool {
-    // Minimal structural parse (no extra dependency): scheme://host/…
-    let Some((scheme, rest)) = raw.split_once("://") else {
-        return false;
-    };
-    if !matches!(scheme, "http" | "https") {
+    let (scheme, authority) = taskboard_sync_nextcloud::client::authority_of(raw);
+    if !matches!(scheme, Some("http" | "https")) {
         return false;
     }
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
     // Any `@` in the authority is userinfo (rejected even when the
     // user part is empty — fail-closed direction of the documented
     // parity policy).

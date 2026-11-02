@@ -352,6 +352,22 @@ fn map_status(raw: &Raw) -> Result<(), DeckError> {
     }
 }
 
+/// The `(scheme, authority)` of a URL-ish string: the lenient,
+/// structural split both the sync crate and the app's config/key
+/// layers share. The scheme is `None` when the input has no `://`
+/// (garbage-tolerant, never panics); the authority is everything after
+/// the scheme up to the first `/`, `?`, or `#`. Policy decisions —
+/// userinfo rejection, port stripping, scheme allow-lists — live with
+/// the consumers, not here (the helper is grammar, not policy).
+#[must_use]
+pub fn authority_of(raw: &str) -> (Option<&str>, &str) {
+    let (scheme, rest) = raw
+        .split_once("://")
+        .map_or((None, raw), |(s, r)| (Some(s), r));
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    (scheme, &rest[..end])
+}
+
 impl DeckClient {
     /// Builds a client for `{base_url}/index.php/apps/deck/api/v1.0`.
     ///
@@ -1651,6 +1667,43 @@ pub(crate) fn decode_envelope<T: serde::de::DeserializeOwned>(
         return Ok(envelope.ocs.data);
     }
     Ok(serde_json::from_slice(bytes)?)
+}
+
+#[cfg(test)]
+mod authority_of_tests {
+    use super::authority_of;
+
+    /// The grammar table: scheme detected or absent, authority cut at
+    /// each terminator, empty authority preserved, garbage never
+    /// panics. The consumers' policy tests (config's `reqwest_host_ok`
+    /// pins, `credential_key`'s garbage table) stay green unchanged —
+    /// that is the behavior-preservation proof for the F8-09 fold.
+    #[test]
+    fn authority_of_splits_the_lenient_url_grammar() {
+        assert_eq!(
+            authority_of("https://cloud.example.com/index.php/apps/deck"),
+            (Some("https"), "cloud.example.com")
+        );
+        assert_eq!(
+            authority_of("http://host:8080?a=1#frag"),
+            (Some("http"), "host:8080")
+        );
+        assert_eq!(authority_of("https://host#frag"), (Some("https"), "host"));
+        assert_eq!(
+            authority_of("cloud.example.com/remote.php"),
+            (None, "cloud.example.com")
+        );
+        assert_eq!(
+            authority_of("cloud.example.com"),
+            (None, "cloud.example.com")
+        );
+        // Empty authority is preserved, not substituted — the
+        // non-empty policy is the consumer's call.
+        assert_eq!(authority_of("https:///path"), (Some("https"), ""));
+        assert_eq!(authority_of("://garbage"), (Some(""), "garbage"));
+        assert_eq!(authority_of(""), (None, ""));
+        assert_eq!(authority_of("  "), (None, "  "));
+    }
 }
 
 #[cfg(test)]
