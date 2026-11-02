@@ -314,6 +314,12 @@ pub enum StateCommand {
     StartTracking {
         /// The task to track.
         task: TaskId,
+        /// What the open entry counts as. Default-off: `Work` unless
+        /// marked — `Respite` opens the *running break* (`track stop`
+        /// closes it like any open entry). Old journal payloads decode
+        /// `Work`.
+        #[serde(default)]
+        kind: crate::tracking::TimeEntryKind,
     },
     /// Close every open entry at the engine-stamped `now`. Nothing open
     /// is the accepted no-op.
@@ -330,6 +336,11 @@ pub enum StateCommand {
         start: chrono::DateTime<chrono::Utc>,
         /// Span end (strictly after `start`).
         end: chrono::DateTime<chrono::Utc>,
+        /// What the block counts as. Default-off (`Work`); `Respite`
+        /// logs a retroactive break block. Old journal payloads decode
+        /// `Work`.
+        #[serde(default)]
+        kind: crate::tracking::TimeEntryKind,
     },
     /// Adjust an entry's span. Each field is a *change mask*: `None` =
     /// unchanged; there is deliberately no way to clear an `end` (a
@@ -345,6 +356,10 @@ pub enum StateCommand {
         start: Option<chrono::DateTime<chrono::Utc>>,
         /// New end, or unchanged. `None` never *clears* an end.
         end: Option<chrono::DateTime<chrono::Utc>>,
+        /// New kind, or unchanged — the same change-mask semantics: the
+        /// retroactive marking/remarking of history (`None` = unchanged;
+        /// the mask rides the existing closed-entry pre-image).
+        kind: Option<crate::tracking::TimeEntryKind>,
     },
     /// Delete one entry — globally (the storage/roaming chunk drives a
     /// wire tombstone). An id naming no entry is the accepted no-op: a

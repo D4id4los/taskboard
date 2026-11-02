@@ -609,10 +609,14 @@ impl Serialize for DismissalEntry {
 #[derive(Debug, Clone, PartialEq)]
 pub enum TimeEntryRecord {
     /// `{ "task": "<decimal card>", "title": str, "start": rfc3339,
-    /// "end": rfc3339|null, "created": rfc3339, "clock": rfc3339 }`.
-    /// `task: None` decodes tolerantly (a peer row without the key) but
-    /// is never emitted by this version — an unbound-task entry has no
-    /// identity another device could resolve (D-T10).
+    /// "end": rfc3339|null, "created": rfc3339, "clock": rfc3339,
+    /// "kind": "work"|"respite" }`. The `kind` key is additive (D-2): a
+    /// pre-kind row omits it and folds `Work`; an unknown kind demotes
+    /// the whole row to [`TimeEntryRecord::Verbatim`] (never a silent
+    /// downgrade — the `RuleEntry` insistence ruling). `task: None`
+    /// decodes tolerantly (a peer row without the key) but is never
+    /// emitted by this version — an unbound-task entry has no identity
+    /// another device could resolve (D-T10).
     Entry {
         task: Option<String>,
         title: String,
@@ -620,6 +624,7 @@ pub enum TimeEntryRecord {
         end: Option<DateTime<Utc>>,
         created: DateTime<Utc>,
         clock: DateTime<Utc>,
+        kind: crate::tracking::TimeEntryKind,
     },
     /// `{ "deleted": true, "clock": rfc3339 }` — a global delete (D-T12:
     /// deliberate deletes roam; retention aging never does).
@@ -662,13 +667,18 @@ impl TimeEntryRecord {
             None | Some(Value::Null) => Some(None),
             Some(value) => serde_json::from_value(value.clone()).ok().map(Some),
         };
-        if let (Some(task), Some(end), Ok(title), Ok(start), Ok(created), Ok(clock)) = (
+        if let (Some(task), Some(end), Ok(title), Ok(start), Ok(created), Ok(clock), Ok(kind)) = (
             task,
             end,
             serde_json::from_value(map.get("title").cloned().unwrap_or(Value::Null)),
             serde_json::from_value(map.get("start").cloned().unwrap_or(Value::Null)),
             serde_json::from_value(map.get("created").cloned().unwrap_or(Value::Null)),
             serde_json::from_value(map.get("clock").cloned().unwrap_or(Value::Null)),
+            // Default-on-missing (the additive-section precedent): a
+            // pre-kind row folds `Work`. A *present* but unmodeled kind
+            // is not defaulted — it falls through to `Verbatim`, never
+            // a silent downgrade (the `RuleEntry` insistence ruling).
+            decode_time_entry_kind_default_on_missing(map.get("kind")),
         ) {
             return Self::Entry {
                 task,
@@ -677,9 +687,24 @@ impl TimeEntryRecord {
                 end,
                 created,
                 clock,
+                kind,
             };
         }
         Self::Verbatim(raw)
+    }
+}
+
+/// Decodes the time-entry row's kind: absent →
+/// [`crate::tracking::TimeEntryKind::Work`] (default-off, the D-2
+/// fold); present and a valid serde unit → the kind; present and
+/// unknown → `Err` (the row demotes to `Verbatim`, never a silent
+/// downgrade).
+fn decode_time_entry_kind_default_on_missing(
+    raw: Option<&Value>,
+) -> Result<crate::tracking::TimeEntryKind, ()> {
+    match raw {
+        None | Some(&Value::Null) => Ok(crate::tracking::TimeEntryKind::Work),
+        Some(value) => serde_json::from_value(value.clone()).map_err(|_| ()),
     }
 }
 
@@ -703,6 +728,7 @@ impl Serialize for TimeEntryRecord {
                 end,
                 created,
                 clock,
+                kind,
             } => serde_json::json!({
                 "task": task,
                 "title": title,
@@ -710,6 +736,7 @@ impl Serialize for TimeEntryRecord {
                 "end": end,
                 "created": created,
                 "clock": clock,
+                "kind": kind.text_form(),
             })
             .serialize(serializer),
             Self::Tombstone { clock } => {
@@ -1488,6 +1515,7 @@ pub fn time_entries_for(
                     end: entry.end,
                     created: entry.created_at,
                     clock: entry.updated_at,
+                    kind: entry.kind,
                 },
             ))
         })
@@ -2919,6 +2947,7 @@ mod tests {
             end: Some(ts(200)),
             created: ts(90),
             clock: ts(clock),
+            kind: crate::tracking::TimeEntryKind::Work,
         }
     }
 
@@ -2930,7 +2959,99 @@ mod tests {
             end: None,
             created: ts(90),
             clock: ts(clock),
+            kind: crate::tracking::TimeEntryKind::Work,
         }
+    }
+
+    // ---- The kind fold on the wire row (D-2) --------------------------
+
+    #[test]
+    fn old_wire_row_without_kind_decodes_entry_with_work() {
+        let raw = serde_json::json!({
+            "task": "412", "title": "old row", "start": ts(100),
+            "end": ts(200), "created": ts(90), "clock": ts(100),
+        });
+        let decoded = TimeEntryRecord::deserialize_verbatim(raw);
+        assert_eq!(
+            decoded,
+            TimeEntryRecord::Entry {
+                task: Some("412".to_owned()),
+                title: "old row".to_owned(),
+                start: ts(100),
+                end: Some(ts(200)),
+                created: ts(90),
+                clock: ts(100),
+                kind: crate::tracking::TimeEntryKind::Work,
+            },
+            "absent kind folds default-off"
+        );
+        // A null kind (a hostile writer) decodes the same way.
+        let null_kind = serde_json::json!({
+            "task": "412", "title": "old row", "start": ts(100),
+            "end": ts(200), "created": ts(90), "clock": ts(100),
+            "kind": Value::Null,
+        });
+        assert_eq!(TimeEntryRecord::deserialize_verbatim(null_kind), decoded);
+    }
+
+    #[test]
+    fn respite_wire_row_roundtrips() {
+        let mut row = entry_row(Some("412"), 100);
+        if let TimeEntryRecord::Entry { kind, .. } = &mut row {
+            *kind = crate::tracking::TimeEntryKind::Respite;
+        }
+        let json = serde_json::to_value(&row).unwrap();
+        assert_eq!(json["kind"], serde_json::json!("respite"));
+        let back = TimeEntryRecord::deserialize_verbatim(json);
+        assert_eq!(back, row);
+        assert_eq!(
+            serde_json::to_value(entry_row(Some("412"), 100)).unwrap()["kind"],
+            serde_json::json!("work")
+        );
+    }
+
+    #[test]
+    fn unmodeled_kind_string_demotes_the_whole_row_to_verbatim() {
+        let raw = serde_json::json!({
+            "task": "412", "title": "future", "start": ts(100),
+            "end": ts(200), "created": ts(90), "clock": ts(100),
+            "kind": "sabbatical",
+        });
+        assert!(matches!(
+            TimeEntryRecord::deserialize_verbatim(raw),
+            TimeEntryRecord::Verbatim(_)
+        ));
+    }
+
+    #[test]
+    fn overlay_emits_the_kind_key() {
+        use crate::ids::{RemoteBoardId, TimeEntryId};
+        use crate::tracking::{TimeEntry, TimeEntryKind};
+        let task = bound_task(false);
+        let tasks = std::collections::BTreeMap::from([(task.id, task.clone())]);
+        let mut entry = TimeEntry {
+            id: TimeEntryId::from(uuid::Uuid::from_u128(9)),
+            task: task.id,
+            task_title: "t".to_owned(),
+            start: ts(100),
+            end: None,
+            created_at: ts(90),
+            updated_at: ts(110),
+            kind: TimeEntryKind::Work,
+        };
+        let entries = std::collections::BTreeMap::from([(entry.id, entry.clone())]);
+        let emitted = time_entries_for(&entries, &tasks, RemoteBoardId(2), ts(1_000_000));
+        assert_eq!(
+            serde_json::to_value(emitted.values().next().unwrap()).unwrap()["kind"],
+            serde_json::json!("work")
+        );
+        entry.kind = TimeEntryKind::Respite;
+        let entries = std::collections::BTreeMap::from([(entry.id, entry)]);
+        let emitted = time_entries_for(&entries, &tasks, RemoteBoardId(2), ts(1_000_000));
+        assert_eq!(
+            serde_json::to_value(emitted.values().next().unwrap()).unwrap()["kind"],
+            serde_json::json!("respite")
+        );
     }
 
     #[test]
@@ -2971,6 +3092,7 @@ mod tests {
                 end: Some("2026-04-01T09:00:00Z".parse().unwrap()),
                 created: "2026-04-01T07:59:00Z".parse().unwrap(),
                 clock: "2026-04-01T09:00:00Z".parse().unwrap(),
+                kind: crate::tracking::TimeEntryKind::Work
             },
             "the full entry decodes typed"
         );
@@ -3015,9 +3137,10 @@ mod tests {
         let entry = serde_json::to_value(entry_row(Some("412"), 100)).unwrap();
         let mut keys: Vec<_> = entry.as_object().unwrap().keys().cloned().collect();
         keys.sort();
+        // `kind` is the additive-tail contract extension (D-2).
         assert_eq!(
             keys,
-            vec!["clock", "created", "end", "start", "task", "title"]
+            vec!["clock", "created", "end", "kind", "start", "task", "title"]
         );
         let open = serde_json::to_value(open_row(None, 100)).unwrap();
         assert_eq!(open["end"], Value::Null);
@@ -3184,6 +3307,7 @@ mod tests {
             end: open.then_some(ts(start + 1_000)),
             created_at: ts(start - 10),
             updated_at: ts(start + 10),
+            kind: crate::tracking::TimeEntryKind::Work,
         }
     }
 
@@ -3195,6 +3319,7 @@ mod tests {
             end: None,
             created: ts(start - 10),
             clock: ts(start + 10),
+            kind: crate::tracking::TimeEntryKind::Work,
         }
     }
 
@@ -3290,6 +3415,7 @@ mod tests {
                 end: fresh.end,
                 created: fresh.created_at,
                 clock: fresh.updated_at,
+                kind: crate::tracking::TimeEntryKind::Work
             }
         );
     }

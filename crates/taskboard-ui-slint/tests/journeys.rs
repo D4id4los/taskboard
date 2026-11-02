@@ -8363,6 +8363,7 @@ fn the_notification_start_task_dispatches_exactly_one_command() {
             window.invoke_notification_track_start_clicked(0);
             harness.assert_commands(&[taskboard_domain::StateCommand::StartTracking {
                 task: fixture.task1,
+                kind: taskboard_domain::tracking::TimeEntryKind::Work,
             }]);
 
             // A stale index degrades to a no-op.

@@ -1188,6 +1188,7 @@ mod tests {
             end: end.map(ts),
             created_at: ts(100),
             updated_at: ts(100),
+            kind: crate::tracking::TimeEntryKind::Work,
         }
     }
 

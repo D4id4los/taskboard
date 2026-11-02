@@ -176,7 +176,10 @@ pub async fn start_on(
     let now = Utc::now();
     match app
         .engine
-        .execute(StateCommand::StartTracking { task })
+        .execute(StateCommand::StartTracking {
+            task,
+            kind: taskboard_domain::tracking::TimeEntryKind::Work,
+        })
         .await?
     {
         CommandOutcome::TrackingStarted { entry, closed } => {
@@ -265,7 +268,12 @@ pub async fn log_on(
     };
     match app
         .engine
-        .execute(StateCommand::LogTime { task, start, end })
+        .execute(StateCommand::LogTime {
+            task,
+            start,
+            end,
+            kind: taskboard_domain::tracking::TimeEntryKind::Work,
+        })
         .await?
     {
         CommandOutcome::TimeLogged { entry } => {
@@ -308,7 +316,12 @@ pub async fn adjust_on(
     let now = Utc::now();
     match app
         .engine
-        .execute(StateCommand::AdjustTimeEntry { id, start, end })
+        .execute(StateCommand::AdjustTimeEntry {
+            id,
+            start,
+            end,
+            kind: None,
+        })
         .await?
     {
         CommandOutcome::EntryAdjusted { entry } => {
@@ -1110,6 +1123,7 @@ mod tests {
             end: end.map(ts),
             created_at: ts(100),
             updated_at: ts(100),
+            kind: taskboard_domain::tracking::TimeEntryKind::Work,
         }
     }
 

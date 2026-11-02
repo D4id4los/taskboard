@@ -118,6 +118,7 @@ tracking:
       end: "1970-01-01T10:04:00Z"
       created_at: "1970-01-01T10:03:00Z"
       updated_at: "1970-01-01T10:04:00Z"
+      kind: work
     00000000-0000-0000-0000-00000000000c:
       id: 00000000-0000-0000-0000-00000000000c
       task: 00000000-0000-0000-0000-000000000004
@@ -126,6 +127,7 @@ tracking:
       end: "1969-12-31T12:00:00Z"
       created_at: "1970-01-01T10:05:00Z"
       updated_at: "1970-01-01T10:05:00Z"
+      kind: work
 habits:
   habits: {}
   log: {}
@@ -195,6 +197,7 @@ journal:
       command:
         StartTracking:
           task: 00000000-0000-0000-0000-000000000004
+          kind: work
       facts:
         NotUndoable: TrackingSurface
       ops:
@@ -219,6 +222,7 @@ journal:
           task: 00000000-0000-0000-0000-000000000004
           start: "1969-12-31T10:00:00Z"
           end: "1969-12-31T12:00:00Z"
+          kind: work
       facts:
         PreImages:
           images:

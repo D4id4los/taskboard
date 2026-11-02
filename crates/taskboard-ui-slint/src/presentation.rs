@@ -1880,6 +1880,7 @@ mod tests {
             end,
             created_at: start,
             updated_at: end.unwrap_or(start),
+            kind: taskboard_domain::tracking::TimeEntryKind::Work,
         }
     }
 

@@ -902,6 +902,7 @@ pub fn fold_time_entries(
                 end,
                 created,
                 clock,
+                kind,
             } => {
                 let Ok(uuid) = uuid::Uuid::parse_str(key) else {
                     continue; // an unparseable key is not an entry identity
@@ -918,6 +919,7 @@ pub fn fold_time_entries(
                         local.task_title.clone_from(title);
                         local.start = *start;
                         local.end = *end;
+                        local.kind = *kind;
                         local.updated_at = std::cmp::max(local.updated_at, *clock);
                         changes.upserts.push(local.clone());
                     }
@@ -931,6 +933,7 @@ pub fn fold_time_entries(
                             end: *end,
                             created_at: *created,
                             updated_at: *clock,
+                            kind: *kind,
                         };
                         tracking.entries.insert(adopted.id, adopted.clone());
                         changes.upserts.push(adopted);
@@ -5187,6 +5190,14 @@ mod duplicate_reconcile_tests {
     use crate::appdata::TimeEntryRecord;
 
     fn entry_row(task: &str, clock: i64) -> TimeEntryRecord {
+        entry_row_with_kind(task, clock, crate::tracking::TimeEntryKind::Work)
+    }
+
+    fn entry_row_with_kind(
+        task: &str,
+        clock: i64,
+        kind: crate::tracking::TimeEntryKind,
+    ) -> TimeEntryRecord {
         TimeEntryRecord::Entry {
             task: Some(task.to_owned()),
             title: "wire title".to_owned(),
@@ -5194,7 +5205,91 @@ mod duplicate_reconcile_tests {
             end: None,
             created: crate::merge_testutil::ts(clock - 2_000),
             clock: crate::merge_testutil::ts(clock),
+            kind,
         }
+    }
+
+    #[test]
+    fn lww_overwrite_carries_kind_and_adopted_row_carries_kind() {
+        let cards = std::collections::BTreeMap::from([(
+            "412".to_owned(),
+            crate::merge_testutil::bound_task(412).id,
+        )]);
+        // Adoption: an unknown UUID adopts the row with its kind.
+        let mut tracking = crate::tracking::TrackingState::default();
+        let rows = std::collections::BTreeMap::from([(
+            uuid::Uuid::from_u128(21).to_string(),
+            entry_row_with_kind(
+                "412",
+                crate::merge_testutil::BASE + 500,
+                crate::tracking::TimeEntryKind::Respite,
+            ),
+        )]);
+        let changes = fold_time_entries(&mut tracking, &rows, &cards);
+        assert_eq!(changes.upserts.len(), 1);
+        assert_eq!(
+            changes.upserts[0].kind,
+            crate::tracking::TimeEntryKind::Respite,
+            "the adopted row carries the wire kind"
+        );
+        // LWW overwrite: a newer wire row replaces the local kind.
+        let local_id = crate::ids::TimeEntryId::from(uuid::Uuid::from_u128(21));
+        let local = tracking.entries.get_mut(&local_id).unwrap();
+        local.kind = crate::tracking::TimeEntryKind::Work;
+        let newer = entry_row_with_kind(
+            "412",
+            crate::merge_testutil::BASE + 900,
+            crate::tracking::TimeEntryKind::Respite,
+        );
+        let rows =
+            std::collections::BTreeMap::from([(uuid::Uuid::from_u128(21).to_string(), newer)]);
+        let changes = fold_time_entries(&mut tracking, &rows, &cards);
+        assert_eq!(changes.upserts.len(), 1);
+        assert_eq!(
+            changes.upserts[0].kind,
+            crate::tracking::TimeEntryKind::Respite,
+            "the overwrite copies the wire kind"
+        );
+    }
+
+    #[test]
+    fn kind_participates_in_clock_competition_only() {
+        // The kind is payload, not competition data: two rows at the
+        // same clock resolve by the tie rule (doc wins), and a kind-only
+        // difference at an older clock loses to local standing.
+        let cards = std::collections::BTreeMap::from([(
+            "412".to_owned(),
+            crate::merge_testutil::bound_task(412).id,
+        )]);
+        let mut tracking = crate::tracking::TrackingState::default();
+        let rows = std::collections::BTreeMap::from([(
+            uuid::Uuid::from_u128(31).to_string(),
+            entry_row_with_kind(
+                "412",
+                crate::merge_testutil::BASE + 500,
+                crate::tracking::TimeEntryKind::Respite,
+            ),
+        )]);
+        let _ = fold_time_entries(&mut tracking, &rows, &cards);
+        let local_id = crate::ids::TimeEntryId::from(uuid::Uuid::from_u128(31));
+        tracking.entries.get_mut(&local_id).unwrap().updated_at =
+            crate::merge_testutil::ts(crate::merge_testutil::BASE + 900);
+        // Older wire row with a different kind: local stands (kind is
+        // not a clock).
+        let older = entry_row_with_kind(
+            "412",
+            crate::merge_testutil::BASE + 100,
+            crate::tracking::TimeEntryKind::Work,
+        );
+        let rows =
+            std::collections::BTreeMap::from([(uuid::Uuid::from_u128(31).to_string(), older)]);
+        let changes = fold_time_entries(&mut tracking, &rows, &cards);
+        assert!(changes.upserts.is_empty(), "local stands");
+        assert_eq!(
+            tracking.entries[&local_id].kind,
+            crate::tracking::TimeEntryKind::Respite,
+            "an older wire row never overwrites the local kind"
+        );
     }
 
     #[test]
@@ -5209,6 +5304,7 @@ mod duplicate_reconcile_tests {
             end: Some(crate::merge_testutil::ts(200)),
             created_at: crate::merge_testutil::ts(50),
             updated_at: crate::merge_testutil::ts(BASE + 300),
+            kind: crate::tracking::TimeEntryKind::Work,
         };
         tracking.entries.insert(local_id, adjusted.clone());
         let cards = std::collections::BTreeMap::from([(
@@ -5263,6 +5359,7 @@ mod duplicate_reconcile_tests {
                     end: None,
                     created: crate::merge_testutil::ts(1),
                     clock: crate::merge_testutil::ts(BASE + 900),
+                    kind: crate::tracking::TimeEntryKind::Work,
                 },
             ),
             (

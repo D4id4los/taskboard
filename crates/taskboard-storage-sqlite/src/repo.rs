@@ -666,6 +666,10 @@ fn decode_time_entry(row: &TimeEntryRow) -> Result<(TimeEntryId, TimeEntry), Rep
             end: row.end,
             created_at: row.created_at,
             updated_at: row.updated_at,
+            // Migration 0018 (the respite column) is the next lane's
+            // landing; until it exists every stored row predates the
+            // kind and decodes default-off.
+            kind: taskboard_domain::tracking::TimeEntryKind::Work,
         },
     ))
 }

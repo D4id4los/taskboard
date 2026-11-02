@@ -2058,7 +2058,7 @@ pub fn plan_command(
                 outcome: CommandOutcome::AdhocAlarmCancelled { alarm: *alarm },
             })
         }
-        StateCommand::StartTracking { task } => {
+        StateCommand::StartTracking { task, kind } => {
             // No done-gate: a completed task is trackable (R-8); the
             // guard resolves liveness only.
             let live = live_task(app, *task)?;
@@ -2087,6 +2087,7 @@ pub fn plan_command(
                 end: None,
                 created_at: now,
                 updated_at: now,
+                kind: *kind,
             };
             let mut actions: Vec<PersistenceAction> = closed_rows
                 .iter()
@@ -2147,7 +2148,12 @@ pub fn plan_command(
                 },
             })
         }
-        StateCommand::LogTime { task, start, end } => {
+        StateCommand::LogTime {
+            task,
+            start,
+            end,
+            kind,
+        } => {
             let live = live_task(app, *task)?;
             // User-authored span: the strict predicate applies (R-5's
             // exemption covers close stamps only).
@@ -2163,6 +2169,7 @@ pub fn plan_command(
                 // under LWW (R-14).
                 created_at: now,
                 updated_at: now,
+                kind: *kind,
             };
             Ok(CommandPlan {
                 actions: vec![
@@ -2172,7 +2179,12 @@ pub fn plan_command(
                 outcome: CommandOutcome::TimeLogged { entry },
             })
         }
-        StateCommand::AdjustTimeEntry { id, start, end } => {
+        StateCommand::AdjustTimeEntry {
+            id,
+            start,
+            end,
+            kind,
+        } => {
             // Entry-only resolution (R-10): the task may be
             // soft-deleted; history stays editable.
             let stored = app
@@ -2186,7 +2198,8 @@ pub fn plan_command(
             // identical-position precedent).
             let new_start = start.unwrap_or(stored.start);
             let new_end = end.or(stored.end);
-            if new_start == stored.start && new_end == stored.end {
+            let new_kind = kind.unwrap_or(stored.kind);
+            if new_start == stored.start && new_end == stored.end && new_kind == stored.kind {
                 return Ok(no_op());
             }
             // The strict predicate applies to the resulting *known*
@@ -2201,6 +2214,7 @@ pub fn plan_command(
             let mut adjusted = stored.clone();
             adjusted.start = new_start;
             adjusted.end = new_end;
+            adjusted.kind = new_kind;
             adjusted.updated_at = now;
             Ok(CommandPlan {
                 actions: vec![
@@ -6940,6 +6954,7 @@ mod tests {
             end: end.map(ts),
             created_at: ts(T0 - 120),
             updated_at: ts(T0 - 120),
+            kind: crate::tracking::TimeEntryKind::Work,
         }
     }
 
@@ -6990,7 +7005,10 @@ mod tests {
         let plan = run(
             &app,
             &outbox,
-            &StateCommand::StartTracking { task: task_id() },
+            &StateCommand::StartTracking {
+                task: task_id(),
+                kind: crate::tracking::TimeEntryKind::Work,
+            },
         )
         .unwrap();
         let CommandOutcome::TrackingStarted { entry, closed } = &plan.outcome else {
@@ -7019,7 +7037,10 @@ mod tests {
         let plan = run(
             &app,
             &outbox,
-            &StateCommand::StartTracking { task: task_id() },
+            &StateCommand::StartTracking {
+                task: task_id(),
+                kind: crate::tracking::TimeEntryKind::Work,
+            },
         )
         .unwrap();
         let CommandOutcome::TrackingStarted { entry: _, closed } = &plan.outcome else {
@@ -7058,7 +7079,10 @@ mod tests {
         let plan = run(
             &app,
             &outbox,
-            &StateCommand::StartTracking { task: task_id() },
+            &StateCommand::StartTracking {
+                task: task_id(),
+                kind: crate::tracking::TimeEntryKind::Work,
+            },
         )
         .unwrap();
         assert_eq!(plan.outcome, CommandOutcome::NoOp);
@@ -7074,7 +7098,10 @@ mod tests {
         let plan = run(
             &app,
             &outbox,
-            &StateCommand::StartTracking { task: task_id() },
+            &StateCommand::StartTracking {
+                task: task_id(),
+                kind: crate::tracking::TimeEntryKind::Work,
+            },
         )
         .unwrap();
         let CommandOutcome::TrackingStarted { closed, .. } = &plan.outcome else {
@@ -7101,7 +7128,10 @@ mod tests {
         let plan = run(
             &app,
             &outbox,
-            &StateCommand::StartTracking { task: task_id() },
+            &StateCommand::StartTracking {
+                task: task_id(),
+                kind: crate::tracking::TimeEntryKind::Work,
+            },
         )
         .unwrap();
         let CommandOutcome::TrackingStarted { .. } = plan.outcome else {
@@ -7131,7 +7161,10 @@ mod tests {
         let plan = run(
             &app,
             &outbox,
-            &StateCommand::StartTracking { task: task_id() },
+            &StateCommand::StartTracking {
+                task: task_id(),
+                kind: crate::tracking::TimeEntryKind::Work,
+            },
         )
         .unwrap();
         assert!(
@@ -7247,7 +7280,10 @@ mod tests {
         let start = run(
             &app,
             &outbox,
-            &StateCommand::StartTracking { task: task_id() },
+            &StateCommand::StartTracking {
+                task: task_id(),
+                kind: crate::tracking::TimeEntryKind::Work,
+            },
         )
         .unwrap();
         let mut disk = crate::persistence::PersistedState {
@@ -7283,6 +7319,7 @@ mod tests {
                 id: entry_id,
                 start: Some(ts(T0 - 60)),
                 end: None,
+                kind: None,
             },
         )
         .unwrap();
@@ -7298,7 +7335,7 @@ mod tests {
         let (mut app, outbox) = base();
         let stranger = TaskId::from(uuid::Uuid::from_u128(4_242));
         assert!(matches!(
-            run(&app, &outbox, &StateCommand::StartTracking { task: stranger }),
+            run(&app, &outbox, &StateCommand::StartTracking { task: stranger , kind: crate::tracking::TimeEntryKind::Work}),
             Err(CommandError::UnknownTask(id)) if id == stranger
         ));
         let mut deleted = task(9, stack_id(), true);
@@ -7306,7 +7343,7 @@ mod tests {
         let dead_id = deleted.id;
         app.tasks.insert(dead_id, deleted);
         assert!(matches!(
-            run(&app, &outbox, &StateCommand::StartTracking { task: dead_id }),
+            run(&app, &outbox, &StateCommand::StartTracking { task: dead_id , kind: crate::tracking::TimeEntryKind::Work}),
             Err(CommandError::TaskDeleted(id)) if id == dead_id
         ));
     }
@@ -7351,6 +7388,7 @@ mod tests {
                 task: task_id(),
                 start: ts(T0 - 86_400),
                 end: ts(T0 - 79_200),
+                kind: crate::tracking::TimeEntryKind::Work,
             },
         )
         .unwrap();
@@ -7378,6 +7416,7 @@ mod tests {
                 task: task_id(),
                 start: ts(T0 - 30),
                 end: ts(T0 - 10),
+                kind: crate::tracking::TimeEntryKind::Work,
             },
         )
         .unwrap();
@@ -7396,6 +7435,7 @@ mod tests {
                         task: task_id(),
                         start: ts(start),
                         end: ts(end),
+                        kind: crate::tracking::TimeEntryKind::Work
                     },
                 ),
                 Err(CommandError::InvalidSpan)
@@ -7416,6 +7456,7 @@ mod tests {
                 id: open.id,
                 start: Some(ts(T0 - 900)),
                 end: None,
+                kind: None,
             },
         )
         .unwrap();
@@ -7435,6 +7476,7 @@ mod tests {
                 id: open.id,
                 start: None,
                 end: Some(ts(T0 - 100)),
+                kind: None,
             },
         )
         .unwrap();
@@ -7453,6 +7495,7 @@ mod tests {
                 id: closed.id,
                 start: Some(ts(T0 - 750)),
                 end: Some(ts(T0 - 650)),
+                kind: None,
             },
         )
         .unwrap();
@@ -7476,6 +7519,7 @@ mod tests {
                 id: closed.id,
                 start: Some(ts(T0 - 850)),
                 end: None,
+                kind: None,
             },
         )
         .unwrap();
@@ -7498,6 +7542,7 @@ mod tests {
                 id: closed.id,
                 start: None,
                 end: None,
+                kind: None,
             },
         )
         .unwrap();
@@ -7512,6 +7557,7 @@ mod tests {
                 id: closed.id,
                 start: Some(closed.start),
                 end: Some(closed.end.unwrap()),
+                kind: None,
             },
         )
         .unwrap();
@@ -7536,6 +7582,7 @@ mod tests {
                     id: entry_id(1),
                     start: Some(ts(T0 - 600)),
                     end: None,
+                    kind: None,
                 },
             ),
             Err(CommandError::InvalidSpan)
@@ -7549,6 +7596,7 @@ mod tests {
                     id: stranger,
                     start: Some(ts(T0)),
                     end: None,
+                    kind: None,
                 },
             ),
             Err(CommandError::UnknownTimeEntry(id)) if id == stranger
@@ -7572,6 +7620,7 @@ mod tests {
                 id: entry.id,
                 start: None,
                 end: Some(ts(T0 - 100)),
+                kind: None,
             },
         )
         .unwrap();
@@ -7644,7 +7693,7 @@ mod tests {
             let command = if stop {
                 StateCommand::StopTracking
             } else {
-                StateCommand::StartTracking { task: target }
+                StateCommand::StartTracking { task: target , kind: crate::tracking::TimeEntryKind::Work}
             };
             let plan = plan_command(
                 &app,
@@ -7758,7 +7807,7 @@ mod tests {
             let start = plan_command(
                 &app,
                 &[],
-                &StateCommand::StartTracking { task: target },
+                &StateCommand::StartTracking { task: target , kind: crate::tracking::TimeEntryKind::Work},
                 &CountingIds::default(),
                 &crate::reminders::ReminderDefaults::default(),
                 test_day(),

@@ -157,6 +157,7 @@ fn arbitrary_action() -> impl Strategy<Value = PersistenceAction> {
             end: Some(ts(2)),
             created_at: ts(1),
             updated_at: ts(1),
+            kind: taskboard_domain::tracking::TimeEntryKind::Work,
         })
     });
     let entry_delete = any::<u128>().prop_map(|raw| {
