@@ -171,6 +171,24 @@ The workspace carries a single global version (see `docs/architecture.org`);
   `normal`, an unknown rung relays verbatim. Migration 0013 adds both
   columns with `'normal'` defaults; existing rows decode `normal`.
 
+- Task view, one header row (GUI review round 4, D16): the back
+  button, a done checkbox, the title, and the Start/Stop tracking
+  button now share one content-height header row — the back button no
+  longer occupies its own row, the phantom padding below the title is
+  gone (the description region absorbs the window's leftover height),
+  and the tracking verbs moved out of the metadata row's State column
+  to the header's right end. The new checkbox toggles the viewed
+  task's done state both directions (click ≡ key ≡ screen reader) and
+  carries the card checkbox's done visual. New hover tips and key
+  hints ride the checkbox, the tracking button, and the tracked-time
+  summary.
+- Task view, tracked-time summary (GUI review round 4, D17): a new
+  row under the metadata shows the task's total tracked time at
+  second precision (e.g. `1h 23m 45s`, `0s` when never tracked),
+  including a running entry's elapsed. While an entry is open the
+  value updates once per second; otherwise it is static. Kiosk
+  displays never tick (the summary never mounts there).
+
 ### Changed
 
 - Column widths redistribute instead of stretch (#556 round-4 chunk

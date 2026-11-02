@@ -388,3 +388,99 @@ fn the_notification_golden_holds() {
         "goldens regenerated — review the PNG diff before landing"
     );
 }
+
+// -- r4 chunk 5 (G1): the task-view goldens -------------------------------
+
+/// The task-view matrix's scale extremes plus the mid scale (D16's
+/// Tier-4 row-shape checks run at 0.5/1.5/3.0).
+const TASK_VIEW_SCALES: [f64; 3] = [0.5, 1.5, 3.0];
+/// The two window heights of the matrix: tall (the description region
+/// visibly absorbs the leftover) and short (the region floors at its
+/// content height and the page scrolls).
+const TASK_VIEW_HEIGHTS: [u32; 2] = [900, 500];
+/// The fixed width (the regular breakpoint's interior).
+const TASK_VIEW_WIDTH: u32 = 1000;
+
+fn task_view_golden_path(scale: f64, height: u32) -> PathBuf {
+    PathBuf::from(format!(
+        "{}/tests/goldens/task-view-{scale:.1}-{height}.png",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+}
+
+/// The task-view golden matrix (r4 chunk 5, G1): scale × window
+/// height over the walked-into task detail. Pins one content-height
+/// header row, the summary row, and the description region as the
+/// flexible element. Phrase stability: the fixture's open entry is
+/// minute-bucketed text-free here — the total phrase is second-
+/// precise, but a capture run never lives long enough to cross a
+/// second between build and snapshot (the today goldens' stability
+/// argument, tighter).
+#[test]
+fn the_task_view_goldens_hold_across_the_scale_height_matrix() {
+    let regen = regen_requested();
+    for scale in TASK_VIEW_SCALES {
+        for height in TASK_VIEW_HEIGHTS {
+            support::driver::run(
+                DriverOptions {
+                    headless_renderer: true,
+                },
+                move |driver| {
+                    capture_task_view(driver, scale, height, regen);
+                },
+            );
+        }
+    }
+    assert!(
+        !regen,
+        "goldens regenerated — review the PNG diff before landing"
+    );
+}
+
+fn capture_task_view(driver: &mut SlintDriver, scale: f64, height: u32, regen: bool) {
+    let state = Arc::new(ArcSwap::from_pointee(fixture::golden_state().1));
+    let (commands, _engine) = support::fake_engine::FakeEngine::channel(Arc::clone(&state));
+    let (requests_tx, _requests_rx) = tokio::sync::mpsc::channel(16);
+    let handle = taskboard_ui_slint::mount(
+        state,
+        dummy_signals(),
+        dummy_system(),
+        commands,
+        requests_tx,
+        UiSettings {
+            scale: taskboard_ui_slint::UiScale::new(scale).expect("valid"),
+            ..UiSettings::default()
+        },
+        detached_health(),
+    )
+    .expect("mount succeeds on the testing backend");
+    // Escape the desktop Today default, then walk into the first
+    // task's detail (the journeys' walk idiom).
+    handle.dispatch_action(taskboard_ui_slint::actions::ActionId::NavFocusBoard);
+    handle.dispatch_action(taskboard_ui_slint::actions::ActionId::NavFirstItem);
+    handle.dispatch_action(taskboard_ui_slint::actions::ActionId::TaskEdit);
+    driver.bind(&handle);
+    driver.advance_time(0); // instantiate conditionals
+    driver.set_window_size(TASK_VIEW_WIDTH, height);
+
+    let snapshot = driver.snapshot();
+    assert_eq!(
+        (snapshot.width, snapshot.height),
+        (TASK_VIEW_WIDTH, height),
+        "renderer-presence contract at the task-view goldens"
+    );
+
+    let path = task_view_golden_path(scale, height);
+    if regen {
+        let bytes = golden_compare::encode_png(&snapshot).expect("encodes");
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("dir");
+        std::fs::write(&path, bytes).expect("writes");
+        return;
+    }
+    let bytes = std::fs::read(&path)
+        .unwrap_or_else(|error| panic!("golden {} readable: {error}", path.display()));
+    let golden: Rgba8Image =
+        golden_compare::decode_png(&bytes).expect("the committed golden decodes as RGBA8");
+    golden_compare::matches(&golden, &snapshot)
+        .unwrap_or_else(|error| panic!("golden {} drifted: {error}", path.display()));
+}
