@@ -1,0 +1,11 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The task view's walk-stop fact (r4 D18, the plan §6.A probe): the
+// activation stops write their id on focus gain so the structural
+// walk journey can read the traversal order — the WalkProbeFacts
+// pattern over the real view. Test instrumentation, deliberately
+// separate from EditingFacts (whose singleton surface is the two
+// focus counts + the reset generation).
+
+export global TaskViewWalkFacts {
+    in-out property <int> stop-id: 0;
+}

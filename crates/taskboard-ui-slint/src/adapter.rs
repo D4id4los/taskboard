@@ -102,6 +102,14 @@ pub(crate) struct Notice {
 /// The adapter state: the validated keymap (applied at UI start, one
 /// way), the shell, the resolver, the router, the view-state machine
 /// (D3), the lock-free state read (D1), and the command channel out.
+/// The flow liveness the focus hand-off gates on (see
+/// `Adapter::flow_open`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FlowLiveness {
+    Open,
+    Flowless,
+}
+
 pub(crate) struct Adapter {
     keymap: Keymap,
     /// The today window's derivation pair (chunk 10 D4): held, never
@@ -125,6 +133,14 @@ pub(crate) struct Adapter {
     /// repaint driver consults it per tick. Kiosk is structurally and
     /// explicitly excluded.
     pub(crate) seconds_surfaces_active: bool,
+    /// The last [`Self::apply_outcomes`] pass's flow liveness (the
+    /// flowless enum variant replaces a bool — clippy's
+    /// excessive-bools wall). The D15 focus hand-off (and the r4 D20
+    /// flow-end reset) fire on the *transition* to flowless, not on
+    /// every flowless pass — a flowless pass must never steal slint
+    /// focus (the r4 chunk-6 control walk moves focus; an
+    /// unconditional refocus would eat the step it just took).
+    flow_open: FlowLiveness,
     /// pub(crate) for the walk-guard test seam only (the shell's
     /// view context is the guard test's chain input).
     #[cfg(test)]
@@ -275,6 +291,12 @@ pub(crate) struct Adapter {
     /// Shared with the intercept closure — the guard must precede the
     /// `borrow_mut`, not live inside it.
     pub(crate) walk_reentry: Rc<std::cell::Cell<bool>>,
+    /// The control walk's traversal one-shot (r4 chunk 6): the
+    /// synthetic Tab cannot be dispatched re-entrantly from inside the
+    /// key callback — the nested event is inert (the recorded probe) —
+    /// so the re-injection defers to the next event-loop turn. Held
+    /// because a dropped [`slint::Timer`] cancels itself.
+    walk_timer: slint::Timer,
 }
 
 impl Adapter {
@@ -478,8 +500,29 @@ impl Adapter {
         // write (D6: shell view/focus derive from view_state).
         self.sync_view_context();
         let chain = self.shell.chain();
+        // The D18 activation reservation (r4 §2): while a task-view
+        // activation stop holds focus, bare Return/Space belong to the
+        // focused cell — the resolver is still fed first (prefix
+        // semantics preserved: a pending prefix aborts on Return
+        // exactly as now), but an `Action` answer or `Unhandled`
+        // yields, and the focused cell's `key-pressed` activates. The
+        // modal surfaces reset the fact anyway; the check is the belt.
+        let reserved = {
+            let facts = window.global::<crate::EditingFacts>();
+            facts.get_activation_focus_count() > 0
+        } && !self.shell.menu.open
+            && !self.shell.palette
+            && (stroke.key == '\n' || stroke.key == ' ')
+            && !stroke.ctrl
+            && !stroke.alt
+            && !stroke.shift
+            && !stroke.meta;
         match self.resolver.feed(stroke, &chain, &self.keymap) {
             Resolution::Action(id) => {
+                if reserved {
+                    Self::set_feedback(window, KeyFeedback::None);
+                    return false;
+                }
                 Self::set_feedback(window, KeyFeedback::None);
                 self.route(window, id);
                 true
@@ -640,6 +683,8 @@ impl Adapter {
     /// mode read) must not go stale.
     fn apply_outcomes(&mut self, window: &AppWindow, outcomes: &[FlowOutcome]) {
         let mut mode_changed = false;
+        let flow_ended =
+            self.flow_open == FlowLiveness::Open && matches!(self.view_state.flow(), Flow::None);
         for outcome in outcomes {
             match outcome {
                 FlowOutcome::Command(command) => {
@@ -677,7 +722,12 @@ impl Adapter {
         // The D15 focus hand-off: a flow's end unmounts the field that
         // held slint focus; the active view scope takes it back (the
         // §7.3 journey caught the keyboard dead-end).
-        if matches!(self.view_state.flow(), Flow::None) {
+        self.flow_open = if matches!(self.view_state.flow(), Flow::None) {
+            FlowLiveness::Flowless
+        } else {
+            FlowLiveness::Open
+        };
+        if flow_ended {
             // The D20 reset seam 1 (flow ends): the funnel that drives
             // `refocus_view` is where a focused field unmounts — the
             // runtime never fires its loss event, so the counts would
@@ -1317,7 +1367,7 @@ impl Adapter {
         if matches!(effect, UiEffect::ControlNext | UiEffect::ControlPrev) {
             let backwards = effect == UiEffect::ControlPrev;
             let flag = self.walk_reentry.clone();
-            Self::dispatch_traversal(window, &flag, backwards);
+            Self::dispatch_traversal(window, &flag, backwards, &self.walk_timer);
         }
         // The scroll actions (round-3 D26): the focused container
         // pages after the outcomes (the tables are fresh).
@@ -1455,24 +1505,39 @@ impl Adapter {
     /// callback borrows — one press = exactly one stop, never a loop.
     fn dispatch_traversal(
         window: &AppWindow,
-        walk_reentry: &std::cell::Cell<bool>,
+        walk_reentry: &Rc<std::cell::Cell<bool>>,
         backwards: bool,
+        timer: &slint::Timer,
     ) {
-        walk_reentry.set(true);
-        let win = window.window();
-        let tab: slint::SharedString = "\t".into();
-        if backwards {
-            let shift: slint::SharedString =
-                slint::platform::Key::into(slint::platform::Key::Shift);
-            win.dispatch_event(slint::platform::WindowEvent::KeyPressed {
-                text: shift.clone(),
-            });
-            win.dispatch_event(slint::platform::WindowEvent::KeyPressed { text: tab });
-            win.dispatch_event(slint::platform::WindowEvent::KeyReleased { text: shift });
-        } else {
-            win.dispatch_event(slint::platform::WindowEvent::KeyPressed { text: tab });
-        }
-        walk_reentry.set(false);
+        // Deferred (see the field's doc): the callback fires outside
+        // the current key event, where the synthetic Tab reaches the
+        // window's traversal fallback instead of dying re-entrantly.
+        let weak = window.as_weak();
+        let reentry = Rc::clone(walk_reentry);
+        timer.start(
+            slint::TimerMode::SingleShot,
+            std::time::Duration::from_millis(0),
+            move || {
+                let Some(window) = weak.upgrade() else {
+                    return;
+                };
+                reentry.set(true);
+                let win = window.window();
+                let tab: slint::SharedString = "\t".into();
+                if backwards {
+                    let shift: slint::SharedString =
+                        slint::platform::Key::into(slint::platform::Key::Shift);
+                    win.dispatch_event(slint::platform::WindowEvent::KeyPressed {
+                        text: shift.clone(),
+                    });
+                    win.dispatch_event(slint::platform::WindowEvent::KeyPressed { text: tab });
+                    win.dispatch_event(slint::platform::WindowEvent::KeyReleased { text: shift });
+                } else {
+                    win.dispatch_event(slint::platform::WindowEvent::KeyPressed { text: tab });
+                }
+                reentry.set(false);
+            },
+        );
     }
 
     /// The native drag's teardown seam (r2 chunk-8 D-G): a synthetic
@@ -1891,6 +1956,11 @@ impl Adapter {
             // The D20 reset seam 2 (view swaps): the same unmount
             // hazard as the flow end, one enumerate-once tail.
             Self::reset_editing_facts(window);
+            // The swap unmounts whatever held slint focus (and any
+            // stale focus must not survive into the new surface) — the
+            // D15 hand-off rides the swap as it rode every dispatch
+            // before the r4 chunk-6 gating.
+            window.invoke_refocus_view();
         }
         if self.shell.palette && !palette_before {
             // The D20 reset seam 3's palette leg: the modal surface
@@ -3191,6 +3261,8 @@ pub(crate) fn install(
         habit_target: None,
         habit_move: None,
         walk_reentry: Rc::clone(&walk_flag),
+        walk_timer: slint::Timer::default(),
+        flow_open: FlowLiveness::Flowless,
         tables: IdTables::default(),
         models: crate::models::PushModels::default(),
         width_drag: None,
