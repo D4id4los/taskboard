@@ -769,6 +769,11 @@ pub fn fold_reminder_rules(
                         local.offset = *offset;
                         local.created_at = *created;
                         local.insistence = *insistence;
+                        // The document's card key is the rule's remote
+                        // scoping (D-S9): when the document wins, the
+                        // rule follows the folding card's task — a rule
+                        // left on a moved-away task would never fire.
+                        local.task = task;
                         local.updated_at = std::cmp::max(local.updated_at, *clock);
                         changes.upserts.push(local.clone());
                     }
@@ -3932,6 +3937,56 @@ mod tests {
         );
         assert_eq!(changes.upserts, Vec::new());
         assert_eq!(rules[&existing.id].updated_at, ts(BASE + 600));
+    }
+
+    #[test]
+    fn a_document_wins_rule_fold_repoints_a_rule_stuck_on_the_old_task() {
+        // The cross-board move repair (#350): the mover's rule UUIDs are
+        // attached to the old (tombstoned) task; when the migrated
+        // document entry wins the fold under the adopted card's task,
+        // the rule follows the folding card's task (D-S9: the document's
+        // card key is the rule's remote scoping).
+        let old_task = TaskId::from(uuid::Uuid::from_u128(1));
+        let new_task = TaskId::from(uuid::Uuid::from_u128(2));
+        let mut local = rule_with_clock(BASE + 100);
+        local.task = old_task;
+        let mut rules = std::collections::BTreeMap::new();
+        rules.insert(local.id, local.clone());
+        let entry = rules_entry(&[(
+            "00000000-0000-0000-0000-00000000000a",
+            RuleEntry::Rule {
+                insistence: Insistence::Alarm,
+                offset: crate::reminders::ReminderOffset::before(
+                    chrono::TimeDelta::try_minutes(-30).unwrap(),
+                )
+                .unwrap(),
+                created: ts(BASE + 100),
+                clock: ts(BASE + 500),
+            },
+        )]);
+        let changes = fold_reminder_rules(&mut rules, new_task, &entry, false);
+        assert_eq!(changes.upserts.len(), 1);
+        let repointed = &rules[&local.id];
+        assert_eq!(
+            repointed.task, new_task,
+            "the rule follows the folding card's task"
+        );
+        assert_eq!(
+            repointed.offset,
+            crate::reminders::ReminderOffset::before(chrono::TimeDelta::try_minutes(-30).unwrap())
+                .unwrap()
+        );
+        assert_eq!(repointed.insistence, Insistence::Alarm);
+        assert_eq!(repointed.updated_at, ts(BASE + 500));
+        // The clock-loses arm keeps the old task: no re-point when the
+        // local rule stands.
+        let mut stands = rule_with_clock(BASE + 600);
+        stands.task = old_task;
+        let mut rules = std::collections::BTreeMap::new();
+        rules.insert(stands.id, stands.clone());
+        let changes = fold_reminder_rules(&mut rules, new_task, &entry, false);
+        assert_eq!(changes.upserts, Vec::new());
+        assert_eq!(rules[&stands.id].task, old_task);
     }
 
     #[test]
