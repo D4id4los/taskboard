@@ -98,6 +98,7 @@ fn task_clocks() -> TaskClocks {
         importance: ts(T),
         urgency: ts(T),
         recur: ts(T),
+        kind: ts(T),
 
         archived: ts(T),
         deleted: ts(T),
@@ -166,6 +167,7 @@ fn draft(task_raw: u128, stack_local: u128, title: &str) -> (Task, PendingOp) {
         importance: None,
         urgency: None,
         recur: None,
+        kind: taskboard_domain::entities::TaskKind::Standard,
 
         archived: false,
         deleted: false,
@@ -1301,6 +1303,7 @@ async fn a18_remote_moved_card_survives_its_queued_edit() {
         importance: None,
         urgency: None,
         recur: None,
+        kind: taskboard_domain::entities::TaskKind::Standard,
 
         archived: false,
         deleted: false,
@@ -1461,6 +1464,7 @@ async fn a21_archive_mismatch_stamp_uses_the_injected_clock() {
         importance: None,
         urgency: None,
         recur: None,
+        kind: taskboard_domain::entities::TaskKind::Standard,
 
         archived: false,
         deleted: false,
@@ -1611,6 +1615,7 @@ async fn a22_remote_moved_card_delete_lands_without_a_twin() {
         importance: None,
         urgency: None,
         recur: None,
+        kind: taskboard_domain::entities::TaskKind::Standard,
 
         archived: false,
         deleted: false,
@@ -2097,6 +2102,7 @@ async fn a28_archived_twin_dedupes_and_the_flag_is_adopted_with_the_observed_sta
         importance: None,
         urgency: None,
         recur: None,
+        kind: taskboard_domain::entities::TaskKind::Standard,
 
         archived: false,
         deleted: false,
