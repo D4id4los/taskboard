@@ -662,6 +662,7 @@ async fn i2_remote_newer_edit_adopts() {
         importance: None,
         urgency: None,
         recur: None,
+        kind: taskboard_domain::entities::TaskKind::Standard,
 
         archived: false,
         deleted: false,
@@ -676,6 +677,7 @@ async fn i2_remote_newer_edit_adopts() {
             importance: ts(T),
             urgency: ts(T),
             recur: ts(T),
+            kind: ts(T),
 
             archived: ts(T),
             deleted: ts(T),
@@ -730,6 +732,7 @@ async fn i3_concurrent_edits_resolve_per_field() {
         importance: None,
         urgency: None,
         recur: None,
+        kind: taskboard_domain::entities::TaskKind::Standard,
 
         archived: false,
         deleted: false,
@@ -744,6 +747,7 @@ async fn i3_concurrent_edits_resolve_per_field() {
             importance: ts(T),
             urgency: ts(T),
             recur: ts(T),
+            kind: ts(T),
 
             archived: ts(T),
             deleted: ts(T),
@@ -855,6 +859,7 @@ async fn i4_move_label_and_delete_push_to_the_server() {
         importance: None,
         urgency: None,
         recur: None,
+        kind: taskboard_domain::entities::TaskKind::Standard,
 
         archived: false,
         deleted: false,
@@ -869,6 +874,7 @@ async fn i4_move_label_and_delete_push_to_the_server() {
             importance: ts(T + 10),
             urgency: ts(T + 10),
             recur: ts(T + 10),
+            kind: ts(T + 10),
 
             archived: ts(T),
             deleted: ts(T),
@@ -1159,6 +1165,7 @@ async fn i7_a_strangers_twin_card_adopts_without_a_create_in_scope() {
         importance: None,
         urgency: None,
         recur: None,
+        kind: taskboard_domain::entities::TaskKind::Standard,
         archived: false,
         deleted: false,
         clocks: taskboard_domain::TaskClocks {
@@ -1172,6 +1179,7 @@ async fn i7_a_strangers_twin_card_adopts_without_a_create_in_scope() {
             importance: ts(T),
             urgency: ts(T),
             recur: ts(T),
+            kind: ts(T),
             archived: ts(T),
             deleted: ts(T),
         },
@@ -1339,6 +1347,7 @@ async fn i8_adopting_an_occurrence_card_learns_its_series() {
             importance: None,
             urgency: None,
             recur: None,
+            kind: taskboard_domain::entities::TaskKind::Standard,
             archived: false,
             deleted: false,
             clocks: taskboard_domain::TaskClocks {
@@ -1352,6 +1361,7 @@ async fn i8_adopting_an_occurrence_card_learns_its_series() {
                 importance: ts(T),
                 urgency: ts(T),
                 recur: ts(T),
+                kind: ts(T),
                 archived: ts(T),
                 deleted: ts(T),
             },

@@ -150,6 +150,7 @@ pub(crate) fn board_has_local_app_data(
                 || task.urgency.is_some()
                 || (!native_scheduled && task.scheduled.is_some())
                 || task.recur.is_some() // no native lane — always document content
+                || task.kind != taskboard_domain::entities::TaskKind::default()
                 || rules.values().any(|rule| rule.task == task.id))
     }) || entries
         .values()
@@ -613,6 +614,13 @@ fn task_has_app_data(
         || task.urgency.is_some()
         || (!features.card_startdate && task.scheduled.is_some())
         || task.recur.is_some() // recurrence has no native lane — always document content
+        // The kind (issue #492) is total: value presence alone gates
+        // it. A reset-to-standard write needs no gate term — its own
+        // queued `UpdateAppData` op scopes the card unconditionally.
+        // No clock term: a remote adoption stamps every field clock,
+        // so an epoch compare would hold the gate for every synced
+        // task forever (the tracking-only pin caught exactly that).
+        || task.kind != taskboard_domain::entities::TaskKind::default()
         || rules.values().any(|rule| rule.task == task.id)
 }
 
@@ -825,6 +833,7 @@ mod tests {
             importance: None,
             urgency: None,
             recur: None,
+            kind: taskboard_domain::entities::TaskKind::Standard,
             archived: false,
             deleted,
             clocks: taskboard_domain::TaskClocks {
@@ -838,6 +847,7 @@ mod tests {
                 importance: ts(1),
                 urgency: ts(1),
                 recur: ts(1),
+                kind: ts(1),
                 archived: ts(1),
                 deleted: ts(1),
             },
@@ -1255,6 +1265,126 @@ mod tests {
                 taskboard_domain::capabilities::DeckFeatures::CONSERVATIVE
             ),
             "the rebuild scope picks the recur-bearing task"
+        );
+    }
+
+    /// The task kind (issue #492) is total: value presence cannot
+    /// discriminate it, so the gate rides the kind clock — a task whose
+    /// only app content is the kind write (tracker-marked, or a reset
+    /// to standard under a non-epoch clock) fires both the lazy board
+    /// gate and the rebuild scope, so `task_entry_for`'s always-emitted
+    /// kind row actually reaches the wire.
+    #[test]
+    fn a_kind_only_tracker_task_holds_the_flush_gate() {
+        let (mut tasks, stacks, task_id) = fixture(false);
+        tasks.get_mut(&task_id).unwrap().kind = taskboard_domain::entities::TaskKind::Tracker;
+        tasks.get_mut(&task_id).unwrap().clocks.kind = ts(500);
+        let tables = EntityTables {
+            tasks: &tasks,
+            stacks: &stacks,
+            labels: empty_labels(),
+            boards: empty_boards(),
+        };
+        let board = BoardId::from(uuid::Uuid::from_u128(1));
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 10, 28).unwrap();
+        let habit_empty = taskboard_domain::HabitState::default();
+        let empty: BTreeMap<TimeEntryId, TimeEntry> = BTreeMap::new();
+        assert!(
+            has_flush_work(
+                None,
+                &AppDataEvidence::Absent,
+                tables,
+                &BTreeMap::new(),
+                &empty,
+                &habit_empty,
+                today,
+                ts(10_000_000),
+                board,
+                false
+            ),
+            "the kind-only board grows its anchor"
+        );
+        assert!(
+            task_has_app_data(
+                &tasks[&task_id],
+                &BTreeMap::new(),
+                taskboard_domain::capabilities::DeckFeatures::CONSERVATIVE
+            ),
+            "the rebuild scope picks the kind-bearing task"
+        );
+    }
+
+    /// The overlay carries the kind write, and the union with a
+    /// pre-kind base keeps both facts (the base's other fields survive;
+    /// the kind row rides the newer clock).
+    #[test]
+    fn the_overlay_carries_the_kind_write_through_the_union() {
+        let (mut tasks, _stacks, task_id) = fixture(false);
+        let task = tasks.get_mut(&task_id).unwrap();
+        task.kind = taskboard_domain::entities::TaskKind::Tracker;
+        task.clocks.kind = ts(500);
+        let overlay = task_entry_for(task, false);
+        let kind_row = overlay.fields.get("kind").expect("the kind row emits");
+        assert!(
+            matches!(
+                kind_row.value,
+                taskboard_domain::appdata::ModeledValue::Kind(Some(
+                    taskboard_domain::entities::TaskKind::Tracker
+                ))
+            ),
+            "the typed kind rides the envelope"
+        );
+        // A pre-kind base (no `kind` key at all) unions losslessly: the
+        // base's effort stands, the kind row enters.
+        let base = taskboard_domain::appdata::AppDataDocument {
+            format: taskboard_domain::appdata::APPDATA_FORMAT,
+            board: RemoteBoardId(77),
+            sections: taskboard_domain::appdata::AppDataSections {
+                tasks: Some(BTreeMap::from([(
+                    "412".to_owned(),
+                    taskboard_domain::appdata::TaskEntry {
+                        fields: BTreeMap::from([(
+                            "effort".to_owned(),
+                            taskboard_domain::appdata::TaskFieldWrite {
+                                value: taskboard_domain::appdata::ModeledValue::Effort(Some(
+                                    taskboard_domain::entities::Effort::new(60),
+                                )),
+                                clock: ts(100),
+                            },
+                        )]),
+                        unmodeled: BTreeMap::new(),
+                    },
+                )])),
+                ..Default::default()
+            },
+            unknown: BTreeMap::new(),
+        };
+        let overlay_doc = taskboard_domain::appdata::AppDataDocument {
+            format: taskboard_domain::appdata::APPDATA_FORMAT,
+            board: RemoteBoardId(77),
+            sections: taskboard_domain::appdata::AppDataSections {
+                tasks: Some(BTreeMap::from([("412".to_owned(), overlay)])),
+                ..Default::default()
+            },
+            unknown: BTreeMap::new(),
+        };
+        let merged = union(&base, &overlay_doc);
+        let card = &merged.sections.tasks.as_ref().expect("tasks section")["412"];
+        assert!(
+            matches!(
+                card.fields["effort"].value,
+                taskboard_domain::appdata::ModeledValue::Effort(Some(_))
+            ),
+            "the base's other facts survive"
+        );
+        assert!(
+            matches!(
+                card.fields["kind"].value,
+                taskboard_domain::appdata::ModeledValue::Kind(Some(
+                    taskboard_domain::entities::TaskKind::Tracker
+                ))
+            ),
+            "the kind write keeps its fact"
         );
     }
 }
