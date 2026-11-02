@@ -1216,6 +1216,133 @@ fn the_task_detail_model_carries_the_tracked_total_and_it_freezes_when_closed() 
     });
 }
 
+// -- the per-second tick gate (r4 D17, §2 decision 5) -------------------
+
+/// Mints one open entry on `task` into the state (the summary's tick
+/// input; the same shape the fixture's `add_open_entry` mints).
+fn open_entry_on(state: &mut AppState, task: TaskId) {
+    let start = chrono::Utc::now();
+    let id = taskboard_domain::TimeEntryId::from_uuid(uuid::Uuid::now_v7());
+    state.tracking.entries.insert(
+        id,
+        taskboard_domain::TimeEntry {
+            id,
+            task,
+            task_title: "open".to_owned(),
+            start,
+            end: None,
+            created_at: start,
+            updated_at: start,
+        },
+    );
+}
+
+/// A1 — the gate's term: the mounted task view's subject holds an
+/// open entry. A foreign task's open entry, no open entry, and a
+/// left task view all leave it false.
+#[test]
+fn the_seconds_gate_holds_only_while_the_subjects_open_entry_is_mounted() {
+    on_slint_thread(|| {
+        let (state, fx) = fixture();
+        let rig = rig(state);
+        let adapter = rig.adapter();
+        let [a_id, b_id, _c] = fx.tasks;
+        let [s0, _s1] = fx.stacks;
+
+        // Nothing mounted, no open entry: false (the initial derive's
+        // computation).
+        assert!(!adapter.borrow().seconds_surfaces_active);
+
+        // An open entry on the future subject while the task view is
+        // not mounted: false.
+        {
+            let mut s = (*rig.handle.test_state().load_full()).clone();
+            open_entry_on(&mut s, a_id);
+            rig.handle.test_state().store(Arc::new(s));
+            adapter.borrow_mut().refresh(rig.handle.window());
+        }
+        assert!(!adapter.borrow().seconds_surfaces_active);
+
+        // The task view mounted on the subject that holds the entry:
+        // true.
+        {
+            let mut a = adapter.borrow_mut();
+            a.refresh_forced(rig.handle.window());
+            a.view_state.activate_card(a_id, s0);
+            a.view_state
+                .activate_focused(&rig.handle.test_state().load_full());
+            a.refresh_forced(rig.handle.window());
+        }
+        assert!(
+            adapter.borrow().seconds_surfaces_active,
+            "the subject's open entry arms the tick"
+        );
+
+        // No open entry on the subject: false (mount the view on the
+        // entry-less sibling — Back first, then activate).
+        {
+            let mut a = adapter.borrow_mut();
+            a.interpret_for_test(rig.handle.window(), UiEffect::FocusBoard);
+            a.view_state.activate_card(b_id, s0);
+            a.view_state
+                .activate_focused(&rig.handle.test_state().load_full());
+            a.refresh_forced(rig.handle.window());
+        }
+        assert!(
+            !adapter.borrow().seconds_surfaces_active,
+            "a foreign task's open entry never arms the tick"
+        );
+    });
+}
+
+/// A2 — the kiosk pin (layer (b)): the explicit `!self.kiosk` term
+/// keeps the gate false even with an open entry and a subject
+/// candidate in the view state.
+#[test]
+fn the_seconds_gate_stays_false_on_kiosk() {
+    on_slint_thread(|| {
+        let (mut state, fx) = fixture();
+        let [a_id, _b, _c] = fx.tasks;
+        let [s0, _s1] = fx.stacks;
+        open_entry_on(&mut state, a_id);
+        let state = Arc::new(arc_swap::ArcSwap::from_pointee(state));
+        let (commands_tx, commands_rx) = mpsc::channel(64);
+        let (requests_tx, _requests_rx) = mpsc::channel(16);
+        let (_health_tx, health) =
+            tokio::sync::watch::channel(crate::presentation::DeliveryHealth::default());
+        let handle = mount(
+            state,
+            dummy_receiver(),
+            dummy_receiver(),
+            commands_tx,
+            requests_tx,
+            UiSettings {
+                kiosk: true,
+                ..UiSettings::default()
+            },
+            health,
+        )
+        .expect("mount succeeds on the null platform");
+        let rig = Rig {
+            handle,
+            commands_rx,
+        };
+        let adapter = rig.adapter();
+        {
+            let mut a = adapter.borrow_mut();
+            a.refresh_forced(rig.handle.window());
+            a.view_state.activate_card(a_id, s0);
+            a.view_state
+                .activate_focused(&rig.handle.test_state().load_full());
+            a.refresh_forced(rig.handle.window());
+        }
+        assert!(
+            !adapter.borrow().seconds_surfaces_active,
+            "kiosk never ticks, whatever the view state holds"
+        );
+    });
+}
+
 /// T4 — the guarded skip's cheap tail still pushes the settings
 /// liveness: a connector episode flips the row's status enum without a
 /// derive pass.
