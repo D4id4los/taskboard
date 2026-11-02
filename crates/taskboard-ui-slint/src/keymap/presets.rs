@@ -371,9 +371,12 @@ static EMACS: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::NavFirstItem, ContextId::StackDetail, &["Alt+<"]),
     (ActionId::NavLastItem, ContextId::StackDetail, &["Alt+>"]),
     (ActionId::TaskCreate, ContextId::StackDetail, &["Ctrl+o"]),
-    // TaskDetail
-    (ActionId::NavNextItem, ContextId::TaskDetail, &["Ctrl+n"]),
-    (ActionId::NavPrevItem, ContextId::TaskDetail, &["Ctrl+p"]),
+    // TaskDetail (r4 D19): C-n/C-p join the walk — the item walk is
+    // semantically dead here (`step_focus` has no TaskDetail arm; the
+    // rows walked the hidden board under the open view), and the
+    // intra-context contract makes this a move, not an add.
+    (ActionId::NavNextControl, ContextId::TaskDetail, &["Ctrl+n"]),
+    (ActionId::NavPrevControl, ContextId::TaskDetail, &["Ctrl+p"]),
     (ActionId::NavFirstItem, ContextId::TaskDetail, &["Alt+<"]),
     (ActionId::NavLastItem, ContextId::TaskDetail, &["Alt+>"]),
     // Menu
@@ -413,6 +416,11 @@ static EMACS: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::NavPrevControl, ContextId::TaskDetail, &["Ctrl+b"]),
     (ActionId::NavNextControl, ContextId::Settings, &["Ctrl+f"]),
     (ActionId::NavPrevControl, ContextId::Settings, &["Ctrl+b"]),
+    // r4 D19: C-n/C-p join the walk in Settings (conflict-contract
+    // clean — the rows were unbound there; the Board keeps its live
+    // task/stack walk, the recorded exclusion for Today/StackDetail).
+    (ActionId::NavNextControl, ContextId::Settings, &["Ctrl+n"]),
+    (ActionId::NavPrevControl, ContextId::Settings, &["Ctrl+p"]),
     // Round 3 (D26): the scroll actions — C-v/M-v, emacs'
     // scroll-up/down commands, in the five view contexts.
     (ActionId::ViewScrollDown, ContextId::Today, &["Ctrl+v"]),

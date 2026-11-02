@@ -640,11 +640,14 @@ mod tests {
         );
     }
 
-    /// Round 3 (D25, the recorded emacs preservation): C-f/C-b are
-    /// the control walk in the four non-board view contexts, and stay
-    /// stack.next/stack.prev on the board chain.
+    /// Round 3 (D25) extended by r4 chunk 6 (D19): all four isearch
+    /// chords walk controls on the detail chain; the board keeps its
+    /// live task/stack walk on C-n/C-p and its isearch chords on
+    /// C-f/C-b; Today/StackDetail keep the item walk (excluded — not
+    /// conflict-clean); Settings resolves the walk on both chord
+    /// pairs.
     #[test]
-    fn emacs_control_walk_preserves_the_board_chords() {
+    fn emacs_four_chords_walk_controls_on_the_detail_chain() {
         let keymap = Keymap::from_preset(Preset::Emacs);
         let board_chain = [ContextId::Board, ContextId::ViNormal, ContextId::Global];
         let detail_chain = [
@@ -652,26 +655,70 @@ mod tests {
             ContextId::ViNormal,
             ContextId::Global,
         ];
-        let c_f = stroke::parse("Ctrl+f").expect("ctrl f");
-        let c_b = stroke::parse("Ctrl+b").expect("ctrl b");
-        assert_eq!(
-            keymap.resolve(&board_chain, &[c_f]),
-            Some(ActionId::StackNext),
-            "the board keeps its isearch chords"
-        );
-        assert_eq!(
-            keymap.resolve(&board_chain, &[c_b]),
-            Some(ActionId::StackPrev)
-        );
-        assert_eq!(
-            keymap.resolve(&detail_chain, &[c_f]),
-            Some(ActionId::NavNextControl),
-            "the detail chain walks controls"
-        );
-        assert_eq!(
-            keymap.resolve(&detail_chain, &[c_b]),
-            Some(ActionId::NavPrevControl)
-        );
+        let today_chain = [ContextId::Today, ContextId::ViNormal, ContextId::Global];
+        let stack_chain = [
+            ContextId::StackDetail,
+            ContextId::ViNormal,
+            ContextId::Global,
+        ];
+        let settings_chain = [ContextId::Settings, ContextId::ViNormal, ContextId::Global];
+        let chords = [
+            ("Ctrl+f", ActionId::NavNextControl),
+            ("Ctrl+b", ActionId::NavPrevControl),
+            ("Ctrl+n", ActionId::NavNextControl),
+            ("Ctrl+p", ActionId::NavPrevControl),
+        ];
+        for (spelling, walk) in chords {
+            let stroke = stroke::parse(spelling).expect("the chord parses");
+            assert_eq!(
+                keymap.resolve(&detail_chain, &[stroke]),
+                Some(walk),
+                "{spelling} walks controls on the detail chain"
+            );
+        }
+        // The board keeps its live task/stack walk: C-n/C-p stay item
+        // nav, C-f/C-b stay stack next/prev.
+        let board_rows = [
+            ("Ctrl+n", ActionId::NavNextItem),
+            ("Ctrl+p", ActionId::NavPrevItem),
+            ("Ctrl+f", ActionId::StackNext),
+            ("Ctrl+b", ActionId::StackPrev),
+        ];
+        for (spelling, action) in board_rows {
+            let stroke = stroke::parse(spelling).expect("the chord parses");
+            assert_eq!(
+                keymap.resolve(&board_chain, &[stroke]),
+                Some(action),
+                "{spelling} keeps the board's live walk"
+            );
+        }
+        // The excluded contexts keep the item walk on C-n/C-p.
+        let item_rows = [
+            ("Ctrl+n", ActionId::NavNextItem),
+            ("Ctrl+p", ActionId::NavPrevItem),
+        ];
+        for (spelling, action) in item_rows {
+            let stroke = stroke::parse(spelling).expect("the chord parses");
+            assert_eq!(
+                keymap.resolve(&today_chain, &[stroke]),
+                Some(action),
+                "{spelling} keeps the today row walk"
+            );
+            assert_eq!(
+                keymap.resolve(&stack_chain, &[stroke]),
+                Some(action),
+                "{spelling} keeps the stack list walk"
+            );
+        }
+        // Settings resolves the walk on both chord pairs.
+        for (spelling, walk) in chords {
+            let stroke = stroke::parse(spelling).expect("the chord parses");
+            assert_eq!(
+                keymap.resolve(&settings_chain, &[stroke]),
+                Some(walk),
+                "{spelling} walks controls on the settings chain"
+            );
+        }
     }
 
     /// Round 3 (D25): the picker context is every preset's chain head
