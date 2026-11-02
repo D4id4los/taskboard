@@ -665,8 +665,12 @@ dependency hierarchies.
    trait), and =resolve_ui_settings= (the figment =[ui]= table into
    typed =UiSettings=; keymap findings surface as startup warnings
    and never block start). The =[ui]= config surface: =scale=
-   (0.5–3.0, typed-validated) and =keymap.preset= /
-   =keymap.overrides=.
+   (0.5–3.0, typed-validated), =keymap.preset= /
+   =keymap.overrides=, the device-local =stack_widths= map (the
+   forwarder's pruned write), and the device-local
+   =window_geometry= table (#412 — the UI request forwarder is the
+   single writer of both subtrees; the minted restore value crosses
+   the mount boundary as typed =UiSettings=, never synced).
    Dependencies: all workspace
    crates plus the manifest's set (see the crate's =Cargo.toml=;
    =keyring= rides platform features via target-specific deps, and the
