@@ -143,24 +143,11 @@ fn the_menu_icon_holds_its_token_derived_geometry_at_every_geometry() {
     }
 }
 
-/// The count of pixels visibly off the background colour (a
-/// max-channel delta of ≥ 12) in the strip — the sub-pixel extreme's
-/// ink-presence floor.
+/// The count of pixels visibly off the background colour in the
+/// strip — the sub-pixel extreme's ink-presence floor (the shared
+/// counter).
 fn strip_pixels_beyond_background(image: &Rgba8Image, strip_height: u32, bg: [u8; 3]) -> u32 {
-    let mut count = 0u32;
-    for y in 0..strip_height.min(image.height) {
-        for x in 0..image.width {
-            let i = (y as usize * image.width as usize + x as usize) * 4;
-            let delta = (i32::from(image.data[i]) - i32::from(bg[0]))
-                .abs()
-                .max((i32::from(image.data[i + 1]) - i32::from(bg[1])).abs())
-                .max((i32::from(image.data[i + 2]) - i32::from(bg[2])).abs());
-            if delta >= 12 {
-                count += 1;
-            }
-        }
-    }
-    count
+    crate::support::pixel_probe::count_off_background(image, 0, 0, image.width, strip_height, bg)
 }
 
 /// G4 — the tooltip state machine (plan D3): hover arms a 600 ms

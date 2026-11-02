@@ -170,28 +170,13 @@ fn p2_the_hover_lift_pair_reads_on_both_surfaces() {
     });
 }
 
-/// Ink-presence floor: pixels visibly off the cell background (a
-/// max-channel delta of ≥ 12). At the 0.5× extreme the sub-pixel
-/// strokes blend far toward the background — the cell still carries
-/// glyph ink, and the count is a floor, never a ceiling.
+/// Ink-presence floor: pixels visibly off the cell background (the
+/// shared counter). At the 0.5× extreme the sub-pixel strokes blend
+/// far toward the background — the cell still carries glyph ink, and
+/// the count is a floor, never a ceiling.
 fn ink_pixels(image: &Rgba8Image, rect: (u32, u32, u32, u32), bg: [u8; 3]) -> u32 {
     let (cx, cy, cw, ch) = rect;
-    let (x0, y0) = (cx.min(image.width), cy.min(image.height));
-    let (x1, y1) = ((cx + cw).min(image.width), (cy + ch).min(image.height));
-    let mut count = 0;
-    for y in y0..y1 {
-        for x in x0..x1 {
-            let i = (y as usize * image.width as usize + x as usize) * 4;
-            let delta = (i32::from(image.data[i]) - i32::from(bg[0]))
-                .abs()
-                .max((i32::from(image.data[i + 1]) - i32::from(bg[1])).abs())
-                .max((i32::from(image.data[i + 2]) - i32::from(bg[2])).abs());
-            if delta >= 12 {
-                count += 1;
-            }
-        }
-    }
-    count
+    support::pixel_probe::count_off_background(image, cx, cy, cx + cw, cy + ch, bg)
 }
 
 /// P3 — the crispness extremes: glyphs render ink at 0.5× and 1.0×
