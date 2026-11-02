@@ -861,6 +861,99 @@ fn a_true_removal_above_the_today_viewport_reflows_by_the_removed_extent() {
     );
 }
 
+/// Anchor-on-removal of a live walked-to row (#461 stage-1 plan D-2
+/// case 3): with the Today overdue viewport driven deep by the
+/// keyboard walk, flipping a **live** row's `done` removes it from the
+/// section in place — the rows **below** it close up by exactly the
+/// removed row's extent (its successor takes its old position), the
+/// rows above it rest, and the page does not scroll (the header
+/// rests). This is the click-flip geometry: the list closes up under
+/// the cursor. The done stamp is a fixed fixture-epoch value outside
+/// today's window — the bench's pure-removal lever, with no
+/// Done-section insertion to confound the geometry — and focus
+/// follow-through is deliberately not asserted here (the walk journey
+/// and the state-side focus pins own that behavior; this pin is the
+/// geometry contract).
+#[test]
+fn a_removal_within_the_today_viewport_closes_the_rows_below_without_scrolling() {
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: false,
+        },
+        |driver| {
+            let (handle, _engine, state) = mount_today(driver, 600);
+
+            // Drive the walk deep (the landed removal pin's setup):
+            // 30 strokes enter at overdue row 0. Overdue rows are the
+            // fixture's multiples of 3 minus its multiples of 10
+            // (every 10th task is done), so the 29th row is order 87
+            // (3, 6, …, 84 below it) and its successor is order 93 —
+            // order 90 is a fixture-done task, not a row.
+            for _ in 0..30 {
+                handle.dispatch_action(ActionId::NavNextItem);
+                driver.advance_time(0);
+            }
+
+            let focused = driver
+                .find_by_label(&bench_label(87))
+                .unwrap_or_else(|| panic!("the walked-to card is live"));
+            let rest = focused.absolute_position();
+            let above = driver
+                .find_by_label(&bench_label(75))
+                .unwrap_or_else(|| panic!("a row above the removed one is live"));
+            let above_rest = above.absolute_position();
+            let header = driver
+                .find_by_label("Overdue")
+                .unwrap_or_else(|| panic!("the Overdue section header renders"));
+            let header_rest = header.absolute_position();
+
+            // Flip the walked-to row's `done` to a fixed stamp
+            // outside today's window: a removal within the viewport.
+            let mut next = (**state.load()).clone();
+            let walked = next
+                .tasks
+                .values()
+                .find(|task| task.title == bench_label(87))
+                .expect("the walked-to task")
+                .id;
+            next.tasks.get_mut(&walked).expect("task").done =
+                Some(chrono::DateTime::from_timestamp(1_704_067_200, 0).expect("fixture stamp"));
+            state.store(Arc::new(next));
+            handle.refresh();
+            driver.advance_time(0);
+
+            let successor = driver
+                .find_by_label(&bench_label(93))
+                .unwrap_or_else(|| panic!("the successor row closes up"));
+            assert_eq!(
+                rest.y,
+                successor.absolute_position().y,
+                "the successor row takes exactly the removed row's old position"
+            );
+            let above = driver
+                .find_by_label(&bench_label(75))
+                .unwrap_or_else(|| panic!("the row above the removed one stays live"));
+            assert_eq!(
+                above_rest.y,
+                above.absolute_position().y,
+                "the rows above the removed row do not move"
+            );
+            let header = driver
+                .find_by_label("Overdue")
+                .unwrap_or_else(|| panic!("the Overdue section header stays"));
+            assert_eq!(
+                header_rest.y,
+                header.absolute_position().y,
+                "the removal must not scroll the page"
+            );
+            assert!(
+                driver.find_by_label(&bench_label(87)).is_none(),
+                "the removed row is gone from the section"
+            );
+        },
+    );
+}
+
 /// Compact stack-switch remount (r2 D8): switching stacks by keyboard
 /// re-mounts the single column's viewport cleanly — the new stack's
 /// head card renders at the rest position, the old stack's cards are
