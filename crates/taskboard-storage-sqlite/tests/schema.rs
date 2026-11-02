@@ -230,6 +230,7 @@ fn minimal_task() -> Task {
         importance: None,
         urgency: None,
         recur: None,
+        kind: taskboard_domain::entities::TaskKind::Standard,
 
         archived: false,
         deleted: false,
@@ -244,6 +245,7 @@ fn minimal_task() -> Task {
             importance: BoardClocks::epoch(),
             urgency: BoardClocks::epoch(),
             recur: BoardClocks::epoch(),
+            kind: BoardClocks::epoch(),
 
             archived: BoardClocks::epoch(),
             deleted: BoardClocks::epoch(),

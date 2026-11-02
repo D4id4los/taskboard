@@ -108,6 +108,29 @@ pub fn time_entry_kind_from_text(raw: &str) -> Option<taskboard_domain::tracking
     }
 }
 
+/// The stored TEXT form of a task kind: the domain enum's serde unit
+/// name (the `time_entry_kind_*` twins' one-representation discipline).
+#[must_use]
+pub fn task_kind_to_text(kind: taskboard_domain::entities::TaskKind) -> &'static str {
+    use taskboard_domain::entities::TaskKind::{Standard, Tracker};
+    match kind {
+        Standard => "standard",
+        Tracker => "tracker",
+    }
+}
+
+/// Parses the stored TEXT form back; `None` on an unknown kind (a
+/// corrupt local row is a corrupted database, never a clamped value).
+#[must_use]
+pub fn task_kind_from_text(raw: &str) -> Option<taskboard_domain::entities::TaskKind> {
+    use taskboard_domain::entities::TaskKind::{Standard, Tracker};
+    match raw {
+        "standard" => Some(Standard),
+        "tracker" => Some(Tracker),
+        _ => None,
+    }
+}
+
 /// Parses the stored TEXT form back; `None` on an unknown rung.
 #[must_use]
 pub fn insistence_from_text(raw: &str) -> Option<taskboard_domain::reminders::Insistence> {

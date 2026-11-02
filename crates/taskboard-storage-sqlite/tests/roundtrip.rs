@@ -42,6 +42,7 @@ fn task_clocks(secs: i64) -> TaskClocks {
         importance: t,
         urgency: t,
         recur: t,
+        kind: t,
 
         archived: t,
         deleted: t,
@@ -144,6 +145,7 @@ fn task(
         importance: None,
         urgency: None,
         recur: None,
+        kind: taskboard_domain::entities::TaskKind::Standard,
 
         archived: false,
         deleted: false,
@@ -1781,6 +1783,131 @@ async fn entry_kind_and_break_rule_rows_round_trip_through_sqlite() {
         .expect("delete");
     let loaded = repo.load().await.expect("load");
     assert!(loaded.reminders.break_rules.is_empty());
+    db.close().await;
+}
+
+// ---- the tracker task kind (backlog round 2 chunk 4.2, #492) --------
+
+/// The kind column round-trips both arms with its clock through
+/// write/reload — the 0019 column pair over the 0007 recipe (stored
+/// TEXT = the serde unit name; rfc3339 clock).
+#[tokio::test]
+async fn task_kind_roundtrips_through_the_row() {
+    let mut db = common::FileDb::new().await;
+    let repo = db.repo();
+    let b = board(11);
+    let s = stack(2, &b);
+    let mut tracker = task(1, &s, BTreeMap::default());
+    tracker.kind = taskboard_domain::entities::TaskKind::Tracker;
+    tracker.clocks.kind = ts(900);
+    repo.apply(vec![
+        PersistenceAction::UpsertBoard(b),
+        PersistenceAction::UpsertStack(s),
+        PersistenceAction::UpsertTask(tracker.clone()),
+    ])
+    .await
+    .expect("apply");
+    let loaded = repo.load().await.expect("load");
+    let row = &loaded.tasks[&tracker.id];
+    assert_eq!(row.kind, taskboard_domain::entities::TaskKind::Tracker);
+    assert_eq!(row.clocks.kind, ts(900));
+    db.close().await;
+}
+
+/// The kind upgrade pin: a pre-0019 `tasks` row (no `kind` column)
+/// decodes `Standard` after the migration's DEFAULT backfill — the
+/// local default-off decode — with an epoch kind clock ("never locally
+/// written", so every remote stamp wins bit-for-bit).
+#[tokio::test]
+async fn pre_0019_task_rows_decode_standard_with_epoch_clocks() {
+    let mut db = common::FileDb::new().await;
+    let raw = sqlx::sqlite::SqliteConnectOptions::new().filename(db.path());
+    let pool = sqlx::SqlitePool::connect_with(raw).await.expect("raw pool");
+    sqlx::query(
+        "INSERT INTO boards (id, title, color, archived, deleted) \
+         VALUES ('00000000-0000-0000-0000-00000000000b', 'b', '0082c9', 0, 0)",
+    )
+    .execute(&pool)
+    .await
+    .expect("raw board insert");
+    sqlx::query(
+        "INSERT INTO stacks (id, board, title, sort_order, archived, deleted, \
+         ck_title, ck_sort_order, ck_deleted) \
+         VALUES ('00000000-0000-0000-0000-000000000002', \
+                 '00000000-0000-0000-0000-00000000000b', 's', 1, 0, 0, \
+                 '1970-01-01T00:00:10+00:00', '1970-01-01T00:00:10+00:00', \
+                 '1970-01-01T00:00:10+00:00')",
+    )
+    .execute(&pool)
+    .await
+    .expect("raw stack insert");
+    sqlx::query(
+        "INSERT INTO tasks (id, stack, title, description, duedate, scheduled, done, sort_order, \
+         effort, importance, urgency, recur, kind, archived, deleted, \
+         ck_title, ck_description, ck_duedate, ck_scheduled, ck_done, ck_position, ck_labels, \
+         ck_effort, ck_importance, ck_urgency, ck_recur, ck_kind, ck_archived, ck_deleted) \
+         VALUES ('00000000-0000-0000-0000-000000000001', \
+                 '00000000-0000-0000-0000-000000000002', 'pre-kind row', '', \
+                 NULL, NULL, NULL, 1, NULL, NULL, NULL, NULL, 'standard', 0, 0, \
+                 '1970-01-01T00:00:10+00:00', '1970-01-01T00:00:10+00:00', \
+                 '1970-01-01T00:00:10+00:00', '1970-01-01T00:00:10+00:00', \
+                 '1970-01-01T00:00:10+00:00', '1970-01-01T00:00:10+00:00', \
+                 '1970-01-01T00:00:10+00:00', '1970-01-01T00:00:10+00:00', \
+                 '1970-01-01T00:00:10+00:00', '1970-01-01T00:00:10+00:00', \
+                 '1970-01-01T00:00:10+00:00', '0001-01-01T00:00:00+00:00', \
+                 '1970-01-01T00:00:10+00:00', '1970-01-01T00:00:10+00:00')",
+    )
+    .execute(&pool)
+    .await
+    .expect("raw task insert");
+    pool.close().await;
+
+    let loaded = db.repo().load().await.expect("load");
+    let task = &loaded.tasks[&taskboard_domain::TaskId::from(uuid::Uuid::from_u128(1))];
+    assert_eq!(
+        task.kind,
+        taskboard_domain::entities::TaskKind::Standard,
+        "the backfill is the decode"
+    );
+    assert_eq!(
+        task.clocks.kind,
+        taskboard_domain::entities::BoardClocks::epoch(),
+        "pre-migration rows read as never locally written"
+    );
+    db.close().await;
+}
+
+/// Strict decode (trusted-written rows): an unknown kind text is a
+/// corrupted database — `Corrupted`, never a clamped value.
+#[tokio::test]
+async fn an_unknown_task_kind_text_is_corrupted() {
+    let mut db = common::FileDb::new().await;
+    let repo = db.repo();
+    let b = board(11);
+    let s = stack(2, &b);
+    let t = task(1, &s, BTreeMap::default());
+    repo.apply(vec![
+        PersistenceAction::UpsertBoard(b),
+        PersistenceAction::UpsertStack(s),
+        PersistenceAction::UpsertTask(t),
+    ])
+    .await
+    .expect("parents");
+    let raw = sqlx::sqlite::SqliteConnectOptions::new().filename(db.path());
+    let pool = sqlx::SqlitePool::connect_with(raw).await.expect("raw pool");
+    sqlx::query(
+        "UPDATE tasks SET kind = 'bogus' WHERE id = '00000000-0000-0000-0000-000000000001'",
+    )
+    .execute(&pool)
+    .await
+    .expect("raw kind tamper");
+    pool.close().await;
+
+    let err = db.repo().load().await.expect_err("corrupted row refuses");
+    assert!(
+        matches!(err, RepositoryError::Corrupted),
+        "the strict decode reports Corrupted, got {err:?}"
+    );
     db.close().await;
 }
 

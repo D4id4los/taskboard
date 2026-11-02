@@ -174,6 +174,7 @@ fn fixture_task(i: usize, stacks: &[Stack], labels: &[Label]) -> Task {
         importance: None,
         urgency: None,
         recur: None,
+        kind: taskboard_domain::entities::TaskKind::Standard,
 
         archived: false,
         deleted: false,
@@ -196,6 +197,7 @@ fn task_clocks(i: usize) -> TaskClocks {
         importance: ts(ix(i) + 1_700_000),
         urgency: ts(ix(i) + 1_800_000),
         recur: ts(ix(i) + 1_800_000),
+        kind: ts(ix(i) + 1_800_000),
 
         archived: t,
         deleted: t,

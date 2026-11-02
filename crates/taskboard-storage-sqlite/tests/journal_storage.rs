@@ -60,6 +60,7 @@ fn undoable_entry(ids: &CountingIds, task_id: taskboard_domain::TaskId) -> Journ
                             importance: ts(1),
                             urgency: ts(1),
                             recur: ts(1),
+                            kind: ts(1),
                             archived: ts(1),
                             deleted: ts(1),
                         },
