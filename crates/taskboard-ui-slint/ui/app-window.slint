@@ -44,12 +44,13 @@ export { FieldValidity }
 import { MenuPanelFacts, DatePickerFacts } from "menu-facts.slint";
 import { SettingsScrollFacts } from "settings-facts.slint";
 import { EditingFacts } from "editing-facts.slint";
+import { TaskViewWalkFacts } from "walk-facts.slint";
 import { AlarmWindow, AlarmRowModel } from "alarm-window.slint";
 export { AlarmWindow, AlarmRowModel }
 
 // Re-export the globals so the generated Rust module exposes them
 // (mount/adapter read/write them through the generated accessors).
-export { Theme, Typography, Semantic, Responsive, TooltipState, MenuPanelFacts, SettingsScrollFacts, DragState, FocusScrollHint, ScrollPageHint, EditingFacts }
+export { Theme, Typography, Semantic, Responsive, TooltipState, MenuPanelFacts, SettingsScrollFacts, DragState, FocusScrollHint, ScrollPageHint, EditingFacts, TaskViewWalkFacts }
 export { BoardBarModel, BoardSegmentModel }
 
 export enum KeyFeedback {

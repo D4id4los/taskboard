@@ -172,6 +172,73 @@ fn capture_and_compare(driver: &mut SlintDriver, scale: f64, width: u32, regen: 
     );
 }
 
+/// The focused closed cell's golden (r4 chunk 6, plan §6.A): the
+/// due cell focused via the control walk pins the D18 ring visual —
+/// the walk's active element is visibly indicated at a closed cell.
+#[test]
+fn the_focused_cell_golden_pins_the_ring() {
+    let regen = regen_requested();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |driver| {
+            let path = PathBuf::from(format!(
+                "{}/tests/goldens/task-view-focus-cell-1.0-900.png",
+                env!("CARGO_MANIFEST_DIR")
+            ));
+            let state = Arc::new(ArcSwap::from_pointee(fixture::golden_state().1));
+            let (commands, _engine) = support::fake_engine::FakeEngine::channel(Arc::clone(&state));
+            let (requests_tx, _requests_rx) = tokio::sync::mpsc::channel(16);
+            let handle = taskboard_ui_slint::mount(
+                state,
+                dummy_signals(),
+                dummy_system(),
+                commands,
+                requests_tx,
+                UiSettings::default(),
+                detached_health(),
+            )
+            .expect("mount succeeds on the testing backend");
+            // The journeys' walk idiom into the detail, then five walk
+            // steps: back, done, title, tracking, due.
+            handle.dispatch_action(taskboard_ui_slint::actions::ActionId::NavFocusBoard);
+            handle.dispatch_action(taskboard_ui_slint::actions::ActionId::NavFirstItem);
+            handle.dispatch_action(taskboard_ui_slint::actions::ActionId::TaskEdit);
+            driver.bind(&handle);
+            driver.advance_time(0);
+            driver.set_window_size(TASK_VIEW_WIDTH, 900);
+            for _ in 0..5 {
+                driver.press_stroke(
+                    taskboard_ui_slint::keymap::stroke::parse("Tab").expect("tab parses"),
+                );
+                driver.advance_time(1);
+            }
+            let snapshot = driver.snapshot();
+            assert_eq!(
+                (snapshot.width, snapshot.height),
+                (TASK_VIEW_WIDTH, 900),
+                "renderer-presence contract at the focused-cell golden"
+            );
+            if regen {
+                let bytes = golden_compare::encode_png(&snapshot).expect("encodes");
+                std::fs::write(&path, bytes).expect("writes");
+                return;
+            }
+            let bytes = std::fs::read(&path)
+                .unwrap_or_else(|error| panic!("golden {} readable: {error}", path.display()));
+            let golden: Rgba8Image =
+                golden_compare::decode_png(&bytes).expect("the committed golden decodes as RGBA8");
+            golden_compare::matches(&golden, &snapshot)
+                .unwrap_or_else(|error| panic!("golden {} drifted: {error}", path.display()));
+        },
+    );
+    assert!(
+        !regen,
+        "goldens regenerated — review the PNG diff before landing"
+    );
+}
+
 fn dummy_signals() -> tokio::sync::broadcast::Receiver<taskboard_domain::EngineSignal> {
     let (_tx, rx) = tokio::sync::broadcast::channel(4);
     rx

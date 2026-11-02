@@ -13,6 +13,63 @@ import { DueEditor } from "../compositions/due-editor.slint";
 import { DueDayModel } from "../compositions/date-picker.slint";
 import { DatePickerFacts } from "../menu-facts.slint";
 import { TooltipState } from "../widgets/tooltip.slint";
+import { EditingFacts } from "../editing-facts.slint";
+import { TaskViewWalkFacts } from "../walk-facts.slint";
+
+// The task view's closed-cell activation stop (r4 D18): the done-box
+// grammar verbatim — a full-size FocusScope tab stop with the cell's
+// a11y triple, bare Return/Space activating the same seam the cell's
+// TouchArea clicks, and the ring visual the parent cell's border
+// renders from `has-focus`. The focus gains publish into
+// EditingFacts' activation count (the §2 reservation arm's input)
+// with the same latch/generation discipline as the text-field
+// publish, and stamp the walk-stop fact (the plan §6.A probe).
+component ActivationStop inherits FocusScope {
+    in property <string> stop-label;
+    in property <string> stop-description;
+    in property <int> stop-id;
+    callback activated();
+    focus-on-tab-navigation: true;
+    accessible-role: AccessibleRole.button;
+    accessible-label: root.stop-label;
+    accessible-description: root.stop-description;
+    accessible-action-default => { root.activated(); }
+    key-pressed(event) => {
+        if ((event.text == Key.Return || event.text == " ")
+            && !event.modifiers.control
+            && !event.modifiers.alt
+            && !event.modifiers.shift
+            && !event.modifiers.meta) {
+            root.activated();
+            accept
+        } else {
+            reject
+        }
+    }
+    // The derived-property wrap is the walk probe's recorded idiom
+    // (P2): `changed` delivers on the wrapper, not on the built-in
+    // has-focus binding directly.
+    property <bool> focused: self.has-focus;
+    property <bool> activation-counted: false;
+    property <int> counted-generation: -1;
+    changed focused => {
+        if (self.focused) {
+            TaskViewWalkFacts.stop-id = root.stop-id;
+        }
+        if (self.counted-generation != EditingFacts.generation) {
+            // A reset seam re-baselined the counts: re-sync, never a
+            // stale decrement into them.
+            self.counted-generation = EditingFacts.generation;
+            self.activation-counted = self.focused;
+            if (self.focused) {
+                EditingFacts.activation-focus-count += 1;
+            }
+        } else if (self.focused != self.activation-counted) {
+            EditingFacts.activation-focus-count += self.focused ? 1 : -1;
+            self.activation-counted = self.focused;
+        }
+    }
+}
 
 // The task-detail model (D22).
 export struct TaskDetailModel {
@@ -206,6 +263,29 @@ export component TaskView inherits FocusScope {
                         width: 100%;
                         height: 100%;
                         focus-on-tab-navigation: true;
+                        // The activation publish (r4 §2): the done-box
+                        // joins the reservation so its Space path is
+                        // uniform under vi (the walk-stop fact rides;
+                        // the derived-property wrap is the walk
+                        // probe's recorded idiom).
+                        property <bool> focused: self.has-focus;
+                        property <bool> activation-counted: false;
+                        property <int> counted-generation: -1;
+                        changed focused => {
+                            if (self.focused) {
+                                TaskViewWalkFacts.stop-id = 2;
+                            }
+                            if (self.counted-generation != EditingFacts.generation) {
+                                self.counted-generation = EditingFacts.generation;
+                                self.activation-counted = self.focused;
+                                if (self.focused) {
+                                    EditingFacts.activation-focus-count += 1;
+                                }
+                            } else if (self.focused != self.activation-counted) {
+                                EditingFacts.activation-focus-count += self.focused ? 1 : -1;
+                                self.activation-counted = self.focused;
+                            }
+                        }
                         accessible-role: AccessibleRole.checkbox;
                         // The done/undone verb pair (the card's
                         // presentation literals, reused verbatim so
@@ -278,12 +358,25 @@ export component TaskView inherits FocusScope {
                 if (!root.task.edit-open): title-display := Rectangle {
                     border-radius: Theme.radius-small;
                     horizontal-stretch: 1;
-                    accessible-role: AccessibleRole.button;
-                    accessible-label: "Edit title";
-                    accessible-description: "Arms the title editor for the viewed task.";
-                    accessible-action-default => { root.title-edit-opened(); }
-                    // The hover surface first (z-under the text): the
-                    // due-cell grammar's hover affordance.
+                    // The D18 ring: the focused closed cell visibly
+                    // indicates the active element (the ring width 0
+                    // keeps the hover surface the rest-state
+                    // differentiator).
+                    border-width: title-stop.has-focus ? Theme.focus-ring-width : 0;
+                    border-color: Semantic.focus-ring;
+                    // The activation stop first (z-under the text):
+                    // the closed-cell grammar's walk stop; the a11y
+                    // triple rides the scope (the click ≡ key seam).
+                    title-stop := ActivationStop {
+                        width: 100%;
+                        height: 100%;
+                        stop-label: "Edit title";
+                        stop-description: "Arms the title editor for the viewed task.";
+                        stop-id: 3;
+                        activated => { root.title-edit-opened(); }
+                    }
+                    // The hover surface (z-over the stop, z-under the
+                    // text): the due-cell grammar's hover affordance.
                     if (title-touch.has-hover): Rectangle {
                         background: Theme.surface-raised;
                         border-radius: Theme.radius-small;
@@ -353,12 +446,16 @@ export component TaskView inherits FocusScope {
                     // cell's grammar.
                     if (!root.task.due-open): due-cell := Rectangle {
                         border-radius: Theme.radius-small;
-                        accessible-role: AccessibleRole.button;
-                        accessible-label: "Edit due date";
-                        accessible-description: "Opens the due-date editor.";
-                        accessible-action-default => { root.due-edit-opened(); }
-                        // The hover surface first (z-under the text):
-                        // the title-cell grammar's hover affordance.
+                        border-width: due-stop.has-focus ? Theme.focus-ring-width : 0;
+                        border-color: Semantic.focus-ring;
+                        due-stop := ActivationStop {
+                            width: 100%;
+                            height: 100%;
+                            stop-label: "Edit due date";
+                            stop-description: "Opens the due-date editor.";
+                            stop-id: 5;
+                            activated => { root.due-edit-opened(); }
+                        }
                         if (due-touch.has-hover): Rectangle {
                             background: Theme.surface-hover;
                             border-radius: Theme.radius-small;
@@ -393,10 +490,16 @@ export component TaskView inherits FocusScope {
                     }
                     if (!root.task.scheduled-open): scheduled-cell := Rectangle {
                         border-radius: Theme.radius-small;
-                        accessible-role: AccessibleRole.button;
-                        accessible-label: "Edit start date";
-                        accessible-description: "Opens the start-date editor.";
-                        accessible-action-default => { root.scheduled-edit-opened(); }
+                        border-width: scheduled-stop.has-focus ? Theme.focus-ring-width : 0;
+                        border-color: Semantic.focus-ring;
+                        scheduled-stop := ActivationStop {
+                            width: 100%;
+                            height: 100%;
+                            stop-label: "Edit start date";
+                            stop-description: "Opens the start-date editor.";
+                            stop-id: 6;
+                            activated => { root.scheduled-edit-opened(); }
+                        }
                         if (scheduled-touch.has-hover): Rectangle {
                             background: Theme.surface-hover;
                             border-radius: Theme.radius-small;
@@ -517,10 +620,16 @@ export component TaskView inherits FocusScope {
                     border-radius: Theme.radius-small;
                     horizontal-stretch: 1;
                     vertical-stretch: 1;
-                    accessible-role: AccessibleRole.button;
-                    accessible-label: "Edit description";
-                    accessible-description: "Opens the description editor.";
-                    accessible-action-default => { root.description-edit-opened(); }
+                    border-width: description-stop.has-focus ? Theme.focus-ring-width : 0;
+                    border-color: Semantic.focus-ring;
+                    description-stop := ActivationStop {
+                        width: 100%;
+                        height: 100%;
+                        stop-label: "Edit description";
+                        stop-description: "Opens the description editor.";
+                        stop-id: 11;
+                        activated => { root.description-edit-opened(); }
+                    }
                     if (description-touch.has-hover): Rectangle {
                         background: Theme.surface-raised;
                         border-radius: Theme.radius-small;

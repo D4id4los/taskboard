@@ -5765,6 +5765,321 @@ fn a_parse_missed_custom_offset_clears_its_buffer() {
     );
 }
 
+// ---- r4 chunk 6 (D18): the activation stops + the walk ------------------
+
+/// The task view's walk-stop fact, read back through the generated
+/// global.
+fn walk_stop(harness: &Harness) -> i32 {
+    harness
+        .handle
+        .window()
+        .global::<taskboard_ui_slint::TaskViewWalkFacts>()
+        .get_stop_id()
+}
+
+/// Walks `steps` control steps, returning the stop fact observed after
+/// each (the reading-order inventory).
+fn walk_steps(harness: &mut Harness, steps: usize) -> Vec<i32> {
+    let mut observed = Vec::with_capacity(steps);
+    for _ in 0..steps {
+        if harness.chain().contains(&ContextId::ViInsert) {
+            // An engaged field masks the view context: the walk
+            // stroke is the native Tab (unbound in the insert chain).
+            harness.stroke(parse("Tab").expect("tab"));
+        } else {
+            press_preset(
+                harness,
+                taskboard_ui_slint::keymap::Preset::Standard,
+                ActionId::NavNextControl,
+            );
+        }
+        harness.driver.advance_time(0);
+        observed.push(walk_stop(harness));
+    }
+    observed
+}
+
+/// r4 D18 (F12, acceptance a) — the structural stop inventory: the
+/// activation stops report their ids in reading order under repeated
+/// control walk, the non-stop interactables (header `IconButton`s, the
+/// custom-offset field) occupy exactly one step without a report, and
+/// the walk wraps; the open-editor branches replace their cell with
+/// the field (one stop, no double report).
+#[test]
+fn the_task_view_stop_inventory_walks_in_reading_order() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            press_preset(
+                &mut harness,
+                taskboard_ui_slint::keymap::Preset::Standard,
+                ActionId::NavNextItem,
+            );
+            press_preset(
+                &mut harness,
+                taskboard_ui_slint::keymap::Preset::Standard,
+                ActionId::TaskEdit,
+            );
+            harness.driver.advance_time(0);
+            assert_eq!(walk_stop(&harness), 0, "no stop report before the walk");
+
+            // The reading-order prefix: back (unreported), done, title,
+            // tracking (unreported), due, scheduled, chips, the
+            // custom-offset field (unreported), description. The wrap
+            // then cycles through the window chrome (unreported stops)
+            // and re-enters at the done box — the wrap pin.
+            let observed = walk_steps(&mut harness, 19);
+            assert_eq!(
+                &observed[..12],
+                &[0, 2, 3, 3, 5, 6, 90, 91, 92, 93, 93, 11],
+                "the reading-order inventory"
+            );
+            assert_eq!(
+                observed[18], 2,
+                "the walk wraps through the chrome and re-enters at the done box"
+            );
+
+            // The open-title branch: the field replaces the cell —
+            // one stop, no report, and the later cells keep their
+            // order.
+            harness.driver.click_by_label("Edit title");
+            harness.driver.advance_time(0);
+            assert!(
+                harness.handle.window().get_task_model().edit_open,
+                "the editor is armed for the open-branch leg"
+            );
+            // The field is the cell's one stop: the walk leaves the
+            // focused field and the next REPORTED stop is the title
+            // cell (the field itself and the branch's Chrome never
+            // re-report 3 while the field is mounted).
+            let observed = walk_steps(&mut harness, 8);
+            assert_eq!(
+                &observed[..7],
+                &[2, 2, 2, 2, 2, 2, 2],
+                "no cell re-report while the field holds the branch"
+            );
+            assert_eq!(observed[7], 3, "the walk's next report is the title cell");
+
+            // The open-due branch: the DueEditor replaces the cell.
+            harness.stroke(parse("Escape").expect("escape"));
+            harness.driver.advance_time(0);
+            // Walk back to the due cell and open it.
+            let mut guard = 0;
+            while walk_stop(&harness) != 5 && guard < 20 {
+                press_preset(
+                    &mut harness,
+                    taskboard_ui_slint::keymap::Preset::Standard,
+                    ActionId::NavNextControl,
+                );
+                harness.driver.advance_time(0);
+                guard += 1;
+            }
+            assert_eq!(walk_stop(&harness), 5, "the walk reached the due cell");
+            harness
+                .driver
+                .find_by_label("Edit due date")
+                .expect("the due cell is present")
+                .invoke_default_action();
+            harness.driver.advance_time(0);
+            assert!(
+                harness.handle.window().get_task_model().due_open,
+                "the due editor is armed for the open-branch leg"
+            );
+            // The editor's field is the cell's one stop: under the
+            // engaged field the walk stroke is the native Tab (the
+            // insert chain leaves it unbound); the editor's own
+            // affordances occupy the steps between it and the next
+            // reported cell — the scheduled cell.
+            let mut guard = 0;
+            while walk_stop(&harness) != 6 && guard < 12 {
+                harness.stroke(parse("Tab").expect("tab"));
+                harness.driver.advance_time(0);
+                guard += 1;
+            }
+            assert_eq!(
+                walk_stop(&harness),
+                6,
+                "the scheduled cell follows the editor"
+            );
+        },
+    );
+}
+
+/// r4 D18 §2 (acceptance d; chunk 7's entry seam) — the cell
+/// activation matrix: bare Return/Space on the focused cell activate
+/// the cell's own seam under every preset — emacs Return never
+/// resolves `task.title-edit` onto the cell, vi Return never
+/// `task.edit`-activates and vi Space never completes — and the
+/// reservation's prefix discipline holds: an emacs pending prefix
+/// aborts on Return and consumes it (the feed-first ordering).
+#[test]
+#[allow(clippy::too_many_lines)] // the matrix's rows are the contract's length
+fn the_focused_cell_activates_on_return_and_space_under_any_preset() {
+    let matrix: Vec<(taskboard_ui_slint::keymap::Preset, i32, &'static str)> = vec![
+        (taskboard_ui_slint::keymap::Preset::Standard, 3, "Return"),
+        (taskboard_ui_slint::keymap::Preset::Standard, 5, "Return"),
+        (taskboard_ui_slint::keymap::Preset::Standard, 6, "Return"),
+        (taskboard_ui_slint::keymap::Preset::Standard, 11, "Return"),
+        (taskboard_ui_slint::keymap::Preset::Standard, 90, "Return"),
+        (taskboard_ui_slint::keymap::Preset::Emacs, 5, "Return"),
+        (taskboard_ui_slint::keymap::Preset::Emacs, 5, "Space"),
+        (taskboard_ui_slint::keymap::Preset::Vi, 5, "Return"),
+        (taskboard_ui_slint::keymap::Preset::Vi, 5, "Space"),
+    ];
+    for (preset, stop, stroke_spelling) in matrix {
+        let (fixture, state) = fixture::golden_state();
+        let task0 = fixture.task0;
+        support::driver::run(
+            DriverOptions {
+                headless_renderer: true,
+            },
+            move |_driver| {
+                let mut harness = Harness::mount_with_settings(
+                    SlintDriver::default(),
+                    state,
+                    UiSettings {
+                        keymap: taskboard_ui_slint::keymap::Keymap::from_preset(preset),
+                        keymap_preset: preset,
+                        ..UiSettings::default()
+                    },
+                );
+                press_preset(&mut harness, preset, ActionId::NavNextItem);
+                press_preset(&mut harness, preset, ActionId::TaskEdit);
+                harness.driver.advance_time(0);
+                let mut guard = 0;
+                while walk_stop(&harness) != stop && guard < 20 {
+                    press_preset(&mut harness, preset, ActionId::NavNextControl);
+                    harness.driver.advance_time(0);
+                    guard += 1;
+                }
+                assert_eq!(walk_stop(&harness), stop, "the walk reached the cell");
+                harness.stroke(parse(stroke_spelling).expect(stroke_spelling));
+                harness.driver.advance_time(0);
+                let task_model = harness.handle.window().get_task_model();
+                match stop {
+                    // The title cell arms the title editor.
+                    3 => assert!(task_model.edit_open, "the title editor armed"),
+                    // The due cell opens the due editor — under emacs
+                    // the two-phase entry seam, under vi neither the
+                    // `task.edit` activate nor the done toggle.
+                    5 => {
+                        assert!(task_model.due_open, "the due editor opened");
+                        assert!(!task_model.done, "the done state never moved");
+                    }
+                    // The scheduled cell opens the start-date editor.
+                    6 => assert!(task_model.scheduled_open, "the editor opened"),
+                    // The description cell opens the editor.
+                    11 => assert!(
+                        task_model.description_edit_open,
+                        "the description editor opened"
+                    ),
+                    // A chip adds its preset offset (5m).
+                    90 => match harness.engine.drain().as_slice() {
+                        [StateCommand::AddReminderRule { task, offset, .. }] => {
+                            assert_eq!(*task, task0);
+                            assert_eq!(
+                                *offset,
+                                taskboard_domain::ReminderOffset::before(
+                                    TimeDelta::try_minutes(-5).expect("-5m")
+                                )
+                                .expect("legal offset")
+                            );
+                        }
+                        other => panic!("the chip added its preset, got {other:?}"),
+                    },
+                    other => panic!("unreachable matrix row {other}"),
+                }
+            },
+        );
+    }
+
+    // The done box (stop 2): Return toggles the subject's done state
+    // — the checkbox row keeps its own semantics under the
+    // reservation.
+    let (fixture, state) = fixture::golden_state();
+    let task0 = fixture.task0;
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let preset = taskboard_ui_slint::keymap::Preset::Vi;
+            let mut harness = Harness::mount_with_settings(
+                SlintDriver::default(),
+                state,
+                UiSettings {
+                    keymap: taskboard_ui_slint::keymap::Keymap::from_preset(preset),
+                    keymap_preset: preset,
+                    ..UiSettings::default()
+                },
+            );
+            press_preset(&mut harness, preset, ActionId::NavNextItem);
+            press_preset(&mut harness, preset, ActionId::TaskEdit);
+            harness.driver.advance_time(0);
+            let mut guard = 0;
+            while walk_stop(&harness) != 2 && guard < 20 {
+                press_preset(&mut harness, preset, ActionId::NavNextControl);
+                harness.driver.advance_time(0);
+                guard += 1;
+            }
+            harness.stroke(parse("Return").expect("return"));
+            harness.driver.advance_time(0);
+            harness.assert_commands(&[StateCommand::SetTaskDone {
+                id: task0,
+                done: true,
+            }]);
+        },
+    );
+
+    // The prefix discipline: an emacs pending prefix (C-x) aborts on
+    // Return and consumes it — the cell does not activate, and the
+    // next bare Return does.
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let preset = taskboard_ui_slint::keymap::Preset::Emacs;
+            let mut harness = Harness::mount_with_settings(
+                SlintDriver::default(),
+                state,
+                UiSettings {
+                    keymap: taskboard_ui_slint::keymap::Keymap::from_preset(preset),
+                    keymap_preset: preset,
+                    ..UiSettings::default()
+                },
+            );
+            press_preset(&mut harness, preset, ActionId::NavNextItem);
+            press_preset(&mut harness, preset, ActionId::TaskEdit);
+            harness.driver.advance_time(0);
+            let mut guard = 0;
+            while walk_stop(&harness) != 5 && guard < 20 {
+                press_preset(&mut harness, preset, ActionId::NavNextControl);
+                harness.driver.advance_time(0);
+                guard += 1;
+            }
+            harness.stroke(parse("Ctrl+x").expect("Ctrl+x"));
+            harness.stroke(parse("Return").expect("return"));
+            harness.driver.advance_time(0);
+            assert!(
+                !harness.handle.window().get_task_model().due_open,
+                "the pending prefix consumed the Return: no activation"
+            );
+            harness.stroke(parse("Return").expect("return"));
+            harness.driver.advance_time(0);
+            assert!(
+                harness.handle.window().get_task_model().due_open,
+                "the bare Return activates the cell"
+            );
+        },
+    );
+}
+
 // ---- r4 chunk 6 (D20): the focus-driven insert engagement --------------
 
 /// Click-focuses the element at `label`'s centre (a text input has no
