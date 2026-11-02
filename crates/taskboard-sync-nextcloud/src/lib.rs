@@ -19,6 +19,7 @@ pub mod color;
 pub mod error;
 mod flush;
 pub mod mapping;
+mod migrate;
 pub mod model;
 pub mod ocs;
 pub mod poll;

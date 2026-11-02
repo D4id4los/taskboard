@@ -33,6 +33,7 @@ use crate::anchor::{self, ANCHOR_ATTACHMENT_FILENAME, ANCHOR_ATTACHMENT_MIME, An
 use crate::client::{AttachmentUpload, DeckClient};
 use crate::error::DeckError;
 use crate::mapping::{self, PushCtx};
+use crate::migrate;
 
 /// The upload response's metadata pair — the `LoopState.documents`
 /// cache refresh's change-detection input (the next cycle must not
@@ -55,11 +56,18 @@ pub(crate) enum FlushVerdict {
         outcomes: Vec<PushOutcome>,
         stamp: AttachmentStamp,
         document: Box<AppDataDocument>,
+        /// The pre-prune card-keyed entries the snapshot-absence GC
+        /// dropped from the uploaded document — the migration
+        /// reservoir's feed (plan D11); never uploaded itself.
+        evicted: AppDataSections,
     },
     /// The write landed but its echo did not decode: outcomes still
     /// complete (the write is authoritative), the cache stays cold so
     /// the next cycle re-GETs honestly.
-    AppliedUncached { outcomes: Vec<PushOutcome> },
+    AppliedUncached {
+        outcomes: Vec<PushOutcome>,
+        evicted: AppDataSections,
+    },
     /// Permanent 4xx: the group's primary dead-letters as a counted
     /// `FailOp`; subsumed ops re-form the group next cycle.
     DeadLettered { primary: taskboard_domain::OpId },
@@ -97,6 +105,11 @@ pub(crate) struct FlushCtx<'a> {
     /// Device-local "today" (the injected day calendar): the habit-log
     /// retention boundary — never a second local-date vocabulary.
     pub today: chrono::NaiveDate,
+    /// The cross-board migration fragment (#350): sibling entries the
+    /// destination snapshot lists and the destination base lacks. Empty
+    /// on every board whose evidence is unreadable or that has no
+    /// migrating sibling. Unions *under* the local overlay (D7).
+    pub migration: &'a AppDataSections,
 }
 
 /// D12's lazy gate: any live task of `board` carrying app-data (the
@@ -158,6 +171,7 @@ pub(crate) fn board_has_local_app_data(
 #[allow(clippy::too_many_arguments)] // the gate reads every lane's inputs; bundling hides the seams
 pub(crate) fn has_flush_work(
     group: Option<&PushGroup>,
+    migration: &AppDataSections,
     evidence: &AppDataEvidence,
     tables: EntityTables<'_>,
     rules: &BTreeMap<ReminderRuleId, ReminderRule>,
@@ -173,6 +187,17 @@ pub(crate) fn has_flush_work(
             board = %board.as_uuid(),
             verdict = true,
             clause = "group queued",
+            "flush work gate"
+        );
+        return true;
+    }
+    // The migration fragment (#350): sibling entries waiting to land in
+    // this board's document are flush work on their own.
+    if !migrate::is_empty(migration) {
+        tracing::debug!(
+            board = %board.as_uuid(),
+            verdict = true,
+            clause = "migration fragment",
             "flush work gate"
         );
         return true;
@@ -373,6 +398,7 @@ pub(crate) async fn run_flush(ctx: FlushCtx<'_>) -> FlushVerdict {
         },
         unknown: BTreeMap::new(),
     };
+    let overlay = overlay_with_migration(ctx.target, ctx.migration, &overlay);
 
     // ---- union + GC chain --------------------------------------------
     let merged = union(&base, &overlay);
@@ -387,6 +413,7 @@ pub(crate) async fn run_flush(ctx: FlushCtx<'_>) -> FlushVerdict {
         .iter()
         .map(|task| task.id.card.get().to_string())
         .collect();
+    let evicted = gc_evicted(&merged, &present_cards);
     let merged = prune_absent_cards(&merged, &present_cards);
     let bytes = serde_json::to_vec(&merged).expect(
         "owned serde data serializes infallibly; an empty body would be a corrupt overwrite",
@@ -459,6 +486,7 @@ pub(crate) async fn run_flush(ctx: FlushCtx<'_>) -> FlushVerdict {
                 .collect(),
             stamp,
             document: Box::new(merged),
+            evicted,
         },
         Ok(None) => FlushVerdict::AppliedUncached {
             outcomes: resolved_members
@@ -468,6 +496,7 @@ pub(crate) async fn run_flush(ctx: FlushCtx<'_>) -> FlushVerdict {
                     result: PushResult::Applied { echo: None },
                 })
                 .collect(),
+            evicted,
         },
         Err(err) => {
             let classified = mapping::classify_push(
@@ -702,6 +731,60 @@ fn attachment_stamp(attachment: &crate::model::Attachment) -> Option<AttachmentS
     })
 }
 
+/// The migration composition (D7): the fragment unions *under* the
+/// local overlay — per-entry clock comparisons keep their existing
+/// semantics, so local truth wins any collision of the same card key
+/// and the migrated content fills only what local truth does not
+/// already carry. An empty fragment is the identity (every existing
+/// flush behaves byte-identically).
+fn overlay_with_migration(
+    target: RemoteBoardId,
+    migration: &AppDataSections,
+    local_overlay: &AppDataDocument,
+) -> AppDataDocument {
+    if migrate::is_empty(migration) {
+        return local_overlay.clone();
+    }
+    let migration_doc = AppDataDocument {
+        format: taskboard_domain::APPDATA_FORMAT,
+        board: target,
+        sections: migration.clone(),
+        unknown: BTreeMap::new(),
+    };
+    union(&migration_doc, local_overlay)
+}
+
+/// The GC-eviction reservoir's feed (D11): the card-keyed entries the
+/// snapshot-absence GC is about to drop — pre-prune keys minus
+/// `present_cards`, over the three card-keyed sections only (the
+/// board-level sections are never card-pruned and never migrate).
+/// Private migration fuel: never uploaded, never folded.
+fn gc_evicted(document: &AppDataDocument, present_cards: &BTreeSet<String>) -> AppDataSections {
+    fn evicted_from<V: Clone>(
+        map: &BTreeMap<String, V>,
+        present: &BTreeSet<String>,
+    ) -> BTreeMap<String, V> {
+        map.iter()
+            .filter(|(card, _)| !present.contains(card.as_str()))
+            .map(|(card, entry)| (card.clone(), entry.clone()))
+            .collect()
+    }
+    let mut evicted = AppDataSections::default();
+    if let Some(tasks) = &document.sections.tasks {
+        let dropped = evicted_from(tasks, present_cards);
+        evicted.tasks = (!dropped.is_empty()).then_some(dropped);
+    }
+    if let Some(rules) = &document.sections.reminder_rules {
+        let dropped = evicted_from(rules, present_cards);
+        evicted.reminder_rules = (!dropped.is_empty()).then_some(dropped);
+    }
+    if let Some(dismissals) = &document.sections.dismissals {
+        let dropped = evicted_from(dismissals, present_cards);
+        evicted.dismissals = (!dropped.is_empty()).then_some(dropped);
+    }
+    evicted
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -823,6 +906,7 @@ mod tests {
         let empty: BTreeMap<TimeEntryId, TimeEntry> = BTreeMap::new();
         assert!(!has_flush_work(
             None,
+            &AppDataSections::default(),
             &AppDataEvidence::Absent,
             tables,
             &BTreeMap::new(),
@@ -837,6 +921,7 @@ mod tests {
         let entries = BTreeMap::from([entry(1, task_id, ts(9_000_000))]);
         assert!(has_flush_work(
             None,
+            &AppDataSections::default(),
             &AppDataEvidence::Absent,
             tables,
             &BTreeMap::new(),
@@ -854,6 +939,7 @@ mod tests {
         let aged = BTreeMap::from([entry(2, task_id, aged_start)]);
         assert!(!has_flush_work(
             None,
+            &AppDataSections::default(),
             &AppDataEvidence::Absent,
             tables,
             &BTreeMap::new(),
@@ -864,6 +950,260 @@ mod tests {
             board,
             false
         ));
+    }
+
+    // T9: a non-empty migration fragment is flush work on its own —
+    // no queued group and no rebuild trigger needed; an empty fragment
+    // changes nothing (every pin above passes with the default arg).
+    #[test]
+    fn a_nonempty_migration_fragment_is_flush_work_without_ops_or_rebuild() {
+        let empty_tasks: BTreeMap<TaskId, Task> = BTreeMap::new();
+        let empty_stacks: BTreeMap<taskboard_domain::StackId, Stack> = BTreeMap::new();
+        let tables = EntityTables {
+            tasks: &empty_tasks,
+            stacks: &empty_stacks,
+            labels: empty_labels(),
+            boards: empty_boards(),
+        };
+        let board = BoardId::from(uuid::Uuid::from_u128(1));
+        let now = ts(10_000_000);
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 10, 28).unwrap();
+        let habit_empty = taskboard_domain::HabitState::default();
+        let empty = AppDataSections::default();
+        // Without a fragment, the idle shape stays idle (Document
+        // evidence, no group, no local app-data).
+        assert!(!has_flush_work(
+            None,
+            &empty,
+            &AppDataEvidence::Document(Box::new(taskboard_domain::AppDataDocument {
+                format: taskboard_domain::APPDATA_FORMAT,
+                board: RemoteBoardId(1),
+                sections: AppDataSections::default(),
+                unknown: BTreeMap::new(),
+            })),
+            tables,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &habit_empty,
+            today,
+            now,
+            board,
+            false
+        ));
+        // The fragment alone wakes the gate.
+        let fragment = AppDataSections {
+            tasks: Some(BTreeMap::from([(
+                "500".to_owned(),
+                taskboard_domain::TaskEntry::default(),
+            )])),
+            ..AppDataSections::default()
+        };
+        assert!(has_flush_work(
+            None,
+            &fragment,
+            &AppDataEvidence::Document(Box::new(taskboard_domain::AppDataDocument {
+                format: taskboard_domain::APPDATA_FORMAT,
+                board: RemoteBoardId(1),
+                sections: AppDataSections::default(),
+                unknown: BTreeMap::new(),
+            })),
+            tables,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &habit_empty,
+            today,
+            now,
+            board,
+            false
+        ));
+    }
+
+    // T10: the D7 composition — the local overlay wins the card slot
+    // over migrated content; the migrated content fills only what local
+    // truth does not already carry.
+    #[test]
+    fn local_overlay_wins_the_card_slot_over_migrated_content() {
+        let target = RemoteBoardId(43);
+        let mut migrated_entry = taskboard_domain::TaskEntry::default();
+        migrated_entry.fields.insert(
+            "effort".to_owned(),
+            taskboard_domain::TaskFieldWrite {
+                value: taskboard_domain::appdata::ModeledValue::Effort(Some(
+                    taskboard_domain::entities::Effort::new(100),
+                )),
+                clock: ts(500),
+            },
+        );
+        let migration = AppDataSections {
+            tasks: Some(BTreeMap::from([("500".to_owned(), migrated_entry.clone())])),
+            ..AppDataSections::default()
+        };
+        let mut local_entry = taskboard_domain::TaskEntry::default();
+        local_entry.fields.insert(
+            "effort".to_owned(),
+            taskboard_domain::TaskFieldWrite {
+                value: taskboard_domain::appdata::ModeledValue::Effort(Some(
+                    taskboard_domain::entities::Effort::new(900),
+                )),
+                // Equal clocks: the tie resolves to the overlay side —
+                // the local truth (the move-back shape).
+                clock: ts(500),
+            },
+        );
+        let local_overlay = AppDataDocument {
+            format: taskboard_domain::APPDATA_FORMAT,
+            board: target,
+            sections: AppDataSections {
+                tasks: Some(BTreeMap::from([("500".to_owned(), local_entry)])),
+                ..AppDataSections::default()
+            },
+            unknown: BTreeMap::new(),
+        };
+        let composed = overlay_with_migration(target, &migration, &local_overlay);
+        // Equal-clock resolution belongs to the overlay side at the
+        // inner union — the local entry, whatever its clock.
+        let composed_entry = &composed.sections.tasks.as_ref().unwrap()["500"];
+        assert_eq!(
+            composed_entry.fields["effort"].value,
+            taskboard_domain::appdata::ModeledValue::Effort(Some(
+                taskboard_domain::entities::Effort::new(900)
+            )),
+            "local truth wins the card slot"
+        );
+        // Per-field LWW keeps its existing semantics: a strictly newer
+        // migrated field displaces older local truth.
+        let mut newer_migrated = taskboard_domain::TaskEntry::default();
+        newer_migrated.fields.insert(
+            "effort".to_owned(),
+            taskboard_domain::TaskFieldWrite {
+                value: taskboard_domain::appdata::ModeledValue::Effort(Some(
+                    taskboard_domain::entities::Effort::new(100),
+                )),
+                clock: ts(600),
+            },
+        );
+        let newer = AppDataSections {
+            tasks: Some(BTreeMap::from([("500".to_owned(), newer_migrated)])),
+            ..AppDataSections::default()
+        };
+        let composed = overlay_with_migration(target, &newer, &local_overlay);
+        assert_eq!(
+            composed.sections.tasks.as_ref().unwrap()["500"].fields["effort"].value,
+            taskboard_domain::appdata::ModeledValue::Effort(Some(
+                taskboard_domain::entities::Effort::new(100)
+            )),
+            "a strictly newer migrated write wins its field"
+        );
+        // A card the local overlay does not carry rides the migration.
+        let mut other_entry = taskboard_domain::TaskEntry::default();
+        other_entry.fields.insert(
+            "urgency".to_owned(),
+            taskboard_domain::TaskFieldWrite {
+                value: taskboard_domain::appdata::ModeledValue::Urgency(None),
+                clock: ts(300),
+            },
+        );
+        let wider = AppDataSections {
+            tasks: Some(BTreeMap::from([
+                ("500".to_owned(), migrated_entry),
+                ("501".to_owned(), other_entry),
+            ])),
+            ..AppDataSections::default()
+        };
+        let composed = overlay_with_migration(target, &wider, &local_overlay);
+        let tasks = composed.sections.tasks.as_ref().unwrap();
+        assert_eq!(
+            tasks["501"].fields["urgency"].value,
+            taskboard_domain::appdata::ModeledValue::Urgency(None),
+            "the migrated card the local truth lacks rides along"
+        );
+        // An empty fragment is the identity.
+        let composed = overlay_with_migration(target, &AppDataSections::default(), &local_overlay);
+        assert_eq!(composed, local_overlay);
+    }
+
+    // T11: the Applied verdict's reservoir feed — pre-prune keys minus
+    // present cards, tombstones included, present cards never evicted,
+    // board-level sections never reported.
+    #[test]
+    fn the_gc_evicted_entries_are_pre_prune_keys_minus_present_cards() {
+        let present: BTreeSet<String> = ["500"].iter().map(|card| (*card).to_owned()).collect();
+        let mut moved = taskboard_domain::TaskEntry::default();
+        moved.fields.insert(
+            "effort".to_owned(),
+            taskboard_domain::TaskFieldWrite {
+                value: taskboard_domain::appdata::ModeledValue::Effort(Some(
+                    taskboard_domain::entities::Effort::new(900),
+                )),
+                clock: ts(500),
+            },
+        );
+        let mut staying = taskboard_domain::TaskEntry::default();
+        staying.fields.insert(
+            "effort".to_owned(),
+            taskboard_domain::TaskFieldWrite {
+                value: taskboard_domain::appdata::ModeledValue::Effort(Some(
+                    taskboard_domain::entities::Effort::new(1),
+                )),
+                clock: ts(500),
+            },
+        );
+        let mut moved_rules = taskboard_domain::RulesEntry::default();
+        moved_rules.rules.insert(
+            "00000000-0000-0000-0000-00000000000a".to_owned(),
+            taskboard_domain::RuleEntry::Tombstone { clock: ts(600) },
+        );
+        let document = AppDataDocument {
+            format: taskboard_domain::APPDATA_FORMAT,
+            board: RemoteBoardId(42),
+            sections: AppDataSections {
+                tasks: Some(BTreeMap::from([
+                    ("500".to_owned(), moved),
+                    ("501".to_owned(), staying),
+                ])),
+                reminder_rules: Some(BTreeMap::from([("501".to_owned(), moved_rules)])),
+                dismissals: None,
+                time_entries: Some(BTreeMap::from([(
+                    "00000000-0000-0000-0000-0000000000ff".to_owned(),
+                    taskboard_domain::TimeEntryRecord::Verbatim(serde_json::json!({})),
+                )])),
+                ..AppDataSections::default()
+            },
+            unknown: BTreeMap::new(),
+        };
+        let evicted = gc_evicted(&document, &present);
+        let tasks = evicted.tasks.as_ref().unwrap();
+        assert_eq!(tasks.len(), 1, "only the absent card's entry is evicted");
+        assert!(
+            tasks.contains_key("501"),
+            "the card the snapshot lists is never evicted"
+        );
+        let rules = evicted.reminder_rules.as_ref().unwrap();
+        assert!(
+            matches!(
+                rules["501"].rules["00000000-0000-0000-0000-00000000000a"],
+                taskboard_domain::RuleEntry::Tombstone { .. }
+            ),
+            "tombstones ride the reservoir"
+        );
+        assert!(
+            evicted.time_entries.is_none()
+                && evicted.habits.is_none()
+                && evicted.habit_log.is_none(),
+            "board-level sections are never card-pruned and never reported"
+        );
+        // A document whose cards are all present feeds nothing.
+        let only_present = AppDataDocument {
+            sections: AppDataSections {
+                tasks: Some(BTreeMap::from([(
+                    "500".to_owned(),
+                    taskboard_domain::TaskEntry::default(),
+                )])),
+                ..AppDataSections::default()
+            },
+            ..document.clone()
+        };
+        assert!(migrate::is_empty(&gc_evicted(&only_present, &present)));
     }
 
     /// A recurrence rule is document content (no native Deck lane): a
@@ -895,6 +1235,7 @@ mod tests {
         assert!(
             has_flush_work(
                 None,
+                &AppDataSections::default(),
                 &AppDataEvidence::Absent,
                 tables,
                 &BTreeMap::new(),
@@ -963,6 +1304,7 @@ mod habit_gate_tests {
         // A live definition of this board grows the anchor alone.
         assert!(has_flush_work(
             None,
+            &AppDataSections::default(),
             &AppDataEvidence::Absent,
             tables,
             &BTreeMap::new(),
@@ -979,6 +1321,7 @@ mod habit_gate_tests {
         foreign_habits.habits.insert(f.id, f);
         assert!(!has_flush_work(
             None,
+            &AppDataSections::default(),
             &AppDataEvidence::Absent,
             tables,
             &BTreeMap::new(),
@@ -1011,6 +1354,7 @@ mod habit_gate_tests {
         );
         assert!(!has_flush_work(
             None,
+            &AppDataSections::default(),
             &AppDataEvidence::Absent,
             tables,
             &BTreeMap::new(),
@@ -1035,6 +1379,7 @@ mod habit_gate_tests {
         );
         assert!(has_flush_work(
             None,
+            &AppDataSections::default(),
             &AppDataEvidence::Absent,
             tables,
             &BTreeMap::new(),

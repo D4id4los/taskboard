@@ -38,6 +38,7 @@ use crate::error::DeckError;
 use crate::flush;
 use crate::mapping;
 use crate::mapping::classify_read;
+use crate::migrate::{self, SiblingView};
 use crate::model::StackFilter;
 use crate::model::{Board, Label, Stack};
 use crate::poll::poll_backoff;
@@ -192,6 +193,13 @@ struct LoopState {
     /// content has no HTTP validators, so the persisted validator table
     /// is the wrong home). Retention mirrors the pull cache.
     documents: std::collections::BTreeMap<RemoteBoardId, CachedAppData>,
+    /// The GC-eviction reservoir (#350, plan D11): per board, the
+    /// card-keyed sidecar entries the board's own flush GC dropped —
+    /// migration fuel for sibling boards whose snapshots list the card.
+    /// Never uploaded, never folded; consumed when a migration carrying
+    /// the keys lands; inert entries are bounded by moves+deletions per
+    /// process lifetime.
+    evicted: std::collections::BTreeMap<RemoteBoardId, taskboard_domain::AppDataSections>,
 }
 
 /// One board's last successful document ingest (D11). Only a
@@ -229,6 +237,7 @@ async fn run(
         retry_after_floor: Duration::ZERO,
         features: probe_features(&client).await,
         documents: std::collections::BTreeMap::new(),
+        evicted: std::collections::BTreeMap::new(),
     };
     // First cycle fires immediately; an empty derived set is a silent
     // skip on poll ticks (no `NoBoard` report — decision 10).
@@ -451,6 +460,7 @@ async fn cycle(
         .stacks_archived
         .retain(|board, _| live.contains(board));
     st.documents.retain(|board, _| live.contains(board));
+    st.evicted.retain(|board, _| live.contains(board));
 
     let tables = EntityTables {
         tasks: &persisted.tasks,
@@ -635,11 +645,64 @@ async fn cycle(
             }
         };
 
+        // ---- cross-board migration fragment (#350, plan D1/D2) ---------
+        // Computed once per destination cycle, between evidence and the
+        // work gate: keyed on the snapshot's card set, never gated by
+        // engine adoption. Evidence-class scoped (D5): the fragment runs
+        // only where the flush may write (Document, Absent, ForeignBoard
+        // — the same allow-list the attempt gate uses below); every
+        // Unreadable form suppresses it, so the flush's unreadable fence
+        // swallows the migration too. Sibling enumeration is pure
+        // in-memory map iteration — infallible (D6).
+        let snapshot_cards: std::collections::BTreeSet<String> = snapshot
+            .tasks
+            .iter()
+            .map(|task| task.id.card.get().to_string())
+            .collect();
+        let migration: taskboard_domain::AppDataSections = {
+            let empty = taskboard_domain::AppDataSections::default();
+            let mut siblings: std::collections::BTreeMap<RemoteBoardId, SiblingView<'_>> =
+                std::collections::BTreeMap::new();
+            for (board, cached) in &st.documents {
+                if *board != target {
+                    siblings.insert(
+                        *board,
+                        SiblingView {
+                            document: Some(&cached.document),
+                            reservoir: &empty,
+                        },
+                    );
+                }
+            }
+            for (board, reservoir) in &st.evicted {
+                if *board != target {
+                    siblings
+                        .entry(*board)
+                        .and_modify(|view| view.reservoir = reservoir)
+                        .or_insert_with(|| SiblingView {
+                            document: None,
+                            reservoir,
+                        });
+                }
+            }
+            match &app_data {
+                AppDataEvidence::Document(document) => {
+                    migrate::migrate_fragment(&document.sections, &snapshot_cards, &siblings)
+                }
+                AppDataEvidence::Absent
+                | AppDataEvidence::Unreadable(AppDataUnreadable::ForeignBoard) => {
+                    migrate::migrate_fragment(&empty, &snapshot_cards, &siblings)
+                }
+                AppDataEvidence::Unreadable(_) => taskboard_domain::AppDataSections::default(),
+            }
+        };
+
         // ---- flush (between pull and report, D-S4 item 4) ---------------
         // The ceremony's write arms wake exactly when the flush has work
         // (lazy, D-S1; zero sidecar cost otherwise, D-S8).
         let has_work = flush::has_flush_work(
             deferred_flush.as_ref(),
+            &migration,
             &app_data,
             tables,
             &persisted.reminders.rules,
@@ -682,6 +745,7 @@ async fn cycle(
                     habits: &persisted.habits,
                     board: *board_id,
                     today: cfg.day.today(read_at),
+                    migration: &migration,
                 })
                 .await;
                 match verdict {
@@ -692,6 +756,7 @@ async fn cycle(
                         outcomes,
                         stamp,
                         document,
+                        evicted,
                     } => {
                         pushes.extend(outcomes);
                         // The cache refresh: the next cycle must not
@@ -704,9 +769,13 @@ async fn cycle(
                                 document: *document,
                             },
                         );
+                        feed_reservoir(st, target, evicted);
+                        consume_reservoirs(st, &migration);
                     }
-                    flush::FlushVerdict::AppliedUncached { outcomes } => {
+                    flush::FlushVerdict::AppliedUncached { outcomes, evicted } => {
                         pushes.extend(outcomes);
+                        feed_reservoir(st, target, evicted);
+                        consume_reservoirs(st, &migration);
                     }
                     flush::FlushVerdict::DeadLettered { primary } => {
                         pushes.push(PushOutcome {
@@ -757,6 +826,66 @@ async fn cycle(
         st.offline = false;
     }
     tracing::info!("sync cycle completed");
+}
+
+/// Reservoir feed (D11): a landed flush's GC-evicted entries join the
+/// board's reservoir; a re-evicted key is fresher and overwrites.
+fn feed_reservoir(
+    st: &mut LoopState,
+    target: RemoteBoardId,
+    evicted: taskboard_domain::AppDataSections,
+) {
+    if migrate::is_empty(&evicted) {
+        return;
+    }
+    let reservoir = st.evicted.entry(target).or_default();
+    macro_rules! feed {
+        ($section:ident) => {
+            if let Some(entries) = evicted.$section {
+                reservoir.$section.get_or_insert_default().extend(entries);
+            }
+        };
+    }
+    feed!(tasks);
+    feed!(reminder_rules);
+    feed!(dismissals);
+}
+
+/// Reservoir consume (D11): when a flush carrying migrated entries
+/// lands, the migrated card keys leave every origin's reservoir — the
+/// repair is done; on `Idle` nothing is consumed and the next cycle
+/// retries. Inert keys (deleted cards, move-backs) are never consulted
+/// and simply age with the process.
+fn consume_reservoirs(st: &mut LoopState, migrated: &taskboard_domain::AppDataSections) {
+    let mut keys: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    macro_rules! collect {
+        ($section:ident) => {
+            if let Some(entries) = &migrated.$section {
+                keys.extend(entries.keys().map(String::as_str));
+            }
+        };
+    }
+    collect!(tasks);
+    collect!(reminder_rules);
+    collect!(dismissals);
+    if keys.is_empty() {
+        return;
+    }
+    for reservoir in st.evicted.values_mut() {
+        macro_rules! consume {
+            ($section:ident) => {
+                if let Some(entries) = &mut reservoir.$section {
+                    entries.retain(|card, _| !keys.contains(card.as_str()));
+                    if entries.is_empty() {
+                        reservoir.$section = None;
+                    }
+                }
+            };
+        }
+        consume!(tasks);
+        consume!(reminder_rules);
+        consume!(dismissals);
+    }
 }
 
 /// The advertised `Retry-After` delay of a rate-limited failure, `ZERO`
