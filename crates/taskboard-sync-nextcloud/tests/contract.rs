@@ -310,7 +310,7 @@ async fn rate_limiting_without_the_header_reports_an_absent_hint() {
 }
 
 #[tokio::test]
-async fn malformed_json_maps_to_envelope_error() {
+async fn malformed_json_maps_to_json_error() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path(BOARDS_PATH))
@@ -323,7 +323,7 @@ async fn malformed_json_maps_to_envelope_error() {
 }
 
 #[tokio::test]
-async fn non_json_content_type_maps_to_envelope_error() {
+async fn non_json_content_type_maps_to_json_error() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path(BOARDS_PATH))
