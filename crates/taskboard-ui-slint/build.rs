@@ -84,4 +84,15 @@ fn main() {
         "cargo:rerun-if-changed={}",
         manifest.join("ui/assets/icons").display()
     );
+
+    // The tooltip layout probe (r4 chunk 4): the real TooltipPanel's
+    // four-state content matrix, same include shape.
+    let tooltip_source = manifest.join("tests/tooltip_layout_probe.slint");
+    slint_build::compile_with_output_path(
+        &tooltip_source,
+        out.join("tooltip_layout_probe.rs"),
+        slint_build::CompilerConfiguration::new().with_debug_info(true),
+    )
+    .expect("tooltip layout probe compilation failed");
+    println!("cargo:rerun-if-changed={}", tooltip_source.display());
 }

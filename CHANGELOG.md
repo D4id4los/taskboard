@@ -264,6 +264,18 @@ The workspace carries a single global version (see `docs/architecture.org`);
 
 ### Fixed
 
+- Hover machinery repairs (GUI review round 4, chunk 4): a tooltip
+  with an empty description no longer renders a phantom empty line
+  (the description and shortcut rows are now mounted only when their
+  content exists, with off-layout measurers keeping the width
+  computation identical); and a visible tooltip can no longer survive
+  the transition that unmounts its anchor — every effect application
+  now dismisses the tooltip when the mounted view, board, or subject
+  changes (view-identity diff at the single effect choke point), and
+  the ghost-create, palette, capture, and kiosk-rotation transitions
+  dismiss explicitly. Previously a hover ghost rode the
+  board→task-detail activation, the inbox jump, and palette invokes
+  into the new view.
 - Board surface repairs (GUI review round 4): the task card's title
   fills the card to its right edge, eliding only there (previously
   column-width squeezes collapsed it to a bare ellipsis); a
