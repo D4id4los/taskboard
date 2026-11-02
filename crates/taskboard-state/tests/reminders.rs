@@ -471,6 +471,7 @@ async fn r9_alarm_fires_within_one_tick_and_survives_until_dismissal() {
     assert!(app.reminders.is_delivered(&reminder, &ts(T0 + 30)));
     let surface = taskboard_domain::active_notifications(
         &app.tasks,
+        &app.tracking,
         &app.reminders,
         &ReminderDefaults::default(),
         ts(T0 + 30),

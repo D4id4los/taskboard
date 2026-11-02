@@ -10,8 +10,8 @@
 use uuid::Uuid;
 
 use crate::ids::{
-    AdhocAlarmId, BoardId, HabitId, JournalId, LabelId, ReminderRuleId, StackId, TaskId,
-    TimeEntryId,
+    AdhocAlarmId, BoardId, BreakRuleId, HabitId, JournalId, LabelId, ReminderRuleId, StackId,
+    TaskId, TimeEntryId,
 };
 use crate::outbox::OpId;
 
@@ -29,6 +29,8 @@ pub trait IdGenerator: Send + Sync + std::fmt::Debug {
     fn new_time_entry_id(&self) -> TimeEntryId;
     /// A fresh adhoc-alarm id.
     fn new_adhoc_alarm_id(&self) -> AdhocAlarmId;
+    /// A fresh break-rule id.
+    fn new_break_rule_id(&self) -> BreakRuleId;
     /// A fresh label id.
     fn new_label_id(&self) -> LabelId;
     /// A fresh habit id.
@@ -58,6 +60,10 @@ impl IdGenerator for UuidV7Generator {
 
     fn new_reminder_rule_id(&self) -> ReminderRuleId {
         ReminderRuleId::from(Uuid::now_v7())
+    }
+
+    fn new_break_rule_id(&self) -> BreakRuleId {
+        BreakRuleId::from(Uuid::now_v7())
     }
 
     fn new_time_entry_id(&self) -> TimeEntryId {

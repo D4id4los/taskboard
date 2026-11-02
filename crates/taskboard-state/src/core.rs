@@ -126,13 +126,26 @@ impl EngineCore {
         defaults: &taskboard_domain::ReminderDefaults,
         now: DateTime<Utc>,
     ) -> Vec<taskboard_domain::ReminderFiring> {
-        taskboard_domain::due_firings(&self.state.tasks, &self.state.reminders, defaults, now)
+        taskboard_domain::due_firings(
+            &self.state.tasks,
+            &self.state.tracking,
+            &self.state.reminders,
+            defaults,
+            now,
+        )
     }
 
     /// The task map (the notification title lookup).
     #[must_use]
     pub fn tasks(&self) -> &BTreeMap<taskboard_domain::TaskId, taskboard_domain::Task> {
         &self.state.tasks
+    }
+
+    /// The tracking sub-state (the break trigger's input, the
+    /// stale-delivery sweep's Break-ref gate).
+    #[must_use]
+    pub fn tracking(&self) -> &taskboard_domain::TrackingState {
+        &self.state.tracking
     }
 
     /// The reminder state (the alarm-label lookup for notification

@@ -361,6 +361,8 @@ pub fn command_label(command: &StateCommand) -> String {
         StateCommand::ReconcileByTitle { .. } => "Reconcile duplicates".into(),
         StateCommand::CreateAdhocAlarm { .. } => "Create alarm".into(),
         StateCommand::CancelAdhocAlarm { .. } => "Cancel alarm".into(),
+        StateCommand::CreateBreakRule { .. } => "Create break rule".into(),
+        StateCommand::DeleteBreakRule { .. } => "Delete break rule".into(),
         StateCommand::StartTracking { .. } => "Start tracking".into(),
         StateCommand::StopTracking => "Stop tracking".into(),
         StateCommand::LogTime { .. } => "Log time".into(),

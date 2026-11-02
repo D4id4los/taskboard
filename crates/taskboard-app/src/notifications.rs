@@ -93,6 +93,13 @@ impl NotificationSink for LogSink {
                     occurrence = %notification.occurrence.to_rfc3339(),
                     "reminder due"
                 ),
+                taskboard_domain::ReminderAnchor::Break(rule) => tracing::info!(
+                    reminder = %notification.reminder.text_form(),
+                    break_rule = %rule.as_uuid(),
+                    title = %notification.title,
+                    occurrence = %notification.occurrence.to_rfc3339(),
+                    "reminder due"
+                ),
             }
             Ok(())
         })
@@ -496,6 +503,7 @@ mod tests {
         let reminder = match &anchor {
             ReminderAnchor::Task(task) => ReminderRef::Default(*task),
             ReminderAnchor::Alarm(alarm) => ReminderRef::Adhoc(*alarm),
+            ReminderAnchor::Break(rule) => ReminderRef::Break(*rule),
         };
         Notification {
             insistence: taskboard_domain::Insistence::Normal,

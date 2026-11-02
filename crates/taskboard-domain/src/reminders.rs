@@ -17,7 +17,8 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::entities::Task;
-use crate::ids::{AdhocAlarmId, ReminderRuleId, TaskId};
+use crate::ids::{AdhocAlarmId, BreakRuleId, ReminderRuleId, TaskId};
+use crate::tracking::{TrackingState, WorkThreshold};
 
 /// A due-anchored offset that can only be "at or before" the due date:
 /// the inner `chrono::TimeDelta` is ≤ 0 and whole-second by
@@ -188,6 +189,8 @@ pub enum ReminderRef {
     Default(TaskId),
     /// A standalone adhoc alarm.
     Adhoc(AdhocAlarmId),
+    /// A break rule (device-local; the label lives on the rule row).
+    Break(BreakRuleId),
 }
 
 impl ReminderRef {
@@ -200,6 +203,7 @@ impl ReminderRef {
             Self::Rule(id) => format!("rule:{}", id.as_uuid()),
             Self::Default(task) => format!("default:{}", task.as_uuid()),
             Self::Adhoc(id) => format!("alarm:{}", id.as_uuid()),
+            Self::Break(id) => format!("break:{}", id.as_uuid()),
         }
     }
 
@@ -215,6 +219,11 @@ impl ReminderRef {
         }
         if let Some(id) = raw.strip_prefix("alarm:") {
             return Some(Self::Adhoc(AdhocAlarmId::from(
+                uuid::Uuid::parse_str(id).ok()?,
+            )));
+        }
+        if let Some(id) = raw.strip_prefix("break:") {
+            return Some(Self::Break(BreakRuleId::from(
                 uuid::Uuid::parse_str(id).ok()?,
             )));
         }
@@ -330,6 +339,30 @@ pub struct AdhocAlarm {
     pub fire_at: DateTime<Utc>,
     /// How loudly this alarm insists (stamped at creation; Cancel
     /// remains the off-switch regardless of level).
+    pub insistence: Insistence,
+    /// Creation stamp.
+    pub created_at: DateTime<Utc>,
+}
+
+/// A break reminder rule: fires when accumulated tracked **work** since
+/// the last respite-marked entry reaches its [`WorkThreshold`] (issue
+/// #495). Device-local by ruling (D-5/D-15) — the `AdhocAlarm` shape
+/// with a duration trigger instead of an instant. No rule-edit verbs
+/// exist anywhere: a different threshold re-creates the rule, and
+/// device-local rows never compete under LWW, so there is no
+/// `updated_at`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BreakRule {
+    /// Local identity.
+    pub id: BreakRuleId,
+    /// The notification title (snapshot source — no task to snapshot a
+    /// title from).
+    pub label: String,
+    /// The accumulated-work threshold. The mint guards it positive;
+    /// a zero threshold would fire immediately and permanently.
+    pub threshold: WorkThreshold,
+    /// How loudly this rule insists. Fire-time snapshot datum for the
+    /// payload — the evaluator never reads it (the when-only contract).
     pub insistence: Insistence,
     /// Creation stamp.
     pub created_at: DateTime<Utc>,
@@ -456,6 +489,8 @@ pub enum ReminderAnchor {
     Task(TaskId),
     /// A standalone alarm (the label lives on the [`AdhocAlarm`] row).
     Alarm(AdhocAlarmId),
+    /// A break rule (the label lives on the [`BreakRule`] row).
+    Break(BreakRuleId),
 }
 
 /// Persisted reminder facts carried in `AppState`/`PersistedState`.
@@ -484,6 +519,8 @@ pub struct ReminderState {
     /// Standalone alarms by id. Map membership is liveness: a removed
     /// row cannot fire, and no done/tombstone state exists.
     pub alarms: BTreeMap<AdhocAlarmId, AdhocAlarm>,
+    /// Break rules by id (device-local; the same liveness law).
+    pub break_rules: BTreeMap<BreakRuleId, BreakRule>,
 }
 
 impl ReminderState {
@@ -598,11 +635,14 @@ pub fn notifications_for(
                         .map(|rule| rule.insistence)
                         .unwrap_or_default(),
                     // The implicit default has no row: it is always
-                    // `Normal` (design D-I3). (An `Adhoc` ref here is
-                    // unreachable by anchor construction — an adhoc
-                    // firing anchors on `ReminderAnchor::Alarm` — and
-                    // stays `Normal` for totality.)
-                    ReminderRef::Default(_) | ReminderRef::Adhoc(_) => Insistence::Normal,
+                    // `Normal` (design D-I3). (`Default`/`Adhoc`/`Break`
+                    // refs here are unreachable by anchor construction —
+                    // an adhoc firing anchors on `ReminderAnchor::Alarm`,
+                    // a break firing on `ReminderAnchor::Break` — and
+                    // stay `Normal` for totality.)
+                    ReminderRef::Default(_) | ReminderRef::Adhoc(_) | ReminderRef::Break(_) => {
+                        Insistence::Normal
+                    }
                 },
                 occurrence: firing.occurrence,
             }),
@@ -614,6 +654,21 @@ pub fn notifications_for(
                     insistence: alarm.insistence,
                     occurrence: firing.occurrence,
                 })
+            }
+            ReminderAnchor::Break(rule_id) => {
+                // The label and the insistence are both fire-time
+                // snapshots from the rule row; a missing row skips the
+                // payload (the documented totality rule).
+                reminders
+                    .break_rules
+                    .get(&rule_id)
+                    .map(|rule| Notification {
+                        reminder: firing.reminder,
+                        anchor: firing.anchor,
+                        title: rule.label.clone(),
+                        insistence: rule.insistence,
+                        occurrence: firing.occurrence,
+                    })
             }
         })
         .collect()
@@ -657,6 +712,19 @@ pub fn compact_snooze_chains(reminders: &mut ReminderState) {
 pub(crate) fn remove_alarm(reminders: &mut ReminderState, id: AdhocAlarmId) {
     reminders.alarms.remove(&id);
     let reminder = ReminderRef::Adhoc(id);
+    reminders.deliveries.retain(|d| d.reminder != reminder);
+    reminders.dismissals.retain(|d| d.reminder != reminder);
+    reminders.snoozes.retain(|key, _| key.reminder != reminder);
+}
+
+/// Removes a break rule row and prunes its `Break`-ref deliveries,
+/// dismissals, and snooze links with it — the [`remove_alarm`] shape,
+/// one definition site shared by the
+/// [`DeleteBreakRule`](crate::persistence::PersistenceAction::DeleteBreakRule)
+/// arm and the planner cascade.
+pub(crate) fn remove_break_rule(reminders: &mut ReminderState, id: BreakRuleId) {
+    reminders.break_rules.remove(&id);
+    let reminder = ReminderRef::Break(id);
     reminders.deliveries.retain(|d| d.reminder != reminder);
     reminders.dismissals.retain(|d| d.reminder != reminder);
     reminders.snoozes.retain(|key, _| key.reminder != reminder);
@@ -732,6 +800,7 @@ pub fn delivery_prune_age() -> chrono::TimeDelta {
 #[must_use]
 pub fn stale_deliveries(
     tasks: &BTreeMap<TaskId, Task>,
+    tracking: &TrackingState,
     reminders: &ReminderState,
     defaults: &ReminderDefaults,
     now: DateTime<Utc>,
@@ -748,6 +817,12 @@ pub fn stale_deliveries(
         ReminderRef::Default(task_id) => {
             unconsulted_task(delivery, Some(task_id), tasks, reminders, defaults)
         }
+        // The break pass consults a delivery row at the snooze-walked
+        // crossing (the same `(reminder, effective)` shape): a missing
+        // rule row or a moved crossing ⇒ the row is unconsulted — the
+        // `Adhoc` arm's gate parity exactly.
+        ReminderRef::Break(id) => break_effective_occurrence(id, tracking, reminders, now)
+            .is_none_or(|eff| eff != delivery.occurrence),
     };
     let Some(cutoff) = now.checked_sub_signed(horizon) else {
         // The cutoff underflows the representable range: nothing can be
@@ -866,13 +941,67 @@ fn base_occurrence(
         }
         // Absolute: no arithmetic, so `None` is only the missing row.
         ReminderRef::Adhoc(id) => Some(reminders.alarms.get(&id)?.fire_at),
+        // A break firing's occurrence is derived from the tracking
+        // history (`break_crossing`), not from reminder rows — the
+        // task/alarm passes here never produce a `Break` ref, so this
+        // arm is the totality `None` for hand-constructed refs.
+        ReminderRef::Break(_) => None,
     }
+}
+
+/// The break pass's effective occurrence: the threshold-crossing
+/// instant (derived from the tracking history at `now`), or wherever
+/// the snooze chain has moved it. `None` ⇔ no crossing below the
+/// threshold or the rule row is missing.
+fn break_effective_occurrence(
+    rule_id: BreakRuleId,
+    tracking: &TrackingState,
+    reminders: &ReminderState,
+    now: DateTime<Utc>,
+) -> Option<DateTime<Utc>> {
+    let rule = reminders.break_rules.get(&rule_id)?;
+    let crossing = crate::tracking::break_crossing(tracking.entries.values(), rule.threshold, now)?;
+    Some(walk_chain(
+        crossing,
+        ReminderRef::Break(rule_id),
+        &reminders.snoozes,
+    ))
+}
+
+/// The break firings: one per break rule whose effective occurrence
+/// (the stable threshold-crossing instant, snooze-walked) satisfies the
+/// gate — `delivered: false` for due eligibility, `true` for the active
+/// surface. One definition of break eligibility, both readers. Sorted
+/// by `(occurrence, reminder)`.
+fn break_firings(
+    tracking: &TrackingState,
+    reminders: &ReminderState,
+    now: DateTime<Utc>,
+    delivered: bool,
+) -> Vec<ReminderFiring> {
+    let mut firings = Vec::new();
+    for &id in reminders.break_rules.keys() {
+        let reminder = ReminderRef::Break(id);
+        if let Some(effective) = break_effective_occurrence(id, tracking, reminders, now)
+            && effective <= now
+            && reminders.is_delivered(&reminder, &effective) == delivered
+            && !reminders.is_dismissed(&reminder, &effective)
+        {
+            firings.push(ReminderFiring {
+                reminder,
+                anchor: ReminderAnchor::Break(id),
+                occurrence: effective,
+            });
+        }
+    }
+    firings
 }
 
 /// Everything that must fire at `now`: explicit rules plus implicit
 /// defaults, occurrence-keyed, snooze- and mute-aware — plus the
 /// standalone alarms (eligibility = alarms-map membership; mute does
-/// not apply to alarms, cancel is their off-switch). Sorted by
+/// not apply to alarms, cancel is their off-switch) and the break rules
+/// (eligibility = the threshold crossing, D-9's third pass). Sorted by
 /// `(occurrence, reminder)` — a total order, so output is fully
 /// deterministic.
 ///
@@ -885,6 +1014,7 @@ fn base_occurrence(
 #[must_use]
 pub fn due_firings(
     tasks: &BTreeMap<TaskId, Task>,
+    tracking: &TrackingState,
     reminders: &ReminderState,
     defaults: &ReminderDefaults,
     now: DateTime<Utc>,
@@ -934,6 +1064,10 @@ pub fn due_firings(
             });
         }
     }
+    // The break pass (D-9): the same eligibility shape over the
+    // tracking history; the concatenation preserves the total order via
+    // the sort below.
+    firings.extend(break_firings(tracking, reminders, now, false));
     firings.sort_by_key(|f| (f.occurrence, f.reminder));
     firings
 }
@@ -956,6 +1090,7 @@ pub fn due_firings(
 #[must_use]
 pub fn active_notifications(
     tasks: &BTreeMap<TaskId, Task>,
+    tracking: &TrackingState,
     reminders: &ReminderState,
     defaults: &ReminderDefaults,
     now: DateTime<Utc>,
@@ -1002,6 +1137,9 @@ pub fn active_notifications(
             });
         }
     }
+    // The break pass: delivered ∧ ¬dismissed occurrences stay on the
+    // surface (the same gate as every other family).
+    firings.extend(break_firings(tracking, reminders, now, true));
     firings.sort_by_key(|f| (f.occurrence, f.reminder));
     notifications_for(&firings, tasks, reminders)
 }
@@ -1177,7 +1315,7 @@ mod tests {
                         };
                         duedate + defaults.default_before.as_duration()
                     }
-                    ReminderRef::Adhoc(_) => continue,
+                    ReminderRef::Adhoc(_) | ReminderRef::Break(_) => continue,
                 };
                 // Hand-rolled snooze walk (stops at first repeat).
                 let mut effective = base;
@@ -1272,7 +1410,7 @@ mod tests {
                         };
                         duedate + defaults.default_before.as_duration()
                     }
-                    ReminderRef::Adhoc(_) => continue,
+                    ReminderRef::Adhoc(_) | ReminderRef::Break(_) => continue,
                 };
                 let mut effective = base;
                 let mut seen = BTreeSet::from([base]);
@@ -1328,6 +1466,9 @@ mod tests {
                     };
                     alarm.label.clone()
                 }
+                // The proptest fixture mints no break rules; a hand-
+                // built Break anchor has no title source here.
+                ReminderAnchor::Break(_) => continue,
             };
             expected.push(Notification {
                 insistence: Insistence::Normal,
@@ -1408,7 +1549,7 @@ mod tests {
         fn p1_settled_firings_never_refire(
             (tasks, reminders, defaults, now) in eval_input(),
         ) {
-            let f1 = due_firings(&tasks, &reminders, &defaults, now);
+            let f1 = due_firings(&tasks, &crate::tracking::TrackingState::default(), &reminders, &defaults, now);
             for f in &f1 {
                 prop_assert!(!reminders.is_delivered(&f.reminder, &f.occurrence));
             }
@@ -1420,7 +1561,7 @@ mod tests {
                     delivered_at: now,
                 });
             }
-            let f2 = due_firings(&tasks, &settled, &defaults, now);
+            let f2 = due_firings(&tasks, &TrackingState::default(), &settled, &defaults, now);
             prop_assert!(f2.is_empty(), "settled firings must not re-fire at the same now");
         }
 
@@ -1428,7 +1569,7 @@ mod tests {
         fn p2_due_firings_equal_the_independently_derived_set(
             (tasks, reminders, defaults, now) in eval_input(),
         ) {
-            let got: Vec<(DateTime<Utc>, ReminderRef)> = due_firings(&tasks, &reminders, &defaults, now)
+            let got: Vec<(DateTime<Utc>, ReminderRef)> = due_firings(&tasks, &crate::tracking::TrackingState::default(), &reminders, &defaults, now)
                 .into_iter()
                 .map(|f| (f.occurrence, f.reminder))
                 .collect();
@@ -1518,11 +1659,11 @@ mod tests {
 
             // Any instant before the target: suppressed.
             let probe = now + chrono::TimeDelta::try_seconds(probe_secs).unwrap().min(postpone - chrono::TimeDelta::try_seconds(1).unwrap());
-            let during = due_firings(&tasks, &reminders, &defaults, probe);
+            let during = due_firings(&tasks, &crate::tracking::TrackingState::default(), &reminders, &defaults, probe);
             prop_assert!(during.is_empty(), "snoozed reminder must not fire before its target");
 
             // At the target: fires (undelivered), then settles forever.
-            let at_target = due_firings(&tasks, &reminders, &defaults, now + postpone);
+            let at_target = due_firings(&tasks, &crate::tracking::TrackingState::default(), &reminders, &defaults, now + postpone);
             prop_assert_eq!(
                 at_target.iter().map(|f| f.reminder).collect::<Vec<_>>(),
                 vec![reminder]
@@ -1532,10 +1673,8 @@ mod tests {
                 occurrence: now + postpone,
                 delivered_at: now + postpone,
             });
-            prop_assert!(due_firings(&tasks, &reminders, &defaults, now + postpone).is_empty());
-            prop_assert!(
-                due_firings(&tasks, &reminders, &defaults, now + postpone * 2).is_empty()
-            );
+            prop_assert_eq!(due_firings(&tasks, &crate::tracking::TrackingState::default(), &reminders, &defaults, now + postpone), Vec::new());
+            prop_assert_eq!(due_firings(&tasks, &crate::tracking::TrackingState::default(), &reminders, &defaults, now + postpone * 2), Vec::new());
         }
 
         #[test]
@@ -1550,17 +1689,17 @@ mod tests {
             // Alarm firings are observed before the mute: muting every
             // task must not silence any of them.
             let alarm_firings: Vec<ReminderRef> =
-                due_firings(&tasks, &reminders, &defaults, now)
+                due_firings(&tasks, &crate::tracking::TrackingState::default(), &reminders, &defaults, now)
                     .into_iter()
                     .filter(|f| matches!(f.anchor, ReminderAnchor::Alarm(_)))
                     .map(|f| f.reminder)
                     .collect();
             reminders.muted = overdue.iter().copied().collect();
-            let firings = due_firings(&tasks, &reminders, &defaults, now);
+            let firings = due_firings(&tasks, &crate::tracking::TrackingState::default(), &reminders, &defaults, now);
             let fired_tasks: Vec<TaskId> =
                 firings.iter().filter_map(|f| match f.anchor {
                     ReminderAnchor::Task(t) => Some(t),
-                    ReminderAnchor::Alarm(_) => None,
+                    ReminderAnchor::Alarm(_) | ReminderAnchor::Break(_) => None,
                 }).collect();
             prop_assert!(fired_tasks.iter().all(|t| !reminders.muted.contains(t)));
             let fired_alarms: Vec<ReminderRef> = firings
@@ -1688,7 +1827,13 @@ mod tests {
         };
         reminders.rules.insert(rule_a.id, rule_a);
         reminders.rules.insert(rule_b.id, rule_b);
-        let firings = due_firings(&tasks, &reminders, &ReminderDefaults::default(), now);
+        let firings = due_firings(
+            &tasks,
+            &crate::tracking::TrackingState::default(),
+            &reminders,
+            &ReminderDefaults::default(),
+            now,
+        );
         let occurrences: Vec<DateTime<Utc>> = firings.iter().map(|f| f.occurrence).collect();
         assert_eq!(
             occurrences,
@@ -1743,6 +1888,7 @@ mod tests {
 
         let stale = stale_deliveries(
             &tasks,
+            &TrackingState::default(),
             &reminders,
             &ReminderDefaults::default(),
             now,
@@ -1769,6 +1915,7 @@ mod tests {
 
         let stale = stale_deliveries(
             &tasks,
+            &TrackingState::default(),
             &reminders,
             &ReminderDefaults::default(),
             now,
@@ -1793,6 +1940,7 @@ mod tests {
 
         let stale = stale_deliveries(
             &tasks,
+            &TrackingState::default(),
             &reminders,
             &ReminderDefaults::default(),
             now,
@@ -1827,6 +1975,7 @@ mod tests {
 
         let stale = stale_deliveries(
             &tasks,
+            &TrackingState::default(),
             &reminders,
             &ReminderDefaults::default(),
             now,
@@ -1854,6 +2003,7 @@ mod tests {
 
         let stale = stale_deliveries(
             &tasks,
+            &TrackingState::default(),
             &reminders,
             &ReminderDefaults::default(),
             now,
@@ -1884,6 +2034,7 @@ mod tests {
 
         let stale = stale_deliveries(
             &tasks,
+            &TrackingState::default(),
             &reminders,
             &ReminderDefaults::default(),
             now,
@@ -1902,19 +2053,19 @@ mod tests {
     fn pruning_the_stale_set_is_unobservable_in_both_readers(
         (tasks, reminders, defaults, now) in eval_input(),
     ) {
-        let stale = stale_deliveries(&tasks, &reminders, &defaults, now, horizon());
+        let stale = stale_deliveries(&tasks, &TrackingState::default(), &reminders, &defaults, now, horizon());
         let mut pruned = reminders.clone();
         for delivery in &stale {
             pruned.deliveries.remove(delivery);
         }
         assert_eq!(
-            due_firings(&tasks, &pruned, &defaults, now),
-            due_firings(&tasks, &reminders, &defaults, now),
+            due_firings(&tasks, &TrackingState::default(), &pruned, &defaults, now),
+            due_firings(&tasks, &TrackingState::default(), &reminders, &defaults, now),
             "due_firings cannot observe the prune"
         );
         assert_eq!(
-            active_notifications(&tasks, &pruned, &defaults, now),
-            active_notifications(&tasks, &reminders, &defaults, now),
+            active_notifications(&tasks, &TrackingState::default(), &pruned, &defaults, now),
+            active_notifications(&tasks, &TrackingState::default(), &reminders, &defaults, now),
             "active_notifications cannot observe the prune"
         );
     }
@@ -1932,8 +2083,8 @@ mod tests {
         else {
             return Ok(());
         };
-        let before = stale_deliveries(&tasks, &reminders, &defaults, now, horizon());
-        let after = stale_deliveries(&tasks, &reminders, &defaults, later, horizon());
+        let before = stale_deliveries(&tasks, &TrackingState::default(), &reminders, &defaults, now, horizon());
+        let after = stale_deliveries(&tasks, &TrackingState::default(), &reminders, &defaults, later, horizon());
         for delivery in &before {
             assert!(
                 after.contains(delivery),
@@ -2086,7 +2237,29 @@ mod tests {
         );
     }
 
+    /// The task-pass wrappers over the default (empty) tracking
+    /// history — the evaluator's task-pass tests never exercise
+    /// tracking.
+    fn task_firings(
+        tasks: &BTreeMap<TaskId, Task>,
+        reminders: &ReminderState,
+        defaults: &ReminderDefaults,
+        now: DateTime<Utc>,
+    ) -> Vec<ReminderFiring> {
+        due_firings(tasks, &TrackingState::default(), reminders, defaults, now)
+    }
+
+    fn task_active(
+        tasks: &BTreeMap<TaskId, Task>,
+        reminders: &ReminderState,
+        defaults: &ReminderDefaults,
+        now: DateTime<Utc>,
+    ) -> Vec<Notification> {
+        active_notifications(tasks, &TrackingState::default(), reminders, defaults, now)
+    }
+
     #[test]
+
     fn dismissal_suppresses_refire_and_clears_the_active_surface() {
         let now = ts(20_000);
         let task = live_task(1, Some(ts(19_000)), 0);
@@ -2106,7 +2279,13 @@ mod tests {
         let defaults = ReminderDefaults::default();
 
         // Fires at the due instant...
-        let fired = due_firings(&tasks, &reminders, &defaults, now);
+        let fired = due_firings(
+            &tasks,
+            &crate::tracking::TrackingState::default(),
+            &reminders,
+            &defaults,
+            now,
+        );
         assert_eq!(fired.len(), 1);
         let occurrence = fired[0].occurrence;
         reminders.deliveries.insert(ReminderDelivery {
@@ -2115,8 +2294,14 @@ mod tests {
             delivered_at: now,
         });
         // ...is quiet afterwards, but active on the surface...
-        assert_eq!(due_firings(&tasks, &reminders, &defaults, now), Vec::new());
-        let active = active_notifications(&tasks, &reminders, &defaults, now);
+        assert_eq!(task_firings(&tasks, &reminders, &defaults, now), Vec::new());
+        let active = active_notifications(
+            &tasks,
+            &crate::tracking::TrackingState::default(),
+            &reminders,
+            &defaults,
+            now,
+        );
         assert_eq!(active.len(), 1);
         assert_eq!(active[0].reminder, reminder);
         assert_eq!(active[0].occurrence, occurrence);
@@ -2128,9 +2313,9 @@ mod tests {
             occurrence,
             dismissed_at: now,
         });
-        assert_eq!(due_firings(&tasks, &reminders, &defaults, now), Vec::new());
+        assert_eq!(task_firings(&tasks, &reminders, &defaults, now), Vec::new());
         assert_eq!(
-            due_firings(
+            task_firings(
                 &tasks,
                 &reminders,
                 &defaults,
@@ -2138,17 +2323,14 @@ mod tests {
             ),
             Vec::new()
         );
-        assert_eq!(
-            active_notifications(&tasks, &reminders, &defaults, now),
-            Vec::new()
-        );
+        assert_eq!(task_active(&tasks, &reminders, &defaults, now), Vec::new());
         // The dismissal is permanent for the occurrence only: a new
         // occurrence (the due date moved) re-arms by construction.
         let mut moved = tasks.get(&task.id).unwrap().clone();
         moved.duedate = Some(ts(40_000));
         let tasks = BTreeMap::from([(moved.id, moved)]);
         assert_eq!(
-            due_firings(&tasks, &reminders, &defaults, ts(40_000)).len(),
+            task_firings(&tasks, &reminders, &defaults, ts(40_000)).len(),
             1,
             "a new occurrence re-arms"
         );
@@ -2686,8 +2868,8 @@ mod tests {
             }
             let defaults = ReminderDefaults::default();
 
-            let a = due_firings(&tasks, &reminders, &defaults, now);
-            let b = due_firings(&tasks, &reminders, &defaults, now);
+            let a = due_firings(&tasks, &crate::tracking::TrackingState::default(), &reminders, &defaults, now);
+            let b = due_firings(&tasks, &crate::tracking::TrackingState::default(), &reminders, &defaults, now);
             prop_assert_eq!(&a, &b, "deterministic");
             for pair in a.windows(2) {
                 prop_assert!(
@@ -2737,7 +2919,7 @@ mod tests {
         fn p10_dismissed_occurrences_never_refire(
             (tasks, reminders, defaults, now) in eval_input(),
         ) {
-            let f1 = due_firings(&tasks, &reminders, &defaults, now);
+            let f1 = due_firings(&tasks, &crate::tracking::TrackingState::default(), &reminders, &defaults, now);
             let mut dismissed = reminders.clone();
             for f in &f1 {
                 dismissed.dismissals.insert(ReminderDismissal {
@@ -2746,10 +2928,10 @@ mod tests {
                     dismissed_at: now,
                 });
             }
-            let f2 = due_firings(&tasks, &dismissed, &defaults, now);
+            let f2 = due_firings(&tasks, &TrackingState::default(), &dismissed, &defaults, now);
             prop_assert!(f2.is_empty(), "dismissed firings must not re-fire at the same now");
             // And the surface is empty for exactly those occurrences...
-            let active = active_notifications(&tasks, &dismissed, &defaults, now);
+            let active = active_notifications(&tasks, &TrackingState::default(), &dismissed, &defaults, now);
             prop_assert!(
                 active
                     .iter()
@@ -2763,7 +2945,7 @@ mod tests {
             (tasks, reminders, defaults, now) in eval_input(),
         ) {
             prop_assert_eq!(
-                active_notifications(&tasks, &reminders, &defaults, now),
+                active_notifications(&tasks, &crate::tracking::TrackingState::default(), &reminders, &defaults, now),
                 expected_active(&tasks, &reminders, &defaults, now),
             );
         }
@@ -2774,11 +2956,11 @@ mod tests {
         ) {
             // Due = ¬delivered ∧ ¬dismissed; active = delivered ∧
             // ¬dismissed: no (reminder, occurrence) pair can be both.
-            let due: BTreeSet<_> = due_firings(&tasks, &reminders, &defaults, now)
+            let due: BTreeSet<_> = due_firings(&tasks, &crate::tracking::TrackingState::default(), &reminders, &defaults, now)
                 .into_iter()
                 .map(|f| (f.reminder, f.occurrence))
                 .collect();
-            let active: BTreeSet<_> = active_notifications(&tasks, &reminders, &defaults, now)
+            let active: BTreeSet<_> = active_notifications(&tasks, &crate::tracking::TrackingState::default(), &reminders, &defaults, now)
                 .into_iter()
                 .map(|n| (n.reminder, n.occurrence))
                 .collect();
@@ -2801,7 +2983,7 @@ mod tests {
             let mut updated = done[&task_id].clone();
             updated.done = Some(now);
             done.insert(task_id, updated);
-            let active_before: BTreeSet<_> = active_notifications(&tasks, &reminders, &defaults, now)
+            let active_before: BTreeSet<_> = active_notifications(&tasks, &crate::tracking::TrackingState::default(), &reminders, &defaults, now)
                 .into_iter()
                 .filter(|n| matches!(n.anchor, ReminderAnchor::Task(t) if t == task_id))
                 .map(|n| (n.reminder, n.occurrence))
@@ -2815,7 +2997,7 @@ mod tests {
                 });
             }
             let still_active: BTreeSet<_> =
-                active_notifications(&done, &after, &defaults, now)
+                active_notifications(&done, &TrackingState::default(), &after, &defaults, now)
                     .into_iter()
                     .filter(|n| matches!(n.anchor, ReminderAnchor::Task(t) if t == task_id))
                     .map(|n| (n.reminder, n.occurrence))
@@ -2852,9 +3034,384 @@ mod tests {
             let rule_id = rule.id;
             reminders.rules.insert(rule_id, rule);
 
-            let firings = due_firings(&tasks, &reminders, &ReminderDefaults::default(), instant);
+            let firings = due_firings(
+                &tasks,
+                &crate::tracking::TrackingState::default(),
+                &reminders,
+                &ReminderDefaults::default(),
+                instant,
+            );
             assert_eq!(firings.len(), 1, "exactly one firing at {instant}");
             assert_eq!(firings[0].occurrence, instant - one_hour);
         }
+    }
+
+    // ---- The break-rule family (#495, D-8/D-9) ---------------------------
+
+    use crate::tracking::{TimeEntry, TimeEntryKind, WorkThreshold};
+
+    fn break_rule(
+        raw: u128,
+        threshold_secs: i64,
+        label: &str,
+        insistence: Insistence,
+    ) -> BreakRule {
+        BreakRule {
+            id: BreakRuleId::from(uuid::Uuid::from_u128(raw)),
+            label: label.to_owned(),
+            threshold: WorkThreshold::try_new(
+                chrono::TimeDelta::try_seconds(threshold_secs).unwrap(),
+            )
+            .expect("positive threshold"),
+            insistence,
+            created_at: ts(100),
+        }
+    }
+
+    fn work_entry(raw: u128, start: i64, end: Option<i64>) -> TimeEntry {
+        TimeEntry {
+            id: crate::ids::TimeEntryId::from(uuid::Uuid::from_u128(raw)),
+            task: TaskId::from(uuid::Uuid::from_u128(900)),
+            task_title: "task 900".into(),
+            start: ts(start),
+            end: end.map(ts),
+            created_at: ts(100),
+            updated_at: ts(100),
+            kind: TimeEntryKind::Work,
+        }
+    }
+
+    fn respite_entry(raw: u128, start: i64, end: Option<i64>) -> TimeEntry {
+        let mut entry = work_entry(raw, start, end);
+        entry.kind = TimeEntryKind::Respite;
+        entry
+    }
+
+    fn tracking_of(entries: &[TimeEntry]) -> TrackingState {
+        let mut tracking = TrackingState::default();
+        for entry in entries {
+            tracking.entries.insert(entry.id, entry.clone());
+        }
+        tracking
+    }
+
+    #[test]
+    fn break_ref_text_form_roundtrips() {
+        let rule = ReminderRef::Break(BreakRuleId::from(uuid::Uuid::from_u128(42)));
+        assert!(rule.text_form().starts_with("break:"));
+        assert_eq!(ReminderRef::parse_text_form(&rule.text_form()), Some(rule));
+        assert_eq!(ReminderRef::parse_text_form("break:not-a-uuid"), None);
+    }
+
+    #[test]
+    fn below_threshold_no_firing() {
+        let now = ts(10_000);
+        let tracking = tracking_of(&[work_entry(1, 5_000, None)]);
+        let reminders = ReminderState {
+            break_rules: BTreeMap::from([(
+                BreakRuleId::from(uuid::Uuid::from_u128(1)),
+                break_rule(1, 9_000, "stretch", Insistence::Normal),
+            )]),
+            ..ReminderState::default()
+        };
+        // 5_000 accrued, 9_000 demanded: no crossing.
+        let defaults = ReminderDefaults::default();
+        assert_eq!(
+            due_firings(&BTreeMap::new(), &tracking, &reminders, &defaults, now),
+            Vec::new()
+        );
+        assert_eq!(
+            active_notifications(&BTreeMap::new(), &tracking, &reminders, &defaults, now),
+            Vec::new()
+        );
+    }
+
+    #[test]
+    fn at_threshold_single_firing_with_crossing_occurrence() {
+        // 30m of work from 0; a 25m threshold crosses at 1_500.
+        let tracking = tracking_of(&[work_entry(1, 0, Some(1_800))]);
+        let reminders = ReminderState {
+            break_rules: BTreeMap::from([(
+                BreakRuleId::from(uuid::Uuid::from_u128(1)),
+                break_rule(1, 1_500, "stretch", Insistence::Normal),
+            )]),
+            ..ReminderState::default()
+        };
+        let defaults = ReminderDefaults::default();
+        let firings = due_firings(
+            &BTreeMap::new(),
+            &tracking,
+            &reminders,
+            &defaults,
+            ts(2_000),
+        );
+        assert_eq!(firings.len(), 1);
+        assert_eq!(firings[0].occurrence, ts(1_500));
+        assert_eq!(
+            firings[0].reminder,
+            ReminderRef::Break(BreakRuleId::from(uuid::Uuid::from_u128(1)))
+        );
+        assert!(matches!(firings[0].anchor, ReminderAnchor::Break(_)));
+    }
+
+    #[test]
+    fn second_tick_does_not_refire_the_crossing() {
+        // The double-fire guard pin (D-8/R-2): tick 1 delivers the
+        // crossing; tick 2 (30 s later, the riding reminder tick) must
+        // stay quiet.
+        let tracking = tracking_of(&[work_entry(1, 0, Some(3_600))]);
+        let rule = break_rule(1, 1_500, "stretch", Insistence::Normal);
+        let rule_id = rule.id;
+        let mut reminders = ReminderState {
+            break_rules: BTreeMap::from([(rule_id, rule)]),
+            ..ReminderState::default()
+        };
+        let defaults = ReminderDefaults::default();
+        let firings = due_firings(
+            &BTreeMap::new(),
+            &tracking,
+            &reminders,
+            &defaults,
+            ts(2_000),
+        );
+        assert_eq!(firings.len(), 1);
+        let occurrence = firings[0].occurrence;
+        reminders.deliveries.insert(ReminderDelivery {
+            reminder: firings[0].reminder,
+            occurrence,
+            delivered_at: ts(2_000),
+        });
+        for tick in [ts(2_030), ts(2_060), ts(3_600)] {
+            assert_eq!(
+                due_firings(&BTreeMap::new(), &tracking, &reminders, &defaults, tick),
+                Vec::new(),
+                "a delivered crossing never re-fires at {tick}"
+            );
+        }
+        // The active surface carries it until dismissed.
+        let active = active_notifications(
+            &BTreeMap::new(),
+            &tracking,
+            &reminders,
+            &defaults,
+            ts(2_030),
+        );
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].title, "stretch");
+    }
+
+    #[test]
+    fn respite_reset_then_recross_fires_the_new_occurrence() {
+        // 90m work, 5m closed respite, 90m work, a 90m threshold: the
+        // respite re-bases the streak (the pre-respite crossing is dead
+        // the moment the respite lands — history edits move the base
+        // honestly), and the post-respite full-threshold crossing is
+        // the new occurrence.
+        let tracking = tracking_of(&[
+            work_entry(1, 0, Some(5_400)),
+            respite_entry(2, 5_400, Some(5_700)),
+            work_entry(3, 5_700, Some(11_100)),
+        ]);
+        let rule = break_rule(1, 5_400, "stretch", Insistence::Normal);
+        let rule_id = rule.id;
+        let mut reminders = ReminderState {
+            break_rules: BTreeMap::from([(rule_id, rule)]),
+            ..ReminderState::default()
+        };
+        let defaults = ReminderDefaults::default();
+
+        // The pre-respite crossing (ts 5_400) never fires: the respite
+        // in history re-based the streak before it could.
+        assert_eq!(
+            due_firings(
+                &BTreeMap::new(),
+                &tracking,
+                &reminders,
+                &defaults,
+                ts(5_400)
+            ),
+            Vec::new()
+        );
+        // Only 300s past the respite: below the threshold.
+        assert_eq!(
+            due_firings(
+                &BTreeMap::new(),
+                &tracking,
+                &reminders,
+                &defaults,
+                ts(6_000)
+            ),
+            Vec::new()
+        );
+        // At the post-respite crossing: fires at the new occurrence.
+        let firings = due_firings(
+            &BTreeMap::new(),
+            &tracking,
+            &reminders,
+            &defaults,
+            ts(11_100),
+        );
+        assert_eq!(firings.len(), 1);
+        assert_eq!(firings[0].occurrence, ts(11_100));
+        // Delivered: the tick stays quiet (the re-armed episode is
+        // at-most-once per streak, the double-fire guard).
+        reminders.deliveries.insert(ReminderDelivery {
+            reminder: firings[0].reminder,
+            occurrence: firings[0].occurrence,
+            delivered_at: ts(11_100),
+        });
+        assert_eq!(
+            due_firings(
+                &BTreeMap::new(),
+                &tracking,
+                &reminders,
+                &defaults,
+                ts(11_100)
+            ),
+            Vec::new()
+        );
+    }
+
+    #[test]
+    fn dismissed_crossing_never_refires() {
+        let tracking = tracking_of(&[work_entry(1, 0, Some(3_600))]);
+        let rule = break_rule(1, 1_500, "stretch", Insistence::Normal);
+        let rule_id = rule.id;
+        let mut reminders = ReminderState {
+            break_rules: BTreeMap::from([(rule_id, rule)]),
+            ..ReminderState::default()
+        };
+        let defaults = ReminderDefaults::default();
+        let reminder = ReminderRef::Break(rule_id);
+        reminders.dismissals.insert(ReminderDismissal {
+            reminder,
+            occurrence: ts(1_500),
+            dismissed_at: ts(1_600),
+        });
+        for tick in [ts(2_000), ts(3_600), ts(99_999)] {
+            assert_eq!(
+                due_firings(&BTreeMap::new(), &tracking, &reminders, &defaults, tick),
+                Vec::new(),
+                "the dismissal is permanent for the episode at {tick}"
+            );
+            assert_eq!(
+                active_notifications(&BTreeMap::new(), &tracking, &reminders, &defaults, tick),
+                Vec::new()
+            );
+        }
+    }
+
+    #[test]
+    fn snoozed_crossing_moves_via_the_chain() {
+        let tracking = tracking_of(&[work_entry(1, 0, Some(3_600))]);
+        let rule = break_rule(1, 1_500, "stretch", Insistence::Normal);
+        let rule_id = rule.id;
+        let mut reminders = ReminderState {
+            break_rules: BTreeMap::from([(rule_id, rule)]),
+            ..ReminderState::default()
+        };
+        let defaults = ReminderDefaults::default();
+        let reminder = ReminderRef::Break(rule_id);
+        reminders.snoozes.insert(
+            ReminderSnoozeKey {
+                reminder,
+                occurrence: ts(1_500),
+            },
+            ts(3_000),
+        );
+        // Below the target: suppressed.
+        assert_eq!(
+            due_firings(
+                &BTreeMap::new(),
+                &tracking,
+                &reminders,
+                &defaults,
+                ts(2_000)
+            ),
+            Vec::new()
+        );
+        // At the target: fires at the moved instant.
+        let firings = due_firings(
+            &BTreeMap::new(),
+            &tracking,
+            &reminders,
+            &defaults,
+            ts(3_000),
+        );
+        assert_eq!(firings.len(), 1);
+        assert_eq!(firings[0].occurrence, ts(3_000));
+    }
+
+    #[test]
+    fn two_rules_fire_independently_in_total_order() {
+        let tracking = tracking_of(&[work_entry(1, 0, Some(3_600))]);
+        let quiet = break_rule(1, 600, "ten minutes", Insistence::Normal);
+        let loud = break_rule(2, 1_500, "twenty five", Insistence::Alarm);
+        let reminders = ReminderState {
+            break_rules: BTreeMap::from([(loud.id, loud), (quiet.id, quiet)]),
+            ..ReminderState::default()
+        };
+        let defaults = ReminderDefaults::default();
+        let firings = due_firings(
+            &BTreeMap::new(),
+            &tracking,
+            &reminders,
+            &defaults,
+            ts(2_000),
+        );
+        assert_eq!(firings.len(), 2);
+        assert_eq!(firings[0].occurrence, ts(600));
+        assert_eq!(firings[1].occurrence, ts(1_500));
+        for pair in firings.windows(2) {
+            assert!(
+                (pair[0].occurrence, pair[0].reminder) < (pair[1].occurrence, pair[1].reminder)
+            );
+        }
+    }
+
+    #[test]
+    fn empty_break_rules_leaves_due_firings_unchanged() {
+        // The extension pin: the default state (no break rules) makes
+        // the break pass a no-op, so the existing property suite keeps
+        // its semantics byte for byte.
+        let tracking = tracking_of(&[work_entry(1, 0, Some(3_600))]);
+        assert_eq!(
+            due_firings(
+                &BTreeMap::new(),
+                &tracking,
+                &ReminderState::default(),
+                &ReminderDefaults::default(),
+                ts(2_000)
+            ),
+            Vec::new()
+        );
+        assert_eq!(ReminderState::default().break_rules, BTreeMap::new());
+    }
+
+    #[test]
+    fn notifications_for_break_anchor_snapshots_label_and_insistence() {
+        let rule = break_rule(7, 1_500, "time for a break", Insistence::Alarm);
+        let rule_id = rule.id;
+        let reminders = ReminderState {
+            break_rules: BTreeMap::from([(rule_id, rule)]),
+            ..ReminderState::default()
+        };
+        let ghost = BreakRuleId::from(uuid::Uuid::from_u128(99));
+        let firings = vec![
+            ReminderFiring {
+                reminder: ReminderRef::Break(rule_id),
+                anchor: ReminderAnchor::Break(rule_id),
+                occurrence: ts(1_500),
+            },
+            ReminderFiring {
+                reminder: ReminderRef::Break(ghost),
+                anchor: ReminderAnchor::Break(ghost),
+                occurrence: ts(1_600),
+            },
+        ];
+        let notes = notifications_for(&firings, &BTreeMap::new(), &reminders);
+        assert_eq!(notes.len(), 1, "a missing rule row skips the payload");
+        assert_eq!(notes[0].title, "time for a break");
+        assert_eq!(notes[0].insistence, Insistence::Alarm);
     }
 }

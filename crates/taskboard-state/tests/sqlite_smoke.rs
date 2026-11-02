@@ -308,6 +308,7 @@ async fn reloaded_rule_never_refires_a_delivered_occurrence() {
     };
     let firings = due_firings(
         &loaded.tasks,
+        &loaded.tracking,
         &loaded.reminders,
         &defaults,
         common::ts(T0 + 3_600),

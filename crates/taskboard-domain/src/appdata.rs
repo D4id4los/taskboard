@@ -1397,9 +1397,12 @@ pub fn dismissals_entry_for(
                     },
                 ))
             }
-            crate::reminders::ReminderRef::Default(_) | crate::reminders::ReminderRef::Adhoc(_) => {
-                None
-            }
+            // The fail-closed rule extends to break rules (D-15): the
+            // wire key admits a rule UUID only; a device-local break
+            // dismissal can never reach the document.
+            crate::reminders::ReminderRef::Default(_)
+            | crate::reminders::ReminderRef::Adhoc(_)
+            | crate::reminders::ReminderRef::Break(_) => None,
         })
         .collect();
     DismissalsEntry {
@@ -3830,10 +3833,12 @@ mod tests {
             task_seed in 0_u128..1_000_000,
             alarm_seed in 0_u128..1_000_000,
             rule_seed in 0_u128..1_000_000,
+            break_seed in 0_u128..1_000_000,
             occurrence in 0_i64..4_000_000_000,
             with_default_row in proptest::bool::ANY,
             with_adhoc_row in proptest::bool::ANY,
             with_rule_row in proptest::bool::ANY,
+            with_break_row in proptest::bool::ANY,
         ) {
             let task = crate::ids::TaskId::from(uuid::Uuid::from_u128(task_seed));
             let alarm = AdhocAlarmId::from(uuid::Uuid::from_u128(alarm_seed));
@@ -3860,6 +3865,14 @@ mod tests {
             if with_adhoc_row {
                 dismissals.insert(dismissal(ReminderRef::Adhoc(alarm), occurrence, occurrence + 3));
             }
+            let break_rule = crate::ids::BreakRuleId::from(uuid::Uuid::from_u128(break_seed));
+            if with_break_row {
+                dismissals.insert(dismissal(
+                    ReminderRef::Break(break_rule),
+                    occurrence,
+                    occurrence + 4,
+                ));
+            }
             let entry = dismissals_entry_for(&dismissals, &rules, task);
             let wire = serde_json::to_string(&entry).unwrap();
             prop_assert!(
@@ -3870,8 +3883,13 @@ mod tests {
                 !wire.contains(&alarm.as_uuid().to_string()),
                 "the local AdhocAlarmId reached the wire: {wire}"
             );
+            prop_assert!(
+                !wire.contains(&break_rule.as_uuid().to_string()),
+                "the local BreakRuleId reached the wire: {wire}"
+            );
             prop_assert!(!wire.contains("default:"), "{wire}");
             prop_assert!(!wire.contains("alarm:"), "{wire}");
+            prop_assert!(!wire.contains("break:"), "{wire}");
         }
 
         // The pre-dismissals relay (agenda §4(f)/M6 extended to the

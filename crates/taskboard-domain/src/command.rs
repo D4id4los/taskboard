@@ -116,6 +116,9 @@ pub enum CommandError {
     /// No adhoc alarm with this id exists.
     #[error("unknown adhoc alarm")]
     UnknownAdhocAlarm(crate::ids::AdhocAlarmId),
+    /// No break rule with this id exists.
+    #[error("unknown break rule")]
+    UnknownBreakRule(crate::ids::BreakRuleId),
     /// An alarm duration must be positive ("in 0 seconds" fires
     /// nothing and "in the past" is [`AdhocWhen::At`] data).
     #[error("alarm duration must be positive")]
@@ -222,6 +225,16 @@ pub enum CommandOutcome {
     AdhocAlarmCancelled {
         /// The cancelled alarm.
         alarm: crate::ids::AdhocAlarmId,
+    },
+    /// The command created the break rule with this id.
+    BreakRuleCreated {
+        /// The fresh rule.
+        rule: crate::ids::BreakRuleId,
+    },
+    /// The command removed the named break rule.
+    BreakRuleDeleted {
+        /// The removed rule.
+        rule: crate::ids::BreakRuleId,
     },
     /// The command opened the entry and closed the named ones (entry-id
     /// ascending).
@@ -1057,6 +1070,7 @@ pub fn plan_command(
                 }
                 let dismissals: Vec<PersistenceAction> = active_notifications(
                     &app.tasks,
+                    &app.tracking,
                     &app.reminders,
                     defaults,
                     now,
@@ -1646,7 +1660,7 @@ pub fn plan_command(
                     // which the rules arm above already covers; alarms
                     // are device-global, not board content — a board
                     // clear never touches either.
-                    ReminderRef::Rule(_) | ReminderRef::Adhoc(_) => false,
+                    ReminderRef::Rule(_) | ReminderRef::Adhoc(_) | ReminderRef::Break(_) => false,
                 })
                 || board_tasks.iter().any(|t| app.reminders.muted.contains(t));
             if board_stacks.is_empty()
@@ -1838,6 +1852,13 @@ pub fn plan_command(
                         .ok_or(CommandError::UnknownAdhocAlarm(alarm_id))?;
                     None
                 }
+                ReminderRef::Break(rule_id) => {
+                    app.reminders
+                        .break_rules
+                        .get(&rule_id)
+                        .ok_or(CommandError::UnknownBreakRule(rule_id))?;
+                    None
+                }
             };
             if let Some(task) = task {
                 live_task(app, task)?;
@@ -1898,6 +1919,13 @@ pub fn plan_command(
                         .alarms
                         .get(&alarm_id)
                         .ok_or(CommandError::UnknownAdhocAlarm(alarm_id))?;
+                    None
+                }
+                ReminderRef::Break(rule_id) => {
+                    app.reminders
+                        .break_rules
+                        .get(&rule_id)
+                        .ok_or(CommandError::UnknownBreakRule(rule_id))?;
                     None
                 }
             };
@@ -2058,6 +2086,42 @@ pub fn plan_command(
                 outcome: CommandOutcome::AdhocAlarmCancelled { alarm: *alarm },
             })
         }
+        StateCommand::CreateBreakRule {
+            label,
+            threshold,
+            insistence,
+        } => {
+            // Device-local by ruling (D-5): no outbox op, no
+            // document-lane trigger — the rule never leaves this
+            // machine. The threshold arrived minted (the payload type
+            // cannot carry a non-positive value).
+            let rule = crate::reminders::BreakRule {
+                id: ids.new_break_rule_id(),
+                label: label.clone(),
+                threshold: *threshold,
+                insistence: *insistence,
+                created_at: now,
+            };
+            Ok(CommandPlan {
+                actions: vec![PersistenceAction::UpsertBreakRule(rule.clone())],
+                outcome: CommandOutcome::BreakRuleCreated { rule: rule.id },
+            })
+        }
+        StateCommand::DeleteBreakRule { id } => {
+            // Existence-only lookup (terminal-by-deletion, the
+            // `CancelAdhocAlarm` law): a repeat targets nothing, so it
+            // is a typed rejection, not a no-op. The persistence
+            // cascade prunes the ref-matched deliveries, dismissals,
+            // and snooze links in the same batch.
+            app.reminders
+                .break_rules
+                .get(id)
+                .ok_or(CommandError::UnknownBreakRule(*id))?;
+            Ok(CommandPlan {
+                actions: vec![PersistenceAction::DeleteBreakRule(*id)],
+                outcome: CommandOutcome::BreakRuleDeleted { rule: *id },
+            })
+        }
         StateCommand::StartTracking { task, kind } => {
             // No done-gate: a completed task is trackable (R-8); the
             // guard resolves liveness only.
@@ -2099,7 +2163,7 @@ pub fn plan_command(
             // in the same batch; the actor's withdraw direction picks
             // them up for the OS toasts.
             actions.extend(
-                active_notifications(&app.tasks, &app.reminders, defaults, now)
+                active_notifications(&app.tasks, &app.tracking, &app.reminders, defaults, now)
                     .into_iter()
                     .filter(|note| {
                         matches!(note.anchor, crate::reminders::ReminderAnchor::Task(t) if t == *task)
@@ -6449,6 +6513,298 @@ mod tests {
             panic!("the upsert is the first action");
         };
         assert_eq!(rule.insistence, Insistence::Alarm, "the level is stamped");
+    }
+
+    fn break_rule_command(threshold_secs: i64) -> StateCommand {
+        StateCommand::CreateBreakRule {
+            label: "time for a break".into(),
+            threshold: crate::tracking::WorkThreshold::try_new(
+                chrono::TimeDelta::try_seconds(threshold_secs).unwrap(),
+            )
+            .expect("positive threshold"),
+            insistence: Insistence::Normal,
+        }
+    }
+
+    #[test]
+    fn create_break_rule_mints_and_stamps() {
+        let (app, outbox) = base();
+        let plan = run(&app, &outbox, &break_rule_command(5_400)).expect("accepted");
+        let PersistenceAction::UpsertBreakRule(rule) = &plan.actions[0] else {
+            panic!("the upsert is the only action");
+        };
+        assert_eq!(rule.label, "time for a break");
+        assert_eq!(
+            rule.threshold.as_duration(),
+            chrono::TimeDelta::try_seconds(5_400).unwrap()
+        );
+        assert_eq!(rule.insistence, Insistence::Normal);
+        assert_eq!(rule.created_at, now());
+        assert!(plan.actions.len() == 1, "device-local: no outbox op");
+        assert!(matches!(
+            plan.outcome,
+            CommandOutcome::BreakRuleCreated { .. }
+        ));
+        // The threshold payload cannot carry a non-positive value: the
+        // mint is the boundary, so the planner sees minted data only.
+        assert!(crate::tracking::WorkThreshold::try_new(chrono::TimeDelta::zero()).is_err());
+        assert!(
+            crate::tracking::WorkThreshold::try_new(chrono::TimeDelta::try_seconds(-1).unwrap())
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn delete_break_rule_stranger_is_unknown_break_rule() {
+        let (app, outbox) = base();
+        let stranger = crate::ids::BreakRuleId::from(uuid::Uuid::from_u128(77));
+        let err = run(
+            &app,
+            &outbox,
+            &StateCommand::DeleteBreakRule { id: stranger },
+        )
+        .expect_err("an unknown break rule is a typed rejection");
+        assert!(matches!(err, CommandError::UnknownBreakRule(id) if id == stranger));
+    }
+
+    #[test]
+    fn delete_break_rule_cascades_ref_matched_rows() {
+        let (mut app, outbox) = base();
+        let rule = crate::reminders::BreakRule {
+            id: crate::ids::BreakRuleId::from(uuid::Uuid::from_u128(5)),
+            label: "stretch".into(),
+            threshold: crate::tracking::WorkThreshold::try_new(
+                chrono::TimeDelta::try_seconds(600).unwrap(),
+            )
+            .unwrap(),
+            insistence: Insistence::Normal,
+            created_at: ts(T0),
+        };
+        let rule_id = rule.id;
+        let reminder = crate::reminders::ReminderRef::Break(rule_id);
+        app.reminders.break_rules.insert(rule_id, rule.clone());
+        app.reminders
+            .deliveries
+            .insert(crate::reminders::ReminderDelivery {
+                reminder,
+                occurrence: ts(T0 + 100),
+                delivered_at: ts(T0 + 101),
+            });
+        app.reminders
+            .dismissals
+            .insert(crate::reminders::ReminderDismissal {
+                reminder,
+                occurrence: ts(T0 + 100),
+                dismissed_at: ts(T0 + 102),
+            });
+        app.reminders.snoozes.insert(
+            crate::reminders::ReminderSnoozeKey {
+                reminder,
+                occurrence: ts(T0 + 100),
+            },
+            ts(T0 + 500),
+        );
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::DeleteBreakRule { id: rule_id },
+        )
+        .expect("accepted");
+        let PersistenceAction::DeleteBreakRule(id) = &plan.actions[0] else {
+            panic!("the delete is the only action");
+        };
+        assert_eq!(*id, rule_id);
+        // The apply side prunes the ref-matched rows (the cascade is
+        // one definition site: `remove_break_rule`).
+        let mut persisted = crate::persistence::PersistedState::default();
+        crate::persistence::apply_actions(
+            &mut persisted,
+            &[
+                PersistenceAction::UpsertBreakRule(rule),
+                PersistenceAction::RecordReminderDelivery(crate::reminders::ReminderDelivery {
+                    reminder,
+                    occurrence: ts(T0 + 100),
+                    delivered_at: ts(T0 + 101),
+                }),
+                PersistenceAction::RecordReminderDismissal(crate::reminders::ReminderDismissal {
+                    reminder,
+                    occurrence: ts(T0 + 100),
+                    dismissed_at: ts(T0 + 102),
+                }),
+                PersistenceAction::DeleteBreakRule(rule_id),
+            ],
+        );
+        assert!(persisted.reminders.break_rules.is_empty());
+        assert!(persisted.reminders.deliveries.is_empty());
+        assert!(persisted.reminders.dismissals.is_empty());
+        assert!(persisted.reminders.snoozes.is_empty());
+    }
+
+    #[test]
+    fn dismiss_and_snooze_resolve_break_refs() {
+        let (app, outbox) = base();
+        let rule = crate::reminders::BreakRule {
+            id: crate::ids::BreakRuleId::from(uuid::Uuid::from_u128(6)),
+            label: "stretch".into(),
+            threshold: crate::tracking::WorkThreshold::try_new(
+                chrono::TimeDelta::try_seconds(600).unwrap(),
+            )
+            .unwrap(),
+            insistence: Insistence::Normal,
+            created_at: ts(T0),
+        };
+        let mut app = app;
+        let rule_id = rule.id;
+        app.reminders.break_rules.insert(rule_id, rule);
+        let reminder = crate::reminders::ReminderRef::Break(rule_id);
+        // Dismiss resolves the break ref (no unknown-ref rejection).
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::DismissReminder {
+                reminder,
+                occurrence: ts(T0 + 100),
+            },
+        )
+        .expect("accepted");
+        assert!(plan.actions.iter().any(
+            |a| matches!(a, PersistenceAction::RecordReminderDismissal(d) if d.reminder == reminder)
+        ));
+        // Snooze resolves too.
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::SnoozeReminder {
+                reminder,
+                occurrence: ts(T0 + 100),
+                postpone: chrono::TimeDelta::try_seconds(300).unwrap(),
+            },
+        )
+        .expect("accepted");
+        assert!(plan.actions.iter().any(
+            |a| matches!(a, PersistenceAction::RecordReminderSnooze(s) if s.reminder == reminder)
+        ));
+    }
+
+    #[test]
+    fn break_rule_commands_are_not_undoable() {
+        let (app, outbox) = base();
+        let ids = crate::test_support::CountingIds::new();
+        let journal = crate::journal::JournalState::default();
+        // Create: the recorded entry carries the typed NotUndoable fact.
+        let plan = crate::undo::plan_journaled_command(
+            &app,
+            &outbox,
+            &journal,
+            &break_rule_command(600),
+            &ids,
+            &ReminderDefaults::default(),
+            test_day(),
+            now(),
+        )
+        .expect("accepted");
+        let Some(crate::persistence::PersistenceAction::RecordJournal(entry)) = plan.actions.last()
+        else {
+            panic!("the journal append is the last action");
+        };
+        assert!(matches!(
+            entry.facts,
+            crate::journal::UndoFacts::NotUndoable(
+                crate::journal::NotUndoableReason::ReminderSurface
+            )
+        ));
+        // Delete: the same family disposition.
+        let rule = crate::reminders::BreakRule {
+            id: crate::ids::BreakRuleId::from(uuid::Uuid::from_u128(6)),
+            label: "stretch".into(),
+            threshold: crate::tracking::WorkThreshold::try_new(
+                chrono::TimeDelta::try_seconds(600).unwrap(),
+            )
+            .unwrap(),
+            insistence: Insistence::Normal,
+            created_at: ts(T0),
+        };
+        let mut app = app;
+        app.reminders.break_rules.insert(rule.id, rule);
+        let plan = crate::undo::plan_journaled_command(
+            &app,
+            &outbox,
+            &journal,
+            &StateCommand::DeleteBreakRule {
+                id: crate::ids::BreakRuleId::from(uuid::Uuid::from_u128(6)),
+            },
+            &ids,
+            &ReminderDefaults::default(),
+            test_day(),
+            now(),
+        )
+        .expect("accepted");
+        let Some(crate::persistence::PersistenceAction::RecordJournal(entry)) = plan.actions.last()
+        else {
+            panic!("the journal append is the last action");
+        };
+        assert!(matches!(
+            entry.facts,
+            crate::journal::UndoFacts::NotUndoable(
+                crate::journal::NotUndoableReason::ReminderSurface
+            )
+        ));
+    }
+
+    #[test]
+    fn adjust_kind_rides_the_existing_change_mask_and_pre_image() {
+        let (app, outbox) = base();
+        let closed = tracked_entry(1, task_id(), T0 - 800, Some(T0 - 700));
+        // Kind-only edit: the mask accepts it, stamps the clock.
+        let plan = run(
+            &with_entry(app.clone(), closed.clone()),
+            &outbox,
+            &StateCommand::AdjustTimeEntry {
+                id: closed.id,
+                start: None,
+                end: None,
+                kind: Some(crate::tracking::TimeEntryKind::Respite),
+            },
+        )
+        .expect("accepted");
+        let CommandOutcome::EntryAdjusted { entry } = &plan.outcome else {
+            panic!("wrong receipt");
+        };
+        assert_eq!(entry.kind, crate::tracking::TimeEntryKind::Respite);
+        assert_eq!(entry.start, closed.start);
+        assert_eq!(entry.end, closed.end);
+        // An all-unchanged mask (kind included) stays the accepted no-op.
+        let plan = run(
+            &with_entry(app, closed.clone()),
+            &outbox,
+            &StateCommand::AdjustTimeEntry {
+                id: closed.id,
+                start: None,
+                end: None,
+                kind: Some(closed.kind),
+            },
+        )
+        .expect("accepted");
+        assert_eq!(plan.outcome, CommandOutcome::NoOp);
+    }
+
+    #[test]
+    fn start_tracking_opens_a_running_break_with_the_kind_payload() {
+        let (app, outbox) = base_with_task_b();
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::StartTracking {
+                task: task_id(),
+                kind: crate::tracking::TimeEntryKind::Respite,
+            },
+        )
+        .expect("accepted");
+        let CommandOutcome::TrackingStarted { entry, .. } = &plan.outcome else {
+            panic!("wrong receipt");
+        };
+        assert_eq!(entry.kind, crate::tracking::TimeEntryKind::Respite);
+        assert!(entry.is_open(), "the running break is an open entry");
     }
 
     #[test]

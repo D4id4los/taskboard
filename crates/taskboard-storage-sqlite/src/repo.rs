@@ -1060,6 +1060,9 @@ impl SqliteTaskRepository {
             deliveries,
             dismissals,
             snoozes,
+            // Migration 0018 (the break-rule table) is the next
+            // commit's lane; until then the map stays empty on load.
+            break_rules: std::collections::BTreeMap::new(),
             muted,
             alarms,
         };
@@ -1268,6 +1271,12 @@ async fn execute_batch(
             PersistenceAction::DeleteReminderRule(rule_id) => rule_deletes.push(rule_id),
             PersistenceAction::UpsertAdhocAlarm(alarm) => alarm_upserts.push(alarm),
             PersistenceAction::DeleteAdhocAlarm(alarm_id) => alarm_deletes.push(alarm_id),
+            // The break-rule persistence lane lands with migration 0018
+            // (the next commit); until that table exists these batch as
+            // no-ops. In-memory state is advanced by apply_actions
+            // regardless, and nothing persists a break rule before the
+            // `breaks` CLI surface exists (also that lane).
+            PersistenceAction::UpsertBreakRule(_) | PersistenceAction::DeleteBreakRule(_) => {}
             PersistenceAction::RecordReminderDelivery(delivery) => deliveries.push(delivery),
             PersistenceAction::RecordReminderDismissal(dismissal) => dismissals.push(dismissal),
             PersistenceAction::RecordReminderSnooze(snooze) => snoozes.push(snooze),
