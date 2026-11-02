@@ -13,6 +13,7 @@
 //!   `shutdown()`, exit (roadmap §2.4: one bootstrap, N frontends).
 
 pub mod boards;
+pub mod breaks;
 pub mod capture;
 pub mod config;
 pub mod connect;
@@ -217,6 +218,9 @@ pub enum CommandError {
     /// No standalone alarm matches the selector.
     #[error("no such timer/alarm")]
     UnknownAdhocAlarm(String),
+    /// No break rule matches the selector.
+    #[error("no such break rule")]
+    UnknownBreakRule(String),
     /// The alarm selector matches several alarms; carries their full
     /// uuids (deterministic alarm-id order).
     #[error("timer selector matches several alarms — pass one of {}", candidates.join(" | "))]
@@ -478,6 +482,7 @@ impl CommandError {
             Self::UnknownReminderRule(_) => "unknown-reminder-rule",
             Self::AmbiguousReminderRule { .. } => "ambiguous-reminder-rule",
             Self::UnknownAdhocAlarm(_) => "unknown-adhoc-alarm",
+            Self::UnknownBreakRule(_) => "unknown-break-rule",
             Self::AmbiguousAdhocAlarm { .. } => "ambiguous-adhoc-alarm",
             Self::UnknownTimeEntry { .. } => "unknown-time-entry",
             Self::AmbiguousTimeEntry { .. } => "ambiguous-time-entry",
@@ -568,6 +573,7 @@ impl CommandError {
             | Self::UnknownLabel(sel)
             | Self::UnknownReminderRule(sel)
             | Self::UnknownAdhocAlarm(sel)
+            | Self::UnknownBreakRule(sel)
             | Self::UnknownTimeEntry { selector: sel } => Some(sel.clone()),
             Self::AmbiguousTask { candidates }
             | Self::AmbiguousStack { candidates }
@@ -1223,6 +1229,12 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
             }
             None => unreachable!("clap requires exactly one of --in/--at on timers add"),
         },
+        Command::Breaks { cmd } => match breaks::collapse(cmd) {
+            Some(invocation) => {
+                breaks::breaks_command(&mut ctx.io, ctx.config_path.clone(), invocation).await
+            }
+            None => unreachable!("clap cannot produce an unresolvable breaks add"),
+        },
         Command::Track { cmd } => match track::collapse(cmd) {
             Some(invocation) => {
                 track::track_command(&mut ctx.io, ctx.config_path.clone(), invocation).await
@@ -1635,6 +1647,10 @@ pub async fn dispatch_line(
         Command::Timers { cmd } => match timers::collapse(cmd) {
             Some(invocation) => timers::timers_line(app, io, invocation).await,
             None => unreachable!("clap requires exactly one of --in/--at on timers add"),
+        },
+        Command::Breaks { cmd } => match breaks::collapse(cmd) {
+            Some(invocation) => breaks::breaks_line(app, io, invocation).await,
+            None => unreachable!("clap cannot produce an unresolvable breaks add"),
         },
         Command::Track { cmd } => match track::collapse(cmd) {
             Some(invocation) => {
@@ -2099,6 +2115,10 @@ pub fn route_for_ipc(command: &Command) -> IpcRoute {
         | Command::Labels { .. }
         | Command::Tasks { .. }
         | Command::Timers { .. }
+        // The break-rule family is the timers family's mutation lane
+        // verbatim: the daemon's engine owns the rows; a one-shot local
+        // boot would orphan them at exit (D-17).
+        | Command::Breaks { .. }
         // Every tracking mutation must land in the process that owns
         // the engine: a one-shot local boot would open an entry and
         // orphan the intent at exit — the timers precedent routes
@@ -2391,9 +2411,13 @@ mod ipc_routing_tests {
             Command::Timers {
                 cmd: crate::cli::TimersCmd::List {},
             },
+            Command::Breaks {
+                cmd: crate::cli::BreaksCmd::List,
+            },
             Command::Track {
                 cmd: crate::cli::TrackCmd::Start {
                     task: "t".to_owned(),
+                    kind: None,
                 },
             },
             Command::Habits {

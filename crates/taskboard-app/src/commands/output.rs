@@ -936,6 +936,9 @@ pub struct TrackEntryRow {
     pub end: Option<DateTime<Utc>>,
     /// Derived at projection time (clamped ≥ 0).
     pub duration_seconds: u64,
+    /// What the entry counts as (`"work"` / `"respite"` — the domain
+    /// serde unit names; the D-20 additive-tail contract extension).
+    pub kind: taskboard_domain::tracking::TimeEntryKind,
 }
 
 /// The `export` row type: the same six columns by alias — the JSON
@@ -992,6 +995,53 @@ pub struct TrackDeleteReceipt {
     pub entry_id: String,
     /// `false` = the id named no entry; nothing changed.
     pub deleted: bool,
+}
+
+/// The `breaks add` receipt (the `TimerAddReceipt` shape over a
+/// duration trigger).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct BreakAddReceipt {
+    /// The fresh rule's uuid.
+    pub rule_id: String,
+    /// The notification title.
+    pub label: String,
+    /// The accumulated-work threshold, whole seconds.
+    pub threshold_seconds: u64,
+    /// The threshold phrase (`90m`, `1h30m` — the domain text form).
+    pub threshold: String,
+    /// How loudly the reminder insists.
+    pub insistence: taskboard_domain::Insistence,
+}
+
+/// The `breaks remove` receipt (the `TimerCancelReceipt` shape).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct BreakRemoveReceipt {
+    /// The removed rule's uuid.
+    pub rule_id: String,
+    /// The removed rule's title.
+    pub label: String,
+}
+
+/// One `breaks list` row: canonical `(threshold, id)` order.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct BreakRuleRow {
+    /// The rule's uuid.
+    pub rule_id: String,
+    /// The notification title.
+    pub label: String,
+    /// The accumulated-work threshold, whole seconds.
+    pub threshold_seconds: u64,
+    /// The threshold phrase.
+    pub threshold: String,
+    /// How loudly the reminder insists.
+    pub insistence: taskboard_domain::Insistence,
+}
+
+/// The `breaks list` payload.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct BreaksList {
+    /// The rule rows, canonical `(threshold, id)` order.
+    pub rules: Vec<BreakRuleRow>,
 }
 
 /// The `track status` view: every open entry (newest-first — the

@@ -30,7 +30,7 @@ use crate::config::AppConfig;
 use crate::secrets::CredentialStore;
 
 /// The header row of the CSV payload (D-TC11's fixed column contract).
-const EXPORT_CSV_HEADER: &str = "entry_id,task_id,task_title,start,end,duration_seconds";
+const EXPORT_CSV_HEADER: &str = "entry_id,task_id,task_title,start,end,duration_seconds,kind";
 
 /// Boots the core and starts tracking the selected live task (the
 /// one-shot lane).
@@ -42,9 +42,13 @@ pub async fn start(
     config: AppConfig,
     store: Arc<dyn CredentialStore>,
     task_selector: &str,
+    kind: taskboard_domain::tracking::TimeEntryKind,
 ) -> Result<TrackStartReceipt, CommandError> {
     let selector = task_selector.to_owned();
-    super::tasks::with_core(config, store, async |app| start_on(app, &selector).await).await
+    super::tasks::with_core(config, store, async |app| {
+        start_on(app, &selector, kind).await
+    })
+    .await
 }
 
 /// # Errors
@@ -102,10 +106,11 @@ pub async fn log(
     store: Arc<dyn CredentialStore>,
     task_selector: &str,
     mode: LogMode,
+    kind: taskboard_domain::tracking::TimeEntryKind,
 ) -> Result<TrackLogReceipt, CommandError> {
     let selector = task_selector.to_owned();
     super::tasks::with_core(config, store, async |app| {
-        log_on(app, &selector, mode).await
+        log_on(app, &selector, mode, kind).await
     })
     .await
 }
@@ -119,10 +124,11 @@ pub async fn adjust(
     entry_selector: &str,
     start: Option<DateTime<Utc>>,
     end: Option<DateTime<Utc>>,
+    kind: Option<taskboard_domain::tracking::TimeEntryKind>,
 ) -> Result<TrackAdjustReceipt, CommandError> {
     let selector = entry_selector.to_owned();
     super::tasks::with_core(config, store, async |app| {
-        adjust_on(app, &selector, start, end).await
+        adjust_on(app, &selector, start, end, kind).await
     })
     .await
 }
@@ -169,6 +175,7 @@ pub async fn export(
 pub async fn start_on(
     app: &crate::App,
     task_selector: &str,
+    kind: taskboard_domain::tracking::TimeEntryKind,
 ) -> Result<TrackStartReceipt, CommandError> {
     let state = app.engine.shared_state().load_full();
     let task = super::tasks::resolve_task(&state, task_selector)?;
@@ -176,10 +183,7 @@ pub async fn start_on(
     let now = Utc::now();
     match app
         .engine
-        .execute(StateCommand::StartTracking {
-            task,
-            kind: taskboard_domain::tracking::TimeEntryKind::Work,
-        })
+        .execute(StateCommand::StartTracking { task, kind })
         .await?
     {
         CommandOutcome::TrackingStarted { entry, closed } => {
@@ -257,6 +261,7 @@ pub async fn log_on(
     app: &crate::App,
     task_selector: &str,
     mode: LogMode,
+    kind: taskboard_domain::tracking::TimeEntryKind,
 ) -> Result<TrackLogReceipt, CommandError> {
     let state = app.engine.shared_state().load_full();
     let task = super::tasks::resolve_task(&state, task_selector)?;
@@ -272,7 +277,7 @@ pub async fn log_on(
             task,
             start,
             end,
-            kind: taskboard_domain::tracking::TimeEntryKind::Work,
+            kind,
         })
         .await?
     {
@@ -309,6 +314,7 @@ pub async fn adjust_on(
     entry_selector: &str,
     start: Option<DateTime<Utc>>,
     end: Option<DateTime<Utc>>,
+    kind: Option<taskboard_domain::tracking::TimeEntryKind>,
 ) -> Result<TrackAdjustReceipt, CommandError> {
     let state = app.engine.shared_state().load_full();
     let id = resolve_time_entry(&state, entry_selector)?;
@@ -320,7 +326,7 @@ pub async fn adjust_on(
             id,
             start,
             end,
-            kind: None,
+            kind,
         })
         .await?
     {
@@ -538,10 +544,12 @@ pub fn resolve_time_entry(state: &AppState, selector: &str) -> Result<TimeEntryI
 /// exactly one mode.
 #[derive(Debug, Clone)]
 pub enum TrackInvocation {
-    /// `start <task>`.
+    /// `start <task> [--kind]`.
     Start {
         /// The task selector.
         task: String,
+        /// What the open entry counts as; `Work` when omitted.
+        kind: taskboard_domain::tracking::TimeEntryKind,
     },
     /// `stop`.
     Stop,
@@ -560,8 +568,10 @@ pub enum TrackInvocation {
         task: String,
         /// The collapsed span mode.
         mode: LogMode,
+        /// What the block counts as; `Work` when omitted.
+        kind: taskboard_domain::tracking::TimeEntryKind,
     },
-    /// `adjust <entry> [--start] [--end]` (the change mask).
+    /// `adjust <entry> [--start] [--end] [--kind]` (the change mask).
     Adjust {
         /// The entry selector.
         entry: String,
@@ -569,6 +579,8 @@ pub enum TrackInvocation {
         start: Option<DateTime<Utc>>,
         /// New end, or unchanged.
         end: Option<DateTime<Utc>>,
+        /// New kind, or unchanged.
+        kind: Option<taskboard_domain::tracking::TimeEntryKind>,
     },
     /// `delete <entry>`.
     Delete {
@@ -597,7 +609,10 @@ pub enum LogMode {
 #[must_use]
 pub fn collapse(cmd: TrackCmd) -> Option<TrackInvocation> {
     match cmd {
-        TrackCmd::Start { task } => Some(TrackInvocation::Start { task }),
+        TrackCmd::Start { task, kind } => Some(TrackInvocation::Start {
+            task,
+            kind: kind.unwrap_or_default(),
+        }),
         TrackCmd::Stop => Some(TrackInvocation::Stop),
         TrackCmd::Status => Some(TrackInvocation::Status),
         TrackCmd::List { task, since } => Some(TrackInvocation::List { task, since }),
@@ -606,6 +621,7 @@ pub fn collapse(cmd: TrackCmd) -> Option<TrackInvocation> {
             for_,
             from,
             to,
+            kind,
         } => {
             let mode = match (for_, from, to) {
                 (Some(duration), _, _) => LogMode::For(duration),
@@ -614,11 +630,23 @@ pub fn collapse(cmd: TrackCmd) -> Option<TrackInvocation> {
                 // `None` keeps `collapse` total for direct calls.
                 (None, _, _) => return None,
             };
-            Some(TrackInvocation::Log { task, mode })
+            Some(TrackInvocation::Log {
+                task,
+                mode,
+                kind: kind.unwrap_or_default(),
+            })
         }
-        TrackCmd::Adjust { entry, start, end } => {
-            Some(TrackInvocation::Adjust { entry, start, end })
-        }
+        TrackCmd::Adjust {
+            entry,
+            start,
+            end,
+            kind,
+        } => Some(TrackInvocation::Adjust {
+            entry,
+            start,
+            end,
+            kind,
+        }),
         TrackCmd::Delete { entry } => Some(TrackInvocation::Delete { entry }),
     }
 }
@@ -677,6 +705,7 @@ pub fn render_csv(rows: &[ExportRow]) -> String {
             row.start.to_rfc3339(),
             row.end.map_or(String::new(), |end| end.to_rfc3339()),
             row.duration_seconds.to_string(),
+            row.kind.text_form().to_owned(),
         ];
         out.push_str(&cells.join(","));
         out.push('\n');
@@ -739,7 +768,9 @@ pub fn status_view(
     let mut open: Vec<&taskboard_domain::TimeEntry> = entries.open_entries().collect();
     open.sort_by_key(|entry| std::cmp::Reverse((entry.start, entry.id)));
     let window = taskboard_domain::day_window(now, day.day_start_time, day.offset);
-    let total = taskboard_domain::tracked_in_window(entries.entries.values(), window, now);
+    // Work-only (D-11): respite-marked entries count against the work
+    // streak, never toward the tracked-today total.
+    let total = taskboard_domain::work_in_window(entries.entries.values(), window, now);
     TrackStatusView {
         open: open.iter().map(|entry| entry_row(entry, now)).collect(),
         tracked_today_seconds: u64::try_from(total.num_seconds()).unwrap_or(0),
@@ -780,6 +811,7 @@ fn entry_row(entry: &taskboard_domain::TimeEntry, now: DateTime<Utc>) -> TrackEn
         start: entry.start,
         end: entry.end,
         duration_seconds: u64::try_from(entry.duration(now).num_seconds()).unwrap_or(0),
+        kind: entry.kind,
     }
 }
 
@@ -986,30 +1018,37 @@ pub async fn track_command(
             )
             .await
         }
-        TrackInvocation::Start { task } => {
+        TrackInvocation::Start { task, kind } => {
             super::run_core(
                 io,
                 config_path,
                 render_text_start,
-                move |config, store| async move { start(config, store, &task).await },
+                move |config, store| async move { start(config, store, &task, kind).await },
             )
             .await
         }
-        TrackInvocation::Log { task, mode } => {
+        TrackInvocation::Log { task, mode, kind } => {
             super::run_core(
                 io,
                 config_path,
                 render_text_log,
-                move |config, store| async move { log(config, store, &task, mode).await },
+                move |config, store| async move { log(config, store, &task, mode, kind).await },
             )
             .await
         }
-        TrackInvocation::Adjust { entry, start, end } => {
+        TrackInvocation::Adjust {
+            entry,
+            start,
+            end,
+            kind,
+        } => {
             super::run_core(
                 io,
                 config_path,
                 render_text_adjust,
-                move |config, store| async move { adjust(config, store, &entry, start, end).await },
+                move |config, store| async move {
+                    adjust(config, store, &entry, start, end, kind).await
+                },
             )
             .await
         }
@@ -1044,15 +1083,20 @@ pub async fn track_line(
         TrackInvocation::Stop => {
             crate::commands::emit_result(io, stop_on(app).await, render_text_stop)
         }
-        TrackInvocation::Start { task } => {
-            crate::commands::emit_result(io, start_on(app, &task).await, render_text_start)
+        TrackInvocation::Start { task, kind } => {
+            crate::commands::emit_result(io, start_on(app, &task, kind).await, render_text_start)
         }
-        TrackInvocation::Log { task, mode } => {
-            crate::commands::emit_result(io, log_on(app, &task, mode).await, render_text_log)
+        TrackInvocation::Log { task, mode, kind } => {
+            crate::commands::emit_result(io, log_on(app, &task, mode, kind).await, render_text_log)
         }
-        TrackInvocation::Adjust { entry, start, end } => crate::commands::emit_result(
+        TrackInvocation::Adjust {
+            entry,
+            start,
+            end,
+            kind,
+        } => crate::commands::emit_result(
             io,
-            adjust_on(app, &entry, start, end).await,
+            adjust_on(app, &entry, start, end, kind).await,
             render_text_adjust,
         ),
         TrackInvocation::Delete { entry } => {
@@ -1180,8 +1224,8 @@ mod tests {
     fn collapse_yields_every_subcommand_exactly_once() {
         use crate::cli::TrackCmd;
         assert!(matches!(
-            collapse(TrackCmd::Start { task: "t".into() }),
-            Some(TrackInvocation::Start { ref task }) if task == "t"
+            collapse(TrackCmd::Start { task: "t".into(), kind: None }),
+            Some(TrackInvocation::Start { ref task, kind: _ }) if task == "t"
         ));
         assert!(matches!(
             collapse(TrackCmd::Stop),
@@ -1202,8 +1246,8 @@ mod tests {
             })
         ));
         assert!(matches!(
-            collapse(TrackCmd::Adjust { entry: "e".into(), start: None, end: None }),
-            Some(TrackInvocation::Adjust { ref entry, start: None, end: None }) if entry == "e"
+            collapse(TrackCmd::Adjust { entry: "e".into(), start: None, end: None, kind: None }),
+            Some(TrackInvocation::Adjust { ref entry, start: None, end: None, kind: _ }) if entry == "e"
         ));
         assert!(matches!(
             collapse(TrackCmd::Delete { entry: "e".into() }),
@@ -1219,6 +1263,7 @@ mod tests {
             for_: Some(TimeDelta::try_minutes(90).expect("90m")),
             from: None,
             to: None,
+            kind: None,
         });
         assert!(
             matches!(
@@ -1237,10 +1282,12 @@ mod tests {
             for_: None,
             from: Some(from),
             to: Some(to),
+            kind: None,
         });
         let Some(TrackInvocation::Log {
             task: span_task,
             mode: LogMode::Span(span_from, span_to),
+            ..
         }) = span_mode
         else {
             panic!("--from/--to collapse to the absolute span");
@@ -1253,7 +1300,8 @@ mod tests {
                 task: "t".into(),
                 for_: None,
                 from: None,
-                to: None
+                to: None,
+                kind: None,
             })
             .is_none()
         );
@@ -1340,9 +1388,30 @@ mod tests {
     // ---- render goldens ------------------------------------------------------
 
     fn row(raw: u128, title: &str, start: i64, end: Option<i64>, duration: u64) -> ExportRow {
+        let mut r = row_with_kind(
+            raw,
+            title,
+            start,
+            end,
+            duration,
+            taskboard_domain::tracking::TimeEntryKind::Work,
+        );
+        r.kind = taskboard_domain::tracking::TimeEntryKind::Work;
+        r
+    }
+
+    fn row_with_kind(
+        raw: u128,
+        title: &str,
+        start: i64,
+        end: Option<i64>,
+        duration: u64,
+        kind: taskboard_domain::tracking::TimeEntryKind,
+    ) -> ExportRow {
         let entry = entry(raw, 900, title, start, end);
         TrackEntryRow {
             duration_seconds: duration,
+            kind,
             ..entry_row(&entry, ts(0))
         }
     }
@@ -1364,12 +1433,12 @@ mod tests {
         ];
         let csv = render_csv(&rows);
         let expected = concat!(
-            "entry_id,task_id,task_title,start,end,duration_seconds\n",
+            "entry_id,task_id,task_title,start,end,duration_seconds,kind\n",
             "00000000-0000-0000-0000-000000000011,00000000-0000-0000-0000-000000000384,",
             "\"tea, with \"\"quotes\"\"\nand a newline\",",
-            "1970-01-01T00:16:40+00:00,1970-01-01T01:16:40+00:00,3600\n",
+            "1970-01-01T00:16:40+00:00,1970-01-01T01:16:40+00:00,3600,work\n",
             "00000000-0000-0000-0000-000000000012,00000000-0000-0000-0000-000000000384,",
-            "open work,1970-01-01T01:23:20+00:00,,300\n",
+            "open work,1970-01-01T01:23:20+00:00,,300,work\n",
         );
         assert_eq!(csv, expected);
     }
@@ -1384,7 +1453,8 @@ mod tests {
                 "[{\"entry_id\":\"00000000-0000-0000-0000-000000000012\",",
                 "\"task_id\":\"00000000-0000-0000-0000-000000000384\",",
                 "\"task_title\":\"open work\",",
-                "\"start\":\"1970-01-01T01:23:20Z\",\"end\":null,\"duration_seconds\":300}]\n",
+                "\"start\":\"1970-01-01T01:23:20Z\",\"end\":null,\"duration_seconds\":300,",
+                "\"kind\":\"work\"}]\n",
             )
         );
         assert_eq!(json.lines().count(), 1, "single line, newline-terminated");
@@ -1479,5 +1549,25 @@ mod tests {
         // two open entries, accrued to `now`); the out-of-window closed
         // row contributes nothing.
         assert_eq!(view.tracked_today_seconds, 1000 + 300 + 4_000 + 3_000);
+    }
+
+    #[test]
+    fn status_view_tracked_today_excludes_respite_marked_entries() {
+        // D-11 through the CLI view: a respite-marked entry inside the
+        // window contributes zero to the total; the identical work row
+        // contributes fully.
+        let day = DayCalendar {
+            day_start_time: chrono::NaiveTime::MIN,
+            offset: chrono::FixedOffset::east_opt(0).expect("UTC"),
+        };
+        let now = ts(10_000);
+        let mut respite = entry(1, 900, "coffee", 4_000, Some(5_000));
+        respite.kind = taskboard_domain::tracking::TimeEntryKind::Respite;
+        let work = entry(2, 900, "sprint", 6_000, Some(7_000));
+        let mut state = tracking_state(&[respite, work]);
+        // keep inserted map identical (tracking_state inserts by id)
+        let _ = &mut state;
+        let view = status_view(&state, day, now);
+        assert_eq!(view.tracked_today_seconds, 1_000, "work only");
     }
 }
