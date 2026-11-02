@@ -438,6 +438,102 @@ async fn adhoc_alarms_and_their_facts_survive_a_board_clear() {
     db.close().await;
 }
 
+/// P-K (issue #201): the prune action survives the sqlite twin
+/// end-to-end — the named stale row is deleted, the live row and every
+/// other reminder fact survive, and a replayed prune (naming now-absent
+/// rows) is a no-op on reload. The in-memory fake executes the same
+/// scenario in the domain contract's lockstep pin.
+#[tokio::test]
+async fn a_delivery_prune_deletes_exactly_the_named_rows() {
+    use taskboard_domain::ids::ReminderRuleId;
+    use taskboard_domain::reminders::{ReminderDelivery, ReminderRef, ReminderRule};
+
+    let mut db = common::FileDb::new().await;
+    let repo = db.repo();
+    let b = board(11);
+    let s = stack(2, &b);
+    let t = task(1, &s, BTreeMap::default());
+    let rule = ReminderRule {
+        insistence: taskboard_domain::Insistence::Normal,
+        id: ReminderRuleId::from(uuid::Uuid::from_u128(20)),
+        task: t.id,
+        offset: taskboard_domain::reminders::ReminderOffset::at_due(),
+        created_at: ts(1_000),
+        updated_at: ts(1_000),
+    };
+    let rule_ref = ReminderRef::Rule(rule.id);
+    let default_ref = ReminderRef::Default(t.id);
+    let stale = ReminderDelivery {
+        reminder: rule_ref,
+        occurrence: ts(1_000),
+        delivered_at: ts(1_001),
+    };
+    let live = ReminderDelivery {
+        reminder: default_ref,
+        occurrence: ts(2_000),
+        delivered_at: ts(2_001),
+    };
+    let absent = ReminderDelivery {
+        reminder: default_ref,
+        occurrence: ts(50_000),
+        delivered_at: ts(50_001),
+    };
+    repo.apply(vec![
+        PersistenceAction::UpsertBoard(b),
+        PersistenceAction::UpsertStack(s),
+        PersistenceAction::UpsertTask(t),
+        PersistenceAction::UpsertReminderRule(rule),
+        PersistenceAction::RecordReminderDelivery(stale),
+        PersistenceAction::RecordReminderDelivery(live),
+    ])
+    .await
+    .expect("apply");
+
+    repo.apply(vec![PersistenceAction::PruneReminderDeliveries(vec![
+        stale, absent,
+    ])])
+    .await
+    .expect("prune");
+    let loaded = repo.load().await.expect("load");
+    assert_eq!(
+        loaded
+            .reminders
+            .deliveries
+            .iter()
+            .copied()
+            .collect::<Vec<_>>(),
+        vec![live],
+        "exactly the named present row goes; the live row survives"
+    );
+    assert!(
+        loaded
+            .reminders
+            .rules
+            .contains_key(&ReminderRuleId::from(uuid::Uuid::from_u128(20))),
+        "the rule row is untouched by the delivery prune"
+    );
+
+    // A replayed prune names only absent rows now: the reload is
+    // unchanged (the replay parity the interpreter carries).
+    repo.apply(vec![PersistenceAction::PruneReminderDeliveries(vec![
+        stale,
+    ])])
+    .await
+    .expect("prune replay");
+    let loaded = repo.load().await.expect("reload");
+    assert_eq!(
+        loaded
+            .reminders
+            .deliveries
+            .iter()
+            .copied()
+            .collect::<Vec<_>>(),
+        vec![live],
+        "the replayed prune changes nothing"
+    );
+    db.close().await;
+}
+
 /// P3 — upserting a modified entity overwrites every stored column.
 #[tokio::test]
 async fn upsert_overwrites_all_columns() {

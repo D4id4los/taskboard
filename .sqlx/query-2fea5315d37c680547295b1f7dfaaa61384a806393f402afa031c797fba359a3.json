@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM reminder_deliveries\n                   WHERE reminder = ? AND occurrence = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "2fea5315d37c680547295b1f7dfaaa61384a806393f402afa031c797fba359a3"
+}

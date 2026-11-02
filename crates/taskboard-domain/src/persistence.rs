@@ -230,6 +230,17 @@ pub enum PersistenceAction {
     /// Record a snooze link. Replaces any prior link for the same
     /// `(reminder, occurrence)`.
     RecordReminderSnooze(ReminderSnooze),
+    /// Remove exactly these delivery rows — the engine's stale-deliveries
+    /// sweep output (age + unconsulted,
+    /// [`stale_deliveries`](crate::reminders::stale_deliveries)).
+    /// Absent rows are skipped: a replayed prune is a no-op (the
+    /// `EnqueueOp` replay parity). Deliveries are per-device facts (R3):
+    /// this action is engine-minted local bookkeeping and never enters
+    /// any sync lane. Removing a row the evaluator still consults would
+    /// break the at-most-once guard — emission-side correctness is
+    /// pinned by the sweep's unobservability property; interpretation is
+    /// a dumb set difference on purpose.
+    PruneReminderDeliveries(Vec<ReminderDelivery>),
     /// Mute (`true`) or unmute (`false`) all firings of a task. The
     /// overdue banner is unaffected by construction (it never reads the
     /// muted set).
@@ -426,6 +437,14 @@ pub fn apply_actions(state: &mut PersistedState, actions: &[PersistenceAction]) 
                 } else {
                     state.reminders.muted.remove(task);
                 }
+            }
+            PersistenceAction::PruneReminderDeliveries(doomed) => {
+                // Order-independent, deterministic set difference — the
+                // identical shape the sqlite twin's per-row DELETEs
+                // execute (the lockstep contract). Absent rows are
+                // skipped by construction.
+                let doomed: std::collections::BTreeSet<&ReminderDelivery> = doomed.iter().collect();
+                state.reminders.deliveries.retain(|d| !doomed.contains(&d));
             }
             PersistenceAction::ClearBoardContent(board) => {
                 // Scoped to the one board: collect its entity ids first,
@@ -1444,6 +1463,118 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![first],
             "the replay must not replace the first proof"
+        );
+    }
+
+    /// P-I (the interpretation pin): `PruneReminderDeliveries` removes
+    /// exactly the named rows; a replayed identical prune is a no-op; a
+    /// prune naming absent rows is a no-op. The interpretation is a dumb
+    /// set difference — the sqlite twin's per-row DELETEs execute the
+    /// same shape (the lockstep contract, pinned repository-side).
+    #[test]
+    fn prune_reminder_deliveries_is_an_idempotent_set_difference() {
+        let mut state = PersistedState::default();
+        let r = crate::reminders::ReminderRef::Default(crate::ids::TaskId::from(
+            uuid::Uuid::from_u128(5),
+        ));
+        let doomed = crate::reminders::ReminderDelivery {
+            reminder: r,
+            occurrence: ts(1_000),
+            delivered_at: ts(1_001),
+        };
+        let kept = crate::reminders::ReminderDelivery {
+            reminder: r,
+            occurrence: ts(2_000),
+            delivered_at: ts(2_001),
+        };
+        apply_actions(
+            &mut state,
+            &[
+                PersistenceAction::RecordReminderDelivery(doomed),
+                PersistenceAction::RecordReminderDelivery(kept),
+            ],
+        );
+        apply_actions(
+            &mut state,
+            &[PersistenceAction::PruneReminderDeliveries(vec![
+                doomed,
+                // An absent row named alongside the doomed one: skipped.
+                crate::reminders::ReminderDelivery {
+                    reminder: r,
+                    occurrence: ts(50_000),
+                    delivered_at: ts(50_001),
+                },
+            ])],
+        );
+        assert_eq!(
+            state
+                .reminders
+                .deliveries
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![kept],
+            "exactly the named present rows go"
+        );
+        // A replayed identical prune is a no-op.
+        apply_actions(
+            &mut state,
+            &[PersistenceAction::PruneReminderDeliveries(vec![doomed])],
+        );
+        assert_eq!(
+            state
+                .reminders
+                .deliveries
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![kept],
+            "the replayed prune changes nothing"
+        );
+    }
+
+    /// A prune batch rides the same `apply_actions` tail as every other
+    /// batch: the post-batch derivations (snooze compaction) still run
+    /// after it — order-orthogonality.
+    #[test]
+    fn a_prune_batch_still_runs_the_post_batch_derivations() {
+        let mut state = PersistedState::default();
+        let r = crate::reminders::ReminderRef::Default(crate::ids::TaskId::from(
+            uuid::Uuid::from_u128(6),
+        ));
+        let settled = |occ: i64| crate::reminders::ReminderDelivery {
+            reminder: r,
+            occurrence: ts(occ),
+            delivered_at: ts(occ + 1),
+        };
+        let dismissed = |occ: i64| crate::reminders::ReminderDismissal {
+            reminder: r,
+            occurrence: ts(occ),
+            dismissed_at: ts(occ + 2),
+        };
+        apply_actions(
+            &mut state,
+            &[
+                PersistenceAction::RecordReminderDelivery(settled(1_000)),
+                PersistenceAction::RecordReminderDismissal(dismissed(1_000)),
+                PersistenceAction::RecordReminderDelivery(settled(2_000)),
+                PersistenceAction::RecordReminderDismissal(dismissed(2_000)),
+                PersistenceAction::RecordReminderSnooze(crate::reminders::ReminderSnooze {
+                    reminder: r,
+                    occurrence: ts(1_000),
+                    rescheduled_to: ts(2_000),
+                }),
+            ],
+        );
+        apply_actions(
+            &mut state,
+            &[PersistenceAction::PruneReminderDeliveries(vec![settled(
+                1_000,
+            )])],
+        );
+        assert!(
+            state.reminders.snoozes.is_empty(),
+            "the fully-dismissed link compacts in the same batch as the prune"
         );
     }
 

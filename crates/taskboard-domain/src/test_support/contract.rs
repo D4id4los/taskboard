@@ -328,6 +328,57 @@ pub async fn assert_task_repository_contract_async<R: TaskRepository>(repo: &R) 
         "the replay must not add a row"
     );
 
+    // The prune action removes exactly the named rows and is a no-op on
+    // replay (issue #201's sweep interpretation). This is the LOCKSTEP
+    // PIN: this contract runs for the in-memory fake AND sqlite — both
+    // interpreters must agree on the same prune scenario, so the
+    // engine's sweep lands identically on every repository.
+    let stale = first_delivery;
+    let live = other_delivery;
+    repo.apply(vec![PersistenceAction::PruneReminderDeliveries(vec![
+        stale,
+        // An absent row named alongside: skipped.
+        crate::reminders::ReminderDelivery {
+            reminder: default_ref,
+            occurrence: Utc.timestamp_opt(1_700_050_000, 0).unwrap(),
+            delivered_at: Utc.timestamp_opt(1_700_050_001, 0).unwrap(),
+        },
+    ])])
+    .await
+    .expect("delivery prune");
+    let after = repo.load().await.expect("reload");
+    assert!(
+        !after.reminders.deliveries.contains(&stale),
+        "the named stale row is gone"
+    );
+    assert_eq!(
+        after
+            .reminders
+            .deliveries
+            .iter()
+            .copied()
+            .collect::<Vec<_>>(),
+        vec![live],
+        "the live row survives, exactly"
+    );
+    // A replayed identical prune is a no-op on both interpreters.
+    repo.apply(vec![PersistenceAction::PruneReminderDeliveries(vec![
+        stale,
+    ])])
+    .await
+    .expect("prune replay");
+    let after = repo.load().await.expect("reload");
+    assert_eq!(
+        after
+            .reminders
+            .deliveries
+            .iter()
+            .copied()
+            .collect::<Vec<_>>(),
+        vec![live],
+        "the replayed prune changes nothing"
+    );
+
     // A snooze link replaces the prior link for the same key.
     let snooze_key = crate::reminders::ReminderSnoozeKey {
         reminder: rule_ref,
