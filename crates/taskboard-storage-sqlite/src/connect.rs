@@ -199,7 +199,7 @@ mod tests {
             .fetch_one(&raw)
             .await
             .expect("migration bookkeeping");
-        assert_eq!(applied, 17, "each shipped migration recorded exactly once");
+        assert_eq!(applied, 18, "each shipped migration recorded exactly once");
         raw.close().await;
         second.close().await;
     }
@@ -1311,9 +1311,10 @@ mod tests {
         let raw = SqlitePool::connect(&format!("sqlite://{}?mode=rwc", file.path().display()))
             .await
             .expect("raw connect");
-        // Simulate a pre-0015 database: run the shipped migrations, strip
-        // the 0015 artifacts and their bookkeeping row. Purely additive —
-        // no dependent objects to strip with it.
+        // Simulate a pre-0015 database: run the shipped migrations,
+        // strip the 0015 artifacts and their bookkeeping row — and 0018's
+        // with them (the kind column ALTERs 0015's table, so a simulated
+        // pre-0015 database must not carry 0018 either).
         sqlx::migrate!("./migrations")
             .run(&raw)
             .await
@@ -1322,7 +1323,11 @@ mod tests {
             .execute(&raw)
             .await
             .expect("strip time_entries");
-        sqlx::query("DELETE FROM _sqlx_migrations WHERE version = 15")
+        sqlx::query("DROP TABLE break_rules")
+            .execute(&raw)
+            .await
+            .expect("strip break_rules");
+        sqlx::query("DELETE FROM _sqlx_migrations WHERE version IN (15, 18)")
             .execute(&raw)
             .await
             .expect("strip bookkeeping");
@@ -1350,8 +1355,9 @@ mod tests {
                 ("end".to_owned(), "TEXT".to_owned(), 0),
                 ("created_at".to_owned(), "TEXT".to_owned(), 0),
                 ("updated_at".to_owned(), "TEXT".to_owned(), 0),
+                ("kind".to_owned(), "TEXT".to_owned(), 0),
             ],
-            "exactly D-T9's seven columns, entry_id the primary key"
+            "D-T9's seven columns plus the 0018 kind tail, entry_id the primary key"
         );
         let state = repo.load().await.expect("load");
         assert_eq!(

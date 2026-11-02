@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM break_rules WHERE rule_id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "981eef60d62167d39173eb0595cd07a30e94664fec9dfae0de523778524a21fc"
+}
