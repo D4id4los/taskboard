@@ -542,6 +542,16 @@ pub enum UrgencySpec {
     Clear,
 }
 
+/// `--kind` grammar: set (`standard`|`tracker`) or reset (`none`) —
+/// the same set-or-clear shape as the other app-lane field specs.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TaskKindSpec {
+    /// Set the kind.
+    Set(taskboard_domain::entities::TaskKind),
+    /// Reset to the `Standard` default.
+    Clear,
+}
+
 /// Parses the `--effort` value over the domain text form
 /// ([`taskboard_domain::Effort::parse_text_form`]): bare digits are
 /// minutes, `s`/`m`/`h` components compose (`1h30m`). `none` clears;
@@ -578,6 +588,19 @@ fn parse_urgency(raw: &str) -> Result<UrgencySpec, String> {
     taskboard_domain::Urgency::parse_text_form(raw)
         .map(UrgencySpec::Set)
         .ok_or_else(|| "expected very-low|low|normal|high|very-high|none".to_owned())
+}
+
+/// Parses `--kind` over the domain serde unit names (`standard`|
+/// `tracker`; `none` resets to the default — the domain enum itself
+/// carries no invariant, the parse is the boundary rejection).
+/// Anything unmatched is a clap usage error (exit 2).
+fn parse_task_kind_flag(raw: &str) -> Result<TaskKindSpec, String> {
+    if raw == "none" {
+        return Ok(TaskKindSpec::Clear);
+    }
+    taskboard_domain::entities::TaskKind::parse_text_form(raw)
+        .map(TaskKindSpec::Set)
+        .ok_or_else(|| "expected standard|tracker|none".to_owned())
 }
 
 /// Parses `--insistence` over the reminder rung vocabulary
@@ -1337,6 +1360,11 @@ pub struct TaskEditFlags {
     /// clears).
     #[arg(long, value_parser = parse_urgency)]
     pub urgency: Option<UrgencySpec>,
+    /// Task kind — `standard` (the completable default) or `tracker`
+    /// (a tracked, never-completed card; the engine rejects `tasks
+    /// done` on it); `none` resets to the default.
+    #[arg(long, value_parser = parse_task_kind_flag)]
+    pub kind: Option<TaskKindSpec>,
     /// Archive the task.
     #[arg(long, conflicts_with = "unarchive")]
     pub archive: bool,

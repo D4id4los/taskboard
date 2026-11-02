@@ -1221,3 +1221,35 @@ async fn ip20_attach_runs_its_blocking_half_off_the_dispatcher_task() {
     })
     .await;
 }
+
+/// A3 (backlog round 2 chunk 4.2, #492): the tracker rejection crosses
+/// the IPC lane typed — the daemon executes the same engine path and
+/// the envelope's `kind` discriminator survives the relay.
+#[tokio::test]
+async fn ip11_the_tracker_rejection_surfaces_over_the_ipc_lane_typed() {
+    bounded(async {
+        let dir = tempdir();
+        let (handle, db) = served(dir.path(), "ip11.db").await;
+
+        for command in [
+            "boards create Personal",
+            "stacks add Todo",
+            "tasks add hobby",
+            "tasks edit hobby --kind tracker",
+        ] {
+            let outcome = exec_once(&db, &argv(command)).await;
+            assert_eq!(outcome.code, 0, "{command}");
+        }
+        let outcome = exec_once(&db, &argv("--json tasks done hobby")).await;
+        assert_eq!(outcome.code, 1);
+        let envelope = &json_lines(outcome.err.as_bytes())[0];
+        assert_eq!(envelope["error"]["kind"], "tracker-not-doneable");
+
+        // The reopen intent stays the accepted success over the relay.
+        let outcome = exec_once(&db, &argv("--json tasks done hobby --undo")).await;
+        assert_eq!(outcome.code, 0, "{:?}", outcome.err);
+
+        let _ = handle.join(DRAIN_BUDGET).await;
+    })
+    .await;
+}

@@ -551,6 +551,7 @@ async fn editing_push_journey(cfg: &common::LiveCfg) {
             importance: None,
             urgency: None,
             recur: None,
+            kind: None,
 
             archived: None,
         },

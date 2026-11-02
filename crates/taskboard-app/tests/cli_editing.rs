@@ -152,6 +152,7 @@ async fn e2_tasks_edit_sets_and_clears_fields() {
             importance: None,
             urgency: None,
             recur: None,
+            kind: None,
 
             archived: None,
         },
@@ -184,6 +185,7 @@ async fn e2_tasks_edit_sets_and_clears_fields() {
             importance: None,
             urgency: None,
             recur: None,
+            kind: None,
 
             archived: None,
         },
@@ -209,6 +211,7 @@ async fn e2_tasks_edit_sets_and_clears_fields() {
             importance: None,
             urgency: None,
             recur: None,
+            kind: None,
 
             archived: None,
         },
@@ -869,4 +872,115 @@ async fn e12_anchor_hides_from_the_list_but_stays_resolvable() {
     .await
     .expect_err("the anchor edit is refused");
     assert!(matches!(err, CommandError::AnchorTaskReserved));
+}
+
+// ---- the tracker task kind (backlog round 2 chunk 4.2, #492) ---------
+
+/// A1: `--kind tracker` marks durably and `--kind standard` resets
+/// durably — observed through the done verb's outcome (the list
+/// column is deferred sugar, D-9; the done gate is the contract).
+#[tokio::test]
+async fn a1_tasks_edit_kind_marks_and_unmarks() {
+    use taskboard_domain::entities::TaskKind;
+    use taskboard_domain::messages::TaskChanges;
+
+    let dir = tempdir();
+    let config = standalone_config(dir.path(), "a1.db");
+    board_with_stack(&config, "Personal", "Todo").await;
+    tasks::add(config.clone(), forbidden_store(), "hobby", Some("Todo"))
+        .await
+        .expect("task");
+
+    let edit = |kind: Option<Option<TaskKind>>| {
+        let config = config.clone();
+        async move {
+            tasks::edit(
+                config,
+                forbidden_store(),
+                "hobby",
+                TaskChanges {
+                    kind,
+                    ..TaskChanges::default()
+                },
+            )
+            .await
+            .expect("kind edit")
+        }
+    };
+    let marked = edit(Some(Some(TaskKind::Tracker))).await;
+    assert_eq!(marked.title, "hobby", "the receipt names the task");
+
+    // The mark is durable: the done verb now refuses typed.
+    let err = tasks::done(config.clone(), forbidden_store(), "hobby", false)
+        .await
+        .expect_err("a tracker refuses done");
+    assert!(matches!(
+        err,
+        taskboard_app::commands::CommandError::Engine(boxed)
+        if matches!(
+            *boxed,
+            taskboard_state::ExecuteError::Rejected(
+                taskboard_domain::CommandError::TrackerTaskNotDoneable(_)
+            )
+        )
+    ));
+
+    // The reset is durable: the same verb succeeds again.
+    let _reset = edit(Some(None)).await;
+    tasks::done(config.clone(), forbidden_store(), "hobby", false)
+        .await
+        .expect("a standard task completes");
+}
+
+/// A2: `tasks done` on a tracker fails typed at the command layer,
+/// and the `--json` envelope's `kind` discriminator is the kebab
+/// table's `tracker-not-doneable` (a structural fact scripts branch
+/// on, never prose).
+#[tokio::test]
+async fn a2_tasks_done_on_a_tracker_fails_typed() {
+    use taskboard_domain::entities::TaskKind;
+    use taskboard_domain::messages::TaskChanges;
+
+    let dir = tempdir();
+    let config = standalone_config(dir.path(), "a2.db");
+    board_with_stack(&config, "Personal", "Todo").await;
+    tasks::add(config.clone(), forbidden_store(), "hobby", Some("Todo"))
+        .await
+        .expect("task");
+    tasks::edit(
+        config.clone(),
+        forbidden_store(),
+        "hobby",
+        TaskChanges {
+            kind: Some(Some(TaskKind::Tracker)),
+            ..TaskChanges::default()
+        },
+    )
+    .await
+    .expect("marked tracker");
+
+    let err = tasks::done(config.clone(), forbidden_store(), "hobby", false)
+        .await
+        .expect_err("the engine rejects");
+    let kind_discriminator = err.error_kind().to_owned();
+    assert!(matches!(
+        err,
+        taskboard_app::commands::CommandError::Engine(boxed)
+        if matches!(
+            *boxed,
+            taskboard_state::ExecuteError::Rejected(
+                taskboard_domain::CommandError::TrackerTaskNotDoneable(_)
+            )
+        )
+    ));
+    // The envelope discriminator: the kebab table is the typed
+    // surface (ADR 0019) — asserted as a value, never as prose.
+    let envelope = taskboard_app::commands::output::ErrorEnvelope {
+        error: taskboard_app::commands::output::ErrorBody {
+            kind: kind_discriminator,
+            detail: None,
+        },
+    };
+    let v = serde_json::to_value(&envelope).unwrap();
+    assert_eq!(v["error"]["kind"], "tracker-not-doneable");
 }
