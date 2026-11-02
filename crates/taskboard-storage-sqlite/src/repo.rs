@@ -1219,6 +1219,7 @@ async fn execute_batch(
     let mut alarm_upserts = Vec::new();
     let mut alarm_deletes = Vec::new();
     let mut deliveries = Vec::new();
+    let mut delivery_prunes = Vec::new();
     let mut dismissals = Vec::new();
     let mut snoozes = Vec::new();
     let mut mute_toggles = Vec::new();
@@ -1266,6 +1267,9 @@ async fn execute_batch(
             PersistenceAction::RecordReminderDelivery(delivery) => deliveries.push(delivery),
             PersistenceAction::RecordReminderDismissal(dismissal) => dismissals.push(dismissal),
             PersistenceAction::RecordReminderSnooze(snooze) => snoozes.push(snooze),
+            PersistenceAction::PruneReminderDeliveries(doomed) => {
+                delivery_prunes.push(doomed);
+            }
             PersistenceAction::SetTaskRemindersMuted(task, muted) => {
                 mute_toggles.push((task, muted));
             }
@@ -1879,6 +1883,27 @@ async fn execute_batch(
         .await
         .map_err(|e| stmt_error(&e))?;
         tracing::trace!(reminder = %codec::reminder_ref_to_text(delivery.reminder), "reminder delivery recorded");
+    }
+
+    for doomed in delivery_prunes {
+        // The engine's sweep twin: per-row prepared DELETEs (the
+        // `DeleteAdhocAlarm` cascade shape) sidestep SQLite's bound
+        // variable ceiling for the one-time large first sweep. Absent
+        // rows are skipped by DELETE semantics — the replay parity the
+        // in-memory interpreter's set difference carries (the lockstep
+        // contract pins both sides on the same scenario).
+        for delivery in doomed {
+            sqlx::query!(
+                r#"DELETE FROM reminder_deliveries
+                   WHERE reminder = ? AND occurrence = ?"#,
+                codec::reminder_ref_to_text(delivery.reminder),
+                delivery.occurrence.to_rfc3339(),
+            )
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| stmt_error(&e))?;
+        }
+        tracing::trace!(rows = doomed.len(), "stale reminder deliveries pruned");
     }
 
     for dismissal in dismissals {
