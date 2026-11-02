@@ -527,10 +527,12 @@ impl App {
         self.control.attach_connector(name, client).await
     }
 
-    /// The graceful shutdown sequence (ADR 0008 §5): engine flush →
-    /// `Shutdown` broadcast → bounded sync-actor join (abort at the
-    /// timeout) → bounded engine join (abort as last resort) → drop the
-    /// storage handle and await its actor. Bounded; never panics.
+    /// The graceful shutdown sequence (ADR 0008 §5): bounded engine
+    /// flush (abandoned with one warning at the budget) → `Shutdown`
+    /// broadcast → bounded sync-actor join (abort at the timeout) →
+    /// bounded engine join (abort as last resort) → drop the storage
+    /// handle and bound its join. Every await in the sequence is
+    /// budgeted; never panics.
     ///
     /// # Errors
     ///
@@ -567,7 +569,10 @@ impl App {
         } = self;
         let timeout = Duration::from_secs(config.app.shutdown_timeout_secs);
         tracing::info!("shutdown: flushing the engine");
-        engine.flush().await;
+        // Bounded (F9-02): a wedged engine (an envelope parked inside a
+        // storage apply) abandons the flush at the budget instead of
+        // hanging the whole shutdown ahead of the bounded joins.
+        flush_bounded(&engine, timeout).await;
         tracing::info!("shutdown: broadcasting Shutdown");
         // No live receivers is fine (engine-only setups in tests).
         let _ = system.send(SystemEvent::Shutdown);
@@ -1333,7 +1338,9 @@ pub async fn shutdown_from_arc(app: Arc<App>) -> Result<ShutdownOutcome, CoreSti
         Err(app) => {
             let strong_refs = Arc::strong_count(&app);
             tracing::error!(strong_refs, "core still shared at daemon shutdown");
-            app.engine.flush().await;
+            // Bounded like the owned sequence's flush (F9-02): this
+            // tail must not hang ahead of the signal ladder either.
+            flush_bounded(&app.engine, SALVAGE_FLUSH_BUDGET).await;
             // No live receivers is fine, as in the owned sequence.
             let _ = app.system.send(SystemEvent::Shutdown);
             Err(CoreStillShared { strong_refs })
@@ -2039,5 +2046,174 @@ mod sink_diagnosis_tests {
             diagnosis,
             SinkDiagnosis::Available { .. } | SinkDiagnosis::Unavailable
         ));
+    }
+}
+
+/// One bounded attempt at the engine flush inside a graceful shutdown.
+/// Returns false when the budget expired (the flush was abandoned —
+/// per-command durability means the abandon loses nothing the bounded
+/// joins around it don't already surface as a degraded drain); true
+/// when the flush barrier resolved within the budget.
+async fn flush_bounded(engine: &EngineHandle, budget: Duration) -> bool {
+    match tokio::time::timeout(budget, engine.flush()).await {
+        Ok(()) => true,
+        Err(_elapsed) => {
+            tracing::warn!("engine flush missed its shutdown budget; abandoning it");
+            false
+        }
+    }
+}
+
+#[cfg(test)]
+mod flush_budget_tests {
+    use super::*;
+    use std::sync::Mutex as StdMutex;
+    use taskboard_domain::idgen::IdGenerator as _;
+    use taskboard_domain::persistence::{BoxFuture, RepositoryError, TaskRepository};
+    use taskboard_domain::test_support::{CountingIds, InMemoryRepository};
+    use taskboard_state::{DayRollConfig, ReminderEngineConfig};
+    use tokio::sync::oneshot;
+
+    /// A constant logical clock (the state suite's `FixedClock` shape,
+    /// inlined) — the flush test never reads the time.
+    #[derive(Debug)]
+    struct FixedTestClock;
+    impl taskboard_domain::Clock for FixedTestClock {
+        fn now(&self) -> chrono::DateTime<chrono::Utc> {
+            use chrono::TimeZone as _;
+            chrono::Utc.timestamp_opt(36_000, 0).unwrap()
+        }
+    }
+
+    /// One live board with a deterministic id (the state suite's board
+    /// fixture shape, inlined — the app crate has no shared fixture for
+    /// it).
+    fn seed_board_state(title: &str) -> taskboard_domain::PersistedState {
+        let ids = CountingIds::new();
+        let board = taskboard_domain::Board {
+            id: ids.new_board_id(),
+            remote: None,
+            title: title.into(),
+            color: taskboard_domain::Color::new("0000ff"),
+            archived: false,
+            deleted: false,
+            clocks: taskboard_domain::BoardClocks {
+                color: taskboard_domain::BoardClocks::epoch(),
+                archived: taskboard_domain::BoardClocks::epoch(),
+                deleted: taskboard_domain::BoardClocks::epoch(),
+                title: taskboard_domain::BoardClocks::epoch(),
+            },
+            remote_seen: None,
+        };
+        let mut state = taskboard_domain::PersistedState::default();
+        state.boards.insert(board.id, board);
+        state
+    }
+
+    /// Delegates to an in-memory repository, but the *first* apply parks
+    /// until the fence's sender is dropped — the deterministic wedge the
+    /// flush test needs (the flush barrier wedges exactly on an engine
+    /// envelope parked inside `repo.apply`).
+    #[derive(Debug)]
+    struct FencedRepository {
+        inner: InMemoryRepository,
+        entered_tx: mpsc::Sender<()>,
+        fence: StdMutex<Option<oneshot::Receiver<()>>>,
+    }
+
+    impl TaskRepository for FencedRepository {
+        fn load(&self) -> BoxFuture<'_, Result<taskboard_domain::PersistedState, RepositoryError>> {
+            self.inner.load()
+        }
+
+        fn apply(
+            &self,
+            actions: Vec<taskboard_domain::PersistenceAction>,
+        ) -> BoxFuture<'_, Result<(), RepositoryError>> {
+            Box::pin(async move {
+                let _ = self.entered_tx.try_send(());
+                let parked = self.fence.lock().expect("poisoned").take();
+                if let Some(rx) = parked {
+                    let _ = rx.await;
+                }
+                self.inner.apply(actions).await
+            })
+        }
+    }
+
+    /// F9-02: the pre-join engine flush is bounded, not unbounded. With
+    /// storage wedged inside `repo.apply`, the flush misses its budget
+    /// (false) instead of hanging shutdown; once the wedge is released,
+    /// the same flush resolves (true). Paused time: the budget expiry is
+    /// virtual-clock deterministic, and the outer net turns a regression
+    /// to an unbounded flush into a failure, not a hang.
+    #[tokio::test(start_paused = true)]
+    async fn the_shutdown_flush_misses_its_budget_when_storage_wedges() {
+        let budget = Duration::from_secs(5);
+        let net = Duration::from_secs(120);
+        tokio::time::timeout(net, async {
+            let state = seed_board_state("board");
+            let (entered_tx, mut entered_rx) = mpsc::channel(1);
+            let (fence_tx, fence_rx) = oneshot::channel();
+            let repo: Arc<dyn TaskRepository> = Arc::new(FencedRepository {
+                inner: InMemoryRepository::with_state(state),
+                entered_tx,
+                fence: StdMutex::new(Some(fence_rx)),
+            });
+            let (sync_out, _sync_in) = mpsc::channel::<taskboard_domain::SyncCommand>(8);
+            let (report_tx, report_rx) = mpsc::channel::<taskboard_domain::SyncReport>(8);
+            let (system_tx, system_rx) = broadcast::channel::<taskboard_domain::SystemEvent>(8);
+            let (notifier, _notifications) = mpsc::channel::<taskboard_domain::NotifierMessage>(64);
+            let (handle, engine_join) = taskboard_state::spawn_state_engine(
+                repo,
+                Arc::new(CountingIds::new()),
+                Arc::new(FixedTestClock),
+                sync_out,
+                report_rx,
+                system_tx.clone(),
+                system_rx,
+                notifier,
+                ReminderEngineConfig::disabled(),
+                DayRollConfig::disabled(),
+            )
+            .await
+            .expect("engine boots");
+            let board = *handle
+                .shared_state()
+                .load()
+                .boards
+                .keys()
+                .next()
+                .expect("one board");
+
+            // A mutating command parks the engine inside `repo.apply` —
+            // the only state a flush barrier can wedge on.
+            handle.dispatch(taskboard_domain::StateCommand::CreateStack {
+                board,
+                title: "backlog".into(),
+                order: 1,
+            });
+            entered_rx.recv().await.expect("the engine entered apply");
+
+            let missed = flush_bounded(&handle, budget).await;
+            assert!(
+                !missed,
+                "the flush must miss its budget while storage is wedged"
+            );
+
+            drop(fence_tx); // release the wedge
+            let met = flush_bounded(&handle, budget).await;
+            assert!(met, "the flush must resolve once storage is unwedged");
+
+            // Close every engine-inbox source so the join resolves:
+            // the reports sender is the engine's input the test holds.
+            system_tx.send(taskboard_domain::SystemEvent::Shutdown).ok();
+            drop(report_tx);
+            drop(handle);
+            drop(system_tx);
+            let _ = engine_join.await;
+        })
+        .await
+        .expect("the flush test stayed inside its outer deadline");
     }
 }
