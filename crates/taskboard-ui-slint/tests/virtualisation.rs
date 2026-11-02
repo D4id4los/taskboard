@@ -642,6 +642,136 @@ fn a_removal_above_the_today_viewport_leaves_the_rows_resting() {
     );
 }
 
+/// Mounts the bench fixture on the desktop default view (Today) — the
+/// anchor catalogue's shared fixture and mount (#461 stage-1 plan D-2:
+/// `build_state(600)`, 1000×900 window, ~200 overdue rows).
+fn mount_today(
+    driver: &mut SlintDriver,
+    n: usize,
+) -> (
+    UiHandle,
+    support::fake_engine::FakeEngine,
+    Arc<ArcSwap<taskboard_domain::AppState>>,
+) {
+    let state = Arc::new(ArcSwap::from_pointee(build_state(n)));
+    let (commands, engine) = support::fake_engine::FakeEngine::channel(Arc::clone(&state));
+    let (requests_tx, _requests_rx) = tokio::sync::mpsc::channel(16);
+    let handle = mount(
+        Arc::clone(&state),
+        dummy_receiver(),
+        dummy_system_receiver(),
+        commands,
+        requests_tx,
+        UiSettings::default(),
+        detached_health(),
+    )
+    .expect("mount succeeds on the testing backend");
+    driver.bind(&handle);
+    driver.set_window_size(1000, 900);
+    driver.advance_time(0);
+    (handle, engine, state)
+}
+
+/// Anchor-on-insertion (#461 stage-1 plan D-2 case 2, pinned-actual):
+/// with the Today overdue viewport driven deep by the keyboard walk,
+/// inserting a new head row into the section (a synthetic task older
+/// than every fixture stamp — the shape a capture landing at the
+/// Overdue head takes) keeps the viewport's content offset: the page
+/// does not scroll (the section header rests), and the live rows
+/// reflow **down** by the inserted row's extent, uniformly — the slint
+/// 1.18.1 `ListView` repeater is content-anchored, not row-anchored (it
+/// even prepends the inserted row into the live window, clipped). The
+/// stage-1 plan D-2 "rows resting" statement was corrected to this
+/// pinned actual; see the stage-2 report's finding.
+#[test]
+fn an_insertion_above_the_today_viewport_reflows_by_the_inserted_extent() {
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: false,
+        },
+        |driver| {
+            let (handle, _engine, state) = mount_today(driver, 600);
+
+            // Drive the walk deep (the landed removal pin's setup):
+            // 30 strokes enter at overdue row 0 and end well past the
+            // viewport, so the seek has scrolled the window far from
+            // the section head.
+            for _ in 0..30 {
+                handle.dispatch_action(ActionId::NavNextItem);
+                driver.advance_time(0);
+            }
+
+            let focused = driver
+                .find_by_label(&bench_label(87))
+                .unwrap_or_else(|| panic!("the walked-to card is live"));
+            let rest = focused.absolute_position();
+            let successor = driver
+                .find_by_label(&bench_label(93))
+                .unwrap_or_else(|| panic!("the successor row is live"));
+            let successor_rest = successor.absolute_position().y;
+            let header = driver
+                .find_by_label("Overdue")
+                .unwrap_or_else(|| panic!("the Overdue section header renders"));
+            let header_rest = header.absolute_position();
+
+            // Insert a synthetic strictly-older task: clone overdue
+            // row 0's shape (live, open, duedate in the past, no
+            // scheduled — fixture order 3 satisfies 3 % 4 != 1) with a
+            // fresh id, order -1, and a duedate one second older. It
+            // lands at Overdue index 0 by the `(order, id)` order —
+            // above the viewport. Direct state mutation + `refresh()`
+            // is the deterministic lever: no desktop verb inserts
+            // above a scrolled viewport.
+            let mut next = (**state.load()).clone();
+            let head = next
+                .tasks
+                .values()
+                .find(|task| task.title == bench_label(3))
+                .expect("the fixture's oldest open overdue task")
+                .clone();
+            let mut insert = head.clone();
+            insert.id = taskboard_domain::TaskId::from_uuid(uuid::Uuid::now_v7());
+            insert.title = "Task probe insertion head".into();
+            insert.order = -1;
+            insert.duedate = head.duedate.map(|d| d - chrono::TimeDelta::seconds(1));
+            insert.clocks = head.clocks;
+            next.tasks.insert(insert.id, insert);
+            state.store(Arc::new(next));
+            handle.refresh();
+            driver.advance_time(0);
+
+            let focused = driver
+                .find_by_label(&bench_label(87))
+                .unwrap_or_else(|| panic!("the focused card stays live across the insertion"));
+            let shifted = focused.absolute_position().y - rest.y;
+            assert!(
+                shifted > 0.0,
+                "the insertion above the viewport reflows the live rows down by the \
+                 inserted row's extent (content-anchored viewport), got shift {shifted}"
+            );
+            // The reflow is uniform: the walked-to row and its
+            // successor shift by the same extent (the section's list
+            // moves as one under the fixed content offset).
+            let successor = driver
+                .find_by_label(&bench_label(93))
+                .unwrap_or_else(|| panic!("the successor row stays live"));
+            assert_eq!(
+                focused.absolute_position().y - rest.y,
+                successor.absolute_position().y - successor_rest,
+                "the reflow shifts every live row by the same extent"
+            );
+            let header = driver
+                .find_by_label("Overdue")
+                .unwrap_or_else(|| panic!("the Overdue section header stays"));
+            assert_eq!(
+                header_rest.y,
+                header.absolute_position().y,
+                "the insertion must not scroll the page"
+            );
+        },
+    );
+}
+
 /// Compact stack-switch remount (r2 D8): switching stacks by keyboard
 /// re-mounts the single column's viewport cleanly — the new stack's
 /// head card renders at the rest position, the old stack's cards are
