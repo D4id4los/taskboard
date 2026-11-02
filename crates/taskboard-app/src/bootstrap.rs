@@ -963,9 +963,11 @@ async fn bootstrap_with_modules(
     modules: Vec<Arc<dyn crate::connectors::ConnectorModule>>,
 ) -> Result<App, BootstrapError> {
     // No `[app] mode` gate here: the core is mode-agnostic, and the
-    // REPL (ADR 0011) serves any mode's console. The daemon/UI entry
-    // (main) refuses `Desktop`/`Kiosk` itself until Phase 7 supplies
-    // those frontends.
+    // REPL (ADR 0011) serves any mode's console. Main's daemon entry
+    // refuses only `Desktop` — no daemon-served desktop frontend exists
+    // (the desktop frontend is the GUI); `Kiosk` passes, the explicit
+    // `daemon` verb being the headless maintenance entry (ADR
+    // 0015/0016).
     config.validate()?;
 
     // The boot-time sink diagnosis (round-3 chunk 7, D31): under a
