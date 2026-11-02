@@ -127,6 +127,14 @@ get. Concurrent connections are accepted and queued, never errored.
 Accepted consequence: one long =sync --timeout-secs N= holds the
 queue; =status= after it is available once the queue drains (a
 read-only fast lane is the documented alternative if pain appears).
+The same acceptance covers the attach ceremony's *blocking half* (the
+config re-read and the credential/keyring load): since the F9-04
+hardening it runs on the blocking pool, so the runtime's worker
+threads stay free while it blocks — but the serial queue itself is
+unchanged, and an in-flight attach still delays the next request.
+That accepted serial-queue latency is deliberate: standalone kiosks
+never hit the attach path (ADR 0010), and un-queuing it would abandon
+the single-dispatcher fairness this section records.
 
 ** Two new operator verbs
 

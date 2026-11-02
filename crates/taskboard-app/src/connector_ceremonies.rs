@@ -250,73 +250,99 @@ pub(crate) async fn attach_from_persisted(
     use crate::bootstrap::AttachError;
     use crate::ipc::protocol::AttachWireOutcome as W;
 
-    // 1. Re-read: the daemon's boot config path, env overlays resolved
-    //    against the daemon's own environment.
-    let config = match AppConfig::load(config_path.map(std::path::Path::to_path_buf)) {
-        Ok(config) => config,
-        Err(err) => {
-            tracing::warn!(?err, "attach: the daemon's config did not re-read");
-            return W::NotConfigured;
-        }
-    };
+    // 1–3 run on the blocking pool (F9-04): the config re-read does
+    // file IO and the client build consults the credential store —
+    // keyring FFI that can block for minutes on a prompting or locked
+    // agent. Honest scope (ADR 0012's recorded latency note): the
+    // dispatcher is serial by design, so an in-flight attach still
+    // delays the next IPC request — what this buys is that the
+    // blocking call no longer occupies a runtime worker thread, so the
+    // S1 control lane, the accept loop, and every other task keep full
+    // worker capacity. The identity match (step 2) rides along: it is
+    // pure and only consumes what step 1 loaded.
+    let preflight_server_url = server_url.to_owned();
+    let preflight_username = username.to_owned();
+    let preflight_name = name.map(str::to_owned);
+    let preflight_store = Arc::clone(store);
+    let config_path = config_path.map(std::path::Path::to_path_buf);
+    let preflight = tokio::task::spawn_blocking(move || {
+        // 1. Re-read: the daemon's boot config path, env overlays
+        //    resolved against the daemon's own environment.
+        let config = match AppConfig::load(config_path) {
+            Ok(config) => config,
+            Err(err) => {
+                tracing::warn!(?err, "attach: the daemon's config did not re-read");
+                return Err(W::NotConfigured);
+            }
+        };
 
-    // 2. Target resolution (D5-14): the entry named `name`, else the
-    //    first (the default connector). No such name ⇒ `NotConfigured`.
-    //    The request's identity must equal the target entry's pair —
-    //    the identity check survives as the guard that the client
-    //    connected *that* connector.
-    let specs = match crate::connectors::configured_connectors(&config) {
-        Ok(specs) => specs,
-        Err(err) => {
+        // 2. Target resolution (D5-14): the entry named `name`, else
+        //    the first (the default connector). No such name ⇒
+        //    `NotConfigured`. The request's identity must equal the
+        //    target entry's pair — the identity check survives as the
+        //    guard that the client connected *that* connector.
+        let specs = match crate::connectors::configured_connectors(&config) {
+            Ok(specs) => specs,
+            Err(err) => {
+                tracing::warn!(
+                    ?err,
+                    "attach: the daemon's config resolves no connector set"
+                );
+                return Err(W::NotConfigured);
+            }
+        };
+        let target = match preflight_name.as_deref() {
+            Some(name) => specs
+                .iter()
+                .find(|spec| spec.name.as_str() == name)
+                .or_else(|| {
+                    tracing::warn!(connector = %name, "attach: the config names no such connector");
+                    None
+                }),
+            None => specs.first(),
+        };
+        let Some(target) = target else {
+            tracing::warn!("attach: the daemon's config resolves no connector");
+            return Err(W::NotConfigured);
+        };
+        if target.server_url != preflight_server_url || target.username != preflight_username {
             tracing::warn!(
-                ?err,
-                "attach: the daemon's config resolves no connector set"
+                requested = %preflight_server_url,
+                persisted = %target.server_url,
+                "attach requested for a foreign identity; refusing"
             );
-            return W::NotConfigured;
+            return Err(W::IdentityMismatch);
         }
-    };
-    let target = match name {
-        Some(name) => specs
-            .iter()
-            .find(|spec| spec.name.as_str() == name)
-            .or_else(|| {
-                tracing::warn!(connector = %name, "attach: the config names no such connector");
-                None
-            }),
-        None => specs.first(),
-    };
-    let Some(target) = target else {
-        tracing::warn!("attach: the daemon's config resolves no connector");
-        return W::NotConfigured;
-    };
-    if target.server_url != server_url || target.username != username {
-        tracing::warn!(
-            requested = %server_url,
-            persisted = %target.server_url,
-            "attach requested for a foreign identity; refusing"
-        );
-        return W::IdentityMismatch;
-    }
-    let target_id = target.name.clone();
-    let target = target.clone();
+        let target_id = target.name.clone();
+        let target = target.clone();
 
-    // 3. Build before any swap: the only post-swap failures are a raced
-    //    shutdown — a failure the daemon's own state could have
-    //    prevented never strands it detached. A credential miss is the
-    //    env-store caveat's typed surface; every other construction
-    //    failure is malformed persisted state (the identity was already
-    //    extracted), logged for diagnosis.
-    let client = match deck_client_from_spec(&target, store) {
-        Ok(client) => client,
-        Err(CommandError::Credential(err)) => {
-            tracing::warn!(
-                ?err,
-                "attach: the daemon's store has no secret for the identity"
-            );
-            return W::CredentialUnavailable;
+        // 3. Build before any swap: the only post-swap failures are a
+        //    raced shutdown — a failure the daemon's own state could
+        //    have prevented never strands it detached. A credential
+        //    miss is the env-store caveat's typed surface; every other
+        //    construction failure is malformed persisted state (the
+        //    identity was already extracted), logged for diagnosis.
+        match deck_client_from_spec(&target, &preflight_store) {
+            Ok(client) => Ok((client, target_id)),
+            Err(CommandError::Credential(err)) => {
+                tracing::warn!(
+                    ?err,
+                    "attach: the daemon's store has no secret for the identity"
+                );
+                Err(W::CredentialUnavailable)
+            }
+            Err(err) => {
+                tracing::warn!(?err, "attach: the daemon's persisted state built no client");
+                Err(W::NotConfigured)
+            }
         }
-        Err(err) => {
-            tracing::warn!(?err, "attach: the daemon's persisted state built no client");
+    })
+    .await;
+    let (client, target_id) = match preflight {
+        Ok(Ok(pair)) => pair,
+        Ok(Err(wire)) => return wire,
+        Err(join_err) => {
+            tracing::warn!(?join_err, "attach: the blocking preflight panicked");
             return W::NotConfigured;
         }
     };

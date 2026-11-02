@@ -20,7 +20,7 @@ use interprocess::local_socket::traits::tokio::Stream as _;
 use taskboard_app::commands::{BasicSession, CommandError};
 use taskboard_app::config::AppConfig;
 use taskboard_app::ipc::{client, codec, protocol, server};
-use taskboard_app::secrets::{AppPassword, CredentialStore, EnvCredentialStore};
+use taskboard_app::secrets::{AppPassword, CredentialError, CredentialStore, EnvCredentialStore};
 
 /// A standalone-backend config over a per-test db (the default config
 /// resolves `standalone` — no server URL — and the credential store is
@@ -710,6 +710,42 @@ async fn served_with_config_file(
     (handle, db, config_path, store)
 }
 
+/// The served shape over a caller-chosen store (the attach ceremony's
+/// blocking-half probe swaps in a recording fake).
+async fn served_with_store(
+    dir: &Path,
+    db_name: &str,
+    store: Arc<dyn CredentialStore>,
+) -> (
+    server::IpcServerHandle,
+    PathBuf,
+    PathBuf,
+    Arc<dyn CredentialStore>,
+) {
+    let db = dir.join(db_name);
+    let config_path = dir.join(format!("{db_name}.toml"));
+    std::fs::write(&config_path, config_file_body(&db, None, None)).expect("write config file");
+    let config = AppConfig::load(Some(config_path.clone())).expect("config parses");
+    let app = Arc::new(
+        taskboard_app::bootstrap::bootstrap(
+            config,
+            store.clone(),
+            Arc::new(taskboard_app::notifications::LogSink),
+        )
+        .await
+        .expect("core boots"),
+    );
+    let session = Arc::new(BasicSession {
+        config: app.config.clone(),
+        store: store.clone(),
+        config_path: Some(config_path.clone()),
+    });
+    let handle = server::spawn_server(app, session, &db)
+        .await
+        .expect("server binds");
+    (handle, db, config_path, store)
+}
+
 /// One attach request over a fresh connection.
 async fn attach_once(db: &Path, server_url: &str, username: &str) -> protocol::AttachWireOutcome {
     let conn = client::try_connect(db).await.expect("daemon answers");
@@ -1091,6 +1127,97 @@ async fn j1_daemon_stop_answers_while_a_verb_is_in_flight() {
             "the wedged verb's client sees the dropped socket, typed"
         );
         drop(password);
+    })
+    .await;
+}
+
+/// F9-04's probe: a credential store that records the thread its
+/// `load` ran on. `#[tokio::test]` is a current-thread runtime, so the
+/// serial dispatcher (and the old inline ceremony call) executes on the
+/// runtime's one thread; `spawn_blocking` closures always run on a
+/// blocking-pool thread — a different `ThreadId`, deterministically.
+struct BlockingPoolProbeStore {
+    inner: common::FakeCredentialStore,
+    load_thread: std::sync::Mutex<Option<std::thread::ThreadId>>,
+}
+
+impl std::fmt::Debug for BlockingPoolProbeStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("BlockingPoolProbeStore")
+    }
+}
+
+impl BlockingPoolProbeStore {
+    fn load_thread(&self) -> Option<std::thread::ThreadId> {
+        *self.load_thread.lock().expect("probe lock")
+    }
+}
+
+impl CredentialStore for BlockingPoolProbeStore {
+    fn load(&self, server: &str, username: &str) -> Result<AppPassword, CredentialError> {
+        let _ = self
+            .load_thread
+            .lock()
+            .expect("probe lock")
+            .replace(std::thread::current().id());
+        self.inner.load(server, username)
+    }
+    fn store(
+        &self,
+        server: &str,
+        username: &str,
+        secret: AppPassword,
+    ) -> Result<(), CredentialError> {
+        self.inner.store(server, username, secret)
+    }
+    fn delete(&self, server: &str, username: &str) -> Result<(), CredentialError> {
+        self.inner.delete(server, username)
+    }
+}
+
+/// IP20 (F9-04): the attach ceremony's blocking half — the config
+/// re-read and the credential load — runs on the blocking pool, so a
+/// prompting/locked keyring cannot hold a runtime worker hostage; and
+/// the attach still succeeds end-to-end over the wire.
+#[tokio::test]
+async fn ip20_attach_runs_its_blocking_half_off_the_dispatcher_task() {
+    bounded(async {
+        let dir = tempdir();
+        let probe = Arc::new(BlockingPoolProbeStore {
+            inner: common::FakeCredentialStore::with("https://cloud.example.com", "alice", "pw"),
+            load_thread: std::sync::Mutex::new(None),
+        });
+        let store: Arc<dyn CredentialStore> = Arc::clone(&probe) as Arc<dyn CredentialStore>;
+        let (handle, db, config_path, _store) =
+            served_with_store(dir.path(), "ip20.db", store).await;
+
+        // What a `connect` ceremony just persisted: identity into the
+        // file; the probe store already holds the secret.
+        std::fs::write(
+            &config_path,
+            config_file_body(&db, Some("https://cloud.example.com"), Some("alice")),
+        )
+        .expect("persist identity");
+
+        let outcome = attach_once(&db, "https://cloud.example.com", "alice").await;
+        assert!(
+            matches!(outcome, protocol::AttachWireOutcome::Attached),
+            "the attach succeeds over the wire, got {outcome:?}"
+        );
+        // The runtime thread is this test's own thread (current-thread
+        // flavor): the old inline call would match it; the blocking
+        // pool never does.
+        let runtime_thread = std::thread::current().id();
+        let load_thread = probe.load_thread().expect("the load ran");
+        assert_ne!(
+            load_thread, runtime_thread,
+            "the credential load must run on the blocking pool, not the dispatcher's thread"
+        );
+
+        let view = status_once(&db).await;
+        assert_eq!(view.connector_attached, Some(true));
+
+        let _ = handle.join(DRAIN_BUDGET).await;
     })
     .await;
 }
