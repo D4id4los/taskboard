@@ -86,14 +86,17 @@ fn longest_run_in_strip(image: &Rgba8Image, rgb: [u8; 3], strip_height: u32) -> 
     best
 }
 
-/// G3 — the hamburger geometry contract (plan D4): the icon bars are
-/// exactly `space-6 − 2×space-2` wide (±1 px rounding) at the kiosk
-/// panel's raw and logical geometries, the golden-matrix base, and
-/// the scale extremes. The committed goldens contain the stretched
-/// bar (≈447 px of the row at 0.5/1000), so this fails before the
-/// primitive's `max-width` pin — a production bug, not a test bug.
+/// G3 — the icon geometry contract (r4 successor of the hamburger
+/// pin, rewritten — not weakened — for the vendored Lucide menu: the
+/// drawn 16 px bars are gone, and the same toolbar strip now pins the
+/// token-derived Lucide geometry). The menu glyph's longest bar is
+/// 16/24 of `Theme.icon-size` plus one stroke width of round caps,
+/// at the kiosk panel's raw and logical geometries, the golden-matrix
+/// base, and the scale extremes. At the 0.5 extreme the 0.5 px
+/// strokes never reach full coverage (the recorded r4 Tier-4
+/// finding), so that cell pins ink presence instead of run length.
 #[test]
-fn the_hamburger_bar_holds_its_token_derived_square_at_every_geometry() {
+fn the_menu_icon_holds_its_token_derived_geometry_at_every_geometry() {
     // (scale, width, height): the kiosk panel raw and logical, the
     // golden-matrix base, and the scale extremes.
     let geometries = [
@@ -115,17 +118,36 @@ fn the_hamburger_bar_holds_its_token_derived_square_at_every_geometry() {
                 // the toolbar strip is Theme.space-8 tall.
                 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
                 let strip = (64.0 * scale).ceil() as u32;
-                let run = longest_run_in_strip(&snapshot, [0xa6, 0xab, 0xbd], strip);
                 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-                let expected = (16.0 * scale).round() as i64; // space-6 − 2×space-2
-                let diff = (i64::from(run) - expected).abs();
-                assert!(
-                    diff <= 1,
-                    "scale {scale} @ {width}×{height}: hamburger bar is {run} px, expected {expected} ±1"
-                );
+                let icon_px = (12.0 * scale).round() as i64; // Theme.icon-size
+                if scale < 1.0 {
+                    // The sub-pixel extreme: glyph ink must exist, the
+                    // run-length pin cannot (no full-coverage pixels).
+                    let ink = strip_pixels_beyond_background(&snapshot, strip, [0x14, 0x16, 0x1c]);
+                    assert!(
+                        ink > 0,
+                        "scale {scale} @ {width}×{height}: no glyph ink in the toolbar strip"
+                    );
+                } else {
+                    let run = longest_run_in_strip(&snapshot, [0xa6, 0xab, 0xbd], strip);
+                    // bar 16/24 of the edge + one 2/24 stroke of caps.
+                    let expected = icon_px * 16 / 24 + icon_px * 2 / 24;
+                    let diff = (i64::from(run) - expected).abs();
+                    assert!(
+                        diff <= 1,
+                        "scale {scale} @ {width}×{height}: menu bar is {run} px, expected {expected} ±1"
+                    );
+                }
             },
         );
     }
+}
+
+/// The count of pixels visibly off the background colour in the
+/// strip — the sub-pixel extreme's ink-presence floor (the shared
+/// counter).
+fn strip_pixels_beyond_background(image: &Rgba8Image, strip_height: u32, bg: [u8; 3]) -> u32 {
+    crate::support::pixel_probe::count_off_background(image, 0, 0, image.width, strip_height, bg)
 }
 
 /// G4 — the tooltip state machine (plan D3): hover arms a 600 ms

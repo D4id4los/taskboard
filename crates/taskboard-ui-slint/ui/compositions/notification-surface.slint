@@ -60,7 +60,9 @@ export component NotificationSurface inherits Rectangle {
             }
             VerticalLayout {
                 IconButton {
-                    icon: IconKind.check;
+                    // r4 D11 (F1): the dismiss affordance is the
+                    // circled x — no longer done's check glyph.
+                    icon: IconKind.dismiss;
                     tone: Tone.info;
                     label: "Dismiss notification";
                     clicked => root.dismiss-clicked(row-index);
