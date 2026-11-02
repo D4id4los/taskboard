@@ -22,7 +22,7 @@ use slint::platform::software_renderer::{
     PhysicalRegion, RepaintBufferType, SoftwareRenderer, TargetPixel,
 };
 use slint::platform::{Platform, PlatformError, Renderer, WindowAdapter, WindowEvent};
-use slint::{PhysicalSize, Window, WindowSize};
+use slint::{PhysicalPosition, PhysicalSize, Window, WindowPosition, WindowSize};
 
 /// A platform that hands out null window adapters: no event loop can
 /// run (tests never call `run_event_loop`); drawing happens only
@@ -56,6 +56,11 @@ pub(crate) struct NullWindowAdapter {
     /// The physical size the window was last resized to through the
     /// public path; 0×0 until then.
     size: Cell<PhysicalSize>,
+    /// The physical position the window was last placed at through
+    /// the public path (`Window::set_position`), if any — recorded so
+    /// a test can play the window manager (set a position, watch the
+    /// capture) and watch the restore (#412).
+    position: Cell<Option<PhysicalPosition>>,
 }
 
 impl NullWindowAdapter {
@@ -64,6 +69,7 @@ impl NullWindowAdapter {
             window: Window::new(weak.clone()),
             renderer: SoftwareRenderer::new(),
             size: Cell::new(PhysicalSize::new(0, 0)),
+            position: Cell::new(None),
         })
     }
 
@@ -111,6 +117,22 @@ impl WindowAdapter for NullWindowAdapter {
         self.window.dispatch_event(WindowEvent::Resized {
             size: physical.to_logical(1.0),
         });
+    }
+
+    /// The recorded placement (#412): `None` until the public path
+    /// lands a physical position — the trait default's `None`
+    /// (window.rs:101) made explicit and observable.
+    fn position(&self) -> Option<PhysicalPosition> {
+        self.position.get()
+    }
+
+    /// The public placement path (`Window::set_position` lands here):
+    /// record the physical position verbatim — no placement logic,
+    /// the WM role the tests play.
+    fn set_position(&self, position: WindowPosition) {
+        if let WindowPosition::Physical(physical) = position {
+            self.position.set(Some(physical));
+        }
     }
 }
 

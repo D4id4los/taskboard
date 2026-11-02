@@ -278,6 +278,31 @@ pub fn mount(
     // construction, so fullscreen alone is the complete profile.
     if settings.kiosk {
         window.window().set_fullscreen(true);
+    } else if let Some(restored) = settings.window_geometry {
+        // The geometry restore (#412, D5): the desktop profile only —
+        // the branch is the kiosk arm's `else if`, so an appliance
+        // boot structurally cannot restore (fullscreen owns geometry;
+        // no lifecycle code needs to remember to clear the field).
+        // This goes through the OS-window level (`slint::Window::
+        // set_position`/`set_size`), which D15's within-session
+        // invariant never covered: the root Window's preferred
+        // `width:`/`height:` bindings (the no-geometry default) stay
+        // untouched.
+        let slint_window = window.window();
+        let clamped = match observe_current_monitor_rect(slint_window) {
+            // The winit-known monitor clamps; without one (headless
+            // tests, non-winit backends) the clamp is a structural
+            // identity no-op.
+            Some(screen) => restored.clamp_to(screen),
+            None => restored,
+        };
+        slint_window.set_position(slint::WindowPosition::Physical(
+            slint::PhysicalPosition::new(clamped.x(), clamped.y()),
+        ));
+        slint_window.set_size(slint::WindowSize::Physical(slint::PhysicalSize::new(
+            clamped.width(),
+            clamped.height(),
+        )));
     }
     // The keymap is applied one-way at UI start (§5.6): install the
     // root-scope interception over the validated keymap.
@@ -471,6 +496,37 @@ fn request_attention(window: &AlarmWindow) {
     });
 }
 
+/// The restore clamp's monitor source (#412, D5): the current
+/// monitor's rect as a minted [`WindowGeometry`], or `None` when
+/// unknowable — the `request_attention` precedent: the types come
+/// through slint's own `unstable-winit-030` re-export, a non-winit
+/// backend fails `has_winit_window`, and the caller's clamp
+/// degrades to a structural identity no-op. No monitor (or no
+/// readable rect) is equally `None` — the fallback is never guessed.
+fn observe_current_monitor_rect(
+    slint_window: &slint::Window,
+) -> Option<crate::geometry::WindowGeometry> {
+    use slint::winit_030::WinitWindowAccessor;
+    if !slint_window.has_winit_window() {
+        return None;
+    }
+    slint_window
+        .with_winit_window(|w| {
+            let monitor = w
+                .current_monitor()
+                .or_else(|| w.available_monitors().next())?;
+            let position = monitor.position();
+            let size = monitor.size();
+            crate::geometry::WindowGeometry::new(
+                i64::from(position.x),
+                i64::from(position.y),
+                i64::from(size.width),
+                i64::from(size.height),
+            )
+        })
+        .flatten()
+}
+
 /// Starts the D1 repaint driver: a repeating slint `Timer` on the
 /// slint thread that drains the engine-signal and system-event
 /// receivers (non-blocking; `Lagged` counts as changed — chunk 1's
@@ -571,6 +627,12 @@ fn start_repaint_driver(
             {
                 run_alarm_pass(lanes, &state, minute_boundary);
             }
+            // The geometry capture (#412, D4): the tick tail's
+            // unconditional sample — the one production sampler. The
+            // capture rides the tick so a move or resize becomes a
+            // typed request within one cadence; the forwarder's
+            // quiet window coalesces the burst.
+            adapter.borrow_mut().capture_window_geometry(&window);
         },
     );
 }
@@ -723,6 +785,17 @@ impl UiHandle {
             self.adapter.borrow_mut().drain_delivery_health(&window)
         } else {
             false
+        }
+    }
+
+    /// One geometry capture (#412): the same tick-tail sample the
+    /// repaint driver runs every cadence. Public for the component
+    /// journeys (the established [`UiHandle`]-seam pattern): the test
+    /// plays the window manager through the public window setters,
+    /// then drives the capture.
+    pub fn capture_window_geometry(&self) {
+        if let Some(window) = self.window.as_weak().upgrade() {
+            self.adapter.borrow_mut().capture_window_geometry(&window);
         }
     }
 
@@ -1304,6 +1377,294 @@ mod mount_tests {
             )
             .expect("mount succeeds on the null platform");
             assert!(!handle.window.window().is_fullscreen());
+        });
+    }
+
+    /// The minted geometry for the #412 mount tests.
+    fn geometry(x: i64, y: i64, w: u32, h: u32) -> crate::geometry::WindowGeometry {
+        crate::geometry::WindowGeometry::new(x, y, i64::from(w), i64::from(h))
+            .expect("sane test rect")
+    }
+
+    /// The adapter's recorded placement (the #412 restore read; the
+    /// WM role the adapter plays on the null platform).
+    fn recorded() -> (Option<slint::PhysicalPosition>, slint::PhysicalSize) {
+        use slint::platform::WindowAdapter as _;
+        let adapter = crate::test_platform::window_adapter().expect("the mounted adapter");
+        (adapter.position(), adapter.size())
+    }
+
+    /// T3 — the capture: a sane live geometry becomes exactly one
+    /// `WindowGeometryChanged` with the minted values; an unchanged
+    /// re-sample requests nothing; the degenerate fresh-mount 0×0 is
+    /// silently skipped; every guard state (maximized/minimized/
+    /// fullscreen) suppresses; a position-only change requests again
+    /// (moves persist too).
+    #[test]
+    fn the_capture_emits_exactly_the_changed_snapshots() {
+        on_slint_thread(|| {
+            let (state, signals, system, commands, requests_tx, mut requests_rx, health) =
+                handover();
+            let handle = mount(
+                state,
+                signals,
+                system,
+                commands,
+                requests_tx,
+                UiSettings::default(),
+                health,
+            )
+            .expect("mount succeeds on the null platform");
+            let drain = |requests_rx: &mut mpsc::Receiver<requests::UiRequest>| {
+                let mut found = Vec::new();
+                while let Ok(request) = requests_rx.try_recv() {
+                    found.push(request);
+                }
+                found
+            };
+
+            // The fresh mount's default 0×0: the mint refuses —
+            // silently, no request.
+            handle.capture_window_geometry();
+            assert!(
+                drain(&mut requests_rx).is_empty(),
+                "a degenerate snapshot is never emitted"
+            );
+
+            // A sane live geometry (the test plays the WM through the
+            // public paths): exactly one request with the minted
+            // values.
+            handle
+                .window()
+                .window()
+                .set_position(slint::WindowPosition::Physical(
+                    slint::PhysicalPosition::new(-1920, 0),
+                ));
+            handle
+                .window()
+                .window()
+                .set_size(slint::WindowSize::Physical(slint::PhysicalSize::new(
+                    1366, 768,
+                )));
+            handle.capture_window_geometry();
+            let captured: Vec<_> = drain(&mut requests_rx)
+                .into_iter()
+                .map(|request| match request {
+                    requests::UiRequest::WindowGeometryChanged { geometry } => geometry,
+                    other => panic!("typed outcome expected, got {other:?}"),
+                })
+                .collect();
+            assert_eq!(captured, vec![geometry(-1920, 0, 1366, 768)]);
+
+            // An unchanged re-sample dedupes to nothing.
+            handle.capture_window_geometry();
+            assert!(drain(&mut requests_rx).is_empty(), "no request, no change");
+
+            // Guard states suppress the sample.
+            handle.window().window().set_maximized(true);
+            handle.capture_window_geometry();
+            assert!(
+                drain(&mut requests_rx).is_empty(),
+                "maximized is never sampled"
+            );
+            handle.window().window().set_maximized(false);
+            handle.window().window().set_minimized(true);
+            handle.capture_window_geometry();
+            assert!(
+                drain(&mut requests_rx).is_empty(),
+                "minimized is never sampled"
+            );
+            handle.window().window().set_minimized(false);
+            handle.window().window().set_fullscreen(true);
+            handle.capture_window_geometry();
+            assert!(
+                drain(&mut requests_rx).is_empty(),
+                "fullscreen is never sampled"
+            );
+            handle.window().window().set_fullscreen(false);
+
+            // A position-only change requests again.
+            handle
+                .window()
+                .window()
+                .set_position(slint::WindowPosition::Physical(
+                    slint::PhysicalPosition::new(100, 200),
+                ));
+            handle.capture_window_geometry();
+            let captured: Vec<_> = drain(&mut requests_rx)
+                .into_iter()
+                .map(|request| match request {
+                    requests::UiRequest::WindowGeometryChanged { geometry } => geometry,
+                    other => panic!("typed outcome expected, got {other:?}"),
+                })
+                .collect();
+            assert_eq!(captured, vec![geometry(100, 200, 1366, 768)]);
+        });
+    }
+
+    /// T3, capture side of D6 — a kiosk hand-over never samples, even
+    /// with a sane live geometry on the window.
+    #[test]
+    fn the_kiosk_capture_never_samples() {
+        on_slint_thread(|| {
+            let (state, signals, system, commands, requests_tx, mut requests_rx, health) =
+                handover();
+            let handle = mount(
+                state,
+                signals,
+                system,
+                commands,
+                requests_tx,
+                UiSettings {
+                    kiosk: true,
+                    ..UiSettings::default()
+                },
+                health,
+            )
+            .expect("mount succeeds on the null platform");
+            handle
+                .window()
+                .window()
+                .set_position(slint::WindowPosition::Physical(
+                    slint::PhysicalPosition::new(10, 10),
+                ));
+            handle
+                .window()
+                .window()
+                .set_size(slint::WindowSize::Physical(slint::PhysicalSize::new(
+                    1366, 768,
+                )));
+            handle.capture_window_geometry();
+            assert!(
+                requests_rx.try_recv().is_err(),
+                "the appliance never sends a geometry request"
+            );
+        });
+    }
+
+    /// T4 — the restore: a desktop hand-over with a stored geometry
+    /// lands the recorded position/size verbatim (no winit window on
+    /// this platform ⇒ the clamp is the pinned identity fallback);
+    /// `None` records nothing.
+    #[test]
+    fn the_desktop_mount_restores_the_stored_geometry() {
+        on_slint_thread(|| {
+            let stored = geometry(-1920, 0, 1366, 768);
+            let (state, signals, system, commands, requests_tx, _requests_rx, health) = handover();
+            let handle = mount(
+                state,
+                signals,
+                system,
+                commands,
+                requests_tx,
+                UiSettings {
+                    window_geometry: Some(stored),
+                    ..UiSettings::default()
+                },
+                health,
+            )
+            .expect("mount succeeds on the null platform");
+            let (position, size) = recorded();
+            assert_eq!(position, Some(slint::PhysicalPosition::new(-1920, 0)));
+            assert_eq!(size, slint::PhysicalSize::new(1366, 768));
+            drop(handle);
+
+            // The `None` hand-over: nothing recorded, defaults stand.
+            let (state, signals, system, commands, requests_tx, _requests_rx, health) = handover();
+            let handle = mount(
+                state,
+                signals,
+                system,
+                commands,
+                requests_tx,
+                UiSettings::default(),
+                health,
+            )
+            .expect("mount succeeds on the null platform");
+            let (position, size) = recorded();
+            assert_eq!(position, None, "no stored geometry, no placement");
+            assert_eq!(size, slint::PhysicalSize::new(0, 0));
+            let _ = handle;
+        });
+    }
+
+    /// T4, the structural kiosk bypass (D6): a kiosk hand-over with a
+    /// stored geometry opens fullscreen AND records no placement —
+    /// one window cannot take both paths.
+    #[test]
+    fn the_kiosk_mount_never_restores_geometry() {
+        on_slint_thread(|| {
+            let stored = geometry(-1920, 0, 1366, 768);
+            let (state, signals, system, commands, requests_tx, _requests_rx, health) = handover();
+            let handle = mount(
+                state,
+                signals,
+                system,
+                commands,
+                requests_tx,
+                UiSettings {
+                    kiosk: true,
+                    window_geometry: Some(stored),
+                    ..UiSettings::default()
+                },
+                health,
+            )
+            .expect("mount succeeds on the null platform");
+            assert!(handle.window().window().is_fullscreen());
+            let (position, size) = recorded();
+            assert_eq!(position, None, "fullscreen owns the placement");
+            assert_eq!(
+                size,
+                slint::PhysicalSize::new(0, 0),
+                "fullscreen owns the size"
+            );
+        });
+    }
+
+    /// T9 — the journey pin at the typed seam (#412): the stored
+    /// geometry reopens at mount (the restore half), a mid-session
+    /// move emits the exact request (the persist half); the restart
+    /// itself is out of a test's reach — the config file is the join
+    /// (pinned app-side by the round-trip and overlay tests).
+    #[test]
+    fn the_geometry_journey_restores_then_persists_a_move() {
+        on_slint_thread(|| {
+            let stored = geometry(-100, -50, 1280, 720);
+            let (state, signals, system, commands, requests_tx, mut requests_rx, health) =
+                handover();
+            let handle = mount(
+                state,
+                signals,
+                system,
+                commands,
+                requests_tx,
+                UiSettings {
+                    window_geometry: Some(stored),
+                    ..UiSettings::default()
+                },
+                health,
+            )
+            .expect("mount succeeds on the null platform");
+            // The restart half: the window reopened where it was left.
+            let (position, size) = recorded();
+            assert_eq!(position, Some(slint::PhysicalPosition::new(-100, -50)));
+            assert_eq!(size, slint::PhysicalSize::new(1280, 720));
+
+            // The session half: the user moves the window, the tick
+            // tail's capture emits the exact snapshot.
+            handle
+                .window()
+                .window()
+                .set_position(slint::WindowPosition::Physical(
+                    slint::PhysicalPosition::new(500, 300),
+                ));
+            handle.capture_window_geometry();
+            let request = requests_rx.try_recv().expect("the move was captured");
+            let requests::UiRequest::WindowGeometryChanged { geometry: moved } = request else {
+                panic!("typed outcome expected, got {request:?}");
+            };
+            assert_eq!(moved, geometry(500, 300, 1280, 720));
+            assert!(requests_rx.try_recv().is_err(), "nothing else emitted");
         });
     }
 }

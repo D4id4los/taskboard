@@ -252,6 +252,10 @@ pub(crate) struct Adapter {
     /// The exit-effect counter (the §6 component-test seam: journeys
     /// assert the quit request without killing the platform).
     pub(crate) quit_requests: usize,
+    /// The last geometry the capture emitted a request for (#412):
+    /// the dedupe baseline — an unchanged window re-samples every
+    /// cadence tick but requests nothing.
+    last_window_geometry: Option<crate::geometry::WindowGeometry>,
     /// The test seam (#463's pin): derive+diff passes executed since
     /// install. The guard's contract in one integer — incremented only
     /// where `models::push` is about to run.
@@ -547,6 +551,50 @@ impl Adapter {
             .focused_task()
             .and_then(|id| state.tasks.get(&id))
             .is_some_and(|task| task.done.is_some());
+    }
+
+    /// The geometry capture (#412, D4): samples the window's normal
+    /// state once per cadence tick and emits one full-snapshot
+    /// request when it changed. Guard chain, in order: never under
+    /// the kiosk profile (D6 — fullscreen owns the appliance's
+    /// geometry; the path is bypassed, not special-cased); never
+    /// maximized/minimized/fullscreen (a maximized window's bounds
+    /// are the workspace's, not the user's normal geometry, and
+    /// minimized geometry is stale/zero on several platforms); the
+    /// mint refuses degenerate snapshots silently (which keeps the
+    /// headless default 0×0 quiet); the dedupe baseline swallows
+    /// unchanged re-samples. A full or closed request inbox drops the
+    /// request with the baseline unset — the next tick retries.
+    pub(crate) fn capture_window_geometry(&mut self, window: &AppWindow) {
+        if self.kiosk {
+            return;
+        }
+        let slint_window = window.window();
+        if slint_window.is_maximized()
+            || slint_window.is_minimized()
+            || slint_window.is_fullscreen()
+        {
+            return;
+        }
+        let position = slint_window.position();
+        let size = slint_window.size();
+        let Some(geometry) = crate::geometry::WindowGeometry::new(
+            i64::from(position.x),
+            i64::from(position.y),
+            i64::from(size.width),
+            i64::from(size.height),
+        ) else {
+            return;
+        };
+        if self.last_window_geometry == Some(geometry) {
+            return;
+        }
+        let request = crate::requests::UiRequest::WindowGeometryChanged { geometry };
+        if self.requests.try_send(request).is_ok() {
+            self.last_window_geometry = Some(geometry);
+        } else {
+            tracing::warn!("request channel full or closed; geometry capture dropped");
+        }
     }
 
     /// Applies flow outcomes verbatim (D9): the adapter never
@@ -3010,6 +3058,7 @@ pub(crate) fn install(
         rotation_timer,
         rotation_fire: Rc::new(|| {}), // replaced below, before any fire can happen
         quit_requests: 0,
+        last_window_geometry: None,
         last_derived: None,
         #[cfg(test)]
         derive_passes: 0,

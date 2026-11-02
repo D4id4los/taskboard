@@ -3134,7 +3134,21 @@ fn a_scale_commit_anchors_the_scroll_on_the_scale_row() {
             // Commit UP via the field; the Ok reply settles.
             window.invoke_settings_field_edited(4, "3.0".into());
             window.invoke_settings_scale_committed("3.0".into());
-            let mut requests = harness.drain_requests();
+            // The #412 capture rides the same ticked lane: this
+            // journey's resized window legitimately emitted one
+            // geometry snapshot on the first tick after the resize.
+            // Drained here per the plan's stray-capture rule (the
+            // test counts the commit's own lane, never the capture's).
+            let mut requests: Vec<_> = harness
+                .drain_requests()
+                .into_iter()
+                .filter(|request| {
+                    !matches!(
+                        request,
+                        taskboard_ui_slint::requests::UiRequest::WindowGeometryChanged { .. }
+                    )
+                })
+                .collect();
             assert_eq!(requests.len(), 1);
             let taskboard_ui_slint::requests::UiRequest::SetScale { reply, .. } =
                 requests.remove(0)
