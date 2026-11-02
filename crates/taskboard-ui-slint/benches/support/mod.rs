@@ -205,9 +205,11 @@ pub fn today_flip_targets(state: &AppState) -> Vec<TaskId> {
 
 /// The Board pin's flip targets: the head rows of every column in
 /// display order (stacks by `order`, tasks in canonical order). The
-/// board renders all N tasks eagerly, so a done flip there is an
-/// *in-place* card change — a different damage shape than the Today
-/// pin's removal, which is exactly what the two pins separate.
+/// board's columns are virtualised (#373), so the head rows the
+/// lanes flip are the cards inside the viewport window; a done flip
+/// on one is an *in-place* card change — a different damage shape
+/// than the Today pin's removal, which is exactly what the two pins
+/// separate.
 #[allow(dead_code)] // the contract test target doesn't drive lanes
 #[must_use]
 pub fn board_flip_targets(state: &AppState) -> Vec<TaskId> {
