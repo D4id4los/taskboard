@@ -586,6 +586,28 @@ mod tests {
         Uuid::from_u128(raw)
     }
 
+    fn sample_baseline() -> taskboard_domain::entities::RemoteTaskBaseline {
+        use taskboard_domain::ids::{RemoteLabelId, RemoteStackId};
+        let mut labels = std::collections::BTreeSet::new();
+        labels.insert(RemoteLabelId(6));
+        labels.insert(RemoteLabelId(1));
+        taskboard_domain::entities::RemoteTaskBaseline {
+            title: "card".to_owned(),
+            description: "desc".to_owned(),
+            duedate: Some(
+                chrono::DateTime::parse_from_rfc3339("2026-01-02T03:04:05Z")
+                    .unwrap()
+                    .with_timezone(&chrono::Utc),
+            ),
+            scheduled: None,
+            done: None,
+            stack: RemoteStackId(7),
+            order: 3,
+            labels,
+            archived: false,
+        }
+    }
+
     #[test]
     fn uuid_text_roundtrips_and_rejects_garbage() {
         let raw = id(42);
@@ -915,6 +937,186 @@ mod tests {
         );
     }
 
+    /// The stored-TEXT golden pins: every literal below is today's
+    /// stored byte form, asserted before the delegation refactor so any
+    /// format drift under the refactor fails here (byte-identity
+    /// contract — no migration).
+    #[test]
+    fn importance_golden_text_pins() {
+        use taskboard_domain::entities::Importance;
+        for (level, text) in [
+            (Importance::VeryLow, "very_low"),
+            (Importance::Low, "low"),
+            (Importance::Normal, "normal"),
+            (Importance::High, "high"),
+            (Importance::VeryHigh, "very_high"),
+        ] {
+            assert_eq!(importance_to_text(level), text);
+            assert_eq!(importance_from_text(text), Some(level));
+        }
+        assert_eq!(importance_from_text("very-low"), None);
+        assert_eq!(importance_from_text(""), None);
+    }
+
+    #[test]
+    fn urgency_golden_text_pins() {
+        use taskboard_domain::entities::Urgency;
+        for (level, text) in [
+            (Urgency::VeryLow, "very_low"),
+            (Urgency::Low, "low"),
+            (Urgency::Normal, "normal"),
+            (Urgency::High, "high"),
+            (Urgency::VeryHigh, "very_high"),
+        ] {
+            assert_eq!(urgency_to_text(level), text);
+            assert_eq!(urgency_from_text(text), Some(level));
+        }
+        assert_eq!(urgency_from_text("very-low"), None);
+        assert_eq!(urgency_from_text(""), None);
+    }
+
+    #[test]
+    fn time_entry_kind_golden_text_pins() {
+        use taskboard_domain::tracking::TimeEntryKind;
+        for (kind, text) in [
+            (TimeEntryKind::Work, "work"),
+            (TimeEntryKind::Respite, "respite"),
+        ] {
+            assert_eq!(time_entry_kind_to_text(kind), text);
+            assert_eq!(time_entry_kind_from_text(text), Some(kind));
+        }
+        assert_eq!(time_entry_kind_from_text(""), None);
+    }
+
+    #[test]
+    fn task_kind_golden_text_pins() {
+        use taskboard_domain::entities::TaskKind;
+        for (kind, text) in [
+            (TaskKind::Standard, "standard"),
+            (TaskKind::Tracker, "tracker"),
+        ] {
+            assert_eq!(task_kind_to_text(kind), text);
+            assert_eq!(task_kind_from_text(text), Some(kind));
+        }
+        assert_eq!(task_kind_from_text(""), None);
+    }
+
+    #[test]
+    fn reminder_kind_golden_text_pins() {
+        use taskboard_domain::reminders::{AtInstant, ReminderKind, ReminderOffset};
+        let due_offset = ReminderKind::DueOffset(
+            ReminderOffset::before(chrono::TimeDelta::try_minutes(-10).unwrap()).unwrap(),
+        );
+        let at = ReminderKind::At(
+            AtInstant::whole_second(chrono::DateTime::from_timestamp(100, 0).unwrap()).unwrap(),
+        );
+        assert_eq!(reminder_kind_to_text(due_offset), "due_offset");
+        assert_eq!(reminder_kind_to_text(at), "at");
+        assert_eq!(reminder_kind_is_at("due_offset"), Some(false));
+        assert_eq!(reminder_kind_is_at("at"), Some(true));
+        assert_eq!(reminder_kind_is_at("At"), None);
+        assert_eq!(reminder_kind_is_at(""), None);
+    }
+
+    #[test]
+    fn op_tags_golden_text_pins() {
+        let task = TaskId::from(id(1));
+        let stack = StackId::from(id(2));
+        let label = LabelId::from(id(3));
+        let board = taskboard_domain::ids::BoardId::from(id(9));
+        let ops = [
+            (LocalOp::CreateTask(task), "create_task"),
+            (LocalOp::UpdateTask(task), "update_task"),
+            (LocalOp::MoveTask(task), "move_task"),
+            (LocalOp::DeleteTask(task), "delete_task"),
+            (LocalOp::CreateStack(stack), "create_stack"),
+            (LocalOp::RenameStack(stack), "rename_stack"),
+            (LocalOp::MoveStack(stack), "move_stack"),
+            (LocalOp::DeleteStack(stack), "delete_stack"),
+            (LocalOp::CreateLabel(label), "create_label"),
+            (LocalOp::UpdateLabel(label), "update_label"),
+            (LocalOp::DeleteLabel(label), "delete_label"),
+            (LocalOp::AssignLabel(task, label), "assign_label"),
+            (LocalOp::UnassignLabel(task, label), "unassign_label"),
+            (LocalOp::UpdateBoard(board), "update_board"),
+            (LocalOp::UpdateAppData(task), "update_app_data"),
+            (LocalOp::FlushBoardAppData(board), "flush_board_app_data"),
+            (LocalOp::DeleteBoard(board), "delete_board"),
+            (
+                LocalOp::DeleteRemoteCard {
+                    board,
+                    card: taskboard_domain::ids::RemoteCardRef {
+                        board: taskboard_domain::ids::RemoteBoardId(42),
+                        stack: taskboard_domain::ids::RemoteStackId(7),
+                        card: taskboard_domain::ids::RemoteCardId(517),
+                    },
+                },
+                "delete_remote_card",
+            ),
+            (
+                LocalOp::DeleteRemoteStack {
+                    board,
+                    stack: taskboard_domain::ids::RemoteStackRef {
+                        board: taskboard_domain::ids::RemoteBoardId(42),
+                        stack: taskboard_domain::ids::RemoteStackId(8),
+                    },
+                },
+                "delete_remote_stack",
+            ),
+        ];
+        for (op, tag) in ops {
+            assert_eq!(op_kind_to_text(&op), tag, "{op:?}");
+        }
+    }
+
+    #[test]
+    fn sync_phase_golden_text_pins() {
+        for (phase, tag) in [
+            (SyncPhase::Idle, "idle"),
+            (SyncPhase::Syncing, "syncing"),
+            (SyncPhase::Offline, "offline"),
+            (
+                SyncPhase::Failed {
+                    last_error: SyncErrorKind::Network,
+                },
+                "failed",
+            ),
+        ] {
+            assert_eq!(sync_phase_to_text(phase), tag);
+        }
+    }
+
+    #[test]
+    fn sync_error_kind_golden_text_pins() {
+        for (kind, tag) in [
+            (SyncErrorKind::Network, "network"),
+            (SyncErrorKind::Auth, "auth"),
+            (SyncErrorKind::Forbidden, "forbidden"),
+            (SyncErrorKind::Server, "server"),
+            (SyncErrorKind::BadRequest, "bad_request"),
+            (SyncErrorKind::LocalData, "local_data"),
+            (SyncErrorKind::NoBoard, "no_board"),
+        ] {
+            assert_eq!(sync_error_kind_to_text(kind), tag);
+        }
+    }
+
+    #[test]
+    fn recur_golden_json_pin() {
+        assert_eq!(
+            recur_to_text(&recur_codec_tests::sample_rule()),
+            "{\"series\":\"00000000-0000-0000-0000-00000000005e\",\"anchor\":\"2026-01-01\",\"pattern\":{\"Daily\":{\"every\":2}},\"bound\":\"None\",\"continued_from\":null}"
+        );
+    }
+
+    #[test]
+    fn remote_baseline_golden_json_pin() {
+        assert_eq!(
+            remote_baseline_to_text(&sample_baseline()),
+            "{\"title\":\"card\",\"description\":\"desc\",\"duedate\":\"2026-01-02T03:04:05Z\",\"scheduled\":null,\"done\":null,\"stack\":7,\"order\":3,\"labels\":[1,6],\"archived\":false}"
+        );
+    }
+
     #[test]
     fn remote_refs_decompose_into_columns() {
         let (b, s) = remote_stack_to_columns(taskboard_domain::ids::RemoteStackRef {
@@ -942,7 +1144,7 @@ mod tests {
 mod recur_codec_tests {
     use super::*;
 
-    fn sample_rule() -> taskboard_domain::recur::RecurRule {
+    pub(crate) fn sample_rule() -> taskboard_domain::recur::RecurRule {
         taskboard_domain::recur::RecurRule {
             series: taskboard_domain::SeriesId::from_uuid(uuid::Uuid::from_u128(0x5e)),
             anchor: chrono::NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
