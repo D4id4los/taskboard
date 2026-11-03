@@ -10,6 +10,21 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 ### Added
 
+- Task reminders that fire at an absolute time (GUI review round 4):
+  a reminder rule can now be "at 17:00" or "in 2h" instead of only
+  "minutes before the due date" — the task editor's rule field
+  understands all three forms (bare entries stay due-anchored), and
+  at-time rules fire on the engine's tick even on tasks without a
+  due date, which previously could never fire at all. An at-time rule
+  settles (is removed from the list) once its fired notification is
+  dismissed, synced across devices; due-anchored rules keep arming
+  with due changes as before. Rule rows now show what they will do:
+  a live per-second countdown plus the fixed local fire time for
+  at-time rules, the effective fire time for due-anchored rules, an
+  explicit "needs a due date" state with a jump-to-due affordance
+  where a rule is not armed, and a muted indicator with an un-mute
+  button on tasks whose reminders are silenced.
+
 - Pomodoro focus mode and the concentration overlay (#496): opt in
   with `[focus] enabled = true` (timings `work_mins`/`break_mins`,
   defaults 25/5, validated `1..=240` as the typed
