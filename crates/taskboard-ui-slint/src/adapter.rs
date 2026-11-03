@@ -197,9 +197,10 @@ pub(crate) struct Adapter {
     /// `reminder.rule-remove` dispatch, then cleared (one-shot, the
     /// banner-verb precedent).
     rule_target: Option<ReminderRuleId>,
-    /// The rule-list add entry's parsed offset (chunk 6, D13); consumed
-    /// by the next `reminder.rule-add` dispatch, then cleared.
-    rule_add_offset: Option<ReminderOffset>,
+    /// The rule-list add entry's parsed timing input (chunk 6, D13;
+    /// r4 D30 widens it to the three-form grammar); consumed by the
+    /// next `reminder.rule-add` dispatch, then cleared.
+    rule_add_when: Option<crate::presentation::RuleWhen>,
     /// The timers form's parsed draft (DR-3/3, D-P10); consumed by the
     /// next `timer.create` dispatch, then cleared (one-shot).
     timer_draft: Option<crate::router::TimerDraft>,
@@ -607,8 +608,8 @@ impl Adapter {
         self.board_target = None;
         ctx.rule_target = self.rule_target;
         self.rule_target = None;
-        ctx.rule_add_offset = self.rule_add_offset;
-        self.rule_add_offset = None;
+        ctx.rule_add_when = self.rule_add_when;
+        self.rule_add_when = None;
         ctx.timer_draft = self.timer_draft.take();
         ctx.timer_target = self.timer_target.take();
         ctx.track_target = self.track_target.take();
@@ -943,8 +944,12 @@ impl Adapter {
             date_valid: crate::due_edit::field_validity(&self.due_buffer, now2, &chrono::Local),
             syntax_hint: crate::due_edit::DUE_SYNTAX_HINT,
             time_hint: crate::due_edit::TIME_SYNTAX_HINT,
-            offset_valid: crate::presentation::offset_validity(&self.rule_offset_draft),
-            offset_hint: crate::presentation::OFFSET_SYNTAX_HINT,
+            offset_valid: crate::presentation::rule_when_validity(
+                &self.rule_offset_draft,
+                now2,
+                &chrono::Local,
+            ),
+            offset_hint: crate::presentation::RULE_WHEN_SYNTAX_HINT,
         };
         // The focus hand-over is one-shot: consumed by this push.
         self.focus_handover = FocusHandover::None;
@@ -3424,7 +3429,7 @@ pub(crate) fn install(
         time_text: "--:--".to_owned(),
         board_target: None,
         rule_target: None,
-        rule_add_offset: None,
+        rule_add_when: None,
         timer_draft: None,
         timer_target: None,
         track_target: None,
@@ -4867,8 +4872,9 @@ fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         else {
             return; // a stale preset index
         };
-        a.rule_add_offset =
-            Some(ReminderOffset::before(-dur).expect("preset magnitudes negate into the domain"));
+        a.rule_add_when = Some(crate::presentation::RuleWhen::DueOffset(
+            ReminderOffset::before(-dur).expect("preset magnitudes negate into the domain"),
+        ));
         a.route(&window, ActionId::ReminderRuleAdd);
     });
 
@@ -4882,13 +4888,18 @@ fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         // A parse miss dispatches nothing (absorbed — D12): the UI
         // owns no error chrome; the CLI owns typed failures. The miss
         // rides the seam's return (r2 D24): the composition clears its
-        // own buffer, so the field never looks stuck.
-        let Some(offset) = ReminderOffset::parse_text_form(&text) else {
+        // own buffer, so the field never looks stuck. The three-form
+        // grammar (r4 D30/D6): bare stays due-anchored, in/at mint the
+        // absolute kind — and `In` carries a duration, the planner is
+        // the only instant-stamping site.
+        let Some(when) =
+            crate::presentation::parse_rule_when(&text, a.day_ctx().now, &chrono::Local)
+        else {
             a.rule_offset_draft.clear();
             return false;
         };
         a.rule_offset_draft.clear();
-        a.rule_add_offset = Some(offset);
+        a.rule_add_when = Some(when);
         a.route(&window, ActionId::ReminderRuleAdd);
         true
     });

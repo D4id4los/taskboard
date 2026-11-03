@@ -1032,36 +1032,102 @@ pub fn parse_timer_when(
             let duration = -offset.as_duration();
             (duration > TimeDelta::zero()).then_some(taskboard_domain::AdhocWhen::In(duration))
         }
-        "at" => {
-            let rest = rest.trim();
-            if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(rest) {
-                return Some(taskboard_domain::AdhocWhen::At(
-                    dt.with_timezone(&chrono::Utc),
-                ));
-            }
-            if let Ok(date) = chrono::NaiveDate::parse_from_str(rest, "%Y-%m-%d") {
-                let midnight = date.and_hms_opt(0, 0, 0)?;
-                return tz.from_local_datetime(&midnight).single().map(|local| {
-                    taskboard_domain::AdhocWhen::At(local.with_timezone(&chrono::Utc))
-                });
-            }
-            let time = chrono::NaiveTime::parse_from_str(rest, "%H:%M")
-                .or_else(|_| chrono::NaiveTime::parse_from_str(rest, "%H:%M:%S"))
-                .ok()?;
-            let today = now.with_timezone(tz).date_naive();
-            let resolve = |day: chrono::NaiveDate| {
-                tz.from_local_datetime(&day.and_time(time))
-                    .single()
-                    .map(|local| local.with_timezone(&chrono::Utc))
-            };
-            let mut instant = resolve(today)?;
-            if instant <= now {
-                instant = resolve(today.succ_opt()?)?;
-            }
-            Some(taskboard_domain::AdhocWhen::At(instant))
-        }
+        "at" => parse_at_instant(rest, now, tz).map(taskboard_domain::AdhocWhen::At),
         _ => None,
     }
+}
+
+/// The shared at-instant parser (r4 D30/D6): exactly one definition of
+/// the `"at <t>"` arm, extracted verbatim from [`parse_timer_when`] and
+/// shared with [`parse_rule_when`]. RFC-3339 any-offset; `YYYY-MM-DD`
+/// host-local midnight; `HH:MM[:SS]` today host-local, rolled to
+/// tomorrow when already past — `now` is data, `tz` the injected seam;
+/// a DST-unresolvable local time is `None`.
+#[must_use]
+pub fn parse_at_instant(
+    rest: &str,
+    now: DateTime<Utc>,
+    tz: &impl chrono::TimeZone,
+) -> Option<DateTime<Utc>> {
+    let rest = rest.trim();
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(rest) {
+        return Some(dt.with_timezone(&chrono::Utc));
+    }
+    if let Ok(date) = chrono::NaiveDate::parse_from_str(rest, "%Y-%m-%d") {
+        let midnight = date.and_hms_opt(0, 0, 0)?;
+        return tz
+            .from_local_datetime(&midnight)
+            .single()
+            .map(|local| local.with_timezone(&chrono::Utc));
+    }
+    let time = chrono::NaiveTime::parse_from_str(rest, "%H:%M")
+        .or_else(|_| chrono::NaiveTime::parse_from_str(rest, "%H:%M:%S"))
+        .ok()?;
+    let today = now.with_timezone(tz).date_naive();
+    let resolve = |day: chrono::NaiveDate| {
+        tz.from_local_datetime(&day.and_time(time))
+            .single()
+            .map(|local| local.with_timezone(&chrono::Utc))
+    };
+    let mut instant = resolve(today)?;
+    if instant <= now {
+        instant = resolve(today.succ_opt()?)?;
+    }
+    Some(instant)
+}
+
+/// The parsed rule-add timing input (r4 D30/D6): either the legacy
+/// due-anchored offset (bare `"10m"` — the parity anchor) or the at/in
+/// shape (`"in 10m"` / `"at 17:00"`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum RuleWhen {
+    /// Fire this far before the task's due date.
+    DueOffset(taskboard_domain::ReminderOffset),
+    /// The at/in input — carried as domain `AdhocWhen` verbatim so the
+    /// planner is the only instant-stamping site (`In` needs no clock
+    /// read anywhere in the UI).
+    At(taskboard_domain::AdhocWhen),
+}
+
+/// The rule-add field's grammar (r4 decision 2): prefix-dispatched on
+/// the first whitespace token like [`parse_timer_when`] — `"in <dur>"`
+/// rides the domain's offset parser (`≤ 0` magnitude is `None`, the
+/// same seam refusal), `"at <t>"` rides the shared
+/// [`parse_at_instant`]; **anything else** is the bare-offset fallback
+/// through [`taskboard_domain::ReminderOffset::parse_text_form`] (bare
+/// `"10m"` stays due-anchored — the parity rule). Empty is `None`.
+///
+/// The exactly-one contract: one at-instant parser
+/// ([`parse_at_instant`]), one in/bare duration grammar (the domain's
+/// `parse_text_form`), one prefix dispatcher per consumer grammar
+/// ([`parse_timer_when`] for timers, this for rules — they differ in
+/// the bare fallback, which is the feature).
+#[must_use]
+pub fn parse_rule_when(
+    raw: &str,
+    now: DateTime<Utc>,
+    tz: &impl chrono::TimeZone,
+) -> Option<RuleWhen> {
+    let trimmed = raw.trim();
+    if let Some((prefix, rest)) = trimmed.split_once(char::is_whitespace) {
+        match prefix {
+            "in" => {
+                let offset = taskboard_domain::ReminderOffset::parse_text_form(rest.trim())?;
+                let duration = -offset.as_duration();
+                return (duration > TimeDelta::zero())
+                    .then_some(RuleWhen::At(taskboard_domain::AdhocWhen::In(duration)));
+            }
+            "at" => {
+                return parse_at_instant(rest, now, tz)
+                    .map(|instant| RuleWhen::At(taskboard_domain::AdhocWhen::At(instant)));
+            }
+            // A prefixed-but-unknown form ("soon 10m") falls through to
+            // the bare fallback below, which rejects it — one miss
+            // shape, no second grammar.
+            _ => {}
+        }
+    }
+    taskboard_domain::ReminderOffset::parse_text_form(trimmed).map(RuleWhen::DueOffset)
 }
 
 /// The tracker badge's visibility predicate (issue #492): the
@@ -1078,6 +1144,26 @@ pub const OFFSET_SYNTAX_HINT: &str = "45m, 3h, 2d, 1w";
 
 /// The timers `when` field's syntax hint (r4 D27).
 pub const TIMER_SYNTAX_HINT: &str = "in 10m · at 09:30 · at 2030-04-01";
+
+/// The rule-add field's three-form syntax hint (r4 D30/D6): bare stays
+/// due-anchored (the parity anchor), the at/in prefixes mint the
+/// absolute kind.
+pub const RULE_WHEN_SYNTAX_HINT: &str = "45m · in 2h · at 17:00";
+
+/// The rule-add field's tri-state validity probe (r4 D30/D6) over
+/// [`parse_rule_when`] — the same injected-tz seam and refusal
+/// discipline as [`timer_when_validity`]. Empty is neutral.
+#[must_use]
+pub fn rule_when_validity(
+    text: &str,
+    now: DateTime<Utc>,
+    tz: &impl chrono::TimeZone,
+) -> Option<bool> {
+    if text.trim().is_empty() {
+        return None;
+    }
+    Some(parse_rule_when(text, now, tz).is_some())
+}
 
 /// The custom-offset field's tri-state validity probe (r4 D27): the
 /// predicate *calls* the authoritative domain parser — no second
@@ -2542,6 +2628,66 @@ mod tests {
         assert_eq!(offset_validity("30s"), Some(true));
         assert_eq!(offset_validity("soon"), Some(false));
         assert_eq!(offset_validity("45x"), Some(false));
+    }
+
+    #[test]
+    fn parse_rule_when_dispatches_the_three_forms() {
+        use super::{RuleWhen, parse_rule_when};
+        let now = Utc.with_ymd_and_hms(2026, 11, 3, 9, 0, 0).unwrap();
+        let tz = chrono::FixedOffset::east_opt(0).unwrap();
+        // Bare: the due-anchored parity anchor.
+        assert_eq!(
+            parse_rule_when("10m", now, &tz),
+            Some(RuleWhen::DueOffset(
+                taskboard_domain::ReminderOffset::before(TimeDelta::try_minutes(-10).unwrap())
+                    .unwrap()
+            ))
+        );
+        // in/at: the absolute kind, carried as AdhocWhen verbatim.
+        assert_eq!(
+            parse_rule_when("in 2h", now, &tz),
+            Some(RuleWhen::At(taskboard_domain::AdhocWhen::In(
+                TimeDelta::try_hours(2).unwrap()
+            )))
+        );
+        assert_eq!(
+            parse_rule_when("at 2030-04-01T05:00:00Z", now, &tz),
+            Some(RuleWhen::At(taskboard_domain::AdhocWhen::At(
+                Utc.with_ymd_and_hms(2030, 4, 1, 5, 0, 0).unwrap()
+            )))
+        );
+        // The `at HH:MM` form resolves in the injected tz (the
+        // structural instant, not a label).
+        match parse_rule_when("at 17:00", now, &tz) {
+            Some(RuleWhen::At(taskboard_domain::AdhocWhen::At(instant))) => {
+                assert_eq!(
+                    instant,
+                    Utc.with_ymd_and_hms(2026, 11, 3, 17, 0, 0).unwrap()
+                );
+            }
+            other => panic!("expected At(At), got {other:?}"),
+        }
+        // The miss classes: non-positive in-magnitude, unknown prefix,
+        // bare garbage, empty.
+        assert_eq!(parse_rule_when("in -10m", now, &tz), None);
+        assert_eq!(parse_rule_when("in", now, &tz), None);
+        assert_eq!(parse_rule_when("soon 10m", now, &tz), None);
+        assert_eq!(parse_rule_when("soon", now, &tz), None);
+        assert_eq!(parse_rule_when("", now, &tz), None);
+    }
+
+    #[test]
+    fn rule_when_validity_follows_the_rule_grammar() {
+        use super::rule_when_validity;
+        let now = Utc.with_ymd_and_hms(2026, 11, 3, 9, 0, 0).unwrap();
+        let tz = chrono::FixedOffset::east_opt(0).unwrap();
+        assert_eq!(rule_when_validity("", now, &tz), None);
+        assert_eq!(rule_when_validity("   ", now, &tz), None);
+        assert_eq!(rule_when_validity("45m", now, &tz), Some(true));
+        assert_eq!(rule_when_validity("in 2h", now, &tz), Some(true));
+        assert_eq!(rule_when_validity("at 17:00", now, &tz), Some(true));
+        assert_eq!(rule_when_validity("soon", now, &tz), Some(false));
+        assert_eq!(rule_when_validity("in", now, &tz), Some(false));
     }
 
     #[test]

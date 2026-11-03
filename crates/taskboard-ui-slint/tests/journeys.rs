@@ -4247,6 +4247,50 @@ fn an_info_tip_hover_arms_the_generalized_tooltip() {
 /// tables. Rows-render and hint-presence are asserted here at the
 /// composition's live mount (the component-level read folded in — one
 /// behavior, one test).
+/// The at/in grammar legs (r4 D30/D6, T8): "in 2h" dispatches the
+/// At(In) shape — the command carries the duration, the planner stamps
+/// the instant; "at 17:00" dispatches the At(At) shape with a concrete
+/// instant (the host-local seam resolved it — a typed instant arrived,
+/// which is the structural fact); bare garbage and a non-positive
+/// in-magnitude are the absorbed misses (D12).
+fn at_in_legs(harness: &mut Harness, task1: TaskId) {
+    harness
+        .handle
+        .window()
+        .invoke_rule_add_custom_accepted("in 2h".into());
+    harness.assert_commands(&[StateCommand::AddReminderRule {
+        task: task1,
+        offset: taskboard_domain::ReminderOffset::at_due(),
+        at: Some(taskboard_domain::AdhocWhen::In(
+            TimeDelta::try_hours(2).expect("2h"),
+        )),
+        insistence: taskboard_domain::Insistence::Normal,
+    }]);
+    harness
+        .handle
+        .window()
+        .invoke_rule_add_custom_accepted("at 17:00".into());
+    let commands = harness.engine.drain();
+    let [
+        StateCommand::AddReminderRule {
+            at: Some(taskboard_domain::AdhocWhen::At(_)),
+            ..
+        },
+    ] = commands[..]
+    else {
+        panic!("expected one AddReminderRule at Some(At(_)), got {commands:?}");
+    };
+    harness
+        .handle
+        .window()
+        .invoke_rule_add_custom_accepted("soon".into());
+    harness
+        .handle
+        .window()
+        .invoke_rule_add_custom_accepted("in -10m".into());
+    harness.assert_commands(&[]);
+}
+
 #[test]
 fn the_rule_list_journeys_reach_the_boundary() {
     let (fixture, mut state) = fixture::journey_state();
@@ -4334,12 +4378,7 @@ fn the_rule_list_journeys_reach_the_boundary() {
                 insistence: taskboard_domain::Insistence::Normal,
             }]);
 
-            // A parse miss dispatches nothing (absorbed — D12).
-            harness
-                .handle
-                .window()
-                .invoke_rule_add_custom_accepted("soon".into());
-            harness.assert_commands(&[]);
+            at_in_legs(&mut harness, task1);
 
             // Row remove resolves the index through the id tables.
             harness.handle.window().invoke_task_rule_remove_clicked(1);
