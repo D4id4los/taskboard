@@ -5508,6 +5508,14 @@ fn install_settings_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
 /// view-state machine — the shell's seam fields are derived from it
 /// on every route (D6); the component tests use this seam now.
 ///
+/// This seam is permanent pub surface, deliberately not
+/// `#[cfg(test)]`-gated (audit F7-04): the integration tier
+/// (`tests/usability_components.rs`) compiles this crate externally and
+/// drives the settings surface through it, so a `#[cfg(test)]` gate —
+/// invisible to an externally-compiled crate — would break the
+/// integration build. Production code calls neither method
+/// (re-verified 2026-11-03 @ `5d8c0751`).
+///
 /// A view-context write is a derive input outside the state Arc, so
 /// `set_view_context` ends in a forced pass (the unchanged-refresh
 /// guard's invariant, #463) — the surfaced rows are material before
