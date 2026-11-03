@@ -142,6 +142,33 @@ pub fn insistence_from_text(raw: &str) -> Option<taskboard_domain::reminders::In
     }
 }
 
+/// The stored TEXT form of a reminder rule kind: the domain enum's
+/// serde unit name (the `task_kind_*` twins' one-representation
+/// discipline; `snake_case` rename on the domain enum keeps the two
+/// lanes identical).
+#[must_use]
+pub fn reminder_kind_to_text(kind: taskboard_domain::reminders::ReminderKind) -> &'static str {
+    use taskboard_domain::reminders::ReminderKind::{At, DueOffset};
+    match kind {
+        DueOffset(_) => "due_offset",
+        At(_) => "at",
+    }
+}
+
+/// The stored TEXT form's kind discriminant: `Some(true)` = the `at`
+/// arm, `Some(false)` = the due-offset arm, `None` = unknown text (a
+/// corrupt local row is a corrupted database, never a clamped value).
+/// The arm's *data* comes from the row's `at_epoch_seconds` column, so
+/// this carries the discriminant only.
+#[must_use]
+pub fn reminder_kind_is_at(raw: &str) -> Option<bool> {
+    match raw {
+        "due_offset" => Some(false),
+        "at" => Some(true),
+        _ => None,
+    }
+}
+
 /// The stored TEXT form of a recurring-series rule: the domain serde
 /// JSON of the rule (the `Option` wrapper is not stored — NULL is the
 /// unset state at the column level).

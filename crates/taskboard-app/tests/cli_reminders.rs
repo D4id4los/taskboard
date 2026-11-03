@@ -406,7 +406,9 @@ async fn r7b_rule_selectors_resolve_and_fail_typed() {
 #[test]
 fn r7c_colliding_rule_prefix_is_typed_ambiguous() {
     use taskboard_app::commands::CommandError;
-    use taskboard_domain::{AppState, ReminderOffset, ReminderRule, ReminderRuleId, TaskId};
+    use taskboard_domain::{
+        AppState, ReminderKind, ReminderOffset, ReminderRule, ReminderRuleId, TaskId,
+    };
 
     let task = TaskId::from(uuid::Uuid::from_u128(1));
     // Two ids sharing a long hex prefix, deterministically.
@@ -415,7 +417,7 @@ fn r7c_colliding_rule_prefix_is_typed_ambiguous() {
         insistence: taskboard_domain::Insistence::Normal,
         id: ReminderRuleId::from(uuid::Uuid::from_u128(raw)),
         task,
-        offset: ReminderOffset::at_due(),
+        kind: ReminderKind::DueOffset(ReminderOffset::at_due()),
         created_at: epoch,
         updated_at: epoch,
     };

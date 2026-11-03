@@ -19,8 +19,8 @@ use taskboard_domain::persistence::{
     BoxFuture, PersistedState, PersistenceAction, RepositoryError, SyncValidators, TaskRepository,
 };
 use taskboard_domain::reminders::{
-    AdhocAlarm, BreakRule, ReminderDelivery, ReminderDismissal, ReminderOffset, ReminderRef,
-    ReminderRule, ReminderSnoozeKey, ReminderState,
+    AdhocAlarm, AtInstant, BreakRule, ReminderDelivery, ReminderDismissal, ReminderKind,
+    ReminderOffset, ReminderRef, ReminderRule, ReminderSnoozeKey, ReminderState,
 };
 use taskboard_domain::state::{SyncPhase, SyncStates, derive_sync_states};
 use taskboard_domain::tracking::TimeEntry;
@@ -156,11 +156,13 @@ struct SyncStatusRow {
     last_success: Option<DateTime<Utc>>,
 }
 
-/// Raw `reminder_rules` row.
+/// Raw `reminder_rules` row (0020: `kind` + `at_epoch_seconds`).
 struct ReminderRuleRow {
     rule_id: String,
     task_id: String,
     offset_seconds: i64,
+    kind: String,
+    at_epoch_seconds: Option<i64>,
     insistence: String,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
@@ -583,18 +585,39 @@ fn decode_reminder_ref(raw: &str) -> Result<ReminderRef, RepositoryError> {
 fn decode_reminder_rule(
     row: &ReminderRuleRow,
 ) -> Result<(ReminderRuleId, ReminderRule), RepositoryError> {
-    // The domain constructor is the integrity check: an unrepresentable
-    // or positive stored offset is corruption, not a clamped value.
-    let duration =
-        chrono::TimeDelta::try_seconds(row.offset_seconds).ok_or(RepositoryError::Corrupted)?;
-    let offset = ReminderOffset::before(duration).map_err(|_| RepositoryError::Corrupted)?;
+    // The kind columns decide the arm, each with its integrity check
+    // (trusted-write discipline: a self-contradictory row is corruption,
+    // not a clamped value):
+    // - `due_offset`: the offset column decodes through the domain
+    //   mint (an unrepresentable or positive stored offset is
+    //   corruption); a stray non-NULL epoch is a self-contradictory row.
+    // - `at`: the epoch column is required and must mint a whole-second
+    //   `AtInstant`; NULL is corruption.
+    let kind = match codec::reminder_kind_is_at(row.kind.as_str()) {
+        Some(false) => {
+            if row.at_epoch_seconds.is_some() {
+                return Err(RepositoryError::Corrupted);
+            }
+            let duration = chrono::TimeDelta::try_seconds(row.offset_seconds)
+                .ok_or(RepositoryError::Corrupted)?;
+            ReminderKind::DueOffset(
+                ReminderOffset::before(duration).map_err(|_| RepositoryError::Corrupted)?,
+            )
+        }
+        Some(true) => {
+            let secs = row.at_epoch_seconds.ok_or(RepositoryError::Corrupted)?;
+            let dt = chrono::DateTime::from_timestamp(secs, 0).ok_or(RepositoryError::Corrupted)?;
+            ReminderKind::At(AtInstant::whole_second(dt).map_err(|_| RepositoryError::Corrupted)?)
+        }
+        None => return Err(RepositoryError::Corrupted),
+    };
     let id = ReminderRuleId::from(decode::uuid(&row.rule_id)?);
     Ok((
         id,
         ReminderRule {
             id,
             task: TaskId::from(decode::uuid(&row.task_id)?),
-            offset,
+            kind,
             insistence: decode::insistence(&row.insistence)?,
             created_at: row.created_at,
             // 0007's NOT NULL DEFAULT epoch column: pre-chunk-4 rows
@@ -876,7 +899,7 @@ impl SqliteTaskRepository {
 
         let reminder_rule_rows = sqlx::query_as!(
             ReminderRuleRow,
-            r#"SELECT rule_id, task_id, offset_seconds, insistence,
+            r#"SELECT rule_id, task_id, offset_seconds, kind, at_epoch_seconds, insistence,
                       created_at as "created_at: DateTime<Utc>",
                       updated_at as "updated_at: DateTime<Utc>"
                FROM reminder_rules ORDER BY rule_id"#
@@ -1864,22 +1887,33 @@ async fn execute_batch(
     // write wins); a snooze link replaces the prior link for the same
     // key; mute toggles membership.
     for rule in rule_upserts {
-        // The type guarantees the offset is whole-second and
-        // non-positive, so the integer column stores it exactly — no
-        // truncation, no divergence between the evaluated offset and
-        // the reloaded one.
+        // The kind columns are decided by the kind itself: a due-offset
+        // row stores the (whole-second, non-positive) offset exactly —
+        // the type guarantees no truncation, no divergence between the
+        // evaluated offset and the reloaded one — and a NULL epoch; an
+        // `At` row stores the epoch seconds and a placeholder offset
+        // (the column is NOT NULL from 0004; the decode never reads it
+        // for `At` rows).
+        let (offset_seconds_column, at_epoch_seconds_column) = match rule.kind {
+            ReminderKind::DueOffset(offset) => (offset.as_duration().num_seconds(), None),
+            ReminderKind::At(at) => (0, Some(at.as_datetime().timestamp())),
+        };
         sqlx::query!(
-            r#"INSERT INTO reminder_rules (rule_id, task_id, offset_seconds, insistence, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?)
+            r#"INSERT INTO reminder_rules (rule_id, task_id, offset_seconds, kind, at_epoch_seconds, insistence, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(rule_id) DO UPDATE SET
                        task_id = excluded.task_id,
                        offset_seconds = excluded.offset_seconds,
+                       kind = excluded.kind,
+                       at_epoch_seconds = excluded.at_epoch_seconds,
                        insistence = excluded.insistence,
                        created_at = excluded.created_at,
                        updated_at = excluded.updated_at"#,
             codec::uuid_to_text(rule.id.as_uuid()),
             codec::uuid_to_text(rule.task.as_uuid()),
-            rule.offset.as_duration().num_seconds(),
+            offset_seconds_column,
+            codec::reminder_kind_to_text(rule.kind),
+            at_epoch_seconds_column,
             codec::insistence_to_text(rule.insistence),
             rule.created_at.to_rfc3339(),
             rule.updated_at.to_rfc3339(),

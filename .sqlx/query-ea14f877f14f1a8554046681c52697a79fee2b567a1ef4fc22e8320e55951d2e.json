@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO reminder_rules (rule_id, task_id, offset_seconds, kind, at_epoch_seconds, insistence, created_at, updated_at)\n                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)\n                   ON CONFLICT(rule_id) DO UPDATE SET\n                       task_id = excluded.task_id,\n                       offset_seconds = excluded.offset_seconds,\n                       kind = excluded.kind,\n                       at_epoch_seconds = excluded.at_epoch_seconds,\n                       insistence = excluded.insistence,\n                       created_at = excluded.created_at,\n                       updated_at = excluded.updated_at",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 8
+    },
+    "nullable": []
+  },
+  "hash": "ea14f877f14f1a8554046681c52697a79fee2b567a1ef4fc22e8320e55951d2e"
+}

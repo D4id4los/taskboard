@@ -434,6 +434,7 @@ impl ActionRouter {
                     DispatchOutcome::Command(StateCommand::AddReminderRule {
                         task,
                         offset,
+                        at: None,
                         insistence: taskboard_domain::Insistence::Normal,
                     })
                 }
@@ -823,6 +824,7 @@ mod tests {
             DispatchOutcome::Command(StateCommand::AddReminderRule {
                 task,
                 offset: ctx.rule_add_offset.expect("set"),
+                at: None,
                 insistence: taskboard_domain::Insistence::Normal,
             })
         );

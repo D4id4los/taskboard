@@ -137,7 +137,7 @@ fn seeded_board() -> taskboard_domain::Board {
 fn due_rule_seed() -> Vec<taskboard_domain::PersistenceAction> {
     use taskboard_domain::entities::Stack;
     use taskboard_domain::idgen::IdGenerator as _;
-    use taskboard_domain::reminders::{ReminderOffset, ReminderRule};
+    use taskboard_domain::reminders::{ReminderKind, ReminderOffset, ReminderRule};
     use taskboard_domain::{PersistenceAction, Task, TaskClocks};
 
     let ids = CountingIds::new();
@@ -200,8 +200,10 @@ fn due_rule_seed() -> Vec<taskboard_domain::PersistenceAction> {
         insistence: taskboard_domain::Insistence::Normal,
         id: rule_id,
         task: task.id,
-        offset: ReminderOffset::before(chrono::TimeDelta::try_seconds(-90).unwrap())
-            .expect("whole-second"),
+        kind: ReminderKind::DueOffset(
+            ReminderOffset::before(chrono::TimeDelta::try_seconds(-90).unwrap())
+                .expect("whole-second"),
+        ),
         created_at: common::ts(T0),
         updated_at: common::ts(T0),
     };

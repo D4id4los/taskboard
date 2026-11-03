@@ -236,19 +236,31 @@ pub enum StateCommand {
         occurrence: chrono::DateTime<chrono::Utc>,
     },
     /// Add one reminder rule to the task's rule set — unless a rule at
-    /// this exact offset already exists, in which case nothing is
+    /// this exact kind already exists, in which case nothing is
     /// planned and the receipt names the surviving rule (the dedup is
-    /// sound because `(task, offset)` fully determines *firing*
-    /// semantics: `occurrence_of` is pure in `(offset, duedate)`;
-    /// insistence is flavour and never keys the dedup — a different
-    /// level at the same offset is a re-create, remove + add). Legal on
-    /// a task without a duedate (the rule arms when a duedate arrives —
-    /// occurrence arithmetic is due-anchored).
+    /// sound because `(task, kind)` fully determines *firing*
+    /// semantics: a `DueOffset` rule's `occurrence_of` is pure in
+    /// `(offset, duedate)`, an `At` rule's occurrence is pure in the
+    /// instant; insistence is flavour and never keys the dedup — a
+    /// different level of the same kind is a re-create, remove + add).
+    /// Legal on a task without a duedate: a `DueOffset` rule arms when
+    /// a duedate arrives (occurrence arithmetic is due-anchored); an
+    /// `At` rule fires regardless (r4 decision 2).
     AddReminderRule {
         /// The task the rule watches.
         task: TaskId,
-        /// The new rule's due-anchored offset.
+        /// Legacy field, kept for the journal/IPC wire: the
+        /// due-anchored offset. Read iff `at` is `None` — the payload
+        /// is additive, never a rename, so a pre-change journal leaf
+        /// keeps decoding at load.
         offset: crate::reminders::ReminderOffset,
+        /// The at/in timing input (r4 decision 2). Absent (the serde
+        /// default) = the legacy due-offset shape; `At` carries a
+        /// minted instant (sub-second is a typed rejection); `In` is
+        /// stamped `now + dur` by the engine's injected clock — the UI
+        /// never mints instants.
+        #[serde(default)]
+        at: Option<crate::reminders::AdhocWhen>,
         /// How loudly the rule insists (stamped at creation, immutable
         /// per row).
         insistence: crate::reminders::Insistence,

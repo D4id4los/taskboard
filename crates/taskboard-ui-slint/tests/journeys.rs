@@ -4257,7 +4257,7 @@ fn the_rule_list_journeys_reach_the_boundary() {
         insistence: taskboard_domain::Insistence::Normal,
         id: taskboard_domain::ReminderRuleId::from_uuid(uuid::Uuid::from_u128(11)),
         task: task1,
-        offset: taskboard_domain::ReminderOffset::at_due(),
+        kind: taskboard_domain::ReminderKind::DueOffset(taskboard_domain::ReminderOffset::at_due()),
         created_at: taskboard_domain::BoardClocks::epoch(),
         updated_at: taskboard_domain::BoardClocks::epoch(),
     };
@@ -4265,10 +4265,10 @@ fn the_rule_list_journeys_reach_the_boundary() {
         insistence: taskboard_domain::Insistence::Normal,
         id: taskboard_domain::ReminderRuleId::from_uuid(uuid::Uuid::from_u128(12)),
         task: task1,
-        offset: taskboard_domain::ReminderOffset::before(
-            TimeDelta::try_minutes(-10).expect("-10m"),
-        )
-        .expect("legal offset"),
+        kind: taskboard_domain::ReminderKind::DueOffset(
+            taskboard_domain::ReminderOffset::before(TimeDelta::try_minutes(-10).expect("-10m"))
+                .expect("legal offset"),
+        ),
         created_at: taskboard_domain::BoardClocks::epoch(),
         updated_at: taskboard_domain::BoardClocks::epoch(),
     };
@@ -4315,6 +4315,7 @@ fn the_rule_list_journeys_reach_the_boundary() {
                     TimeDelta::try_minutes(-5).expect("-5m"),
                 )
                 .expect("legal offset"),
+                at: None,
                 insistence: taskboard_domain::Insistence::Normal,
             }]);
 
@@ -4329,6 +4330,7 @@ fn the_rule_list_journeys_reach_the_boundary() {
                     TimeDelta::try_minutes(-45).expect("-45m"),
                 )
                 .expect("legal offset"),
+                at: None,
                 insistence: taskboard_domain::Insistence::Normal,
             }]);
 
@@ -5873,6 +5875,7 @@ fn a_parse_missed_custom_offset_clears_its_buffer() {
                     TimeDelta::try_minutes(-45).expect("-45m"),
                 )
                 .expect("legal offset"),
+                at: None,
                 insistence: taskboard_domain::Insistence::Normal,
             }]);
         },

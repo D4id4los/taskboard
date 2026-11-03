@@ -399,12 +399,19 @@ impl<'de> Deserialize<'de> for RulesEntry {
 #[derive(Debug, Clone, PartialEq)]
 pub enum RuleEntry {
     /// `{ "offset": <seconds ≤ 0>, "created": rfc3339, "clock": rfc3339,
-    /// "insistence": "normal"|"alarm" }`. The insistence key is
-    /// additive: a pre-insistence document omits it and folds
-    /// `Normal`; an unknown rung demotes the whole entry to
-    /// [`RuleEntry::Verbatim`] (never a silent downgrade).
+    /// "insistence": "normal"|"alarm" }` for a `DueOffset` rule — or
+    /// `{ "at": <rfc3339>, "created": rfc3339, "clock": rfc3339,
+    /// "insistence": "normal"|"alarm" }` for an `At` rule (r4 decision
+    /// 2). The `at` key is additive with a twist: an `At` rule emits
+    /// **no** `offset` key, so documents carrying only due-offset rules
+    /// stay byte-identical and an old reader's `decode_offset` fails —
+    /// the whole entry demotes to [`RuleEntry::Verbatim`] (D-S2's
+    /// materialization rule, both directions safe). Decode-side, a
+    /// missing `at` key defaults-on-missing to `DueOffset` (the
+    /// insistence precedent); a present-but-unmodelable `at` value
+    /// demotes the whole entry (never a silent downgrade).
     Rule {
-        offset: ReminderOffset,
+        kind: crate::reminders::ReminderKind,
         created: DateTime<Utc>,
         clock: DateTime<Utc>,
         insistence: Insistence,
@@ -440,8 +447,8 @@ impl RuleEntry {
             }
             return Self::Verbatim(raw);
         }
-        if let (Ok(offset), Ok(created), Ok(clock), Ok(insistence)) = (
-            decode_offset(map.get("offset")),
+        if let (Ok(kind), Ok(created), Ok(clock), Ok(insistence)) = (
+            decode_kind(map.get("at"), map.get("offset")),
             serde_json::from_value(map.get("created").cloned().unwrap_or(Value::Null)),
             serde_json::from_value(map.get("clock").cloned().unwrap_or(Value::Null)),
             // Default-on-missing (the additive-section precedent): an
@@ -450,7 +457,7 @@ impl RuleEntry {
             decode_insistence_default_on_missing(map.get("insistence")),
         ) {
             return Self::Rule {
-                offset,
+                kind,
                 created,
                 clock,
                 insistence,
@@ -464,16 +471,34 @@ impl Serialize for RuleEntry {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self {
             Self::Rule {
-                offset,
+                kind,
                 created,
                 clock,
                 insistence,
-            } => serde_json::json!({
-                "offset": offset.as_duration().num_seconds(),
-                "created": created,
-                "clock": clock,
-                "insistence": insistence.text_form(),
-            })
+            } => match *kind {
+                // A `DueOffset` rule emits today's shape verbatim: no
+                // new key, byte-identical documents for due-offset-only
+                // rules, old readers unaffected.
+                crate::reminders::ReminderKind::DueOffset(offset) => {
+                    serde_json::json!({
+                        "offset": offset.as_duration().num_seconds(),
+                        "created": created,
+                        "clock": clock,
+                        "insistence": insistence.text_form(),
+                    })
+                }
+                // An `At` rule emits the `at` key instead of `offset`:
+                // an old reader's decode fails and the entry demotes to
+                // `Verbatim` — preserved, never folded.
+                crate::reminders::ReminderKind::At(at) => {
+                    serde_json::json!({
+                        "at": at.as_datetime().to_rfc3339(),
+                        "created": created,
+                        "clock": clock,
+                        "insistence": insistence.text_form(),
+                    })
+                }
+            }
             .serialize(serializer),
             Self::Tombstone { clock } => {
                 serde_json::json!({ "deleted": true, "clock": clock }).serialize(serializer)
@@ -502,6 +527,28 @@ fn decode_offset(raw: Option<&Value>) -> Result<ReminderOffset, ()> {
     };
     let secs = n.as_i64().ok_or(())?;
     ReminderOffset::before(chrono::TimeDelta::seconds(secs)).map_err(|_| ())
+}
+
+/// Decodes the rule entry's kind: an `at` key carries the rfc3339
+/// instant (minted — sub-second or unparseable demotes the entry); no
+/// `at` key defaults-on-missing to the legacy due-offset decode (an
+/// old document's `offset` key). The kind is decided by `at`'s
+/// presence alone, so the two shapes can never blend.
+fn decode_kind(
+    at: Option<&Value>,
+    offset: Option<&Value>,
+) -> Result<crate::reminders::ReminderKind, ()> {
+    match at {
+        Some(Value::Null) | None => Ok(crate::reminders::ReminderKind::DueOffset(decode_offset(
+            offset,
+        )?)),
+        Some(value) => {
+            let raw = serde_json::from_value::<DateTime<Utc>>(value.clone()).map_err(|_| ())?;
+            Ok(crate::reminders::ReminderKind::At(
+                crate::reminders::AtInstant::whole_second(raw).map_err(|_| ())?,
+            ))
+        }
+    }
 }
 
 /// One card's synced-dismissal entry (the `dismissals` section, design
@@ -1380,7 +1427,7 @@ pub fn rules_entry_for(
             (
                 rule.id.as_uuid().to_string(),
                 RuleEntry::Rule {
-                    offset: rule.offset,
+                    kind: rule.kind,
                     created: rule.created_at,
                     clock: rule.updated_at,
                     insistence: rule.insistence,
@@ -1815,8 +1862,10 @@ mod tests {
                             "018f0000-0000-7000-8000-000000000001".to_owned(),
                             RuleEntry::Rule {
                                 insistence: Insistence::Normal,
-                                offset: ReminderOffset::before(chrono::TimeDelta::seconds(-900))
-                                    .unwrap(),
+                                kind: crate::reminders::ReminderKind::DueOffset(
+                                    ReminderOffset::before(chrono::TimeDelta::seconds(-900))
+                                        .unwrap(),
+                                ),
                                 created: ts(100),
                                 clock: ts(120),
                             },
@@ -2133,10 +2182,12 @@ mod tests {
         assert_eq!(
             entry.rules["r"],
             RuleEntry::Rule {
-                offset: crate::reminders::ReminderOffset::before(
-                    chrono::TimeDelta::try_minutes(-15).unwrap()
-                )
-                .unwrap(),
+                kind: crate::reminders::ReminderKind::DueOffset(
+                    crate::reminders::ReminderOffset::before(
+                        chrono::TimeDelta::try_minutes(-15).unwrap(),
+                    )
+                    .unwrap()
+                ),
                 created: "2026-01-01T00:00:00Z".parse().unwrap(),
                 clock: "2026-01-01T00:01:00Z".parse().unwrap(),
                 insistence: crate::reminders::Insistence::Normal,
@@ -2153,10 +2204,12 @@ mod tests {
         assert_eq!(
             entry.rules["r"],
             RuleEntry::Rule {
-                offset: crate::reminders::ReminderOffset::before(
-                    chrono::TimeDelta::try_minutes(-15).unwrap()
-                )
-                .unwrap(),
+                kind: crate::reminders::ReminderKind::DueOffset(
+                    crate::reminders::ReminderOffset::before(
+                        chrono::TimeDelta::try_minutes(-15).unwrap(),
+                    )
+                    .unwrap()
+                ),
                 created: "2026-01-01T00:00:00Z".parse().unwrap(),
                 clock: "2026-01-01T00:01:00Z".parse().unwrap(),
                 insistence: crate::reminders::Insistence::Alarm,
@@ -2630,7 +2683,9 @@ mod tests {
             insistence: Insistence::Normal,
             id: ReminderRuleId::from(uuid::Uuid::from_u128(10)),
             task: task.id,
-            offset: crate::reminders::ReminderOffset::at_due(),
+            kind: crate::reminders::ReminderKind::DueOffset(
+                crate::reminders::ReminderOffset::at_due(),
+            ),
             created_at: task.clocks.title,
             updated_at: task.clocks.effort,
         };
@@ -2647,10 +2702,80 @@ mod tests {
             entry.rules[&rule.id.as_uuid().to_string()],
             RuleEntry::Rule {
                 insistence: Insistence::Normal,
-                offset: rule.offset,
+                kind: rule.kind,
                 created: rule.created_at,
                 clock: rule.updated_at,
             }
+        );
+    }
+
+    #[test]
+    fn a_due_offset_rule_serializes_the_legacy_shape_verbatim() {
+        // Byte-shape pin: a DueOffset rule emits no kind key at all —
+        // documents carrying only due-offset rules stay identical for
+        // old-reading clients.
+        let task = task_fixture();
+        let rule = crate::reminders::ReminderRule {
+            insistence: Insistence::Normal,
+            id: crate::ids::ReminderRuleId::from(uuid::Uuid::from_u128(21)),
+            task: task.id,
+            kind: crate::reminders::ReminderKind::DueOffset(ReminderOffset::at_due()),
+            created_at: ts(100),
+            updated_at: ts(120),
+        };
+        let rule_id = rule.id;
+        let entry = rules_entry_for(&BTreeMap::from([(rule_id, rule)]), task.id);
+        let value = serde_json::to_value(&entry.rules[&rule_id.as_uuid().to_string()]).unwrap();
+        let map = value.as_object().expect("a rule entry is a JSON map");
+        assert!(map.contains_key("offset"), "the legacy offset key");
+        assert!(
+            !map.contains_key("at"),
+            "no kind key rides the legacy shape"
+        );
+        assert!(
+            !map.contains_key("kind"),
+            "no kind key rides the legacy shape"
+        );
+    }
+
+    #[test]
+    fn an_at_rule_entry_roundtrips_and_an_unmodelable_at_demotes() {
+        let task = task_fixture();
+        let rule = crate::reminders::ReminderRule {
+            insistence: Insistence::Alarm,
+            id: crate::ids::ReminderRuleId::from(uuid::Uuid::from_u128(22)),
+            task: task.id,
+            kind: crate::reminders::ReminderKind::At(
+                crate::reminders::AtInstant::whole_second(ts(1_700_000_000)).unwrap(),
+            ),
+            created_at: ts(100),
+            updated_at: ts(120),
+        };
+        let rule_id = rule.id;
+        let entry = rules_entry_for(&BTreeMap::from([(rule_id, rule.clone())]), task.id);
+        // Serialize → parse → same rule (the wire round-trip).
+        let value = serde_json::to_value(&entry).unwrap();
+        let back: RulesEntry = serde_json::from_value(value).unwrap();
+        assert_eq!(
+            back.rules[&rule_id.as_uuid().to_string()],
+            RuleEntry::Rule {
+                kind: rule.kind,
+                created: rule.created_at,
+                clock: rule.updated_at,
+                insistence: rule.insistence,
+            },
+            "the At entry round-trips kind-exact"
+        );
+        // A present-but-unmodelable `at` value demotes the whole entry
+        // to Verbatim (never a silent downgrade).
+        let raw = serde_json::json!({
+            "rules": { "r": { "at": "not-a-timestamp", "created": "2026-01-01T00:00:00Z",
+                              "clock": "2026-01-01T00:01:00Z", "insistence": "normal" } }
+        });
+        let parsed: RulesEntry = serde_json::from_value(raw).unwrap();
+        assert!(
+            matches!(parsed.rules["r"], RuleEntry::Verbatim(_)),
+            "an unmodelable at demotes to Verbatim"
         );
     }
 
@@ -2665,7 +2790,9 @@ mod tests {
                 insistence: Insistence::Normal,
                 id: kept,
                 task: TaskId::from(uuid::Uuid::from_u128(1)),
-                offset: crate::reminders::ReminderOffset::at_due(),
+                kind: crate::reminders::ReminderKind::DueOffset(
+                    crate::reminders::ReminderOffset::at_due(),
+                ),
                 created_at: ts(1),
                 updated_at: ts(2),
             },
@@ -2676,7 +2803,9 @@ mod tests {
                     "00000000-0000-0000-0000-00000000000a",
                     RuleEntry::Rule {
                         insistence: Insistence::Normal,
-                        offset: crate::reminders::ReminderOffset::at_due(),
+                        kind: crate::reminders::ReminderKind::DueOffset(
+                            crate::reminders::ReminderOffset::at_due(),
+                        ),
                         created: ts(1),
                         clock: ts(1),
                     },
@@ -2774,8 +2903,10 @@ mod tests {
                             "018f0000-0000-7000-8000-000000000001".to_owned(),
                             RuleEntry::Rule {
                                 insistence: Insistence::Normal,
-                                offset: ReminderOffset::before(chrono::TimeDelta::seconds(-900))
-                                    .unwrap(),
+                                kind: crate::reminders::ReminderKind::DueOffset(
+                                    ReminderOffset::before(chrono::TimeDelta::seconds(-900))
+                                        .unwrap(),
+                                ),
                                 created: ts(100),
                                 clock: ts(120),
                             },
@@ -2902,7 +3033,9 @@ mod tests {
             insistence: Insistence::Normal,
             id,
             task,
-            offset: crate::reminders::ReminderOffset::at_due(),
+            kind: crate::reminders::ReminderKind::DueOffset(
+                crate::reminders::ReminderOffset::at_due(),
+            ),
             created_at: ts(1),
             updated_at: ts(2),
         };
@@ -3781,7 +3914,7 @@ mod tests {
             let base = RulesEntry {
                 rules: [(id.to_owned(), RuleEntry::Rule {
                     insistence: Insistence::Normal,
-                    offset: crate::reminders::ReminderOffset::at_due(),
+                    kind: crate::reminders::ReminderKind::DueOffset(crate::reminders::ReminderOffset::at_due()),
                     created: ts(1),
                     clock: ts(2),
                 })].into(),
@@ -3795,7 +3928,7 @@ mod tests {
                         insistence: Insistence::Normal,
                         id: ReminderRuleId::from(uuid::Uuid::from_u128(0xa)),
                         task: TaskId::from(uuid::Uuid::from_u128(1)),
-                        offset: crate::reminders::ReminderOffset::at_due(),
+                        kind: crate::reminders::ReminderKind::DueOffset(crate::reminders::ReminderOffset::at_due()),
                         created_at: ts(1),
                         updated_at: ts(2),
                     },
@@ -3923,7 +4056,7 @@ mod tests {
                     insistence: Insistence::Normal,
                     id: rule,
                     task,
-                    offset: crate::reminders::ReminderOffset::at_due(),
+                    kind: crate::reminders::ReminderKind::DueOffset(crate::reminders::ReminderOffset::at_due()),
                     created_at: ts(1),
                     updated_at: ts(2),
                 },

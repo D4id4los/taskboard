@@ -13,7 +13,7 @@ use std::sync::Arc;
 use chrono::TimeDelta;
 
 use taskboard_domain::{
-    AppState, CommandOutcome, ReminderOffset, ReminderRuleId, StateCommand, TaskId,
+    AppState, CommandOutcome, ReminderKind, ReminderOffset, ReminderRuleId, StateCommand, TaskId,
 };
 
 use crate::commands::CommandError;
@@ -130,6 +130,7 @@ pub async fn add_on(
         .execute(StateCommand::AddReminderRule {
             task: task_id,
             offset,
+            at: None,
             insistence,
         })
         .await?;
@@ -180,7 +181,7 @@ pub async fn remove_on(
         .reminders
         .rules
         .get(&rule_id)
-        .map(|rule| rule.offset.text_form())
+        .map(rule_when_text)
         .expect("resolution guarantees the rule exists");
     drop(state);
     app.engine
@@ -242,7 +243,9 @@ pub fn resolve_rule(
         }
     }
     if let Some(offset) = ReminderOffset::parse_text_form(selector)
-        && let Some(rule) = rules.iter().find(|rule| rule.offset == offset)
+        && let Some(rule) = rules
+            .iter()
+            .find(|rule| rule.kind == ReminderKind::DueOffset(offset))
     {
         return Ok(rule.id);
     }
@@ -340,7 +343,7 @@ fn reminder_rows(state: &AppState) -> Vec<ReminderRow> {
                 id: rule.id.as_uuid().to_string(),
                 task_id: task.id.as_uuid().to_string(),
                 task_title: task.title.clone(),
-                before: rule.offset.text_form(),
+                before: rule_when_text(rule),
                 created_at: rule.created_at,
                 task_muted: state.reminders.muted.contains(&task.id),
                 insistence: rule.insistence,
@@ -348,6 +351,17 @@ fn reminder_rows(state: &AppState) -> Vec<ReminderRow> {
         }
     }
     rows
+}
+
+/// The kind-aware timing text for a rule row (r4 D29): a due-offset
+/// rule renders the canonical before-magnitude (`"10m"`); an `At` rule
+/// renders its absolute UTC fire instant (the [`AtInstant`] text form —
+/// local rendering is a presentation concern the CLI does not own).
+fn rule_when_text(rule: &taskboard_domain::ReminderRule) -> String {
+    match rule.kind {
+        ReminderKind::DueOffset(offset) => offset.text_form(),
+        ReminderKind::At(at) => at.text_form(),
+    }
 }
 
 /// The title of a live task in the published state (the receipt source;

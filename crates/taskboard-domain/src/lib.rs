@@ -139,11 +139,13 @@ pub use recur::{
     schedule, series_reference_date,
 };
 pub use reminders::{
-    AdhocAlarm, AdhocWhen, BreakRule, Insistence, InvalidReminderOffset, Notification,
-    NotifierMessage, ReminderAnchor, ReminderDefaults, ReminderDelivery, ReminderDismissal,
-    ReminderFiring, ReminderOffset, ReminderRef, ReminderRule, ReminderSnooze, ReminderSnoozeKey,
-    ReminderState, active_notifications, alarm_occurrence, due_firings, due_soon,
+    AdhocAlarm, AdhocWhen, AtInstant, BreakRule, Insistence, InvalidAtInstant,
+    InvalidReminderOffset, Notification, NotifierMessage, ReminderAnchor, ReminderDefaults,
+    ReminderDelivery, ReminderDismissal, ReminderFiring, ReminderKind, ReminderOffset, ReminderRef,
+    ReminderRule, ReminderSnooze, ReminderSnoozeKey, ReminderState, active_notifications,
+    alarm_occurrence, at_rule_occurrence, dismissal_settles_at_rule, due_firings, due_soon,
     effective_occurrence, notifications_for, occurrence_of, overdue_tasks, prune_settled_alarms,
+    prune_settled_at_rules,
 };
 pub use remote::{
     BoardPullValidators, PushOutcome, PushResult, RemoteBoard, RemoteBoardSnapshot, RemoteEcho,

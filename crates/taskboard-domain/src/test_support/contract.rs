@@ -278,10 +278,10 @@ pub async fn assert_task_repository_contract_async<R: TaskRepository>(repo: &R) 
         insistence: Insistence::Normal,
         id: crate::ids::ReminderRuleId::from(uuid::Uuid::from_u128(20)),
         task: task.id,
-        offset: crate::reminders::ReminderOffset::before(
-            chrono::TimeDelta::try_minutes(-5).unwrap(),
-        )
-        .unwrap(),
+        kind: crate::reminders::ReminderKind::DueOffset(
+            crate::reminders::ReminderOffset::before(chrono::TimeDelta::try_minutes(-5).unwrap())
+                .unwrap(),
+        ),
         created_at: Utc.timestamp_opt(1_700_000_000, 0).unwrap(),
         updated_at: Utc.timestamp_opt(1_700_000_000, 0).unwrap(),
     };
