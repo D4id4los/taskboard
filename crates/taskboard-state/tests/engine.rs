@@ -3149,10 +3149,10 @@ async fn the_roll_re_arms_reminders_by_construction() {
             insistence: taskboard_domain::Insistence::Normal,
             id: rule_id,
             task: task_id,
-            offset: taskboard_domain::ReminderOffset::before(
-                chrono::TimeDelta::try_hours(-1).unwrap(),
-            )
-            .unwrap(),
+            kind: taskboard_domain::ReminderKind::DueOffset(
+                taskboard_domain::ReminderOffset::before(chrono::TimeDelta::try_hours(-1).unwrap())
+                    .unwrap(),
+            ),
             created_at: day(DAY0 - 86_400),
             updated_at: day(DAY0 - 86_400),
         },

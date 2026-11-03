@@ -19,7 +19,7 @@ use taskboard_domain::outbox::{LocalOp, OpId, PendingOp};
 use taskboard_domain::persistence::{
     PersistedState, PersistenceAction, SyncValidators, ValidatorKey,
 };
-use taskboard_domain::reminders::{ReminderOffset, ReminderRule, ReminderState};
+use taskboard_domain::reminders::{ReminderKind, ReminderOffset, ReminderRule, ReminderState};
 use taskboard_domain::state::{SyncPhase, SyncStates};
 use taskboard_domain::{BoardClocks, ReminderRuleId};
 
@@ -217,8 +217,9 @@ fn fixture_rule(k: usize, tasks: &[Task]) -> ReminderRule {
         insistence: taskboard_domain::Insistence::Normal,
         id: ReminderRuleId::from(id(RULE_BASE, k)),
         task: tasks[20 * k].id,
-        offset: ReminderOffset::before(TimeDelta::minutes(-15))
-            .expect("negative delta is before due"),
+        kind: ReminderKind::DueOffset(
+            ReminderOffset::before(TimeDelta::minutes(-15)).expect("negative delta is before due"),
+        ),
         created_at: ts(ix(k) + 4_000_000),
         updated_at: ts(ix(k) + 4_000_000),
     }

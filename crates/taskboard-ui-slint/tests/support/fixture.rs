@@ -204,7 +204,9 @@ pub fn deliver_task_notification(
             insistence: taskboard_domain::Insistence::Normal,
             id: rule_id,
             task,
-            offset: taskboard_domain::ReminderOffset::at_due(),
+            kind: taskboard_domain::ReminderKind::DueOffset(
+                taskboard_domain::ReminderOffset::at_due(),
+            ),
             created_at: now,
             updated_at: now,
         },

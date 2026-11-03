@@ -1672,7 +1672,9 @@ mod tests {
             insistence: taskboard_domain::Insistence::Normal,
             id: taskboard_domain::ReminderRuleId::from_uuid(uuid::Uuid::now_v7()),
             task: ruled,
-            offset: ReminderOffset::before(TimeDelta::minutes(-30)).expect("valid offset"),
+            kind: taskboard_domain::ReminderKind::DueOffset(
+                ReminderOffset::before(TimeDelta::minutes(-30)).expect("valid offset"),
+            ),
             created_at: now,
             updated_at: now,
         };
@@ -1765,7 +1767,7 @@ mod tests {
                 insistence: taskboard_domain::Insistence::Normal,
                 id: rule_id,
                 task: ruled,
-                offset: ReminderOffset::at_due(),
+                kind: taskboard_domain::ReminderKind::DueOffset(ReminderOffset::at_due()),
                 created_at: now,
                 updated_at: now,
             },
@@ -2078,7 +2080,7 @@ mod tests {
                 insistence: taskboard_domain::Insistence::Normal,
                 id: rule_id,
                 task: ruled,
-                offset: ReminderOffset::at_due(),
+                kind: taskboard_domain::ReminderKind::DueOffset(ReminderOffset::at_due()),
                 created_at: now,
                 updated_at: now,
             },
@@ -3030,8 +3032,10 @@ mod tests {
                         insistence: taskboard_domain::Insistence::Normal,
                         id: taskboard_domain::ReminderRuleId::from_uuid(uuid::Uuid::now_v7()),
                         task: id,
-                        offset: ReminderOffset::before(TimeDelta::minutes(-15))
-                            .expect("valid offset"),
+                        kind: taskboard_domain::ReminderKind::DueOffset(
+                            ReminderOffset::before(TimeDelta::minutes(-15))
+                                .expect("valid offset"),
+                        ),
                         created_at: now,
                         updated_at: now,
                     };

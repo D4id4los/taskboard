@@ -614,6 +614,7 @@ fn domain_error_kind(err: &taskboard_domain::CommandError) -> &'static str {
         D::UnknownAdhocAlarm(_) => "unknown-adhoc-alarm",
         D::UnknownBreakRule(_) => "unknown-break-rule",
         D::InvalidAdhocWhen => "invalid-adhoc-when",
+        D::InvalidReminderRuleAt => "invalid-reminder-rule-at",
         D::InvalidSnoozePostpone => "invalid-snooze-postpone",
         D::UnknownTimeEntry(_) => "unknown-time-entry",
         D::InvalidSpan => "invalid-span",

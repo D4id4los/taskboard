@@ -638,6 +638,13 @@ pub fn apply_actions(state: &mut PersistedState, actions: &[PersistenceAction]) 
     // first lets a just-settled chain revert to its base before the
     // check reads it (the composition pinned by the mis-order catcher).
     crate::reminders::prune_settled_alarms(&mut state.reminders);
+    // The `At` rules' settle backstop (r4 D31): an `At`-kinded rule
+    // whose effective occurrence is delivered AND dismissed is settled —
+    // prune the row only (receipts deliberately survive, keeping the
+    // shape re-fire-proof under any later document re-adoption; the
+    // planner-side settle tombstones instead). Same caller-order
+    // discipline: compaction first, alarms, then `At` rules.
+    crate::reminders::prune_settled_at_rules(&mut state.reminders);
     // Derived, never tracked: after every batch the per-board pending
     // counts are re-derived from the outbox they summarize.
     derive_sync_states(
@@ -1028,7 +1035,9 @@ mod tests {
             insistence: Insistence::Normal,
             id: crate::ids::ReminderRuleId::from(uuid::Uuid::from_u128(51)),
             task,
-            offset: crate::reminders::ReminderOffset::at_due(),
+            kind: crate::reminders::ReminderKind::DueOffset(
+                crate::reminders::ReminderOffset::at_due(),
+            ),
             created_at: ts(100),
             updated_at: ts(100),
         };
@@ -1338,7 +1347,9 @@ mod tests {
             insistence: Insistence::Normal,
             id: crate::ids::ReminderRuleId::from(uuid::Uuid::from_u128(raw)),
             task: crate::ids::TaskId::from(uuid::Uuid::from_u128(raw + 1)),
-            offset: crate::reminders::ReminderOffset::at_due(),
+            kind: crate::reminders::ReminderKind::DueOffset(
+                crate::reminders::ReminderOffset::at_due(),
+            ),
             created_at: ts(100),
             updated_at: ts(100),
         }
@@ -1353,9 +1364,10 @@ mod tests {
             &[PersistenceAction::UpsertReminderRule(rule.clone())],
         );
         let mut renamed = rule.clone();
-        renamed.offset =
+        renamed.kind = crate::reminders::ReminderKind::DueOffset(
             crate::reminders::ReminderOffset::before(chrono::TimeDelta::try_minutes(-5).unwrap())
-                .unwrap();
+                .unwrap(),
+        );
         apply_actions(
             &mut state,
             &[PersistenceAction::UpsertReminderRule(renamed)],

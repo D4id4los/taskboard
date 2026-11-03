@@ -18,6 +18,7 @@
 
 use std::sync::Arc;
 
+use taskboard_domain::ReminderKind;
 use taskboard_domain::test_support::{CountingIds, InMemoryRepository};
 use taskboard_domain::{
     Color, CommandOutcome, LocalOp, NotifierMessage, PushOutcome, PushResult, RemoteBoard,
@@ -956,6 +957,7 @@ async fn s10_boards_reset() {
     s.run(StateCommand::AddReminderRule {
         task,
         offset: taskboard_domain::ReminderOffset::at_due(),
+        at: None,
         insistence: taskboard_domain::Insistence::Normal,
     })
     .await;
@@ -1192,8 +1194,10 @@ fn seed_fired_rule_state() -> taskboard_domain::PersistedState {
         insistence: taskboard_domain::Insistence::Normal,
         id: ids.new_reminder_rule_id(),
         task: task.id,
-        offset: ReminderOffset::before(chrono::TimeDelta::try_hours(-2).unwrap())
-            .expect("negative offset"),
+        kind: ReminderKind::DueOffset(
+            ReminderOffset::before(chrono::TimeDelta::try_hours(-2).unwrap())
+                .expect("negative offset"),
+        ),
         created_at: ts(T0 - 60),
         updated_at: ts(T0 - 60),
     };
@@ -1379,6 +1383,25 @@ fn daily_rule(bound: taskboard_domain::RecurBound) -> taskboard_domain::RecurRul
 
 /// A persisted board + stack + recurring head (with one label, one
 /// reminder rule, and the mute flag) + a live label entity.
+/// The series head's reminder rule: 30m before due, stamped at the
+/// series instant minus an hour.
+fn series_rule(
+    rule_id: taskboard_domain::ReminderRuleId,
+    task_id: taskboard_domain::TaskId,
+) -> taskboard_domain::ReminderRule {
+    taskboard_domain::ReminderRule {
+        insistence: taskboard_domain::Insistence::Normal,
+        id: rule_id,
+        task: task_id,
+        kind: taskboard_domain::ReminderKind::DueOffset(
+            taskboard_domain::ReminderOffset::before(chrono::TimeDelta::try_minutes(-30).unwrap())
+                .unwrap(),
+        ),
+        created_at: ts(SERIES_T0 - 3_600),
+        updated_at: ts(SERIES_T0 - 3_600),
+    }
+}
+
 fn seed_series_state(
     scheduled: Option<i64>,
     duedate: Option<i64>,
@@ -1464,21 +1487,12 @@ fn seed_series_state(
         remote_seen: None,
         remote_baseline: None,
     };
-    let rule_id = taskboard_domain::ReminderRuleId::from_uuid(uuid::Uuid::from_u128(700));
-    state.reminders.rules.insert(
-        rule_id,
-        taskboard_domain::ReminderRule {
-            insistence: taskboard_domain::Insistence::Normal,
-            id: rule_id,
-            task: task_id,
-            offset: taskboard_domain::ReminderOffset::before(
-                chrono::TimeDelta::try_minutes(-30).unwrap(),
-            )
-            .unwrap(),
-            created_at: ts(SERIES_T0 - 3_600),
-            updated_at: ts(SERIES_T0 - 3_600),
-        },
+    let rule = series_rule(
+        taskboard_domain::ReminderRuleId::from_uuid(uuid::Uuid::from_u128(700)),
+        task_id,
     );
+    let rule_id = rule.id;
+    state.reminders.rules.insert(rule_id, rule);
     state.reminders.muted.insert(task_id);
     let _ = &mut task;
     state.tasks.insert(task_id, task);

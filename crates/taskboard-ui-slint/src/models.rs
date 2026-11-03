@@ -1440,7 +1440,10 @@ fn push_task_detail(
         .iter()
         .filter_map(|id| state.reminders.rules.get(id))
         .map(|rule| RuleRowModel {
-            before: SharedString::from(rule.offset.text_form()),
+            before: SharedString::from(match rule.kind {
+                taskboard_domain::ReminderKind::DueOffset(offset) => offset.text_form(),
+                taskboard_domain::ReminderKind::At(at) => at.text_form(),
+            }),
             created: SharedString::from(presentation::rule_created_phrase(rule.created_at, now)),
         })
         .collect();

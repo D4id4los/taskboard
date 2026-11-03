@@ -864,6 +864,7 @@ mod d {
                     task: c.task_id,
                     offset: ReminderOffset::before(chrono::TimeDelta::try_minutes(-30).unwrap())
                         .unwrap(),
+                    at: None,
                     insistence: taskboard_domain::Insistence::Normal,
                 })
                 .await

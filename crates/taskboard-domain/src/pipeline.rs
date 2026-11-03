@@ -2376,7 +2376,9 @@ mod tests {
             insistence: Insistence::Normal,
             id: crate::ids::ReminderRuleId::from(uuid::Uuid::from_u128(10)),
             task: state.tasks.values().next().unwrap().id,
-            offset: crate::reminders::ReminderOffset::at_due(),
+            kind: crate::reminders::ReminderKind::DueOffset(
+                crate::reminders::ReminderOffset::at_due(),
+            ),
             created_at: ts(BASE),
             updated_at: ts(BASE),
         };
@@ -2396,10 +2398,12 @@ mod tests {
                     "00000000-0000-0000-0000-00000000000b".to_owned(),
                     RuleEntry::Rule {
                         insistence: Insistence::Normal,
-                        offset: crate::reminders::ReminderOffset::before(
-                            chrono::TimeDelta::try_minutes(-15).unwrap(),
-                        )
-                        .unwrap(),
+                        kind: crate::reminders::ReminderKind::DueOffset(
+                            crate::reminders::ReminderOffset::before(
+                                chrono::TimeDelta::try_minutes(-15).unwrap(),
+                            )
+                            .unwrap(),
+                        ),
                         created: ts(BASE + 100),
                         clock: ts(BASE + 100),
                     },
@@ -2469,7 +2473,9 @@ mod tests {
             insistence: Insistence::Normal,
             id,
             task: task_id,
-            offset: crate::reminders::ReminderOffset::at_due(),
+            kind: crate::reminders::ReminderKind::DueOffset(
+                crate::reminders::ReminderOffset::at_due(),
+            ),
             created_at: ts(BASE + 100),
             updated_at: ts(BASE + 100),
         };
@@ -2479,7 +2485,9 @@ mod tests {
                     "00000000-0000-0000-0000-00000000000a".to_owned(),
                     RuleEntry::Rule {
                         insistence: Insistence::Normal,
-                        offset: crate::reminders::ReminderOffset::at_due(),
+                        kind: crate::reminders::ReminderKind::DueOffset(
+                            crate::reminders::ReminderOffset::at_due(),
+                        ),
                         created: ts(BASE + 100),
                         clock: ts(BASE + 100),
                     },
@@ -2488,7 +2496,9 @@ mod tests {
                     "00000000-0000-0000-0000-00000000000b".to_owned(),
                     RuleEntry::Rule {
                         insistence: Insistence::Normal,
-                        offset: crate::reminders::ReminderOffset::at_due(),
+                        kind: crate::reminders::ReminderKind::DueOffset(
+                            crate::reminders::ReminderOffset::at_due(),
+                        ),
                         created: ts(BASE + 100),
                         clock: ts(BASE + 100),
                     },
@@ -2563,7 +2573,9 @@ mod tests {
                 "00000000-0000-0000-0000-00000000000a".to_owned(),
                 RuleEntry::Rule {
                     insistence: Insistence::Normal,
-                    offset: crate::reminders::ReminderOffset::at_due(),
+                    kind: crate::reminders::ReminderKind::DueOffset(
+                        crate::reminders::ReminderOffset::at_due(),
+                    ),
                     created: ts(BASE + 100),
                     clock: ts(BASE + 100),
                 },
@@ -3311,7 +3323,9 @@ mod tests {
             insistence: Insistence::Normal,
             id: crate::ids::ReminderRuleId::from(uuid::Uuid::from_u128(10)),
             task: task_by_card(&state, 1).id,
-            offset: crate::reminders::ReminderOffset::at_due(),
+            kind: crate::reminders::ReminderKind::DueOffset(
+                crate::reminders::ReminderOffset::at_due(),
+            ),
             created_at: ts(BASE + 300),
             updated_at: ts(BASE + 300),
         };

@@ -127,6 +127,12 @@ pub enum CommandError {
     /// the occurrence forward is not a snooze).
     #[error("snooze postpone must be positive")]
     InvalidSnoozePostpone,
+    /// The rule-add `at` input is unconstructible: a sub-second `At`
+    /// instant (every persistence lane stores whole seconds) or a
+    /// non-positive `In` duration ("in the past" is `At` data). No
+    /// silent truncation — the caller resubmits a mintable input.
+    #[error("invalid reminder rule at/in input")]
+    InvalidReminderRuleAt,
     /// No time entry with this id exists.
     #[error("unknown time entry")]
     UnknownTimeEntry(crate::ids::TimeEntryId),
@@ -651,13 +657,15 @@ fn completion_spawn(
         actions.push(enqueue(LocalOp::AssignLabel(successor.id, label), ids, now));
     }
     // Per head rule, rule-id ascending, the `AddReminderRule` arm's
-    // shape: fresh id, copied offset, both stamps at the spawn instant.
+    // shape: fresh id, copied kind (an `At` rule follows its series to
+    // the successor; the occurrence arithmetic is kind-blind), both
+    // stamps at the spawn instant.
     for old in app.reminders.rules.values().filter(|r| r.task == head.id) {
         actions.push(PersistenceAction::UpsertReminderRule(ReminderRule {
             insistence: Insistence::Normal,
             id: ids.new_reminder_rule_id(),
             task: successor.id,
-            offset: old.offset,
+            kind: old.kind,
             created_at: now,
             updated_at: now,
         }));
@@ -1958,6 +1966,14 @@ pub fn plan_command(
             if app.reminders.is_dismissed(reminder, occurrence) {
                 return Ok(no_op());
             }
+            // The settle leg (r4 D31): dismissing an `At` rule at its
+            // current effective occurrence plans the rule's removal —
+            // tombstone first (the flush derives the document
+            // tombstone from the same op, the RemoveReminderRule
+            // shape), so the rule dies everywhere and no device can
+            // re-adopt it behind the local prune. A stale/base
+            // occurrence dismissal does NOT settle (the snooze walk
+            // decides); a `DueOffset` rule never settles by dismissal.
             let mut actions = vec![PersistenceAction::RecordReminderDismissal(
                 ReminderDismissal {
                     reminder: *reminder,
@@ -1965,6 +1981,15 @@ pub fn plan_command(
                     dismissed_at: now,
                 },
             )];
+            if let ReminderRef::Rule(rule_id) = reminder
+                && crate::reminders::dismissal_settles_at_rule(
+                    &app.reminders,
+                    *rule_id,
+                    *occurrence,
+                )
+            {
+                actions.push(PersistenceAction::DeleteReminderRule(*rule_id));
+            }
             // Rule/default refs sync through the watched task's document;
             // adhoc alarms are device-local — no op, nothing to flush.
             if let Some(task) = task {
@@ -1978,19 +2003,54 @@ pub fn plan_command(
         StateCommand::AddReminderRule {
             task,
             offset,
+            at,
             insistence,
         } => {
             // Edit-style intent: reminding a dead task is a rejection,
-            // even when the offset would "dedup".
+            // even when the kind would "dedup".
             live_task(app, *task)?;
-            // Dedup by offset: a rule at this exact offset already
-            // answers, so plan nothing and name the survivor (`BTreeMap`
+            // Normalize the at/in input into the kind first (the
+            // CreateAdhocAlarm shape): absent = the legacy due-offset
+            // shape; `At` must be whole-second (a sub-second instant
+            // would diverge from its persisted form — no silent
+            // truncation); `In` must be positive and is stamped
+            // `now + dur` on the injected clock, saturating at chrono's
+            // ceiling (the SnoozeReminder precedent). The UI never
+            // mints instants — this planner is the only stamping site.
+            let kind = match *at {
+                None => crate::reminders::ReminderKind::DueOffset(*offset),
+                Some(crate::reminders::AdhocWhen::At(t)) => {
+                    let instant = crate::reminders::AtInstant::whole_second(t)
+                        .map_err(|_| CommandError::InvalidReminderRuleAt)?;
+                    crate::reminders::ReminderKind::At(instant)
+                }
+                Some(crate::reminders::AdhocWhen::In(dur)) => {
+                    if dur <= chrono::TimeDelta::zero() {
+                        return Err(CommandError::InvalidReminderRuleAt);
+                    }
+                    // Total arithmetic: an unrepresentable target
+                    // saturates at chrono's ceiling, truncated to the
+                    // whole second the mint admits (only reachable in
+                    // the saturation corner — `now` is always
+                    // whole-second on this lane).
+                    let target = now
+                        .checked_add_signed(dur)
+                        .unwrap_or(DateTime::<Utc>::MAX_UTC);
+                    let whole = chrono::DateTime::from_timestamp(target.timestamp(), 0)
+                        .ok_or(CommandError::InvalidReminderRuleAt)?;
+                    let instant = crate::reminders::AtInstant::whole_second(whole)
+                        .map_err(|_| CommandError::InvalidReminderRuleAt)?;
+                    crate::reminders::ReminderKind::At(instant)
+                }
+            };
+            // Dedup by kind: a rule of this exact kind already answers,
+            // so plan nothing and name the survivor (`BTreeMap`
             // iteration is id-ordered — the hit is deterministic).
             if let Some(survivor) = app
                 .reminders
                 .rules
                 .values()
-                .find(|rule| rule.task == *task && rule.offset == *offset)
+                .find(|rule| rule.task == *task && rule.kind == kind)
             {
                 return Ok(CommandPlan {
                     actions: Vec::new(),
@@ -2007,7 +2067,7 @@ pub fn plan_command(
                 insistence: *insistence,
                 id: ids.new_reminder_rule_id(),
                 task: *task,
-                offset: *offset,
+                kind,
                 created_at: now,
                 updated_at: now,
             };
@@ -3070,10 +3130,10 @@ mod tests {
             task: task_id,
             // Two hours before the T0 + 3_600 due: the occurrence
             // T0 - 3_600 already fired on this device.
-            offset: crate::reminders::ReminderOffset::before(
-                chrono::TimeDelta::try_hours(-2).unwrap(),
-            )
-            .unwrap(),
+            kind: crate::reminders::ReminderKind::DueOffset(
+                crate::reminders::ReminderOffset::before(chrono::TimeDelta::try_hours(-2).unwrap())
+                    .unwrap(),
+            ),
             created_at: ts(T0 - 60),
             updated_at: ts(T0 - 60),
         };
@@ -6154,7 +6214,9 @@ mod tests {
             insistence: Insistence::Normal,
             id: crate::ids::ReminderRuleId::from(uuid::Uuid::from_u128(u128::from(raw))),
             task,
-            offset: crate::reminders::ReminderOffset::at_due(),
+            kind: crate::reminders::ReminderKind::DueOffset(
+                crate::reminders::ReminderOffset::at_due(),
+            ),
             created_at: now(),
             updated_at: now(),
         }
@@ -6451,6 +6513,7 @@ mod tests {
         StateCommand::AddReminderRule {
             task: task_id(),
             offset: offset_before(secs),
+            at: None,
             insistence: Insistence::Normal,
         }
     }
@@ -6472,7 +6535,10 @@ mod tests {
         };
         assert_eq!(stored.id, rule);
         assert_eq!(stored.task, task_id());
-        assert_eq!(stored.offset, offset_before(600));
+        assert_eq!(
+            stored.kind,
+            crate::reminders::ReminderKind::DueOffset(offset_before(600))
+        );
         assert_eq!(
             stored.created_at,
             now(),
@@ -6489,9 +6555,9 @@ mod tests {
     fn add_rule_at_an_existing_offset_plans_nothing_and_names_the_survivor() {
         let (mut app, outbox) = base();
         let mut own = reminder_rule(61, task_id());
-        own.offset = offset_before(300);
+        own.kind = crate::reminders::ReminderKind::DueOffset(offset_before(300));
         let mut foreign = reminder_rule(63, TaskId::from(uuid::Uuid::from_u128(4245)));
-        foreign.offset = offset_before(300);
+        foreign.kind = crate::reminders::ReminderKind::DueOffset(offset_before(300));
         with_rules(&mut app, &[own.clone(), foreign]);
         let plan = run(&app, &outbox, &add_at(300)).unwrap();
         assert_eq!(
@@ -6505,10 +6571,259 @@ mod tests {
     }
 
     #[test]
+    fn add_rule_with_at_instant_mints_the_at_kind() {
+        let (app, outbox) = base();
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::AddReminderRule {
+                task: task_id(),
+                offset: crate::reminders::ReminderOffset::at_due(),
+                at: Some(crate::reminders::AdhocWhen::At(ts(T0 + 3_600))),
+                insistence: Insistence::Normal,
+            },
+        )
+        .expect("accepted");
+        let PersistenceAction::UpsertReminderRule(stored) = &plan.actions[0] else {
+            panic!("the upsert is the first action");
+        };
+        assert_eq!(
+            stored.kind,
+            crate::reminders::ReminderKind::At(
+                crate::reminders::AtInstant::whole_second(ts(T0 + 3_600)).expect("whole-second")
+            ),
+            "the absolute instant mints verbatim"
+        );
+        assert_eq!(plan.actions.len(), 2, "upsert + exactly one enqueue");
+    }
+
+    #[test]
+    fn add_rule_with_in_duration_stamps_now_on_the_injected_clock() {
+        let (app, outbox) = base();
+        let dur = chrono::TimeDelta::try_minutes(90).unwrap();
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::AddReminderRule {
+                task: task_id(),
+                offset: crate::reminders::ReminderOffset::at_due(),
+                at: Some(crate::reminders::AdhocWhen::In(dur)),
+                insistence: Insistence::Normal,
+            },
+        )
+        .expect("accepted");
+        let PersistenceAction::UpsertReminderRule(stored) = &plan.actions[0] else {
+            panic!("the upsert is the first action");
+        };
+        let crate::reminders::ReminderKind::At(instant) = stored.kind else {
+            panic!("In stamps the At kind, got {:?}", stored.kind);
+        };
+        assert_eq!(
+            instant.as_datetime(),
+            ts(T0 + 5_400),
+            "the planner stamps now + dur — the UI never mints instants"
+        );
+    }
+
+    #[test]
+    fn add_rule_in_and_at_rejections_are_typed() {
+        let (app, outbox) = base();
+        // A non-positive In duration.
+        let result = run(
+            &app,
+            &outbox,
+            &StateCommand::AddReminderRule {
+                task: task_id(),
+                offset: crate::reminders::ReminderOffset::at_due(),
+                at: Some(crate::reminders::AdhocWhen::In(chrono::TimeDelta::zero())),
+                insistence: Insistence::Normal,
+            },
+        );
+        assert!(matches!(result, Err(CommandError::InvalidReminderRuleAt)));
+        // A sub-second At instant — no silent truncation.
+        let sub = Utc.timestamp_opt(T0 + 60, 250_000_000).unwrap();
+        let result = run(
+            &app,
+            &outbox,
+            &StateCommand::AddReminderRule {
+                task: task_id(),
+                offset: crate::reminders::ReminderOffset::at_due(),
+                at: Some(crate::reminders::AdhocWhen::At(sub)),
+                insistence: Insistence::Normal,
+            },
+        );
+        assert!(matches!(result, Err(CommandError::InvalidReminderRuleAt)));
+    }
+
+    #[test]
+    fn add_rule_in_saturates_to_the_whole_second_ceiling() {
+        let (app, outbox) = base();
+        let dur = chrono::TimeDelta::try_milliseconds(i64::MAX).unwrap();
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::AddReminderRule {
+                task: task_id(),
+                offset: crate::reminders::ReminderOffset::at_due(),
+                at: Some(crate::reminders::AdhocWhen::In(dur)),
+                insistence: Insistence::Normal,
+            },
+        )
+        .expect("accepted");
+        let PersistenceAction::UpsertReminderRule(stored) = &plan.actions[0] else {
+            panic!("the upsert is the first action");
+        };
+        let crate::reminders::ReminderKind::At(instant) = stored.kind else {
+            panic!("In stamps the At kind");
+        };
+        assert_eq!(
+            instant.as_datetime().timestamp_subsec_nanos(),
+            0,
+            "the saturated ceiling mints whole-second"
+        );
+    }
+
+    #[test]
+    fn add_rule_dedup_keys_on_the_kind_not_the_offset_field() {
+        let (mut app, outbox) = base();
+        let at = crate::reminders::AtInstant::whole_second(ts(T0 + 3_600)).expect("whole-second");
+        let mut own = reminder_rule(61, task_id());
+        own.kind = crate::reminders::ReminderKind::At(at);
+        with_rules(&mut app, &[own.clone()]);
+        // Same instant, different legacy offset field: still a dedup hit.
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::AddReminderRule {
+                task: task_id(),
+                offset: offset_before(999),
+                at: Some(crate::reminders::AdhocWhen::At(ts(T0 + 3_600))),
+                insistence: Insistence::Normal,
+            },
+        )
+        .expect("accepted");
+        assert_eq!(
+            plan.outcome,
+            CommandOutcome::ReminderRuleAdded {
+                rule: own.id,
+                added: false
+            },
+            "the At kind dedups on the instant"
+        );
+        // A DueOffset rule and an At rule never dedup against each other.
+        let plan = run(&app, &outbox, &add_at(3_600)).expect("accepted");
+        let CommandOutcome::ReminderRuleAdded { added: true, .. } = plan.outcome else {
+            panic!("a due-offset add beside an At rule is a fresh rule");
+        };
+    }
+
+    #[test]
+    fn dismissing_a_settled_at_rule_plans_the_removal_and_one_enqueue() {
+        let (mut app, outbox) = base();
+        let at = crate::reminders::AtInstant::whole_second(ts(T0)).expect("whole-second");
+        let mut rule = reminder_rule(61, task_id());
+        rule.kind = crate::reminders::ReminderKind::At(at);
+        with_rules(&mut app, &[rule.clone()]);
+        // Delivered + dismissed at the effective occurrence: the settle.
+        app.reminders
+            .deliveries
+            .insert(crate::reminders::ReminderDelivery {
+                reminder: ReminderRef::Rule(rule.id),
+                occurrence: ts(T0),
+                delivered_at: ts(T0),
+            });
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::DismissReminder {
+                reminder: ReminderRef::Rule(rule.id),
+                occurrence: ts(T0),
+            },
+        )
+        .expect("accepted");
+        assert!(
+            plan.actions
+                .iter()
+                .any(|a| matches!(a, PersistenceAction::DeleteReminderRule(id) if *id == rule.id)),
+            "the settle plans the rule removal"
+        );
+        let enqueues = plan
+            .actions
+            .iter()
+            .filter(|a| matches!(a, PersistenceAction::EnqueueOp(_)))
+            .count();
+        assert_eq!(
+            enqueues, 1,
+            "exactly one flush op carries dismissal + tombstone"
+        );
+        assert!(
+            plan.actions.iter().any(
+                |a| matches!(a, PersistenceAction::RecordReminderDismissal(d) if d.occurrence == ts(T0))
+            ),
+            "the dismissal itself still persists"
+        );
+    }
+
+    #[test]
+    fn dismissing_a_due_offset_rule_or_a_stale_occurrence_settles_nothing() {
+        let (mut app, outbox) = base();
+        // A DueOffset rule: the negative pin — today's shape, no delete.
+        let mut rule = reminder_rule(61, task_id());
+        rule.kind = crate::reminders::ReminderKind::DueOffset(offset_before(300));
+        with_rules(&mut app, &[rule.clone()]);
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::DismissReminder {
+                reminder: ReminderRef::Rule(rule.id),
+                occurrence: ts(T0),
+            },
+        )
+        .expect("accepted");
+        assert!(
+            !plan
+                .actions
+                .iter()
+                .any(|a| matches!(a, PersistenceAction::DeleteReminderRule(_))),
+            "a DueOffset dismissal never deletes the rule"
+        );
+        // A stale occurrence on an At rule (the base, not the walked
+        // target): no settle either.
+        let at = crate::reminders::AtInstant::whole_second(ts(T0)).expect("whole-second");
+        let mut at_rule = reminder_rule(62, task_id());
+        at_rule.kind = crate::reminders::ReminderKind::At(at);
+        let at_rule_id = at_rule.id;
+        with_rules(&mut app, &[at_rule]);
+        app.reminders.snoozes.insert(
+            crate::reminders::ReminderSnoozeKey {
+                reminder: ReminderRef::Rule(at_rule_id),
+                occurrence: ts(T0),
+            },
+            ts(T0 + 600),
+        );
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::DismissReminder {
+                reminder: ReminderRef::Rule(at_rule_id),
+                occurrence: ts(T0),
+            },
+        )
+        .expect("accepted");
+        assert!(
+            !plan
+                .actions
+                .iter()
+                .any(|a| matches!(a, PersistenceAction::DeleteReminderRule(_))),
+            "a stale-occurrence dismissal does not settle"
+        );
+    }
+
+    #[test]
     fn add_rule_at_a_second_offset_grows_the_rule_set() {
         let (mut app, outbox) = base();
         let mut own = reminder_rule(61, task_id());
-        own.offset = offset_before(300);
+        own.kind = crate::reminders::ReminderKind::DueOffset(offset_before(300));
         with_rules(&mut app, &[own]);
         let plan = run(&app, &outbox, &add_at(600)).unwrap();
         let CommandOutcome::ReminderRuleAdded { added: true, .. } = plan.outcome else {
@@ -6530,6 +6845,7 @@ mod tests {
             &StateCommand::AddReminderRule {
                 task: task_id(),
                 offset: offset_before(600),
+                at: None,
                 insistence: Insistence::Alarm,
             },
         )
@@ -6859,7 +7175,7 @@ mod tests {
         // remove + re-add.
         let (mut app, outbox) = base();
         let mut survivor = reminder_rule(61, task_id());
-        survivor.offset = offset_before(60);
+        survivor.kind = crate::reminders::ReminderKind::DueOffset(offset_before(60));
         with_rules(&mut app, &[survivor.clone()]);
         let plan = run(
             &app,
@@ -6867,6 +7183,7 @@ mod tests {
             &StateCommand::AddReminderRule {
                 task: task_id(),
                 offset: offset_before(60),
+                at: None,
                 insistence: Insistence::Alarm,
             },
         )
@@ -6890,6 +7207,7 @@ mod tests {
             &StateCommand::AddReminderRule {
                 task: task_id(),
                 offset: offset_before(60),
+                at: None,
                 insistence: Insistence::Alarm,
             },
         )
@@ -6911,7 +7229,7 @@ mod tests {
     fn add_rule_rejects_unknown_and_deleted_tasks_before_any_dedup() {
         let (mut app, outbox) = base();
         let mut own = reminder_rule(61, task_id());
-        own.offset = offset_before(60);
+        own.kind = crate::reminders::ReminderKind::DueOffset(offset_before(60));
         with_rules(&mut app, &[own]);
         let stranger = TaskId::from(uuid::Uuid::from_u128(4245));
         assert!(matches!(
@@ -6921,6 +7239,7 @@ mod tests {
                 &StateCommand::AddReminderRule {
                     task: stranger,
                     offset: offset_before(60),
+                    at: None,
                     insistence: Insistence::Normal,
                 }
             ),
@@ -6991,7 +7310,7 @@ mod tests {
                 std::collections::BTreeMap::new();
             for (i, secs) in offsets.iter().enumerate() {
                 let mut rule = reminder_rule(i as u64 + 1, task_id());
-                rule.offset = offset_before(*secs);
+                rule.kind = crate::reminders::ReminderKind::DueOffset(offset_before(*secs));
                 survivor_at.entry(*secs).or_insert(rule.id);
                 app.reminders.rules.insert(rule.id, rule);
             }
@@ -9684,10 +10003,12 @@ mod series_tests {
             insistence: Insistence::Normal,
             id: crate::ids::ReminderRuleId::from_uuid(uuid::Uuid::from_u128(4_100)),
             task: head_id(),
-            offset: crate::reminders::ReminderOffset::before(
-                chrono::TimeDelta::try_minutes(-30).unwrap(),
-            )
-            .unwrap(),
+            kind: crate::reminders::ReminderKind::DueOffset(
+                crate::reminders::ReminderOffset::before(
+                    chrono::TimeDelta::try_minutes(-30).unwrap(),
+                )
+                .unwrap(),
+            ),
             created_at: ts(50),
             updated_at: ts(50),
         };
@@ -9712,9 +10033,13 @@ mod series_tests {
         );
         assert_eq!(fresh.task, successor.id);
         assert_eq!(
-            fresh.offset,
-            crate::reminders::ReminderOffset::before(chrono::TimeDelta::try_minutes(-30).unwrap())
+            fresh.kind,
+            crate::reminders::ReminderKind::DueOffset(
+                crate::reminders::ReminderOffset::before(
+                    chrono::TimeDelta::try_minutes(-30).unwrap()
+                )
                 .unwrap()
+            )
         );
         assert_eq!(fresh.created_at, now());
         assert_eq!(fresh.updated_at, now());

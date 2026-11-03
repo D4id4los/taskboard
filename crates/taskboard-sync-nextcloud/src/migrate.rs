@@ -209,7 +209,8 @@ mod tests {
     use super::*;
     use chrono::TimeZone;
     use taskboard_domain::{
-        DismissalEntry, Insistence, ModeledValue, ReminderOffset, RuleEntry, TaskFieldWrite,
+        DismissalEntry, Insistence, ModeledValue, ReminderKind, ReminderOffset, RuleEntry,
+        TaskFieldWrite,
     };
 
     fn ts(secs: i64) -> chrono::DateTime<chrono::Utc> {
@@ -235,7 +236,7 @@ mod tests {
 
     fn rule_entry(clock_secs: i64) -> RuleEntry {
         RuleEntry::Rule {
-            offset: ReminderOffset::at_due(),
+            kind: ReminderKind::DueOffset(ReminderOffset::at_due()),
             created: ts(100),
             clock: ts(clock_secs),
             insistence: Insistence::Normal,

@@ -3292,7 +3292,9 @@ mod flush_seed {
                 insistence: taskboard_domain::Insistence::Normal,
                 id: rule_id,
                 task: task_id,
-                offset: taskboard_domain::ReminderOffset::at_due(),
+                kind: taskboard_domain::ReminderKind::DueOffset(
+                    taskboard_domain::ReminderOffset::at_due(),
+                ),
                 created_at: ts(T),
                 updated_at: ts(T),
             },

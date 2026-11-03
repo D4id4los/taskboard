@@ -156,6 +156,7 @@ pub fn state_command_strategy() -> impl Strategy<Value = crate::messages::StateC
             .prop_map(|(task, offset, insistence)| StateCommand::AddReminderRule {
                 task,
                 offset,
+                at: None,
                 insistence,
             }),
         super::task_id_strategy().prop_map(|task| StateCommand::ClearReminderRules { task }),

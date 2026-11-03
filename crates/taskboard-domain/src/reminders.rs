@@ -177,6 +177,113 @@ impl<'de> Deserialize<'de> for ReminderOffset {
     }
 }
 
+/// An absolute rule fire instant, whole-second by construction —
+/// [`whole_second`] is the only construction path. The discipline is
+/// [`ReminderOffset`]'s rationale verbatim: every persistence lane (the
+/// sqlite `at_epoch_seconds` column, the document wire) stores whole
+/// seconds; a sub-second instant would diverge from its persisted form
+/// on reload and re-fire a delivered occurrence.
+///
+/// Deliberate leniency, documented at the type: past instants are legal
+/// data (an `At` rule whose instant already passed fires on the next
+/// tick — the `AdhocWhen::At` precedent). No range guard: every
+/// `DateTime<Utc>` fits the i64-seconds column.
+///
+/// [`whole_second`]: AtInstant::whole_second
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct AtInstant(DateTime<Utc>);
+
+impl AtInstant {
+    /// The only construction path: `dt` must carry no sub-second
+    /// component — the sub-second part would be truncated by every
+    /// persistence lane (the [`ReminderOffset`] rationale verbatim).
+    ///
+    /// # Errors
+    ///
+    /// [`InvalidAtInstant::SubSecond`] when `dt` carries a sub-second
+    /// component.
+    pub fn whole_second(dt: DateTime<Utc>) -> Result<Self, InvalidAtInstant> {
+        if dt.timestamp_subsec_nanos() != 0 {
+            Err(InvalidAtInstant::SubSecond)
+        } else {
+            Ok(Self(dt))
+        }
+    }
+
+    /// The wrapped instant.
+    #[must_use]
+    pub const fn as_datetime(self) -> DateTime<Utc> {
+        self.0
+    }
+
+    /// The canonical text form: the ISO-ordered UTC
+    /// `YYYY-MM-DD HH:MM:SS` shape, used by receipts and list rows.
+    /// Local-time rendering is the presentation layer's job (tz is a
+    /// caller concern); this form is the unambiguous record.
+    #[must_use]
+    pub fn text_form(self) -> String {
+        self.0.format("%Y-%m-%d %H:%M:%S").to_string()
+    }
+}
+
+/// Sub-second instants are not constructible; the rejection happens at
+/// the [`whole_second`](AtInstant::whole_second) mint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum InvalidAtInstant {
+    /// The proposed instant carries a sub-second component. Instants
+    /// are whole-second so the storage column and the synced document
+    /// field can never diverge from the evaluated value (a reload would
+    /// recompute a different occurrence and re-fire a delivered
+    /// reminder).
+    #[error("reminder instant must be a whole number of seconds")]
+    SubSecond,
+}
+
+impl Serialize for AtInstant {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        // A one-tuple of epoch seconds — the wire shape pinned against
+        // chrono default drift (the `ReminderOffset` custom-tuple
+        // precedent).
+        <(i64,) as Serialize>::serialize(&(self.0.timestamp(),), serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for AtInstant {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let (secs,) = <(i64,) as Deserialize>::deserialize(deserializer)?;
+        let dt = chrono::DateTime::from_timestamp(secs, 0)
+            .ok_or_else(|| serde::de::Error::custom("instant out of range"))?;
+        // The mint is the integrity check (the offset's serde-lane
+        // precedent): the decode re-mints, never a validate-and-forget.
+        Self::whole_second(dt).map_err(|_| serde::de::Error::custom("invalid reminder instant"))
+    }
+}
+
+/// How a rule decides its fire instant: the due-anchored offset
+/// (today's shape — an armed rule needs the watched task's due date) or
+/// an absolute instant (no due date involved at all — F25's
+/// undated-task class). Enum-with-data over the rule row: the
+/// clock/insistence fields stay on [`ReminderRule`], uniform across
+/// kinds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReminderKind {
+    /// Fire this far before the task's due date.
+    DueOffset(ReminderOffset),
+    /// Fire at this absolute instant — the due date is ignored.
+    At(AtInstant),
+}
+
+impl ReminderKind {
+    /// Whether this kind is the due-anchored shape. Presentation-side
+    /// derived states (the "needs a due date" row) ask this instead of
+    /// matching — one definition of the armed/needs-due split.
+    #[must_use]
+    pub const fn is_due_offset(self) -> bool {
+        matches!(self, Self::DueOffset(_))
+    }
+}
+
 /// Which reminder a firing/delivery/snooze refers to: an explicit rule,
 /// a task's implicit default (no stored row — its identity is the task),
 /// or a standalone adhoc alarm (device-local; the label lives on the
@@ -282,16 +389,20 @@ impl Insistence {
     }
 }
 
-/// A reminder rule anchored on a task's due date. N rules per task.
+/// A reminder rule anchored on a task's due date — or, in the `At`
+/// kind, on an absolute instant. N rules per task.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReminderRule {
     /// Local identity.
     pub id: ReminderRuleId,
     /// The watched task.
     pub task: TaskId,
-    /// Fire this far before the due date; zero = at due (≤ 0 by
-    /// construction via [`ReminderOffset`]).
-    pub offset: ReminderOffset,
+    /// How the rule decides its fire instant: a due-anchored offset (≤ 0
+    /// by construction via [`ReminderOffset`], armed when the task
+    /// carries a due date) or an absolute instant (due-date
+    /// independent). Uniform clock/insistence fields stay above — the
+    /// kind carries only the firing-shape data.
+    pub kind: ReminderKind,
     /// How loudly this rule insists. Stamped at creation, immutable per
     /// row (no rule-edit verbs exist; a different level re-creates the
     /// rule).
@@ -811,8 +922,26 @@ pub fn stale_deliveries(
             alarm_occurrence(reminders, id).is_none_or(|eff| eff != delivery.occurrence)
         }
         ReminderRef::Rule(id) => {
-            let task_id = reminders.rules.get(&id).map(|rule| rule.task);
-            unconsulted_task(delivery, task_id, tasks, reminders, defaults)
+            let Some(rule) = reminders.rules.get(&id) else {
+                return true; // a row-less ref is consulted by nobody
+            };
+            match rule.kind {
+                // The due pass consults a delivery row at the current
+                // effective occurrence behind the remindability gates —
+                // the `Default` arm's gate parity exactly.
+                ReminderKind::DueOffset(_) => {
+                    unconsulted_task(delivery, Some(rule.task), tasks, reminders, defaults)
+                }
+                // An `At` rule's row is consulted behind the At pass's
+                // own gate: live + open + unmuted (no due date involved
+                // — `is_remindable` here would wrongly age out an
+                // undated task's row while the receipt still guards the
+                // toast).
+                ReminderKind::At(_) => {
+                    !at_rule_eligible(rule.task, tasks, &reminders.muted)
+                        || at_rule_occurrence(reminders, id) != Some(delivery.occurrence)
+                }
+            }
         }
         ReminderRef::Default(task_id) => {
             unconsulted_task(delivery, Some(task_id), tasks, reminders, defaults)
@@ -861,13 +990,82 @@ fn unconsulted_task(
     reminders.effective_occurrence(&delivery.reminder, tasks, defaults) != Some(delivery.occurrence)
 }
 
-/// The instant an explicit rule fires at, given the task's current
-/// due date. `None` ⇔ no due date, or a fire instant outside the
-/// representable range (the evaluator is total on arbitrary input).
-/// Pure in `(offset, duedate)`.
+/// The instant an explicit rule fires at, given the task's current due
+/// date. `None` ⇔ a due-anchored rule without a due date, a missing
+/// task, or a fire instant outside the representable range (the
+/// evaluator is total on arbitrary input). `At` rules ignore the due
+/// date entirely — their occurrence is pure in the instant.
+/// Pure in `(kind, duedate)`.
 #[must_use]
 pub fn occurrence_of(rule: &ReminderRule, duedate: Option<DateTime<Utc>>) -> Option<DateTime<Utc>> {
-    duedate.and_then(|d| d.checked_add_signed(rule.offset.as_duration()))
+    match rule.kind {
+        ReminderKind::DueOffset(offset) => {
+            duedate.and_then(|d| d.checked_add_signed(offset.as_duration()))
+        }
+        ReminderKind::At(at) => Some(at.as_datetime()),
+    }
+}
+
+/// Effective occurrence of one `At`-kinded rule: its absolute base
+/// instant, or wherever the snooze chain has moved it — the
+/// [`alarm_occurrence`] reading over rule rows. `None` ⇔ the row is
+/// missing or the rule is `DueOffset`-kinded (whose occurrence needs
+/// the task's due date — the [`effective_occurrence`] reading).
+#[must_use]
+pub fn at_rule_occurrence(reminders: &ReminderState, id: ReminderRuleId) -> Option<DateTime<Utc>> {
+    let rule = reminders.rules.get(&id)?;
+    match rule.kind {
+        ReminderKind::At(at) => Some(walk_chain(
+            at.as_datetime(),
+            ReminderRef::Rule(id),
+            &reminders.snoozes,
+        )),
+        ReminderKind::DueOffset(_) => None,
+    }
+}
+
+/// Whether dismissing `occurrence` settles the `At`-kinded rule `id`:
+/// the rule is `At`-kinded and the dismissed occurrence equals the
+/// rule's current effective (snooze-walked) occurrence. The settle
+/// condition the [`DismissReminder`](crate::messages::StateCommand::DismissReminder)
+/// planner arm consults — a stale/base occurrence dismissal does NOT
+/// settle (the snooze walk decides); a `DueOffset` rule never settles
+/// by dismissal (it persists by design, re-arming with due changes).
+#[must_use]
+pub fn dismissal_settles_at_rule(
+    reminders: &ReminderState,
+    id: ReminderRuleId,
+    occurrence: DateTime<Utc>,
+) -> bool {
+    at_rule_occurrence(reminders, id) == Some(occurrence)
+}
+
+/// Prunes `At`-kinded rules whose effective occurrence is delivered
+/// **and** dismissed — the settled dismissal's post-batch backstop (the
+/// [`prune_settled_alarms`] shape; the caller orders it AFTER compaction
+/// and the alarms prune). Covers the shapes the planner-side settle
+/// cannot have ordered: a synced-in dismissal folded by a batch,
+/// degraded/offline corners. It removes **only the rule row**,
+/// deliberately NOT the receipts: the receipts keep the pruned shape
+/// re-fire-proof under any later document re-adoption
+/// (`delivered ∧ dismissed` blocks the evaluator forever) and the
+/// leftovers age out through the existing sweeps. `DueOffset` rules are
+/// never in the pruned set (persist by design).
+pub fn prune_settled_at_rules(reminders: &mut ReminderState) {
+    let settled: Vec<ReminderRuleId> = reminders
+        .rules
+        .keys()
+        .copied()
+        .filter(|&id| {
+            at_rule_occurrence(reminders, id).is_some_and(|eff| {
+                let reminder = ReminderRef::Rule(id);
+                reminders.is_delivered(&reminder, &eff) && reminders.is_dismissed(&reminder, &eff)
+            })
+        })
+        .collect();
+    for id in settled {
+        reminders.rules.remove(&id);
+    }
 }
 
 /// Effective occurrence of any reminder (explicit or default): the base
@@ -968,6 +1166,58 @@ fn break_effective_occurrence(
     ))
 }
 
+/// The `At` pass's eligibility gate, shared by both readers
+/// ([`at_rule_firings`] and [`stale_deliveries`]' consult test — one
+/// definition of At eligibility, the break pass's discipline): the
+/// rule's task must be live, open, and unmuted. **The due-date
+/// requirement is deliberately dropped** — that is F25's root cause —
+/// but live/open still gate (an `At` reminder on a done task is noise)
+/// and mute still applies (mute is task-shaped: "stop nagging").
+fn at_rule_eligible(
+    task_id: TaskId,
+    tasks: &BTreeMap<TaskId, Task>,
+    muted: &BTreeSet<TaskId>,
+) -> bool {
+    tasks
+        .get(&task_id)
+        .is_some_and(|task| task.is_live() && task.is_open())
+        && !muted.contains(&task_id)
+}
+
+/// The `At` firings: one per `At`-kinded rule whose effective
+/// occurrence (the absolute instant, snooze-walked) satisfies the gate
+/// — `delivered: false` for due eligibility, `true` for the active
+/// surface. One definition of At firing, both readers. Independent of
+/// `is_remindable`'s duedate requirement (the F25 fix); sorted by the
+/// caller's `(occurrence, reminder)` sort.
+fn at_rule_firings(
+    tasks: &BTreeMap<TaskId, Task>,
+    reminders: &ReminderState,
+    now: DateTime<Utc>,
+    delivered: bool,
+) -> Vec<ReminderFiring> {
+    let mut firings = Vec::new();
+    for rule in reminders.rules.values() {
+        let ReminderKind::At(_) = rule.kind else {
+            continue;
+        };
+        let reminder = ReminderRef::Rule(rule.id);
+        if let Some(effective) = at_rule_occurrence(reminders, rule.id)
+            && at_rule_eligible(rule.task, tasks, &reminders.muted)
+            && effective <= now
+            && reminders.is_delivered(&reminder, &effective) == delivered
+            && !reminders.is_dismissed(&reminder, &effective)
+        {
+            firings.push(ReminderFiring {
+                reminder,
+                anchor: ReminderAnchor::Task(rule.task),
+                occurrence: effective,
+            });
+        }
+    }
+    firings
+}
+
 /// The break firings: one per break rule whose effective occurrence
 /// (the stable threshold-crossing instant, snooze-walked) satisfies the
 /// gate — `delivered: false` for due eligibility, `true` for the active
@@ -1065,9 +1315,12 @@ pub fn due_firings(
         }
     }
     // The break pass (D-9): the same eligibility shape over the
-    // tracking history; the concatenation preserves the total order via
-    // the sort below.
+    // tracking history. The `At` pass beside it (F25): the same
+    // eligibility shape over the absolute-instant rules — due-date
+    // independent, live/open/muted gated. Both concatenations preserve
+    // the total order via the sort below.
     firings.extend(break_firings(tracking, reminders, now, false));
+    firings.extend(at_rule_firings(tasks, reminders, now, false));
     firings.sort_by_key(|f| (f.occurrence, f.reminder));
     firings
 }
@@ -1138,8 +1391,10 @@ pub fn active_notifications(
         }
     }
     // The break pass: delivered ∧ ¬dismissed occurrences stay on the
-    // surface (the same gate as every other family).
+    // surface (the same gate as every other family). The `At` pass
+    // beside it, same gate.
     firings.extend(break_firings(tracking, reminders, now, true));
+    firings.extend(at_rule_firings(tasks, reminders, now, true));
     firings.sort_by_key(|f| (f.occurrence, f.reminder));
     notifications_for(&firings, tasks, reminders)
 }
@@ -1309,7 +1564,7 @@ mod tests {
                         let Some(duedate) = tasks.get(&rule.task).and_then(|t| t.duedate) else {
                             continue;
                         };
-                        duedate + rule.offset.as_duration()
+                        duedate + offset_of(rule)
                     }
                     ReminderRef::Default(task_id) => {
                         let Some(duedate) = tasks.get(&task_id).and_then(|t| t.duedate) else {
@@ -1404,7 +1659,7 @@ mod tests {
                         let Some(duedate) = tasks.get(&rule.task).and_then(|t| t.duedate) else {
                             continue;
                         };
-                        duedate + rule.offset.as_duration()
+                        duedate + offset_of(rule)
                     }
                     ReminderRef::Default(task_id) => {
                         let Some(duedate) = tasks.get(&task_id).and_then(|t| t.duedate) else {
@@ -1588,7 +1843,7 @@ mod tests {
             prop_assert!(occurrence_of(&rule, Some(early)) <= occurrence_of(&rule, Some(late)));
             prop_assert_eq!(
                 occurrence_of(&rule, Some(early)),
-                Some(early + rule.offset.as_duration())
+                Some(early + offset_of(&rule))
             );
             prop_assert_eq!(occurrence_of(&rule, None), None);
         }
@@ -1630,7 +1885,7 @@ mod tests {
                         insistence: Insistence::Normal,
                         id: ReminderRuleId::from(uuid::Uuid::from_u128(10)),
                         task: task.id,
-                        offset,
+                        kind: ReminderKind::DueOffset(offset),
                         created_at: now,
                         updated_at: now,
                     };
@@ -1782,7 +2037,9 @@ mod tests {
             insistence: Insistence::Normal,
             id: ReminderRuleId::from(uuid::Uuid::from_u128(1)),
             task: TaskId::from(uuid::Uuid::from_u128(2)),
-            offset: ReminderOffset::before(chrono::TimeDelta::try_days(-30).unwrap()).unwrap(),
+            kind: ReminderKind::DueOffset(
+                ReminderOffset::before(chrono::TimeDelta::try_days(-30).unwrap()).unwrap(),
+            ),
             created_at: ts(100),
             updated_at: ts(100),
         };
@@ -1815,7 +2072,7 @@ mod tests {
             insistence: Insistence::Normal,
             id: ReminderRuleId::from(uuid::Uuid::from_u128(10)),
             task: task_a.id,
-            offset: ReminderOffset::at_due(),
+            kind: crate::reminders::ReminderKind::DueOffset(ReminderOffset::at_due()),
             created_at: ts(100),
             updated_at: ts(100),
         };
@@ -1823,7 +2080,7 @@ mod tests {
             insistence: Insistence::Normal,
             id: ReminderRuleId::from(uuid::Uuid::from_u128(11)),
             task: task_b.id,
-            offset: ReminderOffset::at_due(),
+            kind: crate::reminders::ReminderKind::DueOffset(ReminderOffset::at_due()),
             created_at: ts(100),
             updated_at: ts(100),
         };
@@ -1853,12 +2110,19 @@ mod tests {
         chrono::TimeDelta::try_days(90).expect("90 days is representable")
     }
 
+    fn offset_of(rule: &ReminderRule) -> chrono::TimeDelta {
+        match rule.kind {
+            ReminderKind::DueOffset(offset) => offset.as_duration(),
+            ReminderKind::At(_) => unreachable!("the generators only build due-offset rules"),
+        }
+    }
+
     fn rule_for(id: u128, task_id: TaskId, offset: ReminderOffset) -> ReminderRule {
         ReminderRule {
             insistence: Insistence::Normal,
             id: ReminderRuleId::from(uuid::Uuid::from_u128(id)),
             task: task_id,
-            offset,
+            kind: ReminderKind::DueOffset(offset),
             created_at: ts(100),
             updated_at: ts(100),
         }
@@ -2270,7 +2534,7 @@ mod tests {
             insistence: Insistence::Normal,
             id: ReminderRuleId::from(uuid::Uuid::from_u128(10)),
             task: task.id,
-            offset: ReminderOffset::at_due(),
+            kind: crate::reminders::ReminderKind::DueOffset(ReminderOffset::at_due()),
             created_at: ts(100),
             updated_at: ts(100),
         };
@@ -2526,7 +2790,9 @@ mod tests {
         let loud_rule = ReminderRule {
             id: ReminderRuleId::from(uuid::Uuid::from_u128(10)),
             task: task.id,
-            offset: ReminderOffset::before(chrono::TimeDelta::minutes(-5)).expect("valid"),
+            kind: ReminderKind::DueOffset(
+                ReminderOffset::before(chrono::TimeDelta::minutes(-5)).expect("valid"),
+            ),
             insistence: Insistence::Alarm,
             created_at: ts(100),
             updated_at: ts(100),
@@ -2706,7 +2972,7 @@ mod tests {
             insistence: Insistence::Normal,
             id: ReminderRuleId::from(uuid::Uuid::from_u128(rule_raw)),
             task,
-            offset,
+            kind: ReminderKind::DueOffset(offset),
             created_at,
             updated_at: created_at,
         }
@@ -2733,7 +2999,7 @@ mod tests {
             // arithmetic — no clamping, `None` ⇔ overflow.
             prop_assert_eq!(
                 occurrence_of(&rule, Some(due)),
-                due.checked_add_signed(rule.offset.as_duration()),
+                due.checked_add_signed(match rule.kind { ReminderKind::DueOffset(off) => off.as_duration(), ReminderKind::At(_) => unreachable!("fixture builds due-offset rules") }),
             );
             // Totality covers `None` dues trivially; monotonicity in the
             // due, `None` sorting below `Some` (the saturation contract).
@@ -2759,7 +3025,7 @@ mod tests {
                 insistence: Insistence::Normal,
                 id: ReminderRuleId::from(uuid::Uuid::from_u128(401)),
                 task: task_id,
-                offset: ReminderOffset::at_due(),
+                kind: crate::reminders::ReminderKind::DueOffset(ReminderOffset::at_due()),
                 created_at: due,
                 updated_at: due,
             };
@@ -3023,7 +3289,9 @@ mod tests {
                 insistence: Insistence::Normal,
                 id: ReminderRuleId::from(uuid::Uuid::from_u128(402)),
                 task: task_id,
-                offset: ReminderOffset::before(-one_hour).unwrap(),
+                kind: crate::reminders::ReminderKind::DueOffset(
+                    ReminderOffset::before(-one_hour).unwrap(),
+                ),
                 created_at: instant,
                 updated_at: instant,
             };
@@ -3415,5 +3683,396 @@ mod tests {
         assert_eq!(notes.len(), 1, "a missing rule row skips the payload");
         assert_eq!(notes[0].title, "time for a break");
         assert_eq!(notes[0].insistence, Insistence::Alarm);
+    }
+
+    // ---- r4 chunk 8: the At/in reminder kind (T1, T4) -------------------
+
+    fn at_rule(raw: u128, task: TaskId, at: DateTime<Utc>) -> ReminderRule {
+        ReminderRule {
+            insistence: Insistence::Normal,
+            id: ReminderRuleId::from(uuid::Uuid::from_u128(raw)),
+            task,
+            kind: ReminderKind::At(AtInstant::whole_second(at).expect("whole-second")),
+            created_at: ts(100),
+            updated_at: ts(100),
+        }
+    }
+
+    fn tasks_with(task: &Task) -> BTreeMap<TaskId, Task> {
+        BTreeMap::from([(task.id, task.clone())])
+    }
+
+    #[test]
+    fn at_instant_mints_whole_seconds_and_rejects_sub_seconds() {
+        let whole = ts(1_700_000_000);
+        let minted = AtInstant::whole_second(whole).expect("whole-second mints");
+        assert_eq!(minted.as_datetime(), whole);
+        let sub = Utc.timestamp_opt(1_700_000_000, 500_000_000).unwrap();
+        assert!(
+            matches!(
+                AtInstant::whole_second(sub),
+                Err(InvalidAtInstant::SubSecond)
+            ),
+            "a sub-second instant is the typed rejection"
+        );
+        // Past instants are legal data (fire on the next tick) — the
+        // documented leniency.
+        let past = ts(0);
+        assert!(AtInstant::whole_second(past).is_ok());
+    }
+
+    #[test]
+    fn at_instant_serde_tuple_roundtrips() {
+        let instant = AtInstant::whole_second(ts(1_700_000_000)).expect("whole-second");
+        let back: AtInstant =
+            serde_json::from_str(&serde_json::to_string(&instant).unwrap()).unwrap();
+        assert_eq!(back, instant);
+    }
+
+    #[test]
+    fn reminder_kind_serde_roundtrips_both_arms() {
+        let due = ReminderKind::DueOffset(
+            ReminderOffset::before(chrono::TimeDelta::try_minutes(-10).unwrap()).unwrap(),
+        );
+        let back: ReminderKind =
+            serde_json::from_str(&serde_json::to_string(&due).unwrap()).unwrap();
+        assert_eq!(back, due);
+        let at = ReminderKind::At(AtInstant::whole_second(ts(1_700_000_000)).unwrap());
+        let back: ReminderKind =
+            serde_json::from_str(&serde_json::to_string(&at).unwrap()).unwrap();
+        assert_eq!(back, at);
+    }
+
+    #[test]
+    fn at_rule_fires_on_an_undated_task_at_its_instant() {
+        // F25's regression core: an At rule on a task with no due date
+        // fires at instant <= now — no duedate requirement applies.
+        let task = live_task(1, None, 0);
+        let tasks = tasks_with(&task);
+        let instant = ts(1_000);
+        let rule = at_rule(10, task.id, instant);
+        let reminders = ReminderState {
+            rules: BTreeMap::from([(rule.id, rule)]),
+            ..ReminderState::default()
+        };
+        let defaults = ReminderDefaults::default();
+        // Before the instant: quiet.
+        assert_eq!(
+            due_firings(
+                &tasks,
+                &TrackingState::default(),
+                &reminders,
+                &defaults,
+                ts(999)
+            ),
+            Vec::new()
+        );
+        // At the instant: exactly one firing.
+        let firings = due_firings(
+            &tasks,
+            &TrackingState::default(),
+            &reminders,
+            &defaults,
+            instant,
+        );
+        assert_eq!(firings.len(), 1, "the At rule fires at its instant");
+        assert_eq!(
+            firings[0].reminder,
+            ReminderRef::Rule(ReminderRuleId::from(uuid::Uuid::from_u128(10)))
+        );
+        assert_eq!(firings[0].occurrence, instant);
+    }
+
+    #[test]
+    fn at_delivery_is_quiet_on_repeated_evaluation_and_dismissal_is_terminal() {
+        let task = live_task(1, None, 0);
+        let tasks = tasks_with(&task);
+        let instant = ts(1_000);
+        let rule = at_rule(10, task.id, instant);
+        let id = rule.id;
+        let reminder_ref = ReminderRef::Rule(id);
+        let mut reminders = ReminderState {
+            rules: BTreeMap::from([(id, rule)]),
+            ..ReminderState::default()
+        };
+        let defaults = ReminderDefaults::default();
+        let now_at = |state: &ReminderState, at: DateTime<Utc>| {
+            active_notifications(&tasks, &TrackingState::default(), state, &defaults, at)
+        };
+        // Delivered: the evaluator goes quiet (no re-fire), the surface
+        // keeps the row until dismissal.
+        reminders.deliveries.insert(ReminderDelivery {
+            reminder: reminder_ref,
+            occurrence: instant,
+            delivered_at: instant,
+        });
+        assert!(
+            due_firings(
+                &tasks,
+                &TrackingState::default(),
+                &reminders,
+                &defaults,
+                ts(1_001)
+            )
+            .is_empty(),
+            "a delivered occurrence never re-fires"
+        );
+        assert_eq!(now_at(&reminders, ts(1_001)).len(), 1, "the row is active");
+        // Dismissed: terminal — no surface, no re-fire, ever.
+        reminders.dismissals.insert(ReminderDismissal {
+            reminder: reminder_ref,
+            occurrence: instant,
+            dismissed_at: ts(1_002),
+        });
+        assert!(
+            now_at(&reminders, ts(1_003)).is_empty(),
+            "dismissed never returns"
+        );
+        assert_eq!(
+            due_firings(
+                &tasks,
+                &TrackingState::default(),
+                &reminders,
+                &defaults,
+                ts(1_003)
+            ),
+            Vec::new()
+        );
+    }
+
+    #[test]
+    fn at_rule_snooze_moves_the_occurrence_and_settles_at_the_target() {
+        let task = live_task(1, None, 0);
+        let tasks = tasks_with(&task);
+        let instant = ts(1_000);
+        let rule = at_rule(10, task.id, instant);
+        let id = rule.id;
+        let reminder_ref = ReminderRef::Rule(id);
+        let mut reminders = ReminderState {
+            rules: BTreeMap::from([(id, rule)]),
+            ..ReminderState::default()
+        };
+        let defaults = ReminderDefaults::default();
+        // Snooze the base occurrence to 2_000: quiet at 1_000, firing at
+        // 2_000 (the chain walk composes through the At pass).
+        reminders.snoozes.insert(
+            ReminderSnoozeKey {
+                reminder: reminder_ref,
+                occurrence: instant,
+            },
+            ts(2_000),
+        );
+        assert!(
+            due_firings(
+                &tasks,
+                &TrackingState::default(),
+                &reminders,
+                &defaults,
+                ts(1_000)
+            )
+            .is_empty(),
+            "the snoozed base occurrence is quiet"
+        );
+        let firings = due_firings(
+            &tasks,
+            &TrackingState::default(),
+            &reminders,
+            &defaults,
+            ts(2_000),
+        );
+        assert_eq!(firings.len(), 1);
+        assert_eq!(firings[0].occurrence, ts(2_000));
+        // The settle condition reads the walked occurrence: dismissing
+        // the target settles, dismissing the base does not.
+        assert!(dismissal_settles_at_rule(&reminders, id, ts(2_000)));
+        assert!(!dismissal_settles_at_rule(&reminders, id, instant));
+        assert!(
+            !dismissal_settles_at_rule(&reminders, id, ts(3_000)),
+            "a stranger occurrence never settles"
+        );
+    }
+
+    #[test]
+    fn at_rule_gates_on_live_open_unmuted_but_not_duedate() {
+        // Muted: quiet. Done: quiet. Missing task: quiet. The control
+        // (live, open, undated) fires — the due-date gate is absent.
+        let now = ts(1_000);
+        let defaults = ReminderDefaults::default();
+        let instant = ts(1_000);
+        let mut task = live_task(1, None, 0);
+        let rule = at_rule(10, task.id, instant);
+        let mut reminders = ReminderState {
+            rules: BTreeMap::from([(rule.id, rule)]),
+            muted: BTreeSet::from([task.id]),
+            ..ReminderState::default()
+        };
+        let tasks = tasks_with(&task);
+        assert!(
+            due_firings(
+                &tasks,
+                &TrackingState::default(),
+                &reminders,
+                &defaults,
+                now
+            )
+            .is_empty(),
+            "muted is quiet"
+        );
+        reminders.muted.clear();
+        task.done = Some(ts(500));
+        let done_tasks = tasks_with(&task);
+        assert!(
+            due_firings(
+                &done_tasks,
+                &TrackingState::default(),
+                &reminders,
+                &defaults,
+                now
+            )
+            .is_empty(),
+            "a done task is quiet"
+        );
+        assert!(
+            due_firings(
+                &BTreeMap::new(),
+                &TrackingState::default(),
+                &reminders,
+                &defaults,
+                now
+            )
+            .is_empty(),
+            "a missing task is quiet"
+        );
+        let live_tasks = tasks_with(&live_task(1, None, 0));
+        assert_eq!(
+            due_firings(
+                &live_tasks,
+                &TrackingState::default(),
+                &reminders,
+                &defaults,
+                now
+            )
+            .len(),
+            1,
+            "the undated control fires"
+        );
+    }
+
+    #[test]
+    fn prune_settled_at_rules_takes_exactly_the_delivered_and_dismissed_rows() {
+        let task = live_task(1, None, 0);
+        let tasks = tasks_with(&task);
+        let settled = at_rule(10, task.id, ts(1_000));
+        let settled_ref = ReminderRef::Rule(settled.id);
+        let live = at_rule(11, task.id, ts(5_000));
+        let live_id = live.id;
+        let offset_rule = ReminderRule {
+            insistence: Insistence::Normal,
+            id: ReminderRuleId::from(uuid::Uuid::from_u128(12)),
+            task: task.id,
+            kind: ReminderKind::DueOffset(ReminderOffset::at_due()),
+            created_at: ts(100),
+            updated_at: ts(100),
+        };
+        let mut reminders = ReminderState {
+            rules: BTreeMap::from([
+                (settled.id, settled),
+                (live.id, live),
+                (offset_rule.id, offset_rule),
+            ]),
+            ..ReminderState::default()
+        };
+        // The settled row: delivered + dismissed at its effective
+        // occurrence. The live row: delivered only. The offset row:
+        // delivered + dismissed at a base occurrence (must never prune).
+        reminders.deliveries.insert(ReminderDelivery {
+            reminder: settled_ref,
+            occurrence: ts(1_000),
+            delivered_at: ts(1_000),
+        });
+        reminders.dismissals.insert(ReminderDismissal {
+            reminder: settled_ref,
+            occurrence: ts(1_000),
+            dismissed_at: ts(1_100),
+        });
+        reminders.deliveries.insert(ReminderDelivery {
+            reminder: ReminderRef::Rule(live_id),
+            occurrence: ts(5_000),
+            delivered_at: ts(5_000),
+        });
+        let delivered_before = reminders.deliveries.clone();
+        prune_settled_at_rules(&mut reminders);
+        assert_eq!(reminders.rules.len(), 2, "only the settled At rule pruned");
+        assert!(
+            !reminders
+                .rules
+                .contains_key(&ReminderRuleId::from(uuid::Uuid::from_u128(10))),
+            "the settled At rule is gone"
+        );
+        assert!(
+            reminders.rules.contains_key(&live_id),
+            "a live At rule survives"
+        );
+        assert!(
+            reminders
+                .rules
+                .contains_key(&ReminderRuleId::from(uuid::Uuid::from_u128(12))),
+            "a DueOffset rule is never pruned"
+        );
+        assert_eq!(
+            reminders.deliveries, delivered_before,
+            "the receipts deliberately survive the prune"
+        );
+        // Idempotent: a second pass is a no-op.
+        prune_settled_at_rules(&mut reminders);
+        assert_eq!(reminders.rules.len(), 2);
+        let _ = tasks;
+    }
+
+    #[test]
+    fn stale_delivery_sweep_keeps_a_live_at_rules_receipt() {
+        // An At rule on an undated task: the consult test gates on
+        // live/open/unmuted (never on duedate), so a *current* delivery
+        // is consulted and survives the sweep's unconsulted filter.
+        let task = live_task(1, None, 0);
+        let tasks = tasks_with(&task);
+        let instant = ts(1_000);
+        let rule = at_rule(10, task.id, instant);
+        let id = rule.id;
+        let reminder_ref = ReminderRef::Rule(id);
+        let reminders = ReminderState {
+            rules: BTreeMap::from([(id, rule)]),
+            ..ReminderState::default()
+        };
+        let current = ReminderDelivery {
+            reminder: reminder_ref,
+            occurrence: instant,
+            delivered_at: instant,
+        };
+        let moved = ReminderDelivery {
+            reminder: reminder_ref,
+            occurrence: ts(-8_000_000),
+            delivered_at: ts(-8_000_000),
+        };
+        let reminders = ReminderState {
+            deliveries: BTreeSet::from([current, moved]),
+            ..reminders
+        };
+        let swept = stale_deliveries(
+            &tasks,
+            &TrackingState::default(),
+            &reminders,
+            &ReminderDefaults::default(),
+            ts(0),
+            delivery_prune_age(),
+        );
+        assert!(
+            !swept.contains(&current),
+            "the live occurrence's receipt survives"
+        );
+        assert!(
+            swept.contains(&moved),
+            "a moved occurrence's row is unconsulted"
+        );
     }
 }

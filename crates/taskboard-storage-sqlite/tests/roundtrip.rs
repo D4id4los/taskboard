@@ -252,7 +252,7 @@ async fn outbox_preserves_enqueue_order_across_removals() {
 #[tokio::test]
 async fn reminder_rule_round_trips_the_write_clock_and_epoch_decodes() {
     use taskboard_domain::ids::ReminderRuleId;
-    use taskboard_domain::reminders::{ReminderOffset, ReminderRule};
+    use taskboard_domain::reminders::{ReminderKind, ReminderOffset, ReminderRule};
 
     let mut db = common::FileDb::new().await;
     let repo = db.repo();
@@ -264,8 +264,10 @@ async fn reminder_rule_round_trips_the_write_clock_and_epoch_decodes() {
         insistence: taskboard_domain::Insistence::Normal,
         id: rule_id,
         task: t.id,
-        offset: ReminderOffset::before(chrono::TimeDelta::try_minutes(-5).unwrap())
-            .expect("valid offset"),
+        kind: ReminderKind::DueOffset(
+            ReminderOffset::before(chrono::TimeDelta::try_minutes(-5).unwrap())
+                .expect("valid offset"),
+        ),
         created_at: ts(1_000),
         updated_at: ts(2_000),
     };
@@ -329,7 +331,7 @@ async fn reminder_rule_round_trips_the_write_clock_and_epoch_decodes() {
 #[tokio::test]
 async fn rule_offset_roundtrips_identically_through_sqlite() {
     use taskboard_domain::ids::ReminderRuleId;
-    use taskboard_domain::reminders::{ReminderOffset, ReminderRule};
+    use taskboard_domain::reminders::{ReminderKind, ReminderOffset, ReminderRule};
 
     for (i, secs) in [0_i64, -1, -90, -3_600, -86_400, -2_592_000]
         .into_iter()
@@ -345,8 +347,10 @@ async fn rule_offset_roundtrips_identically_through_sqlite() {
             insistence: taskboard_domain::Insistence::Normal,
             id: rule_id,
             task: t.id,
-            offset: ReminderOffset::before(chrono::TimeDelta::try_seconds(secs).unwrap())
-                .expect("whole-second"),
+            kind: ReminderKind::DueOffset(
+                ReminderOffset::before(chrono::TimeDelta::try_seconds(secs).unwrap())
+                    .expect("whole-second"),
+            ),
             created_at: ts(1_000),
             updated_at: ts(2_000),
         };
@@ -459,7 +463,9 @@ async fn a_delivery_prune_deletes_exactly_the_named_rows() {
         insistence: taskboard_domain::Insistence::Normal,
         id: ReminderRuleId::from(uuid::Uuid::from_u128(20)),
         task: t.id,
-        offset: taskboard_domain::reminders::ReminderOffset::at_due(),
+        kind: taskboard_domain::ReminderKind::DueOffset(
+            taskboard_domain::reminders::ReminderOffset::at_due(),
+        ),
         created_at: ts(1_000),
         updated_at: ts(1_000),
     };
@@ -1402,7 +1408,9 @@ async fn pre_insistence_rows_decode_normal() {
 #[tokio::test]
 async fn insistence_round_trips_through_sqlite() {
     use taskboard_domain::ids::{AdhocAlarmId, ReminderRuleId};
-    use taskboard_domain::reminders::{AdhocAlarm, Insistence, ReminderOffset, ReminderRule};
+    use taskboard_domain::reminders::{
+        AdhocAlarm, Insistence, ReminderKind, ReminderOffset, ReminderRule,
+    };
 
     let mut db = common::FileDb::new().await;
     let repo = db.repo();
@@ -1412,8 +1420,10 @@ async fn insistence_round_trips_through_sqlite() {
     let rule = ReminderRule {
         id: ReminderRuleId::from(uuid::Uuid::from_u128(20)),
         task: t.id,
-        offset: ReminderOffset::before(chrono::TimeDelta::try_minutes(-5).unwrap())
-            .expect("valid offset"),
+        kind: ReminderKind::DueOffset(
+            ReminderOffset::before(chrono::TimeDelta::try_minutes(-5).unwrap())
+                .expect("valid offset"),
+        ),
         insistence: Insistence::Alarm,
         created_at: ts(1_000),
         updated_at: ts(2_000),
@@ -1446,7 +1456,7 @@ async fn insistence_round_trips_through_sqlite() {
 async fn unknown_insistence_text_is_a_typed_corruption() {
     use taskboard_domain::ids::ReminderRuleId;
     use taskboard_domain::persistence::RepositoryError;
-    use taskboard_domain::reminders::{ReminderOffset, ReminderRule};
+    use taskboard_domain::reminders::{ReminderKind, ReminderOffset, ReminderRule};
 
     let mut db = common::FileDb::new().await;
     let repo = db.repo();
@@ -1456,8 +1466,10 @@ async fn unknown_insistence_text_is_a_typed_corruption() {
     let rule = ReminderRule {
         id: ReminderRuleId::from(uuid::Uuid::from_u128(20)),
         task: t.id,
-        offset: ReminderOffset::before(chrono::TimeDelta::try_minutes(-5).unwrap())
-            .expect("valid offset"),
+        kind: ReminderKind::DueOffset(
+            ReminderOffset::before(chrono::TimeDelta::try_minutes(-5).unwrap())
+                .expect("valid offset"),
+        ),
         insistence: taskboard_domain::Insistence::Normal,
         created_at: ts(1_000),
         updated_at: ts(2_000),
@@ -2044,4 +2056,161 @@ async fn break_ref_suppression_rows_round_trip_through_sqlite() {
         Some(ts(9_000))
     );
     db.close().await;
+}
+
+// T7 (r4 chunk 8) — the kind columns: an At row round-trips epoch-exact,
+// a raw pre-0020-shape row (only the 0004/0007/0013 columns) decodes as
+// the DEFAULT 'due_offset' backfill (upgrade pin, no loss), and the
+// self-contradictory shapes decode Corrupted. The receipts stay
+// kind-blind (the ref text form is unchanged).
+#[tokio::test]
+async fn at_rule_rows_roundtrip_epoch_exact_and_pre_0020_rows_decode_due_offset() {
+    use taskboard_domain::ids::ReminderRuleId;
+    use taskboard_domain::reminders::{AtInstant, ReminderKind, ReminderOffset, ReminderRule};
+
+    let mut db = common::FileDb::new().await;
+    let repo = db.repo();
+    let b = board(11);
+    let s = stack(2, &b);
+    let t = task(1, &s, BTreeMap::default());
+    let at_secs = 1_800_000_500_i64;
+    let at_rule = ReminderRule {
+        insistence: taskboard_domain::Insistence::Alarm,
+        id: ReminderRuleId::from(uuid::Uuid::from_u128(30)),
+        task: t.id,
+        kind: ReminderKind::At(AtInstant::whole_second(ts(at_secs)).expect("whole-second")),
+        created_at: ts(1_000),
+        updated_at: ts(2_000),
+    };
+    let offset_rule = ReminderRule {
+        insistence: taskboard_domain::Insistence::Normal,
+        id: ReminderRuleId::from(uuid::Uuid::from_u128(31)),
+        task: t.id,
+        kind: ReminderKind::DueOffset(
+            ReminderOffset::before(chrono::TimeDelta::try_minutes(-10).unwrap())
+                .expect("valid offset"),
+        ),
+        created_at: ts(1_000),
+        updated_at: ts(2_000),
+    };
+    repo.apply(vec![
+        PersistenceAction::UpsertBoard(b),
+        PersistenceAction::UpsertStack(s),
+        PersistenceAction::UpsertTask(t),
+        PersistenceAction::UpsertReminderRule(at_rule.clone()),
+        PersistenceAction::UpsertReminderRule(offset_rule.clone()),
+    ])
+    .await
+    .expect("apply");
+    let loaded = repo.load().await.expect("load");
+    assert_eq!(
+        loaded.reminders.rules.get(&at_rule.id),
+        Some(&at_rule),
+        "epoch-exact"
+    );
+    assert_eq!(
+        loaded.reminders.rules.get(&offset_rule.id),
+        Some(&offset_rule),
+        "the due-offset sibling round-trips"
+    );
+    db.close().await;
+
+    // Full persist → load → persist byte-stability on mixed-kind state:
+    // the reload applies cleanly and reloads identically.
+    let mut db = common::FileDb::new().await;
+    let repo = db.repo();
+    repo.apply(actions_from_state(&loaded))
+        .await
+        .expect("re-persist");
+    let reloaded = repo.load().await.expect("load");
+    assert_eq!(reloaded.reminders.rules, loaded.reminders.rules);
+    db.close().await;
+
+    // The upgrade pin: a raw pre-0020-shape INSERT (only the columns the
+    // pre-migration schema had) loads as DueOffset with the authored
+    // offset — the DEFAULT 'due_offset' backfill IS the legacy decode.
+    let mut db = common::FileDb::new().await;
+    let repo = db.repo();
+    let b = board(11);
+    let s = stack(2, &b);
+    let t = task(1, &s, BTreeMap::default());
+    let t_id = t.id.as_uuid().to_string();
+    repo.apply(vec![
+        PersistenceAction::UpsertBoard(b),
+        PersistenceAction::UpsertStack(s),
+        PersistenceAction::UpsertTask(t),
+    ])
+    .await
+    .expect("parents");
+    let raw = sqlx::sqlite::SqliteConnectOptions::new().filename(db.path());
+    let pool = sqlx::SqlitePool::connect_with(raw).await.expect("raw pool");
+    sqlx::query(
+        "INSERT INTO reminder_rules (rule_id, task_id, offset_seconds, insistence, created_at, updated_at) \
+         VALUES ('00000000-0000-0000-0000-000000000032', ?, -60, 'normal', '1970-01-01T00:00:16+00:00', '1970-01-01T00:00:32+00:00')",
+    )
+    .bind(&t_id)
+    .execute(&pool)
+    .await
+    .expect("raw pre-0020 insert");
+    pool.close().await;
+    let loaded = repo.load().await.expect("load");
+    let upgraded = &loaded.reminders.rules[&ReminderRuleId::from(uuid::Uuid::from_u128(0x32))];
+    assert_eq!(
+        upgraded.kind,
+        ReminderKind::DueOffset(
+            ReminderOffset::before(chrono::TimeDelta::try_minutes(-1).unwrap())
+                .expect("valid offset"),
+        ),
+        "the pre-migration row decodes DueOffset, no loss"
+    );
+    db.close().await;
+}
+
+#[tokio::test]
+async fn self_contradictory_kind_rows_decode_corrupted() {
+    async fn corrupt(sql: &'static str) {
+        let mut db = common::FileDb::new().await;
+        let repo = db.repo();
+        let b = board(11);
+        let s = stack(2, &b);
+        let t = task(1, &s, BTreeMap::default());
+        let t_id = t.id.as_uuid().to_string();
+        repo.apply(vec![
+            PersistenceAction::UpsertBoard(b),
+            PersistenceAction::UpsertStack(s),
+            PersistenceAction::UpsertTask(t),
+        ])
+        .await
+        .expect("parents");
+        let raw = sqlx::sqlite::SqliteConnectOptions::new().filename(db.path());
+        let pool = sqlx::SqlitePool::connect_with(raw).await.expect("raw pool");
+        sqlx::query(sql)
+            .bind(&t_id)
+            .execute(&pool)
+            .await
+            .expect("raw insert");
+        pool.close().await;
+        let err = repo.load().await.expect_err("load must fail");
+        assert_eq!(err, RepositoryError::Corrupted);
+        db.close().await;
+    }
+
+    // kind='at' with a NULL epoch.
+    corrupt(
+        "INSERT INTO reminder_rules (rule_id, task_id, offset_seconds, kind, at_epoch_seconds, insistence, created_at, updated_at) \
+         VALUES ('00000000-0000-0000-0000-000000000033', ?, 0, 'at', NULL, 'normal', '1970-01-01T00:00:16+00:00', '1970-01-01T00:00:16+00:00')",
+    )
+    .await;
+    // A stray non-NULL epoch on a due-offset row.
+    corrupt(
+        "INSERT INTO reminder_rules (rule_id, task_id, offset_seconds, kind, at_epoch_seconds, insistence, created_at, updated_at) \
+         VALUES ('00000000-0000-0000-0000-000000000034', ?, -60, 'due_offset', 42, 'normal', '1970-01-01T00:00:16+00:00', '1970-01-01T00:00:16+00:00')",
+    )
+    .await;
+    // Unknown kind text.
+    corrupt(
+        "INSERT INTO reminder_rules (rule_id, task_id, offset_seconds, kind, at_epoch_seconds, insistence, created_at, updated_at) \
+         VALUES ('00000000-0000-0000-0000-000000000035', ?, -60, 'someday', NULL, 'normal', '1970-01-01T00:00:16+00:00', '1970-01-01T00:00:16+00:00')",
+    )
+    .await;
 }

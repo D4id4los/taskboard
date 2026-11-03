@@ -133,6 +133,7 @@ journal:
           offset:
             - 0
             - 0
+          at: ~
           insistence: normal
       facts:
         NotUndoable: ReminderSurface

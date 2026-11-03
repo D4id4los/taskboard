@@ -1802,6 +1802,7 @@ fn every_arm_journals_entry_or_nothing() {
             task,
             offset: crate::reminders::ReminderOffset::before(chrono::TimeDelta::minutes(-30))
                 .expect("valid"),
+            at: None,
             insistence: crate::reminders::Insistence::Normal,
         })
         .expect("rule");
@@ -1906,6 +1907,7 @@ fn every_arm_journals_entry_or_nothing() {
             task,
             offset: crate::reminders::ReminderOffset::before(chrono::TimeDelta::minutes(-15))
                 .expect("valid"),
+            at: None,
             insistence: crate::reminders::Insistence::Normal,
         },
         StateCommand::RemoveReminderRule { rule: rule_id },

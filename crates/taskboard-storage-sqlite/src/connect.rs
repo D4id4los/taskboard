@@ -199,7 +199,7 @@ mod tests {
             .fetch_one(&raw)
             .await
             .expect("migration bookkeeping");
-        assert_eq!(applied, 19, "each shipped migration recorded exactly once");
+        assert_eq!(applied, 20, "each shipped migration recorded exactly once");
         raw.close().await;
         second.close().await;
     }
@@ -901,10 +901,15 @@ mod tests {
         // order and lands with the column in place). 0013 is the same
         // shape: its insistence ALTER targets the re-created table, so it
         // replays with the strip too.
-        sqlx::query("DELETE FROM _sqlx_migrations WHERE version IN (4, 7, 13)")
+        sqlx::query("DELETE FROM _sqlx_migrations WHERE version IN (4, 7, 13, 20)")
             .execute(&raw)
             .await
             .expect("strip bookkeeping");
+        // 0020 rides the same strip: this hand-built fixture predates
+        // the reminder_rules table entirely, so the replayed 0004
+        // re-creates it bare and the replayed 0020 adds the kind columns
+        // fresh (the real pre-0004 upgrade runs 20 in order).
+
         // 0013's adhoc_alarms half must strip too: its table was not
         // dropped, so the replayed ALTER would collide with the
         // surviving column (the real pre-0004 upgrade runs 8 and 13

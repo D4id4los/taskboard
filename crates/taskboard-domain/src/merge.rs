@@ -784,7 +784,7 @@ pub fn fold_reminder_rules(
     for (key, rule_entry) in &entry.rules {
         match rule_entry {
             crate::appdata::RuleEntry::Rule {
-                offset,
+                kind,
                 created,
                 clock,
                 insistence,
@@ -795,7 +795,7 @@ pub fn fold_reminder_rules(
                 let id = crate::ids::ReminderRuleId::from(uuid);
                 match rules.get_mut(&id) {
                     Some(local) if *clock >= local.updated_at => {
-                        local.offset = *offset;
+                        local.kind = *kind;
                         local.created_at = *created;
                         local.insistence = *insistence;
                         // The document's card key is the rule's remote
@@ -812,7 +812,7 @@ pub fn fold_reminder_rules(
                             insistence: *insistence,
                             id,
                             task,
-                            offset: *offset,
+                            kind: *kind,
                             created_at: *created,
                             updated_at: *clock,
                         };
@@ -2517,7 +2517,9 @@ mod tests {
             insistence: Insistence::Normal,
             id: crate::ids::ReminderRuleId::from(uuid::Uuid::from_u128(10)),
             task: task.id,
-            offset: crate::reminders::ReminderOffset::at_due(),
+            kind: crate::reminders::ReminderKind::DueOffset(
+                crate::reminders::ReminderOffset::at_due(),
+            ),
             created_at: ts(BASE + 60),
             updated_at: ts(BASE + 60),
         };
@@ -2550,7 +2552,9 @@ mod tests {
             insistence: Insistence::Normal,
             id: crate::ids::ReminderRuleId::from(uuid::Uuid::from_u128(10)),
             task: TaskId::from(uuid::Uuid::from_u128(2)),
-            offset: crate::reminders::ReminderOffset::at_due(),
+            kind: crate::reminders::ReminderKind::DueOffset(
+                crate::reminders::ReminderOffset::at_due(),
+            ),
             created_at: ts(BASE + 60),
             updated_at: ts(BASE + 60),
         };
@@ -2626,7 +2630,7 @@ mod tests {
                 insistence: Insistence::Normal,
                 id: crate::ids::ReminderRuleId::from(uuid::Uuid::from_u128(10)),
                 task: rule_task.id,
-                offset: crate::reminders::ReminderOffset::at_due(),
+                kind: crate::reminders::ReminderKind::DueOffset(crate::reminders::ReminderOffset::at_due()),
                 created_at: above,
                 updated_at: above,
             };
@@ -3618,7 +3622,9 @@ mod tests {
             insistence: Insistence::Normal,
             id: crate::ids::ReminderRuleId::from(uuid::Uuid::from_u128(10)),
             task: TaskId::from(uuid::Uuid::from_u128(1)),
-            offset: crate::reminders::ReminderOffset::at_due(),
+            kind: crate::reminders::ReminderKind::DueOffset(
+                crate::reminders::ReminderOffset::at_due(),
+            ),
             created_at: ts(BASE + 100),
             updated_at: ts(updated_secs),
         }
@@ -3878,10 +3884,12 @@ mod tests {
                 "00000000-0000-0000-0000-00000000000a",
                 RuleEntry::Rule {
                     insistence: Insistence::Normal,
-                    offset: crate::reminders::ReminderOffset::before(
-                        chrono::TimeDelta::try_minutes(-30).unwrap(),
-                    )
-                    .unwrap(),
+                    kind: crate::reminders::ReminderKind::DueOffset(
+                        crate::reminders::ReminderOffset::before(
+                            chrono::TimeDelta::try_minutes(-30).unwrap(),
+                        )
+                        .unwrap(),
+                    ),
                     created: ts(BASE + 100),
                     clock: ts(BASE + 500),
                 },
@@ -3890,7 +3898,9 @@ mod tests {
                 "00000000-0000-0000-0000-00000000000b",
                 RuleEntry::Rule {
                     insistence: Insistence::Normal,
-                    offset: crate::reminders::ReminderOffset::at_due(),
+                    kind: crate::reminders::ReminderKind::DueOffset(
+                        crate::reminders::ReminderOffset::at_due(),
+                    ),
                     created: ts(BASE + 400),
                     clock: ts(BASE + 400),
                 },
@@ -3903,15 +3913,71 @@ mod tests {
         // Update: the offset and the clock landed.
         let updated = &rules[&existing.id];
         assert_eq!(
-            updated.offset,
-            crate::reminders::ReminderOffset::before(chrono::TimeDelta::try_minutes(-30).unwrap())
+            updated.kind,
+            crate::reminders::ReminderKind::DueOffset(
+                crate::reminders::ReminderOffset::before(
+                    chrono::TimeDelta::try_minutes(-30).unwrap()
+                )
                 .unwrap()
+            )
         );
         assert_eq!(updated.updated_at, ts(BASE + 500));
         // Adopt: the document's UUID verbatim.
         assert!(rules.contains_key(&new_id));
         assert_eq!(rules[&new_id].task, task);
         assert_eq!(rules[&new_id].updated_at, ts(BASE + 400));
+    }
+
+    #[test]
+    fn rules_fold_carries_the_at_kind_and_repoints_moved_at_rules() {
+        // Adopt: an unknown uuid arms with the document's At kind.
+        let mut rules = std::collections::BTreeMap::new();
+        let adopted_id = crate::ids::ReminderRuleId::from(uuid::Uuid::from_u128(12));
+        let at_instant = crate::reminders::AtInstant::whole_second(ts(BASE + 900)).unwrap();
+        let entry = rules_entry(&[(
+            "00000000-0000-0000-0000-00000000000c",
+            RuleEntry::Rule {
+                insistence: Insistence::Normal,
+                kind: crate::reminders::ReminderKind::At(at_instant),
+                created: ts(BASE + 400),
+                clock: ts(BASE + 400),
+            },
+        )]);
+        let task = TaskId::from(uuid::Uuid::from_u128(1));
+        let changes = fold_reminder_rules(&mut rules, task, &entry, false);
+        assert_eq!(changes.upserts.len(), 1);
+        assert_eq!(
+            rules[&adopted_id].kind,
+            crate::reminders::ReminderKind::At(at_instant)
+        );
+        assert_eq!(rules[&adopted_id].task, task);
+        // A moved card re-points the At rule: the recent cross-board
+        // fold semantics hold for the absolute-instant kind too.
+        let new_task = TaskId::from(uuid::Uuid::from_u128(2));
+        let repoint = rules_entry(&[(
+            "00000000-0000-0000-0000-00000000000c",
+            RuleEntry::Rule {
+                insistence: Insistence::Normal,
+                kind: crate::reminders::ReminderKind::At(
+                    crate::reminders::AtInstant::whole_second(ts(BASE + 950)).unwrap(),
+                ),
+                created: ts(BASE + 400),
+                clock: ts(BASE + 500),
+            },
+        )]);
+        let changes = fold_reminder_rules(&mut rules, new_task, &repoint, false);
+        assert_eq!(changes.upserts.len(), 1, "the newer clock updates");
+        assert_eq!(
+            rules[&adopted_id].task, new_task,
+            "the rule follows the folding card"
+        );
+        assert_eq!(
+            rules[&adopted_id].kind,
+            crate::reminders::ReminderKind::At(
+                crate::reminders::AtInstant::whole_second(ts(BASE + 950)).unwrap()
+            ),
+            "the update lands the kind"
+        );
     }
 
     #[test]
@@ -3923,7 +3989,9 @@ mod tests {
             "00000000-0000-0000-0000-00000000000b",
             RuleEntry::Rule {
                 insistence: Insistence::Alarm,
-                offset: crate::reminders::ReminderOffset::at_due(),
+                kind: crate::reminders::ReminderKind::DueOffset(
+                    crate::reminders::ReminderOffset::at_due(),
+                ),
                 created: ts(BASE + 400),
                 clock: ts(BASE + 400),
             },
@@ -3943,7 +4011,9 @@ mod tests {
             "00000000-0000-0000-0000-00000000000a",
             RuleEntry::Rule {
                 insistence: Insistence::Alarm,
-                offset: crate::reminders::ReminderOffset::at_due(),
+                kind: crate::reminders::ReminderKind::DueOffset(
+                    crate::reminders::ReminderOffset::at_due(),
+                ),
                 created: ts(BASE + 100),
                 clock: ts(BASE + 500),
             },
@@ -3961,7 +4031,9 @@ mod tests {
             "00000000-0000-0000-0000-00000000000a",
             RuleEntry::Rule {
                 insistence: Insistence::Normal,
-                offset: crate::reminders::ReminderOffset::at_due(),
+                kind: crate::reminders::ReminderKind::DueOffset(
+                    crate::reminders::ReminderOffset::at_due(),
+                ),
                 created: ts(BASE + 100),
                 clock: ts(BASE + 500),
             },
@@ -3980,7 +4052,9 @@ mod tests {
             "00000000-0000-0000-0000-00000000000a",
             RuleEntry::Rule {
                 insistence: Insistence::Normal,
-                offset: crate::reminders::ReminderOffset::at_due(),
+                kind: crate::reminders::ReminderKind::DueOffset(
+                    crate::reminders::ReminderOffset::at_due(),
+                ),
                 created: ts(BASE + 100),
                 clock: ts(BASE + 500),
             },
@@ -4012,10 +4086,12 @@ mod tests {
             "00000000-0000-0000-0000-00000000000a",
             RuleEntry::Rule {
                 insistence: Insistence::Alarm,
-                offset: crate::reminders::ReminderOffset::before(
-                    chrono::TimeDelta::try_minutes(-30).unwrap(),
-                )
-                .unwrap(),
+                kind: crate::reminders::ReminderKind::DueOffset(
+                    crate::reminders::ReminderOffset::before(
+                        chrono::TimeDelta::try_minutes(-30).unwrap(),
+                    )
+                    .unwrap(),
+                ),
                 created: ts(BASE + 100),
                 clock: ts(BASE + 500),
             },
@@ -4028,9 +4104,13 @@ mod tests {
             "the rule follows the folding card's task"
         );
         assert_eq!(
-            repointed.offset,
-            crate::reminders::ReminderOffset::before(chrono::TimeDelta::try_minutes(-30).unwrap())
+            repointed.kind,
+            crate::reminders::ReminderKind::DueOffset(
+                crate::reminders::ReminderOffset::before(
+                    chrono::TimeDelta::try_minutes(-30).unwrap()
+                )
                 .unwrap()
+            )
         );
         assert_eq!(repointed.insistence, Insistence::Alarm);
         assert_eq!(repointed.updated_at, ts(BASE + 500));
@@ -4111,7 +4191,9 @@ mod tests {
                 "not-a-uuid-either",
                 RuleEntry::Rule {
                     insistence: Insistence::Normal,
-                    offset: crate::reminders::ReminderOffset::at_due(),
+                    kind: crate::reminders::ReminderKind::DueOffset(
+                        crate::reminders::ReminderOffset::at_due(),
+                    ),
                     created: ts(BASE + 1),
                     clock: ts(BASE + 2),
                 },
@@ -4142,7 +4224,9 @@ mod tests {
                 "00000000-0000-0000-0000-00000000000a",
                 RuleEntry::Rule {
                     insistence: Insistence::Normal,
-                    offset: crate::reminders::ReminderOffset::at_due(),
+                    kind: crate::reminders::ReminderKind::DueOffset(
+                        crate::reminders::ReminderOffset::at_due(),
+                    ),
                     created: ts(BASE + 100),
                     clock: ts(BASE + 900),
                 },
@@ -4151,7 +4235,9 @@ mod tests {
                 "00000000-0000-0000-0000-00000000000b",
                 RuleEntry::Rule {
                     insistence: Insistence::Normal,
-                    offset: crate::reminders::ReminderOffset::at_due(),
+                    kind: crate::reminders::ReminderKind::DueOffset(
+                        crate::reminders::ReminderOffset::at_due(),
+                    ),
                     created: ts(BASE + 1),
                     clock: ts(BASE + 1),
                 },

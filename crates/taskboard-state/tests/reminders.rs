@@ -17,6 +17,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use taskboard_domain::NotifierMessage;
+use taskboard_domain::ReminderKind;
 use taskboard_domain::idgen::IdGenerator as _;
 use taskboard_domain::persistence::{PersistedState, TaskRepository};
 use taskboard_domain::test_support::{CountingIds, InMemoryRepository};
@@ -1076,7 +1077,7 @@ fn seeded_rule_state(
             insistence: Insistence::Normal,
             id: rule_id,
             task: task_id,
-            offset: ReminderOffset::at_due(),
+            kind: ReminderKind::DueOffset(ReminderOffset::at_due()),
             created_at: ts(T0),
             updated_at: ts(T0),
         },
@@ -1190,4 +1191,79 @@ async fn a_quiet_tick_never_touches_the_repository() {
     h.handle.flush().await;
 
     assert_eq!(repo.applies(), 0, "a quiet tick persists nothing");
+}
+
+/// T6 (r4 chunk 8) — F25's end-to-end regression harness: an `At` rule
+/// minted on an **undated** task fires at its instant within one tick,
+/// lands as an in-app notification, stays quiet on repeated ticks, and
+/// settles on dismissal — the rule is pruned from the state and stays
+/// gone across further advances. The engine lanes are kind-agnostic;
+/// this journey proves the At pass rides them unchanged.
+#[cfg_attr(miri, ignore)] // timer wheel (testing-strategy §10 scope)
+#[tokio::test(start_paused = true)]
+async fn at_rule_on_an_undated_task_fires_and_settles_on_dismissal() {
+    // The default Spawner seed carries a due date; the F25 class needs
+    // the undated shape, so the seed is overridden post-construction.
+    let (mut state, task_id) = seeded_task_state(T0 + 3_600);
+    let live = state.tasks.get_mut(&task_id).expect("seeded task");
+    live.duedate = None;
+    let mut h = spawn(Spawner {
+        repo: Arc::new(InMemoryRepository::with_state(state)),
+        ..Spawner::default()
+    })
+    .await;
+    settle_boot_tick().await;
+    let outcome = h
+        .handle
+        .execute(StateCommand::AddReminderRule {
+            task: task_id,
+            offset: ReminderOffset::at_due(),
+            at: Some(AdhocWhen::In(chrono::TimeDelta::try_seconds(30).unwrap())),
+            insistence: Insistence::Normal,
+        })
+        .await
+        .expect("accepted");
+    let CommandOutcome::ReminderRuleAdded { rule, added: true } = outcome else {
+        panic!("add yields the created receipt");
+    };
+    let reminder = ReminderRef::Rule(rule);
+
+    advance_both(&h.clock, 31).await;
+    eventually(&h.handle, |app| app.reminders.deliveries.len() == 1).await;
+
+    // One notification with the rule ref; quiet on the next tick (the
+    // delivery receipt is the at-most-once guard).
+    let notes = drain_notifications(&mut h.notifications);
+    assert_eq!(notes.len(), 1, "one firing, once");
+    assert_eq!(notes[0].reminder, reminder);
+    assert_eq!(notes[0].occurrence, ts(T0 + 30));
+    advance_both(&h.clock, 5).await;
+    assert!(
+        drain_notifications(&mut h.notifications).is_empty(),
+        "a delivered occurrence never re-fires"
+    );
+
+    // The fired rule row survives until dismissal (the live in-app
+    // surface), then the settle prunes it: the dismissal batch plans
+    // the rule's removal (the planner-side settle) and the post-pass
+    // backstop would catch a synced-in dismissal anyway.
+    let outcome = h
+        .handle
+        .execute(StateCommand::DismissReminder {
+            reminder,
+            occurrence: ts(T0 + 30),
+        })
+        .await
+        .expect("accepted");
+    assert_eq!(outcome, CommandOutcome::Applied);
+    eventually(&h.handle, |app| !app.reminders.rules.contains_key(&rule)).await;
+    // Stays gone across further advances (no document lane in this
+    // harness — nothing can re-adopt it).
+    advance_both(&h.clock, 10).await;
+    let app = h.handle.shared_state().load_full();
+    assert!(
+        !app.reminders.rules.contains_key(&rule),
+        "the settled rule stays gone"
+    );
+    drop(app);
 }

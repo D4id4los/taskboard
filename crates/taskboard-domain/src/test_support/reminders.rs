@@ -17,8 +17,8 @@ use super::{task_id_strategy, task_strategy, timestamp_strategy};
 use crate::entities::Task;
 use crate::ids::{AdhocAlarmId, ReminderRuleId, TaskId};
 use crate::reminders::{
-    AdhocAlarm, Insistence, ReminderDelivery, ReminderOffset, ReminderRef, ReminderRule,
-    ReminderSnooze, ReminderSnoozeKey, ReminderState,
+    AdhocAlarm, Insistence, ReminderDelivery, ReminderKind, ReminderOffset, ReminderRef,
+    ReminderRule, ReminderSnooze, ReminderSnoozeKey, ReminderState,
 };
 
 /// A non-positive offset in `≤ −30 d … 0`: exercises the sign domain
@@ -97,7 +97,7 @@ pub fn reminder_rule_strategy() -> impl Strategy<Value = ReminderRule> {
         .prop_map(|(id, task, offset, insistence, created_at)| ReminderRule {
             id,
             task,
-            offset,
+            kind: ReminderKind::DueOffset(offset),
             insistence,
             created_at,
             updated_at: created_at,
@@ -255,7 +255,7 @@ pub fn build_reminders(tasks: &BTreeMap<TaskId, Task>, rows: Vec<ReminderRow>) -
                         insistence: Insistence::Normal,
                         id: row.rule,
                         task,
-                        offset: row.offset,
+                        kind: crate::reminders::ReminderKind::DueOffset(row.offset),
                         updated_at: row.created_at,
                         created_at: row.created_at,
                     };
