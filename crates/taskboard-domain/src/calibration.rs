@@ -36,6 +36,7 @@ use chrono::{DateTime, Utc};
 use crate::entities::Effort;
 use crate::ids::TaskId;
 use crate::state::AppState;
+use crate::tracking::TimeEntryKind;
 
 /// One completed task's calibration row (the ledger's unit).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,15 +63,14 @@ impl CalibrationRow {
     /// settled comparison. Positive = took longer than planned.
     #[must_use]
     pub fn gap(&self) -> Option<chrono::TimeDelta> {
-        match (self.estimate, self.tracked) {
-            (Some(estimate), true) => Some(
-                self.actual
-                    - chrono::TimeDelta::seconds(
-                        i64::try_from(estimate.seconds()).unwrap_or(i64::MAX),
-                    ),
-            ),
-            _ => None,
+        let estimate = self.estimate?;
+        if !self.tracked {
+            return None;
         }
+        let estimate_duration =
+            chrono::TimeDelta::try_seconds(i64::try_from(estimate.seconds()).unwrap_or(i64::MAX))
+                .unwrap_or(chrono::TimeDelta::MAX);
+        Some(self.actual - estimate_duration)
     }
 
     /// Both sides observed — the row counts toward the aggregate gap.
@@ -120,17 +120,77 @@ pub struct CalibrationReport {
 /// window bounds and `now` are data, never reads.
 #[must_use]
 pub fn calibrate(
-    _state: &AppState,
+    state: &AppState,
     window: (DateTime<Utc>, DateTime<Utc>),
-    _now: DateTime<Utc>,
+    now: DateTime<Utc>,
 ) -> CalibrationReport {
-    // Stage-2 red step: the stub admits nothing (the law suite fails
-    // against it); the feat commit replaces this body.
+    let (window_start, window_end) = window;
+    // Membership: live ∧ `done ∈ [start, end)` (half-open). Admission
+    // (D-3): an estimate or at least one Work entry — the work filter
+    // is the D-11 ruling; the actual sums lifetime, open entries
+    // accruing to `now` (`duration`'s clamp keeps skewed spans out).
+    let mut rows: Vec<CalibrationRow> = state
+        .tasks
+        .values()
+        .filter(|task| task.is_live())
+        .filter_map(|task| {
+            let done = task
+                .done
+                .filter(|&done| done >= window_start && done < window_end)?;
+            let work: Vec<_> = state
+                .tracking
+                .entries
+                .values()
+                .filter(|entry| entry.task == task.id && entry.kind == TimeEntryKind::Work)
+                .collect();
+            let tracked = !work.is_empty();
+            if task.effort.is_none() && !tracked {
+                return None; // neither side observed — renders nowhere
+            }
+            let actual = work
+                .iter()
+                .map(|entry| entry.duration(now))
+                .fold(chrono::TimeDelta::zero(), |acc, span| acc + span);
+            Some(CalibrationRow {
+                task: task.id,
+                title: task.title.clone(),
+                done,
+                estimate: task.effort,
+                actual,
+                tracked,
+            })
+        })
+        .collect();
+    // The ledger reads newest-completion-up; ties by task ascending.
+    rows.sort_by(|a, b| b.done.cmp(&a.done).then_with(|| a.task.cmp(&b.task)));
+    let aggregate = fold(&rows);
     CalibrationReport {
         window,
-        rows: Vec::new(),
-        aggregate: CalibrationAggregate::default(),
+        rows,
+        aggregate,
     }
+}
+
+/// The aggregate is literally the rows' fold (law L8) — a second tally
+/// path cannot drift from the ledger because this is the only one.
+fn fold(rows: &[CalibrationRow]) -> CalibrationAggregate {
+    let mut aggregate = CalibrationAggregate::default();
+    for row in rows {
+        if row.compared() {
+            aggregate.compared += 1;
+            aggregate.estimated_seconds += row
+                .estimate
+                .map_or(0, |estimate| estimate.seconds().min(i64::MAX as u64));
+            aggregate.actual_seconds += u64::try_from(row.actual.num_seconds()).unwrap_or(0);
+        } else if row.tracked {
+            aggregate.skipped_unestimated += 1;
+        } else {
+            aggregate.skipped_untracked += 1;
+        }
+    }
+    aggregate.gap_seconds = i64::try_from(aggregate.actual_seconds).unwrap_or(i64::MAX)
+        - i64::try_from(aggregate.estimated_seconds).unwrap_or(i64::MAX);
+    aggregate
 }
 
 #[cfg(test)]
@@ -450,8 +510,10 @@ mod tests {
         fn l7_open_entries_accrue_monotonically_in_now(
             (start, end, now, mut tasks, mut entries) in scenario_strategy(),
         ) {
-            // Force one open Work entry on a completed-in-window task.
-            tasks.push((9, Some(86_400 / 2), Some(60)));
+            // Force one open Work entry on a task completing at the
+            // window's midpoint (always inside the half-open window).
+            let half = (end - start).num_seconds() / 2;
+            tasks.push((9, Some(half), Some(60)));
             entries.push((9, 0, 10_000, true, Kind::Work));
             let state = build(start, &tasks, &entries);
             let victim = TaskId::from(uuid::Uuid::from_u128(9));

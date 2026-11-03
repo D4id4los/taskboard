@@ -81,11 +81,17 @@ pub fn trailing_days_window(
     now: DateTime<Utc>,
     day_start_time: chrono::NaiveTime,
     offset: FixedOffset,
-    _days: std::num::NonZeroU32,
+    days: std::num::NonZeroU32,
 ) -> (DateTime<Utc>, DateTime<Utc>) {
-    // Stage-2 red step: the stub returns the degenerate single-day
-    // window; the feat commit composes the real bounds.
-    day_window(now, day_start_time, offset)
+    let (today_start, _) = day_window(now, day_start_time, offset);
+    let today_date = today_start.with_timezone(&offset).date_naive();
+    let start = window_start(
+        today_date - Days::new(u64::from(days.get() - 1)),
+        day_start_time,
+        offset,
+    );
+    let end = window_start(today_date + Days::new(1), day_start_time, offset);
+    (start, end)
 }
 
 /// The injected day-boundary vocabulary: `(day_start_time, offset)` as
