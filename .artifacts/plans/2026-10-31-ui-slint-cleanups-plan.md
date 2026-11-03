@@ -266,7 +266,7 @@ self-contained):
 > on `chore/ui-slint-cleanups`.
 >
 > - **F7-03** — fixed: `models::current_breakpoint` (the zero-caller
->   Slint→Rust bridge) deleted in <SHA>; the adapter's `is_compact`
+>   Slint→Rust bridge) deleted in facd6b34; the adapter's `is_compact`
 >   remains the single production read-back, and both bridge imports
 >   stay live via `to_slint_breakpoint`.
 > - **F7-04** — fixed (documentation): the two `UiHandle` seam fns
@@ -274,7 +274,7 @@ self-contained):
 >   structurally impossible once the integration tier
 >   (`tests/usability_components.rs`) started driving the settings
 >   surface through `set_view_context`; the seam doc now records the
->   permanence + the zero-production-caller fact (<SHA>).
+>   permanence + the zero-production-caller fact (d61d5727).
 > - **F7-07** — already fixed by the settings wave, no action needed
 >   here: scale re-configures live via the settings-scale verbs
 >   (`settings_scale_preview/committed/pressed/released/focus_lost`),
