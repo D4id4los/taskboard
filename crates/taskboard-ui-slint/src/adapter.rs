@@ -5563,7 +5563,7 @@ fn install_timer_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
 
     let create = Rc::clone(adapter);
     let create_weak = window.as_weak();
-    window.on_timers_create_accepted(move |label, when_text| {
+    window.on_timers_create_accepted(move |label, when_text, alarm_rung| {
         let Some(window) = create_weak.upgrade() else {
             return false;
         };
@@ -5585,9 +5585,17 @@ fn install_timer_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         };
         // Both outcomes clear the field — the validity draft follows.
         a.timer_when_draft.clear();
+        // The rung rides the seam's structural bool (r4 D-T7): the
+        // two-rung enum's alarm bit, minted at this trust boundary.
+        let insistence = if alarm_rung {
+            taskboard_domain::Insistence::Alarm
+        } else {
+            taskboard_domain::Insistence::Normal
+        };
         a.timer_draft = Some(crate::router::TimerDraft {
             label: label.into(),
             when,
+            insistence,
         });
         a.route(&window, ActionId::TimerCreate);
         true

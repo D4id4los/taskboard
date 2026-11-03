@@ -9889,6 +9889,72 @@ fn the_timer_row_renders_the_two_part_countdown_and_the_rung() {
     );
 }
 
+/// r4 D-T7 — the insistence picker: the inline form's picker rides
+/// the commit seam's third parameter — the alarm rung lands on the
+/// captured command verbatim; the default pick is the silent `Normal`
+/// rung. Typed commands, never label text.
+#[test]
+fn the_timers_form_carries_the_insistence_rung() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::ViewToday);
+            let click_field = |harness: &mut Harness, label: &str| {
+                let element = harness
+                    .driver
+                    .find_by_label(label)
+                    .unwrap_or_else(|| panic!("the element {label:?} is present"));
+                let (x, y) = support::driver::centre(&element);
+                harness.driver.click_at(x, y);
+            };
+            click_field(&mut harness, "Timer label");
+            harness.type_text("Wake");
+            click_field(&mut harness, "Timer timing (in 10m or at 09:30)");
+            harness.type_text("in 2m");
+            click_field(&mut harness, "Alarm");
+            harness.stroke(parse("Return").expect("Return"));
+            match harness.engine.drain().as_slice() {
+                [
+                    StateCommand::CreateAdhocAlarm {
+                        label, insistence, ..
+                    },
+                ] => {
+                    assert_eq!(label.as_str(), "Wake");
+                    assert_eq!(
+                        *insistence,
+                        taskboard_domain::Insistence::Alarm,
+                        "the alarm rung rides the commit seam"
+                    );
+                }
+                other => panic!("the create reached the boundary, got {other:?}"),
+            }
+
+            // The default pick is the silent Normal rung (D-I9's
+            // ladder): a fresh commit with the picker untouched.
+            harness.engine.settle(&harness.handle);
+            click_field(&mut harness, "Timer label");
+            harness.type_text("Tea");
+            click_field(&mut harness, "Timer timing (in 10m or at 09:30)");
+            harness.type_text("in 2m");
+            harness.stroke(parse("Return").expect("Return"));
+            match harness.engine.drain().as_slice() {
+                [StateCommand::CreateAdhocAlarm { insistence, .. }] => {
+                    assert_eq!(
+                        *insistence,
+                        taskboard_domain::Insistence::Normal,
+                        "the default rung is the silent base"
+                    );
+                }
+                other => panic!("the create reached the boundary, got {other:?}"),
+            }
+        },
+    );
+}
+
 // -- DR-5/4: the tracking affordances (issue #489) -----------------------
 
 /// DR-5/4 — the chip: the open entry names itself (title snapshot +

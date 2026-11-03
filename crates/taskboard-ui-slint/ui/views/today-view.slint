@@ -63,8 +63,9 @@ export component TodayView inherits FocusScope {
     in property <[TimerRowModel]> timers;
     in property <int> timers-awaiting;
     callback timers-cancel-clicked(int);
-    // `false` keeps the form's text (an absorbed parse miss).
-    callback timers-create-accepted(string, string) -> bool;
+    // `false` keeps the form's text (an absorbed parse miss). The
+    // bool is the insistence rung's alarm bit (r4 D-T7).
+    callback timers-create-accepted(string, string, bool) -> bool;
     // The `when` field's per-keystroke validity (r4 D27).
     callback timers-when-edited(string);
     in property <FieldValidity> timer-when-validity;
@@ -115,7 +116,9 @@ export component TodayView inherits FocusScope {
                     timers: root.timers;
                     timers-awaiting: root.timers-awaiting;
                     cancel-clicked(r) => root.timers-cancel-clicked(r);
-                    create-accepted(label, when) => root.timers-create-accepted(label, when);
+                    create-accepted(label, when, alarm) => {
+                        root.timers-create-accepted(label, when, alarm)
+                    }
                     // The validity half (r4 D27, chunk 9's mount fix):
                     // the form's per-keystroke grammar probe rides the
                     // same forwards the task-view twin wires.
