@@ -1071,6 +1071,8 @@ pub fn parse_timer_when(
 #[must_use]
 pub fn tracker_badge_visible(task: &taskboard_domain::entities::Task) -> bool {
     task.kind == taskboard_domain::entities::TaskKind::Tracker
+}
+
 /// The custom-offset field's syntax hint (r4 D27): the copy constant.
 pub const OFFSET_SYNTAX_HINT: &str = "45m, 3h, 2d, 1w";
 

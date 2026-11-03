@@ -672,7 +672,14 @@ pub fn sync_buffer_picker(
                     .and_then(|(_, time_part)| NaiveTime::parse_from_str(time_part, "%H:%M").ok());
                 Some((
                     buffer.to_owned(),
-                    Some(DuePickerState::from_parts(instant.date_naive(), time)),
+                    // The picker state's cursor is the **local** date
+                    // (r4 D28's convention) — the instant's UTC date
+                    // would rewind a `00:30` typed in a +02:00 zone to
+                    // the previous day.
+                    Some(DuePickerState::from_parts(
+                        instant.with_timezone(tz).date_naive(),
+                        time,
+                    )),
                 ))
             }
             Ok(None) | Err(DueParseError) => None,
@@ -1186,6 +1193,36 @@ mod tests {
         // `2030-01-3` parses (as day 3) — pre-existing grammar
         // leniency, not the sync's concern; the seed then matches
         // what a Return would commit.
+    }
+
+    #[test]
+    fn the_buffer_seed_carries_the_local_date_across_the_offset() {
+        // (r4 D28, the picker's local-date convention) A local
+        // wall-clock whose UTC instant lands the previous day still
+        // seeds the cursor on the *typed* date — the adapter always
+        // passes the device zone, so a `00:30` in a +02:00 summer
+        // zone must not rewind the picker to the UTC date.
+        let picker =
+            DuePickerState::open(NaiveDate::from_ymd_opt(2030, 7, 1).unwrap(), None, &DstTz);
+        let Some((_, Some(seeded))) = sync_buffer_picker(
+            "2030-07-01 00:30",
+            &picker,
+            SyncSource::Buffer,
+            now(),
+            &DstTz,
+        ) else {
+            panic!("parseable buffer seeds");
+        };
+        assert_eq!(
+            seeded.cursor(),
+            NaiveDate::from_ymd_opt(2030, 7, 1).unwrap(),
+            "the local date, not the instant's UTC date"
+        );
+        // The picker-source rendering restores exactly the typed text.
+        assert_eq!(
+            sync_buffer_picker("", &seeded, SyncSource::Picker, now(), &DstTz),
+            Some(("2030-07-01 00:30".to_owned(), None))
+        );
     }
 
     // -- the r4 D28 zone suite: a hand-rolled test TimeZone with a
