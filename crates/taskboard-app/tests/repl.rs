@@ -82,6 +82,9 @@ async fn run_session(
         |_, _| EditorIo {
             lines: rx,
             dispositions: verdicts,
+
+            #[cfg(unix)]
+            wake: None,
         },
         &mut io,
     )
@@ -339,6 +342,9 @@ async fn r6_a_held_instance_lock_fails_the_session_boot_typed() {
         |_, _| EditorIo {
             lines: rx,
             dispositions: verdicts,
+
+            #[cfg(unix)]
+            wake: None,
         },
         &mut io,
     )
@@ -573,6 +579,9 @@ async fn r10_a_connector_sync_failure_is_typed_and_survivable() {
         |_, _| EditorIo {
             lines: rx,
             dispositions: verdicts,
+
+            #[cfg(unix)]
+            wake: None,
         },
         &mut io,
     )
@@ -688,6 +697,9 @@ async fn r12_repl_loop_shuts_the_core_down_before_returning() {
         EditorIo {
             lines: rx,
             dispositions: verdicts,
+
+            #[cfg(unix)]
+            wake: None,
         },
         SessionSignals::inert(),
         &mut io,
@@ -730,6 +742,9 @@ async fn r13_a_kiosk_mode_session_boots_and_serves() {
         |_, _| EditorIo {
             lines: rx,
             dispositions: verdicts,
+
+            #[cfg(unix)]
+            wake: None,
         },
         &mut io,
     )
@@ -1208,6 +1223,9 @@ async fn run_with(
         |_, _| EditorIo {
             lines: rx,
             dispositions: vtx,
+
+            #[cfg(unix)]
+            wake: None,
         },
         &mut io,
     );
@@ -1308,6 +1326,9 @@ async fn run_cancellable(
         |_, _| EditorIo {
             lines: rx,
             dispositions: vtx,
+
+            #[cfg(unix)]
+            wake: None,
         },
         &mut io,
     );
@@ -1539,6 +1560,9 @@ async fn a_terminate_event_ends_the_session_like_ctrl_d() {
         EditorIo {
             lines: rx,
             dispositions: verdicts,
+
+            #[cfg(unix)]
+            wake: None,
         },
         taskboard_app::repl::SessionSignals {
             cancel,

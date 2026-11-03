@@ -96,6 +96,8 @@ rpassword = "7"
 rustyline = "19"
 # POSIX-ish word splitting for REPL lines (taskboard-app)
 shell-words = "1"
+# The masked-read unit tier's safe SIGINT observer (dev-only)
+signal-hook = "0.3"
 # Line-discipline save/restore around the REPL session (taskboard-app):
 # the same termios API (and version) the line editor itself uses
 nix = { version = "0.31.3", default-features = false, features = ["term"] }
