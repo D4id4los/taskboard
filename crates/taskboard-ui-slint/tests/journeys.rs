@@ -7185,10 +7185,82 @@ fn the_scheduled_editor_reaches_the_boundary_with_parity() {
     );
 }
 
-/// R2 D25 — the calendar picker (seeded due 2030-01-31): the grid
-/// opens on the due's month, the keyboard drives the cursor and the
-/// months, Enter and the typed path produce the identical command,
-/// a day click ≡ cursor+Enter, and Escape closes clean.
+/// R4 D23 (F19) — the steppers work from an empty time: a date-only
+/// picker seeds midnight on the first backward step (23:45 the
+/// previous day, the readout leaves `--:--`), and the first forward
+/// step lands 00:15; the eventual commit carries the stepped instant.
+#[test]
+fn steppers_seed_and_step_from_empty() {
+    let (fixture, mut state) = fixture::journey_state();
+    state
+        .tasks
+        .get_mut(&fixture.task1)
+        .expect("fixture task")
+        .duedate = Some(chrono::Utc.with_ymd_and_hms(2030, 1, 31, 0, 0, 0).unwrap());
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavNextView);
+            harness.press(ActionId::NavNextView);
+            harness.driver.click_by_label("Edit due date");
+            harness.driver.advance_time(0);
+            assert_eq!(
+                harness.handle.window().get_task_model().date_time_text,
+                "--:--",
+                "a midnight anchor stays date-only — no phantom time"
+            );
+
+            // The first backward step seeds midnight and wraps to the
+            // previous day's 23:45; the readout follows.
+            harness.handle.window().invoke_task_date_picker_key(9);
+            harness.driver.advance_time(0);
+            assert_eq!(
+                harness.handle.window().get_task_model().date_time_text,
+                "23:45",
+                "the seed made a time exist and the step wrapped"
+            );
+
+            // The commit carries the stepped instant — cursor date
+            // followed the wrap backward.
+            harness.handle.window().invoke_task_date_picker_key(8);
+            harness.assert_commands(&[StateCommand::UpdateTask {
+                id: fixture.task1,
+                changes: taskboard_domain::TaskChanges {
+                    duedate: Some(Some(
+                        chrono::Utc
+                            .with_ymd_and_hms(2030, 1, 30, 23, 45, 0)
+                            .unwrap(),
+                    )),
+                    ..taskboard_domain::TaskChanges::default()
+                },
+            }]);
+
+            // A fresh editor: the first forward step from empty is
+            // 00:15 the same day.
+            harness.driver.click_by_label("Edit due date");
+            harness.driver.advance_time(0);
+            harness.handle.window().invoke_task_date_picker_key(10);
+            harness.driver.advance_time(0);
+            assert_eq!(
+                harness.handle.window().get_task_model().date_time_text,
+                "00:15",
+                "the seed stepped forward"
+            );
+        },
+    );
+}
+
+/// R4 D25 — the calendar picker's two-phase ladder and live sync
+/// (reworks the r2 boundary journey's Enter leg): grid-Enter hands
+/// focus to the field and dispatches nothing, the typed path and
+/// day-click keep their commands, the Escape ladder steps field →
+/// grid → close without a command until the close, and the buffer
+/// mirrors cursor moves while the grid holds focus.
 #[allow(clippy::too_many_lines)] // the walk is the contract's length
 #[test]
 fn the_due_picker_journeys_reach_the_boundary() {
@@ -7217,8 +7289,9 @@ fn the_due_picker_journeys_reach_the_boundary() {
             );
 
             // January 2030: one leading blank (Tuesday start), 31
-            // days, padded to 35 cells in 5 rows; the cursor sits on
-            // the due (flattened index 1 + 30).
+            // days, padded to the six-row reserve — 42 cells in 6
+            // rows (r4 D22); the cursor sits on the due (flattened
+            // index 1 + 30).
             let cursor_index = |harness: &Harness| -> Option<usize> {
                 let grid = harness.handle.window().get_task_model().date_grid;
                 let mut flat = 0usize;
@@ -7241,7 +7314,7 @@ fn the_due_picker_journeys_reach_the_boundary() {
                     .sum();
                 (rows, cells)
             };
-            assert_eq!(grid_shape(&harness), (5, 35));
+            assert_eq!(grid_shape(&harness), (6, 42));
             assert_eq!(cursor_index(&harness), Some(31));
 
             // Down-in-field hands focus to the grid (the one-shot
@@ -7249,7 +7322,8 @@ fn the_due_picker_journeys_reach_the_boundary() {
             // here. Right follows the month (round-3 D12/F28): the
             // caption flips to February and the cursor stays on-grid
             // — Feb 1 2030 is a Friday (4 leading blanks, flattened
-            // 4), 28 days padded to 35 cells in 5 rows. Left returns
+            // 4), 28 days padded to the six-row reserve (42 cells).
+            // Left returns
             // to the due's January grid.
             harness.stroke(parse("Down").expect("Down"));
             harness.driver.advance_time(0);
@@ -7266,7 +7340,8 @@ fn the_due_picker_journeys_reach_the_boundary() {
             assert_eq!(
                 grid_shape(&harness),
                 (6, 42),
-                "the month button answered Return"
+                "the month button answered Return — and every month \
+                renders the same six-row reserve (r4 D22)"
             );
             assert_eq!(cursor_index(&harness), Some(35));
             // Back to January for the legs below.
@@ -7276,7 +7351,7 @@ fn the_due_picker_journeys_reach_the_boundary() {
             harness.driver.advance_time(0);
             harness.stroke(parse("Right").expect("Right"));
             harness.driver.advance_time(0);
-            assert_eq!(grid_shape(&harness), (5, 35));
+            assert_eq!(grid_shape(&harness), (6, 42));
             assert_eq!(
                 cursor_index(&harness),
                 Some(4),
@@ -7284,14 +7359,14 @@ fn the_due_picker_journeys_reach_the_boundary() {
             );
             harness.stroke(parse("Left").expect("Left"));
             harness.driver.advance_time(0);
-            assert_eq!(grid_shape(&harness), (5, 35));
+            assert_eq!(grid_shape(&harness), (6, 42));
             assert_eq!(cursor_index(&harness), Some(31));
 
             // PageDown: February 2030, the cursor clamped to the 28th
             // (leading 4 + 27 = flattened 31 again, 35 cells).
             harness.stroke(parse("PageDown").expect("PageDown"));
             harness.driver.advance_time(0);
-            assert_eq!(grid_shape(&harness), (5, 35));
+            assert_eq!(grid_shape(&harness), (6, 42));
             assert_eq!(cursor_index(&harness), Some(31));
 
             // Enter on the cursor dispatches the same command the
