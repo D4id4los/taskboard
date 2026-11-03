@@ -27,10 +27,10 @@ use crate::view_state::{DateField, Flow, ViewState};
 use crate::{
     AppWindow, BannerRowModel, BoardBarModel, BoardModel, BoardSegmentModel,
     Breakpoint as SlintBreakpoint, DecorationKind, DragState, DueDayModel, DueKind as SlintDueKind,
-    FlowHintModel, HabitRowModel, NotificationRowModel, PaletteRowModel, RuleRowModel,
-    StackColumnModel, StackDetailModel, SyncBadgeModel, SyncPhaseUi, TaskCardModel, TaskDecoration,
-    TaskDetailModel, Theme, TimerRowModel, TodayModel, TodayRowModel, TodaySectionModel, Tone,
-    View,
+    FlowHintModel, HabitRowModel, NotificationRowModel, PaletteRowModel, ReviewModel,
+    ReviewRowModel, ReviewWindowModel, RuleRowModel, StackColumnModel, StackDetailModel,
+    SyncBadgeModel, SyncPhaseUi, TaskCardModel, TaskDecoration, TaskDetailModel, Theme,
+    TimerRowModel, TodayModel, TodayRowModel, TodaySectionModel, Tone, View,
 };
 
 /// The layout cap of the banner slot (D12): the truth is the row
@@ -241,6 +241,9 @@ pub struct PushModels {
     /// re-instantiate the cards (the r2 D9 discipline).
     today_sections: [MirroredRows<TodayRowModel>; 4],
     today: MirroredRows<TodaySectionModel>,
+    /// The review ledger's persistent row handle (#214): the same diff
+    /// pattern — stable identity across refreshes.
+    review: MirroredRows<ReviewRowModel>,
     settings_rows: MirroredRows<crate::ConnectionRow>,
     /// The board-selector's persistent row handle (r2 D32): the same
     /// diff pattern — stable identity across refreshes.
@@ -821,6 +824,7 @@ pub fn push(
     );
     mutations += push_stack_detail(window, state, vs, &sets, &mut tables, now, calendar, models);
     mutations += push_task_detail(window, state, vs, &sets, &mut tables, now, models, due);
+    mutations += push_review(window, state, day, calendar, kiosk, &mut tables, models);
     mutations += push_status_bar(
         window,
         state,
@@ -928,6 +932,54 @@ fn push_focus_overlay(
     // per-second re-push would clobber typing — see the field doc).
     if mount_transition {
         window.set_focus_note_initial_text(SharedString::from(vs.buffer().to_owned()));
+    }
+}
+
+/// The review surface's pass (#214, D-8/D-10): two aggregate
+/// sections (7-day, 30-day trailing local-day windows, bounds derived
+/// per pass from the calendar + `now` and passed into `calibrate` as
+/// data) over ONE 30-day ledger. The kiosk gate lives HERE (D-10(b),
+/// the `push_notifications` precedent): the empty model is emitted on
+/// the appliance even though the rotation can never route to the view.
+/// Returns the diff's mutation count.
+fn push_review(
+    window: &AppWindow,
+    _state: &AppState,
+    _day: crate::view_state::DayCtx,
+    _calendar: taskboard_domain::DayCalendar,
+    kiosk: bool,
+    _tables: &mut IdTables,
+    models: &mut PushModels,
+) -> usize {
+    // Stage-2 red step: the stub always emits the empty model; the
+    // populated projection lands with the feat commit.
+    let _ = kiosk;
+    push_review_model(window, models, empty_review_model())
+}
+
+/// Installs the ledger handle into the model struct and pushes the
+/// whole `ReviewModel` (the board-bar's struct+handle pattern).
+fn push_review_model(window: &AppWindow, models: &mut PushModels, mut model: ReviewModel) -> usize {
+    let handle = models.review.handle_or_insert_with();
+    let mutations = models.review.diff(&[]);
+    model.rows = ModelRc::from(handle);
+    window.set_review_model(model);
+    mutations
+}
+
+fn empty_review_model() -> ReviewModel {
+    let collapsed = ReviewWindowModel {
+        estimated: SharedString::new(),
+        actual: SharedString::new(),
+        gap: SharedString::new(),
+        compared: SharedString::new(),
+        empty: true,
+    };
+    ReviewModel {
+        week: collapsed.clone(),
+        month: collapsed,
+        rows: ModelRc::default(),
+        empty: true,
     }
 }
 
@@ -2954,5 +3006,235 @@ mod tests {
             Some(presentation::TrackDetail::Stop),
             "the open entry keeps its stop verb on a tracker"
         );
+    }
+    // -- the review push (#214, pair 4) --------------------------------------
+
+    use crate::test_platform::on_slint_thread;
+    use crate::{UiSettings, mount};
+    use std::sync::Arc;
+
+    fn review_rig(state: AppState, settings: UiSettings) -> crate::UiHandle {
+        let state = Arc::new(arc_swap::ArcSwap::from_pointee(state));
+        let (commands_tx, _commands_rx) = tokio::sync::mpsc::channel(64);
+        let (requests_tx, _requests_rx) = tokio::sync::mpsc::channel(16);
+        let (_health_tx, health) =
+            tokio::sync::watch::channel(crate::presentation::DeliveryHealth::default());
+        mount(
+            state,
+            {
+                let (_tx, rx) = tokio::sync::broadcast::channel(4);
+                rx
+            },
+            {
+                let (_tx, rx) = tokio::sync::broadcast::channel(4);
+                rx
+            },
+            commands_tx,
+            requests_tx,
+            settings,
+            health,
+        )
+        .expect("mount succeeds on the null platform")
+    }
+
+    /// A completed task `age` ago with the given estimate.
+    fn completed(raw: u128, title: &str, age: chrono::TimeDelta, effort: Option<u64>) -> Task {
+        let mut t = task();
+        t.id = TaskId::from_uuid(uuid::Uuid::from_u128(raw));
+        t.title = title.to_owned();
+        t.done = Some(chrono::Utc::now() - age);
+        t.effort = effort.map(taskboard_domain::Effort::new);
+        t
+    }
+
+    fn work_entry(
+        task: TaskId,
+        start: chrono::DateTime<chrono::Utc>,
+        end: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> taskboard_domain::TimeEntry {
+        let id = taskboard_domain::TimeEntryId::from_uuid(uuid::Uuid::now_v7());
+        taskboard_domain::TimeEntry {
+            id,
+            task,
+            task_title: "snapshotted".to_owned(),
+            start,
+            end,
+            created_at: start,
+            updated_at: end.unwrap_or(start),
+            kind: taskboard_domain::tracking::TimeEntryKind::Work,
+        }
+    }
+
+    fn tracked(state: &mut AppState, t: &Task, secs: i64) {
+        let now = chrono::Utc::now();
+        let e = work_entry(
+            t.id,
+            now - chrono::TimeDelta::try_hours(3).unwrap(),
+            Some(
+                now - chrono::TimeDelta::try_hours(3).unwrap()
+                    + chrono::TimeDelta::try_seconds(secs).unwrap(),
+            ),
+        );
+        state.tracking.entries.insert(e.id, e);
+    }
+
+    #[test]
+    fn the_review_model_mirrors_calibrate() {
+        on_slint_thread(|| {
+            let mut state = AppState::default();
+            // A: estimated + tracked (compared), done 2h ago.
+            let a = completed(
+                1,
+                "compared-a",
+                chrono::TimeDelta::try_hours(2).unwrap(),
+                Some(600),
+            );
+            tracked(&mut state, &a, 300);
+            state.tasks.insert(a.id, a.clone());
+            // B: tracked, unestimated, done 1h ago (newest completion).
+            let b = completed(
+                2,
+                "unestimated-b",
+                chrono::TimeDelta::try_hours(1).unwrap(),
+                None,
+            );
+            tracked(&mut state, &b, 60);
+            state.tasks.insert(b.id, b.clone());
+            // C: open — never surfaces (D-4).
+            let c = task();
+            state.tasks.insert(c.id, c);
+
+            let handle = review_rig(state, UiSettings::default());
+            handle
+                .test_adapter()
+                .borrow_mut()
+                .refresh_forced(handle.window());
+            let model = handle.window().get_review_model();
+
+            assert!(!model.empty, "comparable rows exist");
+            assert!(!model.month.empty);
+            assert!(!model.week.empty);
+            assert_eq!(model.rows.row_count(), 2, "the open task never surfaces");
+            let first = model.rows.row_data(0).expect("row 0");
+            let second = model.rows.row_data(1).expect("row 1");
+            assert_eq!(first.title, "unestimated-b", "newest completion first");
+            assert_eq!(second.title, "compared-a");
+            // The structural absences: unestimated and untracked are
+            // empty phrases, never zero phrases.
+            assert!(first.estimate.is_empty(), "unestimated is the dash");
+            assert!(!first.actual.is_empty());
+            assert!(first.gap.is_empty(), "an uncompared row carries no gap");
+            assert!(!second.estimate.is_empty());
+            assert!(!second.gap.is_empty(), "the settled comparison speaks");
+            // The dumb-client line: the rows equal `calibrate`'s own
+            // output for the same inputs, per the pass's bounds —
+            // structure over re-derivation: the aggregate section
+            // counts match the rows' own fold.
+        });
+    }
+
+    #[test]
+    fn the_kiosk_belt_emits_the_empty_review_model() {
+        on_slint_thread(|| {
+            let mut state = AppState::default();
+            let a = completed(
+                1,
+                "compared-a",
+                chrono::TimeDelta::try_hours(2).unwrap(),
+                Some(600),
+            );
+            tracked(&mut state, &a, 300);
+            state.tasks.insert(a.id, a.clone());
+            let handle = review_rig(
+                state,
+                UiSettings {
+                    kiosk: true,
+                    ..UiSettings::default()
+                },
+            );
+            handle
+                .test_adapter()
+                .borrow_mut()
+                .refresh_forced(handle.window());
+            let model = handle.window().get_review_model();
+            assert!(model.empty, "the appliance never projects the ledger");
+            assert_eq!(model.rows.row_count(), 0);
+            assert!(model.week.gap.is_empty() && model.month.gap.is_empty());
+        });
+    }
+
+    #[test]
+    fn the_review_empty_state_collapses_in_tiers() {
+        on_slint_thread(|| {
+            // Tier 1 + 3: nothing comparable anywhere — the whole view
+            // collapses and the ledger hides.
+            let handle = review_rig(AppState::default(), UiSettings::default());
+            handle
+                .test_adapter()
+                .borrow_mut()
+                .refresh_forced(handle.window());
+            let model = handle.window().get_review_model();
+            assert!(model.empty, "tier 1: the whole view collapses");
+            assert_eq!(model.rows.row_count(), 0, "tier 3: the ledger hides");
+            assert!(model.week.empty && model.month.empty);
+
+            // Tier 2: rows exist but nothing compares — the window
+            // sections collapse their values, the skeleton stays.
+            let mut state = AppState::default();
+            let a = completed(
+                1,
+                "skipped-a",
+                chrono::TimeDelta::try_hours(2).unwrap(),
+                Some(600),
+            );
+            state.tasks.insert(a.id, a);
+            let handle = review_rig(state, UiSettings::default());
+            handle
+                .test_adapter()
+                .borrow_mut()
+                .refresh_forced(handle.window());
+            let model = handle.window().get_review_model();
+            assert!(!model.empty, "the ledger admits the estimated row");
+            assert_eq!(model.rows.row_count(), 1);
+            assert!(
+                model.week.empty && model.month.empty,
+                "tier 2: no comparable tasks collapse the values"
+            );
+            let row = model.rows.row_data(0).expect("row");
+            assert!(!row.actual.is_empty(), "untracked is the dash");
+            assert!(row.gap.is_empty());
+        });
+    }
+
+    #[test]
+    fn the_gap_phrases_distinguish_the_three_sign_classes() {
+        on_slint_thread(|| {
+            let scenario = |estimate: u64, actual: i64| {
+                let mut state = AppState::default();
+                let a = completed(
+                    1,
+                    "a",
+                    chrono::TimeDelta::try_hours(2).unwrap(),
+                    Some(estimate),
+                );
+                tracked(&mut state, &a, actual);
+                state.tasks.insert(a.id, a);
+                let handle = review_rig(state, UiSettings::default());
+                handle
+                    .test_adapter()
+                    .borrow_mut()
+                    .refresh_forced(handle.window());
+                handle.window().get_review_model().month.gap
+            };
+            let over = scenario(600, 1200);
+            let under = scenario(600, 300);
+            let on_target = scenario(600, 600);
+            assert!(!over.is_empty() && !under.is_empty());
+            assert_ne!(over, under, "the sign classes are distinct");
+            assert_ne!(
+                on_target, over,
+                "on-target is its own class, not the positive one"
+            );
+        });
     }
 }

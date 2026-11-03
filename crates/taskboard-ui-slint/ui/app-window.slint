@@ -24,6 +24,8 @@ import { BoardBarModel, BoardSegmentModel } from "compositions/board-bar.slint";
 import { StackView, StackDetailModel } from "views/stack-view.slint";
 import { TodayView, TodayModel } from "views/today-view.slint";
 import { TaskView, TaskDetailModel } from "views/task-view.slint";
+import { ReviewView, ReviewModel } from "views/review-view.slint";
+export { ReviewModel }
 import { DueDayModel } from "compositions/date-picker.slint";
 import { DatePicker } from "compositions/date-picker.slint";
 export { DueDayModel }
@@ -146,6 +148,9 @@ export component AppWindow inherits Window {
     // refresh — never hand-written).
     in-out property <[string]> task-title-edit-hint;
     in-out property <View> current-view: View.board;
+    // The review surface (#214): the whole model arrives from the
+    // push pass; the kiosk gate empties it model-side.
+    in-out property <ReviewModel> review-model;
     // The settings seams (round-1 chunk 3, D6.6/D7/D9).
     callback settings-back-clicked();
     callback settings-field-edited(int, string);
@@ -367,6 +372,9 @@ export component AppWindow inherits Window {
                 scale-pressed() => root.settings-scale-pressed();
                 scale-preview(v) => root.settings-scale-preview(v);
                 scale-released(v) => root.settings-scale-released(v);
+            }
+            if (root.current-view == View.review): ReviewView {
+                review: root.review-model;
             }
             if (root.current-view == View.task-detail): TaskView {
                 task: root.task-model;

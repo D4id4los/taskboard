@@ -1,0 +1,60 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The review view (#214, D-8): the effort-calibration reading — two
+// aggregate stat sections (7-day, 30-day) over ONE per-task ledger of
+// the 30-day window. Read-only: rows carry no activation, no context
+// actions, no walk targets — a ledger, not a task list. Everything
+// arrives from the Rust push pass (the dumb-client line); the view
+// owns composition only.
+
+import { Theme, RoleText, Typography } from "../theme.slint";
+import { EmptyState } from "../widgets/empty-state.slint";
+
+export struct ReviewWindowModel {
+    estimated: string,
+    actual: string,
+    gap: string,
+    compared: string,
+    // True when the window has no comparable tasks: the values
+    // collapse (the section stays for the stable two-section skeleton,
+    // D-9 tier 2).
+    empty: bool,
+}
+
+export struct ReviewRowModel {
+    title: string,
+    // The completion day phrase.
+    completed: string,
+    // Empty = unestimated (the dash renders structurally, never a
+    // zero phrase).
+    estimate: string,
+    // Empty = untracked.
+    actual: string,
+    // Empty when the row is not compared.
+    gap: string,
+}
+
+export struct ReviewModel {
+    week: ReviewWindowModel,
+    month: ReviewWindowModel,
+    rows: [ReviewRowModel],
+    // Whole-view collapse (D-9 tier 1): nothing comparable anywhere.
+    empty: bool,
+}
+
+export component ReviewView inherits FocusScope {
+    in property <ReviewModel> review;
+
+    accessible-role: AccessibleRole.region;
+    accessible-label: "Review";
+    focus-on-tab-navigation: true;
+
+    // Stage-2 push-layer step: the composition lands with the surface
+    // commit; the push pass already targets these properties.
+    HorizontalLayout {
+        padding: Theme.space-3;
+        if (root.review.empty): EmptyState {
+            text: "Nothing to calibrate";
+            hint: "Completed tasks with an estimate or tracked time land here.";
+        }
+    }
+}
