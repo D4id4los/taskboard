@@ -1766,6 +1766,7 @@ async fn entry_kind_and_break_rule_rows_round_trip_through_sqlite() {
     entry.kind = TimeEntryKind::Respite;
     let rule = BreakRule {
         id: BreakRuleId::from(uuid::Uuid::from_u128(60)),
+        board: b.id,
         label: "time for a break".into(),
         threshold: WorkThreshold::try_new(chrono::TimeDelta::try_seconds(5_400).unwrap())
             .expect("positive threshold"),
@@ -1949,6 +1950,7 @@ async fn open_respite_and_break_rule_rehydrate_into_a_firing() {
     running_break.kind = TimeEntryKind::Respite;
     let rule = BreakRule {
         id: BreakRuleId::from(uuid::Uuid::from_u128(82)),
+        board: b.id,
         label: "stretch".into(),
         threshold: WorkThreshold::try_new(chrono::TimeDelta::try_seconds(60).unwrap())
             .expect("positive threshold"),
@@ -2213,4 +2215,107 @@ async fn self_contradictory_kind_rows_decode_corrupted() {
          VALUES ('00000000-0000-0000-0000-000000000035', ?, -60, 'someday', NULL, 'normal', '1970-01-01T00:00:16+00:00', '1970-01-01T00:00:16+00:00')",
     )
     .await;
+}
+
+// T8 (#588, round 3 chunk 1.2) — the board column: a break-rule row
+// carries its board through write/reload, and a raw pre-0021 database
+// (the column stripped, its bookkeeping removed) upgrades with the
+// single-board backfill (D-14). The zero-board fixture documents the
+// recorded leniency: such a row skips at load, typed and structural.
+#[tokio::test]
+async fn pre_0021_database_upgrades_and_backfills_the_board() {
+    use taskboard_domain::ids::BreakRuleId;
+    use taskboard_domain::reminders::{BreakRule, Insistence};
+    use taskboard_domain::tracking::WorkThreshold;
+
+    // The round-trip leg: the column persists and reloads.
+    let mut db = common::FileDb::new().await;
+    let repo = db.repo();
+    let b = board(11);
+    let rule = BreakRule {
+        id: BreakRuleId::from(uuid::Uuid::from_u128(61)),
+        board: b.id,
+        label: "time for a break".into(),
+        threshold: WorkThreshold::try_new(chrono::TimeDelta::try_seconds(1_500).unwrap())
+            .expect("positive threshold"),
+        insistence: Insistence::Normal,
+        created_at: ts(1_000),
+    };
+    repo.apply(vec![
+        PersistenceAction::UpsertBoard(b.clone()),
+        PersistenceAction::UpsertBreakRule(rule.clone()),
+    ])
+    .await
+    .expect("apply");
+    let loaded = repo.load().await.expect("load");
+    assert_eq!(loaded.reminders.break_rules[&rule.id], rule, "round-trips");
+    db.close().await;
+
+    // The upgrade leg: simulate a pre-0021 database — strip the column
+    // and its bookkeeping row — then insert a pre-0021-shape row. The
+    // migrating open re-applies 0021 and backfills the device's sole
+    // bound board.
+    let mut db = common::FileDb::new().await;
+    let repo = db.repo();
+    let b = board(12);
+    let board_uuid = b.id.as_uuid().to_string();
+    repo.apply(vec![PersistenceAction::UpsertBoard(b)])
+        .await
+        .expect("board");
+    let raw = sqlx::sqlite::SqliteConnectOptions::new().filename(db.path());
+    let pool = sqlx::SqlitePool::connect_with(raw).await.expect("raw pool");
+    sqlx::query("ALTER TABLE break_rules DROP COLUMN board_id")
+        .execute(&pool)
+        .await
+        .expect("strip board_id");
+    sqlx::query("DELETE FROM _sqlx_migrations WHERE version = 21")
+        .execute(&pool)
+        .await
+        .expect("strip bookkeeping");
+    sqlx::query(
+        "INSERT INTO break_rules (rule_id, label, threshold_seconds, insistence, created_at) \
+         VALUES ('00000000-0000-0000-0000-000000000062', 'stretch', 600, 'normal', '1970-01-01T00:00:16+00:00')",
+    )
+    .execute(&pool)
+    .await
+    .expect("raw pre-0021 insert");
+    pool.close().await;
+    db.reopen().await;
+    let loaded = db.repo().load().await.expect("load");
+    let upgraded = &loaded.reminders.break_rules[&BreakRuleId::from(uuid::Uuid::from_u128(0x62))];
+    assert_eq!(
+        upgraded.board.as_uuid().to_string(),
+        board_uuid,
+        "the pre-0021 row backfills the device's sole bound board"
+    );
+    db.close().await;
+
+    // The zero-board leniency leg: a backfilled-'' row skips at load —
+    // typed and structural, never a database failure.
+    let mut db = common::FileDb::new().await;
+    let raw = sqlx::sqlite::SqliteConnectOptions::new().filename(db.path());
+    let pool = sqlx::SqlitePool::connect_with(raw).await.expect("raw pool");
+    sqlx::query("ALTER TABLE break_rules DROP COLUMN board_id")
+        .execute(&pool)
+        .await
+        .expect("strip board_id");
+    sqlx::query("DELETE FROM _sqlx_migrations WHERE version = 21")
+        .execute(&pool)
+        .await
+        .expect("strip bookkeeping");
+    sqlx::query(
+        "INSERT INTO break_rules (rule_id, label, threshold_seconds, insistence, created_at) \
+         VALUES ('00000000-0000-0000-0000-000000000063', 'ghost', 600, 'normal', '1970-01-01T00:00:16+00:00')",
+    )
+    .execute(&pool)
+    .await
+    .expect("raw pre-0021 insert");
+    pool.close().await;
+    db.reopen().await;
+    let loaded = db.repo().load().await.expect("load");
+    assert!(
+        loaded.reminders.break_rules.is_empty(),
+        "the zero-board row skips at load (the recorded leniency)"
+    );
+    db.close().await;
 }

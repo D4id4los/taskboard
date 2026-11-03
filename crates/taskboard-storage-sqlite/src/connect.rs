@@ -199,7 +199,7 @@ mod tests {
             .fetch_one(&raw)
             .await
             .expect("migration bookkeeping");
-        assert_eq!(applied, 20, "each shipped migration recorded exactly once");
+        assert_eq!(applied, 21, "each shipped migration recorded exactly once");
         raw.close().await;
         second.close().await;
     }
@@ -1318,8 +1318,9 @@ mod tests {
             .expect("raw connect");
         // Simulate a pre-0015 database: run the shipped migrations,
         // strip the 0015 artifacts and their bookkeeping row — and 0018's
-        // with them (the kind column ALTERs 0015's table, so a simulated
-        // pre-0015 database must not carry 0018 either).
+        // and 0021's with them (the kind column ALTERs 0015's table and
+        // the board column ALTERs 0018's, so a simulated pre-0015
+        // database must not carry 0018 or 0021 either).
         sqlx::migrate!("./migrations")
             .run(&raw)
             .await
@@ -1332,7 +1333,7 @@ mod tests {
             .execute(&raw)
             .await
             .expect("strip break_rules");
-        sqlx::query("DELETE FROM _sqlx_migrations WHERE version IN (15, 18)")
+        sqlx::query("DELETE FROM _sqlx_migrations WHERE version IN (15, 18, 21)")
             .execute(&raw)
             .await
             .expect("strip bookkeeping");

@@ -2239,6 +2239,7 @@ mod tests {
                 time_entries: None,
                 habits: None,
                 habit_log: None,
+                break_rules: None,
                 unknown: std::collections::BTreeMap::new(),
             },
             unknown: std::collections::BTreeMap::new(),

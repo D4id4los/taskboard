@@ -76,13 +76,13 @@ pub mod test_support;
 pub(crate) mod merge_testutil;
 
 pub use appdata::{
-    ANCHOR_CARD_TITLE, APPDATA_FORMAT, AppDataDocument, AppDataSections, DismissalEntry,
-    DismissalsEntry, HABIT_LOG_SYNC_RETENTION_DAYS, HabitLogRecord, HabitRecord,
+    ANCHOR_CARD_TITLE, APPDATA_FORMAT, AppDataDocument, AppDataSections, BreakRuleEntry,
+    DismissalEntry, DismissalsEntry, HABIT_LOG_SYNC_RETENTION_DAYS, HabitLogRecord, HabitRecord,
     MODELED_TASK_FIELD_KEYS, ModeledValue, RuleEntry, RulesEntry, TRACKING_SYNC_RETENTION_DAYS,
-    TaskEntry, TaskFieldWrite, TimeEntryRecord, derive_rule_tombstones,
-    derive_time_entry_tombstones, dismissal_wire_key, dismissals_entry_for, habit_log_for,
-    habits_for, lane_gc_old_habit_log, lane_gc_old_time_entries, lane_gc_scheduled, modeled_key,
-    prune_absent_cards, rules_entry_for, task_entry_for, time_entries_for, union,
+    TaskEntry, TaskFieldWrite, TimeEntryRecord, break_rules_for, derive_break_rule_tombstones,
+    derive_rule_tombstones, derive_time_entry_tombstones, dismissal_wire_key, dismissals_entry_for,
+    habit_log_for, habits_for, lane_gc_old_habit_log, lane_gc_old_time_entries, lane_gc_scheduled,
+    modeled_key, prune_absent_cards, rules_entry_for, task_entry_for, time_entries_for, union,
 };
 pub use calibration::{CalibrationAggregate, CalibrationReport, CalibrationRow, calibrate};
 pub use capabilities::{DeckFeatures, flags_for};

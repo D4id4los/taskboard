@@ -17,6 +17,17 @@ mod common;
 
 use common::{forbidden_store, standalone_config, tempdir};
 
+/// Seeds the fresh db with its board (the single-live-board default the
+/// verbs resolve against — `breaks add` roams via the board since #588)
+/// and returns the config.
+async fn seeded_config(dir: &std::path::Path, db: &str) -> AppConfig {
+    let config = standalone_config(dir, db);
+    taskboard_app::commands::boards::create(config.clone(), forbidden_store(), "seed board", None)
+        .await
+        .expect("board create boots");
+    config
+}
+
 /// The `breaks list` payload over a fresh boot (the persistence read).
 async fn list(config: &AppConfig) -> BreaksList {
     breaks::list(config.clone(), forbidden_store())
@@ -30,7 +41,7 @@ async fn list(config: &AppConfig) -> BreaksList {
 #[tokio::test]
 async fn t1_add_mints_and_persists() {
     let dir = tempdir();
-    let config = standalone_config(dir.path(), "t1.db");
+    let config = seeded_config(dir.path(), "t1.db").await;
     let receipt: BreakAddReceipt = match breaks::collapse(BreaksCmd::Add {
         after: taskboard_domain::WorkThreshold::parse_text_form("90m").expect("positive threshold"),
         label: None,
@@ -74,7 +85,7 @@ async fn t1_add_mints_and_persists() {
 #[tokio::test]
 async fn t2_remove_by_prefix_and_repeat_is_typed() {
     let dir = tempdir();
-    let config = standalone_config(dir.path(), "t2.db");
+    let config = seeded_config(dir.path(), "t2.db").await;
     let added: BreakAddReceipt = match breaks::collapse(BreaksCmd::Add {
         after: taskboard_domain::WorkThreshold::parse_text_form("30m").expect("positive threshold"),
         label: Some("time for a break".into()),
@@ -132,7 +143,7 @@ async fn t2_remove_by_prefix_and_repeat_is_typed() {
 #[tokio::test]
 async fn t3_stranger_selector_is_typed() {
     let dir = tempdir();
-    let config = standalone_config(dir.path(), "t3.db");
+    let config = seeded_config(dir.path(), "t3.db").await;
     let err = match breaks::collapse(BreaksCmd::Remove {
         selector: "no-such-rule".into(),
     }) {
@@ -151,7 +162,7 @@ async fn t3_stranger_selector_is_typed() {
 #[tokio::test]
 async fn t4_label_prefix_resolves_and_ambiguity_is_typed() {
     let dir = tempdir();
-    let config = standalone_config(dir.path(), "t4.db");
+    let config = seeded_config(dir.path(), "t4.db").await;
     #[allow(clippy::items_after_statements)]
     async fn add(config: &AppConfig, label: &str) -> BreakAddReceipt {
         match breaks::collapse(BreaksCmd::Add {
@@ -211,7 +222,7 @@ async fn t4_label_prefix_resolves_and_ambiguity_is_typed() {
 #[tokio::test]
 async fn t5_session_lane_serves_the_family() {
     let dir = tempdir();
-    let config = standalone_config(dir.path(), "t5.db");
+    let config = seeded_config(dir.path(), "t5.db").await;
     let store = forbidden_store();
     let app = taskboard_app::bootstrap::bootstrap(
         config.clone(),

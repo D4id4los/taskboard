@@ -65,14 +65,19 @@ local_id!(
     TimeEntryId
 );
 local_id!(
+    /// Local identity of a break rule (`UUIDv7`, generated client-side).
+    /// Roaming family (#588, D-1): the rule UUID is the wire key of the
+    /// synced board-level `break-rules` section, and break dismissals
+    /// ride the dismissals section's reserved board-level entry under
+    /// `break:`-prefixed keys — its own wire-key grammar, never the
+    /// `ReminderRuleId` family's bare-UUID dismissal keys (that strict
+    /// parse *is* the old-peer fail-closed mechanism).
+    BreakRuleId
+);
+local_id!(
     /// Local identity of a standalone adhoc alarm (`UUIDv7`, generated
     /// client-side; device-local — never synced).
     AdhocAlarmId
-);
-local_id!(
-    /// Local identity of a break rule (`UUIDv7`, generated client-side;
-    /// device-local — never synced, the `AdhocAlarmId` precedent).
-    BreakRuleId
 );
 local_id!(
     /// Local identity of a recurring series (`UUIDv7`, minted

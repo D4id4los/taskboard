@@ -395,6 +395,7 @@ pub(crate) async fn run_flush(ctx: FlushCtx<'_>) -> FlushVerdict {
             time_entries: (!overlay_time.is_empty()).then_some(overlay_time),
             habits: (!overlay_habits.is_empty()).then_some(overlay_habits),
             habit_log: (!overlay_log.is_empty()).then_some(overlay_log),
+            break_rules: None,
             unknown: BTreeMap::new(),
         },
         unknown: BTreeMap::new(),

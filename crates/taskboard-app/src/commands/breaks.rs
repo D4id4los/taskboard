@@ -5,8 +5,9 @@
 //! (uuid/prefix/label-prefix selector). The two-lane shape of every
 //! verb family: one-shot wrappers boot the core over
 //! [`crate::commands::tasks::with_core`], the `*_on` seams run on a
-//! booted session core. Break rules are device-local: no sync lane
-//! anywhere (D-15).
+//! booted session core. Break rules roam (#588): `add` resolves the
+//! board (the `habits add` device) and the rule joins that board's
+//! synced `break-rules` section.
 
 use std::sync::Arc;
 
@@ -77,9 +78,14 @@ pub async fn add_on(
     threshold: taskboard_domain::WorkThreshold,
     insistence: taskboard_domain::Insistence,
 ) -> Result<BreakAddReceipt, CommandError> {
+    // The board resolves at the surface (D-8): the single live board
+    // is the default; an explicit `--board` flag overrides (N.4's
+    // flag wiring); zero or several boards share the ambiguity refusal.
+    let board = super::resolve_board(app, None)?;
     let outcome = app
         .engine
         .execute(StateCommand::CreateBreakRule {
+            board: Some(board),
             label: label.to_owned(),
             threshold,
             insistence,
