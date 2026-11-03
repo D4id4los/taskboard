@@ -105,9 +105,21 @@ async fn h02_log_receipts_name_window_and_count_and_adjust_corrects() {
     };
     let selector = row.habit_id[..8].to_owned();
 
+    // The natural daily window is today on the resolved day convention
+    // (D-F6: midnight rollover on the device's fixed UTC offset — the
+    // same calendar `AppConfig::resolved_day_calendar` builds), not the
+    // UTC calendar. The wall clock may roll a day between the bracket
+    // reads, so the window must be one of the two adjacent todays —
+    // both legitimate for a log landing inside the bracket.
+    let day = taskboard_domain::DayCalendar {
+        day_start_time: chrono::NaiveTime::MIN,
+        offset: *chrono::Local::now().offset(),
+    };
+    let before = day.today(chrono::Utc::now());
     let logged = run_one(&config, parse(&["habits", "log", &selector]))
         .await
         .expect("log");
+    let after = day.today(chrono::Utc::now());
     let habits::HabitOutcome::Logged(HabitLogReceipt {
         habit_id,
         window,
@@ -120,10 +132,10 @@ async fn h02_log_receipts_name_window_and_count_and_adjust_corrects() {
     assert_eq!(habit_id, &row.habit_id);
     assert_eq!(*count, 1, "the post-increment stored count");
     assert_eq!(reported, count);
-    // The window is the UTC-midnight calendar's today (the standalone
-    // default config): the receipt's window is that date.
-    let today = chrono::Utc::now().date_naive();
-    assert_eq!(*window, today, "the natural daily window is today");
+    assert!(
+        *window == before || *window == after,
+        "the natural daily window is the local-calendar today"
+    );
 
     run_one(&config, parse(&["habits", "log", "water"]))
         .await
@@ -137,7 +149,7 @@ async fn h02_log_receipts_name_window_and_count_and_adjust_corrects() {
             "adjust",
             &selector,
             "--window",
-            &today.to_string(),
+            &window.to_string(),
             "--count",
             "0",
         ]),
