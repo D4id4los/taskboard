@@ -5678,8 +5678,6 @@ impl crate::UiHandle {
             Some(ContextId::StackDetail) => crate::view_state::ViewId::StackDetail,
             Some(ContextId::TaskDetail) => crate::view_state::ViewId::TaskDetail,
             Some(ContextId::Settings) => crate::view_state::ViewId::Settings,
-            // The overlay's context maps to no view (the modal masks
-            // the chain; the view identity under it is unchanged).
             // The overlay's context maps to no view: like the other
             // non-routable contexts, the adapter is left untouched
             // (the modal masks the chain; no derive rides it).
