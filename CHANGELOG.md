@@ -10,6 +10,19 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 ### Added
 
+- Effort-estimate calibration surfaces (#214): the new Review view
+  closes the estimate-vs-actual feedback loop's display half over the
+  user's own local history (no telemetry, no third-party data). It
+  joins the desktop view cycle (after TaskDetail; the kiosk rotation
+  never renders it) and shows two aggregate sections — trailing 7 and
+  30 local days, each comparing only settled completions where both
+  the estimate and tracked work are observed, with the skipped
+  completions (unestimated, untracked) counted visibly instead of
+  zero-counted — over one read-only ledger of the window's completed
+  tasks: estimate beside actual beside the signed gap, newest first.
+  Empty views, windows, and ledgers collapse; nothing ticks (the
+  projection re-derives per refresh from published state).
+
 - Task reminders that fire at an absolute time (GUI review round 4):
   a reminder rule can now be "at 17:00" or "in 2h" instead of only
   "minutes before the due date" — the task editor's rule field
@@ -47,6 +60,11 @@ The workspace carries a single global version (see `docs/architecture.org`);
   byte-identical.
 
 ### Fixed
+
+- The task detail's tracked total no longer counts respite entries:
+  the summary now filters to work entries, the same rule the
+  tracked-today total already applied — break activity marked
+  respite never inflated it in the first place.
 
 - Cross-board card moves no longer lose the sidecar-carried state
   (#350): when a card moves between two boards the same connector
