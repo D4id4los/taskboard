@@ -203,9 +203,11 @@ struct TimeEntryRow {
     kind: String,
 }
 
-/// Raw `break_rules` row (0018; device-local reminder rules).
+/// Raw `break_rules` row (0018/0021; board-scoped roaming reminder
+/// rules).
 struct BreakRuleRow {
     rule_id: String,
+    board_id: String,
     label: String,
     threshold_seconds: i64,
     insistence: String,
@@ -229,12 +231,13 @@ fn decode_adhoc_alarm(row: &AdhocAlarmRow) -> Result<AdhocAlarm, RepositoryError
     })
 }
 
-fn decode_break_rule(row: &BreakRuleRow) -> Result<BreakRule, RepositoryError> {
+fn decode_break_rule(row: &BreakRuleRow, board: Uuid) -> Result<BreakRule, RepositoryError> {
     let threshold = chrono::TimeDelta::try_seconds(row.threshold_seconds)
         .and_then(|dur| taskboard_domain::tracking::WorkThreshold::try_new(dur).ok())
         .ok_or(RepositoryError::Corrupted)?;
     Ok(BreakRule {
         id: BreakRuleId::from(decode::uuid(&row.rule_id)?),
+        board: BoardId::from(board),
         label: row.label.clone(),
         threshold,
         insistence: decode::insistence(&row.insistence)?,
@@ -859,7 +862,7 @@ impl SqliteTaskRepository {
 
         let break_rule_rows = sqlx::query_as!(
             BreakRuleRow,
-            r#"SELECT rule_id, label, threshold_seconds, insistence,
+            r#"SELECT rule_id, board_id, label, threshold_seconds, insistence,
                       created_at as "created_at: DateTime<Utc>"
                FROM break_rules ORDER BY rule_id"#
         )
@@ -1080,7 +1083,16 @@ impl SqliteTaskRepository {
         }
         let mut break_rules = std::collections::BTreeMap::new();
         for row in &break_rule_rows {
-            let rule = decode_break_rule(row)?;
+            // The 0021 recorded leniency (D-14): a row backfilled with ''
+            // (a device that never bound a board — which can never have
+            // flushed it) skips at load instead of corrupting the
+            // database. Trusted-written rows are strict everywhere else
+            // (the 0008 rule).
+            let Ok(board) = decode::uuid(&row.board_id) else {
+                tracing::warn!(rule = %row.rule_id, "break rule skipped: no backfilled board");
+                continue;
+            };
+            let rule = decode_break_rule(row, board)?;
             break_rules.insert(rule.id, rule);
         }
         let reminders = ReminderState {
@@ -1625,14 +1637,16 @@ async fn execute_batch(
     // last-write-wins semantics.
     for rule in break_rule_upserts {
         sqlx::query!(
-            r#"INSERT INTO break_rules (rule_id, label, threshold_seconds, insistence, created_at)
-                   VALUES (?, ?, ?, ?, ?)
+            r#"INSERT INTO break_rules (rule_id, board_id, label, threshold_seconds, insistence, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?)
                    ON CONFLICT(rule_id) DO UPDATE SET
+                       board_id = excluded.board_id,
                        label = excluded.label,
                        threshold_seconds = excluded.threshold_seconds,
                        insistence = excluded.insistence,
                        created_at = excluded.created_at"#,
             codec::uuid_to_text(rule.id.as_uuid()),
+            codec::uuid_to_text(rule.board.as_uuid()),
             rule.label,
             rule.threshold.as_duration().num_seconds(),
             codec::insistence_to_text(rule.insistence),

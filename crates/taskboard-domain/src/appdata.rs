@@ -107,6 +107,17 @@ pub struct AppDataSections {
     /// with row-clock LWW, under the 180-day wire retention (D-H14).
     #[serde(rename = "habit-log", default, skip_serializing_if = "Option::is_none")]
     pub habit_log: Option<BTreeMap<String, HabitLogRecord>>,
+    /// Board-level break-rule definitions, keyed by the `BreakRuleId`
+    /// UUID string — the rule's remote identity (D-S9's device, #588
+    /// D-4). Like `time_entries`/`habits`, the keys are not card ids:
+    /// rules outlive any card, so `prune_absent_cards` must never see
+    /// the section.
+    #[serde(
+        rename = "break-rules",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub break_rules: Option<BTreeMap<String, BreakRuleEntry>>,
     /// Unknown sections: carried verbatim.
     #[serde(flatten, default, skip_serializing_if = "BTreeMap::is_empty")]
     pub unknown: BTreeMap<String, Value>,
@@ -1009,6 +1020,132 @@ impl Serialize for HabitLogRecord {
     }
 }
 
+/// One break rule's document shape, or a deletion tombstone, or a shape
+/// this version does not model (preserved verbatim, never folded —
+/// D-S2's materialization rule). Board-level section keyed by the rule
+/// UUID (#588 D-4); the document belongs to one board, so no `board`
+/// rides the wire (D-H11's device — the fold stamps the locally-bound
+/// board). Wire shape: `{ "label": str, "threshold_seconds": i64 > 0,
+/// "created": rfc3339, "clock": rfc3339, "insistence":
+/// "normal"|"alarm" }` — the [`RuleEntry`] row grammar at board level.
+#[derive(Debug, Clone, PartialEq)]
+pub enum BreakRuleEntry {
+    /// The live rule row. `clock` is the row's competition metadata
+    /// (D-5): v1's only verbs are create and delete, so every row this
+    /// version writes carries `clock == created`; the slot is the
+    /// growth path a future edit-verb chunk fills without a wire
+    /// change.
+    Rule {
+        label: String,
+        threshold: crate::tracking::WorkThreshold,
+        created: DateTime<Utc>,
+        clock: DateTime<Utc>,
+        insistence: Insistence,
+    },
+    /// `{ "deleted": true, "clock": rfc3339 }` — rule *membership*
+    /// needs explicit tombstones (absence from a possibly-truncated
+    /// document must never delete locally — the `RuleEntry` ruling).
+    /// A re-created rule is a *new UUID* (no edit verbs), so a
+    /// tombstone's decision is final for its key.
+    Tombstone { clock: DateTime<Utc> },
+    /// A shape this version does not model: preserved verbatim,
+    /// never folded.
+    Verbatim(Value),
+}
+
+impl BreakRuleEntry {
+    /// The entry's write clock; `None` for verbatim content (which the
+    /// union therefore never orders against a clocked entry).
+    #[must_use]
+    pub fn clock(&self) -> Option<DateTime<Utc>> {
+        match self {
+            Self::Rule { clock, .. } | Self::Tombstone { clock } => Some(*clock),
+            Self::Verbatim(_) => None,
+        }
+    }
+
+    /// Decodes one break-rule entry; an unmodelable shape stays
+    /// `Verbatim` with the original value (never an error — one
+    /// malformed row demotes, the document never fails). A zero or
+    /// negative threshold is domain-inconstructible and demotes the
+    /// whole row (the `decode_offset` positivity ruling); a missing
+    /// `insistence` defaults to `Normal` (the additive-section
+    /// precedent) while a present-but-unmodelable one demotes the row
+    /// (never a silent downgrade).
+    fn deserialize_verbatim(raw: Value) -> Self {
+        let Value::Object(map) = &raw else {
+            return Self::Verbatim(raw);
+        };
+        if map.get("deleted") == Some(&Value::Bool(true)) {
+            if let Ok(clock) = serde_json::from_value(map["clock"].clone()) {
+                return Self::Tombstone { clock };
+            }
+            return Self::Verbatim(raw);
+        }
+        let threshold = map
+            .get("threshold_seconds")
+            .and_then(serde_json::Value::as_i64)
+            .and_then(|secs| {
+                chrono::TimeDelta::try_seconds(secs)
+                    .and_then(|dur| crate::tracking::WorkThreshold::try_new(dur).ok())
+            });
+        if let (Some(threshold), Ok(label), Ok(created), Ok(clock), Ok(insistence)) = (
+            threshold,
+            serde_json::from_value(map.get("label").cloned().unwrap_or(Value::Null)),
+            serde_json::from_value(map.get("created").cloned().unwrap_or(Value::Null)),
+            serde_json::from_value(map.get("clock").cloned().unwrap_or(Value::Null)),
+            // Default-on-missing (the additive-section precedent): an
+            // old document folds `Normal`. A *present* but unmodelable
+            // value is not defaulted — it falls through to `Verbatim`.
+            decode_insistence_default_on_missing(map.get("insistence")),
+        ) {
+            return Self::Rule {
+                label,
+                threshold,
+                created,
+                clock,
+                insistence,
+            };
+        }
+        Self::Verbatim(raw)
+    }
+}
+
+impl<'de> Deserialize<'de> for BreakRuleEntry {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // The tolerant boundary: any shape this version does not model
+        // decodes as `Verbatim`, never a document failure.
+        Ok(Self::deserialize_verbatim(Value::deserialize(
+            deserializer,
+        )?))
+    }
+}
+
+impl Serialize for BreakRuleEntry {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Rule {
+                label,
+                threshold,
+                created,
+                clock,
+                insistence,
+            } => serde_json::json!({
+                "label": label,
+                "threshold_seconds": threshold.as_duration().num_seconds(),
+                "created": created,
+                "clock": clock,
+                "insistence": insistence.text_form(),
+            })
+            .serialize(serializer),
+            Self::Tombstone { clock } => {
+                serde_json::json!({ "deleted": true, "clock": clock }).serialize(serializer)
+            }
+            Self::Verbatim(value) => value.serialize(serializer),
+        }
+    }
+}
+
 /// The dismissal row's wire key: `"<rule uuid>|<rfc3339 occurrence>"`.
 /// Neither component can contain `|` (a UUID is hex+dashes, rfc3339 is
 /// digits/punct), so the encoding is injective.
@@ -1040,6 +1177,7 @@ pub(crate) fn parse_dismissal_wire_key(
 /// sections, unmodeled entry keys, and verbatim rule shapes survive
 /// from `base` and are extended (never overwritten) by `overlay`.
 #[must_use]
+#[allow(clippy::too_many_lines)] // one match arm per section; splitting hides the relay rule
 pub fn union(base: &AppDataDocument, overlay: &AppDataDocument) -> AppDataDocument {
     let mut unknown = base.unknown.clone();
     for (key, value) in &overlay.unknown {
@@ -1118,6 +1256,16 @@ pub fn union(base: &AppDataDocument, overlay: &AppDataDocument) -> AppDataDocume
             (Some(b), Some(o)) => {
                 let mut merged = b.clone();
                 union_habit_log(&mut merged, o);
+                Some(merged)
+            }
+            (Some(b), None) => Some(b.clone()),
+            (None, Some(o)) => Some(o.clone()),
+            (None, None) => None,
+        },
+        break_rules: match (&base.sections.break_rules, &overlay.sections.break_rules) {
+            (Some(b), Some(o)) => {
+                let mut merged = b.clone();
+                union_break_rules(&mut merged, o);
                 Some(merged)
             }
             (Some(b), None) => Some(b.clone()),
@@ -1293,6 +1441,32 @@ fn union_habit_log(
             None => Some(overlay_row.clone()),
             Some(base_row) => match (base_row, overlay_row) {
                 (HabitLogRecord::Verbatim(_), _) | (_, HabitLogRecord::Verbatim(_)) => None,
+                (b, o) => match (b.clock(), o.clock()) {
+                    (Some(bc), Some(oc)) if bc > oc => None,
+                    _ => Some(o.clone()),
+                },
+            },
+        };
+        if let Some(winner) = winner {
+            base.insert(key.clone(), winner);
+        }
+    }
+}
+
+/// Per-row embedded-clock LWW over the `break-rules` section (#588
+/// D-6, the [`union_habits`] shape): newer `clock` wins, equal clocks
+/// resolve to the overlay (the flush's just-stamped local writes must
+/// win the pull-side tie), tombstones compete by the same clock, and
+/// `Verbatim` rows are never ordered against and never displaced.
+fn union_break_rules(
+    base: &mut BTreeMap<String, BreakRuleEntry>,
+    overlay: &BTreeMap<String, BreakRuleEntry>,
+) {
+    for (key, overlay_row) in overlay {
+        let winner = match base.get(key) {
+            None => Some(overlay_row.clone()),
+            Some(base_row) => match (base_row, overlay_row) {
+                (BreakRuleEntry::Verbatim(_), _) | (_, BreakRuleEntry::Verbatim(_)) => None,
                 (b, o) => match (b.clock(), o.clock()) {
                     (Some(bc), Some(oc)) if bc > oc => None,
                     _ => Some(o.clone()),
@@ -1802,6 +1976,64 @@ pub fn lane_gc_old_habit_log(
     gc
 }
 
+/// Builds the flush overlay's `break-rules` section from the local
+/// break-rule state (#588 D-2/D-5, the `habits_for` device): every
+/// live row of `board` (rows carry no local tombstone state — deletion
+/// is a hard delete, the tombstones *derive* from the base document,
+/// see [`derive_break_rule_tombstones`]). The wire row carries no
+/// board (D-H11's device — the fold stamps it); `clock` is the row's
+/// creation stamp (v1's only verbs are create and delete, D-5).
+#[must_use]
+pub fn break_rules_for(
+    break_rules: &BTreeMap<crate::ids::BreakRuleId, crate::reminders::BreakRule>,
+    board: crate::ids::BoardId,
+) -> BTreeMap<String, BreakRuleEntry> {
+    break_rules
+        .values()
+        .filter(|rule| rule.board == board)
+        .map(|rule| {
+            (
+                rule.id.as_uuid().to_string(),
+                BreakRuleEntry::Rule {
+                    label: rule.label.clone(),
+                    threshold: rule.threshold,
+                    created: rule.created_at,
+                    clock: rule.created_at,
+                    insistence: rule.insistence,
+                },
+            )
+        })
+        .collect()
+}
+
+/// Derives the removal tombstones for the `break-rules` section (#588
+/// D-7, the [`derive_rule_tombstones`] shape with its truncated-view
+/// guard carried over): every base key that decodes as a *live* `Rule`
+/// row and has no local rule with that UUID gets
+/// `{ deleted: true, clock }` — the removing command's op stamp is the
+/// removal instant. Existing tombstones pass through untouched (no
+/// re-stamp); `Verbatim` entries are never ordered against.
+/// Absence-from-base is never an input: only base-*present* live rows
+/// missing locally tombstone, so a truncated foreign view can never
+/// cause a deletion here.
+#[must_use]
+pub fn derive_break_rule_tombstones(
+    base: &BTreeMap<String, BreakRuleEntry>,
+    local: &BTreeMap<crate::ids::BreakRuleId, crate::reminders::BreakRule>,
+    clock: DateTime<Utc>,
+) -> BTreeMap<String, BreakRuleEntry> {
+    base.iter()
+        .filter_map(|(key, entry)| {
+            let BreakRuleEntry::Rule { .. } = entry else {
+                return None; // tombstones pass through, verbatim never ordered
+            };
+            let uuid = uuid::Uuid::parse_str(key).ok()?;
+            let id = crate::ids::BreakRuleId::from(uuid);
+            (!local.contains_key(&id)).then(|| (key.clone(), BreakRuleEntry::Tombstone { clock }))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1837,6 +2069,33 @@ mod tests {
                 .map(|(k, w)| ((*k).to_owned(), w.clone()))
                 .collect(),
             unmodeled: BTreeMap::new(),
+        }
+    }
+
+    fn break_rule(raw: u128, board: u64) -> crate::reminders::BreakRule {
+        crate::reminders::BreakRule {
+            id: crate::ids::BreakRuleId::from(uuid::Uuid::from_u128(raw)),
+            board: crate::ids::BoardId::from(uuid::Uuid::from_u128(board.into())),
+            label: "time for a break".to_owned(),
+            threshold: crate::tracking::WorkThreshold::try_new(
+                chrono::TimeDelta::try_seconds(1_500).unwrap(),
+            )
+            .unwrap(),
+            insistence: Insistence::Alarm,
+            created_at: ts(100),
+        }
+    }
+
+    fn break_rule_entry() -> BreakRuleEntry {
+        BreakRuleEntry::Rule {
+            label: "time for a break".to_owned(),
+            threshold: crate::tracking::WorkThreshold::try_new(
+                chrono::TimeDelta::try_seconds(1_500).unwrap(),
+            )
+            .unwrap(),
+            created: ts(100),
+            clock: ts(100),
+            insistence: Insistence::Alarm,
         }
     }
 
@@ -2614,6 +2873,206 @@ mod tests {
 
     // Property 8's row half: the emitted recur write survives a full
     // serde round-trip through the row envelope losslessly.
+
+    // ---- the break-rules section grammar (#588 D-4) -------------------
+
+    // P3 (the modeled row): the row round-trips through the wire shape
+    // byte-for-value.
+    #[test]
+    fn modeled_break_rule_row_roundtrips() {
+        let row = break_rule_entry();
+        let json = serde_json::to_value(&row).unwrap();
+        assert_eq!(json["label"], "time for a break");
+        assert_eq!(json["threshold_seconds"], 1_500);
+        assert_eq!(json["insistence"], "alarm");
+        assert_eq!(json["created"], json["clock"], "v1 stamps creation");
+        let back: BreakRuleEntry = serde_json::from_value(json).unwrap();
+        assert_eq!(back, row);
+    }
+
+    #[test]
+    fn deleted_row_decodes_tombstone_and_bad_clock_demotes() {
+        let good: BreakRuleEntry =
+            serde_json::from_value(serde_json::json!({ "deleted": true, "clock": ts(9) })).unwrap();
+        assert_eq!(good, BreakRuleEntry::Tombstone { clock: ts(9) });
+        let bad: BreakRuleEntry =
+            serde_json::from_value(serde_json::json!({ "deleted": true, "clock": "x" })).unwrap();
+        assert!(matches!(bad, BreakRuleEntry::Verbatim(_)));
+    }
+
+    #[test]
+    fn missing_insistence_defaults_normal() {
+        let json = serde_json::json!({
+            "label": "stretch",
+            "threshold_seconds": 60,
+            "created": ts(1),
+            "clock": ts(2),
+        });
+        let row: BreakRuleEntry = serde_json::from_value(json).unwrap();
+        assert!(matches!(
+            row,
+            BreakRuleEntry::Rule {
+                insistence: Insistence::Normal,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn unknown_insistence_demotes_the_row() {
+        let json = serde_json::json!({
+            "label": "stretch",
+            "threshold_seconds": 60,
+            "created": ts(1),
+            "clock": ts(2),
+            "insistence": "shout",
+        });
+        let row: BreakRuleEntry = serde_json::from_value(json).unwrap();
+        assert!(matches!(row, BreakRuleEntry::Verbatim(_)));
+    }
+
+    #[test]
+    fn zero_or_negative_threshold_demotes_the_row() {
+        for secs in [0_i64, -30] {
+            let json = serde_json::json!({
+                "label": "stretch",
+                "threshold_seconds": secs,
+                "created": ts(1),
+                "clock": ts(2),
+                "insistence": "normal",
+            });
+            let row: BreakRuleEntry = serde_json::from_value(json).unwrap();
+            assert!(
+                matches!(row, BreakRuleEntry::Verbatim(_)),
+                "threshold {secs} is domain-inconstructible and demotes"
+            );
+        }
+    }
+
+    #[test]
+    fn non_object_row_demotes_verbatim() {
+        let row: BreakRuleEntry = serde_json::from_value(serde_json::json!([1, 2, 3])).unwrap();
+        assert!(matches!(row, BreakRuleEntry::Verbatim(_)));
+    }
+
+    // P4 (D-2/D-5, the emission filter): only the flushing board's rows
+    // emit, every key present, `clock` is the creation stamp.
+    #[test]
+    fn break_rules_for_scopes_to_the_board_and_emits_every_key() {
+        let mut rules = BTreeMap::new();
+        let mine = break_rule(1, 700);
+        let foreign = break_rule(2, 701);
+        rules.insert(mine.id, mine.clone());
+        rules.insert(foreign.id, foreign.clone());
+        let rows = break_rules_for(
+            &rules,
+            crate::ids::BoardId::from(uuid::Uuid::from_u128(700)),
+        );
+        assert_eq!(rows.len(), 1, "foreign-board rows never emit");
+        let BreakRuleEntry::Rule { clock, .. } = &rows[&mine.id.as_uuid().to_string()] else {
+            panic!("the live row decodes modeled");
+        };
+        assert_eq!(*clock, ts(100), "v1's write clock is the creation stamp");
+        let wire = serde_json::to_string(&rows).unwrap();
+        assert!(
+            !wire.contains(&foreign.id.as_uuid().to_string()),
+            "the foreign rule's identity never reaches the document: {wire}"
+        );
+    }
+
+    // P5 (D-7, the tombstone derivation): base-present live rows
+    // missing locally tombstone at the given stamp; existing tombstones
+    // and verbatim rows pass through untouched; locally-live rows and
+    // verbatim rows never appear in the derivation output.
+    #[test]
+    fn derive_break_rule_tombstones_pins() {
+        let local = break_rule(1, 700);
+        let mut rules = BTreeMap::new();
+        rules.insert(local.id, local.clone());
+        let mut base = BTreeMap::new();
+        base.insert(local.id.as_uuid().to_string(), break_rule_entry());
+        let deleted = crate::ids::BreakRuleId::from(uuid::Uuid::from_u128(2));
+        base.insert(
+            deleted.as_uuid().to_string(),
+            BreakRuleEntry::Tombstone { clock: ts(50) },
+        );
+        base.insert(
+            "strange".to_owned(),
+            BreakRuleEntry::Verbatim(serde_json::json!({ "mystery": true })),
+        );
+        let derived = derive_break_rule_tombstones(&base, &rules, ts(200));
+        // The derivation returns only *newly derived* tombstones; the
+        // existing base tombstone passes through because the flush
+        // inserts the derivation into the base entry, never re-stamping.
+        assert_eq!(derived.len(), 0, "nothing is missing locally");
+        let mut rules_without = rules.clone();
+        rules_without.remove(&local.id);
+        let derived = derive_break_rule_tombstones(&base, &rules_without, ts(200));
+        assert_eq!(
+            derived.get(local.id.as_uuid().to_string().as_str()),
+            Some(&BreakRuleEntry::Tombstone { clock: ts(200) }),
+            "base-present live rows missing locally tombstone at the given stamp"
+        );
+        assert!(
+            !derived.contains_key(&deleted.as_uuid().to_string()),
+            "existing tombstones are never re-stamped"
+        );
+        assert!(!derived.contains_key("strange"), "verbatim never ordered");
+        // The truncated-view guard, positive face: a narrowed base only
+        // tombstones keys it actually carries.
+        let narrowed = BTreeMap::from([(
+            crate::ids::BreakRuleId::from(uuid::Uuid::from_u128(3))
+                .as_uuid()
+                .to_string(),
+            break_rule_entry(),
+        )]);
+        let derived = derive_break_rule_tombstones(&narrowed, &rules, ts(200));
+        assert_eq!(derived.len(), 1);
+        assert!(
+            derived.contains_key(
+                crate::ids::BreakRuleId::from(uuid::Uuid::from_u128(3))
+                    .as_uuid()
+                    .to_string()
+                    .as_str()
+            ),
+            "base-present rows missing locally tombstone at the given stamp"
+        );
+    }
+
+    // P7 (D-6, the relay leg): an old peer without the modeled field
+    // relays the whole `break-rules` section verbatim through
+    // decode → union → encode.
+    #[test]
+    fn break_rules_section_survives_an_old_peer_relay() {
+        let payload = serde_json::json!({ "fancy": true });
+        let sections = AppDataSections {
+            break_rules: Some(
+                [(
+                    "018f0000-0000-7000-8000-000000000009".to_owned(),
+                    serde_json::from_value::<BreakRuleEntry>(serde_json::json!({
+                        "uuid-of-a-future-version": payload
+                    }))
+                    .unwrap(),
+                )]
+                .into_iter()
+                .collect(),
+            ),
+            ..Default::default()
+        };
+        let base = document(2, sections);
+        let overlay = document(2, AppDataSections::default());
+        let merged = union(&base, &overlay);
+        let row = &merged.sections.break_rules.as_ref().unwrap()
+            [&"018f0000-0000-7000-8000-000000000009".to_owned()];
+        let BreakRuleEntry::Verbatim(inner) = row else {
+            panic!("the unmodelable row relays verbatim");
+        };
+        assert_eq!(
+            inner,
+            &serde_json::json!({ "uuid-of-a-future-version": payload })
+        );
+    }
+
     proptest! {
         #![proptest_config(crate::test_support::proptest_config(256))]
         #[test]
@@ -2695,7 +3154,7 @@ mod tests {
             ..rule.clone()
         };
         rules.insert(rule.id, rule.clone());
-        rules.insert(foreign.id, foreign);
+        rules.insert(foreign.id, foreign.clone());
         let entry = rules_entry_for(&rules, task.id);
         assert_eq!(entry.rules.len(), 1, "only the task's own rules");
         assert_eq!(
@@ -3994,6 +4453,36 @@ mod tests {
             let pruned = prune_absent_cards(&doc, &present);
             prop_assert!(!pruned.sections.tasks.as_ref().unwrap().contains_key(&absent));
             prop_assert_eq!(pruned.sections.unknown["proofs"].clone(), serde_json::json!({ "p": payload }));
+        }
+
+        // P6 (D-6, the union): newer clock wins, equal clocks resolve to
+        // the overlay, idempotent re-union (the dismissal_union_lww_laws
+        // shape over tombstone rows).
+        #[test]
+        fn break_rules_union_lww_laws(
+            base_clock in 0_i64..4_000_000_000,
+            overlay_clock in 0_i64..4_000_000_000,
+        ) {
+            let key = crate::ids::BreakRuleId::from(uuid::Uuid::from_u128(1))
+                .as_uuid()
+                .to_string();
+            let mk = |clock: i64| {
+                BTreeMap::from([(
+                    key.clone(),
+                    BreakRuleEntry::Tombstone { clock: ts(clock) },
+                )])
+            };
+            let mut base = mk(base_clock);
+            let overlay = mk(overlay_clock);
+            union_break_rules(&mut base, &overlay);
+            prop_assert_eq!(
+                base[&key].clock(),
+                Some(ts(base_clock.max(overlay_clock))),
+                "the newer embedded clock wins"
+            );
+            let once = base.clone();
+            union_break_rules(&mut base, &overlay);
+            prop_assert_eq!(base, once, "idempotent");
         }
 
         // P1 (design D-7): the dismissals section rides the document

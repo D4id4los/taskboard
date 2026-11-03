@@ -2163,6 +2163,7 @@ mod tests {
         let mut state = AppState::default();
         let rule = BreakRule {
             id: BreakRuleId::from_uuid(uuid::Uuid::now_v7()),
+            board: taskboard_domain::BoardId::from_uuid(uuid::Uuid::now_v7()),
             label: "time for a break".to_owned(),
             threshold: WorkThreshold::try_new(TimeDelta::try_minutes(90).unwrap())
                 .expect("positive threshold"),

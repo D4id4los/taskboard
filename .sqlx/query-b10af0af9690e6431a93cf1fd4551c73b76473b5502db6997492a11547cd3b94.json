@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO break_rules (rule_id, board_id, label, threshold_seconds, insistence, created_at)\n                   VALUES (?, ?, ?, ?, ?, ?)\n                   ON CONFLICT(rule_id) DO UPDATE SET\n                       board_id = excluded.board_id,\n                       label = excluded.label,\n                       threshold_seconds = excluded.threshold_seconds,\n                       insistence = excluded.insistence,\n                       created_at = excluded.created_at",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "b10af0af9690e6431a93cf1fd4551c73b76473b5502db6997492a11547cd3b94"
+}

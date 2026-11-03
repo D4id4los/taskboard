@@ -317,10 +317,18 @@ pub enum StateCommand {
     },
     /// Create a break rule: fires when accumulated tracked work since
     /// the last respite-marked entry reaches the threshold (issue
-    /// #495). Device-local — no sync op, no sidecar section. The
-    /// threshold rides the mint: a zero or negative value is
-    /// unrepresentable in the payload.
+    /// #495). Roaming (#588, D-2/D-3): the rule joins the named board's
+    /// synced `break-rules` section and plans the board's flush
+    /// trigger. The threshold rides the mint: a zero or negative value
+    /// is unrepresentable in the payload.
     CreateBreakRule {
+        /// The board the rule roams with. `None` decodes old journal
+        /// payloads (the additive-field precedent) and is a typed
+        /// rejection at the planner — a decode ghost with no live
+        /// path, since break-rule commands are `NotUndoable` and are
+        /// never re-planned; live surfaces always send `Some`.
+        #[serde(default)]
+        board: Option<crate::ids::BoardId>,
         /// The notification title.
         label: String,
         /// The accumulated-work threshold.

@@ -119,6 +119,13 @@ pub enum CommandError {
     /// No break rule with this id exists.
     #[error("unknown break rule")]
     UnknownBreakRule(crate::ids::BreakRuleId),
+    /// A `CreateBreakRule` payload decoded from an old journal entry
+    /// carries no board (`#[serde(default)]` decode ghost, D-3): the
+    /// planner owes totality, so the rejection is typed, not a panic.
+    /// Live surfaces always send `Some`; the command is `NotUndoable`,
+    /// so the ghost is never re-planned.
+    #[error("break rule create carries no board")]
+    BreakRuleBoardMissing,
     /// An alarm duration must be positive ("in 0 seconds" fires
     /// nothing and "in the past" is [`AdhocWhen::At`] data).
     #[error("alarm duration must be positive")]
@@ -1934,6 +1941,7 @@ pub fn plan_command(
             // anchor's liveness is not required: a dismissal is a
             // terminal fact, not an edit — dismissing a dead task's
             // leftover notification is meaningful and idempotent.
+            let mut break_board: Option<BoardId> = None;
             let task = match *reminder {
                 ReminderRef::Rule(rule_id) => {
                     let rule = app
@@ -1952,10 +1960,15 @@ pub fn plan_command(
                     None
                 }
                 ReminderRef::Break(rule_id) => {
-                    app.reminders
+                    let rule = app
+                        .reminders
                         .break_rules
                         .get(&rule_id)
                         .ok_or(CommandError::UnknownBreakRule(rule_id))?;
+                    // The dismissal is a synced fact now (D-8): the
+                    // board trigger rides the resolved row's board; the
+                    // `task = None` stays (no card-scoped op).
+                    break_board = Some(rule.board);
                     None
                 }
             };
@@ -1992,8 +2005,13 @@ pub fn plan_command(
             }
             // Rule/default refs sync through the watched task's document;
             // adhoc alarms are device-local — no op, nothing to flush.
+            // Break dismissals roam via the rule's board document (D-8):
+            // the board-level trigger enqueued off the resolved row.
             if let Some(task) = task {
                 actions.push(enqueue(LocalOp::UpdateAppData(task), ids, now));
+            }
+            if let Some(board) = break_board {
+                actions.push(board_flush(board, ids, now));
             }
             Ok(CommandPlan {
                 actions,
@@ -2169,23 +2187,35 @@ pub fn plan_command(
             })
         }
         StateCommand::CreateBreakRule {
+            board,
             label,
             threshold,
             insistence,
         } => {
-            // Device-local by ruling (D-5): no outbox op, no
-            // document-lane trigger — the rule never leaves this
-            // machine. The threshold arrived minted (the payload type
-            // cannot carry a non-positive value).
+            // The planner owes totality over the serde-defaulted payload
+            // (D-3): a `None` board is the old-journal decode ghost and
+            // is rejected typed — never a panic, never a synthesized
+            // board.
+            let board = board.ok_or(CommandError::BreakRuleBoardMissing)?;
+            // Roaming (D-2/D-8): the rule joins the board's synced
+            // `break-rules` section, and the D-H9 board-level trigger
+            // is enqueued unconditionally (duplicate triggers are
+            // harmless bookkeeping; coalescing is push-side). The
+            // threshold arrived minted (the payload type cannot carry a
+            // non-positive value).
             let rule = crate::reminders::BreakRule {
                 id: ids.new_break_rule_id(),
+                board,
                 label: label.clone(),
                 threshold: *threshold,
                 insistence: *insistence,
                 created_at: now,
             };
             Ok(CommandPlan {
-                actions: vec![PersistenceAction::UpsertBreakRule(rule.clone())],
+                actions: vec![
+                    PersistenceAction::UpsertBreakRule(rule.clone()),
+                    board_flush(rule.board, ids, now),
+                ],
                 outcome: CommandOutcome::BreakRuleCreated { rule: rule.id },
             })
         }
@@ -2194,13 +2224,19 @@ pub fn plan_command(
             // `CancelAdhocAlarm` law): a repeat targets nothing, so it
             // is a typed rejection, not a no-op. The persistence
             // cascade prunes the ref-matched deliveries, dismissals,
-            // and snooze links in the same batch.
-            app.reminders
+            // and snooze links in the same batch. The board trigger
+            // (D-8) rides the row's board — the tombstone derives at
+            // flush time from this removal op's stamp.
+            let stored = app
+                .reminders
                 .break_rules
                 .get(id)
                 .ok_or(CommandError::UnknownBreakRule(*id))?;
             Ok(CommandPlan {
-                actions: vec![PersistenceAction::DeleteBreakRule(*id)],
+                actions: vec![
+                    PersistenceAction::DeleteBreakRule(*id),
+                    board_flush(stored.board, ids, now),
+                ],
                 outcome: CommandOutcome::BreakRuleDeleted { rule: *id },
             })
         }
@@ -6858,6 +6894,7 @@ mod tests {
 
     fn break_rule_command(threshold_secs: i64) -> StateCommand {
         StateCommand::CreateBreakRule {
+            board: Some(BoardId::from(uuid::Uuid::from_u128(u128::from(BOARD)))),
             label: "time for a break".into(),
             threshold: crate::tracking::WorkThreshold::try_new(
                 chrono::TimeDelta::try_seconds(threshold_secs).unwrap(),
@@ -6881,7 +6918,20 @@ mod tests {
         );
         assert_eq!(rule.insistence, Insistence::Normal);
         assert_eq!(rule.created_at, now());
-        assert!(plan.actions.len() == 1, "device-local: no outbox op");
+        assert_eq!(
+            rule.board,
+            BoardId::from(uuid::Uuid::from_u128(u128::from(BOARD))),
+            "the row carries the payload board (D-2)"
+        );
+        // Roaming (D-8): the board-level flush trigger rides the create.
+        assert!(
+            matches!(
+                &plan.actions[1],
+                PersistenceAction::EnqueueOp(pending)
+                    if matches!(pending.op, crate::outbox::LocalOp::FlushBoardAppData(b) if b == BoardId::from(uuid::Uuid::from_u128(u128::from(BOARD))))
+            ),
+            "the roaming rule plans the board flush"
+        );
         assert!(matches!(
             plan.outcome,
             CommandOutcome::BreakRuleCreated { .. }
@@ -6892,6 +6942,103 @@ mod tests {
         assert!(
             crate::tracking::WorkThreshold::try_new(chrono::TimeDelta::try_seconds(-1).unwrap())
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn create_break_rule_requires_the_board() {
+        let (app, outbox) = base();
+        let ghost = StateCommand::CreateBreakRule {
+            board: None,
+            label: "time for a break".into(),
+            threshold: crate::tracking::WorkThreshold::try_new(
+                chrono::TimeDelta::try_seconds(600).unwrap(),
+            )
+            .expect("positive threshold"),
+            insistence: Insistence::Normal,
+        };
+        let err = run(&app, &outbox, &ghost)
+            .expect_err("the serde-default decode ghost is a typed rejection");
+        assert!(matches!(err, CommandError::BreakRuleBoardMissing));
+    }
+
+    #[test]
+    fn delete_break_rule_plans_the_board_flush() {
+        let (mut app, outbox) = base();
+        let rule = crate::reminders::BreakRule {
+            id: crate::ids::BreakRuleId::from(uuid::Uuid::from_u128(9)),
+            board: BoardId::from(uuid::Uuid::from_u128(u128::from(BOARD))),
+            label: "stretch".into(),
+            threshold: crate::tracking::WorkThreshold::try_new(
+                chrono::TimeDelta::try_seconds(600).unwrap(),
+            )
+            .unwrap(),
+            insistence: Insistence::Normal,
+            created_at: ts(T0),
+        };
+        app.reminders.break_rules.insert(rule.id, rule);
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::DeleteBreakRule {
+                id: crate::ids::BreakRuleId::from(uuid::Uuid::from_u128(9)),
+            },
+        )
+        .expect("accepted");
+        // The tombstone derives at flush time from this removal op's
+        // stamp, so the board trigger rides the row's board (D-8).
+        assert!(
+            matches!(
+                &plan.actions[1],
+                PersistenceAction::EnqueueOp(pending)
+                    if matches!(pending.op, crate::outbox::LocalOp::FlushBoardAppData(b) if b == BoardId::from(uuid::Uuid::from_u128(u128::from(BOARD))))
+            ),
+            "the removal plans the board flush off the stored row"
+        );
+    }
+
+    #[test]
+    fn dismiss_break_occurrence_plans_the_board_flush() {
+        let (mut app, outbox) = base();
+        let rule_id = crate::ids::BreakRuleId::from(uuid::Uuid::from_u128(10));
+        let rule = crate::reminders::BreakRule {
+            id: rule_id,
+            board: BoardId::from(uuid::Uuid::from_u128(u128::from(BOARD))),
+            label: "stretch".into(),
+            threshold: crate::tracking::WorkThreshold::try_new(
+                chrono::TimeDelta::try_seconds(600).unwrap(),
+            )
+            .unwrap(),
+            insistence: Insistence::Normal,
+            created_at: ts(T0),
+        };
+        app.reminders.break_rules.insert(rule_id, rule);
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::DismissReminder {
+                reminder: crate::reminders::ReminderRef::Break(rule_id),
+                occurrence: ts(T0 + 100),
+            },
+        )
+        .expect("accepted");
+        // The dismissal is a synced fact (D-8): the board trigger rides
+        // the resolved row, `task` stays None (no card-scoped op). The
+        // settle leg stays Rule-ref-only: no DeleteBreakRule here.
+        assert!(
+            !plan
+                .actions
+                .iter()
+                .any(|a| matches!(a, PersistenceAction::DeleteBreakRule(_))),
+            "dismissing a break occurrence never deletes the rule"
+        );
+        assert!(
+            matches!(
+                &plan.actions[1],
+                PersistenceAction::EnqueueOp(pending)
+                    if matches!(pending.op, crate::outbox::LocalOp::FlushBoardAppData(b) if b == BoardId::from(uuid::Uuid::from_u128(u128::from(BOARD))))
+            ),
+            "the dismissal plans the board flush off the resolved row"
         );
     }
 
@@ -6913,6 +7060,7 @@ mod tests {
         let (mut app, outbox) = base();
         let rule = crate::reminders::BreakRule {
             id: crate::ids::BreakRuleId::from(uuid::Uuid::from_u128(5)),
+            board: BoardId::from(uuid::Uuid::from_u128(u128::from(BOARD))),
             label: "stretch".into(),
             threshold: crate::tracking::WorkThreshold::try_new(
                 chrono::TimeDelta::try_seconds(600).unwrap(),
@@ -6986,6 +7134,7 @@ mod tests {
         let (app, outbox) = base();
         let rule = crate::reminders::BreakRule {
             id: crate::ids::BreakRuleId::from(uuid::Uuid::from_u128(6)),
+            board: BoardId::from(uuid::Uuid::from_u128(u128::from(BOARD))),
             label: "stretch".into(),
             threshold: crate::tracking::WorkThreshold::try_new(
                 chrono::TimeDelta::try_seconds(600).unwrap(),
@@ -7057,6 +7206,7 @@ mod tests {
         // Delete: the same family disposition.
         let rule = crate::reminders::BreakRule {
             id: crate::ids::BreakRuleId::from(uuid::Uuid::from_u128(6)),
+            board: BoardId::from(uuid::Uuid::from_u128(u128::from(BOARD))),
             label: "stretch".into(),
             threshold: crate::tracking::WorkThreshold::try_new(
                 chrono::TimeDelta::try_seconds(600).unwrap(),

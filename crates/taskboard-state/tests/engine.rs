@@ -2679,6 +2679,7 @@ async fn folded_synced_dismissal_withdraws_the_toast() {
         sections: AppDataSections {
             habits: None,
             habit_log: None,
+            break_rules: None,
             tasks: None,
             reminder_rules: None,
             time_entries: None,

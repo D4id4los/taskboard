@@ -484,15 +484,21 @@ pub struct AdhocAlarm {
 
 /// A break reminder rule: fires when accumulated tracked **work** since
 /// the last respite-marked entry reaches its [`WorkThreshold`] (issue
-/// #495). Device-local by ruling (D-5/D-15) — the `AdhocAlarm` shape
-/// with a duration trigger instead of an instant. No rule-edit verbs
-/// exist anywhere: a different threshold re-creates the rule, and
-/// device-local rows never compete under LWW, so there is no
-/// `updated_at`.
+/// #495). The `AdhocAlarm` shape with a duration trigger instead of an
+/// instant. **Roaming** (#588, D-2): board-scoped rows — the rule rides
+/// the board its creator bound it to and roams via the synced
+/// board-level `break-rules` section; break *evaluation* stays global
+/// over all tracked entries, the board scopes roaming, never firing.
+/// No rule-edit verbs exist anywhere: a different threshold re-creates
+/// the rule (a new UUID, a fresh clock), so the write clock **is** the
+/// creation stamp and there is no `updated_at` (D-5).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BreakRule {
     /// Local identity.
     pub id: BreakRuleId,
+    /// The board the rule roams with (the habits device, D-2): no board
+    /// rides the wire — the fold stamps the locally-bound board.
+    pub board: crate::ids::BoardId,
     /// The notification title (snapshot source — no task to snapshot a
     /// title from).
     pub label: String,
@@ -502,7 +508,9 @@ pub struct BreakRule {
     /// How loudly this rule insists. Fire-time snapshot datum for the
     /// payload — the evaluator never reads it (the when-only contract).
     pub insistence: Insistence,
-    /// Creation stamp.
+    /// Creation stamp — also the row's LWW write clock on the wire
+    /// (v1's only verbs are create and delete, so `clock == created`
+    /// for every row this version writes; D-5).
     pub created_at: DateTime<Utc>,
 }
 
@@ -657,7 +665,8 @@ pub struct ReminderState {
     /// Standalone alarms by id. Map membership is liveness: a removed
     /// row cannot fire, and no done/tombstone state exists.
     pub alarms: BTreeMap<AdhocAlarmId, AdhocAlarm>,
-    /// Break rules by id (device-local; the same liveness law).
+    /// Break rules by id (roaming rows, board-scoped; the same
+    /// liveness law).
     pub break_rules: BTreeMap<BreakRuleId, BreakRule>,
 }
 
@@ -3372,6 +3381,7 @@ mod tests {
     ) -> BreakRule {
         BreakRule {
             id: BreakRuleId::from(uuid::Uuid::from_u128(raw)),
+            board: crate::ids::BoardId::from(uuid::Uuid::from_u128(700)),
             label: label.to_owned(),
             threshold: WorkThreshold::try_new(
                 chrono::TimeDelta::try_seconds(threshold_secs).unwrap(),

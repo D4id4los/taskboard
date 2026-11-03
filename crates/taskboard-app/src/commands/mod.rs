@@ -613,6 +613,7 @@ fn domain_error_kind(err: &taskboard_domain::CommandError) -> &'static str {
         D::UnknownReminderRule(_) => "unknown-reminder-rule",
         D::UnknownAdhocAlarm(_) => "unknown-adhoc-alarm",
         D::UnknownBreakRule(_) => "unknown-break-rule",
+        D::BreakRuleBoardMissing => "break-rule-board-missing",
         D::InvalidAdhocWhen => "invalid-adhoc-when",
         D::InvalidReminderRuleAt => "invalid-reminder-rule-at",
         D::InvalidSnoozePostpone => "invalid-snooze-postpone",
