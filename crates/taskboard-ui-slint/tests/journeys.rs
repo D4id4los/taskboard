@@ -7711,6 +7711,56 @@ fn the_offset_and_timer_fields_flip_validity_with_their_grammars() {
     );
 }
 
+/// Chunk-9 mount regression — the section's `when` field rides the
+/// pushed validity *through the mount*: typing into the rendered
+/// field (not the window callback) flips the `TodayView` root flavour.
+/// The adapter seam is pinned by the journey above; this one pins the
+/// wiring — the mount's forward was never wired and the seam journey
+/// could not see it.
+#[test]
+fn typing_into_the_timers_section_drives_the_when_validity() {
+    let (_fixture, state) = fixture::journey_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::ViewToday);
+            harness.driver.advance_time(0);
+            let click_field = |harness: &mut Harness, label: &str| {
+                let element = harness
+                    .driver
+                    .find_by_label(label)
+                    .unwrap_or_else(|| panic!("the field {label:?} is present"));
+                let (x, y) = support::driver::centre(&element);
+                harness.driver.click_at(x, y);
+            };
+            click_field(&mut harness, "Timer timing (in 10m or at 09:30)");
+            harness.type_text("soon");
+            harness.driver.advance_time(0);
+            assert_eq!(
+                harness.handle.window().get_timer_when_validity(),
+                taskboard_ui_slint::FieldValidity::Invalid,
+                "typed junk flips the flavour through the mount"
+            );
+            // No Clear affordance on this field (it is opt-in): the
+            // retype leg deletes through the same stroke path.
+            let backspace = parse("Backspace").expect("Backspace");
+            for _ in 0.."soon".chars().count() {
+                harness.stroke(backspace);
+            }
+            harness.type_text("in 10m");
+            harness.driver.advance_time(0);
+            assert_eq!(
+                harness.handle.window().get_timer_when_validity(),
+                taskboard_ui_slint::FieldValidity::Valid,
+                "parseable text re-flips through the mount"
+            );
+        },
+    );
+}
+
 /// R4 D24 (chunk-6 acceptance e) — the foreign-flow guard: a focus
 /// steal into the description field while the due editor is armed
 /// settles the due per the rule and leaves the description's own
