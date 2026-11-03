@@ -5799,7 +5799,6 @@ fn install_timer_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     let preset = Rc::clone(adapter);
     let preset_weak = window.as_weak();
     window.on_timer_setter_preset_picked(move |index| {
-        eprintln!("SEAM PRESET {index}");
         let Some(window) = preset_weak.upgrade() else {
             return;
         };
@@ -5840,8 +5839,9 @@ fn install_timer_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         // wraps to 23:45. The wrap stays within the picked day (the
         // day offset is an explicit choice; the step never flips it).
         let time = a.setter_time.unwrap_or(chrono::NaiveTime::MIN);
-        a.setter_time = Some(crate::due_edit::step_minutes(time, n));
-        a.setter_time_text = crate::due_edit::format_time_hm(time);
+        let stepped = crate::due_edit::step_minutes(time, n);
+        a.setter_time = Some(stepped);
+        a.setter_time_text = crate::due_edit::format_time_hm(stepped);
         a.recompose_timer_setter();
         a.refresh_forced(&window);
     });
@@ -5863,7 +5863,6 @@ fn install_timer_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     let day = Rc::clone(adapter);
     let day_weak = window.as_weak();
     window.on_timer_setter_day_picked(move |index| {
-        eprintln!("SEAM DAY {index}");
         let Some(window) = day_weak.upgrade() else {
             return;
         };
@@ -5879,7 +5878,6 @@ fn install_timer_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     let commit = Rc::clone(adapter);
     let commit_weak = window.as_weak();
     window.on_timer_setter_commit_requested(move |label| {
-        eprintln!("SEAM COMMIT {label}");
         let Some(window) = commit_weak.upgrade() else {
             return false;
         };
