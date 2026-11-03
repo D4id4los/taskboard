@@ -43,7 +43,9 @@ use chrono::{
 /// The one local→instant conversion (r4 D28): a local wall-clock
 /// resolves through the injected zone; the gap (`None`) and the
 /// fall-back overlap (`Ambiguous`) refuse — `.single()` or nothing.
-fn resolve_local(
+/// The tracking form's draft assembly (r4 chunk 10) reuses this one
+/// seam — the zone rule has one implementation.
+pub(crate) fn resolve_local(
     naive: NaiveDateTime,
     tz: &impl chrono::TimeZone,
 ) -> Result<DateTime<Utc>, DueParseError> {
