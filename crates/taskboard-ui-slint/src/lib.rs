@@ -3002,6 +3002,13 @@ mod view_component_tests {
             press(&handle, "t");
             assert_eq!(
                 handle.window.get_current_view(),
+                View::Review,
+                "the cycle crosses the review surface (#214) before wrapping"
+            );
+            press(&handle, "g");
+            press(&handle, "t");
+            assert_eq!(
+                handle.window.get_current_view(),
                 View::Today,
                 "the cycle wraps through Today"
             );

@@ -788,6 +788,7 @@ pub fn push(
         crate::view_state::ViewId::Board => View::Board,
         crate::view_state::ViewId::StackDetail => View::StackDetail,
         crate::view_state::ViewId::TaskDetail => View::TaskDetail,
+        crate::view_state::ViewId::Review => View::Review,
         crate::view_state::ViewId::Settings => View::Settings,
     });
 

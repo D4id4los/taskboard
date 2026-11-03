@@ -45,6 +45,12 @@ pub enum ViewId {
     Board,
     StackDetail,
     TaskDetail,
+    /// The review/statistics surface (#214, chunk 6.1): the
+    /// estimate-vs-actual calibration reading — subjectless, read-only
+    /// (a ledger, not a task list). A cycle member like Today;
+    /// `KioskMode` maps only Board/Today, so the appliance rotation
+    /// can never select it.
+    Review,
     /// The settings surface (round-1 D5/D24b): reachable only through
     /// `open_settings` — never a member of the `step_view` cycle.
     Settings,
@@ -467,6 +473,7 @@ impl ViewState {
             ViewId::Board => ContextId::Board,
             ViewId::StackDetail => ContextId::StackDetail,
             ViewId::TaskDetail => ContextId::TaskDetail,
+            ViewId::Review => ContextId::Review,
             ViewId::Settings => ContextId::Settings,
         }
     }
@@ -541,6 +548,7 @@ impl ViewState {
             ViewId::Board,
             ViewId::StackDetail,
             ViewId::TaskDetail,
+            ViewId::Review,
         ];
         let current = order.iter().position(|v| *v == self.view).unwrap_or(0);
         let next = if direction > 0 {
@@ -566,6 +574,12 @@ impl ViewState {
             }
             ViewId::Board => {
                 self.view = ViewId::Board;
+                true
+            }
+            // Subjectless, exactly like Today's arm (#214 D-1): the
+            // review surface reads the whole state, no subject.
+            ViewId::Review => {
+                self.view = ViewId::Review;
                 true
             }
             ViewId::StackDetail => {
@@ -1113,7 +1127,8 @@ impl ViewState {
             // No create row on the today view (chunk 10 D3): capture
             // is the create path there. The settings surface hosts no
             // create flow either (round-1 D5).
-            ViewId::Today | ViewId::Settings => None,
+            // Review is subjectless like Today (#214 D-1).
+            ViewId::Today | ViewId::Settings | ViewId::Review => None,
             ViewId::Board => self
                 .focused_stack(state)
                 .or(self.selected_stack)
@@ -2436,6 +2451,11 @@ mod tests {
             "first card is the fallback subject"
         );
 
+        // The review surface joined the cycle (#214 D-1): subjectless,
+        // between TaskDetail and Today.
+        vs.next_view(&state);
+        assert_eq!(vs.view(), ViewId::Review, "Review entered subjectless");
+
         vs.next_view(&state);
         assert_eq!(vs.view(), ViewId::Today, "the cycle wraps through Today");
         vs.next_view(&state);
@@ -2443,9 +2463,39 @@ mod tests {
         vs.prev_view(&state);
         assert_eq!(vs.view(), ViewId::Today);
         vs.prev_view(&state);
+        assert_eq!(
+            vs.view(),
+            ViewId::Review,
+            "wrapping backwards crosses Review"
+        );
+        vs.prev_view(&state);
         assert_eq!(vs.view(), ViewId::TaskDetail);
         vs.focus_board();
         assert_eq!(vs.view(), ViewId::Board);
+    }
+
+    #[test]
+    fn the_kiosk_rotation_never_lands_on_review() {
+        // D-10(a), structural: KioskMode's view mapping is total over
+        // exactly {Board, Today}, so no rotation tick — over every
+        // declared mode set — can offer the Review view.
+        for modes in [
+            vec![KioskMode::Board, KioskMode::Today],
+            vec![KioskMode::Today, KioskMode::Board],
+        ] {
+            let mut rotation =
+                KioskRotation::new(modes, std::time::Duration::from_secs(1)).expect("mints");
+            for _ in 0..4 {
+                assert_ne!(
+                    rotation.tick().view(),
+                    ViewId::Review,
+                    "the kiosk rotation never renders the review surface"
+                );
+            }
+        }
+        // And the mapping itself is exhaustive over the modes.
+        assert_eq!(KioskMode::Board.view(), ViewId::Board);
+        assert_eq!(KioskMode::Today.view(), ViewId::Today);
     }
 
     #[test]

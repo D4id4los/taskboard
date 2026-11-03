@@ -30,6 +30,10 @@ pub enum ContextId {
     Board,
     StackDetail,
     TaskDetail,
+    /// The review surface's context (#214): read-only — no bindings
+    /// target it yet; the variant exists so the keymap context
+    /// resolution stays total over the view set (the plan's D-8).
+    Review,
     Settings,
     Menu,
     /// The jump-to search palette (#348): a total mask like `Menu`.
@@ -56,6 +60,7 @@ impl ContextId {
             Self::Board => "board",
             Self::StackDetail => "stack-detail",
             Self::TaskDetail => "task-detail",
+            Self::Review => "review",
             Self::Settings => "settings",
             Self::Menu => "menu",
             Self::Palette => "palette",

@@ -1544,6 +1544,7 @@ impl Adapter {
         const FAMILY_BOARD: i32 = 1;
         const FAMILY_TODAY: i32 = 2;
         const FAMILY_STACK: i32 = 3;
+        const FAMILY_REVIEW: i32 = 4;
         #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
         let to_hint_index = |value: usize| value as i32;
         let page = if down { 1 } else { -1 };
@@ -1577,6 +1578,9 @@ impl Adapter {
                 return;
             }
             (crate::view_state::ViewId::TaskDetail, _) => None,
+            // The review page (#214): one whole-page viewport, the
+            // view's own ListView pages as family 4.
+            (crate::view_state::ViewId::Review, _) => Some((FAMILY_REVIEW, -1)),
         };
         // The settings family only ever rides the facts path.
         let Some((family, index)) = hint.filter(|(family, _)| *family != FAMILY_SETTINGS) else {
@@ -1641,7 +1645,12 @@ impl Adapter {
                 .tables
                 .stack_position(focused)
                 .map(|row| (-1, to_hint_index(row))),
-            crate::view_state::ViewId::TaskDetail | crate::view_state::ViewId::Settings => None,
+            // The review page carries no focusable rows (D-8): the
+            // focus-into-view seam never targets it, like the settings
+            // facts path and the detail's own container.
+            crate::view_state::ViewId::TaskDetail
+            | crate::view_state::ViewId::Settings
+            | crate::view_state::ViewId::Review => None,
         };
         let Some((target_a, target_b)) = hint else {
             return;
@@ -6071,6 +6080,7 @@ impl crate::UiHandle {
             Some(ContextId::Board) => crate::view_state::ViewId::Board,
             Some(ContextId::StackDetail) => crate::view_state::ViewId::StackDetail,
             Some(ContextId::TaskDetail) => crate::view_state::ViewId::TaskDetail,
+            Some(ContextId::Review) => crate::view_state::ViewId::Review,
             Some(ContextId::Settings) => crate::view_state::ViewId::Settings,
             // The overlay's context maps to no view: like the other
             // non-routable contexts, the adapter is left untouched

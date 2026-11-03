@@ -125,6 +125,7 @@ impl Harness {
             View::Board => Some(ContextId::Board),
             View::StackDetail => Some(ContextId::StackDetail),
             View::TaskDetail => Some(ContextId::TaskDetail),
+            View::Review => Some(ContextId::Review),
             View::Settings => Some(ContextId::Settings),
         };
         let mut chain = Vec::with_capacity(4);
@@ -346,12 +347,24 @@ fn the_ten_step_keyboard_session() {
             harness.press(ActionId::NavNextView);
             assert_eq!(
                 harness.handle.window().get_current_view(),
+                View::Review,
+                "the view cycle crosses the review surface (#214) before wrapping"
+            );
+            harness.press(ActionId::NavNextView);
+            assert_eq!(
+                harness.handle.window().get_current_view(),
                 View::Today,
                 "the view cycle wraps through Today (chunk 10 D2)"
             );
             harness.press(ActionId::NavNextView);
             assert_eq!(harness.handle.window().get_current_view(), View::Board);
             harness.press(ActionId::NavPrevView);
+            harness.press(ActionId::NavPrevView);
+            assert_eq!(
+                harness.handle.window().get_current_view(),
+                View::Review,
+                "the backwards wrap crosses the review surface (#214)"
+            );
             harness.press(ActionId::NavPrevView);
             assert_eq!(harness.handle.window().get_current_view(), View::TaskDetail);
             harness.press(ActionId::NavPrevView);
@@ -1091,11 +1104,31 @@ fn the_view_graph_walks_from_a_cold_start_without_dead_ends() {
             assert_eq!(current_view(&harness), View::Board);
 
             // The cycle wraps from any starting view (no one-way edges).
+            // Review (#214) sits between TaskDetail and Today: the
+            // backwards wrap from Board crosses Today first, then
+            // Review, then TaskDetail.
             harness.press(ActionId::NavPrevView);
             assert_eq!(current_view(&harness), View::Today, "wrap backwards");
             harness.press(ActionId::NavPrevView);
+            assert_eq!(
+                current_view(&harness),
+                View::Review,
+                "the wrap's far edge is the review surface"
+            );
+            harness.press(ActionId::NavPrevView);
             assert_eq!(current_view(&harness), View::TaskDetail);
             harness.press(ActionId::NavFocusBoard);
+            assert_eq!(current_view(&harness), View::Board);
+
+            // The forward cycle reaches Review the same way: it is
+            // read-only (a ledger), so entering it arms no flow and
+            // nav.focus-board still returns.
+            harness.press(ActionId::NavNextView);
+            harness.press(ActionId::NavNextView);
+            harness.press(ActionId::NavNextView);
+            assert_eq!(current_view(&harness), View::Review);
+            harness.press(ActionId::NavFocusBoard);
+            assert_eq!(current_view(&harness), View::Board);
 
             // The menu opens from the board and dismisses cleanly.
             harness.press(ActionId::AppMenu);
@@ -2780,6 +2813,7 @@ fn the_view_cycle_never_passes_through_settings() {
             for expected in [
                 View::StackDetail,
                 View::TaskDetail,
+                View::Review,
                 View::Today,
                 View::Board,
             ] {
