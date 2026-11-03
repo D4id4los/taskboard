@@ -282,6 +282,33 @@ impl ReminderKind {
     pub const fn is_due_offset(self) -> bool {
         matches!(self, Self::DueOffset(_))
     }
+
+    /// The stored TEXT form's kind discriminant: the derived serde
+    /// unit name (`"due_offset"` / `"at"`). The arm's *data* rides a
+    /// separate column (0020 splits discriminant from data), so this
+    /// is discriminant-only — a lossless pair would misrepresent the
+    /// stored form.
+    #[must_use]
+    pub const fn discriminant_text_form(self) -> &'static str {
+        match self {
+            Self::DueOffset(_) => "due_offset",
+            Self::At(_) => "at",
+        }
+    }
+
+    /// Parses [`discriminant_text_form`](Self::discriminant_text_form)
+    /// back: `Some(true)` = the `at` arm, `Some(false)` = the
+    /// due-offset arm, `None` = unknown text (a corrupt local row is a
+    /// corrupted database, never a clamped value). The arm's data is
+    /// supplied separately, so the discriminant alone is the answer.
+    #[must_use]
+    pub fn parse_discriminant_text_form(raw: &str) -> Option<bool> {
+        match raw {
+            "due_offset" => Some(false),
+            "at" => Some(true),
+            _ => None,
+        }
+    }
 }
 
 /// Which reminder a firing/delivery/snooze refers to: an explicit rule,
@@ -1456,6 +1483,23 @@ mod tests {
 
     fn ref_of(raw: u128) -> ReminderRef {
         ReminderRef::Rule(ReminderRuleId::from(uuid::Uuid::from_u128(raw)))
+    }
+
+    #[test]
+    fn reminder_kind_discriminant_pair_pins_the_stored_tags() {
+        let due_offset = ReminderKind::DueOffset(
+            ReminderOffset::before(chrono::TimeDelta::try_minutes(-10).unwrap()).unwrap(),
+        );
+        let at = ReminderKind::At(AtInstant::whole_second(ts(100)).unwrap());
+        assert_eq!(due_offset.discriminant_text_form(), "due_offset");
+        assert_eq!(at.discriminant_text_form(), "at");
+        assert_eq!(
+            ReminderKind::parse_discriminant_text_form("due_offset"),
+            Some(false)
+        );
+        assert_eq!(ReminderKind::parse_discriminant_text_form("at"), Some(true));
+        assert_eq!(ReminderKind::parse_discriminant_text_form(""), None);
+        assert_eq!(ReminderKind::parse_discriminant_text_form("At"), None);
     }
 
     // ---- Evaluation (P1-P4, P7, P8) -----------------------------------

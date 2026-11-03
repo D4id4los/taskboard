@@ -158,6 +158,53 @@ const fn level_text_form(index: usize) -> &'static str {
     LEVEL_TEXT_FORMS[index]
 }
 
+/// The two level enums' shared *serde* vocabulary: the derived
+/// `#[serde(rename_all = "snake_case")]` unit names, indexed by the
+/// same declaration (severity) order as [`LEVEL_TEXT_FORMS`]. This is
+/// the vocabulary the storage TEXT columns and the appdata sidecar
+/// JSON carry — deliberately distinct from the hyphenated display
+/// form (which stays the CLI/UI vocabulary). The
+/// `serde_name`-alignment tests below prove the table against the
+/// actual derive.
+const LEVEL_SERDE_NAMES: [&str; 5] = ["very_low", "low", "normal", "high", "very_high"];
+
+/// The serde unit name at a declaration-order index.
+const fn level_serde_name(index: usize) -> &'static str {
+    LEVEL_SERDE_NAMES[index]
+}
+
+/// The vocabulary index of a serde unit name.
+fn parse_level_serde_name(raw: &str) -> Option<usize> {
+    LEVEL_SERDE_NAMES.iter().position(|name| *name == raw)
+}
+
+/// The `serde_name`/`parse_serde_name` pair, spelled once and stamped
+/// onto both level enums — the pair is textually identical modulo the
+/// receiver type, and a macro is the one way to own it once.
+macro_rules! serde_name_pair {
+    ($level:ident) => {
+        impl $level {
+            /// The derived serde unit name (`"very_low"` …
+            /// `"very_high"`) — the vocabulary the storage TEXT column
+            /// and the appdata sidecar JSON carry (see the private
+            /// `LEVEL_SERDE_NAMES` table); distinct from
+            /// [`text_form`](Self::text_form) (the hyphenated display
+            /// form).
+            #[must_use]
+            pub const fn serde_name(self) -> &'static str {
+                level_serde_name(self as usize)
+            }
+
+            /// Parses a [`serde_name`](Self::serde_name) back; `None`
+            /// on an unknown name.
+            #[must_use]
+            pub fn parse_serde_name(raw: &str) -> Option<Self> {
+                parse_level_serde_name(raw).map(|index| Self::LEVELS[index])
+            }
+        }
+    };
+}
+
 /// Importance level for later decision support; `None` on a [`Task`] =
 /// unset (a task outside the matrix must not read as "Normal").
 /// Declaration order = severity order: the derived `Ord` is the sorting
@@ -196,6 +243,7 @@ impl Importance {
         level_text_form(self as usize)
     }
 }
+serde_name_pair!(Importance);
 
 /// Urgency level for later decision support; `None` on a [`Task`] =
 /// unset. A distinct type from [`Importance`] on purpose:
@@ -235,6 +283,7 @@ impl Urgency {
         level_text_form(self as usize)
     }
 }
+serde_name_pair!(Urgency);
 
 /// Which sync lane the Deck connector carries a task field on (#244).
 /// The lane is *the connector's* mapping, not an intrinsic property of
@@ -446,6 +495,25 @@ impl RemoteTaskBaseline {
             labels: remote.labels.clone(),
             archived: remote.archived,
         }
+    }
+
+    /// The stored TEXT form: the domain serde JSON of the record (the
+    /// `Option` wrapper is not stored — NULL is the never-observed
+    /// state at the column level, the fallback trigger).
+    #[must_use]
+    pub fn text_form(&self) -> String {
+        // Never fires for this plain-data shape; kept for byte-identity
+        // with the codec this pair replaces.
+        serde_json::to_string(self).unwrap_or_default()
+    }
+
+    /// Parses the stored TEXT form back; `None` on any JSON that does
+    /// not decode as a record (strict decode by design — the
+    /// repository reports `Corrupted`; a NULL column is handled at the
+    /// caller as the fallback trigger).
+    #[must_use]
+    pub fn parse_text_form(raw: &str) -> Option<Self> {
+        serde_json::from_str(raw).ok()
     }
 }
 
@@ -660,8 +728,43 @@ pub struct Label {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ids::{RemoteLabelId, RemoteStackId};
     use crate::test_support;
     use proptest::prelude::*;
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn remote_baseline_text_form_is_the_serde_json_and_round_trips() {
+        let mut labels = BTreeSet::new();
+        labels.insert(RemoteLabelId(6));
+        labels.insert(RemoteLabelId(1));
+        let baseline = RemoteTaskBaseline {
+            title: "card".to_owned(),
+            description: "desc".to_owned(),
+            duedate: Some(
+                DateTime::parse_from_rfc3339("2026-01-02T03:04:05Z")
+                    .unwrap()
+                    .with_timezone(&Utc),
+            ),
+            scheduled: None,
+            done: None,
+            stack: RemoteStackId(7),
+            order: 3,
+            labels,
+            archived: false,
+        };
+        // The exact stored bytes the sqlite codec has always written.
+        assert_eq!(
+            baseline.text_form(),
+            "{\"title\":\"card\",\"description\":\"desc\",\"duedate\":\"2026-01-02T03:04:05Z\",\"scheduled\":null,\"done\":null,\"stack\":7,\"order\":3,\"labels\":[1,6],\"archived\":false}"
+        );
+        assert_eq!(
+            RemoteTaskBaseline::parse_text_form(&baseline.text_form()),
+            Some(baseline)
+        );
+        assert_eq!(RemoteTaskBaseline::parse_text_form("not json"), None);
+        assert_eq!(RemoteTaskBaseline::parse_text_form(""), None);
+    }
 
     #[test]
     fn epoch_clock_roundtrips_through_rfc3339() {
@@ -710,6 +813,43 @@ mod tests {
             assert_eq!(json, serde_json::json!(name));
             assert_eq!(serde_json::from_value::<Urgency>(json).unwrap(), level);
         }
+    }
+
+    #[test]
+    fn level_serde_name_pair_is_aligned_with_the_derive() {
+        for level in [
+            Importance::VeryLow,
+            Importance::Low,
+            Importance::Normal,
+            Importance::High,
+            Importance::VeryHigh,
+        ] {
+            // The pair tracks the actual derive, not a parallel table.
+            assert_eq!(
+                serde_json::to_value(level).unwrap(),
+                serde_json::json!(level.serde_name())
+            );
+            assert_eq!(
+                Importance::parse_serde_name(level.serde_name()),
+                Some(level)
+            );
+        }
+        for level in [
+            Urgency::VeryLow,
+            Urgency::Low,
+            Urgency::Normal,
+            Urgency::High,
+            Urgency::VeryHigh,
+        ] {
+            assert_eq!(
+                serde_json::to_value(level).unwrap(),
+                serde_json::json!(level.serde_name())
+            );
+            assert_eq!(Urgency::parse_serde_name(level.serde_name()), Some(level));
+        }
+        assert_eq!(Importance::parse_serde_name("very-low"), None);
+        assert_eq!(Importance::parse_serde_name(""), None);
+        assert_eq!(Urgency::parse_serde_name("very-low"), None);
     }
 
     #[test]

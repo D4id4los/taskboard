@@ -141,34 +141,48 @@ pub enum ValidatorKey {
     ArchivedStacks(crate::ids::RemoteBoardId),
 }
 
+impl ValidatorKey {
+    /// The text form shared by the serde wire encoding and the storage
+    /// `sync_metadata.key` column (`"boards"`, `"stacks:<u64>"`,
+    /// `"archived_stacks:<u64>"`) — one definition, three consumers.
+    #[must_use]
+    pub fn text_form(self) -> String {
+        match self {
+            Self::Boards => "boards".to_owned(),
+            Self::Stacks(board) => format!("stacks:{}", board.get()),
+            Self::ArchivedStacks(board) => format!("archived_stacks:{}", board.get()),
+        }
+    }
+
+    /// Parses [`text_form`](Self::text_form) back; `None` on any other
+    /// shape.
+    #[must_use]
+    pub fn parse_text_form(raw: &str) -> Option<Self> {
+        if raw == "boards" {
+            return Some(Self::Boards);
+        }
+        if let Some(num) = raw
+            .strip_prefix("archived_stacks:")
+            .and_then(|num| num.parse::<u64>().ok())
+        {
+            return Some(Self::ArchivedStacks(crate::ids::RemoteBoardId(num)));
+        }
+        raw.strip_prefix("stacks:")
+            .and_then(|num| num.parse::<u64>().ok())
+            .map(|num| Self::Stacks(crate::ids::RemoteBoardId(num)))
+    }
+}
+
 impl Serialize for ValidatorKey {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        match self {
-            Self::Boards => serializer.serialize_str("boards"),
-            Self::Stacks(board) => serializer.serialize_str(&format!("stacks:{}", board.get())),
-            Self::ArchivedStacks(board) => {
-                serializer.serialize_str(&format!("archived_stacks:{}", board.get()))
-            }
-        }
+        serializer.serialize_str(&self.text_form())
     }
 }
 
 impl<'de> Deserialize<'de> for ValidatorKey {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let raw = String::deserialize(deserializer)?;
-        if raw == "boards" {
-            return Ok(Self::Boards);
-        }
-        if let Some(num) = raw
-            .strip_prefix("archived_stacks:")
-            .and_then(|n| n.parse().ok())
-        {
-            return Ok(Self::ArchivedStacks(crate::ids::RemoteBoardId(num)));
-        }
-        raw.strip_prefix("stacks:")
-            .and_then(|num| num.parse::<u64>().ok())
-            .map(|num| Self::Stacks(crate::ids::RemoteBoardId(num)))
-            .ok_or_else(|| serde::de::Error::custom("invalid validator key"))
+        Self::parse_text_form(&raw).ok_or_else(|| serde::de::Error::custom("invalid validator key"))
     }
 }
 
@@ -668,6 +682,31 @@ mod tests {
 
     fn ts(secs: i64) -> DateTime<Utc> {
         Utc.timestamp_opt(secs, 0).unwrap()
+    }
+
+    #[test]
+    fn validator_key_text_form_is_the_serde_wire_form_and_round_trips() {
+        for (key, form) in [
+            (ValidatorKey::Boards, "boards".to_owned()),
+            (
+                ValidatorKey::Stacks(crate::ids::RemoteBoardId(9)),
+                "stacks:9".to_owned(),
+            ),
+            (
+                ValidatorKey::ArchivedStacks(crate::ids::RemoteBoardId(9)),
+                "archived_stacks:9".to_owned(),
+            ),
+        ] {
+            assert_eq!(key.text_form(), form);
+            // The hand-rolled serde impls delegate to the pair: the
+            // wire form IS the text form.
+            assert_eq!(serde_json::to_value(key).unwrap(), serde_json::json!(form));
+            assert_eq!(ValidatorKey::parse_text_form(&form), Some(key));
+        }
+        assert_eq!(ValidatorKey::parse_text_form("labels"), None);
+        assert_eq!(ValidatorKey::parse_text_form("stacks:x"), None);
+        assert_eq!(ValidatorKey::parse_text_form("archived_stacks:x"), None);
+        assert_eq!(ValidatorKey::parse_text_form(""), None);
     }
 
     fn task_with_id(raw: u128) -> crate::entities::Task {
