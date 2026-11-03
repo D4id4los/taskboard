@@ -10,17 +10,21 @@
 import { Theme, Typography, RoleText, Tone, Semantic } from "../theme.slint";
 import { Badge } from "../widgets/badge.slint";
 import { IconButton, IconKind } from "../widgets/icon-button.slint";
-import { ListRow } from "../widgets/list-row.slint";
 import { FieldValidity } from "../widgets/text-field.slint";
 import { TextField } from "../widgets/text-field.slint";
 
-// One active timer row: the label snapshot plus the countdown phrase
-// (derived per refresh — no UI-held ticking state). The cancel target
-// is Rust-side (the IdTables index convention); the row carries only
+// One active timer row: the label snapshot, the two-part countdown
+// (r4 D32: d/h/m/s remaining), the `@`-prefixed local fire instant,
+// and the projected alarm-rung bit (the badge renders on the alarm
+// rung only — `normal` is the silent default, D-I9's ladder). Derived
+// per refresh — no UI-held ticking state. The cancel target is
+// Rust-side (the IdTables index convention); the row carries only
 // its index.
 export struct TimerRowModel {
     label: string,
     countdown: string,
+    fire-time: string,
+    alarm-rung: bool,
 }
 
 export component TimersSection inherits Rectangle {
@@ -78,11 +82,38 @@ export component TimersSection inherits Rectangle {
         for row[row-index] in root.timers: HorizontalLayout {
             spacing: Theme.space-2;
 
-            list := ListRow {
+            // The two-line row anatomy (r4 D32, the rule-list twin):
+            // label + alarm-rung badge + mono countdown on the primary
+            // line, the `@` fire instant as the detail line. ListRow is
+            // single-slot and retired from this composition.
+            VerticalLayout {
                 horizontal-stretch: 1;
-                text: row.label;
-                meta: row.countdown;
-                tone: Tone.info;
+                spacing: Theme.space-1;
+                HorizontalLayout {
+                    spacing: Theme.space-2;
+                    RoleText {
+                        role: Typography.body;
+                        text: row.label;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                    if (row.alarm-rung): Badge {
+                        text: "alarm";
+                        tone: Tone.warning;
+                    }
+                    RoleText {
+                        role: Typography.mono;
+                        text: row.countdown;
+                        text-color: Theme.text-secondary;
+                        vertical-alignment: center;
+                    }
+                }
+                RoleText {
+                    role: Typography.caption;
+                    text-color: Theme.text-secondary;
+                    text: row.fire-time;
+                    vertical-alignment: center;
+                }
             }
             VerticalLayout {
                 IconButton {

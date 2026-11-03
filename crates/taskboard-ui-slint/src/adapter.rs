@@ -846,7 +846,7 @@ impl Adapter {
     /// `!self.kiosk` term — freezes the decision even if kiosk view
     /// gating ever changes; (c) the driver only consults the wall
     /// second while this flag holds. Layer (b) is the test-pinned one.
-    fn compute_seconds_surfaces_active(&mut self, state: &AppState) {
+    fn compute_seconds_surfaces_active(&mut self, state: &AppState, now: DateTime<Utc>) {
         let mut active = false;
         if !self.kiosk {
             // The concentration overlay's countdown (#496): the
@@ -879,7 +879,15 @@ impl Adapter {
                             && matches!(rule.kind, taskboard_domain::ReminderKind::At(_))
                     })
                 });
-            active = task_view_active || focus_overlay_active || at_rule_rows;
+            // The timers rows' per-second countdown (r4 D32, §2
+            // decision 5's amendment): the unfired set is the only
+            // timers text that changes with the wall second — an
+            // awaiting-only map renders clamped zeros plus a fixed
+            // instant, static, no tick owed. The doc-comment's named
+            // extension point, discharged — never a second tick
+            // channel.
+            let timer_rows = !crate::presentation::timer_rows(state, now).is_empty();
+            active = task_view_active || focus_overlay_active || at_rule_rows || timer_rows;
         }
         self.seconds_surfaces_active = active;
     }
@@ -920,8 +928,9 @@ impl Adapter {
         let state = self.state.load_full();
         self.view_state.reconcile(&state);
         // After the reconcile — the reconciled view-state is what the
-        // term reads.
-        self.compute_seconds_surfaces_active(&state);
+        // term reads. The pass's clock read feeds the timers term (r4
+        // D32: one derivation, no second list to drift).
+        self.compute_seconds_surfaces_active(&state, chrono::Utc::now());
         self.enforce_due_buffer_invariant(window);
         let chain = self.shell.chain();
         let day = self.day_ctx();

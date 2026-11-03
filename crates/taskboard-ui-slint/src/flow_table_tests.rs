@@ -1360,6 +1360,101 @@ fn the_seconds_gate_holds_only_while_the_subjects_open_entry_is_mounted() {
     });
 }
 
+/// r4 D32 — the timers term: an unfired (counting) alarm arms the
+/// tick on desktop; an awaiting-only map (fired ∧ delivered) does not
+/// — its text is clamped zeros plus a fixed instant, static; kiosk
+/// stays false even with a live alarm (layer (b), the test-pinned
+/// fence).
+#[test]
+fn the_seconds_gate_arms_on_unfired_timers_only() {
+    on_slint_thread(|| {
+        let alarm_at = chrono::Utc::now() + chrono::TimeDelta::minutes(3);
+        let mint = |state: &mut AppState, label: &str, fire_at| {
+            let id = taskboard_domain::AdhocAlarmId::from_uuid(uuid::Uuid::now_v7());
+            state.reminders.alarms.insert(
+                id,
+                taskboard_domain::AdhocAlarm {
+                    insistence: taskboard_domain::Insistence::Normal,
+                    id,
+                    label: label.to_owned(),
+                    fire_at,
+                    created_at: fire_at - chrono::TimeDelta::minutes(1),
+                },
+            );
+        };
+
+        // Desktop, one unfired alarm: true.
+        let (live, _fx) = fixture();
+        let mut live = live;
+        mint(&mut live, "tea", alarm_at);
+        {
+            let rig = rig(live);
+            let adapter = rig.adapter();
+            adapter.borrow_mut().refresh_forced(rig.handle.window());
+            assert!(
+                adapter.borrow().seconds_surfaces_active,
+                "an unfired timer's countdown moves with the wall second"
+            );
+        }
+
+        // Desktop, awaiting-only (fired ∧ delivered): false.
+        let (awaiting, _fx) = fixture();
+        let mut awaiting = awaiting;
+        let fired_at = chrono::Utc::now() - chrono::TimeDelta::minutes(1);
+        mint(&mut awaiting, "fired", fired_at);
+        let id = *awaiting.reminders.alarms.keys().next().expect("alarm");
+        awaiting
+            .reminders
+            .deliveries
+            .insert(taskboard_domain::ReminderDelivery {
+                reminder: taskboard_domain::ReminderRef::Adhoc(id),
+                occurrence: fired_at,
+                delivered_at: fired_at,
+            });
+        {
+            let rig = rig(awaiting);
+            let adapter = rig.adapter();
+            adapter.borrow_mut().refresh_forced(rig.handle.window());
+            assert!(
+                !adapter.borrow().seconds_surfaces_active,
+                "an awaiting-only map renders static text — no tick owed"
+            );
+        }
+
+        // Kiosk, live alarm: false (layer (b)). Mounted kiosk-first
+        // (the A2 shape) — the flag is a mount-time input.
+        let (kiosk_state, _fx) = fixture();
+        let mut kiosk_state = kiosk_state;
+        mint(&mut kiosk_state, "tea", alarm_at);
+        {
+            let state = Arc::new(arc_swap::ArcSwap::from_pointee(kiosk_state));
+            let (commands_tx, _commands_rx) = mpsc::channel(64);
+            let (requests_tx, _requests_rx) = mpsc::channel(16);
+            let (_health_tx, health) =
+                tokio::sync::watch::channel(crate::presentation::DeliveryHealth::default());
+            let handle = mount(
+                state,
+                dummy_receiver(),
+                dummy_receiver(),
+                commands_tx,
+                requests_tx,
+                UiSettings {
+                    kiosk: true,
+                    ..UiSettings::default()
+                },
+                health,
+            )
+            .expect("mount succeeds on the null platform");
+            let adapter = handle.test_adapter();
+            adapter.borrow_mut().refresh_forced(handle.window());
+            assert!(
+                !adapter.borrow().seconds_surfaces_active,
+                "kiosk never ticks, whatever the timers hold"
+            );
+        }
+    });
+}
+
 /// A2 — the kiosk pin (layer (b)): the explicit `!self.kiosk` term
 /// keeps the gate false even with an open entry and a subject
 /// candidate in the view state.
