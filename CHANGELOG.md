@@ -28,6 +28,22 @@ The workspace carries a single global version (see `docs/architecture.org`);
 
 ### Added
 
+- Tracker task kind (#492): a task can now be marked as a *tracker*
+  — a card that exists to be tracked, never completed ("Reading as
+  Hobby", "Meditation"). Mark it with `tasks edit <task> --kind
+  tracker` (reset with `--kind none`); completing a tracker task is
+  rejected typed (`tracker-not-doneable` in the `--json` envelope and
+  over IPC), and every done-triggered cascade — recur spawns,
+  tracking closes, reminder dismissals — is inert against it, while
+  tracking itself (start/stop/log/status) stays fully live. The kind
+  roams as an additive sidecar field (default-off decode; old tasks
+  read `standard`), persists through an additive sqlite column (old
+  databases upgrade in place), and the surfaces suppress the done
+  affordances on tracker cards: the desktop and kiosk cards and the
+  task view hide their checkboxes and grow a `tracker` badge, the
+  card menu offers "Toggle tracker" instead of "Complete task", and
+  keyboard completion on a focused tracker is inert.
+
 - Respite marking and break reminders (#493 + #495): time entries
   gain a `kind` datum — `work` (the default) or `respite` — that
   marks break activity. It roams as an additive wire-row field
