@@ -655,19 +655,6 @@ pub fn notification_rows(
     .collect()
 }
 
-/// The active timer row's remaining-time phrase (D-I7): the
-/// `due_phrase` future direction over [`duration_bucket`] — `Now`
-/// clamps (the fired-undelivered transient is total, never a panic).
-#[must_use]
-pub fn countdown_phrase(effective: DateTime<Utc>, now: DateTime<Utc>) -> String {
-    match duration_bucket(effective - now) {
-        DurationBucket::Now => "now".to_owned(),
-        DurationBucket::Minutes(n) => format!("in {n}m"),
-        DurationBucket::Hours(n) => format!("in {n}h"),
-        DurationBucket::Days(n) => format!("in {n}d"),
-    }
-}
-
 /// The notification row's context phrase (mono role): elapsed since the
 /// fired occurrence, bucketed by [`duration_bucket`] — the due phrase's
 /// tested contract, past-direction ("fired now" / "fired {q} ago").
@@ -1034,7 +1021,9 @@ pub fn tracked_total_phrase(total: &TrackedTotal) -> String {
 
 /// One active timer row (D-I7): the alarm plus its walked effective
 /// occurrence, carried so the push pass derives the countdown phrase
-/// once per refresh.
+/// once per refresh. The insistence rung rides verbatim — the row
+/// model projects the badge bit, the projection never defaults
+/// (r4 D34 remainder #5).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TimerRow {
     /// The alarm the cancel affordance dispatches against.
@@ -1043,6 +1032,8 @@ pub struct TimerRow {
     pub label: String,
     /// The effective occurrence (snooze walk included).
     pub effective: DateTime<Utc>,
+    /// The alarm's insistence rung (the escalation ladder's datum).
+    pub insistence: taskboard_domain::Insistence,
 }
 
 /// The status-bar chip's parts (D-I6): visibility and nearest-fire
@@ -1098,6 +1089,7 @@ pub fn timer_rows(state: &AppState, now: DateTime<Utc>) -> Vec<TimerRow> {
                 alarm: alarm.id,
                 label: alarm.label.clone(),
                 effective,
+                insistence: alarm.insistence,
             })
         })
         .collect();
@@ -2227,19 +2219,29 @@ mod tests {
     }
 
     #[test]
-    fn countdown_phrase_buckets_the_remaining_time_and_clamps() {
+    fn timer_rows_carry_the_insistence_rung_verbatim() {
         let now = Utc::now();
-        assert_eq!(countdown_phrase(now + TimeDelta::seconds(59), now), "now");
-        assert_eq!(countdown_phrase(now + TimeDelta::seconds(60), now), "in 1m");
-        assert_eq!(
-            countdown_phrase(now + TimeDelta::minutes(59), now),
-            "in 59m"
+        let normal_id = taskboard_domain::AdhocAlarmId::from_uuid(uuid::Uuid::now_v7());
+        let alarm_id = taskboard_domain::AdhocAlarmId::from_uuid(uuid::Uuid::now_v7());
+        let mut state = AppState::default();
+        let mut escalation = alarm(alarm_id, "wake", now + TimeDelta::minutes(5));
+        escalation.insistence = taskboard_domain::Insistence::Alarm;
+        state.reminders.alarms.insert(
+            normal_id,
+            alarm(normal_id, "tea", now + TimeDelta::minutes(3)),
         );
-        assert_eq!(countdown_phrase(now + TimeDelta::minutes(60), now), "in 1h");
-        assert_eq!(countdown_phrase(now + TimeDelta::hours(23), now), "in 23h");
-        assert_eq!(countdown_phrase(now + TimeDelta::hours(24), now), "in 1d");
-        // Past input (the fired-undelivered transient) clamps, total.
-        assert_eq!(countdown_phrase(now - TimeDelta::hours(3), now), "now");
+        state.reminders.alarms.insert(alarm_id, escalation);
+        let rows = timer_rows(&state, now);
+        assert_eq!(
+            rows.iter()
+                .map(|row| (row.insistence, row.alarm))
+                .collect::<Vec<_>>(),
+            vec![
+                (taskboard_domain::Insistence::Normal, normal_id),
+                (taskboard_domain::Insistence::Alarm, alarm_id),
+            ],
+            "the rung rides the projection verbatim — no defaulting"
+        );
     }
 
     #[test]

@@ -9832,6 +9832,63 @@ fn the_timers_form_creates_then_cancels() {
     );
 }
 
+/// r4 D32 — the two-part countdown: a live timer's row renders the
+/// fire instant (the `@` detail line) beside the countdown text, and
+/// the insistence rung projects the badge bit — `normal` stays
+/// badge-less (D-I9's ladder), `alarm` arms it. The per-second motion
+/// is pinned at the unit tier (the seconds-gate tests + `SecondTick`):
+/// the journey driver's mock clock moves slint timers, not the wall
+/// clock the repaint driver reads, so a "changes across one clock
+/// step" pin here would be nondeterministic (recorded deviation from
+/// the stage-1 catalogue).
+#[test]
+fn the_timer_row_renders_the_two_part_countdown_and_the_rung() {
+    let (_fixture, mut state) = fixture::journey_state();
+    let _tea = fixture::add_alarm(
+        &mut state,
+        "Tea",
+        chrono::Utc::now() + TimeDelta::minutes(5),
+    );
+    let _wake = fixture::add_alarm_with_rung(
+        &mut state,
+        "Wake",
+        chrono::Utc::now() + TimeDelta::minutes(7),
+        taskboard_domain::Insistence::Alarm,
+    );
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::ViewToday);
+            harness.driver.advance_time(0);
+            let rows = harness.handle.window().get_timers_model();
+            assert_eq!(rows.row_count(), 2, "both live timers render");
+            let normal = rows.row_data(0).expect("the ordered-first row");
+            assert!(
+                !normal.fire_time.is_empty(),
+                "the fire instant's detail line renders"
+            );
+            assert!(!normal.countdown.is_empty(), "the countdown text renders");
+            assert!(
+                !normal.alarm_rung,
+                "the normal rung is the silent default — no badge"
+            );
+            let escalation = rows.row_data(1).expect("the ordered-second row");
+            assert!(
+                escalation.alarm_rung,
+                "the alarm rung projects the badge bit"
+            );
+            assert!(harness.handle.window().get_timers_chip_visible());
+            assert!(
+                !harness.handle.window().get_timers_chip().is_empty(),
+                "the chip names the nearest fire"
+            );
+        },
+    );
+}
+
 // -- DR-5/4: the tracking affordances (issue #489) -----------------------
 
 /// DR-5/4 — the chip: the open entry names itself (title snapshot +

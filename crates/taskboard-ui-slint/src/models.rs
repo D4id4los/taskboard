@@ -589,7 +589,12 @@ fn push_timers(
         .iter()
         .map(|row| TimerRowModel {
             label: SharedString::from(row.label.clone()),
-            countdown: SharedString::from(presentation::countdown_phrase(row.effective, now)),
+            countdown: SharedString::from(presentation::countdown_text(row.effective, now)),
+            fire_time: SharedString::from(format!(
+                "@ {}",
+                presentation::iso_local_fire_time(row.effective, &chrono::Local)
+            )),
+            alarm_rung: row.insistence == taskboard_domain::Insistence::Alarm,
         })
         .collect();
     window.set_timers_visible(!kiosk);
@@ -1763,6 +1768,26 @@ fn push_task_detail(
     mutations
 }
 
+/// The timers chip's display text (r4 D32): the label and the
+/// two-part countdown, the `@` fire instant riding only a *counting*
+/// chip — an awaiting entry's instant is past (the notification
+/// surface owns naming it), and a clamped countdown plus a stale
+/// absolute stamp is exactly the legibility the compact budget cannot
+/// afford.
+fn timer_chip_text(chip: &presentation::TimerChip, now: DateTime<Utc>) -> String {
+    let countdown = presentation::countdown_text(chip.effective, now);
+    if chip.effective > now {
+        format!(
+            "{} \u{b7} {} @ {}",
+            chip.label,
+            countdown,
+            presentation::iso_local_fire_time(chip.effective, &chrono::Local)
+        )
+    } else {
+        format!("{} \u{b7} {}", chip.label, countdown)
+    }
+}
+
 /// The status bar: sync badge, the capped banner rows, the flow hint
 /// (D11/D12). Returns the banner diff's mutation count.
 #[allow(clippy::too_many_arguments)] // the pass's inputs, one bundle
@@ -1785,13 +1810,9 @@ fn push_status_bar(
         presentation::timer_chip(state)
     };
     window.set_timers_chip_visible(chip.is_some());
-    window.set_timers_chip(SharedString::from(chip.map_or(String::new(), |c| {
-        format!(
-            "{} \u{b7} {}",
-            c.label,
-            presentation::countdown_phrase(c.effective, now)
-        )
-    })));
+    window.set_timers_chip(SharedString::from(
+        chip.map_or(String::new(), |c| timer_chip_text(&c, now)),
+    ));
     // The tracking chip (DR-5/4, D-T16): display on kiosk TOO — the
     // appliance shows what is being worked on; only the stop
     // affordance empties (the deliberate deviation from the timers

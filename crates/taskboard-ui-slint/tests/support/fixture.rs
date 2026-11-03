@@ -126,11 +126,23 @@ pub fn add_alarm(
     label: &str,
     fire_at: chrono::DateTime<chrono::Utc>,
 ) -> taskboard_domain::AdhocAlarmId {
+    add_alarm_with_rung(state, label, fire_at, taskboard_domain::Insistence::Normal)
+}
+
+/// The insistence-rung variant (r4 D34 remainder #5): the badge and
+/// escalation journeys mint `Alarm`-rung timers through it.
+#[must_use]
+pub fn add_alarm_with_rung(
+    state: &mut AppState,
+    label: &str,
+    fire_at: chrono::DateTime<chrono::Utc>,
+    insistence: taskboard_domain::Insistence,
+) -> taskboard_domain::AdhocAlarmId {
     let id = taskboard_domain::AdhocAlarmId::from_uuid(uuid::Uuid::now_v7());
     state.reminders.alarms.insert(
         id,
         taskboard_domain::AdhocAlarm {
-            insistence: taskboard_domain::Insistence::Normal,
+            insistence,
             id,
             label: label.to_owned(),
             fire_at,
