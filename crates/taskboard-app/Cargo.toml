@@ -40,7 +40,10 @@ clap.workspace = true
 dirs.workspace = true
 rpassword.workspace = true
 rustyline.workspace = true
-nix.workspace = true
+# "signal" is production now (not dev-only anymore): the masked-read
+# core's `^C` raise parity (plan D2) needs `nix::sys::signal::raise`;
+# "fs" is unistd::read, "poll" the poll(2) loop.
+nix = { workspace = true, features = ["fs", "poll", "signal"] }
 shell-words.workspace = true
 fd-lock.workspace = true
 toml_edit.workspace = true
@@ -107,9 +110,10 @@ png.workspace = true
 # The two-connector tier test's actor-log capture (live-server journeys
 # need the actors' own tracing on failure).
 tracing-subscriber.workspace = true
-# The MCP smoke's SIGTERM exit check (dev-only; the "signal" feature
-# unions into test builds only — the release profile keeps term).
-nix = { workspace = true, features = ["signal"] }
+# The masked-read unit tier: openpty rides the workspace "term"
+# feature; signal-hook observes the `^C` raise with a safe handler
+# (the crate forbids unsafe, so no raw sigaction).
+signal-hook.workspace = true
 # The docker-tier journeys drive the real binary (tokio::process, the
 # async subprocess API the blocking-std one would tie up a worker for);
 # test-util adds tokio::time start_paused/advance for the hermetic E2E

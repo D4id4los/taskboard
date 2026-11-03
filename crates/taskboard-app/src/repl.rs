@@ -166,6 +166,26 @@ pub enum Disposition {
     },
 }
 
+/// The editor's masked-read wake channel: a logged degradation to
+/// `None` when the socket pair cannot be created (the pre-fix wedge
+/// shape, best-effort — the session still works for the happy path).
+#[cfg(unix)]
+fn masked_read_wake_channel() -> (
+    Option<std::sync::Arc<crate::masked_read::WakeSink>>,
+    Option<crate::masked_read::WakeSource>,
+) {
+    match crate::masked_read::wakeup_channel() {
+        Ok((sink, source)) => (Some(std::sync::Arc::new(sink)), Some(source)),
+        Err(err) => {
+            tracing::warn!(
+                ?err,
+                "masked-read wake channel unavailable; a cancelled masked read cannot be unblocked"
+            );
+            (None, None)
+        }
+    }
+}
+
 /// What `spawn_line_reader` hands the session loop: the line stream it
 /// consumes and the disposition channel it answers on. Tests inject
 /// both halves (a scripted disposition peer mirrors the injected-lines
@@ -176,6 +196,13 @@ pub struct EditorIo {
     /// The loop's verdicts (capacity 1 — strict alternation with the
     /// lines channel).
     pub dispositions: mpsc::Sender<Disposition>,
+    /// The masked-read wake's write half: the loop's cancel arm fires
+    /// it while a prompt disposition is in flight, so a cancellation
+    /// unblocks an armed masked read even when the ^C byte was eaten
+    /// by the kernel line discipline (#572). `None` only when the
+    /// channel could not be created — the pre-fix wedge shape, logged.
+    #[cfg(unix)]
+    pub wake: Option<std::sync::Arc<crate::masked_read::WakeSink>>,
 }
 
 /// Spawns the dedicated line-editor thread: rustyline owns stdin there
@@ -210,6 +237,10 @@ pub fn spawn_line_reader(
 ) -> EditorIo {
     let (tx, rx) = mpsc::channel(1);
     let (verdicts_tx, mut verdicts_rx) = mpsc::channel::<Disposition>(1);
+    #[cfg(unix)]
+    let (wake_sink, wake_source) = masked_read_wake_channel();
+    #[cfg(not(unix))]
+    let wake_sink = ();
     std::thread::Builder::new()
         .name("repl-line-reader".to_owned())
         .spawn(move || {
@@ -278,11 +309,24 @@ pub fn spawn_line_reader(
                             // path had no ^C grammar at all) — and the
                             // completion helper is suspended for the
                             // read: no Tab-completion inside a prompt.
-                            // `Masked` stays `rpassword` on /dev/tty.
+                            // `Masked` runs the wake-interruptible
+                            // masked-read core on unix; other platforms
+                            // keep `rpassword` on /dev/tty.
                             let answer = match kind {
                                 PromptKind::Masked => {
-                                    connect::StdinPrompts::read_secret_sync(&label)
+                                    #[cfg(unix)]
+                                    {
+                                        crate::masked_read::read_secret_tty(
+                                            &label,
+                                            wake_source.as_ref(),
+                                        )
                                         .map(PromptValue::Text)
+                                    }
+                                    #[cfg(not(unix))]
+                                    {
+                                        connect::StdinPrompts::read_secret_sync(&label)
+                                            .map(PromptValue::Text)
+                                    }
                                 }
                                 PromptKind::Line | PromptKind::Confirm => {
                                     if let Some(helper) = editor.helper_mut() {
@@ -308,6 +352,8 @@ pub fn spawn_line_reader(
     EditorIo {
         lines: rx,
         dispositions: verdicts_tx,
+        #[cfg(unix)]
+        wake: wake_sink,
     }
 }
 
@@ -321,13 +367,59 @@ pub fn spawn_line_reader(
 #[derive(Debug, Clone)]
 pub struct ReplPrompts {
     dispositions: mpsc::Sender<Disposition>,
+    /// Whether a `Prompt` disposition is currently in flight (set
+    /// before its send, cleared when the answer settles). A prompt
+    /// whose ceremony future is dropped mid-await (a cancelled line)
+    /// stays `true` — the editor may still be inside the masked read,
+    /// and a conservative extra wake is drained, never misapplied.
+    prompt_in_flight: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// The masked-read wake's write half (unix; see [`EditorIo::wake`]).
+    #[cfg(unix)]
+    wake: Option<std::sync::Arc<crate::masked_read::WakeSink>>,
 }
 
 impl ReplPrompts {
     /// Builds the session-side reader over the disposition sender.
     #[must_use]
     pub(crate) fn new(dispositions: mpsc::Sender<Disposition>) -> Self {
-        Self { dispositions }
+        Self {
+            dispositions,
+            prompt_in_flight: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            #[cfg(unix)]
+            wake: None,
+        }
+    }
+
+    /// Builds the production reader: the wake handle rides along so
+    /// the cancel arm can unblock an armed masked read (#572).
+    #[cfg(unix)]
+    #[must_use]
+    pub(crate) fn for_editor(
+        dispositions: mpsc::Sender<Disposition>,
+        wake: Option<std::sync::Arc<crate::masked_read::WakeSink>>,
+    ) -> Self {
+        Self {
+            dispositions,
+            prompt_in_flight: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            wake,
+        }
+    }
+
+    /// Fires the masked-read wake iff a prompt disposition is in
+    /// flight. The cancel arm calls this before reporting: without the
+    /// wake, an editor thread parked inside the masked read never
+    /// observes the cancellation and `readline` never re-arms (#572).
+    /// For a non-prompt line cancellation (e.g. the stalled-line scene)
+    /// no masked read is armed, so no wake fires.
+    pub(crate) fn wake_if_prompt(&self) {
+        #[cfg(unix)]
+        if self
+            .prompt_in_flight
+            .load(std::sync::atomic::Ordering::Acquire)
+            && let Some(wake) = &self.wake
+        {
+            wake.fire();
+        }
     }
 
     /// The per-line verdict for a fully handled line: the editor thread
@@ -339,17 +431,32 @@ impl ReplPrompts {
     /// One prompt round-trip: request the read, await the answer.
     async fn ask(&self, label: &str, kind: PromptKind) -> Result<PromptValue, std::io::Error> {
         let (reply, answer) = oneshot::channel();
-        self.dispositions
+        // In flight from before the send: the editor enters the masked
+        // read upon receiving the disposition, and the cancel arm must
+        // be able to wake it from that moment on (#572).
+        self.prompt_in_flight
+            .store(true, std::sync::atomic::Ordering::Release);
+        let sent = self
+            .dispositions
             .send(Disposition::Prompt {
                 label: label.to_owned(),
                 kind,
                 reply,
             })
+            .await;
+        if sent.is_err() {
+            // The editor is gone — the session is ending; the stale
+            // flag never matters again.
+            return Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe));
+        }
+        let value = answer
             .await
             .map_err(|_| std::io::Error::from(std::io::ErrorKind::BrokenPipe))?;
-        answer
-            .await
-            .map_err(|_| std::io::Error::from(std::io::ErrorKind::BrokenPipe))?
+        // The answer settled (including a wake-caused typed
+        // interruption): the read is no longer armed.
+        self.prompt_in_flight
+            .store(false, std::sync::atomic::Ordering::Release);
+        value
     }
 
     fn text(value: Result<PromptValue, std::io::Error>) -> Result<String, std::io::Error> {
@@ -882,6 +989,10 @@ pub async fn repl_loop(
                     // epoch, and fall through to the per-line resume.
                     () = crate::signals::changed_or_never(&mut signals.cancel) => {
                         let cancelled = CommandError::Cancelled;
+                        // First wake the armed masked read (if any):
+                        // without this the editor parks in the read
+                        // forever and `readline` never re-arms (#572).
+                        session.prompts.wake_if_prompt();
                         let _ = crate::commands::report_to(&mut line_io, &cancelled);
                         let _ = signals.ack.send(acked_epoch);
                     }
@@ -976,6 +1087,9 @@ pub async fn run_session_with_parts(
         store,
         json_default,
         config_path,
+        #[cfg(unix)]
+        prompts: ReplPrompts::for_editor(editor_io.dispositions.clone(), editor_io.wake.clone()),
+        #[cfg(not(unix))]
         prompts: ReplPrompts::new(editor_io.dispositions.clone()),
     };
     // The one-shot prefix's boot-pull wait, once per session (a
@@ -1295,6 +1409,86 @@ mod disposition_tests {
         let prompts = ReplPrompts::new(tx);
         prompts.resume().await;
         assert!(matches!(rx.recv().await, Some(Disposition::Next)));
+    }
+
+    /// U2 (the #572 wiring, flag leg): the prompt-in-flight flag is
+    /// set while the disposition is outstanding — observable by the
+    /// answering peer (set-before-send happens-before its receive) —
+    /// and cleared once the answer settles.
+    #[tokio::test]
+    async fn the_prompt_flag_tracks_the_flight() {
+        use std::sync::atomic::Ordering;
+
+        let (tx, mut rx) = mpsc::channel(1);
+        let prompts = ReplPrompts::new(tx);
+        let in_flight = std::sync::Arc::clone(&prompts.prompt_in_flight);
+        let in_flight_in_peer = std::sync::Arc::clone(&in_flight);
+        let peer = tokio::spawn(async move {
+            let in_flight = in_flight_in_peer;
+            match rx.recv().await {
+                Some(Disposition::Prompt { reply, .. }) => {
+                    assert!(
+                        in_flight.load(Ordering::SeqCst),
+                        "the flag must be set before the editor receives the prompt"
+                    );
+                    let _ = reply.send(Ok(PromptValue::Text("pw".to_owned())));
+                }
+                _other => panic!("expected a Prompt disposition"),
+            }
+        });
+        assert!(!in_flight.load(Ordering::SeqCst));
+        let mut prompts = prompts;
+        assert_eq!(
+            prompts.read_secret("App password: ").await.expect("answer"),
+            "pw"
+        );
+        assert!(
+            !in_flight.load(Ordering::SeqCst),
+            "the flag clears when the answer settles"
+        );
+        peer.await.expect("peer joins");
+    }
+
+    /// U2 (the #572 wiring, wake leg): the cancel arm's trigger fires
+    /// the wake only while a prompt is in flight — the non-prompt
+    /// cancellation world (the stalled-line scene) stays wake-free.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_wake_trigger_fires_only_for_a_prompt_in_flight() {
+        let (tx, mut rx) = mpsc::channel(1);
+        let (sink, source) = crate::masked_read::wakeup_channel().expect("wake channel");
+        let source = std::sync::Arc::new(source);
+        let prompts = ReplPrompts::for_editor(tx, Some(std::sync::Arc::new(sink)));
+
+        // Nothing in flight: no wake.
+        prompts.wake_if_prompt();
+        assert_eq!(source.pending(), 0);
+
+        // A prompt in flight (the ceremony awaits the answer): exactly
+        // one fire per cancel arm.
+        let in_flight = prompts.prompt_in_flight.clone();
+        let ask = tokio::spawn({
+            let mut prompts = prompts.clone();
+            async move {
+                let _ = prompts.read_secret("App password: ").await;
+            }
+        });
+        let reply = match rx.recv().await {
+            Some(Disposition::Prompt { reply, .. }) => reply,
+            _other => panic!("expected a Prompt disposition"),
+        };
+        assert!(in_flight.load(std::sync::atomic::Ordering::SeqCst));
+        prompts.wake_if_prompt();
+        assert_eq!(source.pending(), 1);
+        prompts.wake_if_prompt();
+        assert_eq!(source.pending(), 1);
+
+        // The answer settles: the flag clears, later cancellations
+        // stay wake-free.
+        let _ = reply.send(Ok(PromptValue::Text("pw".to_owned())));
+        ask.await.expect("ask joins");
+        prompts.wake_if_prompt();
+        assert_eq!(source.pending(), 0);
     }
 
     /// U2: the disposition carries the kind — the peer observes a

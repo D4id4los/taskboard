@@ -42,6 +42,8 @@ mod escalation;
 mod focus;
 pub mod ipc;
 pub mod lockfile;
+#[cfg(unix)]
+pub mod masked_read;
 pub mod migration;
 pub mod notifications;
 pub mod repl;
