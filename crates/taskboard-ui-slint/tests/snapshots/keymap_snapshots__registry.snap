@@ -554,6 +554,15 @@ expression: rows
   menu_rank: 180
   description: "Stops the running timer, closing its open time entry."
   menu_group: task
+- id: task.toggle-tracker
+  label: Toggle tracker
+  contexts:
+    - global
+  category: task
+  enabled: true
+  menu_rank: 185
+  description: "Marks or unmarks the focused task as a tracker: a tracked, never-completed card."
+  menu_group: task
 - id: habit.log
   label: Log habit
   contexts:

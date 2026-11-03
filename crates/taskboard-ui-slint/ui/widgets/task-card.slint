@@ -22,6 +22,9 @@ export enum DecorationKind {
     // The recurring-series badge (DR-6/4, D-S7): the open head's next
     // occurrence, derived per frame from the published state.
     recur,
+    // The tracker badge (issue #492): the never-done kind's
+    // kiosk-visible name — the model carries the decision.
+    tracker,
 }
 
 export struct TaskDecoration {
@@ -41,6 +44,10 @@ export struct TaskCardModel {
     effort-phrase: string,
     due-kind: DueKind,
     done: bool,
+    // The done affordance's visibility flag (issue #492): a tracker
+    // card hides it entirely — hide, don't grey; default `true`, so
+    // every non-tracker path is unchanged.
+    can-done: bool,
     emphasis: bool,
     // The pointer drag's source dim (r2 chunk-8 D-D): set by the
     // models pass on the card being dragged; the ghost copy carries
@@ -126,6 +133,7 @@ export component TaskCard inherits Rectangle {
         // single writer). Untouched on the ghost: the runtime
         // suppresses hover/press over the drag ghost.
         done-box := Rectangle {
+            visible: root.model.can-done;
             width: Theme.space-4;
             height: Theme.space-4;
             y: (parent.height - self.height) / 2;

@@ -2157,6 +2157,7 @@ mod view_component_tests {
             importance: epoch(),
             urgency: epoch(),
             recur: epoch(),
+            kind: epoch(),
 
             archived: epoch(),
             deleted: epoch(),
@@ -2183,6 +2184,7 @@ mod view_component_tests {
             importance: None,
             urgency: None,
             recur: None,
+            kind: taskboard_domain::entities::TaskKind::Standard,
 
             archived: false,
             deleted: false,

@@ -126,6 +126,7 @@ fn fixture_task(i: usize, stacks: &[Stack]) -> Task {
         importance: None,
         urgency: None,
         recur: None,
+        kind: taskboard_domain::entities::TaskKind::Standard,
 
         archived: false,
         deleted: false,
@@ -142,6 +143,7 @@ fn fixture_task(i: usize, stacks: &[Stack]) -> Task {
                 importance: t,
                 urgency: t,
                 recur: t,
+                kind: t,
 
                 archived: t,
                 deleted: t,

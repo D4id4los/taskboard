@@ -331,6 +331,12 @@ pub struct DispatchCtx {
     /// focused *completed* task (the `task.complete` machinery
     /// inverted; the router stays pure, the adapter syncs the stamp).
     pub focused_task_done: bool,
+    /// The focused task's kind (issue #492): the complete verb's kind
+    /// guard — the keyboard path has no widget between the key press
+    /// and the engine, so this is the only suppression on that route
+    /// (`NoTarget`-style inert dispatch; the engine rejection is the
+    /// backstop).
+    pub focused_task_tracker: bool,
 }
 
 /// The pure dispatch table. Every [`ActionId`] variant is matched —
@@ -373,9 +379,14 @@ impl ActionRouter {
             ActionId::ModeNormal => DispatchOutcome::UiEffect(UiEffect::SetMode(Mode::Normal)),
             // Task verbs complete without views (D16): the focused
             // task suffices — the chunk-2 end-to-end path.
-            ActionId::TaskComplete => match ctx.focused_task {
-                Some(id) => DispatchOutcome::Command(StateCommand::SetTaskDone { id, done: true }),
-                None => DispatchOutcome::NoTarget,
+            ActionId::TaskComplete => match (ctx.focused_task, ctx.focused_task_tracker) {
+                (Some(id), false) => {
+                    DispatchOutcome::Command(StateCommand::SetTaskDone { id, done: true })
+                }
+                // A tracker card's completion is impossible (issue
+                // #492): an inert dispatch — the same NoTarget shape a
+                // focusless keypress takes.
+                _ => DispatchOutcome::NoTarget,
             },
             ActionId::TaskDelete => match ctx.focused_task {
                 Some(id) => DispatchOutcome::Command(StateCommand::DeleteTask { id }),
@@ -550,6 +561,26 @@ impl ActionRouter {
                 }
                 _ => DispatchOutcome::NoTarget,
             },
+            // The kind toggle (issue #492): reads the focused task's
+            // kind and inverts it through the plain kind edit — no new
+            // domain command, the app-lane carries it.
+            ActionId::TaskToggleTracker => {
+                let inverted = match (ctx.focused_task, ctx.focused_task_tracker) {
+                    (Some(_), true) => Some(taskboard_domain::entities::TaskKind::Standard),
+                    (Some(_), false) => Some(taskboard_domain::entities::TaskKind::Tracker),
+                    (None, _) => None,
+                };
+                match (ctx.focused_task, inverted) {
+                    (Some(id), Some(kind)) => DispatchOutcome::Command(StateCommand::UpdateTask {
+                        id,
+                        changes: taskboard_domain::TaskChanges {
+                            kind: Some(Some(kind)),
+                            ..taskboard_domain::TaskChanges::default()
+                        },
+                    }),
+                    _ => DispatchOutcome::NoTarget,
+                }
+            }
             // The board dimension (design §3.8): pure view intents.
             ActionId::BoardNext => DispatchOutcome::UiEffect(UiEffect::BoardNext),
             ActionId::BoardPrevious => DispatchOutcome::UiEffect(UiEffect::BoardPrevious),
@@ -592,6 +623,7 @@ mod tests {
             habit_move: None,
             day_window: None,
             focused_task_done: false,
+            focused_task_tracker: false,
         }
     }
 
@@ -997,6 +1029,65 @@ mod tests {
         assert_eq!(
             ActionRouter::dispatch(ActionId::ModeNormal, &ctx),
             DispatchOutcome::UiEffect(UiEffect::SetMode(Mode::Normal))
+        );
+    }
+
+    // ---- the tracker task kind (backlog round 2 chunk 4.2, #492) ------
+
+    /// U4 — the keyboard path's kind guard: a focused tracker task's
+    /// complete dispatch is inert (`NoTarget` — the focusless shape),
+    /// the reopen gate keeps its done gate, and the toggle dispatches
+    /// the inverted plain kind edit (no new domain command).
+    #[test]
+    fn the_router_declines_complete_on_a_focused_tracker() {
+        let mut tracker = ctx(true);
+        tracker.focused_task_tracker = true;
+        let id = tracker.focused_task.expect("the focused tracker");
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::TaskComplete, &tracker),
+            DispatchOutcome::NoTarget,
+            "the tracker's complete is an inert dispatch"
+        );
+        // The standard path is byte-identical to the pre-kind pin.
+        assert!(matches!(
+            ActionRouter::dispatch(ActionId::TaskComplete, &ctx(true)),
+            DispatchOutcome::Command(StateCommand::SetTaskDone { done: true, .. })
+        ));
+
+        let mut plus = tracker.clone();
+        plus.focused_task_done = true;
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::TaskReopen, &plus),
+            DispatchOutcome::Command(StateCommand::SetTaskDone { id, done: false }),
+            "the reopen gate is the done gate, not the kind gate"
+        );
+        // The toggle: a tracker resets, a standard marks, no focus is
+        // NoTarget.
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::TaskToggleTracker, &tracker),
+            DispatchOutcome::Command(StateCommand::UpdateTask {
+                id,
+                changes: taskboard_domain::TaskChanges {
+                    kind: Some(Some(taskboard_domain::entities::TaskKind::Standard)),
+                    ..taskboard_domain::TaskChanges::default()
+                }
+            })
+        );
+        let standard = ctx(true);
+        let sid = standard.focused_task.expect("the focused standard");
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::TaskToggleTracker, &standard),
+            DispatchOutcome::Command(StateCommand::UpdateTask {
+                id: sid,
+                changes: taskboard_domain::TaskChanges {
+                    kind: Some(Some(taskboard_domain::entities::TaskKind::Tracker)),
+                    ..taskboard_domain::TaskChanges::default()
+                }
+            })
+        );
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::TaskToggleTracker, &ctx(false)),
+            DispatchOutcome::NoTarget
         );
     }
 }

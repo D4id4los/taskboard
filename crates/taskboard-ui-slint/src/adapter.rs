@@ -628,6 +628,13 @@ impl Adapter {
             .focused_task()
             .and_then(|id| state.tasks.get(&id))
             .is_some_and(|task| task.done.is_some());
+        // The kind flag (issue #492): the complete verb's router guard
+        // and the toggle's inversion read the same focused task.
+        self.shell.focused_task_tracker = self
+            .view_state
+            .focused_task()
+            .and_then(|id| state.tasks.get(&id))
+            .is_some_and(|task| task.kind == taskboard_domain::entities::TaskKind::Tracker);
     }
 
     /// The geometry capture (#412, D4): samples the window's normal
@@ -3888,7 +3895,23 @@ impl Adapter {
     /// The task card's menu list (round-2 D21 spelling of round-1
     /// D13): the Task group's rows, reopen and move-cancel included.
     fn open_task_context_menu(&mut self, window: &AppWindow, x: f32, y: f32) {
-        self.open_context_menu(window, x, y, menu::TASK_CONTEXT);
+        // The tracker hide-set (issue #492): a tracker card's menu
+        // omits the impossible complete verb. Only the impossible verb
+        // is hidden — the reopen no-op stays (dispatch-time semantics
+        // unchanged); the toggle entry is always offered.
+        let state = self.state.load();
+        let tracker = self
+            .view_state
+            .focused_task()
+            .and_then(|id| state.tasks.get(&id))
+            .is_some_and(|task| task.kind == taskboard_domain::entities::TaskKind::Tracker);
+        drop(state);
+        let ids: Vec<ActionId> = menu::TASK_CONTEXT
+            .iter()
+            .copied()
+            .filter(|id| !(tracker && *id == ActionId::TaskComplete))
+            .collect();
+        self.open_context_menu(window, x, y, &ids);
     }
 }
 

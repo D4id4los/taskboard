@@ -29,6 +29,9 @@ export struct TaskDetailModel {
     // cadence is the adapter's seam.
     tracked-total: string,
     done: bool,
+    // The done affordance's visibility flag (issue #492): a tracker
+    // subject hides the header checkbox entirely.
+    can-done: bool,
     // The tracking verbs (DR-5/4, D-TU6): exactly one true while a
     // subject exists, both false without — the buttons at the header
     // row's right end (r4 D16c).
@@ -195,6 +198,7 @@ export component TaskView inherits FocusScope {
                 // mounted while the title flow is open: doneness is
                 // independent of the title buffer.
                 done-box := Rectangle {
+                    visible: root.task.can-done;
                     width: Theme.space-4;
                     height: Theme.space-4;
                     y: (parent.height - self.height) / 2;

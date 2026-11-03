@@ -521,6 +521,7 @@ fn fixture() -> (AppState, Fixture) {
         importance: None,
         urgency: None,
         recur: None,
+        kind: taskboard_domain::entities::TaskKind::Standard,
         archived: false,
         deleted: false,
         clocks: TaskClocks {
@@ -534,6 +535,7 @@ fn fixture() -> (AppState, Fixture) {
             importance: now,
             urgency: now,
             recur: now,
+            kind: now,
             archived: now,
             deleted: now,
         },
