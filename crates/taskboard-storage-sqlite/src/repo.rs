@@ -246,12 +246,20 @@ fn decode_break_rule(row: &BreakRuleRow) -> Result<BreakRule, RepositoryError> {
 /// [`RepositoryError::Corrupted`] (plan decision 10/12).
 mod decode {
     use super::{
-        ConnectorId, RemoteBoardBinding, RemoteBoardId, RemoteCardId, RemoteCardRef, RemoteLabelId,
-        RemoteLabelRef, RemoteStackId, RemoteStackRef, RepositoryError, Uuid, codec,
+        ConnectorId, DateTime, RemoteBoardBinding, RemoteBoardId, RemoteCardId, RemoteCardRef,
+        RemoteLabelId, RemoteLabelRef, RemoteStackId, RemoteStackRef, RepositoryError, Utc, Uuid,
+        codec,
     };
 
     pub(crate) fn uuid(raw: &str) -> Result<Uuid, RepositoryError> {
         codec::uuid_from_text(raw).map_err(|_| RepositoryError::Corrupted)
+    }
+
+    /// An RFC 3339 clock column (`ck_*`, journal stamps, habit-log
+    /// clocks). `chrono::DateTime<Utc>::from_str` semantics, unchanged
+    /// at every folded site.
+    pub(crate) fn clock(text: &str) -> Result<DateTime<Utc>, RepositoryError> {
+        text.parse().map_err(|_| RepositoryError::Corrupted)
     }
 
     pub(crate) fn remote_opt(cols: &[Option<i64>]) -> Result<Option<Vec<u64>>, RepositoryError> {
@@ -409,18 +417,9 @@ fn decode_stack(row: StackRow) -> Result<Stack, RepositoryError> {
         archived: row.archived,
         deleted: row.deleted,
         clocks: StackClocks {
-            title: row
-                .ck_title
-                .parse()
-                .map_err(|_| RepositoryError::Corrupted)?,
-            order: row
-                .ck_sort_order
-                .parse()
-                .map_err(|_| RepositoryError::Corrupted)?,
-            deleted: row
-                .ck_deleted
-                .parse()
-                .map_err(|_| RepositoryError::Corrupted)?,
+            title: decode::clock(&row.ck_title)?,
+            order: decode::clock(&row.ck_sort_order)?,
+            deleted: decode::clock(&row.ck_deleted)?,
         },
         remote_seen: row.remote_seen,
     })
@@ -469,58 +468,19 @@ fn decode_task(
         archived: row.archived,
         deleted: row.deleted,
         clocks: TaskClocks {
-            title: row
-                .ck_title
-                .parse()
-                .map_err(|_| RepositoryError::Corrupted)?,
-            description: row
-                .ck_description
-                .parse()
-                .map_err(|_| RepositoryError::Corrupted)?,
-            duedate: row
-                .ck_duedate
-                .parse()
-                .map_err(|_| RepositoryError::Corrupted)?,
-            scheduled: row
-                .ck_scheduled
-                .parse()
-                .map_err(|_| RepositoryError::Corrupted)?,
-            done: row
-                .ck_done
-                .parse()
-                .map_err(|_| RepositoryError::Corrupted)?,
-            position: row
-                .ck_position
-                .parse()
-                .map_err(|_| RepositoryError::Corrupted)?,
-            effort: row
-                .ck_effort
-                .parse()
-                .map_err(|_| RepositoryError::Corrupted)?,
-            importance: row
-                .ck_importance
-                .parse()
-                .map_err(|_| RepositoryError::Corrupted)?,
-            urgency: row
-                .ck_urgency
-                .parse()
-                .map_err(|_| RepositoryError::Corrupted)?,
-            recur: row
-                .ck_recur
-                .parse()
-                .map_err(|_| RepositoryError::Corrupted)?,
-            kind: row
-                .ck_kind
-                .parse()
-                .map_err(|_| RepositoryError::Corrupted)?,
-            archived: row
-                .ck_archived
-                .parse()
-                .map_err(|_| RepositoryError::Corrupted)?,
-            deleted: row
-                .ck_deleted
-                .parse()
-                .map_err(|_| RepositoryError::Corrupted)?,
+            title: decode::clock(&row.ck_title)?,
+            description: decode::clock(&row.ck_description)?,
+            duedate: decode::clock(&row.ck_duedate)?,
+            scheduled: decode::clock(&row.ck_scheduled)?,
+            done: decode::clock(&row.ck_done)?,
+            position: decode::clock(&row.ck_position)?,
+            effort: decode::clock(&row.ck_effort)?,
+            importance: decode::clock(&row.ck_importance)?,
+            urgency: decode::clock(&row.ck_urgency)?,
+            recur: decode::clock(&row.ck_recur)?,
+            kind: decode::clock(&row.ck_kind)?,
+            archived: decode::clock(&row.ck_archived)?,
+            deleted: decode::clock(&row.ck_deleted)?,
         },
         remote_seen: row.remote_seen,
         remote_baseline: row
@@ -543,18 +503,9 @@ fn decode_label(row: LabelRow) -> Result<Label, RepositoryError> {
         color: Color::new(row.color),
         deleted: row.deleted,
         clocks: LabelClocks {
-            title: row
-                .ck_title
-                .parse()
-                .map_err(|_| RepositoryError::Corrupted)?,
-            color: row
-                .ck_color
-                .parse()
-                .map_err(|_| RepositoryError::Corrupted)?,
-            deleted: row
-                .ck_deleted
-                .parse()
-                .map_err(|_| RepositoryError::Corrupted)?,
+            title: decode::clock(&row.ck_title)?,
+            color: decode::clock(&row.ck_color)?,
+            deleted: decode::clock(&row.ck_deleted)?,
         },
         remote_seen: row.remote_seen,
     })
@@ -683,15 +634,12 @@ fn decode_habit(
                 .map_err(|_| RepositoryError::Corrupted)?,
         ),
     };
-    let clock = |text: &String| -> Result<DateTime<Utc>, RepositoryError> {
-        text.parse().map_err(|_| RepositoryError::Corrupted)
-    };
     let clocks = taskboard_domain::HabitClocks {
-        title: clock(ck_title)?,
-        target: clock(ck_target)?,
-        order: clock(ck_order)?,
-        anchor_time: clock(ck_anchor_time)?,
-        deleted: clock(ck_deleted)?,
+        title: decode::clock(ck_title)?,
+        target: decode::clock(ck_target)?,
+        order: decode::clock(ck_order)?,
+        anchor_time: decode::clock(ck_anchor_time)?,
+        deleted: decode::clock(ck_deleted)?,
     };
     let continued_from = continued_from
         .as_deref()
@@ -1054,10 +1002,7 @@ impl SqliteTaskRepository {
         for row in task_label_rows {
             let task = decode::uuid(&row.task)?;
             let label = decode::uuid(&row.label)?;
-            let clock: DateTime<Utc> = row
-                .ck_membership
-                .parse()
-                .map_err(|_| RepositoryError::Corrupted)?;
+            let clock: DateTime<Utc> = decode::clock(&row.ck_membership)?;
             let state = match row.state.as_str() {
                 "added" => taskboard_domain::entities::MembershipState::Added { at: clock },
                 "removed" => taskboard_domain::entities::MembershipState::Removed { at: clock },
@@ -1165,8 +1110,7 @@ impl SqliteTaskRepository {
                 .map(decode::uuid)
                 .transpose()?
                 .map(taskboard_domain::BoardId::from);
-            let created_at: DateTime<Utc> =
-                created_at.parse().map_err(|_| RepositoryError::Corrupted)?;
+            let created_at: DateTime<Utc> = decode::clock(created_at)?;
             let payload =
                 codec::journal_payload_from_json(payload).ok_or(RepositoryError::Corrupted)?;
             journal_entries.push(taskboard_domain::JournalEntry {
@@ -1216,8 +1160,7 @@ impl SqliteTaskRepository {
                         window: taskboard_domain::WindowStart::from_stored(date),
                     };
                     let count = u32::try_from(*count).map_err(|_| RepositoryError::Corrupted)?;
-                    let clock: DateTime<Utc> =
-                        clock.parse().map_err(|_| RepositoryError::Corrupted)?;
+                    let clock: DateTime<Utc> = decode::clock(clock)?;
                     habits
                         .log
                         .insert(key, taskboard_domain::HabitLogEntry { count, clock });
