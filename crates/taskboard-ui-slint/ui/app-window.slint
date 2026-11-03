@@ -497,6 +497,12 @@ export component AppWindow inherits Window {
                 picker-key(k) => root.task-date-picker-key(k);
                 grid-focus-changed(f) => root.date-picker-grid-focus-changed(f);
                 day-clicked(c) => root.task-date-day-clicked(c);
+                time-validity: root.task-model.date-time-validity;
+                time-slots: root.task-model.date-time-slots;
+                time-nearest-row: root.task-model.date-time-nearest-row;
+                time-edited(t) => root.task-date-time-edited(t);
+                time-picked(m) => root.task-date-time-picked(m);
+                time-accepted(t) => root.task-date-time-accepted(t);
             }
 
         // The D2 outside-click dismissal layer (round 1): a full-window
@@ -871,6 +877,11 @@ export component AppWindow inherits Window {
     // `DatePicker` keymap context exactly with the grid's focus.
     pure callback date-picker-grid-focus-changed(bool);
     pure callback task-date-day-clicked(int);
+    // The time combobox's seams (r4 D26): the typed filter/entry, the
+    // quick-list pick (minutes-of-day), the commit funnel.
+    pure callback task-date-time-edited(string);
+    pure callback task-date-time-picked(int);
+    pure callback task-date-time-accepted(string);
     // The dismissal layer's seam (round-3 D10): drops the picker
     // only — the editor and its flow stay armed.
     pure callback date-picker-dismiss-requested();

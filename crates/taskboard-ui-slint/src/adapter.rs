@@ -221,6 +221,11 @@ pub(crate) struct Adapter {
     /// default-open (the text field keeps focus), `true` on the
     /// Down-in-field stroke — consumed by the next push.
     picker_focus_on_mount: bool,
+    /// The time combobox's visible text mirror (r4 D26): `--:--`
+    /// while no time exists (the value echo), the typed digits while
+    /// the user filters/types, the canonical `HH:MM` after a picker-
+    /// source move. Single writer: the adapter.
+    time_text: String,
     /// The last snapshot the derive+diff materialized onto the models
     /// (the unchanged-refresh guard, #463): `Some` after every derived
     /// pass. `Arc::ptr_eq` against the fresh load ⇒ the models already
@@ -880,12 +885,34 @@ impl Adapter {
         self.enforce_due_buffer_invariant(window);
         let chain = self.shell.chain();
         let day = self.day_ctx();
+        // The time combobox's pushed half (r4 D26): the filtered
+        // quick-list rows over the static slots, and the nearest-slot
+        // seek index against the picker's current time.
+        let time_slots: Vec<chrono::NaiveTime> = if self.due_picker.is_some() {
+            let digits = crate::due_edit::filter_digits(&self.time_text);
+            crate::due_edit::quarter_slots()
+                .into_iter()
+                .filter(|slot| crate::due_edit::quick_list_matches(&digits, *slot))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let time_nearest_row = crate::due_edit::nearest_slot(
+            &time_slots,
+            self.due_picker
+                .as_ref()
+                .and_then(super::due_edit::DuePickerState::time),
+        );
         let due = crate::models::DueEditorPush {
             text: &self.due_buffer,
             echo: &self.due_echo,
             picker: self.due_picker.as_ref(),
             focus_on_mount: self.picker_focus_on_mount,
             horizon: self.due_soon_horizon,
+            time_text: &self.time_text,
+            time_valid: crate::due_edit::time_field_valid(&self.time_text),
+            time_slots: &time_slots,
+            time_nearest_row,
         };
         // The grid-focus flag is one-shot: consumed by this push.
         self.picker_focus_on_mount = false;
@@ -939,6 +966,7 @@ impl Adapter {
             self.due_buffer.clear();
             self.due_echo.clear();
             self.due_picker = None;
+            "--:--".clone_into(&mut self.time_text);
             // The picker dies with the flow (§8): the grid cannot hold
             // focus any more, so the `DatePicker` context disarms
             // here as well as through the focus seam — a missed
@@ -3314,6 +3342,7 @@ pub(crate) fn install(
         due_echo: String::new(),
         due_picker: None,
         picker_focus_on_mount: false,
+        time_text: "--:--".to_owned(),
         board_target: None,
         rule_target: None,
         rule_add_offset: None,
@@ -4903,6 +4932,83 @@ fn install_due_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         }
     });
 
+    let time_edited = Rc::clone(adapter);
+    let time_edited_weak = window.as_weak();
+    window.on_task_date_time_edited(move |text| {
+        let Some(window) = time_edited_weak.upgrade() else {
+            return;
+        };
+        let mut a = time_edited.borrow_mut();
+        // The field's value echo seeds its buffer ("--:--" while no
+        // time exists), so the first keystroke's text carries it as a
+        // prefix — strip the echo, keep the typed digits.
+        let mut text = text.to_string();
+        if let Some(stripped) = text.strip_prefix("--:--") {
+            text = stripped.to_owned();
+        }
+        a.time_text.clone_from(&text);
+        // Buffer-source seeding (r4 D26): a lenient-parse hit moves
+        // the picker's time live; junk/partial leaves it untouched
+        // (the validity flavour shows the state).
+        if let Some(time) = crate::due_edit::parse_time_lenient(&text)
+            && let Some(picker) = a.due_picker.as_mut()
+        {
+            picker.set_time(Some(time));
+        }
+        a.refresh_forced(&window);
+    });
+
+    let time_picked = Rc::clone(adapter);
+    let time_picked_weak = window.as_weak();
+    window.on_task_date_time_picked(move |minutes| {
+        let Some(window) = time_picked_weak.upgrade() else {
+            return;
+        };
+        let mut a = time_picked.borrow_mut();
+        let Some(time) = crate::due_edit::time_of_minutes(minutes) else {
+            return;
+        };
+        let Some(picker) = a.due_picker.as_mut() else {
+            return;
+        };
+        picker.set_time(Some(time));
+        // Picker-source sync (r4 D26): the canonical rendering wins
+        // the field mirror, and the due buffer re-renders from the
+        // selection.
+        a.time_text = crate::due_edit::format_time_hm(time);
+        sync_buffer_from_picker(&mut a);
+        a.refresh_forced(&window);
+    });
+
+    let time_accepted = Rc::clone(adapter);
+    let time_accepted_weak = window.as_weak();
+    window.on_task_date_time_accepted(move |text| {
+        let Some(window) = time_accepted_weak.upgrade() else {
+            return;
+        };
+        let mut a = time_accepted.borrow_mut();
+        match crate::due_edit::parse_time_lenient(&text) {
+            // A refusal keeps the typed text — the validity flavour
+            // makes it visible — and dispatches nothing.
+            None => {
+                a.time_text = text.to_string();
+                a.refresh_forced(&window);
+            }
+            Some(time) => {
+                let Some(picker) = a.due_picker.as_mut() else {
+                    return;
+                };
+                picker.set_time(Some(time));
+                let instant = a
+                    .due_picker
+                    .as_ref()
+                    .expect("checked above")
+                    .commit_instant();
+                commit_date(&mut a, &window, Some(instant));
+            }
+        }
+    });
+
     let day = Rc::clone(adapter);
     let day_weak = window.as_weak();
     window.on_task_date_day_clicked(move |cell| {
@@ -4988,10 +5094,23 @@ impl Adapter {
                 commit_date(self, window, Some(instant));
                 return;
             }
-            // The time steppers (round-3 D9): ±15 min, wrapping —
-            // the date follows the wrap. Button-only.
-            K::TimeBack => picker.step_time(-1),
-            K::TimeForward => picker.step_time(1),
+            // The time steppers (round-3 D9, r4 D26): ±15 min,
+            // wrapping — the date follows the wrap, an unset time
+            // seeds midnight first (r4 D23). Button-only; the combobox
+            // row's steppers land on the same codes.
+            K::TimeBack | K::TimeForward => {
+                picker.step_time(match key {
+                    K::TimeBack => -1,
+                    _ => 1,
+                });
+                // Picker-source sync: the canonical rendering wins the
+                // field mirror, the buffer re-renders from the
+                // selection.
+                self.time_text = picker
+                    .time()
+                    .map_or("--:--".to_owned(), crate::due_edit::format_time_hm);
+                sync_buffer_from_picker(self);
+            }
         }
         self.refresh_forced(window);
     }
@@ -5022,7 +5141,25 @@ impl Adapter {
             chrono::Utc::now().date_naive(),
             anchor,
         ));
+        // The combobox's mirror opens on the picker's seeded time —
+        // canonical when a non-midnight anchor carries one, the
+        // unset echo otherwise (r4 D23's display rule).
+        self.time_text = self
+            .due_picker
+            .as_ref()
+            .and_then(super::due_edit::DuePickerState::time)
+            .map_or("--:--".to_owned(), crate::due_edit::format_time_hm);
         self.refresh_forced(window);
+    }
+}
+
+/// The picker-source buffer sync (r4 D26, the §4.3 helper's Picker
+/// arm in its adapter plumbing until the pure helper lands): the due
+/// buffer/echo re-render from the picker's current selection.
+fn sync_buffer_from_picker(a: &mut Adapter) {
+    if let Some(picker) = a.due_picker.as_ref() {
+        a.due_buffer = crate::due_edit::format_entry(Some(picker.commit_instant()));
+        a.due_echo = crate::due_edit::echo(&a.due_buffer, chrono::Utc::now());
     }
 }
 
@@ -5056,6 +5193,7 @@ fn commit_date(
     a.due_buffer.clear();
     a.due_echo.clear();
     a.due_picker = None;
+    "--:--".clone_into(&mut a.time_text);
     let outcomes = a.view_state.end_edit_date();
     a.apply_outcomes(window, &outcomes);
 }

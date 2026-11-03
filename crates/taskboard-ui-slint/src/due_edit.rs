@@ -286,6 +286,71 @@ pub fn filter_digits(text: &str) -> String {
     text.chars().filter(char::is_ascii_digit).collect()
 }
 
+/// The combobox's canonical `HH:MM` rendering (r4 D26).
+#[must_use]
+pub fn format_time_hm(time: NaiveTime) -> String {
+    time.format("%H:%M").to_string()
+}
+
+/// Minutes-of-day ⇄ time (r4 D26): the quick-list pick seam carries
+/// minutes; the picker state is a `NaiveTime`. `time_of_minutes`
+/// refuses anything outside `0..1439` (never wraps — the pick seam is
+/// adapter-generated).
+#[must_use]
+pub fn minutes_of_day(time: NaiveTime) -> i32 {
+    i32::try_from(time.num_seconds_from_midnight() / 60).unwrap_or(0)
+}
+
+/// # Errors
+///
+/// `None` when `minutes` is outside `0..1439`.
+///
+/// # Panics
+///
+/// Never: the midnight anchor is a compile-time constant shape.
+#[must_use]
+pub fn time_of_minutes(minutes: i32) -> Option<NaiveTime> {
+    if !(0..24 * 60).contains(&minutes) {
+        return None;
+    }
+    Some(
+        NaiveTime::from_hms_opt(0, 0, 0).expect("midnight")
+            + ChronoDuration::try_minutes(i64::from(minutes)).expect("minutes fit"),
+    )
+}
+
+/// The nearest slot's index in `slots` (r4 D26's scroll-to-nearest):
+/// the slot with the smallest minutes distance to `time`; 0 when
+/// `time` is `None` (the list opens on 00:00). Ties resolve upward.
+#[must_use]
+pub fn nearest_slot(slots: &[NaiveTime], time: Option<NaiveTime>) -> usize {
+    let Some(time) = time else {
+        return 0;
+    };
+    let minutes = minutes_of_day(time);
+    slots
+        .iter()
+        .enumerate()
+        .min_by_key(|(index, slot)| {
+            let distance = (minutes_of_day(**slot) - minutes).abs();
+            (distance, *index)
+        })
+        .map_or(0, |(index, _)| index)
+}
+
+/// The time combobox's tri-state validity probe (r4 D27): empty or
+/// the unset display (`--:--`) is `None` (neutral); a lenient-parse
+/// hit is `Some(true)`; anything else `Some(false)`. Tri-state only —
+/// the copy never crosses this seam.
+#[must_use]
+pub fn time_field_valid(text: &str) -> Option<bool> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() || trimmed == "--:--" {
+        return None;
+    }
+    Some(parse_time_lenient(trimmed).is_some())
+}
+
 impl DuePickerState {
     /// Opens on `due`'s month (the anchor the user is editing) or
     /// today's when no due is set; the cursor sits on the due date or
@@ -319,6 +384,13 @@ impl DuePickerState {
     #[must_use]
     pub fn time(&self) -> Option<NaiveTime> {
         self.time
+    }
+
+    /// Sets the picker's time-of-day (r4 D26): `None` returns to
+    /// date-only. The combobox's typed-entry and quick-pick seams are
+    /// the writers; the commit funnel reads it back.
+    pub fn set_time(&mut self, time: Option<NaiveTime>) {
+        self.time = time;
     }
 
     /// Moves the cursor by `n` days (±1 arrow, ±7 week). The

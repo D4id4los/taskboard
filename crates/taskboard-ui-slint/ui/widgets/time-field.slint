@@ -1,0 +1,247 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The time combobox (r4 D26, §2 decision 3): the typable HH:MM field
+// with embedded ± steppers and a quick-list flyout of quarter-hour
+// slots. Surface-neutral by contract — no due-specific bits; the
+// timer setter (chunk 9) and the tracking editor (chunk 10) mount the
+// same widget. The widget dispatches every intent through callbacks
+// (no inline side effects): the lenient parse, the wrap math, the
+// slot/filter generation, the nearest-slot seek, and the None-vs-
+// seeded decision all live in the adapter/pure layer — the widget
+// renders what it is pushed and reports what the user did.
+//
+// The quick list is NOT tab-reached: it is an open-state list
+// navigated by its own Up/Down (§5.4) — opening it hands focus to its
+// FocusScope; Escape and Tab close it (widget-internal Escape, the
+// action layer never sees it). An outside click onto another tab stop
+// moves focus and closes the flyout with it (the FocusScope's
+// focus-loss seam); a TouchArea click never moves focus (the recorded
+// Slint negative), so a click on another panel TouchArea is absorbed
+// by that surface's own grammar instead.
+
+import { Theme, Typography, RoleText, Semantic } from "../theme.slint";
+import { TextField, FieldValidity } from "text-field.slint";
+import { IconButton, IconKind } from "icon-button.slint";
+import { ListView } from "listview.slint";
+
+// One quick-list row: the slot's canonical rendering plus its
+// minutes-of-day (the seam carries numbers, not dates — D2's rule at
+// widget scale).
+export struct TimeSlotRow {
+    label: string,
+    minutes: int,
+}
+
+export component TimeField inherits Rectangle {
+    // The pushed value mirror: the adapter's canonical rendering —
+    // `--:--` while no time exists (r4 D23's display rule), the
+    // stepped/picked value otherwise. The field's own text buffer is
+    // widget-local; the push re-seeds it when the picker state moved
+    // (a stepper, a quick pick, a phase-entry sync) and never while
+    // the user types (r4 R-c's probe shape).
+    in property <string> time-text: "--:--";
+    in property <FieldValidity> validity: FieldValidity.neutral;
+    in property <string> label: "Time";
+    in property <string> placeholder: "HH:MM";
+    in property <string> description;
+    // The filtered quick-list rows, pushed by the adapter on open and
+    // per keystroke (the filter's pure predicate lives beside the
+    // parser); `nearest-row` is the open-time scroll-to-nearest index
+    // into that list (00:00 when unset — the adapter's decision).
+    in property <[TimeSlotRow]> slot-rows;
+    in property <int> nearest-row: 0;
+    // The highlighted slot inside `slot-rows` (the cursor-ring visual
+    // language); keyboard-operated, widget-local. Widget-local state,
+    // re-anchored from `nearest-row` on open.
+    in-out property <int> highlight: 0;
+    in-out property <bool> open: false;
+    // The widget-local seek nonce: every highlight move seeks the
+    // list (the ListView's focus-into-view seam), the open-time
+    // anchor included.
+    property <int> seek-nonce: 0;
+
+    // The intents (§5.1: no inline side effects).
+    callback edited(string);
+    callback accepted(string);
+    // The steppers: `n` is −1 or +1; the adapter applies the
+    // seed-on-step semantics (r4 D23) — the widget never holds the
+    // None/seed decision (§5.3).
+    callback stepped(int);
+    // A quick-list pick: minutes-of-day.
+    callback picked(int);
+
+    height: field.natural-height;
+    border-radius: Theme.radius-small;
+
+    // The push re-seed: the adapter's mirror wins whenever it differs
+    // from the field's buffer. While the user types, the adapter
+    // echoes the typed text back verbatim (single writer, r4 R-c's
+    // probe shape), so the push is a no-op; a picker-source move (a
+    // stepper, a quick pick, a phase-entry sync) rewrites it.
+    changed time-text => {
+        if (field.text != root.time-text) {
+            field.text = root.time-text;
+        }
+    }
+
+    changed highlight => {
+        root.seek-nonce += 1;
+    }
+
+    // The row: typable field, − / + steppers, the dropdown toggle —
+    // each a tab stop, each carrying a hover tip (blanket rule).
+    HorizontalLayout {
+        spacing: Theme.space-1;
+        field := TextField {
+            placeholder: root.placeholder;
+            label: root.label;
+            description: root.description;
+            validity: root.validity;
+            autofocus: false;
+            horizontal-stretch: 1;
+            edited(text) => { root.edited(text); }
+            accepted(text) => { root.accepted(text); }
+        }
+        IconButton {
+            icon: IconKind.minus;
+            label: "Step time back";
+            description: "Steps the time 15 minutes back, wrapping over midnight.";
+            clicked => { root.stepped(-1); }
+        }
+        IconButton {
+            icon: IconKind.plus;
+            label: "Step time forward";
+            description: "Steps the time 15 minutes forward, wrapping over midnight.";
+            clicked => { root.stepped(1); }
+        }
+        IconButton {
+            icon: IconKind.chevron-down;
+            label: "Quick times";
+            description: "Opens the quarter-hour quick list.";
+            clicked => {
+                root.open = !root.open;
+            }
+        }
+    }
+
+    // The quick-list flyout (§5.4): a plain conditional sibling in
+    // the panel's coordinate space — no second window-level layer,
+    // no dismissal-layer interaction. The window-sized underlay is
+    // the outside-click closer at widget scale (the panel's own
+    // dismissal-layer pattern, P1's hit-test order); the flyout is
+    // the later sibling and hit-tested first.
+    if (root.open): Rectangle {
+        // The underlay covers the window from the widget's coordinate
+        // space outward (a Theme-token multiple exceeding any
+        // viewport); its click closes the flyout and is absorbed.
+        x: -flyout-anchor.absolute-position.x;
+        y: -flyout-anchor.absolute-position.y;
+        width: Theme.space-15 * 64;
+        height: Theme.space-15 * 64;
+        underlay := TouchArea {
+            clicked => {
+                root.open = false;
+            }
+        }
+        flyout := Rectangle {
+            x: 0;
+            // Just below the combobox row (the anchor's own height).
+            y: flyout-anchor.height + Theme.space-1;
+            width: flyout-anchor.width;
+            height: min(root.slot-rows.length * Theme.space-6, Theme.space-6 * 6);
+            background: Theme.surface-raised;
+            border-radius: Theme.radius-small;
+            border-width: Theme.focus-ring-width;
+            border-color: Semantic.focus-ring;
+            drop-shadow-blur: Theme.space-2;
+            drop-shadow-color: Theme.surface-hover;
+            clip: true;
+
+            flyout-scope := FocusScope {
+                width: 100%;
+                height: 100%;
+                init => {
+                    // The open-time anchor: the nearest-slot seek index
+                    // (00:00 when unset — the adapter's decision), then
+                    // the grab (the flyout holds focus while open).
+                    root.highlight = Math.clamp(
+                        root.nearest-row,
+                        0,
+                        Math.max(root.slot-rows.length - 1, 0),
+                    );
+                    root.seek-nonce += 1;
+                    self.focus();
+                }
+                // The flyout holds focus while open (the widget-internal
+                // grammar below); editing keys are *forwarded* into the
+                // field's buffer so filter-as-you-type works without a
+                // focus fight (the append shim covers the filter's
+                // digit-prefix use; free cursor editing re-enters
+                // through the field itself, which closes the flyout on
+                // focus gain — the outside-click closer).
+                key-pressed(event) => {
+                    if (event.text == Key.UpArrow && root.slot-rows.length > 0) {
+                        root.highlight = Math.max(root.highlight - 1, 0);
+                        accept
+                    } else if (event.text == Key.DownArrow && root.slot-rows.length > 0) {
+                        root.highlight = Math.min(root.highlight + 1, root.slot-rows.length - 1);
+                        accept
+                    } else if (event.text == Key.Return && root.highlight < root.slot-rows.length) {
+                        root.picked(root.slot-rows[root.highlight].minutes);
+                        root.open = false;
+                        accept
+                    } else if (event.text == Key.Escape) {
+                        // Widget-internal Escape: closes the flyout
+                        // only — the action layer never sees it.
+                        root.open = false;
+                        accept
+                    } else if (event.text == Key.Tab) {
+                        root.open = false;
+                        reject
+                    } else if (event.text != Key.Backspace && event.text != Key.Delete) {
+                        field.text = field.text + event.text;
+                        root.edited(field.text);
+                        accept
+                    } else {
+                        reject
+                    }
+                }
+
+                list := ListView {
+                    request-row: root.highlight;
+                    request-nonce: root.seek-nonce;
+                    total-rows: root.slot-rows.length;
+                    width: 100%;
+                    height: 100%;
+
+                    for row[row-index] in root.slot-rows: Rectangle {
+                        height: Theme.space-6;
+                        background: row-index == root.highlight
+                            ? Theme.surface-hover : transparent;
+                        pick := TouchArea {
+                            clicked => {
+                                root.picked(row.minutes);
+                                root.open = false;
+                            }
+                        }
+                        row-label := RoleText {
+                            role: Typography.mono;
+                            x: Theme.space-2;
+                            y: (parent.height - self.preferred-height) / 2;
+                            text: row.label;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Named after the declaration order so the flyout's geometry can
+    // anchor on the row (the conditional flyout's sibling above).
+    property <length> row-height: field.natural-height;
+    flyout-anchor := Rectangle {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.row-height;
+    }
+}

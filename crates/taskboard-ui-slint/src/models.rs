@@ -511,6 +511,13 @@ pub struct DueEditorPush<'a> {
     /// typed knob, one horizon everywhere (the sets and the grid
     /// tint). Defaults to the presentation constant.
     pub horizon: TimeDelta,
+    /// The time combobox's pushed half (r4 D26): the visible text
+    /// mirror (`--:--` while unset), its tri-state validity probe,
+    /// the filtered quick-list rows, and the scroll-to-nearest index.
+    pub time_text: &'a str,
+    pub time_valid: Option<bool>,
+    pub time_slots: &'a [chrono::NaiveTime],
+    pub time_nearest_row: usize,
 }
 
 impl Default for DueEditorPush<'_> {
@@ -521,6 +528,10 @@ impl Default for DueEditorPush<'_> {
             picker: None,
             focus_on_mount: false,
             horizon: crate::presentation::DUE_SOON_HORIZON,
+            time_text: "--:--",
+            time_valid: None,
+            time_slots: &[],
+            time_nearest_row: 0,
         }
     }
 }
@@ -1539,6 +1550,25 @@ fn push_task_detail(
             p.time()
                 .map_or("--:--".to_owned(), |t| t.format("%H:%M").to_string())
         })),
+        // The time combobox's pushed half (r4 D26): the visible text
+        // mirror, the tri-state validity flavour, and the filtered
+        // quick-list rows with their nearest-slot seek index.
+        date_time_field_text: SharedString::from(due.time_text),
+        date_time_validity: match due.time_valid {
+            None => crate::FieldValidity::Neutral,
+            Some(true) => crate::FieldValidity::Valid,
+            Some(false) => crate::FieldValidity::Invalid,
+        },
+        date_time_slots: ModelRc::new(slint::VecModel::from(
+            due.time_slots
+                .iter()
+                .map(|slot| crate::TimeSlotRow {
+                    label: SharedString::from(crate::due_edit::format_time_hm(*slot)),
+                    minutes: crate::due_edit::minutes_of_day(*slot),
+                })
+                .collect::<Vec<crate::TimeSlotRow>>(),
+        )),
+        date_time_nearest_row: i32::try_from(due.time_nearest_row).unwrap_or(0),
     });
     tables.task_rules = task_rules;
     mutations

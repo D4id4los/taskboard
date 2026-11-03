@@ -13,6 +13,9 @@
 
 import { Theme, Typography, Semantic, RoleText, DueKind } from "../theme.slint";
 import { IconButton, IconKind } from "../widgets/icon-button.slint";
+import { TimeField, TimeSlotRow } from "../widgets/time-field.slint";
+import { FieldValidity } from "../widgets/text-field.slint";
+export { TimeSlotRow, FieldValidity }
 
 // One day cell: the day number plus its markers; blanks render
 // nothing (the weekday offset and the 7-padding tail).
@@ -56,6 +59,19 @@ export component DatePicker inherits Rectangle {
     // The flattened cell index (row * 7 + col) — resolved against the
     // adapter's picker state (D2: no dates cross the seam).
     callback day-clicked(int);
+    // The time combobox's seams (r4 D26): the typed filter/entry, the
+    // quick-list pick (minutes-of-day), and the commit funnel. The
+    // steppers ride the widget's `stepped` onto the picker-key codes
+    // (9/10) — click ≡ the keyboard's TimeBack/TimeForward.
+    callback time-edited(string);
+    callback time-picked(int);
+    callback time-accepted(string);
+
+    // The combobox's pushed half (r4 D26): the validity flavour, the
+    // filtered quick-list rows, and the scroll-to-nearest index.
+    in property <FieldValidity> time-validity: FieldValidity.neutral;
+    in property <[TimeSlotRow]> time-slots;
+    in property <int> time-nearest-row: 0;
 
     background: Theme.surface-raised;
     // Content-sized (the overlay anchors us freely; the default
@@ -117,30 +133,23 @@ export component DatePicker inherits Rectangle {
                 }
             }
 
-            // The time steppers (round-3 D9): − / readout / + — each
-            // press steps the picker's time-of-day by 15 minutes,
-            // wrapping over midnight (the date follows). `--:--` is
-            // the date-only readout.
-            HorizontalLayout {
-                spacing: Theme.space-2;
-                alignment: start;
-                IconButton {
-                    icon: IconKind.minus;
-                    label: "Step time back";
-                    clicked => root.picker-key(9);
-                }
-                RoleText {
-                    role: Typography.mono;
-                    text: root.time-text;
-                    vertical-alignment: center;
-                    horizontal-stretch: 1;
-                    horizontal-alignment: center;
-                }
-                IconButton {
-                    icon: IconKind.plus;
-                    label: "Step time forward";
-                    clicked => root.picker-key(10);
-                }
+            // The time combobox (r4 D26): the typable HH:MM field
+            // with embedded ± steppers and the quarter-hour quick
+            // list — it replaces the old stepper row wholesale (no
+            // orphaned steppers survive). `--:--` is the date-only
+            // value echo (r4 D23's display rule); the adapter owns
+            // the parse, the seed-on-step, and the filter.
+            TimeField {
+                time-text: root.time-text;
+                validity: root.time-validity;
+                label: "Time";
+                description: "The time of day; type HH:MM, use the steppers, or pick from the quick list.";
+                slot-rows: root.time-slots;
+                nearest-row: root.time-nearest-row;
+                stepped(n) => { root.picker-key(n < 0 ? 9 : 10); }
+                edited(text) => { root.time-edited(text); }
+                picked(minutes) => { root.time-picked(minutes); }
+                accepted(text) => { root.time-accepted(text); }
             }
 
             // The weekday initials row (Monday-first, the grid's
