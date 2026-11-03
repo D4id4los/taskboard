@@ -157,7 +157,25 @@ pins both branches):
   through the oneshot — the typed cancellation path
   (=CommandError::Prompt=: the line fails, the session survives,
   ADR 0011's failed-line rule).
-
+- *The re-arm wedge (2026-11-03, #572, fixed)*: the masked read has
+  one gap the raise parity cannot cover — a ^C byte arriving in the
+  window between the prompt label's write and the =tcsetattr= (the tty
+  still cooked, =ISIG= on) is consumed by the kernel line discipline:
+  it raises =SIGINT= (arming the session watcher, so the loop prints
+  the typed =cancelled= and queues =Next=) but leaves no byte for the
+  reader, and =rpassword= then parks in =read(2)= forever — the editor
+  thread never returns to =readline=, the pty goes silent (reproduced
+  loaded, ~1/25 runs). The fix: on unix the editor's =Masked= arm runs
+  the in-repo wake-interruptible masked-read core
+  (=taskboard-app/src/masked_read.rs=, byte-grammar parity with
+  =rpassword= 7.5.4 per its module-doc table): the read polls the tty
+  alongside a wake socket owned by the editor, and the loop's cancel
+  arm fires the wake while a prompt disposition is in flight — a
+  cancellation now always unblocks the read, termios restored, the
+  typed interruption answered, =Next= consumed, =readline= re-armed.
+  The handshake row above ("woke by the user's input") is satisfied
+  even when the waking keystroke was eaten before the prompt could
+  see it. One-shot =StdinPrompts= surfaces keep =rpassword=.
 The environment-independent contract, pinned in both branches: a ^C
 mid-ceremony never persists anything and never wedges the session
 behind an unanswered read.
