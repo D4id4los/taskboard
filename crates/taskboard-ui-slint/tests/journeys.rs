@@ -10080,6 +10080,32 @@ fn the_setter_composes_the_custom_row_grammar() {
             harness.press(ActionId::ViewToday);
             harness.driver.advance_time(0);
             open_setter(&mut harness);
+            // The stepper's seed-on-step (r4 D23): one `+` from the
+            // unset state composes 00:15 — the pushed mirror moves off
+            // the `--:--` sentinel and the fire caption renders. The
+            // seam seeds the *stepped* value; seeding the pre-step
+            // anchor left the display frozen while the composition
+            // moved (the TimeField's re-seed contract).
+            harness.driver.click_by_label("Step time forward");
+            harness.driver.advance_time(0);
+            assert_ne!(
+                harness.handle.window().get_timer_setter_time_text(),
+                "--:--",
+                "the stepper seeds the display with the stepped value"
+            );
+            assert!(
+                !harness
+                    .handle
+                    .window()
+                    .get_timer_setter_fire_time()
+                    .is_empty(),
+                "the stepped composition renders its fire instant"
+            );
+            // A fresh draft for the custom-row leg below: Escape
+            // clears the setter-local state with the panel.
+            harness.stroke(parse("Escape").expect("Escape"));
+            harness.driver.advance_time(0);
+            open_setter(&mut harness);
             // The custom row: click-focus the time field, type the
             // lenient digits, pick Tomorrow.
             let time_field = harness
@@ -10091,10 +10117,6 @@ fn the_setter_composes_the_custom_row_grammar() {
             harness.type_text("09:30");
             harness.driver.advance_time(0);
             click_segment(&mut harness, "Tomorrow");
-            eprintln!(
-                "FIRE-TIME: {}",
-                harness.handle.window().get_timer_setter_fire_time()
-            );
             assert!(
                 !harness
                     .handle
