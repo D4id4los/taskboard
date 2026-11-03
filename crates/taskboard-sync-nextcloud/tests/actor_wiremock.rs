@@ -3282,6 +3282,43 @@ mod flush_seed {
         Arc::new(InMemoryRepository::with_state(state))
     }
 
+    /// A break-only seed (#588): one board-scoped break rule, one
+    /// Break-ref dismissal of it, and the task-less
+    /// `FlushBoardAppData` trigger queued — no task app-data anywhere.
+    pub(crate) fn repo_with_break_flush_work() -> Arc<InMemoryRepository> {
+        let mut state = PersistedState::default();
+        state.boards.insert(bound_board().id, bound_board());
+        let rule_id = taskboard_domain::ids::BreakRuleId::from(uuid(60));
+        state.reminders.break_rules.insert(
+            rule_id,
+            taskboard_domain::BreakRule {
+                id: rule_id,
+                board: taskboard_domain::BoardId::from(uuid(1)),
+                label: "time for a break".to_owned(),
+                threshold: taskboard_domain::WorkThreshold::try_new(
+                    chrono::TimeDelta::try_seconds(1_500).unwrap(),
+                )
+                .unwrap(),
+                insistence: taskboard_domain::Insistence::Alarm,
+                created_at: ts(T + 10),
+            },
+        );
+        state
+            .reminders
+            .dismissals
+            .insert(taskboard_domain::ReminderDismissal {
+                reminder: taskboard_domain::ReminderRef::Break(rule_id),
+                occurrence: ts(T + 1_800),
+                dismissed_at: ts(T + 3_600),
+            });
+        state.outbox.push(PendingOp {
+            op_id: OpId(uuid(999)),
+            op: LocalOp::FlushBoardAppData(taskboard_domain::BoardId::from(uuid(1))),
+            queued_at: ts(T + 30),
+        });
+        Arc::new(InMemoryRepository::with_state(state))
+    }
+
     pub(crate) fn repo_with_dismissal_flush_work() -> Arc<InMemoryRepository> {
         let mut state = flush_work_state(false, true, false);
         let task_id = taskboard_domain::TaskId::from(uuid(100));
@@ -4133,6 +4170,117 @@ async fn f21_habit_and_log_roam_through_the_sidecar_alone() {
     assert!(
         !tasks.contains(&habit_uuid),
         "the habit identity never enters the card-keyed sections: {tasks}"
+    );
+    assert_eq!(
+        body["sections"]["tasks"]["55"]["fields"]["effort"]["v"], 900,
+        "the base document's card content relays untouched"
+    );
+}
+
+/// #588's roaming journey: a break rule and its reserved dismissals
+/// entry flush through the sidecar alone — the trigger is the task-less
+/// `FlushBoardAppData` op, the uploaded document carries the
+/// `break-rules` section and the `dismissals["break"]` reserved entry,
+/// a base-present rule deleted locally derives its tombstone (the
+/// full ladder), and the prune keeps the reserved entry (never a card
+/// key). No `default:`/`alarm:` content and no break identity inside
+/// any card-keyed section.
+#[tokio::test(start_paused = true)]
+async fn f22_break_rule_and_reserved_dismissals_flush_through_the_sidecar() {
+    let server = start_server().await;
+    mount_capabilities(&server, Some("1.19.0")).await;
+    mount_standard_pull(
+        &server,
+        serde_json::json!([sidecar::anchor_card_json(sidecar::CARD, T)]),
+    )
+    .await;
+    sidecar::mount_detail(&server, sidecar::CARD, false).await;
+    // The base document carries card-55 content AND a live break-rule
+    // row (uuid 61) the seed has already deleted locally — the
+    // tombstone derivation's input.
+    let deleted_rule_key = uuid(61).to_string();
+    let base_document = serde_json::json!({
+        "format": 1,
+        "board": BOARD,
+        "sections": {
+            "tasks": { "55": { "fields": {
+                "effort": { "v": 900, "clock": "2026-01-01T00:00:00Z" }
+            } } },
+            "break-rules": {
+                deleted_rule_key: { "label": "deleted elsewhere", "threshold_seconds": 600,
+                        "created": "2020-01-01T00:00:00Z", "clock": "2020-01-01T00:00:00Z",
+                        "insistence": "normal" }
+            }
+        }
+    })
+    .to_string();
+    sidecar::mount_download(&server, base_document, 200).await;
+    flush_seed::mount_content_put(&server, 200).await;
+
+    let mut actor = spawn(&server, flush_seed::repo_with_break_flush_work());
+    let report = nudge_and_report(&mut actor).await;
+    let SyncReport::Completed { pushes, .. } = report else {
+        panic!("expected a Completed report");
+    };
+    assert!(
+        pushes.iter().any(|outcome| {
+            outcome.op == OpId(uuid(999))
+                && matches!(outcome.result, PushResult::Applied { echo: None })
+        }),
+        "the task-less flush trigger completes: {pushes:?}"
+    );
+    let requests = server.received_requests().await.unwrap();
+    let put = requests
+        .iter()
+        .find(|r| r.url.path().contains("/attachment/deck_file:"))
+        .unwrap();
+    let raw = String::from_utf8_lossy(&put.body);
+    let json_start = raw.find("{\"format\"").unwrap();
+    let mut de = serde_json::Deserializer::from_str(&raw[json_start..]);
+    let body: serde_json::Value = serde::Deserialize::deserialize(&mut de).unwrap();
+
+    // The live rule roams; the base-present rule deleted locally rides
+    // its derived tombstone (stamped, never re-stamped).
+    let break_rules = body["sections"]["break-rules"]
+        .as_object()
+        .expect("the break-rules section rode the flush");
+    let live = &break_rules[&uuid(60).to_string()];
+    assert_eq!(live["label"], "time for a break");
+    assert_eq!(live["threshold_seconds"], 1_500);
+    assert_eq!(live["insistence"], "alarm");
+    assert_eq!(
+        live["created"], live["clock"],
+        "v1's write clock is the creation stamp"
+    );
+    assert_eq!(
+        break_rules[&uuid(61).to_string()]["deleted"],
+        true,
+        "the base-present deleted rule derives its tombstone"
+    );
+
+    // The reserved board-level dismissals entry rides under "break"
+    // (the prune keeps it: present cards are only "55").
+    let reserved = &body["sections"]["dismissals"]["break"];
+    let row_keys = reserved["dismissals"]
+        .as_object()
+        .expect("the reserved break entry rode the flush");
+    let row_key = row_keys
+        .keys()
+        .find(|k| k.starts_with("break:"))
+        .expect("the Break-ref row rides the break: grammar");
+    assert!(
+        row_key.starts_with(&format!("break:{}|", uuid(60))),
+        "the on-board rule's dismissal roams: {row_key}"
+    );
+
+    // The fail-closed pins at the wire.
+    let full = body.to_string();
+    assert!(!full.contains("default:"), "{full}");
+    assert!(!full.contains("alarm:"), "{full}");
+    let tasks = body["sections"]["tasks"].to_string();
+    assert!(
+        !tasks.contains(&uuid(60).to_string()) && !tasks.contains(&uuid(61).to_string()),
+        "the break identity never enters a card-keyed section: {tasks}"
     );
     assert_eq!(
         body["sections"]["tasks"]["55"]["fields"]["effort"]["v"], 900,

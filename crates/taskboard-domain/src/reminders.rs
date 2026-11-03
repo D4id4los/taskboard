@@ -3480,6 +3480,81 @@ mod tests {
         assert!(matches!(firings[0].anchor, ReminderAnchor::Break(_)));
     }
 
+    // The #588 acceptance line: a break dismissal on one device
+    // silences the break on another. Two-stage, domain-level, fixed
+    // entries + crossing instant (the §8 fixture discipline — no
+    // sleeps): device A's flushed document folds into device B's
+    // state, and B's break pass no longer lists the occurrence.
+    #[test]
+    fn cross_device_break_dismissal_silences_the_other_device() {
+        use crate::appdata::{DismissalsEntry, break_dismissal_wire_key};
+        use crate::merge::fold_break_dismissals;
+        let board = crate::ids::BoardId::from(uuid::Uuid::from_u128(700));
+        let rule = break_rule(1, 1_500, "stretch", Insistence::Normal);
+        let tracking = tracking_of(&[work_entry(1, 0, Some(1_800))]);
+        let defaults = ReminderDefaults::default();
+        let occurrence = ts(1_500);
+
+        // Device A: the rule exists, the crossing fires, the user
+        // dismisses. The flush emits the reserved entry over the
+        // shared board's rules.
+        let mut a_reminders = ReminderState {
+            break_rules: BTreeMap::from([(rule.id, rule.clone())]),
+            ..ReminderState::default()
+        };
+        a_reminders.dismissals.insert(ReminderDismissal {
+            reminder: ReminderRef::Break(rule.id),
+            occurrence,
+            dismissed_at: ts(1_600),
+        });
+        let entry = crate::appdata::break_dismissals_entry_for(
+            &a_reminders.dismissals,
+            &a_reminders.break_rules,
+            board,
+        );
+        assert_eq!(entry.dismissals.len(), 1);
+        assert!(
+            entry
+                .dismissals
+                .contains_key(&break_dismissal_wire_key(rule.id, occurrence))
+        );
+
+        // Device B: the same board, the same rule (roamed), no
+        // dismissal yet — the crossing still lists.
+        let mut b_reminders = ReminderState {
+            break_rules: BTreeMap::from([(rule.id, rule)]),
+            ..ReminderState::default()
+        };
+        let firings = due_firings(
+            &BTreeMap::new(),
+            &tracking,
+            &b_reminders,
+            &defaults,
+            ts(2_000),
+        );
+        assert!(firings.iter().any(|f| f.occurrence == occurrence));
+
+        // The flush-shaped document lands on B: the reserved entry
+        // folds, and the next break pass no longer lists.
+        let document_entry = DismissalsEntry {
+            dismissals: entry.dismissals.clone(),
+            unknown: std::collections::BTreeMap::new(),
+        };
+        let folded = fold_break_dismissals(&mut b_reminders.dismissals, &document_entry);
+        assert_eq!(folded.len(), 1);
+        let firings = due_firings(
+            &BTreeMap::new(),
+            &tracking,
+            &b_reminders,
+            &defaults,
+            ts(2_000),
+        );
+        assert!(
+            !firings.iter().any(|f| f.occurrence == occurrence),
+            "a break dismissal on one device silences the break on another"
+        );
+    }
+
     #[test]
     fn second_tick_does_not_refire_the_crossing() {
         // The double-fire guard pin (D-8/R-2): tick 1 delivers the

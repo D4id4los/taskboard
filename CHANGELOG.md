@@ -26,6 +26,18 @@ The workspace carries a single global version (see `docs/architecture.org`);
 
 ### Added
 
+- Break-rule roaming (#588): break rules and their dismissals now sync
+  across a board's devices instead of staying device-local. A rule
+  created on one device (CLI: `breaks add [--board <uuid>]`, the
+  single live board by default) appears on every device bound to that
+  board, and dismissing a fired break occurrence on one device stops
+  the break on the others. Behavior notes: deleting a rule removes it
+  fleet-wide (a deleted rule never re-fires behind a late pull), while
+  fire receipts and snoozes remain per-device facts; devices on an
+  older version ignore the new sections and stay silent until
+  upgraded. Break evaluation itself is unchanged — the board scopes
+  roaming, never firing.
+
 - Effort-estimate calibration surfaces (#214): the new Review view
   closes the estimate-vs-actual feedback loop's display half over the
   user's own local history (no telemetry, no third-party data). It
