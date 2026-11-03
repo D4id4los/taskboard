@@ -1,158 +1,97 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Hand-written `TEXT` codecs between domain tag types and their stored
-//! string forms (storage plan §3.10).
+//! The storage seam for the stored `TEXT` forms.
 //!
-//! The forms mirror the domain's serde wire shapes (`"boards"`,
-//! `"stacks:<u64>"`, snake_case-style op tags) so the database stays inspectable
-//! without pulling serde into this crate. Unknown tags or missing id
-//! columns decode to [`Corrupted`](taskboard_domain::persistence::RepositoryError)
-//! via [`CodecError`].
+//! The TEXT forms themselves are defined once, domain-side
+//! (`text_form`/`parse_text_form`/serde-name pairs); this module
+//! delegates to them plus the column-shape codecs, so the database
+//! stays inspectable through plain string vocabularies. Unknown tags
+//! or missing id columns decode to
+//! [`Corrupted`](taskboard_domain::persistence::RepositoryError) via
+//! [`CodecError`].
 
-use taskboard_domain::ids::{BoardId, LabelId, RemoteBoardId, StackId, TaskId};
-use taskboard_domain::outbox::LocalOp;
+use taskboard_domain::entities::{Importance, RemoteTaskBaseline, TaskKind, Urgency};
+use taskboard_domain::ids::{BoardId, LabelId, StackId, TaskId};
+use taskboard_domain::outbox::{LocalOp, LocalOpTag};
 use taskboard_domain::persistence::ValidatorKey;
-use taskboard_domain::reminders::ReminderRef;
+use taskboard_domain::recur::RecurRule;
+use taskboard_domain::reminders::{Insistence, ReminderKind, ReminderRef};
 use taskboard_domain::state::{SyncErrorKind, SyncPhase};
+use taskboard_domain::tracking::TimeEntryKind;
 use uuid::Uuid;
 
-/// The stored TEXT form of an importance/urgency level: the domain
-/// enum's serde unit name (the one-representation discipline — storage
-/// TEXT *is* the serde encoding).
+/// The stored TEXT form of an importance level: the domain enum's
+/// serde unit name (the one-representation discipline — storage TEXT
+/// *is* the serde encoding).
 #[must_use]
-pub fn importance_to_text(level: taskboard_domain::entities::Importance) -> &'static str {
-    use taskboard_domain::entities::Importance::{High, Low, Normal, VeryHigh, VeryLow};
-    match level {
-        VeryLow => "very_low",
-        Low => "low",
-        Normal => "normal",
-        High => "high",
-        VeryHigh => "very_high",
-    }
+pub fn importance_to_text(level: Importance) -> &'static str {
+    level.serde_name()
 }
 
 /// Parses the stored TEXT form back; `None` on an unknown level.
 #[must_use]
-pub fn importance_from_text(raw: &str) -> Option<taskboard_domain::entities::Importance> {
-    use taskboard_domain::entities::Importance::{High, Low, Normal, VeryHigh, VeryLow};
-    match raw {
-        "very_low" => Some(VeryLow),
-        "low" => Some(Low),
-        "normal" => Some(Normal),
-        "high" => Some(High),
-        "very_high" => Some(VeryHigh),
-        _ => None,
-    }
+pub fn importance_from_text(raw: &str) -> Option<Importance> {
+    Importance::parse_serde_name(raw)
 }
 
 /// The stored TEXT form of an urgency level (see
 /// [`importance_to_text`]).
 #[must_use]
-pub fn urgency_to_text(level: taskboard_domain::entities::Urgency) -> &'static str {
-    use taskboard_domain::entities::Urgency::{High, Low, Normal, VeryHigh, VeryLow};
-    match level {
-        VeryLow => "very_low",
-        Low => "low",
-        Normal => "normal",
-        High => "high",
-        VeryHigh => "very_high",
-    }
+pub fn urgency_to_text(level: Urgency) -> &'static str {
+    level.serde_name()
 }
 
 /// Parses the stored TEXT form back; `None` on an unknown level.
 #[must_use]
-pub fn urgency_from_text(raw: &str) -> Option<taskboard_domain::entities::Urgency> {
-    use taskboard_domain::entities::Urgency::{High, Low, Normal, VeryHigh, VeryLow};
-    match raw {
-        "very_low" => Some(VeryLow),
-        "low" => Some(Low),
-        "normal" => Some(Normal),
-        "high" => Some(High),
-        "very_high" => Some(VeryHigh),
-        _ => None,
-    }
+pub fn urgency_from_text(raw: &str) -> Option<Urgency> {
+    Urgency::parse_serde_name(raw)
 }
 
-/// The stored TEXT form of a reminder insistence rung: the domain
-/// enum's serde unit name (single words, so the serde kebab-case and
-/// the TEXT form coincide — the one-representation discipline).
+/// The stored TEXT form of a reminder insistence rung (see
+/// [`Insistence::text_form`]).
 #[must_use]
-pub fn insistence_to_text(level: taskboard_domain::reminders::Insistence) -> &'static str {
-    use taskboard_domain::reminders::Insistence::{Alarm, Normal};
-    match level {
-        Normal => "normal",
-        Alarm => "alarm",
-    }
+pub fn insistence_to_text(level: Insistence) -> &'static str {
+    level.text_form()
 }
 
-/// The stored TEXT form of a time-entry kind: the domain enum's serde
-/// unit name (the same one-representation discipline as the insistence
-/// rungs).
+/// The stored TEXT form of a time-entry kind (see
+/// [`TimeEntryKind::text_form`]).
 #[must_use]
-pub fn time_entry_kind_to_text(kind: taskboard_domain::tracking::TimeEntryKind) -> &'static str {
-    use taskboard_domain::tracking::TimeEntryKind::{Respite, Work};
-    match kind {
-        Work => "work",
-        Respite => "respite",
-    }
+pub fn time_entry_kind_to_text(kind: TimeEntryKind) -> &'static str {
+    kind.text_form()
 }
 
 /// Parses the stored TEXT form back; `None` on an unknown kind (a
 /// corrupt local row is a corrupted database, never a clamped value).
 #[must_use]
-pub fn time_entry_kind_from_text(raw: &str) -> Option<taskboard_domain::tracking::TimeEntryKind> {
-    use taskboard_domain::tracking::TimeEntryKind::{Respite, Work};
-    match raw {
-        "work" => Some(Work),
-        "respite" => Some(Respite),
-        _ => None,
-    }
+pub fn time_entry_kind_from_text(raw: &str) -> Option<TimeEntryKind> {
+    TimeEntryKind::parse_text_form(raw)
 }
 
-/// The stored TEXT form of a task kind: the domain enum's serde unit
-/// name (the `time_entry_kind_*` twins' one-representation discipline).
+/// The stored TEXT form of a task kind (see [`TaskKind::text_form`]).
 #[must_use]
-pub fn task_kind_to_text(kind: taskboard_domain::entities::TaskKind) -> &'static str {
-    use taskboard_domain::entities::TaskKind::{Standard, Tracker};
-    match kind {
-        Standard => "standard",
-        Tracker => "tracker",
-    }
+pub fn task_kind_to_text(kind: TaskKind) -> &'static str {
+    kind.text_form()
 }
 
 /// Parses the stored TEXT form back; `None` on an unknown kind (a
 /// corrupt local row is a corrupted database, never a clamped value).
 #[must_use]
-pub fn task_kind_from_text(raw: &str) -> Option<taskboard_domain::entities::TaskKind> {
-    use taskboard_domain::entities::TaskKind::{Standard, Tracker};
-    match raw {
-        "standard" => Some(Standard),
-        "tracker" => Some(Tracker),
-        _ => None,
-    }
+pub fn task_kind_from_text(raw: &str) -> Option<TaskKind> {
+    TaskKind::parse_text_form(raw)
 }
 
 /// Parses the stored TEXT form back; `None` on an unknown rung.
 #[must_use]
-pub fn insistence_from_text(raw: &str) -> Option<taskboard_domain::reminders::Insistence> {
-    use taskboard_domain::reminders::Insistence::{Alarm, Normal};
-    match raw {
-        "normal" => Some(Normal),
-        "alarm" => Some(Alarm),
-        _ => None,
-    }
+pub fn insistence_from_text(raw: &str) -> Option<Insistence> {
+    Insistence::parse_text_form(raw)
 }
 
-/// The stored TEXT form of a reminder rule kind: the domain enum's
-/// serde unit name (the `task_kind_*` twins' one-representation
-/// discipline; `snake_case` rename on the domain enum keeps the two
-/// lanes identical).
+/// The stored TEXT form of a reminder rule kind's discriminant (see
+/// [`ReminderKind::discriminant_text_form`]; the arm's *data* rides the
+/// row's `at_epoch_seconds` column).
 #[must_use]
-pub fn reminder_kind_to_text(kind: taskboard_domain::reminders::ReminderKind) -> &'static str {
-    use taskboard_domain::reminders::ReminderKind::{At, DueOffset};
-    match kind {
-        DueOffset(_) => "due_offset",
-        At(_) => "at",
-    }
+pub fn reminder_kind_to_text(kind: ReminderKind) -> &'static str {
+    kind.discriminant_text_form()
 }
 
 /// The stored TEXT form's kind discriminant: `Some(true)` = the `at`
@@ -162,37 +101,31 @@ pub fn reminder_kind_to_text(kind: taskboard_domain::reminders::ReminderKind) ->
 /// this carries the discriminant only.
 #[must_use]
 pub fn reminder_kind_is_at(raw: &str) -> Option<bool> {
-    match raw {
-        "due_offset" => Some(false),
-        "at" => Some(true),
-        _ => None,
-    }
+    ReminderKind::parse_discriminant_text_form(raw)
 }
 
 /// The stored TEXT form of a recurring-series rule: the domain serde
 /// JSON of the rule (the `Option` wrapper is not stored — NULL is the
 /// unset state at the column level).
 #[must_use]
-pub fn recur_to_text(rule: &taskboard_domain::recur::RecurRule) -> String {
-    serde_json::to_string(rule).unwrap_or_default()
+pub fn recur_to_text(rule: &RecurRule) -> String {
+    rule.text_form()
 }
 
 /// Parses the stored TEXT form back; `None` on any JSON that does not
 /// decode as a rule (strict decode by design — the mints reject, the
 /// repository reports `Corrupted`; a NULL column is handled at the
 /// caller as the unset state).
-pub fn recur_from_text(raw: &str) -> Option<taskboard_domain::recur::RecurRule> {
-    serde_json::from_str(raw).ok()
+pub fn recur_from_text(raw: &str) -> Option<RecurRule> {
+    RecurRule::parse_text_form(raw)
 }
 
 /// The stored TEXT form of a task's remote baseline: the domain serde
 /// JSON of the record (the `Option` wrapper is not stored — NULL is the
 /// never-observed state at the column level, the fallback trigger).
 #[must_use]
-pub fn remote_baseline_to_text(
-    baseline: &taskboard_domain::entities::RemoteTaskBaseline,
-) -> String {
-    serde_json::to_string(baseline).unwrap_or_default()
+pub fn remote_baseline_to_text(baseline: &RemoteTaskBaseline) -> String {
+    baseline.text_form()
 }
 
 /// A decode rejection; the repository maps this onto
@@ -216,30 +149,11 @@ pub fn uuid_from_text(raw: &str) -> Result<Uuid, CodecError> {
     Uuid::parse_str(raw).map_err(|_| CodecError)
 }
 
-/// The snake-case tag stored in `outbox.op_kind`.
+/// The snake-case tag stored in `outbox.op_kind` (see
+/// [`LocalOpTag::text_form`]).
 #[must_use]
 pub fn op_kind_to_text(op: &LocalOp) -> &'static str {
-    match op {
-        LocalOp::CreateTask(_) => "create_task",
-        LocalOp::UpdateTask(_) => "update_task",
-        LocalOp::MoveTask(_) => "move_task",
-        LocalOp::DeleteTask(_) => "delete_task",
-        LocalOp::CreateStack(_) => "create_stack",
-        LocalOp::RenameStack(_) => "rename_stack",
-        LocalOp::MoveStack(_) => "move_stack",
-        LocalOp::DeleteStack(_) => "delete_stack",
-        LocalOp::CreateLabel(_) => "create_label",
-        LocalOp::UpdateLabel(_) => "update_label",
-        LocalOp::DeleteLabel(_) => "delete_label",
-        LocalOp::AssignLabel(_, _) => "assign_label",
-        LocalOp::UnassignLabel(_, _) => "unassign_label",
-        LocalOp::UpdateBoard(_) => "update_board",
-        LocalOp::UpdateAppData(_) => "update_app_data",
-        LocalOp::FlushBoardAppData(_) => "flush_board_app_data",
-        LocalOp::DeleteBoard(_) => "delete_board",
-        LocalOp::DeleteRemoteCard { .. } => "delete_remote_card",
-        LocalOp::DeleteRemoteStack { .. } => "delete_remote_stack",
-    }
+    op.tag().text_form()
 }
 
 /// Which id columns an op kind requires in the `outbox` row.
@@ -339,73 +253,69 @@ pub fn op_from_columns(
             .map(T::from)
             .ok_or(CodecError)
     }
+    // The tag vocabulary is domain-owned (`LocalOpTag`); which id
+    // columns an op addresses is the outbox *schema*, storage-owned —
+    // so the descriptor selects the arm, the id requirements stay here.
+    let tag = LocalOpTag::parse_text_form(tag).ok_or(CodecError)?;
     match tag {
-        "create_task" => Ok(LocalOp::CreateTask(parse_id(task_id)?)),
-        "update_task" => Ok(LocalOp::UpdateTask(parse_id(task_id)?)),
-        "move_task" => Ok(LocalOp::MoveTask(parse_id(task_id)?)),
-        "delete_task" => Ok(LocalOp::DeleteTask(parse_id(task_id)?)),
-        "create_stack" => Ok(LocalOp::CreateStack(parse_id(stack_id)?)),
-        "rename_stack" => Ok(LocalOp::RenameStack(parse_id(stack_id)?)),
-        "move_stack" => Ok(LocalOp::MoveStack(parse_id(stack_id)?)),
-        "delete_stack" => Ok(LocalOp::DeleteStack(parse_id(stack_id)?)),
-        "create_label" => Ok(LocalOp::CreateLabel(parse_id(label_id)?)),
-        "update_label" => Ok(LocalOp::UpdateLabel(parse_id(label_id)?)),
-        "delete_label" => Ok(LocalOp::DeleteLabel(parse_id(label_id)?)),
-        "assign_label" => Ok(LocalOp::AssignLabel(
+        LocalOpTag::CreateTask => Ok(LocalOp::CreateTask(parse_id(task_id)?)),
+        LocalOpTag::UpdateTask => Ok(LocalOp::UpdateTask(parse_id(task_id)?)),
+        LocalOpTag::MoveTask => Ok(LocalOp::MoveTask(parse_id(task_id)?)),
+        LocalOpTag::DeleteTask => Ok(LocalOp::DeleteTask(parse_id(task_id)?)),
+        LocalOpTag::CreateStack => Ok(LocalOp::CreateStack(parse_id(stack_id)?)),
+        LocalOpTag::RenameStack => Ok(LocalOp::RenameStack(parse_id(stack_id)?)),
+        LocalOpTag::MoveStack => Ok(LocalOp::MoveStack(parse_id(stack_id)?)),
+        LocalOpTag::DeleteStack => Ok(LocalOp::DeleteStack(parse_id(stack_id)?)),
+        LocalOpTag::CreateLabel => Ok(LocalOp::CreateLabel(parse_id(label_id)?)),
+        LocalOpTag::UpdateLabel => Ok(LocalOp::UpdateLabel(parse_id(label_id)?)),
+        LocalOpTag::DeleteLabel => Ok(LocalOp::DeleteLabel(parse_id(label_id)?)),
+        LocalOpTag::AssignLabel => Ok(LocalOp::AssignLabel(
             parse_id(task_id)?,
             parse_id(label_id)?,
         )),
-        "unassign_label" => Ok(LocalOp::UnassignLabel(
+        LocalOpTag::UnassignLabel => Ok(LocalOp::UnassignLabel(
             parse_id(task_id)?,
             parse_id(label_id)?,
         )),
-        "update_board" => Ok(LocalOp::UpdateBoard(parse_id::<BoardId>(board_id)?)),
-        "update_app_data" => Ok(LocalOp::UpdateAppData(parse_id(task_id)?)),
-        "flush_board_app_data" => Ok(LocalOp::FlushBoardAppData(parse_id::<BoardId>(board_id)?)),
-        "delete_board" => Ok(LocalOp::DeleteBoard(parse_id::<BoardId>(board_id)?)),
+        LocalOpTag::UpdateBoard => Ok(LocalOp::UpdateBoard(parse_id::<BoardId>(board_id)?)),
+        LocalOpTag::UpdateAppData => Ok(LocalOp::UpdateAppData(parse_id(task_id)?)),
+        LocalOpTag::FlushBoardAppData => {
+            Ok(LocalOp::FlushBoardAppData(parse_id::<BoardId>(board_id)?))
+        }
+        LocalOpTag::DeleteBoard => Ok(LocalOp::DeleteBoard(parse_id::<BoardId>(board_id)?)),
         // Ref-deletes (#150): the local board stays a column, the remote
         // ref decodes strictly from the payload (missing or undecodable
         // is the corruption class, like a missing required column).
-        "delete_remote_card" => Ok(LocalOp::DeleteRemoteCard {
+        LocalOpTag::DeleteRemoteCard => Ok(LocalOp::DeleteRemoteCard {
             board: parse_id::<BoardId>(board_id)?,
             card: serde_json::from_str(payload.ok_or(CodecError)?).map_err(|_| CodecError)?,
         }),
-        "delete_remote_stack" => Ok(LocalOp::DeleteRemoteStack {
+        LocalOpTag::DeleteRemoteStack => Ok(LocalOp::DeleteRemoteStack {
             board: parse_id::<BoardId>(board_id)?,
             stack: serde_json::from_str(payload.ok_or(CodecError)?).map_err(|_| CodecError)?,
         }),
-        _ => Err(CodecError),
     }
 }
 
-/// The lowercase tag stored in `sync_status.phase`.
+/// The lowercase tag stored in `sync_status.phase` (see
+/// [`SyncPhase::text_form`]).
 #[must_use]
 pub fn sync_phase_to_text(phase: SyncPhase) -> &'static str {
-    match phase {
-        SyncPhase::Idle => "idle",
-        SyncPhase::Syncing => "syncing",
-        SyncPhase::Offline => "offline",
-        SyncPhase::Failed { .. } => "failed",
-    }
+    phase.text_form()
 }
 
-/// The lowercase tag stored in `sync_status.last_error`.
+/// The lowercase tag stored in `sync_status.last_error` (see
+/// [`SyncErrorKind::text_form`]).
 #[must_use]
 pub fn sync_error_kind_to_text(kind: SyncErrorKind) -> &'static str {
-    match kind {
-        SyncErrorKind::Network => "network",
-        SyncErrorKind::Auth => "auth",
-        SyncErrorKind::Forbidden => "forbidden",
-        SyncErrorKind::Server => "server",
-        SyncErrorKind::BadRequest => "bad_request",
-        SyncErrorKind::LocalData => "local_data",
-        SyncErrorKind::NoBoard => "no_board",
-    }
+    kind.text_form()
 }
 
 /// Rebuilds a phase from the `phase` + `last_error` columns. `Failed`
 /// requires its error kind; non-failed phases require the absence of one
-/// (a dangling error tag means the row is not self-consistent).
+/// (a dangling error tag means the row is not self-consistent — the
+/// invariant is enforced domain-side, see
+/// [`SyncPhase::parse_text_form`]).
 ///
 /// # Errors
 ///
@@ -414,34 +324,18 @@ pub fn sync_phase_from_columns(
     phase: &str,
     last_error: Option<&str>,
 ) -> Result<SyncPhase, CodecError> {
-    match phase {
-        "idle" if last_error.is_none() => Ok(SyncPhase::Idle),
-        "syncing" if last_error.is_none() => Ok(SyncPhase::Syncing),
-        "offline" if last_error.is_none() => Ok(SyncPhase::Offline),
-        "failed" => Ok(SyncPhase::Failed {
-            last_error: match last_error {
-                Some("network") => SyncErrorKind::Network,
-                Some("auth") => SyncErrorKind::Auth,
-                Some("forbidden") => SyncErrorKind::Forbidden,
-                Some("server") => SyncErrorKind::Server,
-                Some("bad_request") => SyncErrorKind::BadRequest,
-                Some("local_data") => SyncErrorKind::LocalData,
-                Some("no_board") => SyncErrorKind::NoBoard,
-                _ => return Err(CodecError),
-            },
-        }),
-        _ => Err(CodecError),
-    }
+    let last_error = match last_error {
+        Some(raw) => Some(SyncErrorKind::parse_text_form(raw).ok_or(CodecError)?),
+        None => None,
+    };
+    SyncPhase::parse_text_form(phase, last_error).ok_or(CodecError)
 }
 
-/// The stored `sync_metadata.key` form (identical to the serde wire form).
+/// The stored `sync_metadata.key` form (identical to the serde wire
+/// form, [`ValidatorKey::text_form`]).
 #[must_use]
 pub fn validator_key_to_text(key: &ValidatorKey) -> String {
-    match *key {
-        ValidatorKey::Boards => "boards".to_string(),
-        ValidatorKey::Stacks(board) => format!("stacks:{}", board.get()),
-        ValidatorKey::ArchivedStacks(board) => format!("archived_stacks:{}", board.get()),
-    }
+    key.text_form()
 }
 
 /// Parses a `sync_metadata.key`.
@@ -450,19 +344,7 @@ pub fn validator_key_to_text(key: &ValidatorKey) -> String {
 ///
 /// [`CodecError`] on any other shape.
 pub fn validator_key_from_text(raw: &str) -> Result<ValidatorKey, CodecError> {
-    if raw == "boards" {
-        return Ok(ValidatorKey::Boards);
-    }
-    if let Some(num) = raw
-        .strip_prefix("archived_stacks:")
-        .and_then(|num| num.parse::<u64>().ok())
-    {
-        return Ok(ValidatorKey::ArchivedStacks(RemoteBoardId(num)));
-    }
-    raw.strip_prefix("stacks:")
-        .and_then(|num| num.parse::<u64>().ok())
-        .map(|num| ValidatorKey::Stacks(RemoteBoardId(num)))
-        .ok_or(CodecError)
+    ValidatorKey::parse_text_form(raw).ok_or(CodecError)
 }
 
 /// The stored `reminder_deliveries.reminder` / `reminder_snoozes.reminder`
