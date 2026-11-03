@@ -2163,12 +2163,15 @@ fn undo_restores_a_kind_edit_and_the_watermark_names_it() {
 }
 
 #[test]
-fn undo_refuses_to_recomplete_a_tracker_typed() {
-    // done → reopen → convert → undo: the inverse replans the reopen
-    // as a fresh completion of a now-tracker task — the engine gate
-    // applies uniformly, so the undo refuses typed and the line
-    // keeps its head (a second undo refuses the same way; nothing
-    // was popped).
+fn undoing_past_a_conversion_never_recompletes_a_tracker() {
+    // The LIFO walk: done → reopen → convert → undo pops the
+    // *conversion* first (a legal kind restore), so the reopen's
+    // inverse replans against the restored `Standard` kind and
+    // succeeds — the journal can never produce a re-completion of a
+    // tracker, because the kind restore always precedes the replan.
+    // The uniformity of the guard at the journal boundary is pinned
+    // separately below (the stage-1 plan's D-13 refusal scenario is
+    // unreachable through plain LIFO undo — a recorded correction).
     let mut h = Harness::new();
     let board = h.board();
     let stack = h.stack(board);
@@ -2191,9 +2194,40 @@ fn undo_refuses_to_recomplete_a_tracker_typed() {
         },
     })
     .expect("converted");
+    h.exec(&StateCommand::Undo).expect("the conversion undoes");
+    assert_eq!(
+        h.disk.tasks[&task].kind,
+        crate::entities::TaskKind::Standard,
+        "the kind restored"
+    );
+    // The reopen's inverse replans a completion — against the restored
+    // standard kind it succeeds.
+    h.exec(&StateCommand::Undo).expect("the reopen undoes");
+    assert!(h.disk.tasks[&task].done.is_some());
+
+    // The boundary pin (D-5 row 7's uniformity): a journal-level
+    // replan of a completion against a tracker task hits the engine's
+    // guard typed — the wrapper does not bypass it.
+    let mut h = Harness::new();
+    let board = h.board();
+    let stack = h.stack(board);
+    let task = h.task(stack, "t");
+    h.exec(&StateCommand::UpdateTask {
+        id: task,
+        changes: crate::messages::TaskChanges {
+            kind: Some(Some(crate::entities::TaskKind::Tracker)),
+            ..Default::default()
+        },
+    })
+    .expect("converted");
     let entries_before = h.journal.entries.len();
     let head_before = h.journal.head;
-    let err = h.exec(&StateCommand::Undo).expect_err("refused");
+    let err = h
+        .exec(&StateCommand::SetTaskDone {
+            id: task,
+            done: true,
+        })
+        .expect_err("the guard applies at the journal boundary");
     assert!(matches!(
         err,
         CommandError::TrackerTaskNotDoneable(id) if id == task
