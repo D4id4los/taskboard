@@ -1292,6 +1292,7 @@ mod tests {
         assert!(
             has_flush_work(
                 None,
+                &AppDataSections::default(),
                 &AppDataEvidence::Absent,
                 tables,
                 &BTreeMap::new(),
