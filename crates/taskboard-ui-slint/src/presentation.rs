@@ -474,6 +474,56 @@ pub fn iso_local_fire_time(effective: DateTime<Utc>, tz: &impl chrono::TimeZone)
     local.naive_local().format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
+/// The mouse setter's quick-preset durations (r4 D33, F13): the pinned
+/// 1m/5m/10m/25m/1h ladder, in minutes — the setter's preset order is
+/// the array order.
+pub const TIMER_PRESETS_MIN: [u32; 5] = [1, 5, 10, 25, 60];
+
+/// A preset's grammar text (r4 D-T4): `"in {m}m"`, hours form at 60 —
+/// both re-parsed by the one timer grammar verbatim.
+#[must_use]
+pub fn preset_when_text(minutes: u32) -> String {
+    if minutes == 60 {
+        "in 1h".to_owned()
+    } else {
+        format!("in {minutes}m")
+    }
+}
+
+/// The custom row's composed fire instant (r4 D-T4): `(today + offset)
+/// .and_time(H:M:0)` resolved host-local through `tz` with the
+/// `.single()` fold — a DST-gap pick is `None`, never a guessed
+/// instant. Pure; the setter's commit composes grammar text from it.
+#[must_use]
+pub fn compose_timer_instant(
+    minutes_of_day: u32,
+    day_offset_days: u32,
+    now: DateTime<Utc>,
+    tz: &impl chrono::TimeZone,
+) -> Option<DateTime<Utc>> {
+    let today = now.with_timezone(tz).date_naive();
+    let date = today + chrono::TimeDelta::try_days(i64::from(day_offset_days))?;
+    let time = chrono::NaiveTime::from_hms_opt(minutes_of_day / 60, minutes_of_day % 60, 0)?;
+    tz.from_local_datetime(&date.and_time(time))
+        .single()
+        .map(|local| local.with_timezone(&Utc))
+}
+
+/// The custom row's composed grammar text (r4 D-T4): `at <RFC-3339
+/// with the local offset>` — re-parsed by [`parse_timer_when`]'s
+/// RFC-3339 arm back to the exact instant (the one-parser contract;
+/// no roll — an explicit day choice is honored).
+#[must_use]
+pub fn compose_timer_at(
+    minutes_of_day: u32,
+    day_offset_days: u32,
+    now: DateTime<Utc>,
+    tz: &impl chrono::TimeZone,
+) -> Option<String> {
+    compose_timer_instant(minutes_of_day, day_offset_days, now, tz)
+        .map(|instant| format!("at {}", instant.with_timezone(tz).to_rfc3339()))
+}
+
 /// One rule row's presentation texts (r4 D30): the kind-specific
 /// primary line plus the secondary detail line, and the derived armed
 /// bit (`task.duedate.is_none() && kind.is_due_offset()` at push time —
@@ -2216,6 +2266,111 @@ mod tests {
                 occurrence: at,
                 delivered_at: at,
             });
+    }
+
+    /// A structurally DST-refusing zone (the constructed
+    /// ambiguity): every local datetime folds to `None` — the
+    /// `.single()` discipline's worst case, deterministic without a
+    /// tz database.
+    #[derive(Clone)]
+    struct RefusingZone;
+
+    impl chrono::TimeZone for RefusingZone {
+        type Offset = chrono::FixedOffset;
+        fn offset_from_utc_datetime(&self, _utc: &chrono::NaiveDateTime) -> Self::Offset {
+            chrono::FixedOffset::east_opt(0).expect("zero")
+        }
+        fn offset_from_utc_date(&self, _date: &chrono::NaiveDate) -> Self::Offset {
+            chrono::FixedOffset::east_opt(0).expect("zero")
+        }
+        fn from_offset(_offset: &Self::Offset) -> Self {
+            RefusingZone
+        }
+        fn offset_from_local_datetime(
+            &self,
+            _local: &chrono::NaiveDateTime,
+        ) -> chrono::LocalResult<Self::Offset> {
+            chrono::LocalResult::None
+        }
+        fn offset_from_local_date(
+            &self,
+            _date: &chrono::NaiveDate,
+        ) -> chrono::LocalResult<Self::Offset> {
+            chrono::LocalResult::None
+        }
+    }
+
+    #[test]
+    fn preset_when_text_speaks_the_pinned_grammar() {
+        for minutes in TIMER_PRESETS_MIN {
+            let text = preset_when_text(minutes);
+            assert!(
+                text.starts_with("in "),
+                "the preset rides the in-grammar ({minutes}m)"
+            );
+            assert!(
+                taskboard_domain::ReminderOffset::parse_text_form(&text["in ".len()..]).is_some(),
+                "the preset re-parses through the domain grammar ({minutes}m)"
+            );
+        }
+        assert_eq!(preset_when_text(60), "in 1h", "the hour form at 60");
+        assert_eq!(preset_when_text(25), "in 25m");
+        assert_eq!(
+            TIMER_PRESETS_MIN,
+            [1, 5, 10, 25, 60],
+            "the D33-pinned ladder"
+        );
+    }
+
+    #[test]
+    fn compose_timer_at_round_trips_through_the_one_parser() {
+        let now = Utc
+            .with_ymd_and_hms(2030, 4, 1, 10, 0, 0)
+            .single()
+            .expect("now");
+        // Today's remaining pick resolves to today's instant.
+        let today_text = compose_timer_at(9 * 60 + 30, 0, now, &Utc).expect("composes");
+        let today_when = parse_timer_when(&today_text, now, &Utc);
+        assert_eq!(
+            today_when,
+            Some(taskboard_domain::AdhocWhen::At(
+                Utc.with_ymd_and_hms(2030, 4, 1, 9, 30, 0)
+                    .single()
+                    .expect("t")
+            )),
+            "today pick composes the exact instant ({today_text})"
+        );
+        // Tomorrow's pick is +1 day's instant — an explicit day is
+        // honored, no roll.
+        let tomorrow_text = compose_timer_at(9 * 60 + 30, 1, now, &Utc).expect("composes");
+        assert_eq!(
+            parse_timer_when(&tomorrow_text, now, &Utc),
+            Some(taskboard_domain::AdhocWhen::At(
+                Utc.with_ymd_and_hms(2030, 4, 2, 9, 30, 0)
+                    .single()
+                    .expect("t")
+            )),
+            "tomorrow pick composes the +1-day instant"
+        );
+        // A past-today pick is still Some — an explicit choice is
+        // honored (the At semantics fire next tick).
+        assert!(
+            compose_timer_at(8 * 60, 0, now, &Utc).is_some(),
+            "a past-today pick composes — no silent day flip"
+        );
+    }
+
+    #[test]
+    fn compose_timer_at_folds_a_dst_gap_to_none() {
+        let now = Utc
+            .with_ymd_and_hms(2030, 4, 1, 10, 0, 0)
+            .single()
+            .expect("now");
+        assert_eq!(
+            compose_timer_at(9 * 60 + 30, 0, now, &RefusingZone),
+            None,
+            "the unresolvable local pick folds to None — never a guessed instant"
+        );
     }
 
     #[test]

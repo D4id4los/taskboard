@@ -1,0 +1,239 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The timers header's mouse setter (r4 D33, F13): the anchored
+// popover over the quick presets (1m/5m/10m/25m/1h), the label field,
+// the custom row (chunk 7's time combobox + a Today|Tomorrow day
+// offset), the insistence picker (r4 D-T7), and the commit row. Quick
+// presets are quick-fill, not auto-commit (D-T6): picking one fills
+// the timing grammar and hands focus to the label field — the CLI's
+// required label and D-P14's raw-label rule forbid a Rust-invented
+// one. The panel is one FocusScope with a declared walk order; Escape
+// closes through the action layer's explicit dismissal (the capture
+// overlay's ruling — the root scope's capture tunnel visits every
+// focused item's ancestors, so the panel can never win a
+// widget-internal grab). Every dispatch is a callback (§5.1):
+// the composition, the validity, and the composed fire instant all
+// live in the adapter/pure layer — one draft, two views (the popover
+// and the inline text form share the commit seam and the parse).
+
+import { Theme, Typography, Semantic, RoleText } from "../theme.slint";
+import { TextField, FieldValidity } from "../widgets/text-field.slint";
+import { SegmentedControl } from "../widgets/segmented-control.slint";
+import { TimeField, TimeSlotRow } from "../widgets/time-field.slint";
+import { KbdHint } from "../widgets/kbd-hint.slint";
+import { TooltipState } from "../widgets/tooltip.slint";
+
+// The commit affordance (the CtaButton shape, mounted locally: the
+// board-layout button is composition-local and this is the third use
+// — promoting it is chunk 10's call, not this chunk's churn). An
+// enabled gate dims the label and swallows the click (the
+// SegmentedControl's disabled-segment precedent); the hover tip rides
+// the TooltipState idiom (blanket rule a).
+component CtaButtonArea inherits Rectangle {
+    in property <string> label;
+    in property <bool> enabled: true;
+    callback clicked();
+    height: Theme.space-6;
+    min-width: Theme.space-6 * 4;
+    border-radius: Theme.radius-small;
+    border-width: Theme.focus-ring-width;
+    border-color: commit-focus.has-focus && root.enabled
+        ? Semantic.focus-ring : Theme.border;
+    background: !root.enabled ? Theme.surface
+        : commit-hit.has-hover ? Theme.surface-hover : Theme.surface-raised;
+    accessible-role: AccessibleRole.button;
+    accessible-label: root.label;
+    accessible-enabled: root.enabled;
+    accessible-action-default => {
+        if (root.enabled) { root.clicked(); }
+    }
+    commit-focus := FocusScope {
+        width: 100%;
+        height: 100%;
+        focus-on-tab-navigation: true;
+        accessible-role: AccessibleRole.button;
+        accessible-label: root.label;
+        accessible-description: "Sets the timer with the composed timing.";
+        accessible-enabled: root.enabled;
+        accessible-action-default => {
+            if (root.enabled) { root.clicked(); }
+        }
+        key-pressed(event) => {
+            if ((event.text == Key.Return || event.text == " ")
+                    && !event.modifiers.control
+                    && !event.modifiers.alt
+                    && !event.modifiers.shift
+                    && !event.modifiers.meta) {
+                if (root.enabled) {
+                    root.clicked();
+                }
+                accept
+            } else {
+                reject
+            }
+        }
+    }
+    commit-hit := TouchArea {
+        // A disabled click swallows — the gate reads the same bit.
+        clicked => {
+            if (root.enabled) {
+                root.clicked();
+            }
+        }
+    }
+    HorizontalLayout {
+        padding-left: Theme.space-3;
+        padding-right: Theme.space-3;
+        alignment: center;
+        RoleText {
+            role: Typography.body;
+            text-color: root.enabled ? Theme.text-primary : Theme.border;
+            text: root.label;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+    // The derived-property wrap (the walk probe's recorded idiom):
+    // `changed` delivers on the wrapper alias, not a foreign element's
+    // binding.
+    property <bool> commit-hovered: commit-hit.has-hover;
+    changed commit-hovered => {
+        if (root.enabled && commit-hovered) {
+            TooltipState.hover(
+                root.label,
+                "Sets the timer with the composed timing.",
+                ["Return"],
+                self.absolute-position.x,
+                self.absolute-position.y,
+                self.width,
+                self.height,
+            );
+        } else {
+            TooltipState.unhover();
+        }
+    }
+}
+
+export component TimerSetter inherits Rectangle {
+    // The pushed halves (the adapter's mirrors — the TimeField's
+    // contract: the push re-seeds, the widget never holds state).
+    in property <string> time-text: "--:--";
+    in property <FieldValidity> time-validity: FieldValidity.neutral;
+    in property <string> time-hint;
+    in property <[TimeSlotRow]> time-slots;
+    in property <int> time-nearest-row: 0;
+    // The composed fire instant's `@` caption; empty while nothing
+    // valid is composed (the custom row's live mirror).
+    in property <string> fire-time;
+    // The commit button's gate (r4 D-T4): only a composed-grammar
+    // flavour opens the funnel — the composer's `None` (a DST gap)
+    // never reaches the seam.
+    in property <bool> commit-enabled: false;
+
+    // The focus hand-off (the date-picker's changed-focus idiom): the
+    // open seam bumps the nonce after the panel mounts — a mount-time
+    // init grab alone is dropped (the DatePicker focus-on-mount
+    // precedent).
+    in property <int> focus-nonce: 0;
+    changed focus-nonce => { setter-scope.focus(); }
+
+    // The intents (§5.1): no inline side effects.
+    callback preset-picked(int);
+    callback time-edited(string);
+    callback time-stepped(int);
+    callback time-picked(int);
+    callback day-picked(int);
+    callback insist-picked(int);
+    // `true` commits (the seam cleared nothing on a miss — the panel
+    // stays open with the invalid flavour). The label rides raw
+    // (D-P14): the seam owns the empty-absorb.
+    callback commit-requested(string) -> bool;
+    callback close-requested();
+
+    background: Theme.surface-raised;
+    border-radius: Theme.radius-small;
+    border-width: Theme.focus-ring-width;
+    border-color: Theme.border;
+    accessible-role: AccessibleRole.region;
+    accessible-label: "Set a timer";
+
+    min-height: setter-layout.preferred-height + 2 * Theme.space-3;
+    min-width: 300px * Theme.base-scale;
+
+    // The walk order (blanket rule b): presets → label → time row →
+    // day → insistence → commit. The TimeField's flyout stays
+    // non-tab-reached per its own contract; Escape closes through
+    // the action layer's explicit dismissal (the header comment).
+    setter-scope := FocusScope {
+        width: 100%;
+        height: 100%;
+        focus-on-tab-navigation: true;
+        init => { self.focus(); }
+        VerticalLayout {
+            setter-layout := VerticalLayout {
+                padding: Theme.space-3;
+                spacing: Theme.space-2;
+                // The quick presets (D33's pinned ladder): the order
+                // maps to `presentation::TIMER_PRESETS_MIN`.
+                SegmentedControl {
+                    options: ["1m", "5m", "10m", "25m", "1h"];
+                    group-label: "Quick presets";
+                    picked(index) => { root.preset-picked(index); }
+                }
+                label-field := TextField {
+                    placeholder: "Timer label";
+                    label: "Timer label";
+                    description: "Names the timer; required before it can be set.";
+                    autofocus: false;
+                }
+                HorizontalLayout {
+                    spacing: Theme.space-2;
+                    TimeField {
+                        horizontal-stretch: 1;
+                        time-text: root.time-text;
+                        validity: root.time-validity;
+                        error-hint: root.time-hint;
+                        label: "Custom time";
+                        description: "The time of day the timer fires.";
+                        slot-rows: root.time-slots;
+                        nearest-row: root.time-nearest-row;
+                        edited(text) => { root.time-edited(text); }
+                        stepped(n) => { root.time-stepped(n); }
+                        picked(m) => { root.time-picked(m); }
+                    }
+                    SegmentedControl {
+                        options: ["Today", "Tomorrow"];
+                        group-label: "Day";
+                        picked(index) => { root.day-picked(index); }
+                    }
+                }
+                if (root.fire-time != ""): RoleText {
+                    role: Typography.mono;
+                    text-color: Theme.text-secondary;
+                    text: root.fire-time;
+                    vertical-alignment: center;
+                }
+                SegmentedControl {
+                    options: ["Normal", "Alarm"];
+                    group-label: "Insistence";
+                    picked(index) => { root.insist-picked(index); }
+                }
+                HorizontalLayout {
+                    spacing: Theme.space-2;
+                    alignment: start;
+                    commit-touch := CtaButtonArea {
+                        label: "Set timer";
+                        enabled: root.commit-enabled;
+                        clicked => {
+                            if (root.commit-requested(label-field.text)) {
+                                root.close-requested();
+                            }
+                        }
+                    }
+                    KbdHint {
+                        keys: ["Return"];
+                    }
+                }
+            }
+        }
+    }
+}

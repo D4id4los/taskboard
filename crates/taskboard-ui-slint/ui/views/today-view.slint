@@ -68,6 +68,9 @@ export component TodayView inherits FocusScope {
     callback timers-create-accepted(string, string, bool) -> bool;
     // The `when` field's per-keystroke validity (r4 D27).
     callback timers-when-edited(string);
+    // The mouse setter's open request (r4 D33) — the popover mounts
+    // at window level.
+    callback timers-setter-opened();
     in property <FieldValidity> timer-when-validity;
     in property <string> timer-when-error-hint;
     // The habits section (DR-6/6, §4.6): after the timers block,
@@ -123,6 +126,7 @@ export component TodayView inherits FocusScope {
                     // the form's per-keystroke grammar probe rides the
                     // same forwards the task-view twin wires.
                     when-edited(t) => root.timers-when-edited(t);
+                    setter-opened() => root.timers-setter-opened();
                     when-validity: root.timer-when-validity;
                     when-error-hint: root.timer-when-error-hint;
                 }
