@@ -377,6 +377,11 @@ pub struct App {
     storage_join: JoinHandle<()>,
     engine_join: JoinHandle<()>,
     escalation_join: JoinHandle<()>,
+    /// The pomodoro focus-session runtime (#496): `None` while the mode
+    /// is disabled or the run mode is kiosk (the spawn decision, D-F13).
+    /// Lifecycle bookkeeping only — the task exits on the engine
+    /// broadcast's close, exactly like the escalation driver.
+    pub focus_join: Option<JoinHandle<()>>,
     notifier_join: JoinHandle<()>,
     /// The all-down network authority's hooks (DF-7): the attach/
     /// detach registry hooks and the broadcast sender for its global
@@ -563,6 +568,7 @@ impl App {
             storage_join,
             engine_join,
             escalation_join,
+            focus_join,
             notifier_join,
             authority_join,
             authority: _,
@@ -628,6 +634,15 @@ impl App {
         let escalation_budget_hit =
             join_bounded(escalation_join, timeout, "escalation driver").await;
 
+        // The focus runtime exits on the same broadcast's close; the
+        // bounded join only bounds a wedged task (the escalation join's
+        // shape). `None` while the mode is off or kiosk.
+        let focus_budget_hit = if let Some(focus_join) = focus_join {
+            join_bounded(focus_join, timeout, "focus runtime").await
+        } else {
+            false
+        };
+
         // The consumer exits on its own once the engine's exit closed
         // the channel; the bounded join only bounds a wedged sink.
         let notifier_budget_hit = join_bounded(notifier_join, timeout, "notifier").await;
@@ -643,6 +658,7 @@ impl App {
             budget_hit: authority_budget_hit
                 | engine_budget_hit
                 | escalation_budget_hit
+                | focus_budget_hit
                 | notifier_budget_hit
                 | storage_budget_hit,
         }
@@ -1109,6 +1125,26 @@ async fn bootstrap_with_modules(
         Arc::new(taskboard_domain::SystemClock),
     );
 
+    // The focus-session runtime (#496): rides the escalation template —
+    // published-state reads, the existing tracking verbs, the injected
+    // clock (never a second time source). Spawned after the escalation
+    // driver and *before* the connector loop, so no `StateUpdated`
+    // races its first park (the escalation comment's ordering rule).
+    // Opt-in AND not kiosk: a kiosk is a passive appliance — no
+    // auto-transitions; its open entries are display data. The
+    // honest-decision rhetoric mirrors escalation's audio gate: this is
+    // a decided exclusion, pinned by tests, not an oversight.
+    let focus_join = crate::focus::focus_spawn_decision(config.app.mode, config.focus_config())
+        .map(|timing| {
+            crate::focus::spawn_focus_runtime(
+                engine.shared_state(),
+                timing,
+                engine.clone(),
+                engine.subscribe(),
+                Arc::new(taskboard_domain::SystemClock),
+            )
+        });
+
     // The registry loop (the N=2 exit criterion's seam): one module per
     // configured connector, each spawning over its own command pair. The
     // first module consumes the *boot* pair — its sender is the engine's
@@ -1169,6 +1205,7 @@ async fn bootstrap_with_modules(
                     engine.clone(),
                     engine_join,
                     escalation_join,
+                    focus_join,
                     authority_join,
                     timeout,
                     storage,
@@ -1212,6 +1249,7 @@ async fn bootstrap_with_modules(
         storage_join,
         engine_join,
         escalation_join,
+        focus_join,
         notifier_join,
         authority,
         authority_join,
@@ -1236,6 +1274,7 @@ async fn unwind_after_module_failure(
     engine: EngineHandle,
     engine_join: JoinHandle<()>,
     escalation_join: JoinHandle<()>,
+    focus_join: Option<JoinHandle<()>>,
     authority_join: JoinHandle<()>,
     timeout: Duration,
     storage: StorageHandle,
@@ -1254,6 +1293,9 @@ async fn unwind_after_module_failure(
     // closes the driver's broadcast (D-10) before its bounded join.
     drop(engine);
     join_bounded(escalation_join, timeout, "escalation driver").await;
+    if let Some(focus_join) = focus_join {
+        join_bounded(focus_join, timeout, "focus runtime").await;
+    }
     drop(storage);
     if let Err(join_err) = storage_join.await {
         tracing::warn!(?join_err, "storage actor join failed");
