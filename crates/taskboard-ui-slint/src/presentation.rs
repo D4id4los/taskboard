@@ -14,6 +14,7 @@
 //! commands; only the reading helper lives here — D10).
 
 use std::collections::BTreeSet;
+use std::fmt::Write as _;
 
 use chrono::{DateTime, NaiveTime, TimeDelta, Utc};
 use taskboard_domain::{
@@ -1516,6 +1517,78 @@ pub fn alarm_window_rows(
         })
     })
     .collect()
+}
+
+/// The review aggregate's window phrases (#214, D-8): estimated and
+/// actual totals, the signed gap phrase, and the comparison counts.
+/// Phrases are second-granular like the task view's
+/// [`tracked_total_phrase`] (r4 D17's precision contract). `empty`
+/// collapses the values when the window holds no comparable tasks
+/// (D-9 tier 2) — the section skeleton stays, the values don't.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ReviewWindow {
+    pub estimated: String,
+    pub actual: String,
+    pub gap: String,
+    pub compared: String,
+    pub empty: bool,
+}
+
+/// Second-granular duration glue over the [`TrackedTotal`] parts —
+/// the review surface's precision contract rides the same reduction.
+#[must_use]
+pub fn review_seconds_phrase(seconds: u64) -> String {
+    let total = TrackedTotal {
+        hours: u32::try_from(seconds / 3600).unwrap_or(u32::MAX),
+        minutes: u32::try_from((seconds % 3600) / 60).unwrap_or(u32::MAX),
+        seconds: u32::try_from(seconds % 60).unwrap_or(u32::MAX),
+    };
+    tracked_total_phrase(&total)
+}
+
+/// The gap's direction rendering (D-8): structural — the three sign
+/// classes are three distinct non-empty forms; the wording is UX copy.
+#[must_use]
+pub fn review_gap_phrase(gap_seconds: i64) -> String {
+    match gap_seconds.cmp(&0) {
+        std::cmp::Ordering::Greater => {
+            format!(
+                "over by {}",
+                review_seconds_phrase(gap_seconds.unsigned_abs())
+            )
+        }
+        std::cmp::Ordering::Less => {
+            format!(
+                "under by {}",
+                review_seconds_phrase(gap_seconds.unsigned_abs())
+            )
+        }
+        std::cmp::Ordering::Equal => "on target".to_owned(),
+    }
+}
+
+/// One window's aggregate phrases from the domain fold. The gap counts
+/// only compared rows; the skips keep the denominator honest ("N of M
+/// compared" plus the named skips when nonzero — D-5).
+#[must_use]
+pub fn review_window(aggregate: &taskboard_domain::CalibrationAggregate) -> ReviewWindow {
+    let total = aggregate.compared + aggregate.skipped_unestimated + aggregate.skipped_untracked;
+    let mut compared = format!("{} of {total} compared", aggregate.compared);
+    if aggregate.skipped_unestimated > 0 || aggregate.skipped_untracked > 0 {
+        let _ = write!(
+            compared,
+            ", {} unestimated, {} untracked",
+            aggregate.skipped_unestimated, aggregate.skipped_untracked
+        );
+    }
+    let empty = aggregate.compared == 0;
+    ReviewWindow {
+        estimated: review_seconds_phrase(aggregate.estimated_seconds),
+        actual: review_seconds_phrase(aggregate.actual_seconds),
+        gap: review_gap_phrase(aggregate.gap_seconds),
+        compared,
+        empty,
+    }
 }
 
 /// The open/closed predicate: open iff the awaiting set is not empty.

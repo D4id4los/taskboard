@@ -824,7 +824,7 @@ pub fn push(
     );
     mutations += push_stack_detail(window, state, vs, &sets, &mut tables, now, calendar, models);
     mutations += push_task_detail(window, state, vs, &sets, &mut tables, now, models, due);
-    mutations += push_review(window, state, day, calendar, kiosk, &mut tables, models);
+    mutations += push_review(window, state, day, calendar, kiosk, models);
     mutations += push_status_bar(
         window,
         state,
@@ -944,24 +944,100 @@ fn push_focus_overlay(
 /// Returns the diff's mutation count.
 fn push_review(
     window: &AppWindow,
-    _state: &AppState,
-    _day: crate::view_state::DayCtx,
-    _calendar: taskboard_domain::DayCalendar,
+    state: &AppState,
+    day: crate::view_state::DayCtx,
+    calendar: taskboard_domain::DayCalendar,
     kiosk: bool,
-    _tables: &mut IdTables,
     models: &mut PushModels,
 ) -> usize {
-    // Stage-2 red step: the stub always emits the empty model; the
-    // populated projection lands with the feat commit.
-    let _ = kiosk;
-    push_review_model(window, models, empty_review_model())
+    // The kiosk belt (D-10(b)): the empty model on the appliance,
+    // even though the rotation can never route to the view.
+    if kiosk {
+        return push_review_model(window, models, empty_review_model(), &[]);
+    }
+    // The bounds are derived per pass and passed into `calibrate` as
+    // data (constraint 2: the projection never reads a clock).
+    let now = day.now;
+    let [week_days, month_days] = REVIEW_WINDOW_DAYS;
+    let week_window = taskboard_domain::trailing_days_window(
+        now,
+        calendar.day_start_time,
+        calendar.offset,
+        std::num::NonZeroU32::new(week_days).expect("non-zero constant"),
+    );
+    let month_window = taskboard_domain::trailing_days_window(
+        now,
+        calendar.day_start_time,
+        calendar.offset,
+        std::num::NonZeroU32::new(month_days).expect("non-zero constant"),
+    );
+    let week_report = taskboard_domain::calibrate(state, week_window, now);
+    let month_report = taskboard_domain::calibrate(state, month_window, now);
+    // The ledger reads the wider horizon's rows (D-8); the 7-day
+    // window's members speak through its aggregate section.
+    let rows: Vec<ReviewRowModel> = month_report
+        .rows
+        .iter()
+        .map(|row| {
+            let gap = row.gap();
+            ReviewRowModel {
+                title: SharedString::from(row.title.clone()),
+                completed: SharedString::from(
+                    row.done
+                        .with_timezone(&calendar.offset)
+                        .date_naive()
+                        .to_string(),
+                ),
+                estimate: SharedString::from(presentation::effort_phrase(row.estimate)),
+                actual: if row.tracked {
+                    SharedString::from(presentation::review_seconds_phrase(
+                        row.actual.num_seconds().max(0).unsigned_abs(),
+                    ))
+                } else {
+                    SharedString::new()
+                },
+                gap: SharedString::from(gap.map_or_else(String::new, |delta| {
+                    presentation::review_gap_phrase(delta.num_seconds())
+                })),
+            }
+        })
+        .collect();
+    let to_window = |aggregate: &taskboard_domain::CalibrationAggregate| {
+        let phrases = presentation::review_window(aggregate);
+        ReviewWindowModel {
+            estimated: SharedString::from(phrases.estimated),
+            actual: SharedString::from(phrases.actual),
+            gap: SharedString::from(phrases.gap),
+            compared: SharedString::from(phrases.compared),
+            empty: phrases.empty,
+        }
+    };
+    let model = ReviewModel {
+        week: to_window(&week_report.aggregate),
+        month: to_window(&month_report.aggregate),
+        rows: ModelRc::default(),
+        // Whole-view collapse (D-9 tier 1): the 7-day window sits
+        // inside the 30-day one, so the 30-day ledger's emptiness
+        // implies both sections' emptiness.
+        empty: month_report.rows.is_empty(),
+    };
+    push_review_model(window, models, model, &rows)
 }
+
+/// The review windows' fixed sizes (D-4): the smallest defensible
+/// pair — a config knob is a v2 decision.
+const REVIEW_WINDOW_DAYS: [u32; 2] = [7, 30];
 
 /// Installs the ledger handle into the model struct and pushes the
 /// whole `ReviewModel` (the board-bar's struct+handle pattern).
-fn push_review_model(window: &AppWindow, models: &mut PushModels, mut model: ReviewModel) -> usize {
+fn push_review_model(
+    window: &AppWindow,
+    models: &mut PushModels,
+    mut model: ReviewModel,
+    rows: &[ReviewRowModel],
+) -> usize {
     let handle = models.review.handle_or_insert_with();
-    let mutations = models.review.diff(&[]);
+    let mutations = models.review.diff(rows);
     model.rows = ModelRc::from(handle);
     window.set_review_model(model);
     mutations
@@ -3201,7 +3277,7 @@ mod tests {
                 "tier 2: no comparable tasks collapse the values"
             );
             let row = model.rows.row_data(0).expect("row");
-            assert!(!row.actual.is_empty(), "untracked is the dash");
+            assert!(row.actual.is_empty(), "untracked is the dash");
             assert!(row.gap.is_empty());
         });
     }
