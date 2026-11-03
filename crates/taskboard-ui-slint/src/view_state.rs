@@ -225,6 +225,18 @@ pub enum Flow {
     /// The stack-move flow: repositioning `stack` to insertion slot
     /// `slot` (`0..=len`, wrap-cycled).
     MoveStack { stack: StackId, slot: usize },
+    /// The time-entries overlay's list surface (r4 chunk 10, D-TS2):
+    /// subject-affine — the mount is gated on the subject matching,
+    /// and `reconcile` drops the flow when the view leaves the task
+    /// detail or the subject dies (the overlay cannot outlive its
+    /// view).
+    TrackEntries { task: TaskId },
+    /// The overlay's add (`seed: None`) / edit (`Some`) form surface,
+    /// layered in the Escape ladder over the list.
+    TrackEntryForm {
+        task: TaskId,
+        seed: Option<taskboard_domain::TimeEntryId>,
+    },
     /// The pointer drag-to-move flow (r2 chunk-8, D-B): dragging
     /// `task` toward `target` (the hovered column, seeded to the
     /// source stack). A distinct variant, *not* a `Flow::Move` reuse:
@@ -1523,6 +1535,53 @@ impl ViewState {
         vec![FlowOutcome::SetMode(Mode::Normal), FlowOutcome::RefreshNow]
     }
 
+    // -- time-entries overlay (r4 chunk 10, D-TS2) -------------------------
+
+    /// `task.track-entries`: opens the list surface over the viewed
+    /// task. The kiosk refusal and the no-subject refusal are the
+    /// *adapter's* gate (dispatch-time gating, D-TS8); this arm opens
+    /// whenever asked.
+    pub fn open_track_entries(&mut self, task: TaskId) -> Vec<FlowOutcome> {
+        self.flow = Flow::TrackEntries { task };
+        vec![FlowOutcome::RefreshNow]
+    }
+
+    /// Row-activate (or the add button): arms the form surface over
+    /// the same subject — edit seeds the entry (`Some`), add does not
+    /// (`None`).
+    pub fn open_track_entry_form(
+        &mut self,
+        task: TaskId,
+        seed: Option<taskboard_domain::TimeEntryId>,
+    ) -> Vec<FlowOutcome> {
+        self.flow = Flow::TrackEntryForm { task, seed };
+        vec![FlowOutcome::RefreshNow]
+    }
+
+    /// The Escape ladder (D-TS2): the form steps back to the list;
+    /// the list closes the overlay. `SetMode(Normal)` rides the close
+    /// step so a disengaged field never re-masks (the `close_palette`
+    /// shape).
+    pub fn step_back_track_entries(&mut self) -> Vec<FlowOutcome> {
+        if let Flow::TrackEntryForm { task, .. } = self.flow.clone() {
+            self.flow = Flow::TrackEntries { task };
+            vec![FlowOutcome::RefreshNow]
+        } else {
+            self.flow = Flow::None;
+            self.buffer.clear();
+            vec![FlowOutcome::SetMode(Mode::Normal), FlowOutcome::RefreshNow]
+        }
+    }
+
+    /// Every overlay exit that means close-without-effect: the
+    /// outside click, the view leaving, the subject dying. The
+    /// `close_palette` shape.
+    pub fn close_track_entries(&mut self) -> Vec<FlowOutcome> {
+        self.flow = Flow::None;
+        self.buffer.clear();
+        vec![FlowOutcome::SetMode(Mode::Normal), FlowOutcome::RefreshNow]
+    }
+
     /// `view.inbox` (chunk 10 D9, D-V7): jumps to the global Inbox's
     /// canonical-first stack — read-side only. Quietly no-ops (no
     /// repaint, no creation) when no live Inbox board exists: an empty
@@ -1762,6 +1821,11 @@ impl ViewState {
             // the scrim. The session is untouched (close carries no
             // command).
             Flow::FocusMode { .. } => self.close_focus_mode(),
+            // The entries overlay closes like the palette: the settle
+            // is the bounded re-run's terminator; the close paths stay
+            // the Escape ladder / the outside click (the
+            // close-without-effect shape — no command rides it).
+            Flow::TrackEntries { .. } | Flow::TrackEntryForm { .. } => self.close_track_entries(),
         }
     }
 
@@ -1979,7 +2043,25 @@ impl ViewState {
             }
             Flow::RenameBoard { board } if self.board != Some(board) => self.flow = Flow::None,
             Flow::MoveStack { stack, .. } if !stacks.contains(&stack) => self.flow = Flow::None,
+            // The entries overlay (r4 chunk 10, D-TS2's strand-proof):
+            // it cannot outlive the task-detail view — a dead subject
+            // drops the flow...
+            Flow::TrackEntries { task } if !is_live(task) => self.flow = Flow::None,
+            Flow::TrackEntryForm { task, .. } if !is_live(task) => self.flow = Flow::None,
             _ => {}
+        }
+        // ...and so does a view change: the overlay is mounted only
+        // over the task detail (the window-level mount condition reads
+        // the same flow), so a flow surviving a view flip would be a
+        // stranded modal context. Focus falls back through the
+        // existing walk.
+        if self.view != ViewId::TaskDetail
+            && matches!(
+                self.flow,
+                Flow::TrackEntries { .. } | Flow::TrackEntryForm { .. }
+            )
+        {
+            self.flow = Flow::None;
         }
     }
 }

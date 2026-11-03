@@ -48,6 +48,12 @@ pub struct KeymapShell {
     /// view-state flow by the adapter's `sync_view_context` (the
     /// `palette` precedent).
     pub focus_overlay: bool,
+    /// The time-entries overlay is open (r4 chunk 10, D-TS2): the
+    /// fourth modal context — `chain` flips to
+    /// `[TrackEntries, ViInsert, Global]` and the `TrackEntries` mask
+    /// makes it total. Mirrored from the view-state flow by the
+    /// adapter's `sync_view_context` (the `palette` precedent).
+    pub track_entries: bool,
     pub view: Option<ContextId>,
     /// The [`crate::router::DispatchCtx`] carried to the router.
     pub focused_task: Option<taskboard_domain::TaskId>,
@@ -90,6 +96,19 @@ impl KeymapShell {
             // note field rides `ViInsert` when typing engages it.
             return vec![ContextId::FocusMode, ContextId::ViInsert, ContextId::Global];
         }
+        if self.track_entries {
+            // The time-entries overlay is the fourth modal context
+            // (r4 chunk 10, D-TS2): the palette/focus shape — the
+            // form's fields ride `ViInsert` masking (printables
+            // unbound, Return reaches the field's commit), the
+            // overlay's own rows (dismiss + the walk) live in the
+            // `TrackEntries` context, Ctrl-chords keep working.
+            return vec![
+                ContextId::TrackEntries,
+                ContextId::ViInsert,
+                ContextId::Global,
+            ];
+        }
         if self.mode == Mode::Insert {
             // The picker grid's context rides the chain head
             // (round-3 D25): non-masking — Escape still resolves
@@ -127,6 +146,8 @@ impl KeymapShell {
             rule_target: None,
             rule_add_when: None,
             timer_draft: None,
+            track_entry_draft: None,
+            track_entry_target: None,
             timer_target: None,
             track_target: None,
             habit_target: None,
@@ -233,7 +254,11 @@ impl KeymapShell {
             | UiEffect::BeginCapture
             // The overlay toggle moves no shell state (the flow is the
             // truth; `sync_view_context` mirrors it).
-            | UiEffect::ToggleFocusMode => {}
+            | UiEffect::ToggleFocusMode
+            // The entries overlay's intents are view-state resolves
+            // (the adapter's table); the shell records nothing.
+            | UiEffect::TrackEntriesOpen
+            | UiEffect::TrackEntryDismiss => {}
         }
         true
     }

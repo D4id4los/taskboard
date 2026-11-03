@@ -48,6 +48,11 @@ pub enum ContextId {
     /// resolves `ModeNormal` from `ViInsert` (the editor's clean
     /// close).
     DatePicker,
+    /// The time-entries overlay (r4 chunk 10, D-TS2): a total mask
+    /// like `Palette`/`FocusMode` — the modal context while the
+    /// overlay holds; the form's fields ride `ViInsert` masking and
+    /// the overlay's own rows (dismiss + the walk) live here.
+    TrackEntries,
 }
 
 impl ContextId {
@@ -68,6 +73,7 @@ impl ContextId {
             Self::ViNormal => "vi-normal",
             Self::ViInsert => "vi-insert",
             Self::DatePicker => "date-picker",
+            Self::TrackEntries => "track-entries",
         }
     }
 }
@@ -234,6 +240,24 @@ pub enum ActionId {
     TaskTrackStart,
     TaskTrackStop,
     TaskToggleTracker,
+    /// The entries-overlay open verb (r4 chunk 10, D-TS6): opens
+    /// `Flow::TrackEntries` over the subject task; refuses on kiosk
+    /// (the view intent's own gate).
+    TaskTrackEntries,
+    /// The entries form's add commit (r4 D-TS6): routes the parsed
+    /// draft into `LogTime` (`NoTarget` without a valid draft + task).
+    TaskTrackEntryLog,
+    /// The entries form's edit commit: routes the parsed mask into
+    /// `AdjustTimeEntry` (`NoTarget` without a valid draft + target).
+    TaskTrackEntryAdjust,
+    /// The armed delete's confirm: routes `DeleteTimeEntry` from the
+    /// row's one-shot target (`NoTarget` without one).
+    TaskTrackEntryDelete,
+    /// The overlay's Escape ladder (D-TS2): a view intent resolved
+    /// against the current flow (form → list; list → close; a
+    /// focused field's Insert disengages first — the adapter reads
+    /// the mode).
+    TaskTrackEntryDismiss,
     /// The concentration overlay's toggle (issue #496): opens or
     /// closes `Flow::FocusMode`. Session verbs are NOT re-invented —
     /// start/stop stay `task.track-start`/`task.track-stop` — this
@@ -322,6 +346,11 @@ impl ActionId {
             Self::TaskTrackStart => "task.track-start",
             Self::TaskTrackStop => "task.track-stop",
             Self::TaskToggleTracker => "task.toggle-tracker",
+            Self::TaskTrackEntries => "task.track-entries",
+            Self::TaskTrackEntryLog => "task.track-entry-log",
+            Self::TaskTrackEntryAdjust => "task.track-entry-adjust",
+            Self::TaskTrackEntryDelete => "task.track-entry-delete",
+            Self::TaskTrackEntryDismiss => "task.track-entry-dismiss",
             Self::FocusModeToggle => "focus.toggle",
             Self::HabitLog => "habit.log",
             Self::HabitMove => "habit.move",
@@ -1000,6 +1029,62 @@ pub const REGISTRY: &[ActionEntry] = &[
         description: "Marks or unmarks the focused task as a tracker: a tracked, never-completed card.",
         menu_group: Some(MenuGroup::Task),
     },
+    // The entries overlay (r4 chunk 10, D-TS6/D-TS8): the one
+    // menu-reachable row of the family (the DR-5 fence's
+    // "menu-reachable" clause); the panel verbs below are
+    // section-scoped — pointer-driven, no preset bindings, never
+    // rendered as a menu section (the two-tier rule), with
+    // dispatch-time gating only (the view intent's kiosk refusal).
+    ActionEntry {
+        id: ActionId::TaskTrackEntries,
+        label: "Time entries",
+        contexts: GLOBAL,
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 186,
+        description: "Opens the focused task's time-entries overlay: the tracked history, add, edit, and delete.",
+        menu_group: Some(MenuGroup::Task),
+    },
+    ActionEntry {
+        id: ActionId::TaskTrackEntryLog,
+        label: "Log time entry",
+        contexts: &[ContextId::TrackEntries],
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 220,
+        description: "Commits the entries form's add draft as a new closed time entry.",
+        menu_group: None,
+    },
+    ActionEntry {
+        id: ActionId::TaskTrackEntryAdjust,
+        label: "Adjust time entry",
+        contexts: &[ContextId::TrackEntries],
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 230,
+        description: "Commits the entries form's edit mask onto the seeded entry.",
+        menu_group: None,
+    },
+    ActionEntry {
+        id: ActionId::TaskTrackEntryDelete,
+        label: "Delete time entry",
+        contexts: &[ContextId::TrackEntries],
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 240,
+        description: "Deletes the armed entry row (not undoable — the confirm is the affordance).",
+        menu_group: None,
+    },
+    ActionEntry {
+        id: ActionId::TaskTrackEntryDismiss,
+        label: "Dismiss entries overlay",
+        contexts: &[ContextId::TrackEntries],
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 250,
+        description: "Steps the entries overlay back: a focused field's Escape first, then the form, then the overlay.",
+        menu_group: None,
+    },
     // The concentration overlay (issue #496): the tracking verbs'
     // dispatch-time-gating template — menu-reachable, gated at
     // dispatch (`entry_states`: never kiosk, only while focus mode is
@@ -1278,6 +1363,11 @@ mod tests {
             ActionId::TaskTrackStart,
             ActionId::TaskTrackStop,
             ActionId::TaskToggleTracker,
+            ActionId::TaskTrackEntries,
+            ActionId::TaskTrackEntryLog,
+            ActionId::TaskTrackEntryAdjust,
+            ActionId::TaskTrackEntryDelete,
+            ActionId::TaskTrackEntryDismiss,
             ActionId::FocusModeToggle,
             ActionId::HabitLog,
             ActionId::HabitMove,

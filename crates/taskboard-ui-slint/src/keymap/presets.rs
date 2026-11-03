@@ -54,7 +54,12 @@ impl Preset {
         // search palette (#348): both are modal surfaces; `ViInsert`
         // shadows without masking (D11).
         let _ = self;
-        &[ContextId::Menu, ContextId::Palette, ContextId::FocusMode]
+        &[
+            ContextId::Menu,
+            ContextId::Palette,
+            ContextId::FocusMode,
+            ContextId::TrackEntries,
+        ]
     }
 }
 
@@ -257,6 +262,21 @@ static STANDARD: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::PickerMonthStart, ContextId::DatePicker, &["Home"]),
     (ActionId::PickerMonthEnd, ContextId::DatePicker, &["End"]),
     (ActionId::PickerCommit, ContextId::DatePicker, &["Return"]),
+    // The time-entries overlay (r4 chunk 10, D-TS2): the modal's own
+    // three rows — the Escape ladder + the panel walk (the per-view
+    // row pattern; pointer-driven otherwise, no preset binding for
+    // the panel verbs).
+    (
+        ActionId::TaskTrackEntryDismiss,
+        ContextId::TrackEntries,
+        &["Escape"],
+    ),
+    (ActionId::NavNextControl, ContextId::TrackEntries, &["Tab"]),
+    (
+        ActionId::NavPrevControl,
+        ContextId::TrackEntries,
+        &["Shift+Tab"],
+    ),
 ];
 
 /// `emacs` — default-emacs-authentic (the review's tmux standard):
@@ -482,6 +502,29 @@ static EMACS: &[(ActionId, ContextId, &[&str])] = &[
     ),
     (ActionId::PickerMonthEnd, ContextId::DatePicker, &["Alt+>"]),
     (ActionId::PickerCommit, ContextId::DatePicker, &["Return"]),
+    // The entries overlay (r4 chunk 10, D-TS2): the emacs vocabulary
+    // — the ladder's Escape plus its C-g alternate; the walk rides
+    // the source-editor C-n/C-p pair.
+    (
+        ActionId::TaskTrackEntryDismiss,
+        ContextId::TrackEntries,
+        &["Escape"],
+    ),
+    (
+        ActionId::TaskTrackEntryDismiss,
+        ContextId::TrackEntries,
+        &["Ctrl+g"],
+    ),
+    (
+        ActionId::NavNextControl,
+        ContextId::TrackEntries,
+        &["Ctrl+n"],
+    ),
+    (
+        ActionId::NavPrevControl,
+        ContextId::TrackEntries,
+        &["Ctrl+p"],
+    ),
 ];
 
 /// `vi` — vim-authentic: everything lives in `ViNormal` (the honest
@@ -624,4 +667,17 @@ static VI: &[(ActionId, ContextId, &[&str])] = &[
     ),
     (ActionId::PickerMonthEnd, ContextId::DatePicker, &["G"]),
     (ActionId::PickerCommit, ContextId::DatePicker, &["Return"]),
+    // The entries overlay (r4 chunk 10, D-TS2): the ladder row plus
+    // the tab walk (the vi preset's per-view row pattern).
+    (
+        ActionId::TaskTrackEntryDismiss,
+        ContextId::TrackEntries,
+        &["Escape"],
+    ),
+    (ActionId::NavNextControl, ContextId::TrackEntries, &["Tab"]),
+    (
+        ActionId::NavPrevControl,
+        ContextId::TrackEntries,
+        &["Shift+Tab"],
+    ),
 ];

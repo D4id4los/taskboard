@@ -44,6 +44,11 @@ enum FK {
     Palette,
     Capture,
     FocusOverlay,
+    // The entries overlay's two surfaces (r4 chunk 10): the ladder's
+    // form→list step is observable, so the list and the form carry
+    // distinct kinds.
+    TrackList,
+    TrackForm,
 }
 
 /// The eleven effect classes the matrix columns range over.
@@ -61,6 +66,7 @@ enum EC {
     System,
     Title,
     Picker,
+    TrackOverlay,
 }
 
 fn kind_of(flow: &Flow) -> FK {
@@ -79,6 +85,8 @@ fn kind_of(flow: &Flow) -> FK {
         Flow::Palette { .. } => FK::Palette,
         Flow::Capture => FK::Capture,
         Flow::FocusMode { .. } => FK::FocusOverlay,
+        Flow::TrackEntries { .. } => FK::TrackList,
+        Flow::TrackEntryForm { .. } => FK::TrackForm,
     }
 }
 
@@ -132,6 +140,8 @@ enum EK {
     ControlPrev,
     ScrollUp,
     ScrollDown,
+    TrackEntriesOpen,
+    TrackEntryDismiss,
 }
 
 fn key_of(effect: &UiEffect) -> EK {
@@ -182,6 +192,8 @@ fn key_of(effect: &UiEffect) -> EK {
         UiEffect::ControlPrev => EK::ControlPrev,
         UiEffect::ScrollUp => EK::ScrollUp,
         UiEffect::ScrollDown => EK::ScrollDown,
+        UiEffect::TrackEntriesOpen => EK::TrackEntriesOpen,
+        UiEffect::TrackEntryDismiss => EK::TrackEntryDismiss,
         // The picker keys are applied in `apply_effect`, before the
         // table — the matrix never sees them (the menu-family
         // pattern). Their class cell is exercised via `class_of`.
@@ -207,6 +219,7 @@ fn class_of(effect: &UiEffect) -> EC {
         crate::router::EffectClass::System => EC::System,
         crate::router::EffectClass::Title => EC::Title,
         crate::router::EffectClass::Picker => EC::Picker,
+        crate::router::EffectClass::TrackOverlay => EC::TrackOverlay,
     }
 }
 
@@ -246,6 +259,8 @@ use FK::FocusOverlay as KFoc;
 use FK::Move as KMove;
 use FK::Palette as KPal;
 use FK::Text as KTxt;
+use FK::TrackForm as KTrackForm;
+use FK::TrackList as KTrackList;
 use Post::Kind as K;
 
 use Post::None as N;
@@ -349,6 +364,39 @@ fn class_table() -> Vec<(FK, EC, Exp)> {
     row(FK::FocusOverlay, C::BeginCapture, exp(Z, K(KCap)));
     for class in [C::Edit, C::Menu, C::System, C::Picker] {
         row(FK::FocusOverlay, class, exp(Z, K(KFoc)));
+    }
+    // TRACK OVERLAY (r4 chunk 10, D-TS2): the same settle-then-run
+    // family — the settle is the overlay's own close; the kept
+    // TrackOverlay arms are the pair overrides below (the open
+    // request is inert under a live overlay; the dismissal ladder is
+    // per-surface).
+    for kind in [FK::TrackList, FK::TrackForm] {
+        for class in [C::Nav, C::Lifecycle, C::Begin, C::Title, C::Cancel] {
+            row(kind, class, exp(Z, N));
+        }
+        row(kind, C::OpenPalette, exp(Z, K(KPal)));
+        row(kind, C::FocusOverlay, exp(Z, K(KFoc)));
+        row(kind, C::BeginCapture, exp(Z, K(KCap)));
+        for class in [C::Edit, C::Menu, C::System, C::Picker] {
+            row(kind, class, exp(Z, K(kind)));
+        }
+        row(kind, C::TrackOverlay, exp(Z, N));
+    }
+    row(FK::None, C::TrackOverlay, exp(Z, N));
+    // Every foreign kind under the overlay class: the settle is the
+    // terminator; the dismissal re-run against the settled `None` is
+    // the honest no-op close (the open request's effect-shaped cells
+    // are the pair overrides below).
+    for kind in [
+        FK::Text,
+        FK::Due,
+        FK::Move,
+        FK::Drag,
+        FK::Palette,
+        FK::Capture,
+        FK::FocusOverlay,
+    ] {
+        row(kind, C::TrackOverlay, exp(Z, N));
     }
     t
 }
@@ -490,6 +538,48 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
     row(FK::Capture, E::BeginCreateStack, exp(Z, K(KTxt)));
     row(FK::Capture, E::RequestMove, exp(Z, K(KMove)));
     row(FK::Capture, E::OpenMenu, exp(Z, K(KCap)));
+    // -- TRACK OVERLAY rows (r4 chunk 10, D-TS2) --
+    // From None: the open request opens the list (the rig views the
+    // subject; the kiosk/subject refusals are outside this matrix's
+    // cells); the dismissal under None is the honest no-op close.
+    row(FK::None, E::TrackEntriesOpen, exp(Z, K(KTrackList)));
+    row(FK::None, E::TrackEntryDismiss, exp(Z, N));
+    // Under a live overlay: the open request is the kept inert; the
+    // ladder steps form → list, list → close.
+    row(FK::TrackList, E::TrackEntriesOpen, exp(Z, K(KTrackList)));
+    row(FK::TrackForm, E::TrackEntriesOpen, exp(Z, K(KTrackForm)));
+    row(FK::TrackList, E::TrackEntryDismiss, exp(Z, N));
+    row(FK::TrackForm, E::TrackEntryDismiss, exp(Z, K(KTrackList)));
+    // Settle-then-run under every foreign kind: the settle closes the
+    // foreign flow, the re-run opens the list (the overlay family's
+    // open is effect-shaped like the palette's).
+    for kind in [
+        FK::Text,
+        FK::Due,
+        FK::Move,
+        FK::Drag,
+        FK::Palette,
+        FK::Capture,
+        FK::FocusOverlay,
+    ] {
+        row(kind, E::TrackEntriesOpen, exp(Z, K(KTrackList)));
+    }
+    // The begin/rename/deletes under a live overlay: the settle
+    // closes it, the re-run arms its fresh flow (the overlay family's
+    // effect-shaped set).
+    for kind in [FK::TrackList, FK::TrackForm] {
+        row(kind, E::BeginCreate, exp(Z, K(KTxt)));
+        row(kind, E::BeginCreateStack, exp(Z, K(KTxt)));
+        row(kind, E::RequestMove, exp(Z, K(KMove)));
+        row(kind, E::BeginTitleEdit, exp(Z, K(KTxt)));
+        row(kind, E::StackDelete, exp(NZ, N));
+        row(kind, E::BoardDelete, exp(NZ, N));
+        row(kind, E::StackRename, exp(Z, K(KTxt)));
+        row(kind, E::BoardRename, exp(Z, K(KTxt)));
+        row(kind, E::BoardCreate, exp(Z, K(KTxt)));
+        row(kind, E::StackMove, exp(Z, K(KMove)));
+        row(kind, E::OpenPalette, exp(Z, K(KPal)));
+    }
     t
 }
 
@@ -647,6 +737,14 @@ fn all_flows(fx: &Fixture) -> Vec<Flow> {
         Flow::CreateBoard,
         Flow::RenameStack { stack: s0 },
         Flow::RenameBoard { board: fx.board },
+        // The entries overlay's two surfaces (r4 chunk 10, D-TS2):
+        // the rig's view is the task detail over `a` (the strand-proof
+        // keeps them alive under reconcile).
+        Flow::TrackEntries { task: a },
+        Flow::TrackEntryForm {
+            task: a,
+            seed: None,
+        },
     ]
 }
 
@@ -702,6 +800,8 @@ fn all_effects(fx: &Fixture) -> Vec<UiEffect> {
         UiEffect::ControlPrev,
         UiEffect::ScrollUp,
         UiEffect::ScrollDown,
+        UiEffect::TrackEntriesOpen,
+        UiEffect::TrackEntryDismiss,
     ]
 }
 
@@ -936,7 +1036,7 @@ fn the_matrix_covers_every_class_cell() {
     let cells = class_table();
     assert_eq!(
         cells.len(),
-        8 * 12,
+        10 * 13,
         "one row per (FlowKind, EffectClass) cell"
     );
     let mut seen = std::collections::BTreeSet::new();
@@ -1801,8 +1901,13 @@ fn dismiss_class(effect: &UiEffect) -> DismissClass {
         | UiEffect::BeginCreate { .. }
         | UiEffect::BeginCreateStack
         | UiEffect::OpenPalette
+        // The entries overlay is a modal takeover (r2 D13's rule
+        // sentence) — its open is the AnchorOrModal class like the
+        // palette's; the dismissal itself is identity-preserving.
+        | UiEffect::TrackEntriesOpen
         | UiEffect::BeginCapture
-        | UiEffect::ToggleFocusMode => DismissClass::AnchorOrModal,
+        | UiEffect::ToggleFocusMode
+        | UiEffect::TrackEntryDismiss => DismissClass::AnchorOrModal,
         UiEffect::Exit
         | UiEffect::MenuBack
         | UiEffect::MenuNext
