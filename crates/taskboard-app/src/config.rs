@@ -103,6 +103,93 @@ pub struct AppConfig {
     /// `TASKBOARD_PREFERENCES__DAY_START_TIME`.
     #[serde(default)]
     pub preferences: PreferencesSection,
+    /// Pomodoro focus mode (#496). Opt-in: an absent table is the
+    /// mode's off posture — no focus-session runtime, no overlay.
+    /// Skipped when at its off default so pin-less configs serialize
+    /// unchanged.
+    #[serde(default, skip_serializing_if = "FocusSection::is_default")]
+    pub focus: FocusSection,
+}
+
+/// The `[focus]` timing bounds: strictly positive (a zero work block
+/// would auto-stop instantly) and capped at a garbage-input bound, not
+/// a quality ceiling (a longer focus block is a legitimate choice; 24 h
+/// of minutes is a typo class).
+pub const FOCUS_MINS_MAX: u64 = 240;
+/// `[focus] work_mins` default: the pomodoro idiom.
+pub const DEFAULT_FOCUS_WORK_MINS: u64 = 25;
+/// `[focus] break_mins` default.
+pub const DEFAULT_FOCUS_BREAK_MINS: u64 = 5;
+
+/// `[focus]`: the pomodoro focus mode's timing configuration (issue
+/// #496). Plain integer minutes (the `[sync]` plain-numbers precedent —
+/// no string duration grammar); the values validate in
+/// [`AppConfig::validate`]'s ladder and mint into the domain
+/// [`taskboard_domain::focus::FocusTiming`] at
+/// [`AppConfig::focus_config`]. The struct's `Default` is the
+/// absent-table placeholder (`enabled = false`) that keeps section-less
+/// configs byte-identical on serialization.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FocusSection {
+    /// Spawns the focus-session runtime iff this is `true` (and the
+    /// run mode is not kiosk). Defaults to `false` — without focus
+    /// mode an open entry is just tracking, and an auto-stop would
+    /// hijack ordinary tracked blocks. Skipped when off so the
+    /// absent-table placeholder serializes to nothing.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub enabled: bool,
+    /// Focus-block length in minutes.
+    #[serde(
+        default = "default_focus_work_mins",
+        skip_serializing_if = "focus_work_mins_is_default"
+    )]
+    pub work_mins: u64,
+    /// Break-block length in minutes.
+    #[serde(
+        default = "default_focus_break_mins",
+        skip_serializing_if = "focus_break_mins_is_default"
+    )]
+    pub break_mins: u64,
+}
+
+impl Default for FocusSection {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            work_mins: DEFAULT_FOCUS_WORK_MINS,
+            break_mins: DEFAULT_FOCUS_BREAK_MINS,
+        }
+    }
+}
+
+impl FocusSection {
+    /// The absent-table test behind `skip_serializing_if`: the off
+    /// placeholder serializes to nothing, so a config without
+    /// `[focus]` renders unchanged.
+    #[must_use]
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+fn default_focus_work_mins() -> u64 {
+    DEFAULT_FOCUS_WORK_MINS
+}
+
+fn default_focus_break_mins() -> u64 {
+    DEFAULT_FOCUS_BREAK_MINS
+}
+
+// serde's `skip_serializing_if` demands the `fn(&T) -> bool` shape.
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde's skip fn shape
+fn focus_work_mins_is_default(mins: &u64) -> bool {
+    *mins == DEFAULT_FOCUS_WORK_MINS
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde's skip fn shape
+fn focus_break_mins_is_default(mins: &u64) -> bool {
+    *mins == DEFAULT_FOCUS_BREAK_MINS
 }
 
 /// Which frontend the process runs.
@@ -879,6 +966,13 @@ pub enum ConfigError {
         /// The dotted config key that is invalid.
         field: &'static str,
     },
+    /// A `[focus]` timing is unusable: a minute count of `0` or above
+    /// the [`FOCUS_MINS_MAX`] bound. The payload names the field.
+    #[error("focus timing invalid")]
+    InvalidFocusTiming {
+        /// The dotted config key that is invalid.
+        field: &'static str,
+    },
 }
 
 impl ConfigError {
@@ -909,6 +1003,7 @@ impl ConfigError {
             Self::InvalidWebConfig { .. } => "invalid-web-config",
             Self::InvalidDayStartTime { .. } => "invalid-day-start-time",
             Self::InvalidDueSoonDays { .. } => "invalid-due-soon-days",
+            Self::InvalidFocusTiming { .. } => "invalid-focus-timing",
         }
     }
 }
@@ -1174,6 +1269,20 @@ impl AppConfig {
         if self.web.bind.parse::<std::net::SocketAddr>().is_err() {
             return Err(ConfigError::InvalidWebConfig { field: "web.bind" });
         }
+        // `[focus]`: the decoded (or default) table validates always —
+        // deterministic validation (validate what is written, not what
+        // is live), so garbage minutes are rejected even while the
+        // mode is disabled. The bound is a garbage-input bound, not a
+        // quality ceiling; the values mint into the domain
+        // `FocusTiming` at `focus_config` (expect-on-validated).
+        for (field, mins) in [
+            ("focus.work_mins", self.focus.work_mins),
+            ("focus.break_mins", self.focus.break_mins),
+        ] {
+            if mins == 0 || mins > FOCUS_MINS_MAX {
+                return Err(ConfigError::InvalidFocusTiming { field });
+            }
+        }
         // `[kiosk.rotation]`: a present table validates its shape —
         // two distinct modes (a one-mode rotation or a duplicate are
         // config mistakes, not runtime fallbacks) and the dwell floor.
@@ -1349,6 +1458,31 @@ impl AppConfig {
             enabled: true,
             calendar: self.resolved_day_calendar(),
         }
+    }
+
+    /// The validated `[focus]` table mapped onto the domain
+    /// [`taskboard_domain::focus::FocusTiming`]: `None` while the mode
+    /// is off, otherwise the minted timings. Call after
+    /// [`AppConfig::load`]/[`AppConfig::validate`].
+    ///
+    /// # Panics
+    ///
+    /// Never on a validated config (out-of-bound minutes are rejected
+    /// by [`AppConfig::validate`]).
+    #[must_use]
+    pub fn focus_config(&self) -> Option<taskboard_domain::focus::FocusTiming> {
+        if !self.focus.enabled {
+            return None;
+        }
+        let mins =
+            |m: u64| chrono::TimeDelta::minutes(i64::try_from(m).expect("focus minutes fit i64"));
+        Some(
+            taskboard_domain::focus::FocusTiming::try_new(
+                mins(self.focus.work_mins),
+                mins(self.focus.break_mins),
+            )
+            .expect("focus timing validated"),
+        )
     }
 
     /// The validated server URL. Call after [`AppConfig::validate`].
@@ -1925,6 +2059,125 @@ mod tests {
                 "{raw} must be rejected as InvalidDayStartTime"
             );
         }
+    }
+
+    // ---- the [focus] section (issue #496) ----------------------------
+
+    #[test]
+    fn focus_section_absent_decodes_disabled_and_serializes_nothing() {
+        let config = decode("[app]\nmode = 'daemon'\n").expect("decodes");
+        assert!(!config.focus.enabled, "an absent table never spawns");
+        assert_eq!(config.focus.work_mins, DEFAULT_FOCUS_WORK_MINS);
+        assert_eq!(config.focus.break_mins, DEFAULT_FOCUS_BREAK_MINS);
+        assert_eq!(config.focus_config(), None, "disabled mints nothing");
+        // The serialization fence: a section-less config renders without
+        // any `focus` key (the `web` section's precedent).
+        let value = serde_json::to_value(FocusSection::default()).expect("serializes");
+        assert_eq!(value, serde_json::json!({}));
+    }
+
+    #[test]
+    fn focus_section_present_defaults_to_25_and_5() {
+        let config = decode("[focus]\n").expect("a bare table decodes");
+        assert!(!config.focus.enabled, "presence alone is not the opt-in");
+        assert_eq!(config.focus.work_mins, DEFAULT_FOCUS_WORK_MINS);
+        assert_eq!(config.focus.break_mins, DEFAULT_FOCUS_BREAK_MINS);
+    }
+
+    #[test]
+    fn validate_rejects_zero_and_overflow_focus_minutes() {
+        let mut c = valid();
+        c.focus.enabled = true;
+        c.focus.work_mins = 0;
+        assert!(matches!(
+            c.validate(),
+            Err(ConfigError::InvalidFocusTiming {
+                field: "focus.work_mins"
+            })
+        ));
+        let mut c = valid();
+        c.focus.enabled = true;
+        c.focus.break_mins = 0;
+        assert!(matches!(
+            c.validate(),
+            Err(ConfigError::InvalidFocusTiming {
+                field: "focus.break_mins"
+            })
+        ));
+        let mut c = valid();
+        c.focus.enabled = true;
+        c.focus.work_mins = FOCUS_MINS_MAX + 1;
+        assert!(matches!(
+            c.validate(),
+            Err(ConfigError::InvalidFocusTiming {
+                field: "focus.work_mins"
+            })
+        ));
+        let mut c = valid();
+        c.focus.enabled = true;
+        c.focus.break_mins = FOCUS_MINS_MAX + 1;
+        assert!(matches!(
+            c.validate(),
+            Err(ConfigError::InvalidFocusTiming {
+                field: "focus.break_mins"
+            })
+        ));
+    }
+
+    #[test]
+    fn focus_minutes_boundaries_accepted_and_garbage_rejected_even_when_disabled() {
+        let mut c = valid();
+        c.focus.enabled = true;
+        c.focus.work_mins = FOCUS_MINS_MAX;
+        c.focus.break_mins = 1;
+        c.validate().expect("the 240/1 boundary validates");
+
+        // Deterministic validation: validate what is written, not what
+        // is live — a disabled section still rejects garbage.
+        let mut c = valid();
+        c.focus.enabled = false;
+        c.focus.work_mins = 0;
+        assert!(matches!(
+            c.validate(),
+            Err(ConfigError::InvalidFocusTiming { .. })
+        ));
+    }
+
+    #[test]
+    fn focus_error_kind_is_the_stable_discriminant() {
+        assert_eq!(
+            ConfigError::InvalidFocusTiming {
+                field: "focus.work_mins"
+            }
+            .kind(),
+            "invalid-focus-timing"
+        );
+    }
+
+    #[test]
+    fn serde_round_trip_preserves_focus_defaults() {
+        let original = AppConfig::default();
+        let round: AppConfig = Figment::from(Serialized::from(&original, "round-trip"))
+            .extract()
+            .expect("serialize defaults and extract them back");
+        assert!(!round.focus.enabled);
+        assert_eq!(round.focus.work_mins, DEFAULT_FOCUS_WORK_MINS);
+        assert_eq!(round.focus.break_mins, DEFAULT_FOCUS_BREAK_MINS);
+    }
+
+    #[test]
+    fn focus_config_mints_when_enabled_and_none_when_disabled() {
+        let mut c = valid();
+        assert_eq!(c.focus_config(), None, "disabled mints nothing");
+        c.focus.enabled = true;
+        let timing = c.focus_config().expect("enabled mints");
+        assert_eq!(timing.work(), chrono::TimeDelta::minutes(25));
+        assert_eq!(timing.respite(), chrono::TimeDelta::minutes(5));
+        c.focus.work_mins = 90;
+        c.focus.break_mins = 15;
+        let timing = c.focus_config().expect("enabled mints");
+        assert_eq!(timing.work(), chrono::TimeDelta::minutes(90));
+        assert_eq!(timing.respite(), chrono::TimeDelta::minutes(15));
     }
 
     #[test]
@@ -2681,6 +2934,12 @@ mod tests {
             (
                 ConfigError::KioskPinRequired { count: 2 },
                 "kiosk-pin-required",
+            ),
+            (
+                ConfigError::InvalidFocusTiming {
+                    field: "focus.work_mins",
+                },
+                "invalid-focus-timing",
             ),
         ] {
             assert_eq!(err.kind(), kind);

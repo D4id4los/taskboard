@@ -543,3 +543,34 @@ fn the_ipc_section_decodes_and_the_env_lane_overrides() {
     let config = AppConfig::load(Some(file)).expect("loads");
     assert_eq!(config.ipc.client_read_timeout_secs, Some(0));
 }
+
+/// The `[focus]` section (issue #496): a partial file's zero minutes is
+/// a typed `invalid-focus-timing` through the real load chain, and the
+/// env lane overrides the file's minutes (`TASKBOARD_FOCUS__WORK_MINS`,
+/// figment for free).
+#[test]
+fn the_focus_section_rejects_typed_and_the_env_lane_overrides() {
+    let _env = env_lock();
+    let dir = tempdir();
+    let file = dir.path().join("focus.toml");
+    std::fs::write(&file, "[focus]\nenabled = true\nwork_mins = 0\n").expect("write toml");
+    let err = AppConfig::load(Some(file.clone())).expect_err("zero minutes must not load");
+    assert_eq!(err.kind(), "invalid-focus-timing");
+
+    remove_env("TASKBOARD_FOCUS__WORK_MINS");
+    set_env("TASKBOARD_FOCUS__WORK_MINS", "50");
+    let config = AppConfig::load(Some(file.clone())).expect("env repairs the value");
+    remove_env("TASKBOARD_FOCUS__WORK_MINS");
+    assert!(config.focus.enabled);
+    assert_eq!(config.focus.work_mins, 50, "env beats file");
+    let timing = config.focus_config().expect("enabled mints");
+    assert_eq!(
+        timing.work(),
+        taskboard_domain::focus::FocusTiming::try_new(
+            chrono::TimeDelta::minutes(50),
+            chrono::TimeDelta::minutes(5)
+        )
+        .expect("positive")
+        .work()
+    );
+}
