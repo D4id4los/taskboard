@@ -27,7 +27,7 @@ use crate::view_state::{DateField, Flow, ViewState};
 use crate::{
     AppWindow, BannerRowModel, BoardBarModel, BoardModel, BoardSegmentModel,
     Breakpoint as SlintBreakpoint, DecorationKind, DragState, DueDayModel, DueKind as SlintDueKind,
-    FlowHintModel, HabitRowModel, NotificationRowModel, PaletteRowModel, Responsive, RuleRowModel,
+    FlowHintModel, HabitRowModel, NotificationRowModel, PaletteRowModel, RuleRowModel,
     StackColumnModel, StackDetailModel, SyncBadgeModel, SyncPhaseUi, TaskCardModel, TaskDecoration,
     TaskDetailModel, Theme, TimerRowModel, TodayModel, TodayRowModel, TodaySectionModel, Tone,
     View,
@@ -1817,17 +1817,6 @@ fn recency_caption(last_success: Option<DateTime<Utc>>, now: DateTime<Utc>) -> S
         format!("synced {}m ago", age.num_minutes())
     } else {
         String::new()
-    }
-}
-
-/// Reads the current breakpoint back from the window (the adapter's
-/// compact queries).
-#[must_use]
-pub fn current_breakpoint(window: &AppWindow) -> Breakpoint {
-    match window.global::<Responsive>().get_current_breakpoint() {
-        SlintBreakpoint::Compact => Breakpoint::Compact,
-        SlintBreakpoint::Regular => Breakpoint::Regular,
-        SlintBreakpoint::Expansive => Breakpoint::Expansive,
     }
 }
 
