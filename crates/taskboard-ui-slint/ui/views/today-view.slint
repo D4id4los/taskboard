@@ -116,6 +116,12 @@ export component TodayView inherits FocusScope {
                     timers-awaiting: root.timers-awaiting;
                     cancel-clicked(r) => root.timers-cancel-clicked(r);
                     create-accepted(label, when) => root.timers-create-accepted(label, when);
+                    // The validity half (r4 D27, chunk 9's mount fix):
+                    // the form's per-keystroke grammar probe rides the
+                    // same forwards the task-view twin wires.
+                    when-edited(t) => root.timers-when-edited(t);
+                    when-validity: root.timer-when-validity;
+                    when-error-hint: root.timer-when-error-hint;
                 }
                 // The habits section (D-P18): timers, then habits, then
                 // the task sections.
