@@ -42,6 +42,7 @@ pub mod command;
 pub mod days;
 pub mod entities;
 pub mod find;
+pub mod focus;
 pub mod habit;
 pub mod idgen;
 pub mod ids;
