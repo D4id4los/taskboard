@@ -4075,4 +4075,118 @@ mod tests {
             "a moved occurrence's row is unconsulted"
         );
     }
+
+    proptest! {
+        #![proptest_config(test_support::proptest_config(256))]
+
+        // The prune property over randomized rule/receipt shapes (§8
+        // T4): the pruned set is exactly the delivered∧dismissed `At`
+        // rules — never a live `At` rule, never any `DueOffset` rule —
+        // and the receipts survive untouched, so the prune is
+        // idempotent by the same tokens.
+        #[test]
+        fn prune_settled_at_rules_takes_exactly_the_settled_at_rows(
+            (at_instants, delivered_bits, dismissed_bits, offset_secs, now)
+                in (
+                    prop::collection::vec(test_support::timestamp_strategy(), 0..6),
+                    prop::collection::vec(any::<bool>(), 0..6),
+                    prop::collection::vec(any::<bool>(), 0..6),
+                    prop::collection::vec(-86_400_i64..=0, 0..6),
+                    test_support::timestamp_strategy(),
+                ),
+        ) {
+            let task = live_task(1, None, 0);
+            let tasks = tasks_with(&task);
+            let mut rules = BTreeMap::new();
+            let mut deliveries = BTreeSet::new();
+            let mut dismissals = BTreeSet::new();
+            // The At rules: the vec lengths agree by zip, receipts per
+            // the random bits — delivered/dismissed at the rule's
+            // effective (snooze-free) occurrence.
+            for ((i, instant), (delivered, dismissed)) in
+                at_instants.iter().enumerate().zip(delivered_bits.iter().zip(dismissed_bits.iter()))
+            {
+                let rule = at_rule(1_000 + i as u128, task.id, *instant);
+                let reminder = ReminderRef::Rule(rule.id);
+                if *delivered {
+                    deliveries.insert(ReminderDelivery {
+                        reminder,
+                        occurrence: *instant,
+                        delivered_at: *instant,
+                    });
+                }
+                if *dismissed {
+                    dismissals.insert(ReminderDismissal {
+                        reminder,
+                        occurrence: *instant,
+                        dismissed_at: now,
+                    });
+                }
+                rules.insert(rule.id, rule);
+            }
+            // The DueOffset controls: armed on the same undated task
+            // (unarmed never fires — the strongest never-prune shape).
+            for (i, secs) in offset_secs.iter().enumerate() {
+                let offset =
+                    ReminderOffset::before(chrono::TimeDelta::try_seconds(*secs).unwrap())
+                        .unwrap();
+                let rule = ReminderRule {
+                    insistence: Insistence::Normal,
+                    id: ReminderRuleId::from(uuid::Uuid::from_u128(2_000 + i as u128)),
+                    task: task.id,
+                    kind: ReminderKind::DueOffset(offset),
+                    created_at: now,
+                    updated_at: now,
+                };
+                rules.insert(rule.id, rule);
+            }
+            let mut reminders = ReminderState {
+                rules,
+                deliveries,
+                dismissals,
+                ..ReminderState::default()
+            };
+            let before_rules = reminders.rules.clone();
+            let before_deliveries = reminders.deliveries.clone();
+            let expected: BTreeSet<_> = before_rules
+                .keys()
+                .filter(|&&id| {
+                    let reminder = ReminderRef::Rule(id);
+                    at_rule_occurrence(&reminders, id).is_some_and(|eff| {
+                        reminders.is_delivered(&reminder, &eff)
+                            && reminders.is_dismissed(&reminder, &eff)
+                    })
+                })
+                .copied()
+                .collect();
+            prune_settled_at_rules(&mut reminders);
+            // The pruned set is exactly the settled shape: every settled
+            // At rule is gone, every unsettled row survives.
+            for id in before_rules.keys() {
+                prop_assert_eq!(
+                    reminders.rules.contains_key(id),
+                    !expected.contains(id),
+                    "a rule survives iff it is not settled"
+                );
+            }
+            // No `DueOffset` rule is ever pruned, and the receipts
+            // survive the prune untouched (the re-fire-proof shape).
+            prop_assert!(
+                before_rules
+                    .values()
+                    .filter(|r| r.kind.is_due_offset())
+                    .all(|r| reminders.rules.contains_key(&r.id)),
+                "no DueOffset rule is ever pruned"
+            );
+            prop_assert_eq!(
+                &reminders.deliveries, &before_deliveries,
+                "the receipts deliberately survive the prune"
+            );
+            let _ = &tasks;
+            // Idempotence: a second pass over the survivors is a no-op.
+            let survivor_count = reminders.rules.len();
+            prune_settled_at_rules(&mut reminders);
+            prop_assert_eq!(reminders.rules.len(), survivor_count);
+        }
+    }
 }
