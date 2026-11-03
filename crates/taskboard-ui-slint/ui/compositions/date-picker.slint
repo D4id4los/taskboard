@@ -68,8 +68,10 @@ export component DatePicker inherits Rectangle {
     callback time-accepted(string);
 
     // The combobox's pushed half (r4 D26): the validity flavour, the
-    // filtered quick-list rows, and the scroll-to-nearest index.
+    // filtered quick-list rows, and the scroll-to-nearest index. The
+    // error hint is the copy constant (r4 D27).
     in property <FieldValidity> time-validity: FieldValidity.neutral;
+    in property <string> time-error-hint;
     in property <[TimeSlotRow]> time-slots;
     in property <int> time-nearest-row: 0;
 
@@ -142,6 +144,7 @@ export component DatePicker inherits Rectangle {
             TimeField {
                 time-text: root.time-text;
                 validity: root.time-validity;
+                error-hint: root.time-error-hint;
                 label: "Time";
                 description: "The time of day; type HH:MM, use the steppers, or pick from the quick list.";
                 slot-rows: root.time-slots;

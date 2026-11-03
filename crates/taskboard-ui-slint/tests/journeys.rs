@@ -7259,6 +7259,261 @@ fn steppers_seed_and_step_from_empty() {
     );
 }
 
+/// R4 D24 (F20) — the click-away rule on the date fields: a
+/// parseable non-empty buffer commits (the same funnel as Return),
+/// junk and empty discard (no command, the prior value survives, the
+/// editor collapses). Both date fields ride the same rule.
+#[test]
+#[allow(clippy::too_many_lines)] // the rule's three legs, both fields
+fn click_away_commits_parseable_and_discards_junk() {
+    let (fixture, mut state) = fixture::journey_state();
+    state
+        .tasks
+        .get_mut(&fixture.task1)
+        .expect("fixture task")
+        .duedate = Some(chrono::Utc.with_ymd_and_hms(2030, 1, 31, 0, 0, 0).unwrap());
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavNextView);
+            harness.press(ActionId::NavNextView);
+            // (a) Junk: the click-away discards — no command, the
+            // editor collapses, the prior due survives a reopen.
+            harness.driver.click_by_label("Edit due date");
+            harness.driver.advance_time(0);
+            harness.clear_seeded();
+            harness.type_text("soon");
+            harness.driver.click_at(600.0, 450.0);
+            harness.driver.advance_time(0);
+            harness.assert_commands(&[]);
+            assert!(
+                !harness.handle.window().get_task_model().due_open,
+                "junk cannot linger — the editor collapsed"
+            );
+            harness.driver.click_by_label("Edit due date");
+            harness.driver.advance_time(0);
+            assert_eq!(
+                harness.handle.window().get_task_model().due_text.as_str(),
+                "2030-01-31",
+                "the prior value re-seeded"
+            );
+            // The two-press ladder out: step-back to the grid, then
+            // the clean close — leg (b) starts from a disarmed editor.
+            harness.stroke(parse("Escape").expect("Escape"));
+            harness.driver.advance_time(0);
+            harness.stroke(parse("Escape").expect("Escape"));
+            harness.driver.advance_time(0);
+            assert!(
+                !harness.handle.window().get_task_model().due_open,
+                "the ladder closed the editor"
+            );
+
+            // (b) Parseable: the click-away commits the same command
+            // Return would.
+            harness.driver.click_by_label("Edit due date");
+            harness.driver.advance_time(0);
+            harness.clear_seeded();
+            harness.type_text("2030-02-14");
+            harness.driver.click_at(600.0, 450.0);
+            harness.driver.advance_time(0);
+            harness.assert_commands(&[StateCommand::UpdateTask {
+                id: fixture.task1,
+                changes: taskboard_domain::TaskChanges {
+                    duedate: Some(Some(
+                        chrono::Utc.with_ymd_and_hms(2030, 2, 14, 0, 0, 0).unwrap(),
+                    )),
+                    ..taskboard_domain::TaskChanges::default()
+                },
+            }]);
+            assert!(
+                !harness.handle.window().get_task_model().due_open,
+                "the editor collapsed on the commit"
+            );
+
+            // (c) Empty: the click-away never means clear — no
+            // command, the due survives.
+            harness.driver.click_by_label("Edit due date");
+            harness.driver.advance_time(0);
+            harness.driver.click_by_label("Clear");
+            harness.driver.advance_time(0);
+            harness.driver.click_at(600.0, 450.0);
+            harness.driver.advance_time(0);
+            harness.assert_commands(&[]);
+            assert!(
+                !harness.handle.window().get_task_model().due_open,
+                "the editor collapsed on the empty discard"
+            );
+            // The absence of a command IS the survival: empty on
+            // focus-loss never means clear (a structural fact, not a
+            // state-timing read).
+
+            // (d) The start-date field rides the same rule: junk
+            // discards (its seeded buffer is empty — typing is the
+            // whole entry).
+            harness.driver.click_by_label("Edit start date");
+            harness.driver.advance_time(0);
+            harness.type_text("soon");
+            harness.driver.click_at(600.0, 450.0);
+            harness.driver.advance_time(0);
+            harness.assert_commands(&[]);
+            assert!(
+                !harness.handle.window().get_task_model().scheduled_open,
+                "the scheduled editor collapsed"
+            );
+            harness.driver.click_by_label("Edit start date");
+            harness.driver.advance_time(0);
+            harness.type_text("2030-03-01");
+            harness.driver.click_at(600.0, 450.0);
+            harness.driver.advance_time(0);
+            harness.assert_commands(&[StateCommand::UpdateTask {
+                id: fixture.task1,
+                changes: taskboard_domain::TaskChanges {
+                    scheduled: Some(Some(
+                        chrono::Utc.with_ymd_and_hms(2030, 3, 1, 0, 0, 0).unwrap(),
+                    )),
+                    ..taskboard_domain::TaskChanges::default()
+                },
+            }]);
+        },
+    );
+}
+
+/// R4 D27 (F27) — the date field's tri-state validity flips with the
+/// authoritative parse: junk reads invalid, a parseable entry valid,
+/// the untouched field neutral. The model property is the oracle —
+/// never the label text.
+#[test]
+fn the_date_field_validity_flips_with_the_parse() {
+    let (fixture, mut state) = fixture::journey_state();
+    state
+        .tasks
+        .get_mut(&fixture.task1)
+        .expect("fixture task")
+        .duedate = Some(chrono::Utc.with_ymd_and_hms(2030, 1, 31, 0, 0, 0).unwrap());
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavNextView);
+            harness.press(ActionId::NavNextView);
+            harness.driver.click_by_label("Edit due date");
+            harness.driver.advance_time(0);
+            assert_eq!(
+                harness.handle.window().get_task_model().date_validity,
+                taskboard_ui_slint::FieldValidity::Valid,
+                "the seeded buffer parses"
+            );
+            harness.clear_seeded();
+            harness.type_text("soon");
+            harness.driver.advance_time(0);
+            assert_eq!(
+                harness.handle.window().get_task_model().date_validity,
+                taskboard_ui_slint::FieldValidity::Invalid
+            );
+            harness.clear_seeded();
+            harness.type_text("2030-02-14");
+            harness.driver.advance_time(0);
+            assert_eq!(
+                harness.handle.window().get_task_model().date_validity,
+                taskboard_ui_slint::FieldValidity::Valid
+            );
+        },
+    );
+}
+
+/// R4 D24 (chunk-6 acceptance e) — the foreign-flow guard: a focus
+/// steal into the description field while the due editor is armed
+/// settles the due per the rule and leaves the description's own
+/// engage flow intact.
+#[test]
+fn a_foreign_field_steal_settles_the_due_per_the_rule() {
+    let (fixture, mut state) = fixture::journey_state();
+    state
+        .tasks
+        .get_mut(&fixture.task1)
+        .expect("fixture task")
+        .duedate = Some(chrono::Utc.with_ymd_and_hms(2030, 1, 31, 0, 0, 0).unwrap());
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavNextView);
+            harness.press(ActionId::NavNextView);
+
+            // Junk in the due field: the steal discards — no command,
+            // the due editor collapses, the description's engage flow
+            // is untouched.
+            harness.driver.click_by_label("Edit due date");
+            harness.driver.advance_time(0);
+            harness.clear_seeded();
+            harness.type_text("soon");
+            harness.driver.click_by_label("Edit description");
+            harness.driver.advance_time(0);
+            harness.assert_commands(&[]);
+            assert!(
+                !harness.handle.window().get_task_model().due_open,
+                "the due editor collapsed on the steal"
+            );
+            assert!(
+                harness
+                    .handle
+                    .window()
+                    .get_task_model()
+                    .description_edit_open,
+                "the description's own engage flow is intact"
+            );
+            harness.stroke(parse("Escape").expect("Escape"));
+            harness.driver.advance_time(0);
+            assert!(
+                !harness
+                    .handle
+                    .window()
+                    .get_task_model()
+                    .description_edit_open,
+                "the description closed again"
+            );
+
+            // A parseable buffer: the steal commits the due.
+            harness.driver.click_by_label("Edit due date");
+            harness.driver.advance_time(0);
+            harness.clear_seeded();
+            harness.type_text("2030-03-01");
+            harness.driver.click_by_label("Edit description");
+            harness.driver.advance_time(0);
+            harness.assert_commands(&[StateCommand::UpdateTask {
+                id: fixture.task1,
+                changes: taskboard_domain::TaskChanges {
+                    duedate: Some(Some(
+                        chrono::Utc.with_ymd_and_hms(2030, 3, 1, 0, 0, 0).unwrap(),
+                    )),
+                    ..taskboard_domain::TaskChanges::default()
+                },
+            }]);
+            assert!(
+                harness
+                    .handle
+                    .window()
+                    .get_task_model()
+                    .description_edit_open,
+                "the description's engage flow still armed"
+            );
+        },
+    );
+}
+
 /// R4 D26 (F22, review focus d) — the combobox is the picker's only
 /// time path: the typed filter seeds the picker live (and junk shows
 /// invalid without touching it), a quick-pick renders the canonical
@@ -7634,8 +7889,10 @@ fn the_picker_overlay_dismisses_without_disturbing_the_editor() {
             };
             let y_open = caption(&harness);
 
-            // Outside click: the dismissal layer absorbs it — the
-            // picker drops, the editor and its seeded buffer stay.
+            // Outside click (r4 D24, superseding the round-3 D10
+            // picker-only rule): the editor settles per the rule — the
+            // seeded buffer is parseable, so click-away ≡ done: the
+            // same instant re-commits and the editor collapses.
             harness.driver.click_at(600.0, 450.0);
             harness.driver.advance_time(0);
             assert!(
@@ -7647,26 +7904,18 @@ fn the_picker_overlay_dismisses_without_disturbing_the_editor() {
                 y_open,
                 "the metadata row's y is unchanged — the picker pushes nothing"
             );
-            let field = harness
-                .driver
-                .find_by_label("Due date entry")
-                .expect("the editor stays armed after the dismissal");
-            assert_eq!(
-                field.value().as_deref(),
-                Some("2030-01-31"),
-                "the seeded buffer is intact"
-            );
-            harness.assert_commands(&[]);
-
-            // The ladder has no grid phase left after the dismissal
-            // (no picker to step into — the machine cannot trap into
-            // a phase that does not exist, r4 D25): the Escape ends
-            // the whole editor clean — no command.
-            harness.stroke(parse("Escape").expect("Escape"));
-            harness.assert_commands(&[]);
+            harness.assert_commands(&[StateCommand::UpdateTask {
+                id: fixture.task1,
+                changes: taskboard_domain::TaskChanges {
+                    duedate: Some(Some(
+                        chrono::Utc.with_ymd_and_hms(2030, 1, 31, 0, 0, 0).unwrap(),
+                    )),
+                    ..taskboard_domain::TaskChanges::default()
+                },
+            }]);
             assert!(
                 !harness.handle.window().get_task_model().due_open,
-                "the editor collapsed"
+                "the editor collapsed on the settle"
             );
         },
     );

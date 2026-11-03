@@ -522,6 +522,12 @@ pub struct DueEditorPush<'a> {
     pub time_valid: Option<bool>,
     pub time_slots: &'a [chrono::NaiveTime],
     pub time_nearest_row: usize,
+    /// The due field's tri-state validity probe + the copy constants
+    /// (r4 D27) — the hints live in one Rust home; the slint side
+    /// decides visibility.
+    pub date_valid: Option<bool>,
+    pub syntax_hint: &'static str,
+    pub time_hint: &'static str,
 }
 
 impl Default for DueEditorPush<'_> {
@@ -537,6 +543,9 @@ impl Default for DueEditorPush<'_> {
             time_valid: None,
             time_slots: &[],
             time_nearest_row: 0,
+            date_valid: None,
+            syntax_hint: "",
+            time_hint: "",
         }
     }
 }
@@ -1575,6 +1584,13 @@ fn push_task_detail(
                 .collect::<Vec<crate::TimeSlotRow>>(),
         )),
         date_time_nearest_row: i32::try_from(due.time_nearest_row).unwrap_or(0),
+        date_validity: match due.date_valid {
+            None => crate::FieldValidity::Neutral,
+            Some(true) => crate::FieldValidity::Valid,
+            Some(false) => crate::FieldValidity::Invalid,
+        },
+        date_syntax_hint: SharedString::from(due.syntax_hint),
+        time_syntax_hint: SharedString::from(due.time_hint),
     });
     tables.task_rules = task_rules;
     mutations
