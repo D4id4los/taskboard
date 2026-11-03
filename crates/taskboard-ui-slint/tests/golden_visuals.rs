@@ -59,6 +59,16 @@ const SCALES: [f64; 2] = [0.5, 3.0];
 /// The fixed window height (logical px).
 const HEIGHT: u32 = 900;
 
+/// The golden tier's zone pin (r4 D28): due/scheduled phrases now
+/// render the **device-local** wall-clock, and a golden PNG is
+/// compared on machines in any zone — the capture pins the process to
+/// UTC so the committed pixels are machine-independent (the timezone
+/// fixture convention; cargo-nextest runs each test as its own
+/// process, so the set cannot race the lib's lazy `Local`).
+fn pin_utc_zone() {
+    unsafe { std::env::set_var("TZ", "UTC") };
+}
+
 fn golden_path(scale: f64, width: u32) -> PathBuf {
     PathBuf::from(format!(
         "{}/tests/goldens/board-{scale:.1}-{width}.png",
@@ -136,6 +146,7 @@ fn capture_golden(
 
 #[test]
 fn the_board_goldens_hold_across_the_scale_breakpoint_matrix() {
+    pin_utc_zone();
     let regen = regen_requested();
     for scale in SCALES {
         for width in BREAKPOINTS {
@@ -177,6 +188,7 @@ fn capture_and_compare(driver: &mut SlintDriver, scale: f64, width: u32, regen: 
 /// the walk's active element is visibly indicated at a closed cell.
 #[test]
 fn the_focused_cell_golden_pins_the_ring() {
+    pin_utc_zone();
     let regen = regen_requested();
     support::driver::run(
         DriverOptions {
@@ -258,6 +270,7 @@ fn dummy_system() -> tokio::sync::broadcast::Receiver<taskboard_domain::SystemEv
 /// the minute bucket.
 #[test]
 fn the_today_goldens_hold_across_the_scale_breakpoint_matrix() {
+    pin_utc_zone();
     let regen = regen_requested();
     for scale in SCALES {
         for width in BREAKPOINTS {
@@ -365,6 +378,7 @@ fn capture_kiosk(driver: &mut SlintDriver, mode: &str, regen: bool) {
 /// pinned board through the kiosk mount, one matrix cell.
 #[test]
 fn the_kiosk_board_golden_holds() {
+    pin_utc_zone();
     let regen = regen_requested();
     support::driver::run(
         DriverOptions {
@@ -384,6 +398,7 @@ fn the_kiosk_board_golden_holds() {
 /// timer flip — the passive upcoming reading of the pinned board.
 #[test]
 fn the_kiosk_today_golden_holds() {
+    pin_utc_zone();
     let regen = regen_requested();
     support::driver::run(
         DriverOptions {
@@ -412,6 +427,7 @@ fn the_kiosk_today_golden_holds() {
 /// run renders the identical "fired 30m ago" captions.
 #[test]
 fn the_notification_golden_holds() {
+    pin_utc_zone();
     let regen = regen_requested();
     support::driver::run(
         DriverOptions {
@@ -485,6 +501,7 @@ fn task_view_golden_path(scale: f64, height: u32) -> PathBuf {
 /// argument, tighter).
 #[test]
 fn the_task_view_goldens_hold_across_the_scale_height_matrix() {
+    pin_utc_zone();
     let regen = regen_requested();
     for scale in TASK_VIEW_SCALES {
         for height in TASK_VIEW_HEIGHTS {
