@@ -507,6 +507,10 @@ pub struct DueEditorPush<'a> {
     /// The one-shot grid-focus flag (round-3 D10): consumed by the
     /// next push — `true` hands focus to the overlay's grid.
     pub focus_on_mount: bool,
+    /// The one-shot field-focus flag (r4 D25): consumed by the next
+    /// push — `true` hands focus back to the armed field (the grid's
+    /// Enter hand-over).
+    pub field_focus: bool,
     /// The due-soon horizon (round-3 D14/#230): the handed-over
     /// typed knob, one horizon everywhere (the sets and the grid
     /// tint). Defaults to the presentation constant.
@@ -527,6 +531,7 @@ impl Default for DueEditorPush<'_> {
             echo: "",
             picker: None,
             focus_on_mount: false,
+            field_focus: false,
             horizon: crate::presentation::DUE_SOON_HORIZON,
             time_text: "--:--",
             time_valid: None,
@@ -1546,6 +1551,7 @@ fn push_task_detail(
         ),
         date_grid,
         date_grid_focus: due.focus_on_mount,
+        date_field_focus: due.field_focus,
         date_time_text: SharedString::from(due.picker.map_or(String::new(), |p| {
             p.time()
                 .map_or("--:--".to_owned(), |t| t.format("%H:%M").to_string())

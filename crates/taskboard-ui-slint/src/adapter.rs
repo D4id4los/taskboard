@@ -110,6 +110,15 @@ pub(crate) enum FlowLiveness {
     Flowless,
 }
 
+/// The one-shot focus hand-over's phase (round-3 D10, r4 D25).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum FocusHandover {
+    #[default]
+    None,
+    Grid,
+    Field,
+}
+
 pub(crate) struct Adapter {
     keymap: Keymap,
     /// The today window's derivation pair (chunk 10 D4): held, never
@@ -217,15 +226,22 @@ pub(crate) struct Adapter {
     due_buffer: String,
     due_echo: String,
     due_picker: Option<crate::due_edit::DuePickerState>,
-    /// The one-shot grid focus flag (round-3 D10): `false` on the
-    /// default-open (the text field keeps focus), `true` on the
-    /// Down-in-field stroke — consumed by the next push.
-    picker_focus_on_mount: bool,
+    /// The one-shot focus hand-over (round-3 D10, r4 D25): the phase
+    /// step that owns the next push's focus — `None` keeps the status
+    /// quo, `Grid` hands focus to the overlay's grid (the
+    /// Down-in-field stroke, the Escape step-back), `Field` hands it
+    /// back to the armed field (the grid's Enter). Mutually
+    /// exclusive by construction — one hand-over per pass.
+    focus_handover: FocusHandover,
     /// The time combobox's visible text mirror (r4 D26): `--:--`
     /// while no time exists (the value echo), the typed digits while
     /// the user filters/types, the canonical `HH:MM` after a picker-
     /// source move. Single writer: the adapter.
     time_text: String,
+    /// The programmatic-focus-steal latch (r4 D24): set before the
+    /// phase steps hand focus across seams; the settle funnel
+    /// consumes it and skips the commit/discard rule for that steal.
+    due_focus_steal: bool,
     /// The last snapshot the derive+diff materialized onto the models
     /// (the unchanged-refresh guard, #463): `Some` after every derived
     /// pass. `Arc::ptr_eq` against the fresh load ⇒ the models already
@@ -507,7 +523,10 @@ impl Adapter {
             if self.due_picker.is_none() {
                 self.open_due_picker(window, true);
             } else {
-                self.picker_focus_on_mount = true;
+                // The field→grid hand-over is a programmatic steal —
+                // the funnel must not settle on its focus loss (r4 D24).
+                self.due_focus_steal = true;
+                self.focus_handover = FocusHandover::Grid;
                 // The one-shot flag is a derive input the push consumes — forced.
                 self.refresh_forced(window);
             }
@@ -907,15 +926,16 @@ impl Adapter {
             text: &self.due_buffer,
             echo: &self.due_echo,
             picker: self.due_picker.as_ref(),
-            focus_on_mount: self.picker_focus_on_mount,
+            focus_on_mount: self.focus_handover == FocusHandover::Grid,
+            field_focus: self.focus_handover == FocusHandover::Field,
             horizon: self.due_soon_horizon,
             time_text: &self.time_text,
             time_valid: crate::due_edit::time_field_valid(&self.time_text),
             time_slots: &time_slots,
             time_nearest_row,
         };
-        // The grid-focus flag is one-shot: consumed by this push.
-        self.picker_focus_on_mount = false;
+        // The focus hand-over is one-shot: consumed by this push.
+        self.focus_handover = FocusHandover::None;
         #[cfg(test)]
         {
             self.derive_passes += 1;
@@ -1217,8 +1237,33 @@ impl Adapter {
             // swallow-all arm is gone (round-3 F18): every other
             // effect settles the flow and re-runs via the resolver.
             (Flow::EditDate { .. }, UiEffect::SetMode(Mode::Normal)) => {
-                self.due_picker = None;
-                self.view_state.discard_edit()
+                // The Escape ladder (r4 D25): the phase the grid-focus
+                // mirror reads decides — the picker phase's Escape is
+                // the clean close (the view Escape still ends the
+                // editor, R-c); the field phase's Escape is the phase
+                // step back: the grid takes focus, the half-typed
+                // buffer survives (the steal latch suppresses the
+                // settle funnel).
+                // No ladder without a picker: a dismissed overlay has
+                // no grid to hand focus to — the only non-trapping
+                // exit is the clean close (the machine cannot step
+                // into a phase that no longer exists).
+                if self.due_picker.is_none() || self.shell.date_picker_grid {
+                    self.due_picker = None;
+                    self.view_state.discard_edit()
+                } else {
+                    self.due_focus_steal = true;
+                    self.focus_handover = FocusHandover::Grid;
+                    // The step-back holds insert mode — the grid
+                    // phase's own shape (chunk 6's engage semantics):
+                    // the editor is still armed, and the next Escape
+                    // resolves as the grid phase's clean close.
+                    self.shell.mode = Mode::Insert;
+                    // The phase step pushes its one-shot flag itself
+                    // (no outcomes ride it — the flow stays armed).
+                    self.refresh_forced(window);
+                    Vec::new()
+                }
             }
             (Flow::EditDate { .. }, UiEffect::Activate | UiEffect::SetMode(Mode::Insert)) => {
                 Vec::new()
@@ -3341,7 +3386,8 @@ pub(crate) fn install(
         due_buffer: String::new(),
         due_echo: String::new(),
         due_picker: None,
-        picker_focus_on_mount: false,
+        focus_handover: FocusHandover::None,
+        due_focus_steal: false,
         time_text: "--:--".to_owned(),
         board_target: None,
         rule_target: None,
@@ -4865,12 +4911,24 @@ fn install_due_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         let mut a = edited.borrow_mut();
         a.due_buffer = text.to_string();
         a.due_echo = crate::due_edit::echo(&a.due_buffer, chrono::Utc::now());
-        // Live echo without a full refresh: mutate the pushed struct's
-        // echo in place (the grid/caption are untouched).
-        let mut model = window.get_task_model();
-        model.due_echo = SharedString::from(a.due_echo.clone());
-        model.scheduled_echo = SharedString::from(a.due_echo.clone());
-        window.set_task_model(model);
+        // The Buffer-source live sync (r4 D25): a parseable buffer
+        // re-seeds the picker per keystroke (the field wins while
+        // typing); empty or junk leaves it untouched — the validity
+        // flavour carries the state.
+        let now = chrono::Utc::now();
+        let seeded = a.due_picker.as_ref().and_then(|picker| {
+            crate::due_edit::sync_buffer_picker(
+                &a.due_buffer,
+                picker,
+                crate::due_edit::SyncSource::Buffer,
+                now,
+            )
+        });
+        if let Some((_, Some(seeded))) = seeded {
+            a.due_picker = Some(seeded);
+        }
+        // The echo and the seeded picker both ride a full pass now.
+        a.refresh_forced(&window);
     });
 
     let accepted = Rc::clone(adapter);
@@ -5087,31 +5145,34 @@ impl Adapter {
             K::NextMonth => picker.move_months(1),
             K::MonthStart => picker.month_edge(true),
             K::MonthEnd => picker.month_edge(false),
-            // Commit: the cursor's date at the picker's time through
-            // the one funnel.
+            // Grid-Enter is the phase hand-over, never a commit
+            // (r4 D25, review focus b): the armed field takes focus
+            // via the one-shot flag; the typed path and the combobox
+            // own the commits through the one funnel. Day-cell clicks
+            // keep their direct `commit_date`.
             K::Commit => {
-                let instant = picker.commit_instant();
-                commit_date(self, window, Some(instant));
+                self.focus_handover = FocusHandover::Field;
+                self.refresh_forced(window);
                 return;
             }
             // The time steppers (round-3 D9, r4 D26): ±15 min,
             // wrapping — the date follows the wrap, an unset time
             // seeds midnight first (r4 D23). Button-only; the combobox
             // row's steppers land on the same codes.
-            K::TimeBack | K::TimeForward => {
-                picker.step_time(match key {
-                    K::TimeBack => -1,
-                    _ => 1,
-                });
-                // Picker-source sync: the canonical rendering wins the
-                // field mirror, the buffer re-renders from the
-                // selection.
-                self.time_text = picker
-                    .time()
-                    .map_or("--:--".to_owned(), crate::due_edit::format_time_hm);
-                sync_buffer_from_picker(self);
-            }
+            K::TimeBack => picker.step_time(-1),
+            K::TimeForward => picker.step_time(1),
         }
+        // The Picker-source live sync (r4 D25): every move re-renders
+        // the buffer/echo from the selection, and a stepped time wins
+        // the combobox's mirror.
+        if matches!(key, K::TimeBack | K::TimeForward)
+            && let Some(picker) = self.due_picker.as_ref()
+        {
+            self.time_text = picker
+                .time()
+                .map_or("--:--".to_owned(), crate::due_edit::format_time_hm);
+        }
+        sync_buffer_from_picker(self);
         self.refresh_forced(window);
     }
 }
@@ -5136,7 +5197,11 @@ impl Adapter {
                 crate::view_state::DateField::Due => t.duedate,
                 crate::view_state::DateField::Scheduled => t.scheduled,
             });
-        self.picker_focus_on_mount = focus_grid;
+        self.focus_handover = if focus_grid {
+            FocusHandover::Grid
+        } else {
+            FocusHandover::None
+        };
         self.due_picker = Some(crate::due_edit::DuePickerState::open(
             chrono::Utc::now().date_naive(),
             anchor,
@@ -5157,9 +5222,18 @@ impl Adapter {
 /// arm in its adapter plumbing until the pure helper lands): the due
 /// buffer/echo re-render from the picker's current selection.
 fn sync_buffer_from_picker(a: &mut Adapter) {
-    if let Some(picker) = a.due_picker.as_ref() {
-        a.due_buffer = crate::due_edit::format_entry(Some(picker.commit_instant()));
-        a.due_echo = crate::due_edit::echo(&a.due_buffer, chrono::Utc::now());
+    let now = chrono::Utc::now();
+    let synced = a.due_picker.as_ref().and_then(|picker| {
+        crate::due_edit::sync_buffer_picker(
+            &a.due_buffer,
+            picker,
+            crate::due_edit::SyncSource::Picker,
+            now,
+        )
+    });
+    if let Some((buffer, None)) = synced {
+        a.due_echo = crate::due_edit::echo(&buffer, now);
+        a.due_buffer = buffer;
     }
 }
 

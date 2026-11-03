@@ -393,6 +393,18 @@ impl DuePickerState {
         self.time = time;
     }
 
+    /// The sync helper's constructor (r4 D25): a picker state at
+    /// `cursor` with the given time-of-day — the month follows the
+    /// cursor.
+    #[must_use]
+    pub fn from_parts(cursor: NaiveDate, time: Option<NaiveTime>) -> Self {
+        Self {
+            cursor,
+            month: first_of_month(cursor),
+            time,
+        }
+    }
+
     /// Moves the cursor by `n` days (±1 arrow, ±7 week). The
     /// displayed month follows the cursor (round 3 D12/F28 — the
     /// cursor can never leave the grid), so an arrow across a month
@@ -568,6 +580,67 @@ fn clamp_into_month(cursor: NaiveDate, month: NaiveDate) -> NaiveDate {
         cursor.day().min(days_in_month(month)),
     )
     .unwrap_or(cursor)
+}
+
+/// The bidirectional sync's source (r4 D25): which side moved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncSource {
+    /// The picker moved (a cursor key, a stepper, a quick pick): the
+    /// buffer re-renders from the selection.
+    Picker,
+    /// The buffer moved (typing): a parseable buffer re-seeds the
+    /// picker.
+    Buffer,
+}
+
+/// One bidirectional sync step (r4 D25): the one writer of both
+/// sides. Returns `None` when the pair is already consistent — the
+/// fixed point the no-oscillation property pins — or the fresh
+/// `(buffer, picker)` pair; the picker half is `None` when only the
+/// buffer moved.
+///
+/// Direction rules (pinned):
+///
+/// - `Picker`: buffer := the selection's rendering — date-only when
+///   the picker's time is `None`, `date HH:MM` otherwise (the
+///   two-midnights convention: an explicit `00:00` *stays* in the
+///   rendering; normalizing it away would rewrite the user's text).
+/// - `Buffer`: empty leaves the pair untouched (clearing is a
+///   commit-time act, not a live one); junk or a partial prefix
+///   leaves the picker untouched (the validity flavour shows the
+///   state); a parseable buffer re-seeds the picker — cursor on the
+///   date, the month follows, the time is `Some` exactly when the
+///   text carried an `HH:MM` part (an explicit `00:00` counts — a
+///   typed time exists).
+#[must_use]
+pub fn sync_buffer_picker(
+    buffer: &str,
+    picker: &DuePickerState,
+    source: SyncSource,
+    now: DateTime<Utc>,
+) -> Option<(String, Option<DuePickerState>)> {
+    match source {
+        SyncSource::Picker => {
+            let date = picker.cursor().format("%Y-%m-%d").to_string();
+            let text = picker.time().map_or(date.clone(), |time| {
+                format!("{date} {}", format_time_hm(time))
+            });
+            Some((text, None))
+        }
+        SyncSource::Buffer => match parse(buffer, now) {
+            Ok(Some(instant)) => {
+                let time = buffer
+                    .trim()
+                    .split_once(' ')
+                    .and_then(|(_, time_part)| NaiveTime::parse_from_str(time_part, "%H:%M").ok());
+                Some((
+                    buffer.to_owned(),
+                    Some(DuePickerState::from_parts(instant.date_naive(), time)),
+                ))
+            }
+            Ok(None) | Err(DueParseError) => None,
+        },
+    }
 }
 
 /// A relative parse hits `now + N·unit` exactly.
@@ -959,6 +1032,67 @@ mod tests {
         assert!(quick_list_matches(&filter_digits(" 9:3"), morning));
     }
 
+    #[test]
+    fn sync_directions_follow_the_pinned_rules() {
+        let picker = DuePickerState::open(NaiveDate::from_ymd_opt(2030, 1, 31).unwrap(), None);
+        // Picker source: date-only renders date-only.
+        assert_eq!(
+            sync_buffer_picker("", &picker, SyncSource::Picker, now()),
+            Some(("2030-01-31".to_owned(), None))
+        );
+        // An explicit time renders `date HH:MM`.
+        let mut timed = picker.clone();
+        timed.set_time(Some(NaiveTime::from_hms_opt(14, 30, 0).unwrap()));
+        assert_eq!(
+            sync_buffer_picker("", &timed, SyncSource::Picker, now()),
+            Some(("2030-01-31 14:30".to_owned(), None))
+        );
+        // An explicit midnight *stays* in the rendering (the
+        // two-midnights convention).
+        timed.set_time(Some(NaiveTime::MIN));
+        assert_eq!(
+            sync_buffer_picker("", &timed, SyncSource::Picker, now()),
+            Some(("2030-01-31 00:00".to_owned(), None))
+        );
+        // Buffer source: parseable text re-seeds the picker; the
+        // explicit `00:00` counts — a typed time exists.
+        let Some((_, Some(seeded))) =
+            sync_buffer_picker("2030-02-14 00:00", &picker, SyncSource::Buffer, now())
+        else {
+            panic!("parseable buffer seeds");
+        };
+        assert_eq!(
+            seeded.cursor(),
+            NaiveDate::from_ymd_opt(2030, 2, 14).unwrap()
+        );
+        assert_eq!(seeded.time(), Some(NaiveTime::MIN));
+        // Date-only text: the picker stays date-only.
+        let Some((_, Some(seeded))) =
+            sync_buffer_picker("2030-02-14", &picker, SyncSource::Buffer, now())
+        else {
+            panic!("date-only seeds");
+        };
+        assert_eq!(seeded.time(), None);
+        // Empty and junk leave the pair untouched.
+        assert_eq!(
+            sync_buffer_picker("", &picker, SyncSource::Buffer, now()),
+            None
+        );
+        assert_eq!(
+            sync_buffer_picker("soon", &picker, SyncSource::Buffer, now()),
+            None
+        );
+        assert_eq!(
+            sync_buffer_picker("2030-01-", &picker, SyncSource::Buffer, now()),
+            None,
+            "a partial prefix is junk"
+        );
+        // Recorded: chrono's strptime accepts non-padded fields, so
+        // `2030-01-3` parses (as day 3) — pre-existing grammar
+        // leniency, not the sync's concern; the seed then matches
+        // what a Return would commit.
+    }
+
     proptest::proptest! {
         /// The seed formatter and the parser agree on every instant
         /// ±10 y: `parse(format_entry(x)) == x` truncated to the
@@ -1068,6 +1202,70 @@ mod tests {
                 let cell_date = cell.date.expect("the run between blanks is all days");
                 prop_assert_eq!(cell_date.month(), picker.month().month());
                 prop_assert_eq!(cell_date.year(), picker.month().year());
+            }
+        }
+
+        /// The sync helper's no-oscillation property (r4 D25, review
+        /// focus c): one-step idempotence for both sources, and the
+        /// round trip converges — a `Picker` step after a `Buffer`
+        /// step re-renders exactly the buffer the `Buffer` step
+        /// produced (the formatting is parse's inverse modulo the
+        /// two-midnights convention, exercised explicitly).
+        fn the_sync_never_oscillates(
+            days in -3650i64..=3650,
+            hour in 0u32..24,
+            minute in (0u32..4).prop_map(|q| q * 15),
+            explicit_midnight in proptest::bool::ANY,
+        ) {
+            let now = now();
+            let date = (now + ChronoDuration::try_days(days).unwrap()).date_naive();
+            let time = if explicit_midnight {
+                Some(NaiveTime::MIN)
+            } else {
+                NaiveTime::from_hms_opt(hour, minute, 0)
+            };
+            let picker = DuePickerState::from_parts(date, time);
+
+            // One-step idempotence, Picker source.
+            let Some((buffer, None)) =
+                sync_buffer_picker("", &picker, SyncSource::Picker, now)
+            else {
+                panic!("picker source never touches the picker");
+            };
+            let second = sync_buffer_picker(&buffer, &picker, SyncSource::Picker, now)
+                .expect("picker renders");
+            prop_assert_eq!(second, (buffer.clone(), None));
+
+            // One-step idempotence, Buffer source.
+            let Some((_, Some(seeded))) = sync_buffer_picker(&buffer, &picker, SyncSource::Buffer, now)
+            else {
+                panic!("the canonical buffer carries a picker");
+            };
+            let again = sync_buffer_picker(&buffer, &seeded, SyncSource::Buffer, now);
+            prop_assert_eq!(
+                again.map(|(_, p)| p),
+                Some(Some(seeded.clone())),
+                "the buffer step is a fixed point"
+            );
+
+            // The round trip: Picker-after-Buffer re-renders the
+            // Buffer step's buffer.
+            let Some((_, None)) =
+                sync_buffer_picker(&buffer, &seeded, SyncSource::Picker, now)
+            else {
+                panic!("picker renders");
+            };
+            let round = sync_buffer_picker(&buffer, &seeded, SyncSource::Buffer, now)
+                .expect("round trips parse");
+            prop_assert_eq!(round.0, buffer);
+        }
+
+        /// Arbitrary junk buffers never make the sync panic (totality
+        /// rides with the parser's own).
+        fn the_sync_is_total_on_arbitrary_buffers(text in ".*") {
+            let picker = DuePickerState::open(now().date_naive(), None);
+            for source in [SyncSource::Picker, SyncSource::Buffer] {
+                let _ = sync_buffer_picker(&text, &picker, source, now());
             }
         }
     }

@@ -31,6 +31,26 @@ export component DueEditor inherits VerticalLayout {
     // The x-clear affordance (round-3 D11): both date fields enable
     // it; the staged clear rides `edited("")`.
     in property <bool> clear-affordance: false;
+    // The one-shot field-focus hand-over (r4 D25): the flag change
+    // (not just the mount init) moves focus into the field — the
+    // focus-on-mount mechanism-A idiom run in reverse.
+    in property <bool> field-focus-on-mount: false;
+    changed field-focus-on-mount => {
+        if (root.field-focus-on-mount) {
+            due-field.grab-focus();
+        }
+    }
+    // The push re-seed (r4 D25's live sync; R-c's probe shape): the
+    // adapter's buffer mirror wins whenever it differs from the
+    // field's own text. While the user types, the adapter echoes the
+    // typed text back verbatim, so the push is a no-op; a
+    // Picker-source move (a cursor key, a stepper, a quick pick)
+    // rewrites the visible text.
+    changed initial-text => {
+        if (due-field.text != root.initial-text) {
+            due-field.text = root.initial-text;
+        }
+    }
     callback edited(string);
     callback accepted(string);
     callback picker-toggled();
