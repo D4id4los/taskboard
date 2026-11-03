@@ -4291,6 +4291,131 @@ fn at_in_legs(harness: &mut Harness, task1: TaskId) {
     harness.assert_commands(&[]);
 }
 
+/// T9 (r4 D30/D31a, F25): the rows per kind and the un-mute
+/// round-trip. An At row renders the countdown + fixed fire time
+/// (structural shape, not label text) and survives a one-second
+/// repaint (the seconds-surface term is active); an unarmed
+/// `DueOffset` row presents the needs-a-due-date state and its jump affordance
+/// opens the due editor (`Flow::EditDate { field: Due }`); mute shows
+/// the muted indicator and un-mute dispatches the mute-clearing
+/// command over the subject.
+#[test]
+fn rule_rows_present_per_kind_and_unmute_round_trips() {
+    let (fixture, mut state) = fixture::journey_state();
+    let task1 = fixture.task1;
+    // The subject is undated in this journey (the F25 class): an At
+    // rule and an unarmed DueOffset rule live side by side.
+    let live = state.tasks.get_mut(&task1).expect("task");
+    live.duedate = None;
+    let at_instant = chrono::DateTime::from_timestamp(chrono::Utc::now().timestamp() + 7_200, 0)
+        .expect("whole second");
+    let at_rule = taskboard_domain::ReminderRule {
+        insistence: taskboard_domain::Insistence::Normal,
+        id: taskboard_domain::ReminderRuleId::from_uuid(uuid::Uuid::from_u128(11)),
+        task: task1,
+        kind: taskboard_domain::ReminderKind::At(
+            taskboard_domain::AtInstant::whole_second(at_instant).expect("whole-second"),
+        ),
+        created_at: taskboard_domain::BoardClocks::epoch(),
+        updated_at: taskboard_domain::BoardClocks::epoch(),
+    };
+    let unarmed_rule = taskboard_domain::ReminderRule {
+        insistence: taskboard_domain::Insistence::Normal,
+        id: taskboard_domain::ReminderRuleId::from_uuid(uuid::Uuid::from_u128(12)),
+        task: task1,
+        kind: taskboard_domain::ReminderKind::DueOffset(
+            taskboard_domain::ReminderOffset::before(TimeDelta::try_minutes(-10).expect("-10m"))
+                .expect("legal offset"),
+        ),
+        created_at: taskboard_domain::BoardClocks::epoch(),
+        updated_at: taskboard_domain::BoardClocks::epoch(),
+    };
+    state.reminders.muted.insert(task1);
+    state.reminders.rules.insert(at_rule.id, at_rule.clone());
+    state.reminders.rules.insert(unarmed_rule.id, unarmed_rule);
+
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavNextView);
+            harness.press(ActionId::NavNextView);
+            assert_eq!(harness.handle.window().get_current_view(), View::TaskDetail);
+
+            let task_model = harness.handle.window().get_task_model();
+            // Mute is visible where it bites (D31a — the ranked cause
+            // of "never fires" made visible).
+            assert!(
+                task_model.rules_muted,
+                "the muted indicator rides the model"
+            );
+            assert_eq!(task_model.rules.row_count(), 2, "one row per rule");
+            // The At row: armed, the countdown + fixed fire time shape.
+            let at_row = task_model.rules.row_data(0).expect("row 0");
+            assert!(at_row.armed, "an At row is armed regardless of due date");
+            assert!(
+                at_row.before.starts_with("in "),
+                "the countdown line is the d/h/m/s shape"
+            );
+            assert_eq!(
+                at_row.before.split(' ').count(),
+                5,
+                "in <d>d <h>h <m>m <s>s — five tokens"
+            );
+            assert!(
+                at_row.detail.starts_with("@ "),
+                "the fixed local fire time carries the @ prefix shape"
+            );
+            // The unarmed offset row: the explicit state + the jump
+            // affordance's derived bit.
+            let unarmed_row = task_model.rules.row_data(1).expect("row 1");
+            assert!(
+                !unarmed_row.armed,
+                "a due-less offset row derives not-armed in the projection"
+            );
+
+            // The countdown is a seconds surface: a one-second repaint
+            // re-projects the row (and never panics).
+            harness.driver.advance_time(1_000);
+            let task_model = harness.handle.window().get_task_model();
+            assert_eq!(
+                task_model.rules.row_count(),
+                2,
+                "the rows survive the repaint"
+            );
+            let at_row = task_model.rules.row_data(0).expect("row 0 after repaint");
+            assert!(
+                at_row.before.starts_with("in "),
+                "the countdown re-projected"
+            );
+
+            // The jump affordance opens the due editor for the subject
+            // (the existing due-edit seam).
+            harness
+                .handle
+                .window()
+                .invoke_task_rule_jump_to_due_clicked();
+            harness.driver.advance_time(0);
+            assert!(
+                harness.handle.window().get_task_model().due_open,
+                "the jump affordance opens the due editor"
+            );
+
+            // Un-mute dispatches the mute-clearing command over the
+            // subject (D31a).
+            harness.handle.window().invoke_task_rule_unmute_clicked();
+            harness.assert_commands(&[StateCommand::SetTaskRemindersMuted {
+                task: task1,
+                muted: false,
+            }]);
+        },
+    );
+}
+
 #[test]
 fn the_rule_list_journeys_reach_the_boundary() {
     let (fixture, mut state) = fixture::journey_state();

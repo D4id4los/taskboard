@@ -500,6 +500,15 @@ expression: rows
   menu_rank: 120
   description: Silences all reminders on the selected task.
   menu_group: task
+- id: reminder.unmute
+  label: Un-mute reminders
+  contexts:
+    - global
+  category: task
+  enabled: true
+  menu_rank: 121
+  description: Restores reminders on the focused task after a mute.
+  menu_group: task
 - id: reminder.rule-add
   label: Add reminder
   contexts:

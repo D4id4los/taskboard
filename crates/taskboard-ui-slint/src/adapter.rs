@@ -836,7 +836,10 @@ impl Adapter {
     /// verb button may show Start during the transient double-open
     /// while the subject's older open entry still accrues — the tick
     /// follows the arithmetic truth, the button follows the D-T8
-    /// display pick; recorded.
+    /// display pick; recorded. Chunks 8/9's terms (r4 D30/D32): the
+    /// subject's At-kinded rule rows and the timers surfaces are the
+    /// seconds-changing extensions — chunk 8 landed the rule-row term
+    /// below.
     ///
     /// Kiosk exclusion, three layers: (a) structural — kiosk pins the
     /// view to Board, the task view never mounts; (b) the explicit
@@ -865,7 +868,18 @@ impl Adapter {
                         .open_entries()
                         .any(|entry| entry.task == subject)
                 });
-            active = task_view_active || focus_overlay_active;
+            // The rule rows' per-second countdown (r4 D30, F23): the
+            // subject's At-kinded rules carry the only seconds-changing
+            // text in the section. The doc-comment's named extension
+            // point — never a second tick channel.
+            let at_rule_rows = self.view_state.view() == crate::view_state::ViewId::TaskDetail
+                && self.view_state.subject_task().is_some_and(|subject| {
+                    state.reminders.rules.values().any(|rule| {
+                        rule.task == subject
+                            && matches!(rule.kind, taskboard_domain::ReminderKind::At(_))
+                    })
+                });
+            active = task_view_active || focus_overlay_active || at_rule_rows;
         }
         self.seconds_surfaces_active = active;
     }
@@ -4954,6 +4968,33 @@ fn install_due_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         };
         let mut a = open.borrow_mut();
         begin_date_edit(&mut a, &window, crate::view_state::DateField::Due);
+    });
+
+    // The rule section's jump affordance (r4 D30): an unarmed row's
+    // due-date repair opens the SAME due editor — the callback is the
+    // metadata row's due-edit seam under a second name, no new focus
+    // plumbing (chunk 6's machinery arms from there).
+    let jump = Rc::clone(adapter);
+    let jump_weak = window.as_weak();
+    window.on_task_rule_jump_to_due_clicked(move || {
+        let Some(window) = jump_weak.upgrade() else {
+            return;
+        };
+        let mut a = jump.borrow_mut();
+        begin_date_edit(&mut a, &window, crate::view_state::DateField::Due);
+    });
+
+    // D31a: the section's un-mute affordance — the focused task is the
+    // target (the section always names its subject), the banner's
+    // one-shot machinery is not needed.
+    let unmute = Rc::clone(adapter);
+    let unmute_weak = window.as_weak();
+    window.on_task_rule_unmute_clicked(move || {
+        let Some(window) = unmute_weak.upgrade() else {
+            return;
+        };
+        let mut a = unmute.borrow_mut();
+        a.route(&window, ActionId::ReminderUnmute);
     });
 
     let open_sched = Rc::clone(adapter);

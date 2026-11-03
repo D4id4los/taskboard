@@ -171,6 +171,7 @@ pub const TASK_CONTEXT: &[ActionId] = &[
     ActionId::TaskDelete,
     ActionId::ReminderSnooze,
     ActionId::ReminderMute,
+    ActionId::ReminderUnmute,
     ActionId::ReminderRuleAdd,
     ActionId::ReminderRuleRemove,
     // DR-3/3: the timers family — the Task group page's rows (the
@@ -356,6 +357,7 @@ mod tests {
             ActionId::TaskDelete,
             ActionId::ReminderSnooze,
             ActionId::ReminderMute,
+            ActionId::ReminderUnmute,
             ActionId::ReminderRuleAdd,
             ActionId::ReminderRuleRemove,
             // DR-3/3: the timers family joins the Task group at ranks

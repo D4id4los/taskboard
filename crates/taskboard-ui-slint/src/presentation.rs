@@ -391,13 +391,143 @@ pub fn rule_preset_labels() -> Vec<String> {
 
 /// The rule-list's derived-fact hint (chunk 6, D12): while any explicit
 /// rule exists, the implicit default never fires (`due_firings`'s
-/// rules-replace-default derivation). Empty for a rule-less task.
+/// rules-replace-default derivation). Empty for a rule-less task. The
+/// muted variant (r4 D31a — F25's other ranked cause: mute silences
+/// every rule, and the section says so instead of looking stale).
 #[must_use]
-pub fn rule_list_hint(rule_count: usize) -> String {
+pub fn rule_list_hint(rule_count: usize, muted: bool) -> String {
     if rule_count == 0 {
         String::new()
+    } else if muted {
+        "Reminders on this task are muted: none of these rules fire. Un-mute below.".to_owned()
     } else {
         "Explicit rules replace the task's default reminder: only these rules fire.".to_owned()
+    }
+}
+
+/// One countdown's d/h/m/s decomposition (r4 D30): the structural
+/// remaining-time shape shared by rule rows and chunk 9's timer rows —
+/// segments, never label text (the no-text-assertions rule; tests pin
+/// segment counts and round-trips by re-summing the seconds).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CountdownParts {
+    /// Whole days remaining.
+    pub days: u64,
+    /// Hours remaining after the days.
+    pub hours: u64,
+    /// Minutes remaining after the hours.
+    pub minutes: u64,
+    /// Seconds remaining after the minutes.
+    pub seconds: u64,
+}
+
+impl CountdownParts {
+    /// The total remaining seconds — the structural round-trip.
+    #[must_use]
+    pub fn total_seconds(self) -> i64 {
+        (self.days * 86_400 + self.hours * 3_600 + self.minutes * 60 + self.seconds)
+            .try_into()
+            .unwrap_or(i64::MAX)
+    }
+}
+
+/// Decomposes `effective − now` into d/h/m/s, clamping at zero (the
+/// `countdown_phrase` clamp precedent: a fired-undelivered transient is
+/// total, never a panic or a negative).
+#[must_use]
+pub fn countdown_parts(effective: DateTime<Utc>, now: DateTime<Utc>) -> CountdownParts {
+    let remaining = (effective - now).num_seconds().max(0);
+    let days = u64::try_from(remaining / 86_400).unwrap_or_default();
+    let hours = u64::try_from((remaining % 86_400) / 3_600).unwrap_or_default();
+    let minutes = u64::try_from((remaining % 3_600) / 60).unwrap_or_default();
+    let seconds = u64::try_from(remaining % 60).unwrap_or_default();
+    CountdownParts {
+        days,
+        hours,
+        minutes,
+        seconds,
+    }
+}
+
+/// The countdown's fixed text shape: `in {d}d {h}h {m}m {s}s` — zero
+/// segments kept (the F23 spec shows the full d/h/m/s ladder). The
+/// renderer of [`countdown_parts`]; structure is pinned via the parts.
+#[must_use]
+pub fn countdown_text(effective: DateTime<Utc>, now: DateTime<Utc>) -> String {
+    let parts = countdown_parts(effective, now);
+    format!(
+        "in {}d {}h {}m {}s",
+        parts.days, parts.hours, parts.minutes, parts.seconds
+    )
+}
+
+/// The fire instant's local, ISO-ordered `YYYY-MM-DD HH:MM:SS` form
+/// (the F23 spec: colon-separated per ISO 8601) — the shared fixed-time
+/// renderer for rule rows and chunk 9's timer rows. `tz` is the
+/// injected seam (the parse-side twin).
+#[must_use]
+pub fn iso_local_fire_time(effective: DateTime<Utc>, tz: &impl chrono::TimeZone) -> String {
+    let local = tz.from_utc_datetime(&effective.naive_utc());
+    // The naive-local datetime formats without an Offset bound (the
+    // `at_time_suffix` precedent).
+    local.naive_local().format("%Y-%m-%d %H:%M:%S").to_string()
+}
+
+/// One rule row's presentation texts (r4 D30): the kind-specific
+/// primary line plus the secondary detail line, and the derived armed
+/// bit (`task.duedate.is_none() && kind.is_due_offset()` at push time —
+/// derived in the projection, never stored, so no state desync is
+/// possible).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuleRowTexts {
+    /// The primary line: the authored offset text, the live countdown,
+    /// or the explicit needs-a-due-date copy.
+    pub primary: String,
+    /// The secondary line: the effective fire instant (armed offset
+    /// rows) or the fixed local fire time (At rows); empty otherwise.
+    pub detail: String,
+    /// The needs-a-due-date state: an unarmed `DueOffset` row presents
+    /// the jump affordance.
+    pub armed: bool,
+}
+
+/// The needs-a-due-date row copy (r4 D30 — F25's communication half:
+/// the cause of "never fires" made visible).
+pub const RULE_ROW_UNARMED: &str = "needs a due date — not armed";
+
+/// The projection for one rule row (r4 D30): see [`RuleRowTexts`].
+#[must_use]
+pub fn rule_row_texts(
+    rule: &taskboard_domain::ReminderRule,
+    duedate: Option<DateTime<Utc>>,
+    now: DateTime<Utc>,
+    tz: &impl chrono::TimeZone,
+) -> RuleRowTexts {
+    match rule.kind {
+        taskboard_domain::ReminderKind::At(at) => {
+            let effective = at.as_datetime();
+            RuleRowTexts {
+                primary: countdown_text(effective, now),
+                detail: format!("@ {}", iso_local_fire_time(effective, tz)),
+                armed: true,
+            }
+        }
+        taskboard_domain::ReminderKind::DueOffset(offset) => {
+            match duedate.map(|d| d.checked_add_signed(offset.as_duration())) {
+                Some(Some(effective)) => RuleRowTexts {
+                    primary: offset.text_form(),
+                    detail: format!("fires {}", iso_local_fire_time(effective, tz)),
+                    armed: true,
+                },
+                // Unarmed: no due date (or degenerate arithmetic) — the
+                // explicit state, not silently stale.
+                _ => RuleRowTexts {
+                    primary: RULE_ROW_UNARMED.to_owned(),
+                    detail: String::new(),
+                    armed: false,
+                },
+            }
+        }
     }
 }
 
@@ -2628,6 +2758,135 @@ mod tests {
         assert_eq!(offset_validity("30s"), Some(true));
         assert_eq!(offset_validity("soon"), Some(false));
         assert_eq!(offset_validity("45x"), Some(false));
+    }
+
+    #[test]
+    fn rule_list_hint_names_the_muted_state() {
+        // Rule-less: empty regardless of mute (nothing to hint).
+        assert_eq!(rule_list_hint(0, false), "");
+        assert_eq!(rule_list_hint(0, true), "");
+        // Armed rules: the derived-fact hint.
+        assert_ne!(rule_list_hint(2, false), "");
+        // Muted: the indicator is the hint (F25's ranked cause made
+        // visible — no silent staleness).
+        assert_ne!(rule_list_hint(2, true), "");
+        assert_ne!(rule_list_hint(2, true), rule_list_hint(2, false));
+    }
+
+    #[test]
+    fn countdown_parts_decompose_clamp_and_roundtrip() {
+        use super::countdown_parts;
+        let now = Utc.with_ymd_and_hms(2026, 11, 3, 9, 0, 0).unwrap();
+        let effective = Utc.with_ymd_and_hms(2026, 11, 5, 11, 3, 41).unwrap();
+        let parts = countdown_parts(effective, now);
+        // 2d 2h 3m 41s.
+        assert_eq!(
+            (parts.days, parts.hours, parts.minutes, parts.seconds),
+            (2, 2, 3, 41),
+            "the d/h/m/s decomposition"
+        );
+        assert_eq!(
+            parts.total_seconds(),
+            (effective - now).num_seconds(),
+            "round-trip"
+        );
+        // The fired-undelivered transient clamps at zero.
+        let past = countdown_parts(now - TimeDelta::hours(3), now);
+        assert_eq!(
+            (past.days, past.hours, past.minutes, past.seconds),
+            (0, 0, 0, 0)
+        );
+        // Segment counts stay below each unit's ceiling by construction.
+        let parts2 = countdown_parts(now + TimeDelta::seconds(59), now);
+        assert_eq!(
+            (parts2.days, parts2.hours, parts2.minutes, parts2.seconds),
+            (0, 0, 0, 59)
+        );
+    }
+
+    #[test]
+    fn iso_local_fire_time_roundtrips_in_the_injected_tz() {
+        use super::iso_local_fire_time;
+        let instant = Utc.with_ymd_and_hms(2026, 11, 2, 9, 30, 0).unwrap();
+        // A fixed offset: the local wall form re-parses to the same
+        // instant (structural round-trip, not a label pin).
+        let tz = chrono::FixedOffset::east_opt(2 * 3_600).unwrap();
+        let text = iso_local_fire_time(instant, &tz);
+        let parsed =
+            chrono::NaiveDateTime::parse_from_str(&text, "%Y-%m-%d %H:%M:%S").expect("parses");
+        let back = tz.from_local_datetime(&parsed).single().expect("resolves");
+        assert_eq!(
+            back.with_timezone(&Utc),
+            instant,
+            "the local form round-trips"
+        );
+        // The +02 wall clock is two hours ahead of UTC.
+        assert_eq!(text, "2026-11-02 11:30:00");
+    }
+
+    #[test]
+    fn rule_row_texts_project_per_kind_and_derive_armed() {
+        use super::{RULE_ROW_UNARMED, countdown_text, iso_local_fire_time, rule_row_texts};
+        let now = Utc.with_ymd_and_hms(2026, 11, 3, 9, 0, 0).unwrap();
+        let tz = chrono::FixedOffset::east_opt(0).unwrap();
+        let effective = Utc.with_ymd_and_hms(2026, 11, 3, 11, 3, 41).unwrap();
+        let task_id = taskboard_domain::TaskId::from_uuid(uuid::Uuid::from_u128(2));
+        // An At row: the countdown + the fixed local fire time, always
+        // armed (no due date involved).
+        let at_rule = taskboard_domain::ReminderRule {
+            insistence: taskboard_domain::Insistence::Normal,
+            id: taskboard_domain::ReminderRuleId::from_uuid(uuid::Uuid::from_u128(1)),
+            task: task_id,
+            kind: taskboard_domain::ReminderKind::At(
+                taskboard_domain::AtInstant::whole_second(effective).unwrap(),
+            ),
+            created_at: now,
+            updated_at: now,
+        };
+        let texts = rule_row_texts(&at_rule, None, now, &tz);
+        assert!(texts.armed, "an At row is armed regardless of due date");
+        assert_eq!(texts.primary, countdown_text(effective, now));
+        assert_eq!(
+            texts.detail,
+            format!("@ {}", iso_local_fire_time(effective, &tz))
+        );
+        // An unarmed DueOffset row: the explicit state, never silent —
+        // and armed = false derives from the missing due date.
+        let offset_rule = taskboard_domain::ReminderRule {
+            id: taskboard_domain::ReminderRuleId::from_uuid(uuid::Uuid::from_u128(3)),
+            kind: taskboard_domain::ReminderKind::DueOffset(
+                taskboard_domain::ReminderOffset::before(TimeDelta::try_minutes(-10).unwrap())
+                    .unwrap(),
+            ),
+            ..at_rule.clone()
+        };
+        let texts = rule_row_texts(&offset_rule, None, now, &tz);
+        assert!(!texts.armed, "a due-less offset row is not armed");
+        assert_eq!(texts.primary, RULE_ROW_UNARMED);
+        assert_eq!(texts.detail, "");
+        // The same rule with a due date: armed — the authored offset
+        // plus the effective fire instant.
+        let duedate = Utc.with_ymd_and_hms(2026, 11, 3, 10, 0, 0).unwrap();
+        let texts = rule_row_texts(&offset_rule, Some(duedate), now, &tz);
+        assert!(texts.armed);
+        assert_eq!(
+            texts.primary,
+            taskboard_domain::ReminderOffset::before(TimeDelta::try_minutes(-10).unwrap())
+                .unwrap()
+                .text_form()
+        );
+        assert_eq!(
+            texts.detail,
+            format!(
+                "fires {}",
+                iso_local_fire_time(
+                    duedate
+                        .checked_add_signed(TimeDelta::try_minutes(-10).unwrap())
+                        .unwrap(),
+                    &tz
+                )
+            )
+        );
     }
 
     #[test]

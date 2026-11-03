@@ -47,6 +47,9 @@ export struct TaskDetailModel {
     rules: [RuleRowModel],
     rule-presets: [string],
     rules-hint: string,
+    // The task's mute state (r4 D31a): drives the muted indicator and
+    // the un-mute affordance next to the hint.
+    rules-muted: bool,
     // The date editors (r2 D25, round-3 D8): due and scheduled, one
     // open at a time (the flow's exclusivity) over the shared
     // picker state — the adapter owns it all across refreshes
@@ -120,6 +123,12 @@ export component TaskView inherits FocusScope {
     callback rule-add-custom-accepted(string) -> bool;
     // The custom offset's per-keystroke validity (r4 D27).
     callback rule-offset-edited(string);
+    // D31a: the un-mute affordance routes the mute-clearing command
+    // over the VIEW'S SUBJECT (the section always names its subject).
+    callback rule-unmute-clicked();
+    // D30: an unarmed rule row's jump affordance opens the due editor
+    // for the subject task — the existing due-edit seam.
+    callback rule-jump-to-due-clicked();
     // The date editors' seams (r2 D25, round-3 D8), forwarded to the
     // window: one open seam per field, one shared interaction set.
     callback due-edit-opened();
@@ -639,12 +648,15 @@ export component TaskView inherits FocusScope {
                 rules: root.task.rules;
                 presets: root.task.rule-presets;
                 hint: root.task.rules-hint;
+                muted: root.task.rules-muted;
                 remove-clicked(i) => root.rule-remove-clicked(i);
                 add-preset-clicked(i) => root.rule-add-preset-clicked(i);
                 add-custom-accepted(text) => root.rule-add-custom-accepted(text);
                 offset-validity: root.task.offset-validity;
                 offset-error-hint: root.task.offset-error-hint;
                 offset-edited(t) => root.rule-offset-edited(t);
+                unmute-clicked() => root.rule-unmute-clicked();
+                jump-to-due-clicked() => root.rule-jump-to-due-clicked();
             }
 
             // The description (round-3 D15/#228): the read-only body

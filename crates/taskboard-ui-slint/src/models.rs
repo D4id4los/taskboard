@@ -1439,12 +1439,23 @@ fn push_task_detail(
     let rule_rows: Vec<RuleRowModel> = task_rules
         .iter()
         .filter_map(|id| state.reminders.rules.get(id))
-        .map(|rule| RuleRowModel {
-            before: SharedString::from(match rule.kind {
-                taskboard_domain::ReminderKind::DueOffset(offset) => offset.text_form(),
-                taskboard_domain::ReminderKind::At(at) => at.text_form(),
-            }),
-            created: SharedString::from(presentation::rule_created_phrase(rule.created_at, now)),
+        .map(|rule| {
+            let subject_duedate = vs
+                .subject_task()
+                .and_then(|t| state.tasks.get(&t))
+                .and_then(|t| t.duedate);
+            // The kind-specific texts are the projection's job (r4
+            // D30); the armed bit is derived here, never stored.
+            let texts = presentation::rule_row_texts(rule, subject_duedate, now, &chrono::Local);
+            RuleRowModel {
+                before: SharedString::from(texts.primary),
+                created: SharedString::from(presentation::rule_created_phrase(
+                    rule.created_at,
+                    now,
+                )),
+                detail: SharedString::from(texts.detail),
+                armed: texts.armed,
+            }
         })
         .collect();
     let preset_rows: Vec<SharedString> = presentation::rule_preset_labels()
@@ -1546,7 +1557,14 @@ fn push_task_detail(
         }),
         rules: ModelRc::from(rules_handle.clone()),
         rule_presets: ModelRc::from(presets_handle.clone()),
-        rules_hint: SharedString::from(presentation::rule_list_hint(task_rules.len())),
+        rules_hint: SharedString::from(presentation::rule_list_hint(
+            task_rules.len(),
+            vs.subject_task()
+                .is_some_and(|t| state.reminders.muted.contains(&t)),
+        )),
+        rules_muted: vs
+            .subject_task()
+            .is_some_and(|t| state.reminders.muted.contains(&t)),
         due_open,
         due_text: SharedString::from(if due_open { due.text } else { "" }),
         due_echo: SharedString::from(if due_open { due.echo } else { "" }),
