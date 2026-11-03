@@ -190,6 +190,102 @@ pub const TIME_STEP_MINUTES: u32 = 15;
 /// The grid's reserved cell count (r4 D22): six week-rows always.
 const GRID_CELLS: usize = 42;
 
+/// The time combobox's lenient parse (r4 D26): zone-free, total on
+/// arbitrary input, never panics, never clamps — every out-of-range
+/// field refuses (the grammar's rule). The accepted forms:
+///
+/// - 1–2 digits: the hour, minutes 00 (`9`, `09` → 09:00);
+/// - 3–4 digits: the last two are the minutes, the rest the hour
+///   (`930` → 09:30, `0930` → 09:30);
+/// - `H:MM` / `HH:MM` — the strict form (`9:45`, `09:45`);
+/// - leading/trailing whitespace is trimmed; the digit forms are
+///   digits only.
+///
+/// Deliberate leniency boundary: `9:5` refuses (minutes need two
+/// digits); seconds are not the grammar; hour > 23 or minute > 59
+/// refuse.
+#[must_use]
+pub fn parse_time_lenient(text: &str) -> Option<NaiveTime> {
+    let text = text.trim();
+    let time_of = |hour: u32, minute: u32| NaiveTime::from_hms_opt(hour, minute, 0);
+    if let Some((hour, minute)) = text.split_once(':') {
+        // The strict form: the hour 1–2 digits, the minutes exactly
+        // two — `9:5` refuses.
+        let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+        let hour_ok = (1..=2).contains(&hour.len()) && digits(hour);
+        let minute_ok = minute.len() == 2 && digits(minute);
+        if !hour_ok || !minute_ok {
+            return None;
+        }
+        return time_of(hour.parse().ok()?, minute.parse().ok()?);
+    }
+    // The digit forms: digits only after trim.
+    if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let (hour, minute) = match text.len() {
+        1 | 2 => (text.parse::<u32>().ok()?, 0),
+        3 | 4 => {
+            let (h, m) = text.split_at(text.len() - 2);
+            (h.parse::<u32>().ok()?, m.parse::<u32>().ok()?)
+        }
+        _ => return None,
+    };
+    time_of(hour, minute)
+}
+
+/// The wrapping ±[`TIME_STEP_MINUTES`] math (r4 D26): the wall-clock
+/// wrap generalized out of [`DuePickerState::step_time`] — one
+/// implementation, two callers (the picker keeps its date-following
+/// behavior around this; the combobox consumes it directly).
+///
+/// # Panics
+///
+/// Never: the midnight anchor is a compile-time constant shape.
+#[must_use]
+pub fn step_minutes(time: NaiveTime, n: i32) -> NaiveTime {
+    let current = i64::from(time.num_seconds_from_midnight() / 60);
+    let total = current + i64::from(n) * i64::from(TIME_STEP_MINUTES);
+    let wrapped = total.rem_euclid(i64::from(24 * 60));
+    NaiveTime::from_hms_opt(0, 0, 0).expect("midnight")
+        + ChronoDuration::try_minutes(wrapped).expect("wrapped minutes fit")
+}
+
+/// The quick list's pure source (r4 D26): the 96 quarter-hour slots
+/// of the day, `00:00` first.
+#[must_use]
+pub fn quarter_slots() -> Vec<NaiveTime> {
+    (0..24 * 4)
+        .map(|slot| step_minutes(NaiveTime::MIN, slot))
+        .collect()
+}
+
+/// The quick list's digit-prefix filter (r4 D26): the typed digits
+/// match a slot when the slot's canonical 4-digit rendering
+/// (`"0930"` for 09:30) *or* its leading-zero-stripped rendering
+/// (`"930"`) starts with them — `9` matches the 09-hundred family
+/// via the de-zeroed `"900"`, `930` matches 09:30, `0` matches
+/// everything starting `0…`. Empty text matches everything. The
+/// digits argument is the *stripped* digit prefix the caller derives
+/// (`filter_digits`); non-digit characters never reach here.
+#[must_use]
+pub fn quick_list_matches(typed_digits: &str, slot: NaiveTime) -> bool {
+    if typed_digits.is_empty() {
+        return true;
+    }
+    let canonical = slot.format("%H%M").to_string();
+    let de_zeroed = canonical.trim_start_matches('0').to_owned();
+    canonical.starts_with(typed_digits) || de_zeroed.starts_with(typed_digits)
+}
+
+/// The typed text stripped to its digit prefix (r4 D26): the filter's
+/// input — non-digit characters are dropped; an empty result means
+/// "show all slots".
+#[must_use]
+pub fn filter_digits(text: &str) -> String {
+    text.chars().filter(char::is_ascii_digit).collect()
+}
+
 impl DuePickerState {
     /// Opens on `due`'s month (the anchor the user is editing) or
     /// today's when no due is set; the cursor sits on the due date or
@@ -253,16 +349,12 @@ impl DuePickerState {
         let time = *self.time.get_or_insert(NaiveTime::MIN);
         let current = i64::from(time.num_seconds_from_midnight() / 60);
         let total = current + i64::from(n) * i64::from(TIME_STEP_MINUTES);
-        let wrapped = total.rem_euclid(i64::from(24 * 60));
         if total < 0 {
             self.move_days(-1);
         } else if total >= i64::from(24 * 60) {
             self.move_days(1);
         }
-        self.time = Some(
-            NaiveTime::from_hms_opt(0, 0, 0).expect("midnight")
-                + ChronoDuration::try_minutes(wrapped).expect("wrapped minutes fit"),
-        );
+        self.time = Some(step_minutes(time, n));
     }
 
     /// The commit instant: the cursor's date at the picker's time —
@@ -718,6 +810,83 @@ mod tests {
         assert_eq!(offset.text_form(), "45m");
     }
 
+    #[test]
+    fn parse_time_lenient_truth_table() {
+        // (r4 D26) The documented lenient forms.
+        let hm = |h: u32, m: u32| NaiveTime::from_hms_opt(h, m, 0).unwrap();
+        for (text, expected) in [
+            ("9", Some(hm(9, 0))),
+            ("09", Some(hm(9, 0))),
+            ("930", Some(hm(9, 30))),
+            ("0930", Some(hm(9, 30))),
+            ("9:45", Some(hm(9, 45))),
+            ("09:45", Some(hm(9, 45))),
+            (" 9:45 ", Some(hm(9, 45))),
+            ("0:00", Some(hm(0, 0))),
+            ("23:59", Some(hm(23, 59))),
+            ("2359", Some(hm(23, 59))),
+            ("0000", Some(hm(0, 0))),
+            // The deliberate refusals.
+            ("9:5", None),   // minutes need two digits
+            ("2450", None),  // hour > 23 — never clamp
+            ("24:00", None), // never clamp
+            ("9:60", None),  // minute > 59
+            ("9x", None),    // non-digit junk
+            ("", None),      // empty
+            ("   ", None),   // whitespace-only
+            ("12345", None), // too many digits
+            ("9:450", None), // trailing minutes junk
+        ] {
+            assert_eq!(parse_time_lenient(text), expected, "{text}");
+        }
+    }
+
+    #[test]
+    fn step_minutes_wraps_midnight_both_ways() {
+        let hm = |h: u32, m: u32| NaiveTime::from_hms_opt(h, m, 0).unwrap();
+        assert_eq!(step_minutes(hm(23, 50), 1), hm(0, 5), "wraps forward");
+        assert_eq!(step_minutes(hm(0, 5), -1), hm(23, 50), "wraps backward");
+        assert_eq!(
+            step_minutes(hm(0, 0), -1),
+            hm(23, 45),
+            "backward from midnight"
+        );
+        assert_eq!(step_minutes(hm(0, 0), 1), hm(0, 15));
+        assert_eq!(step_minutes(hm(12, 0), 0), hm(12, 0), "zero is a no-op");
+    }
+
+    #[test]
+    fn quarter_slots_are_the_96_quarter_hours() {
+        let slots = quarter_slots();
+        assert_eq!(slots.len(), 96);
+        let hm = |h: u32, m: u32| NaiveTime::from_hms_opt(h, m, 0).unwrap();
+        assert_eq!(slots[0], hm(0, 0));
+        assert_eq!(slots[1], hm(0, 15));
+        assert_eq!(slots[95], hm(23, 45));
+        assert!(slots.windows(2).all(|pair| pair[0] < pair[1]), "ascending");
+    }
+
+    #[test]
+    fn quick_list_filter_truth_table() {
+        let hm = |h: u32, m: u32| NaiveTime::from_hms_opt(h, m, 0).unwrap();
+        let morning = hm(9, 30);
+        let evening = hm(19, 30);
+        assert!(quick_list_matches("", morning), "empty matches all");
+        assert!(quick_list_matches("9", morning), "de-zeroed prefix");
+        assert!(
+            !quick_list_matches("9", evening),
+            "19:xx carries no leading zero"
+        );
+        assert!(quick_list_matches("930", morning));
+        assert!(quick_list_matches("09", morning), "canonical leading zero");
+        assert!(quick_list_matches("19", evening));
+        assert!(!quick_list_matches("9", hm(8, 0)));
+        assert!(!quick_list_matches("93", evening), "19:30 is not 0930");
+        assert_eq!(filter_digits(" 9:45 "), "945");
+        assert_eq!(filter_digits("abc"), "");
+        assert!(quick_list_matches(&filter_digits(" 9:3"), morning));
+    }
+
     proptest::proptest! {
         /// The seed formatter and the parser agree on every instant
         /// ±10 y: `parse(format_entry(x)) == x` truncated to the
@@ -779,6 +948,12 @@ mod tests {
         #[test]
         fn junk_never_panics(text in ".*") {
             let _ = parse(&text, now());
+            // The combobox's parse is total too (r4 D26): never
+            // panics, and a hit is always a real in-range time.
+            if let Some(time) = parse_time_lenient(&text) {
+                prop_assert!(time.hour() <= 23 && time.minute() <= 59);
+                prop_assert!(text.trim() != "9:5" && text.trim() != "2450");
+            }
         }
 
         /// Month-follow invariant (round 3 D12): after any move
