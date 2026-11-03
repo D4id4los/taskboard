@@ -389,6 +389,8 @@ export component AppWindow inherits Window {
                 date-picker-toggled() => root.task-date-picker-toggled();
                 date-editor-focus-lost() => root.date-editor-focus-lost();
                 rule-offset-edited(t) => root.rule-offset-edited(t);
+                rule-unmute-clicked() => root.task-rule-unmute-clicked();
+                rule-jump-to-due-clicked() => root.task-rule-jump-to-due-clicked();
                 task-track-start-clicked() => root.task-track-start-clicked();
                 task-track-stop-clicked() => root.task-track-stop-clicked();
                 task-done-toggled() => root.task-done-toggled();
@@ -871,6 +873,8 @@ export component AppWindow inherits Window {
     // and the composition resets its buffer — no reject seam.
     pure callback rule-add-custom-accepted(string) -> bool;
     pure callback task-due-edit-opened();
+    pure callback task-rule-unmute-clicked();
+    pure callback task-rule-jump-to-due-clicked();
     pure callback task-scheduled-edit-opened();
     pure callback task-description-edit-opened();
     pure callback task-description-edited(string);

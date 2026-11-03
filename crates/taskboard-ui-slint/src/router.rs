@@ -425,6 +425,16 @@ impl ActionRouter {
                 },
                 None => DispatchOutcome::NoTarget,
             },
+            // D31a (r4): the un-mute is section-shaped — the focused
+            // task is always the target (the section names its
+            // subject), unlike the banner's one-shot target machinery.
+            ActionId::ReminderUnmute => match ctx.focused_task {
+                Some(task) => DispatchOutcome::Command(StateCommand::SetTaskRemindersMuted {
+                    task,
+                    muted: false,
+                }),
+                None => DispatchOutcome::NoTarget,
+            },
             // The rule-list verbs (chunk 6, D11): the banner-verb
             // pattern — concrete one-shot targets only; a menu
             // invocation carries neither.
