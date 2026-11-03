@@ -183,6 +183,10 @@ pub const TASK_CONTEXT: &[ActionId] = &[
     // gating only (the planner's NoOps own the refusals).
     ActionId::TaskTrackStart,
     ActionId::TaskTrackStop,
+    // Issue #492: the kind toggle — pointer-driven, menu-reachable,
+    // no preset binding (the tracking arms' note verbatim); dispatch
+    // reads the kind and inverts it through the plain kind edit.
+    ActionId::TaskToggleTracker,
 ];
 
 /// The stack-header context menu's action list (round-2 D21): the
@@ -361,6 +365,7 @@ mod tests {
             // DR-5/4: the tracking arms join at ranks 170/180.
             ActionId::TaskTrackStart,
             ActionId::TaskTrackStop,
+            ActionId::TaskToggleTracker,
         ];
         assert_eq!(
             ids(&rows),

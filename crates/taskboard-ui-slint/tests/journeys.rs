@@ -4422,6 +4422,7 @@ fn the_drag_survives_interleaved_refreshes_and_engine_changes() {
                     importance: None,
                     urgency: None,
                     recur: None,
+                    kind: taskboard_domain::entities::TaskKind::Standard,
 
                     archived: false,
                     deleted: false,
@@ -4437,6 +4438,7 @@ fn the_drag_survives_interleaved_refreshes_and_engine_changes() {
                         importance: taskboard_domain::BoardClocks::epoch(),
                         urgency: taskboard_domain::BoardClocks::epoch(),
                         recur: taskboard_domain::BoardClocks::epoch(),
+                        kind: taskboard_domain::BoardClocks::epoch(),
 
                         archived: taskboard_domain::BoardClocks::epoch(),
                         deleted: taskboard_domain::BoardClocks::epoch(),
@@ -8292,6 +8294,7 @@ fn the_drag_surface_survives_interleaved_refreshes() {
                     importance: None,
                     urgency: None,
                     recur: None,
+                    kind: taskboard_domain::entities::TaskKind::Standard,
 
                     archived: false,
                     deleted: false,
@@ -8307,6 +8310,7 @@ fn the_drag_surface_survives_interleaved_refreshes() {
                         importance: taskboard_domain::BoardClocks::epoch(),
                         urgency: taskboard_domain::BoardClocks::epoch(),
                         recur: taskboard_domain::BoardClocks::epoch(),
+                        kind: taskboard_domain::BoardClocks::epoch(),
 
                         archived: taskboard_domain::BoardClocks::epoch(),
                         deleted: taskboard_domain::BoardClocks::epoch(),
@@ -9976,6 +9980,204 @@ fn a_tooltip_does_not_survive_a_kiosk_flip() {
             assert!(
                 !tooltip.get_visible() && !tooltip.get_pending() && !tooltip.get_placed(),
                 "the kiosk flip dismissed the tooltip"
+            );
+        },
+    );
+}
+
+// ---- the tracker task kind (backlog round 2 chunk 4.2, #492) ---------
+
+/// A tracker fixture: the golden state's task1 kind-marked (the same
+/// card the context-menu journey addresses).
+fn tracker_journey_state() -> (fixture::Fixture, AppState) {
+    let (fixture, mut state) = fixture::journey_state();
+    let mut tracker = state.tasks.get(&fixture.task1).expect("task").clone();
+    tracker.kind = taskboard_domain::entities::TaskKind::Tracker;
+    state.tasks.insert(fixture.task1, tracker);
+    (fixture, state)
+}
+
+/// U3 — the task-view header checkbox hides for a tracker subject:
+/// the detail model's flag passes through the push (the checkbox and
+/// its focus/touch scopes mount inside the `if`), and the tracking
+/// buttons stay on.
+#[test]
+fn the_task_view_hides_the_header_checkbox_for_a_tracker() {
+    let (_fixture, state) = tracker_journey_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            // Walk to task1's detail: two item steps, two view steps.
+            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavNextView);
+            harness.press(ActionId::NavNextView);
+            assert_eq!(harness.handle.window().get_current_view(), View::TaskDetail);
+            let model = harness.handle.window().get_task_model();
+            assert!(
+                !model.can_done,
+                "the tracker subject hides the header checkbox"
+            );
+            assert!(
+                !model.done,
+                "the tracker is open — the status text stays data-driven"
+            );
+        },
+    );
+}
+
+/// U5 — the tracker card's context menu omits the impossible complete
+/// verb and offers the kind toggle; invoking the toggle sends the
+/// inverted plain kind edit (the context-menu journey's shape).
+#[test]
+fn the_tracker_context_menu_omits_complete_and_offers_the_toggle() {
+    let (fixture, state) = tracker_journey_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            // The toggle is the Task page's last row: a tall window lets
+            // the panel realize every row (the cap is host-pushed).
+            harness.driver.set_window_size(1000, 1800);
+            harness
+                .handle
+                .window()
+                .invoke_board_task_context_requested(0, 1, 300.0, 300.0);
+            harness.driver.advance_time(0);
+            assert!(keyboard(&harness).get_menu_open());
+
+            let entries = keyboard(&harness).get_menu_entries();
+            let rows: Vec<_> = (0..entries.row_count())
+                .map(|i| entries.row_data(i).expect("row"))
+                .collect();
+            assert!(
+                rows.iter().all(|r| r.action != "task.complete"),
+                "the tracker's menu omits Complete task"
+            );
+            assert!(
+                rows.iter().any(|r| r.action == "task.reopen"),
+                "the reopen no-op stays — only the impossible verb hides"
+            );
+            assert!(
+                rows.iter().any(|r| r.action == "task.toggle-tracker"),
+                "the menu offers the kind toggle"
+            );
+
+            harness.driver.advance_time(0);
+            harness.driver.click_by_label("Toggle tracker");
+            harness.assert_commands(&[StateCommand::UpdateTask {
+                id: fixture.task1,
+                changes: taskboard_domain::TaskChanges {
+                    kind: Some(Some(taskboard_domain::entities::TaskKind::Standard)),
+                    ..taskboard_domain::TaskChanges::default()
+                },
+            }]);
+            assert!(
+                !keyboard(&harness).get_menu_open(),
+                "the invocation closed the menu"
+            );
+        },
+    );
+}
+
+/// U6 — the shared suppression under the kiosk pin: the same pinned
+/// the app window renders the tracker card without the done checkbox and
+/// the standard card with it — zero kiosk-specific code (D-11).
+#[test]
+fn the_done_checkbox_seam_is_inert_in_kiosk_mode() {
+    let (fixture, mut state) = fixture::golden_state();
+    let mut tracker = state.tasks.get(&fixture.task1).expect("task").clone();
+    tracker.kind = taskboard_domain::entities::TaskKind::Tracker;
+    tracker.done = None;
+    state.tasks.insert(fixture.task1, tracker);
+    let state = state;
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let harness = Harness::mount_with_settings(
+                SlintDriver::default(),
+                state,
+                taskboard_ui_slint::UiSettings {
+                    kiosk: true,
+                    ..taskboard_ui_slint::UiSettings::default()
+                },
+            );
+            assert_eq!(current_view(&harness), View::Board);
+            // The tracker card's done affordance is gone ambiently; the
+            // standard sibling's stays.
+            let board = harness.handle.window().get_board_model();
+            let mut hidden = 0;
+            let mut shown = 0;
+            for column in 0..board.stacks.row_count() {
+                let tasks = board.stacks.row_data(column).expect("column").tasks;
+                for row in 0..tasks.row_count() {
+                    if tasks.row_data(row).expect("card").can_done {
+                        shown += 1;
+                    } else {
+                        hidden += 1;
+                    }
+                }
+            }
+            assert_eq!(
+                (shown, hidden),
+                (2, 1),
+                "exactly the tracker card hides its done box"
+            );
+            // Only the realized stack publishes a11y elements: the one
+            // visible standard card keeps its checkbox, the tracker's
+            // is gone ambiently.
+            assert_eq!(
+                harness
+                    .driver
+                    .find_by_label("Mark task done")
+                    .iter()
+                    .count(),
+                1,
+                "the visible standard card keeps its checkbox"
+            );
+        },
+    );
+}
+
+/// U7 — a tracker task's notification rows drop the done button (the
+/// existing per-row flag, the task-notification journey's twin).
+#[test]
+fn notification_rows_drop_the_done_button_for_a_tracker() {
+    let (golden, mut state) = fixture::golden_state();
+    let due = chrono::Utc::now() - TimeDelta::minutes(5);
+    fixture::deliver_task_notification(&mut state, golden.task1, due);
+    let mut tracker = state.tasks.get(&golden.task1).expect("task").clone();
+    tracker.kind = taskboard_domain::entities::TaskKind::Tracker;
+    state.tasks.insert(golden.task1, tracker);
+    let state = state;
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let harness = Harness::mount(SlintDriver::default(), state);
+            assert_eq!(
+                harness.handle.window().get_notification_model().row_count(),
+                1
+            );
+            let row = harness
+                .handle
+                .window()
+                .get_notification_model()
+                .row_data(0)
+                .expect("the surface's single row");
+            assert!(!row.can_done, "the tracker row drops the done button");
+            assert!(row.can_mute, "the mute button is untouched");
+            assert!(
+                row.can_track_start,
+                "tracking stays live (the liveness pin)"
             );
         },
     );

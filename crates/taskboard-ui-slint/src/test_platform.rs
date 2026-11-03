@@ -304,6 +304,7 @@ mod tests {
                 importance: None,
                 urgency: None,
                 recur: None,
+                kind: taskboard_domain::entities::TaskKind::Standard,
 
                 archived: false,
                 deleted: false,
@@ -318,6 +319,7 @@ mod tests {
                     importance: stamp(2),
                     urgency: stamp(2),
                     recur: stamp(2),
+                    kind: stamp(2),
 
                     archived: stamp(2),
                     deleted: stamp(2),

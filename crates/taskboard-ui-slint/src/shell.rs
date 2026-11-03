@@ -33,6 +33,7 @@ pub struct MenuState {
 /// (`None` in chunk-2 sessions — no views exist), and the focused
 /// entities.
 #[derive(Debug, Clone, Copy, Default)]
+#[allow(clippy::struct_excessive_bools)] // one flag per synced router gate
 pub struct KeymapShell {
     pub mode: Mode,
     pub menu: MenuState,
@@ -48,6 +49,10 @@ pub struct KeymapShell {
     /// Whether the focused task is done (round 2, D19): the reopen
     /// verb's gate, synced by the adapter from the focused task.
     pub focused_task_done: bool,
+    /// Whether the focused task is kind-marked (issue #492): the
+    /// complete verb's router guard and the toggle's inversion, synced
+    /// by the adapter from the focused task.
+    pub focused_task_tracker: bool,
     /// The date-picker grid holds slint focus (round-3 D25): the
     /// `DatePicker` context rides the chain head while it does —
     /// non-masking, event-mirrored from the grid's focus seam.
@@ -116,6 +121,7 @@ impl KeymapShell {
             habit_move: None,
             day_window: None,
             focused_task_done: self.focused_task_done,
+            focused_task_tracker: self.focused_task_tracker,
         }
     }
 

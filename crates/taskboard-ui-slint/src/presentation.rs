@@ -922,6 +922,15 @@ pub fn parse_timer_when(
     }
 }
 
+/// The tracker badge's visibility predicate (issue #492): the
+/// kind-marked card carries the badge — the kiosk-visible name of the
+/// kind. Pure derivation of the domain datum; the Slint file owns the
+/// glyph only.
+#[must_use]
+pub fn tracker_badge_visible(task: &taskboard_domain::entities::Task) -> bool {
+    task.kind == taskboard_domain::entities::TaskKind::Tracker
+}
+
 /// The anchor-aware per-row button table (D-P11): the notification
 /// surface's total visibility decision. See [`AwaitingButtons`].
 #[must_use]
@@ -1178,6 +1187,7 @@ mod tests {
             importance: epoch(),
             urgency: epoch(),
             recur: epoch(),
+            kind: epoch(),
 
             archived: epoch(),
             deleted: epoch(),
@@ -1200,6 +1210,7 @@ mod tests {
             importance: None,
             urgency: None,
             recur: None,
+            kind: taskboard_domain::entities::TaskKind::Standard,
 
             archived: false,
             deleted: false,
@@ -3057,6 +3068,7 @@ mod connector_status_tests {
                 importance: None,
                 urgency: None,
                 recur: None,
+                kind: taskboard_domain::entities::TaskKind::Standard,
 
                 archived: false,
                 deleted,
@@ -3071,6 +3083,7 @@ mod connector_status_tests {
                     importance: taskboard_domain::BoardClocks::epoch(),
                     urgency: taskboard_domain::BoardClocks::epoch(),
                     recur: taskboard_domain::BoardClocks::epoch(),
+                    kind: taskboard_domain::BoardClocks::epoch(),
 
                     archived: taskboard_domain::BoardClocks::epoch(),
                     deleted: taskboard_domain::BoardClocks::epoch(),
@@ -3262,6 +3275,7 @@ mod recur_badge_tests {
             importance: None,
             urgency: None,
             recur: None,
+            kind: taskboard_domain::entities::TaskKind::Standard,
             archived: false,
             deleted: false,
             clocks: TaskClocks {
@@ -3275,6 +3289,7 @@ mod recur_badge_tests {
                 importance: taskboard_domain::BoardClocks::epoch(),
                 urgency: taskboard_domain::BoardClocks::epoch(),
                 recur: taskboard_domain::BoardClocks::epoch(),
+                kind: taskboard_domain::BoardClocks::epoch(),
                 archived: taskboard_domain::BoardClocks::epoch(),
                 deleted: taskboard_domain::BoardClocks::epoch(),
             },

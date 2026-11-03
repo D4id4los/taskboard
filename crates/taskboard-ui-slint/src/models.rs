@@ -642,13 +642,24 @@ fn push_notifications(
                 ),
             };
             let buttons = presentation::awaiting_row_buttons(anchor);
+            // The tracker suppression (issue #492): a tracker task's
+            // rows drop the done button — the existing per-row flag,
+            // one condition (the engine rejection is the backstop).
+            let tracker = matches!(
+                anchor,
+                taskboard_domain::ReminderAnchor::Task(id)
+                    if state
+                        .tasks
+                        .get(&id)
+                        .is_some_and(presentation::tracker_badge_visible)
+            );
             NotificationRowModel {
                 title: SharedString::from(row.title.clone()),
                 fired_phrase: SharedString::from(presentation::notification_phrase(
                     row.occurrence,
                     now,
                 )),
-                can_done: buttons.done,
+                can_done: buttons.done && !tracker,
                 can_mute: buttons.mute,
                 can_cancel: buttons.cancel,
                 can_track_start: buttons.track_start,
@@ -1411,6 +1422,7 @@ fn push_task_detail(
             subject.map_or(DueKind::None, |t| presentation::due_kind(t, sets)),
         ),
         done: subject.is_some_and(|t| t.done.is_some()),
+        can_done: subject.is_none_or(|t| !presentation::tracker_badge_visible(t)),
         can_track_start: track_verb == Some(presentation::TrackDetail::Start),
         can_track_stop: track_verb == Some(presentation::TrackDetail::Stop),
         description: SharedString::from(subject.map_or(String::new(), |t| t.description.clone())),
@@ -1648,6 +1660,16 @@ fn field_decorations(
             tone: Tone::Info,
         });
     }
+    // The tracker badge (issue #492): visible whenever the task is
+    // kind-marked — the Recur badge's exact mechanism, the decision is
+    // presentation-side, the tone mapping models-side.
+    if presentation::tracker_badge_visible(task) {
+        out.push(TaskDecoration {
+            kind: DecorationKind::Tracker,
+            label: "tracker".into(),
+            tone: Tone::Neutral,
+        });
+    }
     // The recurring badge (DR-6/4, D-S7): derived per frame from the
     // published state — no UI-held recurrence state. Append-last (the
     // rule-D vocabulary grows at the tail); the tone mapping is
@@ -1683,6 +1705,7 @@ fn task_card_model(
         effort_phrase: SharedString::from(presentation::effort_phrase(task.effort)),
         due_kind: to_slint_due_kind(kind),
         done: task.done.is_some(),
+        can_done: !presentation::tracker_badge_visible(task),
         emphasis: vs.focused_task().is_some_and(|f| f == task.id),
         dragging_source: matches!(vs.flow(), Flow::DragMove { task: dragged, .. } if *dragged == task.id),
         decorations,
@@ -1862,6 +1885,7 @@ mod tests {
             importance: None,
             urgency: None,
             recur: None,
+            kind: taskboard_domain::entities::TaskKind::Standard,
 
             archived: false,
             deleted: false,
@@ -1876,6 +1900,7 @@ mod tests {
                 importance: epoch(),
                 urgency: epoch(),
                 recur: epoch(),
+                kind: epoch(),
 
                 archived: epoch(),
                 deleted: epoch(),
@@ -2237,6 +2262,7 @@ mod tests {
                 importance: None,
                 urgency: None,
                 recur: None,
+                kind: taskboard_domain::entities::TaskKind::Standard,
 
                 archived: false,
                 deleted: false,
@@ -2251,6 +2277,7 @@ mod tests {
                     importance: BoardClocks::epoch(),
                     urgency: BoardClocks::epoch(),
                     recur: BoardClocks::epoch(),
+                    kind: BoardClocks::epoch(),
 
                     archived: BoardClocks::epoch(),
                     deleted: BoardClocks::epoch(),
@@ -2667,5 +2694,108 @@ mod tests {
                 assert_eq!(push_palette(&window, &state, &vs, &mut models), Vec::new());
             });
         }
+    }
+
+    // ---- the tracker task kind (backlog round 2 chunk 4.2, #492) ------
+
+    /// U1 — the tracker card hides the done affordance and carries the
+    /// badge: `can-done` is false and the decoration list holds exactly
+    /// one `tracker` badge (the Recur badge's mechanism).
+    #[test]
+    fn tracker_cards_hide_the_done_box_and_carry_the_badge() {
+        let mut t = task();
+        t.kind = taskboard_domain::entities::TaskKind::Tracker;
+        let decorations = Rc::new(VecModel::from(field_decorations(
+            &t,
+            None,
+            calendar(),
+            epoch(),
+        )));
+        let vs = ViewState::default();
+        let card = task_card_model(
+            &t,
+            &DueSets::default(),
+            &vs,
+            epoch(),
+            ModelRc::from(decorations.clone()),
+        );
+        assert!(!card.can_done, "the tracker card hides the done box");
+        let badges: Vec<_> = card
+            .decorations
+            .iter()
+            .filter(|d| matches!(d.kind, DecorationKind::Tracker))
+            .collect();
+        assert_eq!(badges.len(), 1);
+        assert_eq!(badges[0].label, "tracker");
+        // A standard task is byte-identical to the pre-kind shape.
+        let standard = task();
+        let plain = task_card_model(
+            &standard,
+            &DueSets::default(),
+            &vs,
+            epoch(),
+            ModelRc::new(VecModel::from(Vec::new())),
+        );
+        assert!(plain.can_done);
+        assert!(
+            plain
+                .decorations
+                .iter()
+                .all(|d| !matches!(d.kind, DecorationKind::Tracker))
+        );
+    }
+
+    /// U2 — the liveness pin at the model seam: a tracked tracker card
+    /// keeps the tracking affordances (`can-track-*` flags derive from
+    /// the open entry, the Tracking badge rides the list) while the
+    /// done box stays hidden.
+    #[test]
+    fn the_tracking_affordances_stay_on_a_tracker_card() {
+        let mut t = task();
+        t.kind = taskboard_domain::entities::TaskKind::Tracker;
+        let tracked = Some(t.id);
+        let decorations = Rc::new(VecModel::from(field_decorations(
+            &t,
+            tracked,
+            calendar(),
+            epoch(),
+        )));
+        let vs = ViewState::default();
+        let card = task_card_model(
+            &t,
+            &DueSets::default(),
+            &vs,
+            epoch(),
+            ModelRc::from(decorations),
+        );
+        assert!(!card.can_done);
+        assert!(
+            card.decorations
+                .iter()
+                .any(|d| matches!(d.kind, DecorationKind::Tracking)),
+            "the tracking badge co-exists with the hidden done box"
+        );
+        // The detail seam's track flags derive from the tracking pass,
+        // untouched by the kind: the verb table keeps its row.
+        let mut state = taskboard_domain::AppState::default();
+        state.tracking.entries.insert(
+            taskboard_domain::TimeEntryId::from_uuid(uuid::Uuid::now_v7()),
+            taskboard_domain::TimeEntry {
+                id: taskboard_domain::TimeEntryId::from_uuid(uuid::Uuid::now_v7()),
+                task: t.id,
+                task_title: t.title.clone(),
+                start: epoch(),
+                end: None,
+                created_at: epoch(),
+                updated_at: epoch(),
+                kind: taskboard_domain::tracking::TimeEntryKind::Work,
+            },
+        );
+        let verb = presentation::detail_tracking_verb(&state, Some(t.id));
+        assert_eq!(
+            verb,
+            Some(presentation::TrackDetail::Stop),
+            "the open entry keeps its stop verb on a tracker"
+        );
     }
 }

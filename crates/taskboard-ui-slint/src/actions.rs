@@ -223,6 +223,7 @@ pub enum ActionId {
     TimerCancel,
     TaskTrackStart,
     TaskTrackStop,
+    TaskToggleTracker,
     // The habit verbs (DR-6/6, D-P13): section-scoped like the
     // timers' seams — pointer-driven, no preset bindings; dispatch-time
     // gating only (the kiosk gate empties the affordances, the
@@ -304,6 +305,7 @@ impl ActionId {
             Self::TimerCancel => "timer.cancel",
             Self::TaskTrackStart => "task.track-start",
             Self::TaskTrackStop => "task.track-stop",
+            Self::TaskToggleTracker => "task.toggle-tracker",
             Self::HabitLog => "habit.log",
             Self::HabitMove => "habit.move",
             Self::MenuNext => "menu.next",
@@ -962,6 +964,16 @@ pub const REGISTRY: &[ActionEntry] = &[
         menu_group: Some(MenuGroup::Task),
     },
     ActionEntry {
+        id: ActionId::TaskToggleTracker,
+        label: "Toggle tracker",
+        contexts: GLOBAL,
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 185,
+        description: "Marks or unmarks the focused task as a tracker: a tracked, never-completed card.",
+        menu_group: Some(MenuGroup::Task),
+    },
+    ActionEntry {
         id: ActionId::HabitLog,
         label: "Log habit",
         contexts: GLOBAL,
@@ -1222,6 +1234,7 @@ mod tests {
             ActionId::TimerCancel,
             ActionId::TaskTrackStart,
             ActionId::TaskTrackStop,
+            ActionId::TaskToggleTracker,
             ActionId::HabitLog,
             ActionId::HabitMove,
             ActionId::MenuNext,

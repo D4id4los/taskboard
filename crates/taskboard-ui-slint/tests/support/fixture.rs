@@ -31,6 +31,7 @@ fn task_clocks() -> TaskClocks {
         importance: epoch(),
         urgency: epoch(),
         recur: epoch(),
+        kind: epoch(),
 
         archived: epoch(),
         deleted: epoch(),
@@ -61,6 +62,7 @@ fn task(id: TaskId, stack: StackId, order: i64) -> Task {
         importance: None,
         urgency: None,
         recur: None,
+        kind: taskboard_domain::entities::TaskKind::Standard,
 
         archived: false,
         deleted: false,
