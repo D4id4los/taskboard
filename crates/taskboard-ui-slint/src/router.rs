@@ -6,9 +6,7 @@
 //! over the mpsc and applies [`UiEffect`]s to the shell state.
 
 use chrono::TimeDelta;
-use taskboard_domain::{
-    AdhocAlarmId, BoardId, ReminderOffset, ReminderRuleId, StackId, StateCommand, TaskId,
-};
+use taskboard_domain::{AdhocAlarmId, BoardId, ReminderRuleId, StackId, StateCommand, TaskId};
 
 use crate::actions::{ActionId, entry as registry_entry};
 use crate::presentation::ReminderTarget;
@@ -301,10 +299,11 @@ pub struct DispatchCtx {
     /// a row's remove affordance activates; `reminder.rule-remove`
     /// routes from it (`NoTarget` without one).
     pub rule_target: Option<ReminderRuleId>,
-    /// The rule-list add entry's parsed offset (chunk 6, D11): set by
-    /// the adapter (preset or custom); `reminder.rule-add` routes from
-    /// it together with the focused task (`NoTarget` without both).
-    pub rule_add_offset: Option<ReminderOffset>,
+    /// The rule-list add entry's parsed timing input (chunk 6, D11;
+    /// r4 D30 widens it to the three-form grammar): set by the adapter
+    /// (preset or custom); `reminder.rule-add` routes from it together
+    /// with the focused task (`NoTarget` without both).
+    pub rule_add_when: Option<crate::presentation::RuleWhen>,
     /// The today day window (chunk 10 D4), set by the adapter per
     /// dispatch from its held `(day_start_time, offset)` pair — state-
     /// derived, never consumed; `task.due-today` re-commits to its end
@@ -429,12 +428,22 @@ impl ActionRouter {
             // The rule-list verbs (chunk 6, D11): the banner-verb
             // pattern — concrete one-shot targets only; a menu
             // invocation carries neither.
-            ActionId::ReminderRuleAdd => match (ctx.focused_task, ctx.rule_add_offset) {
-                (Some(task), Some(offset)) => {
+            ActionId::ReminderRuleAdd => match (ctx.focused_task, ctx.rule_add_when) {
+                (Some(task), Some(when)) => {
+                    // The three-form grammar (r4 decision 2): the
+                    // command stays additive — a due-offset draft rides
+                    // the legacy field, an at/in draft rides `at` and
+                    // the planner stamps `In`.
+                    let (offset, at) = match when {
+                        crate::presentation::RuleWhen::DueOffset(offset) => (offset, None),
+                        crate::presentation::RuleWhen::At(when) => {
+                            (taskboard_domain::ReminderOffset::at_due(), Some(when))
+                        }
+                    };
                     DispatchOutcome::Command(StateCommand::AddReminderRule {
                         task,
                         offset,
-                        at: None,
+                        at,
                         insistence: taskboard_domain::Insistence::Normal,
                     })
                 }
@@ -628,7 +637,7 @@ mod tests {
             reminder_target: None,
             board_target: None,
             rule_target: None,
-            rule_add_offset: None,
+            rule_add_when: None,
             timer_draft: None,
             timer_target: None,
             track_target: None,
@@ -814,17 +823,36 @@ mod tests {
             DispatchOutcome::NoTarget,
             "no rule target"
         );
-        ctx.rule_add_offset = Some(
+        ctx.rule_add_when = Some(crate::presentation::RuleWhen::DueOffset(
             taskboard_domain::ReminderOffset::before(chrono::TimeDelta::try_minutes(-5).unwrap())
                 .unwrap(),
-        );
+        ));
         let task = ctx.focused_task.expect("set");
         assert_eq!(
             ActionRouter::dispatch(ActionId::ReminderRuleAdd, &ctx),
             DispatchOutcome::Command(StateCommand::AddReminderRule {
                 task,
-                offset: ctx.rule_add_offset.expect("set"),
+                offset: taskboard_domain::ReminderOffset::before(
+                    chrono::TimeDelta::try_minutes(-5).unwrap()
+                )
+                .unwrap(),
                 at: None,
+                insistence: taskboard_domain::Insistence::Normal,
+            })
+        );
+        // The at/in draft rides the `at` input (r4 decision 2); the
+        // legacy offset field is the ignored at-due default.
+        ctx.rule_add_when = Some(crate::presentation::RuleWhen::At(
+            taskboard_domain::AdhocWhen::In(chrono::TimeDelta::try_minutes(90).unwrap()),
+        ));
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::ReminderRuleAdd, &ctx),
+            DispatchOutcome::Command(StateCommand::AddReminderRule {
+                task,
+                offset: taskboard_domain::ReminderOffset::at_due(),
+                at: Some(taskboard_domain::AdhocWhen::In(
+                    chrono::TimeDelta::try_minutes(90).unwrap()
+                )),
                 insistence: taskboard_domain::Insistence::Normal,
             })
         );
@@ -841,7 +869,9 @@ mod tests {
     #[test]
     fn rule_add_without_focus_or_offset_is_no_target() {
         let mut ctx = ctx(false);
-        ctx.rule_add_offset = Some(taskboard_domain::ReminderOffset::at_due());
+        ctx.rule_add_when = Some(crate::presentation::RuleWhen::DueOffset(
+            taskboard_domain::ReminderOffset::at_due(),
+        ));
         assert_eq!(
             ActionRouter::dispatch(ActionId::ReminderRuleAdd, &ctx),
             DispatchOutcome::NoTarget

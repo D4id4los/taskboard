@@ -125,7 +125,7 @@ impl KeymapShell {
             reminder_target: None,
             board_target: None,
             rule_target: None,
-            rule_add_offset: None,
+            rule_add_when: None,
             timer_draft: None,
             timer_target: None,
             track_target: None,
