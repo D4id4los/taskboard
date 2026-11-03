@@ -330,6 +330,9 @@ export component AppWindow inherits Window {
                 timers-awaiting: root.timers-awaiting;
                 timers-cancel-clicked(r) => root.timers-cancel-clicked(r);
                 timers-create-accepted(label, when) => root.timers-create-accepted(label, when);
+                timer-when-validity: root.timer-when-validity;
+                timer-when-error-hint: root.timer-when-error-hint;
+                timers-when-edited(t) => root.timers-when-edited(t);
                 habits: root.habits-model;
                 habits-editing-visible: root.habits-editing-visible;
                 habits-plus-clicked(r) => root.habits-plus-clicked(r);
@@ -385,6 +388,7 @@ export component AppWindow inherits Window {
                 date-accepted(t) => root.task-date-accepted(t);
                 date-picker-toggled() => root.task-date-picker-toggled();
                 date-editor-focus-lost() => root.date-editor-focus-lost();
+                rule-offset-edited(t) => root.rule-offset-edited(t);
                 task-track-start-clicked() => root.task-track-start-clicked();
                 task-track-stop-clicked() => root.task-track-stop-clicked();
                 task-done-toggled() => root.task-done-toggled();
@@ -886,6 +890,11 @@ export component AppWindow inherits Window {
     pure callback task-date-time-accepted(string);
     // The armed date editor's focus-loss settle (r4 D24).
     pure callback date-editor-focus-lost();
+    // The per-keystroke validity probes (r4 D27).
+    pure callback rule-offset-edited(string);
+    pure callback timers-when-edited(string);
+    in-out property <FieldValidity> timer-when-validity: FieldValidity.neutral;
+    in-out property <string> timer-when-error-hint: "";
     // The dismissal layer's seam (round-3 D10): drops the picker
     // only — the editor and its flow stay armed.
     pure callback date-picker-dismiss-requested();

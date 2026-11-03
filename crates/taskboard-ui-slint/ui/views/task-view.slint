@@ -70,6 +70,9 @@ export struct TaskDetailModel {
     date-validity: FieldValidity,
     date-syntax-hint: string,
     time-syntax-hint: string,
+    // The custom-offset field's validity + hint (r4 D27).
+    offset-validity: FieldValidity,
+    offset-error-hint: string,
     date-time-text: string,
     // The time combobox's pushed half (r4 D26): the visible text
     // mirror, the validity flavour, the filtered quick-list rows, and
@@ -115,6 +118,8 @@ export component TaskView inherits FocusScope {
     callback rule-remove-clicked(int);
     callback rule-add-preset-clicked(int);
     callback rule-add-custom-accepted(string) -> bool;
+    // The custom offset's per-keystroke validity (r4 D27).
+    callback rule-offset-edited(string);
     // The date editors' seams (r2 D25, round-3 D8), forwarded to the
     // window: one open seam per field, one shared interaction set.
     callback due-edit-opened();
@@ -637,6 +642,9 @@ export component TaskView inherits FocusScope {
                 remove-clicked(i) => root.rule-remove-clicked(i);
                 add-preset-clicked(i) => root.rule-add-preset-clicked(i);
                 add-custom-accepted(text) => root.rule-add-custom-accepted(text);
+                offset-validity: root.task.offset-validity;
+                offset-error-hint: root.task.offset-error-hint;
+                offset-edited(t) => root.rule-offset-edited(t);
             }
 
             // The description (round-3 D15/#228): the read-only body

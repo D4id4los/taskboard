@@ -8,7 +8,7 @@
 // adapter absorbs it (the CLI owns typed failures, D12).
 
 import { Theme, Typography, Semantic, RoleText } from "../theme.slint";
-import { TextField } from "../widgets/text-field.slint";
+import { TextField, FieldValidity } from "../widgets/text-field.slint";
 import { IconButton, IconKind } from "../widgets/icon-button.slint";
 import { ActivationStop } from "../widgets/activation-stop.slint";
 import { TooltipState } from "../widgets/tooltip.slint";
@@ -94,6 +94,12 @@ export component RuleList inherits VerticalLayout {
     // buffer reset — the field is remounted only on view switch, never
     // per refresh, so the handler below is the buffer's only clearer.
     callback add-custom-accepted(string) -> bool;
+    // The per-keystroke validity (r4 D27): the adapter parses with
+    // the domain grammar and pushes the flavour; the error line
+    // renders the pushed copy constant on invalid text only.
+    callback offset-edited(string);
+    in property <FieldValidity> offset-validity: FieldValidity.neutral;
+    in property <string> offset-error-hint;
 
     RoleText {
         role: Typography.caption;
@@ -150,6 +156,7 @@ export component RuleList inherits VerticalLayout {
             placeholder: "Custom offset, e.g. 45m";
             label: "Custom reminder offset";
             commit-affordance: true;
+            validity: root.offset-validity;
             horizontal-stretch: 1;
             accepted(text) => {
                 // A miss (`false`) is the D12 absorb: nothing
@@ -158,6 +165,12 @@ export component RuleList inherits VerticalLayout {
                     custom-field.text = "";
                 }
             }
+            edited(text) => { root.offset-edited(text); }
         }
+    }
+    if (root.offset-validity == FieldValidity.invalid && custom-field.text != ""): RoleText {
+        role: Typography.caption;
+        text-color: Semantic.danger;
+        text: root.offset-error-hint;
     }
 }

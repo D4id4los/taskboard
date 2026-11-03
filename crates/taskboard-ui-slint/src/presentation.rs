@@ -1055,6 +1055,36 @@ pub fn parse_timer_when(
 #[must_use]
 pub fn tracker_badge_visible(task: &taskboard_domain::entities::Task) -> bool {
     task.kind == taskboard_domain::entities::TaskKind::Tracker
+/// The custom-offset field's syntax hint (r4 D27): the copy constant.
+pub const OFFSET_SYNTAX_HINT: &str = "45m, 3h, 2d, 1w";
+
+/// The timers `when` field's syntax hint (r4 D27).
+pub const TIMER_SYNTAX_HINT: &str = "in 10m · at 09:30 · at 2030-04-01";
+
+/// The custom-offset field's tri-state validity probe (r4 D27): the
+/// predicate *calls* the authoritative domain parser — no second
+/// grammar. Empty is neutral (`None`).
+#[must_use]
+pub fn offset_validity(text: &str) -> Option<bool> {
+    if text.trim().is_empty() {
+        return None;
+    }
+    Some(taskboard_domain::ReminderOffset::parse_text_form(text).is_some())
+}
+
+/// The timers `when` field's tri-state validity probe (r4 D27) over
+/// [`parse_timer_when`] — the same injected-tz seam, the same refusal
+/// discipline. Empty is neutral.
+#[must_use]
+pub fn timer_when_validity(
+    text: &str,
+    now: DateTime<Utc>,
+    tz: &impl chrono::TimeZone,
+) -> Option<bool> {
+    if text.trim().is_empty() {
+        return None;
+    }
+    Some(parse_timer_when(text, now, tz).is_some())
 }
 
 /// The anchor-aware per-row button table (D-P11): the notification
@@ -2470,6 +2500,40 @@ mod tests {
         assert!(task_row.track_start);
         let alarm_row = awaiting_row_buttons(taskboard_domain::ReminderAnchor::Alarm(alarm));
         assert!(!alarm_row.track_start);
+    }
+
+    #[test]
+    fn offset_validity_follows_the_domain_parser() {
+        // (r4 D27) Tri-state: empty neutral, the domain grammar's
+        // forms valid, junk invalid — the predicate calls the
+        // authoritative parser.
+        assert_eq!(offset_validity(""), None);
+        assert_eq!(offset_validity("   "), None);
+        assert_eq!(offset_validity("45m"), Some(true));
+        assert_eq!(offset_validity("3h"), Some(true));
+        assert_eq!(offset_validity("2d"), Some(true));
+        // The domain grammar's units are s | m | h | d — weeks are
+        // not the offset grammar (the due relative arm's `+1w` is a
+        // different grammar; recorded so the hints stay honest).
+        assert_eq!(offset_validity("1w"), Some(false));
+        assert_eq!(offset_validity("30s"), Some(true));
+        assert_eq!(offset_validity("soon"), Some(false));
+        assert_eq!(offset_validity("45x"), Some(false));
+    }
+
+    #[test]
+    fn timer_when_validity_follows_the_timer_grammar() {
+        // (r4 D27) The injected-tz probe over parse_timer_when's own
+        // refusal discipline.
+        let now = Utc.with_ymd_and_hms(2030, 1, 31, 12, 0, 0).unwrap();
+        assert_eq!(timer_when_validity("", now, &Utc), None);
+        assert_eq!(timer_when_validity("   ", now, &Utc), None);
+        assert_eq!(timer_when_validity("in 10m", now, &Utc), Some(true));
+        assert_eq!(timer_when_validity("at 13:30", now, &Utc), Some(true));
+        assert_eq!(timer_when_validity("at 2030-02-01", now, &Utc), Some(true));
+        assert_eq!(timer_when_validity("soon", now, &Utc), Some(false));
+        assert_eq!(timer_when_validity("in", now, &Utc), Some(false));
+        assert_eq!(timer_when_validity("at 25:00", now, &Utc), Some(false));
     }
 
     #[test]

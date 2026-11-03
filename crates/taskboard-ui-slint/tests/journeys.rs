@@ -7430,6 +7430,81 @@ fn the_date_field_validity_flips_with_the_parse() {
     );
 }
 
+/// R4 D27 (F27) — the custom-offset and timers-`when` fields ride
+/// their authoritative grammars' validity: junk reads invalid, a
+/// parseable entry valid, untouched neutral — model reads, never
+/// label text.
+#[test]
+fn the_offset_and_timer_fields_flip_validity_with_their_grammars() {
+    let (_fixture, state) = fixture::journey_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavNextView);
+            harness.press(ActionId::NavNextView);
+
+            // The custom-offset field on the task detail.
+            harness
+                .handle
+                .window()
+                .invoke_rule_offset_edited("soon".into());
+            harness.driver.advance_time(0);
+            assert_eq!(
+                harness.handle.window().get_task_model().offset_validity,
+                taskboard_ui_slint::FieldValidity::Invalid
+            );
+            harness
+                .handle
+                .window()
+                .invoke_rule_offset_edited("45m".into());
+            harness.driver.advance_time(0);
+            assert_eq!(
+                harness.handle.window().get_task_model().offset_validity,
+                taskboard_ui_slint::FieldValidity::Valid
+            );
+            harness.handle.window().invoke_rule_offset_edited("".into());
+            harness.driver.advance_time(0);
+            assert_eq!(
+                harness.handle.window().get_task_model().offset_validity,
+                taskboard_ui_slint::FieldValidity::Neutral
+            );
+
+            // The timers form's `when` field on the today view.
+            harness.press(ActionId::ViewToday);
+            harness.driver.advance_time(0);
+            harness
+                .handle
+                .window()
+                .invoke_timers_when_edited("soon".into());
+            harness.driver.advance_time(0);
+            assert_eq!(
+                harness.handle.window().get_timer_when_validity(),
+                taskboard_ui_slint::FieldValidity::Invalid
+            );
+            harness
+                .handle
+                .window()
+                .invoke_timers_when_edited("in 10m".into());
+            harness.driver.advance_time(0);
+            assert_eq!(
+                harness.handle.window().get_timer_when_validity(),
+                taskboard_ui_slint::FieldValidity::Valid
+            );
+            harness.handle.window().invoke_timers_when_edited("".into());
+            harness.driver.advance_time(0);
+            assert_eq!(
+                harness.handle.window().get_timer_when_validity(),
+                taskboard_ui_slint::FieldValidity::Neutral
+            );
+        },
+    );
+}
+
 /// R4 D24 (chunk-6 acceptance e) — the foreign-flow guard: a focus
 /// steal into the description field while the due editor is armed
 /// settles the due per the rule and leaves the description's own
