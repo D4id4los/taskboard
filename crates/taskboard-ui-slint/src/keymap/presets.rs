@@ -54,7 +54,7 @@ impl Preset {
         // search palette (#348): both are modal surfaces; `ViInsert`
         // shadows without masking (D11).
         let _ = self;
-        &[ContextId::Menu, ContextId::Palette]
+        &[ContextId::Menu, ContextId::Palette, ContextId::FocusMode]
     }
 }
 
@@ -70,6 +70,12 @@ static STANDARD: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::AppHelp, ContextId::Global, &["F1"]),
     (ActionId::CaptureQuick, ContextId::Global, &["Ctrl+K"]),
     (ActionId::PaletteSearch, ContextId::Global, &["Ctrl+F"]),
+    // Focus mode (#496): one stroke from anywhere (the overlay is the
+    // desktop's concentration affordance); the in-overlay rows use
+    // the menu vocabulary — arrows, not j/k, for the same reason the
+    // palette records (the panel has a text field), and the toggle
+    // itself closes (Escape and the stroke both dismiss).
+    (ActionId::FocusModeToggle, ContextId::Global, &["Ctrl+J"]),
     // Chunk 10 (D11): the today jump is one stroke from anywhere, all
     // presets (P10's promise); view.inbox and task.due-today stay
     // menu-reachable without default strokes.
@@ -171,6 +177,14 @@ static STANDARD: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::MenuPrevious, ContextId::Palette, &["Up"]),
     (ActionId::MenuInvoke, ContextId::Palette, &["Return"]),
     (ActionId::MenuDismiss, ContextId::Palette, &["Escape"]),
+    // Focus mode (#496): the overlay's own context — Escape and the
+    // toggle stroke close, arrows walk the switcher, Return starts
+    // the selected task.
+    (ActionId::FocusModeToggle, ContextId::FocusMode, &["Escape"]),
+    (ActionId::FocusModeToggle, ContextId::FocusMode, &["Ctrl+J"]),
+    (ActionId::MenuNext, ContextId::FocusMode, &["Down"]),
+    (ActionId::MenuPrevious, ContextId::FocusMode, &["Up"]),
+    (ActionId::MenuInvoke, ContextId::FocusMode, &["Return"]),
     // D5: insert-mode exit — the same single key vi has (the insert
     // chain masks the view context; printables reach the field).
     (ActionId::ModeNormal, ContextId::ViInsert, &["Escape"]),
@@ -259,6 +273,9 @@ static EMACS: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::AppSettings, ContextId::Global, &["Ctrl+x", "c"]),
     (ActionId::CaptureQuick, ContextId::Global, &["Ctrl+c", "c"]),
     (ActionId::PaletteSearch, ContextId::Global, &["Ctrl+s"]),
+    // Focus mode (#496): the CUA toggle chord (Ctrl+j is free in this
+    // preset's Global — emacs' own C-j has no domain verb here).
+    (ActionId::FocusModeToggle, ContextId::Global, &["Ctrl+J"]),
     (ActionId::ViewToday, ContextId::Global, &["Ctrl+T"]),
     (ActionId::NavNextView, ContextId::Global, &["Ctrl+x", "]"]),
     (ActionId::NavPrevView, ContextId::Global, &["Ctrl+x", "["]),
@@ -391,6 +408,16 @@ static EMACS: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::MenuInvoke, ContextId::Palette, &["Return"]),
     (ActionId::MenuDismiss, ContextId::Palette, &["Ctrl+g"]),
     (ActionId::MenuDismiss, ContextId::Palette, &["Escape"]),
+    // Focus mode (#496): the emacs menu vocabulary rides (both
+    // dismissals); arrows as the palette-shaped alternates.
+    (ActionId::FocusModeToggle, ContextId::FocusMode, &["Escape"]),
+    (ActionId::FocusModeToggle, ContextId::FocusMode, &["Ctrl+J"]),
+    (ActionId::MenuNext, ContextId::FocusMode, &["Ctrl+n"]),
+    (ActionId::MenuNext, ContextId::FocusMode, &["Down"]),
+    (ActionId::MenuPrevious, ContextId::FocusMode, &["Ctrl+p"]),
+    (ActionId::MenuPrevious, ContextId::FocusMode, &["Up"]),
+    (ActionId::MenuInvoke, ContextId::FocusMode, &["Return"]),
+    (ActionId::MenuDismiss, ContextId::FocusMode, &["Ctrl+g"]),
     // D5: insert-mode exit (see standard's note).
     (ActionId::ModeNormal, ContextId::ViInsert, &["Escape"]),
     // Round-1 chunk 3 (D28b): Escape closes the settings surface.
@@ -519,6 +546,9 @@ static VI: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::CaptureQuick, ContextId::ViNormal, &["Z", "c"]),
     (ActionId::AppMenu, ContextId::ViNormal, &[":"]),
     (ActionId::PaletteSearch, ContextId::ViNormal, &["/"]),
+    // Focus mode (#496): `Z f` — the Z leader family's free letter
+    // (Z c capture, Z Q exit, Z s settings).
+    (ActionId::FocusModeToggle, ContextId::ViNormal, &["Z", "f"]),
     (ActionId::AppHelp, ContextId::ViNormal, &["F1"]),
     // ViInsert: the only insert binding (as in vim, only Escape acts).
     (ActionId::ModeNormal, ContextId::ViInsert, &["Escape"]),
@@ -533,6 +563,13 @@ static VI: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::MenuPrevious, ContextId::Palette, &["Up"]),
     (ActionId::MenuInvoke, ContextId::Palette, &["Return"]),
     (ActionId::MenuDismiss, ContextId::Palette, &["Escape"]),
+    // Focus mode (#496): arrows, not j/k — the palette's text-field
+    // reason verbatim; the leader stroke and Escape both dismiss.
+    (ActionId::FocusModeToggle, ContextId::FocusMode, &["Escape"]),
+    (ActionId::FocusModeToggle, ContextId::FocusMode, &["Z", "f"]),
+    (ActionId::MenuNext, ContextId::FocusMode, &["Down"]),
+    (ActionId::MenuPrevious, ContextId::FocusMode, &["Up"]),
+    (ActionId::MenuInvoke, ContextId::FocusMode, &["Return"]),
     // Round-1 chunk 3 (D28b): Escape closes the settings surface.
     (ActionId::AppSettings, ContextId::Settings, &["Escape"]),
     // Round 3 (D25): the control walk — Tab/Shift+Tab in the five

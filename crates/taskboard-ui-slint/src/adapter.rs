@@ -126,6 +126,11 @@ pub(crate) struct Adapter {
     /// occurrence — held, never re-read from config (the `day_start`
     /// consumers contract).
     reminder_defaults: taskboard_domain::ReminderDefaults,
+    /// The injected focus timings (#496): `None` while the mode is
+    /// off — the overlay action never lights and the countdown has no
+    /// input. Held, never re-read from config (the `day_start`
+    /// consumers contract).
+    focus: Option<taskboard_domain::focus::FocusTiming>,
     /// The per-second tick's display-changes-per-second condition
     /// (r4 D17, decision 5): true only while a mounted surface's
     /// displayed value moves with the wall second. Computed once per
@@ -334,6 +339,13 @@ impl Adapter {
                 focused.is_some() && !tracking_live,
             ),
             (ActionId::TaskTrackStop, tracking_live),
+            // The concentration overlay (#496): desktop-only (kiosk's
+            // three-layer exclusion, layer 2) and only while focus
+            // mode is configured — no timing input, no overlay.
+            (
+                ActionId::FocusModeToggle,
+                !self.kiosk && self.focus.is_some(),
+            ),
             // Undo v1 surfaces (undo/2, ADR 0019): availability reads
             // the published `UndoView` (memory-only, derived at every
             // publish) — the whole v1 binding. A `NotUndoable` head
@@ -621,6 +633,10 @@ impl Adapter {
             self.view_state.flow(),
             crate::view_state::Flow::Palette { .. }
         );
+        self.shell.focus_overlay = matches!(
+            self.view_state.flow(),
+            crate::view_state::Flow::FocusMode { .. }
+        );
         // Round 2 (D19): the reopen gate's done stamp, from the same
         // focused task — the router stays pure.
         self.shell.focused_task_done = self
@@ -798,15 +814,27 @@ impl Adapter {
     /// second while this flag holds. Layer (b) is the test-pinned one.
     fn compute_seconds_surfaces_active(&mut self, state: &AppState) {
         let mut active = false;
-        if !self.kiosk
-            && self.view_state.view() == crate::view_state::ViewId::TaskDetail
-            && let Some(subject) = self.view_state.subject_task()
-            && state
-                .tracking
-                .open_entries()
-                .any(|entry| entry.task == subject)
-        {
-            active = true;
+        if !self.kiosk {
+            // The concentration overlay's countdown (#496): the
+            // remaining-time text changes with the wall second while
+            // the flow holds — THIS term is the mandated extension
+            // point (the doc above); never a second tick channel.
+            // Unreachable on kiosk by the three-layer exclusion (the
+            // flow cannot open there), frozen by this explicit
+            // `!self.kiosk` term as before.
+            let focus_overlay_active = matches!(
+                self.view_state.flow(),
+                crate::view_state::Flow::FocusMode { .. }
+            );
+            // The task view's elapsed total (#463's gate, D17).
+            let task_view_active = self.view_state.view() == crate::view_state::ViewId::TaskDetail
+                && self.view_state.subject_task().is_some_and(|subject| {
+                    state
+                        .tracking
+                        .open_entries()
+                        .any(|entry| entry.task == subject)
+                });
+            active = task_view_active || focus_overlay_active;
         }
         self.seconds_surfaces_active = active;
     }
@@ -875,6 +903,7 @@ impl Adapter {
             self.calendar(),
             self.kiosk,
             &self.reminder_defaults,
+            self.focus.as_ref(),
             &mut self.models,
             &due,
         );
@@ -1184,6 +1213,22 @@ impl Adapter {
             (_, UiEffect::BeginCapture) => {
                 Self::dismiss_tooltip(window);
                 self.view_state.begin_capture()
+            }
+            // -- the concentration overlay's toggle (#496): the
+            //    matrix settles any foreign flow first (R3
+            //    settle-then-run), then the overlay opens over it
+            //    (the XOR rule); a second toggle closes. The kiosk
+            //    dispatch no-ops (the exclusion's effect layer —
+            //    layer 3: structurally unreachable even if a future
+            //    surface bypasses the entry_states gate, layer 2).
+            (_, UiEffect::ToggleFocusMode) if self.kiosk => Vec::new(),
+            (Flow::FocusMode { .. }, UiEffect::ToggleFocusMode) => {
+                Self::dismiss_tooltip(window);
+                self.view_state.close_focus_mode()
+            }
+            (_, UiEffect::ToggleFocusMode) => {
+                Self::dismiss_tooltip(window);
+                self.view_state.open_focus_mode()
             }
             // -- the capture commit/close (the palette's modal peer);
             //    NOT `interpret_edit` — capture's non-empty commit
@@ -1696,7 +1741,11 @@ impl Adapter {
     /// The flow kind the matrix rows range over (audit §6).
     fn flow_kind(flow: &Flow) -> FlowKind {
         match flow {
-            Flow::None => FlowKind::None,
+            // The concentration overlay is a modal like the palette:
+            // the matrix's overlay cells cover it (the
+            // `ToggleFocusMode` arms are its own; settle leaves it —
+            // the close paths are its exits).
+            Flow::FocusMode { .. } | Flow::None => FlowKind::None,
             Flow::Create { .. }
             | Flow::CreateStack
             | Flow::CreateBoard
@@ -1790,8 +1839,9 @@ impl Adapter {
             // BEGIN/TITLE: R4 — dead buttons cannot exist; the
             // auto-settle-then-run is the visible feedback.
             (_, C::Begin | C::Title) => R::SettleThenRun,
-            // NAV / LIFECYCLE / palette-open: R3 settle-then-run.
-            (_, C::Nav | C::Lifecycle | C::OpenPalette) => R::SettleThenRun,
+            // NAV / LIFECYCLE / overlay-open (palette + the focus
+            // overlay): R3 settle-then-run.
+            (_, C::Nav | C::Lifecycle | C::OpenPalette | C::FocusOverlay) => R::SettleThenRun,
             // EDIT residue (the effects the kept arms don't own —
             // SetMode(Insert) under a text/due flow): named inert.
             (_, C::Edit) => R::Inert,
@@ -1947,10 +1997,13 @@ impl Adapter {
             | UiEffect::FocusFirst
             | UiEffect::FocusLast
             // Chunk 10: the today/inbox jumps and capture route
-            // through the same interpretation table.
+            // through the same interpretation table. The focus
+            // overlay's toggle joins them (#496) — the kiosk no-op
+            // lives in its interpret arm.
             | UiEffect::FocusToday
             | UiEffect::OpenInbox
-            | UiEffect::BeginCapture => self.interpret(window, effect),
+            | UiEffect::BeginCapture
+            | UiEffect::ToggleFocusMode => self.interpret(window, effect),
         }
         // The pass's tail: the identity diff decides (see the entry
         // comment). The explicit dismisses below (the menu's
@@ -3196,6 +3249,7 @@ pub(crate) fn install(
     kiosk: bool,
     rotation: Option<crate::view_state::KioskRotation>,
     reminder_defaults: taskboard_domain::ReminderDefaults,
+    focus: Option<taskboard_domain::focus::FocusTiming>,
     boards: Vec<requests::BoardInfo>,
     state: Arc<ArcSwap<AppState>>,
     status_timer: Rc<slint::Timer>,
@@ -3238,6 +3292,7 @@ pub(crate) fn install(
         due_soon_horizon,
         kiosk,
         reminder_defaults,
+        focus,
         seconds_surfaces_active: false,
         shell: KeymapShell::default(),
         resolver: KeymapResolver::new(),
@@ -3474,6 +3529,7 @@ fn install_view_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     install_notification_seams(window, adapter);
     install_timer_seams(window, adapter);
     install_tracking_seams(window, adapter);
+    install_focus_seams(window, adapter);
     install_habit_seams(window, adapter);
     install_settings_seams(window, adapter);
 }
@@ -5222,6 +5278,96 @@ fn install_tracking_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     });
 }
 
+/// The concentration overlay's seams (#496): the scrim close, the
+/// note's mirror + capture-commit funnel, the switcher's start (the
+/// notification-row `track_target` precedent), and the session stop.
+/// Every session verb routes the landed registry action — zero new
+/// session commands (the fence).
+fn install_focus_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
+    // The scrim / Escape / toggle close: presentation only — the
+    // session (the open entry) is untouched by construction (the
+    // close outcomes carry no command).
+    let close = Rc::clone(adapter);
+    let close_weak = window.as_weak();
+    window.on_focus_overlay_close_requested(move || {
+        let Some(window) = close_weak.upgrade() else {
+            return;
+        };
+        let mut a = close.borrow_mut();
+        let outcomes = a.view_state.close_focus_mode();
+        a.apply_outcomes(&window, &outcomes);
+        a.finish_mutation(&window);
+    });
+
+    // The quick-note mirror (the capture field's discipline).
+    let note = Rc::clone(adapter);
+    window.on_focus_note_edited(move |text| {
+        note.borrow_mut().view_state.set_buffer(text.to_string());
+    });
+
+    // The note commit: the landed inbox-capture command via the
+    // flow's commit funnel — clears the buffer and KEEPS the overlay
+    // open (rapid-fire capture semantics; an empty commit is a no-op,
+    // never a close).
+    let commit = Rc::clone(adapter);
+    let commit_weak = window.as_weak();
+    window.on_focus_note_accepted(move || {
+        let Some(window) = commit_weak.upgrade() else {
+            return;
+        };
+        let mut a = commit.borrow_mut();
+        let thought = a.view_state.buffer().trim().to_owned();
+        if thought.is_empty() {
+            return; // no-op: the overlay stays as it is
+        }
+        let outcomes = vec![
+            crate::view_state::FlowOutcome::Command(taskboard_domain::StateCommand::CaptureTask {
+                title: thought,
+                board: None,
+            }),
+            crate::view_state::FlowOutcome::RefreshNow,
+        ];
+        a.view_state.set_buffer(String::new());
+        a.apply_outcomes(&window, &outcomes);
+        a.finish_mutation(&window);
+    });
+
+    // The switcher's start: the selected row's task as the one-shot
+    // `track_target`, then the landed `task.track-start` action (the
+    // notification-row Start Task precedent — the router arm maps it
+    // to `StartTracking { kind: Work }`).
+    let start = Rc::clone(adapter);
+    let start_weak = window.as_weak();
+    window.on_focus_switcher_invoked(move |index| {
+        let Some(window) = start_weak.upgrade() else {
+            return;
+        };
+        let mut a = start.borrow_mut();
+        let selected = usize::try_from(index).unwrap_or(usize::MAX);
+        let state = a.state.load();
+        let Some(task) = crate::presentation::focus_switcher_rows(&state)
+            .get(selected)
+            .map(|row| row.task)
+        else {
+            return; // a stale cursor past the pool: inert
+        };
+        a.track_target = Some(task);
+        a.route(&window, ActionId::TaskTrackStart);
+    });
+
+    // The panel's stop: the payload-free landed stop. The overlay
+    // stays open, showing the idle + switcher state (closing the
+    // overlay and stopping the session are deliberately orthogonal).
+    let stop = Rc::clone(adapter);
+    let stop_weak = window.as_weak();
+    window.on_focus_stop_clicked(move || {
+        let Some(window) = stop_weak.upgrade() else {
+            return;
+        };
+        stop.borrow_mut().route(&window, ActionId::TaskTrackStop);
+    });
+}
+
 /// The notification surface's seams (R3 chunk C, design D-10): each
 /// button dispatches exactly one engine command and nothing else (the
 /// thin-client rule).
@@ -5532,10 +5678,14 @@ impl crate::UiHandle {
             Some(ContextId::StackDetail) => crate::view_state::ViewId::StackDetail,
             Some(ContextId::TaskDetail) => crate::view_state::ViewId::TaskDetail,
             Some(ContextId::Settings) => crate::view_state::ViewId::Settings,
-            // A non-routable context leaves the adapter untouched —
-            // no resolver reset, no derive.
+            // The overlay's context maps to no view (the modal masks
+            // the chain; the view identity under it is unchanged).
+            // The overlay's context maps to no view: like the other
+            // non-routable contexts, the adapter is left untouched
+            // (the modal masks the chain; no derive rides it).
             Some(
-                ContextId::Global
+                ContextId::FocusMode
+                | ContextId::Global
                 | ContextId::Menu
                 | ContextId::Palette
                 | ContextId::DatePicker

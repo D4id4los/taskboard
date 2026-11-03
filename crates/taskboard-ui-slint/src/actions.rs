@@ -34,6 +34,9 @@ pub enum ContextId {
     Menu,
     /// The jump-to search palette (#348): a total mask like `Menu`.
     Palette,
+    /// The concentration overlay (#496): a total mask like `Palette`
+    /// (the modal context while the overlay holds).
+    FocusMode,
     ViNormal,
     ViInsert,
     /// The date-picker's grid (round-3 D25): active exactly while the
@@ -56,6 +59,7 @@ impl ContextId {
             Self::Settings => "settings",
             Self::Menu => "menu",
             Self::Palette => "palette",
+            Self::FocusMode => "focus-mode",
             Self::ViNormal => "vi-normal",
             Self::ViInsert => "vi-insert",
             Self::DatePicker => "date-picker",
@@ -224,6 +228,11 @@ pub enum ActionId {
     TaskTrackStart,
     TaskTrackStop,
     TaskToggleTracker,
+    /// The concentration overlay's toggle (issue #496): opens or
+    /// closes `Flow::FocusMode`. Session verbs are NOT re-invented —
+    /// start/stop stay `task.track-start`/`task.track-stop` — this
+    /// action only moves presentation.
+    FocusModeToggle,
     // The habit verbs (DR-6/6, D-P13): section-scoped like the
     // timers' seams — pointer-driven, no preset bindings; dispatch-time
     // gating only (the kiosk gate empties the affordances, the
@@ -306,6 +315,7 @@ impl ActionId {
             Self::TaskTrackStart => "task.track-start",
             Self::TaskTrackStop => "task.track-stop",
             Self::TaskToggleTracker => "task.toggle-tracker",
+            Self::FocusModeToggle => "focus.toggle",
             Self::HabitLog => "habit.log",
             Self::HabitMove => "habit.move",
             Self::MenuNext => "menu.next",
@@ -973,6 +983,21 @@ pub const REGISTRY: &[ActionEntry] = &[
         description: "Marks or unmarks the focused task as a tracker: a tracked, never-completed card.",
         menu_group: Some(MenuGroup::Task),
     },
+    // The concentration overlay (issue #496): the tracking verbs'
+    // dispatch-time-gating template — menu-reachable, gated at
+    // dispatch (`entry_states`: never kiosk, only while focus mode is
+    // configured). The session verbs it surfaces stay the tracking
+    // pair; this row only moves presentation.
+    ActionEntry {
+        id: ActionId::FocusModeToggle,
+        label: "Focus mode",
+        contexts: GLOBAL,
+        category: Category::Application,
+        enabled: true,
+        menu_rank: 210,
+        description: "Opens or closes the concentration overlay: countdown, current task, task switcher, quick notes. The session itself is ordinary time tracking.",
+        menu_group: None,
+    },
     ActionEntry {
         id: ActionId::HabitLog,
         label: "Log habit",
@@ -1095,7 +1120,7 @@ pub const REGISTRY: &[ActionEntry] = &[
     ActionEntry {
         id: ActionId::MenuNext,
         label: "Next menu entry",
-        contexts: &[ContextId::Menu, ContextId::Palette],
+        contexts: &[ContextId::Menu, ContextId::Palette, ContextId::FocusMode],
         category: Category::Menu,
         enabled: true,
         menu_rank: 900,
@@ -1105,7 +1130,7 @@ pub const REGISTRY: &[ActionEntry] = &[
     ActionEntry {
         id: ActionId::MenuPrevious,
         label: "Previous menu entry",
-        contexts: &[ContextId::Menu, ContextId::Palette],
+        contexts: &[ContextId::Menu, ContextId::Palette, ContextId::FocusMode],
         category: Category::Menu,
         enabled: true,
         menu_rank: 900,
@@ -1115,7 +1140,7 @@ pub const REGISTRY: &[ActionEntry] = &[
     ActionEntry {
         id: ActionId::MenuInvoke,
         label: "Invoke menu entry",
-        contexts: &[ContextId::Menu, ContextId::Palette],
+        contexts: &[ContextId::Menu, ContextId::Palette, ContextId::FocusMode],
         category: Category::Menu,
         enabled: true,
         menu_rank: 900,
@@ -1125,7 +1150,7 @@ pub const REGISTRY: &[ActionEntry] = &[
     ActionEntry {
         id: ActionId::MenuDismiss,
         label: "Dismiss menu",
-        contexts: &[ContextId::Menu, ContextId::Palette],
+        contexts: &[ContextId::Menu, ContextId::Palette, ContextId::FocusMode],
         category: Category::Menu,
         enabled: true,
         menu_rank: 900,
@@ -1235,6 +1260,7 @@ mod tests {
             ActionId::TaskTrackStart,
             ActionId::TaskTrackStop,
             ActionId::TaskToggleTracker,
+            ActionId::FocusModeToggle,
             ActionId::HabitLog,
             ActionId::HabitMove,
             ActionId::MenuNext,

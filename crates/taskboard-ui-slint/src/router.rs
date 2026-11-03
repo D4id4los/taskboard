@@ -51,6 +51,10 @@ pub enum UiEffect {
     /// Open the capture overlay (chunk 10, D-V6): any flow is replaced
     /// without committing (the XOR rule); typing rides `ViInsert`.
     BeginCapture,
+    /// Toggle the concentration overlay (#496): open, or close when it
+    /// already holds (the `focus.toggle` action). A kiosk dispatch
+    /// no-ops in the adapter (the structural exclusion, D-F13).
+    ToggleFocusMode,
     /// The adapter closes the menu and re-dispatches the selected
     /// entry — bounded (the menu is closed first, no recursion).
     InvokeSelected,
@@ -173,6 +177,9 @@ pub enum EffectClass {
     Begin,
     /// The palette overlay request.
     OpenPalette,
+    /// The concentration-overlay toggle request (#496): settle-then-run
+    /// like the palette request; the adapter owns the toggle.
+    FocusOverlay,
     /// The capture overlay request (the one replace-without-commit).
     BeginCapture,
     /// The edit-flow's own commit/discard verbs (`Activate`,
@@ -228,6 +235,7 @@ impl UiEffect {
                 EffectClass::Begin
             }
             Self::OpenPalette => EffectClass::OpenPalette,
+            Self::ToggleFocusMode => EffectClass::FocusOverlay,
             Self::BeginCapture => EffectClass::BeginCapture,
             Self::Activate | Self::SetMode(_) => EffectClass::Edit,
             Self::BeginTitleEdit => EffectClass::Title,
@@ -477,6 +485,10 @@ impl ActionRouter {
                 None => DispatchOutcome::NoTarget,
             },
             ActionId::TaskTrackStop => DispatchOutcome::Command(StateCommand::StopTracking),
+            // The concentration overlay's toggle (#496): presentation
+            // only — no session verb rides it (the fence: the session
+            // drives only the landed tracking verbs).
+            ActionId::FocusModeToggle => DispatchOutcome::UiEffect(UiEffect::ToggleFocusMode),
             // The chunk-3 view intents (D6): the adapter resolves the
             // effects against the view-state model.
             ActionId::NavNextView => DispatchOutcome::UiEffect(UiEffect::NextView),

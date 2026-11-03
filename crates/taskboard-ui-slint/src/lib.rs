@@ -124,6 +124,12 @@ pub struct UiSettings {
     /// hand-over carries typed values only. `None` is no rotation:
     /// the desktop path is structurally inert (no state, no timer).
     pub kiosk_rotation: Option<view_state::KioskRotation>,
+    /// The injected focus timings (#496): `None` while the mode is
+    /// off (the overlay's action never lights); `Some` feeds the
+    /// overlay's countdown derivation. Minted app-side from the
+    /// validated `[focus]` table at hand-over — held, never re-read
+    /// from config (the `day_start` consumers contract).
+    pub focus: Option<taskboard_domain::focus::FocusTiming>,
 }
 
 impl Default for UiSettings {
@@ -145,6 +151,7 @@ impl Default for UiSettings {
             ),
             reminder_defaults: taskboard_domain::ReminderDefaults::default(),
             due_soon_horizon: presentation::DUE_SOON_HORIZON,
+            focus: None,
         }
     }
 }
@@ -342,6 +349,7 @@ pub fn mount(
         settings.kiosk,
         settings.kiosk_rotation,
         settings.reminder_defaults,
+        settings.focus,
         settings.boards,
         Arc::clone(&state),
         Rc::clone(&status_timer),

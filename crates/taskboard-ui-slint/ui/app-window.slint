@@ -13,6 +13,7 @@ import { Responsive, Breakpoint } from "responsive.slint";
 import { ActionMenu, MenuEntryModel } from "compositions/action-menu.slint";
 import { SearchPalette, PaletteRowModel } from "compositions/search-palette.slint";
 import { CaptureOverlay } from "compositions/capture-overlay.slint";
+import { FocusOverlay, FocusRowModel } from "compositions/focus-overlay.slint";
 import { Toolbar } from "compositions/toolbar.slint";
 import { StatusBar, SyncBadgeModel, BannerRowModel, FlowHintModel } from "compositions/status-bar.slint";
 import { NotificationSurface, NotificationRowModel } from "compositions/notification-surface.slint";
@@ -202,6 +203,17 @@ export component AppWindow inherits Window {
     in-out property <int> palette-selected-index: 0;
     in-out property <[PaletteRowModel]> palette-model: [];
     in-out property <int> palette-overflow: 0;
+    // The concentration overlay (#496): the derived frame values and
+    // the switcher arrive from the Rust pass (the dumb client); the
+    // callbacks route the landed tracking verbs and the capture
+    // commit.
+    in-out property <bool> focus-overlay-open: false;
+    in-out property <string> focus-phase-text;
+    in-out property <string> focus-remaining-text;
+    in-out property <string> focus-task-title;
+    in-out property <[FocusRowModel]> focus-switcher-model: [];
+    in-out property <int> focus-switcher-selected: 0;
+    in-out property <string> focus-note-initial-text;
     in-out property <FlowHintModel> flow-hint-model;
     // The board create/rename fields' window-level slot (r2 D21):
     // one mount site covers every breakpoint, the empty-board leg,
@@ -653,6 +665,32 @@ export component AppWindow inherits Window {
         // reports). Mounted as the last sibling: mid-drag the runtime
         // suppresses hover/press over it, so it shadows no drop
         // target; no other overlay can be open while a drag is.
+        // The concentration overlay (#496): full-surface scrim + panel
+        // (the capture-overlay precedent; the later sibling wins the
+        // hit test, so an outside click lands on the scrim and closes
+        // — the session keeps running; the overlay is presentation).
+        if (root.focus-overlay-open): TouchArea {
+            width: 100%;
+            height: 100%;
+            clicked => root.focus-overlay-close-requested();
+        }
+        if (root.focus-overlay-open): FocusOverlay {
+            width: min(root.width - 2 * Theme.space-2, 560px * Theme.base-scale);
+            x: (root.width - self.width) / 2;
+            y: max(Theme.space-4,
+                   min((root.height - status.height - self.height) / 2,
+                       status.y - self.height - Theme.space-2));
+            phase-text: root.focus-phase-text;
+            remaining-text: root.focus-remaining-text;
+            task-title: root.focus-task-title;
+            rows: root.focus-switcher-model;
+            selected-index: root.focus-switcher-selected;
+            note-initial-text: root.focus-note-initial-text;
+            note-edited(text) => root.focus-note-edited(text);
+            note-accepted() => root.focus-note-accepted();
+            switcher-activated(index) => root.focus-switcher-invoked(index);
+            stop-clicked() => root.focus-stop-clicked();
+        }
         if (root.board-drag-open): Rectangle {
             width: 100%;
             height: 100%;
@@ -728,6 +766,14 @@ export component AppWindow inherits Window {
     pure callback capture-dismiss-requested();
     pure callback capture-text-edited(string);
     pure callback capture-accepted();
+    // The concentration overlay's seams (#496): scrim close, note
+    // commit (the capture commit funnel), the switcher's start, and
+    // the session stop.
+    pure callback focus-overlay-close-requested();
+    pure callback focus-note-edited(string);
+    pure callback focus-note-accepted();
+    pure callback focus-switcher-invoked(int);
+    pure callback focus-stop-clicked();
     pure callback today-row-activated(int, int);
     pure callback today-row-clicked(int, int);
     pure callback today-row-context-requested(int, int, float, float);

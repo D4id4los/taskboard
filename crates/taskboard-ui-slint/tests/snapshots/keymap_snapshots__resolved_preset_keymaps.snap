@@ -22,6 +22,9 @@ expression: rows
             - Ctrl+F
           action: palette.search
         - sequence:
+            - Ctrl+J
+          action: focus.toggle
+        - sequence:
             - Ctrl+K
           action: capture.quick
         - sequence:
@@ -278,6 +281,23 @@ expression: rows
         - sequence:
             - Down
           action: menu.next
+    - context: focus-mode
+      bindings:
+        - sequence:
+            - Return
+          action: menu.invoke
+        - sequence:
+            - Escape
+          action: focus.toggle
+        - sequence:
+            - Ctrl+J
+          action: focus.toggle
+        - sequence:
+            - Up
+          action: menu.previous
+        - sequence:
+            - Down
+          action: menu.next
     - context: vi-insert
       bindings:
         - sequence:
@@ -319,6 +339,9 @@ expression: rows
         - sequence:
             - Escape
           action: task.move.cancel
+        - sequence:
+            - Ctrl+J
+          action: focus.toggle
         - sequence:
             - Ctrl+T
           action: view.today
@@ -623,6 +646,32 @@ expression: rows
         - sequence:
             - Ctrl+p
           action: menu.previous
+    - context: focus-mode
+      bindings:
+        - sequence:
+            - Return
+          action: menu.invoke
+        - sequence:
+            - Escape
+          action: focus.toggle
+        - sequence:
+            - Ctrl+J
+          action: focus.toggle
+        - sequence:
+            - Ctrl+g
+          action: menu.dismiss
+        - sequence:
+            - Ctrl+n
+          action: menu.next
+        - sequence:
+            - Ctrl+p
+          action: menu.previous
+        - sequence:
+            - Up
+          action: menu.previous
+        - sequence:
+            - Down
+          action: menu.next
     - context: vi-insert
       bindings:
         - sequence:
@@ -735,6 +784,24 @@ expression: rows
         - sequence:
             - Down
           action: menu.next
+    - context: focus-mode
+      bindings:
+        - sequence:
+            - Return
+          action: menu.invoke
+        - sequence:
+            - Escape
+          action: focus.toggle
+        - sequence:
+            - Z
+            - f
+          action: focus.toggle
+        - sequence:
+            - Up
+          action: menu.previous
+        - sequence:
+            - Down
+          action: menu.next
     - context: vi-normal
       bindings:
         - sequence:
@@ -775,6 +842,10 @@ expression: rows
             - Z
             - c
           action: capture.quick
+        - sequence:
+            - Z
+            - f
+          action: focus.toggle
         - sequence:
             - Z
             - s

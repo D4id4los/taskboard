@@ -231,6 +231,11 @@ pub struct PushModels {
     /// keystroke — a fresh `VecModel` per push would regress the
     /// stable-identity invariant (r2 D9).
     palette: MirroredRows<PaletteRowModel>,
+    /// The concentration overlay's mount-only note seed (#496): the
+    /// mirror text is written exactly on the closed→open transition —
+    /// the per-second countdown push must never clobber a field the
+    /// user is typing into (the capture-overlay's init-seed rule).
+    focus_overlay_was_open: bool,
     /// The today view's per-section row handles (chunk 10 D7): fixed
     /// to the four display sections — a rollover refresh must not
     /// re-instantiate the cards (the r2 D9 discipline).
@@ -702,6 +707,7 @@ pub fn push(
     calendar: taskboard_domain::DayCalendar,
     kiosk: bool,
     reminder_defaults: &taskboard_domain::ReminderDefaults,
+    focus: Option<&taskboard_domain::focus::FocusTiming>,
     models: &mut PushModels,
     due: &DueEditorPush<'_>,
 ) -> IdTables {
@@ -822,6 +828,7 @@ pub fn push(
         &mut tables,
         models,
     );
+    push_focus_overlay(window, state, vs, focus, now, models);
     // The decoration handles of tasks this pass dropped from every
     // surface are unreachable from the views.
     let pass = std::mem::take(&mut models.pass_tasks);
@@ -830,6 +837,66 @@ pub fn push(
         .retain(|task, _| pass.contains(task));
     tracing::trace!(rows = mutations, "model push diff: row mutations this pass");
     tables
+}
+
+/// The concentration overlay's frame push (#496, D-F11): one surface,
+/// one `push_*` — phase, countdown, current task, switcher rows, and
+/// the note mirror, all derived per pass from the published state, the
+/// injected timings, and the pass's render-time `now` (the chip-text
+/// precedent). Visibility mirrors the `Flow::FocusMode` flow — the
+/// flow is unreachable on kiosk (the spawn/gate/effect exclusion), so
+/// the overlay never lights there. Pure sets; the slint tree computes
+/// nothing (the dumb-client line). `focus: None` (the mode off)
+/// forces the overlay closed regardless of a stale flow — the
+/// hand-over cannot have opened it, and a defensive close keeps the
+/// property honest.
+fn push_focus_overlay(
+    window: &AppWindow,
+    state: &AppState,
+    vs: &ViewState,
+    focus: Option<&taskboard_domain::focus::FocusTiming>,
+    now: chrono::DateTime<chrono::Utc>,
+    models: &mut PushModels,
+) {
+    let flow_live =
+        focus.is_some() && matches!(vs.flow(), crate::view_state::Flow::FocusMode { .. });
+    window.set_focus_overlay_open(flow_live);
+    let mount_transition = flow_live && !models.focus_overlay_was_open;
+    models.focus_overlay_was_open = flow_live;
+    let Some(focus) = focus else {
+        // Mode off: the derived frame values stay empty.
+        window.set_focus_phase_text(SharedString::new());
+        window.set_focus_remaining_text(SharedString::new());
+        window.set_focus_task_title(SharedString::new());
+        return;
+    };
+    let derived = presentation::focus_overlay(state, focus, now);
+    window.set_focus_phase_text(SharedString::from(match derived.phase {
+        presentation::FocusPhase::Idle => "Idle — start something to begin a block",
+        presentation::FocusPhase::Focus => "Focus",
+        presentation::FocusPhase::Break => "Break",
+    }));
+    window.set_focus_remaining_text(SharedString::from(derived.remaining_text));
+    window.set_focus_task_title(SharedString::from(derived.task_title));
+    let selected = match vs.flow() {
+        crate::view_state::Flow::FocusMode { selected } => *selected,
+        _ => 0,
+    };
+    let rows: Vec<crate::FocusRowModel> = presentation::focus_switcher_rows(state)
+        .into_iter()
+        .map(|row| crate::FocusRowModel {
+            text: SharedString::from(row.title),
+            emphasis: false,
+        })
+        .collect();
+    window.set_focus_switcher_model(slint::ModelRc::new(slint::VecModel::from(rows)));
+    window.set_focus_switcher_selected(i32::try_from(selected).unwrap_or(0));
+    // The note mirror: the shared view-state buffer, seeded exactly
+    // on the mount transition (edits flow back through the seam; a
+    // per-second re-push would clobber typing — see the field doc).
+    if mount_transition {
+        window.set_focus_note_initial_text(SharedString::from(vs.buffer().to_owned()));
+    }
 }
 
 /// The toolbar chrome: board title and the `app.menu` binding hint (a
@@ -2351,6 +2418,7 @@ mod tests {
                 calendar(),
                 kiosk,
                 &taskboard_domain::ReminderDefaults::default(),
+                None,
                 models,
                 &due,
             )
