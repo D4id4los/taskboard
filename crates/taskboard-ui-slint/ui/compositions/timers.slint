@@ -9,6 +9,7 @@
 
 import { Theme, Typography, RoleText, Tone, Semantic } from "../theme.slint";
 import { Badge } from "../widgets/badge.slint";
+import { SegmentedControl } from "../widgets/segmented-control.slint";
 import { IconButton, IconKind } from "../widgets/icon-button.slint";
 import { FieldValidity } from "../widgets/text-field.slint";
 import { TextField } from "../widgets/text-field.slint";
@@ -35,12 +36,18 @@ export component TimersSection inherits Rectangle {
     callback cancel-clicked(int);
     // The form's commit seam (the rule-add convention): `false` keeps
     // the field text (an absorbed parse miss), `true` clears both.
-    callback create-accepted(string, string) -> bool;
+    // The third parameter is the insistence rung's structural bit
+    // (r4 D-T7): the two-rung enum's alarm flag from the picker.
+    callback create-accepted(string, string, bool) -> bool;
     // The `when` field's per-keystroke validity (r4 D27): the
     // adapter parses with the timer grammar and pushes the flavour.
     callback when-edited(string);
     in property <FieldValidity> when-validity: FieldValidity.neutral;
     in property <string> when-error-hint;
+    // The insistence picker's state (r4 D-T7): the caller owns the
+    // selection; `Normal` is the default rung (the ladder's silent
+    // base). Index order `[Normal, Alarm]`.
+    in-out property <int> insistence-index: 0;
 
     background: transparent;
     accessible-role: AccessibleRole.region;
@@ -144,12 +151,25 @@ export component TimersSection inherits Rectangle {
                 validity: root.when-validity;
                 autofocus: false;
                 accepted(text) => {
-                    if (root.create-accepted(label-field.text, text)) {
+                    if (root.create-accepted(label-field.text, text, root.insistence-index == 1)) {
                         label-field.text = "";
                         when-field.text = "";
+                        // The rung re-seats on its silent default — a
+                        // stale Alarm pick would silently escalate the
+                        // next timer (the fields' own reset convention).
+                        root.insistence-index = 0;
                     }
                 }
                 edited(text) => { root.when-edited(text); }
+            }
+            // The insistence picker (r4 D-T7, the D-P1 drop-in spot):
+            // keyboard parity with the popover's picker — the rung
+            // rides the same commit seam's third parameter.
+            SegmentedControl {
+                options: ["Normal", "Alarm"];
+                selected-index: root.insistence-index;
+                group-label: "Insistence";
+                picked(index) => { root.insistence-index = index; }
             }
         }
         if (root.when-validity == FieldValidity.invalid && when-field.text != ""): RoleText {

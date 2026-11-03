@@ -337,7 +337,9 @@ export component AppWindow inherits Window {
                 timers: root.timers-model;
                 timers-awaiting: root.timers-awaiting;
                 timers-cancel-clicked(r) => root.timers-cancel-clicked(r);
-                timers-create-accepted(label, when) => root.timers-create-accepted(label, when);
+                timers-create-accepted(label, when, alarm) => {
+                    root.timers-create-accepted(label, when, alarm)
+                }
                 timer-when-validity: root.timer-when-validity;
                 timer-when-error-hint: root.timer-when-error-hint;
                 timers-when-edited(t) => root.timers-when-edited(t);
@@ -944,6 +946,6 @@ export component AppWindow inherits Window {
     pure callback timers-cancel-clicked(int);
     pure callback habits-plus-clicked(int);
     pure callback habits-reorder-asked(int, int);
-    pure callback timers-create-accepted(string, string) -> bool;
+    pure callback timers-create-accepted(string, string, bool) -> bool;
     pure callback timers-chip-clicked();
 }

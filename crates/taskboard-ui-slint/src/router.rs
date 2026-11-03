@@ -272,6 +272,10 @@ pub enum DispatchOutcome {
 pub struct TimerDraft {
     pub label: String,
     pub when: taskboard_domain::AdhocWhen,
+    /// The escalation rung (r4 D-T7): the GUI's insistence picker
+    /// projects the two-rung enum's alarm bit; the default pick mints
+    /// `Normal`.
+    pub insistence: taskboard_domain::Insistence,
 }
 
 /// The focused-entity seam (D16): chunk 2's shell has no views, so
@@ -466,13 +470,15 @@ impl ActionRouter {
             // The timers verbs (DR-3/3, D-I8): the one-shot target
             // pattern — concrete drafts/targets only.
             ActionId::TimerCreate => match &ctx.timer_draft {
-                Some(TimerDraft { label, when }) => {
-                    DispatchOutcome::Command(StateCommand::CreateAdhocAlarm {
-                        label: label.clone(),
-                        when: *when,
-                        insistence: taskboard_domain::Insistence::Normal,
-                    })
-                }
+                Some(TimerDraft {
+                    label,
+                    when,
+                    insistence,
+                }) => DispatchOutcome::Command(StateCommand::CreateAdhocAlarm {
+                    label: label.clone(),
+                    when: *when,
+                    insistence: *insistence,
+                }),
                 None => DispatchOutcome::NoTarget,
             },
             ActionId::TimerCancel => match ctx.timer_target {
@@ -684,6 +690,7 @@ mod tests {
         ctx.timer_draft = Some(TimerDraft {
             label: "tea".to_owned(),
             when,
+            insistence: taskboard_domain::Insistence::Normal,
         });
         assert_eq!(
             ActionRouter::dispatch(ActionId::TimerCreate, &ctx),
@@ -691,6 +698,17 @@ mod tests {
                 label: "tea".to_owned(),
                 when,
                 insistence: taskboard_domain::Insistence::Normal,
+            })
+        );
+        // The alarm rung (r4 D-T7): the draft's rung routes verbatim —
+        // the router never defaults.
+        ctx.timer_draft.as_mut().expect("draft").insistence = taskboard_domain::Insistence::Alarm;
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::TimerCreate, &ctx),
+            DispatchOutcome::Command(StateCommand::CreateAdhocAlarm {
+                label: "tea".to_owned(),
+                when,
+                insistence: taskboard_domain::Insistence::Alarm,
             })
         );
         let alarm = taskboard_domain::AdhocAlarmId::from_uuid(Uuid::now_v7());
