@@ -208,6 +208,14 @@ pub(crate) struct Adapter {
     /// The timers row's alarm (DR-3/3, D-I8); consumed by the next
     /// `timer.cancel` dispatch, then cleared (one-shot).
     timer_target: Option<taskboard_domain::AdhocAlarmId>,
+    /// The entries form's parsed draft (r4 chunk 10, D-TS6); filled at
+    /// the commit seam only when the live validity table passes,
+    /// consumed by the next `-log`/`-adjust` dispatch (one-shot).
+    track_entry_draft: Option<crate::presentation::TrackEntryDraft>,
+    /// The armed entry row's one-shot target (edit seed + delete
+    /// confirm); consumed by the next `-delete` dispatch and cleared
+    /// on overlay mutations.
+    track_entry_target: Option<taskboard_domain::TimeEntryId>,
     /// The notification row's task (DR-5/4, D-TU5); consumed by the
     /// next `task.track-start` dispatch, then cleared (one-shot, the
     /// timer-target precedent).
@@ -640,6 +648,8 @@ impl Adapter {
         self.rule_add_when = None;
         ctx.timer_draft = self.timer_draft.take();
         ctx.timer_target = self.timer_target.take();
+        ctx.track_entry_draft = self.track_entry_draft.take();
+        ctx.track_entry_target = self.track_entry_target.take();
         ctx.track_target = self.track_target.take();
         ctx.habit_target = self.habit_target.take();
         ctx.habit_move = self.habit_move.take();
@@ -695,6 +705,11 @@ impl Adapter {
         self.shell.focus_overlay = matches!(
             self.view_state.flow(),
             crate::view_state::Flow::FocusMode { .. }
+        );
+        self.shell.track_entries = matches!(
+            self.view_state.flow(),
+            crate::view_state::Flow::TrackEntries { .. }
+                | crate::view_state::Flow::TrackEntryForm { .. }
         );
         // Round 2 (D19): the reopen gate's done stamp, from the same
         // focused task — the router stays pure.
@@ -1470,6 +1485,33 @@ impl Adapter {
                 Self::dismiss_tooltip(window);
                 self.view_state.open_focus_mode()
             }
+            // -- the time-entries overlay (r4 chunk 10, D-TS2) --
+            // The open request settles any foreign flow first (the
+            // matrix's overlay cells), then opens over the viewed
+            // task; the kiosk dispatch and a subjectless view refuse
+            // (dispatch-time gating, D-TS8 — the menu row degrades
+            // through this same arm). The modal-takeover half of the
+            // r2 D13 rule: the tip dies into the overlay.
+            (_, UiEffect::TrackEntriesOpen) if self.kiosk => Vec::new(),
+            (
+                Flow::TrackEntries { .. } | Flow::TrackEntryForm { .. },
+                UiEffect::TrackEntriesOpen,
+            ) => Vec::new(),
+            (_, UiEffect::TrackEntriesOpen) => match self.view_state.subject_task() {
+                Some(task) => {
+                    Self::dismiss_tooltip(window);
+                    self.view_state.open_track_entries(task)
+                }
+                None => Vec::new(),
+            },
+            // The Escape ladder (D-TS2), level-aware like `MenuBack`:
+            // a focused form field disengages first (mode flip; the
+            // overlay stays), then the form steps to the list, then
+            // the overlay closes.
+            (_, UiEffect::TrackEntryDismiss) if self.shell.mode == Mode::Insert => {
+                vec![FlowOutcome::SetMode(Mode::Normal)]
+            }
+            (_, UiEffect::TrackEntryDismiss) => self.view_state.step_back_track_entries(),
             // -- the capture commit/close (the palette's modal peer);
             //    NOT `interpret_edit` — capture's non-empty commit
             //    deliberately keeps the flow --
@@ -1990,11 +2032,15 @@ impl Adapter {
     /// The flow kind the matrix rows range over (audit §6).
     fn flow_kind(flow: &Flow) -> FlowKind {
         match flow {
-            // The concentration overlay is a modal like the palette:
-            // the matrix's overlay cells cover it (the
-            // `ToggleFocusMode` arms are its own; settle leaves it —
-            // the close paths are its exits).
-            Flow::FocusMode { .. } | Flow::None => FlowKind::None,
+            // The modals (the concentration overlay #496; the entries
+            // overlay's two surfaces, r4 chunk 10) and the empty flow
+            // read the same: the matrix's overlay cells cover them —
+            // the kept arms own their opens/closes, settle leaves the
+            // overlay (its close paths are its exits).
+            Flow::FocusMode { .. }
+            | Flow::TrackEntries { .. }
+            | Flow::TrackEntryForm { .. }
+            | Flow::None => FlowKind::None,
             Flow::Create { .. }
             | Flow::CreateStack
             | Flow::CreateBoard
@@ -2088,9 +2134,11 @@ impl Adapter {
             // BEGIN/TITLE: R4 — dead buttons cannot exist; the
             // auto-settle-then-run is the visible feedback.
             (_, C::Begin | C::Title) => R::SettleThenRun,
-            // NAV / LIFECYCLE / overlay-open (palette + the focus
-            // overlay): R3 settle-then-run.
-            (_, C::Nav | C::Lifecycle | C::OpenPalette | C::FocusOverlay) => R::SettleThenRun,
+            // NAV / LIFECYCLE / overlay-open (palette, the focus
+            // overlay, the entries overlay): R3 settle-then-run.
+            (_, C::Nav | C::Lifecycle | C::OpenPalette | C::FocusOverlay | C::TrackOverlay) => {
+                R::SettleThenRun
+            }
             // EDIT residue (the effects the kept arms don't own —
             // SetMode(Insert) under a text/due flow): named inert.
             (_, C::Edit) => R::Inert,
@@ -2252,7 +2300,12 @@ impl Adapter {
             | UiEffect::FocusToday
             | UiEffect::OpenInbox
             | UiEffect::BeginCapture
-            | UiEffect::ToggleFocusMode => self.interpret(window, effect),
+            | UiEffect::ToggleFocusMode
+            // The entries overlay's open request and its Escape
+            // ladder interpret like every view intent (r4 chunk 10,
+            // D-TS2) — the kiosk/subject refusals live in the arms.
+            | UiEffect::TrackEntriesOpen
+            | UiEffect::TrackEntryDismiss => self.interpret(window, effect),
         }
         // The pass's tail: the identity diff decides (see the entry
         // comment). The explicit dismisses below (the menu's
@@ -3596,6 +3649,8 @@ pub(crate) fn install(
         rule_add_when: None,
         timer_draft: None,
         timer_target: None,
+        track_entry_draft: None,
+        track_entry_target: None,
         track_target: None,
         habit_target: None,
         habit_move: None,
@@ -6378,6 +6433,7 @@ impl crate::UiHandle {
                 | ContextId::Menu
                 | ContextId::Palette
                 | ContextId::DatePicker
+                | ContextId::TrackEntries
                 | ContextId::ViNormal
                 | ContextId::ViInsert,
             ) => return,

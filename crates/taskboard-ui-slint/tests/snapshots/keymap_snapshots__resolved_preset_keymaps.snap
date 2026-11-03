@@ -1,5 +1,6 @@
 ---
 source: crates/taskboard-ui-slint/tests/keymap_snapshots.rs
+assertion_line: 115
 expression: rows
 ---
 - preset: standard
@@ -332,6 +333,17 @@ expression: rows
         - sequence:
             - PageDown
           action: picker.next-month
+    - context: track-entries
+      bindings:
+        - sequence:
+            - Tab
+          action: nav.next-control
+        - sequence:
+            - Shift+Tab
+          action: nav.prev-control
+        - sequence:
+            - Escape
+          action: task.track-entry-dismiss
 - preset: emacs
   contexts:
     - context: global
@@ -706,6 +718,20 @@ expression: rows
         - sequence:
             - Ctrl+v
           action: picker.next-month
+    - context: track-entries
+      bindings:
+        - sequence:
+            - Escape
+          action: task.track-entry-dismiss
+        - sequence:
+            - Ctrl+g
+          action: task.track-entry-dismiss
+        - sequence:
+            - Ctrl+n
+          action: nav.next-control
+        - sequence:
+            - Ctrl+p
+          action: nav.prev-control
 - preset: vi
   contexts:
     - context: global
@@ -984,3 +1010,14 @@ expression: rows
         - sequence:
             - l
           action: picker.right
+    - context: track-entries
+      bindings:
+        - sequence:
+            - Tab
+          action: nav.next-control
+        - sequence:
+            - Shift+Tab
+          action: nav.prev-control
+        - sequence:
+            - Escape
+          action: task.track-entry-dismiss

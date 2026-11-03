@@ -1,5 +1,6 @@
 ---
 source: crates/taskboard-ui-slint/tests/keymap_snapshots.rs
+assertion_line: 49
 expression: rows
 ---
 - id: app.exit
@@ -572,6 +573,51 @@ expression: rows
   menu_rank: 185
   description: "Marks or unmarks the focused task as a tracker: a tracked, never-completed card."
   menu_group: task
+- id: task.track-entries
+  label: Time entries
+  contexts:
+    - global
+  category: task
+  enabled: true
+  menu_rank: 186
+  description: "Opens the focused task's time-entries overlay: the tracked history, add, edit, and delete."
+  menu_group: task
+- id: task.track-entry-log
+  label: Log time entry
+  contexts:
+    - track-entries
+  category: task
+  enabled: true
+  menu_rank: 220
+  description: "Commits the entries form's add draft as a new closed time entry."
+  menu_group: ~
+- id: task.track-entry-adjust
+  label: Adjust time entry
+  contexts:
+    - track-entries
+  category: task
+  enabled: true
+  menu_rank: 230
+  description: "Commits the entries form's edit mask onto the seeded entry."
+  menu_group: ~
+- id: task.track-entry-delete
+  label: Delete time entry
+  contexts:
+    - track-entries
+  category: task
+  enabled: true
+  menu_rank: 240
+  description: Deletes the armed entry row (not undoable — the confirm is the affordance).
+  menu_group: ~
+- id: task.track-entry-dismiss
+  label: Dismiss entries overlay
+  contexts:
+    - track-entries
+  category: task
+  enabled: true
+  menu_rank: 250
+  description: "Steps the entries overlay back: a focused field's Escape first, then the form, then the overlay."
+  menu_group: ~
 - id: focus.toggle
   label: Focus mode
   contexts:

@@ -188,6 +188,10 @@ pub const TASK_CONTEXT: &[ActionId] = &[
     // no preset binding (the tracking arms' note verbatim); dispatch
     // reads the kind and inverts it through the plain kind edit.
     ActionId::TaskToggleTracker,
+    // The entries overlay (r4 chunk 10, D-TS8): the object menu's
+    // Task-group mirror; the open arm's kiosk/subject refusals are
+    // the dispatch-time gating.
+    ActionId::TaskTrackEntries,
 ];
 
 /// The stack-header context menu's action list (round-2 D21): the
@@ -368,6 +372,9 @@ mod tests {
             ActionId::TaskTrackStart,
             ActionId::TaskTrackStop,
             ActionId::TaskToggleTracker,
+            // The entries overlay (r4 chunk 10): the one menu row of
+            // the family — rank 186, right after the toggle.
+            ActionId::TaskTrackEntries,
         ];
         assert_eq!(
             ids(&rows),

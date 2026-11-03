@@ -943,7 +943,12 @@ mod tests {
             let masks: Vec<_> = preset.masks().to_vec();
             assert_eq!(
                 masks,
-                vec![ContextId::Menu, ContextId::Palette, ContextId::FocusMode],
+                vec![
+                    ContextId::Menu,
+                    ContextId::Palette,
+                    ContextId::FocusMode,
+                    ContextId::TrackEntries,
+                ],
                 "every modal surface masks; nothing else does"
             );
         }

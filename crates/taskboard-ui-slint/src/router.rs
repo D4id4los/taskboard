@@ -53,6 +53,16 @@ pub enum UiEffect {
     /// already holds (the `focus.toggle` action). A kiosk dispatch
     /// no-ops in the adapter (the structural exclusion, D-F13).
     ToggleFocusMode,
+    /// Open the time-entries overlay (r4 chunk 10, D-TS6): the
+    /// adapter opens `Flow::TrackEntries` over the subject task;
+    /// refuses on kiosk (the structural exclusion) and without a
+    /// viewed task.
+    TrackEntriesOpen,
+    /// The entries overlay's Escape ladder (D-TS2): the adapter
+    /// resolves it against the current flow — a focused field's
+    /// Insert disengages first, then the form steps to the list, then
+    /// the overlay closes.
+    TrackEntryDismiss,
     /// The adapter closes the menu and re-dispatches the selected
     /// entry — bounded (the menu is closed first, no recursion).
     InvokeSelected,
@@ -178,6 +188,10 @@ pub enum EffectClass {
     /// The concentration-overlay toggle request (#496): settle-then-run
     /// like the palette request; the adapter owns the toggle.
     FocusOverlay,
+    /// The time-entries overlay family (r4 chunk 10): the open
+    /// request settle-then-runs (the `FocusOverlay` shape); the
+    /// dismissal is the modal's own exit arm.
+    TrackOverlay,
     /// The capture overlay request (the one replace-without-commit).
     BeginCapture,
     /// The edit-flow's own commit/discard verbs (`Activate`,
@@ -234,6 +248,7 @@ impl UiEffect {
             }
             Self::OpenPalette => EffectClass::OpenPalette,
             Self::ToggleFocusMode => EffectClass::FocusOverlay,
+            Self::TrackEntriesOpen | Self::TrackEntryDismiss => EffectClass::TrackOverlay,
             Self::BeginCapture => EffectClass::BeginCapture,
             Self::Activate | Self::SetMode(_) => EffectClass::Edit,
             Self::BeginTitleEdit => EffectClass::Title,
@@ -321,6 +336,15 @@ pub struct DispatchCtx {
     /// a cancel affordance activates (section row or awaiting row);
     /// `timer.cancel` routes from it (`NoTarget` without one).
     pub timer_target: Option<AdhocAlarmId>,
+    /// The entries form's parsed draft (r4 chunk 10, D-TS6): filled at
+    /// the adapter's commit seam only when the live validity table
+    /// passes; `task.track-entry-log`/`-adjust` route from it
+    /// (`NoTarget` without one).
+    pub track_entry_draft: Option<crate::presentation::TrackEntryDraft>,
+    /// The armed entry row's one-shot target: row-activate (edit
+    /// seed) and the delete confirm resolve through it (`NoTarget`
+    /// without one).
+    pub track_entry_target: Option<taskboard_domain::TimeEntryId>,
     /// The notification row's task (DR-5/4, D-TU5): set by the adapter
     /// when a row's Start Task affordance activates; `task.track-start`
     /// routes from it, falling back to the focused task (the context
@@ -511,6 +535,48 @@ impl ActionRouter {
                 None => DispatchOutcome::NoTarget,
             },
             ActionId::TaskTrackStop => DispatchOutcome::Command(StateCommand::StopTracking),
+            // The entries-overlay family (r4 chunk 10, D-TS6): the
+            // open verb is a view intent; the three panel verbs are
+            // one-shot — draft + target only, exactly the existing
+            // domain commands (`LogTime`/`AdjustTimeEntry`/
+            // `DeleteTimeEntry`), nothing new dispatches.
+            ActionId::TaskTrackEntries => DispatchOutcome::UiEffect(UiEffect::TrackEntriesOpen),
+            ActionId::TaskTrackEntryLog => {
+                match (ctx.track_target.or(ctx.focused_task), ctx.track_entry_draft) {
+                    (Some(task), Some(draft)) => match draft.end {
+                        Some(end) => DispatchOutcome::Command(StateCommand::LogTime {
+                            task,
+                            start: draft.start,
+                            end,
+                            kind: taskboard_domain::tracking::TimeEntryKind::Work,
+                        }),
+                        // An open-end draft never routes an add (the
+                        // parse refuses it live); defensive `NoTarget`.
+                        None => DispatchOutcome::NoTarget,
+                    },
+                    _ => DispatchOutcome::NoTarget,
+                }
+            }
+            ActionId::TaskTrackEntryAdjust => {
+                match (ctx.track_entry_target, ctx.track_entry_draft) {
+                    (Some(id), Some(draft)) => {
+                        DispatchOutcome::Command(StateCommand::AdjustTimeEntry {
+                            id,
+                            start: Some(draft.start),
+                            end: draft.end,
+                            kind: None,
+                        })
+                    }
+                    _ => DispatchOutcome::NoTarget,
+                }
+            }
+            ActionId::TaskTrackEntryDelete => match ctx.track_entry_target {
+                Some(id) => DispatchOutcome::Command(StateCommand::DeleteTimeEntry { id }),
+                None => DispatchOutcome::NoTarget,
+            },
+            ActionId::TaskTrackEntryDismiss => {
+                DispatchOutcome::UiEffect(UiEffect::TrackEntryDismiss)
+            }
             // The concentration overlay's toggle (#496): presentation
             // only — no session verb rides it (the fence: the session
             // drives only the landed tracking verbs).
@@ -655,6 +721,8 @@ mod tests {
             rule_target: None,
             rule_add_when: None,
             timer_draft: None,
+            track_entry_draft: None,
+            track_entry_target: None,
             timer_target: None,
             track_target: None,
             habit_target: None,
