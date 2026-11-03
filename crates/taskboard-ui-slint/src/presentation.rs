@@ -998,7 +998,12 @@ pub fn tracked_total(state: &AppState, subject: TaskId, now: DateTime<Utc>) -> T
         .tracking
         .entries
         .values()
-        .filter(|entry| entry.task == subject)
+        // The D-11 ruling (DR-5): respite counts against the work
+        // streak, never toward it — the summary is Work-only (the
+        // `work_in_window` semantics at lifetime scope).
+        .filter(|entry| {
+            entry.task == subject && entry.kind == taskboard_domain::TimeEntryKind::Work
+        })
         .map(|entry| entry.duration(now).num_seconds())
         .sum();
     let total_seconds = u64::try_from(total_seconds.max(0)).unwrap_or(u64::MAX);
