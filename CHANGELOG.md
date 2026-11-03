@@ -8,6 +8,22 @@ The workspace carries a single global version (see `docs/architecture.org`);
 `scripts/bump_version.sh <major|minor|patch>` cuts release entries.
 
 ## [Unreleased]
+### Fixed
+
+- The REPL editor re-arms after a Ctrl-C during a masked password
+  prompt (#572): a ^C byte the terminal's kernel line discipline
+  consumed while the prompt was still configuring (a window that
+  stretches under load, wedging roughly one in twenty-five loaded
+  sessions) left the editor parked in a read nobody could complete —
+  the session printed its typed `cancelled` envelope and then emitted
+  nothing forever until killed. The masked read on unix is now a
+  wake-interruptible core with byte-for-byte parity with the previous
+  `rpassword` grammar (mask feedback, `^U`/`^W`/backspace editing,
+  escape sequences, the typed `^C` cancellation): the session loop
+  wakes the prompt on cancellation, so the editor always returns to
+  the prompt line. One-shot `login`/`connect` prompts on non-REPL
+  surfaces are unchanged.
+
 ### Added
 
 - Effort-estimate calibration surfaces (#214): the new Review view
