@@ -20,6 +20,7 @@ import { ScrollPageHint } from "../scroll-page.slint";
 import { TaskCard, TaskCardModel } from "../widgets/task-card.slint";
 import { EmptyState } from "../widgets/empty-state.slint";
 import { TimersSection, TimerRowModel } from "../compositions/timers.slint";
+import { FieldValidity } from "../widgets/text-field.slint";
 import { HabitsSection, HabitRowModel } from "../compositions/habits.slint";
 
 export struct TodayRowModel {
@@ -64,6 +65,10 @@ export component TodayView inherits FocusScope {
     callback timers-cancel-clicked(int);
     // `false` keeps the form's text (an absorbed parse miss).
     callback timers-create-accepted(string, string) -> bool;
+    // The `when` field's per-keystroke validity (r4 D27).
+    callback timers-when-edited(string);
+    in property <FieldValidity> timer-when-validity;
+    in property <string> timer-when-error-hint;
     // The habits section (DR-6/6, §4.6): after the timers block,
     // above the task sections (D-P18). Renders whenever the active
     // board has live habits — on kiosk too (passive progress

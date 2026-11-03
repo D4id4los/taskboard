@@ -242,6 +242,12 @@ pub(crate) struct Adapter {
     /// phase steps hand focus across seams; the settle funnel
     /// consumes it and skips the commit/discard rule for that steal.
     due_focus_steal: bool,
+    /// The custom-offset field's typed draft (r4 D27): the validity
+    /// probe reads it per pass; the accepted seam clears it (both
+    /// outcomes clear the field).
+    rule_offset_draft: String,
+    /// The timers `when` field's typed draft (r4 D27).
+    timer_when_draft: String,
     /// The last snapshot the derive+diff materialized onto the models
     /// (the unchanged-refresh guard, #463): `Some` after every derived
     /// pass. `Arc::ptr_eq` against the fresh load ⇒ the models already
@@ -937,6 +943,8 @@ impl Adapter {
             date_valid: crate::due_edit::field_validity(&self.due_buffer, now2),
             syntax_hint: crate::due_edit::DUE_SYNTAX_HINT,
             time_hint: crate::due_edit::TIME_SYNTAX_HINT,
+            offset_valid: crate::presentation::offset_validity(&self.rule_offset_draft),
+            offset_hint: crate::presentation::OFFSET_SYNTAX_HINT,
         };
         // The focus hand-over is one-shot: consumed by this push.
         self.focus_handover = FocusHandover::None;
@@ -2866,6 +2874,24 @@ impl Adapter {
         global.set_save_enabled(self.settings.save_enabled());
         let live_scale = f64::from(window.global::<crate::Theme>().get_base_scale());
         Self::push_settings_validity(&global, &self.settings, live_scale);
+        // The timers `when` field's validity flavour (r4 D27): the
+        // same per-pass push, over the typed draft — the timer
+        // grammar's own tz seam (`&chrono::Local`, the parse's
+        // convention).
+        let (when_validity, when_hint) = match crate::presentation::timer_when_validity(
+            &self.timer_when_draft,
+            self.day_ctx().now,
+            &chrono::Local,
+        ) {
+            None => (crate::FieldValidity::Neutral, ""),
+            Some(true) => (crate::FieldValidity::Valid, ""),
+            Some(false) => (
+                crate::FieldValidity::Invalid,
+                crate::presentation::TIMER_SYNTAX_HINT,
+            ),
+        };
+        window.set_timer_when_validity(when_validity);
+        window.set_timer_when_error_hint(SharedString::from(when_hint));
         global.set_preset_index(preset_index(self.settings.preset));
         global.set_status_text(SharedString::from(crate::settings_status::status_text(
             self.settings.outcome,
@@ -3392,6 +3418,8 @@ pub(crate) fn install(
         due_picker: None,
         focus_handover: FocusHandover::None,
         due_focus_steal: false,
+        rule_offset_draft: String::new(),
+        timer_when_draft: String::new(),
         time_text: "--:--".to_owned(),
         board_target: None,
         rule_target: None,
@@ -4855,11 +4883,24 @@ fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         // rides the seam's return (r2 D24): the composition clears its
         // own buffer, so the field never looks stuck.
         let Some(offset) = ReminderOffset::parse_text_form(&text) else {
+            a.rule_offset_draft.clear();
             return false;
         };
+        a.rule_offset_draft.clear();
         a.rule_add_offset = Some(offset);
         a.route(&window, ActionId::ReminderRuleAdd);
         true
+    });
+
+    let offset_edited = Rc::clone(adapter);
+    let offset_edited_weak = window.as_weak();
+    window.on_rule_offset_edited(move |text| {
+        let Some(window) = offset_edited_weak.upgrade() else {
+            return;
+        };
+        let mut a = offset_edited.borrow_mut();
+        a.rule_offset_draft = text.to_string();
+        a.refresh_forced(&window);
     });
 }
 
@@ -5427,6 +5468,17 @@ fn send_toggled_done(adapter: &Adapter, task: taskboard_domain::TaskId) {
 /// `IdTables.timers` index; the chip click focuses the today view
 /// (the existing `ViewToday` action — no new `UiEffect`).
 fn install_timer_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
+    let when_edited = Rc::clone(adapter);
+    let when_edited_weak = window.as_weak();
+    window.on_timers_when_edited(move |text| {
+        let Some(window) = when_edited_weak.upgrade() else {
+            return;
+        };
+        let mut a = when_edited.borrow_mut();
+        a.timer_when_draft = text.to_string();
+        a.refresh_forced(&window);
+    });
+
     let create = Rc::clone(adapter);
     let create_weak = window.as_weak();
     window.on_timers_create_accepted(move |label, when_text| {
@@ -5449,6 +5501,8 @@ fn install_timer_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         else {
             return false;
         };
+        // Both outcomes clear the field — the validity draft follows.
+        a.timer_when_draft.clear();
         a.timer_draft = Some(crate::router::TimerDraft {
             label: label.into(),
             when,

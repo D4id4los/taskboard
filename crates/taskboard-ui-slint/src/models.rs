@@ -528,6 +528,10 @@ pub struct DueEditorPush<'a> {
     pub date_valid: Option<bool>,
     pub syntax_hint: &'static str,
     pub time_hint: &'static str,
+    /// The custom-offset field's validity probe + hint (r4 D27) —
+    /// the due push is the task-detail pass's carrier.
+    pub offset_valid: Option<bool>,
+    pub offset_hint: &'static str,
 }
 
 impl Default for DueEditorPush<'_> {
@@ -546,6 +550,8 @@ impl Default for DueEditorPush<'_> {
             date_valid: None,
             syntax_hint: "",
             time_hint: "",
+            offset_valid: None,
+            offset_hint: "",
         }
     }
 }
@@ -1591,6 +1597,12 @@ fn push_task_detail(
         },
         date_syntax_hint: SharedString::from(due.syntax_hint),
         time_syntax_hint: SharedString::from(due.time_hint),
+        offset_validity: match due.offset_valid {
+            None => crate::FieldValidity::Neutral,
+            Some(true) => crate::FieldValidity::Valid,
+            Some(false) => crate::FieldValidity::Invalid,
+        },
+        offset_error_hint: SharedString::from(due.offset_hint),
     });
     tables.task_rules = task_rules;
     mutations

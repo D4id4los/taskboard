@@ -7,10 +7,11 @@
 // false on kiosk and the section never renders). Layout only; the
 // commands live in the adapter.
 
-import { Theme, Typography, RoleText, Tone } from "../theme.slint";
+import { Theme, Typography, RoleText, Tone, Semantic } from "../theme.slint";
 import { Badge } from "../widgets/badge.slint";
 import { IconButton, IconKind } from "../widgets/icon-button.slint";
 import { ListRow } from "../widgets/list-row.slint";
+import { FieldValidity } from "../widgets/text-field.slint";
 import { TextField } from "../widgets/text-field.slint";
 
 // One active timer row: the label snapshot plus the countdown phrase
@@ -31,6 +32,11 @@ export component TimersSection inherits Rectangle {
     // The form's commit seam (the rule-add convention): `false` keeps
     // the field text (an absorbed parse miss), `true` clears both.
     callback create-accepted(string, string) -> bool;
+    // The `when` field's per-keystroke validity (r4 D27): the
+    // adapter parses with the timer grammar and pushes the flavour.
+    callback when-edited(string);
+    in property <FieldValidity> when-validity: FieldValidity.neutral;
+    in property <string> when-error-hint;
 
     background: transparent;
     accessible-role: AccessibleRole.region;
@@ -104,6 +110,7 @@ export component TimersSection inherits Rectangle {
                 horizontal-stretch: 1;
                 placeholder: "in 10m · at 09:30";
                 label: "Timer timing (in 10m or at 09:30)";
+                validity: root.when-validity;
                 autofocus: false;
                 accepted(text) => {
                     if (root.create-accepted(label-field.text, text)) {
@@ -111,7 +118,13 @@ export component TimersSection inherits Rectangle {
                         when-field.text = "";
                     }
                 }
+                edited(text) => { root.when-edited(text); }
             }
+        }
+        if (root.when-validity == FieldValidity.invalid && when-field.text != ""): RoleText {
+            role: Typography.caption;
+            text-color: Semantic.danger;
+            text: root.when-error-hint;
         }
     }
 }
