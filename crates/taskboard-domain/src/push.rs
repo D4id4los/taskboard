@@ -315,6 +315,7 @@ pub struct PushGroup {
 ///     importance: t(100),
 ///     urgency: t(100),
 ///     recur: t(100),
+///     kind: t(100),
 ///     archived: t(100),
 ///     deleted: t(100),
 /// };
@@ -333,6 +334,7 @@ pub struct PushGroup {
 ///     importance: None,
 ///     urgency: None,
 ///     recur: None,
+///     kind: taskboard_domain::entities::TaskKind::Standard,
 ///     archived: false,
 ///     deleted: false,
 ///     clocks,
