@@ -70,8 +70,15 @@ plan's §4 arithmetic inherited the same error ("position 29 =
 bench_label(87) — overdue is (order, id)-ordered over orders {0, 3,
 6, …}"): overdue rows are the multiples of 3 **minus** the multiples
 of 10 (orders 0, 30, 60, 90 are fixture-done), so position 29 is
-order 93, not 87. The pins' comments carry the correct derivation;
-fixture drift fails them loudly at setup, as R2 intended.
+order 99 and order 87 sits at position 26 — mid-window, not the
+walked-to row. (Stage-3 correction: the stage-2 draft's "position 29
+is order 93" was itself off by the order-90 removal; the pins' exact
+position map is order 99 → position 29, order 96 → 28, order 93 → 27,
+order 87 → 26, verified by a live-geometry probe.) The pins' comments
+carry the correct derivation; the pins themselves are unaffected —
+order 87 is a genuine live mid-window row, which is exactly what the
+case-2/3 pins need an anchor row to be. Fixture drift fails them
+loudly at setup, as R2 intended.
 
 ### Sub-finding: the break-notification ladder shares the labels
 
