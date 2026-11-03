@@ -16,10 +16,10 @@
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
-use chrono::{DateTime, NaiveTime, TimeDelta, Utc};
+use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, TimeDelta, TimeZone, Utc};
 use taskboard_domain::{
     AdhocAlarmId, AppState, Board, BoardId, Effort, ReminderRef, SidecarHealth, Stack, StackId,
-    SyncPhase, Task, TaskId, TimeEntryKind, focus::FocusTiming, tracking::TimeEntry,
+    SyncPhase, Task, TaskId, TimeEntryId, TimeEntryKind, focus::FocusTiming, tracking::TimeEntry,
 };
 
 /// The due-soon window (design §4): a presentation constant, not
@@ -1069,6 +1069,268 @@ pub fn tracked_total_phrase(total: &TrackedTotal) -> String {
     segments.join(" ")
 }
 
+// ---- The tracking surfaces (r4 chunk 10, D35–D37) -----------------------
+
+/// The running row's end-cell copy constant (D-TS3): an open entry has
+/// no end to render — the cell names the state. UX copy; tests assert
+/// structural facts, never this wording.
+pub const TRACK_RUNNING_END: &str = "running";
+
+/// The midnight-crossing end's mark (D-TS3): rendered after the end
+/// time when the end's local date differs from the start's.
+pub const TRACK_END_PLUS_DAY: &str = "+1d";
+
+/// The entries form's date hint (D-TS4's field decorations; the times
+/// reuse [`crate::due_edit::TIME_SYNTAX_HINT`]).
+pub const TRACK_DATE_HINT: &str = "YYYY-MM-DD";
+
+/// One entries-overlay row (D-TS3): the display parts plus the entry
+/// id (the row model in the markup mirrors these; the id travels only
+/// through the `IdTables` index seam, never the markup).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrackEntryRow {
+    /// The entry (row-activate → edit; delete arms against it).
+    pub id: TimeEntryId,
+    /// The start's local `YYYY-MM-DD`.
+    pub date: String,
+    /// The start's local `HH:MM`.
+    pub start: String,
+    /// The end's local `HH:MM`; the running constant while open.
+    pub end: String,
+    /// The end's local date differs from the start's (the `+1d` mark
+    /// predicate; never set while running).
+    pub end_other_day: bool,
+    /// The row's spent phrase — [`TimeEntry::duration`] at `now` through
+    /// [`tracked_total_phrase`] (F16's seconds-finest precision, one
+    /// phrase vocabulary).
+    pub spent: String,
+    /// `end.is_none()` — the running mark bit (the status dot).
+    pub running: bool,
+}
+
+/// The subject's entry rows in display order (D-TS3): **newest-first**,
+/// `(start, id)` descending — the UI's convention (the chip's open
+/// list, notifications), recorded here, not inherited from the CLI's
+/// file-format order. Every entry of the subject renders (respite rows
+/// included — history renders honestly); the overlay's header total is
+/// the caller's [`tracked_total`] verbatim (Work-only — reconciliation
+/// by construction).
+#[must_use]
+pub fn track_entry_rows(
+    state: &AppState,
+    subject: TaskId,
+    now: DateTime<Utc>,
+    tz: &impl TimeZone,
+) -> Vec<TrackEntryRow> {
+    let mut rows: Vec<(&TimeEntry, TrackEntryRow)> = state
+        .tracking
+        .entries
+        .values()
+        .filter(|entry| entry.task == subject)
+        .map(|entry| {
+            let start_local = tz.from_utc_datetime(&entry.start.naive_utc());
+            let row = TrackEntryRow {
+                id: entry.id,
+                date: start_local.date_naive().format("%Y-%m-%d").to_string(),
+                start: start_local.time().format("%H:%M").to_string(),
+                end: match entry.end {
+                    None => TRACK_RUNNING_END.to_owned(),
+                    Some(end) => tz
+                        .from_utc_datetime(&end.naive_utc())
+                        .time()
+                        .format("%H:%M")
+                        .to_string(),
+                },
+                end_other_day: match entry.end {
+                    None => false,
+                    Some(end) => {
+                        tz.from_utc_datetime(&end.naive_utc()).date_naive()
+                            != start_local.date_naive()
+                    }
+                },
+                spent: tracked_total_phrase(&part_total(entry.duration(now))),
+                running: entry.is_open(),
+            };
+            (entry, row)
+        })
+        .collect();
+    rows.sort_by_key(|(entry, _)| std::cmp::Reverse((entry.start, entry.id)));
+    rows.into_iter().map(|(_, row)| row).collect()
+}
+
+/// `TrackedTotal` over a raw duration (the row phrase's glue — the
+/// same second-finest parts [`tracked_total`] assembles, sourced from
+/// a duration instead of the state).
+#[must_use]
+fn part_total(duration: TimeDelta) -> TrackedTotal {
+    let seconds = u64::try_from(duration.num_seconds().max(0)).unwrap_or(u64::MAX);
+    TrackedTotal {
+        hours: u32::try_from(seconds / 3600).unwrap_or(u32::MAX),
+        minutes: u32::try_from((seconds % 3600) / 60).unwrap_or(u32::MAX),
+        seconds: u32::try_from(seconds % 60).unwrap_or(u32::MAX),
+    }
+}
+
+/// Which form field a rejection lands on (D-TS4's mapping table). The
+/// pair's rejection (`end <= start`) lands on the **end** field — the
+/// later boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrackField {
+    Date,
+    Start,
+    End,
+}
+
+/// The form's parsed draft (D-TS4): the committed instants, local
+/// wall-clocks resolved to store-UTC through the injected zone. An
+/// `end: None` rides only an **edit** commit (the mask's keep-open);
+/// an **add** commit always carries a closed span.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TrackEntryDraft {
+    pub start: DateTime<Utc>,
+    /// `None` = the end field stayed empty (edit only: `end: None` in
+    /// the adjust mask — the entry stays open, well-defined).
+    pub end: Option<DateTime<Utc>>,
+}
+
+/// The form's live parse (D-TS4's validity table): per-field tri-state
+/// validity (the due editor's shape), the field a pair rejection
+/// landed on, and the commit-ready draft (`None` = commit refused).
+/// Total on arbitrary input; DST gap/overlap wall-clocks refuse (the
+/// due editor's `.single()` rule — a guessed instant is worse than a
+/// re-aimed one).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TrackFormParse {
+    pub date_valid: Option<bool>,
+    pub start_valid: Option<bool>,
+    pub end_valid: Option<bool>,
+    /// The live rejection's field (the pair's rejection lands on
+    /// [`TrackField::End`]); `None` = nothing rejected.
+    pub rejected_by: Option<TrackField>,
+    /// `Some` = the commit seam may fill `track_entry_draft`.
+    pub draft: Option<TrackEntryDraft>,
+}
+
+/// Parses the tracking form (D-TS4). `allow_open_end` selects the
+/// add/edit posture: `false` (add) demands a parsed end for a draft
+/// (a `LogTime` span is always closed — an empty end leaves the draft
+/// `None`, the field neutral until typed); `true` (edit) maps an
+/// empty end onto `draft.end: None` (the mask's keep-open). The date
+/// resolves empty to `today` (local). Local→UTC goes through the one
+/// `resolve_local` seam (the due editor's zone rule).
+#[allow(clippy::too_many_arguments)] // three fields + posture + zone; the table's inputs
+#[must_use]
+pub fn parse_track_form(
+    date_text: &str,
+    start_text: &str,
+    end_text: &str,
+    allow_open_end: bool,
+    today: NaiveDate,
+    tz: &impl TimeZone,
+) -> TrackFormParse {
+    let mut out = TrackFormParse::default();
+    let date = date_text.trim();
+    let date = if date.is_empty() {
+        today
+    } else if let Ok(parsed) = NaiveDate::parse_from_str(date, "%Y-%m-%d") {
+        parsed
+    } else {
+        out.date_valid = Some(false);
+        out.rejected_by = Some(TrackField::Date);
+        return out;
+    };
+    let resolve = |time_text: &str| -> Result<Option<DateTime<Utc>>, ()> {
+        let text = time_text.trim();
+        if text.is_empty() || text == "--:--" {
+            return Ok(None);
+        }
+        match crate::due_edit::parse_time_lenient(text) {
+            // A DST-refused wall-clock is a typed refusal (never a
+            // guessed instant, never a neutral) — the same
+            // `.single()` rule as the due editor's zone seam.
+            None => Err(()),
+            Some(time) => crate::due_edit::resolve_local(NaiveDateTime::new(date, time), tz)
+                .map(Some)
+                .map_err(|_| ()),
+        }
+    };
+    let (start_instant, end_instant) = match (resolve(start_text), resolve(end_text)) {
+        (Ok(start), Ok(end)) => (start, end),
+        // An unparseable or DST-refused wall-clock is a typed entry
+        // rejection — it maps to its field, the honest refusal.
+        (Err(()), _) => {
+            out.start_valid = Some(false);
+            out.rejected_by = Some(TrackField::Start);
+            return out;
+        }
+        (_, Err(())) => {
+            out.end_valid = Some(false);
+            out.rejected_by = Some(TrackField::End);
+            return out;
+        }
+    };
+    out.start_valid = start_instant.map(|_| true);
+    out.end_valid = end_instant.map(|_| true);
+    let Some(start) = start_instant else {
+        // The seeded neutral: nothing typed yet, no draft.
+        return out;
+    };
+    if let Some(end) = end_instant {
+        // The pair's rejection lands on the later boundary; commit
+        // refused.
+        if end <= start {
+            out.end_valid = Some(false);
+            out.rejected_by = Some(TrackField::End);
+            return out;
+        }
+        out.draft = Some(TrackEntryDraft {
+            start,
+            end: Some(end),
+        });
+    } else if allow_open_end {
+        // Edit + empty end: the keep-open mask is well-defined.
+        out.draft = Some(TrackEntryDraft { start, end: None });
+    }
+    // Add + empty end: draft stays `None` (a `LogTime` span is always
+    // closed); the field reads neutral until typed.
+    out
+}
+
+/// The #490 today section's per-task rows (D-TS7): Work-only per-task
+/// sums over the day window (`work_in_window` — the aggregator
+/// deviation recorded in the plan §5: the CLI's `track status` and the
+/// summary row already define "tracked" work-only; a GUI day total
+/// disagreeing with `track status` for the same window would be a bug
+/// class). Canonical task order = the state map's key order (the
+/// `BTreeMap`'s deterministic order — the same convention the state's
+/// serialization contract names). Tasks without tracked work are
+/// absent — an empty day yields the empty vec (the collapse's input).
+#[must_use]
+pub fn tracked_today_rows(
+    state: &AppState,
+    window: (DateTime<Utc>, DateTime<Utc>),
+    now: DateTime<Utc>,
+) -> Vec<(TaskId, TimeDelta)> {
+    state
+        .tasks
+        .keys()
+        .copied()
+        .map(|task| {
+            let total = taskboard_domain::tracking::work_in_window(
+                state
+                    .tracking
+                    .entries
+                    .values()
+                    .filter(|entry| entry.task == task),
+                window,
+                now,
+            );
+            (task, total)
+        })
+        .filter(|(_, total)| *total > TimeDelta::zero())
+        .collect()
+}
+
 /// One active timer row (D-I7): the alarm plus its walked effective
 /// occurrence, carried so the push pass derives the countdown phrase
 /// once per refresh. The insistence rung rides verbatim — the row
@@ -1654,7 +1916,6 @@ pub fn attention_due(rows: &[AlarmRow], previous: &[AlarmRow]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::TimeZone as _;
     use proptest::prelude::*;
     use taskboard_domain::{
         BoardClocks, Effort, ReminderOffset, ReminderRule, SidecarHealth, StackId, TaskClocks,
@@ -4212,7 +4473,6 @@ mod recur_badge_tests {
 
     /// The epoch instant of `d`'s UTC midnight.
     fn midnight(d: chrono::NaiveDate) -> DateTime<Utc> {
-        use chrono::TimeZone as _;
         chrono::Utc
             .timestamp_opt((d - date(1970, 1, 1)).num_days() * 86_400, 0)
             .unwrap()
@@ -4466,7 +4726,6 @@ pub fn habit_drop_order(prev: Option<i64>, next: Option<i64>) -> i64 {
 #[cfg(test)]
 mod habit_section_tests {
     use super::*;
-    use chrono::TimeZone as _;
     use taskboard_domain::{
         AppState, Habit, HabitClocks, HabitLogEntry, HabitLogKey, HabitTarget, NonZeroCount,
         PeriodKind, WindowStart,
@@ -4777,5 +5036,394 @@ mod habit_section_tests {
         // The empty pool: no live not-done tasks anywhere.
         let empty = focus_switcher_rows(&AppState::default());
         assert_eq!(empty, [] as [FocusSwitcherRow; 0]);
+    }
+}
+
+// ---- The tracking surfaces' pure layer (r4 chunk 10, slice 1) ----------
+
+#[cfg(test)]
+mod track_surfaces_tests {
+    use super::*;
+    use chrono::{FixedOffset, LocalResult, Timelike};
+    use taskboard_domain::TaskClocks;
+    use taskboard_domain::tracking::TimeEntry;
+
+    fn tz() -> FixedOffset {
+        FixedOffset::east_opt(2 * 3600).expect("fixed +02:00")
+    }
+
+    fn ts(secs: i64) -> DateTime<Utc> {
+        Utc.timestamp_opt(secs, 0).unwrap()
+    }
+
+    fn entry(raw: u128, task: TaskId, start: i64, end: Option<i64>) -> TimeEntry {
+        TimeEntry {
+            id: taskboard_domain::TimeEntryId::from(uuid::Uuid::from_u128(raw)),
+            task,
+            task_title: "t".into(),
+            start: ts(start),
+            end: end.map(ts),
+            created_at: ts(0),
+            updated_at: ts(0),
+            kind: taskboard_domain::tracking::TimeEntryKind::Work,
+        }
+    }
+
+    fn respite(raw: u128, task: TaskId, start: i64, end: Option<i64>) -> TimeEntry {
+        TimeEntry {
+            kind: taskboard_domain::tracking::TimeEntryKind::Respite,
+            ..entry(raw, task, start, end)
+        }
+    }
+
+    #[test]
+    fn entry_rows_render_newest_first_with_the_running_and_plus_day_marks() {
+        let zone = tz();
+        let task = TaskId::from(uuid::Uuid::from_u128(7));
+        let mut state = AppState::default();
+        // 10:00–11:00 local (+02:00) on the 8th; end rolls past local
+        // midnight? No — a same-day span first, then a crossing one.
+        let same_day = entry(1, task, 1_000, Some(1_900));
+        // 23:30 local to 00:30 local next day (21:30Z → 22:30Z the
+        // next day).
+        let day = zone
+            .with_ymd_and_hms(2026, 11, 8, 23, 30, 0)
+            .single()
+            .expect("resolvable wall-clock");
+        let end = day + TimeDelta::hours(1);
+        let crossing = TimeEntry {
+            start: day.with_timezone(&Utc),
+            end: Some(end.with_timezone(&Utc)),
+            ..entry(2, task, 0, Some(0))
+        };
+        let running = entry(3, task, 5_000, None);
+        for row in [&same_day, &crossing, &running] {
+            state.tracking.entries.insert(row.id, row.clone());
+        }
+        // A respite row renders honestly (history is history)…
+        let respite_row = respite(4, task, 2_000, Some(2_400));
+        let respite_id = respite_row.id;
+        state.tracking.entries.insert(respite_id, respite_row);
+        // …and another task's row never renders here.
+        let stranger = entry(
+            5,
+            TaskId::from(uuid::Uuid::from_u128(9)),
+            9_000,
+            Some(9_100),
+        );
+        state.tracking.entries.insert(stranger.id, stranger);
+
+        let now = ts(6_000);
+        let rows = track_entry_rows(&state, task, now, &zone);
+        assert_eq!(rows.len(), 4, "all of the subject's rows, kinds included");
+        // Newest-first by (start, id): crossing (2026) > running
+        // (5000) > respite (2000) > same_day (1970).
+        assert_eq!(rows[0].id, crossing.id);
+        assert!(
+            rows[0].end_other_day,
+            "the crossing span carries the mark bit"
+        );
+        assert_eq!(rows[0].date, "2026-11-08");
+        assert_eq!(rows[0].start, "23:30");
+        assert_eq!(rows[0].end, "00:30");
+        assert_eq!(rows[1].id, running.id);
+        assert!(rows[1].running);
+        assert_eq!(
+            rows[1].end, TRACK_RUNNING_END,
+            "the open end names its state"
+        );
+        assert_eq!(
+            rows[1].spent, "16m 40s",
+            "the phrase vocabulary is the summary row's"
+        );
+        assert_eq!(rows[2].id, respite_id, "a respite row is still history");
+        assert_eq!(rows[3].id, same_day.id);
+        assert!(!rows[3].end_other_day);
+    }
+
+    #[test]
+    fn the_form_parse_maps_each_rejection_to_its_field() {
+        let zone = tz();
+        let today = NaiveDate::from_ymd_opt(2026, 11, 8).expect("today");
+        // Unparseable start → start invalid, no draft.
+        let got = parse_track_form("2026-11-08", "9:5", "10:00", false, today, &zone);
+        assert_eq!(got.start_valid, Some(false));
+        assert_eq!(got.rejected_by, Some(TrackField::Start));
+        assert_eq!(got.draft, None);
+        // Unparseable end → end invalid.
+        let got = parse_track_form("", "09:00", "nope", false, today, &zone);
+        assert_eq!(got.end_valid, Some(false));
+        assert_eq!(got.rejected_by, Some(TrackField::End));
+        assert_eq!(got.date_valid, None, "empty date stays neutral (today)");
+        // Unparseable date → date invalid, named.
+        let got = parse_track_form("2026-13-40", "09:00", "10:00", false, today, &zone);
+        assert_eq!(got.rejected_by, Some(TrackField::Date));
+        // The pair rejection lands on the END field; commit refused.
+        let got = parse_track_form("", "10:00", "09:59", false, today, &zone);
+        assert_eq!(got.start_valid, Some(true));
+        assert_eq!(got.end_valid, Some(false));
+        assert_eq!(got.rejected_by, Some(TrackField::End));
+        assert_eq!(got.draft, None);
+        // The empty span is the same typed rejection.
+        let got = parse_track_form("", "10:00", "10:00", false, today, &zone);
+        assert_eq!(got.rejected_by, Some(TrackField::End));
+        // Seeded neutral: both times empty — no draft, no rejection.
+        let got = parse_track_form("", "--:--", "", false, today, &zone);
+        assert_eq!(
+            got,
+            TrackFormParse {
+                date_valid: None,
+                start_valid: None,
+                end_valid: None,
+                rejected_by: None,
+                draft: None,
+            }
+        );
+    }
+
+    #[test]
+    fn the_draft_resolves_local_to_store_utc_and_carries_the_mask_shape() {
+        let zone = tz();
+        let today = NaiveDate::from_ymd_opt(2026, 11, 8).expect("today");
+        // Add: empty date resolves today; a typed end makes a closed
+        // span at exact UTC instants (+02:00 → minus two hours).
+        let got = parse_track_form("", "10:00", "11:30", false, today, &zone);
+        let draft = got.draft.expect("the add commit is draft-ready");
+        assert_eq!(
+            draft.start,
+            zone.with_ymd_and_hms(2026, 11, 8, 10, 0, 0)
+                .single()
+                .unwrap()
+                .with_timezone(&Utc)
+        );
+        assert_eq!(
+            draft.end,
+            Some(
+                zone.with_ymd_and_hms(2026, 11, 8, 11, 30, 0)
+                    .single()
+                    .unwrap()
+                    .with_timezone(&Utc)
+            )
+        );
+        // Add with the end left empty: no draft (a LogTime span is
+        // always closed), the field neutral.
+        let got = parse_track_form("", "10:00", "", false, today, &zone);
+        assert_eq!(got.draft, None);
+        assert_eq!(got.end_valid, None);
+        assert_eq!(got.start_valid, Some(true));
+        // Edit with the end empty: the keep-open mask is draft-ready.
+        let got = parse_track_form("", "10:00", "", true, today, &zone);
+        let draft = got.draft.expect("the edit commit is draft-ready");
+        assert_eq!(draft.end, None, "the mask's end is None (keep open)");
+        // The lenient digit forms ride the same parser.
+        let got = parse_track_form("", "930", "0945", false, today, &zone);
+        let draft = got.draft.expect("lenient forms parse");
+        assert_eq!(
+            draft.start,
+            zone.with_ymd_and_hms(2026, 11, 8, 9, 30, 0)
+                .single()
+                .unwrap()
+                .with_timezone(&Utc)
+        );
+        assert_eq!(
+            draft.end,
+            Some(
+                zone.with_ymd_and_hms(2026, 11, 8, 9, 45, 0)
+                    .single()
+                    .unwrap()
+                    .with_timezone(&Utc)
+            )
+        );
+    }
+
+    /// A zone with a hard-coded spring-forward gap: `02:00–03:00`
+    /// local on 2026-03-29 does not exist — the resolution refuses.
+    #[derive(Clone, Copy)]
+    struct GapZone(FixedOffset);
+    impl TimeZone for GapZone {
+        type Offset = FixedOffset;
+        fn from_offset(offset: &Self::Offset) -> Self {
+            GapZone(*offset)
+        }
+        fn offset_from_utc_datetime(&self, utc: &NaiveDateTime) -> Self::Offset {
+            self.0.offset_from_utc_datetime(utc)
+        }
+        fn offset_from_utc_date(&self, utc: &chrono::NaiveDate) -> Self::Offset {
+            self.0.offset_from_utc_date(utc)
+        }
+        fn offset_from_local_datetime(&self, local: &NaiveDateTime) -> LocalResult<Self::Offset> {
+            let gap_day = NaiveDate::from_ymd_opt(2026, 3, 29).expect("gap day");
+            if local.date() == gap_day && local.time().hour() == 2 {
+                LocalResult::None
+            } else {
+                LocalResult::Single(self.0)
+            }
+        }
+        fn offset_from_local_date(&self, _local: &chrono::NaiveDate) -> LocalResult<Self::Offset> {
+            LocalResult::Single(self.0)
+        }
+    }
+
+    #[test]
+    fn a_dst_gap_wall_clock_is_a_typed_field_refusal() {
+        let zone = GapZone(tz());
+        let today = NaiveDate::from_ymd_opt(2026, 3, 29).expect("today");
+        // 02:30 local does not exist on the gap day: the start field
+        // takes the typed rejection (never a guessed instant).
+        let got = parse_track_form("", "02:30", "04:00", false, today, &zone);
+        assert_eq!(got.start_valid, Some(false));
+        assert_eq!(got.rejected_by, Some(TrackField::Start));
+        assert_eq!(got.draft, None);
+        // The same wall-clock on a normal day resolves.
+        let normal = NaiveDate::from_ymd_opt(2026, 6, 1).expect("normal");
+        let got = parse_track_form("", "02:30", "04:00", false, normal, &zone);
+        assert!(got.draft.is_some(), "a resolvable wall-clock drafts");
+    }
+
+    #[test]
+    fn tracked_today_rows_are_work_only_in_canonical_order_and_clip_to_the_window() {
+        let task_a = TaskId::from(uuid::Uuid::from_u128(1));
+        let task_b = TaskId::from(uuid::Uuid::from_u128(2));
+        let task_c = TaskId::from(uuid::Uuid::from_u128(3));
+        let mut state = AppState::default();
+        // Canonical (map key) order: insert c, a, b — the output must
+        // still read a, b, c.
+        for id in [task_c, task_a, task_b] {
+            let task = Task {
+                id,
+                remote: None,
+                label_memberships: std::collections::BTreeMap::new(),
+                title: "t".into(),
+                description: String::new(),
+                duedate: None,
+                scheduled: None,
+                done: None,
+                stack: StackId::from(uuid::Uuid::from_u128(50)),
+                order: 0,
+                effort: None,
+                importance: None,
+                urgency: None,
+                recur: None,
+                kind: taskboard_domain::entities::TaskKind::Standard,
+                archived: false,
+                deleted: false,
+                clocks: TaskClocks {
+                    title: ts(0),
+                    description: ts(0),
+                    duedate: ts(0),
+                    scheduled: ts(0),
+                    done: ts(0),
+                    position: ts(0),
+                    effort: ts(0),
+                    importance: ts(0),
+                    urgency: ts(0),
+                    recur: ts(0),
+                    kind: ts(0),
+                    archived: ts(0),
+                    deleted: ts(0),
+                },
+                remote_seen: None,
+                remote_baseline: None,
+            };
+            state.tasks.insert(id, task);
+        }
+        // Window 08:00Z–16:00Z. task_a: a spanning entry 07:00–09:00
+        // contributes its in-window hour only.
+        state.tracking.entries.insert(
+            entry(1, task_a, 7 * 3600, Some(9 * 3600)).id,
+            entry(1, task_a, 7 * 3600, Some(9 * 3600)),
+        );
+        // task_b: work + respite — the respite contributes zero.
+        let work = entry(2, task_b, 10 * 3600, Some(11 * 3600));
+        state.tracking.entries.insert(work.id, work);
+        let respite_row = respite(3, task_b, 12 * 3600, Some(15 * 3600));
+        state.tracking.entries.insert(respite_row.id, respite_row);
+        // An open entry accrues clamped at `now` (inside the window).
+        let running = entry(4, task_c, 14 * 3600, None);
+        state.tracking.entries.insert(running.id, running);
+
+        let window = (ts(8 * 3600), ts(16 * 3600));
+        let now = ts(15 * 3600);
+        let rows = tracked_today_rows(&state, window, now);
+        assert_eq!(
+            rows.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            [task_a, task_b, task_c],
+            "canonical order, workless tasks absent"
+        );
+        assert_eq!(rows[0].1, TimeDelta::hours(1), "the spanning entry clips");
+        assert_eq!(rows[1].1, TimeDelta::hours(1), "respite never counts");
+        assert_eq!(rows[2].1, TimeDelta::hours(1), "open accrual clamps at now");
+        // An empty day is the empty vec (the collapse's input). (An
+        // open entry genuinely accrues into any later window — the
+        // domain oracle's own semantics; the collapse pin is a state
+        // without entries.)
+        let empty = tracked_today_rows(
+            &AppState::default(),
+            (ts(90 * 3600), ts(98 * 3600)),
+            ts(95 * 3600),
+        );
+        assert_eq!(empty, [] as [(TaskId, TimeDelta); 0]);
+    }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(proptest::test_runner::Config::with_cases(32))]
+
+        /// Reconciliation by construction (D-TS3): the overlay's rows
+        /// sum (Work entries at lifetime scope) to exactly the summary
+        /// row's total — one reduction, never a parallel one.
+        #[test]
+        fn overlay_row_sum_reconciles_with_the_summary_total(
+            starts in proptest::collection::vec(0_i64..500_000, 0..6),
+            spans in proptest::collection::vec(1_i64..20_000, 0..6),
+            open in proptest::collection::vec(any::<bool>(), 0..6),
+            now_secs in 500_000_i64..600_000,
+        ) {
+            let task = TaskId::from(uuid::Uuid::from_u128(42));
+            let mut state = AppState::default();
+            for (i, ((start, span), is_open)) in
+                starts.iter().zip(&spans).zip(&open).enumerate()
+            {
+                let entry = TimeEntry {
+                    start: ts(*start),
+                    end: if *is_open { None } else { Some(ts(start + span)) },
+                    ..entry(i as u128 + 1, task, *start, None)
+                };
+                state.tracking.entries.insert(entry.id, entry);
+            }
+            let now = ts(now_secs);
+            let overlay = track_entry_rows(&state, task, now, &tz())
+                .into_iter()
+                .map(|row| row.spent)
+                .collect::<Vec<_>>();
+            let total = tracked_total(&state, task, now);
+            // Structural reconciliation: the header total re-derives
+            // from the same durations the rows phrase.
+            let sum: i64 = state
+                .tracking
+                .entries
+                .values()
+                .filter(|entry| {
+                    entry.task == task
+                        && entry.kind == taskboard_domain::tracking::TimeEntryKind::Work
+                })
+                .map(|entry| entry.duration(now).num_seconds())
+                .sum();
+            let phrase = tracked_total_phrase(&total);
+            prop_assert_eq!(
+                i64::from(total.hours) * 3600
+                    + i64::from(total.minutes) * 60
+                    + i64::from(total.seconds),
+                sum
+            );
+            prop_assert_eq!(
+                overlay.len(),
+                state.tracking.entries.values().filter(|e| e.task == task).count()
+            );
+            prop_assert!(phrase.split(' ').all(|seg| seg.ends_with('h')
+                || seg.ends_with('m')
+                || seg.ends_with('s')));
+        }
     }
 }
