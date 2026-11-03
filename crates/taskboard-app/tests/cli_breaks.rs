@@ -21,11 +21,28 @@ use common::{forbidden_store, standalone_config, tempdir};
 /// verbs resolve against — `breaks add` roams via the board since #588)
 /// and returns the config.
 async fn seeded_config(dir: &std::path::Path, db: &str) -> AppConfig {
+    seeded_config_with_board(dir, db).await.0
+}
+
+/// The seeding plus the board's id (the selector pin's token).
+async fn seeded_config_with_board(
+    dir: &std::path::Path,
+    db: &str,
+) -> (AppConfig, taskboard_domain::BoardId) {
     let config = standalone_config(dir, db);
-    taskboard_app::commands::boards::create(config.clone(), forbidden_store(), "seed board", None)
-        .await
-        .expect("board create boots");
-    config
+    let receipt = taskboard_app::commands::boards::create(
+        config.clone(),
+        forbidden_store(),
+        "seed board",
+        None,
+    )
+    .await
+    .expect("board create boots");
+    let id = receipt
+        .id
+        .parse::<uuid::Uuid>()
+        .expect("the receipt's uuid");
+    (config, taskboard_domain::BoardId::from_uuid(id))
 }
 
 /// The `breaks list` payload over a fresh boot (the persistence read).
@@ -46,6 +63,7 @@ async fn t1_add_mints_and_persists() {
         after: taskboard_domain::WorkThreshold::parse_text_form("90m").expect("positive threshold"),
         label: None,
         insistence: None,
+        board: None,
     })
     .expect("one invocation")
     {
@@ -53,12 +71,14 @@ async fn t1_add_mints_and_persists() {
             label,
             threshold,
             insistence,
+            ..
         } => breaks::add(
             config.clone(),
             forbidden_store(),
             &label,
             threshold,
             insistence,
+            None,
         )
         .await
         .expect("add boots"),
@@ -90,6 +110,7 @@ async fn t2_remove_by_prefix_and_repeat_is_typed() {
         after: taskboard_domain::WorkThreshold::parse_text_form("30m").expect("positive threshold"),
         label: Some("time for a break".into()),
         insistence: Some(taskboard_domain::Insistence::Alarm),
+        board: None,
     })
     .expect("one invocation")
     {
@@ -97,12 +118,14 @@ async fn t2_remove_by_prefix_and_repeat_is_typed() {
             label,
             threshold,
             insistence,
+            ..
         } => breaks::add(
             config.clone(),
             forbidden_store(),
             &label,
             threshold,
             insistence,
+            None,
         )
         .await
         .expect("add boots"),
@@ -170,17 +193,20 @@ async fn t4_label_prefix_resolves_and_ambiguity_is_typed() {
                 .expect("positive threshold"),
             label: Some(label.to_owned()),
             insistence: None,
+            board: None,
         }) {
             Some(BreaksInvocation::Add {
                 label,
                 threshold,
                 insistence,
+                ..
             }) => breaks::add(
                 config.clone(),
                 forbidden_store(),
                 &label,
                 threshold,
                 insistence,
+                None,
             )
             .await
             .expect("add boots"),
@@ -252,6 +278,7 @@ async fn t5_session_lane_serves_the_family() {
                         .expect("positive threshold"),
                     label: Some("session break".into()),
                     insistence: None,
+                    board: None,
                 },
                 0,
             ),
@@ -290,4 +317,97 @@ async fn t5_session_lane_serves_the_family() {
         Some(1),
         "the list shows the session-created rule"
     );
+}
+
+/// T6 (#588, the board selector): an explicit `--board` rides the
+/// payload (the receipt projects the rule over the named board); an
+/// unknown board id is the typed unknown-board refusal; zero boards is
+/// the ambiguity refusal (no default exists).
+#[tokio::test]
+async fn t6_board_selector_resolves_and_refuses_typed() {
+    // The unknown-board refusal.
+    let dir = tempdir();
+    let (config, board_id) = seeded_config_with_board(dir.path(), "t6.db").await;
+    let unknown = uuid::Uuid::now_v7();
+    let err = match breaks::collapse(BreaksCmd::Add {
+        after: taskboard_domain::WorkThreshold::parse_text_form("30m").expect("positive threshold"),
+        label: Some("time for a break".into()),
+        insistence: None,
+        board: Some(taskboard_domain::BoardId::from_uuid(unknown)),
+    }) {
+        Some(BreaksInvocation::Add {
+            label,
+            threshold,
+            insistence,
+            board,
+        }) => breaks::add(
+            config.clone(),
+            forbidden_store(),
+            &label,
+            threshold,
+            insistence,
+            board,
+        )
+        .await
+        .expect_err("an unknown board is the typed refusal"),
+        _ => panic!("collapse yields the add"),
+    };
+    assert_eq!(err.error_kind(), "unknown-board");
+
+    // The explicit selector rides the payload: the add succeeds and the
+    // rule lands on the named board's roaming section lane.
+    let listed = list(&config).await;
+    assert!(listed.rules.is_empty(), "nothing created yet");
+    let receipt: BreakAddReceipt = match breaks::collapse(BreaksCmd::Add {
+        after: taskboard_domain::WorkThreshold::parse_text_form("30m").expect("positive threshold"),
+        label: Some("explicit board".into()),
+        insistence: None,
+        board: Some(board_id),
+    }) {
+        Some(BreaksInvocation::Add {
+            label,
+            threshold,
+            insistence,
+            board,
+        }) => breaks::add(
+            config.clone(),
+            forbidden_store(),
+            &label,
+            threshold,
+            insistence,
+            board,
+        )
+        .await
+        .expect("the explicit selector resolves"),
+        _ => panic!("collapse yields the add"),
+    };
+    assert_eq!(receipt.label, "explicit board");
+
+    // Zero boards: the ambiguity refusal (no default exists).
+    let dir = tempdir();
+    let config = standalone_config(dir.path(), "t6b.db");
+    let err = match breaks::collapse(BreaksCmd::Add {
+        after: taskboard_domain::WorkThreshold::parse_text_form("30m").expect("positive threshold"),
+        label: Some("orphan".into()),
+        insistence: None,
+        board: None,
+    }) {
+        Some(BreaksInvocation::Add {
+            label,
+            threshold,
+            insistence,
+            board,
+        }) => breaks::add(
+            config.clone(),
+            forbidden_store(),
+            &label,
+            threshold,
+            insistence,
+            board,
+        )
+        .await
+        .expect_err("zero boards is the refusal"),
+        _ => panic!("collapse yields the add"),
+    };
+    assert_eq!(err.error_kind(), "ambiguous-board");
 }

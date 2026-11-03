@@ -29,10 +29,11 @@ pub async fn add(
     label: &str,
     threshold: taskboard_domain::WorkThreshold,
     insistence: taskboard_domain::Insistence,
+    board: Option<taskboard_domain::BoardId>,
 ) -> Result<BreakAddReceipt, CommandError> {
     let label = label.to_owned();
     crate::commands::tasks::with_core(config, store, async |app| {
-        add_on(app, &label, threshold, insistence).await
+        add_on(app, &label, threshold, insistence, board).await
     })
     .await
 }
@@ -77,11 +78,13 @@ pub async fn add_on(
     label: &str,
     threshold: taskboard_domain::WorkThreshold,
     insistence: taskboard_domain::Insistence,
+    board: Option<taskboard_domain::BoardId>,
 ) -> Result<BreakAddReceipt, CommandError> {
-    // The board resolves at the surface (D-8): the single live board
-    // is the default; an explicit `--board` flag overrides (N.4's
-    // flag wiring); zero or several boards share the ambiguity refusal.
-    let board = super::resolve_board(app, None)?;
+    // The board resolves at the surface (D-8, the `habits add` device
+    // byte-for-byte): the single live board is the default; an explicit
+    // `--board` flag overrides; zero or several boards share the
+    // ambiguity refusal.
+    let board = super::resolve_board(app, board)?;
     let outcome = app
         .engine
         .execute(StateCommand::CreateBreakRule {
@@ -272,7 +275,7 @@ pub fn render_text_remove(receipt: &BreakRemoveReceipt) -> String {
 /// exactly one mode.
 #[derive(Debug, Clone)]
 pub enum BreaksInvocation {
-    /// `add --after <dur> [--label] [--insistence]`.
+    /// `add --after <dur> [--label] [--insistence] [--board]`.
     Add {
         /// The notification title.
         label: String,
@@ -280,6 +283,9 @@ pub enum BreaksInvocation {
         threshold: taskboard_domain::WorkThreshold,
         /// The explicit `--insistence` value; `Normal` when `None`.
         insistence: taskboard_domain::Insistence,
+        /// The explicit `--board` selector; the single live board when
+        /// `None`.
+        board: Option<taskboard_domain::BoardId>,
     },
     /// `list` (pure read).
     List,
@@ -296,12 +302,14 @@ pub fn collapse(cmd: crate::cli::BreaksCmd) -> Option<BreaksInvocation> {
             after,
             label,
             insistence,
+            board,
         } => Some(BreaksInvocation::Add {
             // The threshold is minted at the clap boundary (the
             // `parse_after_flag` value parser) — `collapse` cannot fail.
             label: label.unwrap_or_else(|| format!("break after {}", after.text_form())),
             threshold: after,
             insistence: insistence.unwrap_or_default(),
+            board,
         }),
         crate::cli::BreaksCmd::List => Some(BreaksInvocation::List),
         crate::cli::BreaksCmd::Remove { selector } => Some(BreaksInvocation::Remove(selector)),
@@ -338,13 +346,14 @@ pub async fn breaks_command(
             label,
             threshold,
             insistence,
+            board,
         } => {
             super::run_core(
                 io,
                 config_path,
                 render_text_add,
                 move |config, store| async move {
-                    add(config, store, &label, threshold, insistence).await
+                    add(config, store, &label, threshold, insistence, board).await
                 },
             )
             .await
@@ -370,9 +379,10 @@ pub async fn breaks_line(
             label,
             threshold,
             insistence,
+            board,
         } => crate::commands::emit_result(
             io,
-            add_on(app, &label, threshold, insistence).await,
+            add_on(app, &label, threshold, insistence, board).await,
             render_text_add,
         ),
     }

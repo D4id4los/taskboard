@@ -900,6 +900,11 @@ pub enum BreaksCmd {
         /// How loudly the reminder insists (`normal|alarm`).
         #[arg(long, value_parser = parse_insistence_flag)]
         insistence: Option<taskboard_domain::Insistence>,
+        /// The board the rule roams with (uuid); the single live board
+        /// when omitted (#588 — break rules roam via the board's
+        /// synced `break-rules` section).
+        #[arg(long, value_parser = parse_board_id)]
+        board: Option<taskboard_domain::BoardId>,
     },
     /// List the break rules in canonical `(threshold, id)` order (pure
     /// read).

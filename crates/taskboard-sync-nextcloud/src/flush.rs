@@ -20,10 +20,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use taskboard_domain::{
-    AppDataDocument, AppDataEvidence, AppDataSections, AppDataUnreadable, BoardId, DeckFeatures,
-    EntityTables, HabitState, LocalOp, PendingOp, PushGroup, PushOutcome, PushResult, ReminderRule,
+    AppDataDocument, AppDataEvidence, AppDataSections, AppDataUnreadable,
+    BREAK_DISMISSALS_ENTRY_KEY, BoardId, BreakRule, BreakRuleId, DeckFeatures, EntityTables,
+    HabitState, LocalOp, PendingOp, PushGroup, PushOutcome, PushResult, ReminderRule,
     ReminderRuleId, RemoteBoardId, RemoteBoardSnapshot, Stack, SyncErrorKind, Task, TaskId,
-    TimeEntry, TimeEntryId, derive_rule_tombstones, derive_time_entry_tombstones,
+    TimeEntry, TimeEntryId, break_dismissals_entry_for, break_rules_for,
+    derive_break_rule_tombstones, derive_rule_tombstones, derive_time_entry_tombstones,
     dismissals_entry_for, habit_log_for, habits_for, lane_gc_old_habit_log,
     lane_gc_old_time_entries, lane_gc_scheduled, prune_absent_cards, rules_entry_for,
     task_entry_for, time_entries_for, union,
@@ -99,6 +101,9 @@ pub(crate) struct FlushCtx<'a> {
     /// The local habit state — the board-level `habits`/`habit-log`
     /// sections' overlay input (DR-6 §4.5).
     pub habits: &'a HabitState,
+    /// The local break rules — the board-level `break-rules` section's
+    /// overlay input (#588 D-7).
+    pub break_rules: &'a BTreeMap<BreakRuleId, BreakRule>,
     /// The local board whose document this is (the actor's loop
     /// variable): the habit builders scope their emission to it.
     pub board: BoardId,
@@ -123,6 +128,7 @@ pub(crate) fn board_has_local_app_data(
     rules: &BTreeMap<ReminderRuleId, ReminderRule>,
     entries: &BTreeMap<TimeEntryId, TimeEntry>,
     habits: &HabitState,
+    break_rules: &BTreeMap<BreakRuleId, BreakRule>,
     today: chrono::NaiveDate,
     now: chrono::DateTime<chrono::Utc>,
     board: BoardId,
@@ -164,6 +170,9 @@ pub(crate) fn board_has_local_app_data(
         .keys()
         .next()
         .is_some()
+    // The break clause (#588 D-7, D-H9's device): a board whose only
+    // sidecar content is break rules still grows its anchor.
+    || break_rules.values().any(|rule| rule.board == board)
 }
 
 /// Whether the flush must run this cycle (D11's has-work gate):
@@ -178,6 +187,7 @@ pub(crate) fn has_flush_work(
     rules: &BTreeMap<ReminderRuleId, ReminderRule>,
     entries: &BTreeMap<TimeEntryId, TimeEntry>,
     habits: &HabitState,
+    break_rules: &BTreeMap<BreakRuleId, BreakRule>,
     today: chrono::NaiveDate,
     now: chrono::DateTime<chrono::Utc>,
     board: BoardId,
@@ -213,6 +223,7 @@ pub(crate) fn has_flush_work(
             rules,
             entries,
             habits,
+            break_rules,
             today,
             now,
             board,
@@ -385,6 +396,35 @@ pub(crate) async fn run_flush(ctx: FlushCtx<'_>) -> FlushVerdict {
     // the overlay emits directly, and log rows are never deleted.
     let overlay_habits = habits_for(&ctx.habits.habits, ctx.board);
     let overlay_log = habit_log_for(&ctx.habits.habits, &ctx.habits.log, ctx.board, ctx.today);
+    // The break-rules section is board-level too (#588 D-7): live rows
+    // of this board, plus the base-driven removal tombstones (the
+    // `derive_rule_tombstones` shape with its truncated-view guard),
+    // stamped with the same scoped stamp the time-entries derivation
+    // uses. A deleted rule leaves no local row to emit from — hard
+    // delete + base derivation, not the habit soft-delete model.
+    let mut overlay_break_rules = break_rules_for(ctx.break_rules, ctx.board);
+    for (key, tombstone) in derive_break_rule_tombstones(
+        base.sections
+            .break_rules
+            .as_ref()
+            .unwrap_or(&BTreeMap::new()),
+        ctx.break_rules,
+        entry_stamp.unwrap_or(ctx.read_at),
+    ) {
+        overlay_break_rules.insert(key, tombstone);
+    }
+    // The reserved board-level `break` dismissals entry (#588 D-10):
+    // the local set's Break-ref rows for this board's rules, inserted
+    // under the reserved key only when non-empty (the
+    // `overlay_dismissals` gate's shape).
+    let mut overlay_break_dismissals =
+        break_dismissals_entry_for(ctx.dismissals, ctx.break_rules, ctx.board);
+    if !overlay_break_dismissals.dismissals.is_empty() {
+        overlay_dismissals.insert(
+            BREAK_DISMISSALS_ENTRY_KEY.to_owned(),
+            std::mem::take(&mut overlay_break_dismissals),
+        );
+    }
     let overlay = AppDataDocument {
         format: taskboard_domain::APPDATA_FORMAT,
         board: ctx.target,
@@ -395,7 +435,7 @@ pub(crate) async fn run_flush(ctx: FlushCtx<'_>) -> FlushVerdict {
             time_entries: (!overlay_time.is_empty()).then_some(overlay_time),
             habits: (!overlay_habits.is_empty()).then_some(overlay_habits),
             habit_log: (!overlay_log.is_empty()).then_some(overlay_log),
-            break_rules: None,
+            break_rules: (!overlay_break_rules.is_empty()).then_some(overlay_break_rules),
             unknown: BTreeMap::new(),
         },
         unknown: BTreeMap::new(),
@@ -923,6 +963,7 @@ mod tests {
             &BTreeMap::new(),
             &empty,
             &habit_empty,
+            &BTreeMap::new(),
             today,
             now,
             board,
@@ -938,6 +979,7 @@ mod tests {
             &BTreeMap::new(),
             &entries,
             &habit_empty,
+            &BTreeMap::new(),
             today,
             now,
             board,
@@ -956,6 +998,7 @@ mod tests {
             &BTreeMap::new(),
             &aged,
             &habit_empty,
+            &BTreeMap::new(),
             today,
             now,
             board,
@@ -996,6 +1039,7 @@ mod tests {
             &BTreeMap::new(),
             &BTreeMap::new(),
             &habit_empty,
+            &BTreeMap::new(),
             today,
             now,
             board,
@@ -1022,6 +1066,7 @@ mod tests {
             &BTreeMap::new(),
             &BTreeMap::new(),
             &habit_empty,
+            &BTreeMap::new(),
             today,
             now,
             board,
@@ -1252,6 +1297,7 @@ mod tests {
                 &BTreeMap::new(),
                 &empty,
                 &habit_empty,
+                &BTreeMap::new(),
                 today,
                 ts(10_000_000),
                 board,
@@ -1299,6 +1345,7 @@ mod tests {
                 &BTreeMap::new(),
                 &empty,
                 &habit_empty,
+                &BTreeMap::new(),
                 today,
                 ts(10_000_000),
                 board,
@@ -1442,6 +1489,7 @@ mod habit_gate_tests {
             &BTreeMap::new(),
             &BTreeMap::new(),
             &habits,
+            &BTreeMap::new(),
             today,
             now,
             board,
@@ -1459,6 +1507,7 @@ mod habit_gate_tests {
             &BTreeMap::new(),
             &BTreeMap::new(),
             &foreign_habits,
+            &BTreeMap::new(),
             today,
             now,
             board,
@@ -1492,6 +1541,7 @@ mod habit_gate_tests {
             &BTreeMap::new(),
             &BTreeMap::new(),
             &aged_only,
+            &BTreeMap::new(),
             today,
             now,
             board,
@@ -1517,6 +1567,7 @@ mod habit_gate_tests {
             &BTreeMap::new(),
             &BTreeMap::new(),
             &fresh_log,
+            &BTreeMap::new(),
             today,
             now,
             board,
