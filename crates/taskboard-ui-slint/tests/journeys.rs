@@ -7255,6 +7255,125 @@ fn steppers_seed_and_step_from_empty() {
     );
 }
 
+/// R4 D26 (F22, review focus d) — the combobox is the picker's only
+/// time path: the typed filter seeds the picker live (and junk shows
+/// invalid without touching it), a quick-pick renders the canonical
+/// value AND re-renders the due buffer, and combobox-Enter commits
+/// the editor through the one funnel.
+#[test]
+fn the_combobox_is_the_only_time_path() {
+    let (fixture, mut state) = fixture::journey_state();
+    state
+        .tasks
+        .get_mut(&fixture.task1)
+        .expect("fixture task")
+        .duedate = Some(chrono::Utc.with_ymd_and_hms(2030, 1, 31, 0, 0, 0).unwrap());
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavNextView);
+            harness.press(ActionId::NavNextView);
+            harness.driver.click_by_label("Edit due date");
+            harness.driver.advance_time(0);
+            assert!(harness.handle.window().get_task_model().date_picker_open);
+            assert_eq!(
+                harness
+                    .handle
+                    .window()
+                    .get_task_model()
+                    .date_time_field_text,
+                "--:--",
+                "the unset echo is the value mirror"
+            );
+            assert_eq!(
+                harness.handle.window().get_task_model().date_time_validity,
+                taskboard_ui_slint::FieldValidity::Neutral
+            );
+
+            // Typed filter: a lenient-parse hit seeds the picker live
+            // and reads valid.
+            harness
+                .handle
+                .window()
+                .invoke_task_date_time_edited("9".into());
+            harness.driver.advance_time(0);
+            assert_eq!(
+                harness.handle.window().get_task_model().date_time_validity,
+                taskboard_ui_slint::FieldValidity::Valid
+            );
+            assert_eq!(
+                harness.handle.window().get_task_model().date_time_text,
+                "09:00",
+                "the typed hour seeded the picker"
+            );
+
+            // Junk: the validity flips invalid and the picker's time
+            // is untouched.
+            harness
+                .handle
+                .window()
+                .invoke_task_date_time_edited("9x".into());
+            harness.driver.advance_time(0);
+            assert_eq!(
+                harness.handle.window().get_task_model().date_time_validity,
+                taskboard_ui_slint::FieldValidity::Invalid
+            );
+            assert_eq!(
+                harness.handle.window().get_task_model().date_time_text,
+                "09:00",
+                "junk never rewrote the seeded time"
+            );
+
+            // A quick-pick: canonical value in the mirror, and the
+            // due buffer re-renders from the selection (Picker-source
+            // sync).
+            harness
+                .handle
+                .window()
+                .invoke_task_date_time_picked(9 * 60 + 30);
+            harness.driver.advance_time(0);
+            assert_eq!(
+                harness
+                    .handle
+                    .window()
+                    .get_task_model()
+                    .date_time_field_text,
+                "09:30",
+                "the pick wrote the canonical rendering"
+            );
+            assert_eq!(
+                harness.handle.window().get_task_model().due_text,
+                "2030-01-31 09:30",
+                "the buffer mirrors the picker's selection"
+            );
+
+            // Combobox-Enter commits the editor through the funnel.
+            harness
+                .handle
+                .window()
+                .invoke_task_date_time_accepted("09:45".into());
+            harness.assert_commands(&[StateCommand::UpdateTask {
+                id: fixture.task1,
+                changes: taskboard_domain::TaskChanges {
+                    duedate: Some(Some(
+                        chrono::Utc.with_ymd_and_hms(2030, 1, 31, 9, 45, 0).unwrap(),
+                    )),
+                    ..taskboard_domain::TaskChanges::default()
+                },
+            }]);
+            assert!(
+                !harness.handle.window().get_task_model().due_open,
+                "the editor collapsed on the combobox commit"
+            );
+        },
+    );
+}
+
 /// R4 D25 — the calendar picker's two-phase ladder and live sync
 /// (reworks the r2 boundary journey's Enter leg): grid-Enter hands
 /// focus to the field and dispatches nothing, the typed path and

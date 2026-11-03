@@ -11,6 +11,8 @@ import { IconButton, IconKind } from "../widgets/icon-button.slint";
 import { RuleList, RuleRowModel } from "../compositions/rule-list.slint";
 import { DueEditor } from "../compositions/due-editor.slint";
 import { DueDayModel } from "../compositions/date-picker.slint";
+import { TimeSlotRow } from "../widgets/time-field.slint";
+import { FieldValidity } from "../widgets/text-field.slint";
 import { DatePickerFacts } from "../menu-facts.slint";
 import { TooltipState } from "../widgets/tooltip.slint";
 import { ActivationStop } from "../widgets/activation-stop.slint";
@@ -62,6 +64,13 @@ export struct TaskDetailModel {
     date-grid: [[DueDayModel]],
     date-grid-focus: bool,
     date-time-text: string,
+    // The time combobox's pushed half (r4 D26): the visible text
+    // mirror, the validity flavour, the filtered quick-list rows, and
+    // the scroll-to-nearest index.
+    date-time-field-text: string,
+    date-time-validity: FieldValidity,
+    date-time-slots: [TimeSlotRow],
+    date-time-nearest-row: int,
 }
 
 export component TaskView inherits FocusScope {
