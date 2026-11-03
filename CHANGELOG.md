@@ -59,6 +59,28 @@ The workspace carries a single global version (see `docs/architecture.org`);
   disabled action, an absorbed dispatch); existing kiosk goldens are
   byte-identical.
 
+- Timer surfaces (GUI review round 4, chunk 9 — #352): the timers
+  section's header gains a mouse setter — an anchored popover with
+  quick presets (1m/5m/10m/25m/1h, quick-fill, never auto-commit),
+  a label field, a custom time-of-day row built on the date editor's
+  time combobox with a Today|Tomorrow day offset, and a live caption
+  showing the composed fire instant. It commits through the same
+  seam as the inline text form (popover ≡ typed grammar ≡ same
+  command), so the text form survives unchanged for keyboard users.
+  The inline form gains an insistence picker (Normal | Alarm,
+  default Normal) matching the popover's; the alarm rung finally
+  reaches the engine — the field existed end to end, only the GUI
+  could not express it — and rows with an alarm-rung timer render a
+  warning badge. Timer rows and the status-bar chip now show the
+  two-part countdown (d/h/m/s remaining plus the fixed local fire
+  instant) instead of the minute-bucketed phrase, ticking once per
+  second while a timer is actually counting (a fired-and-awaiting
+  set renders static text, and kiosk never ticks — the banner stays
+  the appliance's only reminder surface). The timers form's typed
+  `when` field now actually receives the per-keystroke validity
+  flavour in the mounted UI (the section mount never forwarded it;
+  the adapter seam was tested while the wiring was dead).
+
 ### Fixed
 
 - The task detail's tracked total no longer counts respite entries:
