@@ -2532,6 +2532,40 @@ mod tests {
     /// r4 D17 — the summary reduction sums only the subject's entries;
     /// another task's history is excluded.
     #[test]
+    fn tracked_total_applies_the_work_filter() {
+        // The D-11 ruling (DR-5): respite counts against the work
+        // streak, never toward effort — the detail view's total is
+        // Work-only, matching `work_in_window`'s semantics.
+        let now = Utc.with_ymd_and_hms(2026, 10, 28, 10, 0, 0).unwrap();
+        let subject = TaskId::from_uuid(uuid::Uuid::now_v7());
+        let mut state = AppState::default();
+        let mint = |kind| {
+            let id = taskboard_domain::TimeEntryId::from_uuid(uuid::Uuid::now_v7());
+            (
+                id,
+                taskboard_domain::TimeEntry {
+                    kind,
+                    ..entry(id, subject, "t", now - TimeDelta::minutes(30), Some(now))
+                },
+            )
+        };
+        let (work_id, work) = mint(taskboard_domain::tracking::TimeEntryKind::Work);
+        state.tracking.entries.insert(work_id, work);
+        let (respite_id, respite) = mint(taskboard_domain::tracking::TimeEntryKind::Respite);
+        state.tracking.entries.insert(respite_id, respite);
+
+        assert_eq!(
+            tracked_total(&state, subject, now),
+            TrackedTotal {
+                hours: 0,
+                minutes: 30,
+                seconds: 0,
+            },
+            "the respite entry never inflates the total"
+        );
+    }
+
+    #[test]
     fn tracked_total_sums_only_the_subjects_entries() {
         let now = Utc.with_ymd_and_hms(2026, 10, 28, 10, 0, 0).unwrap();
         let subject = TaskId::from_uuid(uuid::Uuid::now_v7());
