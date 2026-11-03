@@ -665,6 +665,27 @@ pub struct RecurRule {
     pub continued_from: Option<HabitId>,
 }
 
+impl RecurRule {
+    /// The stored TEXT form: the domain serde JSON of the rule (the
+    /// `Option` wrapper is not stored — NULL is the unset state at the
+    /// column level).
+    #[must_use]
+    pub fn text_form(&self) -> String {
+        // Never fires for this plain-data shape; kept for byte-identity
+        // with the codec this pair replaces.
+        serde_json::to_string(self).unwrap_or_default()
+    }
+
+    /// Parses the stored TEXT form back; `None` on any JSON that does
+    /// not decode as a rule (strict decode by design — the mints
+    /// reject, the repository reports `Corrupted`; a NULL column is
+    /// handled at the caller as the unset state).
+    #[must_use]
+    pub fn parse_text_form(raw: &str) -> Option<Self> {
+        serde_json::from_str(raw).ok()
+    }
+}
+
 /// The head's reference date — the plain calendar day the series
 /// "is on" (D-E5's chain): the calendar date of `scheduled`, else of
 /// `duedate`, else the completion day (the window-date of `now`). Plain
@@ -1175,6 +1196,25 @@ mod tests {
             bound: RecurBound::None,
             continued_from: None,
         }
+    }
+
+    #[test]
+    fn rule_text_form_is_the_serde_json_and_round_trips() {
+        let sample = rule(RecurPattern::Daily {
+            every: every_days(2),
+        });
+        // The exact stored bytes the sqlite codec has always written.
+        assert_eq!(
+            sample.text_form(),
+            "{\"series\":\"00000000-0000-0000-0000-000000000001\",\"anchor\":\"2026-01-01\",\"pattern\":{\"Daily\":{\"every\":2}},\"bound\":\"None\",\"continued_from\":null}"
+        );
+        assert_eq!(
+            RecurRule::parse_text_form(&sample.text_form()),
+            Some(sample)
+        );
+        assert_eq!(RecurRule::parse_text_form("not json"), None);
+        assert_eq!(RecurRule::parse_text_form("{\"every\": 0}"), None);
+        assert_eq!(RecurRule::parse_text_form(""), None);
     }
 
     #[test]

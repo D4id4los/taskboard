@@ -166,6 +166,39 @@ pub enum SyncPhase {
     },
 }
 
+impl SyncPhase {
+    /// The stored TEXT form's phase tag (`"idle"`/`"syncing"`/
+    /// `"offline"`/`"failed"`). A `Failed` phase's error kind rides a
+    /// separate TEXT column — the tag is discriminant-only.
+    #[must_use]
+    pub const fn text_form(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Syncing => "syncing",
+            Self::Offline => "offline",
+            Self::Failed { .. } => "failed",
+        }
+    }
+
+    /// Parses the phase tag into a full [`SyncPhase`], given the
+    /// *already-parsed* error-kind column: the second parameter
+    /// (`Option<SyncErrorKind>`) feeds the enum-with-data's intrinsic
+    /// consistency invariant — a `Failed` phase requires its error
+    /// kind, a non-failed phase requires the absence of one (a
+    /// dangling error is not a valid `SyncPhase` state, not a storage
+    /// artifact).
+    #[must_use]
+    pub fn parse_text_form(tag: &str, last_error: Option<SyncErrorKind>) -> Option<Self> {
+        match tag {
+            "idle" if last_error.is_none() => Some(Self::Idle),
+            "syncing" if last_error.is_none() => Some(Self::Syncing),
+            "offline" if last_error.is_none() => Some(Self::Offline),
+            "failed" => last_error.map(|last_error| Self::Failed { last_error }),
+            _ => None,
+        }
+    }
+}
+
 /// Deck-agnostic sync failure classification. The sync actor maps
 /// `DeckError` into this (Phase 4); no text payloads (AGENTS §5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -185,6 +218,38 @@ pub enum SyncErrorKind {
     /// No sync target is bound yet — a cycle fired against an empty
     /// derived board set.
     NoBoard,
+}
+
+impl SyncErrorKind {
+    /// The stored TEXT form (`"network"`, `"auth"`, `"forbidden"`,
+    /// `"server"`, `"bad_request"`, `"local_data"`, `"no_board"`).
+    #[must_use]
+    pub const fn text_form(self) -> &'static str {
+        match self {
+            Self::Network => "network",
+            Self::Auth => "auth",
+            Self::Forbidden => "forbidden",
+            Self::Server => "server",
+            Self::BadRequest => "bad_request",
+            Self::LocalData => "local_data",
+            Self::NoBoard => "no_board",
+        }
+    }
+
+    /// Parses the stored TEXT form back; `None` on an unknown tag.
+    #[must_use]
+    pub fn parse_text_form(raw: &str) -> Option<Self> {
+        match raw {
+            "network" => Some(Self::Network),
+            "auth" => Some(Self::Auth),
+            "forbidden" => Some(Self::Forbidden),
+            "server" => Some(Self::Server),
+            "bad_request" => Some(Self::BadRequest),
+            "local_data" => Some(Self::LocalData),
+            "no_board" => Some(Self::NoBoard),
+            _ => None,
+        }
+    }
 }
 
 /// Per-board sync status, keyed by local board id. Rows exist for every
@@ -1094,7 +1159,7 @@ mod sync_states_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::AppState;
+    use super::{AppState, SyncErrorKind, SyncPhase};
     use crate::entities::{BoardClocks, Color, StackClocks};
     use crate::ids::{BoardId, StackId, TaskId};
     use crate::test_support;
@@ -1103,6 +1168,73 @@ mod tests {
 
     fn ts(secs: i64) -> chrono::DateTime<chrono::Utc> {
         chrono::Utc.timestamp_opt(secs, 0).unwrap()
+    }
+
+    #[test]
+    fn sync_error_kind_text_form_pins_and_round_trips() {
+        for (kind, tag) in [
+            (SyncErrorKind::Network, "network"),
+            (SyncErrorKind::Auth, "auth"),
+            (SyncErrorKind::Forbidden, "forbidden"),
+            (SyncErrorKind::Server, "server"),
+            (SyncErrorKind::BadRequest, "bad_request"),
+            (SyncErrorKind::LocalData, "local_data"),
+            (SyncErrorKind::NoBoard, "no_board"),
+        ] {
+            assert_eq!(kind.text_form(), tag);
+            assert_eq!(SyncErrorKind::parse_text_form(tag), Some(kind));
+        }
+        assert_eq!(SyncErrorKind::parse_text_form(""), None);
+        assert_eq!(SyncErrorKind::parse_text_form("meteor"), None);
+    }
+
+    #[test]
+    fn sync_phase_text_form_pins_the_tags() {
+        for (phase, tag) in [
+            (SyncPhase::Idle, "idle"),
+            (SyncPhase::Syncing, "syncing"),
+            (SyncPhase::Offline, "offline"),
+            (
+                SyncPhase::Failed {
+                    last_error: SyncErrorKind::Network,
+                },
+                "failed",
+            ),
+        ] {
+            assert_eq!(phase.text_form(), tag);
+        }
+    }
+
+    #[test]
+    fn sync_phase_parse_enforces_the_failed_error_invariant() {
+        assert_eq!(
+            SyncPhase::parse_text_form("idle", None),
+            Some(SyncPhase::Idle)
+        );
+        assert_eq!(
+            SyncPhase::parse_text_form("syncing", None),
+            Some(SyncPhase::Syncing)
+        );
+        assert_eq!(
+            SyncPhase::parse_text_form("offline", None),
+            Some(SyncPhase::Offline)
+        );
+        assert_eq!(
+            SyncPhase::parse_text_form("failed", Some(SyncErrorKind::NoBoard)),
+            Some(SyncPhase::Failed {
+                last_error: SyncErrorKind::NoBoard
+            })
+        );
+        // Failed without a kind is not a valid state.
+        assert_eq!(SyncPhase::parse_text_form("failed", None), None);
+        // A dangling error on a non-failed phase is not a valid state.
+        for tag in ["idle", "syncing", "offline"] {
+            assert_eq!(
+                SyncPhase::parse_text_form(tag, Some(SyncErrorKind::Auth)),
+                None
+            );
+        }
+        assert_eq!(SyncPhase::parse_text_form("warp", None), None);
     }
 
     fn board(raw: u128, title: &str) -> crate::entities::Board {

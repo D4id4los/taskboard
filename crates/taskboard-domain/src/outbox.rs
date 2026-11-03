@@ -89,6 +89,112 @@ pub enum LocalOp {
     FlushBoardAppData(crate::ids::BoardId),
 }
 
+/// The data-less descriptor of a [`LocalOp`] variant: the one home of
+/// the `snake_case` storage tag vocabulary (`outbox.op_kind`), shared by
+/// the storage codec's encode and decode sides. Distinct from serde:
+/// the [`LocalOp`] derive carries no `rename_all`, so the serde wire
+/// tags (`PascalCase`) stay untouched — the storage tag is defined once
+/// here, serde stays serde.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LocalOpTag {
+    /// Tag of [`LocalOp::CreateTask`].
+    CreateTask,
+    /// Tag of [`LocalOp::UpdateTask`].
+    UpdateTask,
+    /// Tag of [`LocalOp::MoveTask`].
+    MoveTask,
+    /// Tag of [`LocalOp::DeleteTask`].
+    DeleteTask,
+    /// Tag of [`LocalOp::CreateStack`].
+    CreateStack,
+    /// Tag of [`LocalOp::RenameStack`].
+    RenameStack,
+    /// Tag of [`LocalOp::MoveStack`].
+    MoveStack,
+    /// Tag of [`LocalOp::DeleteStack`].
+    DeleteStack,
+    /// Tag of [`LocalOp::CreateLabel`].
+    CreateLabel,
+    /// Tag of [`LocalOp::UpdateLabel`].
+    UpdateLabel,
+    /// Tag of [`LocalOp::DeleteLabel`].
+    DeleteLabel,
+    /// Tag of [`LocalOp::AssignLabel`].
+    AssignLabel,
+    /// Tag of [`LocalOp::UnassignLabel`].
+    UnassignLabel,
+    /// Tag of [`LocalOp::UpdateBoard`].
+    UpdateBoard,
+    /// Tag of [`LocalOp::DeleteBoard`].
+    DeleteBoard,
+    /// Tag of [`LocalOp::DeleteRemoteCard`].
+    DeleteRemoteCard,
+    /// Tag of [`LocalOp::DeleteRemoteStack`].
+    DeleteRemoteStack,
+    /// Tag of [`LocalOp::UpdateAppData`].
+    UpdateAppData,
+    /// Tag of [`LocalOp::FlushBoardAppData`].
+    FlushBoardAppData,
+}
+
+impl LocalOpTag {
+    /// The `snake_case` tag stored in `outbox.op_kind` — the single home
+    /// of these literals.
+    #[must_use]
+    pub const fn text_form(self) -> &'static str {
+        match self {
+            Self::CreateTask => "create_task",
+            Self::UpdateTask => "update_task",
+            Self::MoveTask => "move_task",
+            Self::DeleteTask => "delete_task",
+            Self::CreateStack => "create_stack",
+            Self::RenameStack => "rename_stack",
+            Self::MoveStack => "move_stack",
+            Self::DeleteStack => "delete_stack",
+            Self::CreateLabel => "create_label",
+            Self::UpdateLabel => "update_label",
+            Self::DeleteLabel => "delete_label",
+            Self::AssignLabel => "assign_label",
+            Self::UnassignLabel => "unassign_label",
+            Self::UpdateBoard => "update_board",
+            Self::DeleteBoard => "delete_board",
+            Self::DeleteRemoteCard => "delete_remote_card",
+            Self::DeleteRemoteStack => "delete_remote_stack",
+            Self::UpdateAppData => "update_app_data",
+            Self::FlushBoardAppData => "flush_board_app_data",
+        }
+    }
+
+    /// Parses [`text_form`](Self::text_form) back; `None` on an unknown
+    /// tag (the legacy `rename_board` included — one representation, no
+    /// alias drift).
+    #[must_use]
+    pub fn parse_text_form(raw: &str) -> Option<Self> {
+        match raw {
+            "create_task" => Some(Self::CreateTask),
+            "update_task" => Some(Self::UpdateTask),
+            "move_task" => Some(Self::MoveTask),
+            "delete_task" => Some(Self::DeleteTask),
+            "create_stack" => Some(Self::CreateStack),
+            "rename_stack" => Some(Self::RenameStack),
+            "move_stack" => Some(Self::MoveStack),
+            "delete_stack" => Some(Self::DeleteStack),
+            "create_label" => Some(Self::CreateLabel),
+            "update_label" => Some(Self::UpdateLabel),
+            "delete_label" => Some(Self::DeleteLabel),
+            "assign_label" => Some(Self::AssignLabel),
+            "unassign_label" => Some(Self::UnassignLabel),
+            "update_board" => Some(Self::UpdateBoard),
+            "delete_board" => Some(Self::DeleteBoard),
+            "delete_remote_card" => Some(Self::DeleteRemoteCard),
+            "delete_remote_stack" => Some(Self::DeleteRemoteStack),
+            "update_app_data" => Some(Self::UpdateAppData),
+            "flush_board_app_data" => Some(Self::FlushBoardAppData),
+            _ => None,
+        }
+    }
+}
+
 /// An outbox entry: which operation, when it was queued.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PendingOp {
@@ -101,6 +207,34 @@ pub struct PendingOp {
 }
 
 impl LocalOp {
+    /// The variant's [`LocalOpTag`] descriptor. An exhaustive match: a
+    /// future op variant fails to compile here until it is tagged, so
+    /// the vocabulary cannot silently drift from the enum.
+    #[must_use]
+    pub const fn tag(&self) -> LocalOpTag {
+        match self {
+            Self::CreateTask(_) => LocalOpTag::CreateTask,
+            Self::UpdateTask(_) => LocalOpTag::UpdateTask,
+            Self::MoveTask(_) => LocalOpTag::MoveTask,
+            Self::DeleteTask(_) => LocalOpTag::DeleteTask,
+            Self::CreateStack(_) => LocalOpTag::CreateStack,
+            Self::RenameStack(_) => LocalOpTag::RenameStack,
+            Self::MoveStack(_) => LocalOpTag::MoveStack,
+            Self::DeleteStack(_) => LocalOpTag::DeleteStack,
+            Self::CreateLabel(_) => LocalOpTag::CreateLabel,
+            Self::UpdateLabel(_) => LocalOpTag::UpdateLabel,
+            Self::DeleteLabel(_) => LocalOpTag::DeleteLabel,
+            Self::AssignLabel(_, _) => LocalOpTag::AssignLabel,
+            Self::UnassignLabel(_, _) => LocalOpTag::UnassignLabel,
+            Self::UpdateBoard(_) => LocalOpTag::UpdateBoard,
+            Self::DeleteBoard(_) => LocalOpTag::DeleteBoard,
+            Self::DeleteRemoteCard { .. } => LocalOpTag::DeleteRemoteCard,
+            Self::DeleteRemoteStack { .. } => LocalOpTag::DeleteRemoteStack,
+            Self::UpdateAppData(_) => LocalOpTag::UpdateAppData,
+            Self::FlushBoardAppData(_) => LocalOpTag::FlushBoardAppData,
+        }
+    }
+
     /// The board that owns this op's entity (board ops: themselves;
     /// stack ops: the stack's board; label ops: the label's board;
     /// task ops: the task's stack's board). `None` when the owning
@@ -174,6 +308,62 @@ mod tests {
     use crate::push::EntityTables;
     use chrono::TimeZone;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn every_op_variant_tags_to_the_pinned_storage_form() {
+        let task = TaskId::from(uuid::Uuid::from_u128(1));
+        let stack = StackId::from(uuid::Uuid::from_u128(2));
+        let label = LabelId::from(uuid::Uuid::from_u128(3));
+        let board = BoardId::from(uuid::Uuid::from_u128(9));
+        let ops = [
+            (LocalOp::CreateTask(task), "create_task"),
+            (LocalOp::UpdateTask(task), "update_task"),
+            (LocalOp::MoveTask(task), "move_task"),
+            (LocalOp::DeleteTask(task), "delete_task"),
+            (LocalOp::CreateStack(stack), "create_stack"),
+            (LocalOp::RenameStack(stack), "rename_stack"),
+            (LocalOp::MoveStack(stack), "move_stack"),
+            (LocalOp::DeleteStack(stack), "delete_stack"),
+            (LocalOp::CreateLabel(label), "create_label"),
+            (LocalOp::UpdateLabel(label), "update_label"),
+            (LocalOp::DeleteLabel(label), "delete_label"),
+            (LocalOp::AssignLabel(task, label), "assign_label"),
+            (LocalOp::UnassignLabel(task, label), "unassign_label"),
+            (LocalOp::UpdateBoard(board), "update_board"),
+            (LocalOp::DeleteBoard(board), "delete_board"),
+            (LocalOp::UpdateAppData(task), "update_app_data"),
+            (LocalOp::FlushBoardAppData(board), "flush_board_app_data"),
+            (
+                LocalOp::DeleteRemoteCard {
+                    board,
+                    card: crate::ids::RemoteCardRef {
+                        board: crate::ids::RemoteBoardId(42),
+                        stack: crate::ids::RemoteStackId(7),
+                        card: crate::ids::RemoteCardId(517),
+                    },
+                },
+                "delete_remote_card",
+            ),
+            (
+                LocalOp::DeleteRemoteStack {
+                    board,
+                    stack: crate::ids::RemoteStackRef {
+                        board: crate::ids::RemoteBoardId(42),
+                        stack: crate::ids::RemoteStackId(8),
+                    },
+                },
+                "delete_remote_stack",
+            ),
+        ];
+        for (op, tag) in ops {
+            assert_eq!(op.tag().text_form(), tag, "{op:?}");
+            assert_eq!(LocalOpTag::parse_text_form(tag), Some(op.tag()));
+        }
+        // The legacy `rename_board` tag is unknown after the 0005 tag
+        // rename — a rejection, not a silent alias.
+        assert_eq!(LocalOpTag::parse_text_form("rename_board"), None);
+        assert_eq!(LocalOpTag::parse_text_form(""), None);
+    }
 
     fn stack_clocks() -> crate::entities::StackClocks {
         let t = ts(100);
