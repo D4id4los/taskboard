@@ -24,10 +24,15 @@
 //! - empty input means **clear**;
 //! - anything else is a typed refusal — no command, buffer kept.
 //!
-//! UTC is the grammar's zone: `14:30` means 14:30 UTC, and
-//! [`format_entry`] is the inverse seed formatter — the two cannot
-//! disagree by an offset because both are UTC-fixed and this crate
-//! has no tz database.
+//! The grammar's zone is the **device-local** zone (r4 D28): `14:30`
+//! means 14:30 local, storage stays UTC instants, and
+//! [`format_entry`] is the inverse seed formatter over the same
+//! injected `chrono::TimeZone` — the two cannot disagree by an
+//! offset because both go through the same seam. A local wall-clock
+//! that does not exist (the spring-forward gap) or exists twice
+//! (the fall-back overlap) is a typed refusal, never a guess: a
+//! commit that guesses a wrong instant is worse than one the user
+//! re-aims (the once-a-year cost of honesty).
 
 use crate::presentation::DueKind;
 use chrono::{
@@ -35,13 +40,26 @@ use chrono::{
     Timelike, Utc,
 };
 
+/// The one local→instant conversion (r4 D28): a local wall-clock
+/// resolves through the injected zone; the gap (`None`) and the
+/// fall-back overlap (`Ambiguous`) refuse — `.single()` or nothing.
+fn resolve_local(
+    naive: NaiveDateTime,
+    tz: &impl chrono::TimeZone,
+) -> Result<DateTime<Utc>, DueParseError> {
+    tz.from_local_datetime(&naive)
+        .single()
+        .map(|local| local.with_timezone(&Utc))
+        .ok_or(DueParseError)
+}
+
 /// The typed refusal (r2 D25): carries no text — the caller keeps the
 /// buffer and dispatches nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DueParseError;
 
-/// Parses one typed entry against `now`. `Ok(None)` = clear;
-/// The picker's key vocabulary (round-3 D25): the closed enum of the
+/// Parses one typed entry against `now` in the device-local zone
+/// (r4 D28). `Ok(None)` = clear; the picker's key vocabulary (round-3 D25): the closed enum of the
 /// ten widget codes plus the commit — the registry's `picker.*`
 /// actions map onto it and the click seams (day cells, month/time
 /// `IconButtons`) reuse the same codes. Time steppers stay
@@ -89,7 +107,11 @@ impl DatePickerKey {
 ///
 /// [`DueParseError`] when the entry matches neither grammar form —
 /// the caller keeps the buffer and dispatches nothing.
-pub fn parse(text: &str, now: DateTime<Utc>) -> Result<Option<DateTime<Utc>>, DueParseError> {
+pub fn parse(
+    text: &str,
+    now: DateTime<Utc>,
+    tz: &impl chrono::TimeZone,
+) -> Result<Option<DateTime<Utc>>, DueParseError> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
         return Ok(None);
@@ -102,13 +124,13 @@ pub fn parse(text: &str, now: DateTime<Utc>) -> Result<Option<DateTime<Utc>>, Du
             && let Ok(date) = NaiveDate::parse_from_str(date_part, "%Y-%m-%d")
             && let Ok(time) = NaiveTime::parse_from_str(time_part, "%H:%M")
         {
-            return Ok(Some(NaiveDateTime::new(date, time).and_utc()));
+            return Ok(Some(resolve_local(NaiveDateTime::new(date, time), tz)?));
         }
         return Err(DueParseError);
     }
     if let Ok(date) = NaiveDate::parse_from_str(trimmed, "%Y-%m-%d") {
         let midnight = date.and_hms_opt(0, 0, 0).ok_or(DueParseError)?;
-        return Ok(Some(midnight.and_utc()));
+        return Ok(Some(resolve_local(midnight, tz)?));
     }
     if let Some(instant) = parse_relative(trimmed, now) {
         return Ok(Some(instant));
@@ -141,25 +163,37 @@ fn parse_relative(text: &str, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
 /// parsed entry, or empty when the entry is empty or refused — the
 /// phrase reuses the presentation bucketing; no second grammar.
 #[must_use]
-pub fn echo(text: &str, now: DateTime<Utc>) -> String {
-    match parse(text, now) {
+pub fn echo(text: &str, now: DateTime<Utc>, tz: &impl chrono::TimeZone) -> String {
+    match parse(text, now, tz) {
         Ok(None) => "clears the due date".to_owned(),
-        Ok(Some(instant)) => format!("sets {}", format_entry(Some(instant))),
+        Ok(Some(instant)) => format!("sets {}", format_entry(Some(instant), tz)),
         Err(DueParseError) => String::new(),
     }
 }
 
-/// The seed formatter (round 3 D11): the inverse of [`parse`]'s
-/// absolute forms — `None` is the empty buffer; a midnight instant
-/// formats date-only; any other instant carries its UTC `HH:MM`.
-/// `parse(format_entry(x)) == x` (truncated to the minute) is the
-/// pinned round-trip.
+/// The seed formatter (round 3 D11, r4 D28): the inverse of
+/// [`parse`]'s absolute forms over the injected zone — `None` is the
+/// empty buffer; an instant whose **local** time is midnight formats
+/// date-only; any other carries its local `HH:MM`. A UTC instant of
+/// 23:30 renders `01:30` next-day in a +02:00 zone (the date rolls):
+/// the display tells the truth about when the task is due.
+/// `parse(format_entry(x, tz), now, tz) == x` (minute-truncated,
+/// zone-resolvable wall-clocks) is the pinned round-trip.
 #[must_use]
-pub fn format_entry(value: Option<DateTime<Utc>>) -> String {
+pub fn format_entry(value: Option<DateTime<Utc>>, tz: &impl chrono::TimeZone) -> String {
     match value {
         None => String::new(),
-        Some(instant) if instant.time() == NaiveTime::MIN => instant.format("%Y-%m-%d").to_string(),
-        Some(instant) => instant.format("%Y-%m-%d %H:%M").to_string(),
+        Some(instant) => {
+            let local = tz.from_utc_datetime(&instant.naive_utc());
+            // Naive formatting (no offset display): `DateTime<Tz>`
+            // format would demand `Tz::Offset: Display`.
+            let date = local.date_naive().format("%Y-%m-%d").to_string();
+            if local.time() == NaiveTime::MIN {
+                date
+            } else {
+                format!("{date} {}", format_time_hm(local.time()))
+            }
+        }
     }
 }
 
@@ -353,18 +387,20 @@ pub fn time_field_valid(text: &str) -> Option<bool> {
 
 impl DuePickerState {
     /// Opens on `due`'s month (the anchor the user is editing) or
-    /// today's when no due is set; the cursor sits on the due date or
-    /// today. A non-midnight anchor seeds the time (the steppers pick
-    /// up where the value is); a midnight/absent anchor stays
-    /// date-only.
+    /// today's when no due is set; the cursor sits on the due's
+    /// **local** date (r4 D28 — the picker state is zone-free, the
+    /// local wall-clock by convention) or today. A non-midnight local
+    /// anchor seeds the time (the steppers pick up where the value
+    /// is); a midnight/absent anchor stays date-only.
     #[must_use]
-    pub fn open(today: NaiveDate, due: Option<DateTime<Utc>>) -> Self {
-        let anchor = due.map_or(today, |instant| instant.date_naive());
+    pub fn open(today: NaiveDate, due: Option<DateTime<Utc>>, tz: &impl chrono::TimeZone) -> Self {
+        let local = due.map(|instant| instant.with_timezone(tz));
+        let anchor = local.as_ref().map_or(today, chrono::DateTime::date_naive);
         Self {
             cursor: anchor,
             month: first_of_month(anchor),
-            time: due
-                .map(|instant| instant.time())
+            time: local
+                .map(|l| l.time())
                 .filter(|time| *time != NaiveTime::MIN),
         }
     }
@@ -441,25 +477,16 @@ impl DuePickerState {
         self.time = Some(step_minutes(time, n));
     }
 
-    /// The commit instant: the cursor's date at the picker's time —
-    /// midnight when date-only (today's shape). Enter and the day
-    /// cells both funnel through this.
-    ///
-    /// # Panics
-    ///
-    /// Never on calendar dates: the fallback anchors on the cursor,
-    /// which always has a midnight.
+    /// The commit instant: the cursor's date at the picker's time
+    /// resolved in the device-local zone (r4 D28) — midnight when
+    /// date-only. A DST gap or overlap refuses (`None`): no dispatch,
+    /// the buffer kept, the validity flavour shows the state — the
+    /// commit funnel's caller owns that refusal.
     #[must_use]
-    pub fn commit_instant(&self) -> DateTime<Utc> {
+    pub fn commit_instant(&self, tz: &impl chrono::TimeZone) -> Option<DateTime<Utc>> {
         let (hour, minute) = self.time.map_or((0, 0), |t| (t.hour(), t.minute()));
-        self.cursor
-            .and_hms_opt(hour, minute, 0)
-            .unwrap_or_else(|| {
-                self.cursor
-                    .and_hms_opt(0, 0, 0)
-                    .expect("a date has a midnight")
-            })
-            .and_utc()
+        let naive = self.cursor.and_hms_opt(hour, minute, 0)?;
+        resolve_local(naive, tz).ok()
     }
 
     /// Switches the displayed month by `n` (PageUp/PageDown); the
@@ -521,26 +548,16 @@ impl DuePickerState {
 /// which always has a midnight.
 #[must_use]
 pub fn cell_kind(date: NaiveDate, today: NaiveDate, horizon: TimeDelta) -> DueKind {
-    let midnight = |date: NaiveDate| {
-        date.and_hms_opt(0, 0, 0)
-            .unwrap_or_else(|| today.and_hms_opt(0, 0, 0).expect("today has a midnight"))
-            .and_utc()
-    };
-    let date_start = midnight(date);
-    let today_start = midnight(today);
-    if date_start < today_start {
+    // Date-only comparisons (r4 D28): the local dates on both sides
+    // — the old UTC-midnight construction simplified to calendar
+    // math, same semantics for whole-day horizons.
+    if date < today {
         DueKind::Overdue
-    } else if instant_or_end(date) <= today_start + horizon {
+    } else if date.signed_duration_since(today) <= horizon {
         DueKind::Soon
     } else {
         DueKind::Later
     }
-}
-
-fn instant_or_end(date: NaiveDate) -> DateTime<Utc> {
-    date.and_hms_opt(23, 59, 59)
-        .unwrap_or_else(|| date.and_hms_opt(0, 0, 0).expect("a date has a midnight"))
-        .and_utc()
 }
 
 /// Monday-first weekday index (0..6).
@@ -594,11 +611,11 @@ pub const TIME_SYNTAX_HINT: &str = "HH:MM — bare hours (9) and H+MM (930) also
 /// `Some(true)`; anything else `Some(false)`. The predicates *call*
 /// the authoritative parser — no second grammar (review focus f).
 #[must_use]
-pub fn field_validity(text: &str, now: DateTime<Utc>) -> Option<bool> {
+pub fn field_validity(text: &str, now: DateTime<Utc>, tz: &impl chrono::TimeZone) -> Option<bool> {
     if text.trim().is_empty() {
         return None;
     }
-    Some(parse(text, now).is_ok())
+    Some(parse(text, now, tz).is_ok())
 }
 
 /// The bidirectional sync's source (r4 D25): which side moved.
@@ -637,6 +654,7 @@ pub fn sync_buffer_picker(
     picker: &DuePickerState,
     source: SyncSource,
     now: DateTime<Utc>,
+    tz: &impl chrono::TimeZone,
 ) -> Option<(String, Option<DuePickerState>)> {
     match source {
         SyncSource::Picker => {
@@ -646,7 +664,7 @@ pub fn sync_buffer_picker(
             });
             Some((text, None))
         }
-        SyncSource::Buffer => match parse(buffer, now) {
+        SyncSource::Buffer => match parse(buffer, now, tz) {
             Ok(Some(instant)) => {
                 let time = buffer
                     .trim()
@@ -675,7 +693,7 @@ mod tests {
 
     #[test]
     fn iso_parses_to_midnight_utc() {
-        let parsed = parse("2030-02-28", now()).expect("valid ISO");
+        let parsed = parse("2030-02-28", now(), &chrono::Utc).expect("valid ISO");
         assert_eq!(
             parsed,
             Some(Utc.with_ymd_and_hms(2030, 2, 28, 0, 0, 0).unwrap())
@@ -684,8 +702,8 @@ mod tests {
 
     #[test]
     fn empty_means_clear() {
-        assert_eq!(parse("", now()), Ok(None));
-        assert_eq!(parse("   ", now()), Ok(None));
+        assert_eq!(parse("", now(), &chrono::Utc), Ok(None));
+        assert_eq!(parse("   ", now(), &chrono::Utc), Ok(None));
     }
 
     #[test]
@@ -698,7 +716,7 @@ mod tests {
             ("+2w", ChronoDuration::try_weeks(2).unwrap()),
         ] {
             assert_eq!(
-                parse(text, now()).expect("valid relative"),
+                parse(text, now(), &chrono::Utc).expect("valid relative"),
                 Some(now() + delta),
                 "{text}"
             );
@@ -708,20 +726,24 @@ mod tests {
     #[test]
     fn junk_refuses() {
         for text in ["soon", "2030-13-01", "next friday", "+", "+2x", "2d", "-2d"] {
-            assert_eq!(parse(text, now()), Err(DueParseError), "{text}");
+            assert_eq!(
+                parse(text, now(), &chrono::Utc),
+                Err(DueParseError),
+                "{text}"
+            );
         }
     }
 
     #[test]
     fn echo_phrases_both_forms_and_refuses_silently() {
-        assert_eq!(echo("", now()), "clears the due date");
-        assert_eq!(echo("2030-02-28", now()), "sets 2030-02-28");
-        assert_eq!(echo("junk", now()), "");
+        assert_eq!(echo("", now(), &chrono::Utc), "clears the due date");
+        assert_eq!(echo("2030-02-28", now(), &chrono::Utc), "sets 2030-02-28");
+        assert_eq!(echo("junk", now(), &chrono::Utc), "");
     }
 
     #[test]
     fn date_time_parses_to_the_utc_wall_clock() {
-        let parsed = parse("2030-01-31 14:30", now()).expect("valid time form");
+        let parsed = parse("2030-01-31 14:30", now(), &chrono::Utc).expect("valid time form");
         assert_eq!(
             parsed,
             Some(Utc.with_ymd_and_hms(2030, 1, 31, 14, 30, 0).unwrap())
@@ -738,29 +760,36 @@ mod tests {
             "+2d 14:30",           // no time suffix on the relative form
             "2030-01-31 14:30:15", // seconds are not the grammar
         ] {
-            assert_eq!(parse(text, now()), Err(DueParseError), "{text}");
+            assert_eq!(
+                parse(text, now(), &chrono::Utc),
+                Err(DueParseError),
+                "{text}"
+            );
         }
     }
 
     #[test]
     fn echo_shows_the_time_only_when_present() {
-        assert_eq!(echo("2030-01-31", now()), "sets 2030-01-31");
-        assert_eq!(echo("2030-01-31 14:30", now()), "sets 2030-01-31 14:30");
+        assert_eq!(echo("2030-01-31", now(), &chrono::Utc), "sets 2030-01-31");
+        assert_eq!(
+            echo("2030-01-31 14:30", now(), &chrono::Utc),
+            "sets 2030-01-31 14:30"
+        );
     }
 
     #[test]
     fn format_entry_seeds_the_buffer_forms() {
-        assert_eq!(format_entry(None), "");
+        assert_eq!(format_entry(None, &chrono::Utc), "");
         let midnight = Utc.with_ymd_and_hms(2030, 1, 31, 0, 0, 0).unwrap();
-        assert_eq!(format_entry(Some(midnight)), "2030-01-31");
+        assert_eq!(format_entry(Some(midnight), &chrono::Utc), "2030-01-31");
         let timed = Utc.with_ymd_and_hms(2030, 1, 31, 14, 30, 0).unwrap();
-        assert_eq!(format_entry(Some(timed)), "2030-01-31 14:30");
+        assert_eq!(format_entry(Some(timed), &chrono::Utc), "2030-01-31 14:30");
     }
 
     #[test]
     fn picker_opens_on_the_due_anchor() {
         let due = Utc.with_ymd_and_hms(2030, 1, 31, 0, 0, 0).unwrap();
-        let picker = DuePickerState::open(now().date_naive(), Some(due));
+        let picker = DuePickerState::open(now().date_naive(), Some(due), &chrono::Utc);
         assert_eq!(
             picker.cursor(),
             NaiveDate::from_ymd_opt(2030, 1, 31).unwrap()
@@ -783,7 +812,11 @@ mod tests {
 
     #[test]
     fn page_keys_clamp_the_cursor_into_the_month() {
-        let picker = DuePickerState::open(NaiveDate::from_ymd_opt(2030, 1, 31).unwrap(), None);
+        let picker = DuePickerState::open(
+            NaiveDate::from_ymd_opt(2030, 1, 31).unwrap(),
+            None,
+            &chrono::Utc,
+        );
         let mut picker = picker;
         picker.move_months(1);
         assert_eq!(picker.month(), NaiveDate::from_ymd_opt(2030, 2, 1).unwrap());
@@ -808,7 +841,11 @@ mod tests {
         // Round 3 D12/F28 redefinition: the displayed month syncs to
         // the moved cursor — the "grid simply shows no cursor" desync
         // is gone.
-        let mut picker = DuePickerState::open(NaiveDate::from_ymd_opt(2030, 1, 31).unwrap(), None);
+        let mut picker = DuePickerState::open(
+            NaiveDate::from_ymd_opt(2030, 1, 31).unwrap(),
+            None,
+            &chrono::Utc,
+        );
         picker.move_days(1);
         assert_eq!(
             picker.cursor(),
@@ -833,8 +870,11 @@ mod tests {
         let due = chrono::Utc
             .with_ymd_and_hms(2030, 1, 31, 14, 30, 0)
             .unwrap();
-        let mut picker =
-            DuePickerState::open(NaiveDate::from_ymd_opt(2030, 1, 31).unwrap(), Some(due));
+        let mut picker = DuePickerState::open(
+            NaiveDate::from_ymd_opt(2030, 1, 31).unwrap(),
+            Some(due),
+            &chrono::Utc,
+        );
         assert_eq!(
             picker.time(),
             Some(NaiveTime::from_hms_opt(14, 30, 0).unwrap()),
@@ -842,30 +882,37 @@ mod tests {
         );
         picker.step_time(1);
         assert_eq!(
-            picker.commit_instant(),
-            chrono::Utc
-                .with_ymd_and_hms(2030, 1, 31, 14, 45, 0)
-                .unwrap()
+            picker.commit_instant(&chrono::Utc),
+            Some(
+                chrono::Utc
+                    .with_ymd_and_hms(2030, 1, 31, 14, 45, 0)
+                    .unwrap()
+            )
         );
         // Wrap forward over midnight: the date follows.
         let late = chrono::Utc
             .with_ymd_and_hms(2030, 1, 31, 23, 50, 0)
             .unwrap();
-        let mut picker =
-            DuePickerState::open(NaiveDate::from_ymd_opt(2030, 1, 31).unwrap(), Some(late));
+        let mut picker = DuePickerState::open(
+            NaiveDate::from_ymd_opt(2030, 1, 31).unwrap(),
+            Some(late),
+            &chrono::Utc,
+        );
         picker.step_time(1);
         assert_eq!(
-            picker.commit_instant(),
-            chrono::Utc.with_ymd_and_hms(2030, 2, 1, 0, 5, 0).unwrap()
+            picker.commit_instant(&chrono::Utc),
+            Some(chrono::Utc.with_ymd_and_hms(2030, 2, 1, 0, 5, 0).unwrap())
         );
         // Wrap backward: the date follows the other way.
         picker.step_time(-1);
         picker.step_time(-1);
         assert_eq!(
-            picker.commit_instant(),
-            chrono::Utc
-                .with_ymd_and_hms(2030, 1, 31, 23, 35, 0)
-                .unwrap()
+            picker.commit_instant(&chrono::Utc),
+            Some(
+                chrono::Utc
+                    .with_ymd_and_hms(2030, 1, 31, 23, 35, 0)
+                    .unwrap()
+            )
         );
     }
 
@@ -878,7 +925,7 @@ mod tests {
         // 2029). Leading blanks stay < 7; the padding is trailing.
         for (year, month) in [(2021, 2), (2030, 1), (2029, 12)] {
             let month = NaiveDate::from_ymd_opt(year, month, 1).unwrap();
-            let picker = DuePickerState::open(month, None);
+            let picker = DuePickerState::open(month, None, &chrono::Utc);
             let grid = picker.grid();
             assert_eq!(grid.len(), 42, "{year}-{month:02}");
             let leading = grid.iter().take_while(|c| c.date.is_none()).count();
@@ -890,7 +937,11 @@ mod tests {
             );
         }
         // February 2021 is a known 28-cell month: 16 trailing blanks.
-        let feb = DuePickerState::open(NaiveDate::from_ymd_opt(2021, 2, 1).unwrap(), None);
+        let feb = DuePickerState::open(
+            NaiveDate::from_ymd_opt(2021, 2, 1).unwrap(),
+            None,
+            &chrono::Utc,
+        );
         let grid = feb.grid();
         assert_eq!(grid.iter().filter(|c| c.date.is_some()).count(), 28);
     }
@@ -900,11 +951,15 @@ mod tests {
         // (r4 D23, the reconciled pin) While no time exists, the
         // commit stays the cursor's midnight — no phantom `00:00`
         // exists until something creates one.
-        let mut picker = DuePickerState::open(NaiveDate::from_ymd_opt(2030, 1, 31).unwrap(), None);
+        let mut picker = DuePickerState::open(
+            NaiveDate::from_ymd_opt(2030, 1, 31).unwrap(),
+            None,
+            &chrono::Utc,
+        );
         assert_eq!(picker.time(), None, "no anchor time = date-only");
         assert_eq!(
-            picker.commit_instant(),
-            chrono::Utc.with_ymd_and_hms(2030, 1, 31, 0, 0, 0).unwrap()
+            picker.commit_instant(&chrono::Utc),
+            Some(chrono::Utc.with_ymd_and_hms(2030, 1, 31, 0, 0, 0).unwrap())
         );
         // The first backward step seeds midnight and lands on the
         // previous day's 23:45 (a step is an instant move — the date
@@ -915,21 +970,27 @@ mod tests {
             Some(NaiveTime::from_hms_opt(23, 45, 0).unwrap())
         );
         assert_eq!(
-            picker.commit_instant(),
-            chrono::Utc
-                .with_ymd_and_hms(2030, 1, 30, 23, 45, 0)
-                .unwrap()
+            picker.commit_instant(&chrono::Utc),
+            Some(
+                chrono::Utc
+                    .with_ymd_and_hms(2030, 1, 30, 23, 45, 0)
+                    .unwrap()
+            )
         );
         // A fresh seed stepping forward yields 00:15 the same day.
-        let mut picker = DuePickerState::open(NaiveDate::from_ymd_opt(2030, 1, 31).unwrap(), None);
+        let mut picker = DuePickerState::open(
+            NaiveDate::from_ymd_opt(2030, 1, 31).unwrap(),
+            None,
+            &chrono::Utc,
+        );
         picker.step_time(1);
         assert_eq!(
             picker.time(),
             Some(NaiveTime::from_hms_opt(0, 15, 0).unwrap())
         );
         assert_eq!(
-            picker.commit_instant(),
-            chrono::Utc.with_ymd_and_hms(2030, 1, 31, 0, 15, 0).unwrap()
+            picker.commit_instant(&chrono::Utc),
+            Some(chrono::Utc.with_ymd_and_hms(2030, 1, 31, 0, 15, 0).unwrap())
         );
     }
 
@@ -970,7 +1031,10 @@ mod tests {
         let offset =
             taskboard_domain::ReminderOffset::parse_text_form("45m").expect("domain grammar");
         let expected = now() + ChronoDuration::try_minutes(45).unwrap();
-        assert_eq!(parse("+45m", now()).expect("ui grammar"), Some(expected));
+        assert_eq!(
+            parse("+45m", now(), &chrono::Utc).expect("ui grammar"),
+            Some(expected)
+        );
         assert_eq!(offset.text_form(), "45m");
     }
 
@@ -1053,31 +1117,39 @@ mod tests {
 
     #[test]
     fn sync_directions_follow_the_pinned_rules() {
-        let picker = DuePickerState::open(NaiveDate::from_ymd_opt(2030, 1, 31).unwrap(), None);
+        let picker = DuePickerState::open(
+            NaiveDate::from_ymd_opt(2030, 1, 31).unwrap(),
+            None,
+            &chrono::Utc,
+        );
         // Picker source: date-only renders date-only.
         assert_eq!(
-            sync_buffer_picker("", &picker, SyncSource::Picker, now()),
+            sync_buffer_picker("", &picker, SyncSource::Picker, now(), &chrono::Utc),
             Some(("2030-01-31".to_owned(), None))
         );
         // An explicit time renders `date HH:MM`.
         let mut timed = picker.clone();
         timed.set_time(Some(NaiveTime::from_hms_opt(14, 30, 0).unwrap()));
         assert_eq!(
-            sync_buffer_picker("", &timed, SyncSource::Picker, now()),
+            sync_buffer_picker("", &timed, SyncSource::Picker, now(), &chrono::Utc),
             Some(("2030-01-31 14:30".to_owned(), None))
         );
         // An explicit midnight *stays* in the rendering (the
         // two-midnights convention).
         timed.set_time(Some(NaiveTime::MIN));
         assert_eq!(
-            sync_buffer_picker("", &timed, SyncSource::Picker, now()),
+            sync_buffer_picker("", &timed, SyncSource::Picker, now(), &chrono::Utc),
             Some(("2030-01-31 00:00".to_owned(), None))
         );
         // Buffer source: parseable text re-seeds the picker; the
         // explicit `00:00` counts — a typed time exists.
-        let Some((_, Some(seeded))) =
-            sync_buffer_picker("2030-02-14 00:00", &picker, SyncSource::Buffer, now())
-        else {
+        let Some((_, Some(seeded))) = sync_buffer_picker(
+            "2030-02-14 00:00",
+            &picker,
+            SyncSource::Buffer,
+            now(),
+            &chrono::Utc,
+        ) else {
             panic!("parseable buffer seeds");
         };
         assert_eq!(
@@ -1086,23 +1158,27 @@ mod tests {
         );
         assert_eq!(seeded.time(), Some(NaiveTime::MIN));
         // Date-only text: the picker stays date-only.
-        let Some((_, Some(seeded))) =
-            sync_buffer_picker("2030-02-14", &picker, SyncSource::Buffer, now())
-        else {
+        let Some((_, Some(seeded))) = sync_buffer_picker(
+            "2030-02-14",
+            &picker,
+            SyncSource::Buffer,
+            now(),
+            &chrono::Utc,
+        ) else {
             panic!("date-only seeds");
         };
         assert_eq!(seeded.time(), None);
         // Empty and junk leave the pair untouched.
         assert_eq!(
-            sync_buffer_picker("", &picker, SyncSource::Buffer, now()),
+            sync_buffer_picker("", &picker, SyncSource::Buffer, now(), &chrono::Utc),
             None
         );
         assert_eq!(
-            sync_buffer_picker("soon", &picker, SyncSource::Buffer, now()),
+            sync_buffer_picker("soon", &picker, SyncSource::Buffer, now(), &chrono::Utc),
             None
         );
         assert_eq!(
-            sync_buffer_picker("2030-01-", &picker, SyncSource::Buffer, now()),
+            sync_buffer_picker("2030-01-", &picker, SyncSource::Buffer, now(), &chrono::Utc),
             None,
             "a partial prefix is junk"
         );
@@ -1110,6 +1186,159 @@ mod tests {
         // `2030-01-3` parses (as day 3) — pre-existing grammar
         // leniency, not the sync's concern; the seed then matches
         // what a Return would commit.
+    }
+
+    // -- the r4 D28 zone suite: a hand-rolled test TimeZone with a
+    // -- fixed-offset switch (the workspace has no chrono-tz; a
+    // -- ~30-line tz keeps the DST edges deterministic forever).
+    //
+    // Winter +01:00; summer +02:00. The spring transition sits at
+    // 2030-03-10T01:00Z (local 02:00 jumps to 03:00 — the gap), the
+    // autumn one at 2030-11-03T01:00Z (local 03:00 falls back to
+    // 02:00 — the overlap).
+
+    use chrono::{FixedOffset, LocalResult as TzResult};
+
+    #[derive(Debug, Clone, Copy)]
+    struct DstTz;
+
+    fn east(hours: i32) -> FixedOffset {
+        FixedOffset::east_opt(hours * 3600).expect("whole hours")
+    }
+
+    fn spring_utc() -> chrono::DateTime<chrono::Utc> {
+        chrono::Utc.with_ymd_and_hms(2030, 3, 10, 1, 0, 0).unwrap()
+    }
+
+    fn autumn_utc() -> chrono::DateTime<chrono::Utc> {
+        chrono::Utc.with_ymd_and_hms(2030, 11, 3, 1, 0, 0).unwrap()
+    }
+
+    impl chrono::TimeZone for DstTz {
+        type Offset = FixedOffset;
+
+        fn from_offset(_offset: &FixedOffset) -> Self {
+            DstTz
+        }
+
+        fn offset_from_local_date(&self, date: &NaiveDate) -> TzResult<FixedOffset> {
+            let naive = date.and_time(NaiveTime::MIN);
+            match self.offset_from_local_datetime(&naive) {
+                TzResult::Single(offset) => TzResult::Single(offset),
+                TzResult::Ambiguous(a, b) => TzResult::Ambiguous(a, b),
+                TzResult::None => TzResult::None,
+            }
+        }
+
+        fn offset_from_utc_date(&self, date: &NaiveDate) -> FixedOffset {
+            self.offset_from_utc_datetime(&date.and_time(NaiveTime::MIN))
+        }
+
+        fn offset_from_utc_datetime(&self, utc: &NaiveDateTime) -> FixedOffset {
+            let t = Utc.from_utc_datetime(utc);
+            if t < spring_utc() {
+                east(1)
+            } else if t < autumn_utc() {
+                east(2)
+            } else {
+                east(1)
+            }
+        }
+
+        fn offset_from_local_datetime(&self, local: &NaiveDateTime) -> TzResult<FixedOffset> {
+            // Each offset is valid when its candidate instant lands in
+            // that offset's season — the classic FixedOffset DST map.
+            let winter = *local - ChronoDuration::try_hours(1).unwrap();
+            let summer = *local - ChronoDuration::try_hours(2).unwrap();
+            let winter_valid = {
+                let t = Utc.from_utc_datetime(&winter);
+                t < spring_utc() || t >= autumn_utc()
+            };
+            let summer_valid = Utc.from_utc_datetime(&summer) >= spring_utc()
+                && Utc.from_utc_datetime(&summer) < autumn_utc();
+            match (winter_valid, summer_valid) {
+                (true, false) => TzResult::Single(east(1)),
+                (false, true) => TzResult::Single(east(2)),
+                (true, true) => TzResult::Ambiguous(east(1), east(2)),
+                (false, false) => TzResult::None,
+            }
+        }
+    }
+
+    #[test]
+    fn a_spring_forward_gap_refuses_parse_and_commit() {
+        // (§7 pin 1) 02:30 on the gap date does not exist locally: the
+        // parse refuses and the picker's commit refuses.
+        assert_eq!(parse("2030-03-10 02:30", now(), &DstTz), Err(DueParseError));
+        let picker = DuePickerState::from_parts(
+            NaiveDate::from_ymd_opt(2030, 3, 10).unwrap(),
+            Some(NaiveTime::from_hms_opt(2, 30, 0).unwrap()),
+        );
+        assert_eq!(picker.commit_instant(&DstTz), None, "the gap refuses");
+    }
+
+    #[test]
+    fn a_fall_back_overlap_refuses_parse_and_commit() {
+        // (§7 pin 2) 02:30 on the fall-back date exists twice: the
+        // same refusal discipline, no earliest() guessing.
+        assert_eq!(parse("2030-11-03 02:30", now(), &DstTz), Err(DueParseError));
+        let picker = DuePickerState::from_parts(
+            NaiveDate::from_ymd_opt(2030, 11, 3).unwrap(),
+            Some(NaiveTime::from_hms_opt(2, 30, 0).unwrap()),
+        );
+        assert_eq!(picker.commit_instant(&DstTz), None);
+    }
+
+    #[test]
+    fn non_edge_times_across_the_transitions_hit_the_season_offsets() {
+        // (§7 pin 3) Offset A before the spring transition, offset B
+        // after it — the same local wall-clock, instants an hour apart.
+        let before =
+            parse("2030-03-09 12:00", now(), &DstTz).expect("a real local time before the gap");
+        assert_eq!(
+            before,
+            Some(Utc.with_ymd_and_hms(2030, 3, 9, 11, 0, 0).unwrap())
+        );
+        let after =
+            parse("2030-03-10 12:00", now(), &DstTz).expect("a real local time after the gap");
+        assert_eq!(
+            after,
+            Some(Utc.with_ymd_and_hms(2030, 3, 10, 10, 0, 0).unwrap())
+        );
+    }
+
+    #[test]
+    fn format_entry_renders_the_local_wall_clock() {
+        // (§7 pin 5) 23:30Z in the +02:00 season renders 01:30
+        // next-day — the date rolls, the display tells the truth.
+        let instant = Utc.with_ymd_and_hms(2030, 7, 1, 23, 30, 0).unwrap();
+        assert_eq!(format_entry(Some(instant), &DstTz), "2030-07-02 01:30");
+    }
+
+    #[test]
+    fn the_zone_round_trip_holds_except_the_unresolvable_hour() {
+        // (§7 pin 4) parse(format_entry(x)) == x across the transition
+        // season — except the gap/overlap renderings, which are
+        // refusals; the property encodes the exception.
+        for hours in -48_i64..=48 {
+            let instant = spring_utc() + ChronoDuration::try_hours(hours).unwrap();
+            let text = format_entry(Some(instant), &DstTz);
+            match parse(&text, now(), &DstTz) {
+                Ok(Some(round)) => assert_eq!(round, instant, "{text}"),
+                Err(DueParseError) => {
+                    let local = instant.with_timezone(&DstTz).time();
+                    let on_transition_day = instant.with_timezone(&DstTz).date_naive()
+                        == NaiveDate::from_ymd_opt(2030, 3, 10).unwrap();
+                    assert!(
+                        on_transition_day
+                            && local >= NaiveTime::from_hms_opt(2, 0, 0).unwrap()
+                            && local < NaiveTime::from_hms_opt(3, 0, 0).unwrap(),
+                        "{text} refused outside the gap hour"
+                    );
+                }
+                Ok(None) => panic!("a non-empty rendering never means clear"),
+            }
+        }
     }
 
     proptest::proptest! {
@@ -1125,8 +1354,8 @@ mod tests {
                 .unwrap()
                 .with_nanosecond(0)
                 .unwrap();
-            let text = format_entry(Some(instant));
-            let parsed = parse(&text, now).expect("formatted entries parse");
+            let text = format_entry(Some(instant), &chrono::Utc);
+            let parsed = parse(&text, now, &chrono::Utc).expect("formatted entries parse");
             assert_eq!(parsed, Some(instant), "{text}");
         }
 
@@ -1137,7 +1366,7 @@ mod tests {
             let now = now();
             let date = (now + ChronoDuration::try_days(days).unwrap()).date_naive();
             let text = date.format("%Y-%m-%d").to_string();
-            let parsed = parse(&text, now).expect("formatted dates parse");
+            let parsed = parse(&text, now, &chrono::Utc).expect("formatted dates parse");
             let midnight = date.and_hms_opt(0, 0, 0).unwrap().and_utc();
             assert_eq!(parsed, Some(midnight));
         }
@@ -1149,7 +1378,7 @@ mod tests {
         fn relative_is_now_plus_n(value in 0i64..1_000_000, unit in 0..4u8) {
             let unit = ["m", "h", "d", "w"][unit as usize];
             let text = format!("+{value}{unit}");
-            match parse(&text, now()) {
+            match parse(&text, now(), &chrono::Utc) {
                 Ok(Some(instant)) => {
                     let delta = ChronoDuration::try_minutes(value * match unit {
                         "m" => 1,
@@ -1172,7 +1401,7 @@ mod tests {
         /// panic, never a wrong commit.
         #[test]
         fn junk_never_panics(text in ".*") {
-            let _ = parse(&text, now());
+            let _ = parse(&text, now(), &chrono::Utc);
             // The combobox's parse is total too (r4 D26): never
             // panics, and a hit is always a real in-range time.
             if let Some(time) = parse_time_lenient(&text) {
@@ -1191,7 +1420,7 @@ mod tests {
             seed in -3650i64..=3650,
         ) {
             let date = (now() + ChronoDuration::try_days(seed).unwrap()).date_naive();
-            let mut picker = DuePickerState::open(date, None);
+            let mut picker = DuePickerState::open(date, None, &chrono::Utc);
             for &(amount, kind) in &moves {
                 match kind {
                     0 => picker.move_days(amount),
@@ -1209,7 +1438,7 @@ mod tests {
         #[test]
         fn grid_invariants(days in 0i64..=4000) {
             let date = (now() + ChronoDuration::try_days(days).unwrap()).date_naive();
-            let picker = DuePickerState::open(date, None);
+            let picker = DuePickerState::open(date, None, &chrono::Utc);
             let grid = picker.grid();
             prop_assert_eq!(grid.len(), 42);
             let leading = grid.iter().take_while(|c| c.date.is_none()).count();
@@ -1247,20 +1476,20 @@ mod tests {
 
             // One-step idempotence, Picker source.
             let Some((buffer, None)) =
-                sync_buffer_picker("", &picker, SyncSource::Picker, now)
+                sync_buffer_picker("", &picker, SyncSource::Picker, now, &chrono::Utc)
             else {
                 panic!("picker source never touches the picker");
             };
-            let second = sync_buffer_picker(&buffer, &picker, SyncSource::Picker, now)
+            let second = sync_buffer_picker(&buffer, &picker, SyncSource::Picker, now, &chrono::Utc)
                 .expect("picker renders");
             prop_assert_eq!(second, (buffer.clone(), None));
 
             // One-step idempotence, Buffer source.
-            let Some((_, Some(seeded))) = sync_buffer_picker(&buffer, &picker, SyncSource::Buffer, now)
+            let Some((_, Some(seeded))) = sync_buffer_picker(&buffer, &picker, SyncSource::Buffer, now, &chrono::Utc)
             else {
                 panic!("the canonical buffer carries a picker");
             };
-            let again = sync_buffer_picker(&buffer, &seeded, SyncSource::Buffer, now);
+            let again = sync_buffer_picker(&buffer, &seeded, SyncSource::Buffer, now, &chrono::Utc);
             prop_assert_eq!(
                 again.map(|(_, p)| p),
                 Some(Some(seeded.clone())),
@@ -1270,11 +1499,11 @@ mod tests {
             // The round trip: Picker-after-Buffer re-renders the
             // Buffer step's buffer.
             let Some((_, None)) =
-                sync_buffer_picker(&buffer, &seeded, SyncSource::Picker, now)
+                sync_buffer_picker(&buffer, &seeded, SyncSource::Picker, now, &chrono::Utc)
             else {
                 panic!("picker renders");
             };
-            let round = sync_buffer_picker(&buffer, &seeded, SyncSource::Buffer, now)
+            let round = sync_buffer_picker(&buffer, &seeded, SyncSource::Buffer, now, &chrono::Utc)
                 .expect("round trips parse");
             prop_assert_eq!(round.0, buffer);
         }
@@ -1282,9 +1511,9 @@ mod tests {
         /// Arbitrary junk buffers never make the sync panic (totality
         /// rides with the parser's own).
         fn the_sync_is_total_on_arbitrary_buffers(text in ".*") {
-            let picker = DuePickerState::open(now().date_naive(), None);
+            let picker = DuePickerState::open(now().date_naive(), None, &chrono::Utc);
             for source in [SyncSource::Picker, SyncSource::Buffer] {
-                let _ = sync_buffer_picker(&text, &picker, source, now());
+                let _ = sync_buffer_picker(&text, &picker, source, now(), &chrono::Utc);
             }
         }
     }

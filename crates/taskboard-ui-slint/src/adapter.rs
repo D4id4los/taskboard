@@ -940,7 +940,7 @@ impl Adapter {
             time_valid: crate::due_edit::time_field_valid(&self.time_text),
             time_slots: &time_slots,
             time_nearest_row,
-            date_valid: crate::due_edit::field_validity(&self.due_buffer, now2),
+            date_valid: crate::due_edit::field_validity(&self.due_buffer, now2, &chrono::Local),
             syntax_hint: crate::due_edit::DUE_SYNTAX_HINT,
             time_hint: crate::due_edit::TIME_SYNTAX_HINT,
             offset_valid: crate::presentation::offset_validity(&self.rule_offset_draft),
@@ -1140,8 +1140,9 @@ impl Adapter {
         self.due_buffer = "tomorrow".to_owned();
         self.due_echo = "stale echo".to_owned();
         self.due_picker = Some(crate::due_edit::DuePickerState::open(
-            chrono::Utc::now().date_naive(),
+            chrono::Local::now().date_naive(),
             None,
+            &chrono::Local,
         ));
     }
 
@@ -4962,7 +4963,7 @@ fn install_due_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         };
         let mut a = edited.borrow_mut();
         a.due_buffer = text.to_string();
-        a.due_echo = crate::due_edit::echo(&a.due_buffer, chrono::Utc::now());
+        a.due_echo = crate::due_edit::echo(&a.due_buffer, chrono::Utc::now(), &chrono::Local);
         // The Buffer-source live sync (r4 D25): a parseable buffer
         // re-seeds the picker per keystroke (the field wins while
         // typing); empty or junk leaves it untouched — the validity
@@ -4974,6 +4975,7 @@ fn install_due_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
                 picker,
                 crate::due_edit::SyncSource::Buffer,
                 now,
+                &chrono::Local,
             )
         });
         if let Some((_, Some(seeded))) = seeded {
@@ -4990,7 +4992,7 @@ fn install_due_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
             return;
         };
         let mut a = accepted.borrow_mut();
-        match crate::due_edit::parse(&text, chrono::Utc::now()) {
+        match crate::due_edit::parse(&text, chrono::Utc::now(), &chrono::Local) {
             // A refusal keeps the buffer and dispatches nothing.
             Err(crate::due_edit::DueParseError) => {}
             parsed => commit_date(&mut a, &window, parsed.expect("non-error parse")),
@@ -5124,11 +5126,15 @@ fn install_due_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
                     return;
                 };
                 picker.set_time(Some(time));
-                let instant = a
+                let Some(instant) = a
                     .due_picker
                     .as_ref()
                     .expect("checked above")
-                    .commit_instant();
+                    .commit_instant(&chrono::Local)
+                else {
+                    a.refresh_forced(&window);
+                    return;
+                };
                 commit_date(&mut a, &window, Some(instant));
             }
         }
@@ -5157,11 +5163,15 @@ fn install_due_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
             .set_cursor(date);
         // The click carries the picker's time (round-3 D9): cursor
         // date + time-of-day through the one funnel.
-        let instant = a
+        let Some(instant) = a
             .due_picker
             .as_ref()
             .expect("checked above")
-            .commit_instant();
+            .commit_instant(&chrono::Local)
+        else {
+            a.refresh_forced(&window);
+            return;
+        };
         commit_date(&mut a, &window, Some(instant));
     });
 }
@@ -5183,8 +5193,8 @@ fn begin_date_edit(a: &mut Adapter, window: &AppWindow, field: crate::view_state
             crate::view_state::DateField::Due => t.duedate,
             crate::view_state::DateField::Scheduled => t.scheduled,
         });
-    a.due_buffer = crate::due_edit::format_entry(value);
-    a.due_echo = crate::due_edit::echo(&a.due_buffer, chrono::Utc::now());
+    a.due_buffer = crate::due_edit::format_entry(value, &chrono::Local);
+    a.due_echo = crate::due_edit::echo(&a.due_buffer, chrono::Utc::now(), &chrono::Local);
     a.apply_outcomes(window, &outcomes);
     // The picker is default-open on edit entry (round-3 D10) —
     // visible, click-armed, and idle: the text field keeps focus
@@ -5273,8 +5283,9 @@ impl Adapter {
             FocusHandover::None
         };
         self.due_picker = Some(crate::due_edit::DuePickerState::open(
-            chrono::Utc::now().date_naive(),
+            chrono::Local::now().date_naive(),
             anchor,
+            &chrono::Local,
         ));
         // The combobox's mirror opens on the picker's seeded time —
         // canonical when a non-midnight anchor carries one, the
@@ -5299,10 +5310,11 @@ fn sync_buffer_from_picker(a: &mut Adapter) {
             picker,
             crate::due_edit::SyncSource::Picker,
             now,
+            &chrono::Local,
         )
     });
     if let Some((buffer, None)) = synced {
-        a.due_echo = crate::due_edit::echo(&buffer, now);
+        a.due_echo = crate::due_edit::echo(&buffer, now, &chrono::Local);
         a.due_buffer = buffer;
     }
 }
@@ -5326,7 +5338,7 @@ fn settle_date_editor(a: &mut Adapter, window: &AppWindow) -> bool {
     let text = a.due_buffer.clone();
     let now = chrono::Utc::now();
     // Non-empty and parseable: click-away ≡ Return.
-    if let Ok(Some(instant)) = crate::due_edit::parse(&text, now) {
+    if let Ok(Some(instant)) = crate::due_edit::parse(&text, now, &chrono::Local) {
         commit_date(a, window, Some(instant));
         return true;
     }

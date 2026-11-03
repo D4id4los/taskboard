@@ -173,18 +173,25 @@ impl Direction {
     }
 }
 
-/// The ` · HH:MM` time suffix (round 3 D9/F15): empty for an absent
-/// or midnight instant — a midnight instant renders exactly the
-/// date-only shape it always did — else the UTC wall-clock time. One
-/// place: both date phrases compose it; the tint/direction language
-/// is untouched.
+/// The ` · HH:MM` time suffix (round 3 D9/F15, r4 D28): empty for an
+/// absent or midnight instant — a midnight instant renders exactly
+/// the date-only shape it always did — else the **local** wall-clock
+/// time over the injected zone (the display tells the truth about
+/// when the task is due; a UTC 23:30 renders `01:30` next-day in a
+/// +02:00 zone). One place: both date phrases compose it; the
+/// tint/direction language is untouched.
 #[must_use]
-pub fn at_time_suffix(instant: Option<DateTime<Utc>>) -> String {
+pub fn at_time_suffix(instant: Option<DateTime<Utc>>, tz: &impl chrono::TimeZone) -> String {
     match instant {
-        Some(instant) if instant.time() != NaiveTime::MIN => {
-            format!(" \u{b7} {}", instant.format("%H:%M"))
+        Some(instant) => {
+            let local = tz.from_utc_datetime(&instant.naive_utc());
+            if local.time() == NaiveTime::MIN {
+                String::new()
+            } else {
+                format!(" \u{b7} {}", local.time().format("%H:%M"))
+            }
         }
-        _ => String::new(),
+        None => String::new(),
     }
 }
 
@@ -192,11 +199,16 @@ pub fn at_time_suffix(instant: Option<DateTime<Utc>>) -> String {
 /// from the bucket with the direction taken from the sign of
 /// `duedate - now`.
 #[must_use]
-pub fn due_phrase(kind: DueKind, duedate: Option<DateTime<Utc>>, now: DateTime<Utc>) -> String {
+pub fn due_phrase(
+    kind: DueKind,
+    duedate: Option<DateTime<Utc>>,
+    now: DateTime<Utc>,
+    tz: &impl chrono::TimeZone,
+) -> String {
     let Some(duedate) = duedate else {
         return String::new();
     };
-    let suffix = at_time_suffix(Some(duedate));
+    let suffix = at_time_suffix(Some(duedate), tz);
     let delta = duedate - now;
     let bucket = duration_bucket(delta.abs());
     let quantity = match bucket {
@@ -222,11 +234,15 @@ pub fn due_phrase(kind: DueKind, duedate: Option<DateTime<Utc>>, now: DateTime<U
 /// words do (`starts now` / `starts in {q}` / `started {q} ago`). The
 /// bucketing edges are `duration_bucket`'s tested contract.
 #[must_use]
-pub fn scheduled_phrase(scheduled: Option<DateTime<Utc>>, now: DateTime<Utc>) -> String {
+pub fn scheduled_phrase(
+    scheduled: Option<DateTime<Utc>>,
+    now: DateTime<Utc>,
+    tz: &impl chrono::TimeZone,
+) -> String {
     let Some(scheduled) = scheduled else {
         return String::new();
     };
-    let suffix = at_time_suffix(Some(scheduled));
+    let suffix = at_time_suffix(Some(scheduled), tz);
     let delta = scheduled - now;
     let bucket = duration_bucket(delta.abs());
     // The `Now` arm never consults the direction (the zero delta never
@@ -1474,13 +1490,16 @@ mod tests {
         // glue over `duration_bucket`, whose edges the tests above own
         // — no label-text assertions here.
         let now = Utc::now();
-        assert!(due_phrase(DueKind::None, None, now).is_empty(), "undated");
         assert!(
-            !due_phrase(DueKind::Later, Some(now + TimeDelta::hours(3)), now).is_empty(),
+            due_phrase(DueKind::None, None, now, &Utc).is_empty(),
+            "undated"
+        );
+        assert!(
+            !due_phrase(DueKind::Later, Some(now + TimeDelta::hours(3)), now, &Utc).is_empty(),
             "dated future"
         );
         assert!(
-            !due_phrase(DueKind::Overdue, Some(now - TimeDelta::hours(3)), now).is_empty(),
+            !due_phrase(DueKind::Overdue, Some(now - TimeDelta::hours(3)), now, &Utc).is_empty(),
             "dated past"
         );
     }
@@ -2770,13 +2789,13 @@ mod tests {
         let now = chrono::TimeZone::timestamp_opt(&Utc, 1_700_000_000, 0)
             .single()
             .expect("ts");
-        assert_eq!(scheduled_phrase(None, now), "");
+        assert_eq!(scheduled_phrase(None, now, &Utc), "");
         assert!(
-            !scheduled_phrase(Some(now), now).is_empty(),
+            !scheduled_phrase(Some(now), now, &Utc).is_empty(),
             "the boundary bucket renders"
         );
-        let future = scheduled_phrase(Some(now + TimeDelta::hours(2)), now);
-        let past = scheduled_phrase(Some(now - TimeDelta::hours(2)), now);
+        let future = scheduled_phrase(Some(now + TimeDelta::hours(2)), now, &Utc);
+        let past = scheduled_phrase(Some(now - TimeDelta::hours(2)), now, &Utc);
         assert_ne!(future, "", "the future phrase renders");
         assert_ne!(past, "", "the past phrase renders");
         assert_ne!(future, past, "the direction is carried at one bucket");
@@ -2850,9 +2869,20 @@ mod tests {
     #[test]
     fn at_time_suffix_is_empty_for_absent_and_midnight() {
         use chrono::TimeZone;
-        assert_eq!(at_time_suffix(None), "");
+        assert_eq!(at_time_suffix(None, &Utc), "");
         let midnight = Utc.with_ymd_and_hms(2030, 1, 31, 0, 0, 0).unwrap();
-        assert_eq!(at_time_suffix(Some(midnight)), "");
+        assert_eq!(at_time_suffix(Some(midnight), &Utc), "");
+    }
+
+    #[test]
+    fn at_time_suffix_renders_the_local_wall_clock() {
+        // (r4 D28 §7 pin 5) 23:30Z in a +02:00 zone renders 01:30
+        // next-day — the date rolls; midnight local renders empty.
+        let tz = chrono::FixedOffset::east_opt(2 * 3600).unwrap();
+        let late = Utc.with_ymd_and_hms(2030, 7, 1, 23, 30, 0).unwrap();
+        assert_eq!(at_time_suffix(Some(late), &tz), " \u{b7} 01:30");
+        let local_midnight = Utc.with_ymd_and_hms(2030, 7, 1, 22, 0, 0).unwrap();
+        assert_eq!(at_time_suffix(Some(local_midnight), &tz), "");
     }
 
     #[test]
@@ -2860,15 +2890,15 @@ mod tests {
         use chrono::TimeZone;
         let now = Utc.with_ymd_and_hms(2030, 1, 31, 12, 0, 0).unwrap();
         let timed = Utc.with_ymd_and_hms(2030, 2, 2, 14, 30, 0).unwrap();
-        assert_eq!(at_time_suffix(Some(timed)), " \u{b7} 14:30");
+        assert_eq!(at_time_suffix(Some(timed), &Utc), " \u{b7} 14:30");
         // Midnight instants render exactly the date-only shape.
         let midnight = Utc.with_ymd_and_hms(2030, 2, 2, 0, 0, 0).unwrap();
-        let timed_phrase = due_phrase(DueKind::Later, Some(timed), now);
-        let midnight_phrase = due_phrase(DueKind::Later, Some(midnight), now);
+        let timed_phrase = due_phrase(DueKind::Later, Some(timed), now, &Utc);
+        let midnight_phrase = due_phrase(DueKind::Later, Some(midnight), now, &Utc);
         assert!(timed_phrase.ends_with(" \u{b7} 14:30"));
         assert_eq!(midnight_phrase.find('\u{b7}'), None);
-        let sched_timed = scheduled_phrase(Some(timed), now);
-        let sched_midnight = scheduled_phrase(Some(midnight), now);
+        let sched_timed = scheduled_phrase(Some(timed), now, &Utc);
+        let sched_midnight = scheduled_phrase(Some(midnight), now, &Utc);
         assert!(sched_timed.ends_with(" \u{b7} 14:30"));
         assert_eq!(sched_midnight.find('\u{b7}'), None);
     }

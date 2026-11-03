@@ -66,6 +66,38 @@ The workspace carries a single global version (see `docs/architecture.org`);
   task view hide their checkboxes and grow a `tracker` badge, the
   card menu offers "Toggle tracker" instead of "Complete task", and
   keyboard completion on a focused tracker is inert.
+- Date & time entry rework (round 4, chunks 7; findings F18–F22/F27):
+  - The calendar picker's grid reserves six week-rows always, so the
+    panel's height is constant while open and the overlay can no
+    longer flip above/below the field when month paging changes the
+    row count.
+  - The time steppers work from an empty time: the first press seeds
+    midnight and then steps (the date follows a midnight wrap).
+  - The time combobox replaces the picker's stepper row: a typable
+    HH:MM field (lenient parse — `9`, `930`, `9:45`), ±15-minute
+    steppers, and a quarter-hour quick-list flyout (filter-as-you-
+    type, scroll-to-nearest, full keyboard operation). Chunks 9/10's
+    surfaces will mount the same widget.
+  - The calendar is a two-phase editor: the grid's Enter hands focus
+    to the text field instead of committing, Escape steps back a
+    phase before closing, and the field's text mirrors the picker's
+    selection live (and vice versa while typing) — the emacs walk to
+    a day then typing a time then Return now works end to end.
+  - Clicking away from a date editor settles it: parseable text
+    commits (click-away ≡ Return), empty or non-conforming text
+    discards and restores the prior value — junk can no longer
+    linger. The date, time, custom-reminder-offset, and timer-`when`
+    fields show tri-state validity per keystroke (each validated by
+    its one authoritative parser — no second grammar).
+  - The due grammar speaks device-local time: `2030-02-28 14:30`
+    means 14:30 local, storage stays UTC instants, and echoes render
+    the local wall-clock — the fix behind due-anchored times being
+    hours off for non-UTC devices. A wall-clock that does not exist
+    (the spring-forward gap) or exists twice (the fall-back overlap)
+    refuses rather than guessing an instant. Stored dues are not
+    migrated — the data was always correct; only the reading and the
+    rendering change.
+
 
 - Respite marking and break reminders (#493 + #495): time entries
   gain a `kind` datum — `work` (the default) or `respite` — that
