@@ -885,6 +885,150 @@ pub fn fold_reminder_dismissals(
     folded
 }
 
+/// The typed deltas one [`fold_break_rules`] pass produced (the
+/// [`RuleFoldChanges`] pattern).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct BreakRuleFoldChanges {
+    /// Rules adopted or updated from the document.
+    pub upserts: Vec<crate::reminders::BreakRule>,
+    /// Rules removed by a strictly newer tombstone.
+    pub deletes: Vec<crate::ids::BreakRuleId>,
+}
+
+/// The sidecar document fold for the board-level `break-rules` section
+/// (#588 D-11, recipe step 8 — the [`fold_habits`] placement with the
+/// [`fold_reminder_rules`] comparison). Keyed by the rule UUID;
+/// per-row LWW against the local row's write clock — v1's only writer
+/// stamps creation, so the comparison clock is `created_at` (D-5):
+///
+/// - A live `Rule` row with `clock >=` the local `created_at`
+///   overwrites label/threshold/insistence and `created_at` (doc wins
+///   pull-side ties — the mirror of the flush's tie-to-overlay); an
+///   unknown UUID adopts the row verbatim with `board` = the folding
+///   document's locally-bound board (the fold stamps it — **no board
+///   rides the wire**, D-H11's device). An older row leaves local
+///   standing.
+/// - A tombstone removes the local row iff strictly newer (a
+///   re-created rule is a *new UUID*, D-8 — there is no resurrection
+///   under a deleted key). Tombstones for locally-unknown ids leave no
+///   trace.
+/// - [`crate::appdata::BreakRuleEntry::Verbatim`] rows never fold; an
+///   unparseable map key is not an identity and is skipped (kept in
+///   the document by the union's additivity).
+/// - **Guard-immune**: no `protected` parameter — the D-S6 intent flag
+///   protects local *edits*; break rules have no edit verbs and no
+///   task, so no intent flag exists to consult (the dismissals
+///   precedent).
+///
+/// Break *evaluation* stays global over all tracked entries (D-2): the
+/// board field scopes roaming, never firing.
+pub fn fold_break_rules(
+    break_rules: &mut std::collections::BTreeMap<
+        crate::ids::BreakRuleId,
+        crate::reminders::BreakRule,
+    >,
+    rows: &std::collections::BTreeMap<String, crate::appdata::BreakRuleEntry>,
+    board: crate::ids::BoardId,
+) -> BreakRuleFoldChanges {
+    let mut changes = BreakRuleFoldChanges::default();
+    for (key, row) in rows {
+        match row {
+            crate::appdata::BreakRuleEntry::Rule {
+                label,
+                threshold,
+                created,
+                clock,
+                insistence,
+            } => {
+                let Ok(uuid) = uuid::Uuid::parse_str(key) else {
+                    continue; // an unparseable key is not a rule identity
+                };
+                let id = crate::ids::BreakRuleId::from(uuid);
+                match break_rules.get_mut(&id) {
+                    Some(local) if *clock >= local.created_at => {
+                        local.label.clone_from(label);
+                        local.threshold = *threshold;
+                        local.insistence = *insistence;
+                        local.created_at = *created;
+                        changes.upserts.push(local.clone());
+                    }
+                    Some(_) => {} // local stands
+                    None => {
+                        let adopted = crate::reminders::BreakRule {
+                            id,
+                            board,
+                            label: label.clone(),
+                            threshold: *threshold,
+                            insistence: *insistence,
+                            created_at: *created,
+                        };
+                        break_rules.insert(id, adopted.clone());
+                        changes.upserts.push(adopted);
+                    }
+                }
+            }
+            crate::appdata::BreakRuleEntry::Tombstone { clock } => {
+                let Ok(uuid) = uuid::Uuid::parse_str(key) else {
+                    continue;
+                };
+                let id = crate::ids::BreakRuleId::from(uuid);
+                if break_rules
+                    .get(&id)
+                    .is_some_and(|local| *clock > local.created_at)
+                {
+                    break_rules.remove(&id);
+                    changes.deletes.push(id);
+                }
+            }
+            crate::appdata::BreakRuleEntry::Verbatim(_) => {}
+        }
+    }
+    changes
+}
+
+/// The sidecar document fold for the reserved board-level `break`
+/// dismissals entry (#588 D-10, the [`fold_reminder_dismissals`] body
+/// with the break parse). Rows fold **additively** into the dismissal
+/// set — append-only facts, first-write-wins on the
+/// `(reminder, occurrence)` key, **guard-immune**, and **no
+/// rule-existence check**: exactly like the Rule-ref fold imports rows
+/// for rules it has never seen, an orphan fact is analytically inert,
+/// and a rule adopted in a later cycle is immediately suppressed by
+/// the already-folded dismissal (the D-9 fold-order property).
+/// [`crate::appdata::DismissalEntry::Verbatim`] rows never fold;
+/// unparseable keys are ignored without being dropped (the verbatim
+/// relay).
+///
+/// Returns the newly folded rows (the pipeline turns them into
+/// `RecordReminderDismissal` actions — batch and view are the same
+/// deltas by construction). The **withdraw direction is free**:
+/// `withdrawals_for` is ref-generic, so a folded break dismissal
+/// withdraws the local toast with no new code.
+pub fn fold_break_dismissals(
+    dismissals: &mut std::collections::BTreeSet<crate::reminders::ReminderDismissal>,
+    entry: &crate::appdata::DismissalsEntry,
+) -> Vec<crate::reminders::ReminderDismissal> {
+    let mut folded = Vec::new();
+    for (key, row) in &entry.dismissals {
+        let crate::appdata::DismissalEntry::Dismissed { dismissed_at } = row else {
+            continue; // verbatim content never folds
+        };
+        let Some((rule_id, occurrence)) = crate::appdata::parse_break_dismissal_wire_key(key)
+        else {
+            continue; // not a modeled key: ignored, kept verbatim
+        };
+        let dismissal = crate::reminders::ReminderDismissal {
+            reminder: crate::reminders::ReminderRef::Break(rule_id),
+            occurrence,
+            dismissed_at: *dismissed_at,
+        };
+        if dismissals.insert(dismissal) {
+            folded.push(dismissal);
+        }
+    }
+    folded
+}
+
 /// The typed deltas one [`fold_time_entries`] pass produced: the
 /// pipeline turns them into persistence actions and applies the same
 /// deltas to the memory view, so batch and view cannot drift (the
@@ -4503,6 +4647,256 @@ mod tests {
         let folded = fold_reminder_dismissals(&mut dismissals, &entry);
         assert_eq!(folded, Vec::new());
         assert!(dismissals.is_empty());
+    }
+
+    // ---- #588: the break folds -----------------------------------------
+
+    fn break_rule_row(raw: u128, board: u128) -> crate::reminders::BreakRule {
+        crate::reminders::BreakRule {
+            id: crate::ids::BreakRuleId::from(uuid::Uuid::from_u128(raw)),
+            board: crate::ids::BoardId::from(uuid::Uuid::from_u128(board)),
+            label: "time for a break".to_owned(),
+            threshold: crate::tracking::WorkThreshold::try_new(
+                chrono::TimeDelta::try_seconds(1_500).unwrap(),
+            )
+            .unwrap(),
+            insistence: crate::reminders::Insistence::Normal,
+            created_at: ts(BASE),
+        }
+    }
+
+    fn break_rule_entry(
+        label: &str,
+        created: chrono::DateTime<Utc>,
+        clock: chrono::DateTime<Utc>,
+    ) -> crate::appdata::BreakRuleEntry {
+        crate::appdata::BreakRuleEntry::Rule {
+            label: label.to_owned(),
+            threshold: crate::tracking::WorkThreshold::try_new(
+                chrono::TimeDelta::try_seconds(1_500).unwrap(),
+            )
+            .unwrap(),
+            created,
+            clock,
+            insistence: crate::reminders::Insistence::Alarm,
+        }
+    }
+
+    #[test]
+    fn fold_break_rules_adopts_stamps_and_lwws() {
+        let board = crate::ids::BoardId::from(uuid::Uuid::from_u128(700));
+        let mut break_rules = BTreeMap::new();
+        let local = break_rule_row(1, 700);
+        break_rules.insert(local.id, local.clone());
+        let older = break_rule_row(3, 700);
+        break_rules.insert(older.id, older);
+        let foreign_uuid = uuid::Uuid::from_u128(2);
+        let rows = BTreeMap::from([
+            // Newer doc row overwrites, the doc's created wins.
+            (
+                local.id.as_uuid().to_string(),
+                break_rule_entry("doc label", ts(BASE + 5), ts(BASE + 10)),
+            ),
+            // Unknown UUID adopts with the fold-stamped board.
+            (
+                foreign_uuid.to_string(),
+                break_rule_entry("adopted", ts(BASE + 5), ts(BASE + 10)),
+            ),
+            // Older row leaves local standing.
+            (
+                crate::ids::BreakRuleId::from(uuid::Uuid::from_u128(3))
+                    .as_uuid()
+                    .to_string(),
+                break_rule_entry("old", ts(BASE + 1), ts(BASE - 1)),
+            ),
+        ]);
+        let changes = fold_break_rules(&mut break_rules, &rows, board);
+        assert_eq!(changes.upserts.len(), 2, "the older row folds nothing");
+        assert_eq!(changes.deletes, Vec::new());
+        let updated = &break_rules[&local.id];
+        assert_eq!(updated.label, "doc label");
+        assert_eq!(updated.created_at, ts(BASE + 5));
+        assert_eq!(updated.insistence, crate::reminders::Insistence::Alarm);
+        let adopted = &break_rules[&crate::ids::BreakRuleId::from(foreign_uuid)];
+        assert_eq!(
+            adopted.board, board,
+            "the fold stamps the locally-bound board"
+        );
+        assert_eq!(
+            adopted.created_at,
+            ts(BASE + 5),
+            "the row's created stamps the adopt"
+        );
+        // Pull-side tie: doc wins.
+        let tie_row = BTreeMap::from([(
+            crate::ids::BreakRuleId::from(uuid::Uuid::from_u128(4))
+                .as_uuid()
+                .to_string(),
+            break_rule_entry("tie", ts(BASE + 7), ts(BASE)),
+        )]);
+        let mut locals = BTreeMap::from([(
+            crate::ids::BreakRuleId::from(uuid::Uuid::from_u128(4)),
+            break_rule_row(4, 700),
+        )]);
+        let changes = fold_break_rules(&mut locals, &tie_row, board);
+        assert_eq!(changes.upserts.len(), 1);
+        assert_eq!(
+            locals[&crate::ids::BreakRuleId::from(uuid::Uuid::from_u128(4))].label,
+            "tie"
+        );
+    }
+
+    #[test]
+    fn fold_break_rules_tombstone_removes_iff_strictly_newer() {
+        let board = crate::ids::BoardId::from(uuid::Uuid::from_u128(700));
+        let local = break_rule_row(5, 700);
+        let mut break_rules = BTreeMap::from([(local.id, local.clone())]);
+        // Equal-clock tombstone does not remove (strictly newer only).
+        let rows = BTreeMap::from([(
+            local.id.as_uuid().to_string(),
+            crate::appdata::BreakRuleEntry::Tombstone { clock: ts(BASE) },
+        )]);
+        let changes = fold_break_rules(&mut break_rules, &rows, board);
+        assert_eq!(changes.deletes, Vec::new());
+        assert!(break_rules.contains_key(&local.id));
+        // Strictly newer removes.
+        let rows = BTreeMap::from([(
+            local.id.as_uuid().to_string(),
+            crate::appdata::BreakRuleEntry::Tombstone {
+                clock: ts(BASE + 1),
+            },
+        )]);
+        let changes = fold_break_rules(&mut break_rules, &rows, board);
+        assert_eq!(changes.deletes, vec![local.id]);
+        // A tombstone for an unknown id leaves no trace.
+        let rows = BTreeMap::from([(
+            crate::ids::BreakRuleId::from(uuid::Uuid::from_u128(99))
+                .as_uuid()
+                .to_string(),
+            crate::appdata::BreakRuleEntry::Tombstone {
+                clock: ts(BASE + 1),
+            },
+        )]);
+        let changes = fold_break_rules(&mut break_rules, &rows, board);
+        assert_eq!(changes.deletes, Vec::new());
+    }
+
+    #[test]
+    fn fold_break_rules_verbatim_and_bad_keys_never_fold() {
+        let board = crate::ids::BoardId::from(uuid::Uuid::from_u128(700));
+        let mut break_rules = BTreeMap::new();
+        let rows = BTreeMap::from([
+            (
+                "future-shape".to_owned(),
+                crate::appdata::BreakRuleEntry::Verbatim(serde_json::json!({ "fancy": true })),
+            ),
+            (
+                "not-a-uuid".to_owned(),
+                break_rule_entry("ghost", ts(BASE), ts(BASE)),
+            ),
+        ]);
+        let changes = fold_break_rules(&mut break_rules, &rows, board);
+        assert_eq!(changes.upserts, Vec::new());
+        assert!(break_rules.is_empty());
+    }
+
+    #[test]
+    fn fold_break_dismissals_imports_first_write_wins() {
+        let rule = crate::ids::BreakRuleId::from(uuid::Uuid::from_u128(0xb));
+        let key = crate::appdata::break_dismissal_wire_key(rule, ts(BASE + 100));
+        let entry = dismissals_entry(&[(
+            &key,
+            DismissalEntry::Dismissed {
+                dismissed_at: ts(BASE + 110),
+            },
+        )]);
+        let mut dismissals = BTreeSet::new();
+        let folded = fold_break_dismissals(&mut dismissals, &entry);
+        assert_eq!(folded.len(), 1);
+        assert_eq!(
+            folded[0],
+            ReminderDismissal {
+                reminder: ReminderRef::Break(rule),
+                occurrence: ts(BASE + 100),
+                dismissed_at: ts(BASE + 110),
+            }
+        );
+        // The replayed fold is the accepted no-op (first-write-wins).
+        let replayed = fold_break_dismissals(&mut dismissals, &entry);
+        assert_eq!(replayed, Vec::new());
+        assert_eq!(dismissals.len(), 1);
+    }
+
+    #[test]
+    fn fold_break_dismissals_ignores_unparseable_keys_without_dropping() {
+        let mut dismissals = BTreeSet::new();
+        let entry = dismissals_entry(&[
+            // Bare rule grammar: the other family's lane.
+            (
+                &dismissal_wire_key(
+                    crate::ids::ReminderRuleId::from(uuid::Uuid::from_u128(0xc)),
+                    ts(BASE + 1),
+                ),
+                DismissalEntry::Dismissed {
+                    dismissed_at: ts(BASE + 1),
+                },
+            ),
+            (
+                "default:00000000-0000-0000-0000-000000000009|2026-04-01T08:00:00+00:00",
+                DismissalEntry::Dismissed {
+                    dismissed_at: ts(BASE + 2),
+                },
+            ),
+            (
+                "alarm:00000000-0000-0000-0000-000000000009|2026-04-01T08:00:00+00:00",
+                DismissalEntry::Dismissed {
+                    dismissed_at: ts(BASE + 3),
+                },
+            ),
+            (
+                "break:garbage|2026-04-01T08:00:00+00:00",
+                DismissalEntry::Dismissed {
+                    dismissed_at: ts(BASE + 4),
+                },
+            ),
+            (
+                "future-shape",
+                DismissalEntry::Verbatim(serde_json::json!(1)),
+            ),
+        ]);
+        let folded = fold_break_dismissals(&mut dismissals, &entry);
+        assert_eq!(folded, Vec::new());
+        assert!(dismissals.is_empty());
+    }
+
+    #[test]
+    fn orphan_break_dismissals_fold_and_are_inert() {
+        // No rule-existence check: the row imports although no device
+        // carries the rule (the D-9 fold-order property) — a rule
+        // adopted in a later cycle is immediately suppressed.
+        let rule = crate::ids::BreakRuleId::from(uuid::Uuid::from_u128(0xd));
+        let key = crate::appdata::break_dismissal_wire_key(rule, ts(BASE + 100));
+        let entry = dismissals_entry(&[(
+            &key,
+            DismissalEntry::Dismissed {
+                dismissed_at: ts(BASE + 110),
+            },
+        )]);
+        let mut dismissals = BTreeSet::new();
+        let folded = fold_break_dismissals(&mut dismissals, &entry);
+        assert_eq!(folded.len(), 1);
+        assert!(
+            dismissals
+                .iter()
+                .any(|d| d.reminder == ReminderRef::Break(rule)),
+            "the orphan fact imports"
+        );
+        // Analytic inertness: the evaluator never fires it.
+        let state = crate::reminders::ReminderState {
+            dismissals: dismissals.clone(),
+            ..Default::default()
+        };
+        assert!(state.is_dismissed(&ReminderRef::Break(rule), &ts(BASE + 100)));
     }
 
     // ---- DR-4/S: the skew interleaving pins (D-4b, #133) ---------------

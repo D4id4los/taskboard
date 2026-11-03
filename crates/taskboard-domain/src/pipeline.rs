@@ -973,6 +973,10 @@ pub fn apply_sync_report(
     let mut habit_actions: Vec<PersistenceAction> = Vec::new();
     let mut folded_habits: Option<crate::habit::HabitState> = None;
     let mut folded_tracking: Option<crate::tracking::TrackingState> = None;
+    let mut break_rule_actions: Vec<PersistenceAction> = Vec::new();
+    let mut folded_break_rules: Option<
+        std::collections::BTreeMap<crate::ids::BreakRuleId, crate::reminders::BreakRule>,
+    > = None;
     if let crate::messages::AppDataEvidence::Document(document) = app_data {
         let task_intents = pending_task_intents(outbox, read_at);
         for remote in &snapshot.tasks {
@@ -1057,6 +1061,37 @@ pub fn apply_sync_report(
                 for (key, entry) in changes.records {
                     habit_actions.push(PersistenceAction::RecordHabitLog(key, entry));
                 }
+            }
+        }
+        // The break folds are board-level too (#588 D-11/D-10, §5b's
+        // order — after the habit folds): rules first (LWW against the
+        // local rows, the fold stamps the locally-bound board), then
+        // the reserved dismissals entry (additive, no rule-existence
+        // check — a rule adopted in a later cycle is immediately
+        // suppressed by the already-folded dismissal). The per-card
+        // loop above never reads the reserved entry: it looks up only
+        // card keys of present tasks.
+        if let Some(rows) = &document.sections.break_rules {
+            let break_rules =
+                folded_break_rules.get_or_insert_with(|| current.reminders.break_rules.clone());
+            let changes = crate::merge::fold_break_rules(break_rules, rows, board_id);
+            for rule in changes.upserts {
+                break_rule_actions.push(PersistenceAction::UpsertBreakRule(rule));
+            }
+            for rule_id in changes.deletes {
+                break_rule_actions.push(PersistenceAction::DeleteBreakRule(rule_id));
+            }
+        }
+        if let Some(reserved) = document
+            .sections
+            .dismissals
+            .as_ref()
+            .and_then(|entries| entries.get(crate::appdata::BREAK_DISMISSALS_ENTRY_KEY))
+        {
+            let dismissals =
+                folded_dismissals.get_or_insert_with(|| current.reminders.dismissals.clone());
+            for dismissal in crate::merge::fold_break_dismissals(dismissals, reserved) {
+                dismissal_actions.push(PersistenceAction::RecordReminderDismissal(dismissal));
             }
         }
     }
@@ -1375,6 +1410,7 @@ pub fn apply_sync_report(
     actions.extend(dismissal_actions);
     actions.extend(tracking_actions);
     actions.extend(habit_actions);
+    actions.extend(break_rule_actions);
     // R3's resurrect creates ride last: the re-planning decided in
     // section 6, the batch materializes here. The duplicate collapse's
     // ref-deletes ride beside them (same shape: decided mid-pass,
@@ -1426,6 +1462,8 @@ pub fn apply_sync_report(
         reminders: crate::reminders::ReminderState {
             rules: folded_rules.unwrap_or_else(|| current.reminders.rules.clone()),
             dismissals: folded_dismissals.unwrap_or_else(|| current.reminders.dismissals.clone()),
+            break_rules: folded_break_rules
+                .unwrap_or_else(|| current.reminders.break_rules.clone()),
             ..current.reminders.clone()
         },
         tracking: folded_tracking.unwrap_or_else(|| current.tracking.clone()),

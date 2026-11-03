@@ -323,7 +323,7 @@ pub enum ReminderRef {
     Default(TaskId),
     /// A standalone adhoc alarm.
     Adhoc(AdhocAlarmId),
-    /// A break rule (device-local; the label lives on the rule row).
+    /// A break rule (roaming, #588; the label lives on the rule row).
     Break(BreakRuleId),
 }
 
@@ -539,11 +539,13 @@ pub struct ReminderDelivery {
 /// The state-side type is representable for **all** [`ReminderRef`]
 /// kinds: local dismissal of default-reminder and adhoc-alarm
 /// notifications must clear them in-app, and their occurrences are
-/// per-device facts (they never roam). Only `Rule`-ref rows ever
-/// serialize into the synced `dismissals` document section — the wire
-/// type carries a bare `ReminderRuleId` (the fail-closed mint, design
-/// D-4), and the section's emission filter enforces the split; nothing in
-/// this crate ever serializes a `Default`/`Adhoc` row to the document.
+/// per-device facts (they never roam). Only `Rule`- and `Break`-ref
+/// rows ever serialize into the synced `dismissals` document section —
+/// `Rule`-ref rows into the per-card entries (the wire type carries a
+/// bare `ReminderRuleId`, the fail-closed mint, design D-4), `Break`-ref
+/// rows into the reserved board-level `break` entry (#588 D-9), and the
+/// section's emission filters enforce the split; nothing in this crate
+/// ever serializes a `Default`/`Adhoc` row to the document.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ReminderDismissal {
     /// Which reminder's notification was dismissed.
@@ -653,8 +655,8 @@ pub struct ReminderState {
     pub deliveries: BTreeSet<ReminderDelivery>,
     /// User dismissals (≤ 1 row per `(reminder, occurrence)` — the same
     /// first-write-wins discipline as `deliveries`). Superset of the
-    /// synced lane by construction: Rule-ref rows roam, Default/Adhoc
-    /// rows stay device-local.
+    /// synced lane by construction: Rule-ref and Break-ref rows roam
+    /// (#588), Default/Adhoc rows stay device-local.
     pub dismissals: BTreeSet<ReminderDismissal>,
     /// Snooze chain links: `(reminder, occurrence) → rescheduled`
     /// instant. Chains compose (a snooze target is itself snoozable).

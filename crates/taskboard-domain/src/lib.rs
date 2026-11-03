@@ -76,13 +76,15 @@ pub mod test_support;
 pub(crate) mod merge_testutil;
 
 pub use appdata::{
-    ANCHOR_CARD_TITLE, APPDATA_FORMAT, AppDataDocument, AppDataSections, BreakRuleEntry,
-    DismissalEntry, DismissalsEntry, HABIT_LOG_SYNC_RETENTION_DAYS, HabitLogRecord, HabitRecord,
-    MODELED_TASK_FIELD_KEYS, ModeledValue, RuleEntry, RulesEntry, TRACKING_SYNC_RETENTION_DAYS,
-    TaskEntry, TaskFieldWrite, TimeEntryRecord, break_rules_for, derive_break_rule_tombstones,
-    derive_rule_tombstones, derive_time_entry_tombstones, dismissal_wire_key, dismissals_entry_for,
-    habit_log_for, habits_for, lane_gc_old_habit_log, lane_gc_old_time_entries, lane_gc_scheduled,
-    modeled_key, prune_absent_cards, rules_entry_for, task_entry_for, time_entries_for, union,
+    ANCHOR_CARD_TITLE, APPDATA_FORMAT, AppDataDocument, AppDataSections,
+    BREAK_DISMISSALS_ENTRY_KEY, BreakRuleEntry, DismissalEntry, DismissalsEntry,
+    HABIT_LOG_SYNC_RETENTION_DAYS, HabitLogRecord, HabitRecord, MODELED_TASK_FIELD_KEYS,
+    ModeledValue, RuleEntry, RulesEntry, TRACKING_SYNC_RETENTION_DAYS, TaskEntry, TaskFieldWrite,
+    TimeEntryRecord, break_dismissal_wire_key, break_dismissals_entry_for, break_rules_for,
+    derive_break_rule_tombstones, derive_rule_tombstones, derive_time_entry_tombstones,
+    dismissal_wire_key, dismissals_entry_for, habit_log_for, habits_for, lane_gc_old_habit_log,
+    lane_gc_old_time_entries, lane_gc_scheduled, modeled_key, prune_absent_cards, rules_entry_for,
+    task_entry_for, time_entries_for, union,
 };
 pub use calibration::{CalibrationAggregate, CalibrationReport, CalibrationRow, calibrate};
 pub use capabilities::{DeckFeatures, flags_for};
@@ -114,11 +116,11 @@ pub use journal::{
     UndoWatermark, command_label, evict_journal, evict_journal_ids,
 };
 pub use merge::{
-    RuleFoldChanges, adopt_board_if_newer, adopt_label_after_push, adopt_remote_board,
-    adopt_remote_label, adopt_remote_stack, adopt_remote_task, adopt_stack_after_push,
-    adopt_task_after_push, finalize_pushed_task_delete, fold_reminder_dismissals,
-    fold_reminder_rules, merge_label, merge_stack, merge_task, tombstone_label, tombstone_stack,
-    tombstone_task,
+    BreakRuleFoldChanges, RuleFoldChanges, adopt_board_if_newer, adopt_label_after_push,
+    adopt_remote_board, adopt_remote_label, adopt_remote_stack, adopt_remote_task,
+    adopt_stack_after_push, adopt_task_after_push, finalize_pushed_task_delete,
+    fold_break_dismissals, fold_break_rules, fold_reminder_dismissals, fold_reminder_rules,
+    merge_label, merge_stack, merge_task, tombstone_label, tombstone_stack, tombstone_task,
 };
 pub use messages::{
     AppDataEvidence, AppDataUnreadable, EngineSignal, HabitChanges, LabelChanges, StateCommand,

@@ -36,6 +36,13 @@ pub const APPDATA_FORMAT: u32 = 1;
 /// the string is machine-owned; no normalization ever applies).
 pub const ANCHOR_CARD_TITLE: &str = "[taskboard] app-data";
 
+/// The reserved, never-a-card entry key inside the `dismissals`
+/// section: break-ref dismissal rows ride the board-level entry under
+/// it (#588 D-9). Deck card ids are decimal strings, so `"break"` can
+/// never collide; the per-card fold loop looks up only card keys of
+/// present tasks, so the entry is invisible to it by construction.
+pub const BREAK_DISMISSALS_ENTRY_KEY: &str = "break";
+
 /// The codec's modeled task-field keys — its single dispatch source and
 /// the subject of the manifest lockstep assertion: [`crate::entities::
 /// TASK_FIELDS`]' `AppData` rows plus `scheduled` (the Native row whose
@@ -568,11 +575,15 @@ fn decode_kind(
 /// no deletion tombstones to model.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct DismissalsEntry {
-    /// Keyed by [`dismissal_wire_key`] — `"<rule uuid>|<rfc3339
-    /// occurrence>"` (JSON map keys must be strings; the
-    /// `ReminderSnoozeKey` string-encoding precedent). The rule UUID's
-    /// document presence *is* its remote identity (D-S9); no local
-    /// `TaskId`/`AdhocAlarmId` text form is ever representable here.
+    /// Keyed by the row grammar the *entry* scopes: card entries key
+    /// by [`dismissal_wire_key`] — `"<rule uuid>|<rfc3339
+    /// occurrence>"` — and the reserved board-level entry
+    /// ([`BREAK_DISMISSALS_ENTRY_KEY`]) keys by
+    /// [`break_dismissal_wire_key`] — `"break:<uuid>|<rfc3339>"` (#588
+    /// D-9; JSON map keys must be strings, the `ReminderSnoozeKey`
+    /// string-encoding precedent). The UUID's document presence *is*
+    /// its remote identity (D-S9); no local `TaskId`/`AdhocAlarmId`
+    /// text form is ever representable here.
     pub dismissals: BTreeMap<String, DismissalEntry>,
     /// Unknown keys beside `dismissals`: carried verbatim.
     pub unknown: BTreeMap<String, Value>,
@@ -1155,17 +1166,57 @@ pub fn dismissal_wire_key(rule: crate::ids::ReminderRuleId, occurrence: DateTime
 }
 
 /// Parses [`dismissal_wire_key`]; `None` for any key this version does
-/// not model (a `default:`/`alarm:`-prefixed row a hand-edited document
-/// might carry, a malformed pair, …) — the fold ignores it, the codec
-/// relays it verbatim.
+/// not model (a `default:`/`alarm:`/`break:`-prefixed row a hand-edited
+/// document might carry, a malformed pair, …) — the fold ignores it,
+/// the codec relays it verbatim.
 pub(crate) fn parse_dismissal_wire_key(
     key: &str,
 ) -> Option<(crate::ids::ReminderRuleId, DateTime<Utc>)> {
     let (uuid_part, occurrence_part) = key.split_once('|')?;
+    // The explicit `break:` rejection names the old-peer fail-closed
+    // contract (D-9/D-10): every widening key fails the strict
+    // bare-UUID parse by construction — an old peer needs zero
+    // cooperation, and can never decode a break dismissal as a Rule-ref
+    // dismissal for a rule it may not have.
+    if uuid_part.starts_with("break:") {
+        return None;
+    }
     let uuid = uuid::Uuid::parse_str(uuid_part).ok()?;
     let occurrence = DateTime::parse_from_rfc3339(occurrence_part).ok()?;
     Some((
         crate::ids::ReminderRuleId::from(uuid),
+        occurrence.with_timezone(&Utc),
+    ))
+}
+
+/// The break dismissal row's wire key:
+/// `"break:<uuid>|<rfc3339 occurrence>"` (#588 D-9). The `break:`
+/// prefix is the typed family marker — an old peer's strict bare-UUID
+/// parse fails on it (the fail-closed old-peer mechanism, D-1), and no
+/// [`dismissal_wire_key`] can ever collide with it. Injective for the
+/// same component reason as [`dismissal_wire_key`] (a UUID is
+/// hex+dashes, rfc3339 is digits/punct, the prefix is fixed text).
+#[must_use]
+pub fn break_dismissal_wire_key(
+    rule: crate::ids::BreakRuleId,
+    occurrence: DateTime<Utc>,
+) -> String {
+    format!("break:{}|{}", rule.as_uuid(), occurrence.to_rfc3339())
+}
+
+/// Parses [`break_dismissal_wire_key`]; `None` for any key this version
+/// does not model (a bare rule key, a `default:`/`alarm:`-prefixed row,
+/// a malformed pair, …) — the fold ignores it, the codec relays it
+/// verbatim.
+pub(crate) fn parse_break_dismissal_wire_key(
+    key: &str,
+) -> Option<(crate::ids::BreakRuleId, DateTime<Utc>)> {
+    let rest = key.strip_prefix("break:")?;
+    let (uuid_part, occurrence_part) = rest.split_once('|')?;
+    let uuid = uuid::Uuid::parse_str(uuid_part).ok()?;
+    let occurrence = DateTime::parse_from_rfc3339(occurrence_part).ok()?;
+    Some((
+        crate::ids::BreakRuleId::from(uuid),
         occurrence.with_timezone(&Utc),
     ))
 }
@@ -1482,7 +1533,8 @@ fn union_break_rules(
 /// The flush GC (D-S2): removes the entries — both known sections,
 /// tombstones included — whose decimal card key is absent from
 /// `present_cards` (the cycle's complete snapshot's card set). Entries
-/// for present cards and unknown sections are never touched.
+/// for present cards, the reserved board-level `break` dismissals
+/// entry (#588 D-12), and unknown sections are never touched.
 #[must_use]
 pub fn prune_absent_cards(
     document: &AppDataDocument,
@@ -1507,7 +1559,15 @@ pub fn prune_absent_cards(
         pruned.sections.reminder_rules = (!kept.is_empty()).then_some(kept);
     }
     if let Some(dismissals) = &document.sections.dismissals {
-        let kept = keep(dismissals, present_cards);
+        // The one carve-out (#588 D-12): the reserved board-level
+        // `break` entry is not a card entry — it survives regardless
+        // of the present-card set. The `break-rules` section needs no
+        // arm at all (board-level sections are invisible to this GC —
+        // the D-T10 fact, in its third application).
+        let mut kept: BTreeMap<String, DismissalsEntry> = keep(dismissals, present_cards);
+        if let Some(reserved) = dismissals.get(BREAK_DISMISSALS_ENTRY_KEY) {
+            kept.insert(BREAK_DISMISSALS_ENTRY_KEY.to_owned(), reserved.clone());
+        }
         pruned.sections.dismissals = (!kept.is_empty()).then_some(kept);
     }
     pruned
@@ -1619,17 +1679,18 @@ pub fn rules_entry_for(
 /// set: the task's **Rule-ref** dismissals only, each as
 /// `Dismissed { dismissed_at }` keyed by [`dismissal_wire_key`] (D-11).
 ///
-/// **Fail-closed emission filter (design D-4).** The state-side
-/// `ReminderDismissal` is representable for all [`ReminderRef`] kinds
-/// (local Default/Adhoc dismissals must clear in-app), so the filter —
-/// not the type — is the boundary: `Default(TaskId)` and
-/// `Adhoc(AdhocAlarmId)` rows are skipped here and can never reach the
-/// wire, because the wire key shape admits a rule UUID only. The rule's
-/// task scoping mirrors [`rules_entry_for`] (`rule.task == task`), and
-/// the proptest pin (`no_local_ids_reach_the_dismissals_wire`) is the
-/// tripwire against a future widening. Orphan rows (rule deleted
-/// locally) are filtered by the same scoping; their already-uploaded
-/// rows persist in the base document via the union's additivity.
+/// **Fail-closed emission filter (design D-4, #588 D-11).** The
+/// state-side `ReminderDismissal` is representable for all
+/// [`ReminderRef`] kinds (local Default/Adhoc dismissals must clear
+/// in-app), so the filter — not the type — is the boundary:
+/// `Default(TaskId)` and `Adhoc(AdhocAlarmId)` rows are skipped here
+/// and can never reach a card entry, because the card-entry wire key
+/// shape admits a rule UUID only. The rule's task scoping mirrors
+/// [`rules_entry_for`] (`rule.task == task`), and the proptest pin
+/// (`no_local_ids_reach_the_dismissals_wire`) is the tripwire against
+/// a future widening. Orphan rows (rule deleted locally) are filtered
+/// by the same scoping; their already-uploaded rows persist in the
+/// base document via the union's additivity.
 #[must_use]
 pub fn dismissals_entry_for(
     dismissals: &std::collections::BTreeSet<crate::reminders::ReminderDismissal>,
@@ -1648,12 +1709,60 @@ pub fn dismissals_entry_for(
                     },
                 ))
             }
-            // The fail-closed rule extends to break rules (D-15): the
-            // wire key admits a rule UUID only; a device-local break
-            // dismissal can never reach the document.
+            // The fail-closed arm keeps `Break ⇒ None` (the dispatch's
+            // contract, #588 D-11): break dismissals ride the
+            // board-level reserved entry
+            // ([`BREAK_DISMISSALS_ENTRY_KEY`], see
+            // [`break_dismissals_entry_for`]), never a card entry — a
+            // card entry is scoped to the card's task's rules.
             crate::reminders::ReminderRef::Default(_)
             | crate::reminders::ReminderRef::Adhoc(_)
             | crate::reminders::ReminderRef::Break(_) => None,
+        })
+        .collect();
+    DismissalsEntry {
+        dismissals: mapped,
+        unknown: BTreeMap::new(),
+    }
+}
+
+/// Builds the reserved board-level `break` entry's overlay rows from
+/// the local dismissal set (#588 D-10): the local set's **Break-ref
+/// rows only**, each keyed by [`break_dismissal_wire_key`], filtered
+/// to rules that exist locally **with `rule.board == board`** — the
+/// orphan + scoping filter mirroring [`dismissals_entry_for`]'s
+/// `rule.task == task`. (The orphan arm is belt-and-braces —
+/// `DeleteBreakRule` cascades break dismissals locally — but it keeps
+/// the property shape identical to the recipe and scopes the lane to
+/// the flushing board.) The flush inserts the entry under
+/// [`BREAK_DISMISSALS_ENTRY_KEY`] only when non-empty (the
+/// `overlay_dismissals` gate).
+#[must_use]
+pub fn break_dismissals_entry_for(
+    dismissals: &std::collections::BTreeSet<crate::reminders::ReminderDismissal>,
+    break_rules: &BTreeMap<crate::ids::BreakRuleId, crate::reminders::BreakRule>,
+    board: crate::ids::BoardId,
+) -> DismissalsEntry {
+    let mapped: BTreeMap<String, DismissalEntry> = dismissals
+        .iter()
+        .filter_map(|d| match d.reminder {
+            crate::reminders::ReminderRef::Break(rule_id) => {
+                break_rules
+                    .get(&rule_id)
+                    .filter(|rule| rule.board == board)?;
+                Some((
+                    break_dismissal_wire_key(rule_id, d.occurrence),
+                    DismissalEntry::Dismissed {
+                        dismissed_at: d.dismissed_at,
+                    },
+                ))
+            }
+            // Break-ref rows are this entry's whole grammar; every
+            // other family stays in its own lane (the per-card
+            // entries' filter).
+            crate::reminders::ReminderRef::Default(_)
+            | crate::reminders::ReminderRef::Adhoc(_)
+            | crate::reminders::ReminderRef::Rule(_) => None,
         })
         .collect();
     DismissalsEntry {
@@ -2072,7 +2181,7 @@ mod tests {
         }
     }
 
-    fn break_rule(raw: u128, board: u64) -> crate::reminders::BreakRule {
+    fn break_rule_row(raw: u128, board: u64) -> crate::reminders::BreakRule {
         crate::reminders::BreakRule {
             id: crate::ids::BreakRuleId::from(uuid::Uuid::from_u128(raw)),
             board: crate::ids::BoardId::from(uuid::Uuid::from_u128(board.into())),
@@ -2960,8 +3069,8 @@ mod tests {
     #[test]
     fn break_rules_for_scopes_to_the_board_and_emits_every_key() {
         let mut rules = BTreeMap::new();
-        let mine = break_rule(1, 700);
-        let foreign = break_rule(2, 701);
+        let mine = break_rule_row(1, 700);
+        let foreign = break_rule_row(2, 701);
         rules.insert(mine.id, mine.clone());
         rules.insert(foreign.id, foreign.clone());
         let rows = break_rules_for(
@@ -2986,7 +3095,7 @@ mod tests {
     // verbatim rows never appear in the derivation output.
     #[test]
     fn derive_break_rule_tombstones_pins() {
-        let local = break_rule(1, 700);
+        let local = break_rule_row(1, 700);
         let mut rules = BTreeMap::new();
         rules.insert(local.id, local.clone());
         let mut base = BTreeMap::new();
@@ -3527,7 +3636,7 @@ mod tests {
                 dismissed_at: ts(110)
             }
         );
-        assert!(entry.unknown.is_empty());
+        assert_eq!(entry.unknown, BTreeMap::new());
     }
 
     #[test]
@@ -4298,6 +4407,171 @@ mod tests {
         );
     }
 
+    // ---- #588: the dismissals-wire widening ---------------------------
+
+    #[test]
+    fn wire_key_grammar_pins() {
+        let rule = crate::ids::ReminderRuleId::from(uuid::Uuid::from_u128(1));
+        let break_rule = crate::ids::BreakRuleId::from(uuid::Uuid::from_u128(2));
+        let occurrence = ts(1_000);
+        // The bare grammar rejects the break form (the old-peer
+        // fail-closed mechanism, pinned).
+        let break_key = break_dismissal_wire_key(break_rule, occurrence);
+        assert!(
+            parse_dismissal_wire_key(&break_key).is_none(),
+            "an old peer's strict bare-UUID parse fails on the break: prefix"
+        );
+        // The break grammar accepts exactly its own emitted keys.
+        assert_eq!(
+            parse_break_dismissal_wire_key(&break_key),
+            Some((break_rule, occurrence)),
+            "round-trip"
+        );
+        for bad in [
+            format!("{}|{}", rule.as_uuid(), occurrence.to_rfc3339()),
+            format!(
+                "default:{}|{}",
+                uuid::Uuid::from_u128(3),
+                occurrence.to_rfc3339()
+            ),
+            format!(
+                "alarm:{}|{}",
+                uuid::Uuid::from_u128(4),
+                occurrence.to_rfc3339()
+            ),
+            "break:garbage|2026-04-01T08:00:00+00:00".to_owned(),
+            format!("break:{}", break_rule.as_uuid()),
+            "future-shape".to_owned(),
+        ] {
+            assert!(
+                parse_break_dismissal_wire_key(&bad).is_none(),
+                "the break grammar rejects {bad:?}"
+            );
+        }
+    }
+
+    // P8 (D-10, the reserved-entry emission filter): Break-ref rows
+    // only, orphan/foreign-board rules filtered, other families never
+    // leave their lanes.
+    #[test]
+    fn break_dismissals_entry_for_filters_orphans_and_foreign_boards() {
+        let board = crate::ids::BoardId::from(uuid::Uuid::from_u128(700));
+        let on_board = break_rule_row(1, 700);
+        let foreign = break_rule_row(2, 701);
+        let mut break_rules = BTreeMap::new();
+        break_rules.insert(on_board.id, on_board);
+        break_rules.insert(foreign.id, foreign.clone());
+        let orphan = crate::ids::BreakRuleId::from(uuid::Uuid::from_u128(3));
+        let task = crate::ids::TaskId::from(uuid::Uuid::from_u128(4));
+        let alarm = crate::ids::AdhocAlarmId::from(uuid::Uuid::from_u128(5));
+        let mut dismissals = std::collections::BTreeSet::new();
+        for (reminder, occ) in [
+            (
+                crate::reminders::ReminderRef::Break(crate::ids::BreakRuleId::from(
+                    uuid::Uuid::from_u128(1),
+                )),
+                100_i64,
+            ),
+            (crate::reminders::ReminderRef::Break(foreign.id), 101),
+            (crate::reminders::ReminderRef::Break(orphan), 102),
+            (crate::reminders::ReminderRef::Default(task), 103),
+            (crate::reminders::ReminderRef::Adhoc(alarm), 104),
+        ] {
+            dismissals.insert(crate::reminders::ReminderDismissal {
+                reminder,
+                occurrence: ts(occ),
+                dismissed_at: ts(occ + 1),
+            });
+        }
+        let entry = break_dismissals_entry_for(&dismissals, &break_rules, board);
+        assert_eq!(
+            entry.dismissals.len(),
+            1,
+            "only the on-board rule's row emits"
+        );
+        assert_eq!(entry.unknown, BTreeMap::new());
+        let wire = serde_json::to_string(&entry).unwrap();
+        assert!(
+            !wire.contains(&foreign.id.as_uuid().to_string()),
+            "foreign-board rows never emit: {wire}"
+        );
+        assert!(
+            !wire.contains(&orphan.as_uuid().to_string()),
+            "orphan rows never emit: {wire}"
+        );
+        assert!(!wire.contains(&task.as_uuid().to_string()), "{wire}");
+        assert!(!wire.contains(&alarm.as_uuid().to_string()), "{wire}");
+        assert!(!wire.contains("default:"), "{wire}");
+        assert!(!wire.contains("alarm:"), "{wire}");
+    }
+
+    // P9 (D-12, the prune): the reserved entry survives a prune whose
+    // present-card set excludes it; the break-rules section has no
+    // prune arm at all.
+    #[test]
+    fn reserved_break_entry_survives_the_prune() {
+        let sections = AppDataSections {
+            dismissals: Some(
+                [
+                    ("55".to_owned(), dismissals_card_entry()),
+                    (
+                        BREAK_DISMISSALS_ENTRY_KEY.to_owned(),
+                        serde_json::from_value(serde_json::json!({
+                            "dismissals": {
+                                "break:018f0000-0000-7000-8000-000000000001|2026-04-01T08:00:00+00:00":
+                                    { "dismissed_at": "2026-04-01T08:00:01+00:00" }
+                            }
+                        }))
+                        .unwrap(),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            ),
+            break_rules: Some(
+                [(
+                    "018f0000-0000-7000-8000-000000000002".to_owned(),
+                    serde_json::from_value::<BreakRuleEntry>(serde_json::json!({
+                        "label": "stretch",
+                        "threshold_seconds": 60,
+                        "created": "2026-04-01T08:00:00+00:00",
+                        "clock": "2026-04-01T08:00:00+00:00",
+                        "insistence": "normal"
+                    }))
+                    .unwrap(),
+                )]
+                .into_iter()
+                .collect(),
+            ),
+            ..Default::default()
+        };
+        let doc = document(2, sections);
+        let pruned = prune_absent_cards(&doc, &["99".to_owned()].into_iter().collect());
+        let dismissals = pruned.sections.dismissals.as_ref().unwrap();
+        assert!(
+            !dismissals.contains_key("55"),
+            "the absent card's entry is stripped"
+        );
+        assert!(
+            dismissals.contains_key(BREAK_DISMISSALS_ENTRY_KEY),
+            "the reserved entry survives regardless of the present-card set"
+        );
+        assert!(
+            pruned.sections.break_rules.is_some(),
+            "the board-level break-rules section has no prune arm"
+        );
+    }
+
+    fn dismissals_card_entry() -> DismissalsEntry {
+        serde_json::from_value(serde_json::json!({
+            "dismissals": {
+                "018f0000-0000-7000-8000-000000000009|2026-04-01T08:00:00+00:00":
+                    { "dismissed_at": "2026-04-01T08:00:01+00:00" }
+            }
+        }))
+        .unwrap()
+    }
+
     // ---- proptest: verbatim preservation is the load-bearing property --
 
     proptest! {
@@ -4519,10 +4793,27 @@ mod tests {
             prop_assert_eq!(base, once);
         }
 
-        // P2 (design D-4, the fail-closed pin): for an arbitrary local
-        // dismissal set — Default- and Adhoc-ref rows included — no
-        // local TaskId or AdhocAlarmId identity and no default:/alarm:
-        // key form can reach the serialized dismissals wire content.
+        // P2 (design D-4, the fail-closed pin, extended in place for
+        // #588 D-15). The constraint: the dismissals wire never carries
+        // a *device-local* family's identity, while the roaming Break
+        // family emits only under its own `break:` grammar inside the
+        // reserved board-level entry. Three typed legs over the same
+        // generated set:
+        //
+        // - **Card leg** (unchanged assertions): the card builder's
+        //   wire content contains no TaskId, no AdhocAlarmId, no
+        //   BreakRuleId, no default:/alarm:/break: key form — the
+        //   fail-closed contract, byte-identical.
+        // - **Reserved leg** (the carve-out): the reserved-entry
+        //   builder emits `break:<uuid>|…` keys for exactly the
+        //   generated Break-ref rows whose rule exists on the board,
+        //   and never carries TaskId/AdhocAlarmId text or a
+        //   default:/alarm: prefix. Family membership decides; no
+        //   string allowlist. Flip-proof: temporarily emit a
+        //   Default-ref row from the reserved builder (one test-local
+        //   match arm) and the conjunction/negative assertions fail.
+        // - **Conjunction leg**: card entries ∪ reserved entry never
+        //   carries a device-local family's identity.
         #[test]
         fn no_local_ids_reach_the_dismissals_wire(
             task_seed in 0_u128..1_000_000,
@@ -4561,6 +4852,22 @@ mod tests {
                 dismissals.insert(dismissal(ReminderRef::Adhoc(alarm), occurrence, occurrence + 3));
             }
             let break_rule = crate::ids::BreakRuleId::from(uuid::Uuid::from_u128(break_seed));
+            let board = crate::ids::BoardId::from(uuid::Uuid::from_u128(break_seed ^ 0xdead_beef));
+            let mut break_rules = BTreeMap::new();
+            break_rules.insert(
+                break_rule,
+                crate::reminders::BreakRule {
+                    id: break_rule,
+                    board,
+                    label: "time for a break".to_owned(),
+                    threshold: crate::tracking::WorkThreshold::try_new(
+                        chrono::TimeDelta::try_seconds(1_500).unwrap(),
+                    )
+                    .unwrap(),
+                    insistence: Insistence::Normal,
+                    created_at: ts(1),
+                },
+            );
             if with_break_row {
                 dismissals.insert(dismissal(
                     ReminderRef::Break(break_rule),
@@ -4580,11 +4887,46 @@ mod tests {
             );
             prop_assert!(
                 !wire.contains(&break_rule.as_uuid().to_string()),
-                "the local BreakRuleId reached the wire: {wire}"
+                "the local BreakRuleId reached the card wire: {wire}"
             );
             prop_assert!(!wire.contains("default:"), "{wire}");
             prop_assert!(!wire.contains("alarm:"), "{wire}");
             prop_assert!(!wire.contains("break:"), "{wire}");
+
+            // The reserved leg (the carve-out): typed positive for the
+            // Break family, typed negative for the device-local ones.
+            let reserved = break_dismissals_entry_for(&dismissals, &break_rules, board);
+            let reserved_wire = serde_json::to_string(&reserved).unwrap();
+            prop_assert_eq!(
+                reserved_wire.contains(&format!("break:{}|", break_rule.as_uuid())),
+                with_break_row,
+                "exactly the on-board Break-ref rows emit under the break: grammar"
+            );
+            prop_assert!(
+                !reserved_wire.contains(&task.as_uuid().to_string()),
+                "the local TaskId reached the reserved entry: {reserved_wire}"
+            );
+            prop_assert!(
+                !reserved_wire.contains(&alarm.as_uuid().to_string()),
+                "the local AdhocAlarmId reached the reserved entry: {reserved_wire}"
+            );
+            prop_assert!(!reserved_wire.contains("default:"), "{reserved_wire}");
+            prop_assert!(!reserved_wire.contains("alarm:"), "{reserved_wire}");
+
+            // The conjunction leg: the whole serialized dismissals
+            // section (card entries ∪ reserved entry) never carries a
+            // device-local family's identity.
+            let section_wire = format!("{wire}{reserved_wire}");
+            prop_assert!(
+                !section_wire.contains(&task.as_uuid().to_string()),
+                "the local TaskId reached the section wire"
+            );
+            prop_assert!(
+                !section_wire.contains(&alarm.as_uuid().to_string()),
+                "the local AdhocAlarmId reached the section wire"
+            );
+            prop_assert!(!section_wire.contains("default:"));
+            prop_assert!(!section_wire.contains("alarm:"));
         }
 
         // The pre-dismissals relay (agenda §4(f)/M6 extended to the

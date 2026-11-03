@@ -3479,3 +3479,277 @@ fn an_old_state_snapshot_without_kinds_decodes() {
         taskboard_domain::BoardClocks::epoch()
     );
 }
+
+// ---- The break folds, board-level arms (#588, chunk 1.2) ----------------
+
+/// A pulled document carrying a board-level `break-rules` row and the
+/// reserved `break` dismissals entry lands in the engine state through
+/// the §5b board-level fold arms: the rule adopts with the
+/// fold-stamped locally-bound board, the Break-ref dismissal imports
+/// without a rule-existence check (the fold-order property), and the
+/// folded row withdraws the local toast through the ref-generic
+/// `withdrawals_for` path. Each entry folds under its own grammar: a
+/// card entry carrying adversarial `break:` keys imports nothing (the
+/// per-card loop never reads the reserved entry, and its grammar
+/// rejects the break form).
+#[tokio::test(start_paused = true)]
+#[allow(clippy::too_many_lines)] // the fixture is the length; the assertions are three
+async fn break_rules_and_reserved_entry_fold_into_engine_state() {
+    use taskboard_domain::{
+        AppDataDocument, AppDataEvidence, AppDataSections, BREAK_DISMISSALS_ENTRY_KEY, BreakRuleId,
+        DeckFeatures, DismissalEntry, DismissalsEntry, RemoteCardId, RemoteCardRef, RemoteStackId,
+        RemoteStackRef, WorkThreshold, break_dismissal_wire_key, test_support::test_connector,
+    };
+
+    const CARD: u64 = 7;
+    const STACK: u64 = 5;
+
+    let board_id = taskboard_domain::BoardId::from_uuid(uuid::Uuid::from_u128(1));
+    let stack_id = taskboard_domain::StackId::from_uuid(uuid::Uuid::from_u128(2));
+    let task_id = taskboard_domain::TaskId::from_uuid(uuid::Uuid::from_u128(3));
+    let mut state = seed_bound_board_state("board");
+    let board = state.boards.values_mut().next().expect("one board");
+    board.id = board_id;
+    state.stacks.insert(
+        stack_id,
+        taskboard_domain::Stack {
+            id: stack_id,
+            remote: Some(taskboard_domain::RemoteStackRef {
+                board: RemoteBoardId(42),
+                stack: RemoteStackId(STACK),
+            }),
+            board: board_id,
+            title: "backlog".into(),
+            order: 1,
+            archived: false,
+            deleted: false,
+            clocks: taskboard_domain::StackClocks {
+                title: ts(T0),
+                order: ts(T0),
+                deleted: taskboard_domain::BoardClocks::epoch(),
+            },
+            remote_seen: None,
+        },
+    );
+    state.tasks.insert(
+        task_id,
+        taskboard_domain::Task {
+            id: task_id,
+            remote: Some(RemoteCardRef {
+                board: RemoteBoardId(42),
+                stack: RemoteStackId(STACK),
+                card: RemoteCardId(CARD),
+            }),
+            title: "task".into(),
+            description: String::new(),
+            label_memberships: BTreeMap::new(),
+            duedate: Some(ts(T0)),
+            scheduled: None,
+            done: None,
+            stack: stack_id,
+            order: 1,
+            effort: None,
+            importance: None,
+            urgency: None,
+            recur: None,
+            kind: taskboard_domain::entities::TaskKind::Standard,
+            archived: false,
+            deleted: false,
+            clocks: taskboard_domain::TaskClocks {
+                title: ts(T0),
+                description: ts(T0),
+                duedate: ts(T0),
+                scheduled: ts(T0),
+                done: ts(T0),
+                position: ts(T0),
+                effort: ts(T0),
+                importance: ts(T0),
+                urgency: ts(T0),
+                recur: ts(T0),
+                kind: ts(T0),
+                archived: ts(T0),
+                deleted: ts(T0),
+            },
+            remote_seen: None,
+            remote_baseline: None,
+        },
+    );
+
+    let spawner = Spawner {
+        repo: Arc::new(taskboard_domain::test_support::InMemoryRepository::with_state(state)),
+        ..Spawner::default()
+    };
+    let mut h = spawn(spawner).await;
+
+    // The foreign truth: rule 0xe on the shared board, its occurrence
+    // dismissed on another device.
+    let rule = BreakRuleId::from_uuid(uuid::Uuid::from_u128(0xe));
+    let occurrence = ts(T0 + 6_000);
+    let evidence = AppDataEvidence::Document(Box::new(AppDataDocument {
+        format: taskboard_domain::appdata::APPDATA_FORMAT,
+        board: RemoteBoardId(42),
+        sections: AppDataSections {
+            break_rules: Some(
+                [(
+                    rule.as_uuid().to_string(),
+                    taskboard_domain::BreakRuleEntry::Rule {
+                        label: "time for a break".to_owned(),
+                        threshold: WorkThreshold::try_new(
+                            chrono::TimeDelta::try_seconds(1_500).unwrap(),
+                        )
+                        .expect("positive threshold"),
+                        created: ts(T0 - 10),
+                        clock: ts(T0 - 10),
+                        insistence: taskboard_domain::Insistence::Alarm,
+                    },
+                )]
+                .into_iter()
+                .collect(),
+            ),
+            dismissals: Some(
+                [
+                    // The adversarial card entry: break-grammar keys
+                    // under a card key fold nothing (the card loop's
+                    // grammar rejects the break form).
+                    (
+                        CARD.to_string(),
+                        DismissalsEntry {
+                            dismissals: [(
+                                break_dismissal_wire_key(rule, occurrence),
+                                DismissalEntry::Dismissed {
+                                    dismissed_at: ts(T0 - 30),
+                                },
+                            )]
+                            .into(),
+                            unknown: std::collections::BTreeMap::new(),
+                        },
+                    ),
+                    // The reserved board-level entry folds.
+                    (
+                        BREAK_DISMISSALS_ENTRY_KEY.to_owned(),
+                        DismissalsEntry {
+                            dismissals: [(
+                                break_dismissal_wire_key(rule, occurrence),
+                                DismissalEntry::Dismissed {
+                                    dismissed_at: ts(T0 - 30),
+                                },
+                            )]
+                            .into(),
+                            unknown: std::collections::BTreeMap::new(),
+                        },
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            ),
+            habits: None,
+            habit_log: None,
+            tasks: None,
+            reminder_rules: None,
+            time_entries: None,
+            unknown: std::collections::BTreeMap::new(),
+        },
+        unknown: std::collections::BTreeMap::new(),
+    }));
+
+    h.report_tx
+        .send(SyncReport::Completed {
+            app_data: evidence,
+            duration: Duration::ZERO,
+            connector: test_connector(),
+            snapshot: Box::new(RemoteBoardSnapshot {
+                board: RemoteBoard {
+                    id: RemoteBoardId(42),
+                    title: "remote board".into(),
+                    color: "00ff00".into(),
+                    archived: false,
+                    deleted_at: None,
+                    last_modified: ts(T0),
+                },
+                stacks: vec![taskboard_domain::RemoteStack {
+                    id: RemoteStackRef {
+                        board: RemoteBoardId(42),
+                        stack: RemoteStackId(STACK),
+                    },
+                    title: "backlog".into(),
+                    order: 1,
+                    archived: false,
+                    deleted_at: None,
+                    last_modified: ts(T0),
+                }],
+                tasks: vec![taskboard_domain::RemoteTask {
+                    id: RemoteCardRef {
+                        board: RemoteBoardId(42),
+                        stack: RemoteStackId(STACK),
+                        card: RemoteCardId(CARD),
+                    },
+                    title: "task".into(),
+                    description: String::new(),
+                    duedate: Some(ts(T0)),
+                    scheduled: None,
+                    done: None,
+                    stack: RemoteStackId(STACK),
+                    order: 1,
+                    labels: std::collections::BTreeSet::new(),
+                    archived: false,
+                    last_modified: ts(T0),
+                    created_at: ts(T0),
+                }],
+                labels: vec![],
+            }),
+            validators: test_validators(),
+            pushes: vec![],
+            read_at: ts(T0),
+            features: DeckFeatures::CONSERVATIVE,
+        })
+        .await
+        .expect("report channel open");
+
+    eventually(&h.handle, |app| {
+        // The rule adopted with the fold-stamped board (no board rode
+        // the wire).
+        app.reminders.break_rules.get(&rule).is_some_and(|row| {
+            row.board == board_id && row.label == "time for a break"
+        }) && app
+            .reminders
+            .dismissals
+            .contains(&taskboard_domain::ReminderDismissal {
+                reminder: taskboard_domain::ReminderRef::Break(rule),
+                occurrence,
+                dismissed_at: ts(T0 - 30),
+            })
+            // The adversarial card entry folded nothing under the
+            // Rule-ref grammar.
+            && !app
+                .reminders
+                .dismissals
+                .iter()
+                .any(|d| matches!(d.reminder, taskboard_domain::ReminderRef::Rule(_)))
+    })
+    .await;
+
+    // The folded dismissal withdraws the local toast (the ref-generic
+    // withdraw direction). Bounded wait: the withdrawal follows the
+    // publish the predicate above observed.
+    let message = tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            match h.notifications.try_recv() {
+                Ok(message) => return message,
+                Err(_) => tokio::time::advance(Duration::from_millis(1)).await,
+            }
+        }
+    })
+    .await
+    .expect("the withdraw lands within the deadline");
+    assert_eq!(
+        message,
+        NotifierMessage::Withdraw {
+            reminder: taskboard_domain::ReminderRef::Break(rule),
+            occurrence,
+        }
+    );
+    assert!(
+        h.notifications.try_recv().is_err(),
+        "a re-folded row is not re-withdrawn"
+    );
+}
