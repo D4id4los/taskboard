@@ -573,12 +573,18 @@ fn the_stack_detail_list_virtualises() {
     );
 }
 
-/// Anchor-on-removal (#461): with the Today overdue viewport driven
-/// deep by the keyboard walk, flipping an above-viewport overdue
-/// task's `done` removes it from the section — and the on-screen
-/// rows do not move (the repeater's row-anchored offset shift).
-/// A pixel-anchored repeater shifts every visible row up by the
-/// removed row's height and fails this pin.
+/// A Done-section insertion must not disturb the Today viewport
+/// (#461, landed with #511). Flipping the fixture's task 0 `done`
+/// inserts it into the Done-today section — a separate, lower
+/// `ListView` — and the pin asserts an in-window Overdue row rests.
+/// Scope note (chunk 4.1 review): task 0 is fixture-`done` by the
+/// every-10th pattern (`order % 10 == 0`), so this flip is **not** an
+/// Overdue removal — the catalogue's real case-1 pin is
+/// `a_true_removal_above_the_today_viewport_reflows_by_the_removed_extent`
+/// (the slint 1.18.1 repeater is content-anchored, so an above-viewport
+/// removal reflows the live rows by the removed extent). This pin's
+/// surviving property is the cross-section one: a Done-section
+/// insertion must neither move nor scroll the Overdue viewport.
 #[test]
 fn a_removal_above_the_today_viewport_leaves_the_rows_resting() {
     support::driver::run(
@@ -605,7 +611,11 @@ fn a_removal_above_the_today_viewport_leaves_the_rows_resting() {
 
             // Drive the walk deep: each stroke lands on the next row
             // of the today domain; past the viewport the seek
-            // top-anchors, so the viewport ends far from row 0.
+            // top-anchors, so the viewport ends far from row 0. (The
+            // walk's 30 strokes end at overdue position 29 — order 99;
+            // the position arithmetic is derived on the within-viewport
+            // pin below. bench_label(87) is overdue position 26, live
+            // mid-window — the pin's resting witness row.)
             for _ in 0..30 {
                 handle.dispatch_action(ActionId::NavNextItem);
                 driver.advance_time(0);
@@ -613,11 +623,14 @@ fn a_removal_above_the_today_viewport_leaves_the_rows_resting() {
 
             let focused = driver
                 .find_by_label(&bench_label(87))
-                .unwrap_or_else(|| panic!("the walked-to card is live"));
+                .unwrap_or_else(|| panic!("the witness card is live"));
             let rest = focused.absolute_position();
 
-            // Flip overdue row 0's `done` (the fixture's first task is
-            // the oldest overdue): a removal above the viewport.
+            // Flip the fixture's first task's `done`: order 0 is
+            // fixture-built `done` by the every-10th pattern
+            // (`rem_euclid(10) == 0`), so it was never an Overdue row;
+            // re-stamping it inside today's window inserts it into the
+            // Done-today section and leaves Overdue untouched.
             let mut next = (**state.load()).clone();
             let first = next
                 .tasks
@@ -632,11 +645,11 @@ fn a_removal_above_the_today_viewport_leaves_the_rows_resting() {
 
             let focused = driver
                 .find_by_label(&bench_label(87))
-                .unwrap_or_else(|| panic!("the focused card stays live across the removal"));
+                .unwrap_or_else(|| panic!("the witness card stays live across the flip"));
             let after = focused.absolute_position();
             assert_eq!(
                 rest.y, after.y,
-                "the removal above the viewport must not move the on-screen rows"
+                "a Done-section insertion must not move the Overdue viewport's rows"
             );
         },
     );
@@ -693,9 +706,11 @@ fn an_insertion_above_the_today_viewport_reflows_by_the_inserted_extent() {
             let (handle, _engine, state) = mount_today(driver, 600);
 
             // Drive the walk deep (the landed removal pin's setup):
-            // 30 strokes enter at overdue row 0 and end well past the
-            // viewport, so the seek has scrolled the window far from
-            // the section head.
+            // 30 strokes enter at overdue row 0 and end at overdue
+            // position 29 (order 99 — the arithmetic is derived on the
+            // within-viewport pin below), so the window has left the
+            // section head behind. bench_label(87) (position 26) is a
+            // live mid-window anchor row.
             for _ in 0..30 {
                 handle.dispatch_action(ActionId::NavNextItem);
                 driver.advance_time(0);
@@ -703,7 +718,7 @@ fn an_insertion_above_the_today_viewport_reflows_by_the_inserted_extent() {
 
             let focused = driver
                 .find_by_label(&bench_label(87))
-                .unwrap_or_else(|| panic!("the walked-to card is live"));
+                .unwrap_or_else(|| panic!("the anchor card is live"));
             let rest = focused.absolute_position();
             let successor = driver
                 .find_by_label(&bench_label(93))
@@ -749,7 +764,7 @@ fn an_insertion_above_the_today_viewport_reflows_by_the_inserted_extent() {
                 "the insertion above the viewport reflows the live rows down by the \
                  inserted row's extent (content-anchored viewport), got shift {shifted}"
             );
-            // The reflow is uniform: the walked-to row and its
+            // The reflow is uniform: the anchor row and its
             // successor shift by the same extent (the section's list
             // moves as one under the fixed content offset).
             let successor = driver
@@ -816,7 +831,7 @@ fn a_true_removal_above_the_today_viewport_reflows_by_the_removed_extent() {
 
             let focused = driver
                 .find_by_label(&bench_label(87))
-                .unwrap_or_else(|| panic!("the walked-to card is live"));
+                .unwrap_or_else(|| panic!("the anchor card is live"));
             let rest = focused.absolute_position();
             let header = driver
                 .find_by_label("Overdue")
@@ -861,7 +876,7 @@ fn a_true_removal_above_the_today_viewport_reflows_by_the_removed_extent() {
     );
 }
 
-/// Anchor-on-removal of a live walked-to row (#461 stage-1 plan D-2
+/// Anchor-on-removal of a live in-window row (#461 stage-1 plan D-2
 /// case 3): with the Today overdue viewport driven deep by the
 /// keyboard walk, flipping a **live** row's `done` removes it from the
 /// section in place — the rows **below** it close up by exactly the
@@ -885,10 +900,14 @@ fn a_removal_within_the_today_viewport_closes_the_rows_below_without_scrolling()
 
             // Drive the walk deep (the landed removal pin's setup):
             // 30 strokes enter at overdue row 0. Overdue rows are the
-            // fixture's multiples of 3 minus its multiples of 10
-            // (every 10th task is done), so the 29th row is order 87
-            // (3, 6, …, 84 below it) and its successor is order 93 —
-            // order 90 is a fixture-done task, not a row.
+            // fixture's multiples of 3 (duedate set) minus its
+            // multiples of 10 (`has_done`), so overdue position p is
+            // order 3·m with m − ⌊m/10⌋ = p + 1: the walk's end,
+            // position 29, is order 99, and order 87 is position 26 —
+            // mid-window, pinned because both a row above it
+            // (order 75) and its successor (order 93; order 90 is
+            // fixture-done, not a row) are live, so the close-up is
+            // measurable on both sides.
             for _ in 0..30 {
                 handle.dispatch_action(ActionId::NavNextItem);
                 driver.advance_time(0);
@@ -896,7 +915,7 @@ fn a_removal_within_the_today_viewport_closes_the_rows_below_without_scrolling()
 
             let focused = driver
                 .find_by_label(&bench_label(87))
-                .unwrap_or_else(|| panic!("the walked-to card is live"));
+                .unwrap_or_else(|| panic!("the anchor card is live"));
             let rest = focused.absolute_position();
             let above = driver
                 .find_by_label(&bench_label(75))
@@ -907,16 +926,16 @@ fn a_removal_within_the_today_viewport_closes_the_rows_below_without_scrolling()
                 .unwrap_or_else(|| panic!("the Overdue section header renders"));
             let header_rest = header.absolute_position();
 
-            // Flip the walked-to row's `done` to a fixed stamp
+            // Flip the pinned row's `done` to a fixed stamp
             // outside today's window: a removal within the viewport.
             let mut next = (**state.load()).clone();
-            let walked = next
+            let pinned = next
                 .tasks
                 .values()
                 .find(|task| task.title == bench_label(87))
-                .expect("the walked-to task")
+                .expect("the pinned task")
                 .id;
-            next.tasks.get_mut(&walked).expect("task").done =
+            next.tasks.get_mut(&pinned).expect("task").done =
                 Some(chrono::DateTime::from_timestamp(1_704_067_200, 0).expect("fixture stamp"));
             state.store(Arc::new(next));
             handle.refresh();
