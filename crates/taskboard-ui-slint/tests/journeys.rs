@@ -276,8 +276,27 @@ fn dummy_system_receiver() -> SignalReceiver {
     rx
 }
 
-/// §7.3 — the ten core verbs in one continuous session (one `#[test]`
-/// is the contract; per-step asserts inside — the length is the
+/// The device-local wall-clock's UTC instant (r4 D28): the journeys'
+/// tz-invariant expectation helper — the grammar speaks the local
+/// zone, storage stays UTC instants; the journey computes the seam
+/// conversion the way the app does. Fixed dates/times only — never a
+/// DST edge.
+#[allow(clippy::too_many_arguments)]
+fn local_wall(y: i32, mo: u32, d: u32, h: u32, mi: u32) -> chrono::DateTime<chrono::Utc> {
+    chrono::Local
+        .with_ymd_and_hms(y, mo, d, h, mi, 0)
+        .single()
+        .expect("a resolvable local wall-clock")
+        .with_timezone(&chrono::Utc)
+}
+
+/// The local midnight convenience.
+fn local_midnight(y: i32, mo: u32, d: u32) -> chrono::DateTime<chrono::Utc> {
+    local_wall(y, mo, d, 0, 0)
+}
+
+/// §7.3 — the ten core verbs in one continuous session (one
+/// continuous journey; per-step asserts inside — the length is the
 /// contract's, not sprawl).
 #[allow(clippy::too_many_lines)]
 #[test]
@@ -6653,7 +6672,7 @@ fn the_control_walk_reaches_fields_buttons_and_the_picker() {
     // it (today's fallback would be wall-clock-dependent). January
     // 2030 starts on a Tuesday: one leading blank puts the 30th at
     // flat grid index 30 on every calendar day.
-    let due = chrono::Utc.with_ymd_and_hms(2030, 1, 30, 0, 0, 0).unwrap();
+    let due = local_midnight(2030, 1, 30);
     state
         .tasks
         .get_mut(&fixture.task0)
@@ -7002,7 +7021,7 @@ fn the_menu_curates_itself() {
 #[allow(clippy::too_many_lines)] // the walk is the contract's length
 fn the_typed_due_entries_reach_the_boundary() {
     let (fixture, mut state) = fixture::journey_state();
-    let due = chrono::Utc.with_ymd_and_hms(2030, 1, 31, 0, 0, 0).unwrap();
+    let due = local_midnight(2030, 1, 31);
     state
         .tasks
         .get_mut(&fixture.task1)
@@ -7038,9 +7057,7 @@ fn the_typed_due_entries_reach_the_boundary() {
             harness.assert_commands(&[StateCommand::UpdateTask {
                 id: fixture.task1,
                 changes: taskboard_domain::TaskChanges {
-                    duedate: Some(Some(
-                        chrono::Utc.with_ymd_and_hms(2030, 2, 28, 0, 0, 0).unwrap(),
-                    )),
+                    duedate: Some(Some(local_midnight(2030, 2, 28))),
                     ..taskboard_domain::TaskChanges::default()
                 },
             }]);
@@ -7054,9 +7071,7 @@ fn the_typed_due_entries_reach_the_boundary() {
             harness.assert_commands(&[StateCommand::UpdateTask {
                 id: fixture.task1,
                 changes: taskboard_domain::TaskChanges {
-                    duedate: Some(Some(
-                        chrono::Utc.with_ymd_and_hms(2030, 1, 31, 0, 0, 0).unwrap(),
-                    )),
+                    duedate: Some(Some(local_midnight(2030, 1, 31))),
                     ..taskboard_domain::TaskChanges::default()
                 },
             }]);
@@ -7137,7 +7152,7 @@ fn the_scheduled_editor_reaches_the_boundary_with_parity() {
         .tasks
         .get_mut(&fixture.task1)
         .expect("fixture task")
-        .scheduled = Some(chrono::Utc.with_ymd_and_hms(2030, 3, 15, 0, 0, 0).unwrap());
+        .scheduled = Some(local_midnight(2030, 3, 15));
     support::driver::run(
         DriverOptions {
             headless_renderer: true,
@@ -7162,9 +7177,7 @@ fn the_scheduled_editor_reaches_the_boundary_with_parity() {
             harness.assert_commands(&[StateCommand::UpdateTask {
                 id: fixture.task1,
                 changes: taskboard_domain::TaskChanges {
-                    scheduled: Some(Some(
-                        chrono::Utc.with_ymd_and_hms(2030, 4, 1, 0, 0, 0).unwrap(),
-                    )),
+                    scheduled: Some(Some(local_midnight(2030, 4, 1))),
                     ..taskboard_domain::TaskChanges::default()
                 },
             }]);
@@ -7196,7 +7209,7 @@ fn steppers_seed_and_step_from_empty() {
         .tasks
         .get_mut(&fixture.task1)
         .expect("fixture task")
-        .duedate = Some(chrono::Utc.with_ymd_and_hms(2030, 1, 31, 0, 0, 0).unwrap());
+        .duedate = Some(local_midnight(2030, 1, 31));
     support::driver::run(
         DriverOptions {
             headless_renderer: true,
@@ -7235,11 +7248,7 @@ fn steppers_seed_and_step_from_empty() {
             harness.assert_commands(&[StateCommand::UpdateTask {
                 id: fixture.task1,
                 changes: taskboard_domain::TaskChanges {
-                    duedate: Some(Some(
-                        chrono::Utc
-                            .with_ymd_and_hms(2030, 1, 30, 23, 45, 0)
-                            .unwrap(),
-                    )),
+                    duedate: Some(Some(local_wall(2030, 1, 30, 23, 45))),
                     ..taskboard_domain::TaskChanges::default()
                 },
             }]);
@@ -7271,7 +7280,7 @@ fn click_away_commits_parseable_and_discards_junk() {
         .tasks
         .get_mut(&fixture.task1)
         .expect("fixture task")
-        .duedate = Some(chrono::Utc.with_ymd_and_hms(2030, 1, 31, 0, 0, 0).unwrap());
+        .duedate = Some(local_midnight(2030, 1, 31));
     support::driver::run(
         DriverOptions {
             headless_renderer: true,
@@ -7324,9 +7333,7 @@ fn click_away_commits_parseable_and_discards_junk() {
             harness.assert_commands(&[StateCommand::UpdateTask {
                 id: fixture.task1,
                 changes: taskboard_domain::TaskChanges {
-                    duedate: Some(Some(
-                        chrono::Utc.with_ymd_and_hms(2030, 2, 14, 0, 0, 0).unwrap(),
-                    )),
+                    duedate: Some(Some(local_midnight(2030, 2, 14))),
                     ..taskboard_domain::TaskChanges::default()
                 },
             }]);
@@ -7373,9 +7380,7 @@ fn click_away_commits_parseable_and_discards_junk() {
             harness.assert_commands(&[StateCommand::UpdateTask {
                 id: fixture.task1,
                 changes: taskboard_domain::TaskChanges {
-                    scheduled: Some(Some(
-                        chrono::Utc.with_ymd_and_hms(2030, 3, 1, 0, 0, 0).unwrap(),
-                    )),
+                    scheduled: Some(Some(local_midnight(2030, 3, 1))),
                     ..taskboard_domain::TaskChanges::default()
                 },
             }]);
@@ -7394,7 +7399,7 @@ fn the_date_field_validity_flips_with_the_parse() {
         .tasks
         .get_mut(&fixture.task1)
         .expect("fixture task")
-        .duedate = Some(chrono::Utc.with_ymd_and_hms(2030, 1, 31, 0, 0, 0).unwrap());
+        .duedate = Some(local_midnight(2030, 1, 31));
     support::driver::run(
         DriverOptions {
             headless_renderer: true,
@@ -7516,7 +7521,7 @@ fn a_foreign_field_steal_settles_the_due_per_the_rule() {
         .tasks
         .get_mut(&fixture.task1)
         .expect("fixture task")
-        .duedate = Some(chrono::Utc.with_ymd_and_hms(2030, 1, 31, 0, 0, 0).unwrap());
+        .duedate = Some(local_midnight(2030, 1, 31));
     support::driver::run(
         DriverOptions {
             headless_renderer: true,
@@ -7571,9 +7576,7 @@ fn a_foreign_field_steal_settles_the_due_per_the_rule() {
             harness.assert_commands(&[StateCommand::UpdateTask {
                 id: fixture.task1,
                 changes: taskboard_domain::TaskChanges {
-                    duedate: Some(Some(
-                        chrono::Utc.with_ymd_and_hms(2030, 3, 1, 0, 0, 0).unwrap(),
-                    )),
+                    duedate: Some(Some(local_midnight(2030, 3, 1))),
                     ..taskboard_domain::TaskChanges::default()
                 },
             }]);
@@ -7601,7 +7604,7 @@ fn the_combobox_is_the_only_time_path() {
         .tasks
         .get_mut(&fixture.task1)
         .expect("fixture task")
-        .duedate = Some(chrono::Utc.with_ymd_and_hms(2030, 1, 31, 0, 0, 0).unwrap());
+        .duedate = Some(local_midnight(2030, 1, 31));
     support::driver::run(
         DriverOptions {
             headless_renderer: true,
@@ -7694,9 +7697,7 @@ fn the_combobox_is_the_only_time_path() {
             harness.assert_commands(&[StateCommand::UpdateTask {
                 id: fixture.task1,
                 changes: taskboard_domain::TaskChanges {
-                    duedate: Some(Some(
-                        chrono::Utc.with_ymd_and_hms(2030, 1, 31, 9, 45, 0).unwrap(),
-                    )),
+                    duedate: Some(Some(local_wall(2030, 1, 31, 9, 45))),
                     ..taskboard_domain::TaskChanges::default()
                 },
             }]);
@@ -7718,7 +7719,7 @@ fn the_combobox_is_the_only_time_path() {
 #[test]
 fn the_due_picker_journeys_reach_the_boundary() {
     let (fixture, mut state) = fixture::journey_state();
-    let due = chrono::Utc.with_ymd_and_hms(2030, 1, 31, 0, 0, 0).unwrap();
+    let due = local_midnight(2030, 1, 31);
     state
         .tasks
         .get_mut(&fixture.task1)
@@ -7844,9 +7845,7 @@ fn the_due_picker_journeys_reach_the_boundary() {
             let picked = vec![StateCommand::UpdateTask {
                 id: fixture.task1,
                 changes: taskboard_domain::TaskChanges {
-                    duedate: Some(Some(
-                        chrono::Utc.with_ymd_and_hms(2030, 2, 28, 0, 0, 0).unwrap(),
-                    )),
+                    duedate: Some(Some(local_midnight(2030, 2, 28))),
                     ..taskboard_domain::TaskChanges::default()
                 },
             }];
@@ -7867,9 +7866,7 @@ fn the_due_picker_journeys_reach_the_boundary() {
             harness.assert_commands(&[StateCommand::UpdateTask {
                 id: fixture.task1,
                 changes: taskboard_domain::TaskChanges {
-                    duedate: Some(Some(
-                        chrono::Utc.with_ymd_and_hms(2030, 1, 15, 0, 0, 0).unwrap(),
-                    )),
+                    duedate: Some(Some(local_midnight(2030, 1, 15))),
                     ..taskboard_domain::TaskChanges::default()
                 },
             }]);
@@ -7940,7 +7937,7 @@ fn the_picker_overlay_dismisses_without_disturbing_the_editor() {
         .tasks
         .get_mut(&fixture.task1)
         .expect("fixture task")
-        .duedate = Some(chrono::Utc.with_ymd_and_hms(2030, 1, 31, 0, 0, 0).unwrap());
+        .duedate = Some(local_midnight(2030, 1, 31));
     support::driver::run(
         DriverOptions {
             headless_renderer: true,
@@ -7982,9 +7979,7 @@ fn the_picker_overlay_dismisses_without_disturbing_the_editor() {
             harness.assert_commands(&[StateCommand::UpdateTask {
                 id: fixture.task1,
                 changes: taskboard_domain::TaskChanges {
-                    duedate: Some(Some(
-                        chrono::Utc.with_ymd_and_hms(2030, 1, 31, 0, 0, 0).unwrap(),
-                    )),
+                    duedate: Some(Some(local_midnight(2030, 1, 31))),
                     ..taskboard_domain::TaskChanges::default()
                 },
             }]);
@@ -9969,7 +9964,7 @@ fn a_right_press_outside_dismisses_the_capture_overlay() {
 #[test]
 fn a_right_press_outside_dismisses_the_date_picker() {
     let (fixture, mut state) = fixture::journey_state();
-    let due = chrono::Utc.with_ymd_and_hms(2030, 1, 30, 0, 0, 0).unwrap();
+    let due = local_midnight(2030, 1, 30);
     state
         .tasks
         .get_mut(&fixture.task0)

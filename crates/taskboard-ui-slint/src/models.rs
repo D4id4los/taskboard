@@ -1514,7 +1514,12 @@ fn push_task_detail(
                 .map_or(String::new(), |s| s.title.clone()),
         ),
         due_phrase: SharedString::from(subject.map_or(String::new(), |t| {
-            presentation::due_phrase(presentation::due_kind(t, sets), t.duedate, now)
+            presentation::due_phrase(
+                presentation::due_kind(t, sets),
+                t.duedate,
+                now,
+                &chrono::Local,
+            )
         })),
         due_kind: to_slint_due_kind(
             subject.map_or(DueKind::None, |t| presentation::due_kind(t, sets)),
@@ -1546,7 +1551,7 @@ fn push_task_detail(
         scheduled_text: SharedString::from(if scheduled_open { due.text } else { "" }),
         scheduled_echo: SharedString::from(if scheduled_open { due.echo } else { "" }),
         scheduled_phrase: SharedString::from(subject.map_or(String::new(), |t| {
-            presentation::scheduled_phrase(t.scheduled, now)
+            presentation::scheduled_phrase(t.scheduled, now, &chrono::Local)
         })),
         // The tracked-time total (r4 D17): the phrase when a subject
         // exists — an honest zero with no entries — empty without.
@@ -1692,7 +1697,7 @@ fn push_status_bar(
                     .map_or(String::new(), |t| t.title.clone()),
             ),
             due_phrase: SharedString::from(state.tasks.get(&row.task).map_or(String::new(), |t| {
-                presentation::due_phrase(DueKind::Overdue, t.duedate, now)
+                presentation::due_phrase(DueKind::Overdue, t.duedate, now, &chrono::Local)
             })),
         })
         .collect();
@@ -1831,8 +1836,17 @@ fn task_card_model(
     let kind = presentation::due_kind(task, sets);
     TaskCardModel {
         title: SharedString::from(task.title.clone()),
-        due_phrase: SharedString::from(presentation::due_phrase(kind, task.duedate, now)),
-        scheduled_phrase: SharedString::from(presentation::scheduled_phrase(task.scheduled, now)),
+        due_phrase: SharedString::from(presentation::due_phrase(
+            kind,
+            task.duedate,
+            now,
+            &chrono::Local,
+        )),
+        scheduled_phrase: SharedString::from(presentation::scheduled_phrase(
+            task.scheduled,
+            now,
+            &chrono::Local,
+        )),
         effort_phrase: SharedString::from(presentation::effort_phrase(task.effort)),
         due_kind: to_slint_due_kind(kind),
         done: task.done.is_some(),
