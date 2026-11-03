@@ -563,6 +563,15 @@ expression: rows
   menu_rank: 185
   description: "Marks or unmarks the focused task as a tracker: a tracked, never-completed card."
   menu_group: task
+- id: focus.toggle
+  label: Focus mode
+  contexts:
+    - global
+  category: application
+  enabled: true
+  menu_rank: 210
+  description: "Opens or closes the concentration overlay: countdown, current task, task switcher, quick notes. The session itself is ordinary time tracking."
+  menu_group: ~
 - id: habit.log
   label: Log habit
   contexts:
@@ -667,6 +676,7 @@ expression: rows
   contexts:
     - menu
     - palette
+    - focus-mode
   category: menu
   enabled: true
   menu_rank: 900
@@ -677,6 +687,7 @@ expression: rows
   contexts:
     - menu
     - palette
+    - focus-mode
   category: menu
   enabled: true
   menu_rank: 900
@@ -687,6 +698,7 @@ expression: rows
   contexts:
     - menu
     - palette
+    - focus-mode
   category: menu
   enabled: true
   menu_rank: 900
@@ -697,6 +709,7 @@ expression: rows
   contexts:
     - menu
     - palette
+    - focus-mode
   category: menu
   enabled: true
   menu_rank: 900

@@ -43,6 +43,7 @@ enum FK {
     Drag,
     Palette,
     Capture,
+    FocusOverlay,
 }
 
 /// The eleven effect classes the matrix columns range over.
@@ -52,6 +53,7 @@ enum EC {
     Lifecycle,
     Begin,
     OpenPalette,
+    FocusOverlay,
     BeginCapture,
     Edit,
     Cancel,
@@ -76,6 +78,7 @@ fn kind_of(flow: &Flow) -> FK {
         Flow::DragMove { .. } => FK::Drag,
         Flow::Palette { .. } => FK::Palette,
         Flow::Capture => FK::Capture,
+        Flow::FocusMode { .. } => FK::FocusOverlay,
     }
 }
 
@@ -93,6 +96,7 @@ enum EK {
     FocusToday,
     OpenInbox,
     BeginCapture,
+    ToggleFocusMode,
     InvokeSelected,
     SetModeNormal,
     SetModeInsert,
@@ -142,6 +146,7 @@ fn key_of(effect: &UiEffect) -> EK {
         UiEffect::FocusToday => EK::FocusToday,
         UiEffect::OpenInbox => EK::OpenInbox,
         UiEffect::BeginCapture => EK::BeginCapture,
+        UiEffect::ToggleFocusMode => EK::ToggleFocusMode,
         UiEffect::InvokeSelected => EK::InvokeSelected,
         UiEffect::SetMode(Mode::Normal) => EK::SetModeNormal,
         UiEffect::SetMode(Mode::Insert) => EK::SetModeInsert,
@@ -194,6 +199,7 @@ fn class_of(effect: &UiEffect) -> EC {
         crate::router::EffectClass::Lifecycle => EC::Lifecycle,
         crate::router::EffectClass::Begin => EC::Begin,
         crate::router::EffectClass::OpenPalette => EC::OpenPalette,
+        crate::router::EffectClass::FocusOverlay => EC::FocusOverlay,
         crate::router::EffectClass::BeginCapture => EC::BeginCapture,
         crate::router::EffectClass::Edit => EC::Edit,
         crate::router::EffectClass::Cancel => EC::Cancel,
@@ -236,6 +242,7 @@ use Cmd::Zero as Z;
 use FK::Capture as KCap;
 use FK::Drag as KDrag;
 use FK::Due as KDue;
+use FK::FocusOverlay as KFoc;
 use FK::Move as KMove;
 use FK::Palette as KPal;
 use FK::Text as KTxt;
@@ -263,6 +270,21 @@ fn class_table() -> Vec<(FK, EC, Exp)> {
         C::Picker,
     ] {
         row(FK::None, class, exp(Z, N));
+    }
+    // FOCUS OVERLAY (#496): the toggle's kept arm covers every flow —
+    // from None it opens the overlay (the capture-Replace family's
+    // XOR substitute), under a live overlay it closes.
+    row(FK::None, C::FocusOverlay, exp(Z, K(KFoc)));
+    for kind in [
+        FK::Text,
+        FK::Due,
+        FK::Move,
+        FK::Drag,
+        FK::Palette,
+        FK::Capture,
+        FK::FocusOverlay,
+    ] {
+        row(kind, C::FocusOverlay, exp(Z, K(KFoc)));
     }
     // TEXT: everything foreign settles (the armed non-empty buffer
     // commits) and the effect re-runs; the capture exception replaces
@@ -317,6 +339,17 @@ fn class_table() -> Vec<(FK, EC, Exp)> {
             row(kind, class, exp(Z, K(kind)));
         }
     }
+    // FOCUS OVERLAY (#496): settle is its own close (the palette
+    // family's terminator rule); the toggle is the pair override
+    // below (the kept arm closes without settling).
+    for class in [C::Nav, C::Lifecycle, C::Begin, C::Title, C::Cancel] {
+        row(FK::FocusOverlay, class, exp(Z, N));
+    }
+    row(FK::FocusOverlay, C::OpenPalette, exp(Z, K(KPal)));
+    row(FK::FocusOverlay, C::BeginCapture, exp(Z, K(KCap)));
+    for class in [C::Edit, C::Menu, C::System, C::Picker] {
+        row(FK::FocusOverlay, class, exp(Z, K(KFoc)));
+    }
     t
 }
 
@@ -364,6 +397,30 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
     row(FK::None, E::Activate, exp(Z, N));
     row(FK::None, E::OpenPalette, exp(Z, K(KPal)));
     row(FK::None, E::BeginCapture, exp(Z, K(KCap)));
+    // The concentration overlay's toggle (#496): opens from None
+    // (the kept arm), closes under a live overlay (the toggle).
+    row(FK::None, E::ToggleFocusMode, exp(Z, K(KFoc)));
+    // The overlay's settle-then-run re-run is effect-shaped like the
+    // other modals': the settle closed it, the begin/rename arms a
+    // fresh flow.
+    row(FK::FocusOverlay, E::BeginCreate, exp(Z, K(KTxt)));
+    row(FK::FocusOverlay, E::BeginCreateStack, exp(Z, K(KTxt)));
+    row(FK::FocusOverlay, E::RequestMove, exp(Z, K(KMove)));
+    row(FK::FocusOverlay, E::BeginTitleEdit, exp(Z, K(KTxt)));
+    row(FK::FocusOverlay, E::StackDelete, exp(NZ, N));
+    row(FK::FocusOverlay, E::BoardDelete, exp(NZ, N));
+    row(FK::FocusOverlay, E::StackRename, exp(Z, K(KTxt)));
+    row(FK::FocusOverlay, E::BoardRename, exp(Z, K(KTxt)));
+    row(FK::FocusOverlay, E::BoardCreate, exp(Z, K(KTxt)));
+    row(FK::FocusOverlay, E::StackMove, exp(Z, K(KMove)));
+    // The named-inert edits under the live overlay (the resolver's
+    // Edit class is inert on the overlay's None-kind mapping).
+    row(FK::FocusOverlay, E::Activate, exp(Z, K(KFoc)));
+    row(FK::FocusOverlay, E::SetModeNormal, exp(Z, K(KFoc)));
+    row(FK::FocusOverlay, E::SetModeInsert, exp(Z, K(KFoc)));
+    row(FK::FocusOverlay, E::CancelMove, exp(Z, N)); // CancelOnly: the settle closes
+    // The toggle under a live overlay: the kept arm closes (no settle).
+    row(FK::FocusOverlay, E::ToggleFocusMode, exp(Z, N));
     row(FK::None, E::SetModeInsert, exp(Z, K(KTxt)));
     row(FK::None, E::StackRename, exp(Z, K(KTxt)));
     row(FK::None, E::BoardRename, exp(Z, K(KTxt)));
@@ -875,7 +932,7 @@ fn the_matrix_covers_every_class_cell() {
     let cells = class_table();
     assert_eq!(
         cells.len(),
-        7 * 11,
+        8 * 12,
         "one row per (FlowKind, EffectClass) cell"
     );
     let mut seen = std::collections::BTreeSet::new();
@@ -1645,7 +1702,8 @@ fn dismiss_class(effect: &UiEffect) -> DismissClass {
         | UiEffect::BeginCreate { .. }
         | UiEffect::BeginCreateStack
         | UiEffect::OpenPalette
-        | UiEffect::BeginCapture => DismissClass::AnchorOrModal,
+        | UiEffect::BeginCapture
+        | UiEffect::ToggleFocusMode => DismissClass::AnchorOrModal,
         UiEffect::Exit
         | UiEffect::MenuBack
         | UiEffect::MenuNext
@@ -2025,5 +2083,311 @@ fn first_frame_hints_match_the_keymap_projection() {
                 "hint model {index} differs from its keymap projection at first frame"
             );
         }
+    });
+}
+
+// -- the concentration overlay (#496): journeys and pins ----------------
+
+use slint::SharedString;
+use taskboard_domain::focus::FocusTiming;
+
+/// The overlay rigs' timing: the 25/5 pomodoro idiom.
+fn focus_timing() -> FocusTiming {
+    FocusTiming::try_new(
+        chrono::TimeDelta::minutes(25),
+        chrono::TimeDelta::minutes(5),
+    )
+    .expect("positive timings")
+}
+
+/// A desktop rig carrying the focus timings (the overlay's
+/// precondition) and one open entry on task A (a live session).
+fn focus_rig(mut state: AppState, fx: &Fixture, kiosk: bool) -> Rig {
+    open_entry_on(&mut state, fx.tasks[0]);
+    let state = Arc::new(arc_swap::ArcSwap::from_pointee(state));
+    let (commands_tx, commands_rx) = mpsc::channel(64);
+    let (requests_tx, _requests_rx) = mpsc::channel(16);
+    let (_health_tx, health) =
+        tokio::sync::watch::channel(crate::presentation::DeliveryHealth::default());
+    let handle = mount(
+        state,
+        dummy_receiver(),
+        dummy_receiver(),
+        commands_tx,
+        requests_tx,
+        UiSettings {
+            kiosk,
+            focus: Some(focus_timing()),
+            ..UiSettings::default()
+        },
+        health,
+    )
+    .expect("mount succeeds on the null platform");
+    Rig {
+        handle,
+        commands_rx,
+    }
+}
+
+/// The seconds gate's mandated extension (#496, D-F12): the overlay's
+/// countdown changes with the wall second while the flow holds — THIS
+/// gate is the single tick channel; closed overlay, no per-second
+/// cost.
+#[test]
+fn the_seconds_gate_covers_the_focus_overlay() {
+    on_slint_thread(|| {
+        let (state, fx) = fixture();
+        let rig = focus_rig(state, &fx, false);
+        let adapter = rig.adapter();
+        assert!(!adapter.borrow().seconds_surfaces_active);
+
+        adapter.borrow_mut().view_state.open_focus_mode();
+        adapter.borrow_mut().refresh_forced(rig.handle.window());
+        assert!(
+            adapter.borrow().seconds_surfaces_active,
+            "the open overlay's countdown arms the per-second tick"
+        );
+
+        let mut a = adapter.borrow_mut();
+        a.view_state.close_focus_mode();
+        a.refresh_forced(rig.handle.window());
+        assert!(
+            !a.seconds_surfaces_active,
+            "the closed overlay costs nothing per second"
+        );
+    });
+}
+
+/// The toggle journey: open, close, and the drift-story pin — closing
+/// the overlay never touches the published tracking state (the
+/// session is the open entry; the overlay is presentation).
+#[test]
+fn the_overlay_toggle_opens_closes_and_never_touches_the_session() {
+    on_slint_thread(|| {
+        let (state, fx) = fixture();
+        let rig = focus_rig(state, &fx, false);
+        let adapter = rig.adapter();
+        adapter.borrow_mut().test_reset();
+
+        let window = rig.handle.window();
+        assert!(!window.get_focus_overlay_open());
+        let before = rig.handle.test_state().load_full().tracking.entries.len();
+
+        adapter
+            .borrow_mut()
+            .interpret_for_test(window, UiEffect::ToggleFocusMode);
+        assert!(window.get_focus_overlay_open(), "the overlay opened");
+        assert!(
+            rig.handle.test_state().load_full().tracking.entries.len() == before,
+            "opening touches no tracking state"
+        );
+
+        adapter
+            .borrow_mut()
+            .interpret_for_test(window, UiEffect::ToggleFocusMode);
+        assert!(!window.get_focus_overlay_open(), "the second toggle closes");
+        assert!(
+            rig.handle.test_state().load_full().tracking.entries.len() == before,
+            "closing never stops the session (the drift-story pin)"
+        );
+    });
+}
+
+/// The kiosk exclusion's effect layer (D-F13, layer 3): the flow is
+/// structurally unreachable even if a future surface bypassed the
+/// entry-states gate (layer 2).
+#[test]
+fn the_focus_overlay_never_opens_on_kiosk() {
+    on_slint_thread(|| {
+        let (state, fx) = fixture();
+        let rig = focus_rig(state, &fx, true);
+        let adapter = rig.adapter();
+        adapter.borrow_mut().test_reset();
+        adapter
+            .borrow_mut()
+            .interpret_for_test(rig.handle.window(), UiEffect::ToggleFocusMode);
+        assert!(
+            !rig.handle.window().get_focus_overlay_open(),
+            "kiosk dispatches are absorbed"
+        );
+    });
+}
+
+/// The entry-states gate (D-F13, layer 2) plus the mode-off posture:
+/// the action lights only on a desktop with the timings configured.
+#[test]
+fn the_focus_action_gates_on_kiosk_and_on_the_disabled_mode() {
+    on_slint_thread(|| {
+        let (state, fx) = fixture();
+        let states_of = |rig: &Rig| {
+            let adapter = rig.adapter();
+            let a = adapter.borrow();
+            let live = rig.handle.test_state();
+            let flow = a.view_state.flow().clone();
+            a.entry_states(&live.load_full(), &flow)
+        };
+
+        // Desktop + configured: on.
+        let rig = focus_rig(state.clone(), &fx, false);
+        assert!(states_of(&rig)[&crate::actions::ActionId::FocusModeToggle]);
+        drop(rig);
+
+        // Kiosk + configured: off (layer 2).
+        let rig = focus_rig(state.clone(), &fx, true);
+        assert!(!states_of(&rig)[&crate::actions::ActionId::FocusModeToggle]);
+        drop(rig);
+
+        // Desktop + mode off: off (no timing input, no overlay).
+        let (state, _fx) = fixture();
+        let (commands_tx, commands_rx) = mpsc::channel(64);
+        let (requests_tx, _requests_rx) = mpsc::channel(16);
+        let (_health_tx, health) =
+            tokio::sync::watch::channel(crate::presentation::DeliveryHealth::default());
+        let handle = mount(
+            Arc::new(arc_swap::ArcSwap::from_pointee(state)),
+            dummy_receiver(),
+            dummy_receiver(),
+            commands_tx,
+            requests_tx,
+            UiSettings::default(),
+            health,
+        )
+        .expect("mount succeeds on the null platform");
+        let rig = Rig {
+            handle,
+            commands_rx,
+        };
+        assert!(!states_of(&rig)[&crate::actions::ActionId::FocusModeToggle]);
+    });
+}
+
+/// The quick-note journey: the commit emits the landed inbox-capture
+/// command at the forwarder boundary, clears the buffer, and keeps the
+/// overlay open; an empty commit emits nothing.
+#[test]
+fn the_quick_note_commits_into_the_inbox_and_stays_open() {
+    on_slint_thread(|| {
+        let (state, fx) = fixture();
+        let mut rig = focus_rig(state, &fx, false);
+        let adapter = rig.adapter();
+        adapter.borrow_mut().test_reset();
+        let window = rig.handle.window();
+        adapter
+            .borrow_mut()
+            .interpret_for_test(window, UiEffect::ToggleFocusMode);
+        assert!(window.get_focus_overlay_open());
+
+        // An empty commit emits nothing.
+        window.invoke_focus_note_accepted();
+        assert!(
+            rig.commands_rx.try_recv().is_err(),
+            "an empty note commits nothing"
+        );
+
+        // A non-empty commit: the capture command, the buffer cleared,
+        // the overlay still open.
+        window.invoke_focus_note_edited(SharedString::from("remember the milk"));
+        window.invoke_focus_note_accepted();
+        let command = rig
+            .commands_rx
+            .try_recv()
+            .expect("the capture rode the boundary");
+        assert_eq!(
+            command,
+            taskboard_domain::StateCommand::CaptureTask {
+                title: "remember the milk".into(),
+                board: None,
+            },
+            "the landed inbox-capture verb, never a new one"
+        );
+        assert!(window.get_focus_overlay_open(), "rapid-fire: stays open");
+        assert!(
+            adapter.borrow().view_state.buffer().is_empty(),
+            "the buffer cleared"
+        );
+    });
+}
+
+/// The switcher's start routes the landed `task.track-start` with the
+/// selected row's task (the `track_target` seam); the stop button
+/// routes the payload-free landed stop.
+#[test]
+fn the_switcher_start_and_the_stop_route_the_tracked_verbs() {
+    on_slint_thread(|| {
+        let (state, fx) = fixture();
+        let mut rig = focus_rig(state, &fx, false);
+        let adapter = rig.adapter();
+        adapter.borrow_mut().test_reset();
+        let window = rig.handle.window();
+        adapter
+            .borrow_mut()
+            .interpret_for_test(window, UiEffect::ToggleFocusMode);
+
+        // Start on the first switcher row: StartTracking for THAT task
+        // (the engine's single-global intent closes the open entry).
+        window.invoke_focus_switcher_invoked(0);
+        let command = rig
+            .commands_rx
+            .try_recv()
+            .expect("the start rode the boundary");
+        let taskboard_domain::StateCommand::StartTracking { task, kind } = command else {
+            panic!("expected StartTracking, got {command:?}")
+        };
+        let expected =
+            crate::presentation::focus_switcher_rows(&rig.handle.test_state().load_full())[0].task;
+        assert_eq!(task, expected, "the selected row's task");
+        assert_eq!(
+            kind,
+            taskboard_domain::tracking::TimeEntryKind::Work,
+            "a focus target is a work block"
+        );
+
+        // Stop: the payload-free landed stop.
+        window.invoke_focus_stop_clicked();
+        assert_eq!(
+            rig.commands_rx
+                .try_recv()
+                .expect("the stop rode the boundary"),
+            taskboard_domain::StateCommand::StopTracking
+        );
+    });
+}
+
+/// The dumb-client line at the push: the overlay's derived frame
+/// (phase text, countdown, task title snapshot) follows the published
+/// state per pass; the visibility follows the flow AND the mode gate
+/// (focus `None` forces the overlay closed).
+#[test]
+fn the_overlay_push_follows_the_published_state_and_the_mode_gate() {
+    on_slint_thread(|| {
+        let (state, fx) = fixture();
+        let rig = focus_rig(state, &fx, false);
+        let adapter = rig.adapter();
+        adapter.borrow_mut().test_reset();
+        let window = rig.handle.window();
+        adapter
+            .borrow_mut()
+            .interpret_for_test(window, UiEffect::ToggleFocusMode);
+        adapter.borrow_mut().refresh_forced(window);
+        assert!(window.get_focus_overlay_open());
+        assert_eq!(window.get_focus_phase_text(), SharedString::from("Focus"));
+        assert_eq!(window.get_focus_task_title(), SharedString::from("open"));
+        // The countdown is mm:ss-shaped and reflects the work block's
+        // length (the entry just opened; the wall-second bucket is
+        // structural, never a fixed wall-clock pin).
+        let remaining = window.get_focus_remaining_text().to_string();
+        let (mins, secs) = remaining.split_once(':').expect("mm:ss shape");
+        let mins: u32 = mins.parse().expect("numeric minutes");
+        let secs: u32 = secs.parse().expect("numeric seconds");
+        assert!(
+            mins <= 25 && secs < 60,
+            "the work block's countdown: {remaining}"
+        );
+
+        // Closing the flow hides the overlay on the next pass.
+        let mut a = adapter.borrow_mut();
+        a.view_state.close_focus_mode();
+        a.refresh_forced(window);
+        assert!(!window.get_focus_overlay_open());
     });
 }

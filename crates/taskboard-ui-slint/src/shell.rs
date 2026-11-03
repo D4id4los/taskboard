@@ -42,6 +42,12 @@ pub struct KeymapShell {
     /// `Palette` mask makes it total. Mirrored from the view-state flow
     /// by the adapter's `sync_view_context`.
     pub palette: bool,
+    /// The concentration overlay is open (#496): the third modal
+    /// context — `chain` flips to `[FocusMode, ViInsert, Global]` and
+    /// the `FocusMode` mask makes it total. Mirrored from the
+    /// view-state flow by the adapter's `sync_view_context` (the
+    /// `palette` precedent).
+    pub focus_overlay: bool,
     pub view: Option<ContextId>,
     /// The [`crate::router::DispatchCtx`] carried to the router.
     pub focused_task: Option<taskboard_domain::TaskId>,
@@ -77,6 +83,12 @@ impl KeymapShell {
             // head so the field's printables are unbound everywhere,
             // and the `Palette` mask makes the chain total.
             return vec![ContextId::Palette, ContextId::ViInsert, ContextId::Global];
+        }
+        if self.focus_overlay {
+            // The concentration overlay is the third modal context
+            // (#496): the same total-mask shape as the palette — the
+            // note field rides `ViInsert` when typing engages it.
+            return vec![ContextId::FocusMode, ContextId::ViInsert, ContextId::Global];
         }
         if self.mode == Mode::Insert {
             // The picker grid's context rides the chain head
@@ -218,7 +230,10 @@ impl KeymapShell {
             // Round 3 (W-SM-d): the title arm lives in `view_state`;
             // the shell records nothing for it.
             | UiEffect::BeginTitleEdit
-            | UiEffect::BeginCapture => {}
+            | UiEffect::BeginCapture
+            // The overlay toggle moves no shell state (the flow is the
+            // truth; `sync_view_context` mirrors it).
+            | UiEffect::ToggleFocusMode => {}
         }
         true
     }

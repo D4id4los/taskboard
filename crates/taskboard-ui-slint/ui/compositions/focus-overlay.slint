@@ -1,0 +1,135 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The concentration overlay (L2 composition, #496): the countdown,
+// the current task, the switcher, the quick-note field, and the stop
+// affordance — nothing else. Presentation only (the dumb client):
+// the phase, the countdown text, the task title, and the switcher
+// rows all arrive derived from the Rust model pass; the tree computes
+// nothing. The session itself is ordinary time tracking — Start and
+// Stop ride the landed tracking verbs' callbacks; the Exit affordance
+// is Escape/the toggle stroke/the scrim (the app-window mounts the
+// scrim), never a second quit path.
+
+import { Theme, Typography, RoleText, Semantic } from "../theme.slint";
+import { TextField } from "../widgets/text-field.slint";
+import { ListRow } from "../widgets/list-row.slint";
+
+export struct FocusRowModel {
+    // The candidate task's title.
+    text: string,
+    // The selection ring (`index == selected-index`).
+    emphasis: bool,
+}
+
+export component FocusOverlay inherits Rectangle {
+    // The published phase word and countdown (Rust-assembled).
+    in property <string> phase-text;
+    in property <string> remaining-text;
+    // The open entry's title snapshot; empty while idle.
+    in property <string> task-title;
+    // The switcher pool (live, not-done, board reading order) with
+    // the flow's cursor.
+    in property <[FocusRowModel]> rows;
+    in property <int> selected-index;
+    // The quick-note buffer mirror (the shared view-state buffer).
+    in property <string> note-initial-text;
+    // The session's verbs and the note's commit funnel.
+    callback note-edited(string);
+    callback note-accepted();
+    callback switcher-activated(int);
+    callback stop-clicked();
+
+    background: Theme.surface-raised;
+    border-radius: Theme.radius-medium;
+    border-width: Theme.focus-ring-width;
+    border-color: Semantic.focus-ring;
+    drop-shadow-blur: 12px;
+
+    VerticalLayout {
+        padding: Theme.space-3;
+        spacing: Theme.space-2;
+
+        RoleText {
+            vertical-stretch: 0;
+            role: Typography.caption;
+            text-color: Theme.text-secondary;
+            text: root.phase-text;
+        }
+
+        RoleText {
+            vertical-stretch: 0;
+            role: Typography.display;
+            text: root.remaining-text;
+            visible: !root.remaining-text.is-empty;
+        }
+
+        RoleText {
+            vertical-stretch: 0;
+            role: Typography.body;
+            text: root.task-title;
+            visible: !root.task-title.is-empty;
+            overflow: elide;
+        }
+
+        HorizontalLayout {
+            vertical-stretch: 0;
+            spacing: Theme.space-2;
+            alignment: space-between;
+
+            RoleText {
+                role: Typography.caption;
+                text-color: Theme.text-secondary;
+                text: "Switch to (arrows, Return starts tracking)";
+            }
+
+            // The session's stop affordance: an inline styled button
+            // (no shared text-button primitive exists; the icon-button
+            // is icon-only). Routes `task.track-stop` — the landed
+            // verb, never a second path.
+            stop-button := Rectangle {
+                width: stop-label.preferred-width + 2 * Theme.space-2;
+                height: Theme.space-5;
+                background: touch.pressed || touch.has-hover
+                    ? Theme.surface-hover
+                    : Theme.surface;
+                border-radius: Theme.radius-small;
+                border-width: Theme.focus-ring-width;
+                border-color: Semantic.focus-ring;
+                stop-label := RoleText {
+                    role: Typography.caption;
+                    text-color: Theme.text-primary;
+                    text: "Stop session";
+                    text-halign: center;
+                }
+                touch := TouchArea {
+                    clicked => root.stop-clicked();
+                }
+            }
+        }
+
+        for row[index] in root.rows: ListRow {
+            vertical-stretch: 0;
+            text: row.text;
+            emphasis: index == root.selected-index;
+            TouchArea {
+                clicked => root.switcher-activated(index);
+            }
+        }
+
+        TextField {
+            height: self.natural-height;
+            vertical-stretch: 0;
+            placeholder: "Quick note…";
+            label: "Note";
+            text: root.note-initial-text;
+            edited(text) => root.note-edited(text);
+            accepted() => root.note-accepted();
+        }
+
+        RoleText {
+            vertical-stretch: 0;
+            role: Typography.caption;
+            text-color: Theme.text-secondary;
+            text: "Return notes into the inbox and stays open · Escape closes the overlay (the session keeps running)";
+        }
+    }
+}

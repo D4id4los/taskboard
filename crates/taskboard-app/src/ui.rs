@@ -243,6 +243,10 @@ pub fn resolve_ui_settings(
         // Overwritten by the lifecycle from the engine config right
         // after this returns (the kiosk/connectors/boards precedent).
         reminder_defaults: taskboard_domain::ReminderDefaults::default(),
+        // Overwritten by the lifecycle from the validated `[focus]`
+        // table right after this returns (the reminder_defaults
+        // precedent) — `None` while the mode is off.
+        focus: None,
         // The window-geometry restore value (#412): the raw table
         // mints here (the fallible `WindowGeometry::new`) — a refused
         // value hands `None` through and never blocks UI start (the
@@ -426,6 +430,12 @@ pub async fn run_desktop(
     // notification surface derives from the same value the engine
     // evaluates with.
     ui_settings.reminder_defaults = config.reminder_engine_config().defaults;
+    // The focus timings ride the hand-over (#496): the overlay's
+    // countdown derives from the same validated value the runtime
+    // was spawned with (the kiosk gate lives at the spawn decision —
+    // a kiosk hand-over never carries a timing because the runtime
+    // is not spawned; the overlay's action gate re-checks anyway).
+    ui_settings.focus = config.focus_config();
     surface_keymap_findings(&keymap_findings);
     let store = crate::secrets::resolve_credential_store(
         config.nextcloud.credential_store,

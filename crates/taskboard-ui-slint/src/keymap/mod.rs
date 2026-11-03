@@ -941,7 +941,11 @@ mod tests {
     fn presets_mask_only_the_modal_contexts() {
         for preset in [Preset::Standard, Preset::Emacs, Preset::Vi] {
             let masks: Vec<_> = preset.masks().to_vec();
-            assert_eq!(masks, vec![ContextId::Menu, ContextId::Palette]);
+            assert_eq!(
+                masks,
+                vec![ContextId::Menu, ContextId::Palette, ContextId::FocusMode],
+                "every modal surface masks; nothing else does"
+            );
         }
     }
 

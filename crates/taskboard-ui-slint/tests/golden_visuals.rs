@@ -551,3 +551,82 @@ fn capture_task_view(driver: &mut SlintDriver, scale: f64, height: u32, regen: b
     golden_compare::matches(&golden, &snapshot)
         .unwrap_or_else(|error| panic!("golden {} drifted: {error}", path.display()));
 }
+
+// -- #496: the concentration overlay's golden ----------------------------
+
+/// The concentration overlay's golden (issue #496): the open panel at
+/// the mid scale/breakpoint — phase caption, the switcher pool, the
+/// quick-note field, and the stop affordance, over the board fixture.
+///
+/// The captured phase is the **idle** overlay (no open entry):
+/// deterministic by construction. A live session's countdown is
+/// second-precise text whose digits depend on the wall second between
+/// entry stamp and snapshot — a regen run and a compare run can
+/// disagree in those pixels (the today goldens' minute-bucket argument
+/// does not transfer). The live countdown's derivation stays covered
+/// by the structural unit pins; this golden pins the panel's
+/// composition.
+#[test]
+fn the_focus_overlay_golden_holds() {
+    let regen = regen_requested();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |driver| {
+            let state = Arc::new(ArcSwap::from_pointee(fixture::golden_state().1));
+            let (commands, _engine) = support::fake_engine::FakeEngine::channel(Arc::clone(&state));
+            let (requests_tx, _requests_rx) = tokio::sync::mpsc::channel(16);
+            let handle = taskboard_ui_slint::mount(
+                state,
+                dummy_signals(),
+                dummy_system(),
+                commands,
+                requests_tx,
+                UiSettings {
+                    focus: taskboard_domain::focus::FocusTiming::try_new(
+                        chrono::TimeDelta::minutes(25),
+                        chrono::TimeDelta::minutes(5),
+                    )
+                    .map(Some)
+                    .expect("positive timings"),
+                    ..UiSettings::default()
+                },
+                detached_health(),
+            )
+            .expect("mount succeeds on the testing backend");
+            handle.dispatch_action(taskboard_ui_slint::actions::ActionId::FocusModeToggle);
+            driver.bind(&handle);
+            driver.advance_time(0); // instantiate conditionals
+            driver.set_window_size(1000, HEIGHT);
+
+            let snapshot = driver.snapshot();
+            assert_eq!(
+                (snapshot.width, snapshot.height),
+                (1000, HEIGHT),
+                "renderer-presence contract at the overlay golden"
+            );
+
+            let path = PathBuf::from(format!(
+                "{}/tests/goldens/focus-overlay-1.0-1000.png",
+                env!("CARGO_MANIFEST_DIR")
+            ));
+            if regen {
+                let bytes = golden_compare::encode_png(&snapshot).expect("encodes");
+                std::fs::create_dir_all(path.parent().expect("parent")).expect("dir");
+                std::fs::write(&path, bytes).expect("writes");
+                return;
+            }
+            let bytes = std::fs::read(&path)
+                .unwrap_or_else(|error| panic!("golden {} readable: {error}", path.display()));
+            let golden: Rgba8Image =
+                golden_compare::decode_png(&bytes).expect("the committed golden decodes as RGBA8");
+            golden_compare::matches(&golden, &snapshot)
+                .unwrap_or_else(|error| panic!("golden {} drifted: {error}", path.display()));
+        },
+    );
+    assert!(
+        !regen,
+        "goldens regenerated — review the PNG diff before landing"
+    );
+}

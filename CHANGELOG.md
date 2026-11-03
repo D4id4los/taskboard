@@ -8,6 +8,29 @@ The workspace carries a single global version (see `docs/architecture.org`);
 `scripts/bump_version.sh <major|minor|patch>` cuts release entries.
 
 ## [Unreleased]
+### Added
+
+- Pomodoro focus mode and the concentration overlay (#496): opt in
+  with `[focus] enabled = true` (timings `work_mins`/`break_mins`,
+  defaults 25/5, validated `1..=240` as the typed
+  `invalid-focus-timing` config error). When enabled (on Daemon and
+  Desktop, never on Kiosk), a focus-session runtime drives phase
+  transitions through ordinary time tracking — a running work entry
+  is handed off to a break at its deadline (`StopTracking` → a
+  `Respite` `StartTracking`), a break ends into idle — and the
+  tracked entry stays the truth: stopping the timer from any surface
+  ends the session, the runtime never re-opens it, and a
+  long-past-due entry reconciles once at boot. The desktop gains the
+  concentration overlay (`Ctrl+J`, vi `Z f`, or the "Focus mode"
+  menu row): countdown, current task, an arrow-walked task switcher
+  whose Return starts tracking the selected task, a quick-note field
+  that commits into the inbox and stays open, and a Stop button —
+  all rendered from published state, closed with Escape/the
+  toggle/the scrim without touching a running session. Kiosk is
+  structurally excluded at three pinned layers (no runtime spawn, a
+  disabled action, an absorbed dispatch); existing kiosk goldens are
+  byte-identical.
+
 ### Fixed
 
 - Cross-board card moves no longer lose the sidecar-carried state

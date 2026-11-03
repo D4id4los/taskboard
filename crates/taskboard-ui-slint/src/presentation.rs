@@ -18,7 +18,7 @@ use std::collections::BTreeSet;
 use chrono::{DateTime, NaiveTime, TimeDelta, Utc};
 use taskboard_domain::{
     AdhocAlarmId, AppState, Board, BoardId, Effort, ReminderRef, SidecarHealth, Stack, StackId,
-    SyncPhase, Task, TaskId,
+    SyncPhase, Task, TaskId, TimeEntryKind, focus::FocusTiming, tracking::TimeEntry,
 };
 
 /// The due-soon window (design §4): a presentation constant, not
@@ -597,6 +597,132 @@ pub fn open_elapsed_phrase(start: DateTime<Utc>, now: DateTime<Utc>) -> String {
         DurationBucket::Minutes(n) => format!("{n}m"),
         DurationBucket::Hours(n) => format!("{n}h"),
         DurationBucket::Days(n) => format!("{n}d"),
+    }
+}
+
+// -- the concentration overlay (#496): pure derivations ---------------
+
+/// The switcher row: the task and its live title. The id is the
+/// dispatch datum (`track_target`); the title is the card's live
+/// title (the switcher targets *now*, unlike the chip's snapshot).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FocusSwitcherRow {
+    pub task: TaskId,
+    pub title: String,
+}
+
+/// The switcher pool's bound (#496, D-F10): nine rows — the palette's
+/// row-cap idiom; a focus target is picked, not scrolled.
+pub const FOCUS_SWITCHER_CAP: usize = 9;
+
+/// The overlay's switcher pool: live, not-done tasks in board reading
+/// order (board-id ascending → stack `order`/id → task `order`/id —
+/// the deterministic walk; not the today window's pool, a focus
+/// target may not be scheduled today), bounded to
+/// [`FOCUS_SWITCHER_CAP`]. Pure over the published state.
+#[must_use]
+pub fn focus_switcher_rows(state: &AppState) -> Vec<FocusSwitcherRow> {
+    let mut rows = Vec::new();
+    'boards: for board in live_boards(state) {
+        let mut stacks: Vec<&Stack> = state
+            .stacks
+            .values()
+            .filter(|s| s.board == board.id && !s.deleted && !s.archived)
+            .collect();
+        stacks.sort_by_key(|s| (s.order, s.id));
+        for stack in stacks {
+            for task in state.tasks_in_stack(stack.id) {
+                if task.done.is_none() {
+                    rows.push(FocusSwitcherRow {
+                        task: task.id,
+                        title: task.title.clone(),
+                    });
+                    if rows.len() == FOCUS_SWITCHER_CAP {
+                        break 'boards;
+                    }
+                }
+            }
+        }
+    }
+    rows
+}
+
+/// Which phase the open entry puts the session in (#496, D-F1): the
+/// kind discriminator over [`AppState::newest_open`]-shaped picks —
+/// the session IS the open entry; no runtime truth exists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FocusPhase {
+    /// Nothing open: the runtime is parked, the next focus is the
+    /// user's act.
+    Idle,
+    /// A `Work` entry is open: the focus block runs.
+    Focus,
+    /// A `Respite` entry is open: the break runs.
+    Break,
+}
+
+impl FocusPhase {
+    /// The stable slint-enum mapping (the `View` precedent: Rust
+    /// decides, slint displays).
+    #[must_use]
+    pub const fn from_entry(entry: Option<&TimeEntry>) -> Self {
+        match entry {
+            Some(e) => match e.kind {
+                TimeEntryKind::Work => Self::Focus,
+                TimeEntryKind::Respite => Self::Break,
+            },
+            None => Self::Idle,
+        }
+    }
+}
+
+/// The countdown's remaining-phrase: `mm:ss`, floor-clamped at zero
+/// (a skew-produced negative remaining is a presentation `00:00`,
+/// never a negative lie — the D-T17 clamp's countdown direction).
+#[must_use]
+pub fn focus_remaining_phrase(deadline: DateTime<Utc>, now: DateTime<Utc>) -> String {
+    let total_secs = (deadline - now).max(TimeDelta::zero()).num_seconds();
+    format!("{:02}:{:02}", total_secs / 60, total_secs % 60)
+}
+
+/// The overlay's one-frame derivation (D-F11): phase, remaining time,
+/// and the current task's title snapshot — all from the published
+/// state, the injected timings, and the render-time `now` the push
+/// pass carries. Pure; the slint tree computes nothing (the
+/// dumb-client line).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FocusOverlay {
+    pub phase: FocusPhase,
+    /// The countdown text: `mm:ss` to the phase deadline while a
+    /// phase runs, empty while idle.
+    pub remaining_text: String,
+    /// The open entry's title snapshot (empty while idle).
+    pub task_title: String,
+}
+
+/// See [`FocusOverlay`]. `open` is the caller's newest-open pick.
+#[must_use]
+pub fn focus_overlay(state: &AppState, timing: &FocusTiming, now: DateTime<Utc>) -> FocusOverlay {
+    let open = state.tracking.newest_open();
+    let phase = FocusPhase::from_entry(open);
+    match open {
+        Some(entry) => {
+            let deadline = entry.start
+                + match entry.kind {
+                    TimeEntryKind::Work => timing.work(),
+                    TimeEntryKind::Respite => timing.respite(),
+                };
+            FocusOverlay {
+                phase,
+                remaining_text: focus_remaining_phrase(deadline, now),
+                task_title: entry.task_title.clone(),
+            }
+        }
+        None => FocusOverlay {
+            phase,
+            remaining_text: String::new(),
+            task_title: String::new(),
+        },
     }
 }
 
@@ -3685,5 +3811,196 @@ mod habit_section_tests {
             10,
             "a tied gap floors to the lower bound"
         );
+    }
+
+    // -- the concentration overlay (#496): pure derivations ------------
+
+    use taskboard_domain::{ids::TaskId, tracking::TimeEntry};
+
+    fn overlay_entry(
+        kind: taskboard_domain::tracking::TimeEntryKind,
+        start: DateTime<Utc>,
+    ) -> TimeEntry {
+        TimeEntry {
+            id: taskboard_domain::TimeEntryId::from_uuid(uuid::Uuid::now_v7()),
+            task: TaskId::from_uuid(uuid::Uuid::now_v7()),
+            task_title: "the subject".into(),
+            start,
+            end: None,
+            created_at: start,
+            updated_at: start,
+            kind,
+        }
+    }
+
+    fn overlay_state(
+        kind: taskboard_domain::tracking::TimeEntryKind,
+        start: DateTime<Utc>,
+    ) -> AppState {
+        let entry = overlay_entry(kind, start);
+        AppState {
+            tracking: taskboard_domain::TrackingState {
+                entries: [(entry.id, entry)].into_iter().collect(),
+            },
+            ..AppState::default()
+        }
+    }
+
+    fn overlay_timing() -> FocusTiming {
+        FocusTiming::try_new(TimeDelta::minutes(25), TimeDelta::minutes(5))
+            .expect("positive timings")
+    }
+
+    const OVERLAY_T0: DateTime<Utc> =
+        chrono::DateTime::<Utc>::from_timestamp(1_792_000_000, 0).expect("valid instant");
+
+    #[test]
+    fn focus_overlay_derives_phase_and_remaining() {
+        let timing = overlay_timing();
+
+        // Idle: nothing open.
+        let overlay = focus_overlay(&AppState::default(), &timing, OVERLAY_T0);
+        assert_eq!(overlay.phase, FocusPhase::Idle);
+        assert_eq!(overlay.remaining_text, "");
+        assert_eq!(overlay.task_title, "");
+
+        // Focus: the work block's remaining time, boundary buckets.
+        let state = overlay_state(taskboard_domain::tracking::TimeEntryKind::Work, OVERLAY_T0);
+        let overlay = focus_overlay(&state, &timing, OVERLAY_T0 + TimeDelta::seconds(1));
+        assert_eq!(overlay.phase, FocusPhase::Focus);
+        assert_eq!(overlay.remaining_text, "24:59");
+        assert_eq!(overlay.task_title, "the subject");
+        let overlay = focus_overlay(&state, &timing, OVERLAY_T0);
+        assert_eq!(overlay.remaining_text, "25:00", "the full block at t0");
+        // Past the deadline: floor-clamped, never negative.
+        let overlay = focus_overlay(&state, &timing, OVERLAY_T0 + TimeDelta::hours(2));
+        assert_eq!(overlay.remaining_text, "00:00");
+
+        // Break: the respite block arms its own length.
+        let state = overlay_state(
+            taskboard_domain::tracking::TimeEntryKind::Respite,
+            OVERLAY_T0,
+        );
+        let overlay = focus_overlay(&state, &timing, OVERLAY_T0 + TimeDelta::seconds(1));
+        assert_eq!(overlay.phase, FocusPhase::Break);
+        assert_eq!(overlay.remaining_text, "04:59");
+    }
+
+    #[allow(clippy::too_many_lines)] // the task fixture dominates the count
+    #[test]
+    fn focus_switcher_rows_are_live_not_done_in_board_order_bounded() {
+        let timing = overlay_timing();
+        let _ = timing;
+        let mut state = AppState::default();
+        let board_a = taskboard_domain::BoardId::from_uuid(uuid::Uuid::now_v7());
+        let stack = taskboard_domain::StackId::from_uuid(uuid::Uuid::now_v7());
+        let now = taskboard_domain::BoardClocks::epoch();
+        state.boards.insert(
+            board_a,
+            taskboard_domain::Board {
+                id: board_a,
+                remote: None,
+                title: "a".into(),
+                color: taskboard_domain::Color::new(""),
+                archived: false,
+                deleted: false,
+                clocks: taskboard_domain::BoardClocks {
+                    title: now,
+                    color: now,
+                    archived: now,
+                    deleted: now,
+                },
+                remote_seen: None,
+            },
+        );
+        state.stacks.insert(
+            stack,
+            taskboard_domain::Stack {
+                id: stack,
+                remote: None,
+                board: board_a,
+                title: "s".into(),
+                order: 1,
+                archived: false,
+                deleted: false,
+                clocks: taskboard_domain::StackClocks {
+                    title: now,
+                    order: now,
+                    deleted: now,
+                },
+                remote_seen: None,
+            },
+        );
+        let mk = |title: &str, order: i64, done: bool| {
+            let mut task = taskboard_domain::entities::Task {
+                id: TaskId::from_uuid(uuid::Uuid::now_v7()),
+                remote: None,
+                title: title.into(),
+                description: String::new(),
+                duedate: None,
+                scheduled: None,
+                done: None,
+                stack,
+                order,
+                label_memberships: std::collections::BTreeMap::new(),
+                effort: None,
+                importance: None,
+                urgency: None,
+                recur: None,
+                kind: taskboard_domain::entities::TaskKind::Standard,
+                archived: false,
+                deleted: false,
+                clocks: taskboard_domain::entities::TaskClocks {
+                    title: now,
+                    description: now,
+                    duedate: now,
+                    scheduled: now,
+                    done: now,
+                    position: now,
+                    effort: now,
+                    importance: now,
+                    urgency: now,
+                    recur: now,
+                    kind: now,
+                    archived: now,
+                    deleted: now,
+                },
+                remote_seen: None,
+                remote_baseline: None,
+            };
+            if done {
+                task.done = Some(OVERLAY_T0);
+            }
+            task
+        };
+        let done = mk("done", 1, true);
+        let done_id = done.id;
+        state.tasks.insert(done_id, done);
+        let second = mk("second", 2, false);
+        let second_id = second.id;
+        state.tasks.insert(second_id, second);
+        let first = mk("first", 1, false);
+        let first_id = first.id;
+        state.tasks.insert(first_id, first);
+
+        let rows = focus_switcher_rows(&state);
+        assert_eq!(
+            rows.iter().map(|r| r.title.as_str()).collect::<Vec<_>>(),
+            ["first", "second"],
+            "reading order (order asc, id tie-break), done filtered"
+        );
+        assert_eq!(rows[0].task, first_id);
+
+        // The bound: an 11-row pool caps at nine.
+        for i in 0..9 {
+            let t = mk(&format!("filler-{i}"), 10 + i, false);
+            state.tasks.insert(t.id, t);
+        }
+        let rows = focus_switcher_rows(&state);
+        assert_eq!(rows.len(), FOCUS_SWITCHER_CAP);
+
+        // The empty pool: no live not-done tasks anywhere.
+        let empty = focus_switcher_rows(&AppState::default());
+        assert_eq!(empty, [] as [FocusSwitcherRow; 0]);
     }
 }

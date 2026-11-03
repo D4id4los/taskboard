@@ -201,6 +201,14 @@ pub enum Flow {
     /// open (the rapid-fire braindump; `commit_edit`'s "the flow
     /// always ends" contract does not apply).
     Capture,
+    /// The concentration overlay (#496): subject-free like the palette
+    /// — `reconcile` leaves it alone (no subject to repair); the
+    /// switcher's cursor lives in the flow. Flows are XOR: opening it
+    /// replaces any other flow (the workspace suspends — that is the
+    /// point of concentration mode), and any other flow open replaces
+    /// it back. Closing the overlay never stops a running session
+    /// (the session is the open entry; the overlay is presentation).
+    FocusMode { selected: usize },
     // -- round 2 (D18/D21): the board/stack lifecycle flows --
     /// The new-board field (window-level slot).
     CreateBoard,
@@ -1426,6 +1434,43 @@ impl ViewState {
         self.discard_edit()
     }
 
+    // -- the concentration overlay (#496) ----------------------------------
+
+    /// `focus.toggle` when the overlay is closed: opens
+    /// `Flow::FocusMode` over an empty switcher selection, replacing
+    /// any in-progress flow WITHOUT committing it (the XOR rule —
+    /// `begin_capture`'s opening; the workspace suspends beneath).
+    pub fn open_focus_mode(&mut self) -> Vec<FlowOutcome> {
+        self.flow = Flow::FocusMode { selected: 0 };
+        vec![FlowOutcome::RefreshNow]
+    }
+
+    /// Walks the switcher cursor by `direction`, wrapping over the
+    /// `visible` row count (the palette-cursor ring semantics; inert
+    /// at zero rows).
+    pub fn focus_mode_cursor(&mut self, direction: i32, visible: usize) -> Vec<FlowOutcome> {
+        if let Flow::FocusMode { selected } = &mut self.flow {
+            if visible > 0 {
+                let len = i64::try_from(visible).unwrap_or(i64::MAX);
+                let next = i64::try_from(*selected).unwrap_or(i64::MAX) + i64::from(direction);
+                *selected = usize::try_from(next.rem_euclid(len)).unwrap_or(0);
+            }
+            vec![FlowOutcome::RefreshNow]
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Every overlay exit that means close-without-effect: Escape, the
+    /// toggle stroke, the scrim click. The `discard_edit` shape — the
+    /// session (the open entry) is untouched; the runtime owns the
+    /// phases, the overlay is presentation.
+    pub fn close_focus_mode(&mut self) -> Vec<FlowOutcome> {
+        self.flow = Flow::None;
+        self.buffer.clear();
+        vec![FlowOutcome::SetMode(Mode::Normal), FlowOutcome::RefreshNow]
+    }
+
     // -- search palette (#348, chunk 9) ------------------------------------
 
     /// `PaletteSearch`: opens the palette in insert mode with an empty
@@ -1691,6 +1736,17 @@ impl ViewState {
             }
             Flow::Palette { .. } => self.close_palette(),
             Flow::Capture => self.close_capture(),
+            // The concentration overlay closes like the palette: the
+            // settle is the bounded re-run's terminator (an inert
+            // settle would recurse in the resolver), and the leaving
+            // effects must not re-run beneath a live overlay. The
+            // multi-control surface's field focus-loss never reaches
+            // this settle — the overlay's seam does not wire it (the
+            // capture overlay's single-field discipline does not
+            // transfer); the close paths stay Escape / the toggle /
+            // the scrim. The session is untouched (close carries no
+            // command).
+            Flow::FocusMode { .. } => self.close_focus_mode(),
         }
     }
 
