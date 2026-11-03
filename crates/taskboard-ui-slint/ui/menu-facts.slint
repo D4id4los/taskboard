@@ -31,3 +31,16 @@ export global DatePickerFacts {
     in-out property <length> anchor-width;
     in-out property <length> anchor-height;
 }
+
+// The timers setter popover's facts (r4 D33): the DatePickerFacts
+// twin — the header button lives inside the today view's conditional
+// section the window cannot name, so the button mirrors its realized
+// window-space geometry here through `changed` handlers; values are
+// stale while the section is unmounted, and the popover's mount
+// condition is the window's own `timer-setter-open`.
+export global TimerSetterFacts {
+    in-out property <length> anchor-x;
+    in-out property <length> anchor-y;
+    in-out property <length> anchor-width;
+    in-out property <length> anchor-height;
+}

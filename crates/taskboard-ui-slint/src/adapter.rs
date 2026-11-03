@@ -119,6 +119,7 @@ pub(crate) enum FocusHandover {
     Field,
 }
 
+#[allow(clippy::struct_excessive_bools)] // the view-state flags are the reviewed table shape
 pub(crate) struct Adapter {
     keymap: Keymap,
     /// The today window's derivation pair (chunk 10 D4): held, never
@@ -249,6 +250,19 @@ pub(crate) struct Adapter {
     rule_offset_draft: String,
     /// The timers `when` field's typed draft (r4 D27).
     timer_when_draft: String,
+    /// The timers setter popover's custom-row state (r4 D33): the
+    /// picked/typed time, the typed buffer (the `TimeField`'s push
+    /// re-seed mirror), the day offset, the insistence rung, and the
+    /// composed grammar text + fire instant — the quick-fill presets
+    /// and the custom row write the same pair. One draft, two views:
+    /// the composed text lands in `timer_when_draft`, so the popover
+    /// and the inline form share the validity pass.
+    setter_time: Option<chrono::NaiveTime>,
+    setter_time_text: String,
+    setter_day_offset: u32,
+    setter_insist: bool,
+    setter_composed: Option<String>,
+    setter_fire: Option<DateTime<Utc>>,
     /// The last snapshot the derive+diff materialized onto the models
     /// (the unchanged-refresh guard, #463): `Some` after every derived
     /// pass. `Arc::ptr_eq` against the fresh load ⇒ the models already
@@ -515,6 +529,20 @@ impl Adapter {
                 self.shell.apply(&UiEffect::SetMode(Mode::Normal), 0);
                 self.sync(window);
             }
+        }
+        // The timers setter's Escape (r4 D33): the panel is
+        // presentation state, not a flow — its dismissal is explicit
+        // here, ahead of the resolver (the capture overlay's
+        // action-layer ruling: the root scope's capture tunnel visits
+        // every focused item's ancestors, so a widget-internal grab
+        // can never win; the plan's widget-internal wording is
+        // amended to this house shape). Nothing is committed — the
+        // draft clears with the panel.
+        if window.get_timer_setter_open() && Ok(stroke) == crate::keymap::stroke::parse("Escape") {
+            self.clear_timer_setter();
+            window.set_timer_setter_open(false);
+            self.refresh_forced(window);
+            return true;
         }
         // The date editor's Down-in-field opens the picker focused
         // (r2 D25; round-3 D10): consumed here, ahead of the
@@ -1009,10 +1037,108 @@ impl Adapter {
             self.sync_menu_models(window);
         }
         self.push_settings(window);
+        // The setter popover's pushed halves (r4 D33): cheap, every
+        // pass — the popover reads them only while open.
+        self.push_timer_setter(window);
         // The pass materialized: close the cache only now — a
         // re-entrant pass before this line would see the stale cache
         // and derive again, never skip a needed pass.
         self.last_derived = Some(state);
+    }
+
+    /// Recomposes the setter's grammar text + fire instant from the
+    /// custom row's state (r4 D-T4): the composer emits existing-
+    /// grammar text (`at <RFC-3339 local-offset>`) re-parsed by the
+    /// one parser; a DST-gap pick composes `None` — the draft becomes
+    /// the unparseable `"at "` (the invalid flavour, the honest
+    /// refusal), and the funnel never emits a miss.
+    fn recompose_timer_setter(&mut self) {
+        let Some(time) = self.setter_time else {
+            self.setter_composed = None;
+            self.setter_fire = None;
+            self.timer_when_draft.clear();
+            return;
+        };
+        let now = chrono::Utc::now();
+        let minutes = u32::try_from(crate::due_edit::minutes_of_day(time)).unwrap_or(0);
+        self.setter_composed = crate::presentation::compose_timer_at(
+            minutes,
+            self.setter_day_offset,
+            now,
+            &chrono::Local,
+        );
+        self.setter_fire = crate::presentation::compose_timer_instant(
+            minutes,
+            self.setter_day_offset,
+            now,
+            &chrono::Local,
+        );
+        self.timer_when_draft = self
+            .setter_composed
+            .clone()
+            .unwrap_or_else(|| "at ".to_owned());
+    }
+
+    /// Clears the setter's draft state (dismiss and commit share it —
+    /// drafts are widget-local, nothing survives the panel).
+    fn clear_timer_setter(&mut self) {
+        self.setter_time = None;
+        "--:--".clone_into(&mut self.setter_time_text);
+        self.setter_day_offset = 0;
+        self.setter_insist = false;
+        self.setter_composed = None;
+        self.setter_fire = None;
+        self.timer_when_draft.clear();
+    }
+
+    /// The setter popover's pushed halves (r4 D33): the `TimeField`'s
+    /// contract — the adapter's canonical mirror re-seeds the widget
+    /// buffer only when the picker state moved, never while the user
+    /// types (the typed text echoes verbatim through the draft).
+    fn push_timer_setter(&self, window: &AppWindow) {
+        let digits = crate::due_edit::filter_digits(&self.setter_time_text);
+        let slots: Vec<chrono::NaiveTime> = crate::due_edit::quarter_slots()
+            .into_iter()
+            .filter(|slot| crate::due_edit::quick_list_matches(&digits, *slot))
+            .collect();
+        let nearest = crate::due_edit::nearest_slot(&slots, self.setter_time);
+        window.set_timer_setter_time_text(SharedString::from(self.setter_time_text.clone()));
+        window.set_timer_setter_time_validity(
+            match crate::due_edit::time_field_valid(&self.setter_time_text) {
+                None => crate::FieldValidity::Neutral,
+                Some(true) => crate::FieldValidity::Valid,
+                Some(false) => crate::FieldValidity::Invalid,
+            },
+        );
+        window.set_timer_setter_time_hint(SharedString::from(crate::due_edit::TIME_SYNTAX_HINT));
+        // The fresh-VecModel-per-pass shape (the date editor's slot
+        // push, models.rs:1614): the flyout reads it only while open.
+        window.set_timer_setter_time_slots(ModelRc::new(slint::VecModel::from(
+            slots
+                .iter()
+                .map(|slot| crate::TimeSlotRow {
+                    label: SharedString::from(crate::due_edit::format_time_hm(*slot)),
+                    minutes: crate::due_edit::minutes_of_day(*slot),
+                })
+                .collect::<Vec<crate::TimeSlotRow>>(),
+        )));
+        window.set_timer_setter_time_nearest_row(i32::try_from(nearest).unwrap_or(0));
+        window.set_timer_setter_fire_time(SharedString::from(self.setter_fire.map_or(
+            String::new(),
+            |fire| {
+                format!(
+                    "@ {}",
+                    crate::presentation::iso_local_fire_time(fire, &chrono::Local)
+                )
+            },
+        )));
+        window.set_timer_setter_commit_enabled(
+            crate::presentation::timer_when_validity(
+                &self.timer_when_draft,
+                chrono::Utc::now(),
+                &chrono::Local,
+            ) == Some(true),
+        );
     }
 
     /// §8 (W-SM-c): the date editor's buffers never outlive the flow —
@@ -3458,6 +3584,12 @@ pub(crate) fn install(
         due_focus_steal: false,
         rule_offset_draft: String::new(),
         timer_when_draft: String::new(),
+        setter_time: None,
+        setter_time_text: String::from("--:--"),
+        setter_day_offset: 0,
+        setter_insist: false,
+        setter_composed: None,
+        setter_fire: None,
         time_text: "--:--".to_owned(),
         board_target: None,
         rule_target: None,
@@ -5549,6 +5681,7 @@ fn send_toggled_done(adapter: &Adapter, task: taskboard_domain::TaskId) {
 /// convention) and routes; the section's cancel resolves the
 /// `IdTables.timers` index; the chip click focuses the today view
 /// (the existing `ViewToday` action — no new `UiEffect`).
+#[allow(clippy::too_many_lines)] // the seam bundle: one block per intent, no second parser
 fn install_timer_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     let when_edited = Rc::clone(adapter);
     let when_edited_weak = window.as_weak();
@@ -5632,6 +5765,145 @@ fn install_timer_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
             return;
         };
         chip.borrow_mut().route(&window, ActionId::ViewToday);
+    });
+
+    // The mouse setter's seams (r4 D33): open/dismiss flip the window
+    // property (pure presentation, the palette-open precedent); every
+    // intent updates the setter's draft state and re-runs the one
+    // composer; the commit funnels through `timers-create-accepted` —
+    // the popover adds zero parse paths (the one-parser grep
+    // contract). Quick presets are quick-fill, not auto-commit (D-T6).
+    let open = Rc::clone(adapter);
+    let open_weak = window.as_weak();
+    window.on_timers_setter_opened(move || {
+        let Some(window) = open_weak.upgrade() else {
+            return;
+        };
+        window.set_timer_setter_open(true);
+        open.borrow_mut().refresh_forced(&window);
+        // The focus hand-off lands after the mount pass (the
+        // date-picker's changed-focus idiom; an init grab alone is
+        // dropped on a fresh conditional mount).
+        let nonce = window.get_timer_setter_focus_nonce();
+        window.set_timer_setter_focus_nonce(nonce.wrapping_add(1));
+    });
+    let dismiss = Rc::clone(adapter);
+    let dismiss_weak = window.as_weak();
+    window.on_timer_setter_dismiss_requested(move || {
+        let Some(window) = dismiss_weak.upgrade() else {
+            return;
+        };
+        dismiss.borrow_mut().clear_timer_setter();
+        window.set_timer_setter_open(false);
+    });
+    let preset = Rc::clone(adapter);
+    let preset_weak = window.as_weak();
+    window.on_timer_setter_preset_picked(move |index| {
+        eprintln!("SEAM PRESET {index}");
+        let Some(window) = preset_weak.upgrade() else {
+            return;
+        };
+        let Some(minutes) = crate::presentation::TIMER_PRESETS_MIN
+            .get(usize::try_from(index).unwrap_or(usize::MAX))
+        else {
+            return;
+        };
+        let mut a = preset.borrow_mut();
+        let text = crate::presentation::preset_when_text(*minutes);
+        a.setter_composed = Some(text.clone());
+        a.setter_fire = chrono::TimeDelta::try_minutes(i64::from(*minutes))
+            .and_then(|step| a.day_ctx().now.checked_add_signed(step));
+        a.timer_when_draft = text;
+        a.refresh_forced(&window);
+    });
+    let time_edited = Rc::clone(adapter);
+    let time_edited_weak = window.as_weak();
+    window.on_timer_setter_time_edited(move |text| {
+        let Some(window) = time_edited_weak.upgrade() else {
+            return;
+        };
+        let mut a = time_edited.borrow_mut();
+        a.setter_time_text = text.to_string();
+        a.setter_time = crate::due_edit::parse_time_lenient(&text);
+        a.recompose_timer_setter();
+        a.refresh_forced(&window);
+    });
+    let time_stepped = Rc::clone(adapter);
+    let time_stepped_weak = window.as_weak();
+    window.on_timer_setter_time_stepped(move |n| {
+        let Some(window) = time_stepped_weak.upgrade() else {
+            return;
+        };
+        let mut a = time_stepped.borrow_mut();
+        // Seed-on-step (r4 D23's semantics): an unset time anchors at
+        // midnight first — the first `+` yields 00:15, the first `−`
+        // wraps to 23:45. The wrap stays within the picked day (the
+        // day offset is an explicit choice; the step never flips it).
+        let time = a.setter_time.unwrap_or(chrono::NaiveTime::MIN);
+        a.setter_time = Some(crate::due_edit::step_minutes(time, n));
+        a.setter_time_text = crate::due_edit::format_time_hm(time);
+        a.recompose_timer_setter();
+        a.refresh_forced(&window);
+    });
+    let time_picked = Rc::clone(adapter);
+    let time_picked_weak = window.as_weak();
+    window.on_timer_setter_time_picked(move |minutes| {
+        let Some(window) = time_picked_weak.upgrade() else {
+            return;
+        };
+        let Some(time) = crate::due_edit::time_of_minutes(minutes) else {
+            return;
+        };
+        let mut a = time_picked.borrow_mut();
+        a.setter_time = Some(time);
+        a.setter_time_text = crate::due_edit::format_time_hm(time);
+        a.recompose_timer_setter();
+        a.refresh_forced(&window);
+    });
+    let day = Rc::clone(adapter);
+    let day_weak = window.as_weak();
+    window.on_timer_setter_day_picked(move |index| {
+        eprintln!("SEAM DAY {index}");
+        let Some(window) = day_weak.upgrade() else {
+            return;
+        };
+        let mut a = day.borrow_mut();
+        a.setter_day_offset = u32::try_from(index).unwrap_or(0);
+        a.recompose_timer_setter();
+        a.refresh_forced(&window);
+    });
+    let insist = Rc::clone(adapter);
+    window.on_timer_setter_insist_picked(move |index| {
+        insist.borrow_mut().setter_insist = index == 1;
+    });
+    let commit = Rc::clone(adapter);
+    let commit_weak = window.as_weak();
+    window.on_timer_setter_commit_requested(move |label| {
+        eprintln!("SEAM COMMIT {label}");
+        let Some(window) = commit_weak.upgrade() else {
+            return false;
+        };
+        // The composed grammar is the only text this seam submits —
+        // and it rides `timers-create-accepted` verbatim: popover ≡
+        // text form ≡ same command (the parity contract, acceptance
+        // b). An unset composition never reaches the parser.
+        let composed = {
+            let a = commit.borrow();
+            if label.trim().is_empty() {
+                return false;
+            }
+            a.setter_composed.clone()
+        };
+        let Some(text) = composed else {
+            return false;
+        };
+        let insist = commit.borrow().setter_insist;
+        let ok = window.invoke_timers_create_accepted(label, SharedString::from(text), insist);
+        if ok {
+            commit.borrow_mut().clear_timer_setter();
+            window.set_timer_setter_open(false);
+        }
+        ok
     });
 }
 

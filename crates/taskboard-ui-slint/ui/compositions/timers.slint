@@ -13,6 +13,7 @@ import { SegmentedControl } from "../widgets/segmented-control.slint";
 import { IconButton, IconKind } from "../widgets/icon-button.slint";
 import { FieldValidity } from "../widgets/text-field.slint";
 import { TextField } from "../widgets/text-field.slint";
+import { TimerSetterFacts } from "../menu-facts.slint";
 
 // One active timer row: the label snapshot, the two-part countdown
 // (r4 D32: d/h/m/s remaining), the `@`-prefixed local fire instant,
@@ -48,6 +49,22 @@ export component TimersSection inherits Rectangle {
     // selection; `Normal` is the default rung (the ladder's silent
     // base). Index order `[Normal, Alarm]`.
     in-out property <int> insistence-index: 0;
+    // The mouse setter's open request (r4 D33): the header button's
+    // click (the popover mounts app-window-level — never inside the
+    // scroll page).
+    callback setter-opened();
+    // The popover's anchor (the DatePickerFacts twin): the header
+    // button's realized window-space geometry, mirrored through
+    // `changed` handlers (values are stale while unmounted — harmless,
+    // the popover's own condition gates the read).
+    private property <length> setter-anchor-x: setter-button.absolute-position.x;
+    private property <length> setter-anchor-y: setter-button.absolute-position.y;
+    private property <length> setter-anchor-width: setter-button.width;
+    private property <length> setter-anchor-height: setter-button.height;
+    changed setter-anchor-x => { TimerSetterFacts.anchor-x = root.setter-anchor-x; }
+    changed setter-anchor-y => { TimerSetterFacts.anchor-y = root.setter-anchor-y; }
+    changed setter-anchor-width => { TimerSetterFacts.anchor-width = root.setter-anchor-width; }
+    changed setter-anchor-height => { TimerSetterFacts.anchor-height = root.setter-anchor-height; }
 
     background: transparent;
     accessible-role: AccessibleRole.region;
@@ -83,6 +100,16 @@ export component TimersSection inherits Rectangle {
             if (root.timers-awaiting > 0): Badge {
                 text: "\{root.timers-awaiting} awaiting";
                 tone: Tone.info;
+            }
+            Rectangle {
+                horizontal-stretch: 1;
+            }
+            setter-button := IconButton {
+                icon: IconKind.timer;
+                tone: Tone.info;
+                label: "Set a timer";
+                description: "Opens the mouse setter: quick presets, a label, a custom time of day.";
+                clicked => { root.setter-opened(); }
             }
         }
 

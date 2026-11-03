@@ -9955,6 +9955,257 @@ fn the_timers_form_carries_the_insistence_rung() {
     );
 }
 
+// -- r4 D33: the timers mouse setter (F13) --------------------------------
+
+/// Drives one popover leg: opens via the header button and returns the
+/// harness. The popover's label field shares its a11y address with the
+/// inline form's (both say "Timer label" — the D33-pinned copy); the
+/// popover mounts last in the tree, so the *last* match is the
+/// popover's (the ordered-fixture discipline, asserted by the legs
+/// below behaving: text typed into the wrong field would fail the
+/// captured-command shapes).
+fn open_setter(harness: &mut Harness) {
+    harness.driver.click_by_label("Set a timer");
+    harness.driver.advance_time(0);
+    assert!(
+        harness.handle.window().get_timer_setter_open(),
+        "the header button opened the popover"
+    );
+}
+
+/// The segment click (the toolbar journey's idiom): the radio-role
+/// element is the address — a label can echo on non-button elements
+/// whose default action is inert.
+fn click_segment(harness: &mut Harness, label: &str) {
+    harness
+        .driver
+        .find_all_by_label(label)
+        .into_iter()
+        .find(support::driver::Element::is_radio_button)
+        .unwrap_or_else(|| panic!("the {label} segment is present"))
+        .invoke_default_action();
+    harness.driver.advance_time(0);
+}
+
+fn click_popover_label(harness: &mut Harness) {
+    let matches = harness.driver.find_all_by_label("Timer label");
+    let element = matches
+        .last()
+        .expect("the popover's label field is mounted");
+    let (x, y) = support::driver::centre(element);
+    harness.driver.click_at(x, y);
+}
+
+/// r4 D33 acceptance (b) — the parity contract: a timer created via
+/// the popover (open → preset → label → commit) and one created via
+/// the typed text form with the equivalent grammar dispatch the
+/// `PartialEq`-equal `CreateAdhocAlarm` — same `AdhocWhen`, same
+/// insistence. One parser, one seam, proven.
+#[test]
+fn the_setter_and_the_text_form_hit_the_same_commit_seam() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::ViewToday);
+            harness.driver.advance_time(0);
+
+            // The popover leg: open, quick-fill the 5m preset (never
+            // auto-commit, D-T6), label, commit.
+            open_setter(&mut harness);
+            click_segment(&mut harness, "5m");
+            click_popover_label(&mut harness);
+            harness.type_text("Tea");
+            harness.driver.click_by_label("Set timer");
+            harness.driver.advance_time(0);
+            let popover_command = {
+                let drained = harness.engine.drain();
+                assert_eq!(
+                    drained.len(),
+                    1,
+                    "the popover dispatched exactly the create"
+                );
+                drained.into_iter().next().expect("one command")
+            };
+            assert!(
+                !harness.handle.window().get_timer_setter_open(),
+                "a successful commit closes the popover"
+            );
+            harness.engine.settle(&harness.handle);
+
+            // The text-form leg: the same grammar typed, committed on
+            // the timing field's Return.
+            let click_field = |harness: &mut Harness, label: &str| {
+                let element = harness
+                    .driver
+                    .find_by_label(label)
+                    .unwrap_or_else(|| panic!("the field {label:?} is present"));
+                let (x, y) = support::driver::centre(&element);
+                harness.driver.click_at(x, y);
+            };
+            click_field(&mut harness, "Timer label");
+            harness.type_text("Tea");
+            click_field(&mut harness, "Timer timing (in 10m or at 09:30)");
+            harness.type_text("in 5m");
+            harness.stroke(parse("Return").expect("Return"));
+            let form_command = {
+                let drained = harness.engine.drain();
+                assert_eq!(drained.len(), 1, "the form dispatched exactly the create");
+                drained.into_iter().next().expect("one command")
+            };
+            assert_eq!(
+                popover_command, form_command,
+                "popover ≡ text form ≡ same command (the one-parser contract)"
+            );
+        },
+    );
+}
+
+/// r4 D-T4 — the custom row's grammar: a picked time plus an explicit
+/// Tomorrow composes `at <RFC-3339>` and commits as `At(instant)` at
+/// the picked time of the next day — the one parser between the
+/// composition and the engine (typed match, never label text).
+#[test]
+fn the_setter_composes_the_custom_row_grammar() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::ViewToday);
+            harness.driver.advance_time(0);
+            open_setter(&mut harness);
+            // The custom row: click-focus the time field, type the
+            // lenient digits, pick Tomorrow.
+            let time_field = harness
+                .driver
+                .find_by_label("Custom time")
+                .expect("the custom time field is mounted");
+            let (x, y) = support::driver::centre(&time_field);
+            harness.driver.click_at(x, y);
+            harness.type_text("09:30");
+            harness.driver.advance_time(0);
+            click_segment(&mut harness, "Tomorrow");
+            eprintln!(
+                "FIRE-TIME: {}",
+                harness.handle.window().get_timer_setter_fire_time()
+            );
+            assert!(
+                !harness
+                    .handle
+                    .window()
+                    .get_timer_setter_fire_time()
+                    .is_empty(),
+                "the composed fire instant's caption renders"
+            );
+            click_popover_label(&mut harness);
+            harness.type_text("Standup");
+            harness.driver.click_by_label("Set timer");
+            harness.driver.advance_time(0);
+            match harness.engine.drain().as_slice() {
+                [StateCommand::CreateAdhocAlarm { when, .. }] => {
+                    let tomorrow = (chrono::Local::now().date_naive()
+                        + chrono::TimeDelta::try_days(1).expect("one day"))
+                    .and_hms_opt(9, 30, 0)
+                    .expect("09:30");
+                    let expected = chrono::Local
+                        .from_local_datetime(&tomorrow)
+                        .single()
+                        .expect("resolves")
+                        .with_timezone(&chrono::Utc);
+                    assert_eq!(
+                        *when,
+                        taskboard_domain::AdhocWhen::At(expected),
+                        "the explicit day choice is honored — no roll"
+                    );
+                }
+                other => panic!("the create reached the boundary, got {other:?}"),
+            }
+            assert!(
+                !harness.handle.window().get_timer_setter_open(),
+                "the commit closed the popover"
+            );
+        },
+    );
+}
+
+/// r4 D33 §4.2 — the dismissal grammar: the scrim click and Escape
+/// close without committing (drafts are setter-local, nothing is
+/// dispatched); a successful commit closes; an absorbed miss (the
+/// whitespace-empty label, D-P14) keeps the panel open with nothing
+/// sent.
+#[test]
+fn the_setter_dismissal_layers_close_without_committing() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::ViewToday);
+            harness.driver.advance_time(0);
+
+            // (a) The scrim click closes — no command.
+            open_setter(&mut harness);
+            harness.driver.click_at(600.0, 40.0);
+            harness.driver.advance_time(0);
+            assert!(
+                !harness.handle.window().get_timer_setter_open(),
+                "the outside click dismissed the panel"
+            );
+            harness.assert_commands(&[]);
+
+            // (b) Escape closes — widget-internal, the action layer
+            // never sees it, and still no command. The label click
+            // hands the panel the focus a real open flow has.
+            open_setter(&mut harness);
+            click_popover_label(&mut harness);
+            harness.driver.advance_time(0);
+            harness.stroke(parse("Escape").expect("Escape"));
+            harness.driver.advance_time(0);
+            assert!(
+                !harness.handle.window().get_timer_setter_open(),
+                "Escape closed the panel"
+            );
+            harness.assert_commands(&[]);
+
+            // (c) An absorbed miss keeps the panel open: a preset
+            // quick-filled, no label — the empty-label absorb (D-P14).
+            open_setter(&mut harness);
+            click_segment(&mut harness, "10m");
+            harness.driver.click_by_label("Set timer");
+            harness.driver.advance_time(0);
+            assert!(
+                harness.handle.window().get_timer_setter_open(),
+                "the miss keeps the panel open"
+            );
+            harness.assert_commands(&[]);
+
+            // (d) A successful commit closes and dispatches exactly
+            // the create.
+            click_popover_label(&mut harness);
+            harness.type_text("Tea");
+            harness.driver.click_by_label("Set timer");
+            harness.driver.advance_time(0);
+            assert!(
+                !harness.handle.window().get_timer_setter_open(),
+                "the commit closed the panel"
+            );
+            harness.assert_commands(&[StateCommand::CreateAdhocAlarm {
+                label: "Tea".to_owned(),
+                when: taskboard_domain::AdhocWhen::In(TimeDelta::minutes(10)),
+                insistence: taskboard_domain::Insistence::Normal,
+            }]);
+        },
+    );
+}
+
 // -- DR-5/4: the tracking affordances (issue #489) -----------------------
 
 /// DR-5/4 — the chip: the open entry names itself (title snapshot +

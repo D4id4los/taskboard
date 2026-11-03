@@ -18,6 +18,9 @@ import { Toolbar } from "compositions/toolbar.slint";
 import { StatusBar, SyncBadgeModel, BannerRowModel, FlowHintModel } from "compositions/status-bar.slint";
 import { NotificationSurface, NotificationRowModel } from "compositions/notification-surface.slint";
 import { TimerRowModel } from "compositions/timers.slint";
+import { TimerSetter } from "compositions/timer-setter.slint";
+import { TimerSetterFacts } from "menu-facts.slint";
+import { TimeSlotRow } from "widgets/time-field.slint";
 import { HabitRowModel } from "compositions/habits.slint";
 import { BoardView, BoardModel } from "views/board-view.slint";
 import { BoardBarModel, BoardSegmentModel } from "compositions/board-bar.slint";
@@ -343,6 +346,7 @@ export component AppWindow inherits Window {
                 timer-when-validity: root.timer-when-validity;
                 timer-when-error-hint: root.timer-when-error-hint;
                 timers-when-edited(t) => root.timers-when-edited(t);
+                timers-setter-opened() => root.timers-setter-opened();
                 habits: root.habits-model;
                 habits-editing-visible: root.habits-editing-visible;
                 habits-plus-clicked(r) => root.habits-plus-clicked(r);
@@ -526,6 +530,56 @@ export component AppWindow inherits Window {
                 time-picked(m) => root.task-date-time-picked(m);
                 time-accepted(t) => root.task-date-time-accepted(t);
             }
+
+        // The timers setter popover (r4 D33): the date-picker overlay
+        // twin — the dismissal layer first (a full-window TouchArea,
+        // no visual; the later sibling is hit-tested first), then the
+        // anchored panel. An outside click (or right-click down, the
+        // r4 D2 idiom) dismisses — nothing is committed, drafts are
+        // the adapter's setter-local state. The panel sits below the
+        // header button when it fits, else above, both clamped into
+        // the window (status bar included).
+        if (root.timer-setter-open): TouchArea {
+            width: 100%;
+            height: 100%;
+            clicked => root.timer-setter-dismiss-requested();
+            pointer-event(event) => {
+                if (event.kind == PointerEventKind.down
+                        && event.button == PointerEventButton.right) {
+                    root.timer-setter-dismiss-requested();
+                }
+            }
+        }
+        if (root.timer-setter-open): TimerSetter {
+            width: min(root.width - 2 * Theme.space-2,
+                       max(self.preferred-width, 300px * Theme.base-scale));
+            x: max(Theme.space-2,
+                   min(TimerSetterFacts.anchor-x,
+                       root.width - self.width - Theme.space-2));
+            y: max(Theme.space-2,
+                   min((TimerSetterFacts.anchor-y + TimerSetterFacts.anchor-height
+                            + Theme.space-1 + self.height <= status.y
+                        ? TimerSetterFacts.anchor-y + TimerSetterFacts.anchor-height
+                            + Theme.space-1
+                        : TimerSetterFacts.anchor-y - self.height - Theme.space-1),
+                       status.y - self.height - Theme.space-2));
+            time-text: root.timer-setter-time-text;
+            time-validity: root.timer-setter-time-validity;
+            time-hint: root.timer-setter-time-hint;
+            time-slots: root.timer-setter-time-slots;
+            time-nearest-row: root.timer-setter-time-nearest-row;
+            fire-time: root.timer-setter-fire-time;
+            commit-enabled: root.timer-setter-commit-enabled;
+            focus-nonce: root.timer-setter-focus-nonce;
+            preset-picked(index) => root.timer-setter-preset-picked(index);
+            time-edited(t) => root.timer-setter-time-edited(t);
+            time-stepped(n) => root.timer-setter-time-stepped(n);
+            time-picked(m) => root.timer-setter-time-picked(m);
+            day-picked(d) => root.timer-setter-day-picked(d);
+            insist-picked(i) => root.timer-setter-insist-picked(i);
+            commit-requested(label) => root.timer-setter-commit-requested(label);
+            close-requested() => root.timer-setter-dismiss-requested();
+        }
 
         // The D2 outside-click dismissal layer (round 1): a full-window
         // TouchArea declared AFTER the chrome and BEFORE the menu
@@ -913,6 +967,23 @@ export component AppWindow inherits Window {
     pure callback timers-when-edited(string);
     in-out property <FieldValidity> timer-when-validity: FieldValidity.neutral;
     in-out property <string> timer-when-error-hint: "";
+    // The timers header's mouse setter popover (r4 D33): window-level
+    // overlay mount (never inside the scroll page — a window-sized
+    // underlay inside the Flickable would scroll wrong; the
+    // date-picker precedent). The open flag is pure presentation
+    // state (the palette-open precedent — no model push); the pushed
+    // halves arrive from the adapter's per-pass derive (one draft,
+    // two views: the popover edits and the inline text form's
+    // validity mirror share the same `timer_when_draft`).
+    in-out property <bool> timer-setter-open: false;
+    in-out property <int> timer-setter-focus-nonce: 0;
+    in-out property <string> timer-setter-time-text: "--:--";
+    in-out property <FieldValidity> timer-setter-time-validity: FieldValidity.neutral;
+    in-out property <string> timer-setter-time-hint: "";
+    in-out property <[TimeSlotRow]> timer-setter-time-slots;
+    in-out property <int> timer-setter-time-nearest-row: 0;
+    in-out property <string> timer-setter-fire-time: "";
+    in-out property <bool> timer-setter-commit-enabled: false;
     // The dismissal layer's seam (round-3 D10): drops the picker
     // only — the editor and its flow stay armed.
     pure callback date-picker-dismiss-requested();
@@ -948,4 +1019,17 @@ export component AppWindow inherits Window {
     pure callback habits-reorder-asked(int, int);
     pure callback timers-create-accepted(string, string, bool) -> bool;
     pure callback timers-chip-clicked();
+    // The mouse setter's seams (r4 D33): open/dismiss are window
+    // property flips; the intents ride to the adapter's setter state;
+    // the commit funnels through `timers-create-accepted` — the one
+    // parser between any commit and the engine.
+    pure callback timers-setter-opened();
+    pure callback timer-setter-dismiss-requested();
+    pure callback timer-setter-preset-picked(int);
+    pure callback timer-setter-time-edited(string);
+    pure callback timer-setter-time-stepped(int);
+    pure callback timer-setter-time-picked(int);
+    pure callback timer-setter-day-picked(int);
+    pure callback timer-setter-insist-picked(int);
+    pure callback timer-setter-commit-requested(string) -> bool;
 }
