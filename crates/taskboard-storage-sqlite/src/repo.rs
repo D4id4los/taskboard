@@ -363,7 +363,8 @@ mod decode {
         // A baseline we cannot read must not silently downgrade to the
         // fallback: the next merge would blanket-clobber — the exact bug
         // the record exists to close (ADR 0004's D-7).
-        serde_json::from_str(raw).map_err(|_| RepositoryError::Corrupted)
+        taskboard_domain::entities::RemoteTaskBaseline::parse_text_form(raw)
+            .ok_or(RepositoryError::Corrupted)
     }
 }
 
