@@ -647,3 +647,114 @@ fn the_focus_overlay_golden_holds() {
         "goldens regenerated — review the PNG diff before landing"
     );
 }
+
+// -- #214: the review-view goldens -----------------------------------------
+
+/// The review surface's escape: the cold start is the board, and the
+/// cycle wraps backwards through Today into Review (#214 D-1).
+fn enter_review(handle: &taskboard_ui_slint::UiHandle) {
+    handle.dispatch_action(taskboard_ui_slint::actions::ActionId::NavPrevView);
+    handle.dispatch_action(taskboard_ui_slint::actions::ActionId::NavPrevView);
+}
+
+/// The empty-review golden (D-9 tier 1): the whole-view collapse over
+/// the clean board fixture — no completed tasks anywhere, the ledger
+/// and both sections folded into the `EmptyState`.
+#[test]
+fn the_review_empty_golden_holds() {
+    let regen = regen_requested();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |driver| {
+            let state = Arc::new(ArcSwap::from_pointee(fixture::golden_state().1));
+            capture_golden(
+                driver,
+                state,
+                scale_settings(1.0),
+                |_, handle| enter_review(handle),
+                1000,
+                &PathBuf::from(format!(
+                    "{}/tests/goldens/review-empty-1.0-1000.png",
+                    env!("CARGO_MANIFEST_DIR")
+                )),
+                regen,
+            );
+        },
+    );
+    assert!(
+        !regen,
+        "goldens regenerated — review the PNG diff before landing"
+    );
+}
+
+/// The populated-ledger golden (D-8): two compared rows over the
+/// board fixture — a compared completion (estimate + tracked actual),
+/// an untracked estimated completion, and an unestimated tracked one.
+/// Phrase stability: closed entries and date-only completion phrases
+/// are deterministic within a run (the second-granular phrases never
+/// cross a second between build and snapshot).
+#[test]
+fn the_review_ledger_golden_holds() {
+    let regen = regen_requested();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |driver| {
+            let (fixture, mut state) = fixture::golden_state();
+            let now = chrono::Utc::now();
+            let span = |start: chrono::TimeDelta, secs: i64| {
+                (
+                    now + start,
+                    now + start + chrono::TimeDelta::try_seconds(secs).unwrap(),
+                )
+            };
+            // Newest completion first: the unestimated tracked task.
+            let _ = fixture::add_completed_task(
+                &mut state,
+                fixture.stack_a,
+                "Calibrate the reading nook",
+                now - chrono::TimeDelta::try_hours(2).unwrap(),
+                None,
+                Some(span(chrono::TimeDelta::try_hours(-3).unwrap(), 5_400)),
+            );
+            // The compared row: 90m estimated, 60m actual.
+            let _ = fixture::add_completed_task(
+                &mut state,
+                fixture.stack_a,
+                "Refit the shelf brackets",
+                now - chrono::TimeDelta::try_hours(26).unwrap(),
+                Some(5_400),
+                Some(span(chrono::TimeDelta::try_hours(-30).unwrap(), 3_600)),
+            );
+            // The untracked estimated row.
+            let _ = fixture::add_completed_task(
+                &mut state,
+                fixture.stack_b,
+                "Sort the label drawer",
+                now - chrono::TimeDelta::try_days(4).unwrap(),
+                Some(1_800),
+                None,
+            );
+            let state = Arc::new(ArcSwap::from_pointee(state));
+            capture_golden(
+                driver,
+                state,
+                scale_settings(1.0),
+                |_, handle| enter_review(handle),
+                1000,
+                &PathBuf::from(format!(
+                    "{}/tests/goldens/review-ledger-1.0-1000.png",
+                    env!("CARGO_MANIFEST_DIR")
+                )),
+                regen,
+            );
+        },
+    );
+    assert!(
+        !regen,
+        "goldens regenerated — review the PNG diff before landing"
+    );
+}

@@ -167,6 +167,45 @@ pub fn add_open_entry(
     id
 }
 
+/// The calibration-surface helper (#214): mints one completed task —
+/// optionally estimated, optionally with one closed Work entry — into
+/// `state` and hands back its id. The review goldens/journeys address
+/// the ledger through these, never hand-building the domain rows
+/// inline.
+#[allow(clippy::too_many_arguments)]
+pub fn add_completed_task(
+    state: &mut AppState,
+    stack: StackId,
+    title: &str,
+    done_at: chrono::DateTime<chrono::Utc>,
+    estimate_seconds: Option<u64>,
+    work_span: Option<(chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)>,
+) -> TaskId {
+    let id = TaskId::from_uuid(uuid::Uuid::now_v7());
+    let mut t = task(id, stack, 0);
+    title.clone_into(&mut t.title);
+    t.done = Some(done_at);
+    t.effort = estimate_seconds.map(taskboard_domain::Effort::new);
+    state.tasks.insert(id, t);
+    if let Some((start, end)) = work_span {
+        let entry_id = taskboard_domain::TimeEntryId::from_uuid(uuid::Uuid::now_v7());
+        state.tracking.entries.insert(
+            entry_id,
+            taskboard_domain::TimeEntry {
+                id: entry_id,
+                task: id,
+                task_title: title.to_owned(),
+                start,
+                end: Some(end),
+                created_at: start,
+                updated_at: end,
+                kind: taskboard_domain::tracking::TimeEntryKind::Work,
+            },
+        );
+    }
+    id
+}
+
 /// Records the delivery receipt for an alarm's occurrence (the fire
 /// fact that makes the row awaiting).
 pub fn deliver_alarm(

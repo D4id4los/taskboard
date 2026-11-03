@@ -375,6 +375,7 @@ export component AppWindow inherits Window {
             }
             if (root.current-view == View.review): ReviewView {
                 review: root.review-model;
+                viewport-height: root.window-height;
             }
             if (root.current-view == View.task-detail): TaskView {
                 task: root.task-model;
