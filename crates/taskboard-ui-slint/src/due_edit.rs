@@ -187,6 +187,9 @@ pub struct DuePickerState {
 /// One 15-minute stepper press (round 3 D9).
 pub const TIME_STEP_MINUTES: u32 = 15;
 
+/// The grid's reserved cell count (r4 D22): six week-rows always.
+const GRID_CELLS: usize = 42;
+
 impl DuePickerState {
     /// Opens on `due`'s month (the anchor the user is editing) or
     /// today's when no due is set; the cursor sits on the due date or
@@ -237,17 +240,17 @@ impl DuePickerState {
 
     /// Steps the time-of-day by ±15 minutes (the `n`-fold step),
     /// wrapping over midnight — the date follows (`move_days`), a
-    /// step is an instant move, not a wall-clock edit. A date-only
-    /// picker stays date-only: the steppers are inert until a time
-    /// exists (typed in or seeded).
+    /// step is an instant move, not a wall-clock edit. An unset time
+    /// is **seeded at midnight first** (r4 D23): the first `+` click
+    /// yields 00:15, the first `−` click 23:45 on the previous day.
+    /// A time exists exactly when something created one — a step or
+    /// a typed entry; until then the picker stays date-only.
     ///
     /// # Panics
     ///
     /// Never: the midnight anchor is a compile-time constant shape.
     pub fn step_time(&mut self, n: i32) {
-        let Some(time) = self.time else {
-            return;
-        };
+        let time = *self.time.get_or_insert(NaiveTime::MIN);
         let current = i64::from(time.num_seconds_from_midnight() / 60);
         let total = current + i64::from(n) * i64::from(TIME_STEP_MINUTES);
         let wrapped = total.rem_euclid(i64::from(24 * 60));
@@ -310,7 +313,12 @@ impl DuePickerState {
     }
 
     /// The displayed month's grid: leading weekday blanks then one
-    /// cell per day — always a multiple of 7 (Monday-first).
+    /// cell per day, padded to **42 cells / 6 week-rows always**
+    /// (r4 D22 — the six-row reserve): the panel's preferred height
+    /// is constant while open, so the overlay's above/below fit test
+    /// cannot flip mid-interaction when month paging changes the row
+    /// count. Trailing blanks render nothing (the common calendar
+    /// convention — every month the same grid height).
     #[must_use]
     pub fn grid(&self) -> Vec<GridCell> {
         let leading = weekday_index(self.month);
@@ -319,9 +327,7 @@ impl DuePickerState {
         cells.extend((1..=days).map(|day| GridCell {
             date: self.month.with_day(day),
         }));
-        while !cells.len().is_multiple_of(7) {
-            cells.push(GridCell { date: None });
-        }
+        cells.resize(GRID_CELLS, GridCell { date: None });
         cells
     }
 }
@@ -505,9 +511,9 @@ mod tests {
         );
         assert_eq!(picker.month(), NaiveDate::from_ymd_opt(2030, 1, 1).unwrap());
         // January 2030 starts on a Tuesday: one leading blank, 31
-        // cells, padded to 35.
+        // cells, padded to the six-row reserve (42).
         let grid = picker.grid();
-        assert_eq!(grid.len(), 35);
+        assert_eq!(grid.len(), 42);
         assert_eq!(grid[0], GridCell { date: None });
         assert_eq!(
             grid[1].date,
@@ -608,14 +614,66 @@ mod tests {
     }
 
     #[test]
-    fn date_only_picker_stays_midnight_until_a_time_exists() {
+    fn grid_is_always_six_week_rows() {
+        // (r4 D22) The three source shapes all reserve 42 cells: a
+        // 4-row month (Feb 2021 — 28 days, picked by construction,
+        // not by calendar trivia), a 5-row month (January 2030, the
+        // journeys' month), and a natively 6-row month (December
+        // 2029). Leading blanks stay < 7; the padding is trailing.
+        for (year, month) in [(2021, 2), (2030, 1), (2029, 12)] {
+            let month = NaiveDate::from_ymd_opt(year, month, 1).unwrap();
+            let picker = DuePickerState::open(month, None);
+            let grid = picker.grid();
+            assert_eq!(grid.len(), 42, "{year}-{month:02}");
+            let leading = grid.iter().take_while(|c| c.date.is_none()).count();
+            assert!(leading < 7, "{year}-{month:02}");
+            let trailing = grid.iter().rev().take_while(|c| c.date.is_none()).count();
+            assert!(
+                trailing >= 42 - leading - grid.iter().filter(|c| c.date.is_some()).count(),
+                "{year}-{month:02}: the reserve is trailing padding"
+            );
+        }
+        // February 2021 is a known 28-cell month: 16 trailing blanks.
+        let feb = DuePickerState::open(NaiveDate::from_ymd_opt(2021, 2, 1).unwrap(), None);
+        let grid = feb.grid();
+        assert_eq!(grid.iter().filter(|c| c.date.is_some()).count(), 28);
+    }
+
+    #[test]
+    fn stepping_an_unset_time_seeds_midnight_then_steps() {
+        // (r4 D23, the reconciled pin) While no time exists, the
+        // commit stays the cursor's midnight — no phantom `00:00`
+        // exists until something creates one.
         let mut picker = DuePickerState::open(NaiveDate::from_ymd_opt(2030, 1, 31).unwrap(), None);
         assert_eq!(picker.time(), None, "no anchor time = date-only");
-        picker.step_time(1);
-        assert_eq!(picker.time(), None, "the steppers are inert on date-only");
         assert_eq!(
             picker.commit_instant(),
             chrono::Utc.with_ymd_and_hms(2030, 1, 31, 0, 0, 0).unwrap()
+        );
+        // The first backward step seeds midnight and lands on the
+        // previous day's 23:45 (a step is an instant move — the date
+        // follows the wrap).
+        picker.step_time(-1);
+        assert_eq!(
+            picker.time(),
+            Some(NaiveTime::from_hms_opt(23, 45, 0).unwrap())
+        );
+        assert_eq!(
+            picker.commit_instant(),
+            chrono::Utc
+                .with_ymd_and_hms(2030, 1, 30, 23, 45, 0)
+                .unwrap()
+        );
+        // A fresh seed stepping forward yields 00:15 the same day.
+        let mut picker = DuePickerState::open(NaiveDate::from_ymd_opt(2030, 1, 31).unwrap(), None);
+        picker.step_time(1);
+        assert_eq!(
+            picker.time(),
+            Some(NaiveTime::from_hms_opt(0, 15, 0).unwrap())
+        );
+        assert_eq!(
+            picker.commit_instant(),
+            chrono::Utc.with_ymd_and_hms(2030, 1, 31, 0, 15, 0).unwrap()
         );
     }
 
@@ -745,18 +803,19 @@ mod tests {
             }
         }
 
-        /// The grid is always 7-divisible, blanks lead, and every
-        /// non-blank cell stays inside the displayed month.
+        /// The grid always reserves six week-rows (r4 D22), blanks
+        /// lead, and every non-blank cell stays inside the displayed
+        /// month.
         #[test]
         fn grid_invariants(days in 0i64..=4000) {
             let date = (now() + ChronoDuration::try_days(days).unwrap()).date_naive();
             let picker = DuePickerState::open(date, None);
             let grid = picker.grid();
-            prop_assert_eq!(grid.len() % 7, 0);
+            prop_assert_eq!(grid.len(), 42);
             let leading = grid.iter().take_while(|c| c.date.is_none()).count();
             let trailing = grid.iter().rev().take_while(|c| c.date.is_none()).count();
             prop_assert!(leading < 7);
-            prop_assert!(trailing < 7);
+            prop_assert!(trailing >= 42 - 7 - 31, "the reserve slack is trailing");
             let days_cells = &grid[leading..grid.len() - trailing];
             for cell in days_cells {
                 let cell_date = cell.date.expect("the run between blanks is all days");
