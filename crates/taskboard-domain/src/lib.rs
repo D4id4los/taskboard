@@ -36,6 +36,7 @@
 #![forbid(unsafe_code)]
 
 pub mod appdata;
+pub mod calibration;
 pub mod capabilities;
 pub mod clock;
 pub mod command;
@@ -83,13 +84,14 @@ pub use appdata::{
     habits_for, lane_gc_old_habit_log, lane_gc_old_time_entries, lane_gc_scheduled, modeled_key,
     prune_absent_cards, rules_entry_for, task_entry_for, time_entries_for, union,
 };
+pub use calibration::{CalibrationAggregate, CalibrationReport, CalibrationRow, calibrate};
 pub use capabilities::{DeckFeatures, flags_for};
 pub use clock::{Clock, SystemClock};
 pub use command::{
     CommandError, CommandOutcome, CommandPlan, bind_wipe_count, bind_wipe_forecast, plan_command,
     plan_day_rolls,
 };
-pub use days::{DayCalendar, day_window, window_start};
+pub use days::{DayCalendar, day_window, trailing_days_window, window_start};
 pub use entities::{
     Board, BoardClocks, Color, Effort, Importance, Label, LabelClocks, Stack, StackClocks, Task,
     TaskClocks, Urgency,
