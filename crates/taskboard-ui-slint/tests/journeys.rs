@@ -7226,8 +7226,12 @@ fn steppers_seed_and_step_from_empty() {
             );
 
             // The commit carries the stepped instant — cursor date
-            // followed the wrap backward.
-            harness.handle.window().invoke_task_date_picker_key(8);
+            // followed the wrap backward. (Grid-Enter no longer
+            // commits — r4 D25's hand-over; the combobox funnel does.)
+            harness
+                .handle
+                .window()
+                .invoke_task_date_time_accepted("23:45".into());
             harness.assert_commands(&[StateCommand::UpdateTask {
                 id: fixture.task1,
                 changes: taskboard_domain::TaskChanges {
@@ -7488,8 +7492,24 @@ fn the_due_picker_journeys_reach_the_boundary() {
             assert_eq!(grid_shape(&harness), (6, 42));
             assert_eq!(cursor_index(&harness), Some(31));
 
-            // Enter on the cursor dispatches the same command the
-            // typed path produces for the same date (click ≡ key).
+            // Grid-Enter is the phase hand-over, never a commit
+            // (r4 D25, review focus b): the field takes focus (the
+            // one-shot flag), nothing dispatches, and the buffer
+            // mirrors the cursor's date (the Picker-source live sync).
+            harness.stroke(parse("Return").expect("Return"));
+            harness.driver.advance_time(0);
+            harness.assert_commands(&[]);
+            assert!(
+                harness.handle.window().get_task_model().date_field_focus,
+                "the hand-over flagged the field"
+            );
+            assert_eq!(
+                harness.handle.window().get_task_model().due_text.as_str(),
+                "2030-02-28",
+                "the buffer mirrors the cursor"
+            );
+            // The field's Return now commits the same command the
+            // typed path produces for the same date.
             harness.stroke(parse("Return").expect("Return"));
             let picked = vec![StateCommand::UpdateTask {
                 id: fixture.task1,
@@ -7524,12 +7544,31 @@ fn the_due_picker_journeys_reach_the_boundary() {
                 },
             }]);
 
-            // Escape closes the whole editor clean — no command, the
-            // editor collapses (the default-open picker dies with it),
-            // a reopen starts default-open again, and the cycle
-            // leaves the view closable by its own back binding (R-c).
+            // The Escape ladder (r4 D25): the field phase's Escape is
+            // the phase step back — the grid takes focus, the buffer
+            // survives, nothing dispatches; the second Escape (the
+            // picker phase) is the clean close, no command, the editor
+            // collapses (the default-open picker dies with it). A
+            // reopen starts default-open again, and the cycle leaves
+            // the view closable by its own back binding (R-c).
             harness.driver.click_by_label("Edit due date");
             harness.driver.advance_time(0);
+            harness.stroke(parse("Escape").expect("Escape"));
+            harness.driver.advance_time(0);
+            harness.assert_commands(&[]);
+            assert!(
+                keyboard(&harness).get_date_picker_grid(),
+                "the first Escape stepped back to the grid"
+            );
+            assert!(
+                harness.handle.window().get_task_model().due_open,
+                "the field phase's Escape keeps the editor armed"
+            );
+            assert_eq!(
+                harness.handle.window().get_task_model().due_text.as_str(),
+                "2030-01-31",
+                "the seeded buffer survived the step back"
+            );
             harness.stroke(parse("Escape").expect("Escape"));
             harness.assert_commands(&[]);
             assert!(!keyboard(&harness).get_vi_insert(), "back to normal");
@@ -7545,6 +7584,9 @@ fn the_due_picker_journeys_reach_the_boundary() {
                  the editor's armed affordance"
             );
             harness.stroke(parse("Escape").expect("Escape"));
+            harness.driver.advance_time(0);
+            harness.stroke(parse("Escape").expect("Escape"));
+            harness.driver.advance_time(0);
             harness.press(ActionId::NavFocusBoard);
             assert_eq!(
                 harness.handle.window().get_current_view(),
@@ -7616,7 +7658,10 @@ fn the_picker_overlay_dismisses_without_disturbing_the_editor() {
             );
             harness.assert_commands(&[]);
 
-            // Escape still ends the whole editor — no command.
+            // The ladder has no grid phase left after the dismissal
+            // (no picker to step into — the machine cannot trap into
+            // a phase that does not exist, r4 D25): the Escape ends
+            // the whole editor clean — no command.
             harness.stroke(parse("Escape").expect("Escape"));
             harness.assert_commands(&[]);
             assert!(

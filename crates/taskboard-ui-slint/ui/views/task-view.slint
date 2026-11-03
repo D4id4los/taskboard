@@ -63,6 +63,9 @@ export struct TaskDetailModel {
     date-caption: string,
     date-grid: [[DueDayModel]],
     date-grid-focus: bool,
+    // The one-shot field-focus hand-over (r4 D25): the grid's Enter
+    // hands focus back to the armed editor's field.
+    date-field-focus: bool,
     date-time-text: string,
     // The time combobox's pushed half (r4 D26): the visible text
     // mirror, the validity flavour, the filtered quick-list rows, and
@@ -481,6 +484,7 @@ export component TaskView inherits FocusScope {
                     if (root.task.due-open): DueEditor {
                         initial-text: root.task.due-text;
                         echo: root.task.due-echo;
+                        field-focus-on-mount: root.task.date-field-focus;
                         clear-affordance: true;
                         edited(text) => root.date-edited(text);
                         accepted(text) => root.date-accepted(text);
@@ -545,6 +549,7 @@ export component TaskView inherits FocusScope {
                         entry-placeholder: "YYYY-MM-DD or +2d";
                         initial-text: root.task.scheduled-text;
                         echo: root.task.scheduled-echo;
+                        field-focus-on-mount: root.task.date-field-focus;
                         clear-affordance: true;
                         edited(text) => root.date-edited(text);
                         accepted(text) => root.date-accepted(text);

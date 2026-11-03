@@ -441,7 +441,11 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
     // the table it is unreachable.
     row(FK::Text, E::OpenMenu, exp(Z, K(KTxt)));
     // -- DUE rows --
-    row(FK::Due, E::SetModeNormal, exp(Z, N)); // kept discard
+    // The Escape ladder (r4 D25): the rig arms the flow with no
+    // picker, so SetMode(Normal) is the clean close — the ladder's
+    // step-back needs a live picker (the journeys own that leg); the
+    // machine can never step into a phase that does not exist.
+    row(FK::Due, E::SetModeNormal, exp(Z, N));
     row(FK::Due, E::Activate, exp(Z, K(KDue))); // named inert (the commit funnel owns Return)
     row(FK::Due, E::SetModeInsert, exp(Z, K(KDue)));
     row(FK::Due, E::BeginCreate, exp(Z, K(KTxt)));

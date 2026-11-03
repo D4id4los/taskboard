@@ -135,6 +135,13 @@ export component TextField inherits Rectangle {
     // a growing buffer cannot stretch the field or its ancestors.
     min-width: Theme.space-15;
 
+    // The programmatic focus seam (r4 D25): the inner TextInput owns
+    // the focus; callers (the due editor's phase hand-over) grab it
+    // through here.
+    public function grab-focus() {
+        input.focus();
+    }
+
     // The clear affordance's one seam (round 3 D11): select-all +
     // delete, not Return — the buffer empties and the staged clear
     // rides `edited("")`.
