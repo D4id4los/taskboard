@@ -10941,3 +10941,73 @@ fn notification_rows_drop_the_done_button_for_a_tracker() {
         },
     );
 }
+
+/// #214 — the review surface journey: the cycle's backwards wrap
+/// lands on Review, the ledger model matches the fixture's completed
+/// set (structure over text — row counts, emptiness flags, and the
+/// dashes as structural absences), and nav.focus-board returns. The
+/// rows are read-only (D-8): no activation exists to assert.
+#[test]
+fn the_review_surface_ledgers_and_returns() {
+    let (fixture, mut state) = fixture::golden_state();
+    let now = chrono::Utc::now();
+    let span = |start: chrono::TimeDelta, secs: i64| {
+        (
+            now + start,
+            now + start + chrono::TimeDelta::try_seconds(secs).unwrap(),
+        )
+    };
+    let _ = fixture::add_completed_task(
+        &mut state,
+        fixture.stack_a,
+        "compared-a",
+        now - chrono::TimeDelta::try_hours(2).unwrap(),
+        Some(5_400),
+        Some(span(chrono::TimeDelta::try_hours(-3).unwrap(), 3_600)),
+    );
+    let _ = fixture::add_completed_task(
+        &mut state,
+        fixture.stack_a,
+        "untracked-b",
+        now - chrono::TimeDelta::try_hours(1).unwrap(),
+        Some(600),
+        None,
+    );
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            // Cold start is the board; the backwards wrap crosses
+            // Today into Review (#214 D-1).
+            harness.press(ActionId::NavPrevView);
+            assert_eq!(harness.handle.window().get_current_view(), View::Today);
+            harness.press(ActionId::NavPrevView);
+            assert_eq!(
+                harness.handle.window().get_current_view(),
+                View::Review,
+                "the wrap lands on the review surface"
+            );
+            let model = harness.handle.window().get_review_model();
+            assert!(!model.empty, "the fixture completes two tasks");
+            assert_eq!(model.rows.row_count(), 2, "the ledger mirrors calibrate");
+            let first = model.rows.row_data(0).expect("row 0");
+            assert_eq!(first.title, "untracked-b", "newest completion first");
+            assert!(!first.estimate.is_empty(), "the estimate side is observed");
+            assert!(
+                first.actual.is_empty(),
+                "an untracked actual is a structural absence"
+            );
+            let second = model.rows.row_data(1).expect("row 1");
+            assert_eq!(second.title, "compared-a");
+            assert!(!second.gap.is_empty(), "the settled comparison speaks");
+
+            // nav.focus-board returns from everywhere (the walk's
+            // contract).
+            harness.press(ActionId::NavFocusBoard);
+            assert_eq!(harness.handle.window().get_current_view(), View::Board);
+            harness.assert_commands(&[]); // a read-only view dispatches nothing
+        },
+    );
+}

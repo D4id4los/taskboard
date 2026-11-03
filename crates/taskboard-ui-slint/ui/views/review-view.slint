@@ -2,11 +2,18 @@
 // The review view (#214, D-8): the effort-calibration reading — two
 // aggregate stat sections (7-day, 30-day) over ONE per-task ledger of
 // the 30-day window. Read-only: rows carry no activation, no context
-// actions, no walk targets — a ledger, not a task list. Everything
-// arrives from the Rust push pass (the dumb-client line); the view
-// owns composition only.
+// actions, no walk targets — a ledger, not a task list; the view
+// participates in the page-level scroll only (the ListView pages as
+// ScrollPageHint family 4, no focus containers). Everything arrives
+// from the Rust push pass (the dumb-client line); the view owns
+// composition only. Empty-state collapse per D-9: the whole view
+// folds to the EmptyState; a window without comparable tasks collapses
+// its values to dashes while the two-section skeleton stays stable.
 
-import { Theme, RoleText, Typography } from "../theme.slint";
+import { Theme, RoleText, Typography, Semantic } from "../theme.slint";
+import { FocusScrollHint } from "../focus-scroll.slint";
+import { ListView } from "../widgets/listview.slint";
+import { ScrollPageHint } from "../scroll-page.slint";
 import { EmptyState } from "../widgets/empty-state.slint";
 
 export struct ReviewWindowModel {
@@ -41,20 +48,194 @@ export struct ReviewModel {
     empty: bool,
 }
 
+// One aggregate stat cell: the label over the value; a collapsed
+// window renders the dash for every value (D-9 tier 2).
+component StatCell inherits VerticalLayout {
+    in property <string> label;
+    in property <string> value;
+    in property <bool> collapsed;
+    VerticalLayout {
+        spacing: Theme.space-1;
+        vertical-stretch: 0;
+        RoleText {
+            role: Typography.caption;
+            text-color: Theme.text-secondary;
+            text: root.label;
+        }
+        RoleText {
+            role: Typography.body;
+            text: root.collapsed ? "—" : root.value;
+            wrap: no-wrap;
+            overflow: elide;
+        }
+    }
+}
+
+// One window's aggregate section: the caption row over the four stat
+// cells. The skeleton is fixed — only the values collapse.
+component AggregateSection inherits VerticalLayout {
+    in property <string> caption;
+    in property <ReviewWindowModel> model;
+    VerticalLayout {
+        spacing: Theme.space-1;
+        vertical-stretch: 0;
+        RoleText {
+            role: Typography.heading;
+            text: root.caption;
+        }
+        HorizontalLayout {
+            spacing: Theme.space-4;
+            StatCell {
+                label: "Estimated";
+                value: root.model.estimated;
+                collapsed: root.model.empty;
+            }
+            StatCell {
+                label: "Actual";
+                value: root.model.actual;
+                collapsed: root.model.empty;
+            }
+            StatCell {
+                label: "Gap";
+                value: root.model.gap;
+                collapsed: root.model.empty;
+            }
+            StatCell {
+                label: "Compared";
+                value: root.model.compared;
+                collapsed: root.model.empty;
+            }
+        }
+    }
+}
+
 export component ReviewView inherits FocusScope {
     in property <ReviewModel> review;
+    // The window's logical height, pushed from the app window (the
+    // today view's precedent — never a content-derived height).
+    in property <length> viewport-height;
 
     accessible-role: AccessibleRole.region;
     accessible-label: "Review";
     focus-on-tab-navigation: true;
+    init => self.focus();
 
-    // Stage-2 push-layer step: the composition lands with the surface
-    // commit; the push pass already targets these properties.
-    HorizontalLayout {
-        padding: Theme.space-3;
-        if (root.review.empty): EmptyState {
-            text: "Nothing to calibrate";
-            hint: "Completed tasks with an estimate or tracked time land here.";
+    ring := Rectangle {
+        width: 100%;
+        height: 100%;
+        border-width: root.has-focus ? Theme.focus-ring-width : 0;
+        border-color: Semantic.focus-ring;
+        border-radius: Theme.radius-medium;
+
+        page := Flickable {
+            content := VerticalLayout {
+                padding: Theme.space-3;
+                spacing: Theme.space-3;
+                // D-9 tier 1: the whole-view collapse.
+                if (root.review.empty): EmptyState {
+                    text: "Nothing to calibrate";
+                    hint: "Completed tasks with an estimate or tracked time land here.";
+                }
+                if (!root.review.empty): VerticalLayout {
+                    spacing: Theme.space-3;
+                    vertical-stretch: 0;
+
+                    // The two aggregate sections: 7-day, then
+                    // 30-day — the stable skeleton (D-9 tier 2
+                    // collapses values, never structure).
+                    AggregateSection {
+                        caption: "Last 7 days";
+                        model: root.review.week;
+                    }
+                    AggregateSection {
+                        caption: "Last 30 days";
+                        model: root.review.month;
+                    }
+
+                    // The ledger (D-8): ONE per-task list over the
+                    // 30-day window, newest completion first. The
+                    // #373 viewport pattern (the today sections'
+                    // shape): the repeater fills the window-derived
+                    // bound, the clip host owns the content-sized min.
+                    RoleText {
+                        role: Typography.heading;
+                        text: "Completed tasks";
+                        vertical-stretch: 0;
+                    }
+                    ledger-clip := Rectangle {
+                        clip: true;
+                        ledger := ListView {
+                            height: 100%;
+                            visible-height: Math.max(root.viewport-height - 2 * Theme.space-3, 0);
+                            changed content-height => {
+                                parent.height = Math.min(
+                                    self.content-height,
+                                    Math.max(root.viewport-height - 2 * Theme.space-3, 0),
+                                );
+                            }
+                            request-row: -1;
+                            request-nonce: 0;
+                            // The review page pages as family 4 (D-8:
+                            // page-level scroll only, no focus
+                            // containers).
+                            page-request: ScrollPageHint.family == 4 ? ScrollPageHint.page : 0;
+                            page-nonce: ScrollPageHint.family == 4 ? ScrollPageHint.nonce : -1;
+                            total-rows: root.review.rows.length;
+                            for row[rindex] in root.review.rows: ledger-row := HorizontalLayout {
+                                spacing: Theme.space-3;
+                                vertical-stretch: 0;
+                                // The explicit height (the today rows'
+                                // rule): the repeater's implicit
+                                // preferred-height under-solves.
+                                height: title-text.preferred-height;
+                                title-text := RoleText {
+                                    role: Typography.body;
+                                    text: row.title;
+                                    horizontal-stretch: 1;
+                                    overflow: elide;
+                                    wrap: no-wrap;
+                                    vertical-alignment: center;
+                                }
+                                RoleText {
+                                    role: Typography.caption;
+                                    text-color: Theme.text-secondary;
+                                    width: 120px * Theme.base-scale;
+                                    text: row.completed;
+                                    vertical-alignment: center;
+                                }
+                                RoleText {
+                                    role: Typography.caption;
+                                    text-color: Theme.text-secondary;
+                                    width: 140px * Theme.base-scale;
+                                    text: "est " + (row.estimate == "" ? "—" : row.estimate);
+                                    vertical-alignment: center;
+                                }
+                                RoleText {
+                                    role: Typography.caption;
+                                    text-color: Theme.text-secondary;
+                                    width: 140px * Theme.base-scale;
+                                    text: "act " + (row.actual == "" ? "—" : row.actual);
+                                    vertical-alignment: center;
+                                }
+                                RoleText {
+                                    role: Typography.caption;
+                                    text-color: row.gap == "" ? Theme.text-secondary : Semantic.danger;
+                                    width: 160px * Theme.base-scale;
+                                    text: row.gap == "" ? "no comparison" : row.gap;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+                    property <length> watch-viewport-height: root.viewport-height;
+                    changed watch-viewport-height => {
+                        ledger-clip.height = Math.min(
+                            ledger.content-height,
+                            Math.max(root.viewport-height - 2 * Theme.space-3, 0),
+                        );
+                    }
+                }
+            }
         }
     }
 }
