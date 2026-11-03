@@ -69,6 +69,25 @@ pub fn day_window(
     (start, end)
 }
 
+/// The half-open window covering the last `days` local day-windows
+/// *including the one `now` falls in*: `start` is the opening instant
+/// of local date `today − (days−1)`, `end` the opening instant of
+/// `today + 1`. Composed from [`window_start`] per day (DST-safe by
+/// the fixed-offset rule — no new date arithmetic), so the review
+/// surfaces' "last 7/30 days" reads calendar days, never
+/// `now − 168h`. Pure — `now` and the calendar are data.
+#[must_use]
+pub fn trailing_days_window(
+    now: DateTime<Utc>,
+    day_start_time: chrono::NaiveTime,
+    offset: FixedOffset,
+    _days: std::num::NonZeroU32,
+) -> (DateTime<Utc>, DateTime<Utc>) {
+    // Stage-2 red step: the stub returns the degenerate single-day
+    // window; the feat commit composes the real bounds.
+    day_window(now, day_start_time, offset)
+}
+
 /// The injected day-boundary vocabulary: `(day_start_time, offset)` as
 /// one `Copy` value the planners and ticks receive explicitly (the D-F6
 /// consumer contract, "later engine features via bootstrap injection").
@@ -306,6 +325,78 @@ mod tests {
             local_date - Days::new(1)
         };
         assert_eq!(start, window_start(start_date, time(5, 0), offset_hours(2)));
+    }
+
+    // ---- trailing_days_window (D-4) --------------------------------------
+
+    fn trailing(now: DateTime<Utc>, days: u32) -> (DateTime<Utc>, DateTime<Utc>) {
+        super::trailing_days_window(
+            now,
+            time(0, 0),
+            offset_hours(0),
+            std::num::NonZeroU32::new(days).expect("non-zero"),
+        )
+    }
+
+    #[test]
+    fn a_one_day_trailing_window_is_the_day_window() {
+        let now = utc(1_781_524_800);
+        assert_eq!(
+            trailing(now, 1),
+            day_window(now, time(0, 0), offset_hours(0))
+        );
+    }
+
+    #[test]
+    fn the_trailing_window_covers_exactly_days_local_days_including_nows() {
+        let now = utc(1_781_524_800); // 2026-06-15 12:00 UTC
+        let (start, end) = trailing(now, 7);
+        // The day containing `now` is the window's last day.
+        assert_eq!(end, day_window(now, time(0, 0), offset_hours(0)).1);
+        assert_eq!(
+            start,
+            day_window(now, time(0, 0), offset_hours(0)).0
+                - chrono::TimeDelta::try_days(6).unwrap()
+        );
+        assert!(start <= now && now < end, "now's own day is included");
+        // Six days earlier still lands inside; seven days before does not.
+        let day = chrono::TimeDelta::try_days(1).unwrap();
+        assert!(start <= now - day * 6);
+        assert!(now - day * 7 < start);
+    }
+
+    #[test]
+    fn the_trailing_window_honors_day_start_time_and_offset() {
+        // Night-owl 05:00 at +02:00 (the days.rs D7b fixture's now).
+        let now = utc(1_781_485_200);
+        let calendar = (time(5, 0), offset_hours(2));
+        let (start, end) = super::trailing_days_window(
+            now,
+            calendar.0,
+            calendar.1,
+            std::num::NonZeroU32::new(3).unwrap(),
+        );
+        let (today_start, today_end) = day_window(now, calendar.0, calendar.1);
+        assert_eq!(end, today_end);
+        assert_eq!(start, today_start - chrono::TimeDelta::try_days(2).unwrap());
+    }
+
+    #[test]
+    fn dst_boundary_spans_produce_the_composed_bounds() {
+        // A fixed offset has no transitions, so the bounds stay the
+        // plain `window_start` composition across the known UTC↔DST
+        // boundary instants (the same fixtures the day_window props
+        // use) — 30 days of them included.
+        for now in crate::test_support::dst_boundary_instants() {
+            let days = std::num::NonZeroU32::new(30).unwrap();
+            let (start, end) = super::trailing_days_window(now, time(0, 0), offset_hours(1), days);
+            let (today_start, today_end) = day_window(now, time(0, 0), offset_hours(1));
+            assert_eq!(end, today_end);
+            assert_eq!(
+                start,
+                today_start - chrono::TimeDelta::try_days(29).unwrap()
+            );
+        }
     }
 
     fn day_start_time_strategy() -> impl Strategy<Value = NaiveTime> {
