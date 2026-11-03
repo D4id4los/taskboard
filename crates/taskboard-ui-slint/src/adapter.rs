@@ -922,6 +922,7 @@ impl Adapter {
                 .as_ref()
                 .and_then(super::due_edit::DuePickerState::time),
         );
+        let now2 = chrono::Utc::now();
         let due = crate::models::DueEditorPush {
             text: &self.due_buffer,
             echo: &self.due_echo,
@@ -933,6 +934,9 @@ impl Adapter {
             time_valid: crate::due_edit::time_field_valid(&self.time_text),
             time_slots: &time_slots,
             time_nearest_row,
+            date_valid: crate::due_edit::field_validity(&self.due_buffer, now2),
+            syntax_hint: crate::due_edit::DUE_SYNTAX_HINT,
+            time_hint: crate::due_edit::TIME_SYNTAX_HINT,
         };
         // The focus hand-over is one-shot: consumed by this push.
         self.focus_handover = FocusHandover::None;
@@ -4529,6 +4533,13 @@ fn install_board_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
 /// per-kind rule before its own semantics; idempotent on
 /// `Flow::None` (the double-settle guard).
 fn settle_pointer_conflict(adapter: &mut Adapter, window: &AppWindow) {
+    // The r4 D24 rule governs the date editor's own exits — a foreign
+    // begin (the description field taking focus, journey 13's steal)
+    // is one: settle per the commit/discard rule, not the
+    // unrelated-settle clean close.
+    if matches!(adapter.view_state.flow(), Flow::EditDate { .. }) {
+        settle_date_editor(adapter, window);
+    }
     let state = adapter.state.load_full();
     adapter.settle_flow(window, &state);
 }
@@ -4983,11 +4994,26 @@ fn install_due_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
             return;
         };
         let mut a = dismiss.borrow_mut();
-        // Outside click: drop the picker only — the editor and its
-        // flow stay armed, the buffer intact (round-3 D10).
+        // Outside click (r4 D24, superseding the round-3 D10
+        // picker-only rule): the editor settles per the rule —
+        // parseable commits, empty/junk discards — and the picker
+        // drops with it. In the picker phase the buffer mirrors the
+        // picker, so click-away ≡ done, consistent with the field
+        // phase.
+        settle_date_editor(&mut a, &window);
         if a.due_picker.take().is_some() {
             a.refresh_forced(&window);
         }
+    });
+
+    let focus_lost = Rc::clone(adapter);
+    let focus_lost_weak = window.as_weak();
+    window.on_date_editor_focus_lost(move || {
+        let Some(window) = focus_lost_weak.upgrade() else {
+            return;
+        };
+        let mut a = focus_lost.borrow_mut();
+        settle_date_editor(&mut a, &window);
     });
 
     let time_edited = Rc::clone(adapter);
@@ -5136,6 +5162,9 @@ impl Adapter {
         let Some(picker) = self.due_picker.as_mut() else {
             return; // a stale stroke against an already-closed picker
         };
+        // A panel interaction may move focus (the IconButtons' click
+        // grabs) — the settle funnel must skip that steal (r4 D24).
+        self.due_focus_steal = true;
         match key {
             K::Left => picker.move_days(-1),
             K::Right => picker.move_days(1),
@@ -5235,6 +5264,41 @@ fn sync_buffer_from_picker(a: &mut Adapter) {
         a.due_echo = crate::due_edit::echo(&buffer, now);
         a.due_buffer = buffer;
     }
+}
+
+/// The D24 settle funnel (r4 D24): the one commit/discard rule for
+/// the armed date editor's own seams (focus loss, the dismissal
+/// click). A non-empty parseable buffer commits through the one
+/// `commit_date`; empty or non-conforming discards — no command, the
+/// prior value survives, the editor collapses. The programmatic
+/// focus-steal latch (the phase steps, the panel's own controls)
+/// consumes the skip: a hand-over never settles the text the user is
+/// mid-way through. `true` = committed.
+fn settle_date_editor(a: &mut Adapter, window: &AppWindow) -> bool {
+    if !matches!(a.view_state.flow(), Flow::EditDate { .. }) {
+        return false;
+    }
+    if a.due_focus_steal {
+        a.due_focus_steal = false;
+        return false;
+    }
+    let text = a.due_buffer.clone();
+    let now = chrono::Utc::now();
+    // Non-empty and parseable: click-away ≡ Return.
+    if let Ok(Some(instant)) = crate::due_edit::parse(&text, now) {
+        commit_date(a, window, Some(instant));
+        return true;
+    }
+    // Empty never means clear on focus loss (a stray steal must not
+    // nuke a due date) and junk cannot linger: both discard — the
+    // flow ends clean, the prior value survives.
+    a.due_buffer.clear();
+    a.due_echo.clear();
+    a.due_picker = None;
+    "--:--".clone_into(&mut a.time_text);
+    let outcomes = a.view_state.end_edit_date();
+    a.apply_outcomes(window, &outcomes);
+    false
 }
 
 /// The one commit funnel (r2 D25, round-3 D8): dispatch the typed

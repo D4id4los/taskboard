@@ -40,6 +40,9 @@ export component TimeField inherits Rectangle {
     // the user types (r4 R-c's probe shape).
     in property <string> time-text: "--:--";
     in property <FieldValidity> validity: FieldValidity.neutral;
+    // The error line (r4 D27): a conditional caption below the row
+    // rendering the caller's copy constant — invalid text only.
+    in property <string> error-hint;
     in property <string> label: "Time";
     in property <string> placeholder: "HH:MM";
     in property <string> description;
@@ -71,6 +74,13 @@ export component TimeField inherits Rectangle {
 
     height: field.natural-height;
     border-radius: Theme.radius-small;
+
+    if (root.validity == FieldValidity.invalid && field.text != "" && field.text != "--:--"): RoleText {
+        role: Typography.caption;
+        text-color: Semantic.danger;
+        y: field.natural-height;
+        text: root.error-hint;
+    }
 
     // The push re-seed: the adapter's mirror wins whenever it differs
     // from the field's buffer. While the user types, the adapter

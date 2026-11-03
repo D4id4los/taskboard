@@ -66,6 +66,10 @@ export struct TaskDetailModel {
     // The one-shot field-focus hand-over (r4 D25): the grid's Enter
     // hands focus back to the armed editor's field.
     date-field-focus: bool,
+    // The date field's validity flavour + the syntax hint (r4 D27).
+    date-validity: FieldValidity,
+    date-syntax-hint: string,
+    time-syntax-hint: string,
     date-time-text: string,
     // The time combobox's pushed half (r4 D26): the visible text
     // mirror, the validity flavour, the filtered quick-list rows, and
@@ -123,6 +127,9 @@ export component TaskView inherits FocusScope {
     callback date-edited(string);
     callback date-accepted(string);
     callback date-picker-toggled();
+    // The focus-loss settle (r4 D24): the armed editor's field losing
+    // focus settles it per the commit/discard rule.
+    callback date-editor-focus-lost();
     // The picker's key/day seams live on the window-level overlay
     // (round-3 D10) — bound there directly, not forwarded here.
 
@@ -485,10 +492,13 @@ export component TaskView inherits FocusScope {
                         initial-text: root.task.due-text;
                         echo: root.task.due-echo;
                         field-focus-on-mount: root.task.date-field-focus;
+                        validity: root.task.date-validity;
+                        syntax-hint: root.task.date-syntax-hint;
                         clear-affordance: true;
                         edited(text) => root.date-edited(text);
                         accepted(text) => root.date-accepted(text);
                         picker-toggled() => root.date-picker-toggled();
+                        focus-lost() => root.date-editor-focus-lost();
                     }
                 }
                 // The start-date column (round-3 D8/F14): the due
@@ -550,10 +560,13 @@ export component TaskView inherits FocusScope {
                         initial-text: root.task.scheduled-text;
                         echo: root.task.scheduled-echo;
                         field-focus-on-mount: root.task.date-field-focus;
+                        validity: root.task.date-validity;
+                        syntax-hint: root.task.date-syntax-hint;
                         clear-affordance: true;
                         edited(text) => root.date-edited(text);
                         accepted(text) => root.date-accepted(text);
                         picker-toggled() => root.date-picker-toggled();
+                        focus-lost() => root.date-editor-focus-lost();
                     }
                 }
                 VerticalLayout {

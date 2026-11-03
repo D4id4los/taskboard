@@ -582,6 +582,25 @@ fn clamp_into_month(cursor: NaiveDate, month: NaiveDate) -> NaiveDate {
     .unwrap_or(cursor)
 }
 
+/// The due field's syntax hint (r4 D27): the copy constant — the one
+/// home, so a wording pass never touches a test.
+pub const DUE_SYNTAX_HINT: &str = "YYYY-MM-DD, YYYY-MM-DD HH:MM, or +2d";
+
+/// The time combobox's syntax hint (r4 D27).
+pub const TIME_SYNTAX_HINT: &str = "HH:MM — bare hours (9) and H+MM (930) also work";
+
+/// The due field's tri-state validity probe (r4 D27): empty is `None`
+/// (neutral — no decoration on an untouched field); a parse hit is
+/// `Some(true)`; anything else `Some(false)`. The predicates *call*
+/// the authoritative parser — no second grammar (review focus f).
+#[must_use]
+pub fn field_validity(text: &str, now: DateTime<Utc>) -> Option<bool> {
+    if text.trim().is_empty() {
+        return None;
+    }
+    Some(parse(text, now).is_ok())
+}
+
 /// The bidirectional sync's source (r4 D25): which side moved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyncSource {

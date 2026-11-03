@@ -11,8 +11,8 @@
 // (the clean close), so the picker never shadows the view Escape
 // (R-c).
 
-import { Theme, Typography, RoleText } from "../theme.slint";
-import { TextField } from "../widgets/text-field.slint";
+import { Theme, Typography, RoleText, Semantic } from "../theme.slint";
+import { TextField, FieldValidity } from "../widgets/text-field.slint";
 import { IconButton, IconKind } from "../widgets/icon-button.slint";
 
 // The date editor's field half (round-3 D10): the typed field with
@@ -31,6 +31,13 @@ export component DueEditor inherits VerticalLayout {
     // The x-clear affordance (round-3 D11): both date fields enable
     // it; the staged clear rides `edited("")`.
     in property <bool> clear-affordance: false;
+    // The tri-state validity flavour (r4 D27): the border driver; the
+    // echo row doubles as the error line (empty echo + invalid renders
+    // the syntax hint in the danger tone — one row, no layout growth).
+    in property <FieldValidity> validity: FieldValidity.neutral;
+    in property <string> syntax-hint;
+    // The focus-loss seam (r4 D24): forwarded to the settle funnel.
+    callback focus-lost();
     // The one-shot field-focus hand-over (r4 D25): the flag change
     // (not just the mount init) moves focus into the field — the
     // focus-on-mount mechanism-A idiom run in reverse.
@@ -67,9 +74,11 @@ export component DueEditor inherits VerticalLayout {
             label: root.field-label;
             initial-text: root.initial-text;
             clear-affordance: root.clear-affordance;
+            validity: root.validity;
             horizontal-stretch: 1;
             accepted(text) => { root.accepted(text); }
             edited(text) => { root.edited(text); }
+            focus-lost() => { root.focus-lost(); }
         }
         IconButton {
             icon: IconKind.calendar;
@@ -83,5 +92,10 @@ export component DueEditor inherits VerticalLayout {
         role: Typography.caption;
         text-color: Theme.text-secondary;
         text: root.echo;
+    }
+    if (root.echo == "" && root.validity == FieldValidity.invalid): RoleText {
+        role: Typography.caption;
+        text-color: Semantic.danger;
+        text: root.syntax-hint;
     }
 }
