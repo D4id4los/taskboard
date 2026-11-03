@@ -245,6 +245,15 @@ fn keep_task_intent(merged: &mut Task, local: &Task, task_id: TaskId, p: Pending
         merged.recur.clone_from(&local.recur);
         merged.clocks.recur = local.clocks.recur;
     }
+    if p.kind {
+        // The tracker mark (issue #492) rides the same protection: the
+        // echo adoption resets the kind to the `Standard` default (the
+        // app-lane fields' shape), and an un-protected reset here would
+        // silently un-tracker the task — the kind's whole contract is
+        // that it never vanishes behind a sync cycle.
+        merged.kind = local.kind;
+        merged.clocks.kind = local.clocks.kind;
+    }
     if p.labels {
         // The coarse whole-map restore (the guard protects the OR-set
         // map's entries, not a clock — the second deliberate non-clock
@@ -2110,7 +2119,7 @@ mod tests {
             importance: true,
             urgency: true,
             recur: true,
-            kind: false,
+            kind: true,
             reminder_rules: true,
             deleted: true,
         };
@@ -2679,6 +2688,44 @@ mod tests {
             Some(crate::entities::Effort::new(900)),
             "an op the cycle saw is not protected"
         );
+    }
+
+    #[test]
+    fn the_echo_guard_keeps_a_pending_tracker_mark() {
+        // The self-clobber guard's kind arm (issue #492): the echo
+        // adoption resets the kind to the `Standard` default (the
+        // app-lane shape), and a kind write still queued after read_at
+        // must survive it — a silent reset here un-trackers the task
+        // behind a sync cycle, which the kind's contract forbids.
+        let mut local = bound_task(1);
+        local.kind = crate::entities::TaskKind::Tracker;
+        local.clocks.kind = ts(BASE + 5);
+        let mut merged = local.clone();
+        merged.kind = crate::entities::TaskKind::Standard; // the echo reset
+        merged.clocks.kind = ts(BASE + 300); // the echo stamp
+        keep_task_intent(
+            &mut merged,
+            &local,
+            local.id,
+            PendingTaskIntent {
+                kind: true,
+                ..PendingTaskIntent::default()
+            },
+        );
+        assert_eq!(merged.kind, crate::entities::TaskKind::Tracker);
+        assert_eq!(merged.clocks.kind, ts(BASE + 5));
+        // Without the pending intent the echo reset stands — the
+        // flushed case is the document lane's truth, not the guard's.
+        let mut unguarded = local.clone();
+        unguarded.kind = crate::entities::TaskKind::Standard;
+        unguarded.clocks.kind = ts(BASE + 300);
+        keep_task_intent(
+            &mut unguarded,
+            &local,
+            local.id,
+            PendingTaskIntent::default(),
+        );
+        assert_eq!(unguarded.kind, crate::entities::TaskKind::Standard);
     }
 
     #[test]

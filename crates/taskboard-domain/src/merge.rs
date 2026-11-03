@@ -1608,7 +1608,7 @@ pub fn adopt_task_after_push(
             importance: max_ts(local.clocks.importance, lm),
             urgency: max_ts(local.clocks.urgency, lm),
             recur: max_ts(local.clocks.recur, lm),
-            kind: max_ts(local.clocks.recur, lm),
+            kind: max_ts(local.clocks.kind, lm),
             archived: max_ts(local.clocks.archived, lm),
             deleted: max_ts(local.clocks.deleted, lm),
         },
@@ -2281,6 +2281,30 @@ mod tests {
             ts(BASE + 300),
             "clock advances to max(local, echo stamp)"
         );
+    }
+
+    #[test]
+    fn the_echo_kind_clock_is_the_kind_clock_not_a_sibling_clock() {
+        // The kind's clock slot mirrors its own field (issue #492): a
+        // kind write newer than the echo stamp survives adoption with
+        // its local stamp, while the recur sibling — edited *earlier*
+        // here — advances to the echo stamp. Deriving the kind clock
+        // from `clocks.recur` (the review-pass bug) would push the kind
+        // clock past the document's write and silently lose the mark
+        // at the next fold.
+        let ctx = RemoteIndex::default();
+        let mut local = bound_task(1);
+        local.kind = crate::entities::TaskKind::Tracker;
+        local.clocks.kind = ts(BASE + 400); // newer than the echo stamp
+        local.clocks.recur = ts(BASE - 1); // an older sibling write
+        let echo = remote_task(1, 1, BASE + 300);
+        let adopted = adopt_task_after_push(&local, &echo, &ctx, true);
+        assert_eq!(
+            adopted.clocks.kind,
+            ts(BASE + 400),
+            "the kind clock keeps its own newer local stamp"
+        );
+        assert_eq!(adopted.clocks.recur, ts(BASE + 300));
     }
 
     #[test]
