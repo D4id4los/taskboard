@@ -16,7 +16,7 @@
 // is one FocusScope root with the declared walk order (blanket rule
 // b). Every dispatch is a callback (§5.1).
 
-import { Theme, Typography, Semantic, RoleText } from "../theme.slint";
+import { Theme, Typography, Semantic, RoleText, Tone } from "../theme.slint";
 import { IconButton } from "../widgets/icon-button.slint";
 import { ListView } from "../widgets/listview.slint";
 import { TooltipState } from "../widgets/tooltip.slint";
@@ -104,6 +104,13 @@ export component TrackEntriesPanel inherits Rectangle {
     // The intents (§5.1): no inline side effects.
     callback row-activated(int);
     callback add-requested();
+    // The armed delete (D-TS5): the first activate arms (the tone
+    // flips danger, the copy names the confirm), the second
+    // dispatches. The armed row's index is the window's pushed
+    // mirror (the adapter holds the armed id; the index seam
+    // resolves it — a refresh that drops the row renders unarmed).
+    callback delete-clicked(int);
+    in property <int> armed-index: -1;
 
     background: Theme.surface-raised;
     border-radius: Theme.radius-small;
@@ -309,6 +316,24 @@ export component TrackEntriesPanel inherits Rectangle {
                                 text: row.spent;
                                 text-color: Theme.text-secondary;
                                 vertical-alignment: center;
+                            }
+                            // The delete affordance (D-TS5): the
+                            // journal classifies `DeleteTimeEntry`
+                            // NotUndoable, so the affordance carries
+                            // its own confirmation — arm on the
+                            // first activate, dispatch on the
+                            // second. No timer-based disarm: nothing
+                            // ticks (the fence).
+                            IconButton {
+                                icon: IconKind.trash;
+                                tone: row-index == root.armed-index ? Tone.danger : Tone.neutral;
+                                label: row-index == root.armed-index
+                                    ? "Confirm delete"
+                                    : "Delete time entry";
+                                description: row-index == root.armed-index
+                                    ? "Deletes the entry. This cannot be undone — activate again to confirm."
+                                    : "Arms the delete for this entry; activate again to confirm.";
+                                clicked => { root.delete-clicked(row-index); }
                             }
                         }
                     }

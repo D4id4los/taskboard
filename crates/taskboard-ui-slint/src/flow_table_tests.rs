@@ -2939,3 +2939,46 @@ fn an_inverted_span_refuses_the_commit_and_lands_on_the_end_field() {
         );
     });
 }
+
+/// The armed delete (D-TS5): the first activate arms (no command, the
+/// armed mirror reads the row's index), the second dispatches
+/// `DeleteTimeEntry { id }` verbatim; a dismissal disarms.
+#[test]
+fn the_delete_affordance_arms_then_confirms_and_dismissal_disarms() {
+    on_slint_thread(|| {
+        let (mut state, fx) = fixture();
+        let [a_id, _b, _c] = fx.tasks;
+        let [s0, _s1] = fx.stacks;
+        let entry = closed_entry_on(&mut state, a_id, 8);
+        let mut rig = rig(state);
+        let adapter = rig.adapter();
+        arm_task_view(&rig, &adapter, a_id, s0);
+        {
+            let mut a = adapter.borrow_mut();
+            a.interpret_for_test(
+                rig.handle.window(),
+                crate::router::UiEffect::TrackEntriesOpen,
+            );
+        }
+        // First activate: arms, dispatches nothing.
+        rig.handle.window().invoke_track_entry_delete_clicked(0);
+        adapter.borrow_mut().refresh_forced(rig.handle.window());
+        assert_eq!(rig.drain(), 0, "arming dispatches nothing");
+        assert_eq!(rig.handle.window().get_track_armed_index(), 0);
+        assert!(adapter.borrow().test_armed_delete_is(entry));
+        // Second activate: the confirm dispatches the existing verb.
+        rig.handle.window().invoke_track_entry_delete_clicked(0);
+        let commands = rig.drain_commands();
+        assert_eq!(
+            commands,
+            vec![StateCommand::DeleteTimeEntry { id: entry }],
+            "the confirm dispatches DeleteTimeEntry verbatim"
+        );
+        // The dismissal disarms (the adapter holds no target after).
+        rig.handle.window().invoke_track_entries_dismiss_requested();
+        assert!(
+            adapter.borrow().test_armed_delete_is_none(),
+            "the overlay's close clears the armed target"
+        );
+    });
+}

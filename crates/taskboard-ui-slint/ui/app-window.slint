@@ -642,6 +642,8 @@ export component AppWindow inherits Window {
         form-end-slots: root.track-form-end-slots;
         form-end-nearest-row: root.track-form-end-nearest-row;
         row-activated(index) => root.track-entry-row-activated(index);
+        delete-clicked(index) => root.track-entry-delete-clicked(index);
+        armed-index: root.track-armed-index;
         add-requested() => root.track-form-add-requested();
         date-edited(t) => root.track-form-date-edited(t);
         date-grid-toggled() => root.track-form-grid-toggled();
@@ -1056,6 +1058,9 @@ export component AppWindow inherits Window {
     // The entries panel's focus hand-off (the setter's nonce idiom):
     // the adapter bumps it when the overlay mounts.
     in-out property <int> track-panel-focus-nonce: 0;
+    // The armed delete row's index (D-TS5): the adapter's mirror over
+    // the id table (−1 = nothing armed).
+    in-out property <int> track-armed-index: -1;
     // The form's pushed halves (r4 D-TS4): the adapter's mirrors, one
     // property per half (the timer-setter block's shape).
     in-out property <bool> track-form-open: false;
@@ -1138,6 +1143,7 @@ export component AppWindow inherits Window {
     pure callback task-track-entries-clicked();
     pure callback track-entries-dismiss-requested();
     pure callback track-entry-row-activated(int);
+    pure callback track-entry-delete-clicked(int);
     pure callback track-form-add-requested();
     pure callback track-form-date-edited(string);
     pure callback track-form-grid-toggled();
