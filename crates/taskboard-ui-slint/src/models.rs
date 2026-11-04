@@ -256,9 +256,11 @@ pub struct PushModels {
     /// pattern — stable identity across refreshes.
     review: MirroredRows<ReviewRowModel>,
     settings_rows: MirroredRows<crate::ConnectionRow>,
-    /// The board-selector's persistent row handle (r2 D32): the same
-    /// diff pattern — stable identity across refreshes.
-    settings_boards: MirroredRows<crate::SettingsBoardRow>,
+    // The connections selector's dropdown options and their uuid
+    // strings (r4 D39 — the per-row handles the positional diff
+    // drives; the row struct itself died with the radio list).
+    board_options: MirroredRows<crate::DropdownRow>,
+    board_ids: MirroredRows<SharedString>,
     hints: HintModels,
     /// The tasks whose decoration models the current pass touched
     /// (cleared at pass start) — the prune set for
@@ -1492,18 +1494,29 @@ impl PushModels {
         push_rows(&mut self.settings_rows, |rc| global.set_rows(rc), desired)
     }
 
-    /// Diffs the board-selector rows onto their persistent handle
-    /// (r2 D32) — the same pattern as the connector rows.
-    pub(crate) fn push_settings_boards(
+    /// Diffs the selector's dropdown options onto their persistent
+    /// handle (r4 D39) — the same pattern as the connector rows.
+    pub(crate) fn push_board_options(
         &mut self,
         global: &crate::SettingsModel<'_>,
-        desired: &[crate::SettingsBoardRow],
+        desired: &[crate::DropdownRow],
     ) -> usize {
         push_rows(
-            &mut self.settings_boards,
-            |rc| global.set_boards(rc),
+            &mut self.board_options,
+            |rc| global.set_board_options(rc),
             desired,
         )
+    }
+
+    /// Diffs the options' uuid hand-over strings onto their handle —
+    /// `row-activated(i)` resolves through `board-ids[i]` (the
+    /// widget reports indexes; the id never enters the row model).
+    pub(crate) fn push_board_ids(
+        &mut self,
+        global: &crate::SettingsModel<'_>,
+        desired: &[SharedString],
+    ) -> usize {
+        push_rows(&mut self.board_ids, |rc| global.set_board_ids(rc), desired)
     }
 }
 

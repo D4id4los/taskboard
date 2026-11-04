@@ -4099,6 +4099,57 @@ pub fn connector_row_status(
     worst
 }
 
+/// The row-status tone vocabulary (r4 D39): the `RowDot` colour
+/// language as a plain enum — `success`/`accent`/`warning`/`danger`/
+/// `neutral` — so the dropdown reads like the dots it replaces
+/// without this module ever naming a slint type (the extraction
+/// seam's rule). The adapter maps it onto the widget's tone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatusTone {
+    Neutral,
+    Success,
+    Accent,
+    Warning,
+    Danger,
+}
+
+/// The status→tone fold (r4 D39, `RowDot`'s exact language):
+/// `Idle→Success, Syncing→Accent, Offline→Warning, Failed/Down→Danger`.
+#[must_use]
+pub fn status_tone(status: ConnectorStatus) -> StatusTone {
+    match status {
+        ConnectorStatus::Idle => StatusTone::Success,
+        ConnectorStatus::Syncing => StatusTone::Accent,
+        ConnectorStatus::Offline => StatusTone::Warning,
+        ConnectorStatus::Failed | ConnectorStatus::Down => StatusTone::Danger,
+    }
+}
+
+/// The board projection (r4 D39 §2.3): the ui-side twin of the app
+/// reply's board half (`current_connections`'s board arm) — the live
+/// boards (`!deleted && !archived`) in state order, the binding's
+/// connector name carried across. `push_settings` re-derives the
+/// selector's options from this EVERY pass, so the list can no longer
+/// go stale by construction (finding F29's ghost list). Pure over the
+/// snapshot; no slint types (`BoardInfo` is the hand-written requests
+/// shape).
+#[must_use]
+pub fn boards_of(state: &AppState) -> Vec<crate::requests::BoardInfo> {
+    state
+        .boards
+        .values()
+        .filter(|board| !board.deleted && !board.archived)
+        .map(|board| crate::requests::BoardInfo {
+            id: board.id.as_uuid(),
+            name: board.title.clone(),
+            bound_connector: board
+                .remote
+                .as_ref()
+                .map(|binding| binding.connector.to_string()),
+        })
+        .collect()
+}
+
 /// The badge ordering: `Syncing > Failed > Offline > Idle`.
 fn phase_rank(phase: ConnectorStatus) -> u8 {
     match phase {
@@ -4147,6 +4198,66 @@ mod connector_status_tests {
         let mut states = taskboard_domain::SyncStates::new();
         states.set_stored(board, phase, None);
         state.sync = states;
+    }
+
+    /// The status→tone fold is `RowDot`'s language (r4 D39): typed
+    /// equality, no text, no pixels.
+    #[test]
+    fn the_status_tone_fold_is_the_rowdot_language() {
+        assert_eq!(status_tone(ConnectorStatus::Idle), StatusTone::Success);
+        assert_eq!(status_tone(ConnectorStatus::Syncing), StatusTone::Accent);
+        assert_eq!(status_tone(ConnectorStatus::Offline), StatusTone::Warning);
+        assert_eq!(status_tone(ConnectorStatus::Failed), StatusTone::Danger);
+        assert_eq!(status_tone(ConnectorStatus::Down), StatusTone::Danger);
+    }
+
+    /// The board projection (r4 D39 §2.3): live boards only, the
+    /// binding's connector name carried across, tombstones and
+    /// archived boards excluded — by construction, every pass.
+    #[test]
+    fn boards_of_projects_the_live_boards_with_their_bindings() {
+        let mut state = AppState::default();
+        let live = BoardId::from_uuid(uuid::Uuid::now_v7());
+        let dead = BoardId::from_uuid(uuid::Uuid::now_v7());
+        let archived = BoardId::from_uuid(uuid::Uuid::now_v7());
+        let mut make =
+            |id: BoardId, title: &str, connector: Option<&str>, archived: bool, deleted: bool| {
+                let epoch = BoardClocks::epoch();
+                state.boards.insert(
+                    id,
+                    Board {
+                        id,
+                        remote: connector.map(|c| RemoteBoardBinding {
+                            board: taskboard_domain::RemoteBoardId(1),
+                            connector: ConnectorId::from(c),
+                        }),
+                        title: title.into(),
+                        color: taskboard_domain::Color::new(""),
+                        archived,
+                        deleted,
+                        clocks: BoardClocks {
+                            title: epoch,
+                            color: epoch,
+                            archived: epoch,
+                            deleted: epoch,
+                        },
+                        remote_seen: None,
+                    },
+                );
+            };
+        make(live, "home", Some("work"), false, false);
+        make(dead, "gone", None, false, true);
+        make(archived, "shelved", None, true, false);
+
+        let boards = boards_of(&state);
+        assert_eq!(boards.len(), 1, "the tombstone and the archive are out");
+        assert_eq!(boards[0].id, live.as_uuid());
+        assert_eq!(boards[0].name, "home");
+        assert_eq!(
+            boards[0].bound_connector.as_deref(),
+            Some("work"),
+            "the binding's connector round-trips"
+        );
     }
 
     /// The inbox count (chunk 10 D9): the global Inbox board's live,

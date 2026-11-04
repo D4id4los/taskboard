@@ -50,7 +50,8 @@ import { ScrollPageHint } from "scroll-page.slint";
 import { TextField, FieldValidity } from "widgets/text-field.slint";
 export { FieldValidity }
 import { MenuPanelFacts, DatePickerFacts } from "menu-facts.slint";
-import { SettingsScrollFacts } from "settings-facts.slint";
+import { SettingsScrollFacts, SettingsBoardFacts } from "settings-facts.slint";
+import { DropdownLadder } from "widgets/dropdown.slint";
 import { EditingFacts } from "editing-facts.slint";
 import { TaskViewWalkFacts } from "walk-facts.slint";
 import { AlarmWindow, AlarmRowModel } from "alarm-window.slint";
@@ -58,7 +59,7 @@ export { AlarmWindow, AlarmRowModel }
 
 // Re-export the globals so the generated Rust module exposes them
 // (mount/adapter read/write them through the generated accessors).
-export { Theme, Typography, Semantic, Responsive, TooltipState, MenuPanelFacts, SettingsScrollFacts, DragState, FocusScrollHint, ScrollPageHint, EditingFacts, TaskViewWalkFacts, TrackPanelFacts, TrackPanelWalkFacts }
+export { Theme, Typography, Semantic, Responsive, TooltipState, MenuPanelFacts, SettingsScrollFacts, SettingsBoardFacts, DragState, FocusScrollHint, ScrollPageHint, EditingFacts, TaskViewWalkFacts, TrackPanelFacts, TrackPanelWalkFacts, DropdownLadder }
 export { BoardBarModel, BoardSegmentModel }
 
 export enum KeyFeedback {
@@ -165,7 +166,7 @@ export component AppWindow inherits Window {
     // The board-scoped binding surface (r2 D32/D33).
     callback settings-board-selected(string);
     callback settings-bind-clicked(int);
-    callback settings-detach-clicked(int);
+    callback settings-detach-selected();
     callback settings-preset-picked(int);
     callback settings-view-mounted();
     callback settings-scale-committed(string);
@@ -379,7 +380,7 @@ export component AppWindow inherits Window {
                 remove-clicked(i) => root.settings-remove-clicked(i);
                 board-selected(id) => root.settings-board-selected(id);
                 bind-clicked(i) => root.settings-bind-clicked(i);
-                detach-clicked(i) => root.settings-detach-clicked(i);
+                detach-selected() => root.settings-detach-selected();
                 preset-picked(i) => root.settings-preset-picked(i);
                 scale-committed(t) => root.settings-scale-committed(t);
                 scale-focus-lost() => root.settings-scale-focus-lost();
