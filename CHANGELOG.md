@@ -10,6 +10,16 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 ### Fixed
 
+- Queued sync operations on a deleted board no longer retry forever
+  (#282): when a pull confirms a board dead, the deletion cascade now
+  cancels *every* queued operation attributed to that board — stack
+  and label writes included, not just card operations. Previously those
+  operations stayed queued because Deck answers writes on a deleted
+  board with a retryable rejection, paying one doomed remote call per
+  operation per sync cycle indefinitely. A locally queued board-delete
+  intent still drains through its own push outcome, and retry behavior
+  on live boards is unchanged.
+
 - Starting a tracked block in the other kind no longer silently does
   nothing (#599): while a task's Work entry runs, `track start <task>
   --kind respite` now closes the running work entry and opens the
