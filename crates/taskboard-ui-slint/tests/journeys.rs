@@ -3391,17 +3391,90 @@ fn the_preset_selection_echoes_the_replied_preset_not_the_click() {
 }
 
 // ---------------------------------------------------------------------
-// r3 D20a: the scale echo (field <-> slider sync)
+// r4 D38: the scale release commit (the preview arm is gone)
 // ---------------------------------------------------------------------
 
-/// The scale field echoes the live scale and the slider (r3 D20a,
-/// dispatch §5 e): mount shows "1.0"; slider previews move the echo
-/// and the theme with the lane silent; a typed draft survives a
-/// concurrent preview unclobbered; focus loss discards it and
-/// re-syncs; a commit re-renders the canonical echo and an Err reply
-/// follows the revert.
+/// The scale drag moves nothing until release (r4 D38): the gesture
+/// holds between press and release — the theme, the echo, and the
+/// lane are all untouched (the drag itself is the widget's own, the
+/// grab probe's p4); release emits exactly one `SetScale` carrying
+/// the final value, the theme moves once, and the echo re-renders the
+/// canonical commit.
 #[test]
-fn the_scale_echo_syncs_both_ways() {
+fn the_scale_drag_moves_nothing_until_release() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::AppSettings);
+            let window = harness.handle.window();
+            let model = || window.global::<taskboard_ui_slint::SettingsModel>();
+            let scale = || {
+                window
+                    .global::<taskboard_ui_slint::Theme>()
+                    .get_base_scale()
+            };
+            assert_eq!(scale(), 1.0);
+
+            // Mid-gesture: nothing observable moves.
+            window.invoke_settings_scale_pressed();
+            assert_eq!(scale(), 1.0, "the theme holds the committed scale");
+            assert_eq!(
+                model().get_scale_echo(),
+                "1.0",
+                "the echo holds the committed scale"
+            );
+            assert!(
+                harness.drain_requests().is_empty(),
+                "no request mid-gesture"
+            );
+
+            // Release: one request, one theme move, the canonical echo.
+            window.invoke_settings_scale_released(1.7);
+            let mut requests = harness.drain_requests();
+            assert_eq!(requests.len(), 1, "exactly one SetScale per gesture");
+            // The seam's f32 hand-over pins the comparison term: the
+            // committed value is exactly `f64::from(1.7f32)`.
+            assert!(matches!(
+                &requests[0],
+                taskboard_ui_slint::requests::UiRequest::SetScale { scale, .. }
+                    if scale.total_cmp(&f64::from(1.7f32)) == std::cmp::Ordering::Equal
+            ));
+            assert!(
+                (scale() - 1.7).abs() < 0.001,
+                "the theme moves once, on release"
+            );
+            assert_eq!(
+                model().get_scale_echo(),
+                "1.7",
+                "the echo re-renders the commit"
+            );
+            let taskboard_ui_slint::requests::UiRequest::SetScale { reply, .. } =
+                requests.remove(0)
+            else {
+                panic!("the scale request routed");
+            };
+            reply.send(Ok(())).expect("the reply lane is alive");
+            harness.handle.drain_setting_replies();
+            assert_eq!(
+                model().get_last_outcome(),
+                taskboard_ui_slint::SettingsOutcome::Ok,
+            );
+        },
+    );
+}
+
+/// The scale echo renders the committed scale (r4 D38): mount echo;
+/// a typed draft survives a concurrent drag (nothing writes the echo
+/// mid-gesture anymore); focus loss discards the draft and re-syncs
+/// to the committed scale; a commit re-renders the canonical echo and
+/// an Err reply follows the revert; a Return-less draft never
+/// survives the surface (plan §5.1 draft invariants).
+#[test]
+fn the_scale_echo_renders_the_committed_scale() {
     let (_fixture, state) = fixture::golden_state();
     support::driver::run(
         DriverOptions {
@@ -3421,37 +3494,25 @@ fn the_scale_echo_syncs_both_ways() {
             // Mount: the canonical echo of the live scale.
             assert_eq!(model().get_scale_echo(), "1.0");
 
-            // Slider preview: echo + theme move, the lane silent.
-            window.invoke_settings_scale_pressed();
-            window.invoke_settings_scale_preview(1.7);
-            assert!((scale() - 1.7).abs() < 0.001, "the preview live-applies");
-            assert_eq!(
-                model().get_scale_echo(),
-                "1.7",
-                "the echo follows the thumb"
-            );
-            assert!(harness.drain_requests().is_empty(), "no request per tick");
-
-            // A typed draft survives the concurrent preview.
+            // A typed draft survives a concurrent drag: mid-gesture
+            // nothing writes the echo (the preview writer is gone).
             window.invoke_settings_field_edited(4, "2.2".into());
             assert_eq!(model().get_scale_echo(), "2.2", "the draft is the echo");
-            window.invoke_settings_scale_preview(1.9);
-            assert!(
-                (scale() - 1.9).abs() < 0.001,
-                "the preview still live-applies"
-            );
+            window.invoke_settings_scale_pressed();
             assert_eq!(
                 model().get_scale_echo(),
                 "2.2",
-                "the preview never clobbers the typed draft"
+                "the drag never touches the typed draft"
             );
+            assert_eq!(scale(), 1.0, "the theme holds until release");
 
-            // Focus loss discards the Return-less edit.
+            // Focus loss discards the Return-less edit and re-syncs
+            // to the committed scale (unchanged by the gesture).
             window.invoke_settings_scale_focus_lost();
             assert_eq!(
                 model().get_scale_echo(),
-                "1.9",
-                "the echo re-syncs to the live scale"
+                "1.0",
+                "the echo re-syncs to the committed scale"
             );
 
             // Commit "2": canonical echo, one request, Err reverts.
@@ -3472,23 +3533,20 @@ fn the_scale_echo_syncs_both_ways() {
                 .expect("the reply lane is alive");
             harness.handle.drain_setting_replies();
             assert!(
-                (scale() - 1.9).abs() < 0.001,
+                (scale() - 1.0).abs() < 0.001,
                 "the Err reply reverts the theme"
             );
             assert_eq!(
                 model().get_scale_echo(),
-                "1.9",
-                "the echo follows the reverted live scale"
+                "1.0",
+                "the echo follows the reverted committed scale"
             );
 
             // A Return-less draft never survives the surface: close
             // and reopen settings, and the mount re-renders the
             // canonical live echo (plan §5.1 draft invariants).
             window.invoke_settings_field_edited(4, "9.9".into());
-            {
-                let echo = model().get_scale_echo();
-                assert_eq!(echo, "9.9", "the draft renders");
-            }
+            assert_eq!(model().get_scale_echo(), "9.9", "the draft renders");
             harness.press(ActionId::AppSettings);
             harness.press(ActionId::AppSettings);
             let window = harness.handle.window();
@@ -3496,7 +3554,7 @@ fn the_scale_echo_syncs_both_ways() {
                 window
                     .global::<taskboard_ui_slint::SettingsModel>()
                     .get_scale_echo(),
-                "1.9",
+                "1.0",
                 "the mount discards the stale draft"
             );
         },
@@ -4134,17 +4192,15 @@ fn busy_status_holds_until_the_reply_lands() {
 }
 
 // ---------------------------------------------------------------------
-// r2 D29: the scale slider's gesture (press / preview / release)
+// r2 D29, r4 D38: the scale slider's gesture (press / release)
 // ---------------------------------------------------------------------
 
-/// The slider previews live and commits once per gesture (r2 D29):
-/// five previews move `Theme.base-scale` (the visible live feedback)
-/// while the lane stays empty — no request construction exists in the
-/// preview arm; the release routes exactly one `SetScale` carrying
-/// the final value, whose Ok reply leaves the outcome Ok and the
-/// scale persisted.
+/// The slider's release commits once per gesture (r2 D29, r4 D38):
+/// release routes exactly one `SetScale` carrying the final value,
+/// whose Ok reply leaves the outcome Ok and the scale persisted; the
+/// lane sees nothing before the release.
 #[test]
-fn the_slider_previews_live_and_commits_once_per_gesture() {
+fn the_slider_holds_the_gesture_and_commits_once_on_release() {
     let (_fixture, state) = fixture::golden_state();
     support::driver::run(
         DriverOptions {
@@ -4161,13 +4217,9 @@ fn the_slider_previews_live_and_commits_once_per_gesture() {
             };
 
             window.invoke_settings_scale_pressed();
-            for v in [1.2f32, 1.5, 1.8, 2.1, 2.4] {
-                window.invoke_settings_scale_preview(v);
-                assert_eq!(scale(), v, "the preview live-applies onto the theme");
-            }
             assert!(
                 harness.drain_requests().is_empty(),
-                "the preview arm writes no lane request"
+                "the held gesture writes no lane request"
             );
 
             window.invoke_settings_scale_released(2.0);
@@ -4202,8 +4254,8 @@ fn the_slider_previews_live_and_commits_once_per_gesture() {
 }
 
 /// A slider gesture is inert while an operation is pending (r2 D29):
-/// the silent pending gate absorbs press, previews, and release — no
-/// `SetScale`, no scale movement, no outcome change.
+/// the silent pending gate absorbs press and release — no `SetScale`,
+/// no scale movement, no outcome change.
 #[test]
 fn a_slider_gesture_is_inert_while_an_op_is_pending() {
     let (_fixture, state) = fixture::golden_state();
@@ -4233,7 +4285,6 @@ fn a_slider_gesture_is_inert_while_an_op_is_pending() {
             assert_eq!(scale(), 1.0, "the mount scale stands");
 
             window.invoke_settings_scale_pressed();
-            window.invoke_settings_scale_preview(2.4);
             window.invoke_settings_scale_released(2.0);
             assert!(
                 harness.drain_requests().is_empty(),
@@ -4250,9 +4301,8 @@ fn a_slider_gesture_is_inert_while_an_op_is_pending() {
 }
 
 /// A slider commit reverts on a typed error reply (r2 D29): the
-/// Err reply restores the pre-**gesture** scale (the whole preview
-/// undoes), and the outcome is the typed fold of the error —
-/// outcome-agnostic revert.
+/// Err reply restores the pre-**gesture** scale, and the outcome is
+/// the typed fold of the error — outcome-agnostic revert.
 #[test]
 fn a_slider_commit_reverts_on_a_typed_error_reply() {
     let (_fixture, state) = fixture::golden_state();
@@ -4273,7 +4323,6 @@ fn a_slider_commit_reverts_on_a_typed_error_reply() {
             assert_eq!(scale(), 1.0);
 
             window.invoke_settings_scale_pressed();
-            window.invoke_settings_scale_preview(1.7);
             window.invoke_settings_scale_released(2.0);
             let mut requests = harness.drain_requests();
             let taskboard_ui_slint::requests::UiRequest::SetScale { reply, .. } =

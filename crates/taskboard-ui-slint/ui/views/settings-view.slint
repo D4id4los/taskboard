@@ -92,10 +92,10 @@ export global SettingsModel {
     in-out property <string> error-username: "";
     in-out property <string> error-password: "";
     in-out property <string> error-scale: "";
-    // The scale field's echo (round-3 D20a): draft-when-present,
-    // live-scale-otherwise — written by the adapter's push pass (and
-    // by the slider preview while no draft exists). The field binds
-    // its text here, closing the finding-23 sync hole.
+    // The scale field's echo (round-3 D20a, r4 D38): draft-when-
+    // present, committed-scale-otherwise — written by the adapter's
+    // push pass only; it never tracks the thumb mid-gesture. The
+    // field binds its text here, closing the finding-23 sync hole.
     in-out property <string> scale-echo: "";
     in-out property <int> preset-index: 0;
     in-out property <bool> save-enabled: false;
@@ -295,10 +295,10 @@ export component SettingsView inherits FocusScope {
     // The scale field's focus-loss seam (r3 D20a writer 7): a
     // Return-less edit is discarded and the echo re-syncs to live.
     callback scale-focus-lost();
-    // The slider gesture (r2 D29): press / preview / release — the
-    // width-drag trio's seams.
+    // The slider gesture (r2 D29, r4 D38): press / release — the drag
+    // itself is the widget's own (the thumb follows the pointer
+    // widget-internally; the theme moves once on release).
     callback scale-pressed();
-    callback scale-preview(float);
     callback scale-released(float);
 
     init => {
@@ -375,7 +375,8 @@ export component SettingsView inherits FocusScope {
             // re-layout). Killing the mouse-drag pan restores the
             // full gesture while touch panning (kiosk) and wheel
             // scrolling stay alive — both ignore this property by
-            // construction. Live preview kept; no fallback.
+            // construction. Kept after the preview's removal (r4
+            // D38): the steal does not need the re-layout (probe P2).
             mouse-drag-pan-enabled: false;
             // The journeys' scroll seam (r2 D30): two-way to the
             // global — journeys drive the scroll, gestures write
@@ -685,10 +686,11 @@ export component SettingsView inherits FocusScope {
                 about: "Interface scale";
                 help: SettingsModel.help-scale;
             }
-            // The slider (r2 D29): live preview while dragging, one
+            // The slider (r2 D29, r4 D38): the thumb follows the
+            // pointer widget-internally mid-drag (no re-layout), one
             // commit per release. `value` reads `Theme.base-scale` —
-            // one source of truth; live-applied commits, reply
-            // reverts, and the preview all move the thumb.
+            // one source of truth; commits and reply reverts move the
+            // thumb.
             Slider {
                 minimum: 0.5;
                 maximum: 3.0;
@@ -696,9 +698,6 @@ export component SettingsView inherits FocusScope {
                 value: Theme.base-scale;
                 pressed() => {
                     root.scale-pressed();
-                }
-                preview(v) => {
-                    root.scale-preview(v);
                 }
                 committed(v) => {
                     root.scale-released(v);
