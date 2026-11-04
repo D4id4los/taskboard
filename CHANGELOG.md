@@ -10,6 +10,16 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 ### Fixed
 
+- Starting a tracked block in the other kind no longer silently does
+  nothing (#599): while a task's Work entry runs, `track start <task>
+  --kind respite` now closes the running work entry and opens the
+  running break (the respite marking's documented intent), and
+  starting work on a task whose break entry runs closes the break and
+  starts the work block. The idempotent no-op now compares task and
+  kind — repeating the exact same task and kind still does nothing.
+  The focus runtime's stop-then-start break hand-off is unaffected,
+  and undo still reports the tracking surface as not undoable.
+
 - The REPL editor re-arms after a Ctrl-C during a masked password
   prompt (#572): a ^C byte the terminal's kernel line discipline
   consumed while the prompt was still configuring (a window that
