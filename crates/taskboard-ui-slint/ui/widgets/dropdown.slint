@@ -1,0 +1,395 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The shared dropdown widget (r4 D39): a closed field + chevron and an
+// anchored list flyout — the time-field's flyout grammar applied to a
+// selection list. Surface-neutral by contract: the widget renders what
+// it is pushed (`rows`, `field-text`) and reports what the user did;
+// every intent leaves through callbacks (no inline side effects). Both
+// the settings connections selector and the board bar (past its
+// segment budget, D40) mount it.
+//
+// Keyboard ladder (widget-internal, preset-independent — the action
+// layer never sees these strokes): Return/Space on the closed field
+// opens; Up/Down AND Ctrl+N/Ctrl+P move the highlight (clamped at the
+// ends, the time-field convention); Return on the flyout selects and
+// closes; Escape closes only; Tab closes and rejects so the walk
+// continues. Opening re-anchors the highlight onto the selected row
+// (or 0 when none) and grabs focus into the flyout; closing hands
+// focus back to the field.
+//
+// Tooltip policy is the consumer's: the widget reports
+// `row-hovered(index, x, y, w, h)` / `row-unhovered()` — it knows
+// nothing about `TooltipState`.
+
+import { Theme, Typography, RoleText, Semantic } from "../theme.slint";
+import { Icon, IconKind } from "icon.slint";
+import { ListView } from "listview.slint";
+
+export enum DropdownIndicator {
+    none,
+    link,
+    link-off,
+}
+
+// The tone vocabulary mirrors the RowDot colour language (success /
+// accent / warning / danger / neutral) so the dropdown reads like the
+// dots it replaces.
+export enum DropdownTone {
+    neutral,
+    success,
+    accent,
+    warning,
+    danger,
+}
+
+export struct DropdownRow {
+    label: string,
+    indicator: DropdownIndicator,
+    tone: DropdownTone,
+    selected: bool,
+    busy: bool,
+}
+
+export component Dropdown inherits Rectangle {
+    // The pushed rows and the closed field's rendering (the selected
+    // row's label, or the caller's empty-state placeholder).
+    in property <[DropdownRow]> rows: [];
+    in property <string> field-text: "";
+    // The field's a11y label + description (the blanket rule's hover
+    // tip copy — consumer-owned constants).
+    in property <string> field-label: "";
+    in property <string> field-description: "";
+    // The selection's mid-ceremony marker (r2 D34): renders the busy
+    // pulse in the field's dot slot.
+    in property <bool> field-busy: false;
+
+    // The intents (no inline side effects).
+    callback row-activated(int);
+    // Optional: only the board bar wires it (the segment-context
+    // precedent); coordinates are pointer-space ints like the
+    // card/segment context seams.
+    callback row-context(int, int, int);
+    callback row-hovered(int, length, length, length, length);
+    callback row-unhovered();
+
+    // Widget-local open state (the time-field pattern).
+    in-out property <bool> open: false;
+    // The keyboard highlight inside `rows`; re-anchored from the
+    // selected row on open.
+    in-out property <int> highlight: 0;
+    // The seek nonce: every highlight move seeks the list (the
+    // ListView's focus-into-view seam), the open-time anchor included.
+    property <int> seek-nonce: 0;
+
+    // The probe/journey observation seams (typed, structural). The
+    // conditional flyout's element ids are not reachable from here,
+    // so the geometry seam mirrors the flyout's own expression and
+    // the seek seam mirrors the ListView's `request-row` input.
+    out property <int> seek-row: root.highlight;
+    out property <int> seek-nonce-out: root.seek-nonce;
+    out property <length> flyout-height: min(root.rows.length * Theme.space-6, Theme.space-6 * 6);
+    // The focus hand-over facts: the flyout's grab empties the field,
+    // closing hands the walk back (the field re-focuses).
+    out property <bool> field-focused: field-scope.has-focus;
+
+    // The indicator→glyph mapping: the widget's own three-arm total
+    // (`none` → nothing — the markup guards the slot; the terminal
+    // else is the loud warn fallback, the icon.slint convention).
+    public pure function indicator-kind(indicator: DropdownIndicator) -> IconKind {
+        return indicator == DropdownIndicator.link ? IconKind.link
+            : indicator == DropdownIndicator.link-off ? IconKind.link-off
+            : IconKind.warn;
+    }
+
+    // The tone→colour mapping (RowDot's exact language).
+    public pure function tone-color(tone: DropdownTone) -> color {
+        return tone == DropdownTone.success ? Semantic.success
+            : tone == DropdownTone.accent ? Semantic.focus-ring
+            : tone == DropdownTone.warning ? Semantic.warning
+            : tone == DropdownTone.danger ? Semantic.danger
+            : Theme.text-secondary;
+    }
+
+    height: field-scope.preferred-height + 2 * Theme.space-1;
+    border-radius: Theme.radius-small;
+
+    // The closed field: one walk stop, one click target, a11y button
+    // (the pinned 1.18 role set exposes no combobox role).
+    field-scope := FocusScope {
+        width: 100%;
+        height: field-row.preferred-height + 2 * Theme.space-1;
+        focus-on-tab-navigation: true;
+        accessible-role: AccessibleRole.button;
+        accessible-label: root.field-label;
+        accessible-description: root.field-description;
+        // The icon-button raw-key half (r3 D12): Return/Space open.
+        key-pressed(event) => {
+            if (!root.open
+                    && (event.text == Key.Return || event.text == " ")
+                    && root.rows.length > 0) {
+                root.open = true;
+                accept
+            } else {
+                reject
+            }
+        }
+        field-row := HorizontalLayout {
+            padding-left: Theme.space-2;
+            padding-right: Theme.space-1;
+            spacing: Theme.space-1;
+            // The busy pulse rides in the dot slot; otherwise the
+            // slot collapses (a plain Rectangle holder — a layout
+            // would own the cross-axis and forbid the dot's y).
+            Rectangle {
+                width: root.field-busy ? Theme.space-2 : 0;
+                if root.field-busy: busy-dot := Rectangle {
+                    width: Theme.space-2;
+                    height: self.width;
+                    y: (parent.height - self.height) / 2;
+                    border-radius: self.width / 2;
+                    background: Semantic.sync-active;
+                    states [
+                        pulse when true: {
+                            opacity: 0.45;
+                            in { animate opacity { duration: 600ms; iteration-count: -1; } }
+                        }
+                    ]
+                }
+            }
+            field-text := RoleText {
+                role: Typography.body;
+                text: root.field-text;
+                vertical-alignment: center;
+                overflow: elide;
+                horizontal-stretch: 1;
+            }
+            Icon {
+                kind: IconKind.chevron-down;
+            }
+        }
+        // The whole field is one click target.
+        field-touch := TouchArea {
+            clicked => {
+                root.open = !root.open;
+            }
+        }
+    }
+    // The field's focus ring.
+    border-width: field-scope.has-focus && !root.open ? Theme.focus-ring-width : 0;
+    border-color: Semantic.focus-ring;
+    background: Theme.surface-raised;
+
+    // The flyout (the time-field grammar verbatim): a conditional
+    // sibling in the panel's coordinate space — no window-level
+    // overlay, no dismissal-layer interaction. The window-sized
+    // underlay is the outside-click closer (a TouchArea click never
+    // moves focus, so it is absorbed); the flyout is the later
+    // sibling and hit-tested first.
+    if (root.open): Rectangle {
+        x: -flyout-anchor.absolute-position.x;
+        y: -flyout-anchor.absolute-position.y;
+        width: Theme.space-15 * 64;
+        height: Theme.space-15 * 64;
+        underlay := TouchArea {
+            clicked => {
+                root.close();
+            }
+        }
+        flyout := Rectangle {
+            x: 0;
+            y: flyout-anchor.height + Theme.space-1;
+            width: flyout-anchor.width;
+            // Six-row cap; `ListView` scrolls the rest.
+            height: min(root.rows.length * Theme.space-6, Theme.space-6 * 6);
+            background: Theme.surface-raised;
+            border-radius: Theme.radius-small;
+            border-width: Theme.focus-ring-width;
+            border-color: Semantic.focus-ring;
+            drop-shadow-blur: Theme.space-2;
+            drop-shadow-color: Theme.surface-hover;
+            clip: true;
+
+            flyout-scope := FocusScope {
+                width: 100%;
+                height: 100%;
+                accessible-role: AccessibleRole.list;
+                // The Tab half: the built-in traversal owns Tab (the
+                // scope is a real walk participant); the focus-loss
+                // seam below closes the flyout on its way out. (A
+                // reject-only Tab arm from a programmatically-focused
+                // scope clears focus entirely on the pinned 1.18.1 —
+                // the probe's recorded negative.)
+                focus-on-tab-navigation: true;
+                init => {
+                    // The open-time anchor: the pushed selected index
+                    // (0 when none), then the grab (the flyout holds
+                    // focus while open).
+                    root.highlight = Math.clamp(
+                        root.selected-index,
+                        0,
+                        Math.max(root.rows.length - 1, 0),
+                    );
+                    root.seek-nonce += 1;
+                    self.focus();
+                }
+                // The focus-loss seam: the walk (Tab-reject) or any
+                // focus-taking click elsewhere closes the flyout on
+                // its way out — closing inside the Tab arm instead
+                // destroys the focus owner mid-event and the
+                // traversal aborts (focus cleared, walk dead).
+                changed has-focus => {
+                    if (!self.has-focus && root.open) {
+                        root.open = false;
+                    }
+                }
+                key-pressed(event) => {
+                    if (event.text == Key.UpArrow && root.rows.length > 0) {
+                        root.move-highlight(-1);
+                        accept
+                    } else if (event.text == Key.DownArrow && root.rows.length > 0) {
+                        root.move-highlight(1);
+                        accept
+                    } else if (event.text == "n" && event.modifiers.control && root.rows.length > 0) {
+                        root.move-highlight(1);
+                        accept
+                    } else if (event.text == "p" && event.modifiers.control && root.rows.length > 0) {
+                        root.move-highlight(-1);
+                        accept
+                    } else if (event.text == Key.Return && root.highlight < root.rows.length) {
+                        root.row-activated(root.highlight);
+                        root.close();
+                        accept
+                    } else if (event.text == Key.Escape) {
+                        // Widget-internal Escape: closes the flyout
+                        // only — the action layer never sees it.
+                        root.close();
+                        accept
+                    } else {
+                        // Tab is the built-in traversal's (the
+                        // focus-on-tab-navigation flag above): the
+                        // walk moves the focus, the focus-loss seam
+                        // closes the flyout on its way out.
+                        reject
+                    }
+                }
+
+                list := ListView {
+                    request-row: root.highlight;
+                    request-nonce: root.seek-nonce;
+                    total-rows: root.rows.length;
+                    width: 100%;
+                    height: 100%;
+
+                    for row[row-index] in root.rows: Rectangle {
+                        height: Theme.space-6;
+                        accessible-role: AccessibleRole.list-item;
+                        // The hover-union background (F29's feedback).
+                        background: row-index == root.highlight || row-touch.has-hover
+                            ? Theme.surface-hover : transparent;
+                        row-touch := TouchArea {
+                            width: 100%;
+                            height: 100%;
+                            changed has-hover => {
+                                if (self.has-hover) {
+                                    root.row-hovered(row-index,
+                                        self.absolute-position.x, self.absolute-position.y,
+                                        self.width, self.height);
+                                } else {
+                                    root.row-unhovered();
+                                }
+                            }
+                            clicked => {
+                                root.row-activated(row-index);
+                                root.close();
+                            }
+                            pointer-event(event) => {
+                                if (event.kind == PointerEventKind.down
+                                        && event.button == PointerEventButton.right) {
+                                    root.row-context(row-index,
+                                        (self.absolute-position.x + self.mouse-x) / 1px,
+                                        (self.absolute-position.y + self.mouse-y) / 1px);
+                                }
+                            }
+                        }
+                        HorizontalLayout {
+                            padding-left: Theme.space-2;
+                            padding-right: Theme.space-2;
+                            spacing: Theme.space-1;
+                            // The indicator/busy dot slot: busy wins
+                            // (the r2 D34 ceremony), otherwise the
+                            // indicator glyph colourized by tone
+                            // (`none` collapses the slot). A plain
+                            // Rectangle holder — a layout would own
+                            // the cross-axis and forbid the children's
+                            // vertical centering.
+                            Rectangle {
+                                width: (row.busy
+                                    || row.indicator != DropdownIndicator.none) ? Theme.space-2 : 0;
+                                if row.busy: Rectangle {
+                                    width: Theme.space-2;
+                                    height: self.width;
+                                    y: (parent.height - self.height) / 2;
+                                    border-radius: self.width / 2;
+                                    background: Semantic.sync-active;
+                                    states [
+                                        pulse when true: {
+                                            opacity: 0.45;
+                                            in { animate opacity { duration: 600ms; iteration-count: -1; } }
+                                        }
+                                    ]
+                                }
+                                if !row.busy && row.indicator != DropdownIndicator.none: Icon {
+                                    kind: root.indicator-kind(row.indicator);
+                                    colorize: root.tone-color(row.tone);
+                                    y: (parent.height - self.height) / 2;
+                                }
+                            }
+                            row-label := RoleText {
+                                role: row.selected ? Typography.body-emphasized : Typography.body;
+                                text: row.label;
+                                vertical-alignment: center;
+                                overflow: elide;
+                                horizontal-stretch: 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // The geometry anchor: the closed field's box (the flyout anchors
+    // below it, named after the declaration order — the time-field
+    // pattern).
+    property <length> row-height: field-scope.height;
+    flyout-anchor := Rectangle {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.row-height;
+    }
+
+    // The current selection's index (the open-time anchor's input;
+    // derived by the consumer's push pass — the struct's `selected`
+    // flag is the per-row render fact, this is the anchor fact).
+    in property <int> selected-index: 0;
+
+    // One clamped highlight move (the arrows and C-n/C-p share this
+    // arm — one code path, two key spellings).
+    public function move-highlight(direction: int) {
+        root.highlight = Math.clamp(
+            root.highlight + direction,
+            0,
+            Math.max(root.rows.length - 1, 0),
+        );
+        root.seek-nonce += 1;
+    }
+
+    // Close and hand focus back to the field (the walk's home stop).
+    // The grab lands BEFORE the conditional unmounts: focusing during
+    // teardown loses the grab, and a destroyed focus owner aborts the
+    // post-reject Tab traversal (the walk would stop dead).
+    public function close() {
+        field-scope.focus();
+        root.open = false;
+    }
+}

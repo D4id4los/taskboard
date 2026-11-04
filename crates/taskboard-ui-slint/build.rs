@@ -95,4 +95,17 @@ fn main() {
     )
     .expect("tooltip layout probe compilation failed");
     println!("cargo:rerun-if-changed={}", tooltip_source.display());
+
+    // The dropdown probe (r4 chunk 11, D39): the real Dropdown's
+    // open/close transitions, keyboard ladder, dismissal, hover
+    // seams, and geometry caps — the tier-2 suite's host, same
+    // include shape.
+    let dropdown_source = manifest.join("tests/dropdown_probe.slint");
+    slint_build::compile_with_output_path(
+        &dropdown_source,
+        out.join("dropdown_probe.rs"),
+        slint_build::CompilerConfiguration::new().with_debug_info(true),
+    )
+    .expect("dropdown probe compilation failed");
+    println!("cargo:rerun-if-changed={}", dropdown_source.display());
 }

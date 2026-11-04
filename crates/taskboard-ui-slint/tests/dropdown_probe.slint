@@ -1,0 +1,123 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The dropdown probe (r4 D39, tier 2): the real `Dropdown` widget
+// mounted with the four-row fixture (varied indicators, one busy, one
+// selected) plus a nine-row mount for the six-row cap. The global
+// counts the widget's callback fires; the window-root properties are
+// the typed observation seams (open state, highlight, focus
+// hand-over, flyout geometry).
+//
+// Geometry rides Theme tokens; the dropdown sits at (space-2, space-2)
+// with width space-8 * 3, so the field's centre is computable from the
+// exposed `field-h` and the before-stop sits above the dropdown in the
+// declaration order (the Tab walk reaches it first).
+
+import { Theme } from "../ui/theme.slint";
+import { Dropdown, DropdownRow, DropdownIndicator, DropdownTone } from "../ui/widgets/dropdown.slint";
+import { IconKind } from "../ui/widgets/icon.slint";
+
+export global DropdownProbe {
+    in-out property <int> activated: 0;
+    in-out property <int> activated-index: -1;
+    in-out property <int> contexts: 0;
+    in-out property <int> context-index: -1;
+    in-out property <int> hovered: 0;
+    in-out property <int> hovered-index: -1;
+    in-out property <int> unhovered: 0;
+}
+
+component FourRows inherits Dropdown {
+    width: Theme.space-8 * 3;
+    x: Theme.space-2;
+    y: Theme.space-2;
+    field-label: "Probe field";
+    field-description: "Opens the probe list.";
+    rows: [
+        { label: "alpha", indicator: DropdownIndicator.none, tone: DropdownTone.neutral, selected: false, busy: false },
+        { label: "beta", indicator: DropdownIndicator.link-off, tone: DropdownTone.neutral, selected: false, busy: false },
+        { label: "gamma", indicator: DropdownIndicator.link, tone: DropdownTone.danger, selected: true, busy: false },
+        { label: "delta", indicator: DropdownIndicator.none, tone: DropdownTone.neutral, selected: false, busy: true },
+    ];
+    selected-index: 2;
+    field-text: "gamma";
+}
+
+component NineRows inherits Dropdown {
+    width: Theme.space-8 * 3;
+    x: Theme.space-2;
+    y: Theme.space-2 + Theme.space-8;
+    rows: [
+        { label: "r0", indicator: DropdownIndicator.none, tone: DropdownTone.neutral, selected: false, busy: false },
+        { label: "r1", indicator: DropdownIndicator.none, tone: DropdownTone.neutral, selected: false, busy: false },
+        { label: "r2", indicator: DropdownIndicator.none, tone: DropdownTone.neutral, selected: false, busy: false },
+        { label: "r3", indicator: DropdownIndicator.none, tone: DropdownTone.neutral, selected: false, busy: false },
+        { label: "r4", indicator: DropdownIndicator.none, tone: DropdownTone.neutral, selected: false, busy: false },
+        { label: "r5", indicator: DropdownIndicator.none, tone: DropdownTone.neutral, selected: false, busy: false },
+        { label: "r6", indicator: DropdownIndicator.none, tone: DropdownTone.neutral, selected: false, busy: false },
+        { label: "r7", indicator: DropdownIndicator.none, tone: DropdownTone.neutral, selected: false, busy: false },
+        { label: "r8", indicator: DropdownIndicator.none, tone: DropdownTone.neutral, selected: false, busy: false },
+    ];
+    selected-index: 0;
+    field-text: "r0";
+}
+
+export component DropdownProbeWindow inherits Window {
+    width: Theme.space-8 * 5;
+    height: Theme.space-7 * 6;
+
+    // The observation seams (readable from Rust as root properties).
+    in-out property <bool> open: dd.open;
+    in-out property <bool> field-focused: dd.field-focused;
+    in-out property <int> highlight: dd.highlight;
+    in-out property <int> seek-row: dd.seek-row;
+    in-out property <int> seek-nonce: dd.seek-nonce-out;
+    in-out property <length> flyout-h: dd.flyout-height;
+    in-out property <length> field-h: dd.height;
+    in-out property <length> field-y: dd.y;
+    in-out property <length> field-x: dd.x;
+    in-out property <bool> nine-open: dd9.open;
+    in-out property <bool> nine-field-focused: dd9.field-focused;
+    in-out property <length> nine-flyout-h: dd9.flyout-height;
+    // The Tab walk's continuation stop (declared after the dropdown).
+    in-out property <bool> after-focus: after.has-focus;
+
+    dd := FourRows {
+        row-activated(i) => {
+            DropdownProbe.activated += 1;
+            DropdownProbe.activated-index = i;
+        }
+        row-context(i, x, y) => {
+            DropdownProbe.contexts += 1;
+            DropdownProbe.context-index = i;
+        }
+        row-hovered(i, x, y, w, h) => {
+            DropdownProbe.hovered += 1;
+            DropdownProbe.hovered-index = i;
+        }
+        row-unhovered() => {
+            DropdownProbe.unhovered += 1;
+        }
+    }
+    // The walk's continuation target (the dropdown hands off here on
+    // Tab-reject) — declared immediately after the first dropdown, so
+    // the walk order is field -> after -> nine-row mount.
+    after := FocusScope {
+        y: Theme.space-7 * 5;
+        x: Theme.space-2;
+        width: Theme.space-8 * 3;
+        height: Theme.space-5;
+        focus-on-tab-navigation: true;
+    }
+
+    dd9 := NineRows {}
+
+    // The mapping facts: root property bindings over the widget's
+    // public mappings — the tests read the totals from Rust.
+    in-out property <IconKind> mapped-none: dd.indicator-kind(DropdownIndicator.none);
+    in-out property <IconKind> mapped-link: dd.indicator-kind(DropdownIndicator.link);
+    in-out property <IconKind> mapped-link-off: dd.indicator-kind(DropdownIndicator.link-off);
+    in-out property <color> tone-neutral: dd.tone-color(DropdownTone.neutral);
+    in-out property <color> tone-success: dd.tone-color(DropdownTone.success);
+    in-out property <color> tone-accent: dd.tone-color(DropdownTone.accent);
+    in-out property <color> tone-warning: dd.tone-color(DropdownTone.warning);
+    in-out property <color> tone-danger: dd.tone-color(DropdownTone.danger);
+}
