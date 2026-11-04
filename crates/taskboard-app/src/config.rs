@@ -13,7 +13,7 @@
 //! provider failures collapse into [`ConfigError::Decode`] whose source
 //! is logged, never pattern-matched.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -976,6 +976,31 @@ pub enum ConfigError {
 }
 
 impl ConfigError {
+    /// The dotted config key the rejection blames, when the variant
+    /// carries one — the settings editor's prove-gate attribution
+    /// input (the GUI-settings-editor plan D14): a refusal is
+    /// attributed to the edited section only when the failing field
+    /// lives inside it. Variants without a per-field payload (decode
+    /// failures, shape rejections without a field) attribute to
+    /// nothing — unattributable failures take the plan's
+    /// warn-and-write arm against an already-invalid base.
+    #[must_use]
+    pub fn field(&self) -> Option<&'static str> {
+        match self {
+            Self::InvalidDuration { field }
+            | Self::InvalidScale { field }
+            | Self::InvalidKioskConfig { field }
+            | Self::InvalidWebConfig { field }
+            | Self::InvalidDayStartTime { field }
+            | Self::InvalidDueSoonDays { field }
+            | Self::InvalidFocusTiming { field } => Some(field),
+            Self::InvalidConnectorEntry { .. }
+            | Self::InvalidConnectorName { .. }
+            | Self::DuplicateConnectorName { .. } => Some("sync.connectors"),
+            _ => None,
+        }
+    }
+
     /// The stable per-variant discriminant — the single vocabulary for
     /// both surfaces that report config errors by kind: `config print`'s
     /// `invalid_kind` payload field and the `--json` error envelope's
@@ -1086,6 +1111,75 @@ impl AppConfig {
             config.storage.db_path = default_db_path();
         }
         Ok(config)
+    }
+
+    /// Decodes the config over the *file layer only* — defaults → toml
+    /// at `path`, **no `TASKBOARD_*` env provider** — and fills the
+    /// default db path. This is what the file will decode to on the
+    /// next boot *modulo env overrides standing at that boot*; the
+    /// settings editor's prove gate and the env-override diff both
+    /// read through it.
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError::UnreadableFile`] / [`ConfigError::Decode`] — the
+    /// same classes [`Self::extract_raw`] surfaces.
+    #[allow(clippy::result_large_err)] // the figment source, same shape
+    pub fn extract_file_only(path: Option<&Path>) -> Result<Self, ConfigError> {
+        let probe_path = path.map_or_else(|| PathBuf::from(DEFAULT_CONFIG_PATH), Path::to_path_buf);
+        probe_readable(&probe_path)?;
+        let text = match std::fs::read_to_string(&probe_path) {
+            Ok(text) => text,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(source) => {
+                return Err(ConfigError::UnreadableFile {
+                    path: probe_path,
+                    source,
+                });
+            }
+        };
+        Self::decode_file_only_str(&text)
+    }
+
+    /// Decodes a config *document string* over the file layer only
+    /// (defaults → the given TOML, no env) and fills the default db
+    /// path — the prove gate's read half (the settings editor decodes
+    /// the mutated `DocumentMut` text, not a path).
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError::Decode`] when the providers produce an
+    /// undecodable tree.
+    #[allow(clippy::result_large_err)] // the figment source, same shape
+    pub(crate) fn decode_file_only_str(text: &str) -> Result<Self, ConfigError> {
+        let mut config: Self = Figment::from(Serialized::defaults(AppConfig::default()))
+            .merge(Toml::string(text))
+            .extract()
+            .map_err(ConfigError::Decode)?;
+        if config.storage.db_path.is_none() {
+            config.storage.db_path = default_db_path();
+        }
+        Ok(config)
+    }
+
+    /// The dotted config keys whose effective value differs from the
+    /// file layer's — the env-override overlay the settings editor
+    /// surfaces per key, read-only (the GUI-settings-editor plan
+    /// D1/D16). Sorted and deduped by construction (`BTreeSet`). Pure
+    /// over the two decodes of one file: the provider difference is
+    /// the only input. The set is sampled at hand-over (env vars are
+    /// process-boot state in practice; nothing in the codebase
+    /// mutates its own env).
+    ///
+    /// # Errors
+    ///
+    /// The read classes of [`Self::extract_raw`] /
+    /// [`Self::extract_file_only`].
+    #[allow(clippy::result_large_err)] // the figment source, same shape
+    pub fn env_overridden_keys(path: Option<&Path>) -> Result<BTreeSet<String>, ConfigError> {
+        let file_only = Self::extract_file_only(path)?;
+        let effective = Self::extract_raw(path)?;
+        Ok(diff_keys(&file_only, &effective))
     }
 
     /// The effective sync backend (ADR 0010): the explicit `[sync]
@@ -1539,6 +1633,50 @@ fn default_db_path() -> Option<PathBuf> {
     dirs::data_dir().map(|d| d.join("taskboard").join("taskboard.db"))
 }
 
+/// The dotted-key leaf diff of two decoded config trees (the
+/// env-override overlay's pure core): both sides serialize to JSON,
+/// and every leaf path whose values differ is reported as its dotted
+/// key, sorted and deduped by the `BTreeSet`. Array-valued subtrees
+/// (e.g. `sync.connectors`) diff as whole leaves — a per-element
+/// attribution would be a rendering policy, not a diff fact.
+pub(crate) fn diff_keys(file_only: &AppConfig, effective: &AppConfig) -> BTreeSet<String> {
+    let left = serde_json::to_value(file_only).unwrap_or(serde_json::Value::Null);
+    let right = serde_json::to_value(effective).unwrap_or(serde_json::Value::Null);
+    let mut keys = BTreeSet::new();
+    collect_diffs(&left, &right, &mut Vec::new(), &mut keys);
+    keys
+}
+
+/// The recursive half of [`diff_keys`]: objects diff key-wise; equal
+/// leaves contribute nothing; everything else that differs is one
+/// dotted leaf.
+fn collect_diffs(
+    left: &serde_json::Value,
+    right: &serde_json::Value,
+    path: &mut Vec<String>,
+    keys: &mut BTreeSet<String>,
+) {
+    match (left, right) {
+        (serde_json::Value::Object(a), serde_json::Value::Object(b)) => {
+            for key in a.keys().chain(b.keys()) {
+                path.push(key.clone());
+                collect_diffs(
+                    a.get(key).unwrap_or(&serde_json::Value::Null),
+                    b.get(key).unwrap_or(&serde_json::Value::Null),
+                    path,
+                    keys,
+                );
+                path.pop();
+            }
+        }
+        _ => {
+            if left != right {
+                keys.insert(path.join("."));
+            }
+        }
+    }
+}
+
 /// The host-presence half of `DeckClient::new`'s URL rules, without
 /// constructing a client: scheme http/https, a non-empty host, and no
 /// userinfo in the authority (F12-02 — reqwest never applies URL
@@ -1648,6 +1786,144 @@ pub(crate) fn write_config_atomic(path: &Path, contents: &str) -> std::io::Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+    use figment::value::Dict;
+
+    // -- the env-override diff (W-10/W-11, GUI settings editor) ----
+
+    const DIFF_SEED: &str = "[ui]\nscale = 1.5\ndue_soon_days = 3\n\
+         [sync]\npoll_interval_secs = 30\n\
+         [reminders]\ntick_secs = 30\n";
+
+    /// The effective decode the W-10 cases inject env overrides
+    /// through: a map-backed provider (never process env — the
+    /// deterministic-by-construction rule), nested dicts spelling
+    /// dotted keys.
+    fn effective_with(env: Dict) -> AppConfig {
+        let mut config: AppConfig = Figment::from(Serialized::defaults(AppConfig::default()))
+            .merge(Toml::string(DIFF_SEED))
+            .merge(Serialized::defaults(env))
+            .extract()
+            .expect("the injected chain decodes");
+        // The default db fill both real decodes perform (the diff
+        // must not fire on the fill).
+        if config.storage.db_path.is_none() {
+            config.storage.db_path = default_db_path();
+        }
+        config
+    }
+
+    fn file_only() -> AppConfig {
+        AppConfig::decode_file_only_str(DIFF_SEED).expect("the file decodes")
+    }
+
+    #[test]
+    fn env_overridden_keys_truth_table() {
+        // No env: empty set.
+        let keys = diff_keys(&file_only(), &effective_with(Dict::new()));
+        assert!(keys.is_empty(), "no override, no keys: {keys:?}");
+
+        // An env override of a file key names exactly that dotted key.
+        let mut env = Dict::new();
+        env.insert(
+            "sync".into(),
+            Dict::from([("poll_interval_secs".into(), 90.into())]).into(),
+        );
+        let keys = diff_keys(&file_only(), &effective_with(env));
+        assert_eq!(
+            keys,
+            ["sync.poll_interval_secs".to_owned()].into_iter().collect()
+        );
+
+        // An env key absent from the file is in the set (the file
+        // layer leaves the default standing; the env moves the
+        // effective value).
+        let mut env = Dict::new();
+        env.insert(
+            "app".into(),
+            Dict::from([("shutdown_timeout_secs".into(), 3.into())]).into(),
+        );
+        let keys = diff_keys(&file_only(), &effective_with(env));
+        assert!(keys.contains("app.shutdown_timeout_secs"));
+
+        // Identical values are not a diff.
+        let mut env = Dict::new();
+        env.insert(
+            "sync".into(),
+            Dict::from([("poll_interval_secs".into(), 30.into())]).into(),
+        );
+        let keys = diff_keys(&file_only(), &effective_with(env));
+        assert!(!keys.contains("sync.poll_interval_secs"), "{keys:?}");
+
+        // Nested-section keys diff correctly, several at once.
+        let mut env = Dict::new();
+        env.insert(
+            "ui".into(),
+            Dict::from([("scale".into(), 2.0.into())]).into(),
+        );
+        env.insert(
+            "reminders".into(),
+            Dict::from([("tick_secs".into(), 60.into())]).into(),
+        );
+        let keys = diff_keys(&file_only(), &effective_with(env));
+        assert_eq!(
+            keys,
+            ["reminders.tick_secs", "ui.scale"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect::<BTreeSet<_>>(),
+            "sorted and deduped by construction"
+        );
+    }
+
+    /// The default db fill diffs like any key (R3): an env override
+    /// of `storage.db_path` surfaces per key.
+    #[test]
+    fn a_db_path_override_diffs_like_any_key() {
+        let mut env = Dict::new();
+        env.insert(
+            "storage".into(),
+            Dict::from([("db_path".into(), "/tmp/other.db".into())]).into(),
+        );
+        let keys = diff_keys(&file_only(), &effective_with(env));
+        assert!(keys.contains("storage.db_path"), "{keys:?}");
+    }
+
+    /// W-11: the file-only decode equals the effective decode when
+    /// env is empty — the trivial fixed point.
+    #[test]
+    fn file_only_equals_effective_when_env_is_empty() {
+        let left = serde_json::to_value(file_only()).expect("serializes");
+        let right = serde_json::to_value(effective_with(Dict::new())).expect("serializes");
+        assert_eq!(left, right);
+        assert!(diff_keys(&file_only(), &effective_with(Dict::new())).is_empty());
+    }
+
+    /// The attribution helper: field-carrying variants name their
+    /// dotted key; payload-less variants attribute to nothing (the
+    /// warn-and-write arm's input).
+    #[test]
+    fn config_error_field_attribution() {
+        assert_eq!(
+            ConfigError::InvalidDuration {
+                field: "sync.poll_interval_secs"
+            }
+            .field(),
+            Some("sync.poll_interval_secs")
+        );
+        assert_eq!(
+            ConfigError::InvalidDayStartTime {
+                field: "preferences.day_start_time"
+            }
+            .field(),
+            Some("preferences.day_start_time")
+        );
+        assert_eq!(
+            ConfigError::DuplicateConnectorName { name: "w".into() }.field(),
+            Some("sync.connectors")
+        );
+        assert_eq!(ConfigError::Decode(figment::Error::from("x")).field(), None);
+        assert_eq!(ConfigError::EmptyDbPath.field(), None);
+    }
 
     fn valid() -> AppConfig {
         AppConfig {
