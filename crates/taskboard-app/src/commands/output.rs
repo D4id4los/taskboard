@@ -653,6 +653,9 @@ pub struct RecurRuleReceipt {
     /// The next advertised member; `None` = the `Until` bound excludes
     /// it (this head is the series' last).
     pub next: Option<chrono::NaiveDate>,
+    /// The pause-through date while the pause stands (`None` = the
+    /// series is not paused) — issue #506.
+    pub paused_until: Option<chrono::NaiveDate>,
 }
 
 /// The `config print` payload: the effective configuration plus the
