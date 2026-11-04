@@ -946,8 +946,9 @@ pub struct TrackEntryRow {
 pub type ExportRow = TrackEntryRow;
 
 /// The `track start` receipt. `started: false` is the idempotent
-/// repeat (this task's open entry already exists) — the receipt then
-/// carries that entry, read back from the published snapshot.
+/// repeat (an open entry of this task and the requested kind already
+/// exists) — the receipt then carries that entry, read back from the
+/// published snapshot.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct TrackStartReceipt {
     /// `false` = the idempotent repeat, nothing changed.
