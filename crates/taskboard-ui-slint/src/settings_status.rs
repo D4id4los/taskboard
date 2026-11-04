@@ -78,6 +78,7 @@ fn error_text(err: &SettingsError) -> &'static str {
 /// The `Field`×`InvalidKind` lattice (r2 D28): nested exhaustive
 /// matches — one inner arm per kind per field, no wildcard at either
 /// level, so a new variant on either enum fails to compile here.
+#[allow(clippy::too_many_lines)] // the exhaustive Field×Kind lattice, one arm per cell
 pub(crate) fn invalid_text(field: Field, kind: InvalidKind) -> &'static str {
     match field {
         Field::Name => match kind {
@@ -121,6 +122,80 @@ pub(crate) fn invalid_text(field: Field, kind: InvalidKind) -> &'static str {
             InvalidKind::OutOfRange => "The scale must be between 0.5 and 3.0.",
             InvalidKind::Duplicate => "That scale is already applied.",
         },
+        Field::DayStart => match kind {
+            InvalidKind::Empty => "Enter a time of day.",
+            InvalidKind::NotKebab | InvalidKind::BadUrl | InvalidKind::NotFinite => {
+                "Enter a time of day, e.g. 05:00."
+            }
+            InvalidKind::OutOfRange => "That time does not exist; use 00:00–23:59.",
+            InvalidKind::Duplicate => "That day start is already set.",
+        },
+        Field::RemindersEnabled => match kind {
+            InvalidKind::Empty
+            | InvalidKind::NotKebab
+            | InvalidKind::BadUrl
+            | InvalidKind::NotFinite => "Pick whether reminders are on or off.",
+            InvalidKind::OutOfRange => "That toggle is not available.",
+            InvalidKind::Duplicate => "Reminders are already set that way.",
+        },
+        Field::TickSecs => match kind {
+            InvalidKind::Empty => "Enter the tick interval in seconds.",
+            InvalidKind::NotKebab | InvalidKind::BadUrl | InvalidKind::NotFinite => {
+                "Enter a whole number of seconds, e.g. 30."
+            }
+            InvalidKind::OutOfRange => "The tick must be at least one second.",
+            InvalidKind::Duplicate => "That tick is already set.",
+        },
+        Field::ReminderBefore => match kind {
+            InvalidKind::Empty => "Enter a before-offset, e.g. 5m.",
+            InvalidKind::NotKebab | InvalidKind::BadUrl | InvalidKind::NotFinite => {
+                "Use the 30s / 5m / 1h30m / 2d grammar, e.g. 5m."
+            }
+            InvalidKind::OutOfRange => "That offset is too large; shorten it.",
+            InvalidKind::Duplicate => "That offset is already set.",
+        },
+        Field::ReminderSink => match kind {
+            InvalidKind::Empty
+            | InvalidKind::NotKebab
+            | InvalidKind::BadUrl
+            | InvalidKind::NotFinite => "Pick a notifier: auto, log, or desktop.",
+            InvalidKind::OutOfRange => "That notifier is not available.",
+            InvalidKind::Duplicate => "That notifier is already set.",
+        },
+        Field::PollInterval => match kind {
+            InvalidKind::Empty => "Enter the poll interval in seconds.",
+            InvalidKind::NotKebab | InvalidKind::BadUrl | InvalidKind::NotFinite => {
+                "Enter a whole number of seconds, e.g. 30."
+            }
+            InvalidKind::OutOfRange => "The poll interval must be at least one second.",
+            InvalidKind::Duplicate => "That interval is already set.",
+        },
+        Field::BackoffInitial => match kind {
+            InvalidKind::Empty => "Enter the first backoff in seconds.",
+            InvalidKind::NotKebab | InvalidKind::BadUrl | InvalidKind::NotFinite => {
+                "Enter a whole number of seconds, e.g. 5."
+            }
+            InvalidKind::OutOfRange => {
+                "The first backoff must be positive and not above the maximum."
+            }
+            InvalidKind::Duplicate => "That backoff is already set.",
+        },
+        Field::BackoffMax => match kind {
+            InvalidKind::Empty => "Enter the backoff ceiling in seconds.",
+            InvalidKind::NotKebab | InvalidKind::BadUrl | InvalidKind::NotFinite => {
+                "Enter a whole number of seconds, e.g. 300."
+            }
+            InvalidKind::OutOfRange => "The ceiling must be at least one second.",
+            InvalidKind::Duplicate => "That ceiling is already set.",
+        },
+        Field::DueSoonDays => match kind {
+            InvalidKind::Empty => "Enter the due-soon horizon in days.",
+            InvalidKind::NotKebab | InvalidKind::BadUrl | InvalidKind::NotFinite => {
+                "Enter a whole number of days, e.g. 1."
+            }
+            InvalidKind::OutOfRange => "The horizon must stay within ten years.",
+            InvalidKind::Duplicate => "That horizon is already set.",
+        },
     }
 }
 
@@ -153,6 +228,15 @@ mod tests {
             Field::Username,
             Field::Password,
             Field::Scale,
+            Field::DayStart,
+            Field::RemindersEnabled,
+            Field::TickSecs,
+            Field::ReminderSink,
+            Field::ReminderBefore,
+            Field::PollInterval,
+            Field::BackoffInitial,
+            Field::BackoffMax,
+            Field::DueSoonDays,
         ] {
             for kind in [
                 InvalidKind::Empty,
@@ -271,6 +355,15 @@ mod tests {
             Just(Field::Username),
             Just(Field::Password),
             Just(Field::Scale),
+            Just(Field::DayStart),
+            Just(Field::RemindersEnabled),
+            Just(Field::TickSecs),
+            Just(Field::ReminderSink),
+            Just(Field::ReminderBefore),
+            Just(Field::PollInterval),
+            Just(Field::BackoffInitial),
+            Just(Field::BackoffMax),
+            Just(Field::DueSoonDays),
         ]
     }
 

@@ -123,6 +123,18 @@ pub enum Field {
     Username,
     Password,
     Scale,
+    // The settings editor's general fields (the GUI settings editor
+    // chunk): one variant per editable field, so the typed refusal
+    // lattice and the status sentences stay per-field.
+    DayStart,
+    RemindersEnabled,
+    TickSecs,
+    ReminderSink,
+    ReminderBefore,
+    PollInterval,
+    BackoffInitial,
+    BackoffMax,
+    DueSoonDays,
 }
 
 /// How a field failed.
@@ -134,6 +146,73 @@ pub enum InvalidKind {
     NotFinite,
     OutOfRange,
     Duplicate,
+}
+
+/// The refreshed general-settings snapshot every editor commit reply
+/// carries (the `ConnectionsSnapshot` precedent): rows re-render from
+/// the reply, nothing goes stale. Built app-side from the freshly
+/// written file's decode — the write reply echoes the fresh *file*
+/// value (which will truly be live after the next restart). The
+/// env-override set is NOT re-derived per reply (it is hand-over /
+/// process-boot state); the reply carries it empty and the UI retains
+/// its hand-over set.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SettingsSnapshot {
+    /// The effective editable values, typed (the file layer's decode).
+    pub day_start_time: chrono::NaiveTime,
+    pub reminders_enabled: bool,
+    pub reminder_tick_secs: u64,
+    /// The before-offset in the domain's canonical text form.
+    pub reminder_before: String,
+    pub reminder_sink: ReminderSink,
+    pub poll_interval_secs: u64,
+    pub backoff_initial_secs: u64,
+    pub backoff_max_secs: u64,
+    pub due_soon_days: u32,
+    /// The dotted keys whose effective value is env-overridden (the
+    /// plan D1/D16 per-key honesty overlay). Filled only at hand-over;
+    /// empty on write replies (the UI keeps its hand-over set).
+    pub env_overridden: std::collections::BTreeSet<String>,
+    /// The read-only deployment facts (the §3 read-only inventory),
+    /// each with its apply semantics.
+    pub facts: Vec<SettingsFact>,
+    /// The apply semantics per editable field group (plan D12: the
+    /// config owner states them; the UI never hardcodes). Keys are the
+    /// editable fields' dotted config keys.
+    pub applies: std::collections::BTreeMap<String, SectionApply>,
+}
+
+/// When an edited setting takes effect for the running processes
+/// (plan D5 — stated, never faked): `Live` groups apply immediately
+/// through their own reply paths; `OnRestart` groups take effect at
+/// the next process boot — no signal, no hot reload, no pretend-live
+/// application.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SectionApply {
+    Live,
+    OnRestart,
+}
+
+/// One read-only settings row (the "Deployment" group's inventory):
+/// the dotted config key is the row's address; the value is the
+/// secret-free display string (a secret-adjacent value renders
+/// presence only — `[web] token` renders `set`/`unset`, never its
+/// value).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SettingsFact {
+    pub key: &'static str,
+    pub value: String,
+    pub apply: SectionApply,
+}
+
+/// The `[reminders] sink` choice, mirrored lane-side so this module
+/// stays app-crate-free (the `KeymapPreset` precedent).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ReminderSink {
+    #[default]
+    Auto,
+    Log,
+    Desktop,
 }
 
 /// The reply payload of `SetKeymapPreset` (D9): the app re-resolves
@@ -211,6 +290,63 @@ pub enum UiRequest {
     SetScale {
         scale: f64,
         reply: oneshot::Sender<Result<(), SettingsError>>,
+    },
+    // -- the settings editor's general-field commits (one variant per
+    //    editable field-group; a closed enum of typed intents is the
+    //    secrets boundary: no variant's payload could carry a
+    //    credential, and no fenced subtree (connectors, stack widths,
+    //    window geometry) has a variant to ride). Every reply carries
+    //    the fresh file-layer [`SettingsSnapshot`] (the rows re-render
+    //    from the reply).
+    /// Persists `[preferences] day_start_time`.
+    SetDayStart {
+        time: chrono::NaiveTime,
+        reply: oneshot::Sender<Result<SettingsSnapshot, SettingsError>>,
+    },
+    /// Persists `[reminders] enabled`.
+    SetRemindersEnabled {
+        enabled: bool,
+        reply: oneshot::Sender<Result<SettingsSnapshot, SettingsError>>,
+    },
+    /// Persists `[reminders] tick_secs` (typed u64; the gate proves
+    /// the whole document).
+    SetReminderTick {
+        secs: u64,
+        reply: oneshot::Sender<Result<SettingsSnapshot, SettingsError>>,
+    },
+    /// Persists `[reminders] default_before` in its canonical text
+    /// form (the domain newtype minted UI-side via the domain parser —
+    /// the app never re-parses raw text).
+    SetReminderBefore {
+        before: taskboard_domain::ReminderOffset,
+        reply: oneshot::Sender<Result<SettingsSnapshot, SettingsError>>,
+    },
+    /// Persists `[reminders] sink`.
+    SetReminderSink {
+        sink: ReminderSink,
+        reply: oneshot::Sender<Result<SettingsSnapshot, SettingsError>>,
+    },
+    /// Persists `[sync] poll_interval_secs`.
+    SetPollInterval {
+        secs: u64,
+        reply: oneshot::Sender<Result<SettingsSnapshot, SettingsError>>,
+    },
+    /// Persists `[sync] backoff_initial_secs` — the `initial ≤ max`
+    /// ordering refuses at the prove gate, attributed to this field.
+    SetBackoffInitial {
+        secs: u64,
+        reply: oneshot::Sender<Result<SettingsSnapshot, SettingsError>>,
+    },
+    /// Persists `[sync] backoff_max_secs` — symmetric to
+    /// `SetBackoffInitial`.
+    SetBackoffMax {
+        secs: u64,
+        reply: oneshot::Sender<Result<SettingsSnapshot, SettingsError>>,
+    },
+    /// Persists `[ui] due_soon_days` (0 legal — an empty soon set).
+    SetDueSoonDays {
+        days: u32,
+        reply: oneshot::Sender<Result<SettingsSnapshot, SettingsError>>,
     },
 }
 

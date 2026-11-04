@@ -34,12 +34,12 @@ use taskboard_sync_nextcloud::DeckClient;
 use taskboard_ui_slint::geometry::WindowGeometry;
 use taskboard_ui_slint::requests::{
     ConnectionProfile, ConnectionTarget, ConnectionsSnapshot, ConnectorInfo, Field, InvalidKind,
-    KeymapUpdate, SettingsError, UiRequest,
+    KeymapUpdate, ReminderSink, SettingsError, SettingsSnapshot, UiRequest,
 };
 
 use crate::bootstrap::ConnectorControl;
 use crate::commands::CommandError;
-use crate::config::{AppConfig, ConfigError, ConnectorCfg, SyncBackend};
+use crate::config::{AppConfig, ConfigError, ConnectorCfg, SinkChoice, SyncBackend};
 use crate::migration::url_host;
 use crate::secrets::{CredentialError, CredentialStore};
 
@@ -371,6 +371,145 @@ async fn handle_settings(request: UiRequest, workspace: &ConnectionWorkspace) {
         UiRequest::SetScale { scale, reply } => {
             let _ = reply.send(set_scale(workspace, scale));
         }
+        UiRequest::SetDayStart { time, reply } => {
+            let _ = reply.send(run_editor_write(workspace, Field::DayStart, |path| {
+                crate::settings_overlay::set_day_start(path, time)
+            }));
+        }
+        UiRequest::SetRemindersEnabled { enabled, reply } => {
+            let _ = reply.send(run_editor_write(
+                workspace,
+                Field::RemindersEnabled,
+                |path| crate::settings_overlay::set_reminders_enabled(path, enabled),
+            ));
+        }
+        UiRequest::SetReminderTick { secs, reply } => {
+            let _ = reply.send(run_editor_write(workspace, Field::TickSecs, |path| {
+                crate::settings_overlay::set_reminder_tick(path, secs)
+            }));
+        }
+        UiRequest::SetReminderBefore { before, reply } => {
+            let _ = reply.send(run_editor_write(workspace, Field::ReminderBefore, |path| {
+                crate::settings_overlay::set_reminder_before(path, before)
+            }));
+        }
+        UiRequest::SetReminderSink { sink, reply } => {
+            let _ = reply.send(run_editor_write(workspace, Field::ReminderSink, |path| {
+                crate::settings_overlay::set_reminder_sink(path, map_sink(sink))
+            }));
+        }
+        UiRequest::SetPollInterval { secs, reply } => {
+            let _ = reply.send(run_editor_write(workspace, Field::PollInterval, |path| {
+                crate::settings_overlay::set_poll_interval(path, secs)
+            }));
+        }
+        UiRequest::SetBackoffInitial { secs, reply } => {
+            let _ = reply.send(run_editor_write(workspace, Field::BackoffInitial, |path| {
+                crate::settings_overlay::set_backoff_initial(path, secs)
+            }));
+        }
+        UiRequest::SetBackoffMax { secs, reply } => {
+            let _ = reply.send(run_editor_write(workspace, Field::BackoffMax, |path| {
+                crate::settings_overlay::set_backoff_max(path, secs)
+            }));
+        }
+        UiRequest::SetDueSoonDays { days, reply } => {
+            let _ = reply.send(run_editor_write(workspace, Field::DueSoonDays, |path| {
+                crate::settings_overlay::set_due_soon_days(path, days)
+            }));
+        }
+    }
+}
+
+/// One editor write's shared choreography (the GUI settings editor's
+/// write port): the typed writer runs against the workspace's
+/// resolved write path — never a fresh resolution (plan W-8) — and a
+/// success replies the fresh file-layer snapshot (the echo of what
+/// the file now says).
+fn run_editor_write(
+    workspace: &ConnectionWorkspace,
+    field: Field,
+    write: impl FnOnce(&std::path::Path) -> Result<(), crate::settings_overlay::OverlayError>,
+) -> Result<SettingsSnapshot, SettingsError> {
+    write(&workspace.config_write_path).map_err(|err| map_overlay_error(field, &err))?;
+    fresh_settings_snapshot(workspace)
+}
+
+/// The reply echo: the freshly written file decoded through the
+/// file-layer chain (env excluded — the echo is what the file now
+/// says; the env overlay is the hand-over's standing set). A failed
+/// read is the typed persist failure.
+fn fresh_settings_snapshot(
+    workspace: &ConnectionWorkspace,
+) -> Result<SettingsSnapshot, SettingsError> {
+    let raw = AppConfig::extract_file_only(Some(&workspace.config_write_path))
+        .map_err(|err| map_config_error(&err))?;
+    Ok(crate::ui::settings_snapshot_from_config(&raw))
+}
+
+/// The lane's sink mirror → the config's choice.
+fn map_sink(sink: ReminderSink) -> SinkChoice {
+    match sink {
+        ReminderSink::Auto => SinkChoice::Auto,
+        ReminderSink::Log => SinkChoice::Log,
+        ReminderSink::Desktop => SinkChoice::Desktop,
+    }
+}
+
+/// The gate refusal's typed mapping (plan D8/D14): a blame inside the
+/// edited field's own key surfaces as that field's typed invalidity
+/// (parse-shaped fields take the reserved parse arm, numeric bounds
+/// and the ordering take `OutOfRange`); any other blame — a
+/// different field of the section, or an unattributable failure — is
+/// the coarse persist rejection.
+fn map_overlay_error(field: Field, err: &crate::settings_overlay::OverlayError) -> SettingsError {
+    match err {
+        crate::settings_overlay::OverlayError::Io(io) => map_io_error(io),
+        crate::settings_overlay::OverlayError::Rejected(config_err) => {
+            if config_err.field() == Some(editor_field_key(field)) {
+                SettingsError::Invalid {
+                    field,
+                    kind: editor_invalid_kind(field),
+                }
+            } else {
+                SettingsError::PersistRejected
+            }
+        }
+    }
+}
+
+/// The dotted config key each editor `Field` writes (the blame
+/// comparison term).
+fn editor_field_key(field: Field) -> &'static str {
+    match field {
+        Field::DayStart => "preferences.day_start_time",
+        Field::RemindersEnabled => "reminders.enabled",
+        Field::TickSecs => "reminders.tick_secs",
+        Field::ReminderSink => "reminders.sink",
+        Field::ReminderBefore => "reminders.default_before",
+        Field::PollInterval => "sync.poll_interval_secs",
+        Field::BackoffInitial => "sync.backoff_initial_secs",
+        Field::BackoffMax => "sync.backoff_max_secs",
+        Field::DueSoonDays => "ui.due_soon_days",
+        // The connection-form fields never ride the editor writers.
+        Field::Name | Field::ServerUrl | Field::Username | Field::Password | Field::Scale => "",
+    }
+}
+
+/// The invalidity kind each editor field's own-blame refusal carries.
+fn editor_invalid_kind(field: Field) -> InvalidKind {
+    match field {
+        // Parse-shaped refusals (an unparseable day start or before
+        // text in the file): the reserved parse arm, the mirror's
+        // parity.
+        Field::DayStart | Field::ReminderBefore => InvalidKind::NotKebab,
+        // Everything else: numeric bounds and the initial/max
+        // ordering take the range kind; choice commits are typed
+        // booleans/enums and the connection-form fields never ride
+        // the editor writers — no invalidity can be blamed on any of
+        // them, so the arm exists for the same-section blame
+        // comparison only.
+        _ => InvalidKind::OutOfRange,
     }
 }
 
@@ -1690,6 +1829,149 @@ mod tests {
         assert_eq!(
             map_credential_error(CredentialError::Unsupported),
             E::StoreUnsupported
+        );
+    }
+
+    // -- the settings editor's write port (W-8 + the mapping table) --
+
+    /// The gate-refusal mapping table (the A10 shape): a blame inside
+    /// the edited field's own key is that field's typed invalidity
+    /// (parse arm for text fields, range arm for numerics); any other
+    /// blame — same section, different field, or unattributable — is
+    /// the coarse persist rejection.
+    #[test]
+    fn the_gate_refusal_mapping_table_covers_the_editor_fields() {
+        use crate::config::ConfigError;
+        use crate::settings_overlay::OverlayError;
+        use taskboard_ui_slint::requests::{Field, InvalidKind, SettingsError as E};
+
+        let own_blame = |field, field_str| {
+            map_overlay_error(
+                field,
+                &OverlayError::Rejected(Box::new(ConfigError::InvalidDuration {
+                    field: field_str,
+                })),
+            )
+        };
+        assert_eq!(
+            own_blame(Field::DayStart, "preferences.day_start_time"),
+            E::Invalid {
+                field: Field::DayStart,
+                kind: InvalidKind::NotKebab
+            }
+        );
+        assert_eq!(
+            own_blame(Field::TickSecs, "reminders.tick_secs"),
+            E::Invalid {
+                field: Field::TickSecs,
+                kind: InvalidKind::OutOfRange
+            }
+        );
+        assert_eq!(
+            own_blame(Field::BackoffInitial, "sync.backoff_initial_secs"),
+            E::Invalid {
+                field: Field::BackoffInitial,
+                kind: InvalidKind::OutOfRange
+            }
+        );
+        // Same section, different field: coarse.
+        assert_eq!(
+            map_overlay_error(
+                Field::RemindersEnabled,
+                &OverlayError::Rejected(Box::new(ConfigError::InvalidDuration {
+                    field: "reminders.tick_secs"
+                })),
+            ),
+            E::PersistRejected
+        );
+        // Unattributable: coarse.
+        assert_eq!(
+            map_overlay_error(
+                Field::DueSoonDays,
+                &OverlayError::Rejected(Box::new(ConfigError::EmptyDbPath)),
+            ),
+            E::PersistRejected
+        );
+        // IO: the persist classes.
+        assert_eq!(
+            map_overlay_error(
+                Field::PollInterval,
+                &OverlayError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "shape"
+                )),
+            ),
+            E::PersistRejected
+        );
+        assert_eq!(
+            map_overlay_error(
+                Field::PollInterval,
+                &OverlayError::Io(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "io"
+                )),
+            ),
+            E::PersistFailed
+        );
+    }
+
+    /// W-8 + the round-trip: the editor's handler writes through the
+    /// workspace's resolved path (never a fresh resolution), and the
+    /// reply echoes the fresh file-layer snapshot; a gate-refused
+    /// commit leaves the file byte-untouched and replies the typed
+    /// field invalidity.
+    #[tokio::test]
+    async fn the_editor_handlers_write_through_the_workspace_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("taskboard.toml");
+        std::fs::write(
+            &path,
+            "[reminders]\ntick_secs = 30\n[sync]\nbackoff_initial_secs = 5\nbackoff_max_secs = 300\n",
+        )
+        .expect("seed");
+        let workspace = test_workspace(path.clone()).await;
+
+        let (reply, reply_rx) = tokio::sync::oneshot::channel();
+        handle_settings(UiRequest::SetReminderTick { secs: 45, reply }, &workspace).await;
+        let snapshot = reply_rx
+            .await
+            .expect("the reply lane is alive")
+            .expect("lands");
+        assert_eq!(snapshot.reminder_tick_secs, 45, "the reply echoes the file");
+        assert_eq!(snapshot.applies.len(), 9, "the reply carries the apply map");
+        assert!(
+            snapshot.env_overridden.is_empty(),
+            "replies never re-derive the env set"
+        );
+        let written = std::fs::read_to_string(&path).expect("read back");
+        assert!(
+            written.contains("tick_secs = 45"),
+            "the workspace path took the write"
+        );
+
+        // The ordering gate: a crossing refuses typed, file untouched.
+        let (reply, reply_rx) = tokio::sync::oneshot::channel();
+        handle_settings(
+            UiRequest::SetBackoffInitial { secs: 400, reply },
+            &workspace,
+        )
+        .await;
+        let outcome = reply_rx.await.expect("the reply lane is alive");
+        assert!(
+            matches!(
+                outcome,
+                Err(SettingsError::Invalid {
+                    field: Field::BackoffInitial,
+                    kind: InvalidKind::OutOfRange
+                })
+            ),
+            "the ordering refusal names the offending field: {outcome:?}"
+        );
+        assert!(
+            std::fs::read_to_string(&path)
+                .expect("read")
+                .contains("backoff_initial_secs = 5"),
+            "the refused write left the file untouched"
         );
     }
 
