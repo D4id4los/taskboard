@@ -8,7 +8,8 @@
 // adapter absorbs it (the CLI owns typed failures, D12).
 
 import { Theme, Typography, Semantic, RoleText } from "../theme.slint";
-import { TextField, FieldValidity } from "../widgets/text-field.slint";
+import { FieldValidity } from "../widgets/text-field.slint";
+import { TippedField } from "../widgets/tipped-field.slint";
 import { IconButton, IconKind } from "../widgets/icon-button.slint";
 import { ActivationStop } from "../widgets/activation-stop.slint";
 import { TooltipState } from "../widgets/tooltip.slint";
@@ -115,6 +116,10 @@ export component RuleList inherits VerticalLayout {
     callback jump-to-due-clicked();
     in property <FieldValidity> offset-validity: FieldValidity.neutral;
     in property <string> offset-error-hint;
+    // The custom-offset field's help sentence (r3-3.1): the
+    // `TippedField` pair single-sources it into the tip and the
+    // field's a11y description; markup-literal at the instantiation.
+    in property <string> offset-help: "";
 
     RoleText {
         role: Typography.caption;
@@ -203,9 +208,10 @@ export component RuleList inherits VerticalLayout {
             horizontal-stretch: 0;
             chip-clicked(index) => { root.add-preset-clicked(index); }
         }
-        custom-field := TextField {
+        custom-field := TippedField {
             placeholder: "Custom offset, e.g. 45m";
             label: "Custom reminder offset";
+            help: root.offset-help;
             commit-affordance: true;
             validity: root.offset-validity;
             horizontal-stretch: 1;

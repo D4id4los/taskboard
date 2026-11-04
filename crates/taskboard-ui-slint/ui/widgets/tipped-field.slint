@@ -1,0 +1,81 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The tipped field pair (r3-3.1, issue #590): a `TextField` plus its
+// sibling `InfoTip` square in one row — the settings `LabeledField`'s
+// pair discipline without the form-row furniture. One `label`/`help`
+// source drives BOTH the tip (`about`/`help`) and the field's a11y
+// label/description (the D31 single-source rule; the tip square stays
+// AT-transparent — the help's AT delivery is the field's
+// accessible-description).
+//
+// The sibling-placement rule is the mechanism contract, never a
+// styling choice: the inner `TextInput` accepts its own hover moves
+// (pointer caret placement), so any hover sensor inside or over the
+// field's rect is dead — a sibling `TouchArea` never hovers and one
+// layered above steals click/drag-select (the recorded r4 §5
+// infeasibility, origin report
+// `2026-11-03-ui-r4-taskview-focus-stage3-report.md`). The square is
+// a separate layout cell beside the field; a refactor that slides it
+// over the input is pinned red by the journeys' geometry assertion.
+//
+// Forwarding boundary: the union of what the tipped sites actually
+// use. `secret`/`autofocus` stay unreached — a field needing them is
+// a bare `TextField` and carries no tip (this wrapper is for tipped
+// fields only).
+
+import { Theme } from "../theme.slint";
+import { TextField, FieldValidity } from "text-field.slint";
+import { InfoTip } from "info-tip.slint";
+
+export component TippedField inherits HorizontalLayout {
+    // The field's a11y label AND the tip's `about` (one source).
+    in property <string> label;
+    // The help sentence: the tip's description slot AND the field's
+    // a11y description (one source).
+    in property <string> help;
+    in property <string> placeholder;
+    in property <string> initial-text;
+    in property <bool> selected-on-focus: false;
+    in property <bool> multiline: false;
+    in property <bool> commit-affordance: false;
+    in property <bool> clear-affordance: false;
+    in property <FieldValidity> validity: FieldValidity.neutral;
+    // The two-way text seam: the buffer reset (a parse-missed custom
+    // offset) and the push re-seed (the picker's live sync) both
+    // read/write through it.
+    in-out property <string> text <=> field.text;
+    callback edited(string);
+    callback accepted(string);
+    callback focus-lost();
+    // The focus hand-over seam (the editor's focus-on-mount and the
+    // picker's Enter hand-over call through).
+    public function grab-focus() {
+        field.grab-focus();
+    }
+
+    spacing: Theme.space-2;
+    field := TextField {
+        placeholder: root.placeholder;
+        label: root.label;
+        description: root.help;
+        initial-text: root.initial-text;
+        selected-on-focus: root.selected-on-focus;
+        multiline: root.multiline;
+        commit-affordance: root.commit-affordance;
+        clear-affordance: root.clear-affordance;
+        validity: root.validity;
+        horizontal-stretch: 1;
+        edited(text) => {
+            root.edited(text);
+        }
+        accepted(text) => {
+            root.accepted(text);
+        }
+        focus-lost() => {
+            root.focus-lost();
+        }
+    }
+    help-tip := InfoTip {
+        about: root.label;
+        help: root.help;
+    }
+}
