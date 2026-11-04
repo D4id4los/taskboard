@@ -11461,3 +11461,128 @@ fn the_review_surface_ledgers_and_returns() {
         },
     );
 }
+
+/// The entries overlay's keyboard journey (r4 chunk 10, D35/D36
+/// blanket rule; stage-3 review): the nonce grabs the panel root, one
+/// walk step lands on a row, Return activates it into the seeded edit
+/// form, and the Escape ladder steps form → list → closed. The row
+/// here is an unreported stop (the tracking verbs' precedent), so the
+/// reachability pins ride the observable surfaces (the form flag, the
+/// mount flag) — the arm/confirm semantics stay at the flow-table
+/// layer.
+#[test]
+fn the_entries_overlay_walks_rows_and_the_escape_ladder_steps_back() {
+    let (fx, mut state) = fixture::golden_state();
+    // One closed entry on the walk's focus target: the overlay's row.
+    let start = chrono::Utc::now() - chrono::TimeDelta::hours(1);
+    let id = taskboard_domain::TimeEntryId::from_uuid(uuid::Uuid::now_v7());
+    state.tracking.entries.insert(
+        id,
+        taskboard_domain::TimeEntry {
+            id,
+            task: fx.task0,
+            task_title: "task-0".to_owned(),
+            start,
+            end: Some(start + chrono::TimeDelta::minutes(30)),
+            created_at: start,
+            updated_at: start,
+            kind: taskboard_domain::tracking::TimeEntryKind::Work,
+        },
+    );
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            press_preset(
+                &mut harness,
+                taskboard_ui_slint::keymap::Preset::Standard,
+                ActionId::NavNextItem,
+            );
+            press_preset(
+                &mut harness,
+                taskboard_ui_slint::keymap::Preset::Standard,
+                ActionId::TaskEdit,
+            );
+            harness.driver.advance_time(0);
+            // Open through the affordance's seam (click ≡ key); the
+            // second loop turn delivers the deferred nonce bump (the
+            // mount pass ran in the first).
+            harness.handle.window().invoke_task_track_entries_clicked();
+            harness.driver.advance_time(0);
+            harness.driver.advance_time(0);
+            let window = harness.handle.window();
+            assert!(
+                window.get_task_model().track_entries_open,
+                "the overlay mounts over the subject"
+            );
+            assert_eq!(
+                window.get_task_model().track_entries.row_count(),
+                1,
+                "the subject's entry renders a row"
+            );
+            // The height-transition grab (post-mount) holds the walk
+            // root — the fresh-mount init grab does not take (the
+            // walk probe's P4/P5 split).
+            {
+                let walk_facts = harness
+                    .handle
+                    .window()
+                    .global::<taskboard_ui_slint::TrackPanelWalkFacts>();
+                assert!(
+                    walk_facts.get_panel_root_focused(),
+                    "the height-transition grab lands on the panel root"
+                );
+            }
+            // Row activation (the inventory's accessible-action
+            // idiom): the row's a11y default action IS the
+            // row-activated seam. The walk's step count across the
+            // window-level mount stays the Tier-4 probe item (the
+            // stop itself is structural — the row FocusScope markup
+            // above; the control walk's ordering over the overlay is
+            // runtime-sensitive and unproven here).
+            let start_local = start.with_timezone(&chrono::Local);
+            let row_label = start_local.format("%Y-%m-%d %H:%M").to_string();
+            assert!(
+                !harness.handle.window().get_track_form_open(),
+                "the form stays closed before activation"
+            );
+            harness
+                .driver
+                .find_by_label(row_label.as_str())
+                .expect("the entry row renders under its span label")
+                .invoke_default_action();
+            harness.driver.advance_time(0);
+            assert!(
+                harness.handle.window().get_track_form_open(),
+                "activating the row opens the seeded edit form"
+            );
+            // The seed is the entry's own local wall-clock.
+            assert_eq!(
+                harness.handle.window().get_track_form_start_text(),
+                start_local.format("%H:%M").to_string(),
+                "the edit seeds the entry's local start"
+            );
+            // The ladder, level 2: Escape steps the form back to the
+            // list — the overlay stays.
+            harness.stroke(parse("Escape").expect("escape"));
+            harness.driver.advance_time(0);
+            assert!(
+                !harness.handle.window().get_track_form_open(),
+                "the form steps back"
+            );
+            assert!(
+                harness.handle.window().get_task_model().track_entries_open,
+                "the overlay stays through the form's step"
+            );
+            // The ladder, level 3: Escape closes the overlay.
+            harness.stroke(parse("Escape").expect("escape"));
+            harness.driver.advance_time(0);
+            assert!(
+                !harness.handle.window().get_task_model().track_entries_open,
+                "the second Escape closes the overlay"
+            );
+        },
+    );
+}

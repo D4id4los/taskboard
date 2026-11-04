@@ -20,7 +20,7 @@ import { NotificationSurface, NotificationRowModel } from "compositions/notifica
 import { TimerRowModel } from "compositions/timers.slint";
 import { TimerSetter } from "compositions/timer-setter.slint";
 import { TrackEntriesPanel, TrackEntryRowModel } from "compositions/track-entries.slint";
-import { TrackPanelFacts } from "track-panel-facts.slint";
+import { TrackPanelFacts, TrackPanelWalkFacts } from "track-panel-facts.slint";
 import { TimerSetterFacts } from "menu-facts.slint";
 import { TimeSlotRow } from "widgets/time-field.slint";
 import { HabitRowModel } from "compositions/habits.slint";
@@ -58,7 +58,7 @@ export { AlarmWindow, AlarmRowModel }
 
 // Re-export the globals so the generated Rust module exposes them
 // (mount/adapter read/write them through the generated accessors).
-export { Theme, Typography, Semantic, Responsive, TooltipState, MenuPanelFacts, SettingsScrollFacts, DragState, FocusScrollHint, ScrollPageHint, EditingFacts, TaskViewWalkFacts }
+export { Theme, Typography, Semantic, Responsive, TooltipState, MenuPanelFacts, SettingsScrollFacts, DragState, FocusScrollHint, ScrollPageHint, EditingFacts, TaskViewWalkFacts, TrackPanelFacts, TrackPanelWalkFacts }
 export { BoardBarModel, BoardSegmentModel }
 
 export enum KeyFeedback {
@@ -583,7 +583,7 @@ export component AppWindow inherits Window {
             commit-requested(label) => root.timer-setter-commit-requested(label);
             close-requested() => root.timer-setter-dismiss-requested();
         }
-// The overlay's window-level mount (D-TS1): the date-picker's
+    // The overlay's window-level mount (D-TS1): the date-picker's
     // exact pattern — the dismissal layer first (a full-window
     // TouchArea, no visual; the later sibling is hit-tested first),
     // the anchored panel after, both gated on one mount condition
@@ -621,7 +621,6 @@ export component AppWindow inherits Window {
                    status.y - self.height - Theme.space-2));
         rows: root.task-model.track-entries;
         total: root.task-model.track-entries-total;
-        focus-nonce: root.track-panel-focus-nonce;
         // The form surface's pushed halves (r4 D-TS4) — the
         // adapter-owned mirrors (the TimeField contract: the push
         // re-seeds, the widget never holds state).
@@ -657,9 +656,7 @@ export component AppWindow inherits Window {
         end-stepped(n) => root.track-form-end-stepped(n);
         end-picked(m) => root.track-form-end-picked(m);
         commit-requested() => root.track-form-commit-requested();
-        form-committed() => { /* the flow stepped; the push carries the swap */ }
     }
-
 
         // The D2 outside-click dismissal layer (round 1): a full-window
         // TouchArea declared AFTER the chrome and BEFORE the menu
@@ -1056,9 +1053,6 @@ export component AppWindow inherits Window {
     // two views: the popover edits and the inline text form's
     // validity mirror share the same `timer_when_draft`).
     in-out property <bool> timer-setter-open: false;
-    // The entries panel's focus hand-off (the setter's nonce idiom):
-    // the adapter bumps it when the overlay mounts.
-    in-out property <int> track-panel-focus-nonce: 0;
     // The armed delete row's index (D-TS5): the adapter's mirror over
     // the id table (−1 = nothing armed).
     in-out property <int> track-armed-index: -1;
