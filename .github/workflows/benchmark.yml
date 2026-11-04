@@ -61,7 +61,7 @@ jobs:
         # Bencher Cloud occasionally ships server changes needing a
         # newer CLI — a skew fails this step loudly, which is the
         # designed posture; bump on purpose.
-        uses: bencherdev/bencher@v0.6.13
+        uses: bencherdev/bencher@v0.6.16
         with:
           version: 0.6.13
 
