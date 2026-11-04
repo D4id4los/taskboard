@@ -1500,6 +1500,11 @@ impl Adapter {
             (_, UiEffect::TrackEntriesOpen) => match self.view_state.subject_task() {
                 Some(task) => {
                     Self::dismiss_tooltip(window);
+                    // The focus hand-off lands after the mount pass
+                    // (the setter's nonce idiom; an init grab alone is
+                    // dropped on a fresh mount).
+                    let nonce = window.get_track_panel_focus_nonce();
+                    window.set_track_panel_focus_nonce(nonce.wrapping_add(1));
                     self.view_state.open_track_entries(task)
                 }
                 None => Vec::new(),
@@ -5993,6 +5998,68 @@ fn install_tracking_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
             return;
         };
         stop.borrow_mut().route(&window, ActionId::TaskTrackStop);
+    });
+
+    // The entries overlay's open affordance (r4 chunk 10, D-TS8):
+    // routes `task.track-entries` over the VIEW'S SUBJECT — the
+    // one-shot target seam (the notification row's track-start
+    // precedent; the subject is not guaranteed focused). The open
+    // arm's kiosk/subject refusals are the interpret arms'
+    // dispatch-time gating.
+    let entries = Rc::clone(adapter);
+    let entries_weak = window.as_weak();
+    window.on_task_track_entries_clicked(move || {
+        let Some(window) = entries_weak.upgrade() else {
+            return;
+        };
+        let mut a = entries.borrow_mut();
+        a.track_target = a.view_state.subject_task();
+        a.route(&window, ActionId::TaskTrackEntries);
+    });
+
+    // The dismissal layer's seam (D-TS1): an outside click is a
+    // ladder step (form → list; list → close) — the view-state
+    // machine resolves it; the armed delete clears with the overlay
+    // (the state-truth rule — nothing ticks).
+    let dismiss = Rc::clone(adapter);
+    let dismiss_weak = window.as_weak();
+    window.on_track_entries_dismiss_requested(move || {
+        let Some(window) = dismiss_weak.upgrade() else {
+            return;
+        };
+        let mut a = dismiss.borrow_mut();
+        a.track_entry_target = None;
+        let outcomes = a.view_state.step_back_track_entries();
+        a.apply_outcomes(&window, &outcomes);
+        a.finish_mutation(&window);
+    });
+
+    // The row-activate seam (D-TS3): opens the seeded edit form
+    // (slice 4's commit funnel owns its Return); the seed resolves
+    // through the id table (never a viewport offset).
+    let row = Rc::clone(adapter);
+    let row_weak = window.as_weak();
+    window.on_track_entry_row_activated(move |index| {
+        let Some(window) = row_weak.upgrade() else {
+            return;
+        };
+        let mut a = row.borrow_mut();
+        let Some(subject) = a.view_state.subject_task() else {
+            return;
+        };
+        let Some(entry) = a
+            .tables
+            .track_entries
+            .get(usize::try_from(index).unwrap_or(usize::MAX))
+            .copied()
+        else {
+            return;
+        };
+        let outcomes = a.view_state.open_track_entry_form(subject, Some(entry));
+        a.apply_outcomes(&window, &outcomes);
+        a.finish_mutation(&window);
+        let nonce = window.get_track_panel_focus_nonce();
+        window.set_track_panel_focus_nonce(nonce.wrapping_add(1));
     });
 
     // The task view's done checkbox (r4 D16b/F15): raw-send the

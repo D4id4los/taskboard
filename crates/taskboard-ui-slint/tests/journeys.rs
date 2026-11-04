@@ -6147,14 +6147,18 @@ fn the_task_view_stop_inventory_walks_in_reading_order() {
             // custom-offset field (unreported), description. The wrap
             // then cycles through the window chrome (unreported stops)
             // and re-enters at the done box — the wrap pin.
-            let observed = walk_steps(&mut harness, 19);
+            // The entries affordance (r4 chunk 10, D-TS8) joins the
+            // unreported stops (the tracking verbs' precedent): it
+            // sits after the scheduled cell, so the stale-repeat
+            // window carries one more 6 before the rules rows.
+            let observed = walk_steps(&mut harness, 20);
             assert_eq!(
-                &observed[..12],
-                &[0, 2, 3, 3, 5, 6, 90, 91, 92, 93, 93, 11],
+                &observed[..13],
+                &[0, 2, 3, 3, 5, 6, 6, 90, 91, 92, 93, 93, 11],
                 "the reading-order inventory"
             );
             assert_eq!(
-                observed[18], 2,
+                observed[19], 2,
                 "the walk wraps through the chrome and re-enters at the done box"
             );
 

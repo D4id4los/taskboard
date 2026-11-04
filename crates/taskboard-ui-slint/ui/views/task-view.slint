@@ -18,6 +18,8 @@ import { TooltipState } from "../widgets/tooltip.slint";
 import { ActivationStop } from "../widgets/activation-stop.slint";
 import { EditingFacts } from "../editing-facts.slint";
 import { TaskViewWalkFacts } from "../walk-facts.slint";
+import { TrackPanelFacts } from "../track-panel-facts.slint";
+import { TrackEntryRowModel } from "../compositions/track-entries.slint";
 
 // The task-detail model (D22).
 export struct TaskDetailModel {
@@ -30,6 +32,16 @@ export struct TaskDetailModel {
     // the pushed phrase — the box renders the model only, the tick
     // cadence is the adapter's seam.
     tracked-total: string,
+    // The time-entries overlay (r4 chunk 10, D-TS8): the visible gate
+    // is model-side (`!kiosk && subject present` — the display-stays,
+    // action-empties posture: the total keeps showing, the affordance
+    // hides), the open flag is the overlay's window-level mount
+    // condition, the rows/total are the pushed halves (the total is
+    // the summary row's own phrase verbatim).
+    track-entries-visible: bool,
+    track-entries-open: bool,
+    track-entries-total: string,
+    track-entries: [TrackEntryRowModel],
     done: bool,
     // The done affordance's visibility flag (issue #492): a tracker
     // subject hides the header checkbox entirely.
@@ -104,6 +116,10 @@ export component TaskView inherits FocusScope {
     // over the focused task (the subject IS the focused task).
     callback task-track-start-clicked();
     callback task-track-stop-clicked();
+    // The entries overlay's open affordance (r4 chunk 10, D-TS8):
+    // routes the `task.track-entries` action over the subject (click
+    // ≡ key, §7.1).
+    callback task-track-entries-clicked();
     // The done checkbox (r4 D16b): raw-sends the toggled SetTaskDone
     // over the VIEW'S SUBJECT — the adapter seam resolves it (the
     // subject is not guaranteed focused; the cycle's fallback).
@@ -638,6 +654,28 @@ export component TaskView inherits FocusScope {
                             }
                         }
                     }
+                }
+                // The entries affordance (r4 chunk 10, D-TS8): a
+                // history icon — deliberately NOT the snooze clock
+                // (F1's shared-icon class). Model-side kiosk gate;
+                // the anchor geometry mirrors into the panel's facts
+                // singleton (the TimerSetterFacts idiom).
+                if (root.task.track-entries-visible): entries-anchor := Rectangle {
+                    entries-button := IconButton {
+                        icon: IconKind.history;
+                        label: "Time entries";
+                        description: "Opens the task's time-entries overlay: tracked history, add, edit, delete.";
+                        clicked => {
+                            TooltipState.unhover();
+                            root.task-track-entries-clicked();
+                        }
+                    }
+                    property <length> anchor-x: entries-button.absolute-position.x;
+                    property <length> anchor-y: entries-button.absolute-position.y;
+                    property <length> anchor-height: entries-button.height;
+                    changed anchor-x => { TrackPanelFacts.anchor-x = self.anchor-x; }
+                    changed anchor-y => { TrackPanelFacts.anchor-y = self.anchor-y; }
+                    changed anchor-height => { TrackPanelFacts.anchor-height = self.anchor-height; }
                 }
             }
 
