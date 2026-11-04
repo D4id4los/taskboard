@@ -1524,6 +1524,73 @@ fn not_undoable_heads_refuse_and_name_the_reason() {
     );
 }
 
+#[test]
+fn the_kind_switching_start_tracking_journals_the_tracking_surface() {
+    // P-5 (#599): the same-task different-kind switch is an effectful
+    // StartTracking — it journals one node classified
+    // NotUndoable(TrackingSurface) exactly like every other mutating
+    // tracking command (the old kind-blind arm returned a no-op that
+    // journaled nothing, leaving the previous command as the head).
+    let mut h = Harness::new();
+    let board = h.board();
+    let stack = h.stack(board);
+    let task = h.task(stack, "t");
+    // The prior undoable command on the line: the create-task's
+    // pre-images are head-worthy, so an undo *before* the switch
+    // would target them.
+    h.exec(&StateCommand::UpdateTask {
+        id: task,
+        changes: crate::messages::TaskChanges {
+            title: Some("renamed".into()),
+            ..Default::default()
+        },
+    })
+    .expect("renamed");
+    // Seed the open Work entry directly (the engine's apply shape).
+    h.disk.tracking.entries.insert(
+        crate::ids::TimeEntryId::from(uuid::Uuid::from_u128(7_001)),
+        crate::tracking::TimeEntry {
+            id: crate::ids::TimeEntryId::from(uuid::Uuid::from_u128(7_001)),
+            task,
+            task_title: "t".into(),
+            start: ts(999_000),
+            end: None,
+            created_at: ts(999_000),
+            updated_at: ts(999_000),
+            kind: crate::tracking::TimeEntryKind::Work,
+        },
+    );
+    h.sync();
+    h.exec(&StateCommand::StartTracking {
+        task,
+        kind: crate::tracking::TimeEntryKind::Respite,
+    })
+    .expect("switched");
+    // The head moved onto the switch node and names the tracking
+    // surface.
+    let head_id = h.journal.head.expect("the switch journaled a node");
+    let head = h.journal.entry(head_id).expect("the head is on the line");
+    assert!(matches!(
+        &head.command,
+        StateCommand::StartTracking {
+            kind: crate::tracking::TimeEntryKind::Respite,
+            ..
+        }
+    ));
+    assert!(matches!(
+        head.facts,
+        UndoFacts::NotUndoable(NotUndoableReason::TrackingSurface)
+    ));
+    // Undo right after the switch refuses typed instead of undoing
+    // the rename underneath.
+    assert!(matches!(
+        h.exec(&StateCommand::Undo),
+        Err(CommandError::TargetNotUndoable(
+            NotUndoableReason::TrackingSurface
+        ))
+    ));
+}
+
 // ---- line mechanics -----------------------------------------------------
 
 #[test]

@@ -7940,6 +7940,98 @@ mod tests {
     }
 
     #[test]
+    fn start_tracking_the_respite_repeat_is_also_a_no_op() {
+        // P-2 (#599): the idempotent-repeat guard is kind-aware — the
+        // same task *and* the same kind repeats to the no-op; only a
+        // different kind is a switch.
+        let (app, outbox) = base();
+        let open = tracked_entry(1, task_id(), T0 - 60, None);
+        let app = with_entry(app, open);
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::StartTracking {
+                task: task_id(),
+                kind: crate::tracking::TimeEntryKind::Respite,
+            },
+        )
+        .unwrap();
+        assert_eq!(plan.outcome, CommandOutcome::NoOp);
+        assert_eq!(plan.actions, Vec::new());
+    }
+
+    #[test]
+    fn start_tracking_a_respite_over_a_running_work_entry_switches() {
+        // P-3, forward direction (#599, respite D-3): a different kind
+        // over this task's single open entry is a switch — the running
+        // entry closes at the planner now, a fresh open entry carries
+        // the requested kind, all in one verb application.
+        let (app, outbox) = base();
+        let running = tracked_entry(1, task_id(), T0 - 600, None);
+        let app = with_entry(app, running.clone());
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::StartTracking {
+                task: task_id(),
+                kind: crate::tracking::TimeEntryKind::Respite,
+            },
+        )
+        .unwrap();
+        let CommandOutcome::TrackingStarted { entry, closed } = &plan.outcome else {
+            panic!("the switch lands as a TrackingStarted");
+        };
+        assert_eq!(closed, &vec![running.id], "the work entry closed");
+        assert_eq!(entry.kind, crate::tracking::TimeEntryKind::Respite);
+        assert_eq!(
+            entry.start,
+            now(),
+            "the fresh entry opens at the planner now"
+        );
+        assert_eq!(entry.end, None, "the fresh entry is open");
+        assert_eq!(entry.task, task_id());
+        // Batch shape mirrors the foreign-open path: the stamped close
+        // row, then the fresh open row.
+        let rows = entry_upserts(&plan);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].id, running.id);
+        assert_eq!(rows[0].end, Some(now()));
+        assert_eq!(rows[1].kind, crate::tracking::TimeEntryKind::Respite);
+        assert_eq!(rows[1].end, None);
+    }
+
+    #[test]
+    fn start_tracking_work_over_a_running_break_entry_switches_back() {
+        // P-3, reverse direction (#599): the guard is symmetric —
+        // starting work on a task whose break entry runs ends the
+        // break and opens the work block.
+        let (app, outbox) = base();
+        let mut running = tracked_entry(1, task_id(), T0 - 600, None);
+        running.kind = crate::tracking::TimeEntryKind::Respite;
+        let app = with_entry(app, running.clone());
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::StartTracking {
+                task: task_id(),
+                kind: crate::tracking::TimeEntryKind::Work,
+            },
+        )
+        .unwrap();
+        let CommandOutcome::TrackingStarted { entry, closed } = &plan.outcome else {
+            panic!("the switch lands as a TrackingStarted");
+        };
+        assert_eq!(closed, &vec![running.id], "the break entry closed");
+        assert_eq!(entry.kind, crate::tracking::TimeEntryKind::Work);
+        assert_eq!(entry.end, None);
+        let rows = entry_upserts(&plan);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].id, running.id);
+        assert_eq!(rows[0].end, Some(now()));
+        assert_eq!(rows[1].kind, crate::tracking::TimeEntryKind::Work);
+    }
+
+    #[test]
     fn start_tracking_over_a_double_open_closes_and_reopens() {
         let (app, outbox) = base_with_task_b();
         let first = tracked_entry(1, task_id(), T0 - 900, None);
