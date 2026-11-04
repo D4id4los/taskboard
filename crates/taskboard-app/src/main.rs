@@ -805,6 +805,10 @@ async fn run_kiosk(
             let (commands_tx, commands_rx) = taskboard_app::ui::ui_command_channel();
             let forwarder =
                 taskboard_app::ui::spawn_ui_command_forwarder(commands_rx, app.engine.clone());
+            // The general snapshot before the workspace consumes the
+            // write path (one read of the boot env, plan D1).
+            ui_settings.general =
+                taskboard_app::ui::resolve_settings_snapshot(&app.config, &config_write_path);
             let (requests_tx, requests_rx) = taskboard_app::ui_requests::ui_request_channel();
             let request_forwarder = taskboard_app::ui_requests::spawn_ui_request_forwarder(
                 requests_rx,

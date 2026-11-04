@@ -130,6 +130,14 @@ pub struct UiSettings {
     /// validated `[focus]` table at hand-over — held, never re-read
     /// from config (the `day_start` consumers contract).
     pub focus: Option<taskboard_domain::focus::FocusTiming>,
+    /// The settings editor's general snapshot (the GUI settings
+    /// editor chunk): the typed editable values, the env-override key
+    /// set (sampled once at hand-over — process-boot state), the
+    /// read-only deployment facts, and the per-group apply semantics
+    /// (plan D12 — the config owner states them; the UI renders the
+    /// typed fact). Seeded from the resolved config at hand-over;
+    /// refreshed only from write replies.
+    pub general: requests::SettingsSnapshot,
 }
 
 impl Default for UiSettings {
@@ -152,6 +160,7 @@ impl Default for UiSettings {
             reminder_defaults: taskboard_domain::ReminderDefaults::default(),
             due_soon_horizon: presentation::DUE_SOON_HORIZON,
             focus: None,
+            general: requests::SettingsSnapshot::default(),
         }
     }
 }

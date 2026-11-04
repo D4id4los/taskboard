@@ -247,6 +247,9 @@ pub fn resolve_ui_settings(
         // table right after this returns (the reminder_defaults
         // precedent) — `None` while the mode is off.
         focus: None,
+        // The general snapshot: filled by the lifecycle from the full
+        // config (the connectors/boards precedent).
+        general: taskboard_ui_slint::requests::SettingsSnapshot::default(),
         // The window-geometry restore value (#412): the raw table
         // mints here (the fallible `WindowGeometry::new`) — a refused
         // value hands `None` through and never blocks UI start (the
@@ -275,6 +278,211 @@ pub fn resolve_day_start(
         .unwrap_or_default();
     let offset = *chrono::Local::now().offset();
     (day_start_time, offset)
+}
+
+/// The settings editor's general snapshot for the UI hand-over: the
+/// ONE constructor both UI lifecycles call (the desktop `run_desktop`
+/// and the kiosk appliance — the `resolve_ui_settings` precedent),
+/// plus the env-override set sampled over the resolved write path
+/// (plan D1: env vars are boot state, sampled once here; write replies
+/// never re-derive it). A failed env read degrades to the empty set,
+/// loud in the log — the snapshot is a display surface, never a boot
+/// gate.
+#[must_use]
+pub fn resolve_settings_snapshot(
+    config: &crate::config::AppConfig,
+    config_write_path: &std::path::Path,
+) -> taskboard_ui_slint::requests::SettingsSnapshot {
+    let mut snapshot = settings_snapshot_from_config(config);
+    snapshot.env_overridden =
+        match crate::config::AppConfig::env_overridden_keys(Some(config_write_path)) {
+            Ok(set) => set,
+            Err(err) => {
+                tracing::warn!(error = %err, "settings snapshot: the env-override read failed");
+                std::collections::BTreeSet::new()
+            }
+        };
+    snapshot
+}
+
+/// The snapshot body over one decoded config: typed editable values,
+/// the read-only deployment facts, and the per-field apply semantics
+/// (plan D12 — the apply authority is the app). The env-override set
+/// stays empty — the hand-over wrapper fills it, and write replies
+/// carry it empty by contract (the UI retains its hand-over set).
+#[must_use]
+#[allow(clippy::too_many_lines)] // the §3 inventory: one fact row per read-only key
+pub fn settings_snapshot_from_config(
+    config: &crate::config::AppConfig,
+) -> taskboard_ui_slint::requests::SettingsSnapshot {
+    use taskboard_ui_slint::requests::{ReminderSink, SectionApply as Apply, SettingsSnapshot};
+
+    let mode_word = match config.app.mode {
+        crate::config::AppMode::Daemon => "daemon",
+        crate::config::AppMode::Desktop => "desktop",
+        crate::config::AppMode::Kiosk => "kiosk",
+    };
+    let store_word = match config.nextcloud.credential_store {
+        crate::config::CredentialStoreKind::Keyring => "keyring",
+        crate::config::CredentialStoreKind::Env => "env",
+        crate::config::CredentialStoreKind::File => "file",
+    };
+    let facts = vec![
+        fact("app.mode", mode_word.to_owned(), Apply::OnRestart),
+        fact(
+            "app.shutdown_timeout_secs",
+            config.app.shutdown_timeout_secs.to_string(),
+            Apply::OnRestart,
+        ),
+        fact(
+            "storage.db_path",
+            config
+                .storage
+                .db_path
+                .as_ref()
+                .map_or_else(String::new, |p| p.display().to_string()),
+            Apply::OnRestart,
+        ),
+        fact(
+            "nextcloud.credential_store",
+            store_word.to_owned(),
+            Apply::OnRestart,
+        ),
+        fact(
+            "web.enabled",
+            config.web.enabled.to_string(),
+            Apply::OnRestart,
+        ),
+        fact("web.bind", config.web.bind.clone(), Apply::OnRestart),
+        fact(
+            "web.refresh_secs",
+            config.web.refresh_secs.to_string(),
+            Apply::OnRestart,
+        ),
+        // Presence only — the one secret-adjacent config value never
+        // renders its content.
+        fact(
+            "web.token",
+            config.web.token.is_some().to_string(),
+            Apply::OnRestart,
+        ),
+        fact(
+            "kiosk.fixed_board",
+            config
+                .kiosk
+                .fixed_board
+                .as_ref()
+                .map_or_else(|| "unset".to_owned(), std::string::ToString::to_string),
+            Apply::OnRestart,
+        ),
+        fact(
+            "kiosk.rotation",
+            if config.kiosk.rotation.is_some() {
+                "configured".to_owned()
+            } else {
+                "absent".to_owned()
+            },
+            Apply::OnRestart,
+        ),
+        fact(
+            "ipc.enabled",
+            config.ipc.enabled.to_string(),
+            Apply::OnRestart,
+        ),
+        fact(
+            "ipc.client_read_timeout_secs",
+            config
+                .ipc
+                .client_read_timeout_secs
+                .map_or_else(|| "derived".to_owned(), |secs| secs.to_string()),
+            Apply::OnRestart,
+        ),
+        fact(
+            "focus.enabled",
+            config.focus.enabled.to_string(),
+            Apply::OnRestart,
+        ),
+        fact(
+            "focus.work_mins",
+            config.focus.work_mins.to_string(),
+            Apply::OnRestart,
+        ),
+        fact(
+            "focus.break_mins",
+            config.focus.break_mins.to_string(),
+            Apply::OnRestart,
+        ),
+        fact(
+            "ui.keymap.overrides",
+            config.ui.keymap.overrides.len().to_string(),
+            Apply::OnRestart,
+        ),
+        // The forwarder-owned fenced subtrees (plan D6): their apply
+        // is live — but the editor never writes them, the facts only
+        // display presence.
+        fact(
+            "ui.stack_widths",
+            config.ui.stack_widths.len().to_string(),
+            Apply::Live,
+        ),
+        fact(
+            "ui.window_geometry",
+            if config.ui.window_geometry.is_some() {
+                "stored".to_owned()
+            } else {
+                "absent".to_owned()
+            },
+            Apply::Live,
+        ),
+    ];
+    let mut applies = std::collections::BTreeMap::new();
+    for key in [
+        "preferences.day_start_time",
+        "reminders.enabled",
+        "reminders.tick_secs",
+        "reminders.default_before",
+        "reminders.sink",
+        "sync.poll_interval_secs",
+        "sync.backoff_initial_secs",
+        "sync.backoff_max_secs",
+        "ui.due_soon_days",
+    ] {
+        applies.insert(key.to_owned(), Apply::OnRestart);
+    }
+    let day_start_time = config
+        .preferences
+        .day_start_time
+        .parse::<chrono::NaiveTime>()
+        .unwrap_or_default();
+    SettingsSnapshot {
+        day_start_time,
+        reminders_enabled: config.reminders.enabled,
+        reminder_tick_secs: config.reminders.tick_secs,
+        reminder_before: config.reminders.default_before.clone(),
+        reminder_sink: match config.reminders.sink {
+            crate::config::SinkChoice::Auto => ReminderSink::Auto,
+            crate::config::SinkChoice::Log => ReminderSink::Log,
+            crate::config::SinkChoice::Desktop => ReminderSink::Desktop,
+        },
+        poll_interval_secs: config.sync.poll_interval_secs,
+        backoff_initial_secs: config.sync.backoff_initial_secs,
+        backoff_max_secs: config.sync.backoff_max_secs,
+        due_soon_days: config.ui.due_soon_days,
+        env_overridden: std::collections::BTreeSet::new(),
+        facts,
+        applies,
+    }
+}
+
+/// One read-only fact row: every deployment row applies at restart
+/// (the boot graph's inventory; the forwarder-owned subtrees are the
+/// Live exceptions, marked where they appear).
+fn fact(
+    key: &'static str,
+    value: String,
+    apply: taskboard_ui_slint::requests::SectionApply,
+) -> taskboard_ui_slint::requests::SettingsFact {
+    taskboard_ui_slint::requests::SettingsFact { key, value, apply }
 }
 
 /// The secret-free connector list for the settings hand-over (round-1
@@ -448,6 +656,9 @@ pub async fn run_desktop(
     // command channel and forwards; the UI never sees an EngineHandle.
     let (commands_tx, commands_rx) = ui_command_channel();
     let forwarder = spawn_ui_command_forwarder(commands_rx, app.engine.clone());
+    // The general snapshot before the workspace consumes the write
+    // path (one read of the boot env, plan D1).
+    ui_settings.general = resolve_settings_snapshot(&app.config, &config_write_path);
     let (requests_tx, requests_rx) = crate::ui_requests::ui_request_channel();
     let request_forwarder = crate::ui_requests::spawn_ui_request_forwarder(
         requests_rx,
@@ -538,6 +749,101 @@ pub async fn run_desktop(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use taskboard_ui_slint::requests::SectionApply;
+
+    /// S-1/S-2 (the GUI settings editor's snapshot pins): the one
+    /// constructor projects typed values from a decoded config, the
+    /// apply map is exhaustive over the editable groups (a new
+    /// editable group without an apply fact fails here), the fenced
+    /// subtrees carry Live, the secret-adjacent value renders
+    /// presence only, and the snapshot travels to `UiSettings`
+    /// structurally.
+    #[test]
+    fn the_settings_snapshot_projects_typed_values_and_the_apply_map() {
+        use crate::config::SinkChoice;
+        let mut config = crate::config::AppConfig::default();
+        config.preferences.day_start_time = "05:30".into();
+        config.reminders.enabled = false;
+        config.reminders.tick_secs = 45;
+        config.reminders.default_before = "10m".into();
+        config.reminders.sink = SinkChoice::Desktop;
+        config.sync.poll_interval_secs = 60;
+        config.sync.backoff_initial_secs = 10;
+        config.sync.backoff_max_secs = 600;
+        config.ui.due_soon_days = 14;
+        config.web.token = Some("sekrit-token".into());
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("taskboard.toml");
+        let snapshot = resolve_settings_snapshot(&config, &path);
+
+        assert_eq!(
+            snapshot.day_start_time,
+            chrono::NaiveTime::from_hms_opt(5, 30, 0).expect("t")
+        );
+        assert!(!snapshot.reminders_enabled);
+        assert_eq!(snapshot.reminder_tick_secs, 45);
+        assert_eq!(snapshot.reminder_before, "10m");
+        assert_eq!(
+            snapshot.reminder_sink,
+            taskboard_ui_slint::requests::ReminderSink::Desktop
+        );
+        assert_eq!(snapshot.poll_interval_secs, 60);
+        assert_eq!(snapshot.backoff_initial_secs, 10);
+        assert_eq!(snapshot.backoff_max_secs, 600);
+        assert_eq!(snapshot.due_soon_days, 14);
+
+        // The apply map: exhaustive over the editable groups.
+        assert_eq!(
+            snapshot.applies.len(),
+            9,
+            "one apply fact per editable field"
+        );
+        for key in [
+            "preferences.day_start_time",
+            "reminders.enabled",
+            "reminders.tick_secs",
+            "reminders.default_before",
+            "reminders.sink",
+            "sync.poll_interval_secs",
+            "sync.backoff_initial_secs",
+            "sync.backoff_max_secs",
+            "ui.due_soon_days",
+        ] {
+            assert_eq!(
+                snapshot.applies.get(key),
+                Some(&SectionApply::OnRestart),
+                "{key} applies at restart"
+            );
+        }
+
+        // The env set: no env overrides over the empty fixture file.
+        assert!(snapshot.env_overridden.is_empty());
+
+        // The facts: the fenced subtrees are Live, everything else
+        // OnRestart; the secret-adjacent value renders presence only.
+        let find = |key| {
+            snapshot
+                .facts
+                .iter()
+                .find(|fact| fact.key == key)
+                .unwrap_or_else(|| panic!("{key} is in the facts"))
+                .clone()
+        };
+        assert_eq!(find("ui.stack_widths").apply, SectionApply::Live);
+        assert_eq!(find("ui.window_geometry").apply, SectionApply::Live);
+        assert_eq!(find("app.mode").apply, SectionApply::OnRestart);
+        assert_eq!(find("web.token").value, "true", "presence, never the value");
+        assert!(!format!("{snapshot:?}").contains("sekrit-token"));
+
+        // S-2: the set + snapshot travel to UiSettings structurally.
+        let settings = taskboard_ui_slint::UiSettings {
+            general: snapshot.clone(),
+            ..taskboard_ui_slint::UiSettings::default()
+        };
+        assert_eq!(settings.general, snapshot);
+    }
+
     use std::sync::{Arc, Mutex};
 
     /// Fake sink: collects dispatch order/content hermetically (fakes
