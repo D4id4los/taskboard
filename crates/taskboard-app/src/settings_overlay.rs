@@ -459,6 +459,45 @@ mod tests {
         // and interaction shapes pinned above).
     }
 
+    /// The unknown-key disposition: the config's sections deny
+    /// unknown fields, so a file carrying one is already a
+    /// boot-blocker — the editor neither drops the key nor corrupts
+    /// the file. The gate's warn-and-write arm lands the edit with
+    /// the unknown key preserved verbatim (`toml_edit` round-trips
+    /// what it did not parse), and the file is no less bootable than
+    /// the editor found it.
+    #[test]
+    fn an_unknown_key_survives_an_unrelated_edit_verbatim() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = seed(
+            &dir,
+            "# operator note\n[ui]\nmystery_key = true\nscale = 1.0\n[sync]\npoll_interval_secs = 30\n",
+        );
+        // The seed genuinely fails the file-layer decode (unknown
+        // fields are denied), so both gate sides run the
+        // pre-existing-garbage arm.
+        assert!(matches!(
+            crate::config::AppConfig::decode_file_only_str(
+                &std::fs::read_to_string(&path).expect("read")
+            ),
+            Err(crate::config::ConfigError::Decode(_))
+        ));
+
+        set_poll_interval(&path, 60).expect("the unrelated edit lands");
+        let written = std::fs::read_to_string(&path).expect("read back");
+        assert!(
+            written.contains("mystery_key = true") && written.contains("# operator note"),
+            "the unknown key and the comment survive verbatim: {written}"
+        );
+        assert!(
+            matches!(
+                crate::config::AppConfig::decode_file_only_str(&written),
+                Err(crate::config::ConfigError::Decode(_))
+            ),
+            "the file is no more bootable than the editor found it"
+        );
+    }
+
     /// The gate's arm (b) (W-9, D4): a pre-existing invalid section
     /// does not brick unrelated edits — the write lands warningly.
     /// The seeded file fails validation at `reminders.tick_secs = 0`;
