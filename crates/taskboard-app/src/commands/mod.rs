@@ -2407,6 +2407,8 @@ mod ipc_routing_tests {
                         weekly: None,
                         monthly: None,
                         off: true,
+                        pause: None,
+                        resume: false,
                     },
                     every_weeks: None,
                     until: None,

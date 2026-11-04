@@ -201,7 +201,7 @@ fn the_monthly_and_off_flags_parse_bare_and_valued() {
 
 #[test]
 fn incoherent_flag_combinations_are_usage_errors() {
-    let conflicts: [(&str, Vec<&str>); 8] = [
+    let conflicts: [(&str, Vec<&str>); 13] = [
         ("two patterns", vec!["--daily", "--weekly"]),
         ("three patterns", vec!["--daily", "--monthly"]),
         ("off with a pattern", vec!["--off", "--daily"]),
@@ -213,6 +213,23 @@ fn incoherent_flag_combinations_are_usage_errors() {
         ("every-weeks without weekly", vec!["--every-weeks", "2"]),
         ("bound without a pattern", vec!["--until", "2026-12-31"]),
         ("count without a pattern", vec!["--count", "3"]),
+        (
+            "pause with a pattern",
+            vec!["--daily", "--pause", "2026-12-31"],
+        ),
+        (
+            "pause with a bound",
+            vec!["--pause", "2026-12-31", "--count", "3"],
+        ),
+        ("resume with a pattern", vec!["--resume", "--daily"]),
+        (
+            "resume with a bound",
+            vec!["--resume", "--until", "2026-12-31"],
+        ),
+        (
+            "pause with resume",
+            vec!["--pause", "2026-12-31", "--resume"],
+        ),
     ];
     for (what, extra) in conflicts {
         let mut argv = vec!["taskboard", "tasks", "repeat", "t"];
@@ -257,6 +274,8 @@ fn every_flag_tuple_folds_to_exactly_one_invocation() {
         weekly,
         monthly,
         off,
+        pause: None,
+        resume: false,
     };
     // Bare defaults survive the collapse as `None`s for the handler.
     match fold(RepeatArgs {
@@ -741,6 +760,8 @@ async fn p6_session_lane_serves_repeat_end_to_end() {
                     weekly: None,
                     monthly: None,
                     off: false,
+                    pause: None,
+                    resume: false,
                 },
                 Some(NaiveDate::from_ymd_opt(2027, 1, 31).unwrap()),
                 None,
@@ -759,6 +780,8 @@ async fn p6_session_lane_serves_repeat_end_to_end() {
                     weekly: None,
                     monthly: None,
                     off: true,
+                    pause: None,
+                    resume: false,
                 },
                 None,
                 None,
@@ -802,6 +825,8 @@ fn repeat_routes_ipc_or_local() {
                 weekly: None,
                 monthly: None,
                 off: false,
+                pause: None,
+                resume: false,
             },
             every_weeks: None,
             until: None,
@@ -844,4 +869,144 @@ async fn p7_until_bound_exhaustion_projects_next_none() {
     // And the domain law agrees with itself across a re-read: a
     // bounded series keeps its pattern render.
     assert_eq!(rule.pattern, "daily");
+}
+
+// ---- the pause flags (issue #506) ----
+
+#[test]
+fn pause_and_resume_flags_collapse_to_the_pause_invocation() {
+    use taskboard_app::cli::{RepeatArgs, RepeatModeFlags};
+
+    let fold = |args: RepeatArgs| {
+        repeat::collapse(TasksCmd::Repeat(args)).expect("a clap-valid Repeat always collapses")
+    };
+    let mode = |daily, weekly, monthly, off, pause, resume| RepeatModeFlags {
+        daily,
+        weekly,
+        monthly,
+        off,
+        pause,
+        resume,
+    };
+    // `--pause <date>` carries the inclusive date.
+    match fold(RepeatArgs {
+        task: "t".into(),
+        mode: mode(
+            None,
+            None,
+            None,
+            false,
+            Some(noon_date(2026, 12, 31)),
+            false,
+        ),
+        every_weeks: None,
+        until: None,
+        count: None,
+    }) {
+        repeat::RepeatInvocation::Pause { until: Some(d), .. } => {
+            assert_eq!(d, noon_date(2026, 12, 31));
+        }
+        other => panic!("expected Pause, got {other:?}"),
+    }
+    // `--resume` collapses to the clearing arm.
+    match fold(RepeatArgs {
+        task: "t".into(),
+        mode: mode(None, None, None, false, None, true),
+        every_weeks: None,
+        until: None,
+        count: None,
+    }) {
+        repeat::RepeatInvocation::Pause { until: None, .. } => {}
+        other => panic!("expected the resume arm, got {other:?}"),
+    }
+    // The other modes are untouched.
+    match fold(RepeatArgs {
+        task: "t".into(),
+        mode: mode(None, None, None, true, None, false),
+        every_weeks: None,
+        until: None,
+        count: None,
+    }) {
+        repeat::RepeatInvocation::Off { .. } => {}
+        other => panic!("expected Off, got {other:?}"),
+    }
+}
+
+fn noon_date(y: i32, m: u32, d: u32) -> chrono::NaiveDate {
+    chrono::NaiveDate::from_ymd_opt(y, m, d).unwrap()
+}
+
+/// P8: the pause verb (issue #506) — `--pause` sets the inclusive
+/// pause on the rule (receipt carries it; the next member skips the
+/// covered range), `--resume` clears it, and a pause against a
+/// rule-less head is the domain's typed rejection surfaced verbatim.
+#[tokio::test]
+async fn p8_pause_and_resume_ride_the_domain_verb() {
+    let dir = tempdir();
+    let config = standalone_config(dir.path(), "p8.db");
+    seed(&config, "Todo", "Water plants").await;
+
+    let pause_invocation = |until: Option<NaiveDate>| repeat::RepeatInvocation::Pause {
+        task: "Water plants".into(),
+        until,
+    };
+
+    // Pausing a rule-less head: the domain's NotRecurring, surfaced.
+    let err = repeat::repeat(
+        config.clone(),
+        forbidden_store(),
+        pause_invocation(Some(noon_date(2026, 12, 31))),
+    )
+    .await
+    .expect_err("rule-less head refuses");
+    assert_eq!(err.error_kind(), "not-recurring");
+
+    // Set, pause, resume: the receipt carries the pause field's truth.
+    repeat::repeat(
+        config.clone(),
+        forbidden_store(),
+        set_invocation(
+            "Water plants",
+            repeat::PatternSpec::Daily(EveryDays::new(1).unwrap()),
+            repeat::BoundSpec::None,
+        ),
+    )
+    .await
+    .expect("set");
+    let paused = repeat::repeat(
+        config.clone(),
+        forbidden_store(),
+        pause_invocation(Some(noon_date(2026, 12, 31))),
+    )
+    .await
+    .expect("paused");
+    let rule = paused.rule.expect("the pause kept the rule");
+    assert_eq!(rule.paused_until, Some(noon_date(2026, 12, 31)));
+    // Structural pause pin: a pause covering today and tomorrow moves
+    // the advertised next member past it — the covered members do not
+    // exist, so the badge cannot land inside the pause.
+    let today = chrono::Utc::now().date_naive();
+    let through = today + chrono::Days::new(2);
+    let mid = repeat::repeat(
+        config.clone(),
+        forbidden_store(),
+        pause_invocation(Some(through)),
+    )
+    .await
+    .expect("paused mid");
+    let next = mid
+        .rule
+        .expect("rule")
+        .next
+        .expect("an unbounded daily series resumes");
+    assert!(next > through, "no advertised member inside the pause");
+
+    let resumed = repeat::repeat(config.clone(), forbidden_store(), pause_invocation(None))
+        .await
+        .expect("resumed");
+    assert_eq!(
+        resumed.rule.expect("rule").paused_until,
+        None,
+        "the resume cleared the field"
+    );
 }

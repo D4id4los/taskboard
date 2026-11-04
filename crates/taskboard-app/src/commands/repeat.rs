@@ -35,6 +35,15 @@ pub enum RepeatInvocation {
         /// The task selector.
         task: String,
     },
+    /// `--pause <task> <date>` | `--resume <task>`: the series pause
+    /// verb (issue #506) — collapses to
+    /// [`StateCommand::PauseSeries`], the one field the verb moves.
+    Pause {
+        /// The task selector.
+        task: String,
+        /// The inclusive pause-through date; `None` resumes.
+        until: Option<chrono::NaiveDate>,
+    },
     /// A pattern (exactly one, clap-enforced) plus an optional bound.
     Set {
         /// The task selector.
@@ -114,6 +123,15 @@ pub fn collapse(cmd: TasksCmd) -> Option<RepeatInvocation> {
     } = args;
     if mode.off {
         return Some(RepeatInvocation::Off { task });
+    }
+    if let Some(date) = mode.pause {
+        return Some(RepeatInvocation::Pause {
+            task,
+            until: Some(date),
+        });
+    }
+    if mode.resume {
+        return Some(RepeatInvocation::Pause { task, until: None });
     }
     let pattern = if let Some(daily) = mode.daily {
         PatternSpec::Daily(daily)
@@ -196,7 +214,9 @@ pub async fn repeat_on(
     let now = Utc::now();
     let state = app.engine.shared_state().load_full();
     let (selector, task_id) = match &invocation {
-        RepeatInvocation::Off { task } | RepeatInvocation::Set { task, .. } => (
+        RepeatInvocation::Off { task }
+        | RepeatInvocation::Pause { task, .. }
+        | RepeatInvocation::Set { task, .. } => (
             task.clone(),
             crate::commands::tasks::resolve_task(&state, task)?,
         ),
@@ -206,6 +226,28 @@ pub async fn repeat_on(
         .get(&task_id)
         .filter(|t| t.is_live())
         .ok_or_else(|| CommandError::UnknownTask(selector.clone()))?;
+    if let RepeatInvocation::Pause { until, .. } = &invocation {
+        // The pause verb rides the domain command; the engine's typed
+        // rejections (rule-less head) surface as CommandError verbatim.
+        app.engine
+            .execute(StateCommand::PauseSeries {
+                head: task_id,
+                until: *until,
+            })
+            .await?;
+        let state = app.engine.shared_state().load_full();
+        let task = state
+            .tasks
+            .get(&task_id)
+            .filter(|t| t.is_live())
+            .ok_or_else(|| CommandError::UnknownTask(task_id.as_uuid().to_string()))?;
+        return Ok(repeat_receipt(
+            task,
+            task_id,
+            app.config.day_calendar().calendar,
+            now,
+        ));
+    }
     let recur = assemble_rule(
         &invocation,
         task,
@@ -327,6 +369,7 @@ fn repeat_receipt(
             pattern: rule.pattern.text_form(),
             bound: rule.bound.text_form(),
             next: next.date,
+            paused_until: rule.paused_until,
         }
     });
     RepeatReceipt {
@@ -352,9 +395,15 @@ pub fn render_text_repeat(receipt: &RepeatReceipt) -> String {
             } else {
                 format!(" ({})", rule.bound)
             };
+            // The paused phrase rides the receipt's pause field (the
+            // date-derived resume needs no phrase: an expired pause is
+            // inert, the field is the truth).
+            let paused = rule
+                .paused_until
+                .map_or_else(String::new, |d| format!(" — paused through {d}"));
             format!(
-                "\"{}\" repeats {}{} — next {} (series {})",
-                receipt.task_title, rule.pattern, bound, next, rule.series
+                "\"{}\" repeats {}{}{} — next {} (series {})",
+                receipt.task_title, rule.pattern, bound, paused, next, rule.series
             )
         }
         None => format!("\"{}\" no longer repeats", receipt.task_title),

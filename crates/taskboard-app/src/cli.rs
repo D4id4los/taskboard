@@ -752,6 +752,19 @@ pub struct RepeatModeFlags {
     /// task). Exclusive with every set flag and bound.
     #[arg(long, conflicts_with_all = ["every_weeks", "until", "count"])]
     pub off: bool,
+    /// Pause the series through this inclusive local date (issue #506):
+    /// the covered members do not exist — no miss, no credit. Exclusive
+    /// with every set flag and bound.
+    #[arg(
+        long,
+        conflicts_with_all = ["every_weeks", "until", "count"],
+        value_parser = parse_until_flag
+    )]
+    pub pause: Option<chrono::NaiveDate>,
+    /// Resume a paused series (clear the pause; the badge's dead-pause
+    /// chip goes with it). Exclusive with every set flag and bound.
+    #[arg(long, conflicts_with_all = ["every_weeks", "until", "count"])]
+    pub resume: bool,
 }
 
 /// The `tasks repeat` flags (the pattern family above, plus bounds) —
@@ -768,7 +781,7 @@ pub struct RepeatArgs {
     #[arg(
         long,
         requires = "weekly",
-        conflicts_with_all = ["daily", "monthly"],
+        conflicts_with_all = ["daily", "monthly", "pause", "resume"],
         value_parser = parse_every_weeks_flag
     )]
     pub every_weeks: Option<taskboard_domain::EveryWeeks>,
@@ -776,7 +789,7 @@ pub struct RepeatArgs {
     #[arg(
         long,
         requires = "repeat-mode",
-        conflicts_with_all = ["count"],
+        conflicts_with_all = ["count", "pause", "resume"],
         value_parser = parse_until_flag
     )]
     pub until: Option<chrono::NaiveDate>,
@@ -784,7 +797,7 @@ pub struct RepeatArgs {
     #[arg(
         long,
         requires = "repeat-mode",
-        conflicts_with_all = ["until"],
+        conflicts_with_all = ["until", "pause", "resume"],
         value_parser = parse_count_flag
     )]
     pub count: Option<taskboard_domain::OccurrenceCount>,
