@@ -154,6 +154,10 @@ pub enum CommandError {
     /// is never done, so it idempotence-no-ops exactly as before.
     #[error("tracker tasks cannot be done")]
     TrackerTaskNotDoneable(TaskId),
+    /// `PauseSeries` (or a convert verb) names a task that carries no
+    /// recurrence rule — there is no series to pause/convert.
+    #[error("task does not recur")]
+    NotRecurring(TaskId),
     /// No habit with this id exists.
     #[error("unknown habit")]
     UnknownHabit(HabitId),
@@ -2604,6 +2608,38 @@ pub fn plan_command(
                 actions: vec![
                     PersistenceAction::UpsertHabit(updated),
                     board_flush(habit.board, ids, now),
+                ],
+                outcome: CommandOutcome::Applied,
+            })
+        }
+        StateCommand::PauseSeries { head, until } => {
+            // Existence → liveness → rule: edit-style intent posture.
+            let task = live_task(app, *head)?;
+            let Some(rule) = task.recur.as_ref() else {
+                return Err(CommandError::NotRecurring(*head));
+            };
+            if rule.paused_until == *until {
+                // The MoveTask posture: an identical pause/resume is the
+                // accepted no-op — no clock churn onto the sync wire.
+                return Ok(no_op());
+            }
+            // Read-modify-write under the state lock: one field moves on
+            // the current rule; pattern/anchor/bound/seam are untouched
+            // (a whole-rule replace from a client would clobber a
+            // concurrent pattern edit under one `ck_recur` clock). The
+            // `if let` restates the checked invariant without widening
+            // the catalogue's panic surface.
+            let mut updated = task.clone();
+            if let Some(rule) = updated.recur.as_mut() {
+                rule.paused_until = *until;
+                updated.clocks.recur = now;
+            }
+            // `recur` is an app-slot field: the UpdateTask arm's lane
+            // shape, recur-only.
+            Ok(CommandPlan {
+                actions: vec![
+                    PersistenceAction::UpsertTask(updated),
+                    enqueue(LocalOp::UpdateAppData(*head), ids, now),
                 ],
                 outcome: CommandOutcome::Applied,
             })
@@ -10631,6 +10667,145 @@ mod series_tests {
             &actions[0],
             PersistenceAction::UpsertTask(rolled)
                 if rolled.scheduled.map(|s| utc_midnight().calendar_date(s)) == Some(date(2026, 6, 19))
+        ));
+    }
+
+    // ---- the PauseSeries verb (issue #506) ------------------------------
+
+    fn run(
+        app: &AppState,
+        outbox: &[PendingOp],
+        command: &StateCommand,
+    ) -> Result<CommandPlan, CommandError> {
+        plan_command(
+            app,
+            outbox,
+            command,
+            &burned_ids(),
+            &crate::reminders::ReminderDefaults::default(),
+            utc_midnight(),
+            now(),
+        )
+    }
+
+    fn pause(app: &AppState, outbox: &[PendingOp], until: Option<NaiveDate>) -> CommandPlan {
+        run(
+            app,
+            outbox,
+            &StateCommand::PauseSeries {
+                head: head_id(),
+                until,
+            },
+        )
+        .expect("pause planned")
+    }
+
+    #[test]
+    fn pause_sets_only_the_field_and_rides_the_app_lane() {
+        let (app, outbox) = base_with(recur_head(RecurBound::None));
+        let until = Some(date(2026, 6, 20));
+        let plan = pause(&app, &outbox, until);
+        assert_eq!(plan.actions.len(), 2, "one upsert, one appdata op");
+        let PersistenceAction::UpsertTask(updated) = &plan.actions[0] else {
+            panic!("action 1 is the head upsert, got {:?}", plan.actions[0]);
+        };
+        // Read-modify-write: the rule moves only in `paused_until`, and
+        // only the recur clock stamps (the pattern byte-identical).
+        let pre = app.tasks.get(&head_id()).unwrap();
+        let mut expected = pre.clone();
+        expected.recur.as_mut().unwrap().paused_until = until;
+        expected.clocks.recur = updated.clocks.recur;
+        assert_eq!(*updated, expected);
+        assert!(matches!(
+            &plan.actions[1],
+            PersistenceAction::EnqueueOp(pending)
+                if matches!(pending.op, LocalOp::UpdateAppData(t) if t == head_id())
+        ));
+        assert_eq!(plan.outcome, CommandOutcome::Applied);
+    }
+
+    #[test]
+    fn an_identical_pause_or_resume_is_the_accepted_no_op() {
+        let (mut app, outbox) = base_with(recur_head(RecurBound::None));
+        app.tasks
+            .get_mut(&head_id())
+            .unwrap()
+            .recur
+            .as_mut()
+            .unwrap()
+            .paused_until = Some(date(2026, 6, 20));
+        let plan = pause(&app, &outbox, Some(date(2026, 6, 20)));
+        assert_eq!(plan.actions, Vec::new());
+        assert_eq!(plan.outcome, CommandOutcome::NoOp);
+        // Resume against no pause: same posture.
+        let (app, outbox) = base_with(recur_head(RecurBound::None));
+        let plan = pause(&app, &outbox, None);
+        assert_eq!(plan.outcome, CommandOutcome::NoOp);
+    }
+
+    #[test]
+    fn resume_clears_the_field_for_badge_hygiene() {
+        let (mut app, outbox) = base_with(recur_head(RecurBound::None));
+        app.tasks
+            .get_mut(&head_id())
+            .unwrap()
+            .recur
+            .as_mut()
+            .unwrap()
+            .paused_until = Some(date(2026, 6, 20));
+        let plan = pause(&app, &outbox, None);
+        let PersistenceAction::UpsertTask(updated) = &plan.actions[0] else {
+            panic!("action 1 is the head upsert");
+        };
+        assert_eq!(updated.recur.as_ref().unwrap().paused_until, None);
+    }
+
+    #[test]
+    fn pause_rejections_are_typed() {
+        let (app, outbox) = base_with(recur_head(RecurBound::None));
+        // A rule-less head.
+        let (mut plain, plain_outbox) = super::tests::base();
+        let plain_id = super::tests::task_id();
+        let mut task = super::tests::task(super::tests::TASK, super::tests::stack_id(), true);
+        task.recur = None;
+        plain.tasks.insert(plain_id, task);
+        assert!(matches!(
+            run(
+                &plain,
+                &plain_outbox,
+                &StateCommand::PauseSeries {
+                    head: plain_id,
+                    until: None
+                }
+            ),
+            Err(CommandError::NotRecurring(_))
+        ));
+        // A tombstoned head.
+        let (mut dead, dead_outbox) = base_with(recur_head(RecurBound::None));
+        dead.tasks.get_mut(&head_id()).unwrap().deleted = true;
+        assert!(matches!(
+            run(
+                &dead,
+                &dead_outbox,
+                &StateCommand::PauseSeries {
+                    head: head_id(),
+                    until: None
+                }
+            ),
+            Err(CommandError::TaskDeleted(_))
+        ));
+        // An unknown head.
+        let stranger = TaskId::from(uuid::Uuid::from_u128(777));
+        assert!(matches!(
+            run(
+                &app,
+                &outbox,
+                &StateCommand::PauseSeries {
+                    head: stranger,
+                    until: None
+                }
+            ),
+            Err(CommandError::UnknownTask(_))
         ));
     }
 }
