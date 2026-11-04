@@ -1345,6 +1345,11 @@ impl Adapter {
         self.track_entry_target.is_none()
     }
 
+    #[cfg(test)]
+    pub(crate) fn test_tracked_today_rows(&self) -> Vec<taskboard_domain::TaskId> {
+        self.tables.tracked_today.clone()
+    }
+
     /// Seeds the form's adapter state for the armed flow (the begin
     /// seam's shape: inside the armed window, before the outcomes'
     /// refresh). Add seeds today's date and two unset times; edit
@@ -4669,6 +4674,21 @@ fn install_today_row_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
             send_toggled_done(&a, task);
         }
     });
+    // The Tracked section's activation (#490, D-TS7): resolves the
+    // row through the tracked-today table and opens the task — the
+    // today-row-activated arm verbatim (click ≡ key, §7.1).
+    let tracked = Rc::clone(adapter);
+    let weak = window.as_weak();
+    window.on_today_tracked_activated(move |row| {
+        let Some(window) = weak.upgrade() else {
+            return;
+        };
+        let mut a = tracked.borrow_mut();
+        settle_pointer_conflict(&mut a, &window);
+        if focus_tracked_today_row(&mut a, &window, row).is_some() {
+            a.route(&window, ActionId::TaskEdit);
+        }
+    });
     let context = Rc::clone(adapter);
     let weak = window.as_weak();
     window.on_today_row_context_requested(move |section, row, x, y| {
@@ -4687,6 +4707,21 @@ fn install_today_row_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
 /// per-section prefix sums over `today_tasks`) and applies the click's
 /// focus state. Returns the addressed task, or `None` for a stale
 /// index against an older tables pass.
+fn focus_tracked_today_row(adapter: &mut Adapter, window: &AppWindow, row: i32) -> Option<TaskId> {
+    let Ok(row) = usize::try_from(row) else {
+        return None;
+    };
+    let task = adapter.tables.tracked_today.get(row).copied()?;
+    let stack = adapter.state.load().tasks.get(&task).map(|t| t.stack);
+    if let Some(stack) = stack {
+        adapter.view_state.activate_card(task, stack);
+    } else {
+        adapter.view_state.set_focused(Some(task));
+    }
+    adapter.finish_mutation(window);
+    Some(task)
+}
+
 fn focus_today_row(
     adapter: &mut Adapter,
     window: &AppWindow,

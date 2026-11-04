@@ -2982,3 +2982,75 @@ fn the_delete_affordance_arms_then_confirms_and_dismissal_disarms() {
         );
     });
 }
+
+/// The Tracked-today section (#490, D-TS7): a tracked task renders a
+/// row whose activation opens the task; an untracked day collapses
+/// (the pushed section model is empty — the view's `length > 0`
+/// never renders it).
+#[test]
+fn the_tracked_today_section_opens_its_task_and_an_empty_day_collapses() {
+    on_slint_thread(|| {
+        let (mut state, fx) = fixture();
+        let [a_id, _b, _c] = fx.tasks;
+        let [s0, _s1] = fx.stacks;
+        let start = chrono::Utc::now();
+        let entry = taskboard_domain::TimeEntryId::from_uuid(uuid::Uuid::now_v7());
+        state.tracking.entries.insert(
+            entry,
+            taskboard_domain::TimeEntry {
+                id: entry,
+                task: a_id,
+                task_title: "tracked".to_owned(),
+                start,
+                end: Some(start + chrono::TimeDelta::minutes(5)),
+                created_at: start,
+                updated_at: start,
+                kind: taskboard_domain::tracking::TimeEntryKind::Work,
+            },
+        );
+        let journey = rig(state);
+        let adapter = journey.adapter();
+        arm_task_view(&journey, &adapter, a_id, s0);
+        // Navigate to today (the section lives there).
+        adapter
+            .borrow_mut()
+            .view_state
+            .set_view(crate::view_state::ViewId::Today);
+        adapter.borrow_mut().refresh_forced(journey.handle.window());
+        // The row is pushed and the table resolves it.
+        assert_eq!(
+            adapter.borrow().test_tracked_today_rows(),
+            vec![a_id],
+            "the tracked task renders a row"
+        );
+        // Activation opens the task (the today-row-activated arm).
+        journey.handle.window().invoke_today_tracked_activated(0);
+        assert_eq!(
+            adapter.borrow().view_state.view(),
+            crate::view_state::ViewId::TaskDetail,
+        );
+        assert_eq!(adapter.borrow().view_state.subject_task(), Some(a_id));
+
+        // The empty day: no entries — the section's model is empty
+        // (the collapse's input).
+        let (state2, fx2) = fixture();
+        let [a2, _b2, _c2] = fx2.tasks;
+        let [s02, _s12] = fx2.stacks;
+        let rig2 = rig(state2);
+        let adapter2 = rig2.adapter();
+        {
+            let mut a = adapter2.borrow_mut();
+            a.refresh_forced(rig2.handle.window());
+            a.view_state.activate_card(a2, s02);
+            a.view_state
+                .activate_focused(&rig2.handle.test_state().load_full());
+            a.view_state.set_view(crate::view_state::ViewId::Today);
+            a.refresh_forced(rig2.handle.window());
+        }
+        assert_eq!(
+            adapter2.borrow().test_tracked_today_rows(),
+            Vec::<TaskId>::new(),
+            "an untracked day renders no rows"
+        );
+    });
+}

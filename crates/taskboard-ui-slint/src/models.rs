@@ -30,7 +30,8 @@ use crate::{
     FlowHintModel, HabitRowModel, NotificationRowModel, PaletteRowModel, ReviewModel,
     ReviewRowModel, ReviewWindowModel, RuleRowModel, StackColumnModel, StackDetailModel,
     SyncBadgeModel, SyncPhaseUi, TaskCardModel, TaskDecoration, TaskDetailModel, Theme,
-    TimerRowModel, TodayModel, TodayRowModel, TodaySectionModel, Tone, TrackEntryRowModel, View,
+    TimerRowModel, TodayModel, TodayRowModel, TodaySectionModel, Tone, TrackEntryRowModel,
+    TrackedTodayRowModel, View,
 };
 
 /// The layout cap of the banner slot (D12): the truth is the row
@@ -104,6 +105,10 @@ pub struct IdTables {
     /// entry ids through this table (the index-seam rule, never a
     /// viewport-relative offset).
     pub track_entries: Vec<taskboard_domain::TimeEntryId>,
+    /// The Tracked-today section's rows (r4 chunk 10, D-TS7):
+    /// index-aligned with the pushed section model — row activation
+    /// opens the addressed task.
+    pub tracked_today: Vec<TaskId>,
 }
 
 impl IdTables {
@@ -2105,6 +2110,7 @@ fn task_card_model(
 /// focus walk's domain). Rollover is proven by two `push` calls with
 /// a stepped `DayCtx` — no timer, no sleeps.
 #[allow(clippy::too_many_arguments)] // the pass-shaped parameter list, like `push`
+#[allow(clippy::too_many_lines)] // one push pass over four sections
 fn push_today(
     window: &AppWindow,
     state: &AppState,
@@ -2119,6 +2125,47 @@ fn push_today(
     let sections = taskboard_domain::days::today_sections(&state.tasks, day.now, day.window);
     let multi_board = presentation::live_boards(state).len() > 1;
     let tracked_task = presentation::tracking_open_task(state);
+    // The "Tracked" day summary (r4 chunk 10, D-TS7): Work-only
+    // per-task sums over the day window (`work_in_window` — the
+    // recorded aggregator deviation), filtered to the viewed board on
+    // kiosk, and the day total summed over the FILTERED set (what you
+    // see is what's summed).
+    let tracked_today_all = presentation::tracked_today_rows(state, day.window, day.now);
+    let tracked_today: Vec<(TaskId, TimeDelta)> = tracked_today_all
+        .into_iter()
+        .filter(|(task, _)| {
+            !kiosk
+                || state
+                    .stacks
+                    .get(
+                        &state
+                            .tasks
+                            .get(task)
+                            .map_or(taskboard_domain::StackId::from(uuid::Uuid::nil()), |t| {
+                                t.stack
+                            }),
+                    )
+                    .is_some_and(|s| Some(s.board) == vs.board())
+        })
+        .collect();
+    let tracked_day_total = tracked_today
+        .iter()
+        .fold(TimeDelta::zero(), |acc, (_, total)| acc + *total);
+    let tracked_rows: Vec<TrackedTodayRowModel> = tracked_today
+        .iter()
+        .map(|(task, total)| TrackedTodayRowModel {
+            title: SharedString::from(
+                state
+                    .tasks
+                    .get(task)
+                    .map_or(String::new(), |t| t.title.clone()),
+            ),
+            total: SharedString::from(presentation::tracked_total_phrase(
+                &presentation::part_total(*total),
+            )),
+        })
+        .collect();
+    tables.tracked_today = tracked_today.iter().map(|(task, _)| *task).collect();
     // (ids, section) in display order, filtered before anything
     // derived — rows, `today_tasks`, and the counts all follow.
     let display: [(&[taskboard_domain::TaskId], &str); 4] = [
@@ -2188,6 +2235,10 @@ fn push_today(
     window.set_today_model(TodayModel {
         sections: ModelRc::from(sections_handle.clone()),
         empty: tables.today_tasks.is_empty(),
+        tracked_today: ModelRc::new(slint::VecModel::from(tracked_rows)),
+        tracked_day_total: SharedString::from(presentation::tracked_total_phrase(
+            &presentation::part_total(tracked_day_total),
+        )),
     });
     mutations
 }

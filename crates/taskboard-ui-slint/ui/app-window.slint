@@ -353,6 +353,7 @@ export component AppWindow inherits Window {
                 habits-editing-visible: root.habits-editing-visible;
                 habits-plus-clicked(r) => root.habits-plus-clicked(r);
                 habits-reorder-asked(row, slot) => root.habits-reorder-asked(row, slot);
+                tracked-activated(i) => root.today-tracked-activated(i);
             }
             if (root.current-view == View.stack-detail): StackView {
                 stack: root.stack-model;
@@ -1121,6 +1122,9 @@ export component AppWindow inherits Window {
     pure callback timers-cancel-clicked(int);
     pure callback habits-plus-clicked(int);
     pure callback habits-reorder-asked(int, int);
+    // The Tracked section's activation (#490): opens the addressed
+    // task (the today row's arm).
+    pure callback today-tracked-activated(int);
     pure callback timers-create-accepted(string, string, bool) -> bool;
     pure callback timers-chip-clicked();
     // The mouse setter's seams (r4 D33): open/dismiss are window

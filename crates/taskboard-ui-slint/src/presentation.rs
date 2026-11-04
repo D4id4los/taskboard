@@ -1162,7 +1162,7 @@ pub fn track_entry_rows(
 /// same second-finest parts [`tracked_total`] assembles, sourced from
 /// a duration instead of the state).
 #[must_use]
-fn part_total(duration: TimeDelta) -> TrackedTotal {
+pub fn part_total(duration: TimeDelta) -> TrackedTotal {
     let seconds = u64::try_from(duration.num_seconds().max(0)).unwrap_or(u64::MAX);
     TrackedTotal {
         hours: u32::try_from(seconds / 3600).unwrap_or(u32::MAX),

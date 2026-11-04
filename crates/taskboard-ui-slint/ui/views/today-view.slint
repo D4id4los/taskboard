@@ -22,6 +22,7 @@ import { EmptyState } from "../widgets/empty-state.slint";
 import { TimersSection, TimerRowModel } from "../compositions/timers.slint";
 import { FieldValidity } from "../widgets/text-field.slint";
 import { HabitsSection, HabitRowModel } from "../compositions/habits.slint";
+import { TrackedTodaySection, TrackedTodayRowModel } from "../compositions/tracked-today.slint";
 
 export struct TodayRowModel {
     card: TaskCardModel,
@@ -40,6 +41,12 @@ export struct TodayModel {
     sections: [TodaySectionModel],
     // True when every section is empty — the capture-hint empty state.
     empty: bool,
+    // The "Tracked" day summary (#490, r4 chunk 10 D-TS7): per-task
+    // Work-only totals over the day window plus the day total over
+    // the pushed rows. Empty collapses (no rows → the section never
+    // renders).
+    tracked-today: [TrackedTodayRowModel],
+    tracked-day-total: string,
 }
 
 export component TodayView inherits FocusScope {
@@ -81,6 +88,10 @@ export component TodayView inherits FocusScope {
     in property <bool> habits-editing-visible;
     callback habits-plus-clicked(int);
     callback habits-reorder-asked(int, int);
+    // The Tracked section's activation seam (#490): the adapter
+    // resolves the row against the tracked-today table and opens the
+    // task (the today-row-activated precedent).
+    callback tracked-activated(int);
 
     focus-on-tab-navigation: true;
     accessible-role: AccessibleRole.region;
@@ -142,6 +153,17 @@ export component TodayView inherits FocusScope {
                 if (root.today.empty): EmptyState {
                     text: "Nothing due today";
                     hint: "Capture a thought from anywhere — it lands in the inbox.";
+                }
+                // The "Tracked" day summary (#490): the day-summary
+                // footer after the four task sections — a separate
+                // composition, not a fifth section model (the row
+                // shape differs; the timers/habits precedent). Empty
+                // collapses.
+                if (root.today.tracked-today.length > 0): TrackedTodaySection {
+                    vertical-stretch: 0;
+                    rows: root.today.tracked-today;
+                    day-total: root.today.tracked-day-total;
+                    row-activated(i) => root.tracked-activated(i);
                 }
                 for section[sindex] in root.today.sections: section-block := VerticalLayout {
                     // Content-sized: the walk never stretches a section
