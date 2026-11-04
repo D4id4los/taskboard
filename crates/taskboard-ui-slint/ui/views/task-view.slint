@@ -88,6 +88,15 @@ export struct TaskDetailModel {
     // The custom-offset field's validity + hint (r4 D27).
     offset-validity: FieldValidity,
     offset-error-hint: string,
+    // The recur row (issue #506, plan D-8): the series head's
+    // pattern echo + paused chip + pause/convert affordances.
+    recur-visible: bool,
+    recur-pattern: string,
+    recur-paused-chip: string,
+    // The inline pause editor's open flag and the armed confirm's
+    // flag (the adapter owns both across refreshes).
+    recur-pause-open: bool,
+    recur-confirm-open: bool,
     date-time-text: string,
     // The time combobox's pushed half (r4 D26): the visible text
     // mirror, the validity flavour, the filtered quick-list rows, and
@@ -145,6 +154,17 @@ export component TaskView inherits FocusScope {
     // D30: an unarmed rule row's jump affordance opens the due editor
     // for the subject task — the existing due-edit seam.
     callback rule-jump-to-due-clicked();
+    // The recur row's seams (issue #506, plan D-8): pause opens the
+    // inline editor (a view intent), the editor's commit carries the
+    // typed date, resume clears the field, and the conversion arms
+    // its confirm strip before the verb dispatches.
+    callback recur-pause-asked();
+    callback recur-pause-accepted(string);
+    callback recur-pause-cancelled();
+    callback recur-resume-clicked();
+    callback recur-convert-asked();
+    callback recur-convert-confirmed();
+    callback recur-convert-cancelled();
     // The date editors' seams (r2 D25, round-3 D8), forwarded to the
     // window: one open seam per field, one shared interaction set.
     callback due-edit-opened();
@@ -699,6 +719,113 @@ export component TaskView inherits FocusScope {
                 offset-edited(t) => root.rule-offset-edited(t);
                 unmute-clicked() => root.rule-unmute-clicked();
                 jump-to-due-clicked() => root.rule-jump-to-due-clicked();
+            }
+
+            // The recur row (issue #506, plan D-8): pattern echo +
+            // paused chip + the pause/convert affordances — mounted
+            // only for a recurring subject. Every control carries a
+            // hover tip (label), joins the walk, and dispatches
+            // through the action layer.
+            if (root.task.recur-visible): VerticalLayout {
+                spacing: Theme.space-1;
+                HorizontalLayout {
+                    spacing: Theme.space-2;
+                    RoleText {
+                        role: Typography.caption;
+                        text-color: Theme.text-secondary;
+                        text: root.task.recur-pattern;
+                        vertical-alignment: center;
+                    }
+                    if (root.task.recur-paused-chip != ""): Rectangle {
+                        border-radius: Theme.radius-small;
+                        background: Theme.surface;
+                        HorizontalLayout {
+                            padding-left: Theme.space-2;
+                            padding-right: Theme.space-2;
+                            RoleText {
+                                role: Typography.caption;
+                                text: root.task.recur-paused-chip;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+                if (root.task.recur-pause-open): HorizontalLayout {
+                    spacing: Theme.space-2;
+                    pause-field := TippedField {
+                        placeholder: "YYYY-MM-DD";
+                        label: "Pause through date";
+                        help: "The inclusive pause-through date; the covered members do not exist.";
+                        vertical-stretch: 0;
+                        accepted(text) => {
+                            root.recur-pause-accepted(text);
+                            pause-field.text = "";
+                        }
+                    }
+                    IconButton {
+                        icon: IconKind.check;
+                        tone: Tone.success;
+                        label: "Pause through the typed date";
+                        clicked => {
+                            root.recur-pause-accepted(pause-field.text);
+                            pause-field.text = "";
+                        }
+                    }
+                    IconButton {
+                        icon: IconKind.remove;
+                        tone: Tone.neutral;
+                        label: "Cancel pause";
+                        clicked => root.recur-pause-cancelled();
+                    }
+                }
+                if (!root.task.recur-pause-open): HorizontalLayout {
+                    spacing: Theme.space-2;
+                    IconButton {
+                        icon: IconKind.timer;
+                        tone: Tone.neutral;
+                        // Vacation pause (issue #506, D-C10): the
+                        // covered members do not exist — no miss, no
+                        // credit.
+                        label: "Pause series through a date: the covered members do not exist";
+                        clicked => root.recur-pause-asked();
+                    }
+                    IconButton {
+                        icon: IconKind.play;
+                        tone: Tone.neutral;
+                        label: "Resume series: clears the pause";
+                        clicked => root.recur-resume-clicked();
+                    }
+                    IconButton {
+                        icon: IconKind.check;
+                        tone: Tone.neutral;
+                        label: "Convert to habit: the series stops repeating, the habit continues its history";
+                        clicked => root.recur-convert-asked();
+                    }
+                }
+                // The armed confirm strip (issue #506, plan D-8): the
+                // consequence names the mapping before anything
+                // dispatches.
+                if (root.task.recur-confirm-open): HorizontalLayout {
+                    spacing: Theme.space-2;
+                    RoleText {
+                        role: Typography.caption;
+                        text-color: Theme.text-secondary;
+                        text: "Creates a habit on this board with a 1-per-period quota preset; the series stops repeating.";
+                        vertical-alignment: center;
+                    }
+                    IconButton {
+                        icon: IconKind.check;
+                        tone: Tone.success;
+                        label: "Confirm conversion";
+                        clicked => root.recur-convert-confirmed();
+                    }
+                    IconButton {
+                        icon: IconKind.remove;
+                        tone: Tone.neutral;
+                        label: "Cancel conversion";
+                        clicked => root.recur-convert-cancelled();
+                    }
+                }
             }
 
             // The description (round-3 D15/#228): the read-only body

@@ -142,6 +142,9 @@ enum EK {
     ScrollDown,
     TrackEntriesOpen,
     TrackEntryDismiss,
+    /// The recur row's intents (issue #506): flag flips over the
+    /// subject — no flow moves, no command routes.
+    RecurIntent,
 }
 
 fn key_of(effect: &UiEffect) -> EK {
@@ -193,6 +196,11 @@ fn key_of(effect: &UiEffect) -> EK {
         UiEffect::ScrollUp => EK::ScrollUp,
         UiEffect::ScrollDown => EK::ScrollDown,
         UiEffect::TrackEntriesOpen => EK::TrackEntriesOpen,
+        // The recur row's intents (issue #506): flag flips over the
+        // subject — no flow moves, no command routes.
+        UiEffect::SeriesPauseOpen | UiEffect::HabitConvertArm | UiEffect::SeriesConvertArm => {
+            EK::RecurIntent
+        }
         UiEffect::TrackEntryDismiss => EK::TrackEntryDismiss,
         // The picker keys are applied in `apply_effect`, before the
         // table — the matrix never sees them (the menu-family
@@ -408,6 +416,35 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
     use EK as E;
     let mut t = Vec::new();
     let mut row = |kind: FK, key: EK, e: Exp| t.push((kind, key, e));
+    // -- RECUR INTENT (issue #506): the flag flips ride every flow —
+    //    the flow itself is preserved (the arm is not a modal; the
+    //    strip renders inside the row).
+    row(FK::None, E::RecurIntent, exp(Z, N));
+    for kind in [
+        FK::Text,
+        FK::Due,
+        FK::Move,
+        FK::Drag,
+        FK::Palette,
+        FK::Capture,
+        FK::FocusOverlay,
+        FK::TrackList,
+        FK::TrackForm,
+    ] {
+        let keep = match kind {
+            FK::Text => K(KTxt),
+            FK::Due => K(KDue),
+            FK::Move => K(KMove),
+            FK::Drag => K(KDrag),
+            FK::Palette => K(KPal),
+            FK::Capture => K(KCap),
+            FK::FocusOverlay => K(KFoc),
+            FK::TrackList => K(KTrackList),
+            FK::TrackForm => K(KTrackForm),
+            FK::None => unreachable!("the loop never names None"),
+        };
+        row(kind, E::RecurIntent, exp(Z, keep));
+    }
     // -- LIFECYCLE under every foreign kind: the settle-then-run
     //    re-run's outcome is effect-shaped (a rename arms a fresh
     //    text flow, a delete dispatches with no flow) --
@@ -802,6 +839,11 @@ fn all_effects(fx: &Fixture) -> Vec<UiEffect> {
         UiEffect::ScrollDown,
         UiEffect::TrackEntriesOpen,
         UiEffect::TrackEntryDismiss,
+        // The recur row's view intents (issue #506): the same view
+        // intent class as the entries' open.
+        UiEffect::SeriesPauseOpen,
+        UiEffect::HabitConvertArm,
+        UiEffect::SeriesConvertArm,
     ]
 }
 
@@ -1909,6 +1951,11 @@ fn dismiss_class(effect: &UiEffect) -> DismissClass {
         // sentence) — its open is the AnchorOrModal class like the
         // palette's; the dismissal itself is identity-preserving.
         | UiEffect::TrackEntriesOpen
+            // The recur row's intents (issue #506): view intents — no
+            // modal takeover, the flags ride the next pass.
+            | UiEffect::SeriesPauseOpen
+            | UiEffect::HabitConvertArm
+            | UiEffect::SeriesConvertArm
         | UiEffect::BeginCapture
         | UiEffect::ToggleFocusMode
         | UiEffect::TrackEntryDismiss => DismissClass::AnchorOrModal,

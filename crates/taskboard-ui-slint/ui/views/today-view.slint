@@ -87,6 +87,11 @@ export component TodayView inherits FocusScope {
     in property <[HabitRowModel]> habits;
     in property <bool> habits-editing-visible;
     callback habits-plus-clicked(int);
+    callback habits-repair-clicked(int);
+    callback habits-convert-armed(int);
+    callback habits-convert-confirmed(int);
+    callback habits-convert-cancelled();
+    in property <int> habits-convert-armed-row: -1;
     callback habits-reorder-asked(int, int);
     // The Tracked section's activation seam (#490): the adapter
     // resolves the row against the tracked-today table and opens the
@@ -149,6 +154,11 @@ export component TodayView inherits FocusScope {
                     editing-visible: root.habits-editing-visible;
                     plus-clicked(r) => root.habits-plus-clicked(r);
                     reorder-asked(row, slot) => root.habits-reorder-asked(row, slot);
+                    repair-clicked(r) => root.habits-repair-clicked(r);
+                    convert-armed(r) => root.habits-convert-armed(r);
+                    convert-confirmed(r) => root.habits-convert-confirmed(r);
+                    convert-cancelled() => root.habits-convert-cancelled();
+                    convert-armed-row: root.habits-convert-armed-row;
                 }
                 if (root.today.empty): EmptyState {
                     text: "Nothing due today";

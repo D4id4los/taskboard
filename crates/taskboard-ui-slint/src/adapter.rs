@@ -256,6 +256,41 @@ pub(crate) struct Adapter {
     /// The reorder's resolved (habit, order) (DR-6/6): consumed by the
     /// next `habit.move` dispatch, then cleared.
     habit_move: Option<(taskboard_domain::HabitId, i64)>,
+    /// The make-up valve's resolved `(habit, window, count)` (issue
+    /// #506, plan D-7): presentation's `habit_repair_target` computed
+    /// from the same row source the section renders; consumed by the
+    /// next `habit.repair` dispatch, then cleared (one-shot).
+    habit_repair: Option<(
+        taskboard_domain::HabitId,
+        taskboard_domain::WindowStart,
+        u32,
+    )>,
+    /// The armed conversion row's habit (issue #506): consumed by the
+    /// next `habit.convert-to-series` dispatch, then cleared.
+    habit_convert_target: Option<taskboard_domain::HabitId>,
+    /// The conversion's pattern draft (issue #506, D-2): the quota's
+    /// default mapping computed at the arm seam; consumed by the
+    /// confirm dispatch.
+    pattern_draft: Option<taskboard_domain::RecurPattern>,
+    /// The recur row's subject task (issue #506): consumed by the
+    /// next `series.*` dispatch, then cleared (one-shot).
+    series_target: Option<taskboard_domain::TaskId>,
+    /// The pause editor's parsed inclusive date: consumed by the next
+    /// `series.pause-commit` dispatch, then cleared.
+    pause_draft: Option<chrono::NaiveDate>,
+    /// The conversion's quota draft (issue #506, D-2): the pattern's
+    /// default mapping computed at the arm seam; consumed by the
+    /// confirm dispatch.
+    convert_target: Option<taskboard_domain::HabitTarget>,
+    /// The recur row's adapter-owned flags (issue #506, plan D-8):
+    /// the inline pause editor and the armed confirm strip — cleared
+    /// when the subject stops recurring (the buffers-never-outlive-
+    /// the-flow rule).
+    recur_pause_open: bool,
+    recur_confirm_armed: bool,
+    /// The habits section's armed conversion row (issue #506): the
+    /// row index the confirm strip renders for; `None` = disarmed.
+    habit_convert_armed: Option<usize>,
     /// The date editor's live state (r2 D25/R-d, round-3 D8): the
     /// typed buffer, its echo, and the picker cursor/month/time —
     /// adapter-owned so a refresh push can never reset them. A commit
@@ -682,6 +717,12 @@ impl Adapter {
         ctx.track_target = self.track_target.take();
         ctx.habit_target = self.habit_target.take();
         ctx.habit_move = self.habit_move.take();
+        ctx.habit_repair = self.habit_repair.take();
+        ctx.habit_convert_target = self.habit_convert_target.take();
+        ctx.pattern_draft = self.pattern_draft.take();
+        ctx.series_target = self.series_target.take();
+        ctx.pause_draft = self.pause_draft.take();
+        ctx.convert_target = self.convert_target.take();
         // The today window rides every dispatch (chunk 10 D4): state-
         // derived from the held pair, never consumed.
         ctx.day_window = Some(self.day_ctx().window);
@@ -1057,6 +1098,25 @@ impl Adapter {
         {
             self.derive_passes += 1;
         }
+        // The recur row's flags ride the pass (issue #506): they
+        // clear when the subject stops recurring — the buffers never
+        // outlive their surface.
+        let subject_recurs = self
+            .view_state
+            .subject_task()
+            .and_then(|id| state.tasks.get(&id))
+            .is_some_and(|t| t.recur.is_some());
+        if !subject_recurs {
+            self.recur_pause_open = false;
+            self.recur_confirm_armed = false;
+        }
+        self.habit_convert_armed = self
+            .habit_convert_armed
+            .filter(|row| *row < self.tables.habits.len());
+        let recur = crate::models::RecurRowPush {
+            pause_open: self.recur_pause_open,
+            confirm_open: self.recur_confirm_armed,
+        };
         self.tables = crate::models::push(
             window,
             &state,
@@ -1070,6 +1130,7 @@ impl Adapter {
             self.focus.as_ref(),
             &mut self.models,
             &due,
+            recur,
         );
         // Round-3 D27c: engine syncs re-grey a live menu — the pages
         // rebuild from the fresh state while the menu holds (the
@@ -1791,6 +1852,21 @@ impl Adapter {
                 }
                 None => Vec::new(),
             },
+            // The recur row's intents (issue #506, plan D-8): the
+            // pause open flips the adapter-owned flag over the
+            // subject; the arm effects set their one-shot targets.
+            // The kiosk dispatch is structurally inert (layer 3, the
+            // entries-overlay precedent).
+            (_, UiEffect::SeriesPauseOpen) if self.kiosk => Vec::new(),
+            (_, UiEffect::SeriesPauseOpen) => {
+                if let Some(task) = self.view_state.subject_task() {
+                    self.series_target = Some(task);
+                    self.recur_pause_open = true;
+                    self.recur_confirm_armed = false;
+                }
+                Vec::new()
+            }
+            (_, UiEffect::HabitConvertArm | UiEffect::SeriesConvertArm) => Vec::new(),
             // The Escape ladder (D-TS2), level-aware like `MenuBack`:
             // a focused form field disengages first (mode flip; the
             // overlay stays), then the form steps to the list, then
@@ -2594,7 +2670,13 @@ impl Adapter {
             // the panel's focus hand-off is the composition's
             // changed-height grab (the walk probe's P5).
             | UiEffect::TrackEntriesOpen
-            | UiEffect::TrackEntryDismiss => self.interpret(window, effect),
+            | UiEffect::TrackEntryDismiss
+            // The habit trio's intents interpret like every view
+            // intent (issue #506) — the kiosk/subject refusals live
+            // in the arms.
+            | UiEffect::SeriesPauseOpen
+            | UiEffect::HabitConvertArm
+            | UiEffect::SeriesConvertArm => self.interpret(window, effect),
         }
         // The pass's tail: the identity diff decides (see the entry
         // comment). The explicit dismisses below (the menu's
@@ -3944,6 +4026,15 @@ pub(crate) fn install(
         track_target: None,
         habit_target: None,
         habit_move: None,
+        habit_repair: None,
+        habit_convert_target: None,
+        pattern_draft: None,
+        series_target: None,
+        pause_draft: None,
+        convert_target: None,
+        recur_pause_open: false,
+        recur_confirm_armed: false,
+        habit_convert_armed: None,
         walk_reentry: Rc::clone(&walk_flag),
         walk_timer: slint::Timer::default(),
         flow_open: FlowLiveness::Flowless,
@@ -4153,7 +4244,220 @@ fn install_view_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     install_tracking_seams(window, adapter);
     install_focus_seams(window, adapter);
     install_habit_seams(window, adapter);
+    install_recur_seams(window, adapter);
     install_settings_seams(window, adapter);
+}
+
+/// The recur row's + the habits trio's seams (issue #506, plan
+/// D-7/D-8): every new interactive element rides the blanket rule —
+/// the hover tip is the button's label, the walk stop is the widget's
+/// own focus machinery, and the dispatch goes through the action
+/// layer (`route`) from a one-shot target the seam resolved from the
+/// same row source the sections render.
+#[allow(clippy::too_many_lines)] // one seam table; splitting hides the trio
+fn install_recur_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
+    // The make-up valve: the exact `(habit, window, count)` from the
+    // row source — what you click is what increments.
+    let repair = Rc::clone(adapter);
+    let repair_weak = window.as_weak();
+    window.on_habits_repair_clicked(move |index| {
+        let Some(window) = repair_weak.upgrade() else {
+            return;
+        };
+        let mut a = repair.borrow_mut();
+        let Some(&habit) = a
+            .tables
+            .habits
+            .get(usize::try_from(index).unwrap_or(usize::MAX))
+        else {
+            return; // a stale index degrades to a no-op
+        };
+        let state = a.state.load();
+        let Some(habit_row) = state.habits.habits.get(&habit) else {
+            return;
+        };
+        let Some((target_window, count)) = crate::presentation::habit_repair_target(
+            habit_row,
+            &state.habits.log,
+            a.day_ctx().now,
+            a.calendar(),
+        ) else {
+            return; // the affordance armed against stale state
+        };
+        a.habit_repair = Some((habit, target_window, count));
+        drop(state);
+        a.route(&window, ActionId::HabitRepair);
+    });
+
+    // The conversion flow: arm shows the consequence strip; Confirm
+    // routes the domain verb with the D-2 default pattern.
+    let arm = Rc::clone(adapter);
+    let arm_weak = window.as_weak();
+    window.on_habits_convert_armed(move |index| {
+        let Some(window) = arm_weak.upgrade() else {
+            return;
+        };
+        let mut a = arm.borrow_mut();
+        let Some(&habit) = a
+            .tables
+            .habits
+            .get(usize::try_from(index).unwrap_or(usize::MAX))
+        else {
+            return;
+        };
+        let Some(target) = a.state.load().habits.habits.get(&habit).cloned() else {
+            return;
+        };
+        a.habit_convert_armed = Some(usize::try_from(index.max(0)).unwrap_or(usize::MAX));
+        a.habit_convert_target = Some(habit);
+        a.pattern_draft = Some(crate::presentation::convert_pattern_default(target.target));
+        window.set_habits_convert_armed_row(index);
+        a.route(&window, ActionId::HabitConvertArm);
+    });
+    let confirm = Rc::clone(adapter);
+    let confirm_weak = window.as_weak();
+    window.on_habits_convert_confirmed(move |index| {
+        let Some(window) = confirm_weak.upgrade() else {
+            return;
+        };
+        let mut a = confirm.borrow_mut();
+        let Some(&habit) = a
+            .tables
+            .habits
+            .get(usize::try_from(index).unwrap_or(usize::MAX))
+        else {
+            return;
+        };
+        a.habit_convert_target = Some(habit);
+        a.habit_convert_armed = None;
+        window.set_habits_convert_armed_row(-1);
+        a.route(&window, ActionId::HabitConvertToSeries);
+    });
+    let cancel = Rc::clone(adapter);
+    let cancel_weak = window.as_weak();
+    window.on_habits_convert_cancelled(move || {
+        let Some(window) = cancel_weak.upgrade() else {
+            return;
+        };
+        let mut a = cancel.borrow_mut();
+        a.habit_convert_armed = None;
+        a.habit_convert_target = None;
+        a.pattern_draft = None;
+        window.set_habits_convert_armed_row(-1);
+        a.refresh_forced(&window);
+    });
+
+    // The recur row: pause open (view intent), the editor's typed
+    // commit (the trust boundary parses the date strictly), resume,
+    // and the conversion's arm/confirm/cancel.
+    let pause_asked = Rc::clone(adapter);
+    let pause_asked_weak = window.as_weak();
+    window.on_task_recur_pause_asked(move || {
+        let Some(window) = pause_asked_weak.upgrade() else {
+            return;
+        };
+        pause_asked
+            .borrow_mut()
+            .route(&window, ActionId::SeriesPause);
+    });
+    let pause_accepted = Rc::clone(adapter);
+    let pause_accepted_weak = window.as_weak();
+    window.on_task_recur_pause_accepted(move |text| {
+        let Some(window) = pause_accepted_weak.upgrade() else {
+            return;
+        };
+        // The typed date is the trust boundary: strict `%Y-%m-%d`, no
+        // leniency — an unparseable draft dispatches nothing.
+        let Ok(date) = chrono::NaiveDate::parse_from_str(text.trim(), "%Y-%m-%d") else {
+            return;
+        };
+        let mut a = pause_accepted.borrow_mut();
+        a.pause_draft = Some(date);
+        a.recur_pause_open = false;
+        a.route(&window, ActionId::SeriesPauseCommit);
+    });
+    let pause_cancelled = Rc::clone(adapter);
+    let pause_cancelled_weak = window.as_weak();
+    window.on_task_recur_pause_cancelled(move || {
+        let Some(window) = pause_cancelled_weak.upgrade() else {
+            return;
+        };
+        let mut a = pause_cancelled.borrow_mut();
+        a.recur_pause_open = false;
+        a.pause_draft = None;
+        a.refresh_forced(&window);
+    });
+    let resume = Rc::clone(adapter);
+    let resume_weak = window.as_weak();
+    window.on_task_recur_resume_clicked(move || {
+        let Some(window) = resume_weak.upgrade() else {
+            return;
+        };
+        let mut a = resume.borrow_mut();
+        let Some(task) = a.view_state.subject_task() else {
+            return;
+        };
+        a.series_target = Some(task);
+        a.route(&window, ActionId::SeriesResume);
+    });
+    let convert_asked = Rc::clone(adapter);
+    let convert_asked_weak = window.as_weak();
+    window.on_task_recur_convert_asked(move || {
+        let Some(window) = convert_asked_weak.upgrade() else {
+            return;
+        };
+        let mut a = convert_asked.borrow_mut();
+        let Some(task) = a.view_state.subject_task() else {
+            return;
+        };
+        let pattern = {
+            let state = a.state.load();
+            let Some(rule) = state.tasks.get(&task).and_then(|t| t.recur.as_ref()) else {
+                return;
+            };
+            crate::presentation::convert_target_default(&rule.pattern)
+        };
+        a.series_target = Some(task);
+        a.convert_target = Some(pattern);
+        a.recur_confirm_armed = true;
+        a.route(&window, ActionId::SeriesConvertArm);
+    });
+    let convert_confirmed = Rc::clone(adapter);
+    let convert_confirmed_weak = window.as_weak();
+    window.on_task_recur_convert_confirmed(move || {
+        let Some(window) = convert_confirmed_weak.upgrade() else {
+            return;
+        };
+        let mut a = convert_confirmed.borrow_mut();
+        let Some(task) = a.view_state.subject_task() else {
+            return;
+        };
+        // The quota draft re-derives from the current rule (the arm's
+        // draft may be stale against a mid-confirm pattern edit).
+        let pattern = {
+            let state = a.state.load();
+            let Some(rule) = state.tasks.get(&task).and_then(|t| t.recur.as_ref()) else {
+                return;
+            };
+            crate::presentation::convert_target_default(&rule.pattern)
+        };
+        a.series_target = Some(task);
+        a.convert_target = Some(pattern);
+        a.recur_confirm_armed = false;
+        a.route(&window, ActionId::SeriesConvertToHabit);
+    });
+    let convert_cancelled = Rc::clone(adapter);
+    let convert_cancelled_weak = window.as_weak();
+    window.on_task_recur_convert_cancelled(move || {
+        let Some(window) = convert_cancelled_weak.upgrade() else {
+            return;
+        };
+        let mut a = convert_cancelled.borrow_mut();
+        a.recur_confirm_armed = false;
+        a.series_target = None;
+        a.convert_target = None;
+        a.refresh_forced(&window);
+    });
 }
 
 /// The habits section's seams (DR-6/6, D-P13): the +1 resolves the

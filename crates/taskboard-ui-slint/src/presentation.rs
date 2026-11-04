@@ -937,6 +937,10 @@ pub struct RecurBadge {
     pub stale: bool,
     /// The pattern, the label glue's input.
     pub pattern: taskboard_domain::RecurPattern,
+    /// The pause field's truth (issue #506): while `today <=
+    /// paused_until` the covered members do not exist, so the label
+    /// renders the paused chip instead of a next-member phrase.
+    pub paused_until: Option<chrono::NaiveDate>,
 }
 
 /// The recurring badge's pure decision (D-S7): `None` (hidden) unless
@@ -961,6 +965,7 @@ pub fn recur_badge(
         next: next.date,
         stale: next.stale,
         pattern: rule.pattern.clone(),
+        paused_until: rule.paused_until,
     })
 }
 
@@ -974,6 +979,17 @@ pub fn recur_badge(
 /// tests assert non-empty and deterministic, never the wording.
 #[must_use]
 pub fn recur_badge_label(badge: &RecurBadge, today: chrono::NaiveDate) -> String {
+    // The paused chip (issue #506, plan D-8): while the pause stands
+    // the covered members do not exist — a "next in Nd" phrase would
+    // be a lie, so the chip names the pause's truth instead. An
+    // expired pause is inert (the domain law), and this read is the
+    // same date comparison — the chip disappears with the pause.
+    if let Some(pause) = badge.paused_until.filter(|pause| today <= *pause) {
+        return format!(
+            "{} \u{b7} paused through {pause}",
+            badge.pattern.text_form()
+        );
+    }
     let phrase = badge.next.map(|next| {
         match duration_bucket(next.signed_duration_since(today)) {
             // A past roll target clamps into `Now` (the stale tone
@@ -4497,6 +4513,142 @@ mod recur_badge_tests {
     }
 
     #[test]
+    fn the_paused_badge_names_the_pause_and_clears_with_it() {
+        let day = calendar();
+        let today = date(2026, 10, 21);
+        let now = midnight(today);
+        let mut t = task();
+        let mut paused = rule(
+            Pattern::Daily {
+                every: taskboard_domain::EveryDays::new(1).unwrap(),
+            },
+            date(2026, 10, 1),
+            RecurBound::None,
+        );
+        paused.paused_until = Some(date(2026, 10, 25));
+        t.recur = Some(paused.clone());
+        // Inside the pause: the chip names the truth, not a next
+        // member (the covered members do not exist).
+        let badge = recur_badge(&t, day, now).expect("open + rule shows");
+        assert_eq!(badge.paused_until, Some(date(2026, 10, 25)));
+        let label = recur_badge_label(&badge, today);
+        assert_ne!(label, String::new(), "the paused chip is never empty");
+        // Structural determinism: same read, same phrase (no
+        // wall-clock drift within a window).
+        assert_eq!(recur_badge_label(&badge, today), label);
+        // An expired pause is inert (the domain law): the chip is
+        // gone and the next-member phrase is back.
+        let expired_label = recur_badge_label(&badge, date(2026, 10, 26));
+        assert_ne!(expired_label, label);
+        assert_ne!(expired_label, String::new());
+        // A pause past the Until bound: the badge renders the
+        // pattern-only shape (schedule truth).
+        paused.bound = RecurBound::Until(date(2026, 10, 20));
+        t.recur = Some(paused);
+        let badge = recur_badge(&t, day, now).expect("open + rule shows");
+        assert_eq!(badge.next, None);
+    }
+
+    #[test]
+    fn the_repair_target_answers_grace_and_quota_exactly() {
+        use taskboard_domain::NonZeroCount;
+        use taskboard_domain::habit::{Habit, HabitClocks, HabitTarget};
+        let day = calendar();
+        let today = date(2026, 10, 21);
+        let now = midnight(today);
+        let mut h = Habit {
+            id: taskboard_domain::ids::HabitId::from(uuid::Uuid::from_u128(1)),
+            board: taskboard_domain::BoardId::from(uuid::Uuid::from_u128(2)),
+            title: "repair".into(),
+            target: HabitTarget::PerDay(NonZeroCount::new(2).unwrap()),
+            order: 0,
+            anchor_time: None,
+            clocks: HabitClocks::all(chrono::Utc.timestamp_opt(100, 0).unwrap()),
+            continued_from: None,
+            deleted: false,
+        };
+        let mut log = std::collections::BTreeMap::new();
+        // Under quota, in grace: the make-up points at yesterday's
+        // window with its count plus one.
+        let target = habit_repair_target(&h, &log, now, day).expect("under quota, in grace");
+        assert_eq!(
+            target.0.as_date(),
+            taskboard_domain::habit::period_before(taskboard_domain::PeriodKind::Day, today)
+        );
+        assert_eq!(target.1, 1);
+        // At quota: no repair (surplus logs are the +1's own business).
+        log.insert(
+            taskboard_domain::HabitLogKey {
+                habit: h.id,
+                window: target.0,
+            },
+            taskboard_domain::HabitLogEntry {
+                count: 2,
+                clock: now,
+            },
+        );
+        assert_eq!(habit_repair_target(&h, &log, now, day), None);
+        // Under quota but past the overflow grace: no repair. For a
+        // daily habit the grace covers the whole day (the D-C8
+        // arithmetic), so the out-of-grace leg rides a weekly habit
+        // on its third day.
+        h.target = HabitTarget::PerWeek(NonZeroCount::new(2).unwrap());
+        let week = DayCalendar {
+            day_start_time: chrono::NaiveTime::from_hms_opt(5, 0, 0).unwrap(),
+            offset: chrono::FixedOffset::east_opt(0).expect("zero is a valid offset"),
+        };
+        let wednesday = chrono::NaiveDate::from_ymd_opt(2026, 10, 21).unwrap();
+        let late = chrono::Utc
+            .timestamp_opt(
+                (wednesday - chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap()).num_days()
+                    * 86_400
+                    + 6 * 3_600,
+                0,
+            )
+            .unwrap();
+        let empty = std::collections::BTreeMap::new();
+        assert_eq!(habit_repair_target(&h, &empty, late, week), None);
+    }
+
+    #[test]
+    fn the_conversion_defaults_name_the_presets() {
+        use taskboard_domain::recur::{EveryDays, EveryWeeks, MonthlyAnchor, RecurPattern};
+        // Series → habit: the pre-selected chip is 1 per period.
+        for pattern in [
+            RecurPattern::Daily {
+                every: EveryDays::new(3).unwrap(),
+            },
+            RecurPattern::Weekly {
+                interval: EveryWeeks::new(2).unwrap(),
+                on: taskboard_domain::WeekdaySet::new([chrono::Weekday::Mon]).expect("one weekday"),
+            },
+            RecurPattern::Monthly {
+                on: MonthlyAnchor::OnDay(taskboard_domain::DayOfMonth::new(15).unwrap()),
+            },
+        ] {
+            let target = convert_target_default(&pattern);
+            assert_eq!(target.quota().get(), 1);
+        }
+        // Habit → series: the quota carries into the interval; the
+        // anchors stay at the default.
+        let per_day = taskboard_domain::habit::HabitTarget::PerDay(
+            taskboard_domain::NonZeroCount::new(3).unwrap(),
+        );
+        let pattern = convert_pattern_default(per_day);
+        assert!(matches!(
+            pattern,
+            RecurPattern::Daily { every } if every.get() == 3
+        ));
+        let per_week = taskboard_domain::habit::HabitTarget::PerWeek(
+            taskboard_domain::NonZeroCount::new(2).unwrap(),
+        );
+        assert!(matches!(
+            convert_pattern_default(per_week),
+            RecurPattern::Weekly { interval, .. } if interval.get() == 1
+        ));
+    }
+
+    #[test]
     fn visibility_follows_rule_and_openness() {
         let day = calendar();
         let now = midnight(date(2026, 10, 21));
@@ -4631,6 +4783,10 @@ pub struct HabitRow {
     pub streak: u32,
     /// The display chip; in no ordering path anywhere (D-C13).
     pub chip: Option<chrono::NaiveTime>,
+    /// The make-up affordance's mount flag (issue #506, plan D-7):
+    /// `habit_repair_target` answered `Some` — the button mounts (in
+    /// the edit cluster's gate), the dispatch carries the tuple.
+    pub repair: bool,
     /// The restyle flag.
     pub met: bool,
 }
@@ -4678,6 +4834,7 @@ pub fn habit_rows(
                     day,
                 ),
                 chip: habit.anchor_time,
+                repair: habit_repair_target(habit, &state.habits.log, now, day).is_some(),
                 met: count >= quota,
             }
         })
@@ -4694,6 +4851,99 @@ pub fn habit_target_phrase(target: taskboard_domain::HabitTarget) -> String {
         PeriodKind::Month => "month",
     };
     format!("{}/{}", target.quota().get(), unit)
+}
+
+/// The make-up affordance's target (issue #506, plan D-7): `Some`
+/// while the previous window is under quota **and** still within its
+/// 24 h overflow grace (the D-C8 arithmetic, read-side only — the
+/// same constants [`taskboard_domain::habit::log_window`] composes;
+/// the domain function is called, never edited). The tuple is the
+/// exact `AdjustHabitLog` payload the button dispatches: the previous
+/// window and its count plus one — what you click is what increments,
+/// no re-derivation at dispatch. The attribution decision itself
+/// stays the domain's.
+#[must_use]
+pub fn habit_repair_target(
+    habit: &taskboard_domain::habit::Habit,
+    log: &std::collections::BTreeMap<
+        taskboard_domain::HabitLogKey,
+        taskboard_domain::HabitLogEntry,
+    >,
+    now: DateTime<Utc>,
+    day: taskboard_domain::days::DayCalendar,
+) -> Option<(taskboard_domain::WindowStart, u32)> {
+    let kind = habit.target.kind();
+    let quota = habit.target.quota().get();
+    let natural = taskboard_domain::WindowStart::of_period(kind, day.today(now));
+    let prev_date = taskboard_domain::habit::period_before(kind, natural.as_date());
+    let grace_end =
+        taskboard_domain::habit::period_end(kind, prev_date, day) + TimeDelta::hours(24);
+    if now >= grace_end {
+        return None;
+    }
+    let prev = taskboard_domain::WindowStart::of_period(kind, prev_date);
+    let count = log
+        .get(&taskboard_domain::HabitLogKey {
+            habit: habit.id,
+            window: prev,
+        })
+        .map_or(0, |entry| entry.count);
+    (count < quota).then_some((prev, count + 1))
+}
+
+/// The conversion flow's default quota (issue #506, plan D-2): the
+/// series pattern's pre-selected chip — `Daily(n) → PerDay(1)`,
+/// `Weekly{..} → PerWeek(1)`, `Monthly{..} → PerMonth(1)`. A starting
+/// point, never silent: the confirm strip names the mapping.
+#[must_use]
+/// # Panics
+///
+/// Only via the constant mint's `expect` (`1` is in the mint's
+/// domain by construction) — never an input condition.
+pub fn convert_target_default(
+    pattern: &taskboard_domain::recur::RecurPattern,
+) -> taskboard_domain::habit::HabitTarget {
+    use taskboard_domain::habit::HabitTarget;
+    use taskboard_domain::recur::RecurPattern as P;
+    let one = taskboard_domain::NonZeroCount::new(1).expect("1 is in the mint's domain");
+    match pattern {
+        P::Daily { .. } => HabitTarget::PerDay(one),
+        P::Weekly { .. } => HabitTarget::PerWeek(one),
+        P::Monthly { .. } => HabitTarget::PerMonth(one),
+    }
+}
+
+/// The reverse default (issue #506, plan D-2): the quota's series
+/// mapping — `PerDay(n) → Daily(n)`, `PerWeek(n) → Weekly on
+/// Monday`, `PerMonth(n) → Monthly on the 1st`. The quota has no
+/// series analog (a member is a completion, not a quota) — the
+/// weekday/on-day anchors stay at the default, editable later through
+/// the repeat surface.
+#[must_use]
+/// # Panics
+///
+/// Only via the constant/default mints' `expect`s (`1` and a
+/// quota-carried count are in the mints' domains by construction) —
+/// never an input condition.
+pub fn convert_pattern_default(
+    target: taskboard_domain::habit::HabitTarget,
+) -> taskboard_domain::recur::RecurPattern {
+    use taskboard_domain::recur::{
+        DayOfMonth, EveryDays, EveryWeeks, MonthlyAnchor, RecurPattern, WeekdaySet,
+    };
+    match target {
+        taskboard_domain::habit::HabitTarget::PerDay(n) => RecurPattern::Daily {
+            every: EveryDays::new(u16::try_from(n.get()).unwrap_or(u16::MAX))
+                .expect("the quota carried a minted count"),
+        },
+        taskboard_domain::habit::HabitTarget::PerWeek(_) => RecurPattern::Weekly {
+            interval: EveryWeeks::new(1).expect("1 is in the mint's domain"),
+            on: WeekdaySet::new([chrono::Weekday::Mon]).expect("one weekday is a set"),
+        },
+        taskboard_domain::habit::HabitTarget::PerMonth(_) => RecurPattern::Monthly {
+            on: MonthlyAnchor::OnDay(DayOfMonth::new(1).expect("1 is in the mint's domain")),
+        },
+    }
 }
 
 /// The row's progress phrase ("water 5/8"): a presentation-side

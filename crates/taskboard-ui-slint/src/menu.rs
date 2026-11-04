@@ -192,6 +192,17 @@ pub const TASK_CONTEXT: &[ActionId] = &[
     // Task-group mirror; the open arm's kiosk/subject refusals are
     // the dispatch-time gating.
     ActionId::TaskTrackEntries,
+    // The habit trio (issue #506): the group page's mirror — the
+    // verbs are pointer-driven, dispatch-time gated, no preset
+    // bindings (the tracking arms' note verbatim).
+    ActionId::HabitRepair,
+    ActionId::HabitConvertArm,
+    ActionId::HabitConvertToSeries,
+    ActionId::SeriesPause,
+    ActionId::SeriesPauseCommit,
+    ActionId::SeriesResume,
+    ActionId::SeriesConvertArm,
+    ActionId::SeriesConvertToHabit,
 ];
 
 /// The stack-header context menu's action list (round-2 D21): the
@@ -375,6 +386,17 @@ mod tests {
             // The entries overlay (r4 chunk 10): the one menu row of
             // the family — rank 186, right after the toggle.
             ActionId::TaskTrackEntries,
+            // The habit trio (issue #506): the section-scoped verbs
+            // join the Task group at ranks 200..270 (the registry's
+            // reviewed rows; the arms route no commands).
+            ActionId::HabitRepair,
+            ActionId::HabitConvertArm,
+            ActionId::HabitConvertToSeries,
+            ActionId::SeriesPause,
+            ActionId::SeriesPauseCommit,
+            ActionId::SeriesResume,
+            ActionId::SeriesConvertArm,
+            ActionId::SeriesConvertToHabit,
         ];
         assert_eq!(
             ids(&rows),

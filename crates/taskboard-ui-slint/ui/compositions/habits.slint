@@ -22,6 +22,9 @@ export struct HabitRowModel {
     streak: int,
     chip: string,
     met: bool,
+    // The make-up affordance's mount flag (issue #506): the previous
+    // window is under quota and inside its overflow grace.
+    repair: bool,
 }
 
 export component HabitsSection inherits Rectangle {
@@ -33,6 +36,18 @@ export component HabitsSection inherits Rectangle {
     // The reorder's drop slot (row, slot): Rust computes the floor
     // midpoint of the slot's free interval and dispatches MoveHabit.
     callback reorder-asked(int, int);
+    // The make-up +1 (issue #506): Rust resolves the exact
+    // `(window, count)` from the same row source and dispatches
+    // AdjustHabitLog — what you click is what increments.
+    callback repair-clicked(int);
+    // The conversion flow (issue #506): the first click arms the
+    // row's confirm strip (consequence first); Confirm routes the
+    // domain verb, Cancel disarms. One row armed at a time
+    // (`convert-armed-row`, -1 = none).
+    callback convert-armed(int);
+    callback convert-confirmed(int);
+    callback convert-cancelled();
+    in property <int> convert-armed-row: -1;
 
     background: transparent;
     accessible-role: AccessibleRole.region;
@@ -92,6 +107,49 @@ export component HabitsSection inherits Rectangle {
                     // disables at/after quota (D-P14); `met` restyled
                     // the row instead.
                     clicked => root.plus-clicked(row-index);
+                }
+                if (row.repair): IconButton {
+                    icon: IconKind.plus;
+                    tone: Tone.success;
+                    // The make-up valve (issue #506, plan D-7): the
+                    // click dispatches the exact (window, count) the
+                    // row source resolved — the previous window's
+                    // increment, no re-derivation.
+                    label: "Add make-up +1 to yesterday";
+                    clicked => root.repair-clicked(row-index);
+                }
+                if (root.convert-armed-row != row-index): IconButton {
+                    icon: IconKind.calendar;
+                    tone: Tone.neutral;
+                    label: "Convert to repeating task: the habit retires, its history links to the new series";
+                    clicked => root.convert-armed(row-index);
+                }
+            }
+            // The armed confirm strip (issue #506, plan D-8): the
+            // consequence names the mapping before anything dispatches.
+            // Under the editing gate with its arm button: a kiosk flip
+            // mid-flow unmounts the strip (actions never mount in
+            // kiosk, D-P13) — the adapter keeps the armed flag, the
+            // strip remounts if editing returns.
+            if (root.editing-visible && root.convert-armed-row == row-index): HorizontalLayout {
+                spacing: Theme.space-2;
+                RoleText {
+                    role: Typography.caption;
+                    text-color: Theme.text-secondary;
+                    text: "Converts to a daily repeating task; the quota has no series analog — each member is one completion.";
+                    vertical-alignment: center;
+                }
+                IconButton {
+                    icon: IconKind.check;
+                    tone: Tone.success;
+                    label: "Confirm conversion";
+                    clicked => root.convert-confirmed(row-index);
+                }
+                IconButton {
+                    icon: IconKind.remove;
+                    tone: Tone.neutral;
+                    label: "Cancel conversion";
+                    clicked => root.convert-cancelled();
                 }
             }
         }
