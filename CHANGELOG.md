@@ -10,6 +10,28 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 ### Added
 
+- The settings view can view and edit the general config (#351):
+  a GUI settings editor over `taskboard.toml`'s general sections —
+  day start, reminder engine knobs (enabled, tick, before-offset,
+  notifier), sync timing (poll interval, backoff pair), and the
+  due-soon horizon, each with a typed field, an error line, and the
+  committed value's echo. Writes go through a typed per-field write
+  port that proves the resulting file boots (`apply → decode →
+  validate → atomic write`) before it lands — the editor cannot
+  turn a bootable config into an unbootable one, and the reply
+  echoes the fresh file value. Precedence is honest: rows render
+  the file-layer value with an "applies at the next restart" badge
+  (no pretend-live application beyond the already-live scale,
+  keymap, and connection surfaces), and a key overridden by a
+  `TASKBOARD_*` environment variable renders read-only with its
+  source named instead of accepting edits that would never take
+  effect. A read-only Deployment group displays the deployment-side
+  sections (`app`, `storage`, `nextcloud`, `web`, `kiosk`,
+  `ipc`, `focus`) and the connection-owned subtrees' presence facts;
+  credentials never render (the web token renders set/unset only),
+  and there is deliberately no raw-TOML mode. Restart-required
+  sections state it; nothing pretends to apply live.
+
 - The task view's field editors carry hover tooltips (#590): the
   title editor, the description editor, the due and start-date
   editors, and the custom reminder offset field each gained the
