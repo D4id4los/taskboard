@@ -19,6 +19,8 @@ import { StatusBar, SyncBadgeModel, BannerRowModel, FlowHintModel } from "compos
 import { NotificationSurface, NotificationRowModel } from "compositions/notification-surface.slint";
 import { TimerRowModel } from "compositions/timers.slint";
 import { TimerSetter } from "compositions/timer-setter.slint";
+import { TrackEntriesPanel, TrackEntryRowModel } from "compositions/track-entries.slint";
+import { TrackPanelFacts } from "track-panel-facts.slint";
 import { TimerSetterFacts } from "menu-facts.slint";
 import { TimeSlotRow } from "widgets/time-field.slint";
 import { HabitRowModel } from "compositions/habits.slint";
@@ -580,6 +582,48 @@ export component AppWindow inherits Window {
             commit-requested(label) => root.timer-setter-commit-requested(label);
             close-requested() => root.timer-setter-dismiss-requested();
         }
+// The overlay's window-level mount (D-TS1): the date-picker's
+    // exact pattern — the dismissal layer first (a full-window
+    // TouchArea, no visual; the later sibling is hit-tested first),
+    // the anchored panel after, both gated on one mount condition
+    // (the model's flag over the task-detail view, so the layer can
+    // never linger). The panel sits below the anchor button when it
+    // fits (above the status bar), else above, clamped into the
+    // window — the date-picker's exact `y` expression shape.
+    if (root.current-view == View.task-detail
+            && root.task-model.track-entries-open): TouchArea {
+        width: 100%;
+        height: 100%;
+        clicked => root.track-entries-dismiss-requested();
+        // The right-click dismissal (r4 D2): the card's pointer-event
+        // idiom, closing on the down half.
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.down
+                    && event.button == PointerEventButton.right) {
+                root.track-entries-dismiss-requested();
+            }
+        }
+    }
+    if (root.current-view == View.task-detail
+            && root.task-model.track-entries-open): TrackEntriesPanel {
+        width: min(root.width - 2 * Theme.space-2,
+                   max(self.preferred-width, 360px * Theme.base-scale));
+        x: max(Theme.space-2,
+               min(TrackPanelFacts.anchor-x,
+                   root.width - self.width - Theme.space-2));
+        y: max(Theme.space-2,
+               min((TrackPanelFacts.anchor-y + TrackPanelFacts.anchor-height
+                            + Theme.space-1 + self.height <= status.y
+                        ? TrackPanelFacts.anchor-y + TrackPanelFacts.anchor-height
+                            + Theme.space-1
+                        : TrackPanelFacts.anchor-y - self.height - Theme.space-1),
+                   status.y - self.height - Theme.space-2));
+        rows: root.task-model.track-entries;
+        total: root.task-model.track-entries-total;
+        focus-nonce: root.track-panel-focus-nonce;
+        row-activated(index) => root.track-entry-row-activated(index);
+    }
+
 
         // The D2 outside-click dismissal layer (round 1): a full-window
         // TouchArea declared AFTER the chrome and BEFORE the menu
@@ -976,6 +1020,9 @@ export component AppWindow inherits Window {
     // two views: the popover edits and the inline text form's
     // validity mirror share the same `timer_when_draft`).
     in-out property <bool> timer-setter-open: false;
+    // The entries panel's focus hand-off (the setter's nonce idiom):
+    // the adapter bumps it when the overlay mounts.
+    in-out property <int> track-panel-focus-nonce: 0;
     in-out property <int> timer-setter-focus-nonce: 0;
     in-out property <string> timer-setter-time-text: "--:--";
     in-out property <FieldValidity> timer-setter-time-validity: FieldValidity.neutral;
@@ -1032,4 +1079,11 @@ export component AppWindow inherits Window {
     pure callback timer-setter-day-picked(int);
     pure callback timer-setter-insist-picked(int);
     pure callback timer-setter-commit-requested(string) -> bool;
+    // The time-entries overlay's seams (r4 chunk 10): the summary-row
+    // button routes the open action; the dismissal layer closes the
+    // flow; a row activation opens the seeded edit form; the panel's
+    // intents resolve against the adapter's id tables.
+    pure callback task-track-entries-clicked();
+    pure callback track-entries-dismiss-requested();
+    pure callback track-entry-row-activated(int);
 }

@@ -1,0 +1,14 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The time-entries panel's anchor facts (r4 chunk 10, D-TS1): the
+// `TimerSetterFacts` twin — the summary-row button lives inside the
+// task view's conditional element the window cannot name, so the
+// button mirrors its realized window-space geometry here through
+// `changed` handlers; values are stale while the view is elsewhere,
+// and the overlay's mount condition (the model's `track-entries-open`
+// over the task-detail view) is the window's own read, so staleness
+// never renders.
+export global TrackPanelFacts {
+    in-out property <length> anchor-x;
+    in-out property <length> anchor-y;
+    in-out property <length> anchor-height;
+}

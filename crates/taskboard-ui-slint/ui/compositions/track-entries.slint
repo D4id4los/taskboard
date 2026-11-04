@@ -1,0 +1,163 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The time-entries overlay panel (r4 chunk 10, D35/D-TS1/D-TS3): the
+// anchored modal over the task view's summary row — the Work-only
+// total at the top (the summary row's `tracked_total` verbatim), the
+// entries ListView in newest-first display order, and the add
+// affordance in the footer (it joins with the form surface's
+// commit). Rendering is local-zone echo (the chunk-7 rule); the row
+// carries display parts only — the entry ids resolve Rust-side
+// through the `IdTables` index seam, never viewport offsets. The
+// running row's elapsed accrues through the adapter's per-second
+// seam (D-TS9 — no driver change; the panel is a seconds surface
+// while the subject holds an open entry).
+//
+// Escape / outside click ride the action layer's dismissal (the
+// window-level layer + the `TrackEntries` context's rows); the panel
+// is one FocusScope root with the declared walk order (blanket rule
+// b). Every dispatch is a callback (§5.1).
+
+import { Theme, Typography, Semantic, RoleText } from "../theme.slint";
+import { IconButton } from "../widgets/icon-button.slint";
+import { ListView } from "../widgets/listview.slint";
+import { TooltipState } from "../widgets/tooltip.slint";
+import { StatusDot } from "../widgets/status-dot.slint";
+
+// One entries row: display parts only (D2 — ids stay in the
+// adapter's tables). `running` drives the status-dot mark; the end
+// cell names the running state via the pushed copy; `end-other-day`
+// is the midnight-crossing mark's bit (the adapter's `+1d` suffix
+// rides the pushed end text).
+export struct TrackEntryRowModel {
+    date: string,
+    start: string,
+    end: string,
+    spent: string,
+    running: bool,
+}
+
+export component TrackEntriesPanel inherits Rectangle {
+    in property <[TrackEntryRowModel]> rows;
+    // The header total — the summary row's pushed phrase verbatim
+    // (reconciliation by construction: reuse, not a parallel
+    // reduction).
+    in property <string> total;
+    // The add affordance's visibility (r4 D-TS8's model-side gate:
+    // the kiosk refuses the form surface with the overlay itself).
+    in property <bool> add-visible: true;
+    // The one-shot focus grab (the TimerSetter's nonce idiom — a
+    // mount-time init grab alone is dropped).
+    in property <int> focus-nonce: 0;
+    changed focus-nonce => { panel-scope.focus(); }
+
+    // The intents (§5.1): no inline side effects.
+    callback row-activated(int);
+    callback add-requested();
+
+    background: Theme.surface-raised;
+    border-radius: Theme.radius-small;
+    border-width: Theme.focus-ring-width;
+    border-color: Theme.border;
+    accessible-role: AccessibleRole.region;
+    accessible-label: "Time entries";
+
+    min-height: panel-layout.preferred-height + 2 * Theme.space-3;
+    min-width: 360px * Theme.base-scale;
+
+    // The walk order (blanket rule b): rows → (the footer's add, when
+    // visible). Enter on a row activates (edit); the row's tip names
+    // the span.
+    panel-scope := FocusScope {
+        width: 100%;
+        height: 100%;
+        focus-on-tab-navigation: true;
+        init => { self.focus(); }
+        VerticalLayout {
+            panel-layout := VerticalLayout {
+                padding: Theme.space-3;
+                spacing: Theme.space-2;
+                // The header total: the summary row's vocabulary, at
+                // seconds precision (F16). The tip carries the same
+                // description the summary row's total does.
+                HorizontalLayout {
+                    spacing: Theme.space-3;
+                    RoleText {
+                        role: Typography.caption;
+                        text-color: Theme.text-secondary;
+                        text: "Tracked";
+                        vertical-alignment: center;
+                    }
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        accessible-role: AccessibleRole.text;
+                        accessible-label: "Tracked time total";
+                        RoleText {
+                            role: Typography.mono;
+                            text: root.total;
+                        }
+                    }
+                }
+                // The rows (D-TS3): newest-first pushed order; a
+                // midnight-crossing end carries the pushed `+1d`
+                // mark; the running row renders the status dot.
+                ListView {
+                    height: min(root.rows.length * Theme.space-6, Theme.space-6 * 8);
+                    for row[row-index] in root.rows: Rectangle {
+                        height: Theme.space-6;
+                        row-hit := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            clicked => { root.row-activated(row-index); }
+                            changed has-hover => {
+                                if (self.has-hover) {
+                                    TooltipState.hover(
+                                        row.date + " " + row.start + " – " + row.end,
+                                        "Edits the time entry.",
+                                        [],
+                                        self.absolute-position.x,
+                                        self.absolute-position.y,
+                                        self.width,
+                                        self.height,
+                                    );
+                                } else {
+                                    TooltipState.unhover();
+                                }
+                            }
+                        }
+                        HorizontalLayout {
+                            spacing: Theme.space-2;
+                            padding-left: Theme.space-2;
+                            padding-right: Theme.space-2;
+                            if (row.running): StatusDot {
+                                y: (parent.height - self.height) / 2;
+                            }
+                            RoleText {
+                                role: Typography.mono;
+                                text: row.date;
+                                vertical-alignment: center;
+                            }
+                            RoleText {
+                                role: Typography.mono;
+                                text: row.start;
+                                vertical-alignment: center;
+                            }
+                            RoleText {
+                                role: Typography.mono;
+                                text: row.running ? "–" : row.end;
+                                text-color: row.running ? Semantic.success : Theme.text-primary;
+                                vertical-alignment: center;
+                            }
+                            Rectangle {
+                                horizontal-stretch: 1;
+                            }
+                            RoleText {
+                                role: Typography.mono;
+                                text: row.spent;
+                                text-color: Theme.text-secondary;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

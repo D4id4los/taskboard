@@ -30,7 +30,7 @@ use crate::{
     FlowHintModel, HabitRowModel, NotificationRowModel, PaletteRowModel, ReviewModel,
     ReviewRowModel, ReviewWindowModel, RuleRowModel, StackColumnModel, StackDetailModel,
     SyncBadgeModel, SyncPhaseUi, TaskCardModel, TaskDecoration, TaskDetailModel, Theme,
-    TimerRowModel, TodayModel, TodayRowModel, TodaySectionModel, Tone, View,
+    TimerRowModel, TodayModel, TodayRowModel, TodaySectionModel, Tone, TrackEntryRowModel, View,
 };
 
 /// The layout cap of the banner slot (D12): the truth is the row
@@ -98,6 +98,12 @@ pub struct IdTables {
     /// `(section, row)` seams resolve their flat index against these
     /// prefix sums over `today_tasks`.
     pub today_section_rows: [usize; 4],
+    /// The entries overlay's rows in display order (r4 chunk 10,
+    /// D-TS3): index-aligned with the pushed `track-entries` model —
+    /// row-activate, the edit seed, and the armed-delete resolve
+    /// entry ids through this table (the index-seam rule, never a
+    /// viewport-relative offset).
+    pub track_entries: Vec<taskboard_domain::TimeEntryId>,
 }
 
 impl IdTables {
@@ -828,7 +834,17 @@ pub fn push(
         models,
     );
     mutations += push_stack_detail(window, state, vs, &sets, &mut tables, now, calendar, models);
-    mutations += push_task_detail(window, state, vs, &sets, &mut tables, now, models, due);
+    mutations += push_task_detail(
+        window,
+        state,
+        vs,
+        &sets,
+        &mut tables,
+        now,
+        kiosk,
+        models,
+        due,
+    );
     mutations += push_review(window, state, day, calendar, kiosk, models);
     mutations += push_status_bar(
         window,
@@ -1547,6 +1563,7 @@ fn push_task_detail(
     sets: &DueSets,
     tables: &mut IdTables,
     now: DateTime<Utc>,
+    kiosk: bool,
     models: &mut PushModels,
     due: &DueEditorPush<'_>,
 ) -> usize {
@@ -1650,6 +1667,44 @@ fn push_task_detail(
         .unwrap_or_default();
     let date_grid = slint::ModelRc::new(slint::VecModel::from(due_grid_rows));
 
+    // The entries overlay's pushed halves (r4 chunk 10, D-TS3): the
+    // subject's rows in the presentation's newest-first order, the
+    // total re-derived through the summary row's own helpers
+    // (reconciliation by construction), and the kiosk gate (the
+    // display-stays, action-empties posture — the total keeps
+    // showing, the affordance and the overlay hide). The overlay
+    // mounts only over the viewed task (the mount condition's
+    // subject-affine half is the flow; the model flag is the window's
+    // read of it).
+    let track_rows = vs
+        .subject_task()
+        .map(|subject| presentation::track_entry_rows(state, subject, now, &chrono::Local))
+        .unwrap_or_default();
+    tables.track_entries = track_rows.iter().map(|row| row.id).collect();
+    let track_entry_rows: Vec<TrackEntryRowModel> = track_rows
+        .iter()
+        .map(|row| TrackEntryRowModel {
+            date: SharedString::from(row.date.clone()),
+            start: SharedString::from(row.start.clone()),
+            end: SharedString::from(if row.end_other_day {
+                format!("{} {}", row.end, presentation::TRACK_END_PLUS_DAY)
+            } else {
+                row.end.clone()
+            }),
+            spent: SharedString::from(row.spent.clone()),
+            running: row.running,
+        })
+        .collect();
+    // The overlay's open flag reads the flow (the window's mount
+    // condition) — subject-affine: a flow whose task stopped being
+    // the viewed subject renders closed (reconcile drops it anyway;
+    // this is the push-side belt).
+    let track_open = match vs.flow() {
+        Flow::TrackEntries { task } | Flow::TrackEntryForm { task, .. } => {
+            vs.subject_task() == Some(*task)
+        }
+        _ => false,
+    };
     let presets_handle = models.task_rule_presets.handle_or_insert_with();
     let mut mutations = models.task_rule_presets.diff(&preset_rows);
     let rules_handle = models.task_rules.handle_or_insert_with();
@@ -1719,6 +1774,21 @@ fn push_task_detail(
                 })
                 .unwrap_or_default(),
         ),
+        // The entries overlay's halves (r4 chunk 10): the gate is
+        // `!kiosk && subject present`; the total is the phrase above
+        // verbatim; the rows ride the fresh-VecModel-per-pass shape.
+        track_entries_visible: !kiosk && subject.is_some(),
+        track_entries_open: track_open,
+        track_entries_total: SharedString::from(
+            subject
+                .map(|t| {
+                    presentation::tracked_total_phrase(&presentation::tracked_total(
+                        state, t.id, now,
+                    ))
+                })
+                .unwrap_or_default(),
+        ),
+        track_entries: ModelRc::new(slint::VecModel::from(track_entry_rows)),
         date_picker_open: due.picker.is_some(),
         date_caption: SharedString::from(
             due.picker
