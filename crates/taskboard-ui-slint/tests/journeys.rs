@@ -8914,6 +8914,14 @@ fn board_facts(h: &Harness) -> taskboard_ui_slint::SettingsBoardFacts<'_> {
         .global::<taskboard_ui_slint::SettingsBoardFacts>()
 }
 
+/// The board bar's facts global, fresh per call (the lifetime pattern
+/// above — the global handle ties to the window's borrow).
+fn bar_facts(h: &Harness) -> taskboard_ui_slint::BoardBarFacts<'_> {
+    h.handle
+        .window()
+        .global::<taskboard_ui_slint::BoardBarFacts>()
+}
+
 /// Dispatches one raw key event to the focused element (the widget
 /// ladder's ladder — the action layer never sees these strokes).
 fn raw_key(harness: &Harness, key: slint::platform::Key) {
@@ -12195,4 +12203,116 @@ fn the_entries_overlay_walks_rows_and_the_escape_ladder_steps_back() {
             );
         },
     );
+}
+
+/// The bar dropdown's modal ladder (r4 D40) under every keymap preset:
+/// while the flyout is open, the ladder keys reach the widget — the
+/// capture-phase resolver declines them (the shared decline arm) —
+/// and the action layer dispatches nothing. The anchor is the viewed
+/// board; Escape closes. (The bar probe cannot host this: the decline
+/// arm lives on the app window's key-root capture, absent from a
+/// standalone probe.)
+#[test]
+fn the_bar_dropdown_ladder_declines_the_action_layer_under_every_preset() {
+    for (preset, name) in [
+        (taskboard_ui_slint::keymap::Preset::Standard, "standard"),
+        (taskboard_ui_slint::keymap::Preset::Emacs, "emacs"),
+        (taskboard_ui_slint::keymap::Preset::Vi, "vi"),
+    ] {
+        let mut state = AppState::default();
+        // Nine boards: past the segment budget (the bar's dropdown-at),
+        // so the bar mounts the dropdown switcher.
+        let boards: Vec<_> = (0..9)
+            .map(|i| (uuid::Uuid::new_v4(), format!("board-{i}")))
+            .collect();
+        for (id, title) in &boards {
+            state_board(&mut state, *id, title, None);
+        }
+        support::driver::run(
+            DriverOptions {
+                headless_renderer: true,
+            },
+            move |_driver| {
+                let mut harness = Harness::mount_with_settings(
+                    SlintDriver::default(),
+                    state,
+                    UiSettings {
+                        keymap: taskboard_ui_slint::keymap::Keymap::from_preset(preset),
+                        keymap_preset: preset,
+                        ..UiSettings::default()
+                    },
+                );
+                harness.driver.set_window_size(1000, 900);
+                harness.driver.advance_time(0);
+
+                // Open via the field click (the click focuses the
+                // field — the ladder's home; the element query is the
+                // address in dropdown mode, where no segments render).
+                let mut field = None;
+                for _ in 0..20 {
+                    harness.driver.advance_time(0);
+                    let found = harness.driver.find_all_by_id("BoardBar::bar-dd");
+                    if let Some(first) = found.into_iter().next() {
+                        field = Some(first);
+                        break;
+                    }
+                }
+                let field = field.expect("{name}: the bar dropdown renders past the budget");
+                let pos = field.absolute_position();
+                let size = field.size();
+                let (x, y) = (pos.x + size.width / 2.0, pos.y + size.height / 2.0);
+                harness.driver.hover_at(x, y);
+                harness.driver.advance_time(0);
+                harness.driver.click_at(x, y);
+                harness.driver.advance_time(30);
+
+                assert!(
+                    bar_facts(&harness).get_open(),
+                    "{name}: the field click opens"
+                );
+
+                // The anchor is the viewed board (segment 0 here — the
+                // engine's current board is the first inserted).
+                let anchor = bar_facts(&harness).get_highlight();
+
+                // Down moves the highlight, and the lane stays empty:
+                // the capture-phase resolver declined the stroke.
+                raw_key(&harness, slint::platform::Key::DownArrow);
+                harness.driver.advance_time(0);
+                assert_eq!(
+                    bar_facts(&harness).get_highlight(),
+                    anchor + 1,
+                    "{name}: Down moves the ladder"
+                );
+                assert!(
+                    harness.drain_requests().is_empty(),
+                    "{name}: the arrow dispatched nothing"
+                );
+
+                // The C-n spelling shares the arm — the emacs binding
+                // must not win the capture race either.
+                harness.stroke(parse("Ctrl+n").expect("Ctrl+n parses"));
+                harness.driver.advance_time(0);
+                assert_eq!(
+                    bar_facts(&harness).get_highlight(),
+                    anchor + 2,
+                    "{name}: Ctrl+n moves the ladder too"
+                );
+                assert!(
+                    harness.drain_requests().is_empty(),
+                    "{name}: the emacs stroke dispatched nothing"
+                );
+
+                // Escape closes without selecting; the lane stays
+                // empty and the viewed board is unchanged.
+                raw_key(&harness, slint::platform::Key::Escape);
+                harness.driver.advance_time(0);
+                assert!(!bar_facts(&harness).get_open(), "{name}: Escape closes");
+                assert!(
+                    harness.drain_requests().is_empty(),
+                    "{name}: closing selected nothing"
+                );
+            },
+        );
+    }
 }

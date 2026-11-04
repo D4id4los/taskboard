@@ -215,6 +215,7 @@ fn string_model(values: &[String]) -> ModelRc<SharedString> {
 #[derive(Default)]
 pub struct PushModels {
     bar_segments: MirroredRows<BoardSegmentModel>,
+    bar_rows: MirroredRows<crate::DropdownRow>,
     columns: MirroredRows<StackColumnModel>,
     /// The per-column card models, keyed by the column's stack (the
     /// board's columns and the stack-detail list address them by
@@ -799,12 +800,27 @@ pub fn push(
     .unwrap_or(i32::MAX);
     let segments_handle = models.bar_segments.handle_or_insert_with();
     let mut mutations = models.bar_segments.diff(&segments);
+    // The dropdown's rows (r4 D40): one per segment, no connection
+    // indicator — the switcher carries titles only.
+    let bar_rows: Vec<crate::DropdownRow> = segments
+        .iter()
+        .map(|segment| crate::DropdownRow {
+            label: segment.title.clone(),
+            indicator: crate::DropdownIndicator::None,
+            tone: crate::DropdownTone::Neutral,
+            selected: false,
+            busy: false,
+        })
+        .collect();
+    let bar_rows_handle = models.bar_rows.handle_or_insert_with();
+    mutations += models.bar_rows.diff(&bar_rows);
     // The struct re-assignment runs every pass — its `selected` scalar
     // must stay live; the unchanged segments handle makes it a
     // renderer no-op for the repetition (the repetition-probe pins).
     window.set_board_bar_model(BoardBarModel {
         segments: ModelRc::from(segments_handle),
         selected,
+        rows: ModelRc::from(bar_rows_handle),
     });
 
     mutations += push_chrome(

@@ -4211,22 +4211,27 @@ pub(crate) fn install(
             if walk_flag.get() {
                 return false;
             }
-            // The selector's modal ladder (r4 D39): while the flyout is
-            // open, the ladder keys decline the single key path — the
-            // capture tunneling would otherwise consume the arrows as
-            // bound actions before the focused field's widget-internal
-            // arms ever see them (the settings journey's recorded
-            // negative). Escape/Return are unbound on the surface and
-            // already flow through.
-            {
-                let facts = window.global::<crate::SettingsBoardFacts>();
-                if facts.get_open() {
-                    let arrow = text == SharedString::from(slint::platform::Key::UpArrow)
-                        || text == SharedString::from(slint::platform::Key::DownArrow);
-                    let emacs_move = modifiers.control && (text == "n" || text == "p");
-                    if arrow || emacs_move {
-                        return false;
-                    }
+            // The selectors' modal ladder (r4 D39/D40): while a
+            // dropdown flyout is open, its keys decline the single key
+            // path — the capture tunneling visits the focused field's
+            // ancestors BEFORE the field's widget-internal arms, so a
+            // bound stroke (the arrows, emacs' C-n/C-p, Return, the
+            // presets' Escape) would resolve as an action and the
+            // widget would never see it (the settings journey's
+            // recorded negative, the bar journey's too). Both
+            // consumers report their open state into their facts
+            // global; the decline hands the stroke to the focused
+            // field, whose modal arm owns it.
+            let ladder_open = window.global::<crate::SettingsBoardFacts>().get_open()
+                || window.global::<crate::BoardBarFacts>().get_open();
+            if ladder_open {
+                let arrow = text == SharedString::from(slint::platform::Key::UpArrow)
+                    || text == SharedString::from(slint::platform::Key::DownArrow);
+                let emacs_move = modifiers.control && (text == "n" || text == "p");
+                let close_or_select = text == SharedString::from(slint::platform::Key::Escape)
+                    || text == SharedString::from(slint::platform::Key::Return);
+                if arrow || emacs_move || close_or_select {
+                    return false;
                 }
             }
             adapter.borrow_mut().intercept(&window, &text, modifiers)

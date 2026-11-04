@@ -1,0 +1,86 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The board-bar threshold probe (r4 D40): the real `BoardBar` mounted
+// below (7 segments — the reviewed strip stays) and above (9 segments
+// — the shared dropdown takes the switcher role) the segment budget.
+// The global counts the activated seam's fires; the facts mirror the
+// dropdown's open/highlight.
+
+import { Theme } from "../ui/theme.slint";
+import { BoardBar, BoardBarFacts } from "../ui/compositions/board-bar.slint";
+
+export global BoardBarProbe {
+    in-out property <int> activated: 0;
+    in-out property <int> activated-index: -1;
+}
+
+// The 7/9-segment fixtures differ only in count; the titles are the
+// fixture's keys (data identity, never assertion text).
+component SevenBar inherits BoardBar {
+    x: Theme.space-2;
+    y: Theme.space-2;
+    width: Theme.space-8 * 5;
+    bar: {
+        segments: [
+            { title: "b0" }, { title: "b1" }, { title: "b2" }, { title: "b3" },
+            { title: "b4" }, { title: "b5" }, { title: "b6" },
+        ],
+        selected: 2,
+        rows: [
+            { label: "b0", indicator: none, tone: neutral, selected: false, busy: false },
+            { label: "b1", indicator: none, tone: neutral, selected: false, busy: false },
+            { label: "b2", indicator: none, tone: neutral, selected: false, busy: false },
+            { label: "b3", indicator: none, tone: neutral, selected: false, busy: false },
+            { label: "b4", indicator: none, tone: neutral, selected: false, busy: false },
+            { label: "b5", indicator: none, tone: neutral, selected: false, busy: false },
+            { label: "b6", indicator: none, tone: neutral, selected: false, busy: false },
+        ],
+    };
+    segment-activated(i) => {
+        BoardBarProbe.activated += 1;
+        BoardBarProbe.activated-index = i;
+    }
+}
+
+component NineBar inherits BoardBar {
+    x: Theme.space-2;
+    y: Theme.space-2 + Theme.space-8;
+    width: Theme.space-8 * 5;
+    bar: {
+        segments: [
+            { title: "n0" }, { title: "n1" }, { title: "n2" }, { title: "n3" },
+            { title: "n4" }, { title: "n5" }, { title: "n6" }, { title: "n7" },
+            { title: "n8" },
+        ],
+        selected: 4,
+        rows: [
+            { label: "n0", indicator: none, tone: neutral, selected: false, busy: false },
+            { label: "n1", indicator: none, tone: neutral, selected: false, busy: false },
+            { label: "n2", indicator: none, tone: neutral, selected: false, busy: false },
+            { label: "n3", indicator: none, tone: neutral, selected: false, busy: false },
+            { label: "n4", indicator: none, tone: neutral, selected: false, busy: false },
+            { label: "n5", indicator: none, tone: neutral, selected: false, busy: false },
+            { label: "n6", indicator: none, tone: neutral, selected: false, busy: false },
+            { label: "n7", indicator: none, tone: neutral, selected: false, busy: false },
+            { label: "n8", indicator: none, tone: neutral, selected: false, busy: false },
+        ],
+    };
+    segment-activated(i) => {
+        BoardBarProbe.activated += 1;
+        BoardBarProbe.activated-index = i;
+    }
+}
+
+export component BoardBarProbeWindow inherits Window {
+    width: Theme.space-8 * 6;
+    height: Theme.space-7 * 6;
+
+    in-out property <bool> seven-strip: seven.dropdown-mode == false;
+    in-out property <bool> nine-dropdown: nine.dropdown-mode;
+    in-out property <bool> nine-open: BoardBarFacts.open;
+    in-out property <int> nine-highlight: BoardBarFacts.highlight;
+    in-out property <length> nine-x: nine.x;
+    in-out property <length> nine-y: nine.y;
+
+    seven := SevenBar {}
+    nine := NineBar {}
+}

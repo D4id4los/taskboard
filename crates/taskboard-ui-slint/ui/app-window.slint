@@ -25,7 +25,7 @@ import { TimerSetterFacts } from "menu-facts.slint";
 import { TimeSlotRow } from "widgets/time-field.slint";
 import { HabitRowModel } from "compositions/habits.slint";
 import { BoardView, BoardModel } from "views/board-view.slint";
-import { BoardBarModel, BoardSegmentModel } from "compositions/board-bar.slint";
+import { BoardBarModel, BoardSegmentModel, BoardBarFacts } from "compositions/board-bar.slint";
 import { StackView, StackDetailModel } from "views/stack-view.slint";
 import { TodayView, TodayModel } from "views/today-view.slint";
 import { TaskView, TaskDetailModel } from "views/task-view.slint";
@@ -60,7 +60,7 @@ export { AlarmWindow, AlarmRowModel }
 // Re-export the globals so the generated Rust module exposes them
 // (mount/adapter read/write them through the generated accessors).
 export { Theme, Typography, Semantic, Responsive, TooltipState, MenuPanelFacts, SettingsScrollFacts, SettingsBoardFacts, DragState, FocusScrollHint, ScrollPageHint, EditingFacts, TaskViewWalkFacts, TrackPanelFacts, TrackPanelWalkFacts, DropdownLadder }
-export { BoardBarModel, BoardSegmentModel }
+export { BoardBarModel, BoardSegmentModel, BoardBarFacts }
 
 export enum KeyFeedback {
     none,
