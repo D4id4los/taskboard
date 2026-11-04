@@ -3054,3 +3054,351 @@ fn the_tracked_today_section_opens_its_task_and_an_empty_day_collapses() {
         );
     });
 }
+
+/// The add commit routes over the FORM'S SUBJECT (the one-shot target
+/// seam, D-TS6), not the focus fallback: a task detail entered without
+/// a focused card (the stack-first entry path leaves `focused_task`
+/// `None`) still logs onto the viewed task — no retarget, no swallow.
+#[test]
+fn the_add_commit_routes_over_the_form_subject_not_the_focus() {
+    on_slint_thread(|| {
+        use chrono::{Datelike as _, TimeZone as _};
+        let (state, fx) = fixture();
+        let [a_id, _b, _c] = fx.tasks;
+        let [s0, _s1] = fx.stacks;
+        let mut rig = rig(state);
+        let adapter = rig.adapter();
+        arm_task_view(&rig, &adapter, a_id, s0);
+        // The stack-first entry path: the subject without a focused
+        // card.
+        adapter.borrow_mut().view_state.set_focused(None);
+        {
+            let mut a = adapter.borrow_mut();
+            a.interpret_for_test(
+                rig.handle.window(),
+                crate::router::UiEffect::TrackEntriesOpen,
+            );
+        }
+        assert!(matches!(
+            adapter.borrow().view_state.flow(),
+            Flow::TrackEntries { .. }
+        ));
+        {
+            let mut a = adapter.borrow_mut();
+            let outcomes = a.view_state.open_track_entry_form(a_id, None);
+            a.apply_outcomes_for_test(rig.handle.window(), &outcomes);
+            a.seed_track_form_for_test(None);
+            a.refresh_forced(rig.handle.window());
+            let form = a
+                .track_form_mut_for_test()
+                .as_mut()
+                .expect("the form is seeded");
+            form.start_text = "20:00".to_owned();
+            form.end_text = "21:00".to_owned();
+            let ok = a.commit_track_form_for_test(rig.handle.window());
+            assert!(ok, "a parsed span commits");
+        }
+        let today = chrono::Local::now().date_naive();
+        let expected_start = chrono::Local
+            .with_ymd_and_hms(today.year(), today.month(), today.day(), 20, 0, 0)
+            .single()
+            .expect("resolvable")
+            .with_timezone(&chrono::Utc);
+        assert_eq!(
+            rig.drain_commands(),
+            vec![StateCommand::LogTime {
+                task: a_id,
+                start: expected_start,
+                end: expected_start + chrono::TimeDelta::hours(1),
+                kind: taskboard_domain::tracking::TimeEntryKind::Work,
+            }],
+            "the add lands on the viewed task without a focused card"
+        );
+    });
+}
+
+/// The strand-proof (D-TS2, stage-3 focus d): the overlay cannot
+/// outlive its view. A dead subject drops the flow and pops the view
+/// back to the board; a view flip away from the task detail drops the
+/// flow too — the pushed open flag reads closed either way, so no
+/// stranded modal context survives.
+#[test]
+fn the_overlay_cannot_outlive_its_subject_or_view() {
+    on_slint_thread(|| {
+        // A dead subject underneath the open overlay.
+        let (state, fx) = fixture();
+        let [a_id, _b, _c] = fx.tasks;
+        let [s0, _s1] = fx.stacks;
+        let strand_rig = rig(state);
+        let adapter = strand_rig.adapter();
+        arm_task_view(&strand_rig, &adapter, a_id, s0);
+        {
+            let mut a = adapter.borrow_mut();
+            a.interpret_for_test(
+                strand_rig.handle.window(),
+                crate::router::UiEffect::TrackEntriesOpen,
+            );
+        }
+        assert!(matches!(
+            adapter.borrow().view_state.flow(),
+            Flow::TrackEntries { .. }
+        ));
+        {
+            let swap = strand_rig.handle.test_state();
+            let mut s = swap.load_full().as_ref().clone();
+            s.tasks.get_mut(&a_id).expect("the subject is live").deleted = true;
+            swap.store(Arc::new(s));
+        }
+        adapter
+            .borrow_mut()
+            .refresh_forced(strand_rig.handle.window());
+        {
+            let a = adapter.borrow();
+            assert!(
+                matches!(a.view_state.flow(), Flow::None),
+                "a dead subject drops the flow"
+            );
+            assert_eq!(
+                a.view_state.view(),
+                crate::view_state::ViewId::Board,
+                "a dead subject pops the view"
+            );
+        }
+        assert!(
+            !strand_rig
+                .handle
+                .window()
+                .get_task_model()
+                .track_entries_open,
+            "the overlay's mount flag reads closed"
+        );
+
+        // A view flip underneath the open overlay.
+        let (state, fx) = fixture();
+        let [a_id, _b, _c] = fx.tasks;
+        let [s0, _s1] = fx.stacks;
+        let flip_rig = rig(state);
+        let adapter = flip_rig.adapter();
+        arm_task_view(&flip_rig, &adapter, a_id, s0);
+        {
+            let mut a = adapter.borrow_mut();
+            a.interpret_for_test(
+                flip_rig.handle.window(),
+                crate::router::UiEffect::TrackEntriesOpen,
+            );
+        }
+        assert!(matches!(
+            adapter.borrow().view_state.flow(),
+            Flow::TrackEntries { .. }
+        ));
+        {
+            let mut a = adapter.borrow_mut();
+            let outcomes = a.view_state.focus_board();
+            a.apply_outcomes_for_test(flip_rig.handle.window(), &outcomes);
+            a.refresh_forced(flip_rig.handle.window());
+        }
+        {
+            let a = adapter.borrow();
+            assert!(
+                matches!(a.view_state.flow(), Flow::None),
+                "a view flip drops the flow"
+            );
+        }
+        assert!(
+            !flip_rig.handle.window().get_task_model().track_entries_open,
+            "the overlay cannot outlive the view"
+        );
+    });
+}
+
+/// The kiosk gate (D-TS8): the affordance flag reads false and the
+/// open intent refuses — no flow, no command (the display-stays,
+/// action-empties posture's action half).
+#[test]
+fn the_kiosk_gate_refuses_the_entries_open() {
+    on_slint_thread(|| {
+        let (state, fx) = fixture();
+        let [a_id, _b, _c] = fx.tasks;
+        let mut state = state;
+        closed_entry_on(&mut state, a_id, 10);
+        let swap = Arc::new(arc_swap::ArcSwap::from_pointee(state));
+        let (commands_tx, mut commands_rx) = mpsc::channel(64);
+        let (requests_tx, _requests_rx) = mpsc::channel(16);
+        let (_health_tx, health) =
+            tokio::sync::watch::channel(crate::presentation::DeliveryHealth::default());
+        let handle = mount(
+            swap,
+            dummy_receiver(),
+            dummy_receiver(),
+            commands_tx,
+            requests_tx,
+            UiSettings {
+                kiosk: true,
+                ..UiSettings::default()
+            },
+            health,
+        )
+        .expect("mount succeeds on the null platform");
+        let adapter = handle.test_adapter();
+        adapter.borrow_mut().refresh_forced(handle.window());
+        assert!(
+            !handle.window().get_task_model().track_entries_visible,
+            "kiosk hides the affordance"
+        );
+        adapter
+            .borrow_mut()
+            .interpret_for_test(handle.window(), crate::router::UiEffect::TrackEntriesOpen);
+        assert!(
+            matches!(adapter.borrow().view_state.flow(), Flow::None),
+            "the open refuses on kiosk"
+        );
+        assert!(
+            commands_rx.try_recv().is_err(),
+            "the refusal dispatches nothing"
+        );
+    });
+}
+
+/// The kiosk Tracked section (#490, D-TS7): rows filter to the viewed
+/// board and the day total sums the filtered set — what you see is
+/// what's summed.
+#[test]
+fn the_kiosk_tracked_section_filters_to_the_viewed_board() {
+    on_slint_thread(|| {
+        use taskboard_domain::{Board, BoardClocks, BoardId, Color, Stack, StackClocks, StackId};
+        let now = taskboard_domain::BoardClocks::epoch();
+        let board = |id: BoardId, title: &str| Board {
+            id,
+            remote: None,
+            title: title.to_owned(),
+            color: Color::new(""),
+            archived: false,
+            deleted: false,
+            clocks: BoardClocks {
+                title: now,
+                color: now,
+                archived: now,
+                deleted: now,
+            },
+            remote_seen: None,
+        };
+        let board_one = BoardId::from_uuid(uuid::Uuid::now_v7());
+        let board_two = BoardId::from_uuid(uuid::Uuid::now_v7());
+        let stack_one = StackId::from_uuid(uuid::Uuid::now_v7());
+        let stack_two = StackId::from_uuid(uuid::Uuid::now_v7());
+        let mut state = AppState::default();
+        state.boards.insert(board_one, board(board_one, "one"));
+        state.boards.insert(board_two, board(board_two, "two"));
+        for (stack, board, order) in [(stack_one, board_one, 0), (stack_two, board_two, 0)] {
+            state.stacks.insert(
+                stack,
+                Stack {
+                    id: stack,
+                    remote: None,
+                    board,
+                    title: "s".to_owned(),
+                    order,
+                    archived: false,
+                    deleted: false,
+                    clocks: StackClocks {
+                        title: now,
+                        order: now,
+                        deleted: now,
+                    },
+                    remote_seen: None,
+                },
+            );
+        }
+        let (task_one, task_two) = (
+            taskboard_domain::TaskId::from_uuid(uuid::Uuid::now_v7()),
+            taskboard_domain::TaskId::from_uuid(uuid::Uuid::now_v7()),
+        );
+        for (id, stack, order) in [(task_one, stack_one, 0), (task_two, stack_two, 1)] {
+            state.tasks.insert(
+                id,
+                Task {
+                    id,
+                    remote: None,
+                    label_memberships: BTreeMap::new(),
+                    title: format!("task-{order}"),
+                    description: String::new(),
+                    duedate: None,
+                    scheduled: None,
+                    done: None,
+                    stack,
+                    order,
+                    effort: None,
+                    importance: None,
+                    urgency: None,
+                    recur: None,
+                    kind: taskboard_domain::entities::TaskKind::Standard,
+                    archived: false,
+                    deleted: false,
+                    clocks: taskboard_domain::TaskClocks {
+                        title: now,
+                        description: now,
+                        duedate: now,
+                        scheduled: now,
+                        done: now,
+                        position: now,
+                        effort: now,
+                        importance: now,
+                        urgency: now,
+                        recur: now,
+                        kind: now,
+                        archived: now,
+                        deleted: now,
+                    },
+                    remote_seen: None,
+                    remote_baseline: None,
+                },
+            );
+        }
+        // One tracked hour per board (today, local — the helper's
+        // clamped-hour shape).
+        closed_entry_on(&mut state, task_one, 10);
+        closed_entry_on(&mut state, task_two, 12);
+
+        let swap = Arc::new(arc_swap::ArcSwap::from_pointee(state));
+        let (commands_tx, _commands_rx) = mpsc::channel(64);
+        let (requests_tx, _requests_rx) = mpsc::channel(16);
+        let (_health_tx, health) =
+            tokio::sync::watch::channel(crate::presentation::DeliveryHealth::default());
+        let handle = mount(
+            swap.clone(),
+            dummy_receiver(),
+            dummy_receiver(),
+            commands_tx,
+            requests_tx,
+            UiSettings {
+                kiosk: true,
+                ..UiSettings::default()
+            },
+            health,
+        )
+        .expect("mount succeeds on the null platform");
+        let adapter = handle.test_adapter();
+        {
+            let mut a = adapter.borrow_mut();
+            a.refresh_forced(handle.window());
+            a.view_state.select_board(&swap.load(), board_two);
+            a.view_state.set_view(crate::view_state::ViewId::Today);
+            a.refresh_forced(handle.window());
+        }
+        assert_eq!(
+            adapter.borrow().test_tracked_today_rows(),
+            vec![task_two],
+            "kiosk filters the rows to the viewed board"
+        );
+        // What you see is what's summed: the day total is the
+        // filtered set's phrase (derived, not pinned copy).
+        let expected = crate::presentation::tracked_total_phrase(&crate::presentation::part_total(
+            chrono::TimeDelta::hours(1),
+        ));
+        assert_eq!(
+            handle.window().get_today_model().tracked_day_total,
+            expected,
+            "the day total sums the filtered set"
+        );
+    });
+}

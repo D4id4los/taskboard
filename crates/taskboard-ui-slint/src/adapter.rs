@@ -1390,9 +1390,11 @@ impl Adapter {
 
     /// The commit funnel (D-TS4, F24): the live validity table is
     /// authoritative — the draft fills the one-shot ctx fields only
-    /// when it passes, the router dispatches the existing verb, and
-    /// the surface steps back to the list. A refusal keeps the form
-    /// open with the invalid flavour (never swallowed silence).
+    /// when it passes (the form's subject arms `track_target`: the
+    /// add resolves over the viewed task, never the focus fallback),
+    /// the router dispatches the existing verb, and the surface steps
+    /// back to the list. A refusal keeps the form open with the
+    /// invalid flavour (never swallowed silence).
     #[cfg(test)]
     pub(crate) fn commit_track_form_for_test(&mut self, window: &AppWindow) -> bool {
         self.commit_track_form(window)
@@ -1402,6 +1404,14 @@ impl Adapter {
         let Some(form) = self.track_form.as_ref() else {
             return false;
         };
+        // The form's subject rides the flow, not the focus: the
+        // one-shot target seam (the tracking chip's rule — the subject
+        // is not guaranteed `focused_task`, whose fallback would
+        // swallow or retarget the add).
+        let Flow::TrackEntryForm { task, .. } = self.view_state.flow() else {
+            return false;
+        };
+        let subject = *task;
         let today = chrono::Local::now().date_naive();
         let parse = crate::presentation::parse_track_form(
             &form.date_text,
@@ -1415,6 +1425,7 @@ impl Adapter {
             self.refresh_forced(window);
             return false;
         };
+        self.track_target = Some(subject);
         self.track_entry_draft = Some(draft);
         self.track_entry_target = form.seed;
         let action = if form.seed.is_some() {
@@ -1426,10 +1437,7 @@ impl Adapter {
         // The commit steps the surface back to the list (the
         // ladder's forward direction); the overlay stays open (the
         // multi-add posture).
-        let Flow::TrackEntryForm { task, .. } = self.view_state.flow().clone() else {
-            return true;
-        };
-        let outcomes = self.view_state.open_track_entries(task);
+        let outcomes = self.view_state.open_track_entries(subject);
         self.apply_outcomes(window, &outcomes);
         self.finish_mutation(window);
         true
@@ -1779,11 +1787,6 @@ impl Adapter {
             (_, UiEffect::TrackEntriesOpen) => match self.view_state.subject_task() {
                 Some(task) => {
                     Self::dismiss_tooltip(window);
-                    // The focus hand-off lands after the mount pass
-                    // (the setter's nonce idiom; an init grab alone is
-                    // dropped on a fresh mount).
-                    let nonce = window.get_track_panel_focus_nonce();
-                    window.set_track_panel_focus_nonce(nonce.wrapping_add(1));
                     self.view_state.open_track_entries(task)
                 }
                 None => Vec::new(),
@@ -2587,7 +2590,9 @@ impl Adapter {
             | UiEffect::ToggleFocusMode
             // The entries overlay's open request and its Escape
             // ladder interpret like every view intent (r4 chunk 10,
-            // D-TS2) — the kiosk/subject refusals live in the arms.
+            // D-TS2) — the kiosk/subject refusals live in the arms;
+            // the panel's focus hand-off is the composition's
+            // changed-height grab (the walk probe's P5).
             | UiEffect::TrackEntriesOpen
             | UiEffect::TrackEntryDismiss => self.interpret(window, effect),
         }
@@ -6417,8 +6422,6 @@ fn install_tracking_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         a.finish_mutation(&window);
         a.seed_track_form(None);
         a.refresh_forced(&window);
-        let nonce = window.get_track_panel_focus_nonce();
-        window.set_track_panel_focus_nonce(nonce.wrapping_add(1));
     });
 
     // The form's seams (r4 D-TS4): every intent mutates the
@@ -6652,8 +6655,6 @@ fn install_tracking_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         a.finish_mutation(&window);
         a.seed_track_form(Some(entry));
         a.refresh_forced(&window);
-        let nonce = window.get_track_panel_focus_nonce();
-        window.set_track_panel_focus_nonce(nonce.wrapping_add(1));
     });
 
     // The task view's done checkbox (r4 D16b/F15): raw-send the
