@@ -1626,10 +1626,16 @@ fn the_task_view_header_and_summary_elements_arm_their_tooltips() {
 /// interactive elements: the four closed cells and the preset chips
 /// arm the generalized tooltip (label + description, hint keys where
 /// bound), hover shows it after the delay, and moving away hides it.
-/// The field sites stay tip-less by a recorded plan-vs-runtime
-/// finding: the inner `TextInput` accepts its own hover moves, so a
-/// sibling `TouchArea` never hovers and one above breaks caret
-/// handling — no TouchArea-based tip can coexist with the field.
+/// Historical note: the field sites were tip-less when this journey
+/// was written (the planned `TextField` tip arm died at stage 3 — the
+/// inner `TextInput` accepts its own hover moves, so a sibling
+/// `TouchArea` never hovers and one above breaks caret handling).
+/// The r3-3.1 chunk landed them via the sibling-cell `TippedField`
+/// pair instead; see
+/// `.artifacts/plans/2026-11-03-taskview-field-tooltips-plan.md` and
+/// the origin report §5 for the history — the field sites' tips are
+/// now pinned by `every_task_view_field_editor_carries_its_info_tip`
+/// below.
 #[test]
 fn every_task_view_cell_and_chip_carries_its_info_tip() {
     let (_fixture, state) = fixture::golden_state();
@@ -1711,6 +1717,235 @@ fn every_task_view_cell_and_chip_carries_its_info_tip() {
                 assert!(!tooltip_state(&harness).get_pending());
                 assert!(!tooltip_state(&harness).get_visible());
             }
+        },
+    );
+}
+
+/// Chunk r3-3.1 — the five field sites (title/description editors,
+/// due/scheduled editors, the custom reminder offset) carry their
+/// `TippedField` info tips (issue #590; plan
+/// `.artifacts/plans/2026-11-03-taskview-field-tooltips-plan.md` §3).
+/// The custom-offset square is always mounted (exactly one in the
+/// closed view); each open editor adds exactly one distinct square —
+/// never zero, never duplicated. Per site the square trails the
+/// field as a sibling layout cell (tip.x ≥ field.x + field.width —
+/// the mechanism pin: a square inside or over the field's rect would
+/// reintroduce the r4 caret infeasibility; see the origin report
+/// `2026-11-03-ui-r4-taskview-focus-stage3-report.md` §5). The
+/// functional legs ride the settings sweep's grammar: hover arms the
+/// delay, the mock clock's 600 ms shows the panel with a populated
+/// description slot (content never asserted), moving away hides —
+/// except at the two date-editor sites, where the test currently
+/// pins the picker overlay's hover precedence instead (see the leg
+/// comment below for the mechanism and the tripwire).
+#[test]
+#[allow(clippy::too_many_lines)] // the five site legs are the contract's length
+fn every_task_view_field_editor_carries_its_info_tip() {
+    let sites: [(&str, &str); 5] = [
+        ("Edit title", "Task title"),
+        ("Edit description", "Description"),
+        ("Edit due date", "Due date entry"),
+        ("Edit start date", "Start date entry"),
+        // The offset field is always mounted; no cell opens it.
+        ("", "Custom reminder offset"),
+    ];
+
+    // The closed view: exactly the always-mounted offset square.
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.set_window_size(1000, 900);
+            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::TaskEdit);
+            harness.driver.advance_time(0);
+            assert_eq!(harness.handle.window().get_current_view(), View::TaskDetail);
+            let mut spots: Vec<(f32, f32)> = harness
+                .driver
+                .find_all_by_id("TippedField::help-tip")
+                .iter()
+                .map(|tip| {
+                    let p = tip.absolute_position();
+                    (p.x, p.y)
+                })
+                .collect();
+            spots.sort_by(|a, b| a.partial_cmp(b).expect("no NaN positions"));
+            spots.dedup();
+            assert_eq!(
+                spots.len(),
+                1,
+                "the closed view carries only the offset square"
+            );
+        },
+    );
+
+    for (cell, field_label) in sites {
+        let (_fixture, state) = fixture::golden_state();
+        support::driver::run(
+            DriverOptions {
+                headless_renderer: true,
+            },
+            move |_driver| {
+                let mut harness = Harness::mount(SlintDriver::default(), state);
+                harness.driver.set_window_size(1000, 900);
+                harness.press(ActionId::NavNextItem);
+                harness.press(ActionId::TaskEdit);
+                harness.driver.advance_time(0);
+                if !cell.is_empty() {
+                    harness.driver.click_by_label(cell);
+                    harness.driver.advance_time(0);
+                }
+                let tips = harness.driver.find_all_by_id("TippedField::help-tip");
+                assert_eq!(
+                    tips.len(),
+                    if cell.is_empty() { 1 } else { 2 },
+                    "{field_label}: the open site adds exactly one square to the offset's"
+                );
+
+                // The mechanism pin: the site's square pairs with the
+                // field it annotates — a labelled element sharing the
+                // square's row that the square trails (tip.x ≥ field
+                // right edge — the square never sits inside or over
+                // the field's rect, the caret-guard geometry). The
+                // label lookup is a set, not a single: a section
+                // caption can share the field's label (the
+                // description's caption does), and only the real pair
+                // satisfies the relation.
+                let fields = harness.driver.find_all_by_label(field_label);
+                let mut pairs: Vec<_> = Vec::new();
+                for tip in &tips {
+                    let tpos = tip.absolute_position();
+                    let tsize = tip.size();
+                    for field in &fields {
+                        let fpos = field.absolute_position();
+                        let fsize = field.size();
+                        let same_row =
+                            tpos.y + tsize.height > fpos.y && tpos.y < fpos.y + fsize.height;
+                        if same_row && tpos.x >= fpos.x + fsize.width {
+                            pairs.push((tip, field));
+                        }
+                    }
+                }
+                assert_eq!(
+                    pairs.len(),
+                    1,
+                    "{field_label}: exactly one square trails the field in its row"
+                );
+                let (tip, _) = pairs.remove(0);
+
+                // The functional legs. The three non-picker sites ride
+                // the settings sweep's grammar: hover arms, the delay
+                // shows, the description slot is populated, away
+                // hides. The two date-editor sites currently pin a
+                // limitation instead: the adapter's typing-first
+                // default-open mounts the window-level picker overlay
+                // for the editor's whole life, and its dismissal
+                // layer (r4 D2) sits on top of everything — any click
+                // settles the editor (r4 D24), so no click path
+                // hovers the tip while the editor is open. The help
+                // still reaches AT users via the field's
+                // accessible-description; reworking the overlay is
+                // r4-surface territory, not this chunk's. The pin
+                // asserts the precedence as the live contract — a
+                // future change that frees the hover flips the first
+                // assertion red, which is the intended tripwire.
+                let picker_leg = cell == "Edit due date" || cell == "Edit start date";
+                let (x, y) = support::driver::centre(tip);
+                harness.driver.hover_at(x, y);
+                if picker_leg {
+                    assert!(
+                        !tooltip_state(&harness).get_pending(),
+                        "{field_label}: the picker overlay's dismissal layer outranks the tip hover"
+                    );
+                    harness.driver.hover_at(4.0, 4.0);
+                } else {
+                    assert!(
+                        tooltip_state(&harness).get_pending(),
+                        "{field_label}'s hover armed the delay"
+                    );
+                    harness.driver.advance_time(600);
+                    assert!(
+                        tooltip_state(&harness).get_visible(),
+                        "{field_label} showed"
+                    );
+                    assert_ne!(
+                        tooltip_state(&harness).get_description(),
+                        "",
+                        "{field_label}'s description slot is populated"
+                    );
+                    harness.driver.hover_at(4.0, 4.0);
+                    harness.driver.advance_time(0);
+                    assert!(!tooltip_state(&harness).get_pending());
+                    assert!(!tooltip_state(&harness).get_visible());
+                }
+            },
+        );
+    }
+}
+
+/// Chunk r3-3.1 — the caret-guard companion: hovering the offset
+/// field's tip square mid-edit leaves the caret and the keyboard
+/// surface intact (issue #590's original infeasibility must not
+/// re-enter). The typed buffer survives the hover round-trip and
+/// commits whole; the insert-mask fact still reads true (focus never
+/// left the field). Typed outcomes + structural facts only.
+#[test]
+fn a_field_tip_hover_leaves_the_caret_intact() {
+    let (fixture, state) = fixture::golden_state();
+    let task0 = fixture.task0;
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.set_window_size(1000, 900);
+            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::TaskEdit);
+            harness.driver.advance_time(0);
+            click_field_centre(&mut harness, "Custom reminder offset");
+            harness.type_text("45");
+
+            let tip = harness
+                .driver
+                .find_all_by_id("TippedField::help-tip")
+                .into_iter()
+                .next()
+                .expect("the offset square is mounted");
+            let (x, y) = support::driver::centre(&tip);
+            harness.driver.hover_at(x, y);
+            assert!(
+                tooltip_state(&harness).get_pending(),
+                "the hover armed the delay"
+            );
+            harness.driver.advance_time(600);
+            assert!(
+                tooltip_state(&harness).get_visible(),
+                "the tip shows mid-edit"
+            );
+
+            harness.type_text("m");
+            harness.stroke(parse("Return").expect("return"));
+            match harness.engine.drain().as_slice() {
+                [StateCommand::AddReminderRule { task, offset, .. }] => {
+                    assert_eq!(*task, task0, "the subject's rule");
+                    assert_eq!(
+                        *offset,
+                        taskboard_domain::ReminderOffset::before(
+                            TimeDelta::try_minutes(-45).expect("-45m")
+                        )
+                        .expect("legal offset")
+                    );
+                }
+                other => panic!("the full typed content committed, got {other:?}"),
+            }
+            assert!(
+                keyboard(&harness).get_vi_insert(),
+                "the field's focus masks the chain"
+            );
         },
     );
 }
