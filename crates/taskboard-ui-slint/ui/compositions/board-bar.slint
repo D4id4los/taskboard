@@ -8,6 +8,15 @@
 
 import { Theme, Semantic, Typography, RoleText } from "../theme.slint";
 import { TooltipState } from "../widgets/tooltip.slint";
+import { Dropdown, DropdownRow, DropdownIndicator, DropdownTone } from "../widgets/dropdown.slint";
+
+// The walk's observation seam (r4 D40): the selector's open state and
+// highlight, mirrored by the mounted dropdown's changed hooks (the
+// journeys/probe's fact pattern).
+export global BoardBarFacts {
+    in-out property <bool> open: false;
+    in-out property <int> highlight: 0;
+}
 
 // One board-bar segment (a display model, not a bag of strings). The
 // segment set is the live boards — an archived board is unreachable
@@ -22,10 +31,21 @@ export struct BoardSegmentModel {
 export struct BoardBarModel {
     segments: [BoardSegmentModel],
     selected: int,
+    // The shared dropdown's rows (r4 D40): one per segment (title,
+    // no connection indicator — connection status is the connector
+    // surfaces' business), pushed over the same pass.
+    rows: [DropdownRow],
 }
 
 export component BoardBar inherits Rectangle {
     in property <BoardBarModel> bar;
+    // The segment budget (r4 D40, the threshold verdict): past this
+    // the strip degrades into an elided sea with no reachability
+    // guarantee, and the shared dropdown takes the switcher role.
+    // Markup-local (Q22 freezes the config surface); `always` is a
+    // one-line change if review prefers it.
+    in property <int> dropdown-at: 8;
+    out property <bool> dropdown-mode: root.bar.segments.length > root.dropdown-at;
     // The `board.select` binding as display strings (round-1 D21b; a
     // keymap projection — empty today, the mechanism is what ships).
     in property <[string]> segment-hint;
@@ -50,8 +70,48 @@ export component BoardBar inherits Rectangle {
         background: Theme.border;
     }
 
-    // A zero-segment model (a never-booted install) renders no row.
-    if (root.bar.segments.length > 0): HorizontalLayout {
+    // D40: past the budget the dropdown replaces the strip (the same
+    // one-control height rule, round-1 D20b — the bar's own height
+    // stands). `row-context` stays unwired: the board context menu is
+    // strip-only (the flyout must not host it here — the
+    // overlay-over-flyout dismissal ordering is unprobed); in
+    // dropdown mode the menu stays reachable through the action menu.
+    if (root.dropdown-mode): bar-dd := Dropdown {
+        x: Theme.space-1;
+        width: parent.width - 2 * Theme.space-1;
+        y: Theme.space-1;
+        height: parent.height - 2 * Theme.space-1;
+        rows: root.bar.rows;
+        selected-index: root.bar.selected;
+        field-text: root.bar.segments.length > 0
+            ? root.bar.segments[root.bar.selected].title
+            : "";
+        field-label: "Boards";
+        field-description: "Switches the viewed board.";
+        row-activated(i) => {
+            root.segment-activated(i);
+        }
+        row-hovered(i, x, y, w, h) => {
+            TooltipState.hover(
+                root.bar.rows[i].label,
+                "Switches to this board.",
+                root.segment-hint,
+                x, y, w, h);
+        }
+        row-unhovered() => {
+            TooltipState.unhover();
+        }
+        changed open => {
+            BoardBarFacts.open = self.open;
+        }
+        changed highlight => {
+            BoardBarFacts.highlight = self.highlight;
+        }
+    }
+
+    // A zero-segment model (a never-booted install) renders no row;
+    // under the budget the reviewed strip stays.
+    if (!root.dropdown-mode && root.bar.segments.length > 0): HorizontalLayout {
         spacing: Theme.space-1;
         accessible-role: AccessibleRole.tab-list;
         accessible-label: "Boards";

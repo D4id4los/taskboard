@@ -108,4 +108,16 @@ fn main() {
     )
     .expect("dropdown probe compilation failed");
     println!("cargo:rerun-if-changed={}", dropdown_source.display());
+
+    // The board-bar threshold probe (r4 chunk 11, D40): the real
+    // BoardBar below (strip) and above (dropdown) the segment budget —
+    // the adoption journey's host, same include shape.
+    let bar_source = manifest.join("tests/board_bar_probe.slint");
+    slint_build::compile_with_output_path(
+        &bar_source,
+        out.join("board_bar_probe.rs"),
+        slint_build::CompilerConfiguration::new().with_debug_info(true),
+    )
+    .expect("board bar probe compilation failed");
+    println!("cargo:rerun-if-changed={}", bar_source.display());
 }
