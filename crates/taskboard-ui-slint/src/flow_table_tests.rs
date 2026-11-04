@@ -846,11 +846,15 @@ impl Rig {
     }
 
     fn drain(&mut self) -> usize {
-        let mut n = 0;
-        while self.commands_rx.try_recv().is_ok() {
-            n += 1;
+        self.drain_commands().len()
+    }
+
+    fn drain_commands(&mut self) -> Vec<StateCommand> {
+        let mut out = Vec::new();
+        while let Ok(command) = self.commands_rx.try_recv() {
+            out.push(command);
         }
-        n
+        out
     }
 }
 
@@ -2593,5 +2597,345 @@ fn the_overlay_push_follows_the_published_state_and_the_mode_gate() {
         a.view_state.close_focus_mode();
         a.refresh_forced(window);
         assert!(!window.get_focus_overlay_open());
+    });
+}
+
+// -- the tracking surfaces' commit journeys (r4 chunk 10, D-TS4) -----
+
+/// Mints one CLOSED entry with exact local instants on `task`, at
+/// `hour` and `hour + 1` in the device-local zone (the fixed-zone
+/// trick: the test asserts exact instants, so the seed and the
+/// expectation derive from the same local wall-clock).
+fn closed_entry_on(state: &mut AppState, task: TaskId, hour: u32) -> taskboard_domain::TimeEntryId {
+    use chrono::{Datelike as _, TimeZone as _};
+    let today = chrono::Local::now().date_naive();
+    let start = chrono::Local
+        .with_ymd_and_hms(today.year(), today.month(), today.day(), hour.min(22), 0, 0)
+        .single()
+        .expect("resolvable local wall-clock")
+        .with_timezone(&chrono::Utc);
+    let end = start + chrono::TimeDelta::hours(1);
+    let id = taskboard_domain::TimeEntryId::from_uuid(uuid::Uuid::now_v7());
+    state.tracking.entries.insert(
+        id,
+        taskboard_domain::TimeEntry {
+            id,
+            task,
+            task_title: "closed".to_owned(),
+            start,
+            end: Some(end),
+            created_at: start,
+            updated_at: start,
+            kind: taskboard_domain::tracking::TimeEntryKind::Work,
+        },
+    );
+    id
+}
+
+/// Arms the task-detail view over `task` on the rig (the matrix
+/// driver's seeding, factored for the tracking journeys).
+fn arm_task_view(
+    rig: &Rig,
+    adapter: &std::rc::Rc<std::cell::RefCell<crate::adapter::Adapter>>,
+    task: TaskId,
+    stack: StackId,
+) {
+    let mut a = adapter.borrow_mut();
+    a.refresh_forced(rig.handle.window());
+    a.view_state.activate_card(task, stack);
+    a.view_state
+        .activate_focused(&rig.handle.test_state().load_full());
+    a.refresh_forced(rig.handle.window());
+}
+
+/// The add journey (D-TS4): open → add form → typed fields → commit
+/// routes exactly one `LogTime` with the exact local→UTC instants,
+/// and the surface steps back to the list.
+#[test]
+fn the_track_form_add_commit_routes_logtime_with_the_exact_instants() {
+    on_slint_thread(|| {
+        use chrono::{Datelike as _, TimeZone as _};
+        let (state, fx) = fixture();
+        let [a_id, _b, _c] = fx.tasks;
+        let [s0, _s1] = fx.stacks;
+        let mut rig = rig(state);
+        let adapter = rig.adapter();
+        arm_task_view(&rig, &adapter, a_id, s0);
+        {
+            let mut a = adapter.borrow_mut();
+            a.interpret_for_test(
+                rig.handle.window(),
+                crate::router::UiEffect::TrackEntriesOpen,
+            );
+        }
+        assert!(matches!(
+            adapter.borrow().view_state.flow(),
+            Flow::TrackEntries { .. }
+        ));
+        {
+            let mut a = adapter.borrow_mut();
+            let outcomes = a.view_state.open_track_entry_form(a_id, None);
+            a.apply_outcomes_for_test(rig.handle.window(), &outcomes);
+            a.seed_track_form_for_test(None);
+            a.refresh_forced(rig.handle.window());
+        }
+        assert!(rig.handle.window().get_track_form_open());
+        // The add seed: today's date, both times unset.
+        let today = chrono::Local::now().date_naive();
+        assert_eq!(
+            rig.handle.window().get_track_form_date_text(),
+            today.format("%Y-%m-%d").to_string(),
+            "the empty date resolves today"
+        );
+        assert_eq!(rig.handle.window().get_track_form_start_text(), "--:--");
+        assert_eq!(rig.handle.window().get_track_form_end_text(), "--:--");
+
+        // Type the span: 22:00 → 23:00 local (inside today, rollover
+        // safe). The commit must route the exact instants.
+        {
+            let mut a = adapter.borrow_mut();
+            let form = a
+                .track_form_mut_for_test()
+                .as_mut()
+                .expect("the form is seeded");
+            form.start_text = "22:00".to_owned();
+            form.end_text = "23:00".to_owned();
+            let ok = a.commit_track_form_for_test(rig.handle.window());
+            assert!(ok, "a parsed span commits");
+        }
+        let expected_start = chrono::Local
+            .with_ymd_and_hms(today.year(), today.month(), today.day(), 22, 0, 0)
+            .single()
+            .expect("resolvable")
+            .with_timezone(&chrono::Utc);
+        let expected_end = expected_start + chrono::TimeDelta::hours(1);
+        let commands = rig.drain_commands();
+        assert_eq!(
+            commands,
+            vec![StateCommand::LogTime {
+                task: a_id,
+                start: expected_start,
+                end: expected_end,
+                kind: taskboard_domain::tracking::TimeEntryKind::Work,
+            }],
+            "exactly one LogTime with the exact local→UTC instants"
+        );
+        // The commit steps the surface back to the list; the overlay
+        // stays open (the multi-add posture).
+        assert!(matches!(
+            adapter.borrow().view_state.flow(),
+            Flow::TrackEntries { .. }
+        ));
+    });
+}
+
+/// The edit journey (closed entry): row-activate seeds the local
+/// fields; changing the end routes the exact `AdjustTimeEntry` mask
+/// (`start: Some`, `end: Some`, `kind: None`).
+#[test]
+fn the_track_form_edit_commit_routes_the_exact_adjust_mask() {
+    on_slint_thread(|| {
+        use chrono::{Datelike as _, TimeZone as _};
+        let (mut state, fx) = fixture();
+        let [a_id, _b, _c] = fx.tasks;
+        let [s0, _s1] = fx.stacks;
+        let entry = closed_entry_on(&mut state, a_id, 10);
+        let mut rig = rig(state);
+        let adapter = rig.adapter();
+        arm_task_view(&rig, &adapter, a_id, s0);
+        {
+            let mut a = adapter.borrow_mut();
+            a.interpret_for_test(
+                rig.handle.window(),
+                crate::router::UiEffect::TrackEntriesOpen,
+            );
+        }
+        // Row-activate: the seed resolves through the id table.
+        {
+            let mut a = adapter.borrow_mut();
+            let outcomes = a.view_state.open_track_entry_form(a_id, Some(entry));
+            a.apply_outcomes_for_test(rig.handle.window(), &outcomes);
+            a.seed_track_form_for_test(Some(entry));
+            a.refresh_forced(rig.handle.window());
+        }
+        // The seeded fields are the entry's local wall-clocks (the
+        // echo-local rule); the closed end seeds its time.
+        let start_local = chrono::Local
+            .with_ymd_and_hms(
+                chrono::Local::now().date_naive().year(),
+                chrono::Local::now().date_naive().month(),
+                chrono::Local::now().date_naive().day(),
+                10,
+                0,
+                0,
+            )
+            .single()
+            .expect("resolvable");
+        assert_eq!(
+            rig.handle.window().get_track_form_date_text(),
+            start_local.format("%Y-%m-%d").to_string()
+        );
+        assert_eq!(rig.handle.window().get_track_form_start_text(), "10:00");
+        assert_eq!(rig.handle.window().get_track_form_end_text(), "11:00");
+        // Change the end; the commit routes the exact mask.
+        {
+            let mut a = adapter.borrow_mut();
+            let form = a
+                .track_form_mut_for_test()
+                .as_mut()
+                .expect("the form is seeded");
+            form.end_text = "12:30".to_owned();
+            let ok = a.commit_track_form_for_test(rig.handle.window());
+            assert!(ok);
+        }
+        let expected_start = start_local.with_timezone(&chrono::Utc);
+        let expected_end = chrono::Local
+            .with_ymd_and_hms(
+                chrono::Local::now().date_naive().year(),
+                chrono::Local::now().date_naive().month(),
+                chrono::Local::now().date_naive().day(),
+                12,
+                30,
+                0,
+            )
+            .single()
+            .expect("resolvable")
+            .with_timezone(&chrono::Utc);
+        let commands = rig.drain_commands();
+        assert_eq!(
+            commands,
+            vec![StateCommand::AdjustTimeEntry {
+                id: entry,
+                start: Some(expected_start),
+                end: Some(expected_end),
+                kind: None,
+            }],
+            "the mask: start Some, end Some, kind None"
+        );
+    });
+}
+
+/// The running row's edit (stage-3 focus b): an open entry seeds the
+/// end EMPTY; an empty-end commit routes `end: None` (the mask's
+/// keep-open — the entry stays running, well-defined); a typed end
+/// closes it.
+#[test]
+fn the_running_rows_edit_seeds_an_empty_end_and_the_mask_keeps_it_open() {
+    on_slint_thread(|| {
+        let (mut state, fx) = fixture();
+        let [a_id, _b, _c] = fx.tasks;
+        let [s0, _s1] = fx.stacks;
+        let start = chrono::Utc::now();
+        let entry = taskboard_domain::TimeEntryId::from_uuid(uuid::Uuid::now_v7());
+        state.tracking.entries.insert(
+            entry,
+            taskboard_domain::TimeEntry {
+                id: entry,
+                task: a_id,
+                task_title: "running".to_owned(),
+                start,
+                end: None,
+                created_at: start,
+                updated_at: start,
+                kind: taskboard_domain::tracking::TimeEntryKind::Work,
+            },
+        );
+        let mut rig = rig(state);
+        let adapter = rig.adapter();
+        arm_task_view(&rig, &adapter, a_id, s0);
+        {
+            let mut a = adapter.borrow_mut();
+            a.interpret_for_test(
+                rig.handle.window(),
+                crate::router::UiEffect::TrackEntriesOpen,
+            );
+        }
+        {
+            let mut a = adapter.borrow_mut();
+            let outcomes = a.view_state.open_track_entry_form(a_id, Some(entry));
+            a.apply_outcomes_for_test(rig.handle.window(), &outcomes);
+            a.seed_track_form_for_test(Some(entry));
+            a.refresh_forced(rig.handle.window());
+        }
+        // The open entry's end seeds EMPTY (the keep-open seed), the
+        // start seeds its local wall-clock.
+        assert_eq!(rig.handle.window().get_track_form_end_text(), "--:--");
+        assert_ne!(rig.handle.window().get_track_form_start_text(), "--:--");
+        // Empty-end commit: `end: None` in the mask.
+        {
+            let mut a = adapter.borrow_mut();
+            let ok = a.commit_track_form_for_test(rig.handle.window());
+            assert!(ok, "the keep-open mask is well-defined");
+        }
+        let commands = rig.drain_commands();
+        assert_eq!(commands.len(), 1);
+        assert!(matches!(
+            &commands[0],
+            StateCommand::AdjustTimeEntry {
+                end: None,
+                start: Some(_),
+                kind: None,
+                ..
+            }
+        ));
+        // The typed end closes: `end: Some(_)`.
+        {
+            let mut a = adapter.borrow_mut();
+            let outcomes = a.view_state.open_track_entry_form(a_id, Some(entry));
+            a.apply_outcomes_for_test(rig.handle.window(), &outcomes);
+            a.seed_track_form_for_test(Some(entry));
+            let form = a.track_form_mut_for_test().as_mut().expect("seeded");
+            form.end_text = "23:59".to_owned();
+            let ok = a.commit_track_form_for_test(rig.handle.window());
+            assert!(ok);
+        }
+        let commands = rig.drain_commands();
+        assert!(matches!(
+            &commands[..],
+            [StateCommand::AdjustTimeEntry { end: Some(_), .. }]
+        ));
+    });
+}
+
+/// The live validity table gates the commit (D-TS4): an inverted
+/// span lands on the end field — the command lane stays empty and
+/// the form stays open.
+#[test]
+fn an_inverted_span_refuses_the_commit_and_lands_on_the_end_field() {
+    on_slint_thread(|| {
+        let (state, fx) = fixture();
+        let [a_id, _b, _c] = fx.tasks;
+        let [s0, _s1] = fx.stacks;
+        let mut rig = rig(state);
+        let adapter = rig.adapter();
+        arm_task_view(&rig, &adapter, a_id, s0);
+        {
+            let mut a = adapter.borrow_mut();
+            a.interpret_for_test(
+                rig.handle.window(),
+                crate::router::UiEffect::TrackEntriesOpen,
+            );
+            let outcomes = a.view_state.open_track_entry_form(a_id, None);
+            a.apply_outcomes_for_test(rig.handle.window(), &outcomes);
+            a.seed_track_form_for_test(None);
+            let form = a.track_form_mut_for_test().as_mut().expect("seeded");
+            form.start_text = "10:00".to_owned();
+            form.end_text = "09:00".to_owned();
+            let ok = a.commit_track_form_for_test(rig.handle.window());
+            assert!(!ok, "the inverted span refuses");
+        }
+        assert_eq!(rig.drain(), 0, "no command dispatches");
+        assert!(
+            matches!(
+                adapter.borrow().view_state.flow(),
+                Flow::TrackEntryForm { .. }
+            ),
+            "the form stays open — never swallowed silence"
+        );
+        assert_eq!(
+            rig.handle.window().get_track_form_end_validity(),
+            crate::FieldValidity::Invalid,
+            "the pair's rejection lands on the END field"
+        );
     });
 }

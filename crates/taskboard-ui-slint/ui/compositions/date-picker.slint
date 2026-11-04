@@ -29,6 +29,12 @@ export struct DueDayModel {
 
 export component DatePicker inherits Rectangle {
     in property <string> caption;
+    // The additive surface flag (r4 chunk 10, D-TS4): `false` hides
+    // the TimeField row — the entries form embeds the grid date-only
+    // (its times ride the two dedicated TimeFields). The default
+    // leaves the due editor byte-identical (R2's regression
+    // tripwire).
+    in property <bool> show-time: true;
     in property <string> time-text;
     in property <[[DueDayModel]]> grid;
     // The one-shot grid-focus flag (round-3 D10): `true` on the
@@ -141,7 +147,7 @@ export component DatePicker inherits Rectangle {
             // orphaned steppers survive). `--:--` is the date-only
             // value echo (r4 D23's display rule); the adapter owns
             // the parse, the seed-on-step, and the filter.
-            TimeField {
+            if (root.show-time): TimeField {
                 time-text: root.time-text;
                 validity: root.time-validity;
                 error-hint: root.time-error-hint;
