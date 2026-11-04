@@ -1204,6 +1204,31 @@ impl Adapter {
         if !flow_form {
             self.track_form = None;
         }
+        // The armed delete dies with the overlay (D-TS5's
+        // disarm-on-close; state-truth, nothing ticks) — but it
+        // survives the form surface's ladder step back to the list.
+        if !matches!(
+            self.view_state.flow(),
+            Flow::TrackEntries { .. } | Flow::TrackEntryForm { .. }
+        ) {
+            self.track_entry_target = None;
+        }
+        // The armed row's index resolves through the id table — a
+        // refresh that drops the armed row renders unarmed (the
+        // stale-index no-op).
+        let armed_index = self
+            .track_entry_target
+            .and_then(|armed| {
+                self.tables
+                    .track_entries
+                    .iter()
+                    .position(|entry| *entry == armed)
+            })
+            .map_or(-1, |position| i32::try_from(position).unwrap_or(-1));
+        window.set_track_armed_index(armed_index);
+        if armed_index < 0 {
+            self.track_entry_target = None;
+        }
         let Some(form) = self.track_form.as_ref() else {
             window.set_track_form_open(false);
             return;
@@ -1308,6 +1333,16 @@ impl Adapter {
     #[cfg(test)]
     pub(crate) fn track_form_mut_for_test(&mut self) -> &mut Option<TrackFormState> {
         &mut self.track_form
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_armed_delete_is(&self, entry: taskboard_domain::TimeEntryId) -> bool {
+        self.track_entry_target == Some(entry)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_armed_delete_is_none(&self) -> bool {
+        self.track_entry_target.is_none()
     }
 
     /// Seeds the form's adapter state for the armed flow (the begin
@@ -6296,6 +6331,38 @@ fn install_tracking_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         let outcomes = a.view_state.step_back_track_entries();
         a.apply_outcomes(&window, &outcomes);
         a.finish_mutation(&window);
+    });
+
+    // The armed delete (D-TS5): the first activate arms (the adapter
+    // holds the armed id; the push mirrors the index), the second
+    // dispatches `task.track-entry-delete` — the router resolves the
+    // one-shot target into the existing `DeleteTimeEntry`. Disarm
+    // rides the push (a dropped row or a closed overlay renders
+    // unarmed) and the dismissal seam (state-truth, nothing ticks).
+    let del = Rc::clone(adapter);
+    let del_weak = window.as_weak();
+    window.on_track_entry_delete_clicked(move |index| {
+        let Some(window) = del_weak.upgrade() else {
+            return;
+        };
+        let mut a = del.borrow_mut();
+        let Some(entry) = a
+            .tables
+            .track_entries
+            .get(usize::try_from(index).unwrap_or(usize::MAX))
+            .copied()
+        else {
+            return; // a stale index
+        };
+        if a.track_entry_target == Some(entry) {
+            // The confirm: the target fills the one-shot ctx and the
+            // router dispatches; the overlay stays open (the
+            // multi-delete posture — the row vanishes on refresh).
+            a.route(&window, ActionId::TaskTrackEntryDelete);
+        } else {
+            a.track_entry_target = Some(entry);
+            a.refresh_forced(&window);
+        }
     });
 
     // The add seam (D-TS4): opens the unseeded form over the subject;
