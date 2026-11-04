@@ -120,6 +120,30 @@ pub(crate) enum FocusHandover {
 }
 
 #[allow(clippy::struct_excessive_bools)] // the view-state flags are the reviewed table shape
+/// The entries form's adapter-owned state (r4 D-TS4): the seed, the
+/// grid (the picker's presence), and the three typed texts — wiped
+/// whenever the flow is not `TrackEntryForm`.
+#[derive(Debug, Clone)]
+pub(crate) struct TrackFormState {
+    seed: Option<taskboard_domain::TimeEntryId>,
+    picker: Option<crate::due_edit::DuePickerState>,
+    #[cfg(test)]
+    pub(crate) date_text: String,
+    #[cfg(not(test))]
+    date_text: String,
+    #[cfg(test)]
+    pub(crate) start_text: String,
+    #[cfg(not(test))]
+    start_text: String,
+    #[cfg(test)]
+    pub(crate) end_text: String,
+    #[cfg(not(test))]
+    end_text: String,
+}
+
+#[allow(
+    clippy::struct_excessive_bools // one flag per synced gate (the house shape)
+)]
 pub(crate) struct Adapter {
     keymap: Keymap,
     /// The today window's derivation pair (chunk 10 D4): held, never
@@ -216,6 +240,11 @@ pub(crate) struct Adapter {
     /// confirm); consumed by the next `-delete` dispatch and cleared
     /// on overlay mutations.
     track_entry_target: Option<taskboard_domain::TimeEntryId>,
+    /// The entries form's adapter-owned state (r4 D-TS4, the
+    /// due-editor's buffers pattern): the seed, the picker (grid
+    /// open), and the three typed texts. Wiped whenever the flow is
+    /// not `TrackEntryForm` — the buffers never outlive the flow.
+    track_form: Option<TrackFormState>,
     /// The notification row's task (DR-5/4, D-TU5); consumed by the
     /// next `task.track-start` dispatch, then cleared (one-shot, the
     /// timer-target precedent).
@@ -778,6 +807,11 @@ impl Adapter {
     /// sync, D18): the text-commit seams end in this method without a
     /// `route()` around them, and the visible chain (the status bar's
     /// mode read) must not go stale.
+    #[cfg(test)]
+    pub(crate) fn apply_outcomes_for_test(&mut self, window: &AppWindow, outcomes: &[FlowOutcome]) {
+        self.apply_outcomes(window, outcomes);
+    }
+
     fn apply_outcomes(&mut self, window: &AppWindow, outcomes: &[FlowOutcome]) {
         let mut mode_changed = false;
         let flow_ended =
@@ -1055,6 +1089,9 @@ impl Adapter {
         // The setter popover's pushed halves (r4 D33): cheap, every
         // pass — the popover reads them only while open.
         self.push_timer_setter(window);
+        // The entries form's pushed halves (r4 D-TS4): the same
+        // every-pass shape; the wipe rides the push.
+        self.push_track_form(window);
         // The pass materialized: close the cache only now — a
         // re-entrant pass before this line would see the stale cache
         // and derive again, never skip a needed pass.
@@ -1154,6 +1191,208 @@ impl Adapter {
                 &chrono::Local,
             ) == Some(true),
         );
+    }
+
+    /// The entries form's pushed halves (r4 D-TS4): the tri-state
+    /// mirrors over the live parse (the due editor's shape). Runs
+    /// every pass — cheap; the panel reads them only while mounted.
+    /// The wipe rides here too: the buffers never outlive the flow
+    /// (the §8 invariant's track-form twin).
+    #[allow(clippy::too_many_lines)] // one pushed half per property, kept flat
+    fn push_track_form(&mut self, window: &AppWindow) {
+        let flow_form = matches!(self.view_state.flow(), Flow::TrackEntryForm { .. });
+        if !flow_form {
+            self.track_form = None;
+        }
+        let Some(form) = self.track_form.as_ref() else {
+            window.set_track_form_open(false);
+            return;
+        };
+        let today = chrono::Local::now().date_naive();
+        let parse = crate::presentation::parse_track_form(
+            &form.date_text,
+            &form.start_text,
+            &form.end_text,
+            form.seed.is_some(),
+            today,
+            &chrono::Local,
+        );
+        let validity = |valid: Option<bool>| match valid {
+            None => crate::FieldValidity::Neutral,
+            Some(true) => crate::FieldValidity::Valid,
+            Some(false) => crate::FieldValidity::Invalid,
+        };
+        let to_slots = |slots: &[chrono::NaiveTime]| {
+            ModelRc::new(slint::VecModel::from(
+                slots
+                    .iter()
+                    .map(|slot| crate::TimeSlotRow {
+                        label: SharedString::from(crate::due_edit::format_time_hm(*slot)),
+                        minutes: crate::due_edit::minutes_of_day(*slot),
+                    })
+                    .collect::<Vec<crate::TimeSlotRow>>(),
+            ))
+        };
+        let slots_for = |text: &str| -> Vec<chrono::NaiveTime> {
+            let digits = crate::due_edit::filter_digits(text);
+            crate::due_edit::quarter_slots()
+                .into_iter()
+                .filter(|slot| crate::due_edit::quick_list_matches(&digits, *slot))
+                .collect()
+        };
+        let start_slots = slots_for(&form.start_text);
+        let end_slots = slots_for(&form.end_text);
+        let grid = form.picker.as_ref().map_or_else(
+            || ModelRc::new(slint::VecModel::from(Vec::new())),
+            |picker| {
+                use chrono::Datelike as _;
+                let now = chrono::Local::now().date_naive();
+                ModelRc::new(slint::VecModel::from(
+                    picker
+                        .grid()
+                        .chunks(7)
+                        .map(|chunk| {
+                            ModelRc::new(slint::VecModel::from(
+                                chunk
+                                    .iter()
+                                    .map(|cell| {
+                                        let date = cell.date;
+                                        crate::DueDayModel {
+                                            label: SharedString::from(
+                                                date.map_or(String::new(), |d| d.day().to_string()),
+                                            ),
+                                            blank: date.is_none(),
+                                            cursor: date.is_some_and(|d| d == picker.cursor()),
+                                            today: date.is_some_and(|d| d == now),
+                                            kind: crate::models::to_slint_due_kind(date.map_or(
+                                                crate::presentation::DueKind::None,
+                                                |d| {
+                                                    crate::due_edit::cell_kind(
+                                                        d,
+                                                        now,
+                                                        self.due_soon_horizon,
+                                                    )
+                                                },
+                                            )),
+                                        }
+                                    })
+                                    .collect::<Vec<crate::DueDayModel>>(),
+                            ))
+                        })
+                        .collect::<Vec<ModelRc<crate::DueDayModel>>>(),
+                ))
+            },
+        );
+        window.set_track_form_open(true);
+        window.set_track_form_date_text(SharedString::from(form.date_text.clone()));
+        window.set_track_form_date_validity(validity(parse.date_valid));
+        window.set_track_form_date_hint(SharedString::from(crate::presentation::TRACK_DATE_HINT));
+        window.set_track_form_grid_open(form.picker.is_some());
+        window.set_track_form_grid(grid);
+        window.set_track_form_start_text(SharedString::from(form.start_text.clone()));
+        window.set_track_form_start_validity(validity(parse.start_valid));
+        window.set_track_form_start_hint(SharedString::from(crate::due_edit::TIME_SYNTAX_HINT));
+        window.set_track_form_start_slots(to_slots(&start_slots));
+        window.set_track_form_start_nearest_row(
+            i32::try_from(crate::due_edit::nearest_slot(&start_slots, None)).unwrap_or(0),
+        );
+        window.set_track_form_end_text(SharedString::from(form.end_text.clone()));
+        window.set_track_form_end_validity(validity(parse.end_valid));
+        window.set_track_form_end_hint(SharedString::from(crate::due_edit::TIME_SYNTAX_HINT));
+        window.set_track_form_end_slots(to_slots(&end_slots));
+        window.set_track_form_end_nearest_row(
+            i32::try_from(crate::due_edit::nearest_slot(&end_slots, None)).unwrap_or(0),
+        );
+    }
+
+    #[cfg(test)]
+    pub(crate) fn track_form_mut_for_test(&mut self) -> &mut Option<TrackFormState> {
+        &mut self.track_form
+    }
+
+    /// Seeds the form's adapter state for the armed flow (the begin
+    /// seam's shape: inside the armed window, before the outcomes'
+    /// refresh). Add seeds today's date and two unset times; edit
+    /// seeds the entry's local date and `HH:MM` times — an open
+    /// entry's end seeds empty (the keep-open semantics, D-TS4).
+    #[cfg(test)]
+    pub(crate) fn seed_track_form_for_test(&mut self, seed: Option<taskboard_domain::TimeEntryId>) {
+        self.seed_track_form(seed);
+    }
+
+    fn seed_track_form(&mut self, seed: Option<taskboard_domain::TimeEntryId>) {
+        use chrono::TimeZone as _;
+        let Flow::TrackEntryForm { .. } = self.view_state.flow() else {
+            return;
+        };
+        let state = self.state.load_full();
+        let today = chrono::Local::now().date_naive();
+        let entry = seed.and_then(|id| state.tracking.entries.get(&id));
+        let start_local = entry.map(|e| chrono::Local.from_utc_datetime(&e.start.naive_utc()));
+        self.track_form = Some(TrackFormState {
+            seed,
+            picker: None,
+            date_text: start_local.map_or(today.format("%Y-%m-%d").to_string(), |l| {
+                l.format("%Y-%m-%d").to_string()
+            }),
+            start_text: start_local.map_or("--:--".to_owned(), |l| l.format("%H:%M").to_string()),
+            end_text: entry.and_then(|e| e.end).map_or_else(
+                || "--:--".to_owned(),
+                |end| {
+                    chrono::Local
+                        .from_utc_datetime(&end.naive_utc())
+                        .format("%H:%M")
+                        .to_string()
+                },
+            ),
+        });
+    }
+
+    /// The commit funnel (D-TS4, F24): the live validity table is
+    /// authoritative — the draft fills the one-shot ctx fields only
+    /// when it passes, the router dispatches the existing verb, and
+    /// the surface steps back to the list. A refusal keeps the form
+    /// open with the invalid flavour (never swallowed silence).
+    #[cfg(test)]
+    pub(crate) fn commit_track_form_for_test(&mut self, window: &AppWindow) -> bool {
+        self.commit_track_form(window)
+    }
+
+    fn commit_track_form(&mut self, window: &AppWindow) -> bool {
+        let Some(form) = self.track_form.as_ref() else {
+            return false;
+        };
+        let today = chrono::Local::now().date_naive();
+        let parse = crate::presentation::parse_track_form(
+            &form.date_text,
+            &form.start_text,
+            &form.end_text,
+            form.seed.is_some(),
+            today,
+            &chrono::Local,
+        );
+        let Some(draft) = parse.draft else {
+            self.refresh_forced(window);
+            return false;
+        };
+        self.track_entry_draft = Some(draft);
+        self.track_entry_target = form.seed;
+        let action = if form.seed.is_some() {
+            ActionId::TaskTrackEntryAdjust
+        } else {
+            ActionId::TaskTrackEntryLog
+        };
+        self.route(window, action);
+        // The commit steps the surface back to the list (the
+        // ladder's forward direction); the overlay stays open (the
+        // multi-add posture).
+        let Flow::TrackEntryForm { task, .. } = self.view_state.flow().clone() else {
+            return true;
+        };
+        let outcomes = self.view_state.open_track_entries(task);
+        self.apply_outcomes(window, &outcomes);
+        self.finish_mutation(window);
+        true
     }
 
     /// §8 (W-SM-c): the date editor's buffers never outlive the flow —
@@ -3656,6 +3895,7 @@ pub(crate) fn install(
         timer_target: None,
         track_entry_draft: None,
         track_entry_target: None,
+        track_form: None,
         track_target: None,
         habit_target: None,
         habit_move: None,
@@ -5972,6 +6212,30 @@ fn install_timer_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
 /// D-TU5's fallback path). No seam for the context-menu arms: the
 /// generic menu invocation already re-dispatches registry entries over
 /// the focused task.
+/// The steppers' and the quick-list picks' shared seed-on-step
+/// semantics (r4 D23): the parse seeds midnight when unset, ±15
+/// minutes wraps over midnight, a pick writes the slot verbatim.
+fn apply_time(
+    form: &mut TrackFormState,
+    which: u8,
+    mutation: impl Fn(chrono::NaiveTime) -> chrono::NaiveTime,
+) {
+    let current = if which == 0 {
+        &form.start_text
+    } else {
+        &form.end_text
+    };
+    let base = crate::due_edit::parse_time_lenient(current)
+        .unwrap_or_else(|| chrono::NaiveTime::from_hms_opt(0, 0, 0).expect("midnight"));
+    let text = crate::due_edit::format_time_hm(mutation(base));
+    if which == 0 {
+        form.start_text = text;
+    } else {
+        form.end_text = text;
+    }
+}
+
+#[allow(clippy::too_many_lines)] // one seam per callback, kept flat
 fn install_tracking_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     let chip = Rc::clone(adapter);
     let chip_weak = window.as_weak();
@@ -6034,8 +6298,234 @@ fn install_tracking_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         a.finish_mutation(&window);
     });
 
+    // The add seam (D-TS4): opens the unseeded form over the subject;
+    // the seeding lands in the same window as row-activation's.
+    let add = Rc::clone(adapter);
+    let add_weak = window.as_weak();
+    window.on_track_form_add_requested(move || {
+        let Some(window) = add_weak.upgrade() else {
+            return;
+        };
+        let mut a = add.borrow_mut();
+        let Some(subject) = a.view_state.subject_task() else {
+            return;
+        };
+        let outcomes = a.view_state.open_track_entry_form(subject, None);
+        a.apply_outcomes(&window, &outcomes);
+        a.finish_mutation(&window);
+        a.seed_track_form(None);
+        a.refresh_forced(&window);
+        let nonce = window.get_track_panel_focus_nonce();
+        window.set_track_panel_focus_nonce(nonce.wrapping_add(1));
+    });
+
+    // The form's seams (r4 D-TS4): every intent mutates the
+    // adapter-owned state and refreshes — the widget renders what it
+    // is pushed and reports what the user did (§5.1). The commit
+    // rides the one funnel (`commit_track_form`).
+    let date = Rc::clone(adapter);
+    let date_weak = window.as_weak();
+    window.on_track_form_date_edited(move |text| {
+        let Some(window) = date_weak.upgrade() else {
+            return;
+        };
+        let mut a = date.borrow_mut();
+        if let Some(form) = a.track_form.as_mut() {
+            form.date_text = text.to_string();
+        }
+        a.refresh_forced(&window);
+    });
+    let grid = Rc::clone(adapter);
+    let grid_weak = window.as_weak();
+    window.on_track_form_grid_toggled(move || {
+        let Some(window) = grid_weak.upgrade() else {
+            return;
+        };
+        let mut a = grid.borrow_mut();
+        let Some(form) = a.track_form.as_mut() else {
+            return;
+        };
+        if form.picker.is_some() {
+            form.picker = None;
+        } else {
+            let anchor = chrono::NaiveDate::parse_from_str(&form.date_text, "%Y-%m-%d").ok();
+            let anchor = anchor.and_then(|d| {
+                use chrono::TimeZone as _;
+                chrono::Local
+                    .from_local_datetime(&d.and_hms_opt(12, 0, 0).expect("noon"))
+                    .single()
+                    .map(|local| local.with_timezone(&chrono::Utc))
+            });
+            form.picker = Some(crate::due_edit::DuePickerState::open(
+                chrono::Local::now().date_naive(),
+                anchor,
+                &chrono::Local,
+            ));
+        }
+        a.refresh_forced(&window);
+    });
+    let grid_key = Rc::clone(adapter);
+    let grid_key_weak = window.as_weak();
+    window.on_track_form_grid_key(move |code| {
+        use crate::due_edit::DatePickerKey as K;
+        let Some(window) = grid_key_weak.upgrade() else {
+            return;
+        };
+        let mut a = grid_key.borrow_mut();
+        let Some(key) = crate::due_edit::DatePickerKey::from_code(code) else {
+            return;
+        };
+        let Some(form) = a.track_form.as_mut() else {
+            return;
+        };
+        let Some(picker) = form.picker.as_mut() else {
+            return; // a stale stroke against a closed grid
+        };
+        match key {
+            K::Left => picker.move_days(-1),
+            K::Right => picker.move_days(1),
+            K::Up => picker.move_days(-7),
+            K::Down => picker.move_days(7),
+            K::PrevMonth => picker.move_months(-1),
+            K::NextMonth => picker.move_months(1),
+            K::MonthStart => picker.month_edge(true),
+            K::MonthEnd => picker.month_edge(false),
+            // The grid's Enter hands focus to the date field (the
+            // due grid's phase hand-over); the commit is the click's
+            // or the typed field's.
+            K::Commit | K::TimeBack | K::TimeForward => {}
+        }
+        a.refresh_forced(&window);
+    });
+    let day = Rc::clone(adapter);
+    let day_weak = window.as_weak();
+    window.on_track_form_day_clicked(move |cell| {
+        let Some(window) = day_weak.upgrade() else {
+            return;
+        };
+        let mut a = day.borrow_mut();
+        let Some(date) = a
+            .track_form
+            .as_ref()
+            .and_then(|f| f.picker.as_ref())
+            .and_then(|picker| {
+                picker
+                    .grid()
+                    .get(usize::try_from(cell).unwrap_or(usize::MAX))
+                    .and_then(|c| c.date)
+            })
+        else {
+            return; // a blank or a stale index
+        };
+        let form = a.track_form.as_mut().expect("checked above");
+        if let Some(picker) = form.picker.as_mut() {
+            picker.set_cursor(date);
+        }
+        form.date_text = date.format("%Y-%m-%d").to_string();
+        a.refresh_forced(&window);
+    });
+    let start_edit = Rc::clone(adapter);
+    let start_edit_weak = window.as_weak();
+    window.on_track_form_start_edited(move |text| {
+        let Some(window) = start_edit_weak.upgrade() else {
+            return;
+        };
+        let mut a = start_edit.borrow_mut();
+        if let Some(form) = a.track_form.as_mut() {
+            form.start_text = text.to_string();
+        }
+        a.refresh_forced(&window);
+    });
+    let end_edit = Rc::clone(adapter);
+    let end_edit_weak = window.as_weak();
+    window.on_track_form_end_edited(move |text| {
+        let Some(window) = end_edit_weak.upgrade() else {
+            return;
+        };
+        let mut a = end_edit.borrow_mut();
+        if let Some(form) = a.track_form.as_mut() {
+            form.end_text = text.to_string();
+        }
+        a.refresh_forced(&window);
+    });
+    for (name, which, pick) in [
+        ("start_stepped", 0u8, false),
+        ("start_picked", 0u8, true),
+        ("end_stepped", 1u8, false),
+        ("end_picked", 1u8, true),
+    ] {
+        let seam = Rc::clone(adapter);
+        let seam_weak = window.as_weak();
+        let handler = move |window: &AppWindow, arg: i32| {
+            let mut a = seam.borrow_mut();
+            if let Some(form) = a.track_form.as_mut() {
+                if pick {
+                    let minutes = arg;
+                    apply_time(form, which, |_| {
+                        crate::due_edit::time_of_minutes(minutes).unwrap_or_else(|| {
+                            chrono::NaiveTime::from_hms_opt(0, 0, 0).expect("midnight")
+                        })
+                    });
+                } else {
+                    let delta = arg;
+                    apply_time(form, which, |time| {
+                        crate::due_edit::step_minutes(time, delta)
+                    });
+                }
+            }
+            a.refresh_forced(window);
+        };
+        match name {
+            "start_stepped" => {
+                let w = seam_weak.clone();
+                window.on_track_form_start_stepped(move |arg| {
+                    if let Some(win) = w.upgrade() {
+                        handler(&win, arg);
+                    }
+                });
+            }
+            "start_picked" => {
+                let w = seam_weak.clone();
+                window.on_track_form_start_picked(move |arg| {
+                    if let Some(win) = w.upgrade() {
+                        handler(&win, arg);
+                    }
+                });
+            }
+            "end_stepped" => {
+                let w = seam_weak.clone();
+                window.on_track_form_end_stepped(move |arg| {
+                    if let Some(win) = w.upgrade() {
+                        handler(&win, arg);
+                    }
+                });
+            }
+            _ => {
+                let w = seam_weak;
+                window.on_track_form_end_picked(move |arg| {
+                    if let Some(win) = w.upgrade() {
+                        handler(&win, arg);
+                    }
+                });
+            }
+        }
+    }
+
+    // The commit funnel (F24): the end field's Return. `true` steps
+    // the surface back to the list; `false` keeps the form open with
+    // the invalid flavour (the absorbed-miss convention keeps the
+    // typed text).
+    let commit = Rc::clone(adapter);
+    let commit_weak = window.as_weak();
+    window.on_track_form_commit_requested(move || {
+        let Some(window) = commit_weak.upgrade() else {
+            return false;
+        };
+        commit.borrow_mut().commit_track_form(&window)
+    });
+
     // The row-activate seam (D-TS3): opens the seeded edit form
-    // (slice 4's commit funnel owns its Return); the seed resolves
+    // (the commit funnel owns its Return); the seed resolves
     // through the id table (never a viewport offset).
     let row = Rc::clone(adapter);
     let row_weak = window.as_weak();
@@ -6058,6 +6548,8 @@ fn install_tracking_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         let outcomes = a.view_state.open_track_entry_form(subject, Some(entry));
         a.apply_outcomes(&window, &outcomes);
         a.finish_mutation(&window);
+        a.seed_track_form(Some(entry));
+        a.refresh_forced(&window);
         let nonce = window.get_track_panel_focus_nonce();
         window.set_track_panel_focus_nonce(nonce.wrapping_add(1));
     });

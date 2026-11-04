@@ -621,7 +621,40 @@ export component AppWindow inherits Window {
         rows: root.task-model.track-entries;
         total: root.task-model.track-entries-total;
         focus-nonce: root.track-panel-focus-nonce;
+        // The form surface's pushed halves (r4 D-TS4) — the
+        // adapter-owned mirrors (the TimeField contract: the push
+        // re-seeds, the widget never holds state).
+        form-open: root.track-form-open;
+        form-date-text: root.track-form-date-text;
+        form-date-validity: root.track-form-date-validity;
+        form-date-hint: root.track-form-date-hint;
+        form-grid-open: root.track-form-grid-open;
+        form-grid: root.track-form-grid;
+        form-grid-focus: root.track-form-grid-focus;
+        form-start-text: root.track-form-start-text;
+        form-start-validity: root.track-form-start-validity;
+        form-start-hint: root.track-form-start-hint;
+        form-start-slots: root.track-form-start-slots;
+        form-start-nearest-row: root.track-form-start-nearest-row;
+        form-end-text: root.track-form-end-text;
+        form-end-validity: root.track-form-end-validity;
+        form-end-hint: root.track-form-end-hint;
+        form-end-slots: root.track-form-end-slots;
+        form-end-nearest-row: root.track-form-end-nearest-row;
         row-activated(index) => root.track-entry-row-activated(index);
+        add-requested() => root.track-form-add-requested();
+        date-edited(t) => root.track-form-date-edited(t);
+        date-grid-toggled() => root.track-form-grid-toggled();
+        date-grid-key(k) => root.track-form-grid-key(k);
+        date-day-clicked(c) => root.track-form-day-clicked(c);
+        start-edited(t) => root.track-form-start-edited(t);
+        start-stepped(n) => root.track-form-start-stepped(n);
+        start-picked(m) => root.track-form-start-picked(m);
+        end-edited(t) => root.track-form-end-edited(t);
+        end-stepped(n) => root.track-form-end-stepped(n);
+        end-picked(m) => root.track-form-end-picked(m);
+        commit-requested() => root.track-form-commit-requested();
+        form-committed() => { /* the flow stepped; the push carries the swap */ }
     }
 
 
@@ -1023,6 +1056,25 @@ export component AppWindow inherits Window {
     // The entries panel's focus hand-off (the setter's nonce idiom):
     // the adapter bumps it when the overlay mounts.
     in-out property <int> track-panel-focus-nonce: 0;
+    // The form's pushed halves (r4 D-TS4): the adapter's mirrors, one
+    // property per half (the timer-setter block's shape).
+    in-out property <bool> track-form-open: false;
+    in-out property <string> track-form-date-text: "";
+    in-out property <FieldValidity> track-form-date-validity: FieldValidity.neutral;
+    in-out property <string> track-form-date-hint: "";
+    in-out property <bool> track-form-grid-open: false;
+    in-out property <[[DueDayModel]]> track-form-grid;
+    in-out property <bool> track-form-grid-focus: false;
+    in-out property <string> track-form-start-text: "--:--";
+    in-out property <FieldValidity> track-form-start-validity: FieldValidity.neutral;
+    in-out property <string> track-form-start-hint: "";
+    in-out property <[TimeSlotRow]> track-form-start-slots;
+    in-out property <int> track-form-start-nearest-row: 0;
+    in-out property <string> track-form-end-text: "--:--";
+    in-out property <FieldValidity> track-form-end-validity: FieldValidity.neutral;
+    in-out property <string> track-form-end-hint: "";
+    in-out property <[TimeSlotRow]> track-form-end-slots;
+    in-out property <int> track-form-end-nearest-row: 0;
     in-out property <int> timer-setter-focus-nonce: 0;
     in-out property <string> timer-setter-time-text: "--:--";
     in-out property <FieldValidity> timer-setter-time-validity: FieldValidity.neutral;
@@ -1086,4 +1138,16 @@ export component AppWindow inherits Window {
     pure callback task-track-entries-clicked();
     pure callback track-entries-dismiss-requested();
     pure callback track-entry-row-activated(int);
+    pure callback track-form-add-requested();
+    pure callback track-form-date-edited(string);
+    pure callback track-form-grid-toggled();
+    pure callback track-form-grid-key(int);
+    pure callback track-form-day-clicked(int);
+    pure callback track-form-start-edited(string);
+    pure callback track-form-start-stepped(int);
+    pure callback track-form-start-picked(int);
+    pure callback track-form-end-edited(string);
+    pure callback track-form-end-stepped(int);
+    pure callback track-form-end-picked(int);
+    pure callback track-form-commit-requested() -> bool;
 }
