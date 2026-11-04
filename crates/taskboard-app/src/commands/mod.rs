@@ -620,6 +620,7 @@ fn domain_error_kind(err: &taskboard_domain::CommandError) -> &'static str {
         D::UnknownTimeEntry(_) => "unknown-time-entry",
         D::InvalidSpan => "invalid-span",
         D::TrackerTaskNotDoneable(_) => "tracker-not-doneable",
+        D::NotRecurring(_) => "not-recurring",
         D::UnknownHabit(_) | D::HabitDeleted(_) => "unknown-habit",
         D::InvalidHabitWindow { .. } => "invalid-habit-window",
         // The undo line's refusals are their own surface family

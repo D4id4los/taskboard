@@ -410,6 +410,22 @@ pub enum StateCommand {
         /// The entry to delete.
         id: crate::ids::TimeEntryId,
     },
+    /// Pause (until = `Some`) or resume (`until = None`) a recurring
+    /// series (issue #506, D-C10): the covered members — on or before
+    /// the inclusive `until` date — do not exist (no miss, no credit).
+    /// Read-modify-write inside the planner: only `paused_until` moves
+    /// on the current rule, never a whole-rule replace from the client
+    /// (a concurrent pattern edit cannot be clobbered). The engine
+    /// never writes the field itself — resume is date-derived; the
+    /// explicit resume (`None`) clears the field for badge hygiene. An
+    /// unchanged `until` is the accepted no-op. A rule-less or
+    /// tombstoned head is a typed rejection.
+    PauseSeries {
+        /// The recurring head whose series pauses.
+        head: TaskId,
+        /// The inclusive pause-through local date; `None` resumes.
+        until: Option<chrono::NaiveDate>,
+    },
     /// Create a habit tracker on the live board: the payload carries no
     /// order (the planner appends, D-H11) and no conversion link (the
     /// §4.7 seam links an already-created pair only, D-H7a). Zero quotas

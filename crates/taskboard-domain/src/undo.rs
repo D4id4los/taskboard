@@ -113,7 +113,11 @@ fn record_entry(
         | StateCommand::UpdateLabel { .. }
         | StateCommand::AssignLabel { .. }
         | StateCommand::UnassignLabel { .. }
-        | StateCommand::RestoreTask { .. } => UndoFacts::PreImages {
+        | StateCommand::RestoreTask { .. }
+        // The pause is a one-field task edit under the recur clock
+        // (issue #506): the recur pre-image inverts it exactly (the
+        // UpdateTask class restores the whole rule verbatim).
+        | StateCommand::PauseSeries { .. } => UndoFacts::PreImages {
             images: pre_images(app, actions),
             watermark: watermark_of(actions),
         },
@@ -278,6 +282,7 @@ fn touched_board(app: &AppState, command: &StateCommand) -> Option<crate::ids::B
         StateCommand::UpdateTask { id, .. }
         | StateCommand::SetTaskDone { id, .. }
         | StateCommand::MoveTask { id, .. }
+        | StateCommand::PauseSeries { head: id, .. }
         | StateCommand::DeleteTask { id }
         | StateCommand::SetTaskRemindersMuted { task: id, .. }
         | StateCommand::AddReminderRule { task: id, .. }
@@ -666,7 +671,11 @@ impl JournalEntry {
             StateCommand::CreateTask { .. }
             | StateCommand::CaptureTask { .. }
             | StateCommand::RestoreTask { .. } => Ok(InverseClass::CreatedTask),
-            StateCommand::UpdateTask { .. } => Ok(InverseClass::UpdateTask),
+            StateCommand::UpdateTask { .. }
+            // The pause inverts through the recur pre-image (issue
+            // #506): undoing it restores the pre-pause rule
+            // byte-for-byte via the standard UpdateTask inverse.
+            | StateCommand::PauseSeries { .. } => Ok(InverseClass::UpdateTask),
             StateCommand::SetTaskDone { .. } => Ok(InverseClass::SetTaskDone),
             StateCommand::MoveTask { .. } => Ok(InverseClass::MoveTask),
             StateCommand::DeleteTask { .. } => Ok(InverseClass::DeleteTask),

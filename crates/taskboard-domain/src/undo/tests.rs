@@ -2418,5 +2418,109 @@ proptest::proptest! {
             "the head did not move past the pop"
         );
     }
+}
 
+// ---- the series pause (issue #506): one-field edit, UpdateTask
+// inverse -----------------------------------------------------------
+
+fn daily_rule() -> crate::recur::RecurRule {
+    crate::recur::RecurRule {
+        series: crate::ids::SeriesId::from_uuid(uuid::Uuid::from_u128(9_000)),
+        anchor: chrono::NaiveDate::from_ymd_opt(2026, 6, 1).unwrap(),
+        pattern: crate::recur::RecurPattern::Daily {
+            every: crate::recur::EveryDays::new(1).unwrap(),
+        },
+        bound: crate::recur::RecurBound::None,
+        continued_from: None,
+        paused_until: None,
+    }
+}
+
+fn recur_task(h: &mut Harness, title: &str) -> (crate::ids::TaskId, crate::recur::RecurRule) {
+    let board = h.board();
+    let stack = h.stack(board);
+    let task = h.task(stack, title);
+    let rule = daily_rule();
+    h.exec(&StateCommand::UpdateTask {
+        id: task,
+        changes: crate::messages::TaskChanges {
+            recur: Some(Some(rule.clone())),
+            ..Default::default()
+        },
+    })
+    .expect("rule set");
+    (task, rule)
+}
+
+#[test]
+fn a_pause_journals_pre_images_and_undoes_to_the_pre_pause_rule() {
+    let mut h = Harness::new();
+    let (task, rule) = recur_task(&mut h, "chore");
+    let until = chrono::NaiveDate::from_ymd_opt(2026, 7, 10).unwrap();
+    h.exec(&StateCommand::PauseSeries {
+        head: task,
+        until: Some(until),
+    })
+    .expect("paused");
+    // The journaled facts are PreImages with the pre-pause rule.
+    let entry = h.journal.entries.last().unwrap();
+    let UndoFacts::PreImages { images, .. } = &entry.facts else {
+        panic!("PauseSeries journals PreImages");
+    };
+    let PreImage::Task {
+        before: Some(pre), ..
+    } = &images[0]
+    else {
+        panic!("the pause captures the pre entity");
+    };
+    assert_eq!(pre.recur.as_ref().unwrap().paused_until, None);
+    // Undo restores the pre-pause rule byte-for-byte.
+    h.exec(&StateCommand::Undo).expect("undone");
+    let restored = h.disk.tasks[&task].recur.clone().unwrap();
+    assert_eq!(restored, rule);
+    // Redo re-applies the pause.
+    h.exec(&StateCommand::Redo).expect("redone");
+    let redone = h.disk.tasks[&task].recur.clone().unwrap();
+    assert_eq!(redone.paused_until, Some(until));
+    assert_eq!(redone.pattern, rule.pattern, "only the pause field moves");
+}
+
+#[test]
+fn a_pause_with_a_later_rule_edit_refuses_typed() {
+    // The watermark scope is the recur clock: a concurrent pattern
+    // edit after the pause diverges the clock, so the undo refuses
+    // instead of restoring a stale rule (R-U7).
+    let mut h = Harness::new();
+    let (task, _) = recur_task(&mut h, "chore");
+    let until = chrono::NaiveDate::from_ymd_opt(2026, 7, 10).unwrap();
+    h.exec(&StateCommand::PauseSeries {
+        head: task,
+        until: Some(until),
+    })
+    .expect("paused");
+    h.exec(&StateCommand::UpdateTask {
+        id: task,
+        changes: crate::messages::TaskChanges {
+            recur: Some(Some({
+                let mut edited = daily_rule();
+                edited.paused_until = Some(until);
+                edited.pattern = crate::recur::RecurPattern::Daily {
+                    every: crate::recur::EveryDays::new(2).unwrap(),
+                };
+                edited
+            })),
+            ..Default::default()
+        },
+    })
+    .expect("rule edited after the pause");
+    // The later edit undoes first (its own clock stands).
+    h.exec(&StateCommand::Undo)
+        .expect("the later rule edit undoes");
+    // Undoing the pause now would restore a stale rule across the
+    // edited recur clock (rewritten by the restore) — refuse typed.
+    let err = h.exec(&StateCommand::Undo);
+    assert!(matches!(
+        err,
+        Err(CommandError::TargetNoLongerInvertible { .. })
+    ));
 }
