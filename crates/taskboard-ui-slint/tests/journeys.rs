@@ -12669,6 +12669,45 @@ fn env_overridden_keys_render_locked_and_refuse_the_seam() {
     );
 }
 
+/// An empty Return refuses typed and dispatches nothing: the field's
+/// `accepted` seam fires on Return regardless of content, and the
+/// mirror's empty contract is Neutral — so an empty Return reaches the
+/// commit seam where the typed mints `expect` a validated parse. The
+/// refusal is the visible Rejected outcome, never a mint attempt.
+#[test]
+fn an_empty_return_refuses_typed_without_routing() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = general_harness(state, general_snapshot());
+            harness.press(ActionId::AppSettings);
+            let window = harness.handle.window();
+            let model = || window.global::<taskboard_ui_slint::SettingsModel>();
+
+            // Every text seam, committed empty (the untouched field's
+            // Return) and whitespace-only (the cleared field's
+            // Return): no mint attempt, no lane traffic.
+            for index in [5, 6, 7, 8, 9, 10, 11] {
+                for text in ["", "   "] {
+                    window.invoke_settings_general_committed(index, text.into());
+                    assert!(
+                        harness.drain_requests().is_empty(),
+                        "an empty commit on field {index} routes nothing"
+                    );
+                    assert_eq!(
+                        model().get_last_outcome(),
+                        taskboard_ui_slint::SettingsOutcome::Rejected,
+                        "field {index}: the empty commit refuses visibly"
+                    );
+                }
+            }
+        },
+    );
+}
+
 /// J-6 — the general fields' draft lifecycle: a Return-less edit
 /// never survives the surface (the scale field's §5.1 invariant,
 /// extended to the new fields — the mount dies the staged buffer and
