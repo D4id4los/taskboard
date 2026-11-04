@@ -173,6 +173,7 @@ fn sample_rule() -> taskboard_domain::recur::RecurRule {
         },
         bound: taskboard_domain::recur::RecurBound::None,
         continued_from: None,
+        paused_until: None,
     }
 }
 

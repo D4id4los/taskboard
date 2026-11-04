@@ -44,7 +44,8 @@ use crate::messages::{LabelChanges, StateCommand, TaskChanges};
 use crate::outbox::{LocalOp, OpId, PendingOp, op_targets_task};
 use crate::persistence::PersistenceAction;
 use crate::recur::{
-    RecurBound, RecurRule, next_after, roll_reference_date, roll_target, series_reference_date,
+    RecurBound, RecurRule, lift_to_live, next_live_after, roll_reference_date, roll_target,
+    series_reference_date,
 };
 use crate::reminders::{
     Insistence, ReminderDefaults, ReminderDismissal, ReminderRef, ReminderRule, ReminderSnooze,
@@ -721,7 +722,14 @@ pub fn plan_day_rolls(
         if reference >= today {
             continue;
         }
-        let target = roll_target(&rule.pattern, rule.anchor, reference, today);
+        // The live-member lift composes above the roll law (#506):
+        // mid-pause there is no "latest member ≤ today" to catch up to,
+        // so the head rolls to the first post-pause member and sits
+        // fresh — on resume day it is already due.
+        let target = lift_to_live(
+            rule,
+            roll_target(&rule.pattern, rule.anchor, reference, today),
+        );
         match rule.bound {
             RecurBound::Until(until) if target > until => continue,
             // Unreachable in practice (a count-exhausted series suppresses
@@ -1064,11 +1072,9 @@ pub fn plan_command(
             // reopening never spawns and never clears.
             let spawn_actions = match (*done, task.recur.clone()) {
                 (true, Some(rule)) => {
-                    let next_date = next_after(
-                        &rule.pattern,
-                        rule.anchor,
-                        series_reference_date(task, day, now),
-                    );
+                    // The live-member law (#506): the successor's member
+                    // is the first not covered by `paused_until`.
+                    let next_date = next_live_after(&rule, series_reference_date(task, day, now));
                     if bound_admits(app, &rule, next_date) {
                         Some(completion_spawn(app, task, next_date, day, ids, now))
                     } else {
@@ -9529,6 +9535,7 @@ mod tests {
                 },
                 bound: crate::recur::RecurBound::None,
                 continued_from: None,
+                paused_until: None,
             });
             task.duedate = Some(ts(T0 - 3_600));
         }
@@ -9970,6 +9977,7 @@ mod series_tests {
             },
             bound,
             continued_from: None,
+            paused_until: None,
         }
     }
 
@@ -10577,6 +10585,52 @@ mod series_tests {
             &actions[1],
             PersistenceAction::EnqueueOp(op)
                 if matches!(op.op, LocalOp::UpdateTask(id) if id == head_id())
+        ));
+    }
+
+    // ---- the pause (issue #506): the two engine arms ride the
+    // live-member law -----------------------------------------------
+
+    #[test]
+    fn completing_a_paused_head_spawns_the_first_post_pause_member() {
+        // The head sits on June 15; the pause runs through June 20.
+        // Completing today spawns the June 21 successor — the covered
+        // members never existed, so none of them is spawned or
+        // attributed.
+        let (mut app, outbox) = base_with(recur_head(RecurBound::None));
+        app.tasks
+            .get_mut(&head_id())
+            .unwrap()
+            .recur
+            .as_mut()
+            .unwrap()
+            .paused_until = Some(date(2026, 6, 20));
+        let plan = complete(&app, &outbox);
+        let successor = spawned_successor(&plan).expect("the series continues past the pause");
+        assert_eq!(
+            successor.scheduled.map(|s| utc_midnight().calendar_date(s)),
+            Some(date(2026, 6, 21)),
+        );
+    }
+
+    #[test]
+    fn a_mid_pause_stale_head_rolls_to_the_first_post_pause_member() {
+        // A head stale from June 13 with the pause through June 18:
+        // mid-pause there is no latest member to catch up to, so the
+        // roll lands on June 19 (fresh, already due on resume day).
+        let (mut app, _outbox) = base_with(recur_head(RecurBound::None));
+        let head = app.tasks.get_mut(&head_id()).unwrap();
+        head.scheduled = Some(at(date(2026, 6, 13), 9, 0));
+        head.duedate = None;
+        if let Some(rule) = head.recur.as_mut() {
+            rule.paused_until = Some(date(2026, 6, 18));
+        }
+        let actions = roll(&app, date(2026, 6, 15));
+        assert_eq!(actions.len(), 2, "one upsert, one enqueue");
+        assert!(matches!(
+            &actions[0],
+            PersistenceAction::UpsertTask(rolled)
+                if rolled.scheduled.map(|s| utc_midnight().calendar_date(s)) == Some(date(2026, 6, 19))
         ));
     }
 }

@@ -1234,6 +1234,7 @@ async fn i8_adopting_an_occurrence_card_learns_its_series() {
         },
         bound: RecurBound::None,
         continued_from: None,
+        paused_until: None,
     };
     // The document the other device flushed: the occurrence card's row
     // carries the rule under its write clock. Built through the real

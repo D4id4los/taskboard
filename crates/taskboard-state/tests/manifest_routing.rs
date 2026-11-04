@@ -156,6 +156,7 @@ fn changes_for(field: &str) -> Option<TaskChanges> {
                 },
                 bound: taskboard_domain::recur::RecurBound::None,
                 continued_from: None,
+                paused_until: None,
             };
             changes.recur = Some(Some(rule));
         }

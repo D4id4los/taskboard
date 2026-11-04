@@ -663,6 +663,20 @@ pub struct RecurRule {
     /// (or `None`). Entity lands in a later chunk; the seam is typed
     /// now so misfiling stays recoverable without data fabrication.
     pub continued_from: Option<HabitId>,
+    /// The vacation pause (issue #506, D-C10): members on or before
+    /// this inclusive local date **do not exist** — no miss is derived
+    /// for them, no credit is creatable through them (the absence
+    /// default stays honest *outside* the window only). Plain
+    /// date-space like `anchor`: no instant arithmetic, DST-immune by
+    /// construction; set only by the explicit [`crate::messages::StateCommand::PauseSeries`]
+    /// verb, never by the mint paths. Decode-lenient (documented
+    /// leniency at the trust boundary): pre-pause stored rows carry no
+    /// field and decode to `None`, and an unpaused rule serializes
+    /// without it — every pre-existing row's wire form is
+    /// byte-identical. An expired value is semantically inert (resume
+    /// is date-derived, zero state transition).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paused_until: Option<NaiveDate>,
 }
 
 impl RecurRule {
@@ -885,6 +899,33 @@ pub fn next_after(pattern: &RecurPattern, anchor: NaiveDate, from: NaiveDate) ->
     }
 }
 
+/// The pause's live-member lift (issue #506): the least *live* member
+/// strictly after `from` — a member on or before `paused_until` does
+/// not exist, so the answer walks past the pause in one bound step
+/// (`next_after` from `paused_until`; terminates — the pause is a
+/// finite date). With `paused_until: None` this is exactly
+/// [`next_after`] (the equivalence is pinned by property).
+#[must_use]
+pub fn next_live_after(rule: &RecurRule, from: NaiveDate) -> NaiveDate {
+    lift_to_live(rule, next_after(&rule.pattern, rule.anchor, from))
+}
+
+/// Lifts an already-computed member `target` of `rule` to the first
+/// *live* member at or after it: when the pause covers the target, the
+/// answer is the least member strictly after `paused_until`. The
+/// composition seam for callers that derive a member through the
+/// pattern-level laws ([`roll_target`], [`next_occurrence`]'s arms) —
+/// a rule-level live-member law composes above them without editing
+/// them. Identity when the pause is absent or already behind the
+/// target.
+#[must_use]
+pub fn lift_to_live(rule: &RecurRule, target: NaiveDate) -> NaiveDate {
+    match rule.paused_until {
+        Some(pause) if target <= pause => next_after(&rule.pattern, rule.anchor, pause),
+        _ => target,
+    }
+}
+
 /// The latest member on or before `today` (and ≥ `anchor`); `None` when
 /// no member satisfies both. The backward half of the arithmetic —
 /// [`roll_target`]'s catch-up case. Structured per pattern (no day-by-
@@ -1016,12 +1057,15 @@ pub fn roll_target(
     }
 }
 
-/// The series' schedule: its sorted members in `[from, to]` (empty when
-/// `from > to`). **Bound handling** (D6): `Until(u)` filters (`d ≤ u`
-/// only) — the schedule is the arithmetic truth of the series;
-/// `Count(n)` does *not* filter — the count is evaluated against
-/// completion history at the engine (no counter column exists, so the
-/// pure function cannot see it).
+/// The series' schedule: its sorted **live** members in `[from, to]`
+/// (empty when `from > to`). **Bound handling** (D6): `Until(u)`
+/// filters (`d ≤ u` only) — the schedule is the arithmetic truth of
+/// the series; `Count(n)` does *not* filter — the count is evaluated
+/// against completion history at the engine (no counter column exists,
+/// so the pure function cannot see it). **Pause handling** (#506):
+/// members on or before `paused_until` are neither pushed nor
+/// terminal — the cursor walks past them ([`next_live_after`]), so a
+/// paused range removes exactly its members.
 #[must_use]
 pub fn schedule(rule: &RecurRule, from: NaiveDate, to: NaiveDate) -> Vec<NaiveDate> {
     let mut members = Vec::new();
@@ -1030,7 +1074,7 @@ pub fn schedule(rule: &RecurRule, from: NaiveDate, to: NaiveDate) -> Vec<NaiveDa
     }
     let mut cursor = from.pred_opt();
     while let Some(prev) = cursor {
-        let member = next_after(&rule.pattern, rule.anchor, prev);
+        let member = next_live_after(rule, prev);
         if member > to {
             break;
         }
@@ -1090,7 +1134,12 @@ pub fn occurrence_outcome(
     completions: &[chrono::DateTime<chrono::Utc>],
 ) -> OccurrenceOutcome {
     let ws_day = crate::days::window_start(day, day_start_time, offset);
-    let next = next_after(&rule.pattern, rule.anchor, day);
+    // The window closes at the next **live** member's window start
+    // (#506): completions made during a pause attribute to the last
+    // live member before it, and the paused member's own non-existence
+    // means it can neither be `Done` nor derive `Missed` — a paused
+    // day's window runs until the first post-pause member.
+    let next = next_live_after(rule, day);
     let window_end = match rule.bound {
         RecurBound::Until(until) if next > until => None,
         _ => Some(crate::days::window_start(next, day_start_time, offset)),
@@ -1160,11 +1209,14 @@ pub fn next_occurrence(
     };
     let date = if stale {
         let r = reference.expect("stale implies a reference date");
-        let target = roll_target(&rule.pattern, rule.anchor, r, today);
+        // The live-member lift composes above the roll law (#506):
+        // mid-pause the first live member > the stale reference is the
+        // first post-pause member, and the head sits fresh on it.
+        let target = lift_to_live(rule, roll_target(&rule.pattern, rule.anchor, r, today));
         until_admits(target).then_some(target)
     } else {
         let from = reference.unwrap_or(today);
-        let next = next_after(&rule.pattern, rule.anchor, from);
+        let next = lift_to_live(rule, next_after(&rule.pattern, rule.anchor, from));
         until_admits(next).then_some(next)
     };
     NextOccurrence { date, stale }
@@ -1195,6 +1247,7 @@ mod tests {
             pattern,
             bound: RecurBound::None,
             continued_from: None,
+            paused_until: None,
         }
     }
 
@@ -1462,6 +1515,7 @@ mod arithmetic_tests {
             },
             bound: RecurBound::Until(date(2026, 10, 9)),
             continued_from: None,
+            paused_until: None,
         };
         let got = schedule(&rule, date(2026, 10, 1), date(2026, 10, 31));
         assert_eq!(
@@ -1533,6 +1587,7 @@ mod arithmetic_tests {
             pattern: daily,
             bound: RecurBound::None,
             continued_from: None,
+            paused_until: None,
         };
         assert_eq!(
             schedule(&rule, date(2026, 10, 2), date(2026, 10, 10)),
@@ -1551,6 +1606,7 @@ mod arithmetic_tests {
             pattern,
             bound: RecurBound::Until(until),
             continued_from: None,
+            paused_until: None,
         }
     }
 
@@ -1690,7 +1746,13 @@ mod arithmetic_tests {
                 .checked_add_signed(chrono::TimeDelta::try_days(400).expect("day delta"))
                 .expect("in range");
             let members = schedule(&boundless, rule.anchor, horizon);
-            prop_assert!(!members.is_empty(), "the horizon always contains the anchor's window");
+            // The window-partition premise needs at least one live
+            // member in the horizon: a pause reaching past the last
+            // pre-horizon member empties the list *by design* (paused
+            // members do not exist) and there is no partition to
+            // assert — the enumeration laws own that case
+            // (`pausing_removes_exactly_the_covered_members`).
+            prop_assume!(!members.is_empty());
             let ws = |d: NaiveDate| crate::days::window_start(d, start, offset);
             let ws_anchor = ws(rule.anchor);
             let now = ws_anchor + chrono::TimeDelta::try_seconds(now_offset).expect("delta");
@@ -1863,9 +1925,20 @@ mod arithmetic_tests {
                 prop_assert!(expected.is_empty());
                 return Ok(());
             }
+            // The live-member lift composes over the pattern seed
+            // (#506): the schedule enumerates *live* members, so a seed
+            // inside the pause steps to the first post-pause member and
+            // the chain steps through `next_live_after`.
+            if rule.paused_until.is_some_and(|p| cursor <= p) {
+                cursor = next_after(&rule.pattern, rule.anchor, rule.paused_until.unwrap());
+                if cursor > horizon {
+                    prop_assert!(expected.is_empty(), "the pause covers the horizon");
+                    return Ok(());
+                }
+            }
             let mut chained = vec![cursor];
             loop {
-                let next = next_after(&rule.pattern, rule.anchor, *chained.last().expect("seeded"));
+                let next = next_live_after(&rule, *chained.last().expect("seeded"));
                 if next > horizon {
                     break;
                 }
@@ -1900,6 +1973,7 @@ mod arithmetic_tests {
                         pattern: pattern.clone(),
                         bound: RecurBound::None,
                         continued_from: None,
+                        paused_until: None,
                     },
                     date(y, m, 1),
                     date(y, m, last_day_of(y, m)),
@@ -2321,6 +2395,7 @@ mod next_occurrence_tests {
             pattern,
             bound,
             continued_from: None,
+            paused_until: None,
         }
     }
 
@@ -2486,11 +2561,17 @@ mod next_occurrence_tests {
                 RecurBound::Until(u) if d > u => None,
                 _ => Some(d),
             };
+            // The composed-law oracle composes the live-member lift
+            // (#506): the advertisement is the first live member the
+            // pattern laws name, then bound-checked.
             if reference < today {
                 prop_assert!(next.stale);
                 prop_assert_eq!(
                     next.date,
-                    admits(roll_target(&rule.pattern, rule.anchor, reference, today))
+                    admits(lift_to_live(
+                        &rule,
+                        roll_target(&rule.pattern, rule.anchor, reference, today),
+                    ))
                 );
                 if let Some(d) = next.date {
                     prop_assert!(d > reference);
@@ -2499,13 +2580,311 @@ mod next_occurrence_tests {
                 prop_assert!(!next.stale);
                 prop_assert_eq!(
                     next.date,
-                    admits(next_after(&rule.pattern, rule.anchor, reference))
+                    admits(lift_to_live(
+                        &rule,
+                        next_after(&rule.pattern, rule.anchor, reference),
+                    ))
                 );
             }
             // The Until bound is never exceeded (Count is invisible).
             if let RecurBound::Until(u) = rule.bound {
                 prop_assert!(next.date.is_none_or(|d| d <= u));
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod pause_tests {
+    use super::*;
+    use crate::test_support::{naive_date_strategy, proptest_config, recur_rule_strategy};
+    use chrono::TimeZone as _;
+    use proptest::prelude::*;
+
+    fn date(y: i32, m: u32, d: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, d).unwrap()
+    }
+
+    fn ts(secs: i64) -> DateTime<Utc> {
+        chrono::Utc.timestamp_opt(secs, 0).unwrap()
+    }
+
+    fn days(n: i64) -> chrono::TimeDelta {
+        chrono::TimeDelta::try_days(n).expect("day delta")
+    }
+
+    fn daily_rule(anchor: NaiveDate, paused_until: Option<NaiveDate>) -> RecurRule {
+        RecurRule {
+            series: crate::ids::SeriesId::from_uuid(uuid::Uuid::from_u128(1)),
+            anchor,
+            pattern: RecurPattern::Daily {
+                every: EveryDays::new(1).unwrap(),
+            },
+            bound: RecurBound::None,
+            continued_from: None,
+            paused_until,
+        }
+    }
+
+    // ---- the serde boundary (D-10) ------------------------------------
+
+    #[test]
+    fn a_pre_pause_row_without_the_field_decodes_to_none() {
+        // The exact bytes an old device stored — no `paused_until` key.
+        let raw = r#"{"series":"00000000-0000-0000-0000-000000000001","anchor":"2026-01-01","pattern":{"Daily":{"every":2}},"bound":"None","continued_from":null}"#;
+        let rule: RecurRule = serde_json::from_str(raw).unwrap();
+        assert_eq!(rule.paused_until, None);
+    }
+
+    #[test]
+    fn an_unpaused_rule_serializes_without_the_field_and_round_trips() {
+        let rule = daily_rule(date(2026, 1, 1), None);
+        let json = serde_json::to_string(&rule).unwrap();
+        assert!(
+            !json.contains("paused_until"),
+            "the unpaused wire form stays byte-identical to the pre-pause rows"
+        );
+        assert_eq!(serde_json::from_str::<RecurRule>(&json).unwrap(), rule);
+    }
+
+    #[test]
+    fn a_paused_rule_round_trips_through_its_field() {
+        let rule = daily_rule(date(2026, 1, 1), Some(date(2026, 2, 14)));
+        let json = serde_json::to_string(&rule).unwrap();
+        assert_eq!(serde_json::from_str::<RecurRule>(&json).unwrap(), rule);
+        assert_eq!(
+            serde_json::from_str::<RecurRule>(&json)
+                .unwrap()
+                .paused_until,
+            Some(date(2026, 2, 14))
+        );
+    }
+
+    // ---- the attribution + badge compositions (D-4) ---------------------
+
+    #[test]
+    fn a_completion_during_the_pause_attributes_to_the_last_live_member() {
+        // Daily from March 1, paused through March 10: the last live
+        // member before the pause is March 4; its window closes at the
+        // first post-pause member (March 11). A completion stamped on
+        // March 6 — inside the pause — attributes to March 4, and the
+        // paused member's own non-date derives no outcome of its own
+        // (there is no March 5–10 member to ask).
+        let rule = daily_rule(date(2026, 3, 1), Some(date(2026, 3, 10)));
+        let start = chrono::NaiveTime::MIN;
+        let offset = chrono::FixedOffset::east_opt(0).unwrap();
+        let ws = |d| crate::days::window_start(d, start, offset);
+        let stamp = ws(date(2026, 3, 6)) + chrono::TimeDelta::try_hours(9).expect("9 h");
+        let now = ws(date(2026, 3, 12));
+        assert_eq!(
+            occurrence_outcome(&rule, date(2026, 3, 4), now, start, offset, &[stamp]),
+            OccurrenceOutcome::Done { at: stamp },
+            "the pre-pause member's window reaches across the pause"
+        );
+        // The same member without any completion is honestly missed
+        // once the post-pause window has opened.
+        assert_eq!(
+            occurrence_outcome(&rule, date(2026, 3, 4), now, start, offset, &[]),
+            OccurrenceOutcome::Missed,
+        );
+        // The first post-pause member's window is still open on its own
+        // first day (it closes at March 12's window start).
+        let resume_now = ws(date(2026, 3, 11)) + chrono::TimeDelta::try_hours(6).expect("6 h");
+        assert_eq!(
+            occurrence_outcome(&rule, date(2026, 3, 11), resume_now, start, offset, &[]),
+            OccurrenceOutcome::NotYetReachable,
+        );
+    }
+
+    #[test]
+    fn a_pause_past_the_until_bound_advertises_nothing() {
+        // Daily from March 1 until March 20, paused through March 25:
+        // every member the pattern names lies inside the pause, so the
+        // first live member exceeds the bound — schedule truth is
+        // `date: None`.
+        let mut rule = daily_rule(date(2026, 3, 1), Some(date(2026, 3, 25)));
+        rule.bound = RecurBound::Until(date(2026, 3, 20));
+        let day = crate::days::DayCalendar {
+            day_start_time: chrono::NaiveTime::MIN,
+            offset: chrono::FixedOffset::east_opt(0).unwrap(),
+        };
+        let mut head = head_scheduled(date(2026, 3, 15));
+        head.recur = Some(rule.clone());
+        let now = ts(0) + days((date(2026, 3, 16) - date(1970, 1, 1)).num_days());
+        let next = next_occurrence(&rule, &head, day, now);
+        assert_eq!(next.date, None);
+        assert!(
+            next.stale,
+            "the reference is before today; the lift removed the catch-up member"
+        );
+    }
+
+    /// An open head scheduled at midnight UTC of `scheduled`.
+    fn head_scheduled(scheduled: NaiveDate) -> crate::entities::Task {
+        crate::entities::Task {
+            id: crate::ids::TaskId::from_uuid(uuid::Uuid::from_u128(1)),
+            remote: None,
+            title: "head".into(),
+            description: String::new(),
+            duedate: None,
+            scheduled: Some(ts(0) + days((scheduled - date(1970, 1, 1)).num_days())),
+            done: None,
+            stack: crate::ids::StackId::from_uuid(uuid::Uuid::from_u128(2)),
+            order: 0,
+            label_memberships: std::collections::BTreeMap::default(),
+            effort: None,
+            importance: None,
+            urgency: None,
+            recur: None,
+            kind: crate::entities::TaskKind::Standard,
+            archived: false,
+            deleted: false,
+            clocks: crate::entities::TaskClocks {
+                title: ts(1),
+                description: ts(1),
+                duedate: ts(1),
+                scheduled: ts(1),
+                done: ts(1),
+                position: ts(1),
+                effort: ts(1),
+                importance: ts(1),
+                urgency: ts(1),
+                recur: ts(1),
+                kind: ts(1),
+                archived: ts(1),
+                deleted: ts(1),
+            },
+            remote_seen: None,
+            remote_baseline: None,
+        }
+    }
+
+    // ---- the removal law (D-4) -----------------------------------------
+
+    #[test]
+    fn schedule_skips_exactly_the_inclusive_paused_range() {
+        let rule = daily_rule(date(2026, 3, 1), Some(date(2026, 3, 10)));
+        let members = schedule(&rule, date(2026, 3, 1), date(2026, 3, 20));
+        // The pause is inclusive through paused_until: every member on
+        // or before March 10 does not exist.
+        let expected: Vec<NaiveDate> = (11..=20).map(|d| date(2026, 3, d)).collect();
+        assert_eq!(members, expected);
+    }
+
+    proptest! {
+        #![proptest_config(proptest_config(256))]
+
+        // Paused ≡ pattern-minus-members: the paused schedule is the
+        // unpaused schedule with the covered range removed, and nothing
+        // else moved.
+        #[test]
+        fn pausing_removes_exactly_the_covered_members(
+            rule in recur_rule_strategy(),
+            span in 1_i64..=400,
+        ) {
+            let Some(pause) = rule.paused_until else {
+                // The no-pause equivalence is the baseline arm.
+                let unpaused = RecurRule { paused_until: None, ..rule.clone() };
+                prop_assert_eq!(schedule(&rule, rule.anchor, rule.anchor + days(span)),
+                    schedule(&unpaused, rule.anchor, rule.anchor + days(span)));
+                return Ok(());
+            };
+            let unpaused = RecurRule { paused_until: None, ..rule.clone() };
+            let expected: Vec<NaiveDate> =
+                schedule(&unpaused, rule.anchor, unpaused.anchor + days(span))
+                    .into_iter()
+                    .filter(|d| *d > pause)
+                    .collect();
+            prop_assert_eq!(schedule(&rule, rule.anchor, rule.anchor + days(span)), expected);
+        }
+
+        // next_live_after answers a live member strictly after `from`
+        // and strictly after the pause.
+        #[test]
+        fn next_live_after_is_strictly_after_from_and_the_pause(
+            rule in recur_rule_strategy(),
+            from_offset in 0_i64..=40_000,
+        ) {
+            let from = rule
+                .anchor
+                .checked_add_signed(days(from_offset))
+                .expect("in range");
+            let next = next_live_after(&rule, from);
+            prop_assert!(next > from);
+            prop_assert!(occurs_on(&rule.pattern, rule.anchor, next));
+            if let Some(pause) = rule.paused_until {
+                prop_assert!(next > pause);
+            }
+        }
+
+        // The no-pause equivalence: `next_live_after` with
+        // `paused_until: None` is exactly `next_after` (R2's entrance
+        // contract — the pause can only ever remove members).
+        #[test]
+        fn next_live_without_a_pause_equals_next_after(
+            rule in recur_rule_strategy(),
+            from_offset in 0_i64..=40_000,
+        ) {
+            let unpaused = RecurRule { paused_until: None, ..rule };
+            let from = unpaused
+                .anchor
+                .checked_add_signed(days(from_offset))
+                .expect("in range");
+            prop_assert_eq!(
+                next_live_after(&unpaused, from),
+                next_after(&unpaused.pattern, unpaused.anchor, from)
+            );
+        }
+
+        // An expired pause is semantically inert (D-6): a rule whose
+        // pause lies strictly before the query window behaves exactly
+        // like the same rule with `None`, across every read the
+        // surfaces compose (schedule, next_live_after, lift_to_live).
+        #[test]
+        fn an_expired_pause_is_inert(
+            anchor in naive_date_strategy(),
+            span in 1_i64..=400,
+            pause_offset in 1_i64..=4_000,
+        ) {
+            let from = anchor
+                .checked_add_signed(days(pause_offset))
+                .expect("in range");
+            let to = from
+                .checked_add_signed(days(span))
+                .expect("in range");
+            let base = daily_rule(anchor, None);
+            let mut expired = base.clone();
+            expired.paused_until = Some(anchor);
+            prop_assert_eq!(schedule(&expired, from, to), schedule(&base, from, to));
+            prop_assert_eq!(next_live_after(&expired, from), next_live_after(&base, from));
+            prop_assert_eq!(lift_to_live(&expired, from), lift_to_live(&base, from));
+        }
+
+        // lift_to_live composes: lifting an arbitrary pattern member
+        // yields a live member at or after it, and identity once the
+        // target is already live.
+        #[test]
+        fn lift_to_live_moves_covered_targets_and_is_identity_after(
+            rule in recur_rule_strategy(),
+            target_offset in 0_i64..=40_000,
+        ) {
+            let target = rule
+                .anchor
+                .checked_add_signed(days(target_offset))
+                .expect("in range");
+            let lifted = lift_to_live(&rule, target);
+            prop_assert!(lifted >= target);
+            match rule.paused_until {
+                // Covered: the lift moved to the first post-pause
+                // member — a live pattern member.
+                Some(pause) if target <= pause => {
+                    prop_assert!(lifted > pause);
+                    prop_assert!(occurs_on(&rule.pattern, rule.anchor, lifted));
+                }
+                // Already live: identity.
+                _ => prop_assert_eq!(lifted, target),
+            }
+            prop_assert_eq!(lift_to_live(&rule, lifted), lifted);
         }
     }
 }

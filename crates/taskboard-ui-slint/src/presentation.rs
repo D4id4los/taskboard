@@ -4492,6 +4492,7 @@ mod recur_badge_tests {
             pattern,
             bound,
             continued_from: None,
+            paused_until: None,
         }
     }
 

@@ -1035,6 +1035,7 @@ mod recur_codec_tests {
             },
             bound: taskboard_domain::recur::RecurBound::None,
             continued_from: None,
+            paused_until: None,
         }
     }
 

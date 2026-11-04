@@ -250,6 +250,8 @@ pub enum Flow {
 /// What a view-state transition asks the adapter to do (D9):
 /// dispatch a command, flip the vi mode, or repaint now. The adapter
 /// applies outcomes; focus is mount-driven (module docs).
+#[allow(clippy::large_enum_variant)]
+// StateCommand just crossed the threshold (pause rule); boxing churns every match site for a local lint
 #[derive(Debug, Clone, PartialEq)]
 pub enum FlowOutcome {
     Command(StateCommand),

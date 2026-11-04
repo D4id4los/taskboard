@@ -307,6 +307,7 @@ fn assemble_rule(
         pattern,
         bound,
         continued_from,
+        paused_until: None,
     }))
 }
 

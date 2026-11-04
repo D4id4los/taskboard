@@ -2967,6 +2967,7 @@ mod tests {
             },
             bound: crate::recur::RecurBound::None,
             continued_from: None,
+            paused_until: None,
         };
         task.recur = Some(rule.clone());
         task.clocks.recur = ts(2_000);

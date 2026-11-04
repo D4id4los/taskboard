@@ -1238,6 +1238,7 @@ mod seam_tests {
                 },
                 bound: crate::recur::RecurBound::None,
                 continued_from: None,
+                paused_until: None,
             }),
             kind: crate::entities::TaskKind::Standard,
             archived: false,
@@ -1406,6 +1407,46 @@ mod seam_tests {
         assert_eq!(
             habit_streak_unioned(&habit, &log, &tasks, at, day()),
             streak(&habit, &log, at, day()),
+        );
+    }
+
+    #[test]
+    fn paused_members_are_absent_not_gaps_in_the_joined_run() {
+        // Issue #506: the pause removes the contiguous member block
+        // through `paused_until` — those members do not exist, so the
+        // backward enumeration neither needs done rows inside the
+        // pause nor breaks on their absence (a stored completion at a
+        // paused date stays an inert fact).
+        let habit = linked_habit(Some(7));
+        let yesterday = period_before(PeriodKind::Day, TODAY);
+        let miss = period_before(PeriodKind::Day, yesterday);
+        let pause_through = period_before(PeriodKind::Day, miss);
+        let at = crate::days::window_start(
+            TODAY,
+            chrono::NaiveTime::MIN,
+            chrono::FixedOffset::east_opt(0).unwrap(),
+        ) + chrono::TimeDelta::try_hours(30).expect("30 h");
+        let mut log = BTreeMap::new();
+        met_on(&mut log, &habit, TODAY);
+        met_on(&mut log, &habit, yesterday);
+        let plain = streak(&habit, &log, at, day());
+        assert_eq!(plain, 2, "today and yesterday count; the miss breaks");
+        // The pause rides every carried rule copy (the chain copies the
+        // rule verbatim; the union reads it from the most recent done
+        // occurrence). The pause's own block carries a done row — a
+        // completion made before the pause started — and it does not
+        // join (its member does not exist) and does not break.
+        let mut tasks: BTreeMap<TaskId, Task> = BTreeMap::new();
+        for (raw, member) in [(10, miss), (11, pause_through)] {
+            let mut task = series_task(raw, 7, member, true);
+            if let Some(rule) = task.recur.as_mut() {
+                rule.paused_until = Some(pause_through);
+            }
+            tasks.insert(task.id, task);
+        }
+        assert_eq!(
+            habit_streak_unioned(&habit, &log, &tasks, at, day()),
+            plain + 1,
         );
     }
 }

@@ -7532,6 +7532,7 @@ mod tests {
             },
             bound: crate::recur::RecurBound::None,
             continued_from: None,
+            paused_until: None,
         });
         task.scheduled = scheduled.map(ts);
         task
@@ -8001,6 +8002,7 @@ mod duplicate_reconcile_tests {
             },
             bound: crate::recur::RecurBound::None,
             continued_from: None,
+            paused_until: None,
         });
         task.scheduled = Some(ts(day1));
         let state = base_state(task);
