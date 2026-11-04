@@ -21,6 +21,33 @@ The workspace carries a single global version (see `docs/architecture.org`);
   description only; dismissing the panel (which settles the editor)
   unhides the tip.
 
+- Recurring series can pause (#506): `PauseSeries` — or
+  `tasks repeat --pause <date>` — marks an inclusive pause-through
+  date on the rule; the covered members stop existing (no missed-day
+  derivation, no streak break, no spawn or roll target inside the
+  window), completions made during the pause attribute to the last
+  live member before it, and an expired pause is inert (resume is
+  date-derived; the explicit resume affordance and `--resume` clear
+  the field for badge hygiene). The recurring badge names the pause
+  while it stands.
+
+- One-click series ↔ habit conversion (#506): the task view's recur
+  row converts a series into a linked habit (the rule clears — the
+  head remains an ordinary task — and the habit continues its
+  history), and the habits section converts a habit into a linked
+  repeating task in the board's Backlog (the log outlives the
+  tracker). Both directions are single journaled commands with typed
+  refusals; the conversion seam keeps the chain readable in both
+  directions; undo reports the composites as not undoable (the seam
+  carries no clock slot).
+
+- Streak-repair affordances (#506): a habit row gains a make-up +1
+  while the previous window is under quota and inside its 24-hour
+  overflow grace — the click dispatches the exact audited
+  correction (window and count), so what you click is what
+  increments. No attribution arithmetic changed.
+>>>>>>> 19745467 (docs(changelog): the habit ux trio)
+
 ### Fixed
 
 - Queued sync operations on a deleted board no longer retry forever
