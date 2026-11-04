@@ -8,6 +8,19 @@ The workspace carries a single global version (see `docs/architecture.org`);
 `scripts/bump_version.sh <major|minor|patch>` cuts release entries.
 
 ## [Unreleased]
+### Added
+
+- The task view's field editors carry hover tooltips (#590): the
+  title editor, the description editor, the due and start-date
+  editors, and the custom reminder offset field each gained the
+  info-tip circle beside the field, describing what the field is for.
+  The help text is also the field's accessibility description, so
+  screen readers deliver it without hovering. In the date editors the
+  calendar panel's outside-click layer sits above the tips, so there
+  the help currently reaches mouse users through the accessibility
+  description only; dismissing the panel (which settles the editor)
+  unhides the tip.
+
 ### Fixed
 
 - Queued sync operations on a deleted board no longer retry forever
