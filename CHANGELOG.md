@@ -47,6 +47,26 @@ The workspace carries a single global version (see `docs/architecture.org`);
   older version ignore the new sections and stay silent until
   upgraded. Break evaluation itself is unchanged — the board scopes
   roaming, never firing.
+- Time-tracking surfaces (#490, #491): the task detail's tracked-time
+  summary row gains a time-entries overlay — the Work-only total at
+  the top (the same phrase and reduction the summary row shows), the
+  task's entry history as newest-first rows (local date, start, end
+  with a `+1d` mark on midnight-crossing spans, per-entry spent, the
+  running entry marked and accruing live), and add/edit/delete over
+  the existing engine verbs. Add seeds today's date and two unset
+  times; edit seeds the entry's own local wall-clocks; the running
+  entry edits as keep-open (an empty end commits the open state, a
+  typed end closes it). Typed rejections surface as field validity
+  — an inverted span lands on the end field, a non-existent
+  wall-clock (DST gap) refuses typed — never swallowed silence.
+  Delete is not undoable (the engine's journal classifies it so), so
+  the affordance confirms on a second activate. The today view gains
+  a "Tracked" day summary: per-task tracked-today totals (Work-only —
+  the same definition `taskboard track status` reports) plus the day
+  total, with row activation opening the task; on kiosk the rows
+  filter to the viewed board and the day total sums what is shown.
+  Every new element is a keyboard walk stop with hover tips; Escape
+  backs out level by level (field → form → overlay).
 
 - Effort-estimate calibration surfaces (#214): the new Review view
   closes the estimate-vs-actual feedback loop's display half over the
