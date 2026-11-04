@@ -426,6 +426,34 @@ pub enum StateCommand {
         /// The inclusive pause-through local date; `None` resumes.
         until: Option<chrono::NaiveDate>,
     },
+    /// One-click series → habit conversion (issue #506, D-C12's verb):
+    /// mints a habit on the head's board linked to the series
+    /// (`continued_from` — the §4.7 seam), and stops the series by
+    /// clearing the head's rule (§3.7 "stop repeating" — the head
+    /// remains an ordinary task; its history stays). The guided flow
+    /// feeds `target` (the preset chips' quota); the planner composes
+    /// what the manual two-step path would, as one journaled command.
+    /// A rule-less head is a typed rejection.
+    ConvertSeriesToHabit {
+        /// The recurring head whose series converts.
+        head: TaskId,
+        /// The habit quota the minted habit carries.
+        target: crate::habit::HabitTarget,
+    },
+    /// One-click habit → series conversion (issue #506, D-C12's verb):
+    /// mints an ordinary task head in the habit's board's Backlog stack
+    /// (created on demand — the capture precedent) carrying a rule
+    /// whose `continued_from` names the habit (the seam, reverse
+    /// direction), then tombstones the habit — the log outlives the
+    /// tracker, history is never purged. The retired habit's visible
+    /// history lives in the log itself (D-3: no series-side streak
+    /// union exists to read it into).
+    ConvertHabitToSeries {
+        /// The habit that converts.
+        habit: HabitId,
+        /// The series' interval grammar.
+        pattern: crate::recur::RecurPattern,
+    },
     /// Create a habit tracker on the live board: the payload carries no
     /// order (the planner appends, D-H11) and no conversion link (the
     /// §4.7 seam links an already-created pair only, D-H7a). Zero quotas

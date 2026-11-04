@@ -806,6 +806,11 @@ pub fn plan_day_rolls(
 /// the device's fixed offset) — the completion spawn's date vocabulary
 /// (DR-6/2 D-E5: plain calendar dates for field references, the
 /// window-date for "today").
+///
+/// # Panics
+///
+/// Only via the habit→series arm's constant local-noon construction
+/// (a constant that always succeeds) — never an input condition.
 #[allow(clippy::too_many_lines)] // one catalogue; splitting hides the table
 pub fn plan_command(
     app: &AppState,
@@ -2642,6 +2647,136 @@ pub fn plan_command(
                     enqueue(LocalOp::UpdateAppData(*head), ids, now),
                 ],
                 outcome: CommandOutcome::Applied,
+            })
+        }
+        StateCommand::ConvertSeriesToHabit { head, target } => {
+            // Existence → rule: the seam verb's typed rejections.
+            let task = live_task(app, *head)?;
+            let Some(rule) = task.recur.as_ref() else {
+                return Err(CommandError::NotRecurring(*head));
+            };
+            let board = app
+                .stacks
+                .get(&task.stack)
+                .map(|stack| stack.board)
+                .ok_or(CommandError::UnknownStack(task.stack))?;
+            live_board_of(app, board)?;
+            // The compose, in the manual path's emission order: the
+            // rule clears on the head (§3.7 stop repeating), then the
+            // habit mints on the head's board linked to the series.
+            let mut updated = task.clone();
+            updated.recur = None;
+            updated.clocks.recur = now;
+            let order = append_order_after(
+                app.habits
+                    .habits
+                    .values()
+                    .filter(|h| h.is_live() && h.board == board)
+                    .map(|h| h.order),
+            );
+            let habit_id = ids.new_habit_id();
+            let habit = Habit {
+                id: habit_id,
+                board,
+                title: task.title.clone(),
+                target: *target,
+                order,
+                anchor_time: None,
+                clocks: HabitClocks::all(now),
+                continued_from: Some(rule.series),
+                deleted: false,
+            };
+            Ok(CommandPlan {
+                actions: vec![
+                    PersistenceAction::UpsertTask(updated),
+                    enqueue(LocalOp::UpdateAppData(*head), ids, now),
+                    PersistenceAction::UpsertHabit(habit),
+                    board_flush(board, ids, now),
+                ],
+                outcome: CommandOutcome::HabitCreated(habit_id),
+            })
+        }
+        StateCommand::ConvertHabitToSeries { habit: id, pattern } => {
+            let habit = live_habit(app, *id)?;
+            // The minted head lands in the habit's board's Backlog
+            // stack, created on demand (the `CaptureTask` compose).
+            let board = live_board_of(app, habit.board)?;
+            let mut actions = Vec::new();
+            let mut minted_stack: Option<StackId> = None;
+            let target_stack = if let Some(found) = app.backlog_stack(board) {
+                found
+            } else {
+                let stack = mint_capture_stack(
+                    app,
+                    &mut actions,
+                    board,
+                    crate::state::BACKLOG_STACK_TITLE,
+                    ids,
+                    now,
+                );
+                minted_stack = Some(stack);
+                stack
+            };
+            // Series identity mints here (the planner is the composite's
+            // client); the anchor is today through the day calendar, the
+            // head rides today's local noon so the first member is due
+            // today (the `series_reference_date` chain), and the rule
+            // carries the seam in the reverse direction. Bounds stay at
+            // `None` — editable later through the repeat surface.
+            let today = day.today(now);
+            let noon = chrono::NaiveTime::from_hms_opt(12, 0, 0).expect("noon is valid");
+            let series = crate::ids::SeriesId::from_uuid(ids.new_series_id().as_uuid());
+            let rule = RecurRule {
+                series,
+                anchor: today,
+                pattern: pattern.clone(),
+                bound: RecurBound::None,
+                continued_from: Some(*id),
+                paused_until: None,
+            };
+            let order = app
+                .tasks_in_stack(target_stack)
+                .last()
+                .map_or(0, |t| t.order + 1);
+            let head_id = ids.new_task_id();
+            actions.push(PersistenceAction::UpsertTask(Task {
+                id: head_id,
+                remote: None,
+                title: habit.title.clone(),
+                description: String::new(),
+                duedate: None,
+                scheduled: Some(day.instant(today, noon)),
+                done: None,
+                stack: target_stack,
+                order,
+                label_memberships: BTreeMap::default(),
+                effort: None,
+                importance: None,
+                urgency: None,
+                recur: Some(rule),
+                kind: crate::entities::TaskKind::Standard,
+                archived: false,
+                deleted: false,
+                clocks: all_task_clocks(now),
+                remote_seen: None,
+                remote_baseline: None,
+            }));
+            // The habit tombstones — the log is never touched (history
+            // outlives the tracker).
+            let mut retired = habit.clone();
+            retired.deleted = true;
+            retired.clocks.deleted = now;
+            actions.push(PersistenceAction::UpsertHabit(retired));
+            // The enqueue tail (the capture batch shape): minted stack
+            // first, then the task, then the habit's board flush.
+            if let Some(stack) = minted_stack {
+                actions.push(enqueue(LocalOp::CreateStack(stack), ids, now));
+            }
+            actions.push(enqueue(LocalOp::CreateTask(head_id), ids, now));
+            actions.push(board_flush(habit.board, ids, now));
+            Ok(CommandPlan {
+                actions,
+                outcome: CommandOutcome::CreatedTask(head_id),
             })
         }
         StateCommand::RestoreTask { id, resurrect } => {
@@ -8816,7 +8951,7 @@ mod tests {
 
     const HABIT: u64 = 600;
 
-    fn habit_id() -> HabitId {
+    pub(crate) fn habit_id() -> HabitId {
         HabitId::from(uuid::Uuid::from_u128(u128::from(HABIT)))
     }
 
@@ -8834,7 +8969,7 @@ mod tests {
         }
     }
 
-    fn habit_app(target: crate::habit::HabitTarget) -> (AppState, Vec<PendingOp>) {
+    pub(crate) fn habit_app(target: crate::habit::HabitTarget) -> (AppState, Vec<PendingOp>) {
         let (mut app, outbox) = base();
         let habit = habit_row(target);
         app.habits.habits.insert(habit.id, habit);
@@ -8977,7 +9112,7 @@ mod tests {
             &app,
             &outbox,
             &StateCommand::UpdateHabit {
-                habit: habit_id(),
+                habit: super::tests::habit_id(),
                 changes: crate::HabitChanges {
                     title: Some("renamed".into()),
                     target: Some(crate::habit::HabitTarget::PerWeek(
@@ -9018,7 +9153,7 @@ mod tests {
             &app,
             &outbox,
             &StateCommand::UpdateHabit {
-                habit: habit_id(),
+                habit: super::tests::habit_id(),
                 changes: crate::HabitChanges {
                     title: Some("meditate".into()),
                     ..crate::HabitChanges::default()
@@ -9043,7 +9178,7 @@ mod tests {
             &seeded_app,
             &seeded.1,
             &StateCommand::UpdateHabit {
-                habit: habit_id(),
+                habit: super::tests::habit_id(),
                 changes: crate::HabitChanges {
                     anchor_time: Some(None),
                     ..crate::HabitChanges::default()
@@ -9070,7 +9205,7 @@ mod tests {
             &linked_app,
             &linked.1,
             &StateCommand::UpdateHabit {
-                habit: habit_id(),
+                habit: super::tests::habit_id(),
                 changes: crate::HabitChanges {
                     continued_from: Some(None),
                     ..crate::HabitChanges::default()
@@ -9093,7 +9228,7 @@ mod tests {
             &app,
             &outbox,
             &StateCommand::MoveHabit {
-                habit: habit_id(),
+                habit: super::tests::habit_id(),
                 order: 5,
             },
         )
@@ -9109,7 +9244,7 @@ mod tests {
             &app,
             &outbox,
             &StateCommand::MoveHabit {
-                habit: habit_id(),
+                habit: super::tests::habit_id(),
                 order: 0,
             },
         )
@@ -9191,7 +9326,7 @@ mod tests {
         let (mut app, outbox) = habit_app(crate::habit::HabitTarget::PerDay(quota));
         app.habits.log.insert(
             HabitLogKey {
-                habit: habit_id(),
+                habit: super::tests::habit_id(),
                 window: crate::habit::WindowStart::of_period(
                     crate::habit::PeriodKind::Day,
                     ymd(1970, 1, 1),
@@ -9216,7 +9351,7 @@ mod tests {
         let (mut app, outbox) = habit_app(crate::habit::HabitTarget::PerDay(quota));
         app.habits.log.insert(
             HabitLogKey {
-                habit: habit_id(),
+                habit: super::tests::habit_id(),
                 window: crate::habit::WindowStart::of_period(
                     crate::habit::PeriodKind::Day,
                     ymd(1970, 1, 1),
@@ -9226,7 +9361,7 @@ mod tests {
         );
         app.habits.log.insert(
             HabitLogKey {
-                habit: habit_id(),
+                habit: super::tests::habit_id(),
                 window: crate::habit::WindowStart::of_period(
                     crate::habit::PeriodKind::Day,
                     ymd(1969, 12, 31),
@@ -9263,7 +9398,7 @@ mod tests {
             apply_actions_to_habits(&mut app.habits, &plan.actions);
         }
         let key = HabitLogKey {
-            habit: habit_id(),
+            habit: super::tests::habit_id(),
             window: crate::habit::WindowStart::of_period(
                 crate::habit::PeriodKind::Day,
                 ymd(1970, 1, 1),
@@ -9328,18 +9463,18 @@ mod tests {
         for command in [
             StateCommand::LogHabit { habit: habit_id() },
             StateCommand::MoveHabit {
-                habit: habit_id(),
+                habit: super::tests::habit_id(),
                 order: 3,
             },
             StateCommand::UpdateHabit {
-                habit: habit_id(),
+                habit: super::tests::habit_id(),
                 changes: crate::HabitChanges {
                     title: Some("x".into()),
                     ..crate::HabitChanges::default()
                 },
             },
             StateCommand::AdjustHabitLog {
-                habit: habit_id(),
+                habit: super::tests::habit_id(),
                 window: crate::habit::WindowStart::of_period(
                     crate::habit::PeriodKind::Day,
                     ymd(1970, 1, 1),
@@ -9365,7 +9500,7 @@ mod tests {
 
     fn adjust_cmd(window: crate::habit::WindowStart, count: u32) -> StateCommand {
         StateCommand::AdjustHabitLog {
-            habit: habit_id(),
+            habit: super::tests::habit_id(),
             window,
             count,
         }
@@ -9385,7 +9520,7 @@ mod tests {
         assert_eq!(
             plan.outcome,
             CommandOutcome::HabitLogAdjusted {
-                habit: habit_id(),
+                habit: super::tests::habit_id(),
                 window: today,
                 count: 2,
             }
@@ -9400,7 +9535,7 @@ mod tests {
         apply_actions_to_habits(&mut app.habits, &plan.actions);
         assert_eq!(app.habits.log.len(), 2);
         let key = HabitLogKey {
-            habit: habit_id(),
+            habit: super::tests::habit_id(),
             window: today,
         };
         assert_eq!(app.habits.log[&key].count, 5);
@@ -9433,7 +9568,7 @@ mod tests {
     #[test]
     fn adjust_habit_log_rejects_non_canonical_windows_typed() {
         // A Thursday for a weekly habit: not a Monday, not canonical.
-        let (app, outbox) = habit_app(crate::habit::HabitTarget::PerWeek(
+        let (app, outbox) = super::tests::habit_app(crate::habit::HabitTarget::PerWeek(
             crate::habit::NonZeroCount::new(1).unwrap(),
         ));
         assert_eq!(
@@ -9441,7 +9576,7 @@ mod tests {
                 &app,
                 &outbox,
                 &StateCommand::AdjustHabitLog {
-                    habit: habit_id(),
+                    habit: super::tests::habit_id(),
                     window: crate::habit::WindowStart::of_period(
                         crate::habit::PeriodKind::Day,
                         ymd(1970, 1, 1)
@@ -9451,7 +9586,7 @@ mod tests {
             )
             .unwrap_err(),
             CommandError::InvalidHabitWindow {
-                habit: habit_id(),
+                habit: super::tests::habit_id(),
                 window: crate::habit::WindowStart::of_period(
                     crate::habit::PeriodKind::Day,
                     ymd(1970, 1, 1)
@@ -9466,7 +9601,7 @@ mod tests {
             crate::habit::NonZeroCount::new(1).unwrap(),
         ));
         let key = HabitLogKey {
-            habit: habit_id(),
+            habit: super::tests::habit_id(),
             window: crate::habit::WindowStart::of_period(
                 crate::habit::PeriodKind::Day,
                 ymd(1970, 1, 1),
@@ -9517,19 +9652,19 @@ mod tests {
                 ),
             },
             StateCommand::UpdateHabit {
-                habit: habit_id(),
+                habit: super::tests::habit_id(),
                 changes: crate::HabitChanges {
                     title: Some("y".into()),
                     ..crate::HabitChanges::default()
                 },
             },
             StateCommand::MoveHabit {
-                habit: habit_id(),
+                habit: super::tests::habit_id(),
                 order: 2,
             },
             StateCommand::LogHabit { habit: habit_id() },
             StateCommand::AdjustHabitLog {
-                habit: habit_id(),
+                habit: super::tests::habit_id(),
                 window: crate::habit::WindowStart::of_period(
                     crate::habit::PeriodKind::Day,
                     ymd(1970, 1, 1),
@@ -10807,5 +10942,297 @@ mod series_tests {
             ),
             Err(CommandError::UnknownTask(_))
         ));
+    }
+
+    // ---- the series ↔ habit convert verbs (issue #506, D-C12) ---------
+
+    fn weekly_rule() -> RecurRule {
+        RecurRule {
+            series: crate::ids::SeriesId::from_uuid(uuid::Uuid::from_u128(9_000)),
+            anchor: date(2026, 6, 1),
+            pattern: RecurPattern::Weekly {
+                interval: crate::recur::EveryWeeks::new(1).expect("1 is valid"),
+                on: crate::recur::WeekdaySet::new([chrono::Weekday::Mon]).expect("one weekday"),
+            },
+            bound: RecurBound::None,
+            continued_from: None,
+            paused_until: None,
+        }
+    }
+
+    fn convert() -> Result<CommandPlan, CommandError> {
+        plan_command(
+            &convert_app(),
+            &[],
+            &StateCommand::ConvertSeriesToHabit {
+                head: super::tests::task_id(),
+                target: crate::habit::HabitTarget::PerDay(
+                    crate::habit::NonZeroCount::new(1).unwrap(),
+                ),
+            },
+            &burned_ids(),
+            &crate::reminders::ReminderDefaults::default(),
+            utc_midnight(),
+            now(),
+        )
+    }
+
+    fn convert_app() -> AppState {
+        let (mut app, _) = base_with(recur_head(RecurBound::None));
+        app.tasks.get_mut(&head_id()).unwrap().recur = Some(weekly_rule());
+        app
+    }
+
+    #[test]
+    fn series_to_habit_clears_the_rule_and_mints_the_linked_habit() {
+        let plan = convert().expect("planned");
+        // Batch shape: head upsert + appdata op + habit upsert + board
+        // flush (the manual path's emissions, composed).
+        assert_eq!(plan.actions.len(), 4);
+        let head = app_tasks_head(&plan);
+        assert_eq!(head.recur, None, "the series stops repeating");
+        let PersistenceAction::UpsertHabit(habit) = &plan.actions[2] else {
+            panic!("action 3 is the habit upsert");
+        };
+        assert_eq!(habit.title, "water the plants");
+        assert_eq!(
+            habit.continued_from,
+            Some(crate::ids::SeriesId::from_uuid(uuid::Uuid::from_u128(
+                9_000
+            ))),
+            "the seam links the habit to the series"
+        );
+        assert!(matches!(plan.outcome, CommandOutcome::HabitCreated(_)));
+        assert!(matches!(
+            &plan.actions[3],
+            PersistenceAction::EnqueueOp(pending)
+                if matches!(pending.op, LocalOp::FlushBoardAppData(_))
+        ));
+    }
+
+    fn app_tasks_head(plan: &CommandPlan) -> Task {
+        let PersistenceAction::UpsertTask(head) = &plan.actions[0] else {
+            panic!("action 1 is the head upsert");
+        };
+        head.clone()
+    }
+
+    #[test]
+    fn series_to_habit_rejections_are_typed() {
+        // A rule-less head.
+        let (mut app, _) = base_with(recur_head(RecurBound::None));
+        app.tasks.get_mut(&head_id()).unwrap().recur = None;
+        assert!(matches!(
+            plan_command(
+                &app,
+                &[],
+                &StateCommand::ConvertSeriesToHabit {
+                    head: head_id(),
+                    target: crate::habit::HabitTarget::PerDay(
+                        crate::habit::NonZeroCount::new(1).unwrap()
+                    ),
+                },
+                &burned_ids(),
+                &crate::reminders::ReminderDefaults::default(),
+                utc_midnight(),
+                now(),
+            ),
+            Err(CommandError::NotRecurring(_))
+        ));
+        // A habit-less board is fine, but an unknown head is not.
+        assert!(matches!(
+            plan_command(
+                &AppState::default(),
+                &[],
+                &StateCommand::ConvertSeriesToHabit {
+                    head: TaskId::from(uuid::Uuid::from_u128(777)),
+                    target: crate::habit::HabitTarget::PerDay(
+                        crate::habit::NonZeroCount::new(1).unwrap()
+                    ),
+                },
+                &burned_ids(),
+                &crate::reminders::ReminderDefaults::default(),
+                utc_midnight(),
+                now(),
+            ),
+            Err(CommandError::UnknownTask(_))
+        ));
+    }
+
+    #[test]
+    fn habit_to_series_mints_the_linked_head_and_retires_the_habit() {
+        let (app, outbox) = super::tests::habit_app(crate::habit::HabitTarget::PerWeek(
+            crate::habit::NonZeroCount::new(3).unwrap(),
+        ));
+        let plan = plan_command(
+            &app,
+            &outbox,
+            &StateCommand::ConvertHabitToSeries {
+                habit: super::tests::habit_id(),
+                pattern: RecurPattern::Daily {
+                    every: crate::recur::EveryDays::new(1).unwrap(),
+                },
+            },
+            &burned_ids(),
+            &crate::reminders::ReminderDefaults::default(),
+            utc_midnight(),
+            now(),
+        )
+        .expect("planned");
+        // The head lands on the board's Backlog stack, dated today,
+        // carrying the rule with the reverse seam; the habit tombstones.
+        let CommandOutcome::CreatedTask(head_id) = plan.outcome else {
+            panic!("the composite names its minted head");
+        };
+        let head = plan
+            .actions
+            .iter()
+            .find_map(|action| match action {
+                PersistenceAction::UpsertTask(t) if t.id == head_id => Some(t),
+                _ => None,
+            })
+            .expect("the minted head upserts");
+        let rule = head.recur.as_ref().expect("the minted head recurs");
+        assert_eq!(
+            rule.continued_from,
+            Some(super::tests::habit_id()),
+            "the seam links the series back to the habit"
+        );
+        assert_eq!(rule.bound, RecurBound::None);
+        assert_eq!(
+            utc_midnight().calendar_date(head.scheduled.expect("dated today")),
+            date(2026, 6, 15),
+            "the first member is due today"
+        );
+        let retired = plan
+            .actions
+            .iter()
+            .find_map(|action| match action {
+                PersistenceAction::UpsertHabit(h) => Some(h),
+                _ => None,
+            })
+            .expect("the retired habit upserts");
+        assert!(retired.deleted, "the habit tombstones; the log outlives it");
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // three legs in one journey; splitting hides the chain
+    fn the_conversion_round_trip_keeps_the_seam_chain_readable() {
+        // S → H: the series head converts (habit linked to S, rule
+        // cleared) — H → S′: the habit converts (head linked to H,
+        // habit tombstoned) — H′: the new head converts again (habit
+        // linked to S′). Every link survives in state; the chain
+        // S′ → H → S reads from state alone (the load-bearing pin).
+        // One id source across every leg (production mints UUIDv7s,
+        // never repeated — the deterministic counter must not either).
+        let ids = burned_ids();
+        let (mut app, outbox) = base_with(recur_head(RecurBound::None));
+        let s1 = crate::ids::SeriesId::from_uuid(uuid::Uuid::from_u128(9_000));
+        app.tasks.get_mut(&head_id()).unwrap().recur = Some({
+            let mut rule = weekly_rule();
+            rule.series = s1;
+            rule
+        });
+        // Leg 1: S → H.
+        let plan1 = plan_command(
+            &app,
+            &outbox,
+            &StateCommand::ConvertSeriesToHabit {
+                head: head_id(),
+                target: crate::habit::HabitTarget::PerDay(
+                    crate::habit::NonZeroCount::new(1).unwrap(),
+                ),
+            },
+            &ids,
+            &crate::reminders::ReminderDefaults::default(),
+            utc_midnight(),
+            now(),
+        )
+        .expect("leg 1");
+        let mut state1 = crate::persistence::PersistedState {
+            tasks: app.tasks.clone(),
+            habits: app.habits.clone(),
+            boards: app.boards.clone(),
+            stacks: app.stacks.clone(),
+            ..crate::persistence::PersistedState::default()
+        };
+        crate::persistence::apply_actions(&mut state1, &plan1.actions);
+        let habit1 = state1
+            .habits
+            .habits
+            .values()
+            .find(|h| h.continued_from == Some(s1))
+            .cloned()
+            .expect("the minted habit links to S");
+        assert!(habit1.is_live());
+        assert!(state1.tasks[&head_id()].recur.is_none());
+        // Leg 2: H → S′.
+        let app1 = AppState::from(state1.clone());
+        let plan2 = plan_command(
+            &app1,
+            &[],
+            &StateCommand::ConvertHabitToSeries {
+                habit: habit1.id,
+                pattern: RecurPattern::Daily {
+                    every: crate::recur::EveryDays::new(1).unwrap(),
+                },
+            },
+            &ids,
+            &crate::reminders::ReminderDefaults::default(),
+            utc_midnight(),
+            now(),
+        )
+        .expect("leg 2");
+        let mut state2 = state1;
+        crate::persistence::apply_actions(&mut state2, &plan2.actions);
+        let CommandOutcome::CreatedTask(head2) = plan2.outcome else {
+            panic!("leg 2 names its head");
+        };
+        let s2 = state2.tasks[&head2]
+            .recur
+            .as_ref()
+            .expect("the new head recurs")
+            .series;
+        assert_ne!(s2, s1, "a fresh series mints");
+        assert_eq!(
+            state2.tasks[&head2].recur.as_ref().unwrap().continued_from,
+            Some(habit1.id),
+            "S′ links back to H"
+        );
+        assert!(state2.habits.habits[&habit1.id].deleted, "H is retired");
+        // Leg 3: S′ → H′.
+        let app2 = AppState::from(state2.clone());
+        let plan3 = plan_command(
+            &app2,
+            &[],
+            &StateCommand::ConvertSeriesToHabit {
+                head: head2,
+                target: crate::habit::HabitTarget::PerDay(
+                    crate::habit::NonZeroCount::new(1).unwrap(),
+                ),
+            },
+            &ids,
+            &crate::reminders::ReminderDefaults::default(),
+            utc_midnight(),
+            now(),
+        )
+        .expect("leg 3");
+        let mut state3 = state2;
+        crate::persistence::apply_actions(&mut state3, &plan3.actions);
+        let habit3 = state3
+            .habits
+            .habits
+            .values()
+            .find(|h| h.continued_from == Some(s2))
+            .cloned()
+            .expect("H′ links to S′");
+        assert!(habit3.is_live());
+        // The chain S′ → H → S reads from state alone: S′'s rule names
+        // H (retired but present), and the log rows for H survive the
+        // tombstone (history is never purged).
+        assert!(
+            state3.habits.habits[&habit1.id].deleted,
+            "H stays in the map with its log"
+        );
     }
 }
