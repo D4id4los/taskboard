@@ -1303,8 +1303,11 @@ pub fn parse_track_form(
 /// disagreeing with `track status` for the same window would be a bug
 /// class). Canonical task order = the state map's key order (the
 /// `BTreeMap`'s deterministic order — the same convention the state's
-/// serialization contract names). Tasks without tracked work are
-/// absent — an empty day yields the empty vec (the collapse's input).
+/// serialization contract names). Live tasks only — the today-section
+/// pattern's `is_live` filter (a tombstoned task's surviving history
+/// must not render a row, let alone an openable one). Tasks without
+/// tracked work are absent — an empty day yields the empty vec (the
+/// collapse's input).
 #[must_use]
 pub fn tracked_today_rows(
     state: &AppState,
@@ -1313,19 +1316,19 @@ pub fn tracked_today_rows(
 ) -> Vec<(TaskId, TimeDelta)> {
     state
         .tasks
-        .keys()
-        .copied()
+        .values()
+        .filter(|task| task.is_live())
         .map(|task| {
             let total = taskboard_domain::tracking::work_in_window(
                 state
                     .tracking
                     .entries
                     .values()
-                    .filter(|entry| entry.task == task),
+                    .filter(|entry| entry.task == task.id),
                 window,
                 now,
             );
-            (task, total)
+            (task.id, total)
         })
         .filter(|(_, total)| *total > TimeDelta::zero())
         .collect()
@@ -5281,6 +5284,7 @@ mod track_surfaces_tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)] // one fixture over four rulings
     fn tracked_today_rows_are_work_only_in_canonical_order_and_clip_to_the_window() {
         let task_a = TaskId::from(uuid::Uuid::from_u128(1));
         let task_b = TaskId::from(uuid::Uuid::from_u128(2));
@@ -5341,6 +5345,49 @@ mod track_surfaces_tests {
         // An open entry accrues clamped at `now` (inside the window).
         let running = entry(4, task_c, 14 * 3600, None);
         state.tracking.entries.insert(running.id, running);
+        // A tombstoned task's surviving history renders no row (the
+        // today-section pattern's is_live filter — history outlives
+        // the task, the today view does not).
+        let task_d = TaskId::from(uuid::Uuid::from_u128(4));
+        let tombstone = Task {
+            id: task_d,
+            remote: None,
+            label_memberships: std::collections::BTreeMap::new(),
+            title: "gone".into(),
+            description: String::new(),
+            duedate: None,
+            scheduled: None,
+            done: None,
+            stack: StackId::from(uuid::Uuid::from_u128(50)),
+            order: 0,
+            effort: None,
+            importance: None,
+            urgency: None,
+            recur: None,
+            kind: taskboard_domain::entities::TaskKind::Standard,
+            archived: false,
+            deleted: true,
+            clocks: TaskClocks {
+                title: ts(0),
+                description: ts(0),
+                duedate: ts(0),
+                scheduled: ts(0),
+                done: ts(0),
+                position: ts(0),
+                effort: ts(0),
+                importance: ts(0),
+                urgency: ts(0),
+                recur: ts(0),
+                kind: ts(0),
+                archived: ts(0),
+                deleted: ts(0),
+            },
+            remote_seen: None,
+            remote_baseline: None,
+        };
+        state.tasks.insert(task_d, tombstone);
+        let gone_work = entry(5, task_d, 9 * 3600, Some(10 * 3600));
+        state.tracking.entries.insert(gone_work.id, gone_work);
 
         let window = (ts(8 * 3600), ts(16 * 3600));
         let now = ts(15 * 3600);
@@ -5348,7 +5395,7 @@ mod track_surfaces_tests {
         assert_eq!(
             rows.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
             [task_a, task_b, task_c],
-            "canonical order, workless tasks absent"
+            "canonical order, workless and tombstoned tasks absent"
         );
         assert_eq!(rows[0].1, TimeDelta::hours(1), "the spanning entry clips");
         assert_eq!(rows[1].1, TimeDelta::hours(1), "respite never counts");
