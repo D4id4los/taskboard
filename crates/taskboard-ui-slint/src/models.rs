@@ -262,6 +262,7 @@ pub struct PushModels {
     // drives; the row struct itself died with the radio list).
     board_options: MirroredRows<crate::DropdownRow>,
     board_ids: MirroredRows<SharedString>,
+    settings_facts: MirroredRows<crate::SettingsFactRow>,
     hints: HintModels,
     /// The tasks whose decoration models the current pass touched
     /// (cleared at pass start) — the prune set for
@@ -1533,6 +1534,17 @@ impl PushModels {
         desired: &[SharedString],
     ) -> usize {
         push_rows(&mut self.board_ids, |rc| global.set_board_ids(rc), desired)
+    }
+
+    /// Diffs the settings editor's read-only fact rows onto their
+    /// persistent handle (the connector rows' pattern; the facts
+    /// change only on a reply, but the push is per pass).
+    pub(crate) fn push_settings_facts(
+        &mut self,
+        global: &crate::SettingsModel<'_>,
+        desired: &[crate::SettingsFactRow],
+    ) -> usize {
+        push_rows(&mut self.settings_facts, |rc| global.set_facts(rc), desired)
     }
 }
 

@@ -212,6 +212,20 @@ pub const HELP_SCALE: &str =
 pub const HELP_KEYMAP: &str =
     "The keyboard scheme: Standard, Emacs, or Vi. Overrides from the config file stay in place.";
 pub const HELP_ROWS: &str = "Test verifies the stored password against the server; Remove deletes the config entry and the stored password.";
+// The settings editor's general fields (the GUI settings editor chunk).
+pub const HELP_DAY_START: &str =
+    "The local time of day at which \"today\" begins, e.g. 05:00. Type it and press Return.";
+pub const HELP_TICK: &str = "How often the reminder engine checks, in whole seconds.";
+pub const HELP_BEFORE: &str =
+    "The implicit reminder fires this long before a due date, e.g. 5m, 1h30m, 2d.";
+pub const HELP_POLL: &str = "How long the sync actor rests after a successful cycle, in seconds.";
+pub const HELP_BACKOFF: &str =
+    "The failure backoff: the first wait doubles toward the ceiling. Both in whole seconds.";
+pub const HELP_DUE_SOON: &str =
+    "How many days ahead a task counts as due soon. 0 turns the soon set off.";
+pub const HELP_REMINDERS: &str =
+    "Whether the reminder engine runs at all. Edited values apply at the next restart.";
+pub const HELP_SINK: &str = "Which notifier delivers fired reminders: auto resolves by app mode.";
 
 #[cfg(test)]
 mod tests {
@@ -318,6 +332,14 @@ mod tests {
             HELP_SCALE,
             HELP_KEYMAP,
             HELP_ROWS,
+            HELP_DAY_START,
+            HELP_TICK,
+            HELP_BEFORE,
+            HELP_POLL,
+            HELP_BACKOFF,
+            HELP_DUE_SOON,
+            HELP_REMINDERS,
+            HELP_SINK,
         ] {
             assert_ne!(text, "");
         }

@@ -3599,7 +3599,7 @@ fn a_scale_commit_anchors_the_scroll_on_the_scale_row() {
             // production scroll path — the flickable processes them,
             // severing any property bindings on content-y exactly as
             // in production; the anchor must survive that).
-            for _ in 0..8 {
+            for _ in 0..24 {
                 window
                     .window()
                     .dispatch_event(slint::platform::WindowEvent::PointerScrolled {
@@ -4406,14 +4406,19 @@ fn settings_scroll_reaches_the_scale_controls_at_scale_3() {
                 "the write-back landed (the two-way binding)"
             );
 
-            let scale_field = driver
-                .find_by_label("Scale")
-                .expect("the scale field is addressable");
-            let pos = scale_field.absolute_position();
-            let size = scale_field.size();
+            // The content's tail moved past the scale row (the GUI
+            // settings editor's sections joined below it): the
+            // display section's field is the deepest labelled
+            // addressable, and it sits inside the window after the
+            // scroll.
+            let tail_field = driver
+                .find_by_label("Due soon (days)")
+                .expect("the display field is addressable");
+            let pos = tail_field.absolute_position();
+            let size = tail_field.size();
             assert!(
                 pos.y >= 0.0 && pos.y + size.height <= 400.0 * 3.0,
-                "the scale field sits inside the window after the scroll"
+                "the content tail sits inside the window after the scroll"
             );
             // The status row is the content's last child: with the
             // viewport at the bottom the content's bottom edge is
@@ -4466,7 +4471,12 @@ fn every_settings_field_carries_its_info_tip() {
         move |_driver| {
             let mut harness = Harness::mount_with_settings(SlintDriver::default(), state, settings);
             harness.press(ActionId::AppSettings);
-            harness.driver.set_window_size(1000, 900);
+            // The general fields' tips sit deep in the scroll: the
+            // testing backend addresses laid-out elements only, so
+            // the window grows tall enough to lay every placement out
+            // on screen (the id addressing, not visibility, is the
+            // pin's subject).
+            harness.driver.set_window_size(1000, 2400);
             harness.driver.advance_time(0);
             assert_eq!(harness.handle.window().get_current_view(), View::Settings);
             let driver = &mut harness.driver;
@@ -4490,8 +4500,8 @@ fn every_settings_field_carries_its_info_tip() {
             };
             assert_eq!(
                 distinct_spots(driver, "LabeledField::help-tip"),
-                4,
-                "Name, Server, Username, and App password each carry a tip"
+                11,
+                "the four connection fields and the seven general                  fields each carry a tip"
             );
             for id in [
                 "SettingsView::help-scale",
@@ -12315,4 +12325,459 @@ fn the_bar_dropdown_ladder_declines_the_action_layer_under_every_preset() {
             },
         );
     }
+}
+
+// ---------------------------------------------------------------------
+// The settings editor's general surface (the GUI settings editor
+// chunk, J-1..J-7 of the plan's catalogue). Assertion discipline as
+// everywhere: typed model properties and the typed requests that
+// reached the lane boundary; label/status text is never matched.
+
+use std::collections::BTreeSet;
+use taskboard_ui_slint::requests::{ReminderSink, SectionApply, SettingsFact, SettingsSnapshot};
+
+/// The general snapshot fixture (the hand-over's shape): typed
+/// editable values, the exhaustive apply map, and the read-only
+/// facts. Env-locked variants clone-and-lock.
+fn general_snapshot() -> SettingsSnapshot {
+    let mut applies = std::collections::BTreeMap::new();
+    for key in [
+        "preferences.day_start_time",
+        "reminders.enabled",
+        "reminders.tick_secs",
+        "reminders.default_before",
+        "reminders.sink",
+        "sync.poll_interval_secs",
+        "sync.backoff_initial_secs",
+        "sync.backoff_max_secs",
+        "ui.due_soon_days",
+    ] {
+        applies.insert(key.to_owned(), SectionApply::OnRestart);
+    }
+    SettingsSnapshot {
+        day_start_time: chrono::NaiveTime::from_hms_opt(5, 30, 0).expect("t"),
+        reminders_enabled: true,
+        reminder_tick_secs: 30,
+        reminder_before: "5m".to_owned(),
+        reminder_sink: ReminderSink::Auto,
+        poll_interval_secs: 30,
+        backoff_initial_secs: 5,
+        backoff_max_secs: 300,
+        due_soon_days: 1,
+        env_overridden: BTreeSet::new(),
+        facts: vec![
+            SettingsFact {
+                key: "app.mode",
+                value: "desktop".to_owned(),
+                apply: SectionApply::OnRestart,
+            },
+            SettingsFact {
+                key: "web.token",
+                value: "true".to_owned(),
+                apply: SectionApply::OnRestart,
+            },
+            SettingsFact {
+                key: "ui.stack_widths",
+                value: "3".to_owned(),
+                apply: SectionApply::Live,
+            },
+        ],
+        applies,
+    }
+}
+
+fn general_harness(state: AppState, snapshot: SettingsSnapshot) -> Harness {
+    let settings = UiSettings {
+        general: snapshot,
+        ..UiSettings::default()
+    };
+    Harness::mount_with_settings(SlintDriver::default(), state, settings)
+}
+
+/// J-1 — the render journey: the new sections render the snapshot's
+/// values (typed echoes), the read-only facts render with their apply
+/// badges, and nothing dispatches at mount.
+#[test]
+fn the_general_sections_render_the_snapshot() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = general_harness(state, general_snapshot());
+            harness.press(ActionId::AppSettings);
+            let window = harness.handle.window();
+            let model = || window.global::<taskboard_ui_slint::SettingsModel>();
+
+            // The typed echoes (draft-free at mount).
+            assert_eq!(model().get_day_start_echo(), "05:30");
+            assert_eq!(model().get_tick_echo(), "30");
+            assert_eq!(model().get_before_echo(), "5m");
+            assert_eq!(model().get_poll_echo(), "30");
+            assert_eq!(model().get_backoff_initial_echo(), "5");
+            assert_eq!(model().get_backoff_max_echo(), "300");
+            assert_eq!(model().get_due_soon_echo(), "1");
+            assert_eq!(
+                model().get_reminders_enabled_index(),
+                0,
+                "On renders selected"
+            );
+            assert_eq!(model().get_sink_index(), 0, "auto renders selected");
+
+            // The read-only facts render one row per fact.
+            assert_eq!(model().get_facts().row_count(), 3);
+            let token_row = (0..model().get_facts().row_count())
+                .find_map(|i| {
+                    model()
+                        .get_facts()
+                        .row_data(i)
+                        .filter(|row| row.key == "web.token")
+                })
+                .expect("the token presence row renders");
+            assert_eq!(token_row.value, "true", "presence, never the value");
+            let widths_row = (0..model().get_facts().row_count())
+                .find_map(|i| {
+                    model()
+                        .get_facts()
+                        .row_data(i)
+                        .filter(|row| row.key == "ui.stack_widths")
+                })
+                .expect("the fenced-subtree presence row renders");
+            assert!(!widths_row.on_restart, "the fenced subtree applies live");
+
+            // The apply facts render per editable field (J-5's
+            // structural presence, pinned here for the group).
+            assert!(model().get_day_start_on_restart());
+            assert!(model().get_tick_on_restart());
+            assert!(model().get_reminders_enabled_on_restart());
+            assert!(model().get_due_soon_on_restart());
+
+            assert!(
+                harness.drain_requests().is_empty(),
+                "rendering dispatches nothing"
+            );
+        },
+    );
+}
+
+/// J-2 — the edit round-trip (the acceptance core): a valid edit
+/// commits, exactly the typed intent dispatches with the minted
+/// payload, the fresh-snapshot reply re-renders the row's echo (never
+/// the click), and the outcome lands Ok.
+#[test]
+fn the_general_edit_round_trip_routes_and_echoes_the_reply() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = general_harness(state, general_snapshot());
+            harness.press(ActionId::AppSettings);
+            let window = harness.handle.window();
+            let model = || window.global::<taskboard_ui_slint::SettingsModel>();
+
+            // Stage the edit (per keystroke), commit on Return's seam.
+            window.invoke_settings_field_edited(6, "45".into());
+            assert_eq!(model().get_tick_echo(), "45", "the draft is the echo");
+            window.invoke_settings_general_committed(6, "45".into());
+            let mut requests = harness.drain_requests();
+            assert_eq!(requests.len(), 1, "exactly one typed intent");
+            let taskboard_ui_slint::requests::UiRequest::SetReminderTick { secs, reply } =
+                requests.remove(0)
+            else {
+                panic!("the tick intent routed");
+            };
+            assert_eq!(secs, 45, "the minted payload rides the lane");
+
+            // The reply carries the fresh snapshot; the echo follows
+            // the reply (the committed value), not the click.
+            let mut fresh = general_snapshot();
+            fresh.reminder_tick_secs = 45;
+            reply.send(Ok(fresh)).expect("the reply lane is alive");
+            harness.handle.drain_setting_replies();
+            assert_eq!(model().get_tick_echo(), "45");
+            assert_eq!(
+                model().get_last_outcome(),
+                taskboard_ui_slint::SettingsOutcome::Ok
+            );
+
+            // The choice grammar: pick dispatches on the pick (the
+            // keymap preset's rule), the reply re-renders the index.
+            window.invoke_settings_reminders_picked(1);
+            let mut requests = harness.drain_requests();
+            assert_eq!(requests.len(), 1);
+            let taskboard_ui_slint::requests::UiRequest::SetRemindersEnabled { enabled, reply } =
+                requests.remove(0)
+            else {
+                panic!("the toggle intent routed");
+            };
+            assert!(!enabled);
+            let mut fresh = general_snapshot();
+            fresh.reminders_enabled = false;
+            reply.send(Ok(fresh)).expect("the reply lane is alive");
+            harness.handle.drain_setting_replies();
+            assert_eq!(
+                model().get_reminders_enabled_index(),
+                1,
+                "the selection echoes the replied value"
+            );
+            window.invoke_settings_sink_picked(2);
+            let mut requests = harness.drain_requests();
+            let taskboard_ui_slint::requests::UiRequest::SetReminderSink { sink, reply } =
+                requests.remove(0)
+            else {
+                panic!("the sink intent routed");
+            };
+            assert_eq!(sink, ReminderSink::Desktop);
+            let mut fresh = general_snapshot();
+            fresh.reminder_sink = ReminderSink::Desktop;
+            reply.send(Ok(fresh)).expect("the reply lane is alive");
+            harness.handle.drain_setting_replies();
+            assert_eq!(model().get_sink_index(), 2);
+        },
+    );
+}
+
+/// J-3 — the typed-refusal journey: an unparseable day start, a zero
+/// tick, and the `initial > max` crossing refuse at the seam — no
+/// request dispatches, the field's validity flavour renders the typed
+/// kind, the status line renders the refusal outcome. A refused draft
+/// stays visible (the typo remains under its flavour).
+#[test]
+fn invalid_general_commits_refuse_typed_without_routing() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = general_harness(state, general_snapshot());
+            harness.press(ActionId::AppSettings);
+            let window = harness.handle.window();
+            let model = || window.global::<taskboard_ui_slint::SettingsModel>();
+
+            window.invoke_settings_field_edited(6, "0".into());
+            window.invoke_settings_general_committed(6, "0".into());
+            assert!(
+                harness.drain_requests().is_empty(),
+                "a refusal routes nothing"
+            );
+            assert_eq!(
+                model().get_last_outcome(),
+                taskboard_ui_slint::SettingsOutcome::Rejected
+            );
+            assert_eq!(
+                model().get_validity_tick(),
+                taskboard_ui_slint::FieldValidity::Invalid,
+                "the flavour renders the typed kind"
+            );
+
+            // Unparseable day start: same shape (the draft staged
+            // first — the flavour renders from the staged buffer, the
+            // scale field's grammar).
+            window.invoke_settings_field_edited(5, "abc".into());
+            window.invoke_settings_general_committed(5, "abc".into());
+            assert!(harness.drain_requests().is_empty());
+            assert_eq!(
+                model().get_validity_day_start(),
+                taskboard_ui_slint::FieldValidity::Invalid
+            );
+
+            // The ordering rule (plan D8): initial above the committed
+            // max refuses at the seam, attributed to the offending
+            // field — no lane traffic.
+            window.invoke_settings_field_edited(9, "400".into());
+            window.invoke_settings_general_committed(9, "400".into());
+            assert!(harness.drain_requests().is_empty());
+            assert_eq!(
+                model().get_last_outcome(),
+                taskboard_ui_slint::SettingsOutcome::Rejected,
+                "the crossing refuses visibly at the seam (the status                  line carries it; the per-field flavour is the                  per-keystroke predicate's)"
+            );
+            // Symmetric: max below the committed initial.
+            window.invoke_settings_field_edited(10, "3".into());
+            window.invoke_settings_general_committed(10, "3".into());
+            assert!(harness.drain_requests().is_empty());
+            assert_eq!(
+                model().get_last_outcome(),
+                taskboard_ui_slint::SettingsOutcome::Rejected
+            );
+
+            // A valid commit clears the stale drafts' flavours: the
+            // tick edit refused above stays in its draft; focus loss
+            // discards it (the scale field's grammar).
+            window.invoke_settings_general_focus_lost(6);
+            assert_eq!(
+                model().get_validity_tick(),
+                taskboard_ui_slint::FieldValidity::Neutral,
+                "the discarded draft renders neutral again"
+            );
+            assert_eq!(model().get_tick_echo(), "30", "the echo re-syncs");
+        },
+    );
+}
+
+/// J-4 — the env-override journey: a key in the hand-over's env set
+/// renders read-only (the env-locked fact present, the badge fact
+/// pushed), and its commit is absorbed at the defence arm — nothing
+/// dispatches, nothing pretends to apply.
+#[test]
+fn env_overridden_keys_render_locked_and_refuse_the_seam() {
+    let (_fixture, state) = fixture::golden_state();
+    let mut snapshot = general_snapshot();
+    snapshot.env_overridden = BTreeSet::from(["reminders.tick_secs".to_owned()]);
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = general_harness(state, snapshot);
+            harness.press(ActionId::AppSettings);
+            let window = harness.handle.window();
+            let model = || window.global::<taskboard_ui_slint::SettingsModel>();
+
+            assert!(model().get_tick_env_locked(), "the env fact rides the row");
+
+            // The defence in depth: even a routed commit on the
+            // locked key never dispatches (the effective value cannot
+            // move while the env stands).
+            window.invoke_settings_general_committed(6, "45".into());
+            assert!(
+                harness.drain_requests().is_empty(),
+                "the locked key never dispatches"
+            );
+
+            // A reply must not lift the lock: the env set is
+            // hand-over state, preserved across replies.
+            window.invoke_settings_general_committed(11, "7".into());
+            let mut requests = harness.drain_requests();
+            let taskboard_ui_slint::requests::UiRequest::SetDueSoonDays { reply, .. } =
+                requests.remove(0)
+            else {
+                panic!("the unlocked field routed");
+            };
+            let fresh = general_snapshot();
+            reply.send(Ok(fresh)).expect("the reply lane is alive");
+            harness.handle.drain_setting_replies();
+            assert!(
+                model().get_tick_env_locked(),
+                "the reply preserved the standing env set"
+            );
+        },
+    );
+}
+
+/// J-6 — the general fields' draft lifecycle: a Return-less edit
+/// never survives the surface (the scale field's §5.1 invariant,
+/// extended to the new fields — the mount dies the staged buffer and
+/// the echo re-renders the committed value). The insert-mask
+/// engagement itself is the shared `TextField` widget's D18 machinery,
+/// pinned once by the editing-facts lifecycle journey (the testing
+/// backend cannot focus a settings field: the recorded
+/// "a `TouchArea` click never moves focus" negative, and the fields
+/// opt out of autofocus by the initial-focus contract — the plan's
+/// focus/commit halves are therefore pinned at the draft seam here).
+#[test]
+fn a_general_return_less_edit_never_survives_the_surface() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = general_harness(state, general_snapshot());
+            harness.press(ActionId::AppSettings);
+            let window = harness.handle.window();
+            let model = || window.global::<taskboard_ui_slint::SettingsModel>();
+
+            // Stage a Return-less edit: the draft is the echo.
+            window.invoke_settings_field_edited(7, "90m".into());
+            assert_eq!(model().get_before_echo(), "90m", "the draft renders");
+
+            // The surface closes and reopens: the staged draft died.
+            harness.press(ActionId::AppSettings);
+            harness.press(ActionId::AppSettings);
+            let window = harness.handle.window();
+            assert_eq!(
+                window
+                    .global::<taskboard_ui_slint::SettingsModel>()
+                    .get_before_echo(),
+                "5m",
+                "the mount re-renders the committed echo"
+            );
+
+            // The focus-loss seam shares the grammar: a staged draft
+            // dies and the echo re-syncs without any surface change.
+            window.invoke_settings_field_edited(7, "2h".into());
+            assert_eq!(
+                window
+                    .global::<taskboard_ui_slint::SettingsModel>()
+                    .get_before_echo(),
+                "2h"
+            );
+            window.invoke_settings_general_focus_lost(7);
+            assert_eq!(
+                window
+                    .global::<taskboard_ui_slint::SettingsModel>()
+                    .get_before_echo(),
+                "5m",
+                "the focus-loss discard re-syncs the echo"
+            );
+        },
+    );
+}
+
+/// J-7 — the busy machine covers the new arms: an editor op in flight
+/// disables the other settings ops — a second commit during the
+/// flight refuses visibly and routes nothing (the D34 machine's one
+/// op at a time).
+#[test]
+fn a_general_op_in_flight_gates_the_other_settings_ops() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = general_harness(state, general_snapshot());
+            harness.press(ActionId::AppSettings);
+            let window = harness.handle.window();
+            let model = || window.global::<taskboard_ui_slint::SettingsModel>();
+
+            window.invoke_settings_general_committed(6, "45".into());
+            assert!(model().get_busy(), "the busy gate is up");
+
+            // A second editor commit mid-flight: visible refusal,
+            // nothing routes.
+            window.invoke_settings_general_committed(11, "7".into());
+            assert_eq!(
+                model().get_last_outcome(),
+                taskboard_ui_slint::SettingsOutcome::Rejected
+            );
+
+            // The reply lands: the gate lifts, the next op routes.
+            let mut lane = harness.requests_rx.lock().expect("requests lock");
+            let drained: Vec<_> = std::iter::from_fn(|| lane.try_recv().ok()).collect();
+            assert_eq!(
+                drained.len(),
+                1,
+                "exactly the first op is in the lane — the busy gate                  routed nothing extra"
+            );
+            let taskboard_ui_slint::requests::UiRequest::SetReminderTick { reply, .. } =
+                drained.into_iter().next().expect("the op routes")
+            else {
+                panic!("the tick op routes");
+            };
+            drop(lane);
+            reply
+                .send(Ok(general_snapshot()))
+                .expect("the reply lane is alive");
+            harness.handle.drain_setting_replies();
+            assert!(!model().get_busy());
+            window.invoke_settings_general_committed(11, "7".into());
+            assert_eq!(harness.drain_requests().len(), 1, "the gate lifted");
+        },
+    );
 }

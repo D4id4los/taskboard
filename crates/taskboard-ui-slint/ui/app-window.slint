@@ -171,6 +171,11 @@ export component AppWindow inherits Window {
     callback settings-view-mounted();
     callback settings-scale-committed(string);
     callback settings-scale-focus-lost();
+    // The settings editor's general seams (the GUI settings editor).
+    callback settings-general-committed(int, string);
+    callback settings-general-focus-lost(int);
+    callback settings-reminders-picked(int);
+    callback settings-sink-picked(int);
     in-out property <BoardModel> board-model;
     in-out property <BoardBarModel> board-bar-model;
     in-out property <StackDetailModel> stack-model;
@@ -386,6 +391,10 @@ export component AppWindow inherits Window {
                 scale-focus-lost() => root.settings-scale-focus-lost();
                 scale-pressed() => root.settings-scale-pressed();
                 scale-released(v) => root.settings-scale-released(v);
+                general-committed(f, t) => root.settings-general-committed(f, t);
+                general-focus-lost(f) => root.settings-general-focus-lost(f);
+                reminders-picked(i) => root.settings-reminders-picked(i);
+                sink-picked(i) => root.settings-sink-picked(i);
             }
             if (root.current-view == View.review): ReviewView {
                 review: root.review-model;

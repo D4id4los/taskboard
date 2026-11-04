@@ -221,6 +221,84 @@ pub fn scale_invalid_kind(text: &str) -> Option<InvalidKind> {
     }
 }
 
+// -- the general fields' predicates (the GUI settings editor) --------
+//
+// The same discipline as the connector mirror: the app-side
+// validation stays the authority (the prove gate re-proves the whole
+// document); these predicates exist so the commit seam can refuse
+// before the lane and the field can flag its flavour early. Parity
+// with `AppConfig::validate`'s rejection sets is pinned by fixtures.
+
+/// The day-start field's per-keystroke predicate: parity with the
+/// config's own rule (`preferences.day_start_time` parses as a
+/// `chrono::NaiveTime`). Parse failure maps to the lane lattice's
+/// reserved parse arm (the scale field's precedent); trimmed-empty is
+/// Neutral.
+#[must_use]
+pub fn day_start_invalid_kind(text: &str) -> Option<InvalidKind> {
+    if text.trim().is_empty() {
+        return None;
+    }
+    text.trim()
+        .parse::<chrono::NaiveTime>()
+        .map_or(Some(InvalidKind::NotKebab), |_| None)
+}
+
+/// The before field's predicate: the DELEGATION pin — the grammar is
+/// domain-owned (`ReminderOffset::parse_text_form`, the config's
+/// `parse_before` vocabulary), so this mirror has no grammar of its
+/// own to drift (plan D9).
+#[must_use]
+pub fn before_invalid_kind(text: &str) -> Option<InvalidKind> {
+    if text.trim().is_empty() {
+        return None;
+    }
+    taskboard_domain::ReminderOffset::parse_text_form(text.trim())
+        .map_or(Some(InvalidKind::NotKebab), |_| None)
+}
+
+/// The plain positive-seconds fields (tick, poll interval, backoff
+/// ceiling): parity with the config's zero refusals. Parse failure →
+/// the reserved parse arm; zero → `OutOfRange`.
+#[must_use]
+pub fn secs_invalid_kind(text: &str) -> Option<InvalidKind> {
+    if text.trim().is_empty() {
+        return None;
+    }
+    match text.trim().parse::<u64>() {
+        Err(_) => Some(InvalidKind::NotKebab),
+        Ok(0) => Some(InvalidKind::OutOfRange),
+        Ok(_) => None,
+    }
+}
+
+/// The due-soon field: parity with the config's ceiling rule — 0 is
+/// legal (an empty soon set), above the ten-year horizon refuses.
+#[must_use]
+pub fn due_soon_invalid_kind(text: &str) -> Option<InvalidKind> {
+    if text.trim().is_empty() {
+        return None;
+    }
+    match text.trim().parse::<u32>() {
+        Err(_) => Some(InvalidKind::NotKebab),
+        Ok(days) if days > 3652 => Some(InvalidKind::OutOfRange),
+        Ok(_) => None,
+    }
+}
+
+/// The generic flavour mapping over a text predicate (the
+/// [`field_status`]/[`scale_status`] grammar, unified).
+#[must_use]
+pub fn general_status(text: &str, invalid: fn(&str) -> Option<InvalidKind>) -> FieldStatus {
+    if text.trim().is_empty() {
+        return FieldStatus::Neutral;
+    }
+    match invalid(text) {
+        Some(kind) => FieldStatus::Invalid(kind),
+        None => FieldStatus::Valid,
+    }
+}
+
 /// The scale field's flavour mapping (round-3 D20a), the same grammar
 /// as [`field_status`].
 #[must_use]
@@ -513,6 +591,103 @@ mod tests {
         assert_eq!(format_scale(0.5), "0.5");
         assert_eq!(format_scale(3.0), "3.0");
         assert_eq!(format_scale(1.7), "1.7");
+    }
+
+    // -- the general fields' predicates (U-1) ---------------------------
+
+    /// The day-start truth table: parity with the config's own rule
+    /// (a `chrono::NaiveTime` parse). Empty/whitespace is Neutral.
+    #[test]
+    fn the_day_start_truth_table_matches_the_config_rule() {
+        let probe = |raw: &str| raw.parse::<chrono::NaiveTime>().is_err();
+        for yes in ["00:00", "05:00", "23:59", "05:00:30"] {
+            assert!(day_start_invalid_kind(yes).is_none(), "{yes} must pass");
+            assert!(!probe(yes));
+        }
+        for no in ["25:00", "abc", "5", "05:60", "12:34:99"] {
+            assert_eq!(
+                day_start_invalid_kind(no),
+                Some(InvalidKind::NotKebab),
+                "{no} must refuse"
+            );
+            assert!(probe(no), "{no}: the mirror tracks the config parse");
+        }
+        assert_eq!(day_start_invalid_kind(""), None);
+        assert_eq!(day_start_invalid_kind("   "), None);
+    }
+
+    /// The before field's pin is the DELEGATION (plan D9): the
+    /// mirror's accept/reject set is exactly the domain parser's —
+    /// whatever it accepts passes, whatever it refuses maps to the
+    /// reserved parse arm. One grammar, no mirror of its own.
+    #[test]
+    fn the_before_predicate_delegates_to_the_domain_parser() {
+        // Strict agreement over NON-empty text (the mirror's
+        // trimmed-empty contract is Neutral, pinned below — not a
+        // delegation fact).
+        let agrees = |raw: &str| {
+            before_invalid_kind(raw).is_none()
+                == taskboard_domain::ReminderOffset::parse_text_form(raw.trim()).is_some()
+        };
+        for raw in ["5m", "0s", "1h30m", "2d", "abc", "-5m", "5x", "90m", "5 m"] {
+            assert!(
+                agrees(raw),
+                "{raw}: the mirror must track the domain parser"
+            );
+        }
+        assert_eq!(before_invalid_kind("5m"), None);
+        assert_eq!(before_invalid_kind("abc"), Some(InvalidKind::NotKebab));
+        assert_eq!(before_invalid_kind(""), None);
+        assert_eq!(before_invalid_kind("   "), None);
+    }
+
+    /// The seconds fields: parse, positivity; zero is the config's
+    /// own typed refusal (`OutOfRange`), parse failure the reserved arm.
+    #[test]
+    fn the_secs_truth_table_matches_the_config_rules() {
+        assert_eq!(secs_invalid_kind("30"), None);
+        assert_eq!(secs_invalid_kind("1"), None);
+        assert_eq!(secs_invalid_kind("0"), Some(InvalidKind::OutOfRange));
+        assert_eq!(secs_invalid_kind("-1"), Some(InvalidKind::NotKebab));
+        assert_eq!(secs_invalid_kind("abc"), Some(InvalidKind::NotKebab));
+        assert_eq!(secs_invalid_kind(""), None);
+        assert_eq!(secs_invalid_kind("   "), None);
+    }
+
+    /// The due-soon field: 0 legal (an empty soon set), the ten-year
+    /// ceiling refuses — the config ladder's own bounds.
+    #[test]
+    fn the_due_soon_truth_table_matches_the_config_ceiling() {
+        assert_eq!(due_soon_invalid_kind("0"), None, "0 is legal");
+        assert_eq!(due_soon_invalid_kind("1"), None);
+        assert_eq!(due_soon_invalid_kind("3652"), None, "the boundary is legal");
+        assert_eq!(due_soon_invalid_kind("3653"), Some(InvalidKind::OutOfRange));
+        assert_eq!(due_soon_invalid_kind("abc"), Some(InvalidKind::NotKebab));
+        assert_eq!(due_soon_invalid_kind(""), None);
+    }
+
+    /// The general flavour mapping: empty → Neutral, failing →
+    /// Invalid(kind), passing → Valid, over every predicate.
+    #[test]
+    fn general_status_maps_the_three_flavours() {
+        assert_eq!(general_status("", secs_invalid_kind), FieldStatus::Neutral);
+        assert_eq!(
+            general_status("   ", secs_invalid_kind),
+            FieldStatus::Neutral
+        );
+        assert_eq!(
+            general_status("0", secs_invalid_kind),
+            FieldStatus::Invalid(InvalidKind::OutOfRange)
+        );
+        assert_eq!(general_status("30", secs_invalid_kind), FieldStatus::Valid);
+        assert_eq!(
+            general_status("abc", day_start_invalid_kind),
+            FieldStatus::Invalid(InvalidKind::NotKebab)
+        );
+        assert_eq!(
+            general_status("05:00", day_start_invalid_kind),
+            FieldStatus::Valid
+        );
     }
 
     /// The enablement predicate agrees with the ladder.
