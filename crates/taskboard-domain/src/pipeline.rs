@@ -3777,6 +3777,49 @@ mod tests {
         );
     }
 
+    /// The anti-overreach guard (#282): a `Forbidden` rejection on a
+    /// *live* board stays queued — the dead-board drain keys on
+    /// confirmed-dead state, never on the rejection strand, so the
+    /// transient-403 shape the rig measured keeps retrying on live
+    /// boards exactly as before.
+    #[test]
+    fn live_board_forbidden_strand_still_retries() {
+        let task = bound_task(1);
+        let state = base_state(task);
+        let op_id = crate::outbox::OpId(uuid::Uuid::from_u128(3));
+        let op = crate::outbox::PendingOp {
+            op_id,
+            op: LocalOp::UpdateTask(task_by_card(&state, 1).id),
+            queued_at: ts(BASE),
+        };
+        let snap = single_stack_snapshot(vec![remote_task(1, 1, BASE)], BASE);
+
+        let app = apply_sync_report(
+            &state,
+            std::slice::from_ref(&op),
+            &snap,
+            &[PushOutcome {
+                op: op_id,
+                result: PushResult::Rejected {
+                    kind: SyncErrorKind::Forbidden,
+                },
+            }],
+            DateTime::<chrono::Utc>::MAX_UTC,
+            &CountingIds::default(),
+            ts(BASE + 60),
+            &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
+        );
+        assert_eq!(
+            app.0.sync.aggregate().pending_ops,
+            1,
+            "a live-board Forbidden strand stays queued for retry"
+        );
+        assert_eq!(app.0.sync.aggregate().phase, SyncPhase::Idle);
+    }
+
     #[test]
     fn pipeline_adopts_new_remote_entities_before_resolving_task_labels() {
         // A remote label (11) and a task referencing it, neither known
@@ -4376,6 +4419,227 @@ mod tests {
             app.0.tasks[&dead_task_id].clocks.deleted,
             ts(BASE + 30),
             "already-dead task is not re-tombstoned",
+        );
+    }
+
+    /// The dead-board drain (#282, F10-05): a pull that confirms a board
+    /// dead finalizes every queued op attributed to that board in the
+    /// same report — stack and label ops included — so no doomed write
+    /// against the dead board is ever paid.
+    #[test]
+    fn dead_board_pull_drains_queued_stack_and_label_ops() {
+        let mut state = base_state(bound_task(1));
+        let label = bound_label(9);
+        let label_id = label.id;
+        state.labels.insert(label_id, label);
+        let stack_id = *state.stacks.keys().next().unwrap();
+
+        let op_ids: Vec<crate::outbox::OpId> = (52..=56)
+            .map(|n| crate::outbox::OpId(uuid::Uuid::from_u128(n)))
+            .collect();
+        let ops = vec![
+            crate::outbox::PendingOp {
+                op_id: op_ids[0],
+                op: LocalOp::CreateStack(stack_id),
+                queued_at: ts(BASE),
+            },
+            crate::outbox::PendingOp {
+                op_id: op_ids[1],
+                op: LocalOp::RenameStack(stack_id),
+                queued_at: ts(BASE),
+            },
+            crate::outbox::PendingOp {
+                op_id: op_ids[2],
+                op: LocalOp::MoveStack(stack_id),
+                queued_at: ts(BASE),
+            },
+            crate::outbox::PendingOp {
+                op_id: op_ids[3],
+                op: LocalOp::CreateLabel(label_id),
+                queued_at: ts(BASE),
+            },
+            crate::outbox::PendingOp {
+                op_id: op_ids[4],
+                op: LocalOp::UpdateLabel(label_id),
+                queued_at: ts(BASE),
+            },
+        ];
+
+        let mut board = remote_board(REMOTE_BOARD_NUM, BASE + 60);
+        board.deleted_at = Some(ts(BASE + 60));
+        let snap = RemoteBoardSnapshot {
+            board,
+            stacks: vec![remote_stack(1, BASE)],
+            tasks: vec![remote_task(1, 1, BASE)],
+            labels: vec![remote_label(9, BASE)],
+        };
+
+        let app = apply_sync_report(
+            &state,
+            &ops,
+            &snap,
+            &[],
+            DateTime::<chrono::Utc>::MAX_UTC,
+            &CountingIds::default(),
+            ts(BASE + 120),
+            &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
+        );
+
+        for op_id in &op_ids {
+            assert!(
+                app.1
+                    .iter()
+                    .any(|a| matches!(a, PersistenceAction::FailOp(id) if id == op_id)),
+                "queued op {op_id:?} on the dead board finalizes (FailOp)"
+            );
+        }
+        assert_eq!(
+            app.0.sync.aggregate().pending_ops,
+            0,
+            "the confirming pull drains every op attributed to the dead board"
+        );
+    }
+
+    /// D-3: the drain spares a queued `DeleteBoard` intent — cancelling
+    /// it would strand the local tombstone against a live remote and
+    /// resurrect the board at the next pull. It drains by its own push
+    /// outcome instead.
+    #[test]
+    fn drain_spares_the_board_delete_intent() {
+        let state = base_state(bound_task(1));
+        let stack_id = *state.stacks.keys().next().unwrap();
+        let board_id = crate::ids::BoardId::from(uuid::Uuid::from_u128(800));
+        let delete_op_id = crate::outbox::OpId(uuid::Uuid::from_u128(57));
+        let stack_op_id = crate::outbox::OpId(uuid::Uuid::from_u128(58));
+        let delete_op = crate::outbox::PendingOp {
+            op_id: delete_op_id,
+            op: LocalOp::DeleteBoard(board_id),
+            queued_at: ts(BASE),
+        };
+        let stack_op = crate::outbox::PendingOp {
+            op_id: stack_op_id,
+            op: LocalOp::CreateStack(stack_id),
+            queued_at: ts(BASE),
+        };
+
+        let mut board = remote_board(REMOTE_BOARD_NUM, BASE + 60);
+        board.deleted_at = Some(ts(BASE + 60));
+        let snap = RemoteBoardSnapshot {
+            board,
+            stacks: vec![remote_stack(1, BASE)],
+            tasks: vec![remote_task(1, 1, BASE)],
+            labels: vec![],
+        };
+
+        let app = apply_sync_report(
+            &state,
+            &[delete_op, stack_op],
+            &snap,
+            &[],
+            DateTime::<chrono::Utc>::MAX_UTC,
+            &CountingIds::default(),
+            ts(BASE + 120),
+            &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
+        );
+
+        assert!(
+            app.1
+                .iter()
+                .any(|a| matches!(a, PersistenceAction::FailOp(id) if id == &stack_op_id)),
+            "the stack op drains"
+        );
+        assert!(
+            !app.1
+                .iter()
+                .any(|a| matches!(a, PersistenceAction::FailOp(id) if id == &delete_op_id)),
+            "the board-delete intent stays queued for its own push outcome"
+        );
+        assert_eq!(
+            app.0.sync.aggregate().pending_ops,
+            1,
+            "only the DeleteBoard intent remains"
+        );
+    }
+
+    /// D-2's uniform attribution rule: board-scoped ops (board edit,
+    /// sidecar flush, ref-deletes, task app-data) cancel like stack and
+    /// label ops — one rule over `attributed_board`, no per-kind
+    /// exception table.
+    #[test]
+    fn drain_cancels_board_scope_ops_uniformly() {
+        let state = base_state(bound_task(1));
+        let task_id = task_by_card(&state, 1).id;
+        let board_id = crate::ids::BoardId::from(uuid::Uuid::from_u128(800));
+        let op_ids: Vec<crate::outbox::OpId> = (59..=62)
+            .map(|n| crate::outbox::OpId(uuid::Uuid::from_u128(n)))
+            .collect();
+        let ops = vec![
+            crate::outbox::PendingOp {
+                op_id: op_ids[0],
+                op: LocalOp::UpdateBoard(board_id),
+                queued_at: ts(BASE),
+            },
+            crate::outbox::PendingOp {
+                op_id: op_ids[1],
+                op: LocalOp::FlushBoardAppData(board_id),
+                queued_at: ts(BASE),
+            },
+            crate::outbox::PendingOp {
+                op_id: op_ids[2],
+                op: LocalOp::DeleteRemoteCard {
+                    board: board_id,
+                    card: card_ref(1, 1),
+                },
+                queued_at: ts(BASE),
+            },
+            crate::outbox::PendingOp {
+                op_id: op_ids[3],
+                op: LocalOp::UpdateAppData(task_id),
+                queued_at: ts(BASE),
+            },
+        ];
+
+        let mut board = remote_board(REMOTE_BOARD_NUM, BASE + 60);
+        board.deleted_at = Some(ts(BASE + 60));
+        let snap = RemoteBoardSnapshot {
+            board,
+            stacks: vec![remote_stack(1, BASE)],
+            tasks: vec![remote_task(1, 1, BASE)],
+            labels: vec![],
+        };
+
+        let app = apply_sync_report(
+            &state,
+            &ops,
+            &snap,
+            &[],
+            DateTime::<chrono::Utc>::MAX_UTC,
+            &CountingIds::default(),
+            ts(BASE + 120),
+            &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
+            test_day(),
+        );
+
+        for op_id in &op_ids {
+            assert!(
+                app.1
+                    .iter()
+                    .any(|a| matches!(a, PersistenceAction::FailOp(id) if id == op_id)),
+                "board-scoped op {op_id:?} cancels under the uniform rule"
+            );
+        }
+        assert_eq!(
+            app.0.sync.aggregate().pending_ops,
+            0,
+            "every op attributed to the dead board drained"
         );
     }
 
