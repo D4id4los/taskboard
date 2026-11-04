@@ -46,6 +46,8 @@ const SIGNAL_BUFFER: usize = 64;
 
 /// The engine inbox: channel-bearing envelopes owned by this crate, with
 /// the domain payloads inside (payload/envelope split).
+#[allow(clippy::large_enum_variant)]
+// StateCommand just crossed the threshold (pause rule); boxing churns every send site for a local lint
 #[derive(Debug)]
 pub enum EngineEnvelope {
     /// Execute one [`StateCommand`]; the optional reply is the command

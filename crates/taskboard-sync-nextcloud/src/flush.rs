@@ -1277,6 +1277,7 @@ mod tests {
             },
             bound: taskboard_domain::recur::RecurBound::None,
             continued_from: None,
+            paused_until: None,
         });
         let tables = EntityTables {
             tasks: &tasks,

@@ -2381,6 +2381,7 @@ mod tests {
             },
             bound: taskboard_domain::RecurBound::None,
             continued_from: None,
+            paused_until: None,
         });
         // A fresh open head (reference today at the epoch calendar) is
         // not stale: neutral tone, append-last after importance.

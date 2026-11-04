@@ -102,10 +102,13 @@ pub fn recur_rule_strategy() -> impl Strategy<Value = RecurRule> {
         recur_pattern_strategy(),
         proptest::option::of(naive_date_strategy()),
         proptest::option::of(any::<u128>()),
+        // The vacation pause (#506): any date — a pause behind the
+        // anchor is legitimately inert, a live one removes members.
+        proptest::option::of(naive_date_strategy()),
     )
         .prop_filter_map(
             "anchor ≤ until",
-            |(seed, anchor, pattern, until, from)| {
+            |(seed, anchor, pattern, until, from, paused_until)| {
                 if until.is_some_and(|u| u < anchor) {
                     return None;
                 }
@@ -116,6 +119,7 @@ pub fn recur_rule_strategy() -> impl Strategy<Value = RecurRule> {
                     bound: until.map_or(RecurBound::None, RecurBound::Until),
                     continued_from: from
                         .map(|seed| crate::ids::HabitId::from_uuid(uuid::Uuid::from_u128(seed))),
+                    paused_until,
                 })
             },
         )

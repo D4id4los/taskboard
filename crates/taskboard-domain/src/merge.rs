@@ -6007,6 +6007,7 @@ mod duplicate_reconcile_tests {
             },
             bound: crate::recur::RecurBound::None,
             continued_from: None,
+            paused_until: None,
         }
     }
 

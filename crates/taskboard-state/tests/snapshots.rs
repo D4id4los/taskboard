@@ -1378,6 +1378,7 @@ fn daily_rule(bound: taskboard_domain::RecurBound) -> taskboard_domain::RecurRul
         },
         bound,
         continued_from: None,
+        paused_until: None,
     }
 }
 

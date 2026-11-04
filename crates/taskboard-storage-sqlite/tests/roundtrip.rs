@@ -604,6 +604,7 @@ async fn recur_rule_round_trips_through_sqlite() {
         continued_from: Some(taskboard_domain::HabitId::from_uuid(uuid::Uuid::from_u128(
             0xab,
         ))),
+        paused_until: None,
     });
     recurring.clocks.recur = ts(900);
     repo.apply(vec![PersistenceAction::UpsertTask(recurring.clone())])
@@ -1591,6 +1592,7 @@ async fn recur_rows_survive_a_close_reopen_through_the_real_codec() {
         },
         bound: RecurBound::None,
         continued_from: None,
+        paused_until: None,
     });
     t.clocks.recur = ts(900);
     repo.apply(vec![
