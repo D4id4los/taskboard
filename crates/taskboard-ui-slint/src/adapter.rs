@@ -2857,9 +2857,11 @@ enum PendingKind {
     Detach,
     Preset,
     Scale,
-    /// One of the settings editor's general-field commits (the GUI
-    /// settings editor chunk).
-    General(GeneralField),
+    /// One of the settings editor's commits (the GUI settings editor
+    /// chunk), named by the lane field it edits — text commits and
+    /// choice picks alike (the kind is attribution only; no busy
+    /// marker matches it).
+    General(crate::requests::Field),
 }
 
 /// The typed last-outcome marker the model renders structurally
@@ -4319,6 +4321,15 @@ impl Adapter {
             return;
         }
         let trimmed = text.trim();
+        // The mirror's empty contract is Neutral (no flavour on an
+        // untouched field), so an empty commit reaches here — and the
+        // mints below `expect` a validated parse. `accepted` fires on
+        // Return regardless of content, so an empty Return is a real
+        // keyboard path: it refuses typed, never mints.
+        if trimmed.is_empty() {
+            typed_refusal(self, settings_form::InvalidKind::Empty);
+            return;
+        }
         if let Some(ceiling) = gf.ordering_ceiling(&self.settings.snapshot) {
             let crossing = match gf {
                 GeneralField::BackoffInitial => trimmed
@@ -4368,7 +4379,7 @@ impl Adapter {
         let sent = self.settings.send(
             &self.requests,
             request,
-            PendingKind::General(gf),
+            PendingKind::General(gf.lane_field()),
             PendingReply::Snapshot(reply_rx),
             "",
         );
@@ -4410,7 +4421,7 @@ impl Adapter {
         let sent = self.settings.send(
             &self.requests,
             request,
-            PendingKind::General(GeneralField::TickSecs),
+            PendingKind::General(crate::requests::Field::RemindersEnabled),
             PendingReply::Snapshot(reply_rx),
             "",
         );
@@ -4455,7 +4466,7 @@ impl Adapter {
         let sent = self.settings.send(
             &self.requests,
             request,
-            PendingKind::General(GeneralField::TickSecs),
+            PendingKind::General(crate::requests::Field::ReminderSink),
             PendingReply::Snapshot(reply_rx),
             "",
         );
