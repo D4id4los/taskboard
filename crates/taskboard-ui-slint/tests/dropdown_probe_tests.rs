@@ -84,10 +84,10 @@ fn open_close_hands_focus_between_field_and_flyout() {
 
         click(window, x, y);
         assert!(window.get_open(), "the field click opens");
-        assert!(
-            !window.get_field_focused(),
-            "the flyout grabbed focus (the field emptied)"
-        );
+        // The walk stays in the field (the click focuses it; the
+        // flyout never grabs — the recorded r4 decision: the field is
+        // the ladder's single home).
+        assert!(window.get_field_focused(), "the click focused the field");
 
         key(window, K::Escape);
         assert!(!window.get_open(), "Escape closes");

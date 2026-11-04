@@ -2881,9 +2881,6 @@ pub enum SettingsOutcome {
 struct SettingsVm {
     draft: ConnectionDraft,
     rows: Vec<ConnectorInfo>,
-    /// The board-selector rows (r2 D32): mounted once from
-    /// `UiSettings.boards`, refreshed only from reply snapshots.
-    boards: Vec<requests::BoardInfo>,
     /// Connector name → down-override (the `ConnectorLost`/
     /// `ConnectorRestored` episodes, D8); absent = no override.
     liveness: BTreeMap<String, bool>,
@@ -3137,11 +3134,15 @@ impl Adapter {
                 },
                 PendingReply::List(rx) => match rx.try_recv() {
                     Ok(Ok(snapshot)) => {
-                        // Both surfaces re-render from the same reply
-                        // (r2 D32): rows and the board selector never
-                        // go stale against each other (F18).
+                        // The connector rows re-render from the reply
+                        // (r2 D32). The board selector does NOT read
+                        // the reply payload (r4 D39 §2.3): its options
+                        // are re-derived from the engine state on every
+                        // push pass (`presentation::boards_of`), so the
+                        // list cannot go stale by construction — the
+                        // reply's boards half stays the app's reply
+                        // contract only.
                         self.settings.rows = snapshot.connectors;
-                        self.settings.boards = snapshot.boards;
                         landed = Some((SettingsOutcome::Ok, None));
                         true
                     }
@@ -3397,6 +3398,75 @@ impl Adapter {
     /// refresh pass's settings half; rows fold liveness + the bound
     /// boards' phases, D8). The row list rides the persistent
     /// settings-row handle through the positional diff (r2 D9).
+    /// The selector's dropdown model (r4 D39): options (indicator +
+    /// tone fold — a bound board runs the connector rows' own
+    /// `connector_row_status` fold with the liveness down-override;
+    /// an unbound board is neutral), the selected index (the open-time
+    /// anchor), the selected board's bound flag (Detach's gate) and
+    /// name (the field's rendering), and the uuid hand-over strings.
+    fn board_selector_model(
+        state: &AppState,
+        vm: &SettingsVm,
+        boards: &[requests::BoardInfo],
+        detach_busy: bool,
+    ) -> (
+        Vec<crate::DropdownRow>,
+        i32,
+        bool,
+        Option<String>,
+        Vec<SharedString>,
+    ) {
+        let tone_of = |board: &requests::BoardInfo| -> crate::DropdownTone {
+            let Some(connector) = board.bound_connector.as_deref() else {
+                return crate::DropdownTone::Neutral;
+            };
+            let down = vm.liveness.get(connector).copied().unwrap_or(false);
+            match crate::presentation::status_tone(crate::presentation::connector_row_status(
+                state,
+                &ConnectorId::from(connector.to_owned()),
+                down,
+            )) {
+                crate::presentation::StatusTone::Neutral => crate::DropdownTone::Neutral,
+                crate::presentation::StatusTone::Success => crate::DropdownTone::Success,
+                crate::presentation::StatusTone::Accent => crate::DropdownTone::Accent,
+                crate::presentation::StatusTone::Warning => crate::DropdownTone::Warning,
+                crate::presentation::StatusTone::Danger => crate::DropdownTone::Danger,
+            }
+        };
+        let options: Vec<crate::DropdownRow> = boards
+            .iter()
+            .map(|board| {
+                let bound = board.bound_connector.is_some();
+                crate::DropdownRow {
+                    label: board.name.clone().into(),
+                    indicator: if bound {
+                        crate::DropdownIndicator::Link
+                    } else {
+                        crate::DropdownIndicator::LinkOff
+                    },
+                    tone: tone_of(board),
+                    selected: vm.selected_board == Some(board.id),
+                    busy: detach_busy && vm.busy_target == board.name,
+                }
+            })
+            .collect();
+        let selected = boards
+            .iter()
+            .find(|board| vm.selected_board == Some(board.id));
+        let selected_index = boards
+            .iter()
+            .position(|board| vm.selected_board == Some(board.id))
+            .and_then(|i| i32::try_from(i).ok())
+            .unwrap_or(0);
+        let selected_bound = selected.is_some_and(|board| board.bound_connector.is_some());
+        let selected_name = selected.map(|board| board.name.clone());
+        let ids: Vec<SharedString> = boards
+            .iter()
+            .map(|board| board.id.to_string().into())
+            .collect();
+        (options, selected_index, selected_bound, selected_name, ids)
+    }
+
     pub(crate) fn push_settings(&mut self, window: &AppWindow) {
         use crate::SettingsRowStatus as Row;
         let state = self.state.load();
@@ -3408,19 +3478,19 @@ impl Adapter {
             Some(PendingKind::Save | PendingKind::Test | PendingKind::Remove | PendingKind::Attach)
         );
         let detach_busy = matches!(self.settings.pending, Some(PendingKind::Detach));
-        let boards: Vec<crate::SettingsBoardRow> = self
-            .settings
-            .boards
-            .iter()
-            .map(|board| crate::SettingsBoardRow {
-                id: board.id.to_string().into(),
-                name: board.name.clone().into(),
-                bound_connector: board.bound_connector.clone().unwrap_or_default().into(),
-                bound: board.bound_connector.is_some(),
-                selected: self.settings.selected_board == Some(board.id),
-                busy: detach_busy && self.settings.busy_target == board.name,
-            })
-            .collect();
+        // The board selector's options (r4 D39 §2.3): re-derived from
+        // the engine state EVERY pass — the mount-refresh by
+        // construction. A selection whose board no longer renders is
+        // dropped silently (the stale/foreign-id precedent), so Bind
+        // never stays armed on a ghost.
+        let boards = crate::presentation::boards_of(&state);
+        if let Some(selected) = self.settings.selected_board
+            && !boards.iter().any(|board| board.id == selected)
+        {
+            self.settings.selected_board = None;
+        }
+        let (options, selected_index, selected_bound, selected_name, ids) =
+            Self::board_selector_model(&state, &self.settings, &boards, detach_busy);
         let rows: Vec<crate::ConnectionRow> = self
             .settings
             .rows
@@ -3447,13 +3517,19 @@ impl Adapter {
             .collect();
         let global = window.global::<crate::SettingsModel>();
         self.models.push_settings_rows(&global, &rows);
-        self.models.push_settings_boards(&global, &boards);
+        self.models.push_board_options(&global, &options);
+        self.models.push_board_ids(&global, &ids);
         global.set_selected_board(
             self.settings
                 .selected_board
                 .map_or(String::new(), |id| id.to_string())
                 .into(),
         );
+        global.set_selected_board_index(selected_index);
+        global.set_selected_board_bound(selected_bound);
+        // The empty state renders the caller's placeholder (markup
+        // copy); the push carries "" for "none".
+        global.set_selected_board_label(selected_name.unwrap_or_default().into());
         global.set_busy(self.settings.pending.is_some());
         global.set_busy_target(self.settings.busy_target.clone().into());
         global.set_draft_name(self.settings.draft.name.clone().into());
@@ -3707,19 +3783,40 @@ impl Adapter {
         );
     }
 
-    /// The Detach seam (r2 D33): unbind this board row from its
-    /// connector. A stale index is absorbed silently.
-    pub(crate) fn settings_detach_row(&mut self, window: &AppWindow, row: usize) {
-        let Some(entry) = self.settings.boards.get(row).cloned() else {
+    /// The Detach seam (r2 D33, reshaped r4 D39 §3.3): unbind the
+    /// SELECTED board from its connector. A missing selection or an
+    /// unbound one is absorbed silently (the stale-id precedent — the
+    /// button's enablement is markup; the VM gate is the authority).
+    /// The busy ceremony keeps the board name as its target.
+    pub(crate) fn settings_detach_selected(&mut self, window: &AppWindow) {
+        let Some(selected) = self.settings.selected_board else {
             return;
         };
+        let state = self.state.load();
+        let Some(entry) = state
+            .boards
+            .values()
+            .find(|board| board.id.as_uuid() == selected && !board.deleted && !board.archived)
+            .cloned()
+        else {
+            return;
+        };
+        drop(state);
+        let Some(connector) = entry
+            .remote
+            .as_ref()
+            .map(|binding| binding.connector.to_string())
+        else {
+            return;
+        };
+        let name = entry.title.clone();
         if self.settings.pending.is_some() {
             return;
         }
         let (reply, reply_rx) = oneshot::channel();
         let request = UiRequest::DetachConnector {
-            board: BoardId::from_uuid(entry.id),
-            connector: entry.bound_connector.clone().unwrap_or_default(),
+            board: entry.id,
+            connector,
             reply,
         };
         let sent = self.settings.send(
@@ -3727,7 +3824,7 @@ impl Adapter {
             request,
             PendingKind::Detach,
             PendingReply::List(reply_rx),
-            &entry.name,
+            &name,
         );
         self.set_settings_outcome(
             window,
@@ -3915,7 +4012,6 @@ pub(crate) fn install(
     rotation: Option<crate::view_state::KioskRotation>,
     reminder_defaults: taskboard_domain::ReminderDefaults,
     focus: Option<taskboard_domain::focus::FocusTiming>,
-    boards: Vec<requests::BoardInfo>,
     state: Arc<ArcSwap<AppState>>,
     status_timer: Rc<slint::Timer>,
     rotation_timer: Rc<slint::Timer>,
@@ -4018,9 +4114,6 @@ pub(crate) fn install(
         scale_drag: None,
         settings: SettingsVm {
             rows: connectors,
-            // The mount seed (r2 D32): the board-selector rows ride
-            // the same hand-over — the first refresh's push lands both.
-            boards,
             // The mount seed (r2 D27): the picker's initial selection
             // rides the VM — the first refresh's `push_settings` is
             // the one write path.
@@ -4117,6 +4210,24 @@ pub(crate) fn install(
             // closure while the walk's own borrow is still held.
             if walk_flag.get() {
                 return false;
+            }
+            // The selector's modal ladder (r4 D39): while the flyout is
+            // open, the ladder keys decline the single key path — the
+            // capture tunneling would otherwise consume the arrows as
+            // bound actions before the focused field's widget-internal
+            // arms ever see them (the settings journey's recorded
+            // negative). Escape/Return are unbound on the surface and
+            // already flow through.
+            {
+                let facts = window.global::<crate::SettingsBoardFacts>();
+                if facts.get_open() {
+                    let arrow = text == SharedString::from(slint::platform::Key::UpArrow)
+                        || text == SharedString::from(slint::platform::Key::DownArrow);
+                    let emacs_move = modifiers.control && (text == "n" || text == "p");
+                    if arrow || emacs_move {
+                        return false;
+                    }
+                }
             }
             adapter.borrow_mut().intercept(&window, &text, modifiers)
         });
@@ -7258,12 +7369,9 @@ fn install_settings_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     {
         let adapter = Rc::clone(adapter);
         let weak = window.as_weak();
-        window.on_settings_detach_clicked(move |row| {
+        window.on_settings_detach_selected(move || {
             let Some(window) = weak.upgrade() else { return };
-            let Ok(row) = usize::try_from(row) else {
-                return;
-            };
-            adapter.borrow_mut().settings_detach_row(&window, row);
+            adapter.borrow_mut().settings_detach_selected(&window);
         });
     }
     {

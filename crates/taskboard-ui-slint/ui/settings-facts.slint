@@ -17,3 +17,17 @@ export global SettingsScrollFacts {
     in-out property <length> anchor-offset;
     in-out property <bool> anchor-requested: false;
 }
+
+// The board selector's dropdown facts (r4 D39): the journeys'
+// observation seam onto the mounted widget — open state, highlight,
+// and the field's geometry (the click coordinates' input).
+export global SettingsBoardFacts {
+    in-out property <bool> open: false;
+    in-out property <bool> field-focused: false;
+    in-out property <bool> flyout-focused: false;
+    in-out property <int> highlight: 0;
+    in-out property <length> field-x;
+    in-out property <length> field-y;
+    in-out property <length> field-w;
+    in-out property <length> field-h;
+}

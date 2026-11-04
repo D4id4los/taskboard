@@ -18,8 +18,11 @@ import { TextField, FieldValidity } from "../widgets/text-field.slint";
 export { FieldValidity }
 import { SegmentedControl } from "../widgets/segmented-control.slint";
 import { Slider } from "../widgets/slider.slint";
-import { SettingsScrollFacts } from "../settings-facts.slint";
+import { SettingsScrollFacts, SettingsBoardFacts } from "../settings-facts.slint";
+import { Dropdown, DropdownRow, DropdownIndicator, DropdownTone } from "../widgets/dropdown.slint";
+import { TooltipState } from "../widgets/tooltip.slint";
 import { InfoTip } from "../widgets/info-tip.slint";
+import { Responsive, Breakpoint } from "../responsive.slint";
 import { IconButton, IconKind } from "../widgets/icon-button.slint";
 export enum SettingsRowStatus {
     idle,
@@ -49,26 +52,22 @@ export struct ConnectionRow {
     busy: bool,
 }
 
-// One local board of the settings board selector (r2 D32): a
-// *binding* surface — selection (radio semantics), the binding badge,
-// and Detach. Board lifecycle lives on the board surface, not here.
-export struct SettingsBoardRow {
-    // The board's uuid (the hand-over form; the adapter converts).
-    id: string,
-    name: string,
-    bound-connector: string,
-    bound: bool,
-    selected: bool,
-    busy: bool,
-}
 
 
 export global SettingsModel {
     in-out property <[ConnectionRow]> rows: [];
-    // The board selector's rows (r2 D32) and the current selection
-    // (a board uuid string; empty = none — Bind stays disabled).
-    in-out property <[SettingsBoardRow]> boards: [];
+    // The board selector's dropdown model (r4 D39): the options (the
+    // adapter's per-pass state projection), their uuid hand-over
+    // strings (`row-activated(i)` resolves through `board-ids[i]`),
+    // and the selection facts — uuid (empty = none, Bind's gate),
+    // index (the widget's open-time anchor), label ("" renders the
+    // caller's placeholder), and bound (Detach's enablement).
+    in-out property <[DropdownRow]> board-options: [];
+    in-out property <[string]> board-ids: [];
     in-out property <string> selected-board: "";
+    in-out property <int> selected-board-index: 0;
+    in-out property <string> selected-board-label: "";
+    in-out property <bool> selected-board-bound: false;
     // The busy machine (r2 D34): any op in flight disables every
     // settings op; busy-target names the connector/board the spinner
     // markers render on.
@@ -270,7 +269,93 @@ component LabeledField inherits VerticalLayout {
     }
 }
 
+// The selector's copy constants (r4 D39 §3.2): presentation copy,
+// never asserted — the a11y/description sentence says what selection
+// does NOT do (it does not switch the viewed board).
+export global SettingsBoardCopy {
+    in-out property <string> label: "Select Board to Connect/Disconnect:";
+    in-out property <string> description:
+        "Selects the board to bind to a connector; it does not switch the board view.";
+    in-out property <string> row-description:
+        "Binds this board to the selected connector; it does not switch the board view.";
+    in-out property <string> placeholder: "No board selected";
+}
+
+// The picker row (r4 D39 §3.2): the shared Dropdown + the Detach
+// button. Every intent routes through the view's callbacks — the
+// widget reports, the adapter resolves.
+component BoardPicker inherits HorizontalLayout {
+    // The intents forwarded to the view (the adapter resolves them).
+    callback board-selected(string);
+    callback detach-selected();
+    spacing: Theme.space-2;
+    dd := Dropdown {
+        horizontal-stretch: 1;
+        rows: SettingsModel.board-options;
+        selected-index: SettingsModel.selected-board-index;
+        field-text: SettingsModel.selected-board-label == ""
+            ? SettingsBoardCopy.placeholder
+            : SettingsModel.selected-board-label;
+        field-label: SettingsBoardCopy.label;
+        field-description: SettingsBoardCopy.description;
+        field-busy: SettingsModel.busy && SettingsModel.busy-target != "";
+        row-activated(i) => {
+            root.board-selected(SettingsModel.board-ids[i]);
+        }
+        row-hovered(i, x, y, w, h) => {
+            TooltipState.hover(
+                SettingsModel.board-options[i].label,
+                SettingsBoardCopy.row-description,
+                [],
+                x, y, w, h);
+        }
+        row-unhovered() => {
+            TooltipState.unhover();
+        }
+        // The journeys' observation seam (the SettingsBoardFacts
+        // mirrors; the timer-popover fact pattern).
+        changed open => {
+            SettingsBoardFacts.open = self.open;
+        }
+        changed field-focused => {
+            SettingsBoardFacts.field-focused = self.field-focused;
+        }
+        changed flyout-focused => {
+            SettingsBoardFacts.flyout-focused = self.flyout-focused;
+        }
+        changed highlight => {
+            SettingsBoardFacts.highlight = self.highlight;
+        }
+        changed x => {
+            SettingsBoardFacts.field-x = self.x;
+        }
+        changed y => {
+            SettingsBoardFacts.field-y = self.y;
+        }
+        changed width => {
+            SettingsBoardFacts.field-w = self.width;
+        }
+        changed height => {
+            SettingsBoardFacts.field-h = self.height;
+        }
+    }
+    SettingsButton {
+        text: "Detach";
+        // The selection must be a bound board, and no ceremony may be
+        // in flight (the VM gate is the authority).
+        enabled: SettingsModel.selected-board-bound && !SettingsModel.busy;
+        clicked => {
+            root.detach-selected();
+        }
+    }
+}
+
 export component SettingsView inherits FocusScope {
+    // The label placement rule (r4 D39 §3.1): compact stacks the
+    // label above the picker; regular/expansive put it beside
+    // (breakpoints are unscaled — the established read, the
+    // action-menu/board-layout pattern).
+    in property <bool> selector-compact: Responsive.current-breakpoint == Breakpoint.compact;
     // D6.6: the back affordance routes the same close path as Escape
     // (the adapter's dedicated `settings-back-clicked` seam).
     callback back-clicked();
@@ -284,12 +369,12 @@ export component SettingsView inherits FocusScope {
     callback save-clicked(string, string, string, string);
     callback test-clicked(int);
     callback remove-clicked(int);
-    // The board-scoped binding surface (r2 D32/D33): selecting a board
-    // (radio), binding the selected board to a connector row, and
-    // detaching a bound board row.
+    // The board-scoped binding surface (r2 D32/D33, r4 D39): selecting
+    // a board (the dropdown's row), binding the selected board to a
+    // connector row, and detaching the selected board.
     callback board-selected(string);
     callback bind-clicked(int);
-    callback detach-clicked(int);
+    callback detach-selected();
     callback preset-picked(int);
     callback scale-committed(string);
     // The scale field's focus-loss seam (r3 D20a writer 7): a
@@ -444,50 +529,34 @@ export component SettingsView inherits FocusScope {
             text: "Connections";
         }
 
-        // The board selector (r2 D32): one row per live board, radio
-        // selection, the binding badge, and Detach on bound rows. A
-        // *binding* surface — board lifecycle is the board surface's
-        // job (chunk 3).
-        for board[index] in SettingsModel.boards: Rectangle {
-            background: board.selected ? Theme.surface-raised : Theme.surface;
-            border-radius: Theme.radius-small;
-            min-height: board-layout.min-height + 2 * Theme.space-2;
-            border-width: board.selected ? Theme.focus-ring-width : 0;
-            border-color: Semantic.focus-ring;
-            board-layout := HorizontalLayout {
-                padding: Theme.space-2;
+        // The board selector (r4 D39): a shared Dropdown — selection
+        // drives the existing Bind-only seam, Detach moves beside the
+        // field. A *binding* surface — board lifecycle is the board
+        // surface's job; selecting never switches the viewed board.
+        // The label placement reads the responsive rule (§3.1): above
+        // the field when compact, beside it otherwise (breakpoints
+        // are unscaled — scale-proof by construction). The picker
+        // itself stays unconditional (a deep component under a false
+        // conditional breaks the testing backend's element traversal —
+        // the recorded limitation at the info-tip journey).
+        VerticalLayout {
+            spacing: Theme.space-1;
+            if (root.selector-compact): RoleText {
+                role: Typography.body;
+                text: SettingsBoardCopy.label;
+            }
+            picker-row := HorizontalLayout {
                 spacing: Theme.space-2;
-                // The binding badge: the RowDot-family status element
-                // (bound → the syncing token; unbound → nothing) plus
-                // the connector name text.
-                VerticalLayout {
-                    if board.bound: RowDot {
-                        status: SettingsRowStatus.syncing;
-                    }
+                if (!root.selector-compact): RoleText {
+                    role: Typography.body;
+                    text: SettingsBoardCopy.label;
+                    min-width: Theme.space-8;
+                    vertical-alignment: center;
                 }
-                VerticalLayout {
-                    spacing: 0;
-                    board-touch := TouchArea {
-                        clicked => {
-                            root.board-selected(board.id);
-                        }
-                    }
-                    RoleText {
-                        role: Typography.body;
-                        text: board.name;
-                    }
-                    if board.bound: RoleText {
-                        role: Typography.body;
-                        text: board.bound-connector;
-                        text-color: Theme.text-secondary;
-                    }
-                }
-                if board.bound: SettingsButton {
-                    text: "Detach";
-                    enabled: !board.busy && !SettingsModel.busy;
-                    clicked => {
-                        root.detach-clicked(index);
-                    }
+                BoardPicker {
+                    horizontal-stretch: 1;
+                    board-selected(id) => root.board-selected(id);
+                    detach-selected() => root.detach-selected();
                 }
             }
         }

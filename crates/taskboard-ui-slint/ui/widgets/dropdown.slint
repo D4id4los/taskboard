@@ -21,6 +21,14 @@
 // nothing about `TooltipState`.
 
 import { Theme, Typography, RoleText, Semantic } from "../theme.slint";
+
+// The ladder's typed move counter — the journeys' observation seam
+// (the changed-hook-free fact: a global counter survives the
+// backend's unreliable `changed` mirroring).
+export global DropdownLadder {
+    in-out property <int> moves: 0;
+}
+
 import { Icon, IconKind } from "icon.slint";
 import { ListView } from "listview.slint";
 
@@ -90,6 +98,7 @@ export component Dropdown inherits Rectangle {
     // The focus hand-over facts: the flyout's grab empties the field,
     // closing hands the walk back (the field re-focuses).
     out property <bool> field-focused: field-scope.has-focus;
+    out property <bool> flyout-focused;
 
     // The indicator→glyph mapping: the widget's own three-arm total
     // (`none` → nothing — the markup guards the slot; the terminal
@@ -121,15 +130,68 @@ export component Dropdown inherits Rectangle {
         accessible-role: AccessibleRole.button;
         accessible-label: root.field-label;
         accessible-description: root.field-description;
-        // The icon-button raw-key half (r3 D12): Return/Space open.
+        // The default a11y action opens (the driver's click seam —
+        // the icon-button precedent).
+        accessible-action-default => {
+            if (root.rows.length > 0) {
+                root.open = true;
+                root.anchor-highlight();
+            }
+        }
+        // The ladder's field arm (the icon-button raw-key half, r3
+        // D12, plus the modal ladder): the single key path DECLINES
+        // the ladder keys while the flyout is open (the adapter reads
+        // the facts global — the capture tunneling would otherwise
+        // consume the arrows as bound actions first), so they arrive
+        // here; the action layer never sees them.
         key-pressed(event) => {
-            if (!root.open
+            if (root.open && root.rows.length > 0) {
+                if (event.text == Key.UpArrow) {
+                    root.move-highlight(-1);
+                    accept
+                } else if (event.text == Key.DownArrow) {
+                    root.move-highlight(1);
+                    accept
+                } else if (event.text == "n" && event.modifiers.control) {
+                    root.move-highlight(1);
+                    accept
+                } else if (event.text == "p" && event.modifiers.control) {
+                    root.move-highlight(-1);
+                    accept
+                } else if (event.text == Key.Return) {
+                    root.row-activated(root.highlight);
+                    root.open = false;
+                    accept
+                } else if (event.text == Key.Escape) {
+                    root.open = false;
+                    accept
+                } else if (event.text == Key.Tab) {
+                    // Close BEFORE the traversal runs: the flyout is
+                    // not the focus owner (the field is), so the
+                    // unmount is safe, and the walk continues from the
+                    // field onto the next stop.
+                    root.open = false;
+                    reject
+                } else {
+                    reject
+                }
+            } else if (!root.open
                     && (event.text == Key.Return || event.text == " ")
                     && root.rows.length > 0) {
                 root.open = true;
+                root.anchor-highlight();
                 accept
             } else {
                 reject
+            }
+        }
+        // The walk-away seam: the traversal moving the focus off the
+        // field (Tab while open) closes the flyout on its way out —
+        // the same grammar the flyout's own seam carried, moved to the
+        // scope that actually holds the walk.
+        changed has-focus => {
+            if (!self.has-focus && root.open) {
+                root.open = false;
             }
         }
         field-row := HorizontalLayout {
@@ -166,10 +228,17 @@ export component Dropdown inherits Rectangle {
                 kind: IconKind.chevron-down;
             }
         }
-        // The whole field is one click target.
+        // The whole field is one click target — and a click focuses
+        // it (real click-to-focus: the walk then lives in the field,
+        // so the ladder works after a click-open without depending on
+        // the flyout's grab).
         field-touch := TouchArea {
             clicked => {
+                field-scope.focus();
                 root.open = !root.open;
+                if (root.open) {
+                    root.anchor-highlight();
+                }
             }
         }
     }
@@ -182,8 +251,10 @@ export component Dropdown inherits Rectangle {
     // sibling in the panel's coordinate space — no window-level
     // overlay, no dismissal-layer interaction. The window-sized
     // underlay is the outside-click closer (a TouchArea click never
-    // moves focus, so it is absorbed); the flyout is the later
-    // sibling and hit-tested first.
+    // moves focus, so it is absorbed); the flyout is the later sibling
+    // and hit-tested first. NO focus grab on open: the walk stays in
+    // the field (its ladder arm routes the keys), and the field's
+    // walk-away seam closes the flyout when the traversal moves on.
     if (root.open): Rectangle {
         x: -flyout-anchor.absolute-position.x;
         y: -flyout-anchor.absolute-position.y;
@@ -208,69 +279,15 @@ export component Dropdown inherits Rectangle {
             drop-shadow-color: Theme.surface-hover;
             clip: true;
 
-            flyout-scope := FocusScope {
+            // A plain a11y list container — deliberately NOT a
+            // FocusScope: the walk must never be able to land here
+            // (the ladder lives in the field; a traversal target inside
+            // the flyout would be unmounted by the close, taking the
+            // walk's focus down with it — the recorded negative).
+            flyout-scope := Rectangle {
                 width: 100%;
                 height: 100%;
                 accessible-role: AccessibleRole.list;
-                // The Tab half: the built-in traversal owns Tab (the
-                // scope is a real walk participant); the focus-loss
-                // seam below closes the flyout on its way out. (A
-                // reject-only Tab arm from a programmatically-focused
-                // scope clears focus entirely on the pinned 1.18.1 —
-                // the probe's recorded negative.)
-                focus-on-tab-navigation: true;
-                init => {
-                    // The open-time anchor: the pushed selected index
-                    // (0 when none), then the grab (the flyout holds
-                    // focus while open).
-                    root.highlight = Math.clamp(
-                        root.selected-index,
-                        0,
-                        Math.max(root.rows.length - 1, 0),
-                    );
-                    root.seek-nonce += 1;
-                    self.focus();
-                }
-                // The focus-loss seam: the walk (Tab-reject) or any
-                // focus-taking click elsewhere closes the flyout on
-                // its way out — closing inside the Tab arm instead
-                // destroys the focus owner mid-event and the
-                // traversal aborts (focus cleared, walk dead).
-                changed has-focus => {
-                    if (!self.has-focus && root.open) {
-                        root.open = false;
-                    }
-                }
-                key-pressed(event) => {
-                    if (event.text == Key.UpArrow && root.rows.length > 0) {
-                        root.move-highlight(-1);
-                        accept
-                    } else if (event.text == Key.DownArrow && root.rows.length > 0) {
-                        root.move-highlight(1);
-                        accept
-                    } else if (event.text == "n" && event.modifiers.control && root.rows.length > 0) {
-                        root.move-highlight(1);
-                        accept
-                    } else if (event.text == "p" && event.modifiers.control && root.rows.length > 0) {
-                        root.move-highlight(-1);
-                        accept
-                    } else if (event.text == Key.Return && root.highlight < root.rows.length) {
-                        root.row-activated(root.highlight);
-                        root.close();
-                        accept
-                    } else if (event.text == Key.Escape) {
-                        // Widget-internal Escape: closes the flyout
-                        // only — the action layer never sees it.
-                        root.close();
-                        accept
-                    } else {
-                        // Tab is the built-in traversal's (the
-                        // focus-on-tab-navigation flag above): the
-                        // walk moves the focus, the focus-loss seam
-                        // closes the flyout on its way out.
-                        reject
-                    }
-                }
 
                 list := ListView {
                     request-row: root.highlight;
@@ -373,9 +390,23 @@ export component Dropdown inherits Rectangle {
     // flag is the per-row render fact, this is the anchor fact).
     in property <int> selected-index: 0;
 
+    // The open-time anchor (the push's selected index) + the seek
+    // bump; called by every open site (a root `changed open` hook
+    // breaks the testing backend's element traversal — the recorded
+    // negative).
+    public function anchor-highlight() {
+        root.highlight = Math.clamp(
+            root.selected-index,
+            0,
+            Math.max(root.rows.length - 1, 0),
+        );
+        root.seek-nonce += 1;
+    }
+
     // One clamped highlight move (the arrows and C-n/C-p share this
     // arm — one code path, two key spellings).
     public function move-highlight(direction: int) {
+        DropdownLadder.moves += 1;
         root.highlight = Math.clamp(
             root.highlight + direction,
             0,
