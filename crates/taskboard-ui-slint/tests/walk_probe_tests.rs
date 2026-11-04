@@ -140,3 +140,58 @@ fn p2_changed_has_focus_fires_on_a_focus_scope() {
         assert_eq!(facts.get_second_gained(), 1);
     });
 }
+
+/// P5 — the app overlay's exact shape: a conditional COMPONENT
+/// instantiation whose focused container holds an inner stop. The
+/// fresh mount's init grab does not take (slint 1.17: a conditional
+/// subtree's init runs before the window attaches); the grab lands
+/// via the post-mount height transition instead, and Tab then
+/// crosses the component boundary downward into the inner stop.
+#[test]
+fn p5_focus_lands_via_a_post_mount_height_transition() {
+    run_probe(|window| {
+        advance_probe_clock(0);
+        advance_probe_clock(0);
+        // The init grab does not take for a conditional instantiation
+        // (P5's finding): has-focus reads false.
+        assert!(
+            !window.get_container_has_focus(),
+            "the P5 container's init grab stays dropped (precondition)"
+        );
+        // The height transition (post-mount, from the pad flip) is
+        // the grab's trigger: the handler runs on the attached
+        // subtree.
+        window.set_p5_pad(40.0_f32);
+        advance_probe_clock(0);
+        assert!(
+            window.get_container_has_focus(),
+            "the changed-height grab takes on the attached subtree"
+        );
+        key(window, "\t", true);
+        advance_probe_clock(0);
+        assert!(
+            window.get_inner_has_focus(),
+            "Tab descends into the conditional component's inner stop (container now: {})",
+            window.get_container_has_focus()
+        );
+    });
+}
+
+/// The nested-descent probe (r4 chunk-10 review): the window's init
+/// grabs the CONTAINER; the synthetic Tab must descend into the inner
+/// stop (slint's `default_next_in_local_focus_chain` goes first-child
+/// first).
+#[test]
+fn p4_tab_descends_from_a_focused_container_into_its_child() {
+    run_probe(|window| {
+        advance_probe_clock(0);
+        key(window, "\t", true);
+        advance_probe_clock(0);
+        key(window, "\t", false);
+        assert!(
+            WalkProbeFacts::get(window).get_inner_gained() >= 1,
+            "Tab descends from the focused container into the inner stop (container gains: {})",
+            WalkProbeFacts::get(window).get_container_gained()
+        );
+    });
+}

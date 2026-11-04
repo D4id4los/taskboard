@@ -16,6 +16,85 @@ export global WalkProbeFacts {
     in-out property <int> first-lost: 0;
     in-out property <int> second-gained: 0;
     in-out property <int> second-lost: 0;
+    // The nested-descent probe (r4 chunk-10 review): a focused
+    // CONTAINER FocusScope — does the synthetic Tab descend into its
+    // child stop?
+    in-out property <int> container-gained: 0;
+    in-out property <int> inner-gained: 0;
+    // P5: the same nesting inside a SEPARATE COMPONENT mounted under
+    // a conditional — the app overlay's exact shape.
+    in-out property <int> p5-container-gained: 0;
+    in-out property <int> p5-inner-gained: 0;
+}
+
+// The P5 component: the panel's shape — a conditional component
+// instantiation whose root wraps a focused container over an inner
+// stop.
+component ProbePanel inherits Rectangle {
+    out property <bool> container-has-focus: p5-container.has-focus;
+    out property <bool> inner-has-focus: WalkProbeFacts.p5-inner-gained > 0;
+    // The P6 pad: flipping it post-mount transitions the container's
+    // height — the changed-height grab's trigger.
+    in property <length> pad: 0px;
+    in property <[int]> rows-model;
+    public function focus-container() {
+        p5-container.focus();
+    }
+    p5-container := FocusScope {
+        height: Theme.space-5 + root.pad;
+        width: 100%;
+        focus-on-tab-navigation: true;
+        changed height => { self.focus(); }
+        property <bool> focused: self.has-focus;
+        changed focused => {
+            if (self.focused) {
+                WalkProbeFacts.p5-container-gained += 1;
+            }
+        }
+        init => { self.focus(); }
+        VerticalLayout {
+            // The app's shape: a closed conditional first, the open
+            // surface next, the row a REPEATER child inside nested
+            // layouts.
+            if (false): Rectangle {
+                dead := FocusScope {
+                    focus-on-tab-navigation: true;
+                }
+            }
+            if (true): VerticalLayout {
+                VerticalLayout {
+                    Rectangle {
+                        height: Theme.space-3;
+                    }
+                    for item in root.rows-model: Rectangle {
+                        height: Theme.space-5;
+                        row-scope := FocusScope {
+                            width: 100%;
+                            height: 100%;
+                            focus-on-tab-navigation: true;
+                            property <bool> focused: self.has-focus;
+                            changed focused => {
+                                if (self.focused) {
+                                    WalkProbeFacts.p5-inner-gained += 1;
+                                }
+                            }
+                        }
+                    }
+                    footer := FocusScope {
+                        width: 100%;
+                        height: Theme.space-5;
+                        focus-on-tab-navigation: true;
+                        property <bool> focused: self.has-focus;
+                        changed focused => {
+                            if (self.focused) {
+                                WalkProbeFacts.p5-inner-gained += 10;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 export component WalkProbeWindow inherits Window {
@@ -47,9 +126,8 @@ export component WalkProbeWindow inherits Window {
             }
         }
     }
-    // The ListView page-arithmetic probe (P3, plan §12): the page()
-    // function's clamp and one-row-context overlap, driven directly
-    // from the test.
+    // The nested-descent probe: the container grabs focus at init
+    // (the panel's posture); Tab should descend into the inner stop.
     page-list := ListView {
         x: Theme.space-15;
         y: 0;
@@ -81,4 +159,45 @@ export component WalkProbeWindow inherits Window {
             }
         }
     }
+    container := FocusScope {
+        x: 0;
+        y: Theme.space-15;
+        width: Theme.space-15;
+        height: Theme.space-15;
+        focus-on-tab-navigation: true;
+        property <bool> focused: self.has-focus;
+        changed focused => {
+            if (self.focused) {
+                WalkProbeFacts.container-gained += 1;
+            }
+        }
+        init => { self.focus(); }
+        VerticalLayout {
+            inner := FocusScope {
+                width: 100%;
+                height: Theme.space-5;
+                focus-on-tab-navigation: true;
+                property <bool> focused: self.has-focus;
+                changed focused => {
+                    if (self.focused) {
+                        WalkProbeFacts.inner-gained += 1;
+                    }
+                }
+            }
+        }
+    }
+    in-out property <length> p5-pad: 0px;
+    panel := ProbePanel {
+        x: 0;
+        y: Theme.space-15 * 2;
+        width: Theme.space-15;
+        height: Theme.space-15;
+        pad: root.p5-pad;
+        rows-model: [1];
+    }
+    out property <bool> container-has-focus: panel.container-has-focus;
+    out property <bool> inner-has-focus: panel.inner-has-focus;
+    // The ListView page-arithmetic probe (P3, plan §12): the page()
+    // function's clamp and one-row-context overlap, driven directly
+    // from the test.
 }

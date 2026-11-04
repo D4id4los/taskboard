@@ -12,3 +12,20 @@ export global TrackPanelFacts {
     in-out property <length> anchor-y;
     in-out property <length> anchor-height;
 }
+
+
+// The panel's walk facts (r4 chunk 10, plan §7's band-200
+// instrumentation): the rows and the panel root report focus here so
+// the walk probe (and the keyboard journeys) can observe where the
+// traversal stands — the ActivationStop idiom, panel-scoped.
+// The panel's walk facts (r4 chunk 10, plan §7's band-200
+// instrumentation): the rows and the panel root report focus here so
+// the walk probe (and the keyboard journeys) can observe where the
+// traversal stands — the ActivationStop idiom, panel-scoped. The
+// root's mount-time gain publishes from the init (a mount-time gain
+// fires no `changed`); the rows' gains always fire (they gain only
+// through the walk, never at mount).
+export global TrackPanelWalkFacts {
+    in-out property <int> focused-row-stop: -1;
+    in-out property <bool> panel-root-focused: false;
+}

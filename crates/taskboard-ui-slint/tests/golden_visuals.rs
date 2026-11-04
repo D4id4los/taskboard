@@ -648,6 +648,125 @@ fn the_focus_overlay_golden_holds() {
     );
 }
 
+// -- r4 chunk 10: the entries-overlay golden -----------------------------
+
+/// The time-entries overlay's golden (r4 chunk 10, D35): the open
+/// panel over the task view — the Work-only header total, the
+/// newest-first rows with the `+1d` midnight-crossing mark, the armed
+/// delete affordances, and the footer add affordance.
+///
+/// The fixture's entries are **closed spans at fixed absolute
+/// instants**: every rendered cell (dates, `HH:MM` walls, spent
+/// phrases, the total) is wall-clock independent. A running row is
+/// deliberately absent — its spent phrase is second-precise, the
+/// #496 golden's recorded wall-second exclusion; the running mark's
+/// structure stays with the pure-layer and journey pins.
+#[test]
+fn the_track_entries_golden_holds() {
+    pin_utc_zone();
+    let regen = regen_requested();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |driver| {
+            let (fx, mut state) = fixture::golden_state();
+            // Two closed spans at fixed absolute instants (UTC-pinned
+            // zone): an evening span crossing local midnight (the
+            // `+1d` mark, newest-first) over an afternoon span.
+            let mint = |state: &mut taskboard_domain::AppState,
+                        start: chrono::DateTime<chrono::Utc>,
+                        end: chrono::DateTime<chrono::Utc>| {
+                let id = taskboard_domain::TimeEntryId::from_uuid(uuid::Uuid::now_v7());
+                state.tracking.entries.insert(
+                    id,
+                    taskboard_domain::TimeEntry {
+                        id,
+                        task: fx.task0,
+                        task_title: "task-0".to_owned(),
+                        start,
+                        end: Some(end),
+                        created_at: start,
+                        updated_at: start,
+                        kind: taskboard_domain::tracking::TimeEntryKind::Work,
+                    },
+                );
+            };
+            let day = |h: u32, m: u32| {
+                chrono::NaiveDate::from_ymd_opt(2026, 3, 15)
+                    .expect("fixed day")
+                    .and_hms_opt(h, m, 0)
+                    .expect("fixed wall-clock")
+                    .and_local_timezone(chrono::Utc)
+                    .single()
+                    .expect("resolvable fixed instant")
+            };
+            let next_day = |h: u32, m: u32| {
+                chrono::NaiveDate::from_ymd_opt(2026, 3, 16)
+                    .expect("next day")
+                    .and_hms_opt(h, m, 0)
+                    .expect("fixed wall-clock")
+                    .and_local_timezone(chrono::Utc)
+                    .single()
+                    .expect("resolvable fixed instant")
+            };
+            mint(&mut state, day(22, 30), next_day(0, 30));
+            mint(&mut state, day(13, 0), day(14, 30));
+            let state = Arc::new(ArcSwap::from_pointee(state));
+            let (commands, _engine) = support::fake_engine::FakeEngine::channel(Arc::clone(&state));
+            let (requests_tx, _requests_rx) = tokio::sync::mpsc::channel(16);
+            let handle = taskboard_ui_slint::mount(
+                state,
+                dummy_signals(),
+                dummy_system(),
+                commands,
+                requests_tx,
+                UiSettings::default(),
+                detached_health(),
+            )
+            .expect("mount succeeds on the testing backend");
+            // The capture_task_view idiom: escape Today, walk into the
+            // first task's detail, then route the overlay open (the
+            // menu-reachable path).
+            handle.dispatch_action(taskboard_ui_slint::actions::ActionId::NavFocusBoard);
+            handle.dispatch_action(taskboard_ui_slint::actions::ActionId::NavFirstItem);
+            handle.dispatch_action(taskboard_ui_slint::actions::ActionId::TaskEdit);
+            handle.dispatch_action(taskboard_ui_slint::actions::ActionId::TaskTrackEntries);
+            driver.bind(&handle);
+            driver.advance_time(0); // instantiate conditionals
+            driver.set_window_size(1000, HEIGHT);
+
+            let snapshot = driver.snapshot();
+            assert_eq!(
+                (snapshot.width, snapshot.height),
+                (1000, HEIGHT),
+                "renderer-presence contract at the overlay golden"
+            );
+
+            let path = PathBuf::from(format!(
+                "{}/tests/goldens/track-entries-1.0-1000.png",
+                env!("CARGO_MANIFEST_DIR")
+            ));
+            if regen {
+                let bytes = golden_compare::encode_png(&snapshot).expect("encodes");
+                std::fs::create_dir_all(path.parent().expect("parent")).expect("dir");
+                std::fs::write(&path, bytes).expect("writes");
+                return;
+            }
+            let bytes = std::fs::read(&path)
+                .unwrap_or_else(|error| panic!("golden {} readable: {error}", path.display()));
+            let golden: Rgba8Image =
+                golden_compare::decode_png(&bytes).expect("the committed golden decodes as RGBA8");
+            golden_compare::matches(&golden, &snapshot)
+                .unwrap_or_else(|error| panic!("golden {} drifted: {error}", path.display()));
+        },
+    );
+    assert!(
+        !regen,
+        "goldens regenerated — review the PNG diff before landing"
+    );
+}
+
 // -- #214: the review-view goldens -----------------------------------------
 
 /// The review surface's escape: the cold start is the board, and the

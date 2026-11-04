@@ -2,7 +2,7 @@
 // The time-entries overlay panel (r4 chunk 10, D35/D-TS1/D-TS3): the
 // anchored modal over the task view's summary row — the Work-only
 // total at the top (the summary row's `tracked_total` verbatim), the
-// entries ListView in newest-first display order, and the add
+// entry rows in newest-first display order (a plain column), and the add
 // affordance in the footer (it joins with the form surface's
 // commit). Rendering is local-zone echo (the chunk-7 rule); the row
 // carries display parts only — the entry ids resolve Rust-side
@@ -18,7 +18,6 @@
 
 import { Theme, Typography, Semantic, RoleText, Tone } from "../theme.slint";
 import { IconButton } from "../widgets/icon-button.slint";
-import { ListView } from "../widgets/listview.slint";
 import { TooltipState } from "../widgets/tooltip.slint";
 import { StatusDot } from "../widgets/status-dot.slint";
 import { TextField, FieldValidity } from "../widgets/text-field.slint";
@@ -26,6 +25,7 @@ import { TimeField, TimeSlotRow } from "../widgets/time-field.slint";
 import { DatePicker, DueDayModel } from "./date-picker.slint";
 import { KbdHint } from "../widgets/kbd-hint.slint";
 import { IconKind } from "../widgets/icon.slint";
+import { TrackPanelWalkFacts } from "../track-panel-facts.slint";
 export { TimeSlotRow, FieldValidity }
 
 // One entries row: display parts only (D2 — ids stay in the
@@ -47,13 +47,6 @@ export component TrackEntriesPanel inherits Rectangle {
     // (reconciliation by construction: reuse, not a parallel
     // reduction).
     in property <string> total;
-    // The add affordance's visibility (r4 D-TS8's model-side gate:
-    // the kiosk refuses the form surface with the overlay itself).
-    in property <bool> add-visible: true;
-    // The one-shot focus grab (the TimerSetter's nonce idiom — a
-    // mount-time init grab alone is dropped).
-    in property <int> focus-nonce: 0;
-    changed focus-nonce => { panel-scope.focus(); }
 
     // The form surface's pushed halves (r4 D-TS4): the add (`None`
     // seed) / edit (`Some`) form replaces the list in-place — the
@@ -97,9 +90,6 @@ export component TrackEntriesPanel inherits Rectangle {
     // flow steps back to the list (the absorbed-miss convention
     // keeps the form open with the invalid flavour on `false`).
     callback commit-requested() -> bool;
-    // The commit's accepted half: the adapter stepped the flow back;
-    // the surface swap rides the push.
-    callback form-committed();
 
     // The intents (§5.1): no inline side effects.
     callback row-activated(int);
@@ -118,14 +108,24 @@ export component TrackEntriesPanel inherits Rectangle {
     border-color: Theme.border;
     accessible-role: AccessibleRole.region;
     accessible-label: "Time entries";
+    // The focus hand-off (the walk probe's P5): a fresh conditional
+    // instantiation's init grab does not take (slint 1.17 — the
+    // subtree's init runs before the window attaches), so the walk
+    // root grabs on the panel's own post-mount height transition —
+    // the content mirror's first landing, and every surface swap's
+    // height step. The re-grab also covers the form↔list swap, whose
+    // nested scope inherits the same rule.
+    changed height => { panel-scope.focus(); }
 
-    min-height: form-open ? form-layout-height : list-layout-height;
-    // Content-sized per surface (the timers section's pinned-ends
-    // discipline); the two conditional layouts' preferred heights
-    // are mirrored here through the derived-property idiom — the
-    // direct read would cycle (`preferred-height` ↔ `layoutinfo`).
-    // One-space inits (the lint's token rule): the first layout pass
+    // Content-sized per surface (the date-picker's
+    // `height: panel.preferred-height` shape — the default
+    // absolute-context height would stretch the panel over the whole
+    // window); the two conditional layouts' preferred heights are
+    // mirrored here through the derived-property idiom — the direct
+    // read would cycle (`preferred-height` ↔ `layoutinfo`). One-space
+    // inits (the lint's token rule): the first layout pass
     // overwrites them via the `changed` mirrors below.
+    height: form-open ? form-layout-height : list-layout-height;
     property <length> list-layout-height: Theme.space-1;
     property <length> form-layout-height: Theme.space-1;
     min-width: 360px * Theme.base-scale;
@@ -137,7 +137,17 @@ export component TrackEntriesPanel inherits Rectangle {
         width: 100%;
         height: 100%;
         focus-on-tab-navigation: true;
-        init => { self.focus(); }
+        // The derived-property wrap is the walk probe's recorded
+        // idiom (P2): `changed` delivers on the wrapper, not on the
+        // built-in has-focus binding directly. The height grab is a
+        // post-mount transition, so the gain fires here.
+        property <bool> scope-focused: self.has-focus;
+        changed scope-focused => {
+            TrackPanelWalkFacts.panel-root-focused = self.scope-focused;
+            if (!self.scope-focused) {
+                TrackPanelWalkFacts.focused-row-stop = -1;
+            }
+        }
         VerticalLayout {
             // The form surface (r4 D-TS4): replaces the list
             // in-place; the ladder steps back. The embedded grid
@@ -219,13 +229,10 @@ export component TrackEntriesPanel inherits Rectangle {
                                 stepped(n) => { root.end-stepped(n); }
                                 picked(m) => { root.end-picked(m); }
                                 accepted(text) => {
-                                    if (root.commit-requested()) {
-                                        // The commit steps the
-                                        // surface back to the list
-                                        // (the ladder's forward
-                                        // direction is the commit's).
-                                        root.form-committed();
-                                    }
+                                    // The commit steps the surface
+                                    // back to the list on `true`
+                                    // (the push carries the swap).
+                                    root.commit-requested();
                                 }
                             }
                         }
@@ -259,85 +266,119 @@ export component TrackEntriesPanel inherits Rectangle {
                         }
                     }
                 }
-                // The rows (D-TS3): newest-first pushed order; a
-                // midnight-crossing end carries the pushed `+1d`
-                // mark; the running row renders the status dot.
-                ListView {
-                    height: min(root.rows.length * Theme.space-6, Theme.space-6 * 8);
+                    // The rows (D-TS3): newest-first pushed order; a
+                    // midnight-crossing end carries the pushed `+1d`
+                    // mark; the running row renders the status dot and
+                    // the pushed running copy in the end cell. Each
+                    // row a walk stop with Return activation (blanket
+                    // rule b; the tracked-today row idiom). The rows
+                    // are a plain column (the tracked-today section's
+                    // precedent — no #373 viewport machinery: its
+                    // deferred layout defers the panel's own height
+                    // transition, and with it the focus hand-off); a
+                    // very long history grows the panel to the window
+                    // clamp (the Tier-4 note).
                     for row[row-index] in root.rows: Rectangle {
-                        height: Theme.space-6;
-                        row-hit := TouchArea {
-                            mouse-cursor: MouseCursor.pointer;
-                            clicked => { root.row-activated(row-index); }
-                            changed has-hover => {
-                                if (self.has-hover) {
-                                    TooltipState.hover(
-                                        row.date + " " + row.start + " – " + row.end,
-                                        "Edits the time entry.",
-                                        [],
-                                        self.absolute-position.x,
-                                        self.absolute-position.y,
-                                        self.width,
-                                        self.height,
-                                    );
-                                } else {
-                                    TooltipState.unhover();
+                            height: Theme.space-6;
+                            border-radius: Theme.radius-small;
+                            border-width: row-focus.has-focus ? Theme.focus-ring-width : 0;
+                            border-color: Semantic.focus-ring;
+                            row-focus := FocusScope {
+                                width: 100%;
+                                height: 100%;
+                                focus-on-tab-navigation: true;
+                                // The P2 wrap (see the panel root).
+                                property <bool> row-focused: self.has-focus;
+                                changed row-focused => {
+                                    if (self.row-focused) {
+                                        TrackPanelWalkFacts.focused-row-stop =
+                                            200 + row-index;
+                                    }
+                                }
+                                accessible-role: AccessibleRole.button;
+                                accessible-label: row.date + " " + row.start;
+                                accessible-description: "Edits the time entry.";
+                                accessible-action-default => { root.row-activated(row-index); }
+                                key-pressed(event) => {
+                                    if (event.text == Key.Return || event.text == " ") {
+                                        root.row-activated(row-index);
+                                        accept
+                                    } else {
+                                        reject
+                                    }
+                                }
+                            }
+                            row-hit := TouchArea {
+                                mouse-cursor: MouseCursor.pointer;
+                                clicked => { root.row-activated(row-index); }
+                                changed has-hover => {
+                                    if (self.has-hover) {
+                                        TooltipState.hover(
+                                            row.date + " " + row.start + " – " + row.end,
+                                            "Edits the time entry.",
+                                            [],
+                                            self.absolute-position.x,
+                                            self.absolute-position.y,
+                                            self.width,
+                                            self.height,
+                                        );
+                                    } else {
+                                        TooltipState.unhover();
+                                    }
+                                }
+                            }
+                            HorizontalLayout {
+                                spacing: Theme.space-2;
+                                padding-left: Theme.space-2;
+                                padding-right: Theme.space-2;
+                                if (row.running): StatusDot {
+                                    y: (parent.height - self.height) / 2;
+                                }
+                                RoleText {
+                                    role: Typography.mono;
+                                    text: row.date;
+                                    vertical-alignment: center;
+                                }
+                                RoleText {
+                                    role: Typography.mono;
+                                    text: row.start;
+                                    vertical-alignment: center;
+                                }
+                                RoleText {
+                                    role: Typography.mono;
+                                    text: row.end;
+                                    text-color: row.running ? Semantic.success : Theme.text-primary;
+                                    vertical-alignment: center;
+                                }
+                                Rectangle {
+                                    horizontal-stretch: 1;
+                                }
+                                RoleText {
+                                    role: Typography.mono;
+                                    text: row.spent;
+                                    text-color: Theme.text-secondary;
+                                    vertical-alignment: center;
+                                }
+                                // The delete affordance (D-TS5): the
+                                // journal classifies `DeleteTimeEntry`
+                                // NotUndoable, so the affordance carries
+                                // its own confirmation — arm on the
+                                // first activate, dispatch on the
+                                // second. No timer-based disarm: nothing
+                                // ticks (the fence).
+                                IconButton {
+                                    icon: IconKind.trash;
+                                    tone: row-index == root.armed-index ? Tone.danger : Tone.neutral;
+                                    label: row-index == root.armed-index
+                                        ? "Confirm delete"
+                                        : "Delete time entry";
+                                    description: row-index == root.armed-index
+                                        ? "Deletes the entry. This cannot be undone — activate again to confirm."
+                                        : "Arms the delete for this entry; activate again to confirm.";
+                                    clicked => { root.delete-clicked(row-index); }
                                 }
                             }
                         }
-                        HorizontalLayout {
-                            spacing: Theme.space-2;
-                            padding-left: Theme.space-2;
-                            padding-right: Theme.space-2;
-                            if (row.running): StatusDot {
-                                y: (parent.height - self.height) / 2;
-                            }
-                            RoleText {
-                                role: Typography.mono;
-                                text: row.date;
-                                vertical-alignment: center;
-                            }
-                            RoleText {
-                                role: Typography.mono;
-                                text: row.start;
-                                vertical-alignment: center;
-                            }
-                            RoleText {
-                                role: Typography.mono;
-                                text: row.running ? "–" : row.end;
-                                text-color: row.running ? Semantic.success : Theme.text-primary;
-                                vertical-alignment: center;
-                            }
-                            Rectangle {
-                                horizontal-stretch: 1;
-                            }
-                            RoleText {
-                                role: Typography.mono;
-                                text: row.spent;
-                                text-color: Theme.text-secondary;
-                                vertical-alignment: center;
-                            }
-                            // The delete affordance (D-TS5): the
-                            // journal classifies `DeleteTimeEntry`
-                            // NotUndoable, so the affordance carries
-                            // its own confirmation — arm on the
-                            // first activate, dispatch on the
-                            // second. No timer-based disarm: nothing
-                            // ticks (the fence).
-                            IconButton {
-                                icon: IconKind.trash;
-                                tone: row-index == root.armed-index ? Tone.danger : Tone.neutral;
-                                label: row-index == root.armed-index
-                                    ? "Confirm delete"
-                                    : "Delete time entry";
-                                description: row-index == root.armed-index
-                                    ? "Deletes the entry. This cannot be undone — activate again to confirm."
-                                    : "Arms the delete for this entry; activate again to confirm.";
-                                clicked => { root.delete-clicked(row-index); }
-                            }
-                        }
-                    }
-                }
                 // The footer add affordance (D-TS4): routes the
                 // add-requested seam (click ≡ key, §7.1).
                 HorizontalLayout {
@@ -354,6 +395,12 @@ export component TrackEntriesPanel inherits Rectangle {
                             width: 100%;
                             height: 100%;
                             focus-on-tab-navigation: true;
+                            property <bool> add-focused: self.has-focus;
+                            changed add-focused => {
+                                if (self.add-focused) {
+                                    TrackPanelWalkFacts.focused-row-stop = 300;
+                                }
+                            }
                             accessible-role: AccessibleRole.button;
                             accessible-label: "Add time entry";
                             accessible-description: "Opens the entry form to log a block of work.";
