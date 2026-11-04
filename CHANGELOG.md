@@ -47,6 +47,25 @@ The workspace carries a single global version (see `docs/architecture.org`);
   correction (window and count), so what you click is what
   increments. No attribution arithmetic changed.
 
+- The settings board selector is a dropdown (round-4 GUI review F29):
+  the per-board radio list is replaced by a keyboard-operable
+  combobox — Return/Space opens, arrows and `Ctrl+N`/`Ctrl+P` move
+  the highlight, Return picks, Escape closes — with row hover
+  feedback, per-option connected/not-connected indicators colourized
+  by the connector's live status, and Detach beside the field acting
+  on the selected board. Selecting a board still only arms Bind (it
+  never switches the viewed board), and the option list now re-derives
+  from the engine state on every refresh, so boards created or deleted
+  elsewhere are never stale, and a selection whose board disappears is
+  dropped instead of arming Bind on a ghost.
+- The board bar switches to a dropdown past eight boards (#411): a
+  handful of boards keeps the reviewed tab strip; past the segment
+  budget the strip becomes an elided sea, so the bar mounts the shared
+  dropdown instead — reachable-by-scrolling rows with hover
+  feedback, picking routes the same switch as a tab click, and the
+  keyboard ladder operates it. The per-board context menu stays on the
+  strip (in dropdown mode the action menu reaches it).
+
 ### Changed
 
 - The interface scale applies on release/commit instead of live
