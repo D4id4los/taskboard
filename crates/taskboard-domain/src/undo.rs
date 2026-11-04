@@ -237,6 +237,18 @@ fn record_entry(
             // No `RestoreHabit` verb; tombstone-only delete.
             UndoFacts::NotUndoable(NotUndoableReason::HabitSurface)
         }
+        StateCommand::ConvertSeriesToHabit { .. }
+        | StateCommand::ConvertHabitToSeries { .. } => {
+            // The seam-addressed composites (issue #506, the D25
+            // extension): the `continued_from` seam deliberately
+            // carries no clock slot (D-H7a), so there is nothing to
+            // watermark the seam restore against, and the inverse —
+            // restore the rule *and* remove the minted habit /
+            // un-tombstone the retired one — is unexpressible in the
+            // one-inverse-command synthesis. The chain stays readable
+            // from state; the undo line refuses-and-names.
+            UndoFacts::NotUndoable(NotUndoableReason::HabitSurface)
+        }
         // Never journaled (the wrapper routes Undo/Redo; RequestSync
         // plans an empty batch and never reaches this point — both arms
         // stay for totality).
@@ -313,6 +325,10 @@ fn touched_board(app: &AppState, command: &StateCommand) -> Option<crate::ids::B
             .get(id)
             .and_then(|entry| task_board(entry.task)),
         StateCommand::CreateHabit { board, .. } => Some(*board),
+        StateCommand::ConvertSeriesToHabit { head, .. } => task_board(*head),
+        StateCommand::ConvertHabitToSeries { habit, .. } => {
+            app.habits.habits.get(habit).map(|h| h.board)
+        }
         // CreateBoard mints its id inside the planner — the receipt
         // names it; the tag stays honest `None` here.
         StateCommand::CreateBoard { .. } => None,
@@ -723,6 +739,8 @@ impl JournalEntry {
             | StateCommand::DeleteTimeEntry { .. }
             | StateCommand::LogHabit { .. }
             | StateCommand::DeleteHabit { .. }
+            | StateCommand::ConvertSeriesToHabit { .. }
+            | StateCommand::ConvertHabitToSeries { .. }
             | StateCommand::Undo
             | StateCommand::Redo
             | StateCommand::RequestSync => Err(CommandError::TargetNotUndoable(

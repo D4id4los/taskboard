@@ -120,6 +120,10 @@ impl IdGenerator for CountingIds {
         HabitId::from(Uuid::from_u128(self.next()))
     }
 
+    fn new_series_id(&self) -> crate::ids::SeriesId {
+        crate::ids::SeriesId::from(Uuid::from_u128(self.next()))
+    }
+
     fn new_journal_id(&self) -> JournalId {
         JournalId::from(Uuid::from_u128(self.next()))
     }

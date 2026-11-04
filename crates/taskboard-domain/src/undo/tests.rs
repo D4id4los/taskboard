@@ -2524,3 +2524,80 @@ fn a_pause_with_a_later_rule_edit_refuses_typed() {
         Err(CommandError::TargetNoLongerInvertible { .. })
     ));
 }
+
+// ---- the convert composites (issue #506): the D25 extension -------
+
+#[test]
+fn both_convert_directions_journal_not_undoable_and_refuse_typed() {
+    use crate::habit::{HabitTarget, NonZeroCount};
+    let mut h = Harness::new();
+    let (task, _) = recur_task(&mut h, "chore");
+    // Leg A: series → habit.
+    h.exec(&StateCommand::ConvertSeriesToHabit {
+        head: task,
+        target: HabitTarget::PerDay(NonZeroCount::new(1).unwrap()),
+    })
+    .expect("converted");
+    let entry = h.journal.entries.last().unwrap();
+    assert!(matches!(
+        entry.facts,
+        UndoFacts::NotUndoable(NotUndoableReason::HabitSurface)
+    ));
+    let err = h.exec(&StateCommand::Undo);
+    assert!(
+        matches!(
+            err,
+            Err(CommandError::TargetNotUndoable(
+                NotUndoableReason::HabitSurface
+            ))
+        ),
+        "the composite refuses-and-names, never skips"
+    );
+    // Leg B: habit → series.
+    let board = h.board();
+    let habit = match h
+        .exec(&StateCommand::CreateHabit {
+            board,
+            title: "stretch".into(),
+            target: HabitTarget::PerDay(NonZeroCount::new(2).unwrap()),
+        })
+        .expect("habit created")
+    {
+        CommandOutcome::HabitCreated(id) => id,
+        other => panic!("expected HabitCreated, got {other:?}"),
+    };
+    h.exec(&StateCommand::ConvertHabitToSeries {
+        habit,
+        pattern: crate::recur::RecurPattern::Daily {
+            every: crate::recur::EveryDays::new(1).unwrap(),
+        },
+    })
+    .expect("converted back");
+    let entry = h.journal.entries.last().unwrap();
+    assert!(matches!(
+        entry.facts,
+        UndoFacts::NotUndoable(NotUndoableReason::HabitSurface)
+    ));
+    let err = h.exec(&StateCommand::Undo);
+    assert!(matches!(
+        err,
+        Err(CommandError::TargetNotUndoable(
+            NotUndoableReason::HabitSurface
+        ))
+    ));
+    // The seams stay readable from state: the retired habit is
+    // tombstoned but present, the minted head carries the link.
+    let retired = h.disk.habits.habits[&habit].clone();
+    assert!(retired.deleted);
+    let linked = h
+        .disk
+        .tasks
+        .values()
+        .find(|t| {
+            t.recur
+                .as_ref()
+                .is_some_and(|r| r.continued_from == Some(habit))
+        })
+        .expect("the minted head links to the habit");
+    assert!(linked.is_live());
+}

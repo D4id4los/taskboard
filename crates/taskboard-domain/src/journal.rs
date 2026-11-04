@@ -378,6 +378,8 @@ pub fn command_label(command: &StateCommand) -> String {
         StateCommand::DeleteHabit { .. } => "Delete habit".into(),
         StateCommand::RestoreTask { .. } => "Restore task".into(),
         StateCommand::PauseSeries { .. } => "Pause series".into(),
+        StateCommand::ConvertSeriesToHabit { .. } => "Convert series to habit".into(),
+        StateCommand::ConvertHabitToSeries { .. } => "Convert habit to series".into(),
         StateCommand::Undo | StateCommand::Redo => "Undo/redo".into(),
         StateCommand::RequestSync => "Sync".into(),
     }
