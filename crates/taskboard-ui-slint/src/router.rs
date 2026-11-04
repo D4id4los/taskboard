@@ -66,6 +66,16 @@ pub enum UiEffect {
     /// The adapter closes the menu and re-dispatches the selected
     /// entry — bounded (the menu is closed first, no recursion).
     InvokeSelected,
+    /// Open the recur row's inline pause editor (issue #506): a view
+    /// intent over the subject task — the adapter flips the model's
+    /// `recur-pause-open` flag; any other flow/state is inert.
+    SeriesPauseOpen,
+    /// Arm the habit row's conversion confirm strip (issue #506): the
+    /// adapter records the armed row; the dispatch itself waits for
+    /// Confirm.
+    HabitConvertArm,
+    /// Arm the recur row's conversion confirm strip (issue #506).
+    SeriesConvertArm,
     SetMode(Mode),
     // --- chunk-3 view intents (D6/D9): names state the function; the
     // adapter resolves them against the view-state model.
@@ -249,6 +259,13 @@ impl UiEffect {
             Self::OpenPalette => EffectClass::OpenPalette,
             Self::ToggleFocusMode => EffectClass::FocusOverlay,
             Self::TrackEntriesOpen | Self::TrackEntryDismiss => EffectClass::TrackOverlay,
+            // The habit trio's intents are flag flips over the subject
+            // (issue #506): no flow moves, no command routes — the
+            // nav bucket's contract (the adapter's interpretation
+            // table owns them; no shell state moves).
+            Self::SeriesPauseOpen | Self::HabitConvertArm | Self::SeriesConvertArm => {
+                EffectClass::Nav
+            }
             Self::BeginCapture => EffectClass::BeginCapture,
             Self::Activate | Self::SetMode(_) => EffectClass::Edit,
             Self::BeginTitleEdit => EffectClass::Title,
@@ -361,6 +378,34 @@ pub struct DispatchCtx {
     /// floor-midpoint order computed from the row source; `habit.move`
     /// routes from it (`NoTarget` without one).
     pub habit_move: Option<(taskboard_domain::HabitId, i64)>,
+    /// The repair affordance's resolved target (issue #506, plan D-7):
+    /// the `(habit, window, post-count)` triple presentation's
+    /// `habit_repair_target` computed — what you click is what
+    /// increments; `habit.repair` routes `AdjustHabitLog` from it
+    /// (`NoTarget` without one).
+    pub habit_repair: Option<(
+        taskboard_domain::HabitId,
+        taskboard_domain::WindowStart,
+        u32,
+    )>,
+    /// The armed convert row's habit: `habit.convert-to-series` routes
+    /// `ConvertHabitToSeries` from it together with the pattern draft
+    /// (`NoTarget` without either).
+    pub habit_convert_target: Option<taskboard_domain::HabitId>,
+    /// The conversion's pattern draft (issue #506, D-2): the quota's
+    /// default mapping the adapter computed from the row; consumed by
+    /// the confirm dispatch.
+    pub pattern_draft: Option<taskboard_domain::RecurPattern>,
+    /// The recur row's subject task: the pause/convert verbs' one-shot
+    /// target (`NoTarget` without one).
+    pub series_target: Option<TaskId>,
+    /// The pause editor's parsed inclusive date: `series.pause-commit`
+    /// routes `PauseSeries` from it (`NoTarget` without one).
+    pub pause_draft: Option<chrono::NaiveDate>,
+    /// The conversion's quota draft (issue #506, D-2): the pattern's
+    /// default mapping the adapter computed from the rule; consumed by
+    /// the confirm dispatch.
+    pub convert_target: Option<taskboard_domain::HabitTarget>,
     /// Whether the focused task is done (round 2, D19): the reopen
     /// verb's enablement gate — `task.reopen` routes only for a
     /// focused *completed* task (the `task.complete` machinery
@@ -521,6 +566,57 @@ impl ActionRouter {
                     DispatchOutcome::Command(StateCommand::MoveHabit { habit, order })
                 }
                 None => DispatchOutcome::NoTarget,
+            },
+            // The habit trio (issue #506, plan D-7/D-8): the make-up
+            // valve dispatches the existing audited `AdjustHabitLog`;
+            // the conversion arm is a view intent (the confirm strip),
+            // the confirm dispatch routes the domain verb with the
+            // D-2 default pattern.
+            ActionId::HabitRepair => match ctx.habit_repair {
+                Some((habit, window, count)) => {
+                    DispatchOutcome::Command(StateCommand::AdjustHabitLog {
+                        habit,
+                        window,
+                        count,
+                    })
+                }
+                None => DispatchOutcome::NoTarget,
+            },
+            ActionId::HabitConvertArm => DispatchOutcome::UiEffect(UiEffect::HabitConvertArm),
+            ActionId::HabitConvertToSeries => {
+                match (ctx.habit_convert_target, ctx.pattern_draft.clone()) {
+                    (Some(habit), Some(pattern)) => {
+                        DispatchOutcome::Command(StateCommand::ConvertHabitToSeries {
+                            habit,
+                            pattern,
+                        })
+                    }
+                    _ => DispatchOutcome::NoTarget,
+                }
+            }
+            // The series verbs (issue #506, plan D-8): the pause open
+            // is a view intent; commit and resume route the domain
+            // verb from the recur row's one-shot target.
+            ActionId::SeriesPause => DispatchOutcome::UiEffect(UiEffect::SeriesPauseOpen),
+            ActionId::SeriesPauseCommit => match (ctx.series_target, ctx.pause_draft) {
+                (Some(head), Some(until)) => DispatchOutcome::Command(StateCommand::PauseSeries {
+                    head,
+                    until: Some(until),
+                }),
+                _ => DispatchOutcome::NoTarget,
+            },
+            ActionId::SeriesResume => match ctx.series_target {
+                Some(head) => {
+                    DispatchOutcome::Command(StateCommand::PauseSeries { head, until: None })
+                }
+                None => DispatchOutcome::NoTarget,
+            },
+            ActionId::SeriesConvertArm => DispatchOutcome::UiEffect(UiEffect::SeriesConvertArm),
+            ActionId::SeriesConvertToHabit => match (ctx.series_target, ctx.convert_target) {
+                (Some(head), Some(target)) => {
+                    DispatchOutcome::Command(StateCommand::ConvertSeriesToHabit { head, target })
+                }
+                _ => DispatchOutcome::NoTarget,
             },
             // The tracking verbs (DR-5/4, D-T16): Start routes from the
             // explicit one-shot target, falling back to the focused
@@ -708,7 +804,7 @@ impl ActionRouter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use taskboard_domain::TaskId;
+    use taskboard_domain::{HabitId, TaskId};
     use uuid::Uuid;
 
     fn ctx(task: bool) -> DispatchCtx {
@@ -727,6 +823,12 @@ mod tests {
             track_target: None,
             habit_target: None,
             habit_move: None,
+            habit_repair: None,
+            habit_convert_target: None,
+            pattern_draft: None,
+            series_target: None,
+            pause_draft: None,
+            convert_target: None,
             day_window: None,
             focused_task_done: false,
             focused_task_tracker: false,
@@ -1228,6 +1330,87 @@ mod tests {
         assert_eq!(
             ActionRouter::dispatch(ActionId::TaskToggleTracker, &ctx(false)),
             DispatchOutcome::NoTarget
+        );
+    }
+
+    // ---- the habit trio (issue #506, plan D-7/D-8): the router
+    // routes exact typed commands from the one-shot targets ----------
+
+    #[test]
+    fn the_recur_and_repair_verbs_route_from_their_targets() {
+        let mut ctx = ctx(false);
+        for id in [
+            ActionId::HabitRepair,
+            ActionId::HabitConvertToSeries,
+            ActionId::SeriesPauseCommit,
+            ActionId::SeriesResume,
+            ActionId::SeriesConvertToHabit,
+        ] {
+            assert_eq!(ActionRouter::dispatch(id, &ctx), DispatchOutcome::NoTarget);
+        }
+        // The two arm intents are view effects, even targetless.
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::HabitConvertArm, &ctx),
+            DispatchOutcome::UiEffect(UiEffect::HabitConvertArm)
+        );
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::SeriesConvertArm, &ctx),
+            DispatchOutcome::UiEffect(UiEffect::SeriesConvertArm)
+        );
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::SeriesPause, &ctx),
+            DispatchOutcome::UiEffect(UiEffect::SeriesPauseOpen)
+        );
+        // The make-up valve dispatches the exact audited payload.
+        let (habit, window, count) = (
+            HabitId::from_uuid(Uuid::now_v7()),
+            taskboard_domain::WindowStart::of_period(
+                taskboard_domain::PeriodKind::Day,
+                chrono::NaiveDate::from_ymd_opt(2026, 11, 3).unwrap(),
+            ),
+            2_u32,
+        );
+        ctx.habit_repair = Some((habit, window, count));
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::HabitRepair, &ctx),
+            DispatchOutcome::Command(StateCommand::AdjustHabitLog {
+                habit,
+                window,
+                count,
+            })
+        );
+        // The confirm dispatches carry the drafts verbatim.
+        let head = TaskId::from_uuid(Uuid::now_v7());
+        let pause = chrono::NaiveDate::from_ymd_opt(2026, 12, 24).unwrap();
+        ctx.series_target = Some(head);
+        ctx.pause_draft = Some(pause);
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::SeriesPauseCommit, &ctx),
+            DispatchOutcome::Command(StateCommand::PauseSeries {
+                head,
+                until: Some(pause),
+            })
+        );
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::SeriesResume, &ctx),
+            DispatchOutcome::Command(StateCommand::PauseSeries { head, until: None })
+        );
+        ctx.convert_target = Some(taskboard_domain::habit::HabitTarget::PerWeek(
+            taskboard_domain::NonZeroCount::new(3).unwrap(),
+        ));
+        let outcome = ActionRouter::dispatch(ActionId::SeriesConvertToHabit, &ctx);
+        assert!(matches!(
+            outcome,
+            DispatchOutcome::Command(StateCommand::ConvertSeriesToHabit { .. })
+        ));
+        let pattern = taskboard_domain::RecurPattern::Daily {
+            every: taskboard_domain::EveryDays::new(3).unwrap(),
+        };
+        ctx.habit_convert_target = Some(habit);
+        ctx.pattern_draft = Some(pattern.clone());
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::HabitConvertToSeries, &ctx),
+            DispatchOutcome::Command(StateCommand::ConvertHabitToSeries { habit, pattern })
         );
     }
 }

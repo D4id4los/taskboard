@@ -1,6 +1,5 @@
 ---
 source: crates/taskboard-ui-slint/tests/keymap_snapshots.rs
-assertion_line: 49
 expression: rows
 ---
 - id: app.exit
@@ -636,6 +635,78 @@ expression: rows
   menu_rank: 190
   description: "+1 the addressed tracker's current window (surplus logs are first-class)."
   menu_group: ~
+- id: habit.repair
+  label: Add make-up
+  contexts:
+    - global
+  category: task
+  enabled: true
+  menu_rank: 200
+  description: Adds the make-up +1 into the previous window while its overflow grace is open.
+  menu_group: task
+- id: habit.convert-arm
+  label: Convert habit to series
+  contexts:
+    - global
+  category: task
+  enabled: true
+  menu_rank: 210
+  description: "Arms the row's conversion confirm (the habit retires; its history links to the new series)."
+  menu_group: task
+- id: habit.convert-to-series
+  label: Confirm habit conversion
+  contexts:
+    - global
+  category: task
+  enabled: true
+  menu_rank: 220
+  description: "Routes the confirmed habit-to-series conversion with the quota's default pattern."
+  menu_group: task
+- id: series.pause
+  label: Pause series
+  contexts:
+    - global
+  category: task
+  enabled: true
+  menu_rank: 230
+  description: "Opens the series' pause editor (vacation pause: the covered members do not exist)."
+  menu_group: task
+- id: series.pause-commit
+  label: Commit pause
+  contexts:
+    - global
+  category: task
+  enabled: true
+  menu_rank: 240
+  description: Routes the parsed inclusive pause-through date to the series pause verb.
+  menu_group: task
+- id: series.resume
+  label: Resume series
+  contexts:
+    - global
+  category: task
+  enabled: true
+  menu_rank: 250
+  description: "Clears the series' pause field (an expired pause is inert; the clear is badge hygiene)."
+  menu_group: task
+- id: series.convert-arm
+  label: Convert series to habit
+  contexts:
+    - global
+  category: task
+  enabled: true
+  menu_rank: 260
+  description: "Arms the recur row's conversion confirm (the series stops repeating; the habit continues its history)."
+  menu_group: task
+- id: series.convert-to-habit
+  label: Confirm series conversion
+  contexts:
+    - global
+  category: task
+  enabled: true
+  menu_rank: 270
+  description: "Routes the confirmed series-to-habit conversion with the pattern's default quota."
+  menu_group: task
 - id: habit.move
   label: Reorder habit
   contexts:

@@ -514,6 +514,18 @@ fn push_rows<T: PartialEq + Clone + 'static>(
 /// The due editor's pushed state (r2 D25): the adapter owns the
 /// buffer, echo, and picker cursor across refreshes (R-d); the push
 /// only carries them into the model.
+/// The recur row's adapter-owned flags (issue #506, plan D-8): the
+/// inline pause editor's open flag and the conversion confirm's armed
+/// flag — the adapter owns them across refreshes (the due buffers
+/// pattern), this push only carries.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RecurRowPush {
+    /// The inline pause editor is open.
+    pub pause_open: bool,
+    /// The conversion confirm strip is armed.
+    pub confirm_open: bool,
+}
+
 pub struct DueEditorPush<'a> {
     pub text: &'a str,
     pub echo: &'a str,
@@ -646,6 +658,7 @@ fn push_habits(
             streak: i32::try_from(row.streak).unwrap_or(i32::MAX),
             chip: SharedString::from(row.chip.map_or(String::new(), |chip| chip.to_string())),
             met: row.met,
+            repair: row.repair,
         })
         .collect();
     window.set_habits_editing_visible(presentation::habit_editing_visible(kiosk));
@@ -760,6 +773,7 @@ pub fn push(
     focus: Option<&taskboard_domain::focus::FocusTiming>,
     models: &mut PushModels,
     due: &DueEditorPush<'_>,
+    recur: crate::models::RecurRowPush,
 ) -> IdTables {
     let now = day.now;
     let sets = presentation::due_sets(state, now, due.horizon);
@@ -849,6 +863,8 @@ pub fn push(
         kiosk,
         models,
         due,
+        recur,
+        calendar,
     );
     mutations += push_review(window, state, day, calendar, kiosk, models);
     mutations += push_status_bar(
@@ -1571,8 +1587,16 @@ fn push_task_detail(
     kiosk: bool,
     models: &mut PushModels,
     due: &DueEditorPush<'_>,
+    recur: crate::models::RecurRowPush,
+    calendar: taskboard_domain::DayCalendar,
 ) -> usize {
     let subject = vs.subject_task().and_then(|t| state.tasks.get(&t));
+    // The recur row's display half (issue #506): the pattern echo and
+    // the paused chip read the rule verbatim — the chip rides the
+    // badge label's paused phrase (the same date comparison, so the
+    // chip and the badge can never disagree).
+    let recur_rule = subject.and_then(|t| t.recur.as_ref());
+    let recur_badge = subject.and_then(|t| presentation::recur_badge(t, calendar, now));
     // The detail button's verb (DR-5/4, D-TU6): exactly one while a
     // subject exists, both false without.
     let track_verb = presentation::detail_tracking_verb(state, vs.subject_task());
@@ -1793,6 +1817,27 @@ fn push_task_detail(
                 })
                 .unwrap_or_default(),
         ),
+        // The recur row (issue #506): pattern echo + paused chip over
+        // the rule's truth; the flags ride the RecurRowPush.
+        recur_visible: recur_rule.is_some(),
+        recur_pattern: SharedString::from(
+            recur_rule.map_or(String::new(), |rule| rule.pattern.text_form()),
+        ),
+        recur_paused_chip: SharedString::from(recur_badge.as_ref().map_or_else(
+            String::new,
+            |badge| {
+                if badge
+                    .paused_until
+                    .is_some_and(|pause| calendar.today(now) <= pause)
+                {
+                    presentation::recur_badge_label(badge, calendar.today(now))
+                } else {
+                    String::new()
+                }
+            },
+        )),
+        recur_pause_open: recur.pause_open,
+        recur_confirm_open: recur.confirm_open,
         track_entries: ModelRc::new(slint::VecModel::from(track_entry_rows)),
         date_picker_open: due.picker.is_some(),
         date_caption: SharedString::from(
@@ -2792,6 +2837,7 @@ mod tests {
                 None,
                 models,
                 &due,
+                crate::models::RecurRowPush::default(),
             )
         }
 

@@ -152,6 +152,12 @@ impl KeymapShell {
             track_target: None,
             habit_target: None,
             habit_move: None,
+            habit_repair: None,
+            habit_convert_target: None,
+            pattern_draft: None,
+            series_target: None,
+            pause_draft: None,
+            convert_target: None,
             day_window: None,
             focused_task_done: self.focused_task_done,
             focused_task_tracker: self.focused_task_tracker,
@@ -258,7 +264,12 @@ impl KeymapShell {
             // The entries overlay's intents are view-state resolves
             // (the adapter's table); the shell records nothing.
             | UiEffect::TrackEntriesOpen
-            | UiEffect::TrackEntryDismiss => {}
+            // The habit trio's intents are adapter-interpreted view
+            // intents (issue #506); the shell records nothing.
+            | UiEffect::TrackEntryDismiss
+            | UiEffect::SeriesPauseOpen
+            | UiEffect::HabitConvertArm
+            | UiEffect::SeriesConvertArm => {}
         }
         true
     }

@@ -269,6 +269,33 @@ pub enum ActionId {
     // planner's idempotent NoOps own the refusals).
     HabitLog,
     HabitMove,
+    /// The streak-repair affordance (issue #506, plan D-7): the
+    /// make-up +1 into the previous window — routes `AdjustHabitLog`
+    /// from the adapter-resolved `(habit, window, count)` (what you
+    /// click is what increments).
+    HabitRepair,
+    /// The habit → series conversion's open-confirm step: arms the
+    /// row's confirm strip (consequence phrase first, dispatch only
+    /// on Confirm).
+    HabitConvertArm,
+    /// The habit → series confirm's dispatch: routes
+    /// `ConvertHabitToSeries` with the quota's default pattern (D-2).
+    HabitConvertToSeries,
+    /// The task-view recur row's pause affordance: opens the inline
+    /// pause editor (a view intent, the entries-overlay precedent).
+    SeriesPause,
+    /// The pause editor's commit: routes `PauseSeries` with the parsed
+    /// inclusive date (`NoTarget` without target or valid draft).
+    SeriesPauseCommit,
+    /// The resume affordance: routes `PauseSeries { until: None }` —
+    /// the field clears for badge hygiene (the expired pause is inert).
+    SeriesResume,
+    /// The series → habit conversion's open-confirm step: arms the
+    /// recur row's confirm strip.
+    SeriesConvertArm,
+    /// The series → habit confirm's dispatch: routes
+    /// `ConvertSeriesToHabit` with the pattern's default quota (D-2).
+    SeriesConvertToHabit,
     MenuNext,
     MenuPrevious,
     MenuInvoke,
@@ -354,6 +381,14 @@ impl ActionId {
             Self::FocusModeToggle => "focus.toggle",
             Self::HabitLog => "habit.log",
             Self::HabitMove => "habit.move",
+            Self::HabitRepair => "habit.repair",
+            Self::HabitConvertArm => "habit.convert-arm",
+            Self::HabitConvertToSeries => "habit.convert-to-series",
+            Self::SeriesPause => "series.pause",
+            Self::SeriesPauseCommit => "series.pause-commit",
+            Self::SeriesResume => "series.resume",
+            Self::SeriesConvertArm => "series.convert-arm",
+            Self::SeriesConvertToHabit => "series.convert-to-habit",
             Self::MenuNext => "menu.next",
             Self::MenuPrevious => "menu.previous",
             Self::MenuInvoke => "menu.invoke",
@@ -1114,6 +1149,88 @@ pub const REGISTRY: &[ActionEntry] = &[
         menu_group: None,
     },
     ActionEntry {
+        id: ActionId::HabitRepair,
+        label: "Add make-up",
+        contexts: GLOBAL,
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 200,
+        description: "Adds the make-up +1 into the previous window while its overflow grace is open.",
+        // Section-scoped (see HabitLog): the row's own affordance is
+        // the only invocation.
+        menu_group: Some(MenuGroup::Task),
+    },
+    ActionEntry {
+        id: ActionId::HabitConvertArm,
+        label: "Convert habit to series",
+        contexts: GLOBAL,
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 210,
+        description: "Arms the row's conversion confirm (the habit retires; its history links to the new series).",
+        menu_group: Some(MenuGroup::Task),
+    },
+    ActionEntry {
+        id: ActionId::HabitConvertToSeries,
+        label: "Confirm habit conversion",
+        contexts: GLOBAL,
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 220,
+        description: "Routes the confirmed habit-to-series conversion with the quota's default pattern.",
+        menu_group: Some(MenuGroup::Task),
+    },
+    ActionEntry {
+        id: ActionId::SeriesPause,
+        label: "Pause series",
+        contexts: GLOBAL,
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 230,
+        description: "Opens the series' pause editor (vacation pause: the covered members do not exist).",
+        menu_group: Some(MenuGroup::Task),
+    },
+    ActionEntry {
+        id: ActionId::SeriesPauseCommit,
+        label: "Commit pause",
+        contexts: GLOBAL,
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 240,
+        description: "Routes the parsed inclusive pause-through date to the series pause verb.",
+        menu_group: Some(MenuGroup::Task),
+    },
+    ActionEntry {
+        id: ActionId::SeriesResume,
+        label: "Resume series",
+        contexts: GLOBAL,
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 250,
+        description: "Clears the series' pause field (an expired pause is inert; the clear is badge hygiene).",
+        menu_group: Some(MenuGroup::Task),
+    },
+    ActionEntry {
+        id: ActionId::SeriesConvertArm,
+        label: "Convert series to habit",
+        contexts: GLOBAL,
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 260,
+        description: "Arms the recur row's conversion confirm (the series stops repeating; the habit continues its history).",
+        menu_group: Some(MenuGroup::Task),
+    },
+    ActionEntry {
+        id: ActionId::SeriesConvertToHabit,
+        label: "Confirm series conversion",
+        contexts: GLOBAL,
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 270,
+        description: "Routes the confirmed series-to-habit conversion with the pattern's default quota.",
+        menu_group: Some(MenuGroup::Task),
+    },
+    ActionEntry {
         id: ActionId::HabitMove,
         label: "Reorder habit",
         contexts: GLOBAL,
@@ -1371,6 +1488,14 @@ mod tests {
             ActionId::FocusModeToggle,
             ActionId::HabitLog,
             ActionId::HabitMove,
+            ActionId::HabitRepair,
+            ActionId::HabitConvertArm,
+            ActionId::HabitConvertToSeries,
+            ActionId::SeriesPause,
+            ActionId::SeriesPauseCommit,
+            ActionId::SeriesResume,
+            ActionId::SeriesConvertArm,
+            ActionId::SeriesConvertToHabit,
             ActionId::MenuNext,
             ActionId::MenuPrevious,
             ActionId::MenuInvoke,

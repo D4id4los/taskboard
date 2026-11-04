@@ -353,6 +353,11 @@ export component AppWindow inherits Window {
                 habits-editing-visible: root.habits-editing-visible;
                 habits-plus-clicked(r) => root.habits-plus-clicked(r);
                 habits-reorder-asked(row, slot) => root.habits-reorder-asked(row, slot);
+                habits-repair-clicked(r) => root.habits-repair-clicked(r);
+                habits-convert-armed(r) => root.habits-convert-armed(r);
+                habits-convert-confirmed(r) => root.habits-convert-confirmed(r);
+                habits-convert-cancelled() => root.habits-convert-cancelled();
+                habits-convert-armed-row: root.habits-convert-armed-row;
                 tracked-activated(i) => root.today-tracked-activated(i);
             }
             if (root.current-view == View.stack-detail): StackView {
@@ -412,6 +417,14 @@ export component AppWindow inherits Window {
                 rule-offset-edited(t) => root.rule-offset-edited(t);
                 rule-unmute-clicked() => root.task-rule-unmute-clicked();
                 rule-jump-to-due-clicked() => root.task-rule-jump-to-due-clicked();
+                // The recur row (issue #506).
+                recur-pause-asked() => root.task-recur-pause-asked();
+                recur-pause-accepted(t) => root.task-recur-pause-accepted(t);
+                recur-pause-cancelled() => root.task-recur-pause-cancelled();
+                recur-resume-clicked() => root.task-recur-resume-clicked();
+                recur-convert-asked() => root.task-recur-convert-asked();
+                recur-convert-confirmed() => root.task-recur-convert-confirmed();
+                recur-convert-cancelled() => root.task-recur-convert-cancelled();
                 task-track-start-clicked() => root.task-track-start-clicked();
                 task-track-stop-clicked() => root.task-track-stop-clicked();
                 task-done-toggled() => root.task-done-toggled();
@@ -1116,6 +1129,23 @@ export component AppWindow inherits Window {
     pure callback timers-cancel-clicked(int);
     pure callback habits-plus-clicked(int);
     pure callback habits-reorder-asked(int, int);
+    // The habits trio (issue #506): the make-up valve, and the
+    // conversion flow's arm/confirm/cancel steps (one row armed at a
+    // time via the armed-row property).
+    pure callback habits-repair-clicked(int);
+    pure callback habits-convert-armed(int);
+    pure callback habits-convert-confirmed(int);
+    pure callback habits-convert-cancelled();
+    in-out property <int> habits-convert-armed-row: -1;
+    // The task view's recur row (issue #506): pause open/editor +
+    // resume + the conversion's arm/confirm/cancel.
+    pure callback task-recur-pause-asked();
+    pure callback task-recur-pause-accepted(string);
+    pure callback task-recur-pause-cancelled();
+    pure callback task-recur-resume-clicked();
+    pure callback task-recur-convert-asked();
+    pure callback task-recur-convert-confirmed();
+    pure callback task-recur-convert-cancelled();
     // The Tracked section's activation (#490): opens the addressed
     // task (the today row's arm).
     pure callback today-tracked-activated(int);
