@@ -3514,8 +3514,8 @@ impl Adapter {
             4 => {
                 // The scale field's staged buffer (round-3 D20a): the
                 // draft becomes the rendered echo and the flavour's
-                // input; a concurrent slider preview must not clobber
-                // it (writer point 2 gates on its presence).
+                // input; nothing else writes the echo while the field
+                // holds a draft (r4 D38: the drag no longer previews).
                 self.settings.scale_draft = Some(text.to_owned());
                 self.push_settings(window);
                 return;
@@ -3848,33 +3848,6 @@ impl Adapter {
         self.scale_drag = Some(f64::from(window.global::<crate::Theme>().get_base_scale()));
     }
 
-    /// The slider gesture's preview (r2 D29): clamp into the range and
-    /// live-apply onto the theme — pure visual feedback. It dispatches
-    /// nothing, writes no outcome, pushes nothing; `Theme` is
-    /// seam-written only, so **one request per gesture holds by
-    /// proof**: no lane write exists in this arm.
-    pub(crate) fn settings_scale_preview(&mut self, window: &AppWindow, value: f64) {
-        if self.scale_drag.is_none() {
-            return;
-        }
-        let clamped = value.clamp(0.5, 3.0);
-        #[allow(clippy::cast_possible_truncation)]
-        window
-            .global::<crate::Theme>()
-            .set_base_scale(clamped as f32);
-        // Writer point 2 (round-3 D20a): the echo follows the thumb
-        // ONLY when no typed draft exists — the draft is the field's
-        // staged buffer and must never be clobbered mid-typing. A
-        // direct global write: the preview deliberately pushes
-        // nothing (the one-request-per-gesture proof holds — no lane
-        // write exists in this arm).
-        if self.settings.scale_draft.is_none() {
-            window
-                .global::<crate::SettingsModel>()
-                .set_scale_echo(settings_form::format_scale(clamped).into());
-        }
-    }
-
     /// The scale field's focus-loss seam (round-3 D20a writer 7): a
     /// Return-less edit never applies — the staged draft dies and the
     /// push re-renders the echo from the live scale (the chunk-1
@@ -3897,12 +3870,13 @@ impl Adapter {
         self.push_settings(window);
     }
 
-    /// The slider gesture's release (r2 D29): one gate, one commit.
-    /// An out-of-gate value reverts the whole preview (base-scale
-    /// back to the pre-**gesture** value) with a seam-local Rejected;
+    /// The slider gesture's release (r2 D29, r4 D38): one gate, one
+    /// commit — the ONLY mid-gesture seam the adapter observes (the
+    /// drag itself lives inside the widget). An out-of-gate value
+    /// reverts to the pre-gesture value with a seam-local Rejected;
     /// an in-gate value goes through the shared commit core with the
     /// pre-gesture value as the revert point, so a failed commit
-    /// undoes the whole preview too.
+    /// undoes the gesture too.
     pub(crate) fn settings_scale_released(&mut self, window: &AppWindow, value: f64) {
         let Some(previous) = self.scale_drag.take() else {
             return;
@@ -7327,16 +7301,6 @@ fn install_settings_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         window.on_settings_scale_pressed(move || {
             let Some(window) = weak.upgrade() else { return };
             adapter.borrow_mut().settings_scale_pressed(&window);
-        });
-    }
-    {
-        let adapter = Rc::clone(adapter);
-        let weak = window.as_weak();
-        window.on_settings_scale_preview(move |value: f32| {
-            let Some(window) = weak.upgrade() else { return };
-            adapter
-                .borrow_mut()
-                .settings_scale_preview(&window, f64::from(value));
         });
     }
     {

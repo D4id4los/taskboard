@@ -46,7 +46,18 @@ The workspace carries a single global version (see `docs/architecture.org`);
   overflow grace — the click dispatches the exact audited
   correction (window and count), so what you click is what
   increments. No attribution arithmetic changed.
->>>>>>> 19745467 (docs(changelog): the habit ux trio)
+
+### Changed
+
+- The interface scale applies on release/commit instead of live
+  (round-4 GUI review F28): dragging the settings scale slider no
+  longer re-lays the whole surface out under the pointer — the thumb
+  follows the drag inside the widget, the scale (and the field echo)
+  move exactly once when the gesture is released or the field's
+  Return lands, and a failed persist still reverts. The flicker the
+  live preview caused during fast drags mid-list is gone by
+  construction; the commit's scroll anchor on the scale row is
+  unchanged.
 
 ### Fixed
 

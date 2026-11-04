@@ -171,3 +171,83 @@ fn p3_pan_disabled_restores_the_gesture_and_keeps_the_wheel() {
         );
     });
 }
+
+/// P4 — the widget-internal gesture (r4 D38): with the preview
+/// telemetry counting but writing nothing (the settings surface's
+/// shape — it no longer wires `preview`), the same wobbling drag
+/// moves `rendered-value` onto the pointer mid-drag while the theme
+/// global holds; release commits exactly once and `rendered-value`
+/// lands back on the pushed truth. No re-layout mid-gesture: the
+/// flick never pans (pan disabled) and the theme never moves.
+#[test]
+fn p4_the_thumb_follows_the_pointer_while_the_theme_holds() {
+    run_probe(|window| {
+        window.global::<GrabProbe>().set_pan_enabled(false);
+        window.global::<GrabProbe>().set_preview_writes_theme(false);
+        let theme_scale = || window.get_theme_scale();
+        let rendered = || window.get_rendered();
+
+        // The press: the thumb jumps onto the pointer (x 160 → the
+        // snapped 1.8), the theme untouched.
+        let start = slint::LogicalPosition::new(160.0, 168.0);
+        let button = i_slint_core::items::PointerEventButton::Left;
+        window
+            .window()
+            .dispatch_event(slint::platform::WindowEvent::PointerMoved { position: start });
+        window
+            .window()
+            .dispatch_event(slint::platform::WindowEvent::PointerPressed {
+                position: start,
+                button,
+            });
+        assert!(
+            (rendered() - 1.7).abs() < 0.001,
+            "the thumb follows the pointer from the press (got {})",
+            rendered()
+        );
+        assert_eq!(theme_scale(), 1.0, "the theme holds at the press");
+
+        // The five wobbling moves (x pinned at 200 → the snapped 2.3):
+        // every one lands as preview telemetry, the rendered thumb
+        // tracks, the theme never moves.
+        for i in [1.0f32, 2.0, 3.0, 4.0, 5.0] {
+            window
+                .window()
+                .dispatch_event(slint::platform::WindowEvent::PointerMoved {
+                    position: slint::LogicalPosition::new(200.0, 168.0 - i * 10.0),
+                });
+            assert!(
+                (rendered() - 2.3).abs() < 0.001,
+                "tracks mid-drag (got {})",
+                rendered()
+            );
+            assert_eq!(theme_scale(), 1.0, "the theme holds mid-drag");
+        }
+
+        // The release: one commit; the rendered thumb lands on the
+        // pushed truth (the commit routed nowhere — the probe stub
+        // writes no theme — so that truth is still 1.0).
+        window
+            .window()
+            .dispatch_event(slint::platform::WindowEvent::PointerReleased {
+                position: slint::LogicalPosition::new(160.0, 118.0),
+                button,
+            });
+        assert_eq!(
+            window.global::<GrabProbe>().get_previews(),
+            5,
+            "every move landed as preview telemetry"
+        );
+        assert_eq!(
+            window.global::<GrabProbe>().get_committed(),
+            1,
+            "release committed exactly once"
+        );
+        assert_eq!(theme_scale(), 1.0, "the theme moved never mid-gesture");
+        assert!(
+            (rendered() - theme_scale()).abs() < 0.001,
+            "the rendered thumb lands on the committed value"
+        );
+        assert_eq!(settled_flick_y(window), 0.0, "no pan, no re-layout steal");
+    });
+}

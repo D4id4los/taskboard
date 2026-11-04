@@ -14,6 +14,11 @@
 //   space-7 at y 144–192 (inside the viewport); a trailing space-8·4
 //   filler keeps the content (448 px) overflowing. The track sits at
 //   x 64–256, its centre (160, 168).
+//
+// r4 D38 p4: the observation seams for the widget-internal gesture
+// are window-root property bindings — `rendered` (the slider's
+// `rendered-value`, the thumb's honest position) and `theme-scale`
+// (the theme's base-scale mirror).
 
 import { Theme } from "../ui/theme.slint";
 import { Slider } from "../ui/widgets/slider.slint";
@@ -30,6 +35,12 @@ export global GrabProbe {
 export component GrabProbeWindow inherits Window {
     width: Theme.space-8 * 6;
     height: Theme.space-7 * 4;
+
+    // The observation seams (r4 D38 p4): window-root property
+    // bindings over the named slider and the theme global — readable
+    // from Rust as plain root properties.
+    in-out property <float> rendered: s.rendered-value;
+    in-out property <float> theme-scale: Theme.base-scale;
 
     flick := Flickable {
         width: parent.width;

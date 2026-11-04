@@ -384,7 +384,6 @@ export component AppWindow inherits Window {
                 scale-committed(t) => root.settings-scale-committed(t);
                 scale-focus-lost() => root.settings-scale-focus-lost();
                 scale-pressed() => root.settings-scale-pressed();
-                scale-preview(v) => root.settings-scale-preview(v);
                 scale-released(v) => root.settings-scale-released(v);
             }
             if (root.current-view == View.review): ReviewView {
@@ -1017,11 +1016,10 @@ export component AppWindow inherits Window {
     // The back button (round-1 D12): routes nav.focus-board — no new
     // view-state semantics.
     pure callback task-back-clicked();
-    // The scale slider's gesture seams (r2 D29): press seeds the
-    // revert point, preview live-applies (no lane write), release
-    // commits once.
+    // The scale slider's gesture seams (r2 D29, r4 D38): press seeds
+    // the revert point, release commits once (the drag itself is the
+    // widget's own).
     pure callback settings-scale-pressed();
-    pure callback settings-scale-preview(float);
     pure callback settings-scale-released(float);
     // The rule-list seams (chunk 6, D12): index-resolved against the
     // id tables / parsed at the adapter, then routed one-shot.
