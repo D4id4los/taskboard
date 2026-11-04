@@ -143,6 +143,28 @@ async fn run_start(config: &AppConfig, task: &str) -> TrackStartReceipt {
     }
 }
 
+/// The kind-taking sibling of `run_start`: the same selector path with
+/// an explicit `--kind` flag on the argv.
+async fn run_start_kind(
+    config: &AppConfig,
+    task: &str,
+    kind: taskboard_domain::tracking::TimeEntryKind,
+) -> TrackStartReceipt {
+    let flag = match kind {
+        taskboard_domain::tracking::TimeEntryKind::Work => "work",
+        taskboard_domain::tracking::TimeEntryKind::Respite => "respite",
+    };
+    match parse_track(&["track", "start", task, "--kind", flag]) {
+        TrackInvocation::Start { task, kind: parsed } => {
+            assert_eq!(parsed, kind, "the argv kind survives the clap surface");
+            track::start(config.clone(), forbidden_store(), &task, parsed)
+                .await
+                .expect("start boots")
+        }
+        _ => panic!("the argv selects start"),
+    }
+}
+
 async fn run_stop(config: &AppConfig) -> TrackStopReceipt {
     match parse_track(&["track", "stop"]) {
         TrackInvocation::Stop => track::stop(config.clone(), forbidden_store())
@@ -281,6 +303,41 @@ async fn t3_the_idempotent_start_repeat_is_a_typed_no_op() {
     assert!(!repeat.started, "the repeat is the no-op");
     assert_eq!(repeat.entry.entry_id, first.entry.entry_id);
     assert_eq!(repeat.closed.len(), 0);
+}
+
+/// T3b (#599, respite D-3): starting the running break while the
+/// task's work entry runs is a switch, not a silent no-op — the
+/// receipt reports `started: true` with the work entry in `closed`
+/// and the fresh open respite entry; `track status` shows exactly one
+/// open row afterwards.
+#[tokio::test]
+async fn t3b_starting_the_running_break_while_work_runs_switches() {
+    use taskboard_domain::tracking::TimeEntryKind;
+    let dir = tempdir();
+    let config = standalone_config(dir.path(), "t3b.db");
+    seed_task(&config, "switch me").await;
+    let work = run_start(&config, "switch me").await;
+    let break_ = run_start_kind(&config, "switch me", TimeEntryKind::Respite).await;
+    assert!(break_.started, "the different-kind start is a switch");
+    assert_eq!(
+        break_.closed,
+        vec![work.entry.entry_id],
+        "the switch closed the running work entry"
+    );
+    assert_eq!(
+        break_.entry.kind,
+        TimeEntryKind::Respite,
+        "the fresh entry counts as respite"
+    );
+    assert!(break_.entry.end.is_none(), "the fresh entry is open");
+    let view = run_status(&config, day_calendar()).await;
+    assert_eq!(
+        view.open.len(),
+        1,
+        "exactly one entry runs after the switch"
+    );
+    assert_eq!(view.open[0].entry_id, break_.entry.entry_id);
+    assert_eq!(view.open[0].kind, TimeEntryKind::Respite);
 }
 
 /// T4: `track stop` closes (the receipt carries the stamped entries);
