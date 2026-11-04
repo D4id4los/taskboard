@@ -2245,15 +2245,17 @@ pub fn plan_command(
             // guard resolves liveness only.
             let live = live_task(app, *task)?;
             // Idempotent repeat (R-6): exactly one open entry and it is
-            // this task's. Any other open shape (a foreign open entry, a
-            // transient double-open) closes all and reopens.
+            // this task's *and* this kind's (#599) — a different kind is
+            // a switch, not a repeat. Any other open shape (a foreign
+            // open entry, a transient double-open) closes all and
+            // reopens.
             let open: Vec<&TimeEntry> = app
                 .tracking
                 .entries
                 .values()
                 .filter(|entry| entry.end.is_none())
                 .collect();
-            if open.len() == 1 && open[0].task == *task {
+            if open.len() == 1 && open[0].task == *task && open[0].kind == *kind {
                 return Ok(no_op());
             }
             // Resolve → close-all → open → dismiss → flush ops (the
@@ -7945,7 +7947,8 @@ mod tests {
         // same task *and* the same kind repeats to the no-op; only a
         // different kind is a switch.
         let (app, outbox) = base();
-        let open = tracked_entry(1, task_id(), T0 - 60, None);
+        let mut open = tracked_entry(1, task_id(), T0 - 60, None);
+        open.kind = crate::tracking::TimeEntryKind::Respite;
         let app = with_entry(app, open);
         let plan = run(
             &app,
