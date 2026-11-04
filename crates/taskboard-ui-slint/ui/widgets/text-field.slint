@@ -37,6 +37,12 @@ export component TextField inherits Rectangle {
     // The settings form's write-only secret field (round-1 D26b): echo
     // off. The a11y label stays the field's address, never the value.
     in property <bool> secret: false;
+    // The read-only rendering (the settings editor's env-locked
+    // rows): the value renders, the edit seam is structurally inert.
+    // Unconditional by construction — a conditional input would
+    // re-run the two-way text binding's instantiation write AFTER
+    // the mount re-push (the recorded clobber hazard).
+    in property <bool> read-only: false;
     // The eye toggle (round-3 D16): markup-local state — no model
     // property, nothing secret-adjacent ever leaves the field. The
     // settings view is if-mounted, so `revealed` resets when the form
@@ -201,10 +207,11 @@ export component TextField inherits Rectangle {
         // (rightly) forbids font attributes outside the theme, and
         // the theme cannot reach into a primitive's input. The
         // colour still flows from tokens.
-        color: Theme.text-primary;
+        color: root.read-only ? Theme.text-secondary : Theme.text-primary;
         input-type: root.secret && !root.revealed
             ? InputType.password
             : InputType.text;
+        read-only: root.read-only;
         wrap: root.multiline ? word-wrap : no-wrap;
         vertical-alignment: root.multiline ? TextVerticalAlignment.top : TextVerticalAlignment.center;
         edited() => root.edited(input.text);

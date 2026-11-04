@@ -2839,6 +2839,9 @@ enum PendingReply {
     Keymap(oneshot::Receiver<Result<KeymapUpdate, SettingsError>>),
     /// `SetScale`, with the scale to revert to on an `Err` reply.
     Scale(oneshot::Receiver<Result<(), SettingsError>>, f64),
+    /// One of the settings editor's general commits: the reply
+    /// carries the fresh file-layer [`SettingsSnapshot`].
+    Snapshot(oneshot::Receiver<Result<crate::requests::SettingsSnapshot, SettingsError>>),
 }
 
 /// Which operation is in flight (the form's busy marker; one at a
@@ -2854,6 +2857,9 @@ enum PendingKind {
     Detach,
     Preset,
     Scale,
+    /// One of the settings editor's general-field commits (the GUI
+    /// settings editor chunk).
+    General(GeneralField),
 }
 
 /// The typed last-outcome marker the model renders structurally
@@ -2905,6 +2911,22 @@ struct SettingsVm {
     /// and the flavour's input; the live-scale echo renders only in
     /// its absence.
     scale_draft: Option<String>,
+    /// The general snapshot (the GUI settings editor): seeded from
+    /// the hand-over, refreshed ONLY from write replies (the reply
+    /// echoes the fresh file values). Its env-override set is
+    /// hand-over state — replies carry it empty by contract and the
+    /// VM preserves the standing set on every apply.
+    snapshot: crate::requests::SettingsSnapshot,
+    /// The general text fields' staged buffers (the `scale_draft`
+    /// precedent): set per keystroke, discarded on Return commit and
+    /// on focus loss.
+    day_start_draft: Option<String>,
+    tick_draft: Option<String>,
+    before_draft: Option<String>,
+    poll_draft: Option<String>,
+    backoff_initial_draft: Option<String>,
+    backoff_max_draft: Option<String>,
+    due_soon_draft: Option<String>,
 }
 
 impl SettingsVm {
@@ -2951,6 +2973,103 @@ impl SettingsVm {
             | SettingsError::PersistFailed
             | SettingsError::AttachBusy
             | SettingsError::AttachFailed => SettingsOutcome::Failed,
+        }
+    }
+}
+
+/// The settings editor's general text fields (the GUI settings
+/// editor chunk): the seam addresses, their dotted config keys (the
+/// env-override set's comparison term), the lane fields, the mirror
+/// predicates, and the canonical echoes — one table, no per-field
+/// fork in the seams.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GeneralField {
+    DayStart,
+    TickSecs,
+    ReminderBefore,
+    PollInterval,
+    BackoffInitial,
+    BackoffMax,
+    DueSoonDays,
+}
+
+impl GeneralField {
+    /// The `field-edited` index contract the view's general rows
+    /// carry (the connector form owns 0–3, the scale field 4).
+    fn from_index(index: usize) -> Option<Self> {
+        match index {
+            5 => Some(Self::DayStart),
+            6 => Some(Self::TickSecs),
+            7 => Some(Self::ReminderBefore),
+            8 => Some(Self::PollInterval),
+            9 => Some(Self::BackoffInitial),
+            10 => Some(Self::BackoffMax),
+            11 => Some(Self::DueSoonDays),
+            _ => None,
+        }
+    }
+
+    /// The dotted config key — the env-override set's comparison
+    /// term and the apply map's key.
+    fn key(self) -> &'static str {
+        match self {
+            Self::DayStart => "preferences.day_start_time",
+            Self::TickSecs => "reminders.tick_secs",
+            Self::ReminderBefore => "reminders.default_before",
+            Self::PollInterval => "sync.poll_interval_secs",
+            Self::BackoffInitial => "sync.backoff_initial_secs",
+            Self::BackoffMax => "sync.backoff_max_secs",
+            Self::DueSoonDays => "ui.due_soon_days",
+        }
+    }
+
+    fn lane_field(self) -> crate::requests::Field {
+        match self {
+            Self::DayStart => crate::requests::Field::DayStart,
+            Self::TickSecs => crate::requests::Field::TickSecs,
+            Self::ReminderBefore => crate::requests::Field::ReminderBefore,
+            Self::PollInterval => crate::requests::Field::PollInterval,
+            Self::BackoffInitial => crate::requests::Field::BackoffInitial,
+            Self::BackoffMax => crate::requests::Field::BackoffMax,
+            Self::DueSoonDays => crate::requests::Field::DueSoonDays,
+        }
+    }
+
+    /// The mirror predicate (`settings_form`): the commit seam's
+    /// refusal source — the same function the flavour renders.
+    fn invalid(self, text: &str) -> Option<settings_form::InvalidKind> {
+        match self {
+            Self::DayStart => settings_form::day_start_invalid_kind(text),
+            Self::TickSecs | Self::PollInterval | Self::BackoffInitial | Self::BackoffMax => {
+                settings_form::secs_invalid_kind(text)
+            }
+            Self::ReminderBefore => settings_form::before_invalid_kind(text),
+            Self::DueSoonDays => settings_form::due_soon_invalid_kind(text),
+        }
+    }
+
+    /// The committed counterpart this field's ordering rule checks
+    /// against, when one exists (the `initial ≤ max` rule, plan D8).
+    fn ordering_ceiling(self, snapshot: &crate::requests::SettingsSnapshot) -> Option<u64> {
+        match self {
+            Self::BackoffInitial => Some(snapshot.backoff_max_secs),
+            Self::BackoffMax => Some(snapshot.backoff_initial_secs),
+            _ => None,
+        }
+    }
+
+    /// The canonical echo of the committed snapshot value
+    /// (draft-when-present, committed-otherwise — the scale echo's
+    /// grammar).
+    fn echo_of(self, snapshot: &crate::requests::SettingsSnapshot) -> String {
+        match self {
+            Self::DayStart => snapshot.day_start_time.format("%H:%M").to_string(),
+            Self::TickSecs => snapshot.reminder_tick_secs.to_string(),
+            Self::ReminderBefore => snapshot.reminder_before.clone(),
+            Self::PollInterval => snapshot.poll_interval_secs.to_string(),
+            Self::BackoffInitial => snapshot.backoff_initial_secs.to_string(),
+            Self::BackoffMax => snapshot.backoff_max_secs.to_string(),
+            Self::DueSoonDays => snapshot.due_soon_days.to_string(),
         }
     }
 }
@@ -3110,6 +3229,7 @@ impl Adapter {
         true
     }
 
+    #[allow(clippy::too_many_lines)] // one arm per reply variant, kept flat
     pub(crate) fn drain_setting_replies(&mut self, window: &AppWindow) {
         let mut i = 0;
         let mut drained = false;
@@ -3159,6 +3279,29 @@ impl Adapter {
                 PendingReply::Keymap(rx) => match rx.try_recv() {
                     Ok(Ok(update)) => {
                         self.apply_keymap_update(window, update);
+                        landed = Some((SettingsOutcome::Ok, None));
+                        true
+                    }
+                    Ok(Err(err)) => {
+                        landed = Some((SettingsVm::outcome_of(&err), Some(err.clone())));
+                        true
+                    }
+                    Err(oneshot::error::TryRecvError::Empty) => false,
+                    Err(oneshot::error::TryRecvError::Closed) => {
+                        landed = Some((SettingsOutcome::Failed, None));
+                        true
+                    }
+                },
+                PendingReply::Snapshot(rx) => match rx.try_recv() {
+                    Ok(Ok(snapshot)) => {
+                        // The reply echoes the fresh file values (r2
+                        // D32's rows-rerender rule, generalized). The
+                        // env set is the hand-over's standing state —
+                        // replies carry it empty by contract; the VM
+                        // preserves its set, never overwrites.
+                        let env = self.settings.snapshot.env_overridden.clone();
+                        self.settings.snapshot = snapshot;
+                        self.settings.snapshot.env_overridden = env;
                         landed = Some((SettingsOutcome::Ok, None));
                         true
                     }
@@ -3569,6 +3712,140 @@ impl Adapter {
             SettingsOutcome::Unavailable => crate::SettingsOutcome::Unavailable,
             SettingsOutcome::Failed => crate::SettingsOutcome::Failed,
         });
+        self.push_general_settings(&global);
+    }
+
+    /// The general editor's push half (the GUI settings editor): per
+    /// field the echo (draft-when-present, committed-otherwise — the
+    /// scale echo's grammar), the validity flavour (the same mirror
+    /// predicate the commit seam refuses on), and the app-stated
+    /// env-lock and apply facts; the choice echoes ride the snapshot;
+    /// the read-only facts list re-renders per pass (the board
+    /// options' re-derive precedent).
+    #[allow(clippy::too_many_lines)] // per-field push, one arm per field
+    fn push_general_settings(&mut self, global: &crate::SettingsModel) {
+        let vm = &self.settings;
+        for (gf, draft) in [
+            (GeneralField::DayStart, &vm.day_start_draft),
+            (GeneralField::TickSecs, &vm.tick_draft),
+            (GeneralField::ReminderBefore, &vm.before_draft),
+            (GeneralField::PollInterval, &vm.poll_draft),
+            (GeneralField::BackoffInitial, &vm.backoff_initial_draft),
+            (GeneralField::BackoffMax, &vm.backoff_max_draft),
+            (GeneralField::DueSoonDays, &vm.due_soon_draft),
+        ] {
+            let predicate: fn(&str) -> Option<settings_form::InvalidKind> = match gf {
+                GeneralField::DayStart => settings_form::day_start_invalid_kind,
+                GeneralField::TickSecs
+                | GeneralField::PollInterval
+                | GeneralField::BackoffInitial
+                | GeneralField::BackoffMax => settings_form::secs_invalid_kind,
+                GeneralField::ReminderBefore => settings_form::before_invalid_kind,
+                GeneralField::DueSoonDays => settings_form::due_soon_invalid_kind,
+            };
+            let status = draft
+                .as_deref()
+                .map_or(settings_form::FieldStatus::Neutral, |text| {
+                    settings_form::general_status(text, predicate)
+                });
+            let (validity, error) = match status {
+                settings_form::FieldStatus::Neutral => (crate::FieldValidity::Neutral, ""),
+                settings_form::FieldStatus::Valid => (crate::FieldValidity::Valid, ""),
+                settings_form::FieldStatus::Invalid(kind) => (
+                    crate::FieldValidity::Invalid,
+                    crate::settings_status::invalid_text(gf.lane_field(), map_form_kind(kind)),
+                ),
+            };
+            let echo: SharedString = draft
+                .clone()
+                .unwrap_or_else(|| gf.echo_of(&vm.snapshot))
+                .into();
+            let env_locked = vm.snapshot.env_overridden.contains(gf.key());
+            let on_restart = vm.snapshot.applies.get(gf.key()).copied()
+                == Some(crate::requests::SectionApply::OnRestart);
+            match gf {
+                GeneralField::DayStart => {
+                    global.set_day_start_echo(echo);
+                    global.set_validity_day_start(validity);
+                    global.set_error_day_start(error.into());
+                    global.set_day_start_env_locked(env_locked);
+                    global.set_day_start_on_restart(on_restart);
+                }
+                GeneralField::TickSecs => {
+                    global.set_tick_echo(echo);
+                    global.set_validity_tick(validity);
+                    global.set_error_tick(error.into());
+                    global.set_tick_env_locked(env_locked);
+                    global.set_tick_on_restart(on_restart);
+                }
+                GeneralField::ReminderBefore => {
+                    global.set_before_echo(echo);
+                    global.set_validity_before(validity);
+                    global.set_error_before(error.into());
+                    global.set_before_env_locked(env_locked);
+                    global.set_before_on_restart(on_restart);
+                }
+                GeneralField::PollInterval => {
+                    global.set_poll_echo(echo);
+                    global.set_validity_poll(validity);
+                    global.set_error_poll(error.into());
+                    global.set_poll_env_locked(env_locked);
+                    global.set_poll_on_restart(on_restart);
+                }
+                GeneralField::BackoffInitial => {
+                    global.set_backoff_initial_echo(echo);
+                    global.set_validity_backoff_initial(validity);
+                    global.set_error_backoff_initial(error.into());
+                    global.set_backoff_initial_env_locked(env_locked);
+                    global.set_backoff_initial_on_restart(on_restart);
+                }
+                GeneralField::BackoffMax => {
+                    global.set_backoff_max_echo(echo);
+                    global.set_validity_backoff_max(validity);
+                    global.set_error_backoff_max(error.into());
+                    global.set_backoff_max_env_locked(env_locked);
+                    global.set_backoff_max_on_restart(on_restart);
+                }
+                GeneralField::DueSoonDays => {
+                    global.set_due_soon_echo(echo);
+                    global.set_validity_due_soon(validity);
+                    global.set_error_due_soon(error.into());
+                    global.set_due_soon_env_locked(env_locked);
+                    global.set_due_soon_on_restart(on_restart);
+                }
+            }
+        }
+        // The choice echoes and facts.
+        global.set_reminders_enabled_index(i32::from(!vm.snapshot.reminders_enabled));
+        let enabled_locked = vm.snapshot.env_overridden.contains("reminders.enabled");
+        global.set_reminders_enabled_env_locked(enabled_locked);
+        global.set_reminders_enabled_on_restart(
+            vm.snapshot.applies.get("reminders.enabled").copied()
+                == Some(crate::requests::SectionApply::OnRestart),
+        );
+        let sink_index = match vm.snapshot.reminder_sink {
+            crate::requests::ReminderSink::Auto => 0,
+            crate::requests::ReminderSink::Log => 1,
+            crate::requests::ReminderSink::Desktop => 2,
+        };
+        global.set_sink_index(sink_index);
+        global.set_sink_env_locked(vm.snapshot.env_overridden.contains("reminders.sink"));
+        global.set_sink_on_restart(
+            vm.snapshot.applies.get("reminders.sink").copied()
+                == Some(crate::requests::SectionApply::OnRestart),
+        );
+        let rows: Vec<crate::SettingsFactRow> = vm
+            .snapshot
+            .facts
+            .iter()
+            .map(|fact| crate::SettingsFactRow {
+                key: fact.key.into(),
+                value: fact.value.clone().into(),
+                on_restart: fact.apply == crate::requests::SectionApply::OnRestart,
+                env_locked: vm.snapshot.env_overridden.contains(fact.key),
+            })
+            .collect();
+        self.models.push_settings_facts(global, &rows);
     }
 
     /// Mirrors one edited field into the draft (the buffer precedent).
@@ -3593,6 +3870,44 @@ impl Adapter {
                 // input; nothing else writes the echo while the field
                 // holds a draft (r4 D38: the drag no longer previews).
                 self.settings.scale_draft = Some(text.to_owned());
+                self.push_settings(window);
+                return;
+            }
+            // The general fields' staged buffers (the GUI settings
+            // editor): the same grammar — draft per keystroke,
+            // discarded on Return commit and on focus loss.
+            5 => {
+                self.settings.day_start_draft = Some(text.to_owned());
+                self.push_settings(window);
+                return;
+            }
+            6 => {
+                self.settings.tick_draft = Some(text.to_owned());
+                self.push_settings(window);
+                return;
+            }
+            7 => {
+                self.settings.before_draft = Some(text.to_owned());
+                self.push_settings(window);
+                return;
+            }
+            8 => {
+                self.settings.poll_draft = Some(text.to_owned());
+                self.push_settings(window);
+                return;
+            }
+            9 => {
+                self.settings.backoff_initial_draft = Some(text.to_owned());
+                self.push_settings(window);
+                return;
+            }
+            10 => {
+                self.settings.backoff_max_draft = Some(text.to_owned());
+                self.push_settings(window);
+                return;
+            }
+            11 => {
+                self.settings.due_soon_draft = Some(text.to_owned());
                 self.push_settings(window);
                 return;
             }
@@ -3956,6 +4271,238 @@ impl Adapter {
         self.push_settings(window);
     }
 
+    /// The general fields' commit seam (the GUI settings editor;
+    /// Return-authoritative — the scale field's grammar): the mirror
+    /// predicate refuses typed before the lane; a valid mint
+    /// dispatches the field's typed intent; the reply echo re-renders
+    /// the rows. Env-locked keys never dispatch — the row renders
+    /// read-only, and this arm is the defence-in-depth refusal. The
+    /// `initial ≤ max` ordering (plan D8) refuses at the seam against
+    /// the committed counterpart, the error attributed to the
+    /// offending field; the app-side gate re-proves the whole
+    /// document authoritatively.
+    pub(crate) fn settings_general_committed(
+        &mut self,
+        window: &AppWindow,
+        field: usize,
+        text: &str,
+    ) {
+        let Some(gf) = GeneralField::from_index(field) else {
+            return;
+        };
+        if self.settings.pending.is_some() {
+            self.set_settings_outcome(window, SettingsOutcome::Rejected, None);
+            return;
+        }
+        if self.settings.snapshot.env_overridden.contains(gf.key()) {
+            tracing::debug!(
+                key = gf.key(),
+                "general commit on an env-locked row; absorbed"
+            );
+            return;
+        }
+        let typed_refusal = |this: &mut Self, kind| {
+            this.set_settings_outcome(
+                window,
+                SettingsOutcome::Rejected,
+                Some(SettingsError::Invalid {
+                    field: gf.lane_field(),
+                    kind: map_form_kind(kind),
+                }),
+            );
+        };
+        if let Some(kind) = gf.invalid(text) {
+            // The draft stays: the typo stays visible under its
+            // invalid flavour until focus loss or a good commit (the
+            // scale precedent).
+            typed_refusal(self, kind);
+            return;
+        }
+        let trimmed = text.trim();
+        if let Some(ceiling) = gf.ordering_ceiling(&self.settings.snapshot) {
+            let crossing = match gf {
+                GeneralField::BackoffInitial => trimmed
+                    .parse::<u64>()
+                    .is_ok_and(|initial| initial > ceiling),
+                GeneralField::BackoffMax => trimmed.parse::<u64>().is_ok_and(|max| max < ceiling),
+                _ => false,
+            };
+            if crossing {
+                typed_refusal(self, settings_form::InvalidKind::OutOfRange);
+                return;
+            }
+        }
+        let (reply, reply_rx) = oneshot::channel();
+        let request = match gf {
+            GeneralField::DayStart => UiRequest::SetDayStart {
+                time: trimmed.parse().expect("validated day-start parse"),
+                reply,
+            },
+            GeneralField::TickSecs => UiRequest::SetReminderTick {
+                secs: trimmed.parse().expect("validated seconds parse"),
+                reply,
+            },
+            GeneralField::ReminderBefore => UiRequest::SetReminderBefore {
+                before: taskboard_domain::ReminderOffset::parse_text_form(trimmed)
+                    .expect("validated before parse"),
+                reply,
+            },
+            GeneralField::PollInterval => UiRequest::SetPollInterval {
+                secs: trimmed.parse().expect("validated seconds parse"),
+                reply,
+            },
+            GeneralField::BackoffInitial => UiRequest::SetBackoffInitial {
+                secs: trimmed.parse().expect("validated seconds parse"),
+                reply,
+            },
+            GeneralField::BackoffMax => UiRequest::SetBackoffMax {
+                secs: trimmed.parse().expect("validated seconds parse"),
+                reply,
+            },
+            GeneralField::DueSoonDays => UiRequest::SetDueSoonDays {
+                days: trimmed.parse().expect("validated days parse"),
+                reply,
+            },
+        };
+        self.clear_general_draft(gf);
+        let sent = self.settings.send(
+            &self.requests,
+            request,
+            PendingKind::General(gf),
+            PendingReply::Snapshot(reply_rx),
+            "",
+        );
+        self.set_settings_outcome(
+            window,
+            if sent {
+                SettingsOutcome::Busy
+            } else {
+                SettingsOutcome::Failed
+            },
+            None,
+        );
+    }
+
+    /// The reminders toggle's seam (commit-on-pick, the keymap
+    /// preset grammar): index 0 = On, 1 = Off.
+    pub(crate) fn settings_reminders_picked(&mut self, window: &AppWindow, index: usize) {
+        let Some(enabled) = [true, false].get(index).copied() else {
+            return;
+        };
+        if self.settings.pending.is_some() {
+            self.set_settings_outcome(window, SettingsOutcome::Rejected, None);
+            return;
+        }
+        if self
+            .settings
+            .snapshot
+            .env_overridden
+            .contains("reminders.enabled")
+        {
+            // Choice commits are typed booleans — env-locked picks
+            // are absorbed at the defence arm (the segments render
+            // disabled; the row's source is named by the badge).
+            tracing::debug!("reminders pick on an env-locked row; absorbed");
+            return;
+        }
+        let (reply, reply_rx) = oneshot::channel();
+        let request = UiRequest::SetRemindersEnabled { enabled, reply };
+        let sent = self.settings.send(
+            &self.requests,
+            request,
+            PendingKind::General(GeneralField::TickSecs),
+            PendingReply::Snapshot(reply_rx),
+            "",
+        );
+        self.set_settings_outcome(
+            window,
+            if sent {
+                SettingsOutcome::Busy
+            } else {
+                SettingsOutcome::Failed
+            },
+            None,
+        );
+    }
+
+    /// The notifier's seam (commit-on-pick): 0 = auto, 1 = log,
+    /// 2 = desktop.
+    pub(crate) fn settings_sink_picked(&mut self, window: &AppWindow, index: usize) {
+        let Some(sink) = [
+            crate::requests::ReminderSink::Auto,
+            crate::requests::ReminderSink::Log,
+            crate::requests::ReminderSink::Desktop,
+        ]
+        .get(index)
+        .copied() else {
+            return;
+        };
+        if self.settings.pending.is_some() {
+            self.set_settings_outcome(window, SettingsOutcome::Rejected, None);
+            return;
+        }
+        if self
+            .settings
+            .snapshot
+            .env_overridden
+            .contains("reminders.sink")
+        {
+            tracing::debug!("sink pick on an env-locked row; absorbed");
+            return;
+        }
+        let (reply, reply_rx) = oneshot::channel();
+        let request = UiRequest::SetReminderSink { sink, reply };
+        let sent = self.settings.send(
+            &self.requests,
+            request,
+            PendingKind::General(GeneralField::TickSecs),
+            PendingReply::Snapshot(reply_rx),
+            "",
+        );
+        self.set_settings_outcome(
+            window,
+            if sent {
+                SettingsOutcome::Busy
+            } else {
+                SettingsOutcome::Failed
+            },
+            None,
+        );
+    }
+
+    /// The general fields' focus-loss seam (the scale field's
+    /// grammar): a Return-less edit never dispatches — the staged
+    /// draft dies and the echo re-renders from the committed value.
+    pub(crate) fn settings_general_focus_lost(&mut self, window: &AppWindow, field: usize) {
+        let Some(gf) = GeneralField::from_index(field) else {
+            return;
+        };
+        let cleared = match gf {
+            GeneralField::DayStart => self.settings.day_start_draft.take().is_some(),
+            GeneralField::TickSecs => self.settings.tick_draft.take().is_some(),
+            GeneralField::ReminderBefore => self.settings.before_draft.take().is_some(),
+            GeneralField::PollInterval => self.settings.poll_draft.take().is_some(),
+            GeneralField::BackoffInitial => self.settings.backoff_initial_draft.take().is_some(),
+            GeneralField::BackoffMax => self.settings.backoff_max_draft.take().is_some(),
+            GeneralField::DueSoonDays => self.settings.due_soon_draft.take().is_some(),
+        };
+        if cleared {
+            self.push_settings(window);
+        }
+    }
+
+    fn clear_general_draft(&mut self, gf: GeneralField) {
+        match gf {
+            GeneralField::DayStart => self.settings.day_start_draft = None,
+            GeneralField::TickSecs => self.settings.tick_draft = None,
+            GeneralField::ReminderBefore => self.settings.before_draft = None,
+            GeneralField::PollInterval => self.settings.poll_draft = None,
+            GeneralField::BackoffInitial => self.settings.backoff_initial_draft = None,
+            GeneralField::BackoffMax => self.settings.backoff_max_draft = None,
+            GeneralField::DueSoonDays => self.settings.due_soon_draft = None,
+        }
+    }
+
     /// The settings surface's mount (r3 D20a writer hygiene, plan
     /// §5.1 draft invariants): the scale field's staged buffer dies at
     /// the mount — a Return-less edit from a previous visit never
@@ -3964,6 +4511,15 @@ impl Adapter {
     /// only the scale buffer's lifetime is bound to its surface.)
     pub(crate) fn settings_view_mounted(&mut self, window: &AppWindow) {
         self.settings.scale_draft = None;
+        // The general drafts share the scale buffer's lifetime: bound
+        // to the surface, never surviving the unmount.
+        self.settings.day_start_draft = None;
+        self.settings.tick_draft = None;
+        self.settings.before_draft = None;
+        self.settings.poll_draft = None;
+        self.settings.backoff_initial_draft = None;
+        self.settings.backoff_max_draft = None;
+        self.settings.due_soon_draft = None;
         self.push_settings(window);
     }
 
@@ -4012,6 +4568,7 @@ pub(crate) fn install(
     rotation: Option<crate::view_state::KioskRotation>,
     reminder_defaults: taskboard_domain::ReminderDefaults,
     focus: Option<taskboard_domain::focus::FocusTiming>,
+    general: crate::requests::SettingsSnapshot,
     state: Arc<ArcSwap<AppState>>,
     status_timer: Rc<slint::Timer>,
     rotation_timer: Rc<slint::Timer>,
@@ -4118,6 +4675,10 @@ pub(crate) fn install(
             // rides the VM — the first refresh's `push_settings` is
             // the one write path.
             preset,
+            // The general snapshot (the GUI settings editor): the
+            // hand-over's typed values, env set included (the reply
+            // contract preserves it).
+            snapshot: general,
             ..SettingsVm::default()
         },
         status_timer,
@@ -4192,6 +4753,15 @@ pub(crate) fn install(
         global.set_help_scale(status::HELP_SCALE.into());
         global.set_help_keymap(status::HELP_KEYMAP.into());
         global.set_help_rows(status::HELP_ROWS.into());
+        // The general fields' help constants (the GUI settings editor).
+        global.set_help_day_start(status::HELP_DAY_START.into());
+        global.set_help_tick(status::HELP_TICK.into());
+        global.set_help_before(status::HELP_BEFORE.into());
+        global.set_help_poll(status::HELP_POLL.into());
+        global.set_help_backoff(status::HELP_BACKOFF.into());
+        global.set_help_due_soon(status::HELP_DUE_SOON.into());
+        global.set_help_reminders(status::HELP_REMINDERS.into());
+        global.set_help_sink(status::HELP_SINK.into());
     }
 
     {
@@ -7432,6 +8002,58 @@ fn install_settings_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         window.on_settings_scale_focus_lost(move || {
             let Some(window) = weak.upgrade() else { return };
             adapter.borrow_mut().settings_scale_focus_lost(&window);
+        });
+    }
+    // The settings editor's general seams (the GUI settings editor
+    // chunk): the same weak-handle wiring shape, one block per seam.
+    {
+        let adapter = Rc::clone(adapter);
+        let weak = window.as_weak();
+        window.on_settings_general_committed(move |field, text| {
+            let Some(window) = weak.upgrade() else { return };
+            let Ok(field) = usize::try_from(field) else {
+                return;
+            };
+            adapter
+                .borrow_mut()
+                .settings_general_committed(&window, field, &text);
+        });
+    }
+    {
+        let adapter = Rc::clone(adapter);
+        let weak = window.as_weak();
+        window.on_settings_general_focus_lost(move |field| {
+            let Some(window) = weak.upgrade() else { return };
+            let Ok(field) = usize::try_from(field) else {
+                return;
+            };
+            adapter
+                .borrow_mut()
+                .settings_general_focus_lost(&window, field);
+        });
+    }
+    {
+        let adapter = Rc::clone(adapter);
+        let weak = window.as_weak();
+        window.on_settings_reminders_picked(move |index| {
+            let Some(window) = weak.upgrade() else { return };
+            let Ok(index) = usize::try_from(index) else {
+                return;
+            };
+            adapter
+                .borrow_mut()
+                .settings_reminders_picked(&window, index);
+        });
+    }
+    {
+        let adapter = Rc::clone(adapter);
+        let weak = window.as_weak();
+        window.on_settings_sink_picked(move |index| {
+            let Some(window) = weak.upgrade() else { return };
+            let Ok(index) = usize::try_from(index) else {
+                return;
+            };
+            adapter.borrow_mut().settings_sink_picked(&window, index);
         });
     }
 }

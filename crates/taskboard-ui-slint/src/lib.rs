@@ -359,6 +359,7 @@ pub fn mount(
         settings.kiosk_rotation,
         settings.reminder_defaults,
         settings.focus,
+        settings.general,
         Arc::clone(&state),
         Rc::clone(&status_timer),
         Rc::clone(&rotation_timer),

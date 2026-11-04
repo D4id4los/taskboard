@@ -42,6 +42,17 @@ export enum SettingsOutcome {
 }
 
 
+/// One read-only deployment fact row (the editor's "Deployment"
+/// group): the dotted config key is the address; `value` is the
+/// secret-free display string; the badges are the app-stated apply
+/// and env-override facts (never markup-hardcoded).
+export struct SettingsFactRow {
+    key: string,
+    value: string,
+    on-restart: bool,
+    env-locked: bool,
+}
+
 export struct ConnectionRow {
     name: string,
     server: string,
@@ -111,6 +122,62 @@ export global SettingsModel {
     in-out property <string> help-scale: "";
     in-out property <string> help-keymap: "";
     in-out property <string> help-rows: "";
+    // -- the settings editor's general fields (the GUI settings
+    //    editor chunk): echo/validity/error per text field (the
+    //    scale field's grammar), the app-stated env-lock and apply
+    //    facts, the choice indices, and the read-only facts list.
+    in-out property <[SettingsFactRow]> facts: [];
+    in-out property <string> day-start-echo: "";
+    in-out property <FieldValidity> validity-day-start: FieldValidity.neutral;
+    in-out property <string> error-day-start: "";
+    in-out property <bool> day-start-env-locked: false;
+    in-out property <bool> day-start-on-restart: false;
+    in-out property <string> help-day-start: "";
+    in-out property <string> tick-echo: "";
+    in-out property <FieldValidity> validity-tick: FieldValidity.neutral;
+    in-out property <string> error-tick: "";
+    in-out property <bool> tick-env-locked: false;
+    in-out property <bool> tick-on-restart: false;
+    in-out property <string> help-tick: "";
+    in-out property <string> before-echo: "";
+    in-out property <FieldValidity> validity-before: FieldValidity.neutral;
+    in-out property <string> error-before: "";
+    in-out property <bool> before-env-locked: false;
+    in-out property <bool> before-on-restart: false;
+    in-out property <string> help-before: "";
+    in-out property <string> poll-echo: "";
+    in-out property <FieldValidity> validity-poll: FieldValidity.neutral;
+    in-out property <string> error-poll: "";
+    in-out property <bool> poll-env-locked: false;
+    in-out property <bool> poll-on-restart: false;
+    in-out property <string> help-poll: "";
+    in-out property <string> backoff-initial-echo: "";
+    in-out property <FieldValidity> validity-backoff-initial: FieldValidity.neutral;
+    in-out property <string> error-backoff-initial: "";
+    in-out property <bool> backoff-initial-env-locked: false;
+    in-out property <bool> backoff-initial-on-restart: false;
+    in-out property <string> help-backoff: "";
+    in-out property <string> backoff-max-echo: "";
+    in-out property <FieldValidity> validity-backoff-max: FieldValidity.neutral;
+    in-out property <string> error-backoff-max: "";
+    in-out property <bool> backoff-max-env-locked: false;
+    in-out property <bool> backoff-max-on-restart: false;
+    in-out property <string> due-soon-echo: "";
+    in-out property <FieldValidity> validity-due-soon: FieldValidity.neutral;
+    in-out property <string> error-due-soon: "";
+    in-out property <bool> due-soon-env-locked: false;
+    in-out property <bool> due-soon-on-restart: false;
+    in-out property <string> help-due-soon: "";
+    // The choice echoes (commit-on-pick, the keymap preset grammar)
+    // and their app-stated facts.
+    in-out property <int> reminders-enabled-index: 0;
+    in-out property <bool> reminders-enabled-env-locked: false;
+    in-out property <bool> reminders-enabled-on-restart: false;
+    in-out property <string> help-reminders: "";
+    in-out property <int> sink-index: 0;
+    in-out property <bool> sink-env-locked: false;
+    in-out property <bool> sink-on-restart: false;
+    in-out property <string> help-sink: "";
 }
 
 
@@ -228,8 +295,16 @@ component LabeledField inherits VerticalLayout {
     // border and the error line's presence.
     in property <FieldValidity> validity: FieldValidity.neutral;
     in property <string> error-text: "";
+    // The read-only rendering (the editor's env-locked rows): the
+    // edit seam is not wired — a plain value replaces the field.
+    // A dead control would be an acceptance failure; the value row
+    // wires nothing at all.
+    in property <bool> editable: true;
     callback edited(int, string);
     callback committed();
+    // The focus-loss seam (the scale field's discard grammar),
+    // forwarded for the general fields' staged buffers.
+    callback focus-lost();
     // The row wrapper restructured from a bare HorizontalLayout
     // (round-3 D19, plan §1.3): the error line spans label + InfoTip
     // + field — mounting it inside the primitive would grow the
@@ -254,6 +329,7 @@ component LabeledField inherits VerticalLayout {
             secret: root.secret;
             validity: root.validity;
             autofocus: false;
+            read-only: !root.editable;
             text <=> root.text;
             edited(t) => {
                 root.edited(root.field-index, t);
@@ -261,6 +337,9 @@ component LabeledField inherits VerticalLayout {
             accepted(t) => {
                 root.edited(root.field-index, t);
                 root.committed();
+            }
+            focus-lost() => {
+                root.focus-lost();
             }
         }
     }
@@ -350,6 +429,58 @@ component BoardPicker inherits HorizontalLayout {
     }
 }
 
+// One general editor row (the GUI settings editor): the LabeledField
+// grammar plus the app-stated badges — the env lock renders the row
+// read-only with its source named; the apply fact renders the
+// restart sentence (plan D5/D12: the facts travel typed, the markup
+// renders them).
+component GeneralField inherits VerticalLayout {
+    in property <string> label;
+    in property <string> placeholder;
+    in property <string> help;
+    in property <int> field-index;
+    in-out property <string> text;
+    in property <FieldValidity> validity;
+    in property <string> error-text;
+    in property <bool> env-locked: false;
+    in property <bool> on-restart: false;
+    callback edited(int, string);
+    callback committed(int, string);
+    callback focus-lost(int);
+    spacing: Theme.space-1;
+    LabeledField {
+        label: root.label;
+        placeholder: root.placeholder;
+        help: root.help;
+        field-index: root.field-index;
+        text <=> root.text;
+        validity: root.validity;
+        error-text: root.error-text;
+        editable: !root.env-locked;
+        edited(i, t) => {
+            root.edited(i, t);
+        }
+        committed() => {
+            // The two-way text binding is current at commit: the
+            // field's own value rides the property.
+            root.committed(root.field-index, root.text);
+        }
+        focus-lost() => {
+            root.focus-lost(root.field-index);
+        }
+    }
+    if root.env-locked: RoleText {
+        role: Typography.caption;
+        text: "Overridden by an environment variable; edit the file or the env.";
+        text-color: Semantic.warning;
+    }
+    if root.on-restart && !root.env-locked: RoleText {
+        role: Typography.caption;
+        text: "Takes effect at the next restart.";
+        text-color: Theme.text-secondary;
+    }
+}
+
 export component SettingsView inherits FocusScope {
     // The label placement rule (r4 D39 §3.1): compact stacks the
     // label above the picker; regular/expansive put it beside
@@ -385,6 +516,15 @@ export component SettingsView inherits FocusScope {
     // widget-internally; the theme moves once on release).
     callback scale-pressed();
     callback scale-released(float);
+    // The settings editor's general seams: the text fields commit on
+    // Return (the scale field's grammar) and discard on focus loss;
+    // the choice controls commit on pick (the keymap preset
+    // grammar). Field indices ride the `field-edited` contract
+    // (5..11 = the general text fields).
+    callback general-committed(int, string);
+    callback general-focus-lost(int);
+    callback reminders-picked(int);
+    callback sink-picked(int);
 
     init => {
         root.view-mounted();
@@ -806,6 +946,282 @@ export component SettingsView inherits FocusScope {
                 }
                 if SettingsModel.error-scale != "": ErrorLine {
                     text: SettingsModel.error-scale;
+                }
+            }
+        }
+
+        // -- general (the GUI settings editor) --------------------------
+        RoleText {
+            role: Typography.title;
+            text: "General";
+        }
+        GeneralField {
+            label: "Day starts at";
+            placeholder: "00:00";
+            help: SettingsModel.help-day-start;
+            field-index: 5;
+            text <=> SettingsModel.day-start-echo;
+            validity: SettingsModel.validity-day-start;
+            error-text: SettingsModel.error-day-start;
+            env-locked: SettingsModel.day-start-env-locked;
+            on-restart: SettingsModel.day-start-on-restart;
+            edited(i, t) => {
+                root.field-edited(i, t);
+            }
+            committed(i, t) => {
+                root.general-committed(i, t);
+            }
+            focus-lost(i) => {
+                root.general-focus-lost(i);
+            }
+        }
+
+        // -- reminders ----------------------------------------------------
+        HorizontalLayout {
+            spacing: Theme.space-2;
+            RoleText {
+                role: Typography.title;
+                text: "Reminders";
+            }
+            InfoTip {
+                about: "Reminders";
+                help: SettingsModel.help-reminders;
+            }
+        }
+        VerticalLayout {
+            spacing: Theme.space-1;
+            RoleText {
+                role: Typography.body;
+                text: "Reminders";
+                min-width: Theme.space-8;
+                vertical-alignment: center;
+            }
+            SegmentedControl {
+                options: ["On", "Off"];
+                segment-enabled: [
+                    !SettingsModel.reminders-enabled-env-locked,
+                    !SettingsModel.reminders-enabled-env-locked,
+                ];
+                selected-index: SettingsModel.reminders-enabled-index;
+                group-label: "Reminders";
+                picked(i) => {
+                    root.reminders-picked(i);
+                }
+            }
+            if SettingsModel.reminders-enabled-env-locked: RoleText {
+                role: Typography.caption;
+                text: "Overridden by an environment variable; edit the file or the env.";
+                text-color: Semantic.warning;
+            }
+            if SettingsModel.reminders-enabled-on-restart
+                && !SettingsModel.reminders-enabled-env-locked: RoleText {
+                role: Typography.caption;
+                text: "Takes effect at the next restart.";
+                text-color: Theme.text-secondary;
+            }
+        }
+        GeneralField {
+            label: "Tick (seconds)";
+            placeholder: "30";
+            help: SettingsModel.help-tick;
+            field-index: 6;
+            text <=> SettingsModel.tick-echo;
+            validity: SettingsModel.validity-tick;
+            error-text: SettingsModel.error-tick;
+            env-locked: SettingsModel.tick-env-locked;
+            on-restart: SettingsModel.tick-on-restart;
+            edited(i, t) => {
+                root.field-edited(i, t);
+            }
+            committed(i, t) => {
+                root.general-committed(i, t);
+            }
+            focus-lost(i) => {
+                root.general-focus-lost(i);
+            }
+        }
+        GeneralField {
+            label: "Reminder before";
+            placeholder: "5m";
+            help: SettingsModel.help-before;
+            field-index: 7;
+            text <=> SettingsModel.before-echo;
+            validity: SettingsModel.validity-before;
+            error-text: SettingsModel.error-before;
+            env-locked: SettingsModel.before-env-locked;
+            on-restart: SettingsModel.before-on-restart;
+            edited(i, t) => {
+                root.field-edited(i, t);
+            }
+            committed(i, t) => {
+                root.general-committed(i, t);
+            }
+            focus-lost(i) => {
+                root.general-focus-lost(i);
+            }
+        }
+        VerticalLayout {
+            spacing: Theme.space-1;
+            RoleText {
+                role: Typography.body;
+                text: "Notifier";
+                min-width: Theme.space-8;
+                vertical-alignment: center;
+            }
+            SegmentedControl {
+                options: ["Auto", "Log", "Desktop"];
+                segment-enabled: [
+                    !SettingsModel.sink-env-locked,
+                    !SettingsModel.sink-env-locked,
+                    !SettingsModel.sink-env-locked,
+                ];
+                selected-index: SettingsModel.sink-index;
+                group-label: "Notifier";
+                picked(i) => {
+                    root.sink-picked(i);
+                }
+            }
+            if SettingsModel.sink-env-locked: RoleText {
+                role: Typography.caption;
+                text: "Overridden by an environment variable; edit the file or the env.";
+                text-color: Semantic.warning;
+            }
+            if SettingsModel.sink-on-restart && !SettingsModel.sink-env-locked: RoleText {
+                role: Typography.caption;
+                text: "Takes effect at the next restart.";
+                text-color: Theme.text-secondary;
+            }
+        }
+
+        // -- sync timing ---------------------------------------------------
+        RoleText {
+            role: Typography.title;
+            text: "Sync timing";
+        }
+        GeneralField {
+            label: "Poll (seconds)";
+            placeholder: "30";
+            help: SettingsModel.help-poll;
+            field-index: 8;
+            text <=> SettingsModel.poll-echo;
+            validity: SettingsModel.validity-poll;
+            error-text: SettingsModel.error-poll;
+            env-locked: SettingsModel.poll-env-locked;
+            on-restart: SettingsModel.poll-on-restart;
+            edited(i, t) => {
+                root.field-edited(i, t);
+            }
+            committed(i, t) => {
+                root.general-committed(i, t);
+            }
+            focus-lost(i) => {
+                root.general-focus-lost(i);
+            }
+        }
+        GeneralField {
+            label: "Backoff first (seconds)";
+            placeholder: "5";
+            help: SettingsModel.help-backoff;
+            field-index: 9;
+            text <=> SettingsModel.backoff-initial-echo;
+            validity: SettingsModel.validity-backoff-initial;
+            error-text: SettingsModel.error-backoff-initial;
+            env-locked: SettingsModel.backoff-initial-env-locked;
+            on-restart: SettingsModel.backoff-initial-on-restart;
+            edited(i, t) => {
+                root.field-edited(i, t);
+            }
+            committed(i, t) => {
+                root.general-committed(i, t);
+            }
+            focus-lost(i) => {
+                root.general-focus-lost(i);
+            }
+        }
+        GeneralField {
+            label: "Backoff max (seconds)";
+            placeholder: "300";
+            help: SettingsModel.help-backoff;
+            field-index: 10;
+            text <=> SettingsModel.backoff-max-echo;
+            validity: SettingsModel.validity-backoff-max;
+            error-text: SettingsModel.error-backoff-max;
+            env-locked: SettingsModel.backoff-max-env-locked;
+            on-restart: SettingsModel.backoff-max-on-restart;
+            edited(i, t) => {
+                root.field-edited(i, t);
+            }
+            committed(i, t) => {
+                root.general-committed(i, t);
+            }
+            focus-lost(i) => {
+                root.general-focus-lost(i);
+            }
+        }
+
+        // -- display --------------------------------------------------------
+        RoleText {
+            role: Typography.title;
+            text: "Display";
+        }
+        GeneralField {
+            label: "Due soon (days)";
+            placeholder: "1";
+            help: SettingsModel.help-due-soon;
+            field-index: 11;
+            text <=> SettingsModel.due-soon-echo;
+            validity: SettingsModel.validity-due-soon;
+            error-text: SettingsModel.error-due-soon;
+            env-locked: SettingsModel.due-soon-env-locked;
+            on-restart: SettingsModel.due-soon-on-restart;
+            edited(i, t) => {
+                root.field-edited(i, t);
+            }
+            committed(i, t) => {
+                root.general-committed(i, t);
+            }
+            focus-lost(i) => {
+                root.general-focus-lost(i);
+            }
+        }
+
+        // -- deployment (read-only facts) -----------------------------------
+        RoleText {
+            role: Typography.title;
+            text: "Deployment";
+        }
+        for fact[index] in SettingsModel.facts: Rectangle {
+            background: Theme.surface;
+            border-radius: Theme.radius-small;
+            min-height: fact-layout.min-height + 2 * Theme.space-1;
+            fact-layout := HorizontalLayout {
+                padding: Theme.space-1;
+                spacing: Theme.space-2;
+                RoleText {
+                    role: Typography.caption;
+                    text: fact.key;
+                    text-color: Theme.text-secondary;
+                    vertical-alignment: center;
+                    min-width: Theme.space-8;
+                }
+                RoleText {
+                    role: Typography.body;
+                    text: fact.value;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                    overflow: elide;
+                }
+                if fact.env-locked: RoleText {
+                    role: Typography.caption;
+                    text: "env";
+                    text-color: Semantic.warning;
+                    vertical-alignment: center;
+                }
+                if fact.on-restart: RoleText {
+                    role: Typography.caption;
+                    text: "restart";
+                    text-color: Theme.text-secondary;
+                    vertical-alignment: center;
                 }
             }
         }
