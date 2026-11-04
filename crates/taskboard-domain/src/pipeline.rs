@@ -2062,11 +2062,6 @@ fn cascade_board(
     for id in task_ids {
         let task = &tasks[&id];
         tasks.insert(id, tombstone_task(task, now));
-        for other in outbox {
-            if !op_results.contains_key(&other.op_id) && op_targets_task(&other.op, id) {
-                op_results.insert(other.op_id, false);
-            }
-        }
     }
     let label_ids: Vec<LabelId> = labels
         .iter()
@@ -2076,6 +2071,25 @@ fn cascade_board(
     for id in label_ids {
         let label = &labels[&id];
         labels.insert(id, tombstone_label(label, now));
+    }
+    // The dead-board drain (#282, F10-05): cancel *every* pending op
+    // attributed to the dead board — the per-task cancellation it
+    // replaces was a strict subset (every task op resolves to the board
+    // through the stack chain). One uniform rule over `attributed_board`;
+    // the queued `DeleteBoard` intent is exempt (D-3): cancelling it
+    // would strand the local tombstone against a live remote, so it
+    // drains by its own classified push outcome instead.
+    for entry in outbox {
+        if op_results.contains_key(&entry.op_id) {
+            continue;
+        }
+        if matches!(entry.op, LocalOp::DeleteBoard(_)) {
+            continue;
+        }
+        if crate::state::attributed_board(&entry.op, stacks, tasks, labels) == Some(*board_id) {
+            tracing::debug!(rule = RULE_R6, op_id = ?entry.op_id, "dead-board drain cancels queued op");
+            op_results.insert(entry.op_id, false);
+        }
     }
 }
 
@@ -4406,8 +4420,8 @@ mod tests {
         );
         assert_eq!(
             app.0.sync.aggregate().pending_ops,
-            1,
-            "stack op survives; task op cancelled"
+            0,
+            "the drain finalizes every queued op of the dead board (#282, F10-05)"
         );
         assert!(app.0.labels[&live_label_id].deleted);
         assert_eq!(
