@@ -6,8 +6,8 @@
 // handlers here.
 
 import { Theme, Typography, Semantic, RoleText, Tone, DueKind } from "../theme.slint";
-import { TextField } from "../widgets/text-field.slint";
 import { IconButton, IconKind } from "../widgets/icon-button.slint";
+import { TippedField } from "../widgets/tipped-field.slint";
 import { RuleList, RuleRowModel } from "../compositions/rule-list.slint";
 import { DueEditor } from "../compositions/due-editor.slint";
 import { DueDayModel } from "../compositions/date-picker.slint";
@@ -353,9 +353,10 @@ export component TaskView inherits FocusScope {
                 // leftover width (the display's own horizontal-stretch,
                 // shared). The checkbox and tracking button stay
                 // mounted around it while editing.
-                if (root.task.edit-open): title-field := TextField {
+                if (root.task.edit-open): title-field := TippedField {
                     placeholder: "Task title";
                     label: "Task title";
+                    help: "The task's name as it appears on the board and lists.";
                     commit-affordance: true;
                     initial-text: root.task.initial-text;
                     selected-on-focus: true;
@@ -519,6 +520,7 @@ export component TaskView inherits FocusScope {
                         }
                     }
                     if (root.task.due-open): DueEditor {
+                        field-help: "The task's deadline. Type a date, a relative offset like +2d, or use the calendar button.";
                         initial-text: root.task.due-text;
                         echo: root.task.due-echo;
                         field-focus-on-mount: root.task.date-field-focus;
@@ -586,6 +588,7 @@ export component TaskView inherits FocusScope {
                     }
                     if (root.task.scheduled-open): DueEditor {
                         field-label: "Start date entry";
+                        field-help: "When work on the task starts. Same typed grammar as the due date.";
                         entry-placeholder: "YYYY-MM-DD or +2d";
                         initial-text: root.task.scheduled-text;
                         echo: root.task.scheduled-echo;
@@ -687,6 +690,7 @@ export component TaskView inherits FocusScope {
                 presets: root.task.rule-presets;
                 hint: root.task.rules-hint;
                 muted: root.task.rules-muted;
+                offset-help: "Adds a reminder the given time before the due date.";
                 remove-clicked(i) => root.rule-remove-clicked(i);
                 add-preset-clicked(i) => root.rule-add-preset-clicked(i);
                 add-custom-accepted(text) => root.rule-add-custom-accepted(text);
@@ -765,8 +769,9 @@ export component TaskView inherits FocusScope {
                         }
                     }
                 }
-                if (root.task.description-edit-open): TextField {
+                if (root.task.description-edit-open): TippedField {
                     label: "Description";
+                    help: "The task's longer body text; rendered as plain text.";
                     placeholder: "Describe the task";
                     multiline: true;
                     commit-affordance: true;

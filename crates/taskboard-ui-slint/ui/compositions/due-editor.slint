@@ -12,7 +12,8 @@
 // (R-c).
 
 import { Theme, Typography, RoleText, Semantic } from "../theme.slint";
-import { TextField, FieldValidity } from "../widgets/text-field.slint";
+import { FieldValidity } from "../widgets/text-field.slint";
+import { TippedField } from "../widgets/tipped-field.slint";
 import { IconButton, IconKind } from "../widgets/icon-button.slint";
 
 // The date editor's field half (round-3 D10): the typed field with
@@ -28,6 +29,11 @@ export component DueEditor inherits VerticalLayout {
     // and placeholder differ.
     in property <string> field-label: "Due date entry";
     in property <string> entry-placeholder: "YYYY-MM-DD or +2d";
+    // The field's help sentence (r3-3.1): single-sourced through the
+    // `TippedField` pair into the tip and the field's a11y
+    // description — markup-literal at the instantiations, never
+    // pushed state.
+    in property <string> field-help: "";
     // The x-clear affordance (round-3 D11): both date fields enable
     // it; the staged clear rides `edited("")`.
     in property <bool> clear-affordance: false;
@@ -63,15 +69,17 @@ export component DueEditor inherits VerticalLayout {
     callback picker-toggled();
 
 
-    // The stretch default's alignment: the field's stretch 1 takes
-    // the leftover; the calendar button is max-width-pinned at the
-    // square (an `alignment: start` row would size every cell to its
+    // The stretch default's alignment: the wrapper's stretch 1 takes
+    // the leftover (its field stretches inside the pair row); the
+    // calendar button is max-width-pinned at the square (an
+    // `alignment: start` row would size every cell to its
     // preferred width and defeat the stretch).
     HorizontalLayout {
         spacing: Theme.space-2;
-        due-field := TextField {
+        due-field := TippedField {
             placeholder: root.entry-placeholder;
             label: root.field-label;
+            help: root.field-help;
             initial-text: root.initial-text;
             clear-affordance: root.clear-affordance;
             validity: root.validity;
