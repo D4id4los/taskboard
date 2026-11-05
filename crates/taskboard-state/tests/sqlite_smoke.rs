@@ -313,6 +313,11 @@ async fn reloaded_rule_never_refires_a_delivered_occurrence() {
     let firings = due_firings(
         &loaded.tasks,
         &loaded.tracking,
+        &loaded.habits,
+        taskboard_domain::days::DayCalendar {
+            day_start_time: chrono::NaiveTime::MIN,
+            offset: chrono::FixedOffset::east_opt(0).unwrap(),
+        },
         &loaded.reminders,
         &defaults,
         common::ts(T0 + 3_600),

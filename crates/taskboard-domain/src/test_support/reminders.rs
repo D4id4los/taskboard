@@ -372,8 +372,9 @@ mod tests {
                     ReminderRef::Rule(id) => prop_assert!(state.rules.contains_key(&id)),
                     ReminderRef::Default(task) => prop_assert!(tasks.contains_key(&task)),
                     ReminderRef::Adhoc(id) => prop_assert!(state.alarms.contains_key(&id)),
-                    // The fixture mints no break rules.
+                    // The fixture mints no break rules or tracker refs.
                     ReminderRef::Break(id) => prop_assert!(state.break_rules.contains_key(&id)),
+                    ReminderRef::Tracker(_) => prop_assert!(false, "the fixture mints no tracker refs"),
                 }
             }
             for dismissal in &state.dismissals {
@@ -381,8 +382,9 @@ mod tests {
                     ReminderRef::Rule(id) => prop_assert!(state.rules.contains_key(&id)),
                     ReminderRef::Default(task) => prop_assert!(tasks.contains_key(&task)),
                     ReminderRef::Adhoc(id) => prop_assert!(state.alarms.contains_key(&id)),
-                    // The fixture mints no break rules.
+                    // The fixture mints no break rules or tracker refs.
                     ReminderRef::Break(id) => prop_assert!(state.break_rules.contains_key(&id)),
+                    ReminderRef::Tracker(_) => prop_assert!(false, "the fixture mints no tracker refs"),
                 }
             }
             for key in state.snoozes.keys() {
@@ -390,8 +392,9 @@ mod tests {
                     ReminderRef::Rule(id) => prop_assert!(state.rules.contains_key(&id)),
                     ReminderRef::Default(task) => prop_assert!(tasks.contains_key(&task)),
                     ReminderRef::Adhoc(id) => prop_assert!(state.alarms.contains_key(&id)),
-                    // The fixture mints no break rules.
+                    // The fixture mints no break rules or tracker refs.
                     ReminderRef::Break(id) => prop_assert!(state.break_rules.contains_key(&id)),
+                    ReminderRef::Tracker(_) => prop_assert!(false, "the fixture mints no tracker refs"),
                 }
             }
             for task in &state.muted {

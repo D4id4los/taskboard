@@ -2,7 +2,8 @@
 //! Reminder model: due-anchored rules, occurrence-keyed delivery proofs,
 //! synced dismissals, snooze chains, and mute — pure data plus the pure
 //! evaluator that turns them into firings and the derived notification
-//! surface.
+//! surface. Five families feed it: task rules, the implicit default,
+//! adhoc alarms, break rules, and habit-tracker nudges (#504).
 //!
 //! Time is always a parameter (the `clock.rs` contract): nothing here
 //! reads a clock, generates ids, or touches IO. The suppression guard is
@@ -16,8 +17,10 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::days::DayCalendar;
 use crate::entities::Task;
-use crate::ids::{AdhocAlarmId, BreakRuleId, ReminderRuleId, TaskId};
+use crate::habit::{Habit, HabitLogKey, HabitState, WindowStart};
+use crate::ids::{AdhocAlarmId, BreakRuleId, HabitId, ReminderRuleId, TaskId};
 use crate::tracking::{TrackingState, WorkThreshold};
 
 /// A due-anchored offset that can only be "at or before" the due date:
@@ -325,6 +328,10 @@ pub enum ReminderRef {
     Adhoc(AdhocAlarmId),
     /// A break rule (roaming, #588; the label lives on the rule row).
     Break(BreakRuleId),
+    /// A habit tracker's daily nudge (#504; the "rule" is the habit
+    /// row's `anchor_time`, which roams with the synced habits family —
+    /// the ref itself carries only the habit identity).
+    Tracker(HabitId),
 }
 
 impl ReminderRef {
@@ -338,6 +345,7 @@ impl ReminderRef {
             Self::Default(task) => format!("default:{}", task.as_uuid()),
             Self::Adhoc(id) => format!("alarm:{}", id.as_uuid()),
             Self::Break(id) => format!("break:{}", id.as_uuid()),
+            Self::Tracker(id) => format!("tracker:{}", id.as_uuid()),
         }
     }
 
@@ -358,6 +366,11 @@ impl ReminderRef {
         }
         if let Some(id) = raw.strip_prefix("break:") {
             return Some(Self::Break(BreakRuleId::from(
+                uuid::Uuid::parse_str(id).ok()?,
+            )));
+        }
+        if let Some(id) = raw.strip_prefix("tracker:") {
+            return Some(Self::Tracker(HabitId::from(
                 uuid::Uuid::parse_str(id).ok()?,
             )));
         }
@@ -639,6 +652,8 @@ pub enum ReminderAnchor {
     Alarm(AdhocAlarmId),
     /// A break rule (the label lives on the [`BreakRule`] row).
     Break(BreakRuleId),
+    /// A habit tracker's nudge (the label lives on the [`Habit`] row).
+    Tracker(HabitId),
 }
 
 /// Persisted reminder facts carried in `AppState`/`PersistedState`.
@@ -762,6 +777,7 @@ pub enum NotifierMessage {
 pub fn notifications_for(
     firings: &[ReminderFiring],
     tasks: &BTreeMap<TaskId, Task>,
+    habits: &HabitState,
     reminders: &ReminderState,
 ) -> Vec<Notification> {
     firings
@@ -789,9 +805,10 @@ pub fn notifications_for(
                     // an adhoc firing anchors on `ReminderAnchor::Alarm`,
                     // a break firing on `ReminderAnchor::Break` — and
                     // stay `Normal` for totality.)
-                    ReminderRef::Default(_) | ReminderRef::Adhoc(_) | ReminderRef::Break(_) => {
-                        Insistence::Normal
-                    }
+                    ReminderRef::Default(_)
+                    | ReminderRef::Adhoc(_)
+                    | ReminderRef::Break(_)
+                    | ReminderRef::Tracker(_) => Insistence::Normal,
                 },
                 occurrence: firing.occurrence,
             }),
@@ -816,6 +833,25 @@ pub fn notifications_for(
                         anchor: firing.anchor,
                         title: rule.label.clone(),
                         insistence: rule.insistence,
+                        occurrence: firing.occurrence,
+                    })
+            }
+            ReminderAnchor::Tracker(habit_id) => {
+                // The title is a fire-time snapshot from the habit row;
+                // the insistence is pinned `Normal` (plan D-6 — a habit
+                // nudge has no insistence datum, and the ladder applies
+                // generically the day one exists). A missing or
+                // tombstoned row skips the payload (the documented
+                // totality rule).
+                habits
+                    .habits
+                    .get(&habit_id)
+                    .filter(|habit| habit.is_live())
+                    .map(|habit| Notification {
+                        reminder: firing.reminder,
+                        anchor: firing.anchor,
+                        title: habit.title.clone(),
+                        insistence: Insistence::Normal,
                         occurrence: firing.occurrence,
                     })
             }
@@ -861,6 +897,20 @@ pub fn compact_snooze_chains(reminders: &mut ReminderState) {
 pub(crate) fn remove_alarm(reminders: &mut ReminderState, id: AdhocAlarmId) {
     reminders.alarms.remove(&id);
     let reminder = ReminderRef::Adhoc(id);
+    reminders.deliveries.retain(|d| d.reminder != reminder);
+    reminders.dismissals.retain(|d| d.reminder != reminder);
+    reminders.snoozes.retain(|key, _| key.reminder != reminder);
+}
+
+/// Prunes a habit's `Tracker`-ref deliveries, dismissals, and snooze
+/// links (#504) — the [`remove_break_rule`] receipt-prune shape, minus
+/// the row removal: the habit row is a tombstone, never a map delete
+/// (history outlives the tracker; a resurrected row re-arms honestly).
+/// One definition site, shared by the
+/// [`UpsertHabit`](crate::persistence::PersistenceAction::UpsertHabit)
+/// tombstone cascade.
+pub(crate) fn remove_habit_nudge(reminders: &mut ReminderState, id: HabitId) {
+    let reminder = ReminderRef::Tracker(id);
     reminders.deliveries.retain(|d| d.reminder != reminder);
     reminders.dismissals.retain(|d| d.reminder != reminder);
     reminders.snoozes.retain(|key, _| key.reminder != reminder);
@@ -947,9 +997,12 @@ pub fn delivery_prune_age() -> chrono::TimeDelta {
 /// only widens), which the engine's re-sweep-every-tick failure
 /// discipline rests on.
 #[must_use]
+#[allow(clippy::too_many_arguments)] // the pass-shaped parameter list, like the engine seams
 pub fn stale_deliveries(
     tasks: &BTreeMap<TaskId, Task>,
     tracking: &TrackingState,
+    habits: &HabitState,
+    day: DayCalendar,
     reminders: &ReminderState,
     defaults: &ReminderDefaults,
     now: DateTime<Utc>,
@@ -990,6 +1043,21 @@ pub fn stale_deliveries(
         // `Adhoc` arm's gate parity exactly.
         ReminderRef::Break(id) => break_effective_occurrence(id, tracking, reminders, now)
             .is_none_or(|eff| eff != delivery.occurrence),
+        // The tracker pass consults a delivery row at the snooze-walked
+        // anchor reading (the same `(reminder, effective)` shape): a
+        // missing habit row, a dead gate (tombstoned habit, cleared
+        // anchor, quota met at the current window), or a moved reading
+        // ⇒ the row is unconsulted — the `Break` arm's gate parity.
+        ReminderRef::Tracker(id) => {
+            let Some(habit) = habits.habits.get(&id) else {
+                return true; // a row-less ref is consulted by nobody
+            };
+            if !tracker_eligible(habit, habits, day, now) {
+                return true;
+            }
+            tracker_effective_occurrence(habit, day, reminders, now)
+                .is_none_or(|eff| eff != delivery.occurrence)
+        }
     };
     let Some(cutoff) = now.checked_sub_signed(horizon) else {
         // The cutoff underflows the representable range: nothing can be
@@ -1177,11 +1245,14 @@ fn base_occurrence(
         }
         // Absolute: no arithmetic, so `None` is only the missing row.
         ReminderRef::Adhoc(id) => Some(reminders.alarms.get(&id)?.fire_at),
-        // A break firing's occurrence is derived from the tracking
-        // history (`break_crossing`), not from reminder rows — the
-        // task/alarm passes here never produce a `Break` ref, so this
-        // arm is the totality `None` for hand-constructed refs.
-        ReminderRef::Break(_) => None,
+        // A break firing's occurrence derives from the tracking history
+        // (`break_crossing`), a tracker nudge's from the habit row's
+        // anchor inside the device's day window (`tracker_anchor_
+        // occurrence`) — neither comes from reminder rows, so the
+        // task/alarm passes here never produce these refs: the
+        // totality `None` for hand-constructed refs (the dedicated
+        // readers own them).
+        ReminderRef::Break(_) | ReminderRef::Tracker(_) => None,
     }
 }
 
@@ -1285,13 +1356,95 @@ fn break_firings(
     firings
 }
 
+/// The tracker nudge's effective occurrence: the anchor reading inside
+/// the current day window (`tracker_anchor_occurrence`), snooze-walked
+/// like every family. `None` ⇔ the habit row is missing or tombstoned
+/// or the anchor is cleared (an unanchored habit has no nudge — the
+/// reader is total on arbitrary input).
+fn tracker_effective_occurrence(
+    habit: &Habit,
+    day: DayCalendar,
+    reminders: &ReminderState,
+    now: DateTime<Utc>,
+) -> Option<DateTime<Utc>> {
+    if !habit.is_live() {
+        return None;
+    }
+    let base = crate::habit::tracker_anchor_occurrence(habit.anchor_time?, day.today(now), day);
+    Some(walk_chain(
+        base,
+        ReminderRef::Tracker(habit.id),
+        &reminders.snoozes,
+    ))
+}
+
+/// The tracker pass's eligibility gate, shared by both readers
+/// ([`tracker_firings`] and [`stale_deliveries`]' consult test — one
+/// definition of tracker eligibility): the habit is live, anchored, and
+/// its *current period's* quota is unmet. The gate decides WHEN only —
+/// it reads the log the way `break_crossing` reads entries, never
+/// insistence. Mute does not apply (the muted set is task-shaped; the
+/// tracker's off-switch is clearing the anchor).
+fn tracker_eligible(
+    habit: &Habit,
+    habits: &HabitState,
+    day: DayCalendar,
+    now: DateTime<Utc>,
+) -> bool {
+    if !habit.is_live() || habit.anchor_time.is_none() {
+        return false;
+    }
+    let window = WindowStart::of_period(habit.target.kind(), day.today(now));
+    let count = habits
+        .log
+        .get(&HabitLogKey {
+            habit: habit.id,
+            window,
+        })
+        .map_or(0, |entry| entry.count);
+    count < habit.target.quota().get()
+}
+
+/// The tracker firings: one per live, anchored habit whose current
+/// period's quota is unmet and whose effective occurrence (the stable
+/// anchor reading inside the current day window, snooze-walked)
+/// satisfies the gate — `delivered: false` for due eligibility, `true`
+/// for the active surface. One definition of tracker eligibility, both
+/// readers. Sorted by `(occurrence, reminder)` at the composed callers.
+fn tracker_firings(
+    habits: &HabitState,
+    reminders: &ReminderState,
+    day: DayCalendar,
+    now: DateTime<Utc>,
+    delivered: bool,
+) -> Vec<ReminderFiring> {
+    let mut firings = Vec::new();
+    for habit in habits.habits.values() {
+        let reminder = ReminderRef::Tracker(habit.id);
+        if let Some(effective) = tracker_effective_occurrence(habit, day, reminders, now)
+            && tracker_eligible(habit, habits, day, now)
+            && effective <= now
+            && reminders.is_delivered(&reminder, &effective) == delivered
+            && !reminders.is_dismissed(&reminder, &effective)
+        {
+            firings.push(ReminderFiring {
+                reminder,
+                anchor: ReminderAnchor::Tracker(habit.id),
+                occurrence: effective,
+            });
+        }
+    }
+    firings
+}
+
 /// Everything that must fire at `now`: explicit rules plus implicit
 /// defaults, occurrence-keyed, snooze- and mute-aware — plus the
 /// standalone alarms (eligibility = alarms-map membership; mute does
-/// not apply to alarms, cancel is their off-switch) and the break rules
-/// (eligibility = the threshold crossing, D-9's third pass). Sorted by
-/// `(occurrence, reminder)` — a total order, so output is fully
-/// deterministic.
+/// not apply to alarms, cancel is their off-switch), the break rules
+/// (eligibility = the threshold crossing, D-9's third pass), and the
+/// tracker nudges (eligibility = the anchored quota gate, #504's
+/// fourth pass). Sorted by `(occurrence, reminder)` — a total order, so
+/// output is fully deterministic.
 ///
 /// Task-side eligibility: the task must be live and open with a due date
 /// and not muted; a task's explicit rules (in rule-id order) replace its
@@ -1303,6 +1456,8 @@ fn break_firings(
 pub fn due_firings(
     tasks: &BTreeMap<TaskId, Task>,
     tracking: &TrackingState,
+    habits: &HabitState,
+    day: DayCalendar,
     reminders: &ReminderState,
     defaults: &ReminderDefaults,
     now: DateTime<Utc>,
@@ -1355,10 +1510,12 @@ pub fn due_firings(
     // The break pass (D-9): the same eligibility shape over the
     // tracking history. The `At` pass beside it (F25): the same
     // eligibility shape over the absolute-instant rules — due-date
-    // independent, live/open/muted gated. Both concatenations preserve
-    // the total order via the sort below.
+    // independent, live/open/muted gated. The tracker pass (#504): the
+    // same eligibility shape over the anchored-habit quota gate. Every
+    // concatenation preserves the total order via the sort below.
     firings.extend(break_firings(tracking, reminders, now, false));
     firings.extend(at_rule_firings(tasks, reminders, now, false));
+    firings.extend(tracker_firings(habits, reminders, day, now, false));
     firings.sort_by_key(|f| (f.occurrence, f.reminder));
     firings
 }
@@ -1382,6 +1539,8 @@ pub fn due_firings(
 pub fn active_notifications(
     tasks: &BTreeMap<TaskId, Task>,
     tracking: &TrackingState,
+    habits: &HabitState,
+    day: DayCalendar,
     reminders: &ReminderState,
     defaults: &ReminderDefaults,
     now: DateTime<Utc>,
@@ -1430,11 +1589,12 @@ pub fn active_notifications(
     }
     // The break pass: delivered ∧ ¬dismissed occurrences stay on the
     // surface (the same gate as every other family). The `At` pass
-    // beside it, same gate.
+    // beside it, same gate. The tracker pass (#504), same gate.
     firings.extend(break_firings(tracking, reminders, now, true));
     firings.extend(at_rule_firings(tasks, reminders, now, true));
+    firings.extend(tracker_firings(habits, reminders, day, now, true));
     firings.sort_by_key(|f| (f.occurrence, f.reminder));
-    notifications_for(&firings, tasks, reminders)
+    notifications_for(&firings, tasks, habits, reminders)
 }
 
 /// Kiosk banner: live, open tasks with due date < `now`, in canonical
@@ -1490,6 +1650,13 @@ mod tests {
 
     fn ts(secs: i64) -> DateTime<Utc> {
         Utc.timestamp_opt(secs, 0).unwrap()
+    }
+
+    fn day() -> crate::days::DayCalendar {
+        crate::days::DayCalendar {
+            day_start_time: chrono::NaiveTime::MIN,
+            offset: chrono::FixedOffset::east_opt(0).unwrap(),
+        }
     }
 
     fn ref_of(raw: u128) -> ReminderRef {
@@ -1627,7 +1794,9 @@ mod tests {
                         };
                         duedate + defaults.default_before.as_duration()
                     }
-                    ReminderRef::Adhoc(_) | ReminderRef::Break(_) => continue,
+                    ReminderRef::Adhoc(_) | ReminderRef::Break(_) | ReminderRef::Tracker(_) => {
+                        continue;
+                    }
                 };
                 // Hand-rolled snooze walk (stops at first repeat).
                 let mut effective = base;
@@ -1722,7 +1891,9 @@ mod tests {
                         };
                         duedate + defaults.default_before.as_duration()
                     }
-                    ReminderRef::Adhoc(_) | ReminderRef::Break(_) => continue,
+                    ReminderRef::Adhoc(_) | ReminderRef::Break(_) | ReminderRef::Tracker(_) => {
+                        continue;
+                    }
                 };
                 let mut effective = base;
                 let mut seen = BTreeSet::from([base]);
@@ -1778,9 +1949,10 @@ mod tests {
                     };
                     alarm.label.clone()
                 }
-                // The proptest fixture mints no break rules; a hand-
-                // built Break anchor has no title source here.
-                ReminderAnchor::Break(_) => continue,
+                // The proptest fixture mints no break rules or anchored
+                // habits; a hand-built Break/Tracker anchor has no title
+                // source here.
+                ReminderAnchor::Break(_) | ReminderAnchor::Tracker(_) => continue,
             };
             expected.push(Notification {
                 insistence: Insistence::Normal,
@@ -1861,7 +2033,7 @@ mod tests {
         fn p1_settled_firings_never_refire(
             (tasks, reminders, defaults, now) in eval_input(),
         ) {
-            let f1 = due_firings(&tasks, &crate::tracking::TrackingState::default(), &reminders, &defaults, now);
+            let f1 = due_firings(&tasks, &crate::tracking::TrackingState::default(), &HabitState::default(), day(), &reminders, &defaults, now);
             for f in &f1 {
                 prop_assert!(!reminders.is_delivered(&f.reminder, &f.occurrence));
             }
@@ -1873,7 +2045,7 @@ mod tests {
                     delivered_at: now,
                 });
             }
-            let f2 = due_firings(&tasks, &TrackingState::default(), &settled, &defaults, now);
+            let f2 = due_firings(&tasks, &TrackingState::default(), &HabitState::default(), day(), &settled, &defaults, now);
             prop_assert!(f2.is_empty(), "settled firings must not re-fire at the same now");
         }
 
@@ -1881,7 +2053,7 @@ mod tests {
         fn p2_due_firings_equal_the_independently_derived_set(
             (tasks, reminders, defaults, now) in eval_input(),
         ) {
-            let got: Vec<(DateTime<Utc>, ReminderRef)> = due_firings(&tasks, &crate::tracking::TrackingState::default(), &reminders, &defaults, now)
+            let got: Vec<(DateTime<Utc>, ReminderRef)> = due_firings(&tasks, &crate::tracking::TrackingState::default(), &HabitState::default(), day(), &reminders, &defaults, now)
                 .into_iter()
                 .map(|f| (f.occurrence, f.reminder))
                 .collect();
@@ -1971,11 +2143,11 @@ mod tests {
 
             // Any instant before the target: suppressed.
             let probe = now + chrono::TimeDelta::try_seconds(probe_secs).unwrap().min(postpone - chrono::TimeDelta::try_seconds(1).unwrap());
-            let during = due_firings(&tasks, &crate::tracking::TrackingState::default(), &reminders, &defaults, probe);
+            let during = due_firings(&tasks, &crate::tracking::TrackingState::default(), &HabitState::default(), day(), &reminders, &defaults, probe);
             prop_assert!(during.is_empty(), "snoozed reminder must not fire before its target");
 
             // At the target: fires (undelivered), then settles forever.
-            let at_target = due_firings(&tasks, &crate::tracking::TrackingState::default(), &reminders, &defaults, now + postpone);
+            let at_target = due_firings(&tasks, &crate::tracking::TrackingState::default(), &HabitState::default(), day(), &reminders, &defaults, now + postpone);
             prop_assert_eq!(
                 at_target.iter().map(|f| f.reminder).collect::<Vec<_>>(),
                 vec![reminder]
@@ -1985,8 +2157,8 @@ mod tests {
                 occurrence: now + postpone,
                 delivered_at: now + postpone,
             });
-            prop_assert_eq!(due_firings(&tasks, &crate::tracking::TrackingState::default(), &reminders, &defaults, now + postpone), Vec::new());
-            prop_assert_eq!(due_firings(&tasks, &crate::tracking::TrackingState::default(), &reminders, &defaults, now + postpone * 2), Vec::new());
+            prop_assert_eq!(due_firings(&tasks, &crate::tracking::TrackingState::default(), &HabitState::default(), day(), &reminders, &defaults, now + postpone), Vec::new());
+            prop_assert_eq!(due_firings(&tasks, &crate::tracking::TrackingState::default(), &HabitState::default(), day(), &reminders, &defaults, now + postpone * 2), Vec::new());
         }
 
         #[test]
@@ -2001,17 +2173,18 @@ mod tests {
             // Alarm firings are observed before the mute: muting every
             // task must not silence any of them.
             let alarm_firings: Vec<ReminderRef> =
-                due_firings(&tasks, &crate::tracking::TrackingState::default(), &reminders, &defaults, now)
+                due_firings(&tasks, &crate::tracking::TrackingState::default(), &HabitState::default(), day(), &reminders, &defaults, now)
                     .into_iter()
                     .filter(|f| matches!(f.anchor, ReminderAnchor::Alarm(_)))
                     .map(|f| f.reminder)
                     .collect();
             reminders.muted = overdue.iter().copied().collect();
-            let firings = due_firings(&tasks, &crate::tracking::TrackingState::default(), &reminders, &defaults, now);
+            let firings = due_firings(&tasks, &crate::tracking::TrackingState::default(), &HabitState::default(), day(), &reminders, &defaults, now);
             let fired_tasks: Vec<TaskId> =
                 firings.iter().filter_map(|f| match f.anchor {
                     ReminderAnchor::Task(t) => Some(t),
-                    ReminderAnchor::Alarm(_) | ReminderAnchor::Break(_) => None,
+                    ReminderAnchor::Alarm(_) | ReminderAnchor::Break(_)
+                    | ReminderAnchor::Tracker(_) => None,
                 }).collect();
             prop_assert!(fired_tasks.iter().all(|t| !reminders.muted.contains(t)));
             let fired_alarms: Vec<ReminderRef> = firings
@@ -2144,6 +2317,8 @@ mod tests {
         let firings = due_firings(
             &tasks,
             &crate::tracking::TrackingState::default(),
+            &HabitState::default(),
+            day(),
             &reminders,
             &ReminderDefaults::default(),
             now,
@@ -2210,6 +2385,8 @@ mod tests {
         let stale = stale_deliveries(
             &tasks,
             &TrackingState::default(),
+            &HabitState::default(),
+            day(),
             &reminders,
             &ReminderDefaults::default(),
             now,
@@ -2237,6 +2414,8 @@ mod tests {
         let stale = stale_deliveries(
             &tasks,
             &TrackingState::default(),
+            &HabitState::default(),
+            day(),
             &reminders,
             &ReminderDefaults::default(),
             now,
@@ -2262,6 +2441,8 @@ mod tests {
         let stale = stale_deliveries(
             &tasks,
             &TrackingState::default(),
+            &HabitState::default(),
+            day(),
             &reminders,
             &ReminderDefaults::default(),
             now,
@@ -2297,6 +2478,8 @@ mod tests {
         let stale = stale_deliveries(
             &tasks,
             &TrackingState::default(),
+            &HabitState::default(),
+            day(),
             &reminders,
             &ReminderDefaults::default(),
             now,
@@ -2325,6 +2508,8 @@ mod tests {
         let stale = stale_deliveries(
             &tasks,
             &TrackingState::default(),
+            &HabitState::default(),
+            day(),
             &reminders,
             &ReminderDefaults::default(),
             now,
@@ -2356,6 +2541,8 @@ mod tests {
         let stale = stale_deliveries(
             &tasks,
             &TrackingState::default(),
+            &HabitState::default(),
+            day(),
             &reminders,
             &ReminderDefaults::default(),
             now,
@@ -2374,19 +2561,19 @@ mod tests {
     fn pruning_the_stale_set_is_unobservable_in_both_readers(
         (tasks, reminders, defaults, now) in eval_input(),
     ) {
-        let stale = stale_deliveries(&tasks, &TrackingState::default(), &reminders, &defaults, now, horizon());
+        let stale = stale_deliveries(&tasks, &TrackingState::default(), &HabitState::default(), day(), &reminders, &defaults, now, horizon());
         let mut pruned = reminders.clone();
         for delivery in &stale {
             pruned.deliveries.remove(delivery);
         }
         assert_eq!(
-            due_firings(&tasks, &TrackingState::default(), &pruned, &defaults, now),
-            due_firings(&tasks, &TrackingState::default(), &reminders, &defaults, now),
+            due_firings(&tasks, &TrackingState::default(), &HabitState::default(), day(), &pruned, &defaults, now),
+            due_firings(&tasks, &TrackingState::default(), &HabitState::default(), day(), &reminders, &defaults, now),
             "due_firings cannot observe the prune"
         );
         assert_eq!(
-            active_notifications(&tasks, &TrackingState::default(), &pruned, &defaults, now),
-            active_notifications(&tasks, &TrackingState::default(), &reminders, &defaults, now),
+            active_notifications(&tasks, &TrackingState::default(), &HabitState::default(), day(), &pruned, &defaults, now),
+            active_notifications(&tasks, &TrackingState::default(), &HabitState::default(), day(), &reminders, &defaults, now),
             "active_notifications cannot observe the prune"
         );
     }
@@ -2404,8 +2591,8 @@ mod tests {
         else {
             return Ok(());
         };
-        let before = stale_deliveries(&tasks, &TrackingState::default(), &reminders, &defaults, now, horizon());
-        let after = stale_deliveries(&tasks, &TrackingState::default(), &reminders, &defaults, later, horizon());
+        let before = stale_deliveries(&tasks, &TrackingState::default(), &HabitState::default(), day(), &reminders, &defaults, now, horizon());
+        let after = stale_deliveries(&tasks, &TrackingState::default(), &HabitState::default(), day(), &reminders, &defaults, later, horizon());
         for delivery in &before {
             assert!(
                 after.contains(delivery),
@@ -2567,7 +2754,15 @@ mod tests {
         defaults: &ReminderDefaults,
         now: DateTime<Utc>,
     ) -> Vec<ReminderFiring> {
-        due_firings(tasks, &TrackingState::default(), reminders, defaults, now)
+        due_firings(
+            tasks,
+            &TrackingState::default(),
+            &HabitState::default(),
+            day(),
+            reminders,
+            defaults,
+            now,
+        )
     }
 
     fn task_active(
@@ -2576,7 +2771,15 @@ mod tests {
         defaults: &ReminderDefaults,
         now: DateTime<Utc>,
     ) -> Vec<Notification> {
-        active_notifications(tasks, &TrackingState::default(), reminders, defaults, now)
+        active_notifications(
+            tasks,
+            &TrackingState::default(),
+            &HabitState::default(),
+            day(),
+            reminders,
+            defaults,
+            now,
+        )
     }
 
     #[test]
@@ -2603,6 +2806,8 @@ mod tests {
         let fired = due_firings(
             &tasks,
             &crate::tracking::TrackingState::default(),
+            &HabitState::default(),
+            day(),
             &reminders,
             &defaults,
             now,
@@ -2619,6 +2824,8 @@ mod tests {
         let active = active_notifications(
             &tasks,
             &crate::tracking::TrackingState::default(),
+            &HabitState::default(),
+            day(),
             &reminders,
             &defaults,
             now,
@@ -2762,7 +2969,7 @@ mod tests {
                 occurrence: ts(403),
             },
         ];
-        let notes = notifications_for(&firings, &tasks, &reminders);
+        let notes = notifications_for(&firings, &tasks, &HabitState::default(), &reminders);
         assert_eq!(
             notes,
             vec![
@@ -2784,7 +2991,10 @@ mod tests {
             "task payloads carry the task title; alarm payloads the alarm label; \
              missing anchors are skipped"
         );
-        assert_eq!(notifications_for(&[], &tasks, &reminders), Vec::new());
+        assert_eq!(
+            notifications_for(&[], &tasks, &HabitState::default(), &reminders),
+            Vec::new()
+        );
     }
 
     // ---- Insistence (D-I2/D-I3, chunk DR-3/2) -------------------------
@@ -2883,7 +3093,7 @@ mod tests {
                 occurrence: ts(403),
             },
         ];
-        let notes = notifications_for(&firings, &tasks, &reminders);
+        let notes = notifications_for(&firings, &tasks, &HabitState::default(), &reminders);
         let levels: Vec<Insistence> = notes.iter().map(|n| n.insistence).collect();
         assert_eq!(
             levels,
@@ -2999,7 +3209,7 @@ mod tests {
                     occurrence: *occurrence,
                 });
             }
-            let notes = notifications_for(&firings, &tasks, &ReminderState::default());
+            let notes = notifications_for(&firings, &tasks, &HabitState::default(), &ReminderState::default());
             prop_assert_eq!(notes.len() + 1, firings.len());
             for (note, firing) in notes.iter().zip(&firings[1..]) {
                 prop_assert_eq!(note.reminder, firing.reminder);
@@ -3191,8 +3401,8 @@ mod tests {
             }
             let defaults = ReminderDefaults::default();
 
-            let a = due_firings(&tasks, &crate::tracking::TrackingState::default(), &reminders, &defaults, now);
-            let b = due_firings(&tasks, &crate::tracking::TrackingState::default(), &reminders, &defaults, now);
+            let a = due_firings(&tasks, &crate::tracking::TrackingState::default(), &HabitState::default(), day(), &reminders, &defaults, now);
+            let b = due_firings(&tasks, &crate::tracking::TrackingState::default(), &HabitState::default(), day(), &reminders, &defaults, now);
             prop_assert_eq!(&a, &b, "deterministic");
             for pair in a.windows(2) {
                 prop_assert!(
@@ -3242,7 +3452,7 @@ mod tests {
         fn p10_dismissed_occurrences_never_refire(
             (tasks, reminders, defaults, now) in eval_input(),
         ) {
-            let f1 = due_firings(&tasks, &crate::tracking::TrackingState::default(), &reminders, &defaults, now);
+            let f1 = due_firings(&tasks, &crate::tracking::TrackingState::default(), &HabitState::default(), day(), &reminders, &defaults, now);
             let mut dismissed = reminders.clone();
             for f in &f1 {
                 dismissed.dismissals.insert(ReminderDismissal {
@@ -3251,10 +3461,10 @@ mod tests {
                     dismissed_at: now,
                 });
             }
-            let f2 = due_firings(&tasks, &TrackingState::default(), &dismissed, &defaults, now);
+            let f2 = due_firings(&tasks, &TrackingState::default(), &HabitState::default(), day(), &dismissed, &defaults, now);
             prop_assert!(f2.is_empty(), "dismissed firings must not re-fire at the same now");
             // And the surface is empty for exactly those occurrences...
-            let active = active_notifications(&tasks, &TrackingState::default(), &dismissed, &defaults, now);
+            let active = active_notifications(&tasks, &TrackingState::default(), &HabitState::default(), day(), &dismissed, &defaults, now);
             prop_assert!(
                 active
                     .iter()
@@ -3268,7 +3478,7 @@ mod tests {
             (tasks, reminders, defaults, now) in eval_input(),
         ) {
             prop_assert_eq!(
-                active_notifications(&tasks, &crate::tracking::TrackingState::default(), &reminders, &defaults, now),
+                active_notifications(&tasks, &crate::tracking::TrackingState::default(), &HabitState::default(), day(), &reminders, &defaults, now),
                 expected_active(&tasks, &reminders, &defaults, now),
             );
         }
@@ -3279,11 +3489,11 @@ mod tests {
         ) {
             // Due = ¬delivered ∧ ¬dismissed; active = delivered ∧
             // ¬dismissed: no (reminder, occurrence) pair can be both.
-            let due: BTreeSet<_> = due_firings(&tasks, &crate::tracking::TrackingState::default(), &reminders, &defaults, now)
+            let due: BTreeSet<_> = due_firings(&tasks, &crate::tracking::TrackingState::default(), &HabitState::default(), day(), &reminders, &defaults, now)
                 .into_iter()
                 .map(|f| (f.reminder, f.occurrence))
                 .collect();
-            let active: BTreeSet<_> = active_notifications(&tasks, &crate::tracking::TrackingState::default(), &reminders, &defaults, now)
+            let active: BTreeSet<_> = active_notifications(&tasks, &crate::tracking::TrackingState::default(), &HabitState::default(), day(), &reminders, &defaults, now)
                 .into_iter()
                 .map(|n| (n.reminder, n.occurrence))
                 .collect();
@@ -3306,7 +3516,7 @@ mod tests {
             let mut updated = done[&task_id].clone();
             updated.done = Some(now);
             done.insert(task_id, updated);
-            let active_before: BTreeSet<_> = active_notifications(&tasks, &crate::tracking::TrackingState::default(), &reminders, &defaults, now)
+            let active_before: BTreeSet<_> = active_notifications(&tasks, &crate::tracking::TrackingState::default(), &HabitState::default(), day(), &reminders, &defaults, now)
                 .into_iter()
                 .filter(|n| matches!(n.anchor, ReminderAnchor::Task(t) if t == task_id))
                 .map(|n| (n.reminder, n.occurrence))
@@ -3320,7 +3530,7 @@ mod tests {
                 });
             }
             let still_active: BTreeSet<_> =
-                active_notifications(&done, &TrackingState::default(), &after, &defaults, now)
+                active_notifications(&done, &TrackingState::default(), &HabitState::default(), day(), &after, &defaults, now)
                     .into_iter()
                     .filter(|n| matches!(n.anchor, ReminderAnchor::Task(t) if t == task_id))
                     .map(|n| (n.reminder, n.occurrence))
@@ -3362,6 +3572,8 @@ mod tests {
             let firings = due_firings(
                 &tasks,
                 &crate::tracking::TrackingState::default(),
+                &HabitState::default(),
+                day(),
                 &reminders,
                 &ReminderDefaults::default(),
                 instant,
@@ -3443,11 +3655,27 @@ mod tests {
         // 5_000 accrued, 9_000 demanded: no crossing.
         let defaults = ReminderDefaults::default();
         assert_eq!(
-            due_firings(&BTreeMap::new(), &tracking, &reminders, &defaults, now),
+            due_firings(
+                &BTreeMap::new(),
+                &tracking,
+                &HabitState::default(),
+                day(),
+                &reminders,
+                &defaults,
+                now
+            ),
             Vec::new()
         );
         assert_eq!(
-            active_notifications(&BTreeMap::new(), &tracking, &reminders, &defaults, now),
+            active_notifications(
+                &BTreeMap::new(),
+                &tracking,
+                &HabitState::default(),
+                day(),
+                &reminders,
+                &defaults,
+                now
+            ),
             Vec::new()
         );
     }
@@ -3467,6 +3695,8 @@ mod tests {
         let firings = due_firings(
             &BTreeMap::new(),
             &tracking,
+            &HabitState::default(),
+            day(),
             &reminders,
             &defaults,
             ts(2_000),
@@ -3528,6 +3758,8 @@ mod tests {
         let firings = due_firings(
             &BTreeMap::new(),
             &tracking,
+            &HabitState::default(),
+            day(),
             &b_reminders,
             &defaults,
             ts(2_000),
@@ -3545,6 +3777,8 @@ mod tests {
         let firings = due_firings(
             &BTreeMap::new(),
             &tracking,
+            &HabitState::default(),
+            day(),
             &b_reminders,
             &defaults,
             ts(2_000),
@@ -3571,6 +3805,8 @@ mod tests {
         let firings = due_firings(
             &BTreeMap::new(),
             &tracking,
+            &HabitState::default(),
+            day(),
             &reminders,
             &defaults,
             ts(2_000),
@@ -3584,7 +3820,15 @@ mod tests {
         });
         for tick in [ts(2_030), ts(2_060), ts(3_600)] {
             assert_eq!(
-                due_firings(&BTreeMap::new(), &tracking, &reminders, &defaults, tick),
+                due_firings(
+                    &BTreeMap::new(),
+                    &tracking,
+                    &HabitState::default(),
+                    day(),
+                    &reminders,
+                    &defaults,
+                    tick
+                ),
                 Vec::new(),
                 "a delivered crossing never re-fires at {tick}"
             );
@@ -3593,6 +3837,8 @@ mod tests {
         let active = active_notifications(
             &BTreeMap::new(),
             &tracking,
+            &HabitState::default(),
+            day(),
             &reminders,
             &defaults,
             ts(2_030),
@@ -3627,6 +3873,8 @@ mod tests {
             due_firings(
                 &BTreeMap::new(),
                 &tracking,
+                &HabitState::default(),
+                day(),
                 &reminders,
                 &defaults,
                 ts(5_400)
@@ -3638,6 +3886,8 @@ mod tests {
             due_firings(
                 &BTreeMap::new(),
                 &tracking,
+                &HabitState::default(),
+                day(),
                 &reminders,
                 &defaults,
                 ts(6_000)
@@ -3648,6 +3898,8 @@ mod tests {
         let firings = due_firings(
             &BTreeMap::new(),
             &tracking,
+            &HabitState::default(),
+            day(),
             &reminders,
             &defaults,
             ts(11_100),
@@ -3665,6 +3917,8 @@ mod tests {
             due_firings(
                 &BTreeMap::new(),
                 &tracking,
+                &HabitState::default(),
+                day(),
                 &reminders,
                 &defaults,
                 ts(11_100)
@@ -3691,12 +3945,28 @@ mod tests {
         });
         for tick in [ts(2_000), ts(3_600), ts(99_999)] {
             assert_eq!(
-                due_firings(&BTreeMap::new(), &tracking, &reminders, &defaults, tick),
+                due_firings(
+                    &BTreeMap::new(),
+                    &tracking,
+                    &HabitState::default(),
+                    day(),
+                    &reminders,
+                    &defaults,
+                    tick
+                ),
                 Vec::new(),
                 "the dismissal is permanent for the episode at {tick}"
             );
             assert_eq!(
-                active_notifications(&BTreeMap::new(), &tracking, &reminders, &defaults, tick),
+                active_notifications(
+                    &BTreeMap::new(),
+                    &tracking,
+                    &HabitState::default(),
+                    day(),
+                    &reminders,
+                    &defaults,
+                    tick
+                ),
                 Vec::new()
             );
         }
@@ -3725,6 +3995,8 @@ mod tests {
             due_firings(
                 &BTreeMap::new(),
                 &tracking,
+                &HabitState::default(),
+                day(),
                 &reminders,
                 &defaults,
                 ts(2_000)
@@ -3735,6 +4007,8 @@ mod tests {
         let firings = due_firings(
             &BTreeMap::new(),
             &tracking,
+            &HabitState::default(),
+            day(),
             &reminders,
             &defaults,
             ts(3_000),
@@ -3756,6 +4030,8 @@ mod tests {
         let firings = due_firings(
             &BTreeMap::new(),
             &tracking,
+            &HabitState::default(),
+            day(),
             &reminders,
             &defaults,
             ts(2_000),
@@ -3780,6 +4056,8 @@ mod tests {
             due_firings(
                 &BTreeMap::new(),
                 &tracking,
+                &HabitState::default(),
+                day(),
                 &ReminderState::default(),
                 &ReminderDefaults::default(),
                 ts(2_000)
@@ -3810,7 +4088,12 @@ mod tests {
                 occurrence: ts(1_600),
             },
         ];
-        let notes = notifications_for(&firings, &BTreeMap::new(), &reminders);
+        let notes = notifications_for(
+            &firings,
+            &BTreeMap::new(),
+            &HabitState::default(),
+            &reminders,
+        );
         assert_eq!(notes.len(), 1, "a missing rule row skips the payload");
         assert_eq!(notes[0].title, "time for a break");
         assert_eq!(notes[0].insistence, Insistence::Alarm);
@@ -3892,6 +4175,8 @@ mod tests {
             due_firings(
                 &tasks,
                 &TrackingState::default(),
+                &HabitState::default(),
+                day(),
                 &reminders,
                 &defaults,
                 ts(999)
@@ -3902,6 +4187,8 @@ mod tests {
         let firings = due_firings(
             &tasks,
             &TrackingState::default(),
+            &HabitState::default(),
+            day(),
             &reminders,
             &defaults,
             instant,
@@ -3928,7 +4215,15 @@ mod tests {
         };
         let defaults = ReminderDefaults::default();
         let now_at = |state: &ReminderState, at: DateTime<Utc>| {
-            active_notifications(&tasks, &TrackingState::default(), state, &defaults, at)
+            active_notifications(
+                &tasks,
+                &TrackingState::default(),
+                &HabitState::default(),
+                day(),
+                state,
+                &defaults,
+                at,
+            )
         };
         // Delivered: the evaluator goes quiet (no re-fire), the surface
         // keeps the row until dismissal.
@@ -3941,6 +4236,8 @@ mod tests {
             due_firings(
                 &tasks,
                 &TrackingState::default(),
+                &HabitState::default(),
+                day(),
                 &reminders,
                 &defaults,
                 ts(1_001)
@@ -3963,6 +4260,8 @@ mod tests {
             due_firings(
                 &tasks,
                 &TrackingState::default(),
+                &HabitState::default(),
+                day(),
                 &reminders,
                 &defaults,
                 ts(1_003)
@@ -3997,6 +4296,8 @@ mod tests {
             due_firings(
                 &tasks,
                 &TrackingState::default(),
+                &HabitState::default(),
+                day(),
                 &reminders,
                 &defaults,
                 ts(1_000)
@@ -4007,6 +4308,8 @@ mod tests {
         let firings = due_firings(
             &tasks,
             &TrackingState::default(),
+            &HabitState::default(),
+            day(),
             &reminders,
             &defaults,
             ts(2_000),
@@ -4042,6 +4345,8 @@ mod tests {
             due_firings(
                 &tasks,
                 &TrackingState::default(),
+                &HabitState::default(),
+                day(),
                 &reminders,
                 &defaults,
                 now
@@ -4056,6 +4361,8 @@ mod tests {
             due_firings(
                 &done_tasks,
                 &TrackingState::default(),
+                &HabitState::default(),
+                day(),
                 &reminders,
                 &defaults,
                 now
@@ -4067,6 +4374,8 @@ mod tests {
             due_firings(
                 &BTreeMap::new(),
                 &TrackingState::default(),
+                &HabitState::default(),
+                day(),
                 &reminders,
                 &defaults,
                 now
@@ -4079,6 +4388,8 @@ mod tests {
             due_firings(
                 &live_tasks,
                 &TrackingState::default(),
+                &HabitState::default(),
+                day(),
                 &reminders,
                 &defaults,
                 now
@@ -4192,6 +4503,8 @@ mod tests {
         let swept = stale_deliveries(
             &tasks,
             &TrackingState::default(),
+            &HabitState::default(),
+            day(),
             &reminders,
             &ReminderDefaults::default(),
             ts(0),
@@ -4319,5 +4632,719 @@ mod tests {
             prune_settled_at_rules(&mut reminders);
             prop_assert_eq!(reminders.rules.len(), survivor_count);
         }
+    }
+
+    // ---- The tracker nudge family (#504, plan D-1..D-4) ----------------
+
+    use crate::habit::{HabitClocks, HabitLogEntry, HabitTarget, NonZeroCount};
+
+    fn day5() -> crate::days::DayCalendar {
+        crate::days::DayCalendar {
+            // The common day convention: windows open at 05:00 local.
+            day_start_time: chrono::NaiveTime::from_hms_opt(5, 0, 0).expect("05:00"),
+            offset: chrono::FixedOffset::east_opt(0).expect("zero offset"),
+        }
+    }
+
+    fn at(h: u32, m: u32) -> chrono::NaiveTime {
+        chrono::NaiveTime::from_hms_opt(h, m, 0).expect("whole-minute time")
+    }
+
+    fn ymd(y: i32, m: u32, d: u32) -> chrono::NaiveDate {
+        chrono::NaiveDate::from_ymd_opt(y, m, d).expect("valid date")
+    }
+
+    fn stamp(y: i32, m: u32, d: u32, h: u32, min: u32) -> DateTime<Utc> {
+        day5().instant(ymd(y, m, d), at(h, min))
+    }
+
+    fn tracker_habit(
+        raw: u128,
+        target: HabitTarget,
+        anchor: Option<chrono::NaiveTime>,
+    ) -> crate::habit::Habit {
+        crate::habit::Habit {
+            id: crate::ids::HabitId::from(uuid::Uuid::from_u128(raw)),
+            board: crate::ids::BoardId::from(uuid::Uuid::from_u128(800)),
+            title: format!("habit {raw}"),
+            target,
+            order: 0,
+            anchor_time: anchor,
+            clocks: HabitClocks::all(ts(100)),
+            continued_from: None,
+            deleted: false,
+        }
+    }
+
+    fn habits_of(habits: &[crate::habit::Habit]) -> HabitState {
+        let mut state = HabitState::default();
+        for habit in habits {
+            state.habits.insert(habit.id, habit.clone());
+        }
+        state
+    }
+
+    fn log_count(
+        habits: &mut HabitState,
+        habit: &crate::habit::Habit,
+        window_date: chrono::NaiveDate,
+        count: u32,
+    ) {
+        let window = WindowStart::of_period(habit.target.kind(), window_date);
+        habits.log.insert(
+            HabitLogKey {
+                habit: habit.id,
+                window,
+            },
+            HabitLogEntry {
+                count,
+                clock: ts(500),
+            },
+        );
+    }
+
+    fn tracker_ref(raw: u128) -> ReminderRef {
+        ReminderRef::Tracker(crate::ids::HabitId::from(uuid::Uuid::from_u128(raw)))
+    }
+
+    #[test]
+    fn tracker_ref_text_form_roundtrips() {
+        let id = tracker_ref(42);
+        assert!(id.text_form().starts_with("tracker:"));
+        assert_eq!(ReminderRef::parse_text_form(&id.text_form()), Some(id));
+        assert_eq!(ReminderRef::parse_text_form("tracker:not-a-uuid"), None);
+    }
+
+    const D: (i32, u32, u32) = (2026, 11, 5);
+
+    #[allow(clippy::too_many_lines)] // the journey reads best as one scenario
+    #[test]
+    fn tracker_nudge_fires_once_at_the_anchor_and_not_again_in_the_window() {
+        let habit = tracker_habit(
+            1,
+            HabitTarget::PerDay(NonZeroCount::new(1).unwrap()),
+            Some(at(9, 0)),
+        );
+        let habits = habits_of(std::slice::from_ref(&habit));
+        let reminders = ReminderState::default();
+        let defaults = ReminderDefaults::default();
+
+        // Before the anchor reading: nothing.
+        assert_eq!(
+            due_firings(
+                &BTreeMap::new(),
+                &TrackingState::default(),
+                &habits,
+                day5(),
+                &reminders,
+                &defaults,
+                stamp(D.0, D.1, D.2, 8, 0)
+            ),
+            Vec::new()
+        );
+        // At the anchor reading: exactly one firing, keyed at T*.
+        let t_star = stamp(D.0, D.1, D.2, 9, 0);
+        let firings = due_firings(
+            &BTreeMap::new(),
+            &TrackingState::default(),
+            &habits,
+            day5(),
+            &reminders,
+            &defaults,
+            t_star,
+        );
+        assert_eq!(firings.len(), 1, "exactly one firing at T*");
+        assert_eq!(firings[0].reminder, tracker_ref(1));
+        assert!(matches!(firings[0].anchor, ReminderAnchor::Tracker(_)));
+        assert_eq!(firings[0].occurrence, t_star);
+        // The delivery receipt settles the key the firing minted: the
+        // second tick in the same window fires nothing (the double-fire
+        // guard — the key is the stable anchor reading, never a tick
+        // stamp).
+        let mut delivered = reminders.clone();
+        delivered.deliveries.insert(ReminderDelivery {
+            reminder: tracker_ref(1),
+            occurrence: t_star,
+            delivered_at: t_star,
+        });
+        assert_eq!(
+            due_firings(
+                &BTreeMap::new(),
+                &TrackingState::default(),
+                &habits,
+                day5(),
+                &reminders,
+                &defaults,
+                stamp(D.0, D.1, D.2, 10, 0)
+            )
+            .len()
+                + due_firings(
+                    &BTreeMap::new(),
+                    &TrackingState::default(),
+                    &habits,
+                    day5(),
+                    &delivered,
+                    &defaults,
+                    stamp(D.0, D.1, D.2, 10, 0)
+                )
+                .len(),
+            1,
+            "without the receipt the nudge re-fires (wrong), with it exactly once"
+        );
+        assert_eq!(
+            due_firings(
+                &BTreeMap::new(),
+                &TrackingState::default(),
+                &habits,
+                day5(),
+                &delivered,
+                &defaults,
+                stamp(D.0, D.1, D.2, 10, 0)
+            ),
+            Vec::new()
+        );
+        // The delivered occurrence stays on the surface until dismissed.
+        let surface = active_notifications(
+            &BTreeMap::new(),
+            &TrackingState::default(),
+            &habits,
+            day5(),
+            &delivered,
+            &defaults,
+            stamp(D.0, D.1, D.2, 10, 0),
+        );
+        assert_eq!(surface.len(), 1);
+        assert_eq!(surface[0].title, "habit 1");
+        // The next window derives a fresh key and re-arms by construction.
+        let next_day = stamp(2026, 11, 6, 9, 0);
+        assert_eq!(
+            due_firings(
+                &BTreeMap::new(),
+                &TrackingState::default(),
+                &habits,
+                day5(),
+                &delivered,
+                &defaults,
+                next_day
+            )
+            .len(),
+            1,
+            "re-arm on period rollover, no stored arm/disarm state"
+        );
+    }
+
+    #[test]
+    fn tracker_nudge_gate_is_the_current_period_quota() {
+        let habit = tracker_habit(
+            2,
+            HabitTarget::PerWeek(NonZeroCount::new(2).unwrap()),
+            Some(at(9, 0)),
+        );
+        let mut habits = habits_of(std::slice::from_ref(&habit));
+        let reminders = ReminderState::default();
+        let defaults = ReminderDefaults::default();
+        let t_star = stamp(D.0, D.1, D.2, 9, 0);
+
+        // Unmet weekly quota: the daily nudge fires.
+        assert_eq!(
+            due_firings(
+                &BTreeMap::new(),
+                &TrackingState::default(),
+                &habits,
+                day5(),
+                &reminders,
+                &defaults,
+                t_star
+            )
+            .len(),
+            1
+        );
+        // Met weekly quota: no nudge, and no surface row.
+        log_count(&mut habits, &habit, ymd(D.0, D.1, D.2), 2);
+        assert_eq!(
+            due_firings(
+                &BTreeMap::new(),
+                &TrackingState::default(),
+                &habits,
+                day5(),
+                &reminders,
+                &defaults,
+                t_star
+            ),
+            Vec::new()
+        );
+        assert_eq!(
+            active_notifications(
+                &BTreeMap::new(),
+                &TrackingState::default(),
+                &habits,
+                day5(),
+                &reminders,
+                &defaults,
+                t_star
+            ),
+            Vec::new()
+        );
+        // A quota-correction back below quota re-opens the gate.
+        log_count(&mut habits, &habit, ymd(D.0, D.1, D.2), 1);
+        assert_eq!(
+            due_firings(
+                &BTreeMap::new(),
+                &TrackingState::default(),
+                &habits,
+                day5(),
+                &reminders,
+                &defaults,
+                t_star
+            )
+            .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn weekly_quota_met_this_week_silences_until_the_next_week() {
+        let habit = tracker_habit(
+            3,
+            HabitTarget::PerWeek(NonZeroCount::new(1).unwrap()),
+            Some(at(9, 0)),
+        );
+        let mut habits = habits_of(std::slice::from_ref(&habit));
+        let reminders = ReminderState::default();
+        let defaults = ReminderDefaults::default();
+        // The week's quota met on Monday (2026-11-02 is a Monday).
+        log_count(&mut habits, &habit, ymd(2026, 11, 2), 1);
+        // Every morning that week: silent.
+        for day in [(3_u32, 4), (4, 5), (5, 6), (6, 7), (7, 8)] {
+            let now = stamp(2026, 11, day.0, 10, 0);
+            assert_eq!(
+                due_firings(
+                    &BTreeMap::new(),
+                    &TrackingState::default(),
+                    &habits,
+                    day5(),
+                    &reminders,
+                    &defaults,
+                    now
+                ),
+                Vec::new(),
+                "met weekly quota silences the day"
+            );
+        }
+        // The next week's window (Monday 2026-11-09): fires again.
+        assert_eq!(
+            due_firings(
+                &BTreeMap::new(),
+                &TrackingState::default(),
+                &habits,
+                day5(),
+                &reminders,
+                &defaults,
+                stamp(2026, 11, 9, 10, 0)
+            )
+            .len(),
+            1,
+            "the gate reads canonical periods; a new week is a fresh gate"
+        );
+    }
+
+    #[test]
+    fn dismissal_silences_the_window_and_the_next_window_re_fires() {
+        let habit = tracker_habit(
+            4,
+            HabitTarget::PerDay(NonZeroCount::new(1).unwrap()),
+            Some(at(9, 0)),
+        );
+        let habits = habits_of(&[habit]);
+        let t_star = stamp(D.0, D.1, D.2, 9, 0);
+        let reminders = ReminderState {
+            deliveries: BTreeSet::from([ReminderDelivery {
+                reminder: tracker_ref(4),
+                occurrence: t_star,
+                delivered_at: t_star,
+            }]),
+            dismissals: BTreeSet::from([ReminderDismissal {
+                reminder: tracker_ref(4),
+                occurrence: t_star,
+                dismissed_at: t_star,
+            }]),
+            ..ReminderState::default()
+        };
+        let defaults = ReminderDefaults::default();
+        assert_eq!(
+            due_firings(
+                &BTreeMap::new(),
+                &TrackingState::default(),
+                &habits,
+                day5(),
+                &reminders,
+                &defaults,
+                stamp(D.0, D.1, D.2, 10, 0)
+            ),
+            Vec::new()
+        );
+        assert_eq!(
+            active_notifications(
+                &BTreeMap::new(),
+                &TrackingState::default(),
+                &habits,
+                day5(),
+                &reminders,
+                &defaults,
+                stamp(D.0, D.1, D.2, 10, 0)
+            ),
+            Vec::new(),
+            "a dismissed occurrence never returns"
+        );
+        assert_eq!(
+            due_firings(
+                &BTreeMap::new(),
+                &TrackingState::default(),
+                &habits,
+                day5(),
+                &reminders,
+                &defaults,
+                stamp(2026, 11, 6, 10, 0)
+            )
+            .len(),
+            1,
+            "per-device permanence scopes to the window; the next one re-fires"
+        );
+    }
+
+    #[test]
+    fn snooze_moves_the_nudge_for_both_readers() {
+        let habit = tracker_habit(
+            5,
+            HabitTarget::PerDay(NonZeroCount::new(1).unwrap()),
+            Some(at(9, 0)),
+        );
+        let habits = habits_of(&[habit]);
+        let t_star = stamp(D.0, D.1, D.2, 9, 0);
+        let target = stamp(D.0, D.1, D.2, 10, 30);
+        let reminders = ReminderState {
+            snoozes: BTreeMap::from([(
+                ReminderSnoozeKey {
+                    reminder: tracker_ref(5),
+                    occurrence: t_star,
+                },
+                target,
+            )]),
+            ..ReminderState::default()
+        };
+        let defaults = ReminderDefaults::default();
+        // The chain walk moved the occurrence: silent at the base, due
+        // at the target, for both readers.
+        assert_eq!(
+            due_firings(
+                &BTreeMap::new(),
+                &TrackingState::default(),
+                &habits,
+                day5(),
+                &reminders,
+                &defaults,
+                t_star
+            ),
+            Vec::new()
+        );
+        let firings = due_firings(
+            &BTreeMap::new(),
+            &TrackingState::default(),
+            &habits,
+            day5(),
+            &reminders,
+            &defaults,
+            target,
+        );
+        assert_eq!(firings.len(), 1);
+        assert_eq!(firings[0].occurrence, target);
+        // The surface shows the row only once the occurrence is
+        // delivered (its predicate is delivered ∧ ¬dismissed).
+        assert_eq!(
+            active_notifications(
+                &BTreeMap::new(),
+                &TrackingState::default(),
+                &habits,
+                day5(),
+                &reminders,
+                &defaults,
+                target,
+            ),
+            Vec::new()
+        );
+        let mut delivered = reminders.clone();
+        delivered.deliveries.insert(ReminderDelivery {
+            reminder: tracker_ref(5),
+            occurrence: target,
+            delivered_at: target,
+        });
+        let surface = active_notifications(
+            &BTreeMap::new(),
+            &TrackingState::default(),
+            &habits,
+            day5(),
+            &delivered,
+            &defaults,
+            target,
+        );
+        assert_eq!(surface.len(), 1);
+        assert_eq!(surface[0].occurrence, target);
+    }
+
+    #[test]
+    fn tracker_nudge_totality_dead_unanchored_or_missing_fires_nothing() {
+        let defaults = ReminderDefaults::default();
+        let now = stamp(D.0, D.1, D.2, 10, 0);
+        // Tombstoned habit.
+        let mut dead = tracker_habit(
+            6,
+            HabitTarget::PerDay(NonZeroCount::new(1).unwrap()),
+            Some(at(9, 0)),
+        );
+        dead.deleted = true;
+        let habits = habits_of(&[dead.clone()]);
+        assert_eq!(
+            due_firings(
+                &BTreeMap::new(),
+                &TrackingState::default(),
+                &habits,
+                day5(),
+                &ReminderState::default(),
+                &defaults,
+                now
+            ),
+            Vec::new()
+        );
+        // Cleared anchor.
+        let unanchored = tracker_habit(6, HabitTarget::PerDay(NonZeroCount::new(1).unwrap()), None);
+        let habits = habits_of(&[unanchored]);
+        assert_eq!(
+            due_firings(
+                &BTreeMap::new(),
+                &TrackingState::default(),
+                &habits,
+                day5(),
+                &ReminderState::default(),
+                &defaults,
+                now
+            ),
+            Vec::new()
+        );
+        // Missing row: a hand-constructed ref fires nothing (totality).
+        let reminders = ReminderState::default();
+        assert_eq!(
+            due_firings(
+                &BTreeMap::new(),
+                &TrackingState::default(),
+                &HabitState::default(),
+                day5(),
+                &reminders,
+                &defaults,
+                now
+            ),
+            Vec::new()
+        );
+    }
+
+    #[allow(clippy::too_many_lines)] // the three verdicts read best as one scenario
+    #[test]
+    fn stale_sweep_ages_a_tracker_receipt_once_its_gate_dies() {
+        let defaults = ReminderDefaults::default();
+        let habit = tracker_habit(
+            7,
+            HabitTarget::PerDay(NonZeroCount::new(1).unwrap()),
+            Some(at(9, 0)),
+        );
+        let mut habits = habits_of(std::slice::from_ref(&habit));
+        // A receipt from 91 days ago at that window's anchor reading.
+        let old = stamp(2026, 8, 5, 9, 0);
+        let reminders = ReminderState {
+            deliveries: BTreeSet::from([ReminderDelivery {
+                reminder: tracker_ref(7),
+                occurrence: old,
+                delivered_at: old,
+            }]),
+            ..ReminderState::default()
+        };
+        let now = stamp(2026, 11, 5, 10, 0);
+        // Anchor intact: the current window's reading differs from the
+        // old row → unconsulted, but the alive current-window receipt
+        // survives.
+        let current = ReminderDelivery {
+            reminder: tracker_ref(7),
+            occurrence: stamp(D.0, D.1, D.2, 9, 0),
+            delivered_at: stamp(D.0, D.1, D.2, 9, 0),
+        };
+        let mut with_current = reminders.clone();
+        with_current.deliveries.insert(current);
+        assert!(
+            stale_deliveries(
+                &BTreeMap::new(),
+                &TrackingState::default(),
+                &habits,
+                day5(),
+                &with_current,
+                &defaults,
+                now,
+                delivery_prune_age()
+            )
+            .contains(&ReminderDelivery {
+                reminder: tracker_ref(7),
+                occurrence: old,
+                delivered_at: old
+            })
+        );
+        assert!(
+            !stale_deliveries(
+                &BTreeMap::new(),
+                &TrackingState::default(),
+                &habits,
+                day5(),
+                &with_current,
+                &defaults,
+                now,
+                delivery_prune_age()
+            )
+            .contains(&current)
+        );
+        // Anchor cleared: the gate dies; the old row is unconsulted at
+        // the gate clause too (not merely by the moved effective).
+        habits.habits.get_mut(&habit.id).expect("row").anchor_time = None;
+        assert!(
+            stale_deliveries(
+                &BTreeMap::new(),
+                &TrackingState::default(),
+                &habits,
+                day5(),
+                &with_current,
+                &defaults,
+                now,
+                delivery_prune_age()
+            )
+            .contains(&ReminderDelivery {
+                reminder: tracker_ref(7),
+                occurrence: old,
+                delivered_at: old
+            })
+        );
+        // Quota met at the current window: the same unconsulted verdict.
+        let mut habits = habits_of(std::slice::from_ref(&habit));
+        log_count(&mut habits, &habit, ymd(D.0, D.1, D.2), 1);
+        assert!(
+            stale_deliveries(
+                &BTreeMap::new(),
+                &TrackingState::default(),
+                &habits,
+                day5(),
+                &with_current,
+                &defaults,
+                now,
+                delivery_prune_age()
+            )
+            .contains(&ReminderDelivery {
+                reminder: tracker_ref(7),
+                occurrence: old,
+                delivered_at: old
+            })
+        );
+    }
+
+    #[test]
+    fn tracker_payload_snapshots_the_habit_title_and_stays_normal() {
+        let habit = tracker_habit(
+            8,
+            HabitTarget::PerDay(NonZeroCount::new(1).unwrap()),
+            Some(at(9, 0)),
+        );
+        let habits = habits_of(&[habit]);
+        let t_star = stamp(D.0, D.1, D.2, 9, 0);
+        let firing = ReminderFiring {
+            reminder: tracker_ref(8),
+            anchor: ReminderAnchor::Tracker(habit_by(8, &habits).id),
+            occurrence: t_star,
+        };
+        let notes = notifications_for(
+            &[firing],
+            &BTreeMap::new(),
+            &habits,
+            &ReminderState::default(),
+        );
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].title, "habit 8");
+        assert_eq!(notes[0].insistence, Insistence::Normal);
+        // A missing row skips the payload (the totality rule)…
+        assert_eq!(
+            notifications_for(
+                &[firing],
+                &BTreeMap::new(),
+                &HabitState::default(),
+                &ReminderState::default()
+            ),
+            Vec::new()
+        );
+        // …and so does a tombstoned row.
+        let mut dead_habits = habits.clone();
+        dead_habits
+            .habits
+            .get_mut(&habit_by(8, &habits).id)
+            .expect("row")
+            .deleted = true;
+        assert_eq!(
+            notifications_for(
+                &[firing],
+                &BTreeMap::new(),
+                &dead_habits,
+                &ReminderState::default()
+            ),
+            Vec::new()
+        );
+    }
+
+    fn habit_by(raw: u128, habits: &HabitState) -> crate::habit::Habit {
+        habits
+            .habits
+            .get(&crate::ids::HabitId::from(uuid::Uuid::from_u128(raw)))
+            .expect("fixture row")
+            .clone()
+    }
+
+    #[test]
+    fn night_owl_anchor_fires_in_the_window_tail_at_the_chosen_time() {
+        // day_start 05:00, anchor 03:00: window D's key is D+1 03:00 —
+        // the chosen wall-clock time, once per window.
+        let habit = tracker_habit(
+            9,
+            HabitTarget::PerDay(NonZeroCount::new(1).unwrap()),
+            Some(at(3, 0)),
+        );
+        let habits = habits_of(&[habit]);
+        let reminders = ReminderState::default();
+        let defaults = ReminderDefaults::default();
+        let t_star = stamp(2026, 11, 6, 3, 0);
+        // Window D evening (2026-11-05 20:00): T* not yet reached.
+        assert_eq!(
+            due_firings(
+                &BTreeMap::new(),
+                &TrackingState::default(),
+                &habits,
+                day5(),
+                &reminders,
+                &defaults,
+                stamp(D.0, D.1, D.2, 20, 0)
+            ),
+            Vec::new()
+        );
+        // The tail morning (2026-11-06 03:00): fires, keyed at 03:00.
+        let firings = due_firings(
+            &BTreeMap::new(),
+            &TrackingState::default(),
+            &habits,
+            day5(),
+            &reminders,
+            &defaults,
+            t_star,
+        );
+        assert_eq!(firings.len(), 1);
+        assert_eq!(firings[0].occurrence, t_star);
     }
 }

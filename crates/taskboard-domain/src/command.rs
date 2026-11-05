@@ -1123,6 +1123,8 @@ pub fn plan_command(
                 let dismissals: Vec<PersistenceAction> = active_notifications(
                     &app.tasks,
                     &app.tracking,
+                    &app.habits,
+                    day,
                     &app.reminders,
                     defaults,
                     now,
@@ -1712,7 +1714,13 @@ pub fn plan_command(
                     // which the rules arm above already covers; alarms
                     // are device-global, not board content — a board
                     // clear never touches either.
-                    ReminderRef::Rule(_) | ReminderRef::Adhoc(_) | ReminderRef::Break(_) => false,
+                    // Habit rows survive a board clear (ClearBoardContent
+                    // never touches them), so tracker-nudge facts are no
+                    // more board content than alarms are.
+                    ReminderRef::Rule(_)
+                    | ReminderRef::Adhoc(_)
+                    | ReminderRef::Break(_)
+                    | ReminderRef::Tracker(_) => false,
                 })
                 || board_tasks.iter().any(|t| app.reminders.muted.contains(t));
             if board_stacks.is_empty()
@@ -1911,6 +1919,13 @@ pub fn plan_command(
                         .ok_or(CommandError::UnknownBreakRule(rule_id))?;
                     None
                 }
+                // Edit-style intent: snoozing a dead habit's nudge is a
+                // rejection (the plan D-7 guard shape; the habit row is
+                // the snooze target's "rule row").
+                ReminderRef::Tracker(habit_id) => {
+                    live_habit(app, habit_id)?;
+                    None
+                }
             };
             if let Some(task) = task {
                 live_task(app, task)?;
@@ -1984,6 +1999,18 @@ pub fn plan_command(
                     // board trigger rides the resolved row's board; the
                     // `task = None` stays (no card-scoped op).
                     break_board = Some(rule.board);
+                    None
+                }
+                // The ref must resolve (existence only — a dismissal is
+                // a terminal fact, not an edit; a dead habit's leftover
+                // nudge is dismissable, the break arm's posture minus
+                // the sync: per-device, #504 D-5 — no board ride, no
+                // `UpdateAppData` op).
+                ReminderRef::Tracker(habit_id) => {
+                    app.habits
+                        .habits
+                        .get(&habit_id)
+                        .ok_or(CommandError::UnknownHabit(habit_id))?;
                     None
                 }
             };
@@ -2298,7 +2325,15 @@ pub fn plan_command(
             // in the same batch; the actor's withdraw direction picks
             // them up for the OS toasts.
             actions.extend(
-                active_notifications(&app.tasks, &app.tracking, &app.reminders, defaults, now)
+                active_notifications(
+                    &app.tasks,
+                    &app.tracking,
+                    &app.habits,
+                    day,
+                    &app.reminders,
+                    defaults,
+                    now,
+                )
                     .into_iter()
                     .filter(|note| {
                         matches!(note.anchor, crate::reminders::ReminderAnchor::Task(t) if t == *task)
@@ -9906,6 +9941,118 @@ mod tests {
             assert_eq!(entries.len(), 1);
             assert_eq!(entries[0].end, Some(now()));
         }
+    }
+    // ---- Tracker nudge planner arms (#504, plan D-7/D-5) ---------------
+
+    fn tracker_nudge_ref() -> crate::reminders::ReminderRef {
+        crate::reminders::ReminderRef::Tracker(habit_id())
+    }
+
+    #[test]
+    fn snoozing_a_live_habit_s_nudge_plans_the_chain_link() {
+        let (app, outbox) = habit_app(crate::habit::HabitTarget::PerDay(
+            crate::habit::NonZeroCount::new(1).unwrap(),
+        ));
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::SnoozeReminder {
+                reminder: tracker_nudge_ref(),
+                occurrence: ts(T0),
+                postpone: chrono::TimeDelta::try_minutes(10).unwrap(),
+            },
+        )
+        .expect("a live habit's nudge is snoozable");
+        assert!(matches!(
+            plan.actions[0],
+            PersistenceAction::RecordReminderSnooze(ref link)
+                if link.reminder == tracker_nudge_ref()
+        ));
+    }
+
+    #[test]
+    fn snoozing_a_dead_or_stranger_habit_s_nudge_is_the_typed_rejection() {
+        let (mut app, outbox) = habit_app(crate::habit::HabitTarget::PerDay(
+            crate::habit::NonZeroCount::new(1).unwrap(),
+        ));
+        app.habits.habits.get_mut(&habit_id()).expect("row").deleted = true;
+        let err = run(
+            &app,
+            &outbox,
+            &StateCommand::SnoozeReminder {
+                reminder: tracker_nudge_ref(),
+                occurrence: ts(T0),
+                postpone: chrono::TimeDelta::try_minutes(10).unwrap(),
+            },
+        )
+        .expect_err("a dead habit's nudge is an edit-style rejection");
+        assert!(
+            matches!(err, CommandError::HabitDeleted(id) if id == habit_id()),
+            "the live_habit guard's tombstone verdict"
+        );
+        let (app, outbox) = base();
+        let stranger = crate::reminders::ReminderRef::Tracker(crate::ids::HabitId::from(
+            uuid::Uuid::from_u128(654),
+        ));
+        let err = run(
+            &app,
+            &outbox,
+            &StateCommand::SnoozeReminder {
+                reminder: stranger,
+                occurrence: ts(T0),
+                postpone: chrono::TimeDelta::try_minutes(10).unwrap(),
+            },
+        )
+        .expect_err("a stranger's nudge is a rejection");
+        assert!(
+            matches!(err, CommandError::UnknownHabit(id) if uuid::Uuid::from_u128(654) == id.as_uuid())
+        );
+    }
+
+    #[test]
+    fn dismissing_a_tracker_occurrence_is_device_local() {
+        let (app, outbox) = habit_app(crate::habit::HabitTarget::PerDay(
+            crate::habit::NonZeroCount::new(1).unwrap(),
+        ));
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::DismissReminder {
+                reminder: tracker_nudge_ref(),
+                occurrence: ts(T0 + 60),
+            },
+        )
+        .expect("accepted");
+        // Structural pin (plan D-5): the dismissal records the local
+        // fact and NOTHING else — no `UpdateAppData` op, no board flush
+        // (per-device dismissals; the occurrence keys derive from the
+        // device's day calendar).
+        assert_eq!(plan.actions.len(), 1);
+        assert!(matches!(
+            plan.actions[0],
+            PersistenceAction::RecordReminderDismissal(ref d)
+                if d.reminder == tracker_nudge_ref()
+        ));
+    }
+
+    #[test]
+    fn dismissing_a_stranger_s_tracker_occurrence_is_the_typed_rejection() {
+        let (app, outbox) = base();
+        let stranger = crate::reminders::ReminderRef::Tracker(crate::ids::HabitId::from(
+            uuid::Uuid::from_u128(655),
+        ));
+        let err = run(
+            &app,
+            &outbox,
+            &StateCommand::DismissReminder {
+                reminder: stranger,
+                occurrence: ts(T0),
+            },
+        )
+        .expect_err("a stranger's nudge is a rejection");
+        assert!(
+            matches!(err, CommandError::UnknownHabit(id) if uuid::Uuid::from_u128(655) == id.as_uuid())
+        );
     }
 }
 

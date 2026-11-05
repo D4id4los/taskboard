@@ -671,11 +671,14 @@ pub struct NotificationRow {
 pub fn notification_rows(
     state: &AppState,
     defaults: &taskboard_domain::ReminderDefaults,
+    day: taskboard_domain::DayCalendar,
     now: DateTime<Utc>,
 ) -> Vec<NotificationRow> {
     taskboard_domain::active_notifications(
         &state.tasks,
         &state.tracking,
+        &state.habits,
+        day,
         &state.reminders,
         defaults,
         now,
@@ -686,10 +689,10 @@ pub fn notification_rows(
             state.tasks.get(&task).is_none_or(|t| !is_anchor_task(t))
         }
         // A break row has no card to filter (D-18): always shown, like
-        // an alarm row.
-        taskboard_domain::ReminderAnchor::Alarm(_) | taskboard_domain::ReminderAnchor::Break(_) => {
-            true
-        }
+        // an alarm row — and a tracker nudge row too (no card exists).
+        taskboard_domain::ReminderAnchor::Alarm(_)
+        | taskboard_domain::ReminderAnchor::Break(_)
+        | taskboard_domain::ReminderAnchor::Tracker(_) => true,
     })
     .map(|note| NotificationRow {
         task: match note.anchor {
@@ -697,7 +700,8 @@ pub fn notification_rows(
             // No Done/Mute target; Dismiss/Snooze carry the ref and
             // occurrence themselves (the alarm-row precedent).
             taskboard_domain::ReminderAnchor::Alarm(_)
-            | taskboard_domain::ReminderAnchor::Break(_) => None,
+            | taskboard_domain::ReminderAnchor::Break(_)
+            | taskboard_domain::ReminderAnchor::Tracker(_) => None,
         },
         reminder: note.reminder,
         occurrence: note.occurrence,
@@ -1461,9 +1465,10 @@ pub fn timer_rows(state: &AppState, now: DateTime<Utc>) -> Vec<TimerRow> {
 pub fn awaiting_alarm_count(
     state: &AppState,
     defaults: &taskboard_domain::ReminderDefaults,
+    day: taskboard_domain::DayCalendar,
     now: DateTime<Utc>,
 ) -> usize {
-    notification_rows(state, defaults, now)
+    notification_rows(state, defaults, day, now)
         .iter()
         .filter(|row| matches!(row.reminder, ReminderRef::Adhoc(_)))
         .count()
@@ -1700,7 +1705,12 @@ pub const fn awaiting_row_buttons(anchor: taskboard_domain::ReminderAnchor) -> A
         // A break row behaves like an alarm row for affordances: no
         // task target, so no Done/Mute/Start; the insistence ladder
         // applies as-is.
-        taskboard_domain::ReminderAnchor::Break(_) => AwaitingButtons {
+        // Break and tracker rows behave like an alarm row for
+        // affordances: no task target, so no Done/Mute/Start; the
+        // ladder never applies to a tracker nudge (Normal pinned, #504
+        // D-6).
+        taskboard_domain::ReminderAnchor::Break(_)
+        | taskboard_domain::ReminderAnchor::Tracker(_) => AwaitingButtons {
             dismiss: true,
             done: false,
             snooze: true,
@@ -1838,11 +1848,14 @@ pub struct AlarmRow {
 pub fn alarm_window_rows(
     state: &AppState,
     defaults: &taskboard_domain::ReminderDefaults,
+    day: taskboard_domain::DayCalendar,
     now: DateTime<Utc>,
 ) -> Vec<AlarmRow> {
     taskboard_domain::active_notifications(
         &state.tasks,
         &state.tracking,
+        &state.habits,
+        day,
         &state.reminders,
         defaults,
         now,
@@ -2393,6 +2406,55 @@ mod tests {
     }
 
     #[test]
+    fn tracker_rows_render_taskless_with_the_habit_title() {
+        use taskboard_domain::ReminderDelivery;
+        use taskboard_domain::habit::{Habit, HabitClocks, HabitTarget, NonZeroCount};
+        // Late-evening fixed instant: the day's anchor reading (09:00,
+        // midnight day start) is already behind it — deterministic, no
+        // wall-clock coupling.
+        let now = chrono::TimeZone::timestamp_opt(&Utc, 1_700_000_000, 0)
+            .single()
+            .expect("valid ts");
+        let habit_id = taskboard_domain::HabitId::from_uuid(uuid::Uuid::now_v7());
+        let mut state = AppState::default();
+        state.habits.habits.insert(
+            habit_id,
+            Habit {
+                id: habit_id,
+                board: taskboard_domain::BoardId::from_uuid(uuid::Uuid::now_v7()),
+                title: "stretch".into(),
+                target: HabitTarget::PerDay(NonZeroCount::new(1).unwrap()),
+                order: 0,
+                anchor_time: Some(chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap()),
+                clocks: HabitClocks::all(now),
+                continued_from: None,
+                deleted: false,
+            },
+        );
+        // The delivered key is the window's anchor reading (the same
+        // derivation the evaluator mints), not an arbitrary stamp.
+        let occurrence = calendar().instant(
+            calendar().today(now),
+            chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap(),
+        );
+        state.reminders.deliveries.insert(ReminderDelivery {
+            reminder: ReminderRef::Tracker(habit_id),
+            occurrence,
+            delivered_at: occurrence,
+        });
+        let rows = notification_rows(&state, &defaults(), calendar(), now);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].task, None, "a tracker row has no Done/Mute target");
+        assert_eq!(rows[0].title, "stretch", "the title snapshot is carried");
+        assert_eq!(rows[0].reminder, ReminderRef::Tracker(habit_id));
+        assert_eq!(rows[0].occurrence, occurrence);
+        // The affordance table: dismiss + snooze, never Done/Mute/Start.
+        let buttons = awaiting_row_buttons(taskboard_domain::ReminderAnchor::Tracker(habit_id));
+        assert!(buttons.dismiss && buttons.snooze);
+        assert!(!buttons.done && !buttons.mute && !buttons.track_start);
+    }
+
+    #[test]
     fn notification_rows_follow_the_domain_view_and_filter_the_anchor() {
         use taskboard_domain::ReminderDelivery;
         let now = Utc::now();
@@ -2417,7 +2479,7 @@ mod tests {
         // No delivery yet: not active (the surface is fired ∧ not
         // dismissed — the domain view's contract, not a UI rule).
         assert_eq!(
-            notification_rows(&state, &defaults(), now),
+            notification_rows(&state, &defaults(), calendar(), now),
             [] as [NotificationRow; 0]
         );
 
@@ -2427,7 +2489,7 @@ mod tests {
             occurrence,
             delivered_at: now,
         });
-        let rows = notification_rows(&state, &defaults(), now);
+        let rows = notification_rows(&state, &defaults(), calendar(), now);
         assert_eq!(
             rows,
             vec![NotificationRow {
@@ -2452,7 +2514,7 @@ mod tests {
                 dismissed_at: now,
             });
         assert_eq!(
-            notification_rows(&state, &defaults(), now),
+            notification_rows(&state, &defaults(), calendar(), now),
             [] as [NotificationRow; 0]
         );
     }
@@ -2503,7 +2565,7 @@ mod tests {
             occurrence,
             delivered_at: now,
         });
-        let rows = notification_rows(&state, &defaults(), now);
+        let rows = notification_rows(&state, &defaults(), calendar(), now);
         assert_eq!(rows.len(), 1, "a break row is shown (no card to filter)");
         assert_eq!(rows[0].task, None, "no Done/Mute target");
         assert_eq!(rows[0].title, "time for a break", "the label snapshot");
@@ -2519,7 +2581,7 @@ mod tests {
                 dismissed_at: now,
             });
         assert_eq!(
-            notification_rows(&state, &defaults(), now),
+            notification_rows(&state, &defaults(), calendar(), now),
             [] as [NotificationRow; 0]
         );
     }
@@ -2543,7 +2605,7 @@ mod tests {
             delivered_at: now,
         });
         assert_eq!(
-            notification_rows(&state, &defaults(), now),
+            notification_rows(&state, &defaults(), calendar(), now),
             [] as [NotificationRow; 0]
         );
     }
@@ -2787,11 +2849,17 @@ mod tests {
         state.reminders.alarms.insert(id, alarm(id, "tea", base));
 
         // Not yet delivered: not awaiting.
-        assert_eq!(awaiting_alarm_count(&state, &defaults(), now), 0);
+        assert_eq!(
+            awaiting_alarm_count(&state, &defaults(), calendar(), now),
+            0
+        );
 
         // Fired + delivered: one awaiting row.
         deliver_alarm(&mut state, id, base);
-        assert_eq!(awaiting_alarm_count(&state, &defaults(), now), 1);
+        assert_eq!(
+            awaiting_alarm_count(&state, &defaults(), calendar(), now),
+            1
+        );
 
         // Snoozed to a future target: the delivery keys the old
         // occurrence, the effective walked — the row leaves by
@@ -2803,12 +2871,18 @@ mod tests {
             },
             now + TimeDelta::minutes(10),
         );
-        assert_eq!(awaiting_alarm_count(&state, &defaults(), now), 0);
+        assert_eq!(
+            awaiting_alarm_count(&state, &defaults(), calendar(), now),
+            0
+        );
 
         // Delivered at the new target: awaiting again at that target.
         deliver_alarm(&mut state, id, now + TimeDelta::minutes(10));
         let later = now + TimeDelta::minutes(11);
-        assert_eq!(awaiting_alarm_count(&state, &defaults(), later), 1);
+        assert_eq!(
+            awaiting_alarm_count(&state, &defaults(), calendar(), later),
+            1
+        );
 
         // Dismissed at the effective: gone for good.
         state
@@ -2819,7 +2893,10 @@ mod tests {
                 occurrence: now + TimeDelta::minutes(10),
                 dismissed_at: later,
             });
-        assert_eq!(awaiting_alarm_count(&state, &defaults(), later), 0);
+        assert_eq!(
+            awaiting_alarm_count(&state, &defaults(), calendar(), later),
+            0
+        );
     }
 
     #[test]
@@ -2852,12 +2929,12 @@ mod tests {
                 delivered_at: now,
             });
         assert_eq!(
-            notification_rows(&state, &defaults(), now).len(),
+            notification_rows(&state, &defaults(), calendar(), now).len(),
             1,
             "the task row renders on the surface"
         );
         assert_eq!(
-            awaiting_alarm_count(&state, &defaults(), now),
+            awaiting_alarm_count(&state, &defaults(), calendar(), now),
             0,
             "task-anchored rows never count as awaiting alarms"
         );
@@ -3715,7 +3792,7 @@ mod tests {
         deliver_alarm(&mut state, id, now - TimeDelta::minutes(1));
         deliver_alarm(&mut state, normal, now - TimeDelta::minutes(1));
 
-        let rows = alarm_window_rows(&state, &defaults(), now);
+        let rows = alarm_window_rows(&state, &defaults(), calendar(), now);
         assert_eq!(rows.len(), 1, "only the alarm-insistent row survives");
         assert_eq!(rows[0].alarm, id);
         assert_eq!(rows[0].title, "tea");
@@ -3735,7 +3812,7 @@ mod tests {
                 occurrence: now - TimeDelta::minutes(1),
                 dismissed_at: now,
             });
-        let rows = alarm_window_rows(&state, &defaults(), now);
+        let rows = alarm_window_rows(&state, &defaults(), calendar(), now);
         assert_eq!(rows.len(), 0, "dismissed is gone for good");
         assert!(!alarm_window_open(&rows));
     }
@@ -3764,6 +3841,13 @@ mod tests {
 
     fn defaults() -> taskboard_domain::ReminderDefaults {
         taskboard_domain::ReminderDefaults::default()
+    }
+
+    fn calendar() -> taskboard_domain::DayCalendar {
+        taskboard_domain::DayCalendar {
+            day_start_time: chrono::NaiveTime::MIN,
+            offset: chrono::FixedOffset::east_opt(0).expect("zero is a valid offset"),
+        }
     }
 
     #[test]
@@ -4043,8 +4127,9 @@ mod tests {
                         prop_assert!(state.reminders.rules.values().any(|r| r.task == row.task));
                     }
                     ReminderRef::Default(task) => prop_assert_eq!(task, row.task),
-                    ReminderRef::Adhoc(_) | ReminderRef::Break(_) => {
-                        panic!("banner rows never carry alarm or break refs");
+                    ReminderRef::Adhoc(_) | ReminderRef::Break(_)
+                    | ReminderRef::Tracker(_) => {
+                        panic!("banner rows never carry alarm, break, or tracker refs");
                     }
                 }
             }

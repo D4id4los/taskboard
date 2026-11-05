@@ -597,6 +597,7 @@ fn push_timers(
     state: &AppState,
     reminder_defaults: &taskboard_domain::ReminderDefaults,
     now: DateTime<Utc>,
+    calendar: taskboard_domain::DayCalendar,
     kiosk: bool,
     tables: &mut IdTables,
     models: &mut PushModels,
@@ -610,7 +611,7 @@ fn push_timers(
     let awaiting = if kiosk {
         0
     } else {
-        presentation::awaiting_alarm_count(state, reminder_defaults, now)
+        presentation::awaiting_alarm_count(state, reminder_defaults, calendar, now)
     };
     let shown: Vec<TimerRowModel> = rows
         .iter()
@@ -686,6 +687,7 @@ fn push_notifications(
     state: &AppState,
     reminder_defaults: &taskboard_domain::ReminderDefaults,
     now: DateTime<Utc>,
+    calendar: taskboard_domain::DayCalendar,
     kiosk: bool,
     tables: &mut IdTables,
     models: &mut PushModels,
@@ -693,7 +695,7 @@ fn push_notifications(
     let rows: Vec<presentation::NotificationRow> = if kiosk {
         Vec::new()
     } else {
-        presentation::notification_rows(state, reminder_defaults, now)
+        presentation::notification_rows(state, reminder_defaults, calendar, now)
     };
     tables.notifications.clone_from(&rows);
     let shown: Vec<NotificationRowModel> = rows
@@ -902,6 +904,7 @@ pub fn push(
         state,
         reminder_defaults,
         now,
+        calendar,
         kiosk,
         &mut tables,
         models,
@@ -911,6 +914,7 @@ pub fn push(
         state,
         reminder_defaults,
         now,
+        calendar,
         kiosk,
         &mut tables,
         models,

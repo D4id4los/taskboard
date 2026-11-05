@@ -199,8 +199,12 @@ pub struct Habit {
     /// the UI computes midpoints on drag. `anchor_time` never
     /// influences any ordering.
     pub order: i64,
-    /// Display chip only (D-C13) — a local time-of-day shown next to
-    /// the habit; it is in no ordering path and drives no reminder.
+    /// The tracker nudge's anchor (#504, plan D-1): when set, the
+    /// reminder engine arms a once-per-day-window nudge at this local
+    /// time (gated on the current period's quota); when `None`, the
+    /// habit drives no reminder. In no ordering path (D-C13 verbatim —
+    /// the `anchor_time_never_influences_the_canonical_order` proptest
+    /// stands).
     pub anchor_time: Option<chrono::NaiveTime>,
     /// Per-field LWW clocks.
     pub clocks: HabitClocks,
@@ -1448,5 +1452,146 @@ mod seam_tests {
             habit_streak_unioned(&habit, &log, &tasks, at, day()),
             plain + 1,
         );
+    }
+}
+
+// -- the tracker nudge anchor derivation (#504, plan D-2) ---------------
+
+/// The tracker-nudge occurrence for the day-window `window_date`: the
+/// anchor reading inside that window's span
+/// `[window_start(D), window_start(D+1))` — a stable instant derived
+/// purely from `(anchor_time, window_date, day)`. An anchor *before*
+/// `day_start_time` reads on the window's tail calendar date (the
+/// night-owl rule: window `D` spans into `D+1`'s early morning), so the
+/// key always lies inside `D`'s span and every tick inside the window
+/// derives the same instant — the at-most-once suppression key, stable
+/// while history is stable (the break-rule D-8 law, tracker-shaped).
+/// Never a tick stamp; never an ordering input (D-C13 stands).
+///
+/// The next window derives its own fresh instant, so the nudge re-arms
+/// on period rollover by construction — no stored arm/disarm state.
+/// The in-span law is total for every representable window date; only
+/// within a day of `NaiveDate::MAX` (whose successor date does not
+/// exist) does the tail reading clamp to the latest date — a value no
+/// real calendar ever reaches.
+#[must_use]
+pub fn tracker_anchor_occurrence(
+    anchor_time: chrono::NaiveTime,
+    window_date: NaiveDate,
+    day: DayCalendar,
+) -> DateTime<Utc> {
+    let date = if anchor_time >= day.day_start_time {
+        window_date
+    } else {
+        window_date
+            .checked_add_days(chrono::Days::new(1))
+            .unwrap_or(NaiveDate::MAX)
+    };
+    day.instant(date, anchor_time)
+}
+
+#[cfg(test)]
+mod tracker_anchor_tests {
+    use super::*;
+    use crate::test_support::proptest_config;
+    use chrono::{FixedOffset, NaiveTime};
+    use proptest::prelude::*;
+
+    fn day(day_start_h: u32, offset_secs: i32) -> DayCalendar {
+        DayCalendar {
+            day_start_time: NaiveTime::from_hms_opt(day_start_h, 0, 0)
+                .expect("whole-hour day start"),
+            offset: FixedOffset::east_opt(offset_secs).expect("bounded offset"),
+        }
+    }
+
+    fn date(y: i32, m: u32, d: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, d).expect("valid date")
+    }
+
+    fn anchor(h: u32, m: u32) -> NaiveTime {
+        NaiveTime::from_hms_opt(h, m, 0).expect("whole-minute anchor")
+    }
+
+    #[test]
+    fn tracker_anchor_occurrence_common_case_is_the_same_calendar_day() {
+        let day = day(5, 0);
+        let at = anchor(9, 30);
+        let d = date(2026, 11, 5);
+        assert_eq!(
+            tracker_anchor_occurrence(at, d, day),
+            day.instant(d, at),
+            "anchor ≥ day_start reads on the window's own calendar date"
+        );
+    }
+
+    #[test]
+    fn tracker_anchor_occurrence_night_owl_tail_reads_the_next_calendar_day() {
+        let day = day(5, 0);
+        let at = anchor(3, 0);
+        let d = date(2026, 11, 5);
+        let next = d.checked_add_days(chrono::Days::new(1)).unwrap();
+        assert_eq!(
+            tracker_anchor_occurrence(at, d, day),
+            day.instant(next, at),
+            "anchor < day_start reads on the window's tail calendar date"
+        );
+    }
+
+    #[test]
+    fn tracker_anchor_occurrence_at_day_start_is_the_window_open() {
+        let day = day(5, 0);
+        let at = anchor(5, 0);
+        let d = date(2026, 11, 5);
+        assert_eq!(tracker_anchor_occurrence(at, d, day), day.instant(d, at));
+    }
+
+    proptest! {
+        #![proptest_config(proptest_config(256))]
+
+        #[test]
+        fn tracker_anchor_occurrence_lies_inside_its_window_span(
+            anchor_secs in 0_u32..86_400_u32,
+            start_secs in 0_u32..86_400_u32,
+            offset_secs in -50_400_i32..50_400_i32,
+            ce_day in 20_000_i32..60_000_i32,
+        ) {
+            let at = NaiveTime::from_num_seconds_from_midnight_opt(anchor_secs, 0)
+                .expect("in-range seconds-of-day");
+            let day = DayCalendar {
+                day_start_time: NaiveTime::from_num_seconds_from_midnight_opt(start_secs, 0)
+                    .expect("in-range seconds-of-day"),
+                offset: FixedOffset::east_opt(offset_secs).expect("bounded offset"),
+            };
+            let d = NaiveDate::from_num_days_from_ce_opt(ce_day).expect("in-range CE day");
+            let t = tracker_anchor_occurrence(at, d, day);
+            let start = crate::days::window_start(d, day.day_start_time, day.offset);
+            let next = d.checked_add_days(chrono::Days::new(1)).expect("in-range");
+            let end = crate::days::window_start(next, day.day_start_time, day.offset);
+            prop_assert!(t >= start && t < end, "the key must lie inside D's window span");
+        }
+
+        #[test]
+        fn tracker_anchor_occurrence_is_monotone_across_window_dates(
+            anchor_secs in 0_u32..86_400_u32,
+            start_secs in 0_u32..86_400_u32,
+            offset_secs in -50_400_i32..50_400_i32,
+            ce_day in 20_000_i32..60_000_i32,
+        ) {
+            let at = NaiveTime::from_num_seconds_from_midnight_opt(anchor_secs, 0)
+                .expect("in-range seconds-of-day");
+            let day = DayCalendar {
+                day_start_time: NaiveTime::from_num_seconds_from_midnight_opt(start_secs, 0)
+                    .expect("in-range seconds-of-day"),
+                offset: FixedOffset::east_opt(offset_secs).expect("bounded offset"),
+            };
+            let d = NaiveDate::from_num_days_from_ce_opt(ce_day).expect("in-range CE day");
+            let next = d.checked_add_days(chrono::Days::new(1)).expect("in-range");
+            prop_assert!(
+                tracker_anchor_occurrence(at, next, day)
+                    > tracker_anchor_occurrence(at, d, day),
+                "distinct window dates derive distinct, ordered keys"
+            );
+        }
     }
 }

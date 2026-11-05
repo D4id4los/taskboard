@@ -123,16 +123,25 @@ impl EngineCore {
     #[must_use]
     pub fn due_reminder_firings(
         &self,
+        day: taskboard_domain::DayCalendar,
         defaults: &taskboard_domain::ReminderDefaults,
         now: DateTime<Utc>,
     ) -> Vec<taskboard_domain::ReminderFiring> {
         taskboard_domain::due_firings(
             &self.state.tasks,
             &self.state.tracking,
+            &self.state.habits,
+            day,
             &self.state.reminders,
             defaults,
             now,
         )
+    }
+
+    /// The habit map (the tracker-nudge pass's rows).
+    #[must_use]
+    pub fn habits(&self) -> &taskboard_domain::habit::HabitState {
+        &self.state.habits
     }
 
     /// The task map (the notification title lookup).

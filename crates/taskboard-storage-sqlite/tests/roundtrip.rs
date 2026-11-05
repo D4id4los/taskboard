@@ -1975,6 +1975,11 @@ async fn open_respite_and_break_rule_rehydrate_into_a_firing() {
     let firings = taskboard_domain::reminders::due_firings(
         &loaded.tasks,
         &loaded.tracking,
+        &loaded.habits,
+        taskboard_domain::days::DayCalendar {
+            day_start_time: chrono::NaiveTime::MIN,
+            offset: chrono::FixedOffset::east_opt(0).unwrap(),
+        },
         &loaded.reminders,
         &taskboard_domain::reminders::ReminderDefaults::default(),
         ts(4_000),
@@ -2009,9 +2014,7 @@ async fn open_respite_and_break_rule_rehydrate_into_a_firing() {
 #[tokio::test]
 async fn break_ref_suppression_rows_round_trip_through_sqlite() {
     use taskboard_domain::ids::BreakRuleId;
-    use taskboard_domain::reminders::{
-        ReminderDelivery, ReminderDismissal, ReminderSnooze, ReminderSnoozeKey,
-    };
+    use taskboard_domain::reminders::{ReminderDelivery, ReminderDismissal, ReminderSnooze};
 
     let mut db = common::FileDb::new().await;
     let repo = db.repo();
@@ -2052,7 +2055,7 @@ async fn break_ref_suppression_rows_round_trip_through_sqlite() {
         loaded
             .reminders
             .snoozes
-            .get(&ReminderSnoozeKey {
+            .get(&taskboard_domain::reminders::ReminderSnoozeKey {
                 reminder,
                 occurrence: ts(5_000)
             })
@@ -2318,6 +2321,89 @@ async fn pre_0021_database_upgrades_and_backfills_the_board() {
     assert!(
         loaded.reminders.break_rules.is_empty(),
         "the zero-board row skips at load (the recorded leniency)"
+    );
+    db.close().await;
+}
+
+/// The tracker-restart pin (#504, plan item 20): a persisted state
+/// carrying tracker deliveries, dismissals, and snoozes rehydrates and
+/// re-evaluates identically — the delivery receipt suppresses the
+/// second toast across a reload (the durable-guard journey).
+#[tokio::test]
+async fn tracker_receipts_rehydrate_and_still_guard_the_toast() {
+    use taskboard_domain::habit::{Habit, HabitClocks, HabitState, HabitTarget, NonZeroCount};
+    use taskboard_domain::reminders::{ReminderDelivery, ReminderDismissal, ReminderSnooze};
+
+    let mut db = common::FileDb::new().await;
+    let repo = db.repo();
+    let b = board(11);
+    let s = stack(2, &b);
+    let t = task(1, &s, BTreeMap::default());
+    let habit_id = taskboard_domain::ids::HabitId::from(uuid::Uuid::from_u128(90));
+    let habit = Habit {
+        id: habit_id,
+        board: b.id,
+        title: "stretch".into(),
+        target: HabitTarget::PerDay(NonZeroCount::new(1).unwrap()),
+        order: 0,
+        // Anchor 09:00 with a midnight day start: the 1970 epoch-scale
+        // ts() stamps sit inside the same window as their own day.
+        anchor_time: Some(chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap()),
+        clocks: HabitClocks::all(ts(1_000)),
+        continued_from: None,
+        deleted: false,
+    };
+    let day = taskboard_domain::days::DayCalendar {
+        day_start_time: chrono::NaiveTime::MIN,
+        offset: chrono::FixedOffset::east_opt(0).unwrap(),
+    };
+    let window_date = day.today(ts(4_000));
+    let t_star = day.instant(window_date, habit.anchor_time.unwrap());
+    let reminder = taskboard_domain::reminders::ReminderRef::Tracker(habit_id);
+    let mut habits = HabitState::default();
+    habits.habits.insert(habit_id, habit);
+    repo.apply(vec![
+        PersistenceAction::UpsertBoard(b),
+        PersistenceAction::UpsertStack(s),
+        PersistenceAction::UpsertTask(t),
+        PersistenceAction::UpsertHabit(habits.habits[&habit_id].clone()),
+        PersistenceAction::RecordReminderDelivery(ReminderDelivery {
+            reminder,
+            occurrence: t_star,
+            delivered_at: t_star,
+        }),
+        PersistenceAction::RecordReminderDismissal(ReminderDismissal {
+            reminder,
+            occurrence: t_star,
+            dismissed_at: t_star,
+        }),
+        PersistenceAction::RecordReminderSnooze(ReminderSnooze {
+            reminder,
+            occurrence: t_star,
+            rescheduled_to: ts(9_000),
+        }),
+    ])
+    .await
+    .expect("apply");
+
+    // "Restart": a fresh load, then the pure evaluation.
+    let loaded = repo.load().await.expect("load");
+    assert_eq!(loaded.habits.habits[&habit_id].title, "stretch");
+    assert!(loaded.reminders.is_delivered(&reminder, &t_star));
+    assert!(loaded.reminders.is_dismissed(&reminder, &t_star));
+    let defaults = taskboard_domain::reminders::ReminderDefaults::default();
+    let firings = taskboard_domain::reminders::due_firings(
+        &loaded.tasks,
+        &loaded.tracking,
+        &loaded.habits,
+        day,
+        &loaded.reminders,
+        &defaults,
+        ts(4_000),
+    );
+    assert!(
+        firings.iter().all(|f| f.reminder != reminder),
+        "the delivered ∧ dismissed occurrence is quiet across the reload"
     );
     db.close().await;
 }

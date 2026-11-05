@@ -255,11 +255,14 @@ pub(crate) fn chime_samples() -> Vec<f32> {
 pub(crate) fn awaiting_alarms(
     state: &AppState,
     defaults: &ReminderDefaults,
+    day: taskboard_domain::DayCalendar,
     now: DateTime<Utc>,
 ) -> Vec<Notification> {
     taskboard_domain::active_notifications(
         &state.tasks,
         &state.tracking,
+        &state.habits,
+        day,
         &state.reminders,
         defaults,
         now,
@@ -481,6 +484,7 @@ async fn apply(sink: &dyn NotificationSink, chime: &dyn ChimeSink, action: Escal
 pub(crate) fn spawn_escalation_driver(
     state: Arc<arc_swap::ArcSwap<AppState>>,
     defaults: ReminderDefaults,
+    day: taskboard_domain::DayCalendar,
     sink: Arc<dyn NotificationSink>,
     chime: Arc<dyn ChimeSink>,
     mut signals: broadcast::Receiver<EngineSignal>,
@@ -491,7 +495,7 @@ pub(crate) fn spawn_escalation_driver(
         let mut memory = LadderMemory::default();
         loop {
             let now = clock.now();
-            let awaiting = awaiting_alarms(&state.load(), &defaults, now);
+            let awaiting = awaiting_alarms(&state.load(), &defaults, day, now);
             if awaiting.is_empty() {
                 // Bookkeeping dies with the set (D-12); park on the
                 // signal lane with NO timer armed.
@@ -865,6 +869,70 @@ mod tests {
         (state, id)
     }
 
+    /// A delivered, Normal-insistent tracker nudge rides the same
+    /// notification lane the ladder filters — the genericity pin (#504
+    /// D-6): the filter reads insistence, never the ref family.
+    fn tracker_row_state() -> AppState {
+        use taskboard_domain::habit::{Habit, HabitClocks, HabitTarget, NonZeroCount};
+        let habit_id = taskboard_domain::HabitId::from_uuid(uuid::Uuid::now_v7());
+        let mut state = AppState::default();
+        state.habits.habits.insert(
+            habit_id,
+            Habit {
+                id: habit_id,
+                board: taskboard_domain::BoardId::from_uuid(uuid::Uuid::now_v7()),
+                title: "stretch".to_owned(),
+                target: HabitTarget::PerDay(NonZeroCount::new(1).unwrap()),
+                order: 0,
+                anchor_time: Some(chrono::NaiveTime::from_hms_opt(0, 30, 0).unwrap()),
+                clocks: HabitClocks::all(T0 - TimeDelta::hours(1)),
+                continued_from: None,
+                deleted: false,
+            },
+        );
+        let occurrence = T0 - chrono::TimeDelta::try_minutes(30).expect("30 min"); // the window's anchor reading (00:30, midnight day start)
+        state
+            .reminders
+            .deliveries
+            .insert(taskboard_domain::ReminderDelivery {
+                reminder: ReminderRef::Tracker(habit_id),
+                occurrence,
+                delivered_at: occurrence,
+            });
+        state
+    }
+
+    #[test]
+    fn a_normal_tracker_row_never_enters_the_awaiting_set_and_disturbs_no_alarm() {
+        let day = taskboard_domain::days::DayCalendar {
+            day_start_time: chrono::NaiveTime::MIN,
+            offset: chrono::FixedOffset::east_opt(0).unwrap(),
+        };
+        // The tracker row alone: the ladder sees nothing.
+        assert_eq!(
+            awaiting_alarms(
+                &tracker_row_state(),
+                &defaults(),
+                day,
+                T0 + TimeDelta::minutes(1)
+            ),
+            [] as [taskboard_domain::Notification; 0]
+        );
+        // Beside an awaiting alarm: exactly the alarm, unperturbed.
+        let (mut state, alarm_id) = awaiting_notification_state();
+        let tracker = tracker_row_state();
+        state.habits = tracker.habits.clone();
+        state
+            .reminders
+            .deliveries
+            .extend(tracker.reminders.deliveries.iter().copied());
+        let awaiting = awaiting_alarms(&state, &defaults(), day, T0 + TimeDelta::minutes(1));
+        assert_eq!(awaiting.len(), 1);
+        assert!(
+            matches!(awaiting[0].anchor, taskboard_domain::ReminderAnchor::Alarm(a) if a == alarm_id)
+        );
+    }
+
     fn defaults() -> ReminderDefaults {
         ReminderDefaults::default()
     }
@@ -969,7 +1037,15 @@ mod tests {
                 occurrence: T0,
                 delivered_at: T0,
             });
-        let awaiting = awaiting_alarms(&state, &defaults(), T0 + TimeDelta::minutes(1));
+        let awaiting = awaiting_alarms(
+            &state,
+            &defaults(),
+            taskboard_domain::days::DayCalendar {
+                day_start_time: chrono::NaiveTime::MIN,
+                offset: chrono::FixedOffset::east_opt(0).unwrap(),
+            },
+            T0 + TimeDelta::minutes(1),
+        );
         assert_eq!(awaiting.len(), 1, "only the alarm-insistent row survives");
         assert_eq!(awaiting[0].insistence, Insistence::Alarm);
         assert_eq!(awaiting[0].reminder, ReminderRef::Adhoc(id));
@@ -1037,6 +1113,10 @@ mod tests {
         let driver = spawn_escalation_driver(
             Arc::clone(&state),
             defaults(),
+            taskboard_domain::days::DayCalendar {
+                day_start_time: chrono::NaiveTime::MIN,
+                offset: chrono::FixedOffset::east_opt(0).unwrap(),
+            },
             Arc::clone(&sink) as Arc<dyn NotificationSink>,
             disabled_chime(),
             signals_tx.subscribe(),
@@ -1130,6 +1210,10 @@ mod tests {
         let driver = spawn_escalation_driver(
             state,
             defaults(),
+            taskboard_domain::days::DayCalendar {
+                day_start_time: chrono::NaiveTime::MIN,
+                offset: chrono::FixedOffset::east_opt(0).unwrap(),
+            },
             Arc::clone(&sink) as Arc<dyn NotificationSink>,
             disabled_chime(),
             rx,
@@ -1153,6 +1237,10 @@ mod tests {
         let driver = spawn_escalation_driver(
             state,
             defaults(),
+            taskboard_domain::days::DayCalendar {
+                day_start_time: chrono::NaiveTime::MIN,
+                offset: chrono::FixedOffset::east_opt(0).unwrap(),
+            },
             Arc::new(crate::notifications::LogSink) as Arc<dyn NotificationSink>,
             disabled_chime(),
             rx,

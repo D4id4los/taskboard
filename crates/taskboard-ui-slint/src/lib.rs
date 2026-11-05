@@ -245,6 +245,9 @@ struct AlarmLanes {
     /// The derivation defaults injected at hand-over (the same
     /// consumers contract as the notification surface's).
     defaults: taskboard_domain::ReminderDefaults,
+    /// The day convention injected at hand-over (the tracker pass's
+    /// window derivation; the adapter's `calendar()` contract).
+    calendar: taskboard_domain::DayCalendar,
 }
 
 // -- test seams (the lib flow/buffer harnesses; never shipped) ------
@@ -337,6 +340,10 @@ pub fn mount(
         Some(std::rc::Rc::new(install_alarm_lanes(
             commands,
             settings.reminder_defaults,
+            taskboard_domain::DayCalendar {
+                day_start_time: settings.day_start.0,
+                offset: settings.day_start.1,
+            },
         )))
     };
     let status_timer = std::rc::Rc::new(slint::Timer::default());
@@ -489,12 +496,14 @@ pub const TOOLTIP_DELAY_MS: u64 = 600;
 fn install_alarm_lanes(
     commands: mpsc::Sender<StateCommand>,
     defaults: taskboard_domain::ReminderDefaults,
+    calendar: taskboard_domain::DayCalendar,
 ) -> AlarmLanes {
     AlarmLanes {
         window: std::cell::RefCell::new(None),
         commands,
         rows: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
         defaults,
+        calendar,
     }
 }
 
@@ -754,7 +763,7 @@ fn run_alarm_pass(
     minute_boundary: bool,
 ) {
     let now = chrono::Utc::now();
-    let rows = presentation::alarm_window_rows(&state.load(), &lanes.defaults, now);
+    let rows = presentation::alarm_window_rows(&state.load(), &lanes.defaults, lanes.calendar, now);
     let gained = presentation::attention_due(&rows, &lanes.rows.borrow());
     if presentation::alarm_window_open(&rows) {
         // Lazy build (the mount grows no window until an alarm waits):
