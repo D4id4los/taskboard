@@ -1,0 +1,831 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+//! The attach ceremony and the steady-cycle state machine (decision
+//! D-FT8), generic over the [`FilesTransport`] seam: PROPFIND → dirty
+//! / vanished sets → tolerant re-read → the chunk-1 fold over
+//! `local + seed + peers` → the local-hash skip-compare → guarded
+//! PUTs → status/backoff bookkeeping.
+//!
+//! The discipline this module exists to enforce:
+//! - **Create-once everywhere on first contact** (`If-None-Match: *`);
+//!   a `412` there is an *adoption* arm, never a fork.
+//! - **Guarded rewrites**: a `put_if_match` is issued only when the
+//!   etag store holds a token for the path — a cold store GETs first
+//!   (the adopting read) and never PUTs unguarded.
+//! - **The fork alarm** (D-SF4/D-FT6): an unexpected `412` on an own
+//!   single-writer path is disambiguated by one GET — 404 ⇒
+//!   `OwnFileVanished` (drop the token; recreate next cycle), 200 ⇒
+//!   `ForkDetected` (stop-write that path forever, keep reading,
+//!   `error!` loudly). No retry loop re-PUTs after a fork-indicating
+//!   412.
+//! - **Skip-PUT by local content hash** (F5): server etags churn per
+//!   upload, so `StateHash::of` against the last *published* hash is
+//!   the only skip criterion.
+//! - **Readers never delete**: a vanished peer device's rows simply
+//!   leave the merged view; nothing is removed on the server.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
+use std::time::Duration;
+
+use chrono::{DateTime, Utc};
+use taskboard_domain::Clock;
+use taskboard_sync_files::document::{DOCUMENT_FORMAT, UserDocument, UserRecord, UserSections};
+use taskboard_sync_files::fold::fold;
+use taskboard_sync_files::hash::StateHash;
+use taskboard_sync_files::heartbeat::DeviceInfo;
+use taskboard_sync_files::identity::{DeviceIdentity, FolderIdentity};
+use taskboard_sync_files::ids::DeviceId;
+use taskboard_sync_files::layout::{
+    self, APPDATA_FILE_NAME, DEVICES_DIR_NAME, IDENTITY_FILE_NAME, ROOT_FOLDER_NAME,
+    TREE_FORMAT_VERSION,
+};
+use tokio::sync::watch;
+
+use crate::error::TransportError;
+use crate::etag::EtagStore;
+use crate::status::{CycleOutcome, FilesSyncStatus, ParkKind};
+use crate::transport::{FilesTransport, PropfindListing, PutOutcome};
+
+/// The device's own contribution to the merged view (D-SF5's "+ the
+/// local engine state as one more input"; D-SF12's materialise-from-
+/// state). Chunk 2 ships the empty document; chunk 3 derives it from
+/// the published `ArcSwap<AppState>` — this trait is the seam that
+/// chunk adds an implementation to, no surgery on the loop.
+pub trait LocalDocument: Send + Sync {
+    fn document(&self) -> UserDocument;
+}
+
+/// The chunk-2 production local contribution: nothing. The cycle,
+/// config gate, and wiring are complete and honest without the engine
+/// (peers fold, the device publishes its merged view, the heartbeat
+/// carries its hash).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct EmptyDocument;
+
+impl LocalDocument for EmptyDocument {
+    fn document(&self) -> UserDocument {
+        UserDocument {
+            format: DOCUMENT_FORMAT,
+            sections: UserSections::default(),
+            unknown: BTreeMap::default(),
+        }
+    }
+}
+
+/// Everything the cycle needs besides the transport and its mutable
+/// state — the injected identity facts and knobs.
+pub struct SyncContext {
+    /// This device's identity (the `device.json` ceremony's product).
+    pub identity: DeviceIdentity,
+    /// The heartbeat's `app_version`.
+    pub app_version: String,
+    /// The clock every stamp the cycle mints rides.
+    pub clock: Arc<dyn Clock>,
+    /// The local contribution to the fold.
+    pub local: Arc<dyn LocalDocument>,
+}
+
+/// The actor's mutable state, process-local (decision D-FT4). A
+/// restart starts empty — one honest full-read cycle (the fold is
+/// idempotent; D-SF19 zero migrations).
+#[derive(Debug, Default)]
+pub struct LoopState {
+    /// The attach ceremony completed; the steady cycle runs.
+    attached: bool,
+    pub etags: EtagStore,
+    /// Last decoded peer document per device (excl. self).
+    docs: BTreeMap<DeviceId, UserDocument>,
+    /// Last decoded peer heartbeat (chunk 4's freshness input).
+    heartbeats: BTreeMap<DeviceId, DeviceInfo>,
+    /// Adopted own-file content (a former install's `appdata.json`),
+    /// folded into every merged view until the seeding subtree
+    /// vanishes — *retained*, not consumed-once: a once-consumed seed
+    /// would silently drop the adopted rows at the second publish
+    /// (the re-publication semantics matrix test 11 pins). Cleared
+    /// when the self subtree leaves the listing or the path forks.
+    publish_seed: Option<UserDocument>,
+    /// Hash of the last successfully published view.
+    published_hash: Option<StateHash>,
+    /// Set at attach and on every appdata publish.
+    pending_heartbeat: bool,
+    /// The stop-write set (the fork alarm).
+    forked_paths: BTreeSet<String>,
+    /// Parked peer paths (D-SF15) → why.
+    parked: BTreeMap<String, ParkKind>,
+    /// Consecutive transport-class failures (the rescheduling input).
+    pub failure_streak: u32,
+    /// The server's advertised `Retry-After` floor, when it sent one.
+    pub retry_after_floor: Duration,
+    /// When this device last wrote its own heartbeat.
+    last_heartbeat_at: Option<DateTime<Utc>>,
+}
+
+/// How a cycle ended, for the actor's rescheduling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CycleVerdict {
+    Completed {
+        published: bool,
+        read_devices: usize,
+    },
+    /// The cycle failed. `retryable` marks the transport class (the
+    /// backoff escalates on it); `retry_after` carries a parsed
+    /// `Retry-After` floor when the server advertised one.
+    Failed {
+        retryable: bool,
+        retry_after: Duration,
+    },
+}
+
+/// Root-inclusive substrate path of a below-root layout path.
+fn rooted(rel: &str) -> String {
+    format!("{ROOT_FOLDER_NAME}/{rel}")
+}
+
+/// A structured finding record (the loud half of "surface loudly";
+/// the watch carries the state half). Chunk 4 maps these onto the
+/// status vocabulary.
+fn finding(event: &str, path: &str) {
+    tracing::warn!(event, path, "files-sync finding");
+}
+
+fn fork_alarm(path: &str) {
+    tracing::error!(
+        event = "ForkDetected",
+        path,
+        "another writer holds this device's single-writer path; \
+         writes to it stop, reads continue"
+    );
+}
+
+/// Runs one cycle: attach first when needed, then the steady cycle.
+/// State mutations and the status watch update happen on every path
+/// where they are meaningful (the stop-write set, parks, streaks).
+pub async fn run_cycle<T: FilesTransport>(
+    transport: &T,
+    ctx: &SyncContext,
+    st: &mut LoopState,
+    status: &watch::Sender<FilesSyncStatus>,
+) -> CycleVerdict {
+    let verdict = if st.attached {
+        steady_cycle(transport, ctx, st).await
+    } else {
+        attach(transport, ctx, st).await
+    };
+    match verdict {
+        Ok((published, read_devices)) => {
+            st.failure_streak = 0;
+            st.retry_after_floor = Duration::ZERO;
+            publish_status(
+                status,
+                Some(&CycleOutcome::Ok {
+                    published,
+                    read_devices,
+                }),
+                st,
+            );
+            CycleVerdict::Completed {
+                published,
+                read_devices,
+            }
+        }
+        Err(err) => {
+            let retryable = err.is_transport();
+            if !retryable {
+                tracing::warn!(event = "CycleFailedTyped", error = %err, "files-sync finding");
+            }
+            st.failure_streak += 1;
+            let retry_after = match &err {
+                TransportError::RateLimited { retry_after } => retry_after.unwrap_or_default(),
+                _ => Duration::ZERO,
+            };
+            st.retry_after_floor = retry_after;
+            publish_status(status, Some(&CycleOutcome::Failed), st);
+            CycleVerdict::Failed {
+                retryable,
+                retry_after,
+            }
+        }
+    }
+}
+
+fn publish_status(
+    status: &watch::Sender<FilesSyncStatus>,
+    last_cycle: Option<&CycleOutcome>,
+    st: &LoopState,
+) {
+    status.send_modify(|current| {
+        current.last_cycle = last_cycle.cloned();
+        current.forked_paths.clone_from(&st.forked_paths);
+        current.parked.clone_from(&st.parked);
+        current.last_heartbeat_written = st.last_heartbeat_at;
+    });
+}
+
+// ------------------------------------------------------------------
+// The attach ceremony (D-FT8, arms 2–9; arm 1 — device.json — ran at
+// spawn; `Unusable` there parks the actor before any server request).
+// Every arm's network failure is a cycle failure; the backoff retries
+// the whole ceremony (it is idempotent).
+// ------------------------------------------------------------------
+
+/// The MKCOL ladder arm: created (201) or the exists-ok posture
+/// (405); any other status is a typed error.
+async fn mkcol_exists_ok<T: FilesTransport>(
+    transport: &T,
+    path: &str,
+) -> Result<(), TransportError> {
+    match transport.mkcol(path).await? {
+        crate::transport::MkcolOutcome::Created | crate::transport::MkcolOutcome::AlreadyExists => {
+            Ok(())
+        }
+    }
+}
+
+async fn attach<T: FilesTransport>(
+    transport: &T,
+    ctx: &SyncContext,
+    st: &mut LoopState,
+) -> Result<(bool, usize), TransportError> {
+    let self_dir = rooted(&format!("{DEVICES_DIR_NAME}/{}", ctx.identity.device_id));
+    mkcol_exists_ok(transport, ROOT_FOLDER_NAME).await?;
+    mkcol_exists_ok(transport, &rooted(DEVICES_DIR_NAME)).await?;
+    mkcol_exists_ok(transport, &self_dir).await?;
+
+    // identity.json: create-once; a 412 means another device won the
+    // create race — adopt the winner (F3).
+    let identity_path = rooted(IDENTITY_FILE_NAME);
+    let folder = FolderIdentity {
+        // A fresh v7 UUID minted at this one site; the payload is only
+        // ever echoed back (never a path, never an order key — the
+        // chunk-1 payload's contract), so the substrate's mint is its
+        // source without a second uuid creation surface.
+        folder_id: ctx.identity.device_id.as_uuid(),
+        format_version: TREE_FORMAT_VERSION,
+        created_at: ctx.identity.created_at,
+    };
+    let body = serde_json::to_vec(&folder)?;
+    match transport.put_create(&identity_path, &body).await {
+        Ok(_) => {}
+        Err(TransportError::PreconditionFailed) => {
+            let served = transport.get(&identity_path).await?;
+            let adopted: FolderIdentity =
+                serde_json::from_slice(&served.bytes).map_err(|_| TransportError::BadRequest)?;
+            if adopted.format_version > TREE_FORMAT_VERSION {
+                // A folder our older reader cannot represent: unusable,
+                // fail closed (writing here would corrupt a newer tree).
+                finding("FolderNewerFormat", &identity_path);
+                return Err(TransportError::BadRequest);
+            }
+        }
+        Err(other) => return Err(other),
+    }
+
+    // First read: the full dirty set (the store is cold, so every
+    // listed peer re-reads — the honest full-read cycle).
+    let listing = transport.propfind_devices().await?;
+    ingest_listing(&listing, ctx, st);
+    read_dirty_peers(transport, ctx, st).await?;
+
+    // Own appdata: first publish (create-once, content = the merged
+    // view). A 412 ⇒ adopt: the served content seeds the next
+    // publish; a corrupt seed stops writes to the path (fail closed —
+    // publishing an empty merged view over an unrecoverable own
+    // history is data loss).
+    let appdata_path = rooted(&layout::device_appdata_path(ctx.identity.device_id));
+    let merged = merged_view(ctx, st);
+    let appdata_bytes = serde_json::to_vec(&merged)?;
+    match transport.put_create(&appdata_path, &appdata_bytes).await {
+        Ok(outcome) => {
+            record_put(st, &appdata_path, &outcome);
+            st.published_hash = Some(StateHash::of(&merged));
+            st.pending_heartbeat = true;
+        }
+        Err(TransportError::PreconditionFailed) => {
+            adopt_own_file(transport, st, &appdata_path).await?;
+        }
+        Err(other) => return Err(other),
+    }
+
+    // Own heartbeat: create-once; a 412 ⇒ adopt (get + capture the
+    // etag only — the content is ours to rewrite next cycle).
+    let info_path = rooted(&layout::device_info_path(ctx.identity.device_id));
+    let heartbeat = heartbeat_for(ctx, &merged_view(ctx, st));
+    let info_bytes = serde_json::to_vec(&heartbeat)?;
+    match transport.put_create(&info_path, &info_bytes).await {
+        Ok(outcome) => {
+            record_put(st, &info_path, &outcome);
+            st.pending_heartbeat = false;
+            st.last_heartbeat_at = Some(ctx.clock.now());
+        }
+        Err(TransportError::PreconditionFailed) => {
+            adopt_own_file(transport, st, &info_path).await?;
+        }
+        Err(other) => return Err(other),
+    }
+
+    st.attached = true;
+    Ok((true, st.docs.len()))
+}
+
+/// The adopting read (adoption arms): GET the own file and store its
+/// etag — the token that guards the next rewrite. When the file is
+/// appdata, decode it as the publish seed; a corrupt seed quarantines
+/// the path (stop-write, fail closed).
+async fn adopt_own_file<T: FilesTransport>(
+    transport: &T,
+    st: &mut LoopState,
+    path: &str,
+) -> Result<(), TransportError> {
+    finding("OwnFileAdopted", path);
+    match transport.get(path).await {
+        Ok(content) => {
+            record_get(st, path, &content);
+            if path.ends_with(APPDATA_FILE_NAME) {
+                match serde_json::from_slice::<UserDocument>(&content.bytes) {
+                    Ok(document) if document.format <= DOCUMENT_FORMAT => {
+                        st.publish_seed = Some(document);
+                    }
+                    _ => {
+                        st.forked_paths.insert(path.to_owned());
+                        st.parked.insert(path.to_owned(), ParkKind::Quarantined);
+                        finding("OwnSeedQuarantined", path);
+                    }
+                }
+            }
+            Ok(())
+        }
+        Err(TransportError::NotFound) => {
+            // The create raced a delete; the next cycle recreates via
+            // create-once. Nothing is stored, so the cold-store rule
+            // keeps guarding.
+            Ok(())
+        }
+        Err(other) => Err(other),
+    }
+}
+
+// ------------------------------------------------------------------
+// The steady cycle.
+// ------------------------------------------------------------------
+
+async fn steady_cycle<T: FilesTransport>(
+    transport: &T,
+    ctx: &SyncContext,
+    st: &mut LoopState,
+) -> Result<(bool, usize), TransportError> {
+    // 1. PROPFIND devices/ → dirty / vanished sets.
+    let listing = transport.propfind_devices().await?;
+    for device in ingest_listing(&listing, ctx, st) {
+        // The tree is the truth: a vanished device's rows leave the
+        // merged view (its subtree was removed in the Files UI; the
+        // trashbin is the user's recovery). Nothing on the server is
+        // touched — readers never delete.
+        st.docs.remove(&device);
+        st.heartbeats.remove(&device);
+    }
+    // 2. changed-set re-read. Self is never dirty in steady state:
+    // own files are output-only, and every self-read happens at
+    // attach/adoption, feeding the seed (D-FT4).
+    read_dirty_peers(transport, ctx, st).await?;
+
+    // 3. fold over local + seed + peers.
+    let merged = merged_view(ctx, st);
+    // 4. the local-hash skip-compare (never a server etag, F5).
+    let hash = StateHash::of(&merged);
+    let skip = st.published_hash.as_ref() == Some(&hash);
+    let mut published = false;
+    if !skip {
+        // 5. conditional PUTs, each guarded by the fork set first.
+        publish_appdata(transport, ctx, st, &merged).await?;
+        published = true;
+    }
+    if st.pending_heartbeat {
+        write_heartbeat(transport, ctx, st, &merged).await?;
+    }
+    Ok((published, st.docs.len()))
+}
+
+/// Updates the store from a listing; returns the devices that vanished
+/// (stored in the docs map, absent from the listing).
+fn ingest_listing(
+    listing: &PropfindListing,
+    ctx: &SyncContext,
+    st: &mut LoopState,
+) -> Vec<DeviceId> {
+    let mut listed = BTreeSet::new();
+    for member in &listing.members {
+        // Raw href matching against the encoded forms we can compute:
+        // a device directory's encoded form is its `Display` form
+        // (UUIDs are URL-safe). Unmatched hrefs are ignored.
+        if let Some(device) = href_device(&member.href) {
+            listed.insert(device);
+            if let Some(etag) = &member.etag {
+                st.etags.record_device_dir(device, etag.clone());
+            }
+        }
+    }
+    let vanished: Vec<DeviceId> = st
+        .docs
+        .keys()
+        .copied()
+        .filter(|device| !listed.contains(device))
+        .collect();
+    st.etags
+        .retain_device_dirs(|device| listed.contains(device));
+    // The seed's retirement arm: the device whose adopted file seeded
+    // the view has left the tree — its rows leave the merged view with
+    // it (the tree is the truth).
+    if !listed.contains(&ctx.identity.device_id) {
+        st.publish_seed = None;
+    }
+    vanished
+}
+
+/// The raw-href → device mapping: the last path segment must parse as
+/// a device id (everything else in the listing is not ours to read).
+fn href_device(href: &str) -> Option<DeviceId> {
+    let last = href.trim_end_matches('/').rsplit('/').next()?;
+    DeviceId::parse(last)
+}
+
+/// Re-reads every dirty peer (dir etag differs from the store, or the
+/// device was never seen), 404-tolerant, decode tolerant (D-SF15).
+async fn read_dirty_peers<T: FilesTransport>(
+    transport: &T,
+    ctx: &SyncContext,
+    st: &mut LoopState,
+) -> Result<(), TransportError> {
+    let dirty: Vec<DeviceId> = st
+        .etags
+        .dirty_devices()
+        .into_iter()
+        .filter(|device| *device != ctx.identity.device_id)
+        .collect();
+    for device in dirty {
+        let appdata_path = rooted(&layout::device_appdata_path(device));
+        let info_path = rooted(&layout::device_info_path(device));
+        let appdata = match transport.get(&appdata_path).await {
+            Ok(content) => Some(content),
+            Err(TransportError::NotFound) => None,
+            Err(other) => return Err(other),
+        };
+        if let Some(content) = &appdata {
+            record_get(st, &appdata_path, content);
+        }
+        ingest_peer_document(
+            st,
+            &appdata_path,
+            appdata.as_ref().map(|c| &c.bytes),
+            device,
+        );
+        let info = match transport.get(&info_path).await {
+            Ok(content) => Some(content),
+            Err(TransportError::NotFound) => None,
+            Err(other) => return Err(other),
+        };
+        if let Some(content) = &info {
+            record_get(st, &info_path, content);
+        }
+        ingest_peer_heartbeat(st, &info_path, info.as_ref().map(|c| &c.bytes), device);
+        st.etags.mark_device_read(device);
+    }
+    Ok(())
+}
+
+/// The tolerant peer-document decode (D-SF15): absent is fine; a
+/// newer format parks (`NewerFormat` — fold nothing from it); garbage
+/// quarantines (in-memory, the file stays untouched on the server); a
+/// well-formed current-format document lands in the fold input.
+fn ingest_peer_document(st: &mut LoopState, path: &str, bytes: Option<&Vec<u8>>, device: DeviceId) {
+    let Some(bytes) = bytes else { return };
+    match serde_json::from_slice::<UserDocument>(bytes) {
+        Ok(document) if document.format <= DOCUMENT_FORMAT => {
+            st.docs.insert(device, document);
+            st.parked.remove(path);
+        }
+        Ok(document) => {
+            st.parked.insert(
+                path.to_owned(),
+                ParkKind::NewerFormat {
+                    format: document.format,
+                },
+            );
+            st.docs.remove(&device);
+        }
+        Err(_) => {
+            st.parked.insert(path.to_owned(), ParkKind::Quarantined);
+            st.docs.remove(&device);
+        }
+    }
+}
+
+fn ingest_peer_heartbeat(
+    st: &mut LoopState,
+    path: &str,
+    bytes: Option<&Vec<u8>>,
+    device: DeviceId,
+) {
+    let Some(bytes) = bytes else { return };
+    match serde_json::from_slice::<DeviceInfo>(bytes) {
+        Ok(info) => {
+            st.heartbeats.insert(device, info);
+            st.parked.remove(path);
+        }
+        Err(_) => {
+            st.parked.insert(path.to_owned(), ParkKind::Quarantined);
+        }
+    }
+}
+
+fn record_get(st: &mut LoopState, path: &str, content: &crate::transport::FileContent) {
+    if let Some(etag) = &content.etag {
+        st.etags.record_file(path, etag.clone());
+    }
+}
+
+fn record_put(st: &mut LoopState, path: &str, outcome: &PutOutcome) {
+    let etag = match outcome {
+        PutOutcome::Created { etag } | PutOutcome::Updated { etag } => etag.clone(),
+    };
+    if let Some(etag) = etag {
+        st.etags.record_file(path, etag);
+    }
+}
+
+/// The merged view: local contribution + the retained seed + every
+/// peer document present in the latest listing.
+fn merged_view(ctx: &SyncContext, st: &LoopState) -> UserDocument {
+    fold(
+        std::iter::once(&ctx.local.document())
+            .chain(st.publish_seed.iter())
+            .chain(st.docs.values())
+            .collect::<Vec<_>>(),
+    )
+}
+
+/// The cycle's own publish: guarded rewrite (or the cold-store
+/// adopting GET first), with the 412 disambiguation on every failure
+/// shape the guard can answer.
+async fn publish_appdata<T: FilesTransport>(
+    transport: &T,
+    ctx: &SyncContext,
+    st: &mut LoopState,
+    merged: &UserDocument,
+) -> Result<(), TransportError> {
+    let path = rooted(&layout::device_appdata_path(ctx.identity.device_id));
+    if st.forked_paths.contains(&path) {
+        return Ok(());
+    }
+    let Some(token) = st.etags.file_etag(&path).cloned() else {
+        // Cold store: the adopting GET first — never an unguarded PUT.
+        return match transport.get(&path).await {
+            Ok(content) => {
+                record_get(st, &path, &content);
+                if let Ok(document) = serde_json::from_slice::<UserDocument>(&content.bytes)
+                    && document.format > DOCUMENT_FORMAT
+                {
+                    // A newer-format own file is not ours to overwrite
+                    // blind: adopt it as the seed for the next publish
+                    // (after re-folding), skip this one.
+                    st.publish_seed = Some(document);
+                    finding("OwnFileNewerFormat", &path);
+                    return Ok(());
+                }
+                rewrite_own_appdata(transport, ctx, st, merged).await
+            }
+            Err(TransportError::NotFound) => {
+                // Vanished since the store went cold: recreate via
+                // create-once.
+                create_own_appdata(transport, st, &path, merged).await
+            }
+            Err(other) => Err(other),
+        };
+    };
+    let bytes = serde_json::to_vec(merged)?;
+    match transport.put_if_match(&path, &bytes, &token).await {
+        Ok(outcome) => {
+            record_put(st, &path, &outcome);
+            st.published_hash = Some(StateHash::of(merged));
+            st.pending_heartbeat = true;
+            Ok(())
+        }
+        Err(TransportError::NotFound) => create_own_appdata(transport, st, &path, merged).await,
+        Err(TransportError::PreconditionFailed) => {
+            disambiguate_own_412(transport, ctx, st, &path).await
+        }
+        Err(other) => Err(other),
+    }
+}
+
+async fn rewrite_own_appdata<T: FilesTransport>(
+    transport: &T,
+    ctx: &SyncContext,
+    st: &mut LoopState,
+    merged: &UserDocument,
+) -> Result<(), TransportError> {
+    let path = rooted(&layout::device_appdata_path(ctx.identity.device_id));
+    let bytes = serde_json::to_vec(merged)?;
+    let token = st.etags.file_etag(&path).cloned();
+    match token {
+        Some(token) => match transport.put_if_match(&path, &bytes, &token).await {
+            Ok(outcome) => {
+                record_put(st, &path, &outcome);
+                st.published_hash = Some(StateHash::of(merged));
+                st.pending_heartbeat = true;
+                Ok(())
+            }
+            Err(TransportError::PreconditionFailed) => {
+                disambiguate_own_412(transport, ctx, st, &path).await
+            }
+            Err(other) => Err(other),
+        },
+        None => create_own_appdata(transport, st, &path, merged).await,
+    }
+}
+
+async fn create_own_appdata<T: FilesTransport>(
+    transport: &T,
+    st: &mut LoopState,
+    path: &str,
+    merged: &UserDocument,
+) -> Result<(), TransportError> {
+    let bytes = serde_json::to_vec(merged)?;
+    match transport.put_create(path, &bytes).await {
+        Ok(outcome) => {
+            record_put(st, path, &outcome);
+            st.published_hash = Some(StateHash::of(merged));
+            st.pending_heartbeat = true;
+            Ok(())
+        }
+        Err(TransportError::PreconditionFailed) => {
+            // Someone recreated the file between our 404 and this
+            // create: the adoption arm.
+            adopt_own_file(transport, st, path).await
+        }
+        Err(other) => Err(other),
+    }
+}
+
+/// The fork disambiguation (D-FT6): one GET of the own path decides —
+/// 404 ⇒ `OwnFileVanished` (drop the token; the next cycle recreates
+/// via create-once), 200 ⇒ `ForkDetected` (stop-write that path,
+/// reads continue, loud). Failing closed here is deliberate: a false
+/// fork alarm over a user delete would cry wolf; a missed fork would
+/// silently split a device's history.
+async fn disambiguate_own_412<T: FilesTransport>(
+    transport: &T,
+    ctx: &SyncContext,
+    st: &mut LoopState,
+    path: &str,
+) -> Result<(), TransportError> {
+    match transport.get(path).await {
+        Err(TransportError::NotFound) => {
+            finding("OwnFileVanished", path);
+            st.etags.forget_file(path);
+            // The local view is no longer published anywhere: clear
+            // the skip-hash so the next cycle recreates via
+            // create-once (the seed's rows ride along — nothing is
+            // dropped by a transient delete).
+            st.published_hash = None;
+            Ok(())
+        }
+        Ok(content) => {
+            fork_alarm(path);
+            st.forked_paths.insert(path.to_owned());
+            st.publish_seed = None;
+            // Our own subtree is read as peer data after the fork: the
+            // sibling path (the clone's write) keeps participating in
+            // PROPFIND/GET/fold, and forks on its own 412 if the clone
+            // writes it — the set converges to full-subtree stop.
+            if path.ends_with(APPDATA_FILE_NAME)
+                && let Ok(document) = serde_json::from_slice::<UserDocument>(&content.bytes)
+                && document.format <= DOCUMENT_FORMAT
+            {
+                st.docs.insert(ctx.identity.device_id, document);
+            }
+            Ok(())
+        }
+        Err(other) => Err(other),
+    }
+}
+
+/// The heartbeat write (same guarded discipline as appdata); the
+/// heartbeat's hash describes exactly the `merged` view passed in.
+async fn write_heartbeat<T: FilesTransport>(
+    transport: &T,
+    ctx: &SyncContext,
+    st: &mut LoopState,
+    merged: &UserDocument,
+) -> Result<(), TransportError> {
+    let path = rooted(&layout::device_info_path(ctx.identity.device_id));
+    if st.forked_paths.contains(&path) {
+        return Ok(());
+    }
+    let heartbeat = heartbeat_for(ctx, merged);
+    let bytes = serde_json::to_vec(&heartbeat)?;
+    let Some(token) = st.etags.file_etag(&path).cloned() else {
+        return match transport.get(&path).await {
+            Ok(content) => {
+                record_get(st, &path, &content);
+                write_heartbeat_guarded(transport, ctx, st, &path, bytes).await
+            }
+            Err(TransportError::NotFound) => {
+                create_own_heartbeat(transport, ctx, st, &path, bytes).await
+            }
+            Err(other) => Err(other),
+        };
+    };
+    match transport.put_if_match(&path, &bytes, &token).await {
+        Ok(outcome) => {
+            record_put(st, &path, &outcome);
+            st.pending_heartbeat = false;
+            st.last_heartbeat_at = Some(ctx.clock.now());
+            Ok(())
+        }
+        Err(TransportError::NotFound) => {
+            create_own_heartbeat(transport, ctx, st, &path, bytes).await
+        }
+        Err(TransportError::PreconditionFailed) => {
+            disambiguate_own_412(transport, ctx, st, &path).await
+        }
+        Err(other) => Err(other),
+    }
+}
+
+async fn write_heartbeat_guarded<T: FilesTransport>(
+    transport: &T,
+    ctx: &SyncContext,
+    st: &mut LoopState,
+    path: &str,
+    bytes: Vec<u8>,
+) -> Result<(), TransportError> {
+    match st.etags.file_etag(path).cloned() {
+        Some(token) => match transport.put_if_match(path, &bytes, &token).await {
+            Ok(outcome) => {
+                record_put(st, path, &outcome);
+                st.pending_heartbeat = false;
+                st.last_heartbeat_at = Some(ctx.clock.now());
+                Ok(())
+            }
+            Err(TransportError::PreconditionFailed) => {
+                disambiguate_own_412(transport, ctx, st, path).await
+            }
+            Err(other) => Err(other),
+        },
+        None => create_own_heartbeat(transport, ctx, st, path, bytes).await,
+    }
+}
+
+async fn create_own_heartbeat<T: FilesTransport>(
+    transport: &T,
+    ctx: &SyncContext,
+    st: &mut LoopState,
+    path: &str,
+    bytes: Vec<u8>,
+) -> Result<(), TransportError> {
+    match transport.put_create(path, &bytes).await {
+        Ok(outcome) => {
+            record_put(st, path, &outcome);
+            st.pending_heartbeat = false;
+            st.last_heartbeat_at = Some(ctx.clock.now());
+            Ok(())
+        }
+        Err(TransportError::PreconditionFailed) => {
+            // A racing recreate: the adoption arm.
+            adopt_own_file(transport, st, path).await
+        }
+        Err(other) => Err(other),
+    }
+}
+
+/// Builds the heartbeat payload: the max clock over the merged rows
+/// (falling back to the device's creation clock on an empty view).
+fn heartbeat_for(ctx: &SyncContext, merged: &UserDocument) -> DeviceInfo {
+    DeviceInfo {
+        app_version: ctx.app_version.clone(),
+        format_version: TREE_FORMAT_VERSION,
+        last_clock: max_row_clock(merged).unwrap_or(ctx.identity.created_at),
+        state_hash: StateHash::of(merged),
+        written_at: ctx.clock.now(),
+    }
+}
+
+/// Max clock over every clocked row in the merged view (`None` on an
+/// empty view — the heartbeat falls back to the creation clock).
+fn max_row_clock(document: &UserDocument) -> Option<DateTime<Utc>> {
+    let mut max = None;
+    for record in document
+        .sections
+        .journal
+        .iter()
+        .flatten()
+        .map(|(_, record)| record)
+    {
+        let clock = match record {
+            UserRecord::Entry { clock, .. } | UserRecord::Tombstone { clock, .. } => *clock,
+            UserRecord::Verbatim(_) => continue,
+        };
+        max = Some(max.map_or(clock, |current: DateTime<Utc>| current.max(clock)));
+    }
+    max
+}

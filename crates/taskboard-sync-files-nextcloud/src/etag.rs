@@ -61,6 +61,10 @@ impl AsRef<str> for Etag {
 #[derive(Debug, Default)]
 pub struct EtagStore {
     device_dirs: BTreeMap<DeviceId, Etag>,
+    /// The directory token as of the device's last full read — the
+    /// dirty compare's "already seen" half (F6: an unchanged tree etag
+    /// skips the device's GETs).
+    read_dirs: BTreeMap<DeviceId, Etag>,
     files: BTreeMap<String, Etag>,
 }
 
@@ -100,6 +104,26 @@ impl EtagStore {
     #[must_use]
     pub fn file_etag(&self, relative_path: &str) -> Option<&Etag> {
         self.files.get(relative_path)
+    }
+
+    /// The devices listed in the latest PROPFIND whose directory etag
+    /// differs from their last-read etag — the dirty set (never-read
+    /// devices are trivially dirty). In listing order (deterministic).
+    #[must_use]
+    pub fn dirty_devices(&self) -> Vec<DeviceId> {
+        self.device_dirs
+            .iter()
+            .filter(|(device, etag)| self.read_dirs.get(device) != Some(*etag))
+            .map(|(device, _)| *device)
+            .collect()
+    }
+
+    /// Marks a device's files as read at its current directory etag
+    /// (the dirty compare's write half).
+    pub fn mark_device_read(&mut self, device: DeviceId) {
+        if let Some(etag) = self.device_dirs.get(&device) {
+            self.read_dirs.insert(device, etag.clone());
+        }
     }
 }
 
