@@ -532,6 +532,7 @@ mod tests {
                     requests_tx,
                     UiSettings::default(),
                     health,
+                    None,
                 )
                 .expect("mount succeeds on the testing backend");
                 // Escape the desktop Today default (chunk 10 D2): the
@@ -605,6 +606,7 @@ mod tests {
                     requests_tx,
                     UiSettings::default(),
                     health,
+                    None,
                 )
                 .expect("mount succeeds on the testing backend");
                 // Escape the desktop Today default (chunk 10 D2): the

@@ -173,6 +173,7 @@ fn mounted(n: usize, kiosk: bool) -> Bench {
             ..UiSettings::default()
         },
         health,
+        None,
     )
     .expect("mount succeeds on the null platform");
     handle

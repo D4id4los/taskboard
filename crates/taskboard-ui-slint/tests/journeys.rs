@@ -71,6 +71,7 @@ impl Harness {
             requests_tx,
             settings,
             detached_health(),
+            None,
         )
         .expect("mount succeeds on the testing backend");
         let mut harness = Self {

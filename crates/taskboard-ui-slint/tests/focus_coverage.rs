@@ -218,6 +218,7 @@ fn mount(state: AppState, settings: UiSettings, size: (u32, u32)) -> Mounted {
         requests_tx,
         settings,
         detached_health(),
+        None,
     )
     .expect("mount succeeds on the testing backend");
     let mut driver = SlintDriver::default();

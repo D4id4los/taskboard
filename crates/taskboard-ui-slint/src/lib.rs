@@ -262,6 +262,7 @@ impl UiHandle {
 /// # Errors
 ///
 /// [`UiMountError`] — typed, see the variant docs.
+#[allow(clippy::too_many_arguments)] // the mount hand-over, one bundle
 pub fn mount(
     state: Arc<ArcSwap<AppState>>,
     signals: broadcast::Receiver<EngineSignal>,
@@ -270,6 +271,7 @@ pub fn mount(
     requests: mpsc::Sender<requests::UiRequest>,
     settings: UiSettings,
     delivery_health: tokio::sync::watch::Receiver<crate::presentation::DeliveryHealth>,
+    files_sync: Option<tokio::sync::watch::Receiver<crate::presentation::FilesSyncChip>>,
 ) -> Result<UiHandle, UiMountError> {
     fonts::register_bundled_fonts();
     let window = AppWindow::new().map_err(UiMountError::WindowCreation)?;
@@ -334,6 +336,12 @@ pub fn mount(
     // pattern — created unconditionally, armed by `install` only when
     // the hand-over carries a rotation.
     let rotation_timer = std::rc::Rc::new(slint::Timer::default());
+    // The chip lane's seed (DR-8 chunk 4, D-FH5): a running substrate
+    // shows its chip from the first paint — the state at hand-over —
+    // not from the first status change.
+    if let Some(rx) = &files_sync {
+        adapter::paint_files_sync_chip(&window, &rx.borrow());
+    }
     let adapter = adapter::install(
         &window,
         settings.keymap,
@@ -352,6 +360,7 @@ pub fn mount(
         Rc::clone(&status_timer),
         Rc::clone(&rotation_timer),
         delivery_health,
+        files_sync,
     );
     let tooltip_timer = install_tooltip_delay(&window);
     let handle = UiHandle {
@@ -603,6 +612,12 @@ fn start_repaint_driver(
             // strictly better delivery only clears the surface, so a
             // missed tick can never strand a stale failure chip).
             if adapter.borrow_mut().drain_delivery_health(&window) {
+                signal_dirty = true;
+            }
+            // The files-sync chip drain (DR-8 chunk 4, D-FH5): the same
+            // non-blocking poll — a changed chip snapshot repaints
+            // within the tick.
+            if adapter.borrow_mut().drain_files_sync(&window) {
                 signal_dirty = true;
             }
             // The settings reply drain (D25b): the non-blocking poll
@@ -891,6 +906,19 @@ impl UiHandle {
         }
     }
 
+    /// One files-sync chip drain (DR-8 chunk 4, D-FH5): the same
+    /// non-blocking watch poll the repaint timer runs every cadence
+    /// tick. Public for the component journeys (the established
+    /// [`UiHandle`]-seam pattern). A `None` receiver (the substrate
+    /// off) never reports a change — the chip stays hidden.
+    pub fn drain_files_sync(&self) -> bool {
+        if let Some(window) = self.window.as_weak().upgrade() {
+            self.adapter.borrow_mut().drain_files_sync(&window)
+        } else {
+            false
+        }
+    }
+
     /// One geometry capture (#412): the same tick-tail sample the
     /// repaint driver runs every cadence. Public for the component
     /// journeys (the established [`UiHandle`]-seam pattern): the test
@@ -1059,6 +1087,76 @@ mod mount_tests {
         )
     }
 
+    /// The files-sync chip lane (DR-8 chunk 4, D-FH5): a running
+    /// substrate shows the seeded chip immediately and a pushed chip
+    /// after one drain pass; the `None` receiver (substrate off) never
+    /// shows the chip — the golden-stability pin. Typed edges only —
+    /// the caption is never asserted.
+    #[test]
+    fn the_files_sync_chip_drains_and_stays_hidden_without_the_lane() {
+        on_slint_thread(|| {
+            // The off arm: hidden, and the drain never reports change.
+            {
+                let (state, signals, system, commands, requests_tx, _requests_rx) = handover6();
+                let handle = mount(
+                    state,
+                    signals,
+                    system,
+                    commands,
+                    requests_tx,
+                    UiSettings::default(),
+                    {
+                        let (_tx, health) = tokio::sync::watch::channel(
+                            crate::presentation::DeliveryHealth::default(),
+                        );
+                        health
+                    },
+                    None,
+                )
+                .expect("mount succeeds on the null platform");
+                assert!(!handle.window.get_files_sync_visible());
+                assert!(!handle.drain_files_sync());
+                assert!(!handle.window.get_files_sync_visible());
+            }
+            // The on arm: seeded visible, then a pushed chip drains.
+            let (state, signals, system, commands, requests_tx, _requests_rx, health_rx) =
+                handover();
+            let (chip_tx, chip_rx) =
+                tokio::sync::watch::channel(crate::presentation::FilesSyncChip::default());
+            let handle = mount(
+                state,
+                signals,
+                system,
+                commands,
+                requests_tx,
+                UiSettings::default(),
+                health_rx,
+                Some(chip_rx),
+            )
+            .expect("mount succeeds on the null platform");
+            assert!(handle.window.get_files_sync_visible(), "the seed paints");
+            assert_eq!(
+                handle.window.get_files_sync_state(),
+                crate::FilesSyncChipState::Ok
+            );
+            chip_tx
+                .send(crate::presentation::FilesSyncChip {
+                    state: crate::presentation::FilesSyncChipState::Forked,
+                })
+                .expect("watch send");
+            assert!(handle.drain_files_sync());
+            assert!(
+                !handle.drain_files_sync(),
+                "a drained snapshot is seen: the next tick repaints nothing"
+            );
+            assert!(handle.window.get_files_sync_visible());
+            assert_eq!(
+                handle.window.get_files_sync_state(),
+                crate::FilesSyncChipState::Forked
+            );
+        });
+    }
+
     /// The delivery-health lane (round-3 chunk 7, D31): a degraded
     /// snapshot pushed on the watch surfaces as the visible chip after
     /// one drain pass; a later success clears it. Typed edges only —
@@ -1077,6 +1175,7 @@ mod mount_tests {
                 requests_tx,
                 UiSettings::default(),
                 health_rx,
+                None,
             )
             .expect("mount succeeds on the null platform");
             // The healthy default: the chip is absent after the mount
@@ -1122,6 +1221,7 @@ mod mount_tests {
                     ..UiSettings::default()
                 },
                 health,
+                None,
             )
             .expect("mount succeeds on the null platform");
             let base_scale = handle.window.global::<Theme>().get_base_scale();
@@ -1141,6 +1241,7 @@ mod mount_tests {
                 requests_tx,
                 UiSettings::default(),
                 health,
+                None,
             )
             .expect("mount succeeds on the null platform");
             assert_eq!(handle.window.global::<Theme>().get_base_scale(), 1.0);
@@ -1162,6 +1263,7 @@ mod mount_tests {
                 requests_tx,
                 UiSettings::default(),
                 health,
+                None,
             )
             .expect("mount succeeds on the null platform");
             let responsive = handle.window.global::<Responsive>();
@@ -1224,6 +1326,7 @@ mod mount_tests {
                 requests_tx,
                 UiSettings::default(),
                 health,
+                None,
             )
             .expect("mount succeeds on the null platform");
             assert!(handle.alarm.is_some(), "the desktop mount has lanes");
@@ -1240,6 +1343,7 @@ mod mount_tests {
                     ..UiSettings::default()
                 },
                 health,
+                None,
             )
             .expect("mount succeeds on the null platform");
             assert!(handle.alarm.is_none(), "the kiosk mount has no lanes");
@@ -1261,6 +1365,7 @@ mod mount_tests {
                 requests_tx,
                 UiSettings::default(),
                 health,
+                None,
             )
             .expect("mount succeeds on the null platform");
             let lanes = handle.alarm.as_ref().expect("desktop lanes").clone();
@@ -1321,6 +1426,7 @@ mod mount_tests {
                 requests_tx,
                 UiSettings::default(),
                 health,
+                None,
             )
             .expect("mount succeeds on the null platform");
             assert!(!handle.window.window().is_visible());
@@ -1348,6 +1454,7 @@ mod mount_tests {
                 requests_tx,
                 UiSettings::default(),
                 health,
+                None,
             )
             .expect("mount succeeds on the null platform");
             assert!(!handle.window.window().is_fullscreen());
@@ -1371,6 +1478,7 @@ mod mount_tests {
                     ..UiSettings::default()
                 },
                 health,
+                None,
             )
             .expect("mount succeeds on the null platform");
             assert!(handle.window.window().is_fullscreen());
@@ -1447,6 +1555,7 @@ mod mount_tests {
                     ..UiSettings::default()
                 },
                 health,
+                None,
             )
             .expect("mount succeeds on the null platform");
             let seeded = handle.adapter.borrow().view_state.stack_width(board, stack);
@@ -1477,6 +1586,7 @@ mod mount_tests {
                 requests_tx,
                 UiSettings::default(),
                 health,
+                None,
             )
             .expect("mount succeeds on the null platform");
             assert!(!handle.window.window().is_fullscreen());
@@ -1516,6 +1626,7 @@ mod mount_tests {
                 requests_tx,
                 UiSettings::default(),
                 health,
+                None,
             )
             .expect("mount succeeds on the null platform");
             let drain = |requests_rx: &mut mpsc::Receiver<requests::UiRequest>| {
@@ -1623,6 +1734,7 @@ mod mount_tests {
                     ..UiSettings::default()
                 },
                 health,
+                None,
             )
             .expect("mount succeeds on the null platform");
             handle
@@ -1665,6 +1777,7 @@ mod mount_tests {
                     ..UiSettings::default()
                 },
                 health,
+                None,
             )
             .expect("mount succeeds on the null platform");
             let (position, size) = recorded();
@@ -1682,6 +1795,7 @@ mod mount_tests {
                 requests_tx,
                 UiSettings::default(),
                 health,
+                None,
             )
             .expect("mount succeeds on the null platform");
             let (position, size) = recorded();
@@ -1711,6 +1825,7 @@ mod mount_tests {
                     ..UiSettings::default()
                 },
                 health,
+                None,
             )
             .expect("mount succeeds on the null platform");
             assert!(handle.window().window().is_fullscreen());
@@ -1746,6 +1861,7 @@ mod mount_tests {
                     ..UiSettings::default()
                 },
                 health,
+                None,
             )
             .expect("mount succeeds on the null platform");
             // The restart half: the window reopened where it was left.
@@ -1841,6 +1957,7 @@ mod first_frame_tests {
                 requests_tx,
                 crate::UiSettings::default(),
                 health,
+                None,
             )
             .expect("mount succeeds on the null platform");
             drop(guard);
@@ -1928,6 +2045,7 @@ mod keymap_adapter_tests {
                 ..UiSettings::default()
             },
             health,
+            None,
         )
         .expect("mount succeeds on the null platform");
         // Escape the desktop default (chunk 10 D2) for the board-level
@@ -2013,6 +2131,7 @@ mod keymap_adapter_tests {
                 requests_tx,
                 UiSettings::default(), // standard preset
                 health,
+                None,
             )
             .expect("mount succeeds on the null platform");
 
@@ -2312,6 +2431,7 @@ mod view_component_tests {
                 ..UiSettings::default()
             },
             health,
+            None,
         )
         .expect("mount succeeds on the null platform");
         // The desktop default is Today (chunk 10 D2); these component
@@ -2902,6 +3022,7 @@ mod view_component_tests {
                     ..UiSettings::default()
                 },
                 health,
+                None,
             )
             .expect("mount succeeds on the null platform");
             assert_eq!(

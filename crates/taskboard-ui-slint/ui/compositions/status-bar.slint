@@ -12,6 +12,17 @@ import { IconButton, IconKind } from "../widgets/icon-button.slint";
 import { Icon } from "../widgets/icon.slint";
 import { KbdHint } from "../widgets/kbd-hint.slint";
 
+// The files-sync chip's state vocabulary (DR-8 chunk 4, D-FH5): the
+// precedence ladder's rungs, fork loudest. Markup maps the state onto
+// tones; the caption text is model-side (never asserted in tests).
+export enum FilesSyncChipState {
+    ok,
+    cycle-failed,
+    parked,
+    diverged,
+    forked,
+}
+
 // The sync badge model (D11): the phase enum plus the pending depth;
 // the recency caption rides along as display text.
 export struct SyncBadgeModel {
@@ -72,6 +83,13 @@ export component StatusBar inherits Rectangle {
     // findings, in the chips' row.
     in property <bool> delivery-chip-visible;
     in property <string> delivery-chip;
+    // The files-sync chip (DR-8 chunk 4, D-FH5): visible while the
+    // substrate actor is running (absent receiver = hidden, the
+    // golden-stability pin); the fork state renders distinctively
+    // (alarm styling — the loud half lives in the actor's log).
+    in property <bool> files-sync-visible;
+    in property <string> files-sync-text;
+    in property <FilesSyncChipState> files-sync-state;
     callback tracking-stop-clicked();
     callback snooze-clicked(int);
     callback mute-clicked(int);
@@ -311,6 +329,28 @@ export component StatusBar inherits Rectangle {
             // caption + badge, the sidecar-warning shape. No click
             // target — the record lives in the log and the in-app
             // notification rows.
+            // The files-sync chip (DR-8 chunk 4, D-FH5): the same
+            // passive badge posture as the delivery chip; the fork
+            // state takes the danger tone (alarm styling), the rest
+            // warning.
+            if (root.files-sync-visible): HorizontalLayout {
+                spacing: Theme.space-2;
+                RoleText {
+                    role: Typography.caption;
+                    text-color: root.files-sync-state == FilesSyncChipState.forked
+                        ? Semantic.danger
+                        : Semantic.warning;
+                    text: root.files-sync-text;
+                    vertical-alignment: center;
+                }
+                Badge {
+                    text: "!";
+                    tone: root.files-sync-state == FilesSyncChipState.forked
+                        ? Tone.danger
+                        : Tone.warning;
+                }
+            }
+
             if (root.delivery-chip-visible): HorizontalLayout {
                 spacing: Theme.space-2;
                 RoleText {

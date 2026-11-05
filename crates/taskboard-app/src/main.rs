@@ -823,6 +823,11 @@ async fn run_kiosk(
                 },
             );
 
+            // The files-sync chip lane (DR-8 chunk 4, D-FH5): `None`
+            // when the substrate is off — no chip, no pump task.
+            let files_sync_chips =
+                taskboard_app::files_sync_surface::chip_channel(app.files_sync_status.clone())
+                    .map(|(_join, rx)| rx);
             let handle = match taskboard_ui_slint::mount(
                 app.engine.shared_state(),
                 app.engine.subscribe(),
@@ -831,6 +836,7 @@ async fn run_kiosk(
                 requests_tx,
                 ui_settings,
                 app.delivery_health.clone(),
+                files_sync_chips,
             ) {
                 Ok(handle) => handle,
                 // Mount failure (the display-var-outlives-its-server

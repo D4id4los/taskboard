@@ -451,6 +451,9 @@ pub(crate) struct Adapter {
     /// beside the two broadcasts — a failure repaints within one
     /// cadence tick, no new thread or task in the UI.
     delivery_health: tokio::sync::watch::Receiver<crate::presentation::DeliveryHealth>,
+    /// The files-sync chip lane (DR-8 chunk 4, D-FH5): `None` when the
+    /// substrate actor is off — the chip stays hidden.
+    files_sync: Option<tokio::sync::watch::Receiver<crate::presentation::FilesSyncChip>>,
     rotation: Option<crate::view_state::KioskRotation>,
     /// The rotation flip's single-shot dwell timer (K13). Armed by
     /// `install` only when `rotation` is present, re-armed by the
@@ -4206,6 +4209,23 @@ impl Adapter {
         true
     }
 
+    /// The files-sync chip's drain (DR-8 chunk 4, D-FH5): the same
+    /// non-blocking watch poll as the delivery chip's. `None` (the
+    /// substrate off) leaves the chip at its hidden default — no boot
+    /// with the actor off ever shows it (the golden-stability pin).
+    /// Returns whether the snapshot changed.
+    pub(crate) fn drain_files_sync(&mut self, window: &AppWindow) -> bool {
+        let Some(rx) = self.files_sync.as_mut() else {
+            return false;
+        };
+        if !rx.has_changed().unwrap_or(false) {
+            return false;
+        }
+        let chip = rx.borrow_and_update().clone();
+        paint_files_sync_chip(window, &chip);
+        true
+    }
+
     #[allow(clippy::too_many_lines)] // one arm per reply variant, kept flat
     pub(crate) fn drain_setting_replies(&mut self, window: &AppWindow) {
         let mut i = 0;
@@ -5899,6 +5919,7 @@ pub(crate) fn install(
     status_timer: Rc<slint::Timer>,
     rotation_timer: Rc<slint::Timer>,
     delivery_health: tokio::sync::watch::Receiver<crate::presentation::DeliveryHealth>,
+    files_sync: Option<tokio::sync::watch::Receiver<crate::presentation::FilesSyncChip>>,
 ) -> Rc<RefCell<Adapter>> {
     // The load path (round-1 D16): the uuid-keyed settings map
     // converts once here and seeds the fresh ViewState before the
@@ -6045,6 +6066,7 @@ pub(crate) fn install(
         derive_passes: 0,
         notice: None,
         delivery_health,
+        files_sync,
     }));
     // The status auto-clear's fire closure (r2 D28): weak handles
     // only — no Rc cycle. Armed by `set_settings_outcome` from the
@@ -9235,4 +9257,14 @@ impl crate::UiHandle {
             self.adapter.borrow_mut().refresh_forced(&window);
         }
     }
+}
+
+/// Shows the files-sync chip in the given state (the mount seed and
+/// every drain paint through here).
+pub(crate) fn paint_files_sync_chip(window: &AppWindow, chip: &crate::presentation::FilesSyncChip) {
+    window.set_files_sync_visible(true);
+    window.set_files_sync_state(crate::models::files_sync_chip_state(chip.state));
+    window.set_files_sync_text(SharedString::from(
+        crate::presentation::files_sync_chip_caption(chip.state),
+    ));
 }
