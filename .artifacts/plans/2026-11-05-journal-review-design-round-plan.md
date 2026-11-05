@@ -45,13 +45,16 @@
   `../taskboard-WT-docs-journal-review-design-round` (off `main` @
   `1dc5bf44`; `scripts/worktree-doctor.sh` passed — 219G free, floor
   25G — before creation).
-- **Status**: **PENDING USER ACCEPTANCE** — the round does not
-  self-accept (dispatch §2 acceptance gate). The §7 chunk issues are
-  **not yet opened**: stage 2 lands them after the user accepts
-  (dispatch prompt 1.1/1.2; the PR body states which happened).
-  **No decision is open**: all three pending-ruling flags were
-  resolved in-session on 2026-11-05 (three passes — §4's final
-  status); the only remaining gate is the acceptance itself.
+- **Status**: **ACCEPTED** — the user reviewed and approved the
+  round as designed (2026-11-05, in-session), resolving all three
+  `pending user ruling` flags across three passes (§4's final
+  status; no decision was left open). Stage 2 executed in the same
+  session: the §7 chunk issues **#636** (domain & engine), **#637**
+  (storage & CLI/export), **#638** (review walk UI & surfacing) and
+  the fence issues **#639**–**#642** are open on GitHub under the
+  v0.2 milestone, and #621/#218 carry the accepted-round annotation.
+  Implementation is the three chunk issues (sequenced 1 → 2 → 3); a
+  follow-up dispatch round chunks them (the DR-5/§14 precedent).
 
 ---
 
@@ -672,8 +675,8 @@ non-issue at v0.2; named as a future concern in §6).
 | D-J12 | Export leg | `export --what <tracking\|journal>`, **default `tracking`** (bare export byte-compatible); journal CSV columns fixed; filters inclusive on `window_start`; tombstones skipped; the track.rs serializer machinery reused, no second serializer | recorded |
 | D-J13 | Storage | Migration **0022** `reflection_entries` (re-verified 2026-11-05: 0001–0021 taken; chunks re-verify at base); **one** new `PersistenceAction::UpsertReflectionEntry` (tombstone-in-place makes delete an upsert); typed columns, flags as JSON-array TEXT + parked-extra column; no FKs | recorded |
 | D-J14 | Kiosk posture | Walk desktop-only via the focus-overlay structural exclusion (three-layer pins extended); the push pass carries nothing journal-shaped onto kiosk-visible models; no passive journal display in v0.2 either (strictest reading of the per-feature passive rulings) | recorded |
-| D-J15 | ADR | Chunk 1 writes **ADR 0020** ("the reflection family — device-local by ruling, roaming-ready by construction; the boundary-generic review walk; derived-at-read gentle surfacing"), recording D-J1/J2/J6/J7/J10 and the fence list (next number re-verified at base: 0019 is last today) | recorded |
-| — | Round scope | One primitive, day-interactive v0.2; roaming/statistics/templates/interactive-week-month/LLM/`$EDITOR` all fenced to §7 or owned issues; acceptance **pending user ruling** — this round does not self-accept | recorded |
+| D-J15 | ADR | Chunk 1 writes **ADR 0020** ("the reflection family — device-local by ruling, roaming-ready by construction; the boundary-generic review walk; derived-at-read gentle surfacing"), recording D-J1/J2/J6/J7/J10 and the fence list (next number re-verified at base: 0019 is last today). **Amended 2026-11-05 (stage 3)**: the parallel DR-8 files-substrate round (`2026-11-05-filesync-substrate-implementation-dispatch-plan.md` §6) also reserves 0020 for its core-crate ADR — the re-verify-at-base rule governs: whichever chunk reaches its base second takes the next free number; renumbering is the sanctioned mechanical response, never a content change | recorded |
+| — | Round scope | One primitive, day-interactive v0.2; roaming/statistics/templates/interactive-week-month/LLM/`$EDITOR` all fenced to §7 or owned issues; acceptance is the user's gate and was **granted in-session 2026-11-05** (the round never self-accepted — see the status header) | recorded |
 
 **User rulings — final status after the 2026-11-05 in-session
 passes (every mechanism and every string is now decided):**
@@ -698,9 +701,11 @@ passes (every mechanism and every string is now decided):**
    `Plan tomorrow` recorded as the recommended planner-surface
    title.
 
-**No decision is open.** The only remaining gate is the user's
-acceptance of the round itself (dispatch §2), after which stage 2
-opens the §7 chunk and fence issues.
+**No decision is open.** The user's acceptance gate was passed
+2026-11-05 (in-session; the status header records it), and stage 2
+has since opened the §7 chunk issues (#636–#638) and fence issues
+(#639–#642) and annotated #621/#218 — all as this section's tables
+describe.
 
 ## 5. Test-strategy hooks (for the implementation chunks)
 
@@ -811,10 +816,10 @@ opens the §7 chunk and fence issues.
 
 ## 7. Chunk mapping → the issues this round opens
 
-Implementation chunks (opened by **stage 2 after user acceptance** —
-not by this stage-1 commit; each body = summary + permalink here +
-the chunk's decision IDs; `backlog:` prefix, v0.2 milestone, labels
-per AGENTS §7):
+Implementation chunks (**opened 2026-11-05 on acceptance** —
+#636 / #637 / #638 in the table's order; each body = summary +
+permalink here + the chunk's decision IDs; `backlog:` prefix, v0.2
+milestone, labels per AGENTS §7):
 
 | Chunk | Scope | Size | Issue title |
 |---|---|---|---|
@@ -824,13 +829,13 @@ per AGENTS §7):
 
 Sequencing: 1 → 2 → 3 (3 needs the verbs and reads the stored
 entries; the walk's planner leg additionally needs chunk 3 of the
-parent dispatch (`feat/plan-next-day`) landed — degrade-to-seam per
-D-J9 otherwise). On acceptance this round is annotated onto #621 and
-#218; the issues close with the follow-up implementation round's
-last chunk (dispatch §10).
+parent dispatch (`feat/plan-next-day`) landed — the leg is skipped
+per D-J9's shape B otherwise). Accepted 2026-11-05: the round is
+annotated onto #621 and #218; the chunk issues close with the
+follow-up implementation round's last chunk (dispatch §10).
 
-Fence issues (out-of-scope by recorded rulings; each carries a
-permalink here):
+Fence issues (**opened 2026-11-05 on acceptance** — #639–#642;
+out-of-scope by recorded rulings; each carries a permalink here):
 
 | Fence | Issue title |
 |---|---|
