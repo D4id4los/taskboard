@@ -6830,8 +6830,26 @@ fn return_never_hijacks_on_a_focused_field_under_any_preset() {
                 harness.driver.advance_time(0);
                 harness.driver.click_by_label("Edit description");
                 harness.driver.advance_time(0);
+                // D-MLE-6 (the D1 field-level redefinition): plain
+                // Return inserts a newline and never commits; the
+                // commit seam is Shift+Return.
                 harness.type_text("hello");
                 harness.stroke(parse("Return").expect("return"));
+                harness.driver.advance_time(0);
+                assert!(
+                    harness
+                        .handle
+                        .window()
+                        .get_task_model()
+                        .description_edit_open,
+                    "{name}: plain Return never closed the editor"
+                );
+                assert!(
+                    harness.engine.drain().is_empty(),
+                    "{name}: plain Return dispatched nothing"
+                );
+                harness.type_text("world");
+                harness.stroke(parse("Shift+Return").expect("shift+return"));
                 assert!(
                     !harness
                         .handle
@@ -6842,7 +6860,7 @@ fn return_never_hijacks_on_a_focused_field_under_any_preset() {
                 );
                 match harness.engine.drain().as_slice() {
                     [StateCommand::UpdateTask { changes, .. }] => {
-                        assert_eq!(changes.description.as_deref(), Some("hello"));
+                        assert_eq!(changes.description.as_deref(), Some("hello\nworld"));
                     }
                     other => panic!("{name}: the description committed, got {other:?}"),
                 }
@@ -8573,14 +8591,24 @@ fn the_description_edits_in_place() {
                 "the editor opened in insert mode"
             );
 
-            // Typed text + Return commits `Some(_)` through the
-            // funnel — and proves the multiline field's Return fires
-            // `accepted` without inserting a newline (the recorded
-            // probe).
+            // Typed text + Shift+Return commits `Some(_)` through
+            // the funnel; the plain Return in the middle inserted a
+            // newline (the D-MLE-6 grammar) and dispatched nothing.
             // The fixture's description is empty, so the seeded
             // buffer starts empty: typing is the whole entry.
-            harness.type_text("steep, then serve");
+            harness.type_text("steep, then");
             harness.stroke(parse("Return").expect("Return"));
+            harness.assert_commands(&[]);
+            assert!(
+                harness
+                    .handle
+                    .window()
+                    .get_task_model()
+                    .description_edit_open,
+                "plain Return never closed the editor"
+            );
+            harness.type_text("serve");
+            harness.stroke(parse("Shift+Return").expect("Shift+Return"));
             let drained = harness.engine.drain();
             match drained.as_slice() {
                 [StateCommand::UpdateTask { id, changes, .. }] => {
@@ -8589,7 +8617,7 @@ fn the_description_edits_in_place() {
                         .description
                         .as_deref()
                         .expect("the description arm is Some(_)");
-                    assert!(!description.contains('\n'), "no newline inserts");
+                    assert_eq!(description, "steep, then\nserve", "the newline persisted");
                 }
                 other => panic!("the description commit reached the boundary, got {other:?}"),
             }
@@ -8603,6 +8631,73 @@ fn the_description_edits_in_place() {
             assert!(
                 !keyboard(&harness).get_vi_insert(),
                 "back to normal after the discard"
+            );
+        },
+    );
+}
+
+/// Round-5 chunk 2 (F7, D-MLE-6): a multi-line buffer commits
+/// verbatim through the existing funnel — the newlines survive the
+/// round trip with zero Rust-side change (verified, not touched).
+#[test]
+fn the_multiline_buffer_commits_verbatim() {
+    let (fixture, mut state) = fixture::journey_state();
+    let task = state.tasks.get_mut(&fixture.task1).expect("fixture task");
+    task.description = "first\nsecond".into();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavNextView);
+            harness.press(ActionId::NavNextView);
+            harness.driver.click_by_label("Edit description");
+            harness.driver.advance_time(0);
+            // No typing: the seeded buffer commits as-is.
+            harness.stroke(parse("Shift+Return").expect("Shift+Return"));
+            match harness.engine.drain().as_slice() {
+                [StateCommand::UpdateTask { id, changes, .. }] => {
+                    assert_eq!(id, &fixture.task1);
+                    assert_eq!(
+                        changes.description.as_deref(),
+                        Some("first\nsecond"),
+                        "the newlines survived the round trip"
+                    );
+                }
+                other => panic!("the verbatim commit reached the boundary, got {other:?}"),
+            }
+        },
+    );
+}
+
+/// Round-5 chunk 2 (adoption wiring, F12): the display mount is the
+/// editor (a labelled text-input cell, not a bare text row) — the
+/// viewport's scroll mechanics themselves are pinned at the widget
+/// layer (the probe's P-arms); the journey asserts only the wiring,
+/// the lowest layer that can see the adoption.
+#[test]
+fn the_description_display_mounts_the_editor() {
+    let (_fixture, state) = fixture::journey_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavNextView);
+            harness.press(ActionId::NavNextView);
+            let display = harness
+                .driver
+                .find_by_label("Description")
+                .expect("the description cell is mounted");
+            assert!(
+                !display.is_accessible_button(),
+                "the display mount is a text-input cell"
             );
         },
     );
