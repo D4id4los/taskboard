@@ -18,6 +18,18 @@ The workspace carries a single global version (see `docs/architecture.org`);
   section skeleton stays; tracked time alone now keeps the Review
   view standing even without comparable completed tasks. Kiosk is
   untouched.
+- The `[focus]` section's settings editor (#625): a Focus group in
+  the desktop settings view with one editable row per knob — the
+  three booleans (enabled, chain, notify) as segmented On/Off
+  controls committing on pick, the four timings (work, break,
+  long-break minutes and the every-N cadence) as text fields
+  committing on Return. Every write rides the landed prove-gated
+  config-persist path; out-of-bounds values surface as typed field
+  validity (never a silent clamp), env-overridden keys render locked,
+  and every row states its takes-effect-at-restart fact honestly (the
+  focus runtime reads config at boot only). The three pomodoro-era
+  read-only focus facts left the Deployment list — a key renders
+  exactly once.
 - The plan-next-day surface (#622, the v0.2 wave's interactive
   placement ruling): a desktop-only `PlanNextDay` view off the view
   cycle (the Settings precedent), opened by the routed

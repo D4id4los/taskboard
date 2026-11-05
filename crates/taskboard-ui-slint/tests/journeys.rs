@@ -4501,8 +4501,9 @@ fn every_settings_field_carries_its_info_tip() {
             };
             assert_eq!(
                 distinct_spots(driver, "LabeledField::help-tip"),
-                11,
-                "the four connection fields and the seven general                  fields each carry a tip"
+                15,
+                "the four connection fields, the seven general fields, \
+                 and the four focus minute fields each carry a tip"
             );
             for id in [
                 "SettingsView::help-scale",
@@ -12840,6 +12841,428 @@ fn a_general_op_in_flight_gates_the_other_settings_ops() {
             assert!(!model().get_busy());
             window.invoke_settings_general_committed(11, "7".into());
             assert_eq!(harness.drain_requests().len(), 1, "the gate lifted");
+        },
+    );
+}
+
+// ---- #625: the focus settings editor's journeys (J-F1..J-F9) -----------
+
+/// J-F1 — the render journey: the seven focus rows render the
+/// snapshot's typed echoes and segmented indices, the on-restart
+/// facts ride the rows, the promoted keys are absent from the facts
+/// model, and nothing dispatches at mount.
+#[test]
+fn the_focus_rows_render_the_snapshot() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = general_harness(state, general_snapshot());
+            harness.press(ActionId::AppSettings);
+            let window = harness.handle.window();
+            let model = || window.global::<taskboard_ui_slint::SettingsModel>();
+
+            assert_eq!(model().get_focus_work_echo(), "25");
+            assert_eq!(model().get_focus_break_echo(), "5");
+            assert_eq!(model().get_focus_long_break_echo(), "15");
+            assert_eq!(model().get_focus_every_echo(), "4");
+            assert_eq!(model().get_focus_enabled_index(), 0, "On renders selected");
+            assert_eq!(model().get_focus_chain_index(), 1, "Off renders selected");
+            assert_eq!(model().get_focus_notify_index(), 0, "On renders selected");
+
+            // The on-restart captions' facts are pushed per row.
+            assert!(model().get_focus_work_on_restart());
+            assert!(model().get_focus_every_on_restart());
+            assert!(model().get_focus_enabled_on_restart());
+            assert!(model().get_focus_notify_on_restart());
+
+            // The promoted keys left the facts: a key renders exactly
+            // once, never both editable and read-only (D-FS2).
+            for row_index in 0..model().get_facts().row_count() {
+                let row = model().get_facts().row_data(row_index).expect("row");
+                assert!(
+                    !row.key.starts_with("focus."),
+                    "the {key} fact left the read-only list",
+                    key = row.key
+                );
+            }
+
+            assert!(
+                harness.drain_requests().is_empty(),
+                "rendering dispatches nothing"
+            );
+        },
+    );
+}
+
+/// J-F2 — the edit round-trip: a staged edit commits on Return,
+/// exactly the typed intent dispatches with the minted payload, the
+/// fresh-snapshot reply re-renders the echo; a pick dispatches the
+/// toggle intent and the reply re-renders the index.
+#[test]
+fn a_focus_edit_round_trips_and_echoes_the_reply() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = general_harness(state, general_snapshot());
+            harness.press(ActionId::AppSettings);
+            let window = harness.handle.window();
+            let model = || window.global::<taskboard_ui_slint::SettingsModel>();
+
+            window.invoke_settings_field_edited(12, "45".into());
+            assert_eq!(model().get_focus_work_echo(), "45", "the draft renders");
+            window.invoke_settings_general_committed(12, "45".into());
+            let mut requests = harness.drain_requests();
+            assert_eq!(requests.len(), 1, "exactly one typed intent");
+            let taskboard_ui_slint::requests::UiRequest::SetFocusWorkMins { mins, reply } =
+                requests.remove(0)
+            else {
+                panic!("the work-minutes intent routed");
+            };
+            assert_eq!(mins, 45, "the minted payload rides the lane");
+
+            let mut fresh = general_snapshot();
+            fresh.focus_work_mins = 45;
+            reply.send(Ok(fresh)).expect("the reply lane is alive");
+            harness.handle.drain_setting_replies();
+            assert_eq!(model().get_focus_work_echo(), "45");
+            assert_eq!(
+                model().get_last_outcome(),
+                taskboard_ui_slint::SettingsOutcome::Ok
+            );
+
+            // The pick grammar: dispatch on the pick, the reply
+            // re-renders the selection.
+            window.invoke_settings_focus_enabled_picked(1);
+            let mut requests = harness.drain_requests();
+            assert_eq!(requests.len(), 1);
+            let taskboard_ui_slint::requests::UiRequest::SetFocusEnabled { enabled, reply } =
+                requests.remove(0)
+            else {
+                panic!("the toggle intent routed");
+            };
+            assert!(!enabled);
+            let mut fresh = general_snapshot();
+            fresh.focus_enabled = false;
+            reply.send(Ok(fresh)).expect("the reply lane is alive");
+            harness.handle.drain_setting_replies();
+            assert_eq!(
+                model().get_focus_enabled_index(),
+                1,
+                "the selection echoes the replied value"
+            );
+        },
+    );
+}
+
+/// J-F3 — the typed-refusal journey: out-of-bounds minutes refuse at
+/// the seam — the validity flavour renders Invalid, the status shows
+/// the refusal outcome, zero requests dispatch, and the draft stays
+/// visible under its flavour.
+#[test]
+fn invalid_focus_commits_refuse_typed_without_routing() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = general_harness(state, general_snapshot());
+            harness.press(ActionId::AppSettings);
+            let window = harness.handle.window();
+            let model = || window.global::<taskboard_ui_slint::SettingsModel>();
+
+            for text in ["0", "241"] {
+                window.invoke_settings_field_edited(12, text.into());
+                window.invoke_settings_general_committed(12, text.into());
+                assert!(
+                    harness.drain_requests().is_empty(),
+                    "{text}: a refusal routes nothing"
+                );
+                assert_eq!(
+                    model().get_validity_focus_work(),
+                    taskboard_ui_slint::FieldValidity::Invalid,
+                    "{text}: the flavour renders the typed kind"
+                );
+                assert_eq!(
+                    model().get_last_outcome(),
+                    taskboard_ui_slint::SettingsOutcome::Rejected
+                );
+                assert_eq!(
+                    model().get_focus_work_echo(),
+                    text,
+                    "{text}: the refused draft stays visible"
+                );
+            }
+
+            for text in ["0", "25"] {
+                window.invoke_settings_field_edited(15, text.into());
+                window.invoke_settings_general_committed(15, text.into());
+                assert!(
+                    harness.drain_requests().is_empty(),
+                    "{text}: the every bound refuses without routing"
+                );
+                assert_eq!(
+                    model().get_validity_focus_every(),
+                    taskboard_ui_slint::FieldValidity::Invalid
+                );
+            }
+
+            // The discarded draft renders neutral again.
+            window.invoke_settings_general_focus_lost(12);
+            assert_eq!(
+                model().get_validity_focus_work(),
+                taskboard_ui_slint::FieldValidity::Neutral
+            );
+            assert_eq!(model().get_focus_work_echo(), "25", "the echo re-syncs");
+        },
+    );
+}
+
+/// J-F4 — the env-override journey: a focus key in the hand-over env
+/// set locks its row and the commit/pick is absorbed at the defence
+/// arm — nothing dispatches.
+#[test]
+fn env_locked_focus_rows_render_locked_and_refuse_the_seam() {
+    let (_fixture, state) = fixture::golden_state();
+    let mut snapshot = general_snapshot();
+    snapshot.env_overridden =
+        BTreeSet::from(["focus.work_mins".to_owned(), "focus.notify".to_owned()]);
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = general_harness(state, snapshot);
+            harness.press(ActionId::AppSettings);
+            let window = harness.handle.window();
+            let model = || window.global::<taskboard_ui_slint::SettingsModel>();
+
+            assert!(model().get_focus_work_env_locked());
+            assert!(model().get_focus_notify_env_locked());
+            assert!(!model().get_focus_break_env_locked());
+
+            window.invoke_settings_general_committed(12, "45".into());
+            window.invoke_settings_focus_notify_picked(1);
+            assert!(
+                harness.drain_requests().is_empty(),
+                "the locked keys never dispatch"
+            );
+        },
+    );
+}
+
+/// J-F5 — the empty-Return arm at the new indices: no mint attempt,
+/// no lane traffic, a visible typed refusal.
+#[test]
+fn an_empty_focus_return_refuses_typed_without_routing() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = general_harness(state, general_snapshot());
+            harness.press(ActionId::AppSettings);
+            let window = harness.handle.window();
+            let model = || window.global::<taskboard_ui_slint::SettingsModel>();
+
+            for index in [12, 13, 14, 15] {
+                for text in ["", "   "] {
+                    window.invoke_settings_general_committed(index, text.into());
+                    assert!(
+                        harness.drain_requests().is_empty(),
+                        "an empty commit on field {index} routes nothing"
+                    );
+                    assert_eq!(
+                        model().get_last_outcome(),
+                        taskboard_ui_slint::SettingsOutcome::Rejected,
+                        "field {index}: the empty commit refuses visibly"
+                    );
+                }
+            }
+        },
+    );
+}
+
+/// J-F6 — the draft lifecycle arm: a Return-less focus edit never
+/// survives — focus loss re-syncs the echo to the committed value.
+#[test]
+fn a_focus_return_less_edit_never_survives_the_surface() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = general_harness(state, general_snapshot());
+            harness.press(ActionId::AppSettings);
+            let window = harness.handle.window();
+            let model = || window.global::<taskboard_ui_slint::SettingsModel>();
+
+            window.invoke_settings_field_edited(12, "60".into());
+            assert_eq!(model().get_focus_work_echo(), "60", "the draft renders");
+
+            window.invoke_settings_general_focus_lost(12);
+            assert_eq!(
+                model().get_focus_work_echo(),
+                "25",
+                "the focus-loss discard re-syncs the echo"
+            );
+
+            // The mount shares the grammar: closing and reopening the
+            // surface kills a staged draft.
+            window.invoke_settings_field_edited(15, "8".into());
+            harness.press(ActionId::AppSettings);
+            harness.press(ActionId::AppSettings);
+            let window = harness.handle.window();
+            assert_eq!(
+                window
+                    .global::<taskboard_ui_slint::SettingsModel>()
+                    .get_focus_every_echo(),
+                "4",
+                "the mount re-renders the committed echo"
+            );
+        },
+    );
+}
+
+/// J-F7 — the busy machine covers the focus seams: an editor op in
+/// flight gates the other settings ops (one op at a time).
+#[test]
+fn a_focus_op_in_flight_gates_the_other_settings_ops() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = general_harness(state, general_snapshot());
+            harness.press(ActionId::AppSettings);
+            let window = harness.handle.window();
+            let model = || window.global::<taskboard_ui_slint::SettingsModel>();
+
+            window.invoke_settings_general_committed(12, "30".into());
+            assert!(model().get_busy(), "the busy gate is up");
+
+            window.invoke_settings_general_committed(11, "7".into());
+            window.invoke_settings_focus_enabled_picked(1);
+            assert_eq!(
+                model().get_last_outcome(),
+                taskboard_ui_slint::SettingsOutcome::Rejected
+            );
+            let mut lane = harness.requests_rx.lock().expect("requests lock");
+            let drained: Vec<_> = std::iter::from_fn(|| lane.try_recv().ok()).collect();
+            drop(lane);
+            assert_eq!(
+                drained.len(),
+                1,
+                "exactly the first op is in the lane — the gate routed nothing extra"
+            );
+            let taskboard_ui_slint::requests::UiRequest::SetFocusWorkMins { reply, .. } =
+                drained.into_iter().next().expect("the op routes")
+            else {
+                panic!("the focus op routes");
+            };
+            reply
+                .send(Ok(general_snapshot()))
+                .expect("the reply lane is alive");
+            harness.handle.drain_setting_replies();
+            assert!(!model().get_busy(), "the reply lifted the gate");
+        },
+    );
+}
+
+/// J-F8 — the failed-persist revert: an `Err` reply leaves the VM's
+/// snapshot untouched, so the echo re-derives from the last-known-good
+/// file value; the outcome renders typed; no retry loop, no stuck
+/// Busy.
+#[test]
+fn a_failed_focus_persist_reverts_the_echo_and_shows_the_outcome() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = general_harness(state, general_snapshot());
+            harness.press(ActionId::AppSettings);
+            let window = harness.handle.window();
+            let model = || window.global::<taskboard_ui_slint::SettingsModel>();
+
+            window.invoke_settings_general_committed(13, "10".into());
+            let mut requests = harness.drain_requests();
+            let taskboard_ui_slint::requests::UiRequest::SetFocusBreakMins { reply, .. } =
+                requests.remove(0)
+            else {
+                panic!("the break intent routed");
+            };
+            reply
+                .send(Err(
+                    taskboard_ui_slint::requests::SettingsError::PersistRejected,
+                ))
+                .expect("the reply lane is alive");
+            harness.handle.drain_setting_replies();
+
+            assert_eq!(
+                model().get_focus_break_echo(),
+                "5",
+                "the failed value never sticks — the echo re-derives"
+            );
+            assert_eq!(
+                model().get_last_outcome(),
+                taskboard_ui_slint::SettingsOutcome::Rejected,
+                "the typed outcome renders"
+            );
+            assert!(!model().get_busy(), "no stuck Busy");
+
+            // No retry loop: the next op routes normally.
+            window.invoke_settings_general_committed(11, "7".into());
+            assert_eq!(harness.drain_requests().len(), 1);
+        },
+    );
+}
+
+/// J-F9 — the commit-on-release structural pin (D-FS8): these rows
+/// mount no gesture widget — per-keystroke edits dispatch zero
+/// requests; only the single Return seam routes, one intent per
+/// commit.
+#[test]
+fn focus_keystrokes_never_dispatch_until_the_commit_seam() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = general_harness(state, general_snapshot());
+            harness.press(ActionId::AppSettings);
+            let window = harness.handle.window();
+
+            for partial in ["4", "45", "450"] {
+                window.invoke_settings_field_edited(12, partial.into());
+            }
+            assert!(
+                harness.drain_requests().is_empty(),
+                "keystrokes dispatch nothing"
+            );
+
+            window.invoke_settings_general_committed(12, "45".into());
+            let requests = harness.drain_requests();
+            assert_eq!(
+                requests.len(),
+                1,
+                "the single Return seam dispatches exactly one intent"
+            );
+            assert!(matches!(
+                requests[0],
+                taskboard_ui_slint::requests::UiRequest::SetFocusWorkMins { .. }
+            ));
         },
     );
 }
