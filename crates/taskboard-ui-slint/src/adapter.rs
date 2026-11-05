@@ -4921,38 +4921,27 @@ pub(crate) fn install(
         });
     }
     {
-        let adapter = Rc::clone(&adapter);
-        let weak = window.as_weak();
-        window.on_menu_entry_invoked(move |index: i32| {
-            let Some(window) = weak.upgrade() else {
+        install_seam!(window: window.on_menu_entry_invoked, adapter: &adapter;
+        bind mut (a, window), args (index: i32), {            let Ok(index) = usize::try_from(index) else {
                 return;
             };
-            let Ok(index) = usize::try_from(index) else {
-                return;
-            };
-            adapter.borrow_mut().invoke_root_entry(&window, index);
+            a.invoke_root_entry(&window, index);
+
         });
     }
     {
-        let adapter = Rc::clone(&adapter);
-        let weak = window.as_weak();
-        window.on_menu_submenu_entry_invoked(move |index: i32| {
-            let Some(window) = weak.upgrade() else {
+        install_seam!(window: window.on_menu_submenu_entry_invoked, adapter: &adapter;
+        bind mut (a, window), args (index: i32), {            let Ok(index) = usize::try_from(index) else {
                 return;
             };
-            let Ok(index) = usize::try_from(index) else {
-                return;
-            };
-            adapter.borrow_mut().invoke_entry(&window, index);
+            a.invoke_entry(&window, index);
+
         });
     }
     {
-        let adapter = Rc::clone(&adapter);
-        let weak = window.as_weak();
-        window.on_menu_level_back(move || {
-            let Some(window) = weak.upgrade() else { return };
-            let mut a = adapter.borrow_mut();
-            a.apply_effect(&window, UiEffect::MenuBack);
+        install_seam!(window: window.on_menu_level_back, adapter: &adapter;
+        bind mut (a, window), args (), {            a.apply_effect(&window, UiEffect::MenuBack);
+
         });
     }
     {
@@ -4960,13 +4949,8 @@ pub(crate) fn install(
         // unscaled Rust mapping lands in the `Responsive` global
         // (widths `<= 0` are ignored inside the mapping — the null
         // platform reports 0×0).
-        let adapter = Rc::clone(&adapter);
-        let weak = window.as_weak();
-        window.on_window_width_changed(move |width: f32| {
-            let Some(window) = weak.upgrade() else {
-                return;
-            };
-            let breakpoint =
+        install_seam!(window: window.on_window_width_changed, adapter: &adapter;
+        bind mut (a, window), args (width: f32), {            let breakpoint =
                 crate::models::to_slint_breakpoint(crate::responsive::breakpoint_for_width(width));
             window
                 .global::<crate::Responsive>()
@@ -4979,7 +4963,8 @@ pub(crate) fn install(
             // forced diff pass per width event during a live window
             // drag; the diff carries only `width_px` scalars (the
             // kiosk's window never resizes in service).
-            adapter.borrow_mut().refresh_forced(&window);
+            a.refresh_forced(&window);
+
         });
     }
     install_view_seams(window, &adapter);
@@ -5859,9 +5844,22 @@ fn install_stack_done_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     });
 }
 
-/// A `Fn(&mut Adapter, &AppWindow, Args)` wrapper shape is over
-/// generics' worth of closure types; the per-seam helpers below stay
-/// explicit instead.
+/// The seam-wiring decision record (chunk 4.2 of backlog round 3,
+/// plan `.artifacts/plans/2026-11-03-install-seam-macro-plan.md` §3.2;
+/// closes #595): the standing note here read "a `Fn(&mut Adapter,
+/// &AppWindow, Args)` wrapper shape is over generics' worth of closure
+/// types; the per-seam helpers stay explicit". The re-adjudication
+/// counted 163 installs over 28 `install_*` fns (the trigger of audit
+/// finding F7-08 fired ~12.5× over) and re-derived 6 scaffold
+/// variants × 9 behavior families. That variety kills the *generic
+/// wrapper* — the objection above stands and is decisive against it —
+/// but it never reached a declarative token-splicing macro, which
+/// hands slint exactly the closure it always received: no generics,
+/// no inference change. The scaffold is now `install_seam!` (above);
+/// bodies and per-seam design comments stay verbatim at the call
+/// site; the six genuinely singular installs stay explicit. Re-open
+/// trigger: a seventh scaffold shape or per-site scaffold
+/// customization re-adjudicates on the plan's evidence form.
 fn install_board_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // A card click: focus the (column, row) card (selection state
     // only, §7.1 mouse discipline); activation routes `task.edit`
