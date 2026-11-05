@@ -109,6 +109,11 @@ pub struct AppConfig {
     /// unchanged.
     #[serde(default, skip_serializing_if = "FocusSection::is_default")]
     pub focus: FocusSection,
+    /// Nextcloud files-sync transport (opt-in). An absent table is
+    /// today's behaviour: nothing spawns. Skipped when at its off
+    /// default so pin-less configs serialize unchanged.
+    #[serde(default, skip_serializing_if = "FilesSyncSection::is_default")]
+    pub files_sync: FilesSyncSection,
 }
 
 /// The `[focus]` timing bounds: strictly positive (a zero work block
@@ -254,6 +259,36 @@ fn focus_long_break_every_is_default(every: &u64) -> bool {
 #[allow(clippy::trivially_copy_pass_by_ref)] // serde's skip fn shape
 fn focus_notify_is_default(notify: &bool) -> bool {
     *notify
+}
+
+/// `[files_sync]`: the Nextcloud files-sync transport's opt-in section
+/// (DR-8 decision D-FT9). The `[focus]` recipe verbatim: the absent
+/// table is the off posture — nothing spawns, nothing validates — and
+/// a section-less config serializes unchanged. The account identity
+/// and the credential come from the *default connector* (Q4: one
+/// account); validation checks only what is written, the credential
+/// resolution happens at the bootstrap spawn gate.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FilesSyncSection {
+    /// Spawns the files-sync transport iff `true` AND the default
+    /// connector is Nextcloud. Defaults to `false`; skipped when off
+    /// so the absent-table placeholder serializes to nothing.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub enabled: bool,
+    /// Poll-cadence override in seconds (D-SF8: the default rides the
+    /// `[sync] poll_interval_secs` the board sync runs on).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub poll_secs: Option<u64>,
+}
+
+impl FilesSyncSection {
+    /// The absent-table test behind `skip_serializing_if` (the
+    /// `[focus]` section's precedent).
+    #[must_use]
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 /// Which frontend the process runs.
@@ -1037,6 +1072,15 @@ pub enum ConfigError {
         /// The dotted config key that is invalid.
         field: &'static str,
     },
+    /// `[files_sync] enabled` without a Nextcloud default connector:
+    /// the files substrate binds to the one Nextcloud account the
+    /// Deck connector uses (DR-8 Q4); a standalone world has no
+    /// account to bind and no silent fallback exists.
+    #[error("files sync enabled without a nextcloud connector")]
+    FilesSyncWithoutNextcloud {
+        /// The dotted config key that is invalid.
+        field: &'static str,
+    },
 }
 
 impl ConfigError {
@@ -1057,7 +1101,8 @@ impl ConfigError {
             | Self::InvalidWebConfig { field }
             | Self::InvalidDayStartTime { field }
             | Self::InvalidDueSoonDays { field }
-            | Self::InvalidFocusTiming { field } => Some(field),
+            | Self::InvalidFocusTiming { field }
+            | Self::FilesSyncWithoutNextcloud { field } => Some(field),
             Self::InvalidConnectorEntry { .. }
             | Self::InvalidConnectorName { .. }
             | Self::DuplicateConnectorName { .. } => Some("sync.connectors"),
@@ -1093,6 +1138,7 @@ impl ConfigError {
             Self::InvalidDayStartTime { .. } => "invalid-day-start-time",
             Self::InvalidDueSoonDays { .. } => "invalid-due-soon-days",
             Self::InvalidFocusTiming { .. } => "invalid-focus-timing",
+            Self::FilesSyncWithoutNextcloud { .. } => "files-sync-without-nextcloud",
         }
     }
 }
@@ -1447,6 +1493,22 @@ impl AppConfig {
                 field: "focus.long_break_every",
             });
         }
+        // `[files_sync]`: deterministic validation (what is written,
+        // not what is live) — a zero poll is garbage even while the
+        // mode is disabled, and an enablement without a Nextcloud
+        // account to bind is rejected here rather than at the spawn
+        // gate (Q4: the substrate binds to the one Nextcloud account
+        // the default connector uses; a standalone world has none).
+        if self.files_sync.poll_secs == Some(0) {
+            return Err(ConfigError::InvalidDuration {
+                field: "files_sync.poll_secs",
+            });
+        }
+        if self.files_sync.enabled && self.resolved_default_backend() != SyncBackend::Nextcloud {
+            return Err(ConfigError::FilesSyncWithoutNextcloud {
+                field: "files_sync.enabled",
+            });
+        }
         // `[kiosk.rotation]`: a present table validates its shape —
         // two distinct modes (a one-mode rotation or a duplicate are
         // config mistakes, not runtime fallbacks) and the dwell floor.
@@ -1649,6 +1711,28 @@ impl AppConfig {
             )
             .expect("focus timing validated"),
         )
+    }
+
+    /// The `[files_sync]` table mapped onto the transport crate's
+    /// actor knobs (DR-8 decision D-FT9): the poll override or the
+    /// `[sync]` cadence, the same `[sync]` backoff knobs (one cadence
+    /// family), the system clock, and the binary's version for the
+    /// heartbeat. Call after [`AppConfig::validate`].
+    #[must_use]
+    pub fn files_sync_config(&self) -> taskboard_sync_files_nextcloud::actor::FilesSyncConfig {
+        taskboard_sync_files_nextcloud::actor::FilesSyncConfig {
+            poll_interval: Duration::from_secs(
+                self.files_sync
+                    .poll_secs
+                    .unwrap_or(self.sync.poll_interval_secs),
+            ),
+            backoff_initial: Duration::from_secs(self.sync.backoff_initial_secs),
+            backoff_max: Duration::from_secs(self.sync.backoff_max_secs),
+            // Stateless: the transport reads one wall source (the
+            // sync_actor_config precedent).
+            clock: std::sync::Arc::new(taskboard_domain::SystemClock),
+            app_version: env!("CARGO_PKG_VERSION").to_owned(),
+        }
     }
 
     /// The validated server URL. Call after [`AppConfig::validate`].
@@ -2511,6 +2595,71 @@ mod tests {
         assert!(!round.focus.enabled);
         assert_eq!(round.focus.work_mins, DEFAULT_FOCUS_WORK_MINS);
         assert_eq!(round.focus.break_mins, DEFAULT_FOCUS_BREAK_MINS);
+    }
+
+    #[test]
+    fn files_sync_section_absent_decodes_disabled_and_serializes_nothing() {
+        let config = decode("[app]\nmode = 'daemon'\n").expect("decodes");
+        assert!(!config.files_sync.enabled, "an absent table never spawns");
+        assert_eq!(config.files_sync.poll_secs, None);
+        // The serialization fence (the `[focus]` precedent): a
+        // section-less config renders without any `files_sync` key.
+        let value = serde_json::to_value(FilesSyncSection::default()).expect("serializes");
+        assert_eq!(value, serde_json::json!({}));
+    }
+
+    #[test]
+    fn files_sync_section_denies_unknown_fields() {
+        match decode("[files_sync]\nenabled = true\npoll_secs = 5\nunknown = 1\n") {
+            Err(ConfigError::Decode(_)) => {}
+            other => panic!("expected a decode rejection, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn files_sync_poll_secs_zero_is_a_typed_rejection_even_when_disabled() {
+        let mut config = decode("[files_sync]\npoll_secs = 0\n").expect("decodes");
+        config.storage.db_path = Some(std::path::PathBuf::from("/tmp/t.db"));
+        match config.validate() {
+            Err(ConfigError::InvalidDuration { field }) => {
+                assert_eq!(field, "files_sync.poll_secs");
+            }
+            other => panic!("expected InvalidDuration, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn files_sync_enabled_without_nextcloud_is_rejected() {
+        let mut config = decode("[files_sync]\nenabled = true\n").expect("decodes");
+        config.storage.db_path = Some(std::path::PathBuf::from("/tmp/t.db"));
+        // No server_url configured: the default connector resolves
+        // standalone, and the enablement has no account to bind.
+        match config.validate() {
+            Err(ConfigError::FilesSyncWithoutNextcloud { field }) => {
+                assert_eq!(field, "files_sync.enabled");
+            }
+            other => panic!("expected FilesSyncWithoutNextcloud, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn files_sync_mint_inherits_the_sync_knobs_and_honors_the_override() {
+        let mut config = decode(
+            "[sync]\npoll_interval_secs = 90\nbackoff_initial_secs = 3\nbackoff_max_secs = 60\n\n[nextcloud]\nserver_url = 'https://nc.example'\nusername = 'alice'\n\n[files_sync]\nenabled = true\n",
+        )
+        .expect("decodes");
+        config.storage.db_path = Some(std::path::PathBuf::from("/tmp/t.db"));
+        config.validate().expect("valid world");
+        let minted = config.files_sync_config();
+        assert_eq!(minted.poll_interval, Duration::from_secs(90));
+        assert_eq!(minted.backoff_initial, Duration::from_secs(3));
+        assert_eq!(minted.backoff_max, Duration::from_secs(60));
+        // The override wins over the `[sync]` cadence.
+        config.files_sync.poll_secs = Some(7);
+        assert_eq!(
+            config.files_sync_config().poll_interval,
+            Duration::from_secs(7)
+        );
     }
 
     #[test]
