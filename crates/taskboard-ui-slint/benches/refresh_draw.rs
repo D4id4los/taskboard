@@ -73,7 +73,17 @@
 //! N = 10 000, every draw lane N-independent). The partial flip stays
 //! the removal class on Today (the flip's 2024 stamp falls outside the
 //! done-today window, so the target leaves the Overdue list) and the
-//! in-place class on the board. No live unvirtualised lane is kept
+//! in-place class on the board. Since #592's row-anchored mode
+//! the Today sections carry the anchor-facts pass in every
+//! state-changing refresh (the per-section structural summary plus
+//! the cache-fed facts write — O(common) comparisons against the
+//! derive+diff's own O(N), and the extent-report seam's init-time
+//! callback per instantiation): the lanes run the default mount with
+//! the mode live, so it is inside these numbers; the before/after
+//! pairs are recorded in the #592 stage-2 report (G-3: within the
+//! runs' own spread). The partial flip's synthetic scroll repaints
+//! the shifted band in the same region class as the reflow it
+//! replaces (no region growth). No live unvirtualised lane is kept
 //! (recorded decision, #461 stage-1 plan D-4): the detection duty a
 //! live eager lane would carry is carried by the structural
 //! engagement probes (`the_today_sections_virtualise` and the
