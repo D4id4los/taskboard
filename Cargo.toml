@@ -4,6 +4,7 @@ members = [
     "crates/taskboard-domain",
     "crates/taskboard-state",
     "crates/taskboard-sync-nextcloud",
+    "crates/taskboard-sync-files",
     "crates/taskboard-storage-sqlite",
     "crates/taskboard-ui-slint",
     "crates/taskboard-app",
