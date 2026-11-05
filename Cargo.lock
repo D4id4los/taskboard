@@ -6954,6 +6954,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "taskboard-sync-files-nextcloud"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "proptest",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "taskboard-domain",
+ "taskboard-sync-files",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "wiremock",
+]
+
+[[package]]
 name = "taskboard-sync-nextcloud"
 version = "0.1.0"
 dependencies = [
