@@ -10,6 +10,20 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 ### Added
 
+- The files-sync substrate's pure core crate, `taskboard-sync-files`
+  (#629, ADR 0020): the substrate tree's layout types and file-kind
+  classifier (reserved `ops/`/`snapshot-` kinds unparseable by
+  construction), the per-user `appdata.json` document codec (strict
+  envelope, lenient `Entry`/`Tombstone`/`Verbatim` rows, unknown
+  content carried verbatim — the structural relay doctrine; reserved
+  `settings`/`proofs` sections and the `author` wire slot decoded,
+  never emitted), the input-order-free merge fold over the total
+  `(rank, clock, author, content)` order with its proptest law
+  catalogue (commutativity, idempotence, associativity, tombstone
+  clock races, the verbatim floor, adversarial author-`None`
+  totality, the `Some(author)` forward pin), and the tagged
+  `fnv1a64:` canonical state hash. Pure — no IO, no async, no UI;
+  `#![forbid(unsafe_code)]`; workspace-pinned dependencies only.
 - The settings view can view and edit the general config (#351):
   a GUI settings editor over `taskboard.toml`'s general sections —
   day start, reminder engine knobs (enabled, tick, before-offset,
