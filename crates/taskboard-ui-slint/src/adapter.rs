@@ -4559,6 +4559,92 @@ impl Adapter {
     }
 }
 
+/// The adapter seam scaffold (chunk 4.2, plan §5): splices the
+/// compiler-forced `Rc::clone` + weak + upgrade-guard + borrow scaffold
+/// in front of a seam body, so a seam's wiring is one line of shape
+/// plus the body it exists for. Pure token splicing — slint keeps
+/// receiving exactly the closure it always did; no generics, no
+/// inference change, no added logic (index conversions, settles and
+/// refreshes stay in bodies, never hidden in the macro).
+///
+/// Arms and their populations at conversion time (plan §5.3; no arm
+/// exists for a shape with one occupant):
+/// - default — weak mint + upgrade-guard + `borrow_mut()` (~137 sites);
+/// - `[else <expr>]` — as default, the guard returns `<expr>` instead
+///   (3 bool-returning seams);
+/// - `[bare_mut]` — no window access, `borrow_mut()` only (11 mirror
+///   seams);
+/// - `[bare_ref]` — no window access, `borrow()` only (4 raw-send
+///   seams);
+/// - `[try]` — weak + guard + `try_borrow_mut()` absorb (the 2
+///   teardown-echo seams).
+///
+/// The first binder group is caller-authored: macro hygiene keeps the
+/// macro's own temporaries invisible to the body, so the body's `a` /
+/// `window` names are spliced in as binders (write `_window` when the
+/// body never touches the window). Closure args are the callback's own
+/// parameters (`_` allowed).
+///
+/// Re-open trigger (plan §3.3): a future shape needing a sixth arm, or
+/// per-site customization beyond the body tokens, re-adjudicates on
+/// the same evidence form — do not grow arms ad hoc.
+macro_rules! install_seam {
+    (window: $window:ident . $on:ident, adapter: $adapter:expr;
+     bind ($a:ident, $w:ident), args ($($arg:ident),*), $body:block) => {{
+        let seam_adapter = ::std::rc::Rc::clone($adapter);
+        let seam_weak = $window.as_weak();
+        $window.$on(move |$($arg),*| {
+            let Some($w) = seam_weak.upgrade() else {
+                return;
+            };
+            let mut $a = seam_adapter.borrow_mut();
+            $body
+        });
+    }};
+    (window: $window:ident . $on:ident, adapter: $adapter:expr; [else $guard_return:expr]
+     bind ($a:ident, $w:ident), args ($($arg:ident),*), $body:block) => {{
+        let seam_adapter = ::std::rc::Rc::clone($adapter);
+        let seam_weak = $window.as_weak();
+        $window.$on(move |$($arg),*| {
+            let Some($w) = seam_weak.upgrade() else {
+                return $guard_return;
+            };
+            let mut $a = seam_adapter.borrow_mut();
+            $body
+        });
+    }};
+    (window: $window:ident . $on:ident, adapter: $adapter:expr; [bare_mut]
+     bind ($a:ident), args ($($arg:ident),*), $body:block) => {{
+        let seam_adapter = ::std::rc::Rc::clone($adapter);
+        $window.$on(move |$($arg),*| {
+            let mut $a = seam_adapter.borrow_mut();
+            $body
+        });
+    }};
+    (window: $window:ident . $on:ident, adapter: $adapter:expr; [bare_ref]
+     bind ($a:ident), args ($($arg:ident),*), $body:block) => {{
+        let seam_adapter = ::std::rc::Rc::clone($adapter);
+        $window.$on(move |$($arg),*| {
+            let $a = seam_adapter.borrow();
+            $body
+        });
+    }};
+    (window: $window:ident . $on:ident, adapter: $adapter:expr; [try]
+     bind ($a:ident, $w:ident), args ($($arg:ident),*), $body:block) => {{
+        let seam_adapter = ::std::rc::Rc::clone($adapter);
+        let seam_weak = $window.as_weak();
+        $window.$on(move |$($arg),*| {
+            let Some($w) = seam_weak.upgrade() else {
+                return;
+            };
+            let Ok($a) = seam_adapter.try_borrow_mut() else {
+                return;
+            };
+            $body
+        });
+    }};
+}
+
 /// Installs the interception callbacks on a fresh window and returns
 /// the shared adapter (also held by [`crate::UiHandle`] for the
 /// chunk-3 focus seam).
@@ -5508,15 +5594,11 @@ fn install_toolbar_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
 /// The dismissal layer's full close (round-1 D2): an outside click
 /// routes `menu.dismiss` — a dismissal, not a level-up.
 fn install_menu_dismiss_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
-    let adapter = Rc::clone(adapter);
-    let weak = window.as_weak();
-    window.on_menu_dismiss_requested(move || {
-        let Some(window) = weak.upgrade() else { return };
-        // An outside click is a full dismissal, not a level-up
-        // (round-1 D6: `CloseMenu`, the layer and the toggle share it).
-        adapter
-            .borrow_mut()
-            .apply_effect(&window, UiEffect::CloseMenu);
+    // An outside click is a full dismissal, not a level-up
+    // (round-1 D6: `CloseMenu`, the layer and the toggle share it).
+    install_seam!(window: window.on_menu_dismiss_requested, adapter: adapter;
+        bind (a, window), args (), {
+        a.apply_effect(&window, UiEffect::CloseMenu);
     });
 }
 
@@ -7756,9 +7838,8 @@ fn install_focus_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
 fn install_notification_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // Dismiss: the synced dismissal fact (the universal surface's one
     // write command).
-    let dismiss = Rc::clone(adapter);
-    window.on_notification_dismiss_clicked(move |index| {
-        let a = dismiss.borrow();
+    install_seam!(window: window.on_notification_dismiss_clicked, adapter: adapter; [bare_ref]
+        bind (a), args (index), {
         let Some(row) = notification_row(&a, index) else {
             return;
         };
@@ -7772,9 +7853,8 @@ fn install_notification_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
     // dismissal rows for the task's active occurrences (R3.5.5). An
     // alarm row has no task to done (the button's absence is the
     // presentation's job; a stray index degrades to a no-op).
-    let done = Rc::clone(adapter);
-    window.on_notification_done_clicked(move |index| {
-        let a = done.borrow();
+    install_seam!(window: window.on_notification_done_clicked, adapter: adapter; [bare_ref]
+        bind (a), args (index), {
         let Some(row) = notification_row(&a, index) else {
             return;
         };
@@ -7789,13 +7869,8 @@ fn install_notification_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
     // target — the same registry actions, unchanged. The target's
     // anchor mirrors the ref (task rows task-anchored; alarm rows
     // adhoc-anchored — mute has no button there anyway).
-    let snooze = Rc::clone(adapter);
-    let snooze_weak = window.as_weak();
-    window.on_notification_snooze_clicked(move |index| {
-        let Some(window) = snooze_weak.upgrade() else {
-            return;
-        };
-        let mut a = snooze.borrow_mut();
+    install_seam!(window: window.on_notification_snooze_clicked, adapter: adapter;
+        bind (a, window), args (index), {
         let Some(row) = notification_row(&a, index) else {
             return;
         };
@@ -7803,13 +7878,8 @@ fn install_notification_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
         a.route(&window, ActionId::ReminderSnooze);
     });
 
-    let mute = Rc::clone(adapter);
-    let mute_weak = window.as_weak();
-    window.on_notification_mute_clicked(move |index| {
-        let Some(window) = mute_weak.upgrade() else {
-            return;
-        };
-        let mut a = mute.borrow_mut();
+    install_seam!(window: window.on_notification_mute_clicked, adapter: adapter;
+        bind (a, window), args (index), {
         let Some(row) = notification_row(&a, index) else {
             return;
         };
@@ -7821,13 +7891,8 @@ fn install_notification_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
     // TimerCancel verb over the one-shot target. A stray or task row
     // degrades to a no-op (the done-seam's guard shape); the row
     // disappears by derivation at the next refresh.
-    let cancel = Rc::clone(adapter);
-    let cancel_weak = window.as_weak();
-    window.on_notification_cancel_clicked(move |index| {
-        let Some(window) = cancel_weak.upgrade() else {
-            return;
-        };
-        let mut a = cancel.borrow_mut();
+    install_seam!(window: window.on_notification_cancel_clicked, adapter: adapter;
+        bind (a, window), args (index), {
         let Some(row) = notification_row(&a, index) else {
             return;
         };
@@ -7845,13 +7910,8 @@ fn install_notification_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
     // alarm row (no task behind the anchor table) degrades to a no-op,
     // the done-seam's guard shape. The issue #210 reservation
     // resolves here.
-    let track = Rc::clone(adapter);
-    let track_weak = window.as_weak();
-    window.on_notification_track_start_clicked(move |index| {
-        let Some(window) = track_weak.upgrade() else {
-            return;
-        };
-        let mut a = track.borrow_mut();
+    install_seam!(window: window.on_notification_track_start_clicked, adapter: adapter;
+        bind (a, window), args (index), {
         let Some(row) = notification_row(&a, index) else {
             return;
         };
