@@ -60,6 +60,7 @@ pub mod reminders;
 pub mod remote;
 pub mod state;
 pub mod tracking;
+pub mod tracking_stats;
 pub mod undo;
 
 /// Kani bounded-model-checking harnesses (compiled only under Kani's
