@@ -5549,45 +5549,32 @@ fn install_drag_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
 /// only ever fire while the menu is closed, so the pre-menu chain the
 /// projection reads is the real one on every open.
 fn install_toolbar_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
-    let menu = Rc::clone(adapter);
-    let weak = window.as_weak();
-    window.on_toolbar_menu_clicked(move || {
-        let Some(window) = weak.upgrade() else { return };
-        let mut a = menu.borrow_mut();
-        if a.shell.menu.open {
-            // The toggle is a full close from any level (round-1 D6).
-            a.apply_effect(&window, UiEffect::CloseMenu);
-        } else {
-            a.route(&window, ActionId::AppMenu);
-        }
+    install_seam!(window: window.on_toolbar_menu_clicked, adapter: adapter;
+    bind (a, window), args (), {        if a.shell.menu.open {
+        // The toggle is a full close from any level (round-1 D6).
+        a.apply_effect(&window, UiEffect::CloseMenu);
+    } else {
+        a.route(&window, ActionId::AppMenu);
+    }
+
     });
     // The inbox chip's click routes `view.inbox` (§7.1: every click
     // has an action equivalent; chunk 10 D9).
-    let inbox = Rc::clone(adapter);
-    let weak = window.as_weak();
-    window.on_toolbar_inbox_clicked(move || {
-        let Some(window) = weak.upgrade() else { return };
-        inbox.borrow_mut().route(&window, ActionId::ViewInbox);
+    install_seam!(window: window.on_toolbar_inbox_clicked, adapter: adapter;
+    bind (a, window), args (), {        a.route(&window, ActionId::ViewInbox);
+
     });
     // The view switcher's clicks (round-3 D22): each routes the same
     // registry action the keyboard uses — the leaving-rule settle
     // applies unchanged (a switcher click under a live flow settles
     // it first, the `FocusBoard` precedent).
-    let board = Rc::clone(adapter);
-    let board_weak = window.as_weak();
-    window.on_toolbar_switcher_board_clicked(move || {
-        let Some(window) = board_weak.upgrade() else {
-            return;
-        };
-        board.borrow_mut().route(&window, ActionId::NavFocusBoard);
+    install_seam!(window: window.on_toolbar_switcher_board_clicked, adapter: adapter;
+    bind (a, window), args (), {        a.route(&window, ActionId::NavFocusBoard);
+
     });
-    let today = Rc::clone(adapter);
-    let today_weak = window.as_weak();
-    window.on_toolbar_switcher_today_clicked(move || {
-        let Some(window) = today_weak.upgrade() else {
-            return;
-        };
-        today.borrow_mut().route(&window, ActionId::ViewToday);
+    install_seam!(window: window.on_toolbar_switcher_today_clicked, adapter: adapter;
+    bind (a, window), args (), {        a.route(&window, ActionId::ViewToday);
+
     });
 }
 
@@ -5692,66 +5679,45 @@ fn install_stack_context_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
 /// discipline, with the selection-follows-focus retarget), then the
 /// activation/context seams route through the action layer's verbs.
 fn install_today_row_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
-    let click = Rc::clone(adapter);
-    let weak = window.as_weak();
-    window.on_today_row_clicked(move |section, row| {
-        let Some(window) = weak.upgrade() else {
-            return;
-        };
-        let mut a = click.borrow_mut();
-        settle_pointer_conflict(&mut a, &window);
-        focus_today_row(&mut a, &window, section, row);
+    install_seam!(window: window.on_today_row_clicked, adapter: adapter;
+    bind (a, window), args (section, row), {        settle_pointer_conflict(&mut a, &window);
+    focus_today_row(&mut a, &window, section, row);
+
     });
-    let activated = Rc::clone(adapter);
-    let weak = window.as_weak();
-    window.on_today_row_activated(move |section, row| {
-        let Some(window) = weak.upgrade() else {
-            return;
-        };
-        let mut a = activated.borrow_mut();
-        settle_pointer_conflict(&mut a, &window);
-        if focus_today_row(&mut a, &window, section, row).is_some() {
-            a.route(&window, ActionId::TaskEdit);
-        }
+    install_seam!(window: window.on_today_row_activated, adapter: adapter;
+    bind (a, window), args (section, row), {        settle_pointer_conflict(&mut a, &window);
+    if focus_today_row(&mut a, &window, section, row).is_some() {
+        a.route(&window, ActionId::TaskEdit);
+    }
+
     });
     // The done checkbox (r3 D6): the toggled command, the board
     // cards' seam verbatim (a stale index absorbed).
-    let done = Rc::clone(adapter);
-    window.on_today_row_done_toggled(move |section, row| {
-        let a = done.borrow();
-        let (Ok(section), Ok(row)) = (usize::try_from(section), usize::try_from(row)) else {
-            return;
-        };
-        if let Some(task) = a.tables.today_row(section, row) {
-            send_toggled_done(&a, task);
-        }
+    install_seam!(window: window.on_today_row_done_toggled, adapter: adapter; [bare_ref]
+    bind (a), args (section, row), {        let (Ok(section), Ok(row)) = (usize::try_from(section), usize::try_from(row)) else {
+        return;
+    };
+    if let Some(task) = a.tables.today_row(section, row) {
+        send_toggled_done(&a, task);
+    }
+
     });
     // The Tracked section's activation (#490, D-TS7): resolves the
     // row through the tracked-today table and opens the task — the
     // today-row-activated arm verbatim (click ≡ key, §7.1).
-    let tracked = Rc::clone(adapter);
-    let weak = window.as_weak();
-    window.on_today_tracked_activated(move |row| {
-        let Some(window) = weak.upgrade() else {
-            return;
-        };
-        let mut a = tracked.borrow_mut();
-        settle_pointer_conflict(&mut a, &window);
-        if focus_tracked_today_row(&mut a, &window, row).is_some() {
-            a.route(&window, ActionId::TaskEdit);
-        }
+    install_seam!(window: window.on_today_tracked_activated, adapter: adapter;
+    bind (a, window), args (row), {        settle_pointer_conflict(&mut a, &window);
+    if focus_tracked_today_row(&mut a, &window, row).is_some() {
+        a.route(&window, ActionId::TaskEdit);
+    }
+
     });
-    let context = Rc::clone(adapter);
-    let weak = window.as_weak();
-    window.on_today_row_context_requested(move |section, row, x, y| {
-        let Some(window) = weak.upgrade() else {
-            return;
-        };
-        let mut a = context.borrow_mut();
-        settle_pointer_conflict(&mut a, &window);
-        if focus_today_row(&mut a, &window, section, row).is_some() {
-            a.open_task_context_menu(&window, x, y);
-        }
+    install_seam!(window: window.on_today_row_context_requested, adapter: adapter;
+    bind (a, window), args (section, row, x, y), {        settle_pointer_conflict(&mut a, &window);
+    if focus_today_row(&mut a, &window, section, row).is_some() {
+        a.open_task_context_menu(&window, x, y);
+    }
+
     });
 }
 
@@ -5834,86 +5800,61 @@ fn install_body_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
 fn install_object_context_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // The stack header (the regular header and the compact switcher's
     // segments share the callback).
-    let header = Rc::clone(adapter);
-    let header_weak = window.as_weak();
-    window.on_board_header_context_requested(move |column, x, y| {
-        let Some(window) = header_weak.upgrade() else {
-            return;
-        };
-        let mut a = header.borrow_mut();
-        open_stack_context(&mut a, &window, column, x, y);
+    install_seam!(window: window.on_board_header_context_requested, adapter: adapter;
+    bind (a, window), args (column, x, y), {        open_stack_context(&mut a, &window, column, x, y);
+
     });
     // The stack card's bare surface (r3 D4): context on right-down,
     // select on left-click (r4 D3) — the two body seams, one home.
     install_body_seams(window, adapter);
     // The board-bar segment.
-    let segment = Rc::clone(adapter);
-    let segment_weak = window.as_weak();
-    window.on_board_segment_context_requested(move |index, x, y| {
-        let Some(window) = segment_weak.upgrade() else {
-            return;
-        };
-        let Ok(index) = usize::try_from(index) else {
-            return;
-        };
-        let mut a = segment.borrow_mut();
-        settle_pointer_conflict(&mut a, &window);
-        let Some(board) = a.tables.board_ids.get(index).copied() else {
-            return;
-        };
-        let state = a.state.load_full();
-        let outcomes = a.view_state.select_board(&state, board);
-        a.apply_outcomes(&window, &outcomes);
-        a.open_context_menu(&window, x, y, menu::BOARD_CONTEXT);
+    install_seam!(window: window.on_board_segment_context_requested, adapter: adapter;
+    bind (a, window), args (index, x, y), {        let Ok(index) = usize::try_from(index) else {
+        return;
+    };
+    settle_pointer_conflict(&mut a, &window);
+    let Some(board) = a.tables.board_ids.get(index).copied() else {
+        return;
+    };
+    let state = a.state.load_full();
+    let outcomes = a.view_state.select_board(&state, board);
+    a.apply_outcomes(&window, &outcomes);
+    a.open_context_menu(&window, x, y, menu::BOARD_CONTEXT);
+
     });
     // The stack-rename field (per-column; the flow names the stack —
     // the mirror only needs the buffer, the commit resolves the flow).
-    let rename_mirror = Rc::clone(adapter);
-    window.on_board_stack_rename_edited(move |_column, text| {
-        rename_mirror
-            .borrow_mut()
-            .view_state
-            .set_buffer(text.to_string());
+    install_seam!(window: window.on_board_stack_rename_edited, adapter: adapter; [bare_mut]
+    bind (a), args (_column, text), {        a
+        .view_state
+        .set_buffer(text.to_string());
+
     });
-    let rename_commit = Rc::clone(adapter);
-    let rename_commit_weak = window.as_weak();
-    window.on_board_stack_rename_committed(move |_column, text| {
-        let Some(window) = rename_commit_weak.upgrade() else {
-            return;
-        };
-        commit_text(&mut rename_commit.borrow_mut(), &window, &text);
+    install_seam!(window: window.on_board_stack_rename_committed, adapter: adapter;
+    bind (a, window), args (_column, text), {        commit_text(&mut a, &window, &text);
+
     });
     // The board create/rename fields: the window-level slot's
     // mirror/commit seams (the create-row pattern).
-    let board_mirror = Rc::clone(adapter);
-    window.on_board_create_field_edited(move |text| {
-        board_mirror
-            .borrow_mut()
-            .view_state
-            .set_buffer(text.to_string());
+    install_seam!(window: window.on_board_create_field_edited, adapter: adapter; [bare_mut]
+    bind (a), args (text), {        a
+        .view_state
+        .set_buffer(text.to_string());
+
     });
-    let board_commit = Rc::clone(adapter);
-    let board_commit_weak = window.as_weak();
-    window.on_board_create_field_committed(move |text| {
-        let Some(window) = board_commit_weak.upgrade() else {
-            return;
-        };
-        commit_text(&mut board_commit.borrow_mut(), &window, &text);
+    install_seam!(window: window.on_board_create_field_committed, adapter: adapter;
+    bind (a, window), args (text), {        commit_text(&mut a, &window, &text);
+
     });
-    let board_rename_mirror = Rc::clone(adapter);
-    window.on_board_rename_field_edited(move |text| {
-        board_rename_mirror
-            .borrow_mut()
-            .view_state
-            .set_buffer(text.to_string());
+    install_seam!(window: window.on_board_rename_field_edited, adapter: adapter; [bare_mut]
+    bind (a), args (text), {        a
+        .view_state
+        .set_buffer(text.to_string());
+
     });
-    let board_rename_commit = Rc::clone(adapter);
-    let board_rename_commit_weak = window.as_weak();
-    window.on_board_rename_field_committed(move |text| {
-        let Some(window) = board_rename_commit_weak.upgrade() else {
-            return;
-        };
-        commit_text(&mut board_rename_commit.borrow_mut(), &window, &text);
+    install_seam!(window: window.on_board_rename_field_committed, adapter: adapter;
+    bind (a, window), args (text), {        commit_text(&mut a, &window, &text);
+
     });
 }
 
@@ -5965,42 +5906,28 @@ fn install_board_bar_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
 /// the click equivalent of its keyboard binding (§7.1) — and the
 /// flow's field mirrors/commits like every other text flow (D9).
 fn install_stack_create_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
-    let route = Rc::clone(adapter);
-    let route_weak = window.as_weak();
-    window.on_board_new_stack_clicked(move || {
-        let Some(window) = route_weak.upgrade() else {
-            return;
-        };
-        let mut a = route.borrow_mut();
-        settle_pointer_conflict(&mut a, &window);
-        a.route(&window, ActionId::StackCreate);
+    install_seam!(window: window.on_board_new_stack_clicked, adapter: adapter;
+    bind (a, window), args (), {        settle_pointer_conflict(&mut a, &window);
+    a.route(&window, ActionId::StackCreate);
+
     });
     // The empty-board preset CTA (r3 D5): the direct command dispatch
     // — no text flow, the flow machine untouched.
-    let preset = Rc::clone(adapter);
-    let preset_weak = window.as_weak();
-    window.on_board_default_preset_clicked(move || {
-        let Some(window) = preset_weak.upgrade() else {
-            return;
-        };
-        let mut a = preset.borrow_mut();
-        let state = a.state.load_full();
-        let outcomes = a
-            .view_state
-            .apply_board_preset(&state, &crate::board_presets::DEFAULT_KANBAN);
-        a.apply_outcomes(&window, &outcomes);
+    install_seam!(window: window.on_board_default_preset_clicked, adapter: adapter;
+    bind (a, window), args (), {        let state = a.state.load_full();
+    let outcomes = a
+        .view_state
+        .apply_board_preset(&state, &crate::board_presets::DEFAULT_KANBAN);
+    a.apply_outcomes(&window, &outcomes);
+
     });
-    let mirror = Rc::clone(adapter);
-    window.on_board_stack_create_edited(move |text| {
-        mirror.borrow_mut().view_state.set_buffer(text.to_string());
+    install_seam!(window: window.on_board_stack_create_edited, adapter: adapter; [bare_mut]
+    bind (a), args (text), {        a.view_state.set_buffer(text.to_string());
+
     });
-    let commit = Rc::clone(adapter);
-    let commit_weak = window.as_weak();
-    window.on_board_stack_create_committed(move |text| {
-        let Some(window) = commit_weak.upgrade() else {
-            return;
-        };
-        commit_text(&mut commit.borrow_mut(), &window, &text);
+    install_seam!(window: window.on_board_stack_create_committed, adapter: adapter;
+    bind (a, window), args (text), {        commit_text(&mut a, &window, &text);
+
     });
 }
 
@@ -6025,64 +5952,43 @@ fn install_board_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // A card click: focus the (column, row) card (selection state
     // only, §7.1 mouse discipline); activation routes `task.edit`
     // after it.
-    let (card, activated) = (Rc::clone(adapter), Rc::clone(adapter));
-    let (click_weak, act_weak) = (window.as_weak(), window.as_weak());
-    window.on_board_task_clicked(move |column, row| {
-        let Some(window) = click_weak.upgrade() else {
-            return;
-        };
-        let mut a = card.borrow_mut();
-        focus_board_card(&mut a, &window, column, row);
+    install_seam!(window: window.on_board_task_clicked, adapter: adapter;
+    bind (a, window), args (column, row), {        focus_board_card(&mut a, &window, column, row);
+
     });
-    window.on_board_task_activated(move |column, row| {
-        let Some(window) = act_weak.upgrade() else {
-            return;
-        };
-        let mut a = activated.borrow_mut();
-        if focus_board_card(&mut a, &window, column, row).is_some() {
-            a.route(&window, ActionId::TaskEdit);
-        }
+    install_seam!(window: window.on_board_task_activated, adapter: adapter;
+    bind (a, window), args (column, row), {        if focus_board_card(&mut a, &window, column, row).is_some() {
+        a.route(&window, ActionId::TaskEdit);
+    }
+
     });
 
     // Header and switcher activation are the same selection move (D8:
     // one mechanism per breakpoint; D13: no stack management in UI).
-    let (header, switcher) = (Rc::clone(adapter), Rc::clone(adapter));
-    let (head_weak, switch_weak) = (window.as_weak(), window.as_weak());
-    window.on_board_header_activated(move |column| {
-        let Some(window) = head_weak.upgrade() else {
-            return;
-        };
-        let mut a = header.borrow_mut();
-        select_column(&mut a, &window, column);
+    install_seam!(window: window.on_board_header_activated, adapter: adapter;
+    bind (a, window), args (column), {        select_column(&mut a, &window, column);
+
     });
-    window.on_board_switcher_activated(move |column| {
-        let Some(window) = switch_weak.upgrade() else {
-            return;
-        };
-        let mut a = switcher.borrow_mut();
-        select_column(&mut a, &window, column);
+    install_seam!(window: window.on_board_switcher_activated, adapter: adapter;
+    bind (a, window), args (column), {        select_column(&mut a, &window, column);
+
     });
 
     // The Add Task ghost (r2 D8): select the addressed stack, then
     // route task.create — the keyboard's exact action, so click ≡ key
     // by construction (one action, one target-resolution rule).
-    let ghost = Rc::clone(adapter);
-    let ghost_weak = window.as_weak();
-    window.on_board_add_task_activated(move |column| {
-        let Some(window) = ghost_weak.upgrade() else {
-            return;
-        };
-        let mut a = ghost.borrow_mut();
-        select_column(&mut a, &window, column);
-        settle_pointer_conflict(&mut a, &window);
-        // The clicked column IS the create target (r4 D4): resolved
-        // through the id tables (the D2 index-only convention — a
-        // stale index yields `None`, never a wrong stack), so field
-        // placement and selection can never diverge.
-        if let Ok(index) = usize::try_from(column) {
-            a.create_target = a.tables.stack_ids.get(index).copied();
-        }
-        a.route(&window, ActionId::TaskCreate);
+    install_seam!(window: window.on_board_add_task_activated, adapter: adapter;
+    bind (a, window), args (column), {        select_column(&mut a, &window, column);
+    settle_pointer_conflict(&mut a, &window);
+    // The clicked column IS the create target (r4 D4): resolved
+    // through the id tables (the D2 index-only convention — a
+    // stale index yields `None`, never a wrong stack), so field
+    // placement and selection can never diverge.
+    if let Ok(index) = usize::try_from(column) {
+        a.create_target = a.tables.stack_ids.get(index).copied();
+    }
+    a.route(&window, ActionId::TaskCreate);
+
     });
 
     // The done checkbox (r3 D6): resolve (column, row) against the id
@@ -6092,38 +5998,29 @@ fn install_board_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // focused task; the checkbox addresses an arbitrary card). No
     // local checked state exists anywhere: the refresh push is the
     // single writer of `TaskCardModel.done`.
-    let done = Rc::clone(adapter);
-    let done_weak = window.as_weak();
-    window.on_board_task_done_toggled(move |column, row| {
-        let Some(window) = done_weak.upgrade() else {
-            return;
-        };
-        let mut a = done.borrow_mut();
-        settle_pointer_conflict(&mut a, &window);
-        let (Ok(column), Ok(row)) = (usize::try_from(column), usize::try_from(row)) else {
-            return;
-        };
-        let Some((_, task)) = a.tables.board_task(column, row) else {
-            return;
-        };
-        send_toggled_done(&a, task);
+    install_seam!(window: window.on_board_task_done_toggled, adapter: adapter;
+    bind (a, window), args (column, row), {        settle_pointer_conflict(&mut a, &window);
+    let (Ok(column), Ok(row)) = (usize::try_from(column), usize::try_from(row)) else {
+        return;
+    };
+    let Some((_, task)) = a.tables.board_task(column, row) else {
+        return;
+    };
+    send_toggled_done(&a, task);
+
     });
 
     // The create-row field: keystrokes mirror into the Rust buffer
     // (D9 rule 1); Return commits.
-    let mirror = Rc::clone(adapter);
-    window.on_board_create_edited(move |column, text| {
-        let _ = column;
-        mirror.borrow_mut().view_state.set_buffer(text.to_string());
+    install_seam!(window: window.on_board_create_edited, adapter: adapter; [bare_mut]
+    bind (a), args (column, text), {        let _ = column;
+    a.view_state.set_buffer(text.to_string());
+
     });
-    let commit = Rc::clone(adapter);
-    let commit_weak = window.as_weak();
-    window.on_board_create_committed(move |column, text| {
-        let Some(window) = commit_weak.upgrade() else {
-            return;
-        };
-        let _ = column;
-        commit_text(&mut commit.borrow_mut(), &window, &text);
+    install_seam!(window: window.on_board_create_committed, adapter: adapter;
+    bind (a, window), args (column, text), {        let _ = column;
+    commit_text(&mut a, &window, &text);
+
     });
 }
 
@@ -6196,106 +6093,70 @@ fn commit_text(adapter: &mut Adapter, window: &AppWindow, text: &str) {
 fn install_stack_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // A card click: focus the row's task (selection state only, §7.1);
     // activation routes `task.edit` after it.
-    let (card, activated) = (Rc::clone(adapter), Rc::clone(adapter));
-    let (click_weak, act_weak) = (window.as_weak(), window.as_weak());
-    window.on_stack_task_clicked(move |row| {
-        let Some(window) = click_weak.upgrade() else {
-            return;
-        };
-        let mut a = card.borrow_mut();
-        activate_stack_row(&mut a, &window, row);
+    install_seam!(window: window.on_stack_task_clicked, adapter: adapter;
+    bind (a, window), args (row), {        activate_stack_row(&mut a, &window, row);
+
     });
-    window.on_stack_task_activated(move |row| {
-        let Some(window) = act_weak.upgrade() else {
-            return;
-        };
-        let mut a = activated.borrow_mut();
-        activate_stack_row(&mut a, &window, row);
-        a.route(&window, ActionId::TaskEdit);
+    install_seam!(window: window.on_stack_task_activated, adapter: adapter;
+    bind (a, window), args (row), {        activate_stack_row(&mut a, &window, row);
+    a.route(&window, ActionId::TaskEdit);
+
     });
 
-    let mirror = Rc::clone(adapter);
-    window.on_stack_create_edited(move |text| {
-        mirror.borrow_mut().view_state.set_buffer(text.to_string());
+    install_seam!(window: window.on_stack_create_edited, adapter: adapter; [bare_mut]
+    bind (a), args (text), {        a.view_state.set_buffer(text.to_string());
+
     });
 
     // The search palette (#348): per-keystroke re-rank, outside-click
     // close, and row activation sharing the keyboard Activate path.
-    let palette = Rc::clone(adapter);
-    let weak = window.as_weak();
-    window.on_palette_query_edited(move |text| {
-        let Some(window) = weak.upgrade() else {
-            return;
-        };
-        palette.borrow_mut().apply_palette_query(&window, &text);
+    install_seam!(window: window.on_palette_query_edited, adapter: adapter;
+    bind (a, window), args (text), {        a.apply_palette_query(&window, &text);
+
     });
     // Quick capture (chunk 10 D8): the buffer mirror, the Return
     // commit (keeps the flow), and the scrim's discard-and-close
     // (routed through the action layer's ModeNormal semantics).
-    let capture = Rc::clone(adapter);
-    window.on_capture_text_edited(move |text| {
-        capture.borrow_mut().view_state.set_buffer(text.to_string());
+    install_seam!(window: window.on_capture_text_edited, adapter: adapter; [bare_mut]
+    bind (a), args (text), {        a.view_state.set_buffer(text.to_string());
+
     });
-    let capture = Rc::clone(adapter);
-    let weak = window.as_weak();
-    window.on_capture_accepted(move || {
-        let Some(window) = weak.upgrade() else {
-            return;
-        };
-        let mut a = capture.borrow_mut();
-        let outcomes = a.view_state.commit_capture();
-        a.apply_outcomes(&window, &outcomes);
-        a.finish_mutation(&window);
+    install_seam!(window: window.on_capture_accepted, adapter: adapter;
+    bind (a, window), args (), {        let outcomes = a.view_state.commit_capture();
+    a.apply_outcomes(&window, &outcomes);
+    a.finish_mutation(&window);
+
     });
-    let capture = Rc::clone(adapter);
-    let weak = window.as_weak();
-    window.on_capture_dismiss_requested(move || {
-        let Some(window) = weak.upgrade() else {
-            return;
-        };
-        let mut a = capture.borrow_mut();
-        let outcomes = a.view_state.close_capture();
-        a.apply_outcomes(&window, &outcomes);
-        a.finish_mutation(&window);
+    install_seam!(window: window.on_capture_dismiss_requested, adapter: adapter;
+    bind (a, window), args (), {        let outcomes = a.view_state.close_capture();
+    a.apply_outcomes(&window, &outcomes);
+    a.finish_mutation(&window);
+
     });
-    let palette = Rc::clone(adapter);
-    let weak = window.as_weak();
-    window.on_palette_dismiss_requested(move || {
-        let Some(window) = weak.upgrade() else {
-            return;
-        };
-        let mut a = palette.borrow_mut();
-        let outcomes = a.view_state.close_palette();
-        a.apply_outcomes(&window, &outcomes);
-        a.finish_mutation(&window);
+    install_seam!(window: window.on_palette_dismiss_requested, adapter: adapter;
+    bind (a, window), args (), {        let outcomes = a.view_state.close_palette();
+    a.apply_outcomes(&window, &outcomes);
+    a.finish_mutation(&window);
+
     });
-    let palette = Rc::clone(adapter);
-    let weak = window.as_weak();
-    window.on_palette_row_activated(move |index| {
-        let Some(window) = weak.upgrade() else {
-            return;
-        };
-        let mut a = palette.borrow_mut();
-        let target = a
-            .tables
-            .palette
-            .get(usize::try_from(index).unwrap_or(usize::MAX))
-            .copied();
-        let state = a.state.load();
-        let outcomes = match target {
-            Some(target) => a.view_state.palette_jump(&state, target),
-            None => a.view_state.close_palette(),
-        };
-        a.apply_outcomes(&window, &outcomes);
-        a.finish_mutation(&window);
+    install_seam!(window: window.on_palette_row_activated, adapter: adapter;
+    bind (a, window), args (index), {        let target = a
+        .tables
+        .palette
+        .get(usize::try_from(index).unwrap_or(usize::MAX))
+        .copied();
+    let state = a.state.load();
+    let outcomes = match target {
+        Some(target) => a.view_state.palette_jump(&state, target),
+        None => a.view_state.close_palette(),
+    };
+    a.apply_outcomes(&window, &outcomes);
+    a.finish_mutation(&window);
+
     });
-    let commit = Rc::clone(adapter);
-    let commit_weak = window.as_weak();
-    window.on_stack_create_committed(move |text| {
-        let Some(window) = commit_weak.upgrade() else {
-            return;
-        };
-        commit_text(&mut commit.borrow_mut(), &window, &text);
+    install_seam!(window: window.on_stack_create_committed, adapter: adapter;
+    bind (a, window), args (text), {        commit_text(&mut a, &window, &text);
+
     });
 }
 
