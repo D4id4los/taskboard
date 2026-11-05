@@ -21,6 +21,18 @@ The workspace carries a single global version (see `docs/architecture.org`);
   Stop always wins and never chains. Gentle toast + chime at each
   phase boundary by default (`[focus] notify = false` silences) —
   focus users get boundary sounds from this version.
+- Tracker reminders (#504): the habit's optional `anchor_time` now arms
+  a once-per-day-window nudge — the reminder family's fifth arm
+  (`ReminderRef::Tracker` / `ReminderAnchor::Tracker`, the `tracker:`
+  text form, no storage migration). The nudge fires only while the
+  current period's quota is unmet (the gate re-arms on period rollover
+  by construction), keys on the stable anchor reading inside the day
+  window (never a tick stamp — at-most-once per window), snoozes like
+  every family, dismisses per-device (occurrence keys derive from the
+  device's day calendar), pins `Insistence::Normal` (no escalation
+  ladder rung), and prunes its receipts on `DeleteHabit` (the log
+  outlives the tracker). Zero new CLI verbs: `habits add/update --at`
+  was already the edit surface.
 - The files-sync substrate's pure core crate, `taskboard-sync-files`
   (#629, ADR 0020): the substrate tree's layout types and file-kind
   classifier (reserved `ops/`/`snapshot-` kinds unparseable by
