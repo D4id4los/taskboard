@@ -170,6 +170,63 @@ pub struct LoopState {
     /// the fingerprint every cycle would re-send a no-op report. The
     /// engine is independently no-op-safe (D-ES6).
     last_import_fingerprint: Option<StateHash>,
+    /// This cycle's merged-view hash — the divergence derivation's
+    /// "our current settled view" input (set every Ok cycle).
+    view_hash: Option<StateHash>,
+    /// Consecutive quiet-and-disagreeing cycles (the quiescence
+    /// window; D-FH3). Reset by a busy or an agreeing quiet cycle;
+    /// held across failures.
+    quiet_streak: u32,
+    /// The current divergence finding (fires at `quiet_streak >= 2`).
+    diverged_from: BTreeSet<DeviceId>,
+}
+
+/// The quiescence window's length: the finding fires on the second
+/// consecutive quiet-and-disagreeing cycle (design Part F: "two
+/// cycles + no pending writes").
+const QUIET_CYCLES_TO_FIRE: u32 = 2;
+
+/// The divergence window's pure rule (D-FH3): clock-free by
+/// construction — the caller folds the cycle's classification (`quiet`
+/// = no publish ∧ no pending heartbeat post-cycle) into the running
+/// streak, and the disagreeing set is recomputed from the latest
+/// evidence every call, so membership always follows the newest
+/// observation. Exclusions are structural: a peer absent from `docs`
+/// (parked — its park finding already says why) or from `heartbeats`
+/// (no decoded heartbeat — no evidence, no finding) cannot appear in
+/// the comparison; self is excluded because its heartbeat never enters
+/// `heartbeats` (the fork alarm is that condition's specific finding).
+fn advance_divergence(
+    quiet_streak: u32,
+    quiet: bool,
+    view: &StateHash,
+    docs: &BTreeMap<DeviceId, UserDocument>,
+    heartbeats: &BTreeMap<DeviceId, DeviceInfo>,
+) -> (u32, BTreeSet<DeviceId>) {
+    if !quiet {
+        // Local writes in flight mean the fleet is mid-convergence;
+        // firing here is noise.
+        return (0, BTreeSet::new());
+    }
+    let disagreeing: BTreeSet<DeviceId> = docs
+        .keys()
+        .filter(|device| {
+            heartbeats
+                .get(*device)
+                .is_some_and(|info| &info.state_hash != view)
+        })
+        .copied()
+        .collect();
+    if disagreeing.is_empty() {
+        // Agreement is evidence too.
+        return (0, BTreeSet::new());
+    }
+    let streak = quiet_streak.saturating_add(1);
+    if streak >= QUIET_CYCLES_TO_FIRE {
+        (streak, disagreeing)
+    } else {
+        (streak, BTreeSet::new())
+    }
 }
 
 /// How a cycle ended, for the actor's rescheduling.
@@ -227,6 +284,13 @@ pub async fn run_cycle<T: FilesTransport>(
         Ok((published, read_devices, import_rejected)) => {
             st.failure_streak = 0;
             st.retry_after_floor = Duration::ZERO;
+            if let Some(view) = &st.view_hash {
+                let quiet = !published && !st.pending_heartbeat;
+                let (streak, diverged) =
+                    advance_divergence(st.quiet_streak, quiet, view, &st.docs, &st.heartbeats);
+                st.quiet_streak = streak;
+                st.diverged_from = diverged;
+            }
             publish_status(
                 status,
                 Some(&CycleOutcome::Ok {
@@ -271,6 +335,20 @@ fn publish_status(
         current.forked_paths.clone_from(&st.forked_paths);
         current.parked.clone_from(&st.parked);
         current.last_heartbeat_written = st.last_heartbeat_at;
+        current.peers = st
+            .heartbeats
+            .iter()
+            .map(|(device, info)| {
+                (
+                    *device,
+                    crate::status::PeerFreshness {
+                        written_at: info.written_at,
+                        last_clock: info.last_clock,
+                    },
+                )
+            })
+            .collect();
+        current.diverged_from.clone_from(&st.diverged_from);
     });
 }
 
@@ -350,6 +428,7 @@ async fn attach<T: FilesTransport>(
     let appdata_path = rooted(&layout::device_appdata_path(ctx.identity.device_id));
     let merged = merged_view(ctx, st);
     let import_rejected = import_step(ctx, st, &merged).await;
+    st.view_hash = Some(StateHash::of(&merged));
     let appdata_bytes = serde_json::to_vec(&merged)?;
     match transport.put_create(&appdata_path, &appdata_bytes).await {
         Ok(outcome) => {
@@ -456,6 +535,7 @@ async fn steady_cycle<T: FilesTransport>(
     let import_rejected = import_step(ctx, st, &merged).await;
     // 4. the local-hash skip-compare (never a server etag, F5).
     let hash = StateHash::of(&merged);
+    st.view_hash = Some(hash.clone());
     let skip = st.published_hash.as_ref() == Some(&hash);
     let mut published = false;
     if !skip {
@@ -964,4 +1044,187 @@ fn max_row_clock(document: &UserDocument) -> Option<DateTime<Utc>> {
         max = Some(max.map_or(clock, |current: DateTime<Utc>| current.max(clock)));
     }
     max
+}
+
+#[cfg(test)]
+mod divergence_rule {
+    use super::*;
+    use proptest::prelude::*;
+    use serde_json::json;
+
+    fn device(tag: u8) -> DeviceId {
+        DeviceId::parse(&format!("0193c000-0000-7c89-ab01-2345abcdef{tag:02x}"))
+            .expect("fixture device id")
+    }
+
+    fn doc_with(text: &str) -> UserDocument {
+        let mut journal = BTreeMap::new();
+        journal.insert(
+            "0193c000-0000-7c89-ab01-2345abcdef99".to_owned(),
+            UserRecord::Entry {
+                body: BTreeMap::from([("text".to_owned(), json!(text))]),
+                clock: "2026-11-05T08:00:00Z".parse().expect("clock"),
+                author: None,
+            },
+        );
+        UserDocument {
+            format: DOCUMENT_FORMAT,
+            sections: taskboard_sync_files::document::UserSections {
+                journal: Some(journal),
+                unknown: BTreeMap::new(),
+            },
+            unknown: BTreeMap::new(),
+        }
+    }
+
+    fn info(hash: StateHash) -> DeviceInfo {
+        DeviceInfo {
+            app_version: "test".to_owned(),
+            format_version: TREE_FORMAT_VERSION,
+            last_clock: "2026-11-05T08:00:00Z".parse().expect("clock"),
+            state_hash: hash,
+            written_at: "2026-11-05T09:30:00Z".parse().expect("clock"),
+        }
+    }
+
+    /// One cycle classification: a quiet cycle with the peer agreeing,
+    /// a quiet cycle with the peer disagreeing, or a busy cycle (the
+    /// disagreement bit is irrelevant while writes are in flight).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Step {
+        QuietAgree,
+        QuietDisagree,
+        Busy,
+    }
+
+    fn step_strategy() -> impl Strategy<Value = Step> {
+        prop_oneof![
+            Just(Step::QuietAgree),
+            Just(Step::QuietDisagree),
+            Just(Step::Busy)
+        ]
+    }
+
+    fn evidence(
+        step: Step,
+    ) -> (
+        BTreeMap<DeviceId, UserDocument>,
+        BTreeMap<DeviceId, DeviceInfo>,
+    ) {
+        let peer = device(1);
+        let view = StateHash::of(&doc_with("view"));
+        let docs = BTreeMap::from([(peer, doc_with("peer"))]);
+        let heartbeats = match step {
+            Step::QuietAgree => BTreeMap::from([(peer, info(view))]),
+            Step::QuietDisagree | Step::Busy => {
+                BTreeMap::from([(peer, info(StateHash::of(&doc_with("other"))))])
+            }
+        };
+        (docs, heartbeats)
+    }
+
+    /// The rule table, one row per test.
+    #[test]
+    fn a_first_quiet_disagreeing_cycle_does_not_fire() {
+        let view = StateHash::of(&doc_with("view"));
+        let (docs, heartbeats) = evidence(Step::QuietDisagree);
+        let (streak, diverged) = advance_divergence(0, true, &view, &docs, &heartbeats);
+        assert_eq!(streak, 1);
+        assert!(diverged.is_empty(), "the window is two cycles");
+    }
+
+    #[test]
+    fn a_second_consecutive_quiet_disagreeing_cycle_fires_with_the_current_set() {
+        let peer = device(1);
+        let view = StateHash::of(&doc_with("view"));
+        let (docs, heartbeats) = evidence(Step::QuietDisagree);
+        let (streak, diverged) = advance_divergence(1, true, &view, &docs, &heartbeats);
+        assert_eq!(streak, QUIET_CYCLES_TO_FIRE);
+        assert_eq!(diverged, BTreeSet::from([peer]));
+    }
+
+    #[test]
+    fn a_third_quiet_disagreeing_cycle_stays_active_with_the_fresh_membership() {
+        // Membership follows the latest observation: the same set here,
+        // but recomputed every call (the set argument is only carried
+        // through by the caller, never consulted).
+        let peer = device(1);
+        let view = StateHash::of(&doc_with("view"));
+        let (docs, heartbeats) = evidence(Step::QuietDisagree);
+        let (streak, diverged) = advance_divergence(2, true, &view, &docs, &heartbeats);
+        assert_eq!(streak, 3);
+        assert_eq!(diverged, BTreeSet::from([peer]));
+    }
+
+    #[test]
+    fn a_quiet_agreeing_cycle_resets_the_streak_and_clears_the_finding() {
+        let view = StateHash::of(&doc_with("view"));
+        let (docs, heartbeats) = evidence(Step::QuietAgree);
+        let (streak, diverged) = advance_divergence(2, true, &view, &docs, &heartbeats);
+        assert_eq!(streak, 0);
+        assert!(diverged.is_empty(), "agreement is evidence too");
+    }
+
+    #[test]
+    fn a_busy_cycle_resets_the_streak_and_clears_the_finding() {
+        let view = StateHash::of(&doc_with("view"));
+        let (docs, heartbeats) = evidence(Step::Busy);
+        let (streak, diverged) = advance_divergence(1, false, &view, &docs, &heartbeats);
+        assert_eq!(streak, 0);
+        assert!(diverged.is_empty(), "local writes in flight: no firing");
+    }
+
+    #[test]
+    fn a_parked_peer_is_excluded_no_document_no_comparison() {
+        let view = StateHash::of(&doc_with("view"));
+        // The parked posture: a heartbeat exists but the document was
+        // withheld (quarantine / newer format) ⇒ the peer is in
+        // `heartbeats` only.
+        let docs = BTreeMap::new();
+        let heartbeats = BTreeMap::from([(device(1), info(StateHash::of(&doc_with("other"))))]);
+        let (streak, diverged) = advance_divergence(1, true, &view, &docs, &heartbeats);
+        assert_eq!(streak, 0, "no evidence to carry a streak over");
+        assert!(diverged.is_empty(), "the park finding already says why");
+    }
+
+    #[test]
+    fn a_heartbeat_less_peer_is_excluded() {
+        let view = StateHash::of(&doc_with("view"));
+        let peer = device(1);
+        let docs = BTreeMap::from([(peer, doc_with("peer"))]);
+        let heartbeats = BTreeMap::new();
+        let (streak, diverged) = advance_divergence(1, true, &view, &docs, &heartbeats);
+        assert_eq!(streak, 0);
+        assert!(diverged.is_empty(), "no evidence, no finding");
+    }
+
+    // The interleaving property: the window is local — across random
+    // classification sequences the finding can only be active when
+    // the last two cycles were both quiet-and-disagreeing (no streak
+    // leakage across an intervening busy or agreeing cycle), and it
+    // must be active whenever they were.
+    proptest! {
+        #[test]
+        fn the_window_never_fires_without_two_consecutive_quiet_disagreeing_cycles(
+            steps in prop::collection::vec(step_strategy(), 0..40),
+        ) {
+            let view = StateHash::of(&doc_with("view"));
+            let mut streak = 0u32;
+            let mut history: Vec<Step> = Vec::new();
+            for step in steps {
+                let (docs, heartbeats) = evidence(step);
+                let quiet = step != Step::Busy;
+                let (s, finding) = advance_divergence(streak, quiet, &view, &docs, &heartbeats);
+                streak = s;
+                history.push(step);
+                let two_consecutive = history.len() >= 2
+                    && history[history.len() - 1] == Step::QuietDisagree
+                    && history[history.len() - 2] == Step::QuietDisagree;
+                prop_assert!(finding.is_empty() || two_consecutive);
+                if two_consecutive {
+                    prop_assert_eq!(finding.len(), 1, "fires exactly when the window closes");
+                }
+            }
+        }
+    }
 }
