@@ -6098,3 +6098,107 @@ mod track_surfaces_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod review_tracking_tests {
+    use super::*;
+    use taskboard_domain::{DayTotal, WindowSplit, WorkBlockReading};
+
+    fn secs(n: i64) -> chrono::TimeDelta {
+        chrono::TimeDelta::try_seconds(n).unwrap()
+    }
+
+    fn day(work: i64, respite: i64) -> DayTotal {
+        DayTotal {
+            date: chrono::NaiveDate::from_ymd_opt(2026, 11, 5).unwrap(),
+            split: WindowSplit {
+                work: secs(work),
+                respite: secs(respite),
+            },
+        }
+    }
+
+    fn reading(blocks: usize, total: i64) -> WorkBlockReading {
+        WorkBlockReading {
+            blocks,
+            total: secs(total),
+        }
+    }
+
+    // P-1: the phrases + the collapse flag. Empty → all phrases empty
+    // + the flag set; non-empty → phrases observed, distinct inputs
+    // give distinct forms (structure, never text matching).
+    #[test]
+    fn review_tracking_section_phrases_and_collapse_flag() {
+        let empty = WindowSplit {
+            work: chrono::TimeDelta::zero(),
+            respite: chrono::TimeDelta::zero(),
+        };
+        let collapsed = review_tracking_section(&empty, &reading(0, 0));
+        assert!(collapsed.empty);
+        assert!(collapsed.work.is_empty());
+        assert!(collapsed.respite.is_empty());
+        assert!(collapsed.blocks.is_empty());
+
+        let split = WindowSplit {
+            work: secs(3_600),
+            respite: secs(600),
+        };
+        let populated = review_tracking_section(&split, &reading(2, 7_200));
+        assert!(!populated.empty);
+        assert!(!populated.work.is_empty());
+        assert!(!populated.respite.is_empty());
+        assert!(!populated.blocks.is_empty());
+        // Distinct inputs, distinct forms (the phrases carry the
+        // magnitudes, unlike the fractions).
+        let longer = review_tracking_section(
+            &WindowSplit {
+                work: secs(7_200),
+                respite: secs(600),
+            },
+            &reading(2, 7_200),
+        );
+        assert_ne!(populated.work, longer.work);
+        // A zero count is an observed fact, phrased — the dash is
+        // reserved for the collapsed section.
+        let unblocked = review_tracking_section(&split, &reading(0, 0));
+        assert!(!unblocked.blocks.is_empty());
+        assert_ne!(unblocked.blocks, populated.blocks);
+    }
+
+    // P-2: the fractions normalize to the strip maximum — the max
+    // day's segment sum ≈ 1.0, other days scaled, all-zero → all
+    // zeros (never NaN), lengths preserved, nothing above 1.0.
+    #[test]
+    fn review_bar_fractions_normalize_to_the_strip_maximum() {
+        let series = [day(3_600, 0), day(7_200, 600), day(0, 0)];
+        let bars = review_bar_fractions(&series);
+        assert_eq!(bars.len(), series.len());
+        let max_sum = bars[1].work + bars[1].respite;
+        assert!(
+            (max_sum - 1.0_f32).abs() < 1e-6,
+            "the max day fills the strip"
+        );
+        assert!(bars[0].work > 0.0 && bars[0].respite == 0.0);
+        assert!(
+            bars[0].work < bars[1].work,
+            "smaller days scale down proportionally"
+        );
+        assert!(
+            bars.iter().all(|bar| bar.work <= 1.0 && bar.respite <= 1.0),
+            "fractions clamp at 1.0"
+        );
+        assert!(
+            bars.iter().all(
+                |bar| bar.work.is_finite() && bar.respite.is_finite()
+            ),
+            "never NaN"
+        );
+
+        // The all-zero strip: all zeros, never NaN.
+        let zeros = review_bar_fractions(&[day(0, 0), day(0, 0)]);
+        assert!(zeros.iter().all(|bar| bar.work == 0.0 && bar.respite == 0.0));
+
+        assert!(review_bar_fractions(&[]).is_empty());
+    }
+}
