@@ -34,6 +34,7 @@
 #![forbid(unsafe_code)]
 
 pub mod client;
+pub mod device;
 pub mod error;
 pub mod etag;
 pub mod extract;
