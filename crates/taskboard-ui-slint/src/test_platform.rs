@@ -253,6 +253,7 @@ mod tests {
             requests,
             UiSettings::default(),
             health,
+            None,
         )
         .expect("mount succeeds on the null platform")
     }

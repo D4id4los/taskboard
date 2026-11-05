@@ -16,7 +16,7 @@ import { CaptureOverlay } from "compositions/capture-overlay.slint";
 import { ReviewWalkOverlay, ReviewWalkModel } from "views/review-walk-overlay.slint";
 import { FocusOverlay, FocusRowModel } from "compositions/focus-overlay.slint";
 import { Toolbar } from "compositions/toolbar.slint";
-import { StatusBar, SyncBadgeModel, BannerRowModel, FlowHintModel } from "compositions/status-bar.slint";
+import { StatusBar, SyncBadgeModel, BannerRowModel, FlowHintModel, FilesSyncChipState } from "compositions/status-bar.slint";
 import { NotificationSurface, NotificationRowModel } from "compositions/notification-surface.slint";
 import { TimerRowModel } from "compositions/timers.slint";
 import { TimerSetter } from "compositions/timer-setter.slint";
@@ -248,6 +248,11 @@ export component AppWindow inherits Window {
     // it model-side — a state of the world, never a timer).
     in-out property <bool> delivery-chip-visible: false;
     in-out property <string> delivery-chip;
+    // The files-sync chip (DR-8 chunk 4, D-FH5): fed at mount/drain
+    // beside the delivery chip; default hidden (no actor at boot).
+    in-out property <bool> files-sync-visible: false;
+    in-out property <string> files-sync-text;
+    in-out property <FilesSyncChipState> files-sync-state;
     // The jump-to search palette (#348): the model rows arrive ranked,
     // anchor-filtered, and capped from the Rust pass.
     in-out property <bool> palette-open: false;
@@ -583,6 +588,9 @@ export component AppWindow inherits Window {
                 tracking-chip-action-visible: root.tracking-chip-action-visible;
                 delivery-chip-visible: root.delivery-chip-visible;
                 delivery-chip: root.delivery-chip;
+                files-sync-visible: root.files-sync-visible;
+                files-sync-text: root.files-sync-text;
+                files-sync-state: root.files-sync-state;
                 snooze-clicked(i) => root.banner-snooze-clicked(i);
                 mute-clicked(i) => root.banner-mute-clicked(i);
                 row-activated(i) => root.banner-row-activated(i);

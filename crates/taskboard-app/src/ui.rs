@@ -770,6 +770,10 @@ pub async fn run_desktop(
 
     ui_settings.connectors = resolve_connector_infos(&app.config)?;
     ui_settings.boards = resolve_board_infos(&app.engine);
+    // The files-sync chip lane (DR-8 chunk 4, D-FH5): `None` when the
+    // substrate is off — no chip, no pump task.
+    let files_sync_chips = crate::files_sync_surface::chip_channel(app.files_sync_status.clone())
+        .map(|(_join, rx)| rx);
     let handle = taskboard_ui_slint::mount(
         app.engine.shared_state(),
         app.engine.subscribe(),
@@ -778,6 +782,7 @@ pub async fn run_desktop(
         requests_tx,
         ui_settings,
         app.delivery_health.clone(),
+        files_sync_chips,
     )?;
 
     // D5b: the physical exit paths are wired so shutdown is always

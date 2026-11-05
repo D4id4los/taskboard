@@ -44,6 +44,7 @@ fn mount_populated(
             ..UiSettings::default()
         },
         health,
+        None,
     )
     .expect("mount succeeds on the testing backend");
     driver.bind(&handle);
@@ -694,6 +695,7 @@ fn the_segmented_picker_roles_and_routes_the_preset_pick() {
                 requests_tx,
                 UiSettings::default(),
                 detached_health(),
+                None,
             )
             .expect("mount succeeds on the testing backend");
             driver.bind(&handle);
@@ -775,6 +777,7 @@ fn the_backend_picker_renders_two_segments_with_only_nextcloud_enabled() {
                 requests_tx,
                 UiSettings::default(),
                 detached_health(),
+                None,
             )
             .expect("mount succeeds on the testing backend");
             driver.bind(&handle);

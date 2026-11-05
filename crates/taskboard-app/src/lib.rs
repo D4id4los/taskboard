@@ -39,6 +39,7 @@ pub mod connections;
 mod connector_ceremonies;
 pub mod connectors;
 mod escalation;
+pub mod files_sync_surface;
 mod focus;
 pub mod ipc;
 pub mod lockfile;

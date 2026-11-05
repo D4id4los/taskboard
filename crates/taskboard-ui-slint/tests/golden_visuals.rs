@@ -115,6 +115,7 @@ fn capture_golden(
         requests_tx,
         settings,
         detached_health(),
+        None,
     )
     .expect("mount succeeds on the testing backend");
     driver.bind(&handle);
@@ -222,6 +223,7 @@ fn the_focused_cell_golden_pins_the_ring() {
                     ..UiSettings::default()
                 },
                 detached_health(),
+                None,
             )
             .expect("mount succeeds on the testing backend");
             // The journeys' walk idiom into the detail, then five walk
@@ -566,6 +568,7 @@ fn capture_task_view(driver: &mut SlintDriver, scale: f64, height: u32, regen: b
             ..UiSettings::default()
         },
         detached_health(),
+        None,
     )
     .expect("mount succeeds on the testing backend");
     // Escape the desktop Today default, then walk into the first
@@ -649,6 +652,7 @@ fn the_focus_overlay_golden_holds() {
                     ..UiSettings::default()
                 },
                 detached_health(),
+                None,
             )
             .expect("mount succeeds on the testing backend");
             handle.dispatch_action(taskboard_ui_slint::actions::ActionId::FocusModeToggle);
@@ -765,6 +769,7 @@ fn the_track_entries_golden_holds() {
                     ..UiSettings::default()
                 },
                 detached_health(),
+                None,
             )
             .expect("mount succeeds on the testing backend");
             // The capture_task_view idiom: escape Today, walk into the

@@ -364,6 +364,7 @@ fn mount_board(
         requests_tx,
         UiSettings::default(),
         detached_health(),
+        None,
     )
     .expect("mount succeeds on the testing backend");
     handle.dispatch_action(ActionId::NavFocusBoard);
@@ -649,6 +650,7 @@ fn the_today_sections_virtualise() {
                 requests_tx,
                 UiSettings::default(),
                 detached_health(),
+                None,
             )
             .expect("mount succeeds on the testing backend");
             driver.bind(&handle);
@@ -780,6 +782,7 @@ fn a_removal_above_the_today_viewport_leaves_the_rows_resting() {
                 requests_tx,
                 UiSettings::default(),
                 detached_health(),
+                None,
             )
             .expect("mount succeeds on the testing backend");
             driver.bind(&handle);
@@ -854,6 +857,7 @@ fn mount_today(
         requests_tx,
         UiSettings::default(),
         detached_health(),
+        None,
     )
     .expect("mount succeeds on the testing backend");
     driver.bind(&handle);

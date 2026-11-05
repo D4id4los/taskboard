@@ -1132,6 +1132,7 @@ fn rig(state: AppState) -> Rig {
         requests_tx,
         UiSettings::default(),
         health,
+        None,
     )
     .expect("mount succeeds on the null platform");
     Rig {
@@ -1547,6 +1548,7 @@ fn guard_rig(state: AppState, settings: UiSettings) -> Rig {
         requests_tx,
         settings,
         health,
+        None,
     )
     .expect("mount succeeds on the null platform");
     Rig {
@@ -1847,6 +1849,7 @@ fn the_seconds_gate_arms_on_unfired_timers_only() {
                     ..UiSettings::default()
                 },
                 health,
+                None,
             )
             .expect("mount succeeds on the null platform");
             let adapter = handle.test_adapter();
@@ -1885,6 +1888,7 @@ fn the_seconds_gate_stays_false_on_kiosk() {
                 ..UiSettings::default()
             },
             health,
+            None,
         )
         .expect("mount succeeds on the null platform");
         let rig = Rig {
@@ -2092,6 +2096,7 @@ fn the_header_hint_projections_follow_the_mounted_verb() {
                 ..UiSettings::default()
             },
             health,
+            None,
         )
         .expect("mount succeeds on the null platform");
         let rig = Rig {
@@ -2654,6 +2659,7 @@ fn focus_rig(mut state: AppState, fx: &Fixture, kiosk: bool) -> Rig {
             ..UiSettings::default()
         },
         health,
+        None,
     )
     .expect("mount succeeds on the null platform");
     Rig {
@@ -2784,6 +2790,7 @@ fn the_focus_action_gates_on_kiosk_and_on_the_disabled_mode() {
             requests_tx,
             UiSettings::default(),
             health,
+            None,
         )
         .expect("mount succeeds on the null platform");
         let rig = Rig {
@@ -3591,6 +3598,7 @@ fn the_kiosk_gate_refuses_the_entries_open() {
                 ..UiSettings::default()
             },
             health,
+            None,
         )
         .expect("mount succeeds on the null platform");
         let adapter = handle.test_adapter();
@@ -3738,6 +3746,7 @@ fn the_kiosk_tracked_section_filters_to_the_viewed_board() {
                 ..UiSettings::default()
             },
             health,
+            None,
         )
         .expect("mount succeeds on the null platform");
         let adapter = handle.test_adapter();

@@ -27,12 +27,12 @@ use crate::view_state::{DateField, Flow, ViewState};
 use crate::{
     AppWindow, BannerRowModel, BoardBarModel, BoardModel, BoardSegmentModel,
     Breakpoint as SlintBreakpoint, DecorationKind, DragState, DueDayModel, DueKind as SlintDueKind,
-    FlowHintModel, HabitRowModel, NotificationRowModel, PaletteRowModel, PlanModel, PlanRowModel,
-    ReflectionRowModel, ReflectionSectionModel, ReviewModel, ReviewRowModel, ReviewWindowModel,
-    RuleRowModel, StackColumnModel, StackDetailModel, StatBarModel, SyncBadgeModel, SyncPhaseUi,
-    TaskCardModel, TaskDecoration, TaskDetailModel, Theme, TimerRowModel, TodayModel,
-    TodayRowModel, TodaySectionModel, Tone, TrackEntryRowModel, TrackedTodayRowModel,
-    TrackingSectionModel, View,
+    FilesSyncChipState as SlintFilesSyncChipState, FlowHintModel, HabitRowModel,
+    NotificationRowModel, PaletteRowModel, PlanModel, PlanRowModel, ReflectionRowModel,
+    ReflectionSectionModel, ReviewModel, ReviewRowModel, ReviewWindowModel, RuleRowModel,
+    StackColumnModel, StackDetailModel, StatBarModel, SyncBadgeModel, SyncPhaseUi, TaskCardModel,
+    TaskDecoration, TaskDetailModel, Theme, TimerRowModel, TodayModel, TodayRowModel,
+    TodaySectionModel, Tone, TrackEntryRowModel, TrackedTodayRowModel, TrackingSectionModel, View,
 };
 
 /// The layout cap of the banner slot (D12): the truth is the row
@@ -3035,6 +3035,18 @@ fn recency_caption(last_success: Option<DateTime<Utc>>, now: DateTime<Utc>) -> S
     }
 }
 
+/// The files-sync chip state's 1:1 generated-enum ferry (D-FH5).
+#[must_use]
+pub fn files_sync_chip_state(state: presentation::FilesSyncChipState) -> SlintFilesSyncChipState {
+    match state {
+        presentation::FilesSyncChipState::Ok => SlintFilesSyncChipState::Ok,
+        presentation::FilesSyncChipState::CycleFailed => SlintFilesSyncChipState::CycleFailed,
+        presentation::FilesSyncChipState::Parked => SlintFilesSyncChipState::Parked,
+        presentation::FilesSyncChipState::Diverged => SlintFilesSyncChipState::Diverged,
+        presentation::FilesSyncChipState::Forked => SlintFilesSyncChipState::Forked,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4225,6 +4237,7 @@ mod tests {
             requests_tx,
             settings,
             health,
+            None,
         )
         .expect("mount succeeds on the null platform")
     }

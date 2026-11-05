@@ -70,6 +70,41 @@ pub fn delivery_chip(health: &DeliveryHealth) -> Option<String> {
     health.degraded().then(|| DELIVERY_CHIP_TEXT.to_owned())
 }
 
+/// The files-sync chip's state (DR-8 chunk 4, D-FH5): the plain
+/// ui-safe payload the app-side pump produces from the transport
+/// crate's typed findings — the UI never names the IO crate. No ages
+/// on the chip (the derivation stays clock-free and the UI test
+/// surface deterministic; the CLI line is the "N min ago" consumer).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FilesSyncChip {
+    pub state: FilesSyncChipState,
+}
+
+/// The chip's precedence ladder rung (D-FH5): Forked > Diverged >
+/// Parked > `CycleFailed` > `Ok`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FilesSyncChipState {
+    #[default]
+    Ok,
+    CycleFailed,
+    Parked,
+    Diverged,
+    Forked,
+}
+
+/// The chip's caption (presentation text, never asserted — only the
+/// visibility and state edges are).
+#[must_use]
+pub fn files_sync_chip_caption(state: FilesSyncChipState) -> &'static str {
+    match state {
+        FilesSyncChipState::Ok => "files-sync running",
+        FilesSyncChipState::CycleFailed => "files-sync cycle failing",
+        FilesSyncChipState::Parked => "files-sync: peer files parked",
+        FilesSyncChipState::Diverged => "files-sync: devices diverged",
+        FilesSyncChipState::Forked => "files-sync forked — writes stopped",
+    }
+}
+
 /// The due classification vocabulary (slint-free; `models` maps it
 /// 1:1 onto the generated enum for markup conditionals).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
