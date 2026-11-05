@@ -1,0 +1,10 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 2eb4b497dc7d8673e1689b5b3720b114019f2a47f62f151a29d957572ab6bdf0 # shrinks to anchors = [(0, 0, -1, 0, None, Some(()), false, 0)]
+cc 72422338ed44c9f95123eda8b99a3e14ceb6b2597562e0a765c677935bb63d6b # shrinks to anchors = [(0, 0, 0, 0, None, Some(()), false, 0)]
+cc 32c4dac5d1eb7f86b6a31790c27631a3dc3ad0e5ab09649a4ec3905a0dc4ac66 # shrinks to anchors = [(0, -1, -1, 0, Some(()), Some(()), false, 0)]
+cc 5b9ec4d1bd2d8e221299b1107e53080f49b060640f69fa35e8e751865f0aba2e # shrinks to anchors = [(0, -1, -1, 0, true, true, false, 0)]
