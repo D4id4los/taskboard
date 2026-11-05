@@ -10,6 +10,7 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 ### Added
 
+<<<<<<< HEAD
 - The focus mode's auto-chain and long-break cadence (#600, the
   pomodoro follow-ups): with `[focus] chain = true` a runtime-driven
   break end no longer parks in idle — the next focus block starts
@@ -33,6 +34,27 @@ The workspace carries a single global version (see `docs/architecture.org`);
   ladder rung), and prunes its receipts on `DeleteHabit` (the log
   outlives the tracker). Zero new CLI verbs: `habits add/update --at`
   was already the edit surface.
+||||||| parent of 24e1334e (docs(changelog): the nextcloud files transport)
+=======
+- The Nextcloud files transport, `taskboard-sync-files-nextcloud`
+  (#630): a WebDAV client over the workspace reqwest stack (closed
+  verb set — MKCOL, PROPFIND, GET, conditional PUT; no DELETE/MOVE by
+  construction), the conditional-PUT discipline (create-once via
+  `If-None-Match: *` with the 412 adoption arm, guarded rewrites
+  echoing the served etag verbatim), the typed fork alarm on an
+  unexpected own-path 412 (stop-write that path, reads continue,
+  loud), the fixed-body PROPFIND extractor with its proptest fuzz
+  targets (no XML dependency), the `device.json` create-once
+  ceremony (corrupt = typed refusal, never regenerated), the
+  attach ceremony + steady poll cycle over the chunk-1 fold with
+  local-hash skip-PUT and PROPFIND change detection, the opt-in
+  `[files_sync]` config section (absent table = nothing spawns, one
+  account with the Deck connector), mode-agnostic bootstrap spawn
+  beside the focus/escalation runtimes, and docker-tier pins of the
+  characterization facts F3–F6 plus the fork/MKCOL server facts.
+  Status findings emit on a `tokio::sync::watch`; surfacing is
+  chunk 4's.
+>>>>>>> 24e1334e (docs(changelog): the nextcloud files transport)
 - The files-sync substrate's pure core crate, `taskboard-sync-files`
   (#629, ADR 0020): the substrate tree's layout types and file-kind
   classifier (reserved `ops/`/`snapshot-` kinds unparseable by
