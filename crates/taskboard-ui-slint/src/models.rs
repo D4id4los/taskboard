@@ -2787,6 +2787,30 @@ mod tests {
         assert_eq!(reordered_mirror, rows_of(&reordered));
     }
 
+    /// #592's mechanism fact: a head (above-viewport) membership
+    /// change is transported as a `set_row_data` rebind cascade plus
+    /// exactly one tail mutation — every structural notification the
+    /// push discipline emits is tail-indexed, so the repeater's
+    /// before-window offset-shift branches never fire for it. The
+    /// counts pin the shape: head removal of one of N rows costs N
+    /// mutations (N−1 rebinds + one tail remove), head insertion N+1
+    /// (N rebinds + one tail push).
+    #[test]
+    fn a_head_membership_change_is_a_rebind_cascade_plus_one_tail_mutation() {
+        // Head removal: [1, 2, 3] → [2, 3].
+        let mut mirror = vec![1, 2, 3];
+        let model = VecModel::from(vec![1, 2, 3]);
+        assert_eq!(diff_rows(&mut mirror, &model, &[2, 3]), 3);
+        assert_eq!(model.row_count(), 2);
+        assert_eq!(mirror, rows_of(&model));
+        // Head insertion: [2, 3] → [0, 2, 3].
+        let mut grown_mirror = vec![2, 3];
+        let grown = VecModel::from(vec![2, 3]);
+        assert_eq!(diff_rows(&mut grown_mirror, &grown, &[0, 2, 3]), 3);
+        assert_eq!(grown.row_count(), 3);
+        assert_eq!(grown_mirror, rows_of(&grown));
+    }
+
     /// D9's column rule: a `StackColumnModel` row whose scalars and
     /// inner card handle are unchanged compares equal — the outer
     /// `set_row_data` never fires for an unchanged refresh.
