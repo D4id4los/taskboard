@@ -332,6 +332,10 @@ const SAVE_SETTLE: std::time::Duration = std::time::Duration::from_secs(5);
 /// reply is fire-and-forget-honest: a dropped receiver (a stale form)
 /// is at most a log line, never a panic, and persistence is never
 /// undone by a failed reply.
+// A pure dispatch table: one routing arm per lane variant, each body
+// a one-line delegation into the shared choreography — the arm count
+// tracks the closed enum, not the function's complexity.
+#[allow(clippy::too_many_lines)]
 async fn handle_settings(request: UiRequest, workspace: &ConnectionWorkspace) {
     match request {
         UiRequest::StackWidthsChanged { .. } | UiRequest::WindowGeometryChanged { .. } => {
@@ -418,6 +422,45 @@ async fn handle_settings(request: UiRequest, workspace: &ConnectionWorkspace) {
                 crate::settings_overlay::set_due_soon_days(path, days)
             }));
         }
+        UiRequest::SetFocusEnabled { enabled, reply } => {
+            let _ = reply.send(run_editor_write(workspace, Field::FocusEnabled, |path| {
+                crate::settings_overlay::set_focus_enabled(path, enabled)
+            }));
+        }
+        UiRequest::SetFocusWorkMins { mins, reply } => {
+            let _ = reply.send(run_editor_write(workspace, Field::FocusWorkMins, |path| {
+                crate::settings_overlay::set_focus_work_mins(path, mins)
+            }));
+        }
+        UiRequest::SetFocusBreakMins { mins, reply } => {
+            let _ = reply.send(run_editor_write(workspace, Field::FocusBreakMins, |path| {
+                crate::settings_overlay::set_focus_break_mins(path, mins)
+            }));
+        }
+        UiRequest::SetFocusChain { enabled, reply } => {
+            let _ = reply.send(run_editor_write(workspace, Field::FocusChain, |path| {
+                crate::settings_overlay::set_focus_chain(path, enabled)
+            }));
+        }
+        UiRequest::SetFocusLongBreakMins { mins, reply } => {
+            let _ = reply.send(run_editor_write(
+                workspace,
+                Field::FocusLongBreakMins,
+                |path| crate::settings_overlay::set_focus_long_break_mins(path, mins),
+            ));
+        }
+        UiRequest::SetFocusLongBreakEvery { every, reply } => {
+            let _ = reply.send(run_editor_write(
+                workspace,
+                Field::FocusLongBreakEvery,
+                |path| crate::settings_overlay::set_focus_long_break_every(path, every),
+            ));
+        }
+        UiRequest::SetFocusNotify { enabled, reply } => {
+            let _ = reply.send(run_editor_write(workspace, Field::FocusNotify, |path| {
+                crate::settings_overlay::set_focus_notify(path, enabled)
+            }));
+        }
     }
 }
 
@@ -491,6 +534,16 @@ fn editor_field_key(field: Field) -> &'static str {
         Field::BackoffInitial => "sync.backoff_initial_secs",
         Field::BackoffMax => "sync.backoff_max_secs",
         Field::DueSoonDays => "ui.due_soon_days",
+        // The `[focus]` rows (the focus settings editor, #625). The
+        // three bool arms exist for the same-section blame comparison
+        // only — a typed boolean cannot carry an invalidity.
+        Field::FocusEnabled => "focus.enabled",
+        Field::FocusWorkMins => "focus.work_mins",
+        Field::FocusBreakMins => "focus.break_mins",
+        Field::FocusChain => "focus.chain",
+        Field::FocusLongBreakMins => "focus.long_break_mins",
+        Field::FocusLongBreakEvery => "focus.long_break_every",
+        Field::FocusNotify => "focus.notify",
         // The connection-form fields never ride the editor writers.
         Field::Name | Field::ServerUrl | Field::Username | Field::Password | Field::Scale => "",
     }
@@ -1938,7 +1991,11 @@ mod tests {
             .expect("the reply lane is alive")
             .expect("lands");
         assert_eq!(snapshot.reminder_tick_secs, 45, "the reply echoes the file");
-        assert_eq!(snapshot.applies.len(), 9, "the reply carries the apply map");
+        assert_eq!(
+            snapshot.applies.len(),
+            16,
+            "the reply carries the apply map"
+        );
         assert!(
             snapshot.env_overridden.is_empty(),
             "replies never re-derive the env set"
@@ -1971,6 +2028,78 @@ mod tests {
             std::fs::read_to_string(&path)
                 .expect("read")
                 .contains("backoff_initial_secs = 5"),
+            "the refused write left the file untouched"
+        );
+    }
+
+    /// The focus commits persist through the workspace path and the
+    /// reply echoes the fresh file snapshot's typed values (the focus
+    /// settings editor, #625).
+    #[tokio::test]
+    async fn focus_commits_persist_and_reply_the_fresh_snapshot() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("taskboard.toml");
+        std::fs::write(&path, "[ui]\nscale = 1.0\n").expect("seed");
+        let workspace = test_workspace(path.clone()).await;
+
+        let (reply, reply_rx) = tokio::sync::oneshot::channel();
+        handle_settings(UiRequest::SetFocusWorkMins { mins: 45, reply }, &workspace).await;
+        let snapshot = reply_rx
+            .await
+            .expect("the reply lane is alive")
+            .expect("lands");
+        assert_eq!(snapshot.focus_work_mins, 45, "the reply echoes the file");
+        assert!(
+            std::fs::read_to_string(&path)
+                .expect("read back")
+                .contains("work_mins = 45"),
+            "the workspace path took the write"
+        );
+
+        let (reply, reply_rx) = tokio::sync::oneshot::channel();
+        handle_settings(
+            UiRequest::SetFocusEnabled {
+                enabled: true,
+                reply,
+            },
+            &workspace,
+        )
+        .await;
+        let snapshot = reply_rx
+            .await
+            .expect("the reply lane is alive")
+            .expect("lands");
+        assert!(snapshot.focus_enabled);
+        assert_eq!(snapshot.focus_work_mins, 45, "the earlier write survives");
+    }
+
+    /// A garbage minute write reaching the handler from a non-UI lane
+    /// client is refused typed with own-blame attribution — the gate's
+    /// defence in depth, never a silent clamp at any layer.
+    #[tokio::test]
+    async fn focus_gate_refusal_attributes_own_blame() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("taskboard.toml");
+        std::fs::write(&path, "[ui]\nscale = 1.0\n").expect("seed");
+        let workspace = test_workspace(path.clone()).await;
+
+        let (reply, reply_rx) = tokio::sync::oneshot::channel();
+        handle_settings(UiRequest::SetFocusWorkMins { mins: 0, reply }, &workspace).await;
+        let outcome = reply_rx.await.expect("the reply lane is alive");
+        assert!(
+            matches!(
+                outcome,
+                Err(SettingsError::Invalid {
+                    field: Field::FocusWorkMins,
+                    kind: InvalidKind::OutOfRange
+                })
+            ),
+            "the own-blame refusal is typed: {outcome:?}"
+        );
+        assert!(
+            !std::fs::read_to_string(&path)
+                .expect("read")
+                .contains("work_mins"),
             "the refused write left the file untouched"
         );
     }

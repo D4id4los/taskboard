@@ -286,6 +286,38 @@ pub fn due_soon_invalid_kind(text: &str) -> Option<InvalidKind> {
     }
 }
 
+/// The bound-checked core shared by the focus minute mirrors: parse
+/// failure → the reserved parse arm; `0` or above `max` →
+/// `OutOfRange` (the config ladder's strictly-positive minute rule);
+/// trimmed-empty is Neutral.
+fn focus_count_invalid_kind(text: &str, max: u64) -> Option<InvalidKind> {
+    if text.trim().is_empty() {
+        return None;
+    }
+    match text.trim().parse::<u64>() {
+        Err(_) => Some(InvalidKind::NotKebab),
+        Ok(mins) if mins == 0 || mins > max => Some(InvalidKind::OutOfRange),
+        Ok(_) => None,
+    }
+}
+
+/// The focus minute fields (`work_mins`/`break_mins`/
+/// `long_break_mins`): parity with the config's
+/// `FOCUS_MINS_MAX = 240` bound (ui-slint cannot depend on
+/// taskboard-app; drift breaks a test on either side, and the journeys
+/// pin the round-trip through the real gate).
+#[must_use]
+pub fn focus_mins_invalid_kind(text: &str) -> Option<InvalidKind> {
+    focus_count_invalid_kind(text, 240)
+}
+
+/// The `long_break_every` field: parity with the config's
+/// `FOCUS_EVERY_MAX = 24` bound (the same hard-coded-mirror posture).
+#[must_use]
+pub fn focus_every_invalid_kind(text: &str) -> Option<InvalidKind> {
+    focus_count_invalid_kind(text, 24)
+}
+
 /// The generic flavour mapping over a text predicate (the
 /// [`field_status`]/[`scale_status`] grammar, unified).
 #[must_use]
@@ -664,6 +696,95 @@ mod tests {
         assert_eq!(due_soon_invalid_kind("3653"), Some(InvalidKind::OutOfRange));
         assert_eq!(due_soon_invalid_kind("abc"), Some(InvalidKind::NotKebab));
         assert_eq!(due_soon_invalid_kind(""), None);
+    }
+
+    /// The focus minute fields (`work_mins`/`break_mins`/
+    /// `long_break_mins`): parity with the config ladder's
+    /// `1..=240` bound. 1 and 240 pass; 0 and 241 refuse `OutOfRange`;
+    /// non-numbers map to the reserved parse arm; trimmed-empty is
+    /// Neutral.
+    #[test]
+    fn the_focus_mins_truth_table_matches_the_config_bounds() {
+        for yes in ["1", "25", "240"] {
+            assert_eq!(focus_mins_invalid_kind(yes), None, "{yes} must pass");
+        }
+        for no in ["0", "241"] {
+            assert_eq!(
+                focus_mins_invalid_kind(no),
+                Some(InvalidKind::OutOfRange),
+                "{no} must refuse"
+            );
+        }
+        for no in ["abc", "-1", "2.5"] {
+            assert_eq!(
+                focus_mins_invalid_kind(no),
+                Some(InvalidKind::NotKebab),
+                "{no} maps to the reserved parse arm"
+            );
+        }
+        assert_eq!(focus_mins_invalid_kind(""), None);
+        assert_eq!(focus_mins_invalid_kind("   "), None);
+    }
+
+    /// The `long_break_every` field: the same shape over the
+    /// `1..=24` bound (both bounds' neighbours pinned — drift on
+    /// either side of the config ladder breaks this loudly).
+    #[test]
+    fn the_focus_every_truth_table_matches_the_config_bounds() {
+        for yes in ["1", "4", "24"] {
+            assert_eq!(focus_every_invalid_kind(yes), None, "{yes} must pass");
+        }
+        for no in ["0", "25"] {
+            assert_eq!(
+                focus_every_invalid_kind(no),
+                Some(InvalidKind::OutOfRange),
+                "{no} must refuse"
+            );
+        }
+        for no in ["abc", "-1", "1.5"] {
+            assert_eq!(
+                focus_every_invalid_kind(no),
+                Some(InvalidKind::NotKebab),
+                "{no} maps to the reserved parse arm"
+            );
+        }
+        assert_eq!(focus_every_invalid_kind(""), None);
+        assert_eq!(focus_every_invalid_kind("   "), None);
+    }
+
+    /// The focus flavour mapping: the `general_status` composition over
+    /// both predicates (empty → Neutral, failing → Invalid(kind),
+    /// passing → Valid).
+    #[test]
+    fn focus_status_maps_the_three_flavours() {
+        assert_eq!(
+            general_status("", focus_mins_invalid_kind),
+            FieldStatus::Neutral
+        );
+        assert_eq!(
+            general_status("   ", focus_every_invalid_kind),
+            FieldStatus::Neutral
+        );
+        assert_eq!(
+            general_status("0", focus_mins_invalid_kind),
+            FieldStatus::Invalid(InvalidKind::OutOfRange)
+        );
+        assert_eq!(
+            general_status("25", focus_every_invalid_kind),
+            FieldStatus::Invalid(InvalidKind::OutOfRange)
+        );
+        assert_eq!(
+            general_status("abc", focus_mins_invalid_kind),
+            FieldStatus::Invalid(InvalidKind::NotKebab)
+        );
+        assert_eq!(
+            general_status("25", focus_mins_invalid_kind),
+            FieldStatus::Valid
+        );
+        assert_eq!(
+            general_status("4", focus_every_invalid_kind),
+            FieldStatus::Valid
+        );
     }
 
     /// The general flavour mapping: empty → Neutral, failing →

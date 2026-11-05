@@ -239,6 +239,73 @@ pub fn set_due_soon_days(path: &Path, days: u32) -> Result<(), OverlayError> {
     )
 }
 
+/// Writes `[focus] enabled`.
+///
+/// # Errors
+///
+/// [`OverlayError`] — see the module docs.
+pub fn set_focus_enabled(path: &Path, enabled: bool) -> Result<(), OverlayError> {
+    prove_and_write(path, "focus", "enabled", toml_edit::value(enabled))
+}
+
+/// Writes `[focus] work_mins`. The `1..=240` bound refuses at the
+/// prove gate (typed `invalid-focus-timing` blaming this key).
+///
+/// # Errors
+///
+/// [`OverlayError`] — see the module docs.
+pub fn set_focus_work_mins(path: &Path, mins: u64) -> Result<(), OverlayError> {
+    set_secs(path, "focus", "work_mins", mins)
+}
+
+/// Writes `[focus] break_mins`. The bound refuses at the gate,
+/// symmetric to [`set_focus_work_mins`].
+///
+/// # Errors
+///
+/// [`OverlayError`] — see the module docs.
+pub fn set_focus_break_mins(path: &Path, mins: u64) -> Result<(), OverlayError> {
+    set_secs(path, "focus", "break_mins", mins)
+}
+
+/// Writes `[focus] chain` (the auto-chain knob, #600).
+///
+/// # Errors
+///
+/// [`OverlayError`] — see the module docs.
+pub fn set_focus_chain(path: &Path, enabled: bool) -> Result<(), OverlayError> {
+    prove_and_write(path, "focus", "chain", toml_edit::value(enabled))
+}
+
+/// Writes `[focus] long_break_mins`. The bound refuses at the gate,
+/// symmetric to [`set_focus_work_mins`].
+///
+/// # Errors
+///
+/// [`OverlayError`] — see the module docs.
+pub fn set_focus_long_break_mins(path: &Path, mins: u64) -> Result<(), OverlayError> {
+    set_secs(path, "focus", "long_break_mins", mins)
+}
+
+/// Writes `[focus] long_break_every`. The `1..=24` bound refuses at
+/// the prove gate, blaming this key.
+///
+/// # Errors
+///
+/// [`OverlayError`] — see the module docs.
+pub fn set_focus_long_break_every(path: &Path, every: u64) -> Result<(), OverlayError> {
+    set_secs(path, "focus", "long_break_every", every)
+}
+
+/// Writes `[focus] notify` (the boundary-notification knob, #600).
+///
+/// # Errors
+///
+/// [`OverlayError`] — see the module docs.
+pub fn set_focus_notify(path: &Path, enabled: bool) -> Result<(), OverlayError> {
+    prove_and_write(path, "focus", "notify", toml_edit::value(enabled))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -564,4 +631,64 @@ mod tests {
     // The env-override truth tables (W-10/W-11) live beside the diff
     // core they pin in `config.rs`'s test module; the writers here
     // consume the set only through the handler layer.
+
+    // -- the [focus] writers (the focus settings editor, #625) ---------
+
+    /// A minute write lands its typed value; garbage (0) is refused
+    /// typed at the gate and the file stays byte-identical — never a
+    /// silent clamp at any layer.
+    #[test]
+    fn focus_minute_writes_and_the_gate_refuses_garbage() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = seed(&dir, COMMENTED);
+        set_focus_work_mins(&path, 50).expect("the minute write lands");
+        let decoded = crate::config::AppConfig::decode_file_only_str(
+            &std::fs::read_to_string(&path).expect("read back"),
+        )
+        .expect("decodes");
+        assert_eq!(decoded.focus.work_mins, 50);
+
+        let before = std::fs::read_to_string(&path).expect("read");
+        let err = set_focus_break_mins(&path, 0).expect_err("zero minutes refuse");
+        assert!(
+            matches!(err, OverlayError::Rejected(_)),
+            "the refusal is typed Rejected, got {err:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read"),
+            before,
+            "the file is byte-untouched"
+        );
+    }
+
+    /// The `long_break_every` bound refuses at the gate with the typed
+    /// config rejection blaming the edited key.
+    #[test]
+    fn focus_every_bound_refuses_at_the_gate() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = seed(&dir, COMMENTED);
+        let err = set_focus_long_break_every(&path, 25).expect_err("above the every bound refuses");
+        let OverlayError::Rejected(config_err) = &err else {
+            panic!("typed Rejected, got {err:?}");
+        };
+        assert_eq!(config_err.field(), Some("focus.long_break_every"));
+    }
+
+    /// The three bool knobs round-trip both ways.
+    #[test]
+    fn focus_bool_writes_round_trip() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = seed(&dir, COMMENTED);
+        set_focus_enabled(&path, true).expect("lands");
+        set_focus_chain(&path, true).expect("lands");
+        set_focus_notify(&path, false).expect("lands");
+        let decoded = crate::config::AppConfig::decode_file_only_str(
+            &std::fs::read_to_string(&path).expect("read back"),
+        )
+        .expect("decodes");
+        decoded.validate().expect("the written config stays valid");
+        assert!(decoded.focus.enabled);
+        assert!(decoded.focus.chain);
+        assert!(!decoded.focus.notify);
+    }
 }
