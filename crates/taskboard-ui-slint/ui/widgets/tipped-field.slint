@@ -35,7 +35,6 @@ export component TippedField inherits HorizontalLayout {
     in property <string> placeholder;
     in property <string> initial-text;
     in property <bool> selected-on-focus: false;
-    in property <bool> multiline: false;
     in property <bool> commit-affordance: false;
     in property <bool> clear-affordance: false;
     in property <FieldValidity> validity: FieldValidity.neutral;
@@ -59,7 +58,6 @@ export component TippedField inherits HorizontalLayout {
         description: root.help;
         initial-text: root.initial-text;
         selected-on-focus: root.selected-on-focus;
-        multiline: root.multiline;
         commit-affordance: root.commit-affordance;
         clear-affordance: root.clear-affordance;
         validity: root.validity;

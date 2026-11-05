@@ -923,7 +923,7 @@ export component TaskView inherits FocusScope {
                         edited(text) => root.description-edited(text);
                         focus-lost() => root.text-flow-focus-lost();
                     }
-                    InfoTip {
+                    description-help-tip := InfoTip {
                         about: "Description";
                         help: "The task's longer body text; rendered as plain text.";
                     }
