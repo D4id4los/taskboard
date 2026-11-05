@@ -1,0 +1,106 @@
+#+title: taskboard Files-Sync Runbook
+#+options: toc:t
+
+Operational procedures for the per-user files-sync substrate (the
+Nextcloud files transport, DR-8 / ADR 0020): the fork alarm
+(device rename / re-identity) and the trashbin recovery. Every step
+names the code symbol it exercises; the procedures match the code's
+actual semantics — in particular, the app *never* deletes anything on
+the server (the [[*2. Trashbin recovery][trashbin]] is the user's recovery path), and the fork
+alarm is a stop-write/keep-read posture, not an error to retry
+through.
+
+* 1. The fork alarm (device rename / re-identity)
+
+** Symptom
+
+- The status-bar chip shows the fork state ("files-sync forked —
+  writes stopped") or ~taskboard status~ prints a =fork:= line naming
+  the affected path.
+- The daemon log carries a ~ForkDetected~ =error!= record (the loud
+  half; see ~fork_alarm~ in ~crates/taskboard-sync-files-nextcloud/
+  src/cycle.rs~).
+
+** What the app is doing
+
+Writes to the affected own path are *stopped*; reads continue. The
+detection is ~disambiguate_own_412~: an unexpected HTTP 412 on one of
+this device's own single-writer paths is disambiguated by one GET —
+200 means another writer holds the path, so the path joins
+~LoopState.forked_paths~ (the stop-write set, carried on the status
+watch). The forked sibling path keeps participating in PROPFIND, GET,
+and the fold — the fleet's data still flows. A 412 there is the only
+signal the medium can give that the identity is duplicated; no retry
+loop re-PUTs after it.
+
+** Cause
+
+Another writer holds this device's single-writer path
+(=taskboard/devices/<device-id>/…): a cloned disk or VM image, a
+restored snapshot, a copied data directory (duplicated
+=device.json=), or a copied folder subtree. The device identity lives
+in a single create-once file — duplicating it duplicates the writer.
+
+** Recovery (matches the code's stop-write semantics)
+
+1. Stop *both* instances — the original and the clone. Quiet the
+   fleet first.
+2. Choose which instance keeps the identity (normally the original).
+3. On the instance to re-identify: quit the app, delete its local
+   =device.json=
+   (~<dirs::data_dir()>/taskboard/device.json~, i.e.
+   =~/.local/share/taskboard/device.json= on Linux), and restart.
+   The ceremony (~device.rs::load_or_create~) mints a fresh
+   =device_id=, the attach ladder creates a new
+   =taskboard/devices/<new-id>/= subtree create-once, and the alarm
+   is gone for that device — fresh paths, no contest.
+4. The orphaned old subtree
+   (=taskboard/devices/<old-id>/=): remove it *by hand in the
+   Nextcloud Files UI, if desired*. This is a user action, never the
+   app's — the transport's verb set is closed (no DELETE, no MOVE in
+   ~FilesTransport~), and a mistake is trashbin-recoverable (see
+   section 2). When the subtree vanishes, its rows simply leave the
+   merged view (~steady_cycle~'s vanish arm — the tree is the truth).
+5. Verify on each instance: ~taskboard status~ shows no =fork:=
+   line, and heartbeats advance.
+
+** What NOT to do
+
+- Never regenerate =device.json= while another live writer shares it
+  without stopping both instances — that is exactly how the fork is
+  created.
+- Never delete the *other* instance's subtree to "fix" the alarm.
+  The alarm says the path is contested, not whose content is right;
+  the app-side rule is readers-never-delete.
+
+* 2. Trashbin recovery
+
+** Symptom
+
+A device's rows vanish from all surfaces after someone deleted
+=taskboard/= (or a subtree of it) in the Nextcloud Files UI. Own
+files recreate on their own via the create-once ceremony (the
+~OwnFileVanished~ finding, ~disambiguate_own_412~'s 404 arm); the
+affected peers' rows leave the merged view.
+
+** Recovery
+
+Restore the deleted files from the Nextcloud trashbin (Files UI →
+Deleted files). Deleted collections are recoverable. No app action
+is required.
+
+** After the restore
+
+The restored files' etags changed, so the next PROPFIND marks
+everything dirty; the cycle re-reads, decodes tolerantly, and folds
+idempotently — data returns on the next cycle. The own etag store
+re-learns its tokens via the adopting GET before any guarded PUT
+(the cold-store rule; ~publish_appdata~'s cold-store arm), so there
+is no stale-token 412 storm.
+
+** Prevention note
+
+The app cannot cause this class of loss: readers never delete (the
+~FilesTransport~ verb set is closed by construction). Deletes happen
+only in the Files UI, by a user — and the trashbin is the safety
+net.
