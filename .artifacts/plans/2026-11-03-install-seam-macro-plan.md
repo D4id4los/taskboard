@@ -340,6 +340,19 @@ Hygiene rules:
 | `[bare_ref]` | no weak; `borrow()` only | 4 |
 | `[try]` | weak + `try_borrow_mut()` absorb (`return` on failure) | 2 |
 
+**Stage-3 amendment (deviation from D5, reviewed 2026-11-05):** a
+sixth arm exists — the *non-mut* spelling of the default arm, one
+occupant (`on_task_done_toggled`; its body only reads through the
+borrow, so the `mut` arm's binding would trip `unused_mut` under
+`-D warnings`). D5's no-single-occupant rule stands, but the
+alternative was not an arm-count reduction — it was either a
+warning-suppression attribute per the mandate's "no new clippy
+suppressions" bar or a behavior-adjacent body rewrite (mutating
+through a borrow that only reads). The arm carries its reason in its
+matcher comment; final arm census: default-mut 136, default non-mut
+1, `[else]` 3, `[bare_mut]` 11, `[bare_ref]` 4, `[try]` 2 = 157
+macro + 6 explicit = 163.
+
 ## 6. Migration order (commit breakdown)
 
 Ordered small→large to prove arms early; each commit standalone-green
