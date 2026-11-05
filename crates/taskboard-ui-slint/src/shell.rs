@@ -140,6 +140,7 @@ impl KeymapShell {
         crate::router::DispatchCtx {
             focused_task: self.focused_task,
             focused_stack: self.focused_stack,
+            plan_target: None,
             create_target: None,
             reminder_target: None,
             board_target: None,
@@ -237,6 +238,14 @@ impl KeymapShell {
             | UiEffect::StackWider
             | UiEffect::StackNarrower
             | UiEffect::OpenSettings
+            // The plan-next-day family (#622) moves no shell state —
+            // the view/flow intents live in `view_state`.
+            | UiEffect::OpenPlanNextDay
+            | UiEffect::PlanBeginPlace(_)
+            | UiEffect::PlanCommitPlace
+            | UiEffect::PlanBoxEarlier(_)
+            | UiEffect::PlanBoxLater(_)
+            | UiEffect::PlanRemoveBox(_)
             // Round 2 (D16–D21): the round-up verbs live in
             // `view_state` too; the shell records nothing for them.
             | UiEffect::CancelMove

@@ -588,10 +588,13 @@ mod tests {
         // Round 3 (D27a): the re-ranked ViewNav page — the go-to
         // verbs above the cycle, spaced 10, no ties.
         let expected = [
-            ActionId::PaletteSearch,  // 50
-            ActionId::ViewToday,      // 60
-            ActionId::ViewInbox,      // 70
-            ActionId::NavFocusBoard,  // 80
+            ActionId::PaletteSearch, // 50
+            ActionId::ViewToday,     // 60
+            // The plan-next-day opener (#622): rank 65, between the
+            // go-to verbs and the inbox jump.
+            ActionId::ViewPlanNextDay, // 65
+            ActionId::ViewInbox,       // 70
+            ActionId::NavFocusBoard,   // 80
             ActionId::NavShowTask, // 90 (palette-only availability: not chain-visible over the board chain)
             ActionId::NavNextView, // 100
             ActionId::NavPrevView, // 110
