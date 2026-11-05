@@ -15,7 +15,7 @@
 
 const ADAPTER_SOURCE: &str = include_str!("../src/adapter.rs");
 
-/// The 163 installed window callbacks in `adapter.rs` as of the
+/// The 171 installed window callbacks in `adapter.rs` as of the
 /// chunk-4.2 base (plan §2.1 census; the #275 close comment counted
 /// 110 at `5d8c0751` — the seam surface grows ~30 installs per GUI
 /// round, so this list changes on purpose when a new seam lands, and
@@ -83,6 +83,14 @@ const SEAM_INVENTORY: &[&str] = &[
     "notification_mute_clicked",
     "notification_snooze_clicked",
     "notification_track_start_clicked",
+    "plan_box_activated",
+    "plan_box_earlier",
+    "plan_box_later",
+    "plan_box_remove",
+    "plan_place_cancel",
+    "plan_place_commit",
+    "plan_place_edited",
+    "plan_pool_activated",
     "palette_dismiss_requested",
     "palette_query_edited",
     "palette_row_activated",

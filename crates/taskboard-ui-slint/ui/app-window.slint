@@ -28,6 +28,7 @@ import { BoardView, BoardModel } from "views/board-view.slint";
 import { BoardBarModel, BoardSegmentModel, BoardBarFacts } from "compositions/board-bar.slint";
 import { StackView, StackDetailModel } from "views/stack-view.slint";
 import { TodayView, TodayModel } from "views/today-view.slint";
+import { PlanNextDayView, PlanModel } from "views/plan-next-day-view.slint";
 import { TaskView, TaskDetailModel } from "views/task-view.slint";
 import { ReviewView, ReviewModel } from "views/review-view.slint";
 export { ReviewModel }
@@ -130,6 +131,22 @@ export component AppWindow inherits Window {
     // ---- The one-way model push surface (D2: models in, indices
     //      back — no ids cross the seam). ---------------------------
     in-out property <TodayModel> today-model;
+    // The plan-next-day surface (#622): the two-pane ritual's model —
+    // boxes first, then the pool; the placement form's mirrors are
+    // adapter-held (D9 rule 1).
+    in-out property <PlanModel> plan-model;
+    // The placement form's text mirrors (#622): adapter-held, the
+    // pass never writes them (D9 rule 4).
+    in-out property <string> plan-time-text;
+    in-out property <string> plan-effort-text;
+    callback plan-box-activated(int);
+    callback plan-pool-activated(int);
+    callback plan-box-earlier(int);
+    callback plan-box-later(int);
+    callback plan-box-remove(int);
+    callback plan-place-edited(string, string);
+    callback plan-place-commit();
+    callback plan-place-cancel();
     in-out property <string> toolbar-title;
     in-out property <int> toolbar-inbox-count: 0;
     // The view switcher's pushed index (round-3 D22; contract
@@ -398,6 +415,19 @@ export component AppWindow inherits Window {
                 general-focus-lost(f) => root.settings-general-focus-lost(f);
                 reminders-picked(i) => root.settings-reminders-picked(i);
                 sink-picked(i) => root.settings-sink-picked(i);
+            }
+            if (root.current-view == View.plan-next-day): PlanNextDayView {
+                plan: root.plan-model;
+                time-text: root.plan-time-text;
+                effort-text: root.plan-effort-text;
+                box-activated(i) => root.plan-box-activated(i);
+                pool-activated(i) => root.plan-pool-activated(i);
+                box-earlier(i) => root.plan-box-earlier(i);
+                box-later(i) => root.plan-box-later(i);
+                box-remove(i) => root.plan-box-remove(i);
+                place-edited(t, e) => root.plan-place-edited(t, e);
+                place-commit() => root.plan-place-commit();
+                place-cancel() => root.plan-place-cancel();
             }
             if (root.current-view == View.review): ReviewView {
                 review: root.review-model;

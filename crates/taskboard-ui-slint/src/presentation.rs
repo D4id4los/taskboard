@@ -270,6 +270,22 @@ pub fn effort_phrase(effort: Option<Effort>) -> String {
     effort.map_or(String::new(), Effort::text_form)
 }
 
+/// The placed box's time-of-day phrase (#622, D-8): the scheduled
+/// instant's fixed-offset local reading, `HH:mm`. Pure — the instant
+/// and the calendar are data.
+#[must_use]
+pub fn plan_box_time_phrase(
+    instant: Option<chrono::DateTime<Utc>>,
+    calendar: taskboard_domain::DayCalendar,
+) -> String {
+    instant.map_or(String::new(), |instant| {
+        instant
+            .with_timezone(&calendar.offset)
+            .format("%H:%M")
+            .to_string()
+    })
+}
+
 /// The anchor-card test (DDF-5, the presentation-side half): an exact
 /// byte-equal title match — no trim, no case-fold, no normalization (a
 /// trailing space is a visible near-miss, and must stay visible).

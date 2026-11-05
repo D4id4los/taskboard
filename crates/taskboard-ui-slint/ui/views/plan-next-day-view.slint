@@ -1,0 +1,252 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The plan-next-day surface (#622, D-1/D-3): the wave's only
+// interactive editing workspace — two panes, tomorrow's placed boxes
+// first (the day shape), then the candidate pool (carried misses
+// included, marked by their own overdue tint). Placement is
+// pick → place: activating a pool row arms the inline form (time of
+// day + optional effort — no arithmetic, R-6); a placement routes one
+// scheduled/effort edit through the adapter's commit funnel. Reorder
+// swaps a box's start instant with the temporal neighbor's; the
+// instant set is invariant, so ties render honestly in the pushed
+// order. Slint computes nothing (the dumb-client line): every phrase
+// arrives derived in the row model.
+import { Theme, Semantic, RoleText, Typography } from "../theme.slint";
+import { TaskCard, TaskCardModel } from "../widgets/task-card.slint";
+import { EmptyState } from "../widgets/empty-state.slint";
+import { TextField } from "../widgets/text-field.slint";
+
+export struct PlanRowModel {
+    card: TaskCardModel,
+    // The placed pane's time-of-day phrase ("09:30"); empty on pool
+    // rows.
+    time: string,
+    // The effort phrase, empty when absent.
+    effort: string,
+    // The carried misses' overdue tint (the card's own decoration
+    // communicates the miss).
+    overdue: bool,
+}
+
+export struct PlanModel {
+    boxes: [PlanRowModel],
+    pool: [PlanRowModel],
+    // The placement form is armed (the `Flow::PlanPlace` mirror).
+    placing: bool,
+}
+
+export component PlanNextDayView inherits FocusScope {
+    in property <PlanModel> plan;
+    // The placement form's two text mirrors (adapter-held; D9 rule
+    // 1): separate one-way slots the pass never touches — a refresh
+    // must never clobber a field the user is typing into.
+    in property <string> time-text;
+    in property <string> effort-text;
+    callback box-activated(int);
+    callback pool-activated(int);
+    callback box-earlier(int);
+    callback box-later(int);
+    callback box-remove(int);
+    callback place-edited(string, string);
+    callback place-commit();
+    callback place-cancel();
+
+    focus-on-tab-navigation: true;
+    accessible-role: AccessibleRole.region;
+    accessible-label: "Plan next day";
+    init => self.focus();
+
+    ring := Rectangle {
+        width: 100%;
+        height: 100%;
+        border-width: root.has-focus ? Theme.focus-ring-width : 0;
+        border-color: Semantic.focus-ring;
+        border-radius: Theme.radius-medium;
+
+        Flickable {
+            content := VerticalLayout {
+                padding: Theme.space-3;
+                spacing: Theme.space-3;
+
+                // The placed boxes first (P4: the day is blocks with
+                // starts). Empty collapses.
+                if (root.plan.boxes.length > 0): pane := VerticalLayout {
+                    vertical-stretch: 0;
+                    spacing: Theme.space-1;
+
+                    RoleText {
+                        role: Typography.caption;
+                        text: "Placed";
+                        vertical-alignment: center;
+                    }
+                    for box[bindex] in root.plan.boxes: box-row := HorizontalLayout {
+                        vertical-stretch: 0;
+                        spacing: Theme.space-2;
+
+                        TouchArea {
+                            width: box-row-card.preferred-width;
+                            height: box-row-card.preferred-height;
+                            clicked => { root.box-activated(bindex); }
+                            box-row-card := TaskCard {
+                                model: box.card;
+                            }
+                        }
+                        VerticalLayout {
+                            vertical-stretch: 0;
+                            alignment: center;
+                            spacing: 0;
+
+                            RoleText {
+                                role: Typography.caption;
+                                text: box.time;
+                                vertical-alignment: center;
+                            }
+                            RoleText {
+                                role: Typography.caption;
+                                text-color: Theme.text-secondary;
+                                text: box.effort;
+                                vertical-alignment: center;
+                            }
+                        }
+                        // The pointer-grade row verbs (D-6): no preset
+                        // bindings, the affordance is the invocation.
+                        HorizontalLayout {
+                            vertical-stretch: 0;
+                            spacing: Theme.space-1;
+                            alignment: end;
+
+                            box-earlier-hit := TouchArea {
+                                width: Theme.space-5;
+                                height: Theme.space-5;
+                                clicked => { root.box-earlier(bindex); }
+                                Rectangle {
+                                    width: 100%;
+                                    height: 100%;
+                                    border-radius: Theme.radius-small;
+                                    background: box-earlier-hit.has-hover
+                                        ? Theme.surface-hover
+                                        : transparent;
+                                    RoleText {
+                                        text: "↑";
+                                        vertical-alignment: center;
+                                        horizontal-alignment: center;
+                                    }
+                                }
+                            }
+                            box-later-hit := TouchArea {
+                                width: Theme.space-5;
+                                height: Theme.space-5;
+                                clicked => { root.box-later(bindex); }
+                                Rectangle {
+                                    width: 100%;
+                                    height: 100%;
+                                    border-radius: Theme.radius-small;
+                                    background: box-later-hit.has-hover
+                                        ? Theme.surface-hover
+                                        : transparent;
+                                    RoleText {
+                                        text: "↓";
+                                        vertical-alignment: center;
+                                        horizontal-alignment: center;
+                                    }
+                                }
+                            }
+                            box-remove-hit := TouchArea {
+                                width: Theme.space-5;
+                                height: Theme.space-5;
+                                clicked => { root.box-remove(bindex); }
+                                Rectangle {
+                                    width: 100%;
+                                    height: 100%;
+                                    border-radius: Theme.radius-small;
+                                    background: box-remove-hit.has-hover
+                                        ? Theme.surface-hover
+                                        : transparent;
+                                    RoleText {
+                                        text: "✕";
+                                        vertical-alignment: center;
+                                        horizontal-alignment: center;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // The candidate pool: the pickable pool (carried
+                // misses included, overdue-tinted). Empty collapses.
+                if (root.plan.pool.length > 0): pool-pane := VerticalLayout {
+                    vertical-stretch: 0;
+                    spacing: Theme.space-1;
+
+                    RoleText {
+                        role: Typography.caption;
+                        text: "Candidates";
+                        vertical-alignment: center;
+                    }
+                    for pool-row[pindex] in root.plan.pool: pool-item := HorizontalLayout {
+                        vertical-stretch: 0;
+                        spacing: Theme.space-1;
+                        // The carried misses' accent (the card's own
+                        // overdue decoration communicates the miss;
+                        // this is the pane-level echo).
+                        Rectangle {
+                            width: Theme.focus-ring-width;
+                            height: pool-card.preferred-height;
+                            background: pool-row.overdue ? Semantic.overdue : transparent;
+                            border-radius: Theme.radius-small;
+                        }
+                        pool-hit := TouchArea {
+                            width: pool-card.preferred-width;
+                            height: pool-card.preferred-height;
+                            clicked => { root.pool-activated(pindex); }
+                            pool-card := TaskCard {
+                                model: pool-row.card;
+                            }
+                        }
+                    }
+                }
+
+                // The placement form (the TrackEntryForm tenant): a
+                // time of day plus an optional effort — the date is
+                // pinned to tomorrow (no horizon beyond the next
+                // day, §5.2).
+                if (root.plan.placing): form := VerticalLayout {
+                    vertical-stretch: 0;
+                    spacing: Theme.space-2;
+
+                    RoleText {
+                        role: Typography.caption;
+                        text: "Place tomorrow — time of day, optional effort";
+                        vertical-alignment: center;
+                    }
+                    TextField {
+                        placeholder: "09:30";
+                        label: "Time";
+                        initial-text: root.time-text;
+                        accepted(_) => { root.place-commit(); }
+                        edited(t) => { root.place-edited(t, root.effort-text); }
+                    }
+                    TextField {
+                        placeholder: "30, 1h30m…";
+                        label: "Effort (optional)";
+                        initial-text: root.effort-text;
+                        accepted(_) => { root.place-commit(); }
+                        edited(t) => { root.place-edited(root.time-text, t); }
+                    }
+                    RoleText {
+                        role: Typography.caption;
+                        text-color: Theme.text-secondary;
+                        text: "Enter places · Escape steps back";
+                        vertical-alignment: center;
+                    }
+                }
+
+                if (root.plan.boxes.length == 0 && root.plan.pool.length == 0
+                    && !root.plan.placing): EmptyState {
+                    text: "Tomorrow is empty";
+                    hint: "Pick from the pool once tomorrow has candidates.";
+                }
+            }
+        }
+    }
+}
