@@ -5,6 +5,7 @@ members = [
     "crates/taskboard-state",
     "crates/taskboard-sync-nextcloud",
     "crates/taskboard-sync-files",
+    "crates/taskboard-sync-files-nextcloud",
     "crates/taskboard-storage-sqlite",
     "crates/taskboard-ui-slint",
     "crates/taskboard-app",
@@ -35,6 +36,8 @@ unexpected_cfgs = { level = "allow", check-cfg = ['cfg(kani)'] }
 taskboard-domain = { path = "crates/taskboard-domain" }
 taskboard-state = { path = "crates/taskboard-state" }
 taskboard-sync-nextcloud = { path = "crates/taskboard-sync-nextcloud" }
+taskboard-sync-files = { path = "crates/taskboard-sync-files" }
+taskboard-sync-files-nextcloud = { path = "crates/taskboard-sync-files-nextcloud" }
 taskboard-storage-sqlite = { path = "crates/taskboard-storage-sqlite" }
 taskboard-ui-slint = { path = "crates/taskboard-ui-slint" }
 

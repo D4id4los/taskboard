@@ -1,0 +1,39 @@
+[package]
+name = "taskboard-sync-files-nextcloud"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+license = "MIT OR Apache-2.0"
+description = "Nextcloud WebDAV files transport for the taskboard files-sync substrate (conditional-PUT discipline, PROPFIND change detection, the attach ceremony)"
+
+[dependencies]
+taskboard-domain.workspace = true
+taskboard-sync-files.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+taskboard-sync-files = { workspace = true, features = ["test-support"] }
+proptest.workspace = true
+wiremock.workspace = true
+tempfile.workspace = true
+uuid.workspace = true
+tracing-subscriber.workspace = true
+# Additive dev-only feature: tokio::time::pause()/start_paused for
+# deterministic actor-timing assertions (docs/testing_strategy.org §6/§8).
+tokio = { workspace = true, features = ["test-util"] }
+
+[features]
+# Exports `FakeFilesTransport` (the scripted server) to downstream
+# crates' tests — the chunk-3 convergence journeys reuse it.
+test-support = []
+
+[lints]
+workspace = true
