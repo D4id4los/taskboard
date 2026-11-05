@@ -391,6 +391,25 @@ rebase-merge hygiene rule). Hand-off at the quality gates green +
 PR open (one PR; the gates run through
 `scripts/run-quality-gates.sh` in the worktree).
 
+**Stage-3 amendment (deviation from D-3, reviewed 2026-11-05):** the
+planner's keyboard row walking rides the view's Tab traversal (the
+slint `FocusScope` chain over box/pool rows — every row's verbs are
+pointer-grade with no preset bindings, so a `focus_domain` arm over
+`tables.plan_rows` would address no bound verb) and D-3's other
+walking sentence — "the planner returns its own row list" — is
+honored by `IdTables::plan_rows`/`plan_position` (the seams'
+resolution base), not by `ViewState::focus_domain`. The board-side
+`reading_order` walk is *not* wired for `ViewId::PlanNextDay`: the
+planner context binds no board-adjacent row verbs, so a stray
+`nav.next-task` there moves a highlight no bound verb can act on —
+the placement interaction itself is affordance-driven by design.
+Wiring a planner focus domain remains available when the review
+walk's keyboard leg (chunk 9+) needs it; it was deliberately not
+grown speculatively here. D-3's form-seed sentence *was* honored at
+review: re-opening a placed box seeds the time field from the row's
+instant (the stale-stamp guard seeds nothing; pinned by
+`the_placed_box_reopen_seeds_the_form_from_the_instant`).
+
 ## 4. Risks
 
 - **The as-of-tomorrow's-opening semantics surprise**: a task due

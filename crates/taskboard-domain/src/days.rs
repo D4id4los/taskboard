@@ -1084,8 +1084,6 @@ mod plan_tests {
         assert_eq!(s.placed_due, [] as [TaskId; 0]);
     }
 
-    // 7 — the night-owl edge pin: due tomorrow 03:00 local with a
-    // 05:00 start is carried, not placed_due.
     // 7 — the night-owl edge pin: during tomorrow eve's ritual
     // (local 06-15 21:00) a task due tomorrow 03:00 local sits before
     // tomorrow's 05:00 opening — carried, not placed_due.
