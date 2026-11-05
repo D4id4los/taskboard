@@ -241,6 +241,83 @@ pub fn today_sections(
     sections
 }
 
+/// The window *after* the one containing `now`: `[today's end,
+/// today's end + 24h)`, composed through [`window_start`] per day
+/// (the [`trailing_days_window`] precedent — DST-safe by the
+/// fixed-offset rule, no `+24h` delta on a possibly-wobbling label).
+/// Pure, total, deterministic.
+#[must_use]
+pub fn next_day_window(
+    now: DateTime<Utc>,
+    day_start_time: chrono::NaiveTime,
+    offset: FixedOffset,
+) -> (DateTime<Utc>, DateTime<Utc>) {
+    let (today_start, today_end) = day_window(now, day_start_time, offset);
+    let today_date = today_start.with_timezone(&offset).date_naive();
+    let end = window_start(today_date + Days::new(2), day_start_time, offset);
+    (today_end, end)
+}
+
+/// The four sets of the plan-next-day surface (#622): [`today_sections`]
+/// evaluated **as of tomorrow's opening** (the semantic heart — an open
+/// task due later *today* is carried, a candidate to re-commit; the
+/// window rule decides, not the calendar date), plus one complement
+/// pass. Ids only, the [`TodaySections`] discipline; the four sets
+/// partition every live open task; tombstoned and done tasks appear
+/// nowhere. Pure, total, deterministic.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PlanNextDaySections {
+    /// The scheduled section of tomorrow's window verbatim, ordered
+    /// `(scheduled, order, id)` — the day's boxes.
+    pub placed_scheduled: Vec<TaskId>,
+    /// The due section of tomorrow's window verbatim, ordered
+    /// `(order, id)` — must finish tomorrow, already committed by the
+    /// due field.
+    pub placed_due: Vec<TaskId>,
+    /// The overdue-at-open section verbatim — live ∧ open ∧
+    /// `duedate < next_start`: yesterday's misses, visibly pickable.
+    pub carried: Vec<TaskId>,
+    /// Live ∧ open ∧ not placed (`placed_scheduled`/`placed_due`) —
+    /// the pickable pool in `(order, id)` order. The carried misses
+    /// are a subset: they are picks too, marked by their own overdue
+    /// decoration (the partition contract: `carried ⊆ candidates`).
+    pub candidates: Vec<TaskId>,
+}
+
+/// Derives the plan-next-day sections of `tasks` for the window after
+/// the one containing `now` (see [`next_day_window`]). The read routes
+/// through [`today_sections`] unchanged — no parallel projection.
+#[must_use]
+pub fn plan_next_day(
+    tasks: &BTreeMap<TaskId, Task>,
+    now: DateTime<Utc>,
+    day_start_time: chrono::NaiveTime,
+    offset: FixedOffset,
+) -> PlanNextDaySections {
+    let window = next_day_window(now, day_start_time, offset);
+    let next_start = window.0;
+    let today = today_sections(tasks, next_start, window);
+    let mut sections = PlanNextDaySections {
+        placed_scheduled: today.scheduled,
+        placed_due: today.due_today,
+        carried: today.overdue,
+        candidates: Vec::new(),
+    };
+    let mut candidates: Vec<(i64, TaskId)> = tasks
+        .values()
+        .filter(|t| {
+            t.is_live()
+                && t.is_open()
+                && !sections.placed_scheduled.contains(&t.id)
+                && !sections.placed_due.contains(&t.id)
+        })
+        .map(|t| (t.order, t.id))
+        .collect();
+    candidates.sort();
+    sections.candidates = candidates.into_iter().map(|(_, id)| id).collect();
+    sections
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -845,6 +922,330 @@ mod today_tests {
                 .map(|t| t.id)
                 .collect();
             prop_assert_eq!(s.overdue, expected);
+        }
+    }
+}
+
+#[cfg(test)]
+mod plan_tests {
+    use super::*;
+    use crate::entities::TaskClocks;
+    use crate::test_support::{self, proptest_config};
+    use chrono::{NaiveTime, TimeDelta, TimeZone};
+    use proptest::prelude::*;
+
+    fn day() -> TimeDelta {
+        TimeDelta::try_hours(24).unwrap()
+    }
+
+    fn time(h: u32, m: u32) -> NaiveTime {
+        NaiveTime::from_hms_opt(h, m, 0).unwrap()
+    }
+
+    fn offset_hours(h: i32) -> FixedOffset {
+        FixedOffset::east_opt(h * 3600).unwrap()
+    }
+
+    fn stamp(secs: i64) -> DateTime<Utc> {
+        Utc.timestamp_opt(secs, 0).unwrap()
+    }
+
+    fn task(
+        raw: u128,
+        order: i64,
+        duedate: Option<DateTime<Utc>>,
+        scheduled: Option<DateTime<Utc>>,
+        done: Option<DateTime<Utc>>,
+    ) -> Task {
+        Task {
+            id: TaskId::from(uuid::Uuid::from_u128(raw)),
+            remote: None,
+            title: format!("task {raw}"),
+            description: String::new(),
+            duedate,
+            scheduled,
+            done,
+            stack: crate::ids::StackId::from(uuid::Uuid::from_u128(1)),
+            order,
+            label_memberships: BTreeMap::default(),
+            effort: None,
+            importance: None,
+            urgency: None,
+            recur: None,
+            kind: crate::entities::TaskKind::Standard,
+            archived: false,
+            deleted: false,
+            clocks: TaskClocks {
+                title: stamp(100),
+                description: stamp(100),
+                duedate: stamp(100),
+                scheduled: stamp(100),
+                done: stamp(100),
+                position: stamp(100),
+                effort: stamp(100),
+                importance: stamp(100),
+                urgency: stamp(100),
+                recur: stamp(100),
+                kind: stamp(100),
+                archived: stamp(100),
+                deleted: stamp(100),
+            },
+            remote_seen: None,
+            remote_baseline: None,
+        }
+    }
+
+    fn map(tasks: Vec<Task>) -> BTreeMap<TaskId, Task> {
+        tasks.into_iter().map(|t| (t.id, t)).collect()
+    }
+
+    fn id(raw: u128) -> TaskId {
+        TaskId::from(uuid::Uuid::from_u128(raw))
+    }
+
+    // Fixture: `now` inside today's window; today's window is
+    // [T0, T0+24h), tomorrow's is [T0+24h, T0+48h). Midnight start at
+    // UTC so hand-computation stays trivial.
+    const NOW: i64 = 1_781_524_800; // 2026-06-15 12:00:00 UTC
+    const T0: i64 = 1_781_481_600; // 2026-06-15 00:00:00 UTC
+    const T1: i64 = 1_781_568_000; // 2026-06-16 00:00:00 UTC
+    const T2: i64 = 1_781_654_400; // 2026-06-17 00:00:00 UTC
+
+    // 1 — the consecutive-window pin: today's `.1` == next `.0`, and
+    // the next window spans 24h.
+    #[test]
+    fn next_day_window_is_todays_window_advanced() {
+        let now = stamp(NOW);
+        let (start, end) = next_day_window(now, time(0, 0), offset_hours(0));
+        assert_eq!(start, stamp(T1));
+        assert_eq!(end, stamp(T2));
+        let (_, today_end) = day_window(now, time(0, 0), offset_hours(0));
+        assert_eq!(start, today_end);
+        assert_eq!(end - start, day());
+    }
+
+    // 2 — the composition is stable across the boundary instant: both
+    // flanks of today's opening give the same next-day window.
+    #[test]
+    fn next_day_window_is_stable_across_todays_boundary() {
+        let today_start = stamp(T0);
+        let inside = today_start + TimeDelta::try_hours(12).unwrap();
+        assert_eq!(
+            next_day_window(today_start, time(0, 0), offset_hours(0)),
+            next_day_window(inside, time(0, 0), offset_hours(0))
+        );
+    }
+
+    // 3 — night-owl + offset honored: with a 05:00 start at +02:00,
+    // local 2026-06-15 03:00 (01:00 UTC) is still *today*; tomorrow's
+    // window opens at local 2026-06-16 05:00 = 2026-06-16 03:00 UTC.
+    #[test]
+    fn night_owl_start_rolls_tomorrow_forward() {
+        let now = stamp(1_781_485_200); // local 2026-06-15 03:00 +02:00
+        let (start, end) = next_day_window(now, time(5, 0), offset_hours(2));
+        assert_eq!(start, stamp(1_781_492_400)); // local 2026-06-15 05:00
+        assert_eq!(end, stamp(1_781_578_800)); // +24h
+        assert_eq!(end - start, day());
+    }
+
+    // 4 — DST boundary instants: composed bounds across every fixture.
+    #[test]
+    fn dst_boundary_spans_produce_the_composed_bounds() {
+        for now in crate::test_support::dst_boundary_instants() {
+            let (start, end) = next_day_window(now, time(0, 0), offset_hours(1));
+            let (_, today_end) = day_window(now, time(0, 0), offset_hours(1));
+            assert_eq!(start, today_end);
+            assert_eq!(end - start, day());
+        }
+    }
+
+    // 5 — placement: scheduled-in-window lands in placed_scheduled,
+    // due-in-window lands in placed_due.
+    #[test]
+    fn tasks_in_tomorrows_window_land_in_their_sections() {
+        let now = stamp(NOW);
+        let tasks = map(vec![
+            task(1, 0, None, Some(stamp(T1 + 3_600)), None),
+            task(2, 1, Some(stamp(T1 + 7_200)), None, None),
+        ]);
+        let s = plan_next_day(&tasks, now, time(0, 0), offset_hours(0));
+        assert_eq!(s.placed_scheduled, vec![id(1)]);
+        assert_eq!(s.placed_due, vec![id(2)]);
+    }
+
+    // 6 — the as-of-open pin: a task due later *today* is carried, not
+    // placed.
+    #[test]
+    fn a_task_due_later_today_is_carried_not_placed() {
+        let now = stamp(NOW);
+        let tasks = map(vec![task(1, 0, Some(stamp(T0 + 20 * 3_600)), None, None)]);
+        let s = plan_next_day(&tasks, now, time(0, 0), offset_hours(0));
+        assert_eq!(s.carried, vec![id(1)]);
+        assert_eq!(s.placed_due, [] as [TaskId; 0]);
+    }
+
+    // 7 — the night-owl edge pin: due tomorrow 03:00 local with a
+    // 05:00 start is carried, not placed_due.
+    // 7 — the night-owl edge pin: during tomorrow eve's ritual
+    // (local 06-15 21:00) a task due tomorrow 03:00 local sits before
+    // tomorrow's 05:00 opening — carried, not placed_due.
+    #[test]
+    fn due_before_tomorrows_opening_is_carried() {
+        let now = stamp(1_781_550_000); // 06-15 19:00 UTC = 21:00 +02:00
+        let tasks = map(vec![task(
+            1,
+            0,
+            Some(stamp(1_781_571_600)), // 06-16 01:00 UTC = 03:00 +02:00
+            None,
+            None,
+        )]);
+        let s = plan_next_day(&tasks, now, time(5, 0), offset_hours(2));
+        assert_eq!(s.carried, vec![id(1)]);
+        assert_eq!(s.placed_due, [] as [TaskId; 0]);
+    }
+
+    // 8 — carried == open ∧ duedate < next_start: a due date exactly
+    // at next_start is placed_due (the half-open boundary).
+    #[test]
+    fn due_exactly_at_tomorrows_opening_is_placed_not_carried() {
+        let now = stamp(NOW);
+        let tasks = map(vec![task(1, 0, Some(stamp(T1)), None, None)]);
+        let s = plan_next_day(&tasks, now, time(0, 0), offset_hours(0));
+        assert_eq!(s.carried, [] as [TaskId; 0]);
+        assert_eq!(s.placed_due, vec![id(1)]);
+    }
+
+    // 9 — partition: every live open task covered exactly once;
+    // done and tombstoned tasks appear nowhere.
+    #[test]
+    fn the_sections_partition_every_live_open_task() {
+        let now = stamp(NOW);
+        let mut tombstoned = task(7, 6, Some(stamp(T1 + 3_600)), None, None);
+        tombstoned.deleted = true;
+        let tasks = map(vec![
+            task(1, 3, None, Some(stamp(T1 + 3_600)), None), // placed_scheduled
+            task(2, 2, Some(stamp(T1 + 7_200)), None, None), // placed_due
+            task(3, 1, Some(stamp(T0 + 3_600)), None, None), // carried
+            task(4, 0, None, None, None),                    // candidate
+            task(5, 4, None, Some(stamp(T0 + 3_600)), None), // scheduled today: candidate
+            task(6, 5, None, None, Some(stamp(T0 + 3_600))), // done today: nowhere
+            tombstoned,                                      // tombstone: nowhere
+        ]);
+        let s = plan_next_day(&tasks, now, time(0, 0), offset_hours(0));
+        let mut all: Vec<TaskId> = s
+            .placed_scheduled
+            .iter()
+            .chain(&s.placed_due)
+            .chain(&s.candidates)
+            .copied()
+            .collect();
+        all.sort();
+        assert_eq!(all, vec![id(1), id(2), id(3), id(4), id(5)]);
+        for task_id in &all {
+            assert!(tasks[task_id].is_open());
+        }
+        assert!(s.carried.iter().all(|c| s.candidates.contains(c)));
+    }
+
+    // 10 — the section orderings: `(scheduled, order, id)` /
+    // `(order, id)`.
+    #[test]
+    fn sections_are_canonically_sorted() {
+        let now = stamp(NOW);
+        let tasks = map(vec![
+            task(1, 2, None, Some(stamp(T1 + 3_600)), None),
+            task(2, 1, None, Some(stamp(T1 + 3_600)), None), // same instant: order decides
+            task(3, 0, None, Some(stamp(T1 + 7_200)), None),
+            task(4, 5, Some(stamp(T1 + 9_600)), None, None),
+            task(5, 4, Some(stamp(T1 + 9_600)), None, None),
+            task(6, 0, None, None, None),
+            task(7, 1, Some(stamp(T0 + 3_600)), None, None),
+            task(8, 2, Some(stamp(T0 + 7_200)), None, None),
+        ]);
+        let s = plan_next_day(&tasks, now, time(0, 0), offset_hours(0));
+        assert_eq!(s.placed_scheduled, vec![id(2), id(1), id(3)]);
+        assert_eq!(s.placed_due, vec![id(5), id(4)]);
+        assert_eq!(s.carried, vec![id(7), id(8)]);
+        // The pool includes the carried misses (the partition rule).
+        assert_eq!(s.candidates, vec![id(6), id(7), id(8)]);
+    }
+
+    fn day_start_time_strategy() -> impl Strategy<Value = NaiveTime> {
+        (0_u32..=86_399).prop_map(|s| NaiveTime::from_num_seconds_from_midnight_opt(s, 0).unwrap())
+    }
+
+    fn offset_strategy() -> impl Strategy<Value = FixedOffset> {
+        (-86_399_i32..=86_399).prop_map(|s| FixedOffset::east_opt(s).unwrap())
+    }
+
+    proptest! {
+        #![proptest_config(proptest_config(256))]
+
+        // 11 — the next window is today's end + 24h; equal inputs,
+        // equal outputs.
+        #[test]
+        fn next_day_window_is_24h_and_deterministic(
+            now in test_support::timestamp_strategy(),
+            day_start_time in day_start_time_strategy(),
+            offset in offset_strategy(),
+        ) {
+            let (start, end) = next_day_window(now, day_start_time, offset);
+            let (_, today_end) = day_window(now, day_start_time, offset);
+            prop_assert_eq!(start, today_end);
+            prop_assert_eq!(end - start, day());
+            prop_assert_eq!(next_day_window(now, day_start_time, offset), (start, end));
+        }
+
+        // 12 — the partition + ordering props over generated tasks.
+        #[test]
+        fn sections_partition_and_sort_generated_tasks(
+            now in test_support::timestamp_strategy(),
+        ) {
+            let day_start = time(0, 0);
+            let offset = offset_hours(0);
+            let (t0, _) = day_window(now, day_start, offset);
+            let t0 = t0.timestamp();
+            let lo = t0 - 86_400;
+            let mut raw: u128 = 0;
+            let mut tasks = Vec::new();
+            for i in 0..10 {
+                raw += 1;
+                let mut t = task(raw, i, None, None, None);
+                t.duedate = if i % 3 == 0 { Some(stamp(lo + i * 3_600)) } else { None };
+                t.scheduled = if i % 3 == 1 { Some(stamp(lo + i * 3_600)) } else { None };
+                if i == 9 {
+                    t.done = Some(stamp(t0));
+                }
+                tasks.push(t);
+            }
+            let tasks = map(tasks);
+            let s = plan_next_day(&tasks, now, day_start, offset);
+            let mut all: Vec<TaskId> = s
+                .placed_scheduled
+                .iter()
+                .chain(&s.placed_due)
+                .chain(&s.candidates)
+                .copied()
+                .collect();
+            let distinct = all.len();
+            all.sort();
+            all.dedup();
+            prop_assert_eq!(all.len(), distinct, "sets are pairwise disjoint");
+            prop_assert!(s.carried.iter().all(|c| s.candidates.contains(c)));
+            for pair in s.placed_scheduled.windows(2) {
+                let a = &tasks[&pair[0]];
+                let b = &tasks[&pair[1]];
+                prop_assert!(
+                    (a.scheduled.unwrap(), a.order, a.id) < (b.scheduled.unwrap(), b.order, b.id)
+                );
+            }
+            let key = |id: &TaskId| (tasks[id].order, *id);
+            for pair in s.placed_due.windows(2) {
+                prop_assert!(key(&pair[0]) < key(&pair[1]));
+            }
+            for pair in s.candidates.windows(2) {
+                prop_assert!(key(&pair[0]) < key(&pair[1]));
+            }
         }
     }
 }
