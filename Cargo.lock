@@ -6943,6 +6943,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "taskboard-sync-files"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "proptest",
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
 name = "taskboard-sync-nextcloud"
 version = "0.1.0"
 dependencies = [
