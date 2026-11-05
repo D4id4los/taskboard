@@ -3895,4 +3895,136 @@ mod tests {
             );
         });
     }
+
+    // -- the tracking sections (#623 slice A, M-1..M-4) ---------------------
+
+    #[test]
+    fn the_tracking_sections_mirror_the_domain_projection() {
+        on_slint_thread(|| {
+            let mut state = AppState::default();
+            let a = completed(
+                1,
+                "compared-a",
+                chrono::TimeDelta::try_hours(2).unwrap(),
+                None,
+            );
+            tracked(&mut state, &a, 3_600);
+            state.tasks.insert(a.id, a.clone());
+            let handle = review_rig(state, UiSettings::default());
+            handle
+                .test_adapter()
+                .borrow_mut()
+                .refresh_forced(handle.window());
+            let model = handle.window().get_review_model();
+            for section in [model.tracking_week.clone(), model.tracking_month.clone()] {
+                assert!(!section.empty, "the window holds tracked time");
+                assert!(!section.work.is_empty());
+                assert!(!section.blocks.is_empty());
+                // The strip always carries the window's day count.
+                assert!(section.bars.row_count() == 7 || section.bars.row_count() == 30);
+                // The running day's bucket is populated (the entry sat
+                // 3h ago inside it).
+                let last = section
+                    .bars
+                    .row_data(section.bars.row_count() - 1)
+                    .expect("the running day's bar");
+                assert!(
+                    last.work > 0.0,
+                    "the running day's work fraction is strictly positive"
+                );
+                assert!(last.respite == 0.0, "no respite was planted");
+            }
+            assert_eq!(model.tracking_week.bars.row_count(), 7);
+            assert_eq!(model.tracking_month.bars.row_count(), 30);
+        });
+    }
+
+    #[test]
+    fn the_tracking_sections_collapse_in_tiers() {
+        on_slint_thread(|| {
+            // Tier 1 + 2 together on the bare fixture: the whole view
+            // collapses and the sections' strips stay full-length and
+            // all-zero.
+            let handle = review_rig(AppState::default(), UiSettings::default());
+            handle
+                .test_adapter()
+                .borrow_mut()
+                .refresh_forced(handle.window());
+            let model = handle.window().get_review_model();
+            assert!(model.empty, "tier 1: nothing anywhere");
+            for section in [model.tracking_week.clone(), model.tracking_month.clone()] {
+                assert!(section.empty, "tier 2: the section collapses");
+                assert_eq!(section.work, "");
+                assert_eq!(section.respite, "");
+                assert_eq!(section.blocks, "");
+                let len = section.bars.row_count();
+                assert!(len == 7 || len == 30, "the skeleton never vanishes");
+                for i in 0..len {
+                    let bar = section.bars.row_data(i).expect("bar");
+                    assert!(bar.work == 0.0 && bar.respite == 0.0, "all-zero strip");
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn tracked_time_alone_keeps_the_review_view_standing() {
+        on_slint_thread(|| {
+            // D-S9's tier-1 extension: tracked time, no comparable
+            // completed tasks — the view stays, the calibration pair
+            // collapses, the tracking pair speaks.
+            let mut state = AppState::default();
+            let open = task();
+            let entry = work_entry(open.id, chrono::Utc::now(), None);
+            state.tracking.entries.insert(entry.id, entry);
+            state.tasks.insert(open.id, open);
+            let handle = review_rig(state, UiSettings::default());
+            handle
+                .test_adapter()
+                .borrow_mut()
+                .refresh_forced(handle.window());
+            let model = handle.window().get_review_model();
+            assert!(!model.empty, "tracked time alone keeps the view");
+            assert!(
+                model.week.empty && model.month.empty,
+                "the calibration sections collapse"
+            );
+            assert!(!model.tracking_week.empty && !model.tracking_month.empty);
+            assert!(!model.tracking_week.work.is_empty());
+        });
+    }
+
+    #[test]
+    fn the_kiosk_belt_extends_to_the_tracking_sections() {
+        on_slint_thread(|| {
+            let mut state = AppState::default();
+            let a = completed(
+                1,
+                "compared-a",
+                chrono::TimeDelta::try_hours(2).unwrap(),
+                Some(600),
+            );
+            tracked(&mut state, &a, 300);
+            state.tasks.insert(a.id, a);
+            let handle = review_rig(
+                state,
+                UiSettings {
+                    kiosk: true,
+                    ..UiSettings::default()
+                },
+            );
+            handle
+                .test_adapter()
+                .borrow_mut()
+                .refresh_forced(handle.window());
+            let model = handle.window().get_review_model();
+            assert!(model.empty);
+            assert_eq!(model.rows.row_count(), 0);
+            for section in [model.tracking_week.clone(), model.tracking_month.clone()] {
+                assert!(section.empty, "the belt never projects the folds");
+                assert_eq!(section.work, "");
+                assert_eq!(section.bars.row_count(), 0);
+            }
+        });
+    }
 }
