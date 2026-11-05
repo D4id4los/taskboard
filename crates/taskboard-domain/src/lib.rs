@@ -146,8 +146,9 @@ pub use recur::{
     schedule, series_reference_date,
 };
 pub use reflection::{
-    DEFAULT_TEMPLATES, HealthFlag, InvalidRating, Rating, ReflectionAttributes, ReflectionEntry,
-    ReflectionState, ReflectionTemplate, ReviewCadence, UnknownHealthFlag,
+    DEFAULT_TEMPLATES, HealthFlag, InvalidRating, InvalidReviewWindow, Rating,
+    ReflectionAttributes, ReflectionEntry, ReflectionState, ReflectionTemplate, ReviewCadence,
+    ReviewWindow, UnknownHealthFlag, review_window,
 };
 pub use reminders::{
     AdhocAlarm, AdhocWhen, AtInstant, BreakRule, Insistence, InvalidAtInstant,
