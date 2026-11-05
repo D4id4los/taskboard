@@ -5031,205 +5031,150 @@ fn install_view_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
 fn install_recur_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // The make-up valve: the exact `(habit, window, count)` from the
     // row source — what you click is what increments.
-    let repair = Rc::clone(adapter);
-    let repair_weak = window.as_weak();
-    window.on_habits_repair_clicked(move |index| {
-        let Some(window) = repair_weak.upgrade() else {
-            return;
-        };
-        let mut a = repair.borrow_mut();
-        let Some(&habit) = a
-            .tables
-            .habits
-            .get(usize::try_from(index).unwrap_or(usize::MAX))
-        else {
-            return; // a stale index degrades to a no-op
-        };
-        let state = a.state.load();
-        let Some(habit_row) = state.habits.habits.get(&habit) else {
-            return;
-        };
-        let Some((target_window, count)) = crate::presentation::habit_repair_target(
-            habit_row,
-            &state.habits.log,
-            a.day_ctx().now,
-            a.calendar(),
-        ) else {
-            return; // the affordance armed against stale state
-        };
-        a.habit_repair = Some((habit, target_window, count));
-        drop(state);
-        a.route(&window, ActionId::HabitRepair);
+    install_seam!(window: window.on_habits_repair_clicked, adapter: adapter;
+    bind mut (a, window), args (index), {        let Some(&habit) = a
+        .tables
+        .habits
+        .get(usize::try_from(index).unwrap_or(usize::MAX))
+    else {
+        return; // a stale index degrades to a no-op
+    };
+    let state = a.state.load();
+    let Some(habit_row) = state.habits.habits.get(&habit) else {
+        return;
+    };
+    let Some((target_window, count)) = crate::presentation::habit_repair_target(
+        habit_row,
+        &state.habits.log,
+        a.day_ctx().now,
+        a.calendar(),
+    ) else {
+        return; // the affordance armed against stale state
+    };
+    a.habit_repair = Some((habit, target_window, count));
+    drop(state);
+    a.route(&window, ActionId::HabitRepair);
+
     });
 
     // The conversion flow: arm shows the consequence strip; Confirm
     // routes the domain verb with the D-2 default pattern.
-    let arm = Rc::clone(adapter);
-    let arm_weak = window.as_weak();
-    window.on_habits_convert_armed(move |index| {
-        let Some(window) = arm_weak.upgrade() else {
-            return;
-        };
-        let mut a = arm.borrow_mut();
-        let Some(&habit) = a
-            .tables
-            .habits
-            .get(usize::try_from(index).unwrap_or(usize::MAX))
-        else {
-            return;
-        };
-        let Some(target) = a.state.load().habits.habits.get(&habit).cloned() else {
-            return;
-        };
-        a.habit_convert_armed = Some(usize::try_from(index.max(0)).unwrap_or(usize::MAX));
-        a.habit_convert_target = Some(habit);
-        a.pattern_draft = Some(crate::presentation::convert_pattern_default(target.target));
-        window.set_habits_convert_armed_row(index);
-        a.route(&window, ActionId::HabitConvertArm);
+    install_seam!(window: window.on_habits_convert_armed, adapter: adapter;
+    bind mut (a, window), args (index), {        let Some(&habit) = a
+        .tables
+        .habits
+        .get(usize::try_from(index).unwrap_or(usize::MAX))
+    else {
+        return;
+    };
+    let Some(target) = a.state.load().habits.habits.get(&habit).cloned() else {
+        return;
+    };
+    a.habit_convert_armed = Some(usize::try_from(index.max(0)).unwrap_or(usize::MAX));
+    a.habit_convert_target = Some(habit);
+    a.pattern_draft = Some(crate::presentation::convert_pattern_default(target.target));
+    window.set_habits_convert_armed_row(index);
+    a.route(&window, ActionId::HabitConvertArm);
+
     });
-    let confirm = Rc::clone(adapter);
-    let confirm_weak = window.as_weak();
-    window.on_habits_convert_confirmed(move |index| {
-        let Some(window) = confirm_weak.upgrade() else {
-            return;
-        };
-        let mut a = confirm.borrow_mut();
-        let Some(&habit) = a
-            .tables
-            .habits
-            .get(usize::try_from(index).unwrap_or(usize::MAX))
-        else {
-            return;
-        };
-        a.habit_convert_target = Some(habit);
-        a.habit_convert_armed = None;
-        window.set_habits_convert_armed_row(-1);
-        a.route(&window, ActionId::HabitConvertToSeries);
+    install_seam!(window: window.on_habits_convert_confirmed, adapter: adapter;
+    bind mut (a, window), args (index), {        let Some(&habit) = a
+        .tables
+        .habits
+        .get(usize::try_from(index).unwrap_or(usize::MAX))
+    else {
+        return;
+    };
+    a.habit_convert_target = Some(habit);
+    a.habit_convert_armed = None;
+    window.set_habits_convert_armed_row(-1);
+    a.route(&window, ActionId::HabitConvertToSeries);
+
     });
-    let cancel = Rc::clone(adapter);
-    let cancel_weak = window.as_weak();
-    window.on_habits_convert_cancelled(move || {
-        let Some(window) = cancel_weak.upgrade() else {
-            return;
-        };
-        let mut a = cancel.borrow_mut();
-        a.habit_convert_armed = None;
-        a.habit_convert_target = None;
-        a.pattern_draft = None;
-        window.set_habits_convert_armed_row(-1);
-        a.refresh_forced(&window);
+    install_seam!(window: window.on_habits_convert_cancelled, adapter: adapter;
+    bind mut (a, window), args (), {        a.habit_convert_armed = None;
+    a.habit_convert_target = None;
+    a.pattern_draft = None;
+    window.set_habits_convert_armed_row(-1);
+    a.refresh_forced(&window);
+
     });
 
     // The recur row: pause open (view intent), the editor's typed
     // commit (the trust boundary parses the date strictly), resume,
     // and the conversion's arm/confirm/cancel.
-    let pause_asked = Rc::clone(adapter);
-    let pause_asked_weak = window.as_weak();
-    window.on_task_recur_pause_asked(move || {
-        let Some(window) = pause_asked_weak.upgrade() else {
-            return;
-        };
-        pause_asked
-            .borrow_mut()
-            .route(&window, ActionId::SeriesPause);
+    install_seam!(window: window.on_task_recur_pause_asked, adapter: adapter;
+    bind mut (a, window), args (), {        a
+        .route(&window, ActionId::SeriesPause);
+
     });
-    let pause_accepted = Rc::clone(adapter);
-    let pause_accepted_weak = window.as_weak();
-    window.on_task_recur_pause_accepted(move |text| {
-        let Some(window) = pause_accepted_weak.upgrade() else {
-            return;
-        };
-        // The typed date is the trust boundary: strict `%Y-%m-%d`, no
-        // leniency — an unparseable draft dispatches nothing.
-        let Ok(date) = chrono::NaiveDate::parse_from_str(text.trim(), "%Y-%m-%d") else {
-            return;
-        };
-        let mut a = pause_accepted.borrow_mut();
-        a.pause_draft = Some(date);
-        a.recur_pause_open = false;
-        a.route(&window, ActionId::SeriesPauseCommit);
+    install_seam!(window: window.on_task_recur_pause_accepted, adapter: adapter;
+    bind mut (a, window), args (text), {        // The typed date is the trust boundary: strict `%Y-%m-%d`, no
+    // leniency — an unparseable draft dispatches nothing.
+    let Ok(date) = chrono::NaiveDate::parse_from_str(text.trim(), "%Y-%m-%d") else {
+        return;
+    };
+    a.pause_draft = Some(date);
+    a.recur_pause_open = false;
+    a.route(&window, ActionId::SeriesPauseCommit);
+
     });
-    let pause_cancelled = Rc::clone(adapter);
-    let pause_cancelled_weak = window.as_weak();
-    window.on_task_recur_pause_cancelled(move || {
-        let Some(window) = pause_cancelled_weak.upgrade() else {
-            return;
-        };
-        let mut a = pause_cancelled.borrow_mut();
-        a.recur_pause_open = false;
-        a.pause_draft = None;
-        a.refresh_forced(&window);
+    install_seam!(window: window.on_task_recur_pause_cancelled, adapter: adapter;
+    bind mut (a, window), args (), {        a.recur_pause_open = false;
+    a.pause_draft = None;
+    a.refresh_forced(&window);
+
     });
-    let resume = Rc::clone(adapter);
-    let resume_weak = window.as_weak();
-    window.on_task_recur_resume_clicked(move || {
-        let Some(window) = resume_weak.upgrade() else {
-            return;
-        };
-        let mut a = resume.borrow_mut();
-        let Some(task) = a.view_state.subject_task() else {
-            return;
-        };
-        a.series_target = Some(task);
-        a.route(&window, ActionId::SeriesResume);
+    install_seam!(window: window.on_task_recur_resume_clicked, adapter: adapter;
+    bind mut (a, window), args (), {        let Some(task) = a.view_state.subject_task() else {
+        return;
+    };
+    a.series_target = Some(task);
+    a.route(&window, ActionId::SeriesResume);
+
     });
-    let convert_asked = Rc::clone(adapter);
-    let convert_asked_weak = window.as_weak();
-    window.on_task_recur_convert_asked(move || {
-        let Some(window) = convert_asked_weak.upgrade() else {
+    install_seam!(window: window.on_task_recur_convert_asked, adapter: adapter;
+    bind mut (a, window), args (), {        let Some(task) = a.view_state.subject_task() else {
+        return;
+    };
+    let pattern = {
+        let state = a.state.load();
+        let Some(rule) = state.tasks.get(&task).and_then(|t| t.recur.as_ref()) else {
             return;
         };
-        let mut a = convert_asked.borrow_mut();
-        let Some(task) = a.view_state.subject_task() else {
-            return;
-        };
-        let pattern = {
-            let state = a.state.load();
-            let Some(rule) = state.tasks.get(&task).and_then(|t| t.recur.as_ref()) else {
-                return;
-            };
-            crate::presentation::convert_target_default(&rule.pattern)
-        };
-        a.series_target = Some(task);
-        a.convert_target = Some(pattern);
-        a.recur_confirm_armed = true;
-        a.route(&window, ActionId::SeriesConvertArm);
+        crate::presentation::convert_target_default(&rule.pattern)
+    };
+    a.series_target = Some(task);
+    a.convert_target = Some(pattern);
+    a.recur_confirm_armed = true;
+    a.route(&window, ActionId::SeriesConvertArm);
+
     });
-    let convert_confirmed = Rc::clone(adapter);
-    let convert_confirmed_weak = window.as_weak();
-    window.on_task_recur_convert_confirmed(move || {
-        let Some(window) = convert_confirmed_weak.upgrade() else {
+    install_seam!(window: window.on_task_recur_convert_confirmed, adapter: adapter;
+    bind mut (a, window), args (), {        let Some(task) = a.view_state.subject_task() else {
+        return;
+    };
+    // The quota draft re-derives from the current rule (the arm's
+    // draft may be stale against a mid-confirm pattern edit).
+    let pattern = {
+        let state = a.state.load();
+        let Some(rule) = state.tasks.get(&task).and_then(|t| t.recur.as_ref()) else {
             return;
         };
-        let mut a = convert_confirmed.borrow_mut();
-        let Some(task) = a.view_state.subject_task() else {
-            return;
-        };
-        // The quota draft re-derives from the current rule (the arm's
-        // draft may be stale against a mid-confirm pattern edit).
-        let pattern = {
-            let state = a.state.load();
-            let Some(rule) = state.tasks.get(&task).and_then(|t| t.recur.as_ref()) else {
-                return;
-            };
-            crate::presentation::convert_target_default(&rule.pattern)
-        };
-        a.series_target = Some(task);
-        a.convert_target = Some(pattern);
-        a.recur_confirm_armed = false;
-        a.route(&window, ActionId::SeriesConvertToHabit);
+        crate::presentation::convert_target_default(&rule.pattern)
+    };
+    a.series_target = Some(task);
+    a.convert_target = Some(pattern);
+    a.recur_confirm_armed = false;
+    a.route(&window, ActionId::SeriesConvertToHabit);
+
     });
-    let convert_cancelled = Rc::clone(adapter);
-    let convert_cancelled_weak = window.as_weak();
-    window.on_task_recur_convert_cancelled(move || {
-        let Some(window) = convert_cancelled_weak.upgrade() else {
-            return;
-        };
-        let mut a = convert_cancelled.borrow_mut();
-        a.recur_confirm_armed = false;
-        a.series_target = None;
-        a.convert_target = None;
-        a.refresh_forced(&window);
+    install_seam!(window: window.on_task_recur_convert_cancelled, adapter: adapter;
+    bind mut (a, window), args (), {        a.recur_confirm_armed = false;
+    a.series_target = None;
+    a.convert_target = None;
+    a.refresh_forced(&window);
+
     });
 }
 
@@ -7466,182 +7411,141 @@ fn notification_target(
 #[allow(clippy::too_many_lines)]
 fn install_settings_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     {
-        let adapter = Rc::clone(adapter);
-        let weak = window.as_weak();
-        window.on_settings_field_edited(move |field, text| {
-            let Some(window) = weak.upgrade() else { return };
-            let Ok(field) = usize::try_from(field) else {
+        install_seam!(window: window.on_settings_field_edited, adapter: adapter;
+        bind mut (a, window), args (field, text), {            let Ok(field) = usize::try_from(field) else {
                 return;
             };
-            adapter
-                .borrow_mut()
+            a
                 .settings_field_edited(field, &text, &window);
+
         });
     }
     {
-        let adapter = Rc::clone(adapter);
-        let weak = window.as_weak();
-        window.on_settings_save_clicked(move |name, server, username, password| {
-            let Some(window) = weak.upgrade() else { return };
-            adapter
-                .borrow_mut()
+        install_seam!(window: window.on_settings_save_clicked, adapter: adapter;
+        bind mut (a, window), args (name, server, username, password), {            a
                 .settings_save(&window, &name, &server, &username, &password);
+
         });
     }
     {
-        let adapter = Rc::clone(adapter);
-        let weak = window.as_weak();
-        window.on_settings_test_clicked(move |row| {
-            let Some(window) = weak.upgrade() else { return };
-            let Ok(row) = usize::try_from(row) else {
+        install_seam!(window: window.on_settings_test_clicked, adapter: adapter;
+        bind mut (a, window), args (row), {            let Ok(row) = usize::try_from(row) else {
                 return;
             };
-            adapter.borrow_mut().settings_test_row(&window, row);
+            a.settings_test_row(&window, row);
+
         });
     }
     {
-        let adapter = Rc::clone(adapter);
-        let weak = window.as_weak();
-        window.on_settings_remove_clicked(move |row| {
-            let Some(window) = weak.upgrade() else { return };
-            let Ok(row) = usize::try_from(row) else {
+        install_seam!(window: window.on_settings_remove_clicked, adapter: adapter;
+        bind mut (a, window), args (row), {            let Ok(row) = usize::try_from(row) else {
                 return;
             };
-            adapter.borrow_mut().settings_remove_row(&window, row);
+            a.settings_remove_row(&window, row);
+
         });
     }
     {
-        let adapter = Rc::clone(adapter);
-        let weak = window.as_weak();
-        window.on_settings_board_selected(move |id| {
-            let Some(window) = weak.upgrade() else { return };
-            adapter.borrow_mut().settings_board_selected(&window, &id);
+        install_seam!(window: window.on_settings_board_selected, adapter: adapter;
+        bind mut (a, window), args (id), {            a.settings_board_selected(&window, &id);
+
         });
     }
     {
-        let adapter = Rc::clone(adapter);
-        let weak = window.as_weak();
-        window.on_settings_bind_clicked(move |row| {
-            let Some(window) = weak.upgrade() else { return };
-            let Ok(row) = usize::try_from(row) else {
+        install_seam!(window: window.on_settings_bind_clicked, adapter: adapter;
+        bind mut (a, window), args (row), {            let Ok(row) = usize::try_from(row) else {
                 return;
             };
-            adapter.borrow_mut().settings_bind_row(&window, row);
+            a.settings_bind_row(&window, row);
+
         });
     }
     {
-        let adapter = Rc::clone(adapter);
-        let weak = window.as_weak();
-        window.on_settings_detach_selected(move || {
-            let Some(window) = weak.upgrade() else { return };
-            adapter.borrow_mut().settings_detach_selected(&window);
+        install_seam!(window: window.on_settings_detach_selected, adapter: adapter;
+        bind mut (a, window), args (), {            a.settings_detach_selected(&window);
+
         });
     }
     {
-        let adapter = Rc::clone(adapter);
-        let weak = window.as_weak();
-        window.on_settings_preset_picked(move |index| {
-            let Some(window) = weak.upgrade() else { return };
-            let Ok(index) = usize::try_from(index) else {
+        install_seam!(window: window.on_settings_preset_picked, adapter: adapter;
+        bind mut (a, window), args (index), {            let Ok(index) = usize::try_from(index) else {
                 return;
             };
-            adapter.borrow_mut().settings_preset_picked(&window, index);
+            a.settings_preset_picked(&window, index);
+
         });
     }
     {
-        let adapter = Rc::clone(adapter);
-        let weak = window.as_weak();
-        window.on_settings_view_mounted(move || {
-            let Some(window) = weak.upgrade() else { return };
-            adapter.borrow_mut().settings_view_mounted(&window);
+        install_seam!(window: window.on_settings_view_mounted, adapter: adapter;
+        bind mut (a, window), args (), {            a.settings_view_mounted(&window);
+
         });
     }
     {
-        let adapter = Rc::clone(adapter);
-        let weak = window.as_weak();
-        window.on_settings_scale_committed(move |text| {
-            let Some(window) = weak.upgrade() else { return };
-            adapter
-                .borrow_mut()
+        install_seam!(window: window.on_settings_scale_committed, adapter: adapter;
+        bind mut (a, window), args (text), {            a
                 .settings_scale_committed(&window, &text);
+
         });
     }
     {
-        let adapter = Rc::clone(adapter);
-        let weak = window.as_weak();
-        window.on_settings_scale_pressed(move || {
-            let Some(window) = weak.upgrade() else { return };
-            adapter.borrow_mut().settings_scale_pressed(&window);
+        install_seam!(window: window.on_settings_scale_pressed, adapter: adapter;
+        bind mut (a, window), args (), {            a.settings_scale_pressed(&window);
+
         });
     }
     {
-        let adapter = Rc::clone(adapter);
-        let weak = window.as_weak();
-        window.on_settings_scale_released(move |value: f32| {
-            let Some(window) = weak.upgrade() else { return };
-            adapter
-                .borrow_mut()
+        install_seam!(window: window.on_settings_scale_released, adapter: adapter;
+        bind mut (a, window), args (value: f32), {            a
                 .settings_scale_released(&window, f64::from(value));
+
         });
     }
     {
-        let adapter = Rc::clone(adapter);
-        let weak = window.as_weak();
-        window.on_settings_scale_focus_lost(move || {
-            let Some(window) = weak.upgrade() else { return };
-            adapter.borrow_mut().settings_scale_focus_lost(&window);
+        install_seam!(window: window.on_settings_scale_focus_lost, adapter: adapter;
+        bind mut (a, window), args (), {            a.settings_scale_focus_lost(&window);
+
         });
     }
     // The settings editor's general seams (the GUI settings editor
     // chunk): the same weak-handle wiring shape, one block per seam.
     {
-        let adapter = Rc::clone(adapter);
-        let weak = window.as_weak();
-        window.on_settings_general_committed(move |field, text| {
-            let Some(window) = weak.upgrade() else { return };
-            let Ok(field) = usize::try_from(field) else {
+        install_seam!(window: window.on_settings_general_committed, adapter: adapter;
+        bind mut (a, window), args (field, text), {            let Ok(field) = usize::try_from(field) else {
                 return;
             };
-            adapter
-                .borrow_mut()
+            a
                 .settings_general_committed(&window, field, &text);
+
         });
     }
     {
-        let adapter = Rc::clone(adapter);
-        let weak = window.as_weak();
-        window.on_settings_general_focus_lost(move |field| {
-            let Some(window) = weak.upgrade() else { return };
-            let Ok(field) = usize::try_from(field) else {
+        install_seam!(window: window.on_settings_general_focus_lost, adapter: adapter;
+        bind mut (a, window), args (field), {            let Ok(field) = usize::try_from(field) else {
                 return;
             };
-            adapter
-                .borrow_mut()
+            a
                 .settings_general_focus_lost(&window, field);
+
         });
     }
     {
-        let adapter = Rc::clone(adapter);
-        let weak = window.as_weak();
-        window.on_settings_reminders_picked(move |index| {
-            let Some(window) = weak.upgrade() else { return };
-            let Ok(index) = usize::try_from(index) else {
+        install_seam!(window: window.on_settings_reminders_picked, adapter: adapter;
+        bind mut (a, window), args (index), {            let Ok(index) = usize::try_from(index) else {
                 return;
             };
-            adapter
-                .borrow_mut()
+            a
                 .settings_reminders_picked(&window, index);
+
         });
     }
     {
-        let adapter = Rc::clone(adapter);
-        let weak = window.as_weak();
-        window.on_settings_sink_picked(move |index| {
-            let Some(window) = weak.upgrade() else { return };
-            let Ok(index) = usize::try_from(index) else {
+        install_seam!(window: window.on_settings_sink_picked, adapter: adapter;
+        bind mut (a, window), args (index), {            let Ok(index) = usize::try_from(index) else {
                 return;
             };
-            adapter.borrow_mut().settings_sink_picked(&window, index);
+            a.settings_sink_picked(&window, index);
+
         });
     }
 }
