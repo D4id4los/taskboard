@@ -4590,7 +4590,7 @@ impl Adapter {
 /// the same evidence form — do not grow arms ad hoc.
 macro_rules! install_seam {
     (window: $window:ident . $on:ident, adapter: $adapter:expr;
-     bind ($a:ident, $w:ident), args ($($arg:tt)*), $body:block) => {{
+     bind mut ($a:ident, $w:ident), args ($($arg:tt)*), $body:block) => {{
         let seam_adapter = ::std::rc::Rc::clone($adapter);
         let seam_weak = $window.as_weak();
         $window.$on(move |$($arg)*| {
@@ -4601,8 +4601,24 @@ macro_rules! install_seam {
             $body
         });
     }};
-    (window: $window:ident . $on:ident, adapter: $adapter:expr; [else ($guard_return:expr)]
+    // the non-mut spelling of the default arm: one occupant
+    // (on_task_done_toggled — the guard-check drift site; its body
+    // only reads through the borrow, and its original binding was
+    // non-mut)
+    (window: $window:ident . $on:ident, adapter: $adapter:expr;
      bind ($a:ident, $w:ident), args ($($arg:tt)*), $body:block) => {{
+        let seam_adapter = ::std::rc::Rc::clone($adapter);
+        let seam_weak = $window.as_weak();
+        $window.$on(move |$($arg)*| {
+            let Some($w) = seam_weak.upgrade() else {
+                return;
+            };
+            let $a = seam_adapter.borrow_mut();
+            $body
+        });
+    }};
+    (window: $window:ident . $on:ident, adapter: $adapter:expr; [else ($guard_return:expr)]
+     bind mut ($a:ident, $w:ident), args ($($arg:tt)*), $body:block) => {{
         let seam_adapter = ::std::rc::Rc::clone($adapter);
         let seam_weak = $window.as_weak();
         $window.$on(move |$($arg)*| {
@@ -4614,7 +4630,7 @@ macro_rules! install_seam {
         });
     }};
     (window: $window:ident . $on:ident, adapter: $adapter:expr; [bare_mut]
-     bind ($a:ident), args ($($arg:tt)*), $body:block) => {{
+     bind mut ($a:ident), args ($($arg:tt)*), $body:block) => {{
         let seam_adapter = ::std::rc::Rc::clone($adapter);
         $window.$on(move |$($arg)*| {
             let mut $a = seam_adapter.borrow_mut();
@@ -4630,7 +4646,7 @@ macro_rules! install_seam {
         });
     }};
     (window: $window:ident . $on:ident, adapter: $adapter:expr; [try]
-     bind ($a:ident, $w:ident), args ($($arg:tt)*), $body:block) => {{
+     bind mut ($a:ident, $w:ident), args ($($arg:tt)*), $body:block) => {{
         let seam_adapter = ::std::rc::Rc::clone($adapter);
         let seam_weak = $window.as_weak();
         $window.$on(move |$($arg)*| {
@@ -5226,7 +5242,7 @@ fn install_recur_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
 /// stamps.
 fn install_habit_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     install_seam!(window: window.on_habits_plus_clicked, adapter: adapter;
-    bind (a, window), args (index), {        let Some(habit) = a
+    bind mut (a, window), args (index), {        let Some(habit) = a
         .tables
         .habits
         .get(usize::try_from(index).unwrap_or(usize::MAX))
@@ -5240,7 +5256,7 @@ fn install_habit_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     });
 
     install_seam!(window: window.on_habits_reorder_asked, adapter: adapter;
-    bind (a, window), args (row, slot), {        let Some(&habit) = a
+    bind mut (a, window), args (row, slot), {        let Some(&habit) = a
         .tables
         .habits
         .get(usize::try_from(row).unwrap_or(usize::MAX))
@@ -5283,7 +5299,7 @@ fn install_habit_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
 /// `board_target` precedent).
 fn install_stack_width_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     install_seam!(window: window.on_board_stack_width_press, adapter: adapter;
-    bind (a, window), args (column), {        let Ok(column) = usize::try_from(column) else {
+    bind mut (a, window), args (column), {        let Ok(column) = usize::try_from(column) else {
         return;
     };
     let Some(&left) = a.tables.stack_ids.get(column) else {
@@ -5317,7 +5333,7 @@ fn install_stack_width_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>)
 
     });
     install_seam!(window: window.on_board_stack_width_drag, adapter: adapter;
-    bind (a, window), args (column, delta), {        let Ok(column) = usize::try_from(column) else {
+    bind mut (a, window), args (column, delta), {        let Ok(column) = usize::try_from(column) else {
         return;
     };
     let Some((left, right, base)) = a.width_drag else {
@@ -5358,7 +5374,7 @@ fn install_stack_width_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>)
 
     });
     install_seam!(window: window.on_board_stack_width_release, adapter: adapter;
-    bind (a, _window), args (column), {        let Ok(_column) = usize::try_from(column) else {
+    bind mut (a, _window), args (column), {        let Ok(_column) = usize::try_from(column) else {
         return;
     };
     // Persist on release only (the drag path never sends): one
@@ -5401,7 +5417,7 @@ fn install_drag_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // stack. A stale (column, row) against an older tables pass is
     // absorbed (the `focus_board_card` precedent).
     install_seam!(window: window.on_board_card_drag_armed, adapter: adapter;
-    bind (a, window), args (column, row), {        let (Ok(column), Ok(row)) = (usize::try_from(column), usize::try_from(row)) else {
+    bind mut (a, window), args (column, row), {        let (Ok(column), Ok(row)) = (usize::try_from(column), usize::try_from(row)) else {
         return;
     };
     if a.view_state.flow() != &Flow::None {
@@ -5422,7 +5438,7 @@ fn install_drag_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // crosses to Rust, D-E). Resolves the column against the id
     // tables and reports the target; inert without the drag flow.
     install_seam!(window: window.on_board_drag_hovered, adapter: adapter;
-    bind (a, window), args (column), {        let Ok(column) = usize::try_from(column) else {
+    bind mut (a, window), args (column), {        let Ok(column) = usize::try_from(column) else {
         return;
     };
     let Flow::DragMove { .. } = a.view_state.flow() else {
@@ -5442,7 +5458,7 @@ fn install_drag_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // `MoveTask` the keyboard flow confirms (D-F, equivalence by
     // construction; the journey pins the command).
     install_seam!(window: window.on_board_card_dropped, adapter: adapter;
-    bind (a, window), args (column), {        let Ok(column) = usize::try_from(column) else {
+    bind mut (a, window), args (column), {        let Ok(column) = usize::try_from(column) else {
         return;
     };
     let Flow::DragMove { .. } = a.view_state.flow() else {
@@ -5476,7 +5492,7 @@ fn install_drag_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // absorbed here — the view-state flow is already gone, which the
     // flow guard would assert anyway.
     install_seam!(window: window.on_board_card_drag_finished, adapter: adapter; [try]
-    bind (a, window), args (column, row, _completed), {        let _ = (column, row);
+    bind mut (a, window), args (column, row, _completed), {        let _ = (column, row);
     // Round 3 (R2, F8): the `completed` early-out is gone — the
     // handler settles whenever the flow is still armed,
     // `completed` or not. `completed == true` with the flow still
@@ -5503,7 +5519,7 @@ fn install_drag_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
 /// projection reads is the real one on every open.
 fn install_toolbar_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     install_seam!(window: window.on_toolbar_menu_clicked, adapter: adapter;
-    bind (a, window), args (), {        if a.shell.menu.open {
+    bind mut (a, window), args (), {        if a.shell.menu.open {
         // The toggle is a full close from any level (round-1 D6).
         a.apply_effect(&window, UiEffect::CloseMenu);
     } else {
@@ -5514,7 +5530,7 @@ fn install_toolbar_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // The inbox chip's click routes `view.inbox` (§7.1: every click
     // has an action equivalent; chunk 10 D9).
     install_seam!(window: window.on_toolbar_inbox_clicked, adapter: adapter;
-    bind (a, window), args (), {        a.route(&window, ActionId::ViewInbox);
+    bind mut (a, window), args (), {        a.route(&window, ActionId::ViewInbox);
 
     });
     // The view switcher's clicks (round-3 D22): each routes the same
@@ -5522,11 +5538,11 @@ fn install_toolbar_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // applies unchanged (a switcher click under a live flow settles
     // it first, the `FocusBoard` precedent).
     install_seam!(window: window.on_toolbar_switcher_board_clicked, adapter: adapter;
-    bind (a, window), args (), {        a.route(&window, ActionId::NavFocusBoard);
+    bind mut (a, window), args (), {        a.route(&window, ActionId::NavFocusBoard);
 
     });
     install_seam!(window: window.on_toolbar_switcher_today_clicked, adapter: adapter;
-    bind (a, window), args (), {        a.route(&window, ActionId::ViewToday);
+    bind mut (a, window), args (), {        a.route(&window, ActionId::ViewToday);
 
     });
 }
@@ -5537,7 +5553,7 @@ fn install_menu_dismiss_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>)
     // An outside click is a full dismissal, not a level-up
     // (round-1 D6: `CloseMenu`, the layer and the toggle share it).
     install_seam!(window: window.on_menu_dismiss_requested, adapter: adapter;
-        bind (a, window), args (), {
+        bind mut (a, window), args (), {
         a.apply_effect(&window, UiEffect::CloseMenu);
     });
 }
@@ -5593,7 +5609,7 @@ impl Adapter {
 /// A board card's right click (round-1 D13): resolve, focus, open.
 fn install_board_context_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     install_seam!(window: window.on_board_task_context_requested, adapter: adapter;
-    bind (a, window), args (column, row, x, y), {        let (Ok(column), Ok(row)) = (usize::try_from(column), usize::try_from(row)) else {
+    bind mut (a, window), args (column, row, x, y), {        let (Ok(column), Ok(row)) = (usize::try_from(column), usize::try_from(row)) else {
         return;
     };
     settle_pointer_conflict(&mut a, &window);
@@ -5610,7 +5626,7 @@ fn install_board_context_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
 /// A stack-detail card's right click (round-1 D13).
 fn install_stack_context_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     install_seam!(window: window.on_stack_task_context_requested, adapter: adapter;
-    bind (a, window), args (row, x, y), {        let Ok(row) = usize::try_from(row) else {
+    bind mut (a, window), args (row, x, y), {        let Ok(row) = usize::try_from(row) else {
         return;
     };
     settle_pointer_conflict(&mut a, &window);
@@ -5633,12 +5649,12 @@ fn install_stack_context_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
 /// activation/context seams route through the action layer's verbs.
 fn install_today_row_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     install_seam!(window: window.on_today_row_clicked, adapter: adapter;
-    bind (a, window), args (section, row), {        settle_pointer_conflict(&mut a, &window);
+    bind mut (a, window), args (section, row), {        settle_pointer_conflict(&mut a, &window);
     focus_today_row(&mut a, &window, section, row);
 
     });
     install_seam!(window: window.on_today_row_activated, adapter: adapter;
-    bind (a, window), args (section, row), {        settle_pointer_conflict(&mut a, &window);
+    bind mut (a, window), args (section, row), {        settle_pointer_conflict(&mut a, &window);
     if focus_today_row(&mut a, &window, section, row).is_some() {
         a.route(&window, ActionId::TaskEdit);
     }
@@ -5659,14 +5675,14 @@ fn install_today_row_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // row through the tracked-today table and opens the task — the
     // today-row-activated arm verbatim (click ≡ key, §7.1).
     install_seam!(window: window.on_today_tracked_activated, adapter: adapter;
-    bind (a, window), args (row), {        settle_pointer_conflict(&mut a, &window);
+    bind mut (a, window), args (row), {        settle_pointer_conflict(&mut a, &window);
     if focus_tracked_today_row(&mut a, &window, row).is_some() {
         a.route(&window, ActionId::TaskEdit);
     }
 
     });
     install_seam!(window: window.on_today_row_context_requested, adapter: adapter;
-    bind (a, window), args (section, row, x, y), {        settle_pointer_conflict(&mut a, &window);
+    bind mut (a, window), args (section, row, x, y), {        settle_pointer_conflict(&mut a, &window);
     if focus_today_row(&mut a, &window, section, row).is_some() {
         a.open_task_context_menu(&window, x, y);
     }
@@ -5736,11 +5752,11 @@ fn open_stack_context(a: &mut Adapter, window: &AppWindow, column: i32, x: f32, 
 /// they cannot drift from the header's pair.
 fn install_body_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     install_seam!(window: window.on_board_body_context_requested, adapter: adapter;
-    bind (a, window), args (column, x, y), {        open_stack_context(&mut a, &window, column, x, y);
+    bind mut (a, window), args (column, x, y), {        open_stack_context(&mut a, &window, column, x, y);
 
     });
     install_seam!(window: window.on_board_body_activated, adapter: adapter;
-    bind (a, window), args (column), {        select_column(&mut a, &window, column);
+    bind mut (a, window), args (column), {        select_column(&mut a, &window, column);
 
     });
 }
@@ -5754,7 +5770,7 @@ fn install_object_context_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter
     // The stack header (the regular header and the compact switcher's
     // segments share the callback).
     install_seam!(window: window.on_board_header_context_requested, adapter: adapter;
-    bind (a, window), args (column, x, y), {        open_stack_context(&mut a, &window, column, x, y);
+    bind mut (a, window), args (column, x, y), {        open_stack_context(&mut a, &window, column, x, y);
 
     });
     // The stack card's bare surface (r3 D4): context on right-down,
@@ -5762,7 +5778,7 @@ fn install_object_context_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter
     install_body_seams(window, adapter);
     // The board-bar segment.
     install_seam!(window: window.on_board_segment_context_requested, adapter: adapter;
-    bind (a, window), args (index, x, y), {        let Ok(index) = usize::try_from(index) else {
+    bind mut (a, window), args (index, x, y), {        let Ok(index) = usize::try_from(index) else {
         return;
     };
     settle_pointer_conflict(&mut a, &window);
@@ -5778,35 +5794,35 @@ fn install_object_context_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter
     // The stack-rename field (per-column; the flow names the stack —
     // the mirror only needs the buffer, the commit resolves the flow).
     install_seam!(window: window.on_board_stack_rename_edited, adapter: adapter; [bare_mut]
-    bind (a), args (_column, text), {        a
+    bind mut (a), args (_column, text), {        a
         .view_state
         .set_buffer(text.to_string());
 
     });
     install_seam!(window: window.on_board_stack_rename_committed, adapter: adapter;
-    bind (a, window), args (_column, text), {        commit_text(&mut a, &window, &text);
+    bind mut (a, window), args (_column, text), {        commit_text(&mut a, &window, &text);
 
     });
     // The board create/rename fields: the window-level slot's
     // mirror/commit seams (the create-row pattern).
     install_seam!(window: window.on_board_create_field_edited, adapter: adapter; [bare_mut]
-    bind (a), args (text), {        a
+    bind mut (a), args (text), {        a
         .view_state
         .set_buffer(text.to_string());
 
     });
     install_seam!(window: window.on_board_create_field_committed, adapter: adapter;
-    bind (a, window), args (text), {        commit_text(&mut a, &window, &text);
+    bind mut (a, window), args (text), {        commit_text(&mut a, &window, &text);
 
     });
     install_seam!(window: window.on_board_rename_field_edited, adapter: adapter; [bare_mut]
-    bind (a), args (text), {        a
+    bind mut (a), args (text), {        a
         .view_state
         .set_buffer(text.to_string());
 
     });
     install_seam!(window: window.on_board_rename_field_committed, adapter: adapter;
-    bind (a, window), args (text), {        commit_text(&mut a, &window, &text);
+    bind mut (a, window), args (text), {        commit_text(&mut a, &window, &text);
 
     });
 }
@@ -5816,7 +5832,7 @@ fn install_object_context_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter
 /// method, not a registry action (closing is not a routable intent).
 fn install_settings_back_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     install_seam!(window: window.on_settings_back_clicked, adapter: adapter;
-    bind (a, window), args (), {        Adapter::dismiss_tooltip(&window);
+    bind mut (a, window), args (), {        Adapter::dismiss_tooltip(&window);
     let outcomes = a.view_state.close_settings();
     a.apply_outcomes(&window, &outcomes);
     a.sync_view_context();
@@ -5830,7 +5846,7 @@ fn install_settings_back_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
 /// view-state semantics.
 fn install_task_back_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     install_seam!(window: window.on_task_back_clicked, adapter: adapter;
-    bind (a, window), args (), {        a.route(&window, ActionId::NavFocusBoard);
+    bind mut (a, window), args (), {        a.route(&window, ActionId::NavFocusBoard);
 
     });
 }
@@ -5842,7 +5858,7 @@ fn install_task_back_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
 /// absorbed silently.
 fn install_board_bar_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     install_seam!(window: window.on_board_bar_segment_activated, adapter: adapter;
-    bind (a, window), args (index), {        let Ok(index) = usize::try_from(index) else {
+    bind mut (a, window), args (index), {        let Ok(index) = usize::try_from(index) else {
         return;
     };
     settle_pointer_conflict(&mut a, &window);
@@ -5860,14 +5876,14 @@ fn install_board_bar_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
 /// flow's field mirrors/commits like every other text flow (D9).
 fn install_stack_create_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     install_seam!(window: window.on_board_new_stack_clicked, adapter: adapter;
-    bind (a, window), args (), {        settle_pointer_conflict(&mut a, &window);
+    bind mut (a, window), args (), {        settle_pointer_conflict(&mut a, &window);
     a.route(&window, ActionId::StackCreate);
 
     });
     // The empty-board preset CTA (r3 D5): the direct command dispatch
     // — no text flow, the flow machine untouched.
     install_seam!(window: window.on_board_default_preset_clicked, adapter: adapter;
-    bind (a, window), args (), {        let state = a.state.load_full();
+    bind mut (a, window), args (), {        let state = a.state.load_full();
     let outcomes = a
         .view_state
         .apply_board_preset(&state, &crate::board_presets::DEFAULT_KANBAN);
@@ -5875,11 +5891,11 @@ fn install_stack_create_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
 
     });
     install_seam!(window: window.on_board_stack_create_edited, adapter: adapter; [bare_mut]
-    bind (a), args (text), {        a.view_state.set_buffer(text.to_string());
+    bind mut (a), args (text), {        a.view_state.set_buffer(text.to_string());
 
     });
     install_seam!(window: window.on_board_stack_create_committed, adapter: adapter;
-    bind (a, window), args (text), {        commit_text(&mut a, &window, &text);
+    bind mut (a, window), args (text), {        commit_text(&mut a, &window, &text);
 
     });
 }
@@ -5906,11 +5922,11 @@ fn install_board_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // only, §7.1 mouse discipline); activation routes `task.edit`
     // after it.
     install_seam!(window: window.on_board_task_clicked, adapter: adapter;
-    bind (a, window), args (column, row), {        focus_board_card(&mut a, &window, column, row);
+    bind mut (a, window), args (column, row), {        focus_board_card(&mut a, &window, column, row);
 
     });
     install_seam!(window: window.on_board_task_activated, adapter: adapter;
-    bind (a, window), args (column, row), {        if focus_board_card(&mut a, &window, column, row).is_some() {
+    bind mut (a, window), args (column, row), {        if focus_board_card(&mut a, &window, column, row).is_some() {
         a.route(&window, ActionId::TaskEdit);
     }
 
@@ -5919,11 +5935,11 @@ fn install_board_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // Header and switcher activation are the same selection move (D8:
     // one mechanism per breakpoint; D13: no stack management in UI).
     install_seam!(window: window.on_board_header_activated, adapter: adapter;
-    bind (a, window), args (column), {        select_column(&mut a, &window, column);
+    bind mut (a, window), args (column), {        select_column(&mut a, &window, column);
 
     });
     install_seam!(window: window.on_board_switcher_activated, adapter: adapter;
-    bind (a, window), args (column), {        select_column(&mut a, &window, column);
+    bind mut (a, window), args (column), {        select_column(&mut a, &window, column);
 
     });
 
@@ -5931,7 +5947,7 @@ fn install_board_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // route task.create — the keyboard's exact action, so click ≡ key
     // by construction (one action, one target-resolution rule).
     install_seam!(window: window.on_board_add_task_activated, adapter: adapter;
-    bind (a, window), args (column), {        select_column(&mut a, &window, column);
+    bind mut (a, window), args (column), {        select_column(&mut a, &window, column);
     settle_pointer_conflict(&mut a, &window);
     // The clicked column IS the create target (r4 D4): resolved
     // through the id tables (the D2 index-only convention — a
@@ -5952,7 +5968,7 @@ fn install_board_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // local checked state exists anywhere: the refresh push is the
     // single writer of `TaskCardModel.done`.
     install_seam!(window: window.on_board_task_done_toggled, adapter: adapter;
-    bind (a, window), args (column, row), {        settle_pointer_conflict(&mut a, &window);
+    bind mut (a, window), args (column, row), {        settle_pointer_conflict(&mut a, &window);
     let (Ok(column), Ok(row)) = (usize::try_from(column), usize::try_from(row)) else {
         return;
     };
@@ -5966,12 +5982,12 @@ fn install_board_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // The create-row field: keystrokes mirror into the Rust buffer
     // (D9 rule 1); Return commits.
     install_seam!(window: window.on_board_create_edited, adapter: adapter; [bare_mut]
-    bind (a), args (column, text), {        let _ = column;
+    bind mut (a), args (column, text), {        let _ = column;
     a.view_state.set_buffer(text.to_string());
 
     });
     install_seam!(window: window.on_board_create_committed, adapter: adapter;
-    bind (a, window), args (column, text), {        let _ = column;
+    bind mut (a, window), args (column, text), {        let _ = column;
     commit_text(&mut a, &window, &text);
 
     });
@@ -6047,53 +6063,53 @@ fn install_stack_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // A card click: focus the row's task (selection state only, §7.1);
     // activation routes `task.edit` after it.
     install_seam!(window: window.on_stack_task_clicked, adapter: adapter;
-    bind (a, window), args (row), {        activate_stack_row(&mut a, &window, row);
+    bind mut (a, window), args (row), {        activate_stack_row(&mut a, &window, row);
 
     });
     install_seam!(window: window.on_stack_task_activated, adapter: adapter;
-    bind (a, window), args (row), {        activate_stack_row(&mut a, &window, row);
+    bind mut (a, window), args (row), {        activate_stack_row(&mut a, &window, row);
     a.route(&window, ActionId::TaskEdit);
 
     });
 
     install_seam!(window: window.on_stack_create_edited, adapter: adapter; [bare_mut]
-    bind (a), args (text), {        a.view_state.set_buffer(text.to_string());
+    bind mut (a), args (text), {        a.view_state.set_buffer(text.to_string());
 
     });
 
     // The search palette (#348): per-keystroke re-rank, outside-click
     // close, and row activation sharing the keyboard Activate path.
     install_seam!(window: window.on_palette_query_edited, adapter: adapter;
-    bind (a, window), args (text), {        a.apply_palette_query(&window, &text);
+    bind mut (a, window), args (text), {        a.apply_palette_query(&window, &text);
 
     });
     // Quick capture (chunk 10 D8): the buffer mirror, the Return
     // commit (keeps the flow), and the scrim's discard-and-close
     // (routed through the action layer's ModeNormal semantics).
     install_seam!(window: window.on_capture_text_edited, adapter: adapter; [bare_mut]
-    bind (a), args (text), {        a.view_state.set_buffer(text.to_string());
+    bind mut (a), args (text), {        a.view_state.set_buffer(text.to_string());
 
     });
     install_seam!(window: window.on_capture_accepted, adapter: adapter;
-    bind (a, window), args (), {        let outcomes = a.view_state.commit_capture();
+    bind mut (a, window), args (), {        let outcomes = a.view_state.commit_capture();
     a.apply_outcomes(&window, &outcomes);
     a.finish_mutation(&window);
 
     });
     install_seam!(window: window.on_capture_dismiss_requested, adapter: adapter;
-    bind (a, window), args (), {        let outcomes = a.view_state.close_capture();
+    bind mut (a, window), args (), {        let outcomes = a.view_state.close_capture();
     a.apply_outcomes(&window, &outcomes);
     a.finish_mutation(&window);
 
     });
     install_seam!(window: window.on_palette_dismiss_requested, adapter: adapter;
-    bind (a, window), args (), {        let outcomes = a.view_state.close_palette();
+    bind mut (a, window), args (), {        let outcomes = a.view_state.close_palette();
     a.apply_outcomes(&window, &outcomes);
     a.finish_mutation(&window);
 
     });
     install_seam!(window: window.on_palette_row_activated, adapter: adapter;
-    bind (a, window), args (index), {        let target = a
+    bind mut (a, window), args (index), {        let target = a
         .tables
         .palette
         .get(usize::try_from(index).unwrap_or(usize::MAX))
@@ -6108,7 +6124,7 @@ fn install_stack_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
 
     });
     install_seam!(window: window.on_stack_create_committed, adapter: adapter;
-    bind (a, window), args (text), {        commit_text(&mut a, &window, &text);
+    bind mut (a, window), args (text), {        commit_text(&mut a, &window, &text);
 
     });
 }
@@ -6146,21 +6162,21 @@ fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // can never mask a legitimate settle (a genuine focus move
     // happens outside any borrow, where the borrow succeeds).
     install_seam!(window: window.on_text_flow_focus_lost, adapter: adapter; [try]
-    bind (a, window), args (), {        let state = a.state.load_full();
+    bind mut (a, window), args (), {        let state = a.state.load_full();
     a.settle_flow(&window, &state);
 
     });
     install_seam!(window: window.on_task_title_edit_activated, adapter: adapter;
-    bind (a, window), args (), {        a
+    bind mut (a, window), args (), {        a
         .route(&window, ActionId::TaskTitleEdit);
 
     });
     install_seam!(window: window.on_task_title_edited, adapter: adapter; [bare_mut]
-    bind (a), args (text), {        a.view_state.set_buffer(text.to_string());
+    bind mut (a), args (text), {        a.view_state.set_buffer(text.to_string());
 
     });
     install_seam!(window: window.on_task_title_committed, adapter: adapter;
-    bind (a, window), args (text), {        commit_text(&mut a, &window, &text);
+    bind mut (a, window), args (text), {        commit_text(&mut a, &window, &text);
 
     });
 
@@ -6171,7 +6187,7 @@ fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // buffer read (the funnel re-reads the view-state buffer, kept
     // current by the edited seam).
     install_seam!(window: window.on_task_description_edit_opened, adapter: adapter;
-    bind (a, window), args (), {        settle_pointer_conflict(&mut a, &window);
+    bind mut (a, window), args (), {        settle_pointer_conflict(&mut a, &window);
     let state = a.state.load_full();
     let Some(task) = a.view_state.subject_task() else {
         return;
@@ -6181,19 +6197,19 @@ fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
 
     });
     install_seam!(window: window.on_task_description_edited, adapter: adapter; [bare_mut]
-    bind (a), args (text), {        a
+    bind mut (a), args (text), {        a
         .view_state
         .set_buffer(text.to_string());
 
     });
     install_seam!(window: window.on_task_description_committed, adapter: adapter;
-    bind (a, window), args (_text), {        let outcomes = a.view_state.commit_description();
+    bind mut (a, window), args (_text), {        let outcomes = a.view_state.commit_description();
     a.apply_outcomes(&window, &outcomes);
 
     });
 
     install_seam!(window: window.on_task_rule_remove_clicked, adapter: adapter;
-    bind (a, window), args (index), {        let Some(rule) = a
+    bind mut (a, window), args (index), {        let Some(rule) = a
         .tables
         .task_rules
         .get(usize::try_from(index).unwrap_or(usize::MAX))
@@ -6207,7 +6223,7 @@ fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     });
 
     install_seam!(window: window.on_rule_add_preset_clicked, adapter: adapter;
-    bind (a, window), args (index), {        let Some(dur) = crate::presentation::RULE_PRESETS
+    bind mut (a, window), args (index), {        let Some(dur) = crate::presentation::RULE_PRESETS
         .get(usize::try_from(index).unwrap_or(usize::MAX))
         .copied()
     else {
@@ -6221,7 +6237,7 @@ fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     });
 
     install_seam!(window: window.on_rule_add_custom_accepted, adapter: adapter; [else ( false)]
-    bind (a, window), args (text), {        // A parse miss dispatches nothing (absorbed — D12): the UI
+    bind mut (a, window), args (text), {        // A parse miss dispatches nothing (absorbed — D12): the UI
     // owns no error chrome; the CLI owns typed failures. The miss
     // rides the seam's return (r2 D24): the composition clears its
     // own buffer, so the field never looks stuck. The three-form
@@ -6242,7 +6258,7 @@ fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     });
 
     install_seam!(window: window.on_rule_offset_edited, adapter: adapter;
-    bind (a, window), args (text), {        a.rule_offset_draft = text.to_string();
+    bind mut (a, window), args (text), {        a.rule_offset_draft = text.to_string();
     a.refresh_forced(&window);
 
     });
@@ -6263,7 +6279,7 @@ fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
 /// from `ViInsert` regardless).
 fn install_picker_grid_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     install_seam!(window: window.on_date_picker_grid_focus_changed, adapter: adapter;
-    bind (a, window), args (focused: bool), {        a.shell.date_picker_grid = focused;
+    bind mut (a, window), args (focused: bool), {        a.shell.date_picker_grid = focused;
     // The mirror rides with the seam (the Down-in-field path
     // lands here without a `sync` around it).
     window
@@ -6276,7 +6292,7 @@ fn install_picker_grid_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) 
 #[allow(clippy::too_many_lines)] // the r2 D25 seam family, kept flat
 fn install_due_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     install_seam!(window: window.on_task_due_edit_opened, adapter: adapter;
-    bind (a, window), args (), {        begin_date_edit(&mut a, &window, crate::view_state::DateField::Due);
+    bind mut (a, window), args (), {        begin_date_edit(&mut a, &window, crate::view_state::DateField::Due);
 
     });
 
@@ -6285,7 +6301,7 @@ fn install_due_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // metadata row's due-edit seam under a second name, no new focus
     // plumbing (chunk 6's machinery arms from there).
     install_seam!(window: window.on_task_rule_jump_to_due_clicked, adapter: adapter;
-    bind (a, window), args (), {        begin_date_edit(&mut a, &window, crate::view_state::DateField::Due);
+    bind mut (a, window), args (), {        begin_date_edit(&mut a, &window, crate::view_state::DateField::Due);
 
     });
 
@@ -6293,17 +6309,17 @@ fn install_due_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // target (the section always names its subject), the banner's
     // one-shot machinery is not needed.
     install_seam!(window: window.on_task_rule_unmute_clicked, adapter: adapter;
-    bind (a, window), args (), {        a.route(&window, ActionId::ReminderUnmute);
+    bind mut (a, window), args (), {        a.route(&window, ActionId::ReminderUnmute);
 
     });
 
     install_seam!(window: window.on_task_scheduled_edit_opened, adapter: adapter;
-    bind (a, window), args (), {        begin_date_edit(&mut a, &window, crate::view_state::DateField::Scheduled);
+    bind mut (a, window), args (), {        begin_date_edit(&mut a, &window, crate::view_state::DateField::Scheduled);
 
     });
 
     install_seam!(window: window.on_task_date_edited, adapter: adapter;
-    bind (a, window), args (text), {        a.due_buffer = text.to_string();
+    bind mut (a, window), args (text), {        a.due_buffer = text.to_string();
     a.due_echo = crate::due_edit::echo(&a.due_buffer, chrono::Utc::now(), &chrono::Local);
     // The Buffer-source live sync (r4 D25): a parseable buffer
     // re-seeds the picker per keystroke (the field wins while
@@ -6328,7 +6344,7 @@ fn install_due_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     });
 
     install_seam!(window: window.on_task_date_accepted, adapter: adapter;
-    bind (a, window), args (text), {        match crate::due_edit::parse(&text, chrono::Utc::now(), &chrono::Local) {
+    bind mut (a, window), args (text), {        match crate::due_edit::parse(&text, chrono::Utc::now(), &chrono::Local) {
         // A refusal keeps the buffer and dispatches nothing.
         Err(crate::due_edit::DueParseError) => {}
         parsed => commit_date(&mut a, &window, parsed.expect("non-error parse")),
@@ -6337,7 +6353,7 @@ fn install_due_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     });
 
     install_seam!(window: window.on_task_date_picker_toggled, adapter: adapter;
-    bind (a, window), args (), {        if a.due_picker.take().is_some() {
+    bind mut (a, window), args (), {        if a.due_picker.take().is_some() {
         a.refresh_forced(&window);
     } else {
         a.open_due_picker(&window, false);
@@ -6346,7 +6362,7 @@ fn install_due_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     });
 
     install_seam!(window: window.on_task_date_picker_key, adapter: adapter;
-    bind (a, window), args (code), {        // The click seams carry the widget's int code space; the
+    bind mut (a, window), args (code), {        // The click seams carry the widget's int code space; the
     // registry actions arrive as typed `PickerKey` effects on the
     // same function (round-3 D25: one implementation, two
     // dispatch sites).
@@ -6358,7 +6374,7 @@ fn install_due_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     });
 
     install_seam!(window: window.on_date_picker_dismiss_requested, adapter: adapter;
-    bind (a, window), args (), {        // Outside click (r4 D24, superseding the round-3 D10
+    bind mut (a, window), args (), {        // Outside click (r4 D24, superseding the round-3 D10
     // picker-only rule): the editor settles per the rule —
     // parseable commits, empty/junk discards — and the picker
     // drops with it. In the picker phase the buffer mirrors the
@@ -6372,12 +6388,12 @@ fn install_due_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     });
 
     install_seam!(window: window.on_date_editor_focus_lost, adapter: adapter;
-    bind (a, window), args (), {        settle_date_editor(&mut a, &window);
+    bind mut (a, window), args (), {        settle_date_editor(&mut a, &window);
 
     });
 
     install_seam!(window: window.on_task_date_time_edited, adapter: adapter;
-    bind (a, window), args (text), {        // The field's value echo seeds its buffer ("--:--" while no
+    bind mut (a, window), args (text), {        // The field's value echo seeds its buffer ("--:--" while no
     // time exists), so the first keystroke's text carries it as a
     // prefix — strip the echo, keep the typed digits.
     let mut text = text.to_string();
@@ -6398,7 +6414,7 @@ fn install_due_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     });
 
     install_seam!(window: window.on_task_date_time_picked, adapter: adapter;
-    bind (a, window), args (minutes), {        let Some(time) = crate::due_edit::time_of_minutes(minutes) else {
+    bind mut (a, window), args (minutes), {        let Some(time) = crate::due_edit::time_of_minutes(minutes) else {
         return;
     };
     let Some(picker) = a.due_picker.as_mut() else {
@@ -6415,7 +6431,7 @@ fn install_due_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     });
 
     install_seam!(window: window.on_task_date_time_accepted, adapter: adapter;
-    bind (a, window), args (text), {        match crate::due_edit::parse_time_lenient(&text) {
+    bind mut (a, window), args (text), {        match crate::due_edit::parse_time_lenient(&text) {
         // A refusal keeps the typed text — the validity flavour
         // makes it visible — and dispatches nothing.
         None => {
@@ -6443,7 +6459,7 @@ fn install_due_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     });
 
     install_seam!(window: window.on_task_date_day_clicked, adapter: adapter;
-    bind (a, window), args (cell), {        let Some(picker) = a.due_picker.as_ref() else {
+    bind mut (a, window), args (cell), {        let Some(picker) = a.due_picker.as_ref() else {
         return;
     };
     let Some(date) = picker
@@ -6702,7 +6718,7 @@ fn banner_row(adapter: &Adapter, index: i32) -> Option<crate::presentation::Bann
 /// target and route the registry actions.
 fn install_banner_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     install_seam!(window: window.on_banner_row_activated, adapter: adapter;
-    bind (a, window), args (index), {        let Some(banner_row) = banner_row(&a, index) else {
+    bind mut (a, window), args (index), {        let Some(banner_row) = banner_row(&a, index) else {
         return;
     };
     a.view_state.set_focused(Some(banner_row.task));
@@ -6712,7 +6728,7 @@ fn install_banner_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     });
 
     install_seam!(window: window.on_banner_snooze_clicked, adapter: adapter;
-    bind (a, window), args (index), {        let Some(banner_row) = banner_row(&a, index) else {
+    bind mut (a, window), args (index), {        let Some(banner_row) = banner_row(&a, index) else {
         return;
     };
     a.reminder_target = Some(banner_row.target);
@@ -6721,7 +6737,7 @@ fn install_banner_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     });
 
     install_seam!(window: window.on_banner_mute_clicked, adapter: adapter;
-    bind (a, window), args (index), {        let Some(banner_row) = banner_row(&a, index) else {
+    bind mut (a, window), args (index), {        let Some(banner_row) = banner_row(&a, index) else {
         return;
     };
     a.reminder_target = Some(banner_row.target);
@@ -6763,88 +6779,69 @@ fn send_toggled_done(adapter: &Adapter, task: taskboard_domain::TaskId) {
 /// (the existing `ViewToday` action — no new `UiEffect`).
 #[allow(clippy::too_many_lines)] // the seam bundle: one block per intent, no second parser
 fn install_timer_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
-    let when_edited = Rc::clone(adapter);
-    let when_edited_weak = window.as_weak();
-    window.on_timers_when_edited(move |text| {
-        let Some(window) = when_edited_weak.upgrade() else {
-            return;
-        };
-        let mut a = when_edited.borrow_mut();
-        a.timer_when_draft = text.to_string();
-        a.refresh_forced(&window);
+    install_seam!(window: window.on_timers_when_edited, adapter: adapter;
+    bind mut (a, window), args (text), {        a.timer_when_draft = text.to_string();
+    a.refresh_forced(&window);
+
     });
 
-    let create = Rc::clone(adapter);
-    let create_weak = window.as_weak();
-    window.on_timers_create_accepted(move |label, when_text, alarm_rung| {
-        let Some(window) = create_weak.upgrade() else {
-            return false;
-        };
-        let mut a = create.borrow_mut();
-        // A whitespace-empty label dispatches nothing (D-P14): the raw
-        // label never gets rewritten, an empty one never reaches the
-        // engine.
-        if label.trim().is_empty() {
-            return false;
-        }
-        // A parse miss keeps the timing text (the rule-add seam's
-        // return convention; the UI owns no error chrome). The tz is
-        // the untested glue edge — the CLI's "only the edge reads
-        // Local" shape.
-        let Some(when) =
-            crate::presentation::parse_timer_when(&when_text, a.day_ctx().now, &chrono::Local)
-        else {
-            return false;
-        };
-        // Both outcomes clear the field — the validity draft follows.
-        a.timer_when_draft.clear();
-        // The rung rides the seam's structural bool (r4 D-T7): the
-        // two-rung enum's alarm bit, minted at this trust boundary.
-        let insistence = if alarm_rung {
-            taskboard_domain::Insistence::Alarm
-        } else {
-            taskboard_domain::Insistence::Normal
-        };
-        a.timer_draft = Some(crate::router::TimerDraft {
-            label: label.into(),
-            when,
-            insistence,
-        });
-        a.route(&window, ActionId::TimerCreate);
-        true
+    install_seam!(window: window.on_timers_create_accepted, adapter: adapter; [else ( false)]
+    bind mut (a, window), args (label, when_text, alarm_rung), {        // A whitespace-empty label dispatches nothing (D-P14): the raw
+    // label never gets rewritten, an empty one never reaches the
+    // engine.
+    if label.trim().is_empty() {
+        return false;
+    }
+    // A parse miss keeps the timing text (the rule-add seam's
+    // return convention; the UI owns no error chrome). The tz is
+    // the untested glue edge — the CLI's "only the edge reads
+    // Local" shape.
+    let Some(when) =
+        crate::presentation::parse_timer_when(&when_text, a.day_ctx().now, &chrono::Local)
+    else {
+        return false;
+    };
+    // Both outcomes clear the field — the validity draft follows.
+    a.timer_when_draft.clear();
+    // The rung rides the seam's structural bool (r4 D-T7): the
+    // two-rung enum's alarm bit, minted at this trust boundary.
+    let insistence = if alarm_rung {
+        taskboard_domain::Insistence::Alarm
+    } else {
+        taskboard_domain::Insistence::Normal
+    };
+    a.timer_draft = Some(crate::router::TimerDraft {
+        label: label.into(),
+        when,
+        insistence,
+    });
+    a.route(&window, ActionId::TimerCreate);
+    true
+
     });
 
-    let cancel = Rc::clone(adapter);
-    let cancel_weak = window.as_weak();
-    window.on_timers_cancel_clicked(move |index| {
-        let Some(window) = cancel_weak.upgrade() else {
-            return;
-        };
-        let mut a = cancel.borrow_mut();
-        // A stale index degrades to a no-op (the notification_row
-        // guard shape).
-        let Some(alarm) = a
-            .tables
-            .timers
-            .get(usize::try_from(index).unwrap_or(usize::MAX))
-            .copied()
-        else {
-            return;
-        };
-        a.timer_target = Some(alarm);
-        a.route(&window, ActionId::TimerCancel);
+    install_seam!(window: window.on_timers_cancel_clicked, adapter: adapter;
+    bind mut (a, window), args (index), {        // A stale index degrades to a no-op (the notification_row
+    // guard shape).
+    let Some(alarm) = a
+        .tables
+        .timers
+        .get(usize::try_from(index).unwrap_or(usize::MAX))
+        .copied()
+    else {
+        return;
+    };
+    a.timer_target = Some(alarm);
+    a.route(&window, ActionId::TimerCancel);
+
     });
 
     // The chip click focuses the today view: the section sits
     // top-of-page (D-P18), so the existing FocusToday lands it
     // visibly (D-P2).
-    let chip = Rc::clone(adapter);
-    let chip_weak = window.as_weak();
-    window.on_timers_chip_clicked(move || {
-        let Some(window) = chip_weak.upgrade() else {
-            return;
-        };
-        chip.borrow_mut().route(&window, ActionId::ViewToday);
+    install_seam!(window: window.on_timers_chip_clicked, adapter: adapter;
+    bind mut (a, window), args (), {        a.route(&window, ActionId::ViewToday);
+
     });
 
     // The mouse setter's seams (r4 D33): open/dismiss flip the window
@@ -6853,107 +6850,74 @@ fn install_timer_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // composer; the commit funnels through `timers-create-accepted` —
     // the popover adds zero parse paths (the one-parser grep
     // contract). Quick presets are quick-fill, not auto-commit (D-T6).
-    let open = Rc::clone(adapter);
-    let open_weak = window.as_weak();
-    window.on_timers_setter_opened(move || {
-        let Some(window) = open_weak.upgrade() else {
-            return;
-        };
-        window.set_timer_setter_open(true);
-        open.borrow_mut().refresh_forced(&window);
-        // The focus hand-off lands after the mount pass (the
-        // date-picker's changed-focus idiom; an init grab alone is
-        // dropped on a fresh conditional mount).
-        let nonce = window.get_timer_setter_focus_nonce();
-        window.set_timer_setter_focus_nonce(nonce.wrapping_add(1));
+    install_seam!(window: window.on_timers_setter_opened, adapter: adapter;
+    bind mut (a, window), args (), {        window.set_timer_setter_open(true);
+    a.refresh_forced(&window);
+    // The focus hand-off lands after the mount pass (the
+    // date-picker's changed-focus idiom; an init grab alone is
+    // dropped on a fresh conditional mount).
+    let nonce = window.get_timer_setter_focus_nonce();
+    window.set_timer_setter_focus_nonce(nonce.wrapping_add(1));
+
     });
-    let dismiss = Rc::clone(adapter);
-    let dismiss_weak = window.as_weak();
-    window.on_timer_setter_dismiss_requested(move || {
-        let Some(window) = dismiss_weak.upgrade() else {
-            return;
-        };
-        dismiss.borrow_mut().clear_timer_setter();
-        window.set_timer_setter_open(false);
+    install_seam!(window: window.on_timer_setter_dismiss_requested, adapter: adapter;
+    bind mut (a, window), args (), {        a.clear_timer_setter();
+    window.set_timer_setter_open(false);
+
     });
-    let preset = Rc::clone(adapter);
-    let preset_weak = window.as_weak();
-    window.on_timer_setter_preset_picked(move |index| {
-        let Some(window) = preset_weak.upgrade() else {
-            return;
-        };
-        let Some(minutes) = crate::presentation::TIMER_PRESETS_MIN
-            .get(usize::try_from(index).unwrap_or(usize::MAX))
-        else {
-            return;
-        };
-        let mut a = preset.borrow_mut();
-        let text = crate::presentation::preset_when_text(*minutes);
-        a.setter_composed = Some(text.clone());
-        a.setter_fire = chrono::TimeDelta::try_minutes(i64::from(*minutes))
-            .and_then(|step| a.day_ctx().now.checked_add_signed(step));
-        a.timer_when_draft = text;
-        a.refresh_forced(&window);
+    install_seam!(window: window.on_timer_setter_preset_picked, adapter: adapter;
+    bind mut (a, window), args (index), {        let Some(minutes) = crate::presentation::TIMER_PRESETS_MIN
+        .get(usize::try_from(index).unwrap_or(usize::MAX))
+    else {
+        return;
+    };
+    let text = crate::presentation::preset_when_text(*minutes);
+    a.setter_composed = Some(text.clone());
+    a.setter_fire = chrono::TimeDelta::try_minutes(i64::from(*minutes))
+        .and_then(|step| a.day_ctx().now.checked_add_signed(step));
+    a.timer_when_draft = text;
+    a.refresh_forced(&window);
+
     });
-    let time_edited = Rc::clone(adapter);
-    let time_edited_weak = window.as_weak();
-    window.on_timer_setter_time_edited(move |text| {
-        let Some(window) = time_edited_weak.upgrade() else {
-            return;
-        };
-        let mut a = time_edited.borrow_mut();
-        a.setter_time_text = text.to_string();
-        a.setter_time = crate::due_edit::parse_time_lenient(&text);
-        a.recompose_timer_setter();
-        a.refresh_forced(&window);
+    install_seam!(window: window.on_timer_setter_time_edited, adapter: adapter;
+    bind mut (a, window), args (text), {        a.setter_time_text = text.to_string();
+    a.setter_time = crate::due_edit::parse_time_lenient(&text);
+    a.recompose_timer_setter();
+    a.refresh_forced(&window);
+
     });
-    let time_stepped = Rc::clone(adapter);
-    let time_stepped_weak = window.as_weak();
-    window.on_timer_setter_time_stepped(move |n| {
-        let Some(window) = time_stepped_weak.upgrade() else {
-            return;
-        };
-        let mut a = time_stepped.borrow_mut();
-        // Seed-on-step (r4 D23's semantics): an unset time anchors at
-        // midnight first — the first `+` yields 00:15, the first `−`
-        // wraps to 23:45. The wrap stays within the picked day (the
-        // day offset is an explicit choice; the step never flips it).
-        let time = a.setter_time.unwrap_or(chrono::NaiveTime::MIN);
-        let stepped = crate::due_edit::step_minutes(time, n);
-        a.setter_time = Some(stepped);
-        a.setter_time_text = crate::due_edit::format_time_hm(stepped);
-        a.recompose_timer_setter();
-        a.refresh_forced(&window);
+    install_seam!(window: window.on_timer_setter_time_stepped, adapter: adapter;
+    bind mut (a, window), args (n), {        // Seed-on-step (r4 D23's semantics): an unset time anchors at
+    // midnight first — the first `+` yields 00:15, the first `−`
+    // wraps to 23:45. The wrap stays within the picked day (the
+    // day offset is an explicit choice; the step never flips it).
+    let time = a.setter_time.unwrap_or(chrono::NaiveTime::MIN);
+    let stepped = crate::due_edit::step_minutes(time, n);
+    a.setter_time = Some(stepped);
+    a.setter_time_text = crate::due_edit::format_time_hm(stepped);
+    a.recompose_timer_setter();
+    a.refresh_forced(&window);
+
     });
-    let time_picked = Rc::clone(adapter);
-    let time_picked_weak = window.as_weak();
-    window.on_timer_setter_time_picked(move |minutes| {
-        let Some(window) = time_picked_weak.upgrade() else {
-            return;
-        };
-        let Some(time) = crate::due_edit::time_of_minutes(minutes) else {
-            return;
-        };
-        let mut a = time_picked.borrow_mut();
-        a.setter_time = Some(time);
-        a.setter_time_text = crate::due_edit::format_time_hm(time);
-        a.recompose_timer_setter();
-        a.refresh_forced(&window);
+    install_seam!(window: window.on_timer_setter_time_picked, adapter: adapter;
+    bind mut (a, window), args (minutes), {        let Some(time) = crate::due_edit::time_of_minutes(minutes) else {
+        return;
+    };
+    a.setter_time = Some(time);
+    a.setter_time_text = crate::due_edit::format_time_hm(time);
+    a.recompose_timer_setter();
+    a.refresh_forced(&window);
+
     });
-    let day = Rc::clone(adapter);
-    let day_weak = window.as_weak();
-    window.on_timer_setter_day_picked(move |index| {
-        let Some(window) = day_weak.upgrade() else {
-            return;
-        };
-        let mut a = day.borrow_mut();
-        a.setter_day_offset = u32::try_from(index).unwrap_or(0);
-        a.recompose_timer_setter();
-        a.refresh_forced(&window);
+    install_seam!(window: window.on_timer_setter_day_picked, adapter: adapter;
+    bind mut (a, window), args (index), {        a.setter_day_offset = u32::try_from(index).unwrap_or(0);
+    a.recompose_timer_setter();
+    a.refresh_forced(&window);
+
     });
-    let insist = Rc::clone(adapter);
-    window.on_timer_setter_insist_picked(move |index| {
-        insist.borrow_mut().setter_insist = index == 1;
+    install_seam!(window: window.on_timer_setter_insist_picked, adapter: adapter; [bare_mut]
+    bind mut (a), args (index), {        a.setter_insist = index == 1;
+
     });
     let commit = Rc::clone(adapter);
     let commit_weak = window.as_weak();
@@ -7017,31 +6981,19 @@ fn apply_time(
 
 #[allow(clippy::too_many_lines)] // one seam per callback, kept flat
 fn install_tracking_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
-    let chip = Rc::clone(adapter);
-    let chip_weak = window.as_weak();
-    window.on_tracking_chip_stop_clicked(move || {
-        let Some(window) = chip_weak.upgrade() else {
-            return;
-        };
-        chip.borrow_mut().route(&window, ActionId::TaskTrackStop);
+    install_seam!(window: window.on_tracking_chip_stop_clicked, adapter: adapter;
+    bind mut (a, window), args (), {        a.route(&window, ActionId::TaskTrackStop);
+
     });
 
-    let start = Rc::clone(adapter);
-    let start_weak = window.as_weak();
-    window.on_task_track_start_clicked(move || {
-        let Some(window) = start_weak.upgrade() else {
-            return;
-        };
-        start.borrow_mut().route(&window, ActionId::TaskTrackStart);
+    install_seam!(window: window.on_task_track_start_clicked, adapter: adapter;
+    bind mut (a, window), args (), {        a.route(&window, ActionId::TaskTrackStart);
+
     });
 
-    let stop = Rc::clone(adapter);
-    let stop_weak = window.as_weak();
-    window.on_task_track_stop_clicked(move || {
-        let Some(window) = stop_weak.upgrade() else {
-            return;
-        };
-        stop.borrow_mut().route(&window, ActionId::TaskTrackStop);
+    install_seam!(window: window.on_task_track_stop_clicked, adapter: adapter;
+    bind mut (a, window), args (), {        a.route(&window, ActionId::TaskTrackStop);
+
     });
 
     // The entries overlay's open affordance (r4 chunk 10, D-TS8):
@@ -7050,32 +7002,22 @@ fn install_tracking_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // precedent; the subject is not guaranteed focused). The open
     // arm's kiosk/subject refusals are the interpret arms'
     // dispatch-time gating.
-    let entries = Rc::clone(adapter);
-    let entries_weak = window.as_weak();
-    window.on_task_track_entries_clicked(move || {
-        let Some(window) = entries_weak.upgrade() else {
-            return;
-        };
-        let mut a = entries.borrow_mut();
-        a.track_target = a.view_state.subject_task();
-        a.route(&window, ActionId::TaskTrackEntries);
+    install_seam!(window: window.on_task_track_entries_clicked, adapter: adapter;
+    bind mut (a, window), args (), {        a.track_target = a.view_state.subject_task();
+    a.route(&window, ActionId::TaskTrackEntries);
+
     });
 
     // The dismissal layer's seam (D-TS1): an outside click is a
     // ladder step (form → list; list → close) — the view-state
     // machine resolves it; the armed delete clears with the overlay
     // (the state-truth rule — nothing ticks).
-    let dismiss = Rc::clone(adapter);
-    let dismiss_weak = window.as_weak();
-    window.on_track_entries_dismiss_requested(move || {
-        let Some(window) = dismiss_weak.upgrade() else {
-            return;
-        };
-        let mut a = dismiss.borrow_mut();
-        a.track_entry_target = None;
-        let outcomes = a.view_state.step_back_track_entries();
-        a.apply_outcomes(&window, &outcomes);
-        a.finish_mutation(&window);
+    install_seam!(window: window.on_track_entries_dismiss_requested, adapter: adapter;
+    bind mut (a, window), args (), {        a.track_entry_target = None;
+    let outcomes = a.view_state.step_back_track_entries();
+    a.apply_outcomes(&window, &outcomes);
+    a.finish_mutation(&window);
+
     });
 
     // The armed delete (D-TS5): the first activate arms (the adapter
@@ -7084,179 +7026,139 @@ fn install_tracking_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // one-shot target into the existing `DeleteTimeEntry`. Disarm
     // rides the push (a dropped row or a closed overlay renders
     // unarmed) and the dismissal seam (state-truth, nothing ticks).
-    let del = Rc::clone(adapter);
-    let del_weak = window.as_weak();
-    window.on_track_entry_delete_clicked(move |index| {
-        let Some(window) = del_weak.upgrade() else {
-            return;
-        };
-        let mut a = del.borrow_mut();
-        let Some(entry) = a
-            .tables
-            .track_entries
-            .get(usize::try_from(index).unwrap_or(usize::MAX))
-            .copied()
-        else {
-            return; // a stale index
-        };
-        if a.track_entry_target == Some(entry) {
-            // The confirm: the target fills the one-shot ctx and the
-            // router dispatches; the overlay stays open (the
-            // multi-delete posture — the row vanishes on refresh).
-            a.route(&window, ActionId::TaskTrackEntryDelete);
-        } else {
-            a.track_entry_target = Some(entry);
-            a.refresh_forced(&window);
-        }
+    install_seam!(window: window.on_track_entry_delete_clicked, adapter: adapter;
+    bind mut (a, window), args (index), {        let Some(entry) = a
+        .tables
+        .track_entries
+        .get(usize::try_from(index).unwrap_or(usize::MAX))
+        .copied()
+    else {
+        return; // a stale index
+    };
+    if a.track_entry_target == Some(entry) {
+        // The confirm: the target fills the one-shot ctx and the
+        // router dispatches; the overlay stays open (the
+        // multi-delete posture — the row vanishes on refresh).
+        a.route(&window, ActionId::TaskTrackEntryDelete);
+    } else {
+        a.track_entry_target = Some(entry);
+        a.refresh_forced(&window);
+    }
+
     });
 
     // The add seam (D-TS4): opens the unseeded form over the subject;
     // the seeding lands in the same window as row-activation's.
-    let add = Rc::clone(adapter);
-    let add_weak = window.as_weak();
-    window.on_track_form_add_requested(move || {
-        let Some(window) = add_weak.upgrade() else {
-            return;
-        };
-        let mut a = add.borrow_mut();
-        let Some(subject) = a.view_state.subject_task() else {
-            return;
-        };
-        let outcomes = a.view_state.open_track_entry_form(subject, None);
-        a.apply_outcomes(&window, &outcomes);
-        a.finish_mutation(&window);
-        a.seed_track_form(None);
-        a.refresh_forced(&window);
+    install_seam!(window: window.on_track_form_add_requested, adapter: adapter;
+    bind mut (a, window), args (), {        let Some(subject) = a.view_state.subject_task() else {
+        return;
+    };
+    let outcomes = a.view_state.open_track_entry_form(subject, None);
+    a.apply_outcomes(&window, &outcomes);
+    a.finish_mutation(&window);
+    a.seed_track_form(None);
+    a.refresh_forced(&window);
+
     });
 
     // The form's seams (r4 D-TS4): every intent mutates the
     // adapter-owned state and refreshes — the widget renders what it
     // is pushed and reports what the user did (§5.1). The commit
     // rides the one funnel (`commit_track_form`).
-    let date = Rc::clone(adapter);
-    let date_weak = window.as_weak();
-    window.on_track_form_date_edited(move |text| {
-        let Some(window) = date_weak.upgrade() else {
-            return;
-        };
-        let mut a = date.borrow_mut();
-        if let Some(form) = a.track_form.as_mut() {
-            form.date_text = text.to_string();
-        }
-        a.refresh_forced(&window);
+    install_seam!(window: window.on_track_form_date_edited, adapter: adapter;
+    bind mut (a, window), args (text), {        if let Some(form) = a.track_form.as_mut() {
+        form.date_text = text.to_string();
+    }
+    a.refresh_forced(&window);
+
     });
-    let grid = Rc::clone(adapter);
-    let grid_weak = window.as_weak();
-    window.on_track_form_grid_toggled(move || {
-        let Some(window) = grid_weak.upgrade() else {
-            return;
-        };
-        let mut a = grid.borrow_mut();
-        let Some(form) = a.track_form.as_mut() else {
-            return;
-        };
-        if form.picker.is_some() {
-            form.picker = None;
-        } else {
-            let anchor = chrono::NaiveDate::parse_from_str(&form.date_text, "%Y-%m-%d").ok();
-            let anchor = anchor.and_then(|d| {
-                use chrono::TimeZone as _;
-                chrono::Local
-                    .from_local_datetime(&d.and_hms_opt(12, 0, 0).expect("noon"))
-                    .single()
-                    .map(|local| local.with_timezone(&chrono::Utc))
-            });
-            form.picker = Some(crate::due_edit::DuePickerState::open(
-                chrono::Local::now().date_naive(),
-                anchor,
-                &chrono::Local,
-            ));
-        }
-        a.refresh_forced(&window);
+    install_seam!(window: window.on_track_form_grid_toggled, adapter: adapter;
+    bind mut (a, window), args (), {        let Some(form) = a.track_form.as_mut() else {
+        return;
+    };
+    if form.picker.is_some() {
+        form.picker = None;
+    } else {
+        let anchor = chrono::NaiveDate::parse_from_str(&form.date_text, "%Y-%m-%d").ok();
+        let anchor = anchor.and_then(|d| {
+            use chrono::TimeZone as _;
+            chrono::Local
+                .from_local_datetime(&d.and_hms_opt(12, 0, 0).expect("noon"))
+                .single()
+                .map(|local| local.with_timezone(&chrono::Utc))
+        });
+        form.picker = Some(crate::due_edit::DuePickerState::open(
+            chrono::Local::now().date_naive(),
+            anchor,
+            &chrono::Local,
+        ));
+    }
+    a.refresh_forced(&window);
+
     });
-    let grid_key = Rc::clone(adapter);
-    let grid_key_weak = window.as_weak();
-    window.on_track_form_grid_key(move |code| {
-        use crate::due_edit::DatePickerKey as K;
-        let Some(window) = grid_key_weak.upgrade() else {
-            return;
-        };
-        let mut a = grid_key.borrow_mut();
+    install_seam!(window: window.on_track_form_grid_key, adapter: adapter;
+    bind mut (a, window), args (code), {        use crate::due_edit::DatePickerKey as K;
         let Some(key) = crate::due_edit::DatePickerKey::from_code(code) else {
-            return;
-        };
-        let Some(form) = a.track_form.as_mut() else {
-            return;
-        };
-        let Some(picker) = form.picker.as_mut() else {
-            return; // a stale stroke against a closed grid
-        };
-        match key {
-            K::Left => picker.move_days(-1),
-            K::Right => picker.move_days(1),
-            K::Up => picker.move_days(-7),
-            K::Down => picker.move_days(7),
-            K::PrevMonth => picker.move_months(-1),
-            K::NextMonth => picker.move_months(1),
-            K::MonthStart => picker.month_edge(true),
-            K::MonthEnd => picker.month_edge(false),
-            // The grid's Enter hands focus to the date field (the
-            // due grid's phase hand-over); the commit is the click's
-            // or the typed field's.
-            K::Commit | K::TimeBack | K::TimeForward => {}
-        }
-        a.refresh_forced(&window);
+        return;
+    };
+    let Some(form) = a.track_form.as_mut() else {
+        return;
+    };
+    let Some(picker) = form.picker.as_mut() else {
+        return; // a stale stroke against a closed grid
+    };
+    match key {
+        K::Left => picker.move_days(-1),
+        K::Right => picker.move_days(1),
+        K::Up => picker.move_days(-7),
+        K::Down => picker.move_days(7),
+        K::PrevMonth => picker.move_months(-1),
+        K::NextMonth => picker.move_months(1),
+        K::MonthStart => picker.month_edge(true),
+        K::MonthEnd => picker.month_edge(false),
+        // The grid's Enter hands focus to the date field (the
+        // due grid's phase hand-over); the commit is the click's
+        // or the typed field's.
+        K::Commit | K::TimeBack | K::TimeForward => {}
+    }
+    a.refresh_forced(&window);
+
     });
-    let day = Rc::clone(adapter);
-    let day_weak = window.as_weak();
-    window.on_track_form_day_clicked(move |cell| {
-        let Some(window) = day_weak.upgrade() else {
-            return;
-        };
-        let mut a = day.borrow_mut();
-        let Some(date) = a
-            .track_form
-            .as_ref()
-            .and_then(|f| f.picker.as_ref())
-            .and_then(|picker| {
-                picker
-                    .grid()
-                    .get(usize::try_from(cell).unwrap_or(usize::MAX))
-                    .and_then(|c| c.date)
-            })
-        else {
-            return; // a blank or a stale index
-        };
-        let form = a.track_form.as_mut().expect("checked above");
-        if let Some(picker) = form.picker.as_mut() {
-            picker.set_cursor(date);
-        }
-        form.date_text = date.format("%Y-%m-%d").to_string();
-        a.refresh_forced(&window);
+    install_seam!(window: window.on_track_form_day_clicked, adapter: adapter;
+    bind mut (a, window), args (cell), {        let Some(date) = a
+        .track_form
+        .as_ref()
+        .and_then(|f| f.picker.as_ref())
+        .and_then(|picker| {
+            picker
+                .grid()
+                .get(usize::try_from(cell).unwrap_or(usize::MAX))
+                .and_then(|c| c.date)
+        })
+    else {
+        return; // a blank or a stale index
+    };
+    let form = a.track_form.as_mut().expect("checked above");
+    if let Some(picker) = form.picker.as_mut() {
+        picker.set_cursor(date);
+    }
+    form.date_text = date.format("%Y-%m-%d").to_string();
+    a.refresh_forced(&window);
+
     });
-    let start_edit = Rc::clone(adapter);
-    let start_edit_weak = window.as_weak();
-    window.on_track_form_start_edited(move |text| {
-        let Some(window) = start_edit_weak.upgrade() else {
-            return;
-        };
-        let mut a = start_edit.borrow_mut();
-        if let Some(form) = a.track_form.as_mut() {
-            form.start_text = text.to_string();
-        }
-        a.refresh_forced(&window);
+    install_seam!(window: window.on_track_form_start_edited, adapter: adapter;
+    bind mut (a, window), args (text), {        if let Some(form) = a.track_form.as_mut() {
+        form.start_text = text.to_string();
+    }
+    a.refresh_forced(&window);
+
     });
-    let end_edit = Rc::clone(adapter);
-    let end_edit_weak = window.as_weak();
-    window.on_track_form_end_edited(move |text| {
-        let Some(window) = end_edit_weak.upgrade() else {
-            return;
-        };
-        let mut a = end_edit.borrow_mut();
-        if let Some(form) = a.track_form.as_mut() {
-            form.end_text = text.to_string();
-        }
-        a.refresh_forced(&window);
+    install_seam!(window: window.on_track_form_end_edited, adapter: adapter;
+    bind mut (a, window), args (text), {        if let Some(form) = a.track_form.as_mut() {
+        form.end_text = text.to_string();
+    }
+    a.refresh_forced(&window);
+
     });
     for (name, which, pick) in [
         ("start_stepped", 0u8, false),
@@ -7325,41 +7227,32 @@ fn install_tracking_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // the surface back to the list; `false` keeps the form open with
     // the invalid flavour (the absorbed-miss convention keeps the
     // typed text).
-    let commit = Rc::clone(adapter);
-    let commit_weak = window.as_weak();
-    window.on_track_form_commit_requested(move || {
-        let Some(window) = commit_weak.upgrade() else {
-            return false;
-        };
-        commit.borrow_mut().commit_track_form(&window)
+    install_seam!(window: window.on_track_form_commit_requested, adapter: adapter; [else ( false)]
+    bind mut (a, window), args (), {        a.commit_track_form(&window)
+
     });
 
     // The row-activate seam (D-TS3): opens the seeded edit form
     // (the commit funnel owns its Return); the seed resolves
     // through the id table (never a viewport offset).
-    let row = Rc::clone(adapter);
-    let row_weak = window.as_weak();
-    window.on_track_entry_row_activated(move |index| {
-        let Some(window) = row_weak.upgrade() else {
-            return;
-        };
-        let mut a = row.borrow_mut();
-        let Some(subject) = a.view_state.subject_task() else {
-            return;
-        };
-        let Some(entry) = a
-            .tables
-            .track_entries
-            .get(usize::try_from(index).unwrap_or(usize::MAX))
-            .copied()
-        else {
-            return;
-        };
-        let outcomes = a.view_state.open_track_entry_form(subject, Some(entry));
-        a.apply_outcomes(&window, &outcomes);
-        a.finish_mutation(&window);
-        a.seed_track_form(Some(entry));
-        a.refresh_forced(&window);
+    install_seam!(window: window.on_track_entry_row_activated, adapter: adapter;
+    bind mut (a, window), args (index), {        let Some(subject) = a.view_state.subject_task() else {
+        return;
+    };
+    let Some(entry) = a
+        .tables
+        .track_entries
+        .get(usize::try_from(index).unwrap_or(usize::MAX))
+        .copied()
+    else {
+        return;
+    };
+    let outcomes = a.view_state.open_track_entry_form(subject, Some(entry));
+    a.apply_outcomes(&window, &outcomes);
+    a.finish_mutation(&window);
+    a.seed_track_form(Some(entry));
+    a.refresh_forced(&window);
+
     });
 
     // The task view's done checkbox (r4 D16b/F15): raw-send the
@@ -7373,20 +7266,15 @@ fn install_tracking_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // `settle_pointer_conflict`: the board checkbox settles because
     // the board owns the capture-settle lane; the view's other clicks
     // don't settle and neither does this one.
-    let done = Rc::clone(adapter);
-    let done_weak = window.as_weak();
-    window.on_task_done_toggled(move || {
-        if done_weak.upgrade().is_none() {
-            return;
-        }
-        let a = done.borrow_mut();
-        let Some(task) = a.view_state.subject_task() else {
-            return;
-        };
-        if !a.state.load().tasks.contains_key(&task) {
-            return;
-        }
-        send_toggled_done(&a, task);
+    install_seam!(window: window.on_task_done_toggled, adapter: adapter;
+    bind (a, _window), args (), {            let Some(task) = a.view_state.subject_task() else {
+        return;
+    };
+    if !a.state.load().tasks.contains_key(&task) {
+        return;
+    }
+    send_toggled_done(&a, task);
+
     });
 }
 
@@ -7400,7 +7288,7 @@ fn install_focus_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // session (the open entry) is untouched by construction (the
     // close outcomes carry no command).
     install_seam!(window: window.on_focus_overlay_close_requested, adapter: adapter;
-    bind (a, window), args (), {        let outcomes = a.view_state.close_focus_mode();
+    bind mut (a, window), args (), {        let outcomes = a.view_state.close_focus_mode();
     a.apply_outcomes(&window, &outcomes);
     a.finish_mutation(&window);
 
@@ -7408,7 +7296,7 @@ fn install_focus_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
 
     // The quick-note mirror (the capture field's discipline).
     install_seam!(window: window.on_focus_note_edited, adapter: adapter; [bare_mut]
-    bind (a), args (text), {        a.view_state.set_buffer(text.to_string());
+    bind mut (a), args (text), {        a.view_state.set_buffer(text.to_string());
 
     });
 
@@ -7417,7 +7305,7 @@ fn install_focus_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // open (rapid-fire capture semantics; an empty commit is a no-op,
     // never a close).
     install_seam!(window: window.on_focus_note_accepted, adapter: adapter;
-    bind (a, window), args (), {        let thought = a.view_state.buffer().trim().to_owned();
+    bind mut (a, window), args (), {        let thought = a.view_state.buffer().trim().to_owned();
     if thought.is_empty() {
         return; // no-op: the overlay stays as it is
     }
@@ -7439,7 +7327,7 @@ fn install_focus_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // notification-row Start Task precedent — the router arm maps it
     // to `StartTracking { kind: Work }`).
     install_seam!(window: window.on_focus_switcher_invoked, adapter: adapter;
-    bind (a, window), args (index), {        let selected = usize::try_from(index).unwrap_or(usize::MAX);
+    bind mut (a, window), args (index), {        let selected = usize::try_from(index).unwrap_or(usize::MAX);
     let state = a.state.load();
     let Some(task) = crate::presentation::focus_switcher_rows(&state)
         .get(selected)
@@ -7456,7 +7344,7 @@ fn install_focus_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // stays open, showing the idle + switcher state (closing the
     // overlay and stopping the session are deliberately orthogonal).
     install_seam!(window: window.on_focus_stop_clicked, adapter: adapter;
-    bind (a, window), args (), {        a.route(&window, ActionId::TaskTrackStop);
+    bind mut (a, window), args (), {        a.route(&window, ActionId::TaskTrackStop);
 
     });
 }
@@ -7499,7 +7387,7 @@ fn install_notification_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
     // anchor mirrors the ref (task rows task-anchored; alarm rows
     // adhoc-anchored — mute has no button there anyway).
     install_seam!(window: window.on_notification_snooze_clicked, adapter: adapter;
-        bind (a, window), args (index), {
+        bind mut (a, window), args (index), {
         let Some(row) = notification_row(&a, index) else {
             return;
         };
@@ -7508,7 +7396,7 @@ fn install_notification_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
     });
 
     install_seam!(window: window.on_notification_mute_clicked, adapter: adapter;
-        bind (a, window), args (index), {
+        bind mut (a, window), args (index), {
         let Some(row) = notification_row(&a, index) else {
             return;
         };
@@ -7521,7 +7409,7 @@ fn install_notification_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
     // degrades to a no-op (the done-seam's guard shape); the row
     // disappears by derivation at the next refresh.
     install_seam!(window: window.on_notification_cancel_clicked, adapter: adapter;
-        bind (a, window), args (index), {
+        bind mut (a, window), args (index), {
         let Some(row) = notification_row(&a, index) else {
             return;
         };
@@ -7540,7 +7428,7 @@ fn install_notification_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
     // the done-seam's guard shape. The issue #210 reservation
     // resolves here.
     install_seam!(window: window.on_notification_track_start_clicked, adapter: adapter;
-        bind (a, window), args (index), {
+        bind mut (a, window), args (index), {
         let Some(row) = notification_row(&a, index) else {
             return;
         };
