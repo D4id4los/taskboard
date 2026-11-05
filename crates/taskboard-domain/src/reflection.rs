@@ -20,6 +20,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::days::{DayCalendar, window_start};
+use crate::habit::{PeriodKind, period_after, period_start};
 use crate::ids::ReflectionId;
 
 /// How wide the reviewed window is — which walk or verb produced the
@@ -408,6 +410,145 @@ pub const DEFAULT_TEMPLATES: &[ReflectionTemplate] = &[
     },
 ];
 
+/// The calendar-blind A1 mint the planner validates through (DR-7
+/// D-J6): private fields, `Copy`; windows enter command payloads as
+/// plain instants and cannot enter a row without passing
+/// [`ReviewWindow::try_new`].
+///
+/// # Minting vs. leniency
+///
+/// Validation is **structural only** — `end > start`, plus per-cadence
+/// length sanity (Day = 24h exactly, Week = 168h exactly; Month length
+/// varies, so only monotonicity is checkable calendar-free). The `day`
+/// label is taken on trust as mint input (the
+/// `WindowStart::from_stored`/D-H12 posture): the mint enforces nothing
+/// about the label — a non-Monday label on a week window is tolerated,
+/// because the label is data the caller owns, and the derivation
+/// ([`review_window`]) produces labels that satisfy the law by
+/// construction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReviewWindow {
+    cadence: ReviewCadence,
+    day: NaiveDate,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+}
+
+/// The window mint rejected the payload: the duration did not match the
+/// cadence's structural rule (or was not monotone at all).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("review window does not match its cadence")]
+pub struct InvalidReviewWindow;
+
+/// One day's duration (24h): the Day cadence's exact window length.
+const DAY: chrono::TimeDelta = chrono::TimeDelta::try_hours(24).unwrap();
+/// One ISO week's duration (168h): the Week cadence's exact length.
+const WEEK: chrono::TimeDelta = chrono::TimeDelta::try_hours(24 * 7).unwrap();
+
+impl ReviewWindow {
+    /// The mint: structural validation only, per the type doc.
+    ///
+    /// # Errors
+    ///
+    /// [`InvalidReviewWindow`] when `end <= start`, when a Day window is
+    /// not exactly 24h, or when a Week window is not exactly 168h. A
+    /// Month window needs only monotonicity (month lengths vary;
+    /// calendar-blindness is the ruling).
+    pub fn try_new(
+        cadence: ReviewCadence,
+        day: NaiveDate,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> Result<Self, InvalidReviewWindow> {
+        let span = end - start;
+        let ok = match cadence {
+            ReviewCadence::Day => span == DAY,
+            ReviewCadence::Week => span == WEEK,
+            ReviewCadence::Month => span > chrono::TimeDelta::zero(),
+        };
+        if ok {
+            Ok(Self {
+                cadence,
+                day,
+                start,
+                end,
+            })
+        } else {
+            Err(InvalidReviewWindow)
+        }
+    }
+
+    /// The window's cadence.
+    #[must_use]
+    pub const fn cadence(&self) -> ReviewCadence {
+        self.cadence
+    }
+
+    /// The window-date label (mint input, taken on trust).
+    #[must_use]
+    pub const fn day(&self) -> NaiveDate {
+        self.day
+    }
+
+    /// The window's opening instant.
+    #[must_use]
+    pub const fn start(&self) -> DateTime<Utc> {
+        self.start
+    }
+
+    /// The window's closing instant (exclusive).
+    #[must_use]
+    pub const fn end(&self) -> DateTime<Utc> {
+        self.end
+    }
+
+    /// The `(start, end)` pair the projections take.
+    #[must_use]
+    pub const fn bounds(&self) -> (DateTime<Utc>, DateTime<Utc>) {
+        (self.start, self.end)
+    }
+}
+
+/// The pure window derivation (DR-7 D-J8): floors `reference_date` to
+/// its cadence period in the given calendar and returns the half-open
+/// window `[period start, next period start)`.
+///
+/// One flooring implementation, two consumers (habits, review): the
+/// period flooring composes `habit::period_start`/`period_after` with
+/// `days::window_start` — no second flooring definition exists. Pure;
+/// `calendar` is data (the D-F6 consumer contract). Fixed offsets have
+/// no transitions, so the arithmetic is gap-free by construction.
+///
+/// Total for every representable reference date at least one period
+/// inside chrono's date range (the period-step arithmetic saturates
+/// only at chrono's extremes, the `period_after` documented leniency).
+///
+/// The output satisfies [`ReviewWindow::try_new`] by construction and
+/// `calendar.calendar_date(window.day())` equals the floored
+/// period-start date (the label law — both pinned by property).
+#[must_use]
+pub fn review_window(
+    cadence: ReviewCadence,
+    reference_date: NaiveDate,
+    calendar: DayCalendar,
+) -> ReviewWindow {
+    let kind = match cadence {
+        ReviewCadence::Day => PeriodKind::Day,
+        ReviewCadence::Week => PeriodKind::Week,
+        ReviewCadence::Month => PeriodKind::Month,
+    };
+    let floored = period_start(kind, reference_date);
+    let next = period_after(kind, floored);
+    let start = window_start(floored, calendar.day_start_time, calendar.offset);
+    let end = window_start(next, calendar.day_start_time, calendar.offset);
+    ReviewWindow {
+        cadence,
+        day: floored,
+        start,
+        end,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -426,7 +567,7 @@ mod tests {
         "good-day",
     ];
 
-    use chrono::TimeZone as _;
+    use chrono::{Datelike as _, FixedOffset, TimeZone as _};
 
     fn ts(secs: i64) -> DateTime<Utc> {
         chrono::Utc.timestamp_opt(secs, 0).unwrap()
@@ -655,8 +796,211 @@ mod tests {
         assert_eq!(state.entries.len(), 2, "the tombstone stays in the map");
     }
 
+    /// A bounded reference-date domain: every cadence's flooring
+    /// arithmetic stays a period inside chrono's representable range
+    /// (the derivation's documented totality posture).
+    fn reference_date() -> impl Strategy<Value = NaiveDate> {
+        (1_u64..=45_000_u64).prop_map(|days| {
+            NaiveDate::from_ymd_opt(1972, 1, 1)
+                .unwrap()
+                .checked_add_days(chrono::Days::new(days))
+                .unwrap()
+        })
+    }
+
+    /// The calendar domain: a few day-start times (midnight, the
+    /// night-owl 05:00, a late 23:00) across a few fixed offsets (UTC,
+    /// +2h, −9:30) — the days.rs property shapes.
+    fn calendar() -> impl Strategy<Value = DayCalendar> {
+        prop_oneof![
+            Just(DayCalendar {
+                day_start_time: chrono::NaiveTime::MIN,
+                offset: FixedOffset::east_opt(0).unwrap(),
+            }),
+            Just(DayCalendar {
+                day_start_time: chrono::NaiveTime::from_hms_opt(5, 0, 0).unwrap(),
+                offset: FixedOffset::east_opt(2 * 3600).unwrap(),
+            }),
+            Just(DayCalendar {
+                day_start_time: chrono::NaiveTime::from_hms_opt(23, 0, 0).unwrap(),
+                offset: FixedOffset::west_opt(9 * 3600 + 1800).unwrap(),
+            }),
+        ]
+    }
+
+    fn cadence() -> impl Strategy<Value = ReviewCadence> {
+        prop::sample::select(&[
+            ReviewCadence::Day,
+            ReviewCadence::Week,
+            ReviewCadence::Month,
+        ])
+    }
+
     proptest! {
         #![proptest_config(proptest_config(256))]
+
+        // ---- the window derivation battery (plan §5.1 items 1–6) ----
+
+        /// Day windows: exactly 24h, opening at the reference's own
+        /// window-start, labeled by the reference, containing it.
+        #[test]
+        fn day_windows_are_exact_and_labeled(
+            reference in reference_date(),
+            cal in calendar(),
+        ) {
+            let window = review_window(ReviewCadence::Day, reference, cal);
+            prop_assert_eq!(window.end() - window.start(), DAY);
+            prop_assert_eq!(window.start(), window_start(reference, cal.day_start_time, cal.offset));
+            prop_assert_eq!(cal.calendar_date(window.start()), reference, "label law");
+            prop_assert!(window.start() <= window_start(reference, cal.day_start_time, cal.offset)
+                && window_start(reference, cal.day_start_time, cal.offset) < window.end());
+        }
+
+        /// Week windows: exactly 168h, Monday-anchored; mid-week
+        /// references floor to the same window.
+        #[test]
+        fn week_windows_are_exact_monday_anchored_and_midweek_stable(
+            reference in reference_date(),
+            mid_week_shift in 0_u64..7,
+            cal in calendar(),
+        ) {
+            let floored = period_start(PeriodKind::Week, reference);
+            let mid_week = floored
+                .checked_add_days(chrono::Days::new(mid_week_shift))
+                .unwrap();
+            let window = review_window(ReviewCadence::Week, mid_week, cal);
+            prop_assert_eq!(window.end() - window.start(), WEEK);
+            prop_assert_eq!(
+                window.start(),
+                window_start(floored, cal.day_start_time, cal.offset)
+            );
+            // Monday-start: the label reads Monday in the offset
+            // calendar (chrono weekday, week starting Monday).
+            prop_assert_eq!(cal.calendar_date(window.start()).weekday(), chrono::Weekday::Mon);
+            prop_assert_eq!(
+                window,
+                review_window(ReviewCadence::Week, reference, cal),
+                "mid-week reference floors to the same window"
+            );
+        }
+
+        /// Month windows: bounded by day 1 and next month's day 1;
+        /// monotone across month lengths and leap years.
+        #[test]
+        fn month_windows_span_calendar_months(
+            reference in reference_date(),
+            cal in calendar(),
+        ) {
+            let floored = period_start(PeriodKind::Month, reference);
+            let next = period_after(PeriodKind::Month, floored);
+            let window = review_window(ReviewCadence::Month, reference, cal);
+            prop_assert_eq!(window.start(), window_start(floored, cal.day_start_time, cal.offset));
+            prop_assert_eq!(window.end(), window_start(next, cal.day_start_time, cal.offset));
+            prop_assert_eq!(cal.calendar_date(window.start()).day(), 1);
+            prop_assert!(window.end() > window.start(), "monotone across 28–31 day months");
+        }
+
+        /// Cadence-uniform pins: the derived window satisfies the mint
+        /// (composition law); equal inputs equal outputs; the day
+        /// derivation IS `day_window` — no second day-window definition.
+        #[test]
+        fn derived_windows_satisfy_the_mint_and_day_equals_day_window(
+            now in timestamp_strategy(),
+            reference in reference_date(),
+            cadence in cadence(),
+            cal in calendar(),
+        ) {
+            let window = review_window(cadence, reference, cal);
+            prop_assert_eq!(
+                ReviewWindow::try_new(cadence, window.day(), window.start(), window.end()),
+                Ok(window),
+                "composition law"
+            );
+            prop_assert_eq!(window, review_window(cadence, reference, cal), "determinism");
+            let day = review_window(ReviewCadence::Day, cal.today(now), cal);
+            prop_assert_eq!(day.bounds(), crate::days::day_window(now, cal.day_start_time, cal.offset));
+        }
+
+        /// The DST battery composes through the fixed-offset rule: the
+        /// derivation's bounds equal the plain `window_start`
+        /// composition at every transition-adjacent instant's date.
+        #[test]
+        fn dst_boundary_dates_compose_through_the_plain_composition(
+            stamp in proptest::sample::select(crate::test_support::dst_boundary_instants()),
+            cal in calendar(),
+            cadence in cadence(),
+        ) {
+            let reference = cal.calendar_date(stamp);
+            let window = review_window(cadence, reference, cal);
+            let floored = period_start(
+                match cadence {
+                    ReviewCadence::Day => PeriodKind::Day,
+                    ReviewCadence::Week => PeriodKind::Week,
+                    ReviewCadence::Month => PeriodKind::Month,
+                },
+                reference,
+            );
+            let next = period_after(
+                match cadence {
+                    ReviewCadence::Day => PeriodKind::Day,
+                    ReviewCadence::Week => PeriodKind::Week,
+                    ReviewCadence::Month => PeriodKind::Month,
+                },
+                floored,
+            );
+            prop_assert_eq!(window.start(), window_start(floored, cal.day_start_time, cal.offset));
+            prop_assert_eq!(window.end(), window_start(next, cal.day_start_time, cal.offset));
+        }
+
+        /// Mint rejections: inverted spans and wrong-duration windows
+        /// for Day and Week; a 400-day "month" span is accepted — the
+        /// documented calendar-blindness.
+        #[test]
+        fn mint_rejects_structurally_invalid_windows(
+            start in timestamp_strategy(),
+            day in reference_date(),
+        ) {
+            let hour = chrono::TimeDelta::try_hours(1).unwrap();
+            let end = start + DAY;
+            // Inverted / empty spans reject on every cadence.
+            for cadence in [ReviewCadence::Day, ReviewCadence::Week, ReviewCadence::Month] {
+                prop_assert_eq!(ReviewWindow::try_new(cadence, day, end, start), Err(InvalidReviewWindow));
+                prop_assert_eq!(ReviewWindow::try_new(cadence, day, start, start), Err(InvalidReviewWindow));
+            }
+            // Day must be exactly 24h; Week exactly 168h.
+            prop_assert_eq!(
+                ReviewWindow::try_new(ReviewCadence::Day, day, start, end + hour),
+                Err(InvalidReviewWindow)
+            );
+            prop_assert_eq!(
+                ReviewWindow::try_new(ReviewCadence::Day, day, start, end - hour),
+                Err(InvalidReviewWindow)
+            );
+            let week_end = start + WEEK;
+            prop_assert_eq!(
+                ReviewWindow::try_new(ReviewCadence::Week, day, start, week_end + hour),
+                Err(InvalidReviewWindow)
+            );
+            prop_assert_eq!(
+                ReviewWindow::try_new(ReviewCadence::Week, day, start, week_end - hour),
+                Err(InvalidReviewWindow)
+            );
+            prop_assert_eq!(
+                ReviewWindow::try_new(ReviewCadence::Week, day, start, end),
+                Err(InvalidReviewWindow),
+                "a 24h week-window rejects"
+            );
+            // Month checks monotonicity only: a 400-day span passes.
+            let four_hundred_days = chrono::TimeDelta::try_days(400).unwrap();
+            prop_assert!(
+                ReviewWindow::try_new(ReviewCadence::Month, day, start, start + four_hundred_days).is_ok()
+            );
+            // The label is never validated: a non-Monday label on a
+            // well-formed week window is accepted (the documented trust).
+            prop_assert!(ReviewWindow::try_new(ReviewCadence::Week, day, start, week_end).is_ok());
+        }
+
+        // ---- the commit-1 battery ----
 
         #[test]
         fn attributes_roundtrip_through_serde(
