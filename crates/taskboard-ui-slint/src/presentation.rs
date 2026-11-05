@@ -5246,8 +5246,13 @@ mod habit_section_tests {
     }
 
     fn overlay_timing() -> FocusTiming {
-        FocusTiming::try_new(TimeDelta::minutes(25), TimeDelta::minutes(5))
-            .expect("positive timings")
+        FocusTiming::try_new(
+            TimeDelta::minutes(25),
+            TimeDelta::minutes(5),
+            TimeDelta::minutes(15),
+            4,
+        )
+        .expect("positive timings")
     }
 
     const OVERLAY_T0: DateTime<Utc> =

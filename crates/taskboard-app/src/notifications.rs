@@ -5,6 +5,14 @@
 //! renders the same payload as a passive desktop toast (D-R12) behind
 //! the same unmoved port (D-R11); which one a process uses is
 //! boot-time config (D-R13).
+//!
+//! The module also owns the focus-mode boundary surfaces (issue #600):
+//! the [`crate::focus::FocusBoundarySink`] implementations and the
+//! [`mount_focus_boundaries`] resolution, mirroring the reminder
+//! sink's household — disabled / log / desktop (passive toast + one
+//! gentle chime through the shared escalation chime arc). The trait
+//! and its event live beside their consumer in `focus.rs`; the OS
+//! plumbing lives here.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -15,6 +23,8 @@ use chrono::{DateTime, Local, Utc};
 use std::collections::HashMap;
 
 use crate::config::{AppMode, SinkChoice};
+use crate::escalation::ChimeSink;
+use crate::focus::{FocusBoundary, FocusBoundarySink};
 
 use taskboard_domain::{Notification, NotifierMessage, ReminderRef};
 // The health snapshot is presentation-side data (one shared shape for
@@ -490,6 +500,139 @@ pub fn spawn_notifier(
     })
 }
 
+// -- the focus boundary household (issue #600) ------------------------
+
+/// The resolved focus-boundary surface — the typed result of the
+/// D-R13-shaped matrix (`notify` knob, reminder sink kind).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BoundarySurface {
+    /// `notify = false`: the honest no-op.
+    Disabled,
+    /// The daemon-auto surface: one typed log line per boundary.
+    Log,
+    /// The desktop surface: passive toast + one gentle chime.
+    Desktop,
+}
+
+/// The boundary posture resolution: `notify = false` disables the
+/// whole bundle (one knob opts out — D-FF8); otherwise the reminder
+/// sink kind decides — kiosk and the log choice keep the log trail
+/// (the kiosk matrix: even a future kiosk runtime could only ever
+/// reach the log surface).
+#[must_use]
+pub(crate) fn resolve_boundary_surface(notify: bool, kind: SinkKind) -> BoundarySurface {
+    match (notify, kind) {
+        (false, _) => BoundarySurface::Disabled,
+        (true, SinkKind::Log) => BoundarySurface::Log,
+        (true, SinkKind::Desktop) => BoundarySurface::Desktop,
+    }
+}
+
+/// The honest no-op: the `notify = false` mount (and the tests'
+/// baseline). A no-op that cannot fail — the `DisabledChime` pattern.
+#[derive(Debug, Default)]
+pub(crate) struct DisabledBoundaries;
+
+impl FocusBoundarySink for DisabledBoundaries {
+    fn boundary<'a>(
+        &'a self,
+        _event: &'a FocusBoundary,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {})
+    }
+}
+
+/// The daemon-auto surface: one `tracing` line with typed fields per
+/// boundary event (the `LogSink` pattern).
+#[derive(Debug, Default)]
+pub(crate) struct LogBoundaries;
+
+impl FocusBoundarySink for LogBoundaries {
+    fn boundary<'a>(
+        &'a self,
+        event: &'a FocusBoundary,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            tracing::info!(?event, "focus: phase boundary");
+        })
+    }
+}
+
+/// The desktop surface (D-FF7): a passive `notify-rust` toast plus one
+/// chime through the *shared* escalation [`ChimeSink`] arc — no
+/// insistence, no re-toast cadence, no volume ramp, no occurrence
+/// keys, nothing to withdraw (P12-gentle by construction). Failures
+/// are logged and dropped, never propagated.
+pub(crate) struct DesktopBoundaries {
+    chime: Arc<dyn ChimeSink>,
+}
+
+impl std::fmt::Debug for DesktopBoundaries {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DesktopBoundaries").finish_non_exhaustive()
+    }
+}
+
+/// The typed phrase pair (summary, body) for one boundary. Text is
+/// never asserted in tests — the typed [`FocusBoundary`] is the
+/// contract; these phrases are the toast's human rendering.
+fn boundary_phrases(event: &FocusBoundary) -> (&'static str, &'static str) {
+    match event {
+        FocusBoundary::BreakBegan { long: true } => {
+            ("Focus block complete", "Time for a long break.")
+        }
+        FocusBoundary::BreakBegan { long: false } => {
+            ("Focus block complete", "Time for a short break.")
+        }
+        FocusBoundary::FocusResumed => ("Break over", "The next focus block has started."),
+        FocusBoundary::SessionIdle => ("Break over", "The focus session is idle."),
+    }
+}
+
+impl FocusBoundarySink for DesktopBoundaries {
+    fn boundary<'a>(
+        &'a self,
+        event: &'a FocusBoundary,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            let (summary, body) = boundary_phrases(event);
+            // Fire-and-forget: no urgency, no handle tracking, nothing
+            // to withdraw — the platform's default timeout.
+            let err = notify_rust::Notification::new()
+                .appname("taskboard")
+                .summary(summary)
+                .body(body)
+                .show_async()
+                .await;
+            if let Err(err) = err {
+                tracing::warn!(error = %err, ?event, "focus boundary toast failed");
+            }
+            if let Err(err) = self.chime.chime(crate::focus::FOCUS_CHIME_VOLUME) {
+                tracing::warn!(error = %err, ?event, "focus boundary chime failed");
+            }
+        })
+    }
+}
+
+/// The boot-time boundary mount, resolving the posture matrix exactly
+/// like the reminder sink: `notify = false` ⇒ disabled; the log kind ⇒
+/// log; the desktop kind ⇒ desktop with the passed chime arc (which
+/// bootstrap already mounted through `mount_chime` — the escalation
+/// chime is constructed before the focus spawn site, so the ordering
+/// holds; no second `RodioChime`, ever).
+#[must_use]
+pub(crate) fn mount_focus_boundaries(
+    notify: bool,
+    kind: SinkKind,
+    chime: Arc<dyn ChimeSink>,
+) -> Arc<dyn FocusBoundarySink> {
+    match resolve_boundary_surface(notify, kind) {
+        BoundarySurface::Disabled => Arc::new(DisabledBoundaries),
+        BoundarySurface::Log => Arc::new(LogBoundaries),
+        BoundarySurface::Desktop => Arc::new(DesktopBoundaries { chime }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -559,6 +702,36 @@ mod tests {
                 FIRED_AT
             )
             .critical
+        );
+    }
+
+    #[test]
+    fn mount_focus_boundaries_resolves_the_posture_matrix() {
+        // notify = false ⇒ disabled, whatever the sink kind.
+        assert_eq!(
+            resolve_boundary_surface(false, SinkKind::Desktop),
+            BoundarySurface::Disabled
+        );
+        assert_eq!(
+            resolve_boundary_surface(false, SinkKind::Log),
+            BoundarySurface::Disabled
+        );
+        // The log kind keeps the log trail.
+        assert_eq!(
+            resolve_boundary_surface(true, SinkKind::Log),
+            BoundarySurface::Log
+        );
+        // Desktop resolves desktop (the chime arc rides the mount).
+        assert_eq!(
+            resolve_boundary_surface(true, SinkKind::Desktop),
+            BoundarySurface::Desktop
+        );
+        // The kiosk matrix (D-FF12): the sink resolves to log, and the
+        // chime arc bootstrap passes is the disabled one — so even a
+        // future kiosk runtime could only ever reach the log surface.
+        assert_eq!(
+            resolve_boundary_surface(true, resolve_sink(SinkChoice::Auto, AppMode::Kiosk)),
+            BoundarySurface::Log
         );
     }
 

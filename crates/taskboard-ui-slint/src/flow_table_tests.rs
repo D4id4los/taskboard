@@ -2351,6 +2351,8 @@ fn focus_timing() -> FocusTiming {
     FocusTiming::try_new(
         chrono::TimeDelta::minutes(25),
         chrono::TimeDelta::minutes(5),
+        chrono::TimeDelta::minutes(15),
+        4,
     )
     .expect("positive timings")
 }

@@ -604,6 +604,8 @@ fn the_focus_overlay_golden_holds() {
                     focus: taskboard_domain::focus::FocusTiming::try_new(
                         chrono::TimeDelta::minutes(25),
                         chrono::TimeDelta::minutes(5),
+                        chrono::TimeDelta::minutes(15),
+                        4,
                     )
                     .map(Some)
                     .expect("positive timings"),

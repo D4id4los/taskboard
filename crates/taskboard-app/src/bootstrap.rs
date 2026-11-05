@@ -1116,11 +1116,15 @@ async fn bootstrap_with_modules(
     let audio_allowed = config.app.mode == crate::config::AppMode::Desktop
         && crate::notifications::resolve_sink(config.reminders.sink, config.app.mode)
             == crate::notifications::SinkKind::Desktop;
+    // One chime arc for the whole process (issue #600): the escalation
+    // driver and the focus boundary surface share it — no second
+    // `RodioChime`, ever (one audio stream owner, D-4).
+    let chime = crate::escalation::mount_chime(audio_allowed, crate::escalation::RodioChime::open);
     let escalation_join = crate::escalation::spawn_escalation_driver(
         engine.shared_state(),
         reminder_cfg.defaults,
         escalation_sink,
-        crate::escalation::mount_chime(audio_allowed, crate::escalation::RodioChime::open),
+        chime.clone(),
         engine.subscribe(),
         Arc::new(taskboard_domain::SystemClock),
     );
@@ -1133,12 +1137,22 @@ async fn bootstrap_with_modules(
     // Opt-in AND not kiosk: a kiosk is a passive appliance — no
     // auto-transitions; its open entries are display data. The
     // honest-decision rhetoric mirrors escalation's audio gate: this is
-    // a decided exclusion, pinned by tests, not an oversight.
+    // a decided exclusion, pinned by tests, not an oversight. The
+    // boundary surface rides the same sink matrix (notify = false ⇒
+    // disabled; kiosk resolves to log; the chime arc is the process's
+    // shared one, disabled when audio is not allowed).
     let focus_join = crate::focus::focus_spawn_decision(config.app.mode, config.focus_config())
         .map(|timing| {
+            let boundaries = crate::notifications::mount_focus_boundaries(
+                config.focus.notify,
+                crate::notifications::resolve_sink(config.reminders.sink, config.app.mode),
+                chime.clone(),
+            );
             crate::focus::spawn_focus_runtime(
                 engine.shared_state(),
                 timing,
+                config.focus.chain,
+                boundaries,
                 engine.clone(),
                 engine.subscribe(),
                 Arc::new(taskboard_domain::SystemClock),

@@ -120,6 +120,14 @@ pub const FOCUS_MINS_MAX: u64 = 240;
 pub const DEFAULT_FOCUS_WORK_MINS: u64 = 25;
 /// `[focus] break_mins` default.
 pub const DEFAULT_FOCUS_BREAK_MINS: u64 = 5;
+/// The `[focus] long_break_every` garbage-input bound (a typo'd
+/// `4000000004` must not decode), never a quality ceiling — `1` is
+/// legal and means every break long.
+pub const FOCUS_EVERY_MAX: u64 = 24;
+/// `[focus] long_break_mins` default: the pomodoro idiom.
+pub const DEFAULT_FOCUS_LONG_BREAK_MINS: u64 = 15;
+/// `[focus] long_break_every` default: a long break every four blocks.
+pub const DEFAULT_FOCUS_LONG_BREAK_EVERY: u64 = 4;
 
 /// `[focus]`: the pomodoro focus mode's timing configuration (issue
 /// #496). Plain integer minutes (the `[sync]` plain-numbers precedent —
@@ -151,6 +159,31 @@ pub struct FocusSection {
         skip_serializing_if = "focus_break_mins_is_default"
     )]
     pub break_mins: u64,
+    /// Auto-start the next focus block when a runtime-driven break
+    /// ends (issue #600). Default off: the fence's posture — the user
+    /// starts the next focus.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub chain: bool,
+    /// Long-break length in minutes. Default 15 (the pomodoro idiom).
+    #[serde(
+        default = "default_focus_long_break_mins",
+        skip_serializing_if = "focus_long_break_mins_is_default"
+    )]
+    pub long_break_mins: u64,
+    /// Every N completed work blocks the next break is long. Default 4.
+    #[serde(
+        default = "default_focus_long_break_every",
+        skip_serializing_if = "focus_long_break_every_is_default"
+    )]
+    pub long_break_every: u64,
+    /// A gentle toast + chime at each runtime-driven phase boundary
+    /// (issue #600). Default on: the boundary signal is the point;
+    /// one knob opts the whole bundle out.
+    #[serde(
+        default = "default_focus_notify",
+        skip_serializing_if = "focus_notify_is_default"
+    )]
+    pub notify: bool,
 }
 
 impl Default for FocusSection {
@@ -159,6 +192,10 @@ impl Default for FocusSection {
             enabled: false,
             work_mins: DEFAULT_FOCUS_WORK_MINS,
             break_mins: DEFAULT_FOCUS_BREAK_MINS,
+            chain: false,
+            long_break_mins: DEFAULT_FOCUS_LONG_BREAK_MINS,
+            long_break_every: DEFAULT_FOCUS_LONG_BREAK_EVERY,
+            notify: true,
         }
     }
 }
@@ -181,6 +218,18 @@ fn default_focus_break_mins() -> u64 {
     DEFAULT_FOCUS_BREAK_MINS
 }
 
+fn default_focus_long_break_mins() -> u64 {
+    DEFAULT_FOCUS_LONG_BREAK_MINS
+}
+
+fn default_focus_long_break_every() -> u64 {
+    DEFAULT_FOCUS_LONG_BREAK_EVERY
+}
+
+fn default_focus_notify() -> bool {
+    true
+}
+
 // serde's `skip_serializing_if` demands the `fn(&T) -> bool` shape.
 #[allow(clippy::trivially_copy_pass_by_ref)] // serde's skip fn shape
 fn focus_work_mins_is_default(mins: &u64) -> bool {
@@ -190,6 +239,21 @@ fn focus_work_mins_is_default(mins: &u64) -> bool {
 #[allow(clippy::trivially_copy_pass_by_ref)] // serde's skip fn shape
 fn focus_break_mins_is_default(mins: &u64) -> bool {
     *mins == DEFAULT_FOCUS_BREAK_MINS
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde's skip fn shape
+fn focus_long_break_mins_is_default(mins: &u64) -> bool {
+    *mins == DEFAULT_FOCUS_LONG_BREAK_MINS
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde's skip fn shape
+fn focus_long_break_every_is_default(every: &u64) -> bool {
+    *every == DEFAULT_FOCUS_LONG_BREAK_EVERY
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde's skip fn shape
+fn focus_notify_is_default(notify: &bool) -> bool {
+    *notify
 }
 
 /// Which frontend the process runs.
@@ -1372,10 +1436,16 @@ impl AppConfig {
         for (field, mins) in [
             ("focus.work_mins", self.focus.work_mins),
             ("focus.break_mins", self.focus.break_mins),
+            ("focus.long_break_mins", self.focus.long_break_mins),
         ] {
             if mins == 0 || mins > FOCUS_MINS_MAX {
                 return Err(ConfigError::InvalidFocusTiming { field });
             }
+        }
+        if self.focus.long_break_every == 0 || self.focus.long_break_every > FOCUS_EVERY_MAX {
+            return Err(ConfigError::InvalidFocusTiming {
+                field: "focus.long_break_every",
+            });
         }
         // `[kiosk.rotation]`: a present table validates its shape —
         // two distinct modes (a one-mode rotation or a duplicate are
@@ -1574,6 +1644,8 @@ impl AppConfig {
             taskboard_domain::focus::FocusTiming::try_new(
                 mins(self.focus.work_mins),
                 mins(self.focus.break_mins),
+                mins(self.focus.long_break_mins),
+                u32::try_from(self.focus.long_break_every).expect("focus cadence validated"),
             )
             .expect("focus timing validated"),
         )
@@ -2457,6 +2529,155 @@ mod tests {
     }
 
     #[test]
+    fn focus_section_new_knobs_decode_defaults_and_skip_at_default() {
+        let config = decode("[focus]\n").expect("a bare table decodes");
+        assert!(
+            !config.focus.chain,
+            "chain defaults off (the fence posture)"
+        );
+        assert_eq!(config.focus.long_break_mins, DEFAULT_FOCUS_LONG_BREAK_MINS);
+        assert_eq!(
+            config.focus.long_break_every,
+            DEFAULT_FOCUS_LONG_BREAK_EVERY
+        );
+        assert!(config.focus.notify, "boundary notifications default on");
+        // Skip-at-default: the placeholder still serializes to nothing.
+        let value = serde_json::to_value(FocusSection::default()).expect("serializes");
+        assert_eq!(value, serde_json::json!({}));
+    }
+
+    #[test]
+    fn validate_rejects_garbage_long_break_minutes_and_every() {
+        for (field, every) in [
+            ("focus.long_break_mins", 0u64),
+            ("focus.long_break_every", 0u64),
+        ] {
+            let mut c = valid();
+            c.focus.enabled = true;
+            match field {
+                "focus.long_break_mins" => c.focus.long_break_mins = every,
+                _ => c.focus.long_break_every = every,
+            }
+            assert!(matches!(
+                c.validate(),
+                Err(ConfigError::InvalidFocusTiming { .. })
+            ));
+        }
+        let mut c = valid();
+        c.focus.enabled = true;
+        c.focus.long_break_mins = FOCUS_MINS_MAX + 1;
+        assert!(matches!(
+            c.validate(),
+            Err(ConfigError::InvalidFocusTiming {
+                field: "focus.long_break_mins"
+            })
+        ));
+        let mut c = valid();
+        c.focus.enabled = true;
+        c.focus.long_break_every = FOCUS_EVERY_MAX + 1;
+        assert!(matches!(
+            c.validate(),
+            Err(ConfigError::InvalidFocusTiming {
+                field: "focus.long_break_every"
+            })
+        ));
+        // The boundary: 240 minutes and every = 24 validate; so does
+        // the coherent degenerate every = 1.
+        let mut c = valid();
+        c.focus.enabled = true;
+        c.focus.long_break_mins = FOCUS_MINS_MAX;
+        c.focus.long_break_every = FOCUS_EVERY_MAX;
+        c.validate().expect("the 240/24 boundary validates");
+        let mut c = valid();
+        c.focus.enabled = true;
+        c.focus.long_break_every = 1;
+        c.validate().expect("every = 1 is legal");
+    }
+
+    #[test]
+    fn the_new_focus_kinds_reject_garbage_even_when_disabled() {
+        // Deterministic validation: validate what is written, not what
+        // is live — garbage is rejected while disabled and while the
+        // chain itself is off.
+        let mut c = valid();
+        c.focus.enabled = false;
+        c.focus.chain = false;
+        c.focus.long_break_mins = 0;
+        assert!(matches!(
+            c.validate(),
+            Err(ConfigError::InvalidFocusTiming {
+                field: "focus.long_break_mins"
+            })
+        ));
+        let mut c = valid();
+        c.focus.enabled = false;
+        c.focus.chain = false;
+        c.focus.long_break_every = FOCUS_EVERY_MAX + 1;
+        assert!(matches!(
+            c.validate(),
+            Err(ConfigError::InvalidFocusTiming {
+                field: "focus.long_break_every"
+            })
+        ));
+    }
+
+    #[test]
+    fn the_focus_stable_kind_covers_the_new_fields() {
+        for field in ["focus.long_break_mins", "focus.long_break_every"] {
+            assert_eq!(
+                ConfigError::InvalidFocusTiming { field }.kind(),
+                "invalid-focus-timing",
+                "no new stable kind: the payload distinguishes"
+            );
+        }
+    }
+
+    #[test]
+    fn serde_round_trip_preserves_the_focus_knobs() {
+        let toml = "[focus]\nenabled = true\nchain = true\nlong_break_mins = 20\nlong_break_every = 6\nnotify = false\n";
+        let round: AppConfig = Figment::from(Serialized::defaults(AppConfig::default()))
+            .merge(Toml::string(toml))
+            .extract()
+            .expect("the knob table decodes");
+        assert!(round.focus.enabled);
+        assert!(round.focus.chain);
+        assert_eq!(round.focus.long_break_mins, 20);
+        assert_eq!(round.focus.long_break_every, 6);
+        assert!(!round.focus.notify);
+
+        // The serializing half: non-default knobs survive, defaults
+        // skip (the section's byte-stability fence).
+        let serialized = serde_json::to_value(round.focus).expect("serialize");
+        assert_eq!(serialized.get("chain"), Some(&serde_json::json!(true)));
+        assert_eq!(
+            serialized.get("long_break_mins"),
+            Some(&serde_json::json!(20))
+        );
+        assert_eq!(serialized.get("notify"), Some(&serde_json::json!(false)));
+        let serialized = serde_json::to_value(FocusSection::default()).expect("serialize defaults");
+        assert_eq!(
+            serialized.get("notify"),
+            None,
+            "the default notify skips (default = on)"
+        );
+    }
+
+    #[test]
+    fn focus_config_mints_the_cadence_when_enabled_and_none_when_disabled() {
+        let mut c = valid();
+        assert_eq!(c.focus_config(), None, "disabled mints nothing");
+        c.focus.enabled = true;
+        let timing = c.focus_config().expect("enabled mints");
+        assert_eq!(timing.long_break(), chrono::TimeDelta::minutes(15));
+        assert_eq!(timing.long_break_every(), 4);
+        c.focus.long_break_mins = 20;
+        c.focus.long_break_every = 6;
+        let timing = c.focus_config().expect("enabled mints");
+        assert_eq!(timing.long_break(), chrono::TimeDelta::minutes(20));
+        assert_eq!(timing.long_break_every(), 6);
+    }
+
+    #[test]
     fn valid_day_start_times_decode_and_validate() {
         for raw in ["05:30", "23:59:59", "05:00"] {
             let config: Result<AppConfig, _> =
@@ -3214,6 +3435,12 @@ mod tests {
             (
                 ConfigError::InvalidFocusTiming {
                     field: "focus.work_mins",
+                },
+                "invalid-focus-timing",
+            ),
+            (
+                ConfigError::InvalidFocusTiming {
+                    field: "focus.long_break_every",
                 },
                 "invalid-focus-timing",
             ),
