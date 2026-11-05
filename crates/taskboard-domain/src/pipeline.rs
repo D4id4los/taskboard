@@ -2599,6 +2599,11 @@ mod tests {
         let firings = crate::reminders::due_firings(
             &app.tasks,
             &app.tracking,
+            &app.habits,
+            crate::days::DayCalendar {
+                day_start_time: chrono::NaiveTime::MIN,
+                offset: chrono::FixedOffset::east_opt(0).unwrap(),
+            },
             &app.reminders,
             &ReminderDefaults::default(),
             ts(BASE + 3_600),

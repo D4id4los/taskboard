@@ -475,6 +475,11 @@ async fn r9_alarm_fires_within_one_tick_and_survives_until_dismissal() {
     let surface = taskboard_domain::active_notifications(
         &app.tasks,
         &app.tracking,
+        &app.habits,
+        taskboard_domain::days::DayCalendar {
+            day_start_time: chrono::NaiveTime::MIN,
+            offset: chrono::FixedOffset::east_opt(0).unwrap(),
+        },
         &app.reminders,
         &ReminderDefaults::default(),
         ts(T0 + 30),
@@ -1266,4 +1271,112 @@ async fn at_rule_on_an_undated_task_fires_and_settles_on_dismissal() {
         "the settled rule stays gone"
     );
     drop(app);
+}
+
+// ---- The tracker nudge family (#504) --------------------------------
+
+use taskboard_domain::habit::{Habit, HabitClocks, HabitState, HabitTarget, NonZeroCount};
+
+/// A live board + stack + one future-due task (quiet) + one anchored
+/// habit whose day-window anchor reading (09:00 with a midnight day
+/// start) lies 1 h before T0.
+fn seeded_tracker_state() -> PersistedState {
+    let (mut state, task_id) = seeded_task_state(T0 + 3_600);
+    let _ = task_id; // the task's default reminder stays future — quiet
+    let habit = Habit {
+        id: taskboard_domain::HabitId::from_uuid(uuid::Uuid::from_u128(42)),
+        board: state.boards.keys().next().copied().expect("board"),
+        title: "stretch".into(),
+        target: HabitTarget::PerDay(NonZeroCount::new(1).unwrap()),
+        order: 0,
+        anchor_time: Some(chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap()),
+        clocks: HabitClocks::all(ts(T0 - 60)),
+        continued_from: None,
+        deleted: false,
+    };
+    let mut habits = HabitState::default();
+    habits.habits.insert(habit.id, habit);
+    state.habits = habits;
+    state
+}
+
+/// The tracker journey: one tick fires the nudge durably-then-notifiably
+/// (the delivery persists before the payload drains), the same window's
+/// second tick stays silent (the receipt is the at-most-once guard), and
+/// the nudge rides the generic payload path (title snapshot, Normal
+/// insistence) beside a task firing in the same batch.
+#[cfg_attr(miri, ignore)]
+#[tokio::test(start_paused = true)]
+async fn tracker_nudge_fires_once_through_the_tick_and_stays_quiet_in_its_window() {
+    let state = seeded_tracker_state();
+    let mut h = spawn(Spawner {
+        repo: Arc::new(InMemoryRepository::with_state(state)),
+        clock: FixedClock::new(T0),
+        reminders: tick_config(),
+    })
+    .await;
+    settle_boot_tick().await;
+    advance_both(&h.clock, 1).await;
+    let tracker_ref = ReminderRef::Tracker(taskboard_domain::HabitId::from_uuid(
+        uuid::Uuid::from_u128(42),
+    ));
+    eventually(&h.handle, |app| {
+        app.reminders
+            .deliveries
+            .iter()
+            .any(|d| d.reminder == tracker_ref)
+    })
+    .await;
+
+    // The delivery persisted (durable first)…
+    let app = h.handle.shared_state().load_full();
+    let delivery = app
+        .reminders
+        .deliveries
+        .iter()
+        .find(|d| d.reminder == tracker_ref)
+        .expect("the tracker receipt persisted");
+    assert_eq!(
+        delivery.occurrence,
+        taskboard_domain::days::DayCalendar {
+            day_start_time: chrono::NaiveTime::MIN,
+            offset: chrono::FixedOffset::east_opt(0).unwrap(),
+        }
+        .instant(
+            chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap(),
+            chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap()
+        ),
+        "the key is the stable anchor reading, not the tick stamp"
+    );
+    drop(app);
+
+    // …then the payload arrived: the habit title snapshot, Normal
+    // insistence, Tracker anchor.
+    let notes = drain_notifications(&mut h.notifications);
+    let tracker_note = notes
+        .iter()
+        .find(|n| n.reminder == tracker_ref)
+        .expect("the tracker payload");
+    assert_eq!(tracker_note.title, "stretch");
+    assert_eq!(tracker_note.insistence, Insistence::Normal);
+    assert!(matches!(tracker_note.anchor, ReminderAnchor::Tracker(_)));
+    // The same window's second tick fires nothing — the receipt guards.
+    advance_both(&h.clock, 5).await;
+    let app = h.handle.shared_state().load_full();
+    assert_eq!(
+        app.reminders
+            .deliveries
+            .iter()
+            .filter(|d| d.reminder == tracker_ref)
+            .count(),
+        1,
+        "at-most-once per (Tracker, occurrence)"
+    );
+    drop(app);
+    assert!(
+        !drain_notifications(&mut h.notifications)
+            .iter()
+            .any(|n| n.reminder == tracker_ref),
+        "no second toast in the same window"
+    );
 }

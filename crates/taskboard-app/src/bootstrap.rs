@@ -1123,6 +1123,7 @@ async fn bootstrap_with_modules(
     let escalation_join = crate::escalation::spawn_escalation_driver(
         engine.shared_state(),
         reminder_cfg.defaults,
+        config.resolved_day_calendar(),
         escalation_sink,
         chime.clone(),
         engine.subscribe(),

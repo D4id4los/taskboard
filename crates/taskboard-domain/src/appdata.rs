@@ -1717,7 +1717,12 @@ pub fn dismissals_entry_for(
             // card entry is scoped to the card's task's rules.
             crate::reminders::ReminderRef::Default(_)
             | crate::reminders::ReminderRef::Adhoc(_)
-            | crate::reminders::ReminderRef::Break(_) => None,
+            | crate::reminders::ReminderRef::Break(_)
+            // Tracker dismissals stay device-local (#504 D-5 — the
+            // occurrence keys derive from the device's day calendar, so
+            // a synced key cannot compose across day configs): the
+            // fail-closed arm, exactly the Default/Adhoc lane.
+            | crate::reminders::ReminderRef::Tracker(_) => None,
         })
         .collect();
     DismissalsEntry {
@@ -1762,7 +1767,10 @@ pub fn break_dismissals_entry_for(
             // entries' filter).
             crate::reminders::ReminderRef::Default(_)
             | crate::reminders::ReminderRef::Adhoc(_)
-            | crate::reminders::ReminderRef::Rule(_) => None,
+            | crate::reminders::ReminderRef::Rule(_)
+            // Tracker-ref rows are nobody's lane here (per-device
+            // dismissals, #504 D-5) — the fail-closed arm.
+            | crate::reminders::ReminderRef::Tracker(_) => None,
         })
         .collect();
     DismissalsEntry {

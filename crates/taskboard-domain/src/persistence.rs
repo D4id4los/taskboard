@@ -421,6 +421,13 @@ pub fn apply_actions(state: &mut PersistedState, actions: &[PersistenceAction]) 
             }
             PersistenceAction::UpsertHabit(habit) => {
                 state.habits.habits.insert(habit.id, habit.clone());
+                // The tombstone cascade (#504, plan D-7): a deleted
+                // habit's tracker-ref receipts are dead weight — prune
+                // them so a resurrected row re-arms honestly. The log is
+                // never touched (count facts are not receipts).
+                if habit.deleted {
+                    crate::reminders::remove_habit_nudge(&mut state.reminders, habit.id);
+                }
             }
             PersistenceAction::RecordHabitLog(key, entry) => {
                 match state.habits.log.get(key) {
@@ -682,6 +689,13 @@ mod tests {
 
     fn ts(secs: i64) -> DateTime<Utc> {
         Utc.timestamp_opt(secs, 0).unwrap()
+    }
+
+    fn test_day() -> crate::days::DayCalendar {
+        crate::days::DayCalendar {
+            day_start_time: chrono::NaiveTime::MIN,
+            offset: chrono::FixedOffset::east_opt(0).unwrap(),
+        }
     }
 
     #[test]
@@ -1792,7 +1806,7 @@ mod tests {
         ) {
             let defaults = crate::reminders::ReminderDefaults { default_before: offset };
             let target = now + chrono::TimeDelta::try_minutes(10).unwrap();
-            let f1 = crate::reminders::due_firings(&app, &crate::tracking::TrackingState::default(), &reminders, &defaults, now);
+            let f1 = crate::reminders::due_firings(&app, &crate::tracking::TrackingState::default(), &crate::habit::HabitState::default(), test_day(), &reminders, &defaults, now);
             let mut actions = Vec::new();
             let mut batch_snoozed = std::collections::BTreeSet::new();
             for (i, f) in f1.iter().enumerate() {
@@ -1830,7 +1844,7 @@ mod tests {
             let settled = &state.reminders;
 
             // (a) nothing fires again at `now`...
-            let f2 = crate::reminders::due_firings(&app, &crate::tracking::TrackingState::default(), settled, &defaults, now);
+            let f2 = crate::reminders::due_firings(&app, &crate::tracking::TrackingState::default(), &crate::habit::HabitState::default(), test_day(), settled, &defaults, now);
             prop_assert!(f2.is_empty(), "settled occurrences must not refire");
             // (b) reminders THIS batch snoozed stay quiet below their
             // (now + 10 m) target. Only the batch's own links qualify as
@@ -1839,7 +1853,7 @@ mod tests {
             // target is legal (P7) — a reminder-identity proxy over all
             // links would forbid that legal fire.
             let probe = now + chrono::TimeDelta::try_minutes(9).unwrap();
-            let at_probe = crate::reminders::due_firings(&app, &crate::tracking::TrackingState::default(), settled, &defaults, probe);
+            let at_probe = crate::reminders::due_firings(&app, &crate::tracking::TrackingState::default(), &crate::habit::HabitState::default(), test_day(), settled, &defaults, probe);
             prop_assert!(
                 at_probe
                     .iter()
@@ -1848,12 +1862,13 @@ mod tests {
             );
             // (c) muted tasks contribute zero task firings.
             let fired_tasks: std::collections::BTreeSet<_> =
-                crate::reminders::due_firings(&app, &crate::tracking::TrackingState::default(), settled, &defaults, now + chrono::TimeDelta::try_minutes(20).unwrap())
+                crate::reminders::due_firings(&app, &crate::tracking::TrackingState::default(), &crate::habit::HabitState::default(), test_day(), settled, &defaults, now + chrono::TimeDelta::try_minutes(20).unwrap())
                     .into_iter()
                     .filter_map(|f| match f.anchor {
                         crate::reminders::ReminderAnchor::Task(t) => Some(t),
                         crate::reminders::ReminderAnchor::Alarm(_)
-                        | crate::reminders::ReminderAnchor::Break(_) => None,
+                        | crate::reminders::ReminderAnchor::Break(_)
+                        | crate::reminders::ReminderAnchor::Tracker(_) => None,
                     })
                     .collect();
             prop_assert!(fired_tasks.iter().all(|t| !settled.muted.contains(t)));
@@ -1893,15 +1908,15 @@ mod tests {
                 ..PersistedState::default()
             };
             apply_actions(&mut normalized, &[]);
-            let got_plain = crate::reminders::due_firings(&app, &crate::tracking::TrackingState::default(), &reminders, &defaults, now);
+            let got_plain = crate::reminders::due_firings(&app, &crate::tracking::TrackingState::default(), &crate::habit::HabitState::default(), test_day(), &reminders, &defaults, now);
             let got_compacted =
-                crate::reminders::due_firings(&app, &crate::tracking::TrackingState::default(), &normalized.reminders, &defaults, now);
+                crate::reminders::due_firings(&app, &crate::tracking::TrackingState::default(), &crate::habit::HabitState::default(), test_day(), &normalized.reminders, &defaults, now);
             prop_assert_eq!(got_plain, got_compacted);
             // The second reader (the resurrection hole): the in-app
             // surface must be equally untouched by the post-pass.
             prop_assert_eq!(
-                crate::reminders::active_notifications(&app, &crate::tracking::TrackingState::default(), &reminders, &defaults, now),
-                crate::reminders::active_notifications(&app, &crate::tracking::TrackingState::default(), &normalized.reminders, &defaults, now),
+                crate::reminders::active_notifications(&app, &crate::tracking::TrackingState::default(), &crate::habit::HabitState::default(), test_day(), &reminders, &defaults, now),
+                crate::reminders::active_notifications(&app, &crate::tracking::TrackingState::default(), &crate::habit::HabitState::default(), test_day(), &normalized.reminders, &defaults, now),
                 "compaction never changes the active surface",
             );
         }
@@ -1933,12 +1948,12 @@ mod tests {
             };
             apply_actions(&mut normalized, &[]);
             prop_assert_eq!(
-                crate::reminders::due_firings(&app, &crate::tracking::TrackingState::default(), &dirty, &defaults, now),
-                crate::reminders::due_firings(&app, &crate::tracking::TrackingState::default(), &normalized.reminders, &defaults, now)
+                crate::reminders::due_firings(&app, &crate::tracking::TrackingState::default(), &crate::habit::HabitState::default(), test_day(), &dirty, &defaults, now),
+                crate::reminders::due_firings(&app, &crate::tracking::TrackingState::default(), &crate::habit::HabitState::default(), test_day(), &normalized.reminders, &defaults, now)
             );
             prop_assert_eq!(
-                crate::reminders::active_notifications(&app, &crate::tracking::TrackingState::default(), &dirty, &defaults, now),
-                crate::reminders::active_notifications(&app, &crate::tracking::TrackingState::default(), &normalized.reminders, &defaults, now),
+                crate::reminders::active_notifications(&app, &crate::tracking::TrackingState::default(), &crate::habit::HabitState::default(), test_day(), &dirty, &defaults, now),
+                crate::reminders::active_notifications(&app, &crate::tracking::TrackingState::default(), &crate::habit::HabitState::default(), test_day(), &normalized.reminders, &defaults, now),
                 "compaction never changes the active surface",
             );
         }
@@ -1952,12 +1967,12 @@ mod tests {
         ) {
             let defaults = crate::reminders::ReminderDefaults { default_before: offset };
             let due_before: std::collections::BTreeSet<_> =
-                crate::reminders::due_firings(&app, &crate::tracking::TrackingState::default(), &reminders, &defaults, now)
+                crate::reminders::due_firings(&app, &crate::tracking::TrackingState::default(), &crate::habit::HabitState::default(), test_day(), &reminders, &defaults, now)
                     .into_iter()
                     .map(|f| (f.reminder, f.occurrence))
                     .collect();
             let active_before: std::collections::BTreeSet<_> =
-                crate::reminders::active_notifications(&app, &crate::tracking::TrackingState::default(), &reminders, &defaults, now)
+                crate::reminders::active_notifications(&app, &crate::tracking::TrackingState::default(), &crate::habit::HabitState::default(), test_day(), &reminders, &defaults, now)
                     .into_iter()
                     .map(|n| (n.reminder, n.occurrence))
                     .collect();
@@ -1967,12 +1982,12 @@ mod tests {
             };
             apply_actions(&mut after, &[]);
             let due_after: std::collections::BTreeSet<_> =
-                crate::reminders::due_firings(&app, &crate::tracking::TrackingState::default(), &after.reminders, &defaults, now)
+                crate::reminders::due_firings(&app, &crate::tracking::TrackingState::default(), &crate::habit::HabitState::default(), test_day(), &after.reminders, &defaults, now)
                     .into_iter()
                     .map(|f| (f.reminder, f.occurrence))
                     .collect();
             let active_after: std::collections::BTreeSet<_> =
-                crate::reminders::active_notifications(&app, &crate::tracking::TrackingState::default(), &after.reminders, &defaults, now)
+                crate::reminders::active_notifications(&app, &crate::tracking::TrackingState::default(), &crate::habit::HabitState::default(), test_day(), &after.reminders, &defaults, now)
                     .into_iter()
                     .map(|n| (n.reminder, n.occurrence))
                     .collect();
@@ -2089,6 +2104,8 @@ mod tests {
             crate::reminders::due_firings(
                 &app.tasks,
                 &state.tracking,
+                &crate::habit::HabitState::default(),
+                test_day(),
                 &state.reminders,
                 &defaults,
                 ts(500)
@@ -2115,6 +2132,8 @@ mod tests {
             let firings = crate::reminders::due_firings(
                 &app.tasks,
                 &state.tracking,
+                &crate::habit::HabitState::default(),
+                test_day(),
                 &state.reminders,
                 &defaults,
                 ts(now),
@@ -2258,6 +2277,8 @@ mod tests {
                 crate::reminders::due_firings(
                     &app.tasks,
                     &state.tracking,
+                    &crate::habit::HabitState::default(),
+                    test_day(),
                     &state.reminders,
                     &crate::reminders::ReminderDefaults::default(),
                     ts(now)
@@ -2311,6 +2332,8 @@ mod tests {
             crate::reminders::active_notifications(
                 &app.tasks,
                 &state.tracking,
+                &crate::habit::HabitState::default(),
+                test_day(),
                 &state.reminders,
                 &defaults,
                 ts(1_000)
@@ -2341,6 +2364,8 @@ mod tests {
             crate::reminders::active_notifications(
                 &app.tasks,
                 &state.tracking,
+                &crate::habit::HabitState::default(),
+                test_day(),
                 &state.reminders,
                 &defaults,
                 ts(1_500)
@@ -2365,6 +2390,8 @@ mod tests {
             crate::reminders::active_notifications(
                 &app.tasks,
                 &state.tracking,
+                &crate::habit::HabitState::default(),
+                test_day(),
                 &state.reminders,
                 &defaults,
                 ts(2_000)
@@ -2398,6 +2425,8 @@ mod tests {
                 crate::reminders::active_notifications(
                     &app.tasks,
                     &state.tracking,
+                    &crate::habit::HabitState::default(),
+                    test_day(),
                     &state.reminders,
                     &defaults,
                     ts(now)
@@ -2457,6 +2486,8 @@ mod tests {
             crate::reminders::due_firings(
                 &app.tasks,
                 &state.tracking,
+                &crate::habit::HabitState::default(),
+                test_day(),
                 &state.reminders,
                 &crate::reminders::ReminderDefaults::default(),
                 ts(1_500),
@@ -2487,6 +2518,8 @@ mod tests {
             crate::reminders::active_notifications(
                 &app.tasks,
                 &state.tracking,
+                &crate::habit::HabitState::default(),
+                test_day(),
                 &state.reminders,
                 &crate::reminders::ReminderDefaults::default(),
                 ts(2_000),
@@ -2532,16 +2565,16 @@ mod tests {
             let mut pruned = reminders.clone();
             crate::reminders::prune_settled_alarms(&mut pruned);
             prop_assert_eq!(
-                crate::reminders::due_firings(&app, &crate::tracking::TrackingState::default(), &reminders, &defaults, now),
-                crate::reminders::due_firings(&app, &crate::tracking::TrackingState::default(), &pruned, &defaults, now),
+                crate::reminders::due_firings(&app, &crate::tracking::TrackingState::default(), &crate::habit::HabitState::default(), test_day(), &reminders, &defaults, now),
+                crate::reminders::due_firings(&app, &crate::tracking::TrackingState::default(), &crate::habit::HabitState::default(), test_day(), &pruned, &defaults, now),
                 "the prune never changes what fires",
             );
             // The second reader: a settled (delivered ∧ dismissed)
             // alarm contributes no active row, so removing it cannot
             // change the surface.
             prop_assert_eq!(
-                crate::reminders::active_notifications(&app, &crate::tracking::TrackingState::default(), &reminders, &defaults, now),
-                crate::reminders::active_notifications(&app, &crate::tracking::TrackingState::default(), &pruned, &defaults, now),
+                crate::reminders::active_notifications(&app, &crate::tracking::TrackingState::default(), &crate::habit::HabitState::default(), test_day(), &reminders, &defaults, now),
+                crate::reminders::active_notifications(&app, &crate::tracking::TrackingState::default(), &crate::habit::HabitState::default(), test_day(), &pruned, &defaults, now),
                 "the prune never changes the active surface",
             );
         }
@@ -2574,6 +2607,261 @@ mod tests {
             let back: ValidatorKey =
                 serde_json::from_str(&serde_json::to_string(&key).unwrap()).unwrap();
             prop_assert_eq!(back, key);
+        }
+    }
+
+    // ---- The tracker nudge family (#504) --------------------------------
+
+    fn tracker_habit_for_props(
+        id: crate::ids::HabitId,
+        target: crate::habit::HabitTarget,
+        anchor: chrono::NaiveTime,
+    ) -> crate::habit::Habit {
+        crate::habit::Habit {
+            id,
+            board: crate::ids::BoardId::from(uuid::Uuid::from_u128(800)),
+            title: "prop habit".to_owned(),
+            target,
+            order: 0,
+            anchor_time: Some(anchor),
+            clocks: crate::habit::HabitClocks::all(ts(100)),
+            continued_from: None,
+            deleted: false,
+        }
+    }
+
+    #[test]
+    fn tracker_nudge_receipts_are_at_most_once_per_key_through_apply_actions() {
+        let habit = tracker_habit_for_props(
+            crate::ids::HabitId::from(uuid::Uuid::from_u128(7)),
+            crate::habit::HabitTarget::PerDay(crate::habit::NonZeroCount::new(1).unwrap()),
+            chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap(),
+        );
+        let mut state = PersistedState::default();
+        apply_actions(&mut state, &[PersistenceAction::UpsertHabit(habit.clone())]);
+        let day = crate::days::DayCalendar {
+            day_start_time: chrono::NaiveTime::MIN,
+            offset: chrono::FixedOffset::east_opt(0).unwrap(),
+        };
+        let defaults = crate::reminders::ReminderDefaults::default();
+        let app: AppState = state.clone().into();
+        let firings = crate::reminders::due_firings(
+            &app.tasks,
+            &state.tracking,
+            &state.habits,
+            day,
+            &state.reminders,
+            &defaults,
+            ts(1_000_000),
+        );
+        let tracker: Vec<_> = firings
+            .iter()
+            .filter(|f| matches!(f.reminder, crate::reminders::ReminderRef::Tracker(_)))
+            .collect();
+        assert_eq!(tracker.len(), 1, "the armed habit fires exactly once");
+        let key = (tracker[0].reminder, tracker[0].occurrence);
+        // The same delivery twice: the ≤ 1-row-per-key invariant holds.
+        let delivery = crate::reminders::ReminderDelivery {
+            reminder: key.0,
+            occurrence: key.1,
+            delivered_at: ts(1_000_000),
+        };
+        apply_actions(
+            &mut state,
+            &[
+                PersistenceAction::RecordReminderDelivery(delivery),
+                PersistenceAction::RecordReminderDelivery(delivery),
+            ],
+        );
+        assert_eq!(
+            state
+                .reminders
+                .deliveries
+                .iter()
+                .filter(|d| (d.reminder, d.occurrence) == key)
+                .count(),
+            1,
+            "≤ 1 delivery per (Tracker, occurrence)"
+        );
+        // The receipt suppresses the next evaluation.
+        let app: AppState = state.clone().into();
+        let after: Vec<_> = crate::reminders::due_firings(
+            &app.tasks,
+            &state.tracking,
+            &state.habits,
+            day,
+            &state.reminders,
+            &defaults,
+            ts(1_000_000),
+        )
+        .into_iter()
+        .filter(|f| f.reminder == key.0)
+        .collect();
+        assert!(after.is_empty(), "the receipt guards the second toast");
+    }
+
+    #[test]
+    fn deleting_a_habit_prunes_its_nudge_receipts_but_not_its_log() {
+        let habit = tracker_habit_for_props(
+            crate::ids::HabitId::from(uuid::Uuid::from_u128(11)),
+            crate::habit::HabitTarget::PerDay(crate::habit::NonZeroCount::new(1).unwrap()),
+            chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap(),
+        );
+        let mut state = PersistedState::default();
+        apply_actions(&mut state, &[PersistenceAction::UpsertHabit(habit.clone())]);
+        let key = crate::habit::HabitLogKey {
+            habit: habit.id,
+            window: crate::habit::WindowStart::of_period(
+                crate::habit::PeriodKind::Day,
+                chrono::NaiveDate::from_ymd_opt(2026, 11, 5).unwrap(),
+            ),
+        };
+        apply_actions(
+            &mut state,
+            &[
+                PersistenceAction::RecordHabitLog(
+                    key,
+                    crate::habit::HabitLogEntry {
+                        count: 3,
+                        clock: ts(500),
+                    },
+                ),
+                PersistenceAction::RecordReminderDelivery(crate::reminders::ReminderDelivery {
+                    reminder: crate::reminders::ReminderRef::Tracker(habit.id),
+                    occurrence: ts(1_000_000),
+                    delivered_at: ts(1_000_000),
+                }),
+                PersistenceAction::RecordReminderDismissal(crate::reminders::ReminderDismissal {
+                    reminder: crate::reminders::ReminderRef::Tracker(habit.id),
+                    occurrence: ts(1_000_000),
+                    dismissed_at: ts(1_000_000),
+                }),
+                PersistenceAction::RecordReminderSnooze(crate::reminders::ReminderSnooze {
+                    reminder: crate::reminders::ReminderRef::Tracker(habit.id),
+                    occurrence: ts(1_000_000),
+                    rescheduled_to: ts(2_000_000),
+                }),
+            ],
+        );
+        // The tombstone lands via the same UpsertHabit action the
+        // DeleteHabit planner plans — the cascade prunes the tracker-ref
+        // receipts in the same batch.
+        let mut tombstoned = habit.clone();
+        tombstoned.deleted = true;
+        apply_actions(&mut state, &[PersistenceAction::UpsertHabit(tombstoned)]);
+        let reminder = crate::reminders::ReminderRef::Tracker(habit.id);
+        assert!(
+            state
+                .reminders
+                .deliveries
+                .iter()
+                .all(|d| d.reminder != reminder),
+            "no delivery receipt survives the tombstone"
+        );
+        assert!(
+            state
+                .reminders
+                .dismissals
+                .iter()
+                .all(|d| d.reminder != reminder),
+            "no dismissal survives the tombstone"
+        );
+        assert!(
+            state
+                .reminders
+                .snoozes
+                .keys()
+                .all(|k| k.reminder != reminder),
+            "no snooze link survives the tombstone"
+        );
+        assert_eq!(
+            state.habits.log.get(&key).map(|e| e.count),
+            Some(3),
+            "count facts are not receipts — the log outlives the tracker"
+        );
+    }
+
+    proptest! {
+        #![proptest_config(test_support::proptest_config(256))]
+
+        #[test]
+        fn p_tracker_nudge_suppression_is_unobservable_under_compaction(
+            anchor_secs in 0_u32..86_400_u32,
+            day_start_secs in 0_u32..86_400_u32,
+            ce_day in 20_000_i32..60_000_i32,
+            quota in 1_u32..4_u32,
+            count in 0_u32..5_u32,
+            now_secs in 1_000_000_i64..2_000_000_i64,
+        ) {
+            let anchor = chrono::NaiveTime::from_num_seconds_from_midnight_opt(anchor_secs, 0)
+                .expect("in-range seconds-of-day");
+            let day = crate::days::DayCalendar {
+                day_start_time: chrono::NaiveTime::from_num_seconds_from_midnight_opt(day_start_secs, 0)
+                    .expect("in-range seconds-of-day"),
+                offset: chrono::FixedOffset::east_opt(0).unwrap(),
+            };
+            let id = crate::ids::HabitId::from(uuid::Uuid::from_u128(9));
+            let habit = tracker_habit_for_props(
+                id,
+                crate::habit::HabitTarget::PerDay(crate::habit::NonZeroCount::new(quota).unwrap()),
+                anchor,
+            );
+            let mut state = PersistedState::default();
+            apply_actions(&mut state, &[PersistenceAction::UpsertHabit(habit.clone())]);
+            let now_date = crate::days::DayCalendar {
+                day_start_time: day.day_start_time,
+                offset: day.offset,
+            }
+            .today(Utc.timestamp_opt(now_secs, 0).unwrap())
+            .checked_add_days(chrono::Days::new((ce_day.rem_euclid(30)) as u64))
+            .expect("in-range date");
+            let window = crate::habit::WindowStart::of_period(
+                crate::habit::PeriodKind::Day,
+                now_date,
+            );
+            state.habits.log.insert(
+                crate::habit::HabitLogKey { habit: id, window },
+                crate::habit::HabitLogEntry { count, clock: ts(500) },
+            );
+            let now = Utc.timestamp_opt(now_secs, 0).unwrap();
+            let defaults = crate::reminders::ReminderDefaults::default();
+            let evaluate = |state: &PersistedState| {
+                let app: AppState = state.clone().into();
+                (
+                    crate::reminders::due_firings(&app.tasks, &state.tracking, &state.habits, day, &state.reminders, &defaults, now),
+                    crate::reminders::active_notifications(&app.tasks, &state.tracking, &state.habits, day, &state.reminders, &defaults, now),
+                )
+            };
+            let (firings, _surface) = evaluate(&state);
+            // Whatever the gate decided, applying the delivery batch for
+            // every firing keeps both readers stable under snooze-chain
+            // compaction (the unobservability property, tracker-shaped).
+            let mut acted = state.clone();
+            let actions: Vec<PersistenceAction> = firings
+                .iter()
+                .map(|f| {
+                    PersistenceAction::RecordReminderDelivery(crate::reminders::ReminderDelivery {
+                        reminder: f.reminder,
+                        occurrence: f.occurrence,
+                        delivered_at: now,
+                    })
+                })
+                .collect();
+            apply_actions(&mut acted, &actions);
+            let (firings_after, surface_after) = evaluate(&acted);
+            crate::reminders::compact_snooze_chains(&mut acted.reminders);
+            let (firings_compacted, surface_compacted) = evaluate(&acted);
+            prop_assert_eq!(&firings_after, &firings_compacted);
+            prop_assert_eq!(&surface_after, &surface_compacted);
+            // At-most-once: no tracker ref re-fires after its receipt.
+            prop_assert!(
+                firings_after
+                    .iter()
+                    .all(|f| firings.iter().all(|before| {
+                        before.reminder != f.reminder || before.occurrence == f.occurrence
+                    })),
+                "a tracker nudge never re-fires behind its receipt"
+            );
         }
     }
 }

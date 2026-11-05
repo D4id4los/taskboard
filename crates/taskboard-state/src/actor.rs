@@ -572,6 +572,7 @@ async fn run_loop(
                         },
                         &metrics,
                         &reminder_cfg,
+                        day_roll.calendar,
                         &mut storage_failing,
                     )
                     .await;
@@ -1195,6 +1196,7 @@ struct TickSeams<'a> {
 /// only then notify — the marker is the notification permit, so nothing
 /// fires on a failed batch (durable-then-notify, design §6). A quiet
 /// tick is a no-op: nothing persisted, published, or signaled.
+#[allow(clippy::too_many_arguments)] // the injected seams ARE the constructor
 async fn reminder_tick(
     core: &mut EngineCore,
     shared: &Arc<ArcSwap<AppState>>,
@@ -1202,6 +1204,7 @@ async fn reminder_tick(
     seams: TickSeams<'_>,
     metrics: &EngineMetrics,
     cfg: &ReminderEngineConfig,
+    day: taskboard_domain::DayCalendar,
     storage_failing: &mut bool,
 ) {
     let TickSeams {
@@ -1211,7 +1214,7 @@ async fn reminder_tick(
         notifier,
     } = seams;
     let now = clock.now();
-    let firings = core.due_reminder_firings(&cfg.defaults, now);
+    let firings = core.due_reminder_firings(day, &cfg.defaults, now);
     // Issue #201: the tick also emits the stale-delivery sweep —
     // delivery rows no reader consults whose occurrence has aged past
     // the horizon. The sweep rides the reminder tick (the same
@@ -1222,6 +1225,8 @@ async fn reminder_tick(
     let stale = taskboard_domain::reminders::stale_deliveries(
         core.tasks(),
         core.tracking(),
+        core.habits(),
+        day,
         core.reminders(),
         &cfg.defaults,
         now,
@@ -1240,7 +1245,7 @@ async fn reminder_tick(
         return;
     }
     *storage_failing = false;
-    let payloads = notifications_for(&firings, core.tasks(), core.reminders());
+    let payloads = notifications_for(&firings, core.tasks(), core.habits(), core.reminders());
     if core.interpret(&actions, now) {
         publish(core, shared, signals, metrics);
     }
