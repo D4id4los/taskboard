@@ -6135,7 +6135,6 @@ fn activate_stack_row(adapter: &mut Adapter, window: &AppWindow, row: i32) {
 /// route — the banner-seam template.
 #[allow(clippy::too_many_lines)] // one wiring sequence, kept flat for review
 fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
-    let mirror = Rc::clone(adapter);
     // The closed title's click (round-3 W-SM-d, F26): routes the
     // `task.title-edit` action — click ≡ key (§7.1); re-arming after
     // one close is always possible.
@@ -6146,38 +6145,23 @@ fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // `apply_outcomes`' borrow — that echo must be absorbed, and it
     // can never mask a legitimate settle (a genuine focus move
     // happens outside any borrow, where the borrow succeeds).
-    let focus_lost = Rc::clone(adapter);
-    let focus_lost_weak = window.as_weak();
-    window.on_text_flow_focus_lost(move || {
-        let Some(window) = focus_lost_weak.upgrade() else {
-            return;
-        };
-        let Ok(mut a) = focus_lost.try_borrow_mut() else {
-            return;
-        };
-        let state = a.state.load_full();
-        a.settle_flow(&window, &state);
+    install_seam!(window: window.on_text_flow_focus_lost, adapter: adapter; [try]
+    bind (a, window), args (), {        let state = a.state.load_full();
+    a.settle_flow(&window, &state);
+
     });
-    let title_click = Rc::clone(adapter);
-    let title_click_weak = window.as_weak();
-    window.on_task_title_edit_activated(move || {
-        let Some(window) = title_click_weak.upgrade() else {
-            return;
-        };
-        title_click
-            .borrow_mut()
-            .route(&window, ActionId::TaskTitleEdit);
+    install_seam!(window: window.on_task_title_edit_activated, adapter: adapter;
+    bind (a, window), args (), {        a
+        .route(&window, ActionId::TaskTitleEdit);
+
     });
-    window.on_task_title_edited(move |text| {
-        mirror.borrow_mut().view_state.set_buffer(text.to_string());
+    install_seam!(window: window.on_task_title_edited, adapter: adapter; [bare_mut]
+    bind (a), args (text), {        a.view_state.set_buffer(text.to_string());
+
     });
-    let commit = Rc::clone(adapter);
-    let commit_weak = window.as_weak();
-    window.on_task_title_committed(move |text| {
-        let Some(window) = commit_weak.upgrade() else {
-            return;
-        };
-        commit_text(&mut commit.borrow_mut(), &window, &text);
+    install_seam!(window: window.on_task_title_committed, adapter: adapter;
+    bind (a, window), args (text), {        commit_text(&mut a, &window, &text);
+
     });
 
     // The description editor's seams (round-3 D15/#228): the closed
@@ -6186,112 +6170,81 @@ fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // `commit_description` — the accepted text is the field's own
     // buffer read (the funnel re-reads the view-state buffer, kept
     // current by the edited seam).
-    let description_open = Rc::clone(adapter);
-    let description_open_weak = window.as_weak();
-    window.on_task_description_edit_opened(move || {
-        let Some(window) = description_open_weak.upgrade() else {
-            return;
-        };
-        let mut a = description_open.borrow_mut();
-        settle_pointer_conflict(&mut a, &window);
-        let state = a.state.load_full();
-        let Some(task) = a.view_state.subject_task() else {
-            return;
-        };
-        let outcomes = a.view_state.begin_edit_description(&state, task);
-        a.apply_outcomes(&window, &outcomes);
+    install_seam!(window: window.on_task_description_edit_opened, adapter: adapter;
+    bind (a, window), args (), {        settle_pointer_conflict(&mut a, &window);
+    let state = a.state.load_full();
+    let Some(task) = a.view_state.subject_task() else {
+        return;
+    };
+    let outcomes = a.view_state.begin_edit_description(&state, task);
+    a.apply_outcomes(&window, &outcomes);
+
     });
-    let description_edited = Rc::clone(adapter);
-    window.on_task_description_edited(move |text| {
-        description_edited
-            .borrow_mut()
-            .view_state
-            .set_buffer(text.to_string());
+    install_seam!(window: window.on_task_description_edited, adapter: adapter; [bare_mut]
+    bind (a), args (text), {        a
+        .view_state
+        .set_buffer(text.to_string());
+
     });
-    let description_commit = Rc::clone(adapter);
-    let description_commit_weak = window.as_weak();
-    window.on_task_description_committed(move |_text| {
-        let Some(window) = description_commit_weak.upgrade() else {
-            return;
-        };
-        let mut a = description_commit.borrow_mut();
-        let outcomes = a.view_state.commit_description();
-        a.apply_outcomes(&window, &outcomes);
+    install_seam!(window: window.on_task_description_committed, adapter: adapter;
+    bind (a, window), args (_text), {        let outcomes = a.view_state.commit_description();
+    a.apply_outcomes(&window, &outcomes);
+
     });
 
-    let remove = Rc::clone(adapter);
-    let remove_weak = window.as_weak();
-    window.on_task_rule_remove_clicked(move |index| {
-        let Some(window) = remove_weak.upgrade() else {
-            return;
-        };
-        let mut a = remove.borrow_mut();
-        let Some(rule) = a
-            .tables
-            .task_rules
-            .get(usize::try_from(index).unwrap_or(usize::MAX))
-            .copied()
-        else {
-            return; // a stale index against an older tables pass
-        };
-        a.rule_target = Some(rule);
-        a.route(&window, ActionId::ReminderRuleRemove);
+    install_seam!(window: window.on_task_rule_remove_clicked, adapter: adapter;
+    bind (a, window), args (index), {        let Some(rule) = a
+        .tables
+        .task_rules
+        .get(usize::try_from(index).unwrap_or(usize::MAX))
+        .copied()
+    else {
+        return; // a stale index against an older tables pass
+    };
+    a.rule_target = Some(rule);
+    a.route(&window, ActionId::ReminderRuleRemove);
+
     });
 
-    let preset = Rc::clone(adapter);
-    let preset_weak = window.as_weak();
-    window.on_rule_add_preset_clicked(move |index| {
-        let Some(window) = preset_weak.upgrade() else {
-            return;
-        };
-        let mut a = preset.borrow_mut();
-        let Some(dur) = crate::presentation::RULE_PRESETS
-            .get(usize::try_from(index).unwrap_or(usize::MAX))
-            .copied()
-        else {
-            return; // a stale preset index
-        };
-        a.rule_add_when = Some(crate::presentation::RuleWhen::DueOffset(
-            ReminderOffset::before(-dur).expect("preset magnitudes negate into the domain"),
-        ));
-        a.route(&window, ActionId::ReminderRuleAdd);
+    install_seam!(window: window.on_rule_add_preset_clicked, adapter: adapter;
+    bind (a, window), args (index), {        let Some(dur) = crate::presentation::RULE_PRESETS
+        .get(usize::try_from(index).unwrap_or(usize::MAX))
+        .copied()
+    else {
+        return; // a stale preset index
+    };
+    a.rule_add_when = Some(crate::presentation::RuleWhen::DueOffset(
+        ReminderOffset::before(-dur).expect("preset magnitudes negate into the domain"),
+    ));
+    a.route(&window, ActionId::ReminderRuleAdd);
+
     });
 
-    let custom = Rc::clone(adapter);
-    let custom_weak = window.as_weak();
-    window.on_rule_add_custom_accepted(move |text| {
-        let Some(window) = custom_weak.upgrade() else {
-            return false;
-        };
-        let mut a = custom.borrow_mut();
-        // A parse miss dispatches nothing (absorbed — D12): the UI
-        // owns no error chrome; the CLI owns typed failures. The miss
-        // rides the seam's return (r2 D24): the composition clears its
-        // own buffer, so the field never looks stuck. The three-form
-        // grammar (r4 D30/D6): bare stays due-anchored, in/at mint the
-        // absolute kind — and `In` carries a duration, the planner is
-        // the only instant-stamping site.
-        let Some(when) =
-            crate::presentation::parse_rule_when(&text, a.day_ctx().now, &chrono::Local)
-        else {
-            a.rule_offset_draft.clear();
-            return false;
-        };
+    install_seam!(window: window.on_rule_add_custom_accepted, adapter: adapter; [else ( false)]
+    bind (a, window), args (text), {        // A parse miss dispatches nothing (absorbed — D12): the UI
+    // owns no error chrome; the CLI owns typed failures. The miss
+    // rides the seam's return (r2 D24): the composition clears its
+    // own buffer, so the field never looks stuck. The three-form
+    // grammar (r4 D30/D6): bare stays due-anchored, in/at mint the
+    // absolute kind — and `In` carries a duration, the planner is
+    // the only instant-stamping site.
+    let Some(when) =
+        crate::presentation::parse_rule_when(&text, a.day_ctx().now, &chrono::Local)
+    else {
         a.rule_offset_draft.clear();
-        a.rule_add_when = Some(when);
-        a.route(&window, ActionId::ReminderRuleAdd);
-        true
+        return false;
+    };
+    a.rule_offset_draft.clear();
+    a.rule_add_when = Some(when);
+    a.route(&window, ActionId::ReminderRuleAdd);
+    true
+
     });
 
-    let offset_edited = Rc::clone(adapter);
-    let offset_edited_weak = window.as_weak();
-    window.on_rule_offset_edited(move |text| {
-        let Some(window) = offset_edited_weak.upgrade() else {
-            return;
-        };
-        let mut a = offset_edited.borrow_mut();
-        a.rule_offset_draft = text.to_string();
-        a.refresh_forced(&window);
+    install_seam!(window: window.on_rule_offset_edited, adapter: adapter;
+    bind (a, window), args (text), {        a.rule_offset_draft = text.to_string();
+    a.refresh_forced(&window);
+
     });
 }
 
@@ -6322,271 +6275,201 @@ fn install_picker_grid_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) 
 
 #[allow(clippy::too_many_lines)] // the r2 D25 seam family, kept flat
 fn install_due_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
-    let open = Rc::clone(adapter);
-    let open_weak = window.as_weak();
-    window.on_task_due_edit_opened(move || {
-        let Some(window) = open_weak.upgrade() else {
-            return;
-        };
-        let mut a = open.borrow_mut();
-        begin_date_edit(&mut a, &window, crate::view_state::DateField::Due);
+    install_seam!(window: window.on_task_due_edit_opened, adapter: adapter;
+    bind (a, window), args (), {        begin_date_edit(&mut a, &window, crate::view_state::DateField::Due);
+
     });
 
     // The rule section's jump affordance (r4 D30): an unarmed row's
     // due-date repair opens the SAME due editor — the callback is the
     // metadata row's due-edit seam under a second name, no new focus
     // plumbing (chunk 6's machinery arms from there).
-    let jump = Rc::clone(adapter);
-    let jump_weak = window.as_weak();
-    window.on_task_rule_jump_to_due_clicked(move || {
-        let Some(window) = jump_weak.upgrade() else {
-            return;
-        };
-        let mut a = jump.borrow_mut();
-        begin_date_edit(&mut a, &window, crate::view_state::DateField::Due);
+    install_seam!(window: window.on_task_rule_jump_to_due_clicked, adapter: adapter;
+    bind (a, window), args (), {        begin_date_edit(&mut a, &window, crate::view_state::DateField::Due);
+
     });
 
     // D31a: the section's un-mute affordance — the focused task is the
     // target (the section always names its subject), the banner's
     // one-shot machinery is not needed.
-    let unmute = Rc::clone(adapter);
-    let unmute_weak = window.as_weak();
-    window.on_task_rule_unmute_clicked(move || {
-        let Some(window) = unmute_weak.upgrade() else {
-            return;
-        };
-        let mut a = unmute.borrow_mut();
-        a.route(&window, ActionId::ReminderUnmute);
+    install_seam!(window: window.on_task_rule_unmute_clicked, adapter: adapter;
+    bind (a, window), args (), {        a.route(&window, ActionId::ReminderUnmute);
+
     });
 
-    let open_sched = Rc::clone(adapter);
-    let open_sched_weak = window.as_weak();
-    window.on_task_scheduled_edit_opened(move || {
-        let Some(window) = open_sched_weak.upgrade() else {
-            return;
-        };
-        let mut a = open_sched.borrow_mut();
-        begin_date_edit(&mut a, &window, crate::view_state::DateField::Scheduled);
+    install_seam!(window: window.on_task_scheduled_edit_opened, adapter: adapter;
+    bind (a, window), args (), {        begin_date_edit(&mut a, &window, crate::view_state::DateField::Scheduled);
+
     });
 
-    let edited = Rc::clone(adapter);
-    let edited_weak = window.as_weak();
-    window.on_task_date_edited(move |text| {
-        let Some(window) = edited_weak.upgrade() else {
-            return;
-        };
-        let mut a = edited.borrow_mut();
-        a.due_buffer = text.to_string();
-        a.due_echo = crate::due_edit::echo(&a.due_buffer, chrono::Utc::now(), &chrono::Local);
-        // The Buffer-source live sync (r4 D25): a parseable buffer
-        // re-seeds the picker per keystroke (the field wins while
-        // typing); empty or junk leaves it untouched — the validity
-        // flavour carries the state.
-        let now = chrono::Utc::now();
-        let seeded = a.due_picker.as_ref().and_then(|picker| {
-            crate::due_edit::sync_buffer_picker(
-                &a.due_buffer,
-                picker,
-                crate::due_edit::SyncSource::Buffer,
-                now,
-                &chrono::Local,
-            )
-        });
-        if let Some((_, Some(seeded))) = seeded {
-            a.due_picker = Some(seeded);
-        }
-        // The echo and the seeded picker both ride a full pass now.
+    install_seam!(window: window.on_task_date_edited, adapter: adapter;
+    bind (a, window), args (text), {        a.due_buffer = text.to_string();
+    a.due_echo = crate::due_edit::echo(&a.due_buffer, chrono::Utc::now(), &chrono::Local);
+    // The Buffer-source live sync (r4 D25): a parseable buffer
+    // re-seeds the picker per keystroke (the field wins while
+    // typing); empty or junk leaves it untouched — the validity
+    // flavour carries the state.
+    let now = chrono::Utc::now();
+    let seeded = a.due_picker.as_ref().and_then(|picker| {
+        crate::due_edit::sync_buffer_picker(
+            &a.due_buffer,
+            picker,
+            crate::due_edit::SyncSource::Buffer,
+            now,
+            &chrono::Local,
+        )
+    });
+    if let Some((_, Some(seeded))) = seeded {
+        a.due_picker = Some(seeded);
+    }
+    // The echo and the seeded picker both ride a full pass now.
+    a.refresh_forced(&window);
+
+    });
+
+    install_seam!(window: window.on_task_date_accepted, adapter: adapter;
+    bind (a, window), args (text), {        match crate::due_edit::parse(&text, chrono::Utc::now(), &chrono::Local) {
+        // A refusal keeps the buffer and dispatches nothing.
+        Err(crate::due_edit::DueParseError) => {}
+        parsed => commit_date(&mut a, &window, parsed.expect("non-error parse")),
+    }
+
+    });
+
+    install_seam!(window: window.on_task_date_picker_toggled, adapter: adapter;
+    bind (a, window), args (), {        if a.due_picker.take().is_some() {
         a.refresh_forced(&window);
+    } else {
+        a.open_due_picker(&window, false);
+    }
+
     });
 
-    let accepted = Rc::clone(adapter);
-    let accepted_weak = window.as_weak();
-    window.on_task_date_accepted(move |text| {
-        let Some(window) = accepted_weak.upgrade() else {
-            return;
-        };
-        let mut a = accepted.borrow_mut();
-        match crate::due_edit::parse(&text, chrono::Utc::now(), &chrono::Local) {
-            // A refusal keeps the buffer and dispatches nothing.
-            Err(crate::due_edit::DueParseError) => {}
-            parsed => commit_date(&mut a, &window, parsed.expect("non-error parse")),
-        }
+    install_seam!(window: window.on_task_date_picker_key, adapter: adapter;
+    bind (a, window), args (code), {        // The click seams carry the widget's int code space; the
+    // registry actions arrive as typed `PickerKey` effects on the
+    // same function (round-3 D25: one implementation, two
+    // dispatch sites).
+    let Some(key) = crate::due_edit::DatePickerKey::from_code(code) else {
+        return;
+    };
+    a.apply_picker_key(&window, key);
+
     });
 
-    let toggle = Rc::clone(adapter);
-    let toggle_weak = window.as_weak();
-    window.on_task_date_picker_toggled(move || {
-        let Some(window) = toggle_weak.upgrade() else {
-            return;
-        };
-        let mut a = toggle.borrow_mut();
-        if a.due_picker.take().is_some() {
-            a.refresh_forced(&window);
-        } else {
-            a.open_due_picker(&window, false);
-        }
-    });
-
-    let key = Rc::clone(adapter);
-    let key_weak = window.as_weak();
-    window.on_task_date_picker_key(move |code| {
-        let Some(window) = key_weak.upgrade() else {
-            return;
-        };
-        let mut a = key.borrow_mut();
-        // The click seams carry the widget's int code space; the
-        // registry actions arrive as typed `PickerKey` effects on the
-        // same function (round-3 D25: one implementation, two
-        // dispatch sites).
-        let Some(key) = crate::due_edit::DatePickerKey::from_code(code) else {
-            return;
-        };
-        a.apply_picker_key(&window, key);
-    });
-
-    let dismiss = Rc::clone(adapter);
-    let dismiss_weak = window.as_weak();
-    window.on_date_picker_dismiss_requested(move || {
-        let Some(window) = dismiss_weak.upgrade() else {
-            return;
-        };
-        let mut a = dismiss.borrow_mut();
-        // Outside click (r4 D24, superseding the round-3 D10
-        // picker-only rule): the editor settles per the rule —
-        // parseable commits, empty/junk discards — and the picker
-        // drops with it. In the picker phase the buffer mirrors the
-        // picker, so click-away ≡ done, consistent with the field
-        // phase.
-        settle_date_editor(&mut a, &window);
-        if a.due_picker.take().is_some() {
-            a.refresh_forced(&window);
-        }
-    });
-
-    let focus_lost = Rc::clone(adapter);
-    let focus_lost_weak = window.as_weak();
-    window.on_date_editor_focus_lost(move || {
-        let Some(window) = focus_lost_weak.upgrade() else {
-            return;
-        };
-        let mut a = focus_lost.borrow_mut();
-        settle_date_editor(&mut a, &window);
-    });
-
-    let time_edited = Rc::clone(adapter);
-    let time_edited_weak = window.as_weak();
-    window.on_task_date_time_edited(move |text| {
-        let Some(window) = time_edited_weak.upgrade() else {
-            return;
-        };
-        let mut a = time_edited.borrow_mut();
-        // The field's value echo seeds its buffer ("--:--" while no
-        // time exists), so the first keystroke's text carries it as a
-        // prefix — strip the echo, keep the typed digits.
-        let mut text = text.to_string();
-        if let Some(stripped) = text.strip_prefix("--:--") {
-            text = stripped.to_owned();
-        }
-        a.time_text.clone_from(&text);
-        // Buffer-source seeding (r4 D26): a lenient-parse hit moves
-        // the picker's time live; junk/partial leaves it untouched
-        // (the validity flavour shows the state).
-        if let Some(time) = crate::due_edit::parse_time_lenient(&text)
-            && let Some(picker) = a.due_picker.as_mut()
-        {
-            picker.set_time(Some(time));
-        }
+    install_seam!(window: window.on_date_picker_dismiss_requested, adapter: adapter;
+    bind (a, window), args (), {        // Outside click (r4 D24, superseding the round-3 D10
+    // picker-only rule): the editor settles per the rule —
+    // parseable commits, empty/junk discards — and the picker
+    // drops with it. In the picker phase the buffer mirrors the
+    // picker, so click-away ≡ done, consistent with the field
+    // phase.
+    settle_date_editor(&mut a, &window);
+    if a.due_picker.take().is_some() {
         a.refresh_forced(&window);
+    }
+
     });
 
-    let time_picked = Rc::clone(adapter);
-    let time_picked_weak = window.as_weak();
-    window.on_task_date_time_picked(move |minutes| {
-        let Some(window) = time_picked_weak.upgrade() else {
-            return;
-        };
-        let mut a = time_picked.borrow_mut();
-        let Some(time) = crate::due_edit::time_of_minutes(minutes) else {
-            return;
-        };
-        let Some(picker) = a.due_picker.as_mut() else {
-            return;
-        };
+    install_seam!(window: window.on_date_editor_focus_lost, adapter: adapter;
+    bind (a, window), args (), {        settle_date_editor(&mut a, &window);
+
+    });
+
+    install_seam!(window: window.on_task_date_time_edited, adapter: adapter;
+    bind (a, window), args (text), {        // The field's value echo seeds its buffer ("--:--" while no
+    // time exists), so the first keystroke's text carries it as a
+    // prefix — strip the echo, keep the typed digits.
+    let mut text = text.to_string();
+    if let Some(stripped) = text.strip_prefix("--:--") {
+        text = stripped.to_owned();
+    }
+    a.time_text.clone_from(&text);
+    // Buffer-source seeding (r4 D26): a lenient-parse hit moves
+    // the picker's time live; junk/partial leaves it untouched
+    // (the validity flavour shows the state).
+    if let Some(time) = crate::due_edit::parse_time_lenient(&text)
+        && let Some(picker) = a.due_picker.as_mut()
+    {
         picker.set_time(Some(time));
-        // Picker-source sync (r4 D26): the canonical rendering wins
-        // the field mirror, and the due buffer re-renders from the
-        // selection.
-        a.time_text = crate::due_edit::format_time_hm(time);
-        sync_buffer_from_picker(&mut a);
-        a.refresh_forced(&window);
+    }
+    a.refresh_forced(&window);
+
     });
 
-    let time_accepted = Rc::clone(adapter);
-    let time_accepted_weak = window.as_weak();
-    window.on_task_date_time_accepted(move |text| {
-        let Some(window) = time_accepted_weak.upgrade() else {
-            return;
-        };
-        let mut a = time_accepted.borrow_mut();
-        match crate::due_edit::parse_time_lenient(&text) {
-            // A refusal keeps the typed text — the validity flavour
-            // makes it visible — and dispatches nothing.
-            None => {
-                a.time_text = text.to_string();
-                a.refresh_forced(&window);
-            }
-            Some(time) => {
-                let Some(picker) = a.due_picker.as_mut() else {
-                    return;
-                };
-                picker.set_time(Some(time));
-                let Some(instant) = a
-                    .due_picker
-                    .as_ref()
-                    .expect("checked above")
-                    .commit_instant(&chrono::Local)
-                else {
-                    a.refresh_forced(&window);
-                    return;
-                };
-                commit_date(&mut a, &window, Some(instant));
-            }
-        }
+    install_seam!(window: window.on_task_date_time_picked, adapter: adapter;
+    bind (a, window), args (minutes), {        let Some(time) = crate::due_edit::time_of_minutes(minutes) else {
+        return;
+    };
+    let Some(picker) = a.due_picker.as_mut() else {
+        return;
+    };
+    picker.set_time(Some(time));
+    // Picker-source sync (r4 D26): the canonical rendering wins
+    // the field mirror, and the due buffer re-renders from the
+    // selection.
+    a.time_text = crate::due_edit::format_time_hm(time);
+    sync_buffer_from_picker(&mut a);
+    a.refresh_forced(&window);
+
     });
 
-    let day = Rc::clone(adapter);
-    let day_weak = window.as_weak();
-    window.on_task_date_day_clicked(move |cell| {
-        let Some(window) = day_weak.upgrade() else {
-            return;
-        };
-        let mut a = day.borrow_mut();
-        let Some(picker) = a.due_picker.as_ref() else {
-            return;
-        };
-        let Some(date) = picker
-            .grid()
-            .get(usize::try_from(cell).unwrap_or(usize::MAX))
-            .and_then(|c| c.date)
-        else {
-            return; // a blank or a stale index
-        };
-        a.due_picker
-            .as_mut()
-            .expect("checked above")
-            .set_cursor(date);
-        // The click carries the picker's time (round-3 D9): cursor
-        // date + time-of-day through the one funnel.
-        let Some(instant) = a
-            .due_picker
-            .as_ref()
-            .expect("checked above")
-            .commit_instant(&chrono::Local)
-        else {
+    install_seam!(window: window.on_task_date_time_accepted, adapter: adapter;
+    bind (a, window), args (text), {        match crate::due_edit::parse_time_lenient(&text) {
+        // A refusal keeps the typed text — the validity flavour
+        // makes it visible — and dispatches nothing.
+        None => {
+            a.time_text = text.to_string();
             a.refresh_forced(&window);
-            return;
-        };
-        commit_date(&mut a, &window, Some(instant));
+        }
+        Some(time) => {
+            let Some(picker) = a.due_picker.as_mut() else {
+                return;
+            };
+            picker.set_time(Some(time));
+            let Some(instant) = a
+                .due_picker
+                .as_ref()
+                .expect("checked above")
+                .commit_instant(&chrono::Local)
+            else {
+                a.refresh_forced(&window);
+                return;
+            };
+            commit_date(&mut a, &window, Some(instant));
+        }
+    }
+
+    });
+
+    install_seam!(window: window.on_task_date_day_clicked, adapter: adapter;
+    bind (a, window), args (cell), {        let Some(picker) = a.due_picker.as_ref() else {
+        return;
+    };
+    let Some(date) = picker
+        .grid()
+        .get(usize::try_from(cell).unwrap_or(usize::MAX))
+        .and_then(|c| c.date)
+    else {
+        return; // a blank or a stale index
+    };
+    a.due_picker
+        .as_mut()
+        .expect("checked above")
+        .set_cursor(date);
+    // The click carries the picker's time (round-3 D9): cursor
+    // date + time-of-day through the one funnel.
+    let Some(instant) = a
+        .due_picker
+        .as_ref()
+        .expect("checked above")
+        .commit_instant(&chrono::Local)
+    else {
+        a.refresh_forced(&window);
+        return;
+    };
+    commit_date(&mut a, &window, Some(instant));
+
     });
 }
 
