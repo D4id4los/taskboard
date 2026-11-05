@@ -568,9 +568,39 @@ fn the_focus_section_rejects_typed_and_the_env_lane_overrides() {
         timing.work(),
         taskboard_domain::focus::FocusTiming::try_new(
             chrono::TimeDelta::minutes(50),
-            chrono::TimeDelta::minutes(5)
+            chrono::TimeDelta::minutes(5),
+            chrono::TimeDelta::minutes(15),
+            4,
         )
         .expect("positive")
         .work()
     );
+}
+
+/// The new focus knobs ride the same typed load chain (issue #600): a
+/// partial file's zero cadence is a typed `invalid-focus-timing`, and
+/// the env lane wins over the file for the behavior knobs too.
+#[test]
+fn the_focus_chain_knobs_reject_typed_and_the_env_lane_overrides() {
+    let _env = env_lock();
+    let dir = tempdir();
+    let file = dir.path().join("focus-chain.toml");
+    std::fs::write(&file, "[focus]\nenabled = true\nlong_break_every = 0\n").expect("write toml");
+    let err = AppConfig::load(Some(file.clone())).expect_err("a zero cadence must not load");
+    assert_eq!(err.kind(), "invalid-focus-timing");
+
+    std::fs::write(
+        &file,
+        "[focus]\nenabled = true\nchain = false\nnotify = true\n",
+    )
+    .expect("write toml");
+    remove_env("TASKBOARD_FOCUS__CHAIN");
+    remove_env("TASKBOARD_FOCUS__NOTIFY");
+    set_env("TASKBOARD_FOCUS__CHAIN", "true");
+    set_env("TASKBOARD_FOCUS__NOTIFY", "false");
+    let config = AppConfig::load(Some(file)).expect("loads");
+    remove_env("TASKBOARD_FOCUS__CHAIN");
+    remove_env("TASKBOARD_FOCUS__NOTIFY");
+    assert!(config.focus.chain, "env beats file");
+    assert!(!config.focus.notify, "env beats file");
 }
