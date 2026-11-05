@@ -73,6 +73,11 @@ use taskboard_ui_slint::presentation::DeliveryHealth;
 use crate::config::{AppConfig, ConfigError, SyncBackend};
 use crate::lockfile::{InstanceLock, LockError};
 use crate::notifications::{NOTIFIER_CAPACITY, NotificationSink};
+use taskboard_sync_files_nextcloud::actor::spawn_files_sync_actor;
+use taskboard_sync_files_nextcloud::client::WebDavFilesTransport;
+use taskboard_sync_files_nextcloud::cycle::EmptyDocument;
+use taskboard_sync_files_nextcloud::status::FilesSyncStatus;
+
 use crate::secrets::{CredentialError, CredentialStore};
 
 /// Channel capacity of the system broadcast (`NetworkLost`,
@@ -89,6 +94,132 @@ const BOOT_FAILURE_JOIN_BUDGET: Duration = Duration::from_secs(10);
 pub const SYNC_COMMAND_CAPACITY: usize = 32;
 /// Channel capacity of the sync-report inbox (one report per cycle).
 pub const SYNC_REPORT_CAPACITY: usize = 32;
+
+/// The files-sync spawn gate's typed failures (DR-8 decision D-FT10):
+/// resolved at the spawn site, mapped onto [`BootstrapError`].
+/// The kebab connector identity the files-sync actor runs under (the
+/// `DEFAULT_CONNECTOR_NAME` precedent; proven kebab by a pinned unit
+/// test, so the mint cannot fail by construction).
+pub const FILES_SYNC_CONNECTOR_NAME: &str = "files-sync";
+
+/// The pure spawn decision for the files-sync transport (DR-8 decision
+/// D-FT10, the `focus_spawn_decision` precedent): `Some(spec)` iff
+/// `[files_sync] enabled` ∧ the default connector is Nextcloud. No
+/// run-mode arm — a kiosk is a device of the fleet (D-SF18); the mode
+/// agnosticism is pinned by a test. No IO happens here — the gate
+/// ([`files_sync_spawn`]) does the credential/URL/dir work.
+///
+/// # Panics
+///
+/// Only if `FILES_SYNC_CONNECTOR_NAME` ever stops being kebab —
+/// pinned impossible by a unit test (the `DEFAULT_CONNECTOR_NAME`
+/// precedent).
+#[must_use]
+pub fn files_sync_spawn_decision(config: &AppConfig) -> Option<FilesSyncSpawnSpec> {
+    if !config.files_sync.enabled {
+        return None;
+    }
+    // validate() already rejected enabled-without-Nextcloud; the
+    // decision re-derives, never re-validates. An empty connector set
+    // cannot reach here through a validated config.
+    let specs = crate::connectors::configured_connectors(config).ok()?;
+    let default = specs.first()?;
+    if default.backend != SyncBackend::Nextcloud {
+        return None;
+    }
+    Some(FilesSyncSpawnSpec {
+        identity: taskboard_domain::ConnectorId::from_kebab(FILES_SYNC_CONNECTOR_NAME)
+            .expect("FILES_SYNC_CONNECTOR_NAME is kebab"),
+        server_url: default.server_url.clone(),
+        username: default.username.clone(),
+    })
+}
+
+/// The identity the files-sync gate spawns with (the pure decision's
+/// product).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FilesSyncSpawnSpec {
+    pub identity: taskboard_domain::ConnectorId,
+    pub server_url: String,
+    pub username: String,
+}
+
+/// The spawn gate (the `NextcloudModule::build_and_spawn` order):
+/// resolve the device-identity file's home, resolve the credential
+/// (ADR 0008 env escape unchanged), build the `WebDAV` transport, spawn
+/// the actor. The status watch is created here; the receiver half
+/// rides the returned pair for the app's status surface.
+///
+/// # Errors
+///
+/// [`FilesSyncGateError`]: credential resolution, client URL
+/// rejection, or the data dir.
+async fn files_sync_spawn(
+    spec: &FilesSyncSpawnSpec,
+    credentials: Arc<dyn CredentialStore>,
+    config: &AppConfig,
+    system: broadcast::Sender<SystemEvent>,
+) -> Result<
+    (
+        JoinHandle<()>,
+        tokio::sync::watch::Receiver<FilesSyncStatus>,
+    ),
+    FilesSyncGateError,
+> {
+    // The fixed home is `<data>/taskboard/device.json` (D-SF4); path
+    // resolution stays app-side, the file IO is the transport crate's.
+    let data_dir = dirs::data_dir()
+        .map(|dir| dir.join("taskboard"))
+        .ok_or(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "no platform application-data directory",
+        ))?;
+    tokio::fs::create_dir_all(&data_dir).await?;
+    let device_json = data_dir.join("device.json");
+    let password = credentials.load(&spec.server_url, &spec.username)?;
+    if crate::config::url_is_cleartext(&spec.server_url) {
+        tracing::warn!(
+            server = %spec.server_url,
+            "files sync over cleartext http; the app password travels unencrypted — prefer https"
+        );
+    }
+    let transport = WebDavFilesTransport::new(&spec.server_url, &spec.username, password.expose())?;
+    let (join, status_rx) = spawn_files_sync_actor(
+        transport,
+        device_json,
+        Arc::new(EmptyDocument),
+        // The broadcast is the engine's system feed; the actor consumes
+        // only `Shutdown` and publishes nothing on it.
+        system,
+        config.files_sync_config(),
+    );
+    tracing::info!(identity = %spec.identity, "files-sync actor spawned");
+    Ok((join, status_rx))
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum FilesSyncGateError {
+    /// The account's app password could not be resolved (ADR 0008's
+    /// keyring/env/file stores).
+    #[error("credential resolution failed")]
+    Credential(#[from] CredentialError),
+    /// The server URL was rejected by the transport client.
+    #[error("files sync client construction failed")]
+    Client(#[from] taskboard_sync_files_nextcloud::error::TransportError),
+    /// The platform data dir is missing or uncreatable.
+    #[error("device identity directory unavailable")]
+    DataDir(#[from] std::io::Error),
+}
+
+impl From<FilesSyncGateError> for BootstrapError {
+    fn from(err: FilesSyncGateError) -> Self {
+        match err {
+            FilesSyncGateError::Credential(source) => Self::FilesSyncCredential(source),
+            FilesSyncGateError::Client(source) => Self::FilesSyncClient(source),
+            FilesSyncGateError::DataDir(source) => Self::FilesSyncDataDirIo(source),
+        }
+    }
+}
 
 /// Bootstrap failure classes, typed end to end.
 #[derive(Debug, thiserror::Error)]
@@ -114,6 +245,22 @@ pub enum BootstrapError {
     /// The Deck client rejected the server URL.
     #[error("deck client construction failed")]
     Client(#[from] taskboard_sync_nextcloud::DeckError),
+    /// The files-sync transport's credential could not be resolved at
+    /// the spawn gate (distinct from the connector's: the user enabled
+    /// `[files_sync]`, so the boot fails loudly — D-SF18's "credentials
+    /// resolve" conjunct).
+    #[error("files sync credential resolution failed")]
+    FilesSyncCredential(#[source] CredentialError),
+    /// The files-sync transport rejected the server URL.
+    #[error("files sync client construction failed")]
+    FilesSyncClient(#[from] taskboard_sync_files_nextcloud::error::TransportError),
+    /// The platform has no application-data directory for the device
+    /// identity file.
+    #[error("no application data directory for the device identity")]
+    FilesSyncDataDir,
+    /// The device-identity directory could not be created.
+    #[error("device identity directory could not be created")]
+    FilesSyncDataDirIo(#[source] std::io::Error),
     /// Another taskboard instance already holds this database.
     #[error("another taskboard instance holds this database")]
     InstanceLocked {
@@ -382,6 +529,14 @@ pub struct App {
     /// Lifecycle bookkeeping only — the task exits on the engine
     /// broadcast's close, exactly like the escalation driver.
     pub focus_join: Option<JoinHandle<()>>,
+    /// The files-sync transport actor (DR-8 chunk 2): `None` while
+    /// `[files_sync]` is off or unspawnable. Lifecycle bookkeeping —
+    /// the actor exits on the Shutdown broadcast (D-FT8's broadcast
+    /// posture), the bounded join below only bounds a wedged task.
+    files_sync_join: Option<JoinHandle<()>>,
+    /// The files-sync status watch's receiver (chunk 4's surface
+    /// consumes it); lives as long as the process otherwise.
+    pub files_sync_status: Option<watch::Receiver<FilesSyncStatus>>,
     notifier_join: JoinHandle<()>,
     /// The all-down network authority's hooks (DF-7): the attach/
     /// detach registry hooks and the broadcast sender for its global
@@ -569,9 +724,13 @@ impl App {
             engine_join,
             escalation_join,
             focus_join,
+            files_sync_join,
             notifier_join,
             authority_join,
             authority: _,
+            // The files-sync status lane dies with the process; the
+            // UI-facing consumer (chunk 4) clones before shutdown.
+            files_sync_status: _,
             _lock,
             // The health lane dies with the process (or the UI's
             // clone outlives the shutdown tail harmlessly — a closed
@@ -643,6 +802,15 @@ impl App {
             false
         };
 
+        // The files-sync actor exits on the same broadcast (the
+        // Shutdown-only posture); the bounded join only bounds a
+        // wedged task. `None` while the feature is off.
+        let files_sync_budget_hit = if let Some(files_sync_join) = files_sync_join {
+            join_bounded(files_sync_join, timeout, "files sync actor").await
+        } else {
+            false
+        };
+
         // The consumer exits on its own once the engine's exit closed
         // the channel; the bounded join only bounds a wedged sink.
         let notifier_budget_hit = join_bounded(notifier_join, timeout, "notifier").await;
@@ -659,6 +827,7 @@ impl App {
                 | engine_budget_hit
                 | escalation_budget_hit
                 | focus_budget_hit
+                | files_sync_budget_hit
                 | notifier_budget_hit
                 | storage_budget_hit,
         }
@@ -974,7 +1143,7 @@ async fn diagnose_desktop_sink(probe: &dyn ServerProbe) -> SinkDiagnosis {
 #[allow(clippy::too_many_lines)] // one wiring sequence, kept flat for review
 async fn bootstrap_with_modules(
     config: AppConfig,
-    _credentials: Arc<dyn CredentialStore>,
+    credentials: Arc<dyn CredentialStore>,
     notifier_sink: Arc<dyn NotificationSink>,
     modules: Vec<Arc<dyn crate::connectors::ConnectorModule>>,
 ) -> Result<App, BootstrapError> {
@@ -1240,6 +1409,44 @@ async fn bootstrap_with_modules(
         // for a later attach.
         drop(rx);
     }
+
+    // The files-sync transport (DR-8 D-FT10): spawned beside the
+    // focus/escalation runtimes, never in the connector registry (it
+    // is not a board connector — no SyncCommand/SyncReport lane
+    // exists in this chunk). Mode-agnostic: a kiosk is a device of the
+    // fleet. The pure decision derives; validate() already
+    // guaranteed the shape. A gate failure (credential / URL / data
+    // dir) unwinds the boot exactly like a module failure — the user
+    // enabled the feature; fail loudly, run nothing half-wired.
+    let (files_sync_join, files_sync_status) = match files_sync_spawn_decision(&config) {
+        Some(spec) => {
+            let gate = files_sync_spawn(&spec, credentials.clone(), &config, system.clone()).await;
+            match gate {
+                Ok((join, status_rx)) => (Some(join), Some(status_rx)),
+                Err(err) => {
+                    // Unwind like a module failure: nothing keeps
+                    // running behind the typed gate error.
+                    tracing::error!(?err, "bootstrap failed: the files-sync gate");
+                    drop(connectors);
+                    drop(sync_commands);
+                    let _ = system.send(SystemEvent::Shutdown);
+                    drop(system);
+                    drop(reports);
+                    join_bounded(authority_join, timeout, "authority").await;
+                    join_bounded(engine_join, timeout, "state engine").await;
+                    drop(engine);
+                    join_bounded(escalation_join, timeout, "escalation driver").await;
+                    if let Some(focus_join) = focus_join {
+                        join_bounded(focus_join, timeout, "focus runtime").await;
+                    }
+                    drop(storage);
+                    join_bounded(storage_join, timeout, "storage actor").await;
+                    return Err(BootstrapError::from(err));
+                }
+            }
+        }
+        None => (None, None),
+    };
     tracing::info!("actor graph spawned: storage, state engine, notifier");
 
     let connectors = Arc::new(std::sync::Mutex::new(connectors));
@@ -1265,6 +1472,8 @@ async fn bootstrap_with_modules(
         engine_join,
         escalation_join,
         focus_join,
+        files_sync_join,
+        files_sync_status,
         notifier_join,
         authority,
         authority_join,
@@ -2030,6 +2239,150 @@ mod connector_module_tests {
     /// A credential-refusing store: `build_and_spawn`'s failure maps onto
     /// the existing typed `BootstrapError` variant (D-14: wrap, not
     /// duplicate) — and unwinds the already-spawned engine.
+    /// An accepting credential store: the files-sync gate's happy path.
+    #[derive(Debug)]
+    struct AcceptingStore;
+
+    impl crate::secrets::CredentialStore for AcceptingStore {
+        fn load(
+            &self,
+            _: &str,
+            _: &str,
+        ) -> Result<crate::secrets::AppPassword, crate::secrets::CredentialError> {
+            Ok(crate::secrets::AppPassword::new("it-password".to_owned()))
+        }
+        fn store(
+            &self,
+            _: &str,
+            _: &str,
+            _: crate::secrets::AppPassword,
+        ) -> Result<(), crate::secrets::CredentialError> {
+            Ok(())
+        }
+        fn delete(&self, _: &str, _: &str) -> Result<(), crate::secrets::CredentialError> {
+            Ok(())
+        }
+    }
+
+    fn files_sync_enabled_config(dir: &std::path::Path) -> AppConfig {
+        let mut config = AppConfig::default();
+        config.nextcloud.server_url = Some("https://nc.example".into());
+        config.nextcloud.username = Some("alice".into());
+        config.storage.db_path = Some(dir.join("taskboard.db"));
+        config.files_sync.enabled = true;
+        config.validate().expect("valid world");
+        config
+    }
+
+    /// The dispatch's bootstrap pin: absent `[files_sync]` ⇒ no spec
+    /// and no spawn (behavior-level, through the real boot).
+    #[tokio::test]
+    async fn absent_files_sync_spawns_nothing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut config = AppConfig::default();
+        config.storage.db_path = Some(dir.path().join("taskboard.db"));
+        config.validate().expect("valid");
+        let app = bootstrap_with_modules(
+            config,
+            Arc::new(RefusingStore),
+            Arc::new(crate::notifications::LogSink),
+            Vec::new(),
+        )
+        .await
+        .expect("boot");
+        assert!(app.files_sync_status.is_none(), "nothing spawned");
+        app.shutdown().await;
+    }
+
+    /// The mode-agnostic pin (D-SF18): a kiosk is a device of the
+    /// fleet — the spawn decision has no run-mode arm.
+    #[test]
+    fn enabled_files_sync_spawns_under_kiosk() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut config = files_sync_enabled_config(dir.path());
+        config.app.mode = crate::config::AppMode::Kiosk;
+        assert!(
+            files_sync_spawn_decision(&config).is_some(),
+            "no kiosk exclusion exists"
+        );
+    }
+
+    /// Enabled + standalone ⇒ the config error fires upstream (the
+    /// decision never sees an invalid config).
+    #[test]
+    fn enabled_files_sync_without_nextcloud_is_rejected_upstream() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut config = AppConfig::default();
+        config.storage.db_path = Some(dir.path().join("t.db"));
+        config.files_sync.enabled = true;
+        match config.validate() {
+            Err(crate::config::ConfigError::FilesSyncWithoutNextcloud { .. }) => {}
+            other => panic!("expected the typed rejection, got {other:?}"),
+        }
+    }
+
+    /// The spawn gate's credential failure unwinds the boot with the
+    /// typed error — nothing keeps running behind the failure.
+    #[tokio::test]
+    async fn files_sync_credential_failure_unwinds_the_boot() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = files_sync_enabled_config(dir.path());
+        let outcome = bootstrap_with_modules(
+            config,
+            Arc::new(RefusingStore),
+            Arc::new(crate::notifications::LogSink),
+            Vec::new(),
+        )
+        .await;
+        match outcome {
+            Err(BootstrapError::FilesSyncCredential(_)) => {}
+            other => panic!("expected FilesSyncCredential, got {other:?}"),
+        }
+    }
+
+    /// The decision's purity: it reads only config — a spec for a
+    /// Nextcloud default connector carries the shared identity.
+    #[test]
+    fn files_sync_spawn_decision_derives_from_the_default_connector() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = files_sync_enabled_config(dir.path());
+        let spec = files_sync_spawn_decision(&config).expect("enabled + nextcloud");
+        assert_eq!(spec.server_url, "https://nc.example");
+        assert_eq!(spec.username, "alice");
+        assert_eq!(spec.identity.as_str(), FILES_SYNC_CONNECTOR_NAME);
+    }
+
+    /// The spawn identity constant is kebab (the `DEFAULT_CONNECTOR_
+    /// NAME` pin's twin): the gate's `expect` cannot fail by
+    /// construction.
+    #[test]
+    fn the_files_sync_connector_name_is_kebab() {
+        assert!(taskboard_domain::ConnectorId::is_kebab_name(
+            FILES_SYNC_CONNECTOR_NAME
+        ));
+    }
+
+    /// The happy path end-to-end: enabled + accepting credentials ⇒
+    /// the actor spawned and the status watch is live.
+    #[tokio::test]
+    async fn enabled_files_sync_spawns_the_actor_and_the_status_watch() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = files_sync_enabled_config(dir.path());
+        let app = bootstrap_with_modules(
+            config,
+            Arc::new(AcceptingStore),
+            Arc::new(crate::notifications::LogSink),
+            Vec::new(),
+        )
+        .await
+        .expect("boot");
+        assert!(
+            app.files_sync_status.is_some(),
+            "the status watch rides the boot"
+        );
+        app.shutdown().await;
+    }
+
     #[derive(Debug)]
     struct RefusingStore;
 
