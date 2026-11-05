@@ -2157,6 +2157,24 @@ impl Adapter {
             (Flow::None, UiEffect::PlanBeginPlace(task)) => {
                 self.plan_time_text.clear();
                 self.plan_effort_text.clear();
+                // Re-opening a placed box edits that box (D-3): the
+                // form seeds from the row's instant — tomorrow's box
+                // only (a stale scheduled stamp from any earlier day
+                // seeds nothing; the commit would re-place to
+                // tomorrow).
+                if let Some(scheduled) = state.tasks.get(&task).and_then(|t| t.scheduled) {
+                    let (next_start, _) = taskboard_domain::days::next_day_window(
+                        self.day_ctx().now,
+                        self.day_start.0,
+                        self.day_start.1,
+                    );
+                    if scheduled >= next_start {
+                        self.plan_time_text = crate::presentation::plan_box_time_phrase(
+                            Some(scheduled),
+                            self.calendar(),
+                        );
+                    }
+                }
                 self.view_state.open_plan_place(task)
             }
             (Flow::None, UiEffect::PlanRemoveBox(task)) => {
@@ -5781,6 +5799,9 @@ fn install_today_row_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     };
     a.plan_target = Some(task);
     a.route(&window, ActionId::PlanBeginPlace);
+    // A placed row's re-open seeds the form from the box's instant
+    // (D-3): echo the seeded buffer so the mounting field shows it.
+    window.set_plan_time_text(SharedString::from(a.plan_time_text.clone()));
 
     });
 
@@ -5801,6 +5822,7 @@ fn install_today_row_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     a.plan_effort_text.clear();
     a.plan_target = Some(task);
     a.route(&window, ActionId::PlanBeginPlace);
+    window.set_plan_time_text(SharedString::new());
 
     });
 

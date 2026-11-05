@@ -3599,3 +3599,76 @@ fn the_kiosk_tracked_section_filters_to_the_viewed_board() {
         );
     });
 }
+
+/// The placed box's re-open seeds the placement form from the row's
+/// instant (#622, D-3): committing with no typing routes the box's
+/// own instant back — the seed round-trips as the placement write. A
+/// stale scheduled stamp from an earlier day seeds nothing (the
+/// commit would re-place to tomorrow), so its commit is the typed
+/// inert.
+#[test]
+fn the_placed_box_reopen_seeds_the_form_from_the_instant() {
+    on_slint_thread(|| {
+        let day_start = UiSettings::default().day_start;
+        let (next_start, _) =
+            taskboard_domain::days::next_day_window(chrono::Utc::now(), day_start.0, day_start.1);
+        let instant = next_start + chrono::TimeDelta::hours(2);
+
+        let (mut state, fx) = fixture();
+        state.tasks.get_mut(&fx.tasks[0]).expect("task").scheduled = Some(instant);
+        let mut plan_rig = rig(state);
+        let adapter = plan_rig.adapter();
+        {
+            let mut a = adapter.borrow_mut();
+            a.interpret_for_test(
+                plan_rig.handle.window(),
+                UiEffect::PlanBeginPlace(fx.tasks[0]),
+            );
+        }
+        assert!(matches!(
+            adapter.borrow().view_state.flow(),
+            Flow::PlanPlace { .. }
+        ));
+        // The seed round-trips: commit with no typing routes the box's
+        // own instant.
+        {
+            let mut a = adapter.borrow_mut();
+            a.interpret_for_test(plan_rig.handle.window(), UiEffect::PlanCommitPlace);
+        }
+        assert_eq!(
+            plan_rig.drain_commands(),
+            vec![StateCommand::UpdateTask {
+                id: fx.tasks[0],
+                changes: taskboard_domain::TaskChanges {
+                    scheduled: Some(Some(instant)),
+                    ..taskboard_domain::TaskChanges::default()
+                },
+            }],
+            "the seeded instant commits untouched"
+        );
+
+        // The stale-stamp guard: yesterday's box seeds nothing, the
+        // empty time field refuses the commit (typed inert, form kept).
+        let (mut state, fx) = fixture();
+        state.tasks.get_mut(&fx.tasks[0]).expect("task").scheduled =
+            Some(chrono::Utc::now() - chrono::TimeDelta::days(3));
+        let mut plan_rig = rig(state);
+        let adapter = plan_rig.adapter();
+        {
+            let mut a = adapter.borrow_mut();
+            a.interpret_for_test(
+                plan_rig.handle.window(),
+                UiEffect::PlanBeginPlace(fx.tasks[0]),
+            );
+            a.interpret_for_test(plan_rig.handle.window(), UiEffect::PlanCommitPlace);
+        }
+        assert!(matches!(
+            adapter.borrow().view_state.flow(),
+            Flow::PlanPlace { .. }
+        ));
+        assert!(
+            plan_rig.drain_commands().is_empty(),
+            "the unseeded commit dispatches nothing"
+        );
+    });
+}
