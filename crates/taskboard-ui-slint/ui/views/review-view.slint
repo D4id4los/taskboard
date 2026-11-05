@@ -15,6 +15,7 @@ import { FocusScrollHint } from "../focus-scroll.slint";
 import { ListView } from "../widgets/listview.slint";
 import { ScrollPageHint } from "../scroll-page.slint";
 import { EmptyState } from "../widgets/empty-state.slint";
+import { StatBars, StatBarModel } from "../widgets/stat-bars.slint";
 
 export struct ReviewWindowModel {
     estimated: string,
@@ -40,11 +41,34 @@ export struct ReviewRowModel {
     gap: string,
 }
 
+// One tracking section's pushed values (#623 slice A): the three stat
+// cells' phrases plus the per-day bar strip. `bars` always carries the
+// window's day count (7 / 30) — zero days are baseline ticks, never
+// missing bars. A collapsed section phrases empty strings and keeps
+// the full-length all-zero strip.
+export struct TrackingSectionModel {
+    // Collapsed (no tracked time of either kind) → "" — the dash
+    // renders structurally.
+    work: string,
+    respite: string,
+    // The Work-block reading (count + duration in one phrase).
+    blocks: string,
+    bars: [StatBarModel],
+    // No tracked time of either kind in the window (D-9 tier 2).
+    empty: bool,
+}
+
 export struct ReviewModel {
     week: ReviewWindowModel,
     month: ReviewWindowModel,
+    // The tracking sections (#623 slice A, D-S1): appended after the
+    // calibration pair, before the ledger — the skeleton's visual
+    // signature stays intact.
+    tracking-week: TrackingSectionModel,
+    tracking-month: TrackingSectionModel,
     rows: [ReviewRowModel],
-    // Whole-view collapse (D-9 tier 1): nothing comparable anywhere.
+    // Whole-view collapse (D-9 tier 1): nothing comparable AND nothing
+    // tracked anywhere.
     empty: bool,
 }
 
@@ -109,6 +133,46 @@ component AggregateSection inherits VerticalLayout {
     }
 }
 
+// One tracking window's section (#623 slice A, D-S1): the caption row,
+// three stat cells (Work total, Respite total, Work blocks), and the
+// per-day bar strip (D-S4). Read-only like everything here: the strip
+// carries no activation. The skeleton is fixed — only the values
+// collapse (D-9 tier 2: an empty window renders dashes and baseline
+// ticks, never a vanished section).
+component TrackingSection inherits VerticalLayout {
+    in property <string> caption;
+    in property <TrackingSectionModel> model;
+    VerticalLayout {
+        spacing: Theme.space-1;
+        vertical-stretch: 0;
+        RoleText {
+            role: Typography.heading;
+            text: root.caption;
+        }
+        HorizontalLayout {
+            spacing: Theme.space-4;
+            StatCell {
+                label: "Work";
+                value: root.model.work;
+                collapsed: root.model.empty;
+            }
+            StatCell {
+                label: "Respite";
+                value: root.model.respite;
+                collapsed: root.model.empty;
+            }
+            StatCell {
+                label: "Work blocks";
+                value: root.model.blocks;
+                collapsed: root.model.empty;
+            }
+        }
+        StatBars {
+            bars: root.model.bars;
+        }
+    }
+}
+
 export component ReviewView inherits FocusScope {
     in property <ReviewModel> review;
     // The window's logical height, pushed from the app window (the
@@ -150,6 +214,19 @@ export component ReviewView inherits FocusScope {
                     AggregateSection {
                         caption: "Last 30 days";
                         model: root.review.month;
+                    }
+
+                    // The tracking pair (#623 slice A, D-S1): appended
+                    // after the calibration sections, each captioned
+                    // with its window — appending keeps the landed
+                    // skeleton's visual signature intact.
+                    TrackingSection {
+                        caption: "Tracking · last 7 days";
+                        model: root.review.tracking-week;
+                    }
+                    TrackingSection {
+                        caption: "Tracking · last 30 days";
+                        model: root.review.tracking-month;
                     }
 
                     // The ledger (D-8): ONE per-task list over the

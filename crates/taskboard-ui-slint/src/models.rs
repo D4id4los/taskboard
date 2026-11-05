@@ -29,9 +29,9 @@ use crate::{
     Breakpoint as SlintBreakpoint, DecorationKind, DragState, DueDayModel, DueKind as SlintDueKind,
     FlowHintModel, HabitRowModel, NotificationRowModel, PaletteRowModel, PlanModel, PlanRowModel,
     ReviewModel, ReviewRowModel, ReviewWindowModel, RuleRowModel, StackColumnModel,
-    StackDetailModel, SyncBadgeModel, SyncPhaseUi, TaskCardModel, TaskDecoration, TaskDetailModel,
-    Theme, TimerRowModel, TodayModel, TodayRowModel, TodaySectionModel, Tone, TrackEntryRowModel,
-    TrackedTodayRowModel, View,
+    StackDetailModel, StatBarModel, SyncBadgeModel, SyncPhaseUi, TaskCardModel, TaskDecoration,
+    TaskDetailModel, Theme, TimerRowModel, TodayModel, TodayRowModel, TodaySectionModel, Tone,
+    TrackEntryRowModel, TrackedTodayRowModel, TrackingSectionModel, View,
 };
 
 /// The layout cap of the banner slot (D12): the truth is the row
@@ -1119,14 +1119,51 @@ fn push_review(
             empty: phrases.empty,
         }
     };
+    // The tracking sections (#623 slice A, D-S6): the same per-pass
+    // windows feed the pure folds — `now`, the bounds, and the
+    // calendar are data (the projection never reads a clock). The
+    // bars ride a plain whole-struct set: small, fixed-length, never
+    // row-diffed.
+    let entries: Vec<&taskboard_domain::TimeEntry> = state.tracking.entries.values().collect();
+    let to_tracking = |split_window, strip_days: u32| {
+        let split = taskboard_domain::window_split(entries.iter().copied(), split_window, now);
+        let blocks = taskboard_domain::work_blocks(entries.iter().copied(), split_window, now);
+        let phrases = presentation::review_tracking_section(&split, &blocks);
+        let series = taskboard_domain::daily_split_series(
+            entries.iter().copied(),
+            std::num::NonZeroU32::new(strip_days).expect("non-zero constant"),
+            calendar.day_start_time,
+            calendar.offset,
+            now,
+        );
+        let bars: Vec<StatBarModel> = presentation::review_bar_fractions(&series)
+            .into_iter()
+            .map(|bar| StatBarModel {
+                work: bar.work,
+                respite: bar.respite,
+            })
+            .collect();
+        TrackingSectionModel {
+            work: SharedString::from(phrases.work),
+            respite: SharedString::from(phrases.respite),
+            blocks: SharedString::from(phrases.blocks),
+            bars: ModelRc::new(slint::VecModel::from(bars)),
+            empty: phrases.empty,
+        }
+    };
+    let tracking_week = to_tracking(week_window, week_days);
+    let tracking_month = to_tracking(month_window, month_days);
+    let tracking_month_empty = tracking_month.empty;
     let model = ReviewModel {
         week: to_window(&week_report.aggregate),
         month: to_window(&month_report.aggregate),
+        tracking_week,
+        tracking_month,
         rows: ModelRc::default(),
-        // Whole-view collapse (D-9 tier 1): the 7-day window sits
-        // inside the 30-day one, so the 30-day ledger's emptiness
-        // implies both sections' emptiness.
-        empty: month_report.rows.is_empty(),
+        // Whole-view collapse (D-9 tier 1, D-S9's extension): the
+        // 30-day ledger empty AND nothing tracked in the 30-day
+        // window — tracked time alone keeps the view standing.
+        empty: month_report.rows.is_empty() && tracking_month_empty,
     };
     push_review_model(window, models, model, &rows)
 }
@@ -1158,9 +1195,22 @@ fn empty_review_model() -> ReviewModel {
         compared: SharedString::new(),
         empty: true,
     };
+    // The belt's collapsed tracking sections (D-S6/D-S8(b)): empty
+    // phrases, empty bars — the appliance never projects the surface
+    // (the belt model is never rendered; the belt test asserts the
+    // collapsed fields).
+    let collapsed_tracking = TrackingSectionModel {
+        work: SharedString::new(),
+        respite: SharedString::new(),
+        blocks: SharedString::new(),
+        bars: ModelRc::default(),
+        empty: true,
+    };
     ReviewModel {
         week: collapsed.clone(),
         month: collapsed,
+        tracking_week: collapsed_tracking.clone(),
+        tracking_month: collapsed_tracking,
         rows: ModelRc::default(),
         empty: true,
     }
