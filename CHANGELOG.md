@@ -220,7 +220,9 @@ The workspace carries a single global version (see `docs/architecture.org`);
   cursor-following scroll). The key grammar is the D1 redefinition:
   plain Return inserts a newline and never commits; Shift+Return
   (or the checkmark) commits; Escape discards as before; focus loss
-  settles exactly as it did — no Rust-side funnel change.
+  settles exactly as it did — no Rust-side funnel change. The
+  single-line `TextField` retires its fenced multiline flavour (its
+  only consumer moved to the new widget).
 
 - Queued sync operations on a deleted board no longer retry forever
   (#282): when a pull confirms a board dead, the deletion cascade now

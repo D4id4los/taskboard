@@ -1764,10 +1764,19 @@ fn every_task_view_field_editor_carries_its_info_tip() {
             harness.press(ActionId::TaskEdit);
             harness.driver.advance_time(0);
             assert_eq!(harness.handle.window().get_current_view(), View::TaskDetail);
+            // The offset square rides TippedField; the description's
+            // square is the manual edit-mount composition's own
+            // (round-5 chunk 2, D-MLE-8) — both count.
             let mut spots: Vec<(f32, f32)> = harness
                 .driver
                 .find_all_by_id("TippedField::help-tip")
                 .iter()
+                .chain(
+                    harness
+                        .driver
+                        .find_all_by_id("TaskView::description-help-tip")
+                        .iter(),
+                )
                 .map(|tip| {
                     let p = tip.absolute_position();
                     (p.x, p.y)
@@ -1799,7 +1808,15 @@ fn every_task_view_field_editor_carries_its_info_tip() {
                     harness.driver.click_by_label(cell);
                     harness.driver.advance_time(0);
                 }
-                let tips = harness.driver.find_all_by_id("TippedField::help-tip");
+                // The offset square rides TippedField; the
+                // description site's square is the manual edit-mount
+                // composition's own (round-5 chunk 2, D-MLE-8).
+                let mut tips = harness.driver.find_all_by_id("TippedField::help-tip");
+                tips.extend(
+                    harness
+                        .driver
+                        .find_all_by_id("TaskView::description-help-tip"),
+                );
                 assert_eq!(
                     tips.len(),
                     if cell.is_empty() { 1 } else { 2 },
