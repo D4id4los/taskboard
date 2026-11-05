@@ -706,6 +706,43 @@ dependency hierarchies.
    optional =console-subscriber= feature gates =tokio-console=
    support).
 
+7. *taskboard-sync-files* — The files-sync substrate's pure core
+   (ADR 0020): the tree-layout types (=identity.json= payload, the
+   per-device file taxonomy with the reserved 5.5-compatible kinds
+   treated as opaque relay data), the per-user section document
+   codecs (versioned envelope, tolerant hand-written serde; unknown
+   rows =Verbatim=, =settings= / =proofs= relayed-never-emitted), the
+   per-device fold (embedded-clock per-key LWW, winner
+   =max by (clock, author, entry-id)= with the =author= slot =None=
+   for every v1 writer) with its proptest laws, the canonical state
+   hash (the tagged =fnv1a64:= equality fingerprint), and the
+   heartbeat payload types. No IO, no async, no UI — the
+   transport-agnostic library the folder-client and LAN transport
+   successors reuse (MIT OR Apache-2.0,
+   =#![forbid(unsafe_code)]=).
+
+8. *taskboard-sync-files-nextcloud* — The files-sync transport actor
+   over the substrate core (ADR 0020): the WebDAV client on the
+   workspace reqwest stack with the conditional-PUT discipline
+   (create-once via =If-None-Match: *= with the 412-adoption arm;
+   single-writer rewrites via =If-Match= of the etag echoed verbatim
+   as served), PROPFIND change detection with the skip-PUT decided by
+   a *local* content hash (server etags churn per upload), the
+   =device.json= identity ceremony, the narrow fixed-shape PROPFIND
+   extractor (no XML dependency), the =[files_sync]= config section
+   (mode-agnostic spawn: enabled ∧ the Nextcloud default connector's
+   shared account), and the typed status surface: latest-state
+   findings on a =tokio::sync::watch= (cycle outcome, the fork
+   alarm's stop-write paths, parked peer files, heartbeat freshness
+   per peer, the quiescence-window divergence finding) consumed by
+   the app's status projection, the CLI =status= block, and the
+   status-bar chip. Server-enforced path ownership is the posture:
+   an unexpected 412 on an own single-writer path is the fork alarm
+   (stop-write, keep-read, loud); readers never delete — the
+   =FilesTransport= verb set is closed (no DELETE/MOVE) and the
+   trashbin is the user's recovery path (see
+   =docs/files-sync-runbook.org=).
+
 * Tech Stack & External Crates Specification
 
 | Category | Selected Tool / Crate | Purpose & Selection Rationale |

@@ -10,6 +10,17 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 ### Added
 
+- The files-sync substrate's status surfacing and hardening (#632,
+  DR-8 chunk 4): the typed findings grew peer heartbeat freshness and
+  the quiescence-window divergence finding (two consecutive quiet
+  cycles, clock-free and deterministic); the `status` CLI carries the
+  additive `files_sync` block (last cycle, peer freshness ages, fork
+  alarm, parked peer files, diverged devices); the desktop UI gained
+  a status-bar chip beside the sync badge (fork state alarm-styled);
+  a new `docs/files-sync-runbook.org` covers the fork/re-identity and
+  trashbin-recovery procedures; and live Tier-3 pins
+  (`it_nextcloud_live_files_*`) re-prove the WebDAV
+  characterization facts against the hosted tier.
 - `export --what pdf` — the PDF export & print verb (#624 stage B,
   the 2026-11-05 krilla stack ruling): the printable today sheet as a
   deterministic, fixed-geometry PDF. Four curated layouts — single-
