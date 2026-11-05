@@ -4637,7 +4637,7 @@ macro_rules! install_seam {
             let Some($w) = seam_weak.upgrade() else {
                 return;
             };
-            let Ok($a) = seam_adapter.try_borrow_mut() else {
+            let Ok(mut $a) = seam_adapter.try_borrow_mut() else {
                 return;
             };
             $body
@@ -5225,61 +5225,51 @@ fn install_recur_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
 /// floor-midpoint order — the UI computes midpoints, the planner
 /// stamps.
 fn install_habit_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
-    let plus = Rc::clone(adapter);
-    let plus_weak = window.as_weak();
-    window.on_habits_plus_clicked(move |index| {
-        let Some(window) = plus_weak.upgrade() else {
-            return;
-        };
-        let mut a = plus.borrow_mut();
-        let Some(habit) = a
-            .tables
-            .habits
-            .get(usize::try_from(index).unwrap_or(usize::MAX))
-            .copied()
-        else {
-            return; // a stale index degrades to a no-op
-        };
-        a.habit_target = Some(habit);
-        a.route(&window, ActionId::HabitLog);
+    install_seam!(window: window.on_habits_plus_clicked, adapter: adapter;
+    bind (a, window), args (index), {        let Some(habit) = a
+        .tables
+        .habits
+        .get(usize::try_from(index).unwrap_or(usize::MAX))
+        .copied()
+    else {
+        return; // a stale index degrades to a no-op
+    };
+    a.habit_target = Some(habit);
+    a.route(&window, ActionId::HabitLog);
+
     });
 
-    let reorder = Rc::clone(adapter);
-    let reorder_weak = window.as_weak();
-    window.on_habits_reorder_asked(move |row, slot| {
-        let Some(window) = reorder_weak.upgrade() else {
-            return;
-        };
-        let mut a = reorder.borrow_mut();
-        let Some(&habit) = a
-            .tables
-            .habits
-            .get(usize::try_from(row).unwrap_or(usize::MAX))
-        else {
-            return; // a stale index degrades to a no-op
-        };
-        let Some(habit_row) = a.state.load().habits.habits.get(&habit).cloned() else {
-            return;
-        };
-        // The same row source the section renders: the board's live
-        // habits in stored `(order, id)` order; the drop slot's free
-        // interval brackets it.
-        let board = habit_row.board;
-        let mut orders: Vec<i64> = a
-            .state
-            .load()
-            .habits
-            .habits
-            .values()
-            .filter(|h| h.is_live() && h.board == board)
-            .map(|h| h.order)
-            .collect();
-        orders.sort_unstable();
-        let slot = usize::try_from(slot.max(0)).unwrap_or(usize::MAX);
-        let prev = slot.checked_sub(1).and_then(|i| orders.get(i).copied());
-        let next = orders.get(slot).copied();
-        a.habit_move = Some((habit, crate::presentation::habit_drop_order(prev, next)));
-        a.route(&window, ActionId::HabitMove);
+    install_seam!(window: window.on_habits_reorder_asked, adapter: adapter;
+    bind (a, window), args (row, slot), {        let Some(&habit) = a
+        .tables
+        .habits
+        .get(usize::try_from(row).unwrap_or(usize::MAX))
+    else {
+        return; // a stale index degrades to a no-op
+    };
+    let Some(habit_row) = a.state.load().habits.habits.get(&habit).cloned() else {
+        return;
+    };
+    // The same row source the section renders: the board's live
+    // habits in stored `(order, id)` order; the drop slot's free
+    // interval brackets it.
+    let board = habit_row.board;
+    let mut orders: Vec<i64> = a
+        .state
+        .load()
+        .habits
+        .habits
+        .values()
+        .filter(|h| h.is_live() && h.board == board)
+        .map(|h| h.order)
+        .collect();
+    orders.sort_unstable();
+    let slot = usize::try_from(slot.max(0)).unwrap_or(usize::MAX);
+    let prev = slot.checked_sub(1).and_then(|i| orders.get(i).copied());
+    let next = orders.get(slot).copied();
+    a.habit_move = Some((habit, crate::presentation::habit_drop_order(prev, next)));
+    a.route(&window, ActionId::HabitMove);
+
     });
 }
 
@@ -5292,116 +5282,101 @@ fn install_habit_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
 /// against an older tables pass is absorbed silently (the
 /// `board_target` precedent).
 fn install_stack_width_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
-    let press = Rc::clone(adapter);
-    let press_weak = window.as_weak();
-    window.on_board_stack_width_press(move |column| {
-        let Some(window) = press_weak.upgrade() else {
-            return;
-        };
-        let Ok(column) = usize::try_from(column) else {
-            return;
-        };
-        let mut a = press.borrow_mut();
-        let Some(&left) = a.tables.stack_ids.get(column) else {
-            return;
-        };
-        let Some(board) = a.view_state.board() else {
-            return;
-        };
-        let row = crate::models::board_row(&window, &a.state.load(), &a.view_state);
-        // A boundary needs a right column; the last column has no
-        // divider (the markup's conditional hides it anyway).
-        let Some(&right) = row.stacks.get(column + 1) else {
-            return;
-        };
-        let scale = f64::from(window.global::<crate::Theme>().get_base_scale()).max(0.001);
-        // Press materializes the resolved row into the view-state
-        // overlay (chunk-2 plan §7.2): from here the gesture runs on a
-        // total, sum-exact basis — untouched columns cannot wiggle
-        // mid-gesture and the released boundary cannot jump when the
-        // next derive re-fits the row. View-state only; release still
-        // sends the lane's one request.
-        for (stack, &width) in row.stacks.iter().zip(&row.widths) {
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            let stored = (f64::from(width) / scale).round() as i64;
-            a.view_state
-                .set_stack_width(board, *stack, u32::try_from(stored).unwrap_or(u32::MAX));
-        }
-        #[allow(clippy::cast_possible_truncation)] // a px value
-        let base = f64::from(row.widths[column]) as f32;
-        a.width_drag = Some((left, right, base));
-    });
-    let drag = Rc::clone(adapter);
-    let drag_weak = window.as_weak();
-    window.on_board_stack_width_drag(move |column, delta| {
-        let Some(window) = drag_weak.upgrade() else {
-            return;
-        };
-        let Ok(column) = usize::try_from(column) else {
-            return;
-        };
-        let mut a = drag.borrow_mut();
-        let Some((left, right, base)) = a.width_drag else {
-            return;
-        };
-        // A tables pass that reordered the columns makes the index
-        // stale: only proceed when it still addresses the dragged
-        // boundary's left column (the right StackId rides in the
-        // buffer and needs no re-check against the row below).
-        if a.tables.stack_ids.get(column) != Some(&left) {
-            return;
-        }
-        let Some(board) = a.view_state.board() else {
-            return;
-        };
-        let row = crate::models::board_row(&window, &a.state.load(), &a.view_state);
-        let Some(boundary) = row.stacks.iter().position(|stack| *stack == left) else {
-            return;
-        };
-        if row.stacks.get(boundary + 1) != Some(&right) {
-            return;
-        }
-        let requested = f64::from(base) + f64::from(delta);
+    install_seam!(window: window.on_board_stack_width_press, adapter: adapter;
+    bind (a, window), args (column), {        let Ok(column) = usize::try_from(column) else {
+        return;
+    };
+    let Some(&left) = a.tables.stack_ids.get(column) else {
+        return;
+    };
+    let Some(board) = a.view_state.board() else {
+        return;
+    };
+    let row = crate::models::board_row(&window, &a.state.load(), &a.view_state);
+    // A boundary needs a right column; the last column has no
+    // divider (the markup's conditional hides it anyway).
+    let Some(&right) = row.stacks.get(column + 1) else {
+        return;
+    };
+    let scale = f64::from(window.global::<crate::Theme>().get_base_scale()).max(0.001);
+    // Press materializes the resolved row into the view-state
+    // overlay (chunk-2 plan §7.2): from here the gesture runs on a
+    // total, sum-exact basis — untouched columns cannot wiggle
+    // mid-gesture and the released boundary cannot jump when the
+    // next derive re-fits the row. View-state only; release still
+    // sends the lane's one request.
+    for (stack, &width) in row.stacks.iter().zip(&row.widths) {
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let d = (requested - f64::from(row.widths[boundary])).round() as i64;
-        let next = crate::widths::drag_boundary(&row.widths, boundary, d, &row.mins);
-        let scale = f64::from(window.global::<crate::Theme>().get_base_scale()).max(0.001);
-        for index in [boundary, boundary + 1] {
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            let stored = (f64::from(next[index]) / scale).round() as i64;
-            a.view_state.set_stack_width(
-                board,
-                row.stacks[index],
-                u32::try_from(stored).unwrap_or(u32::MAX),
-            );
-        }
-        a.refresh_forced(&window);
+        let stored = (f64::from(width) / scale).round() as i64;
+        a.view_state
+            .set_stack_width(board, *stack, u32::try_from(stored).unwrap_or(u32::MAX));
+    }
+    #[allow(clippy::cast_possible_truncation)] // a px value
+    let base = f64::from(row.widths[column]) as f32;
+    a.width_drag = Some((left, right, base));
+
     });
-    let release = Rc::clone(adapter);
-    let release_weak = window.as_weak();
-    window.on_board_stack_width_release(move |column| {
-        let Some(_window) = release_weak.upgrade() else {
-            return;
-        };
-        let Ok(_column) = usize::try_from(column) else {
-            return;
-        };
-        let mut a = release.borrow_mut();
-        // Persist on release only (the drag path never sends): one
-        // full-snapshot request, warn-and-drop on a full inbox.
-        if a.width_drag.take().is_none() {
-            return;
-        }
-        let Some(board) = a.view_state.board() else {
-            return;
-        };
-        let request = crate::requests::UiRequest::StackWidthsChanged {
+    install_seam!(window: window.on_board_stack_width_drag, adapter: adapter;
+    bind (a, window), args (column, delta), {        let Ok(column) = usize::try_from(column) else {
+        return;
+    };
+    let Some((left, right, base)) = a.width_drag else {
+        return;
+    };
+    // A tables pass that reordered the columns makes the index
+    // stale: only proceed when it still addresses the dragged
+    // boundary's left column (the right StackId rides in the
+    // buffer and needs no re-check against the row below).
+    if a.tables.stack_ids.get(column) != Some(&left) {
+        return;
+    }
+    let Some(board) = a.view_state.board() else {
+        return;
+    };
+    let row = crate::models::board_row(&window, &a.state.load(), &a.view_state);
+    let Some(boundary) = row.stacks.iter().position(|stack| *stack == left) else {
+        return;
+    };
+    if row.stacks.get(boundary + 1) != Some(&right) {
+        return;
+    }
+    let requested = f64::from(base) + f64::from(delta);
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let d = (requested - f64::from(row.widths[boundary])).round() as i64;
+    let next = crate::widths::drag_boundary(&row.widths, boundary, d, &row.mins);
+    let scale = f64::from(window.global::<crate::Theme>().get_base_scale()).max(0.001);
+    for index in [boundary, boundary + 1] {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let stored = (f64::from(next[index]) / scale).round() as i64;
+        a.view_state.set_stack_width(
             board,
-            widths: a.view_state.stack_widths_of(board),
-        };
-        if a.requests.try_send(request).is_err() {
-            tracing::warn!("request channel full or closed; dropped");
-        }
+            row.stacks[index],
+            u32::try_from(stored).unwrap_or(u32::MAX),
+        );
+    }
+    a.refresh_forced(&window);
+
+    });
+    install_seam!(window: window.on_board_stack_width_release, adapter: adapter;
+    bind (a, _window), args (column), {        let Ok(_column) = usize::try_from(column) else {
+        return;
+    };
+    // Persist on release only (the drag path never sends): one
+    // full-snapshot request, warn-and-drop on a full inbox.
+    if a.width_drag.take().is_none() {
+        return;
+    }
+    let Some(board) = a.view_state.board() else {
+        return;
+    };
+    let request = crate::requests::UiRequest::StackWidthsChanged {
+        board,
+        widths: a.view_state.stack_widths_of(board),
+    };
+    if a.requests.try_send(request).is_err() {
+        tracing::warn!("request channel full or closed; dropped");
+    }
+
     });
 }
 
@@ -5425,83 +5400,68 @@ fn install_drag_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // then opens the drag flow with the target seeded to the source
     // stack. A stale (column, row) against an older tables pass is
     // absorbed (the `focus_board_card` precedent).
-    let armed = Rc::clone(adapter);
-    let armed_weak = window.as_weak();
-    window.on_board_card_drag_armed(move |column, row| {
-        let Some(window) = armed_weak.upgrade() else {
-            return;
-        };
-        let (Ok(column), Ok(row)) = (usize::try_from(column), usize::try_from(row)) else {
-            return;
-        };
-        let mut a = armed.borrow_mut();
-        if a.view_state.flow() != &Flow::None {
-            return;
-        }
-        let Some((_, task)) = a.tables.board_task(column, row) else {
-            return;
-        };
-        Adapter::dismiss_tooltip(&window);
-        let state = a.state.load_full();
-        let outcomes = a.view_state.begin_drag_move(&state, task);
-        a.apply_outcomes(&window, &outcomes);
+    install_seam!(window: window.on_board_card_drag_armed, adapter: adapter;
+    bind (a, window), args (column, row), {        let (Ok(column), Ok(row)) = (usize::try_from(column), usize::try_from(row)) else {
+        return;
+    };
+    if a.view_state.flow() != &Flow::None {
+        return;
+    }
+    let Some((_, task)) = a.tables.board_task(column, row) else {
+        return;
+    };
+    Adapter::dismiss_tooltip(&window);
+    let state = a.state.load_full();
+    let outcomes = a.view_state.begin_drag_move(&state, task);
+    a.apply_outcomes(&window, &outcomes);
+
     });
 
     // The hover report: a column DropArea sees the DragMove (the
     // runtime's DragMove hit-testing designated it — no geometry
     // crosses to Rust, D-E). Resolves the column against the id
     // tables and reports the target; inert without the drag flow.
-    let hovered = Rc::clone(adapter);
-    let hovered_weak = window.as_weak();
-    window.on_board_drag_hovered(move |column| {
-        let Some(window) = hovered_weak.upgrade() else {
-            return;
-        };
-        let Ok(column) = usize::try_from(column) else {
-            return;
-        };
-        let mut a = hovered.borrow_mut();
-        let Flow::DragMove { .. } = a.view_state.flow() else {
-            return;
-        };
-        let Some(stack) = a.tables.stack_ids.get(column).copied() else {
-            return;
-        };
-        let state = a.state.load_full();
-        let outcomes = a.view_state.drag_target(&state, stack);
-        a.apply_outcomes(&window, &outcomes);
+    install_seam!(window: window.on_board_drag_hovered, adapter: adapter;
+    bind (a, window), args (column), {        let Ok(column) = usize::try_from(column) else {
+        return;
+    };
+    let Flow::DragMove { .. } = a.view_state.flow() else {
+        return;
+    };
+    let Some(stack) = a.tables.stack_ids.get(column).copied() else {
+        return;
+    };
+    let state = a.state.load_full();
+    let outcomes = a.view_state.drag_target(&state, stack);
+    a.apply_outcomes(&window, &outcomes);
+
     });
 
     // The drop: re-assert the target from the drop column, then
     // confirm — the shared construction site builds exactly the
     // `MoveTask` the keyboard flow confirms (D-F, equivalence by
     // construction; the journey pins the command).
-    let dropped = Rc::clone(adapter);
-    let dropped_weak = window.as_weak();
-    window.on_board_card_dropped(move |column| {
-        let Some(window) = dropped_weak.upgrade() else {
-            return;
-        };
-        let Ok(column) = usize::try_from(column) else {
-            return;
-        };
-        let mut a = dropped.borrow_mut();
-        let Flow::DragMove { .. } = a.view_state.flow() else {
-            return;
-        };
-        // Round 3 (R2, F8): a drop that cannot resolve its column —
-        // the stale-tables race — settles instead of returning: the
-        // move dispatches nothing (a missed drop must not guess a
-        // target) and no armed flow/ghost survives the gesture.
-        let Some(stack) = a.tables.stack_ids.get(column).copied() else {
-            let state = a.state.load_full();
-            a.settle_flow(&window, &state);
-            return;
-        };
+    install_seam!(window: window.on_board_card_dropped, adapter: adapter;
+    bind (a, window), args (column), {        let Ok(column) = usize::try_from(column) else {
+        return;
+    };
+    let Flow::DragMove { .. } = a.view_state.flow() else {
+        return;
+    };
+    // Round 3 (R2, F8): a drop that cannot resolve its column —
+    // the stale-tables race — settles instead of returning: the
+    // move dispatches nothing (a missed drop must not guess a
+    // target) and no armed flow/ghost survives the gesture.
+    let Some(stack) = a.tables.stack_ids.get(column).copied() else {
         let state = a.state.load_full();
-        let mut outcomes = a.view_state.drag_target(&state, stack);
-        outcomes.extend(a.view_state.confirm_drag_move(&state));
-        a.apply_outcomes(&window, &outcomes);
+        a.settle_flow(&window, &state);
+        return;
+    };
+    let state = a.state.load_full();
+    let mut outcomes = a.view_state.drag_target(&state, stack);
+    outcomes.extend(a.view_state.confirm_drag_move(&state));
+    a.apply_outcomes(&window, &outcomes);
+
     });
 
     // The finished outcome (round 3, R2/F8): the flow settles
@@ -5515,31 +5475,24 @@ fn install_drag_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // synchronously *inside* an `interpret` borrow; that echo is
     // absorbed here — the view-state flow is already gone, which the
     // flow guard would assert anyway.
-    let finished = Rc::clone(adapter);
-    let finished_weak = window.as_weak();
-    window.on_board_card_drag_finished(move |column, row, _completed| {
-        let Some(window) = finished_weak.upgrade() else {
-            return;
-        };
-        let _ = (column, row);
-        let Ok(mut a) = finished.try_borrow_mut() else {
-            return;
-        };
-        // Round 3 (R2, F8): the `completed` early-out is gone — the
-        // handler settles whenever the flow is still armed,
-        // `completed` or not. `completed == true` with the flow still
-        // armed means the drop seam's confirm was swallowed (exactly
-        // the stale-column race); `completed == false` is today's
-        // cancel. Either way the gesture is over and nothing stays
-        // armed. The `try_borrow_mut` absorption stays: the synthetic
-        // teardown echo fires inside an `interpret` borrow with the
-        // flow already gone — absorption is correct there and can
-        // never mask a legitimate settle.
-        let Flow::DragMove { .. } = a.view_state.flow() else {
-            return;
-        };
-        let state = a.state.load_full();
-        a.settle_flow(&window, &state);
+    install_seam!(window: window.on_board_card_drag_finished, adapter: adapter; [try]
+    bind (a, window), args (column, row, _completed), {        let _ = (column, row);
+    // Round 3 (R2, F8): the `completed` early-out is gone — the
+    // handler settles whenever the flow is still armed,
+    // `completed` or not. `completed == true` with the flow still
+    // armed means the drop seam's confirm was swallowed (exactly
+    // the stale-column race); `completed == false` is today's
+    // cancel. Either way the gesture is over and nothing stays
+    // armed. The `try_borrow_mut` absorption stays: the synthetic
+    // teardown echo fires inside an `interpret` borrow with the
+    // flow already gone — absorption is correct there and can
+    // never mask a legitimate settle.
+    let Flow::DragMove { .. } = a.view_state.flow() else {
+        return;
+    };
+    let state = a.state.load_full();
+    a.settle_flow(&window, &state);
+
     });
 }
 
@@ -6865,47 +6818,32 @@ fn banner_row(adapter: &Adapter, index: i32) -> Option<crate::presentation::Bann
 /// state plus the one-shot reminder target (D4); snooze/mute set the
 /// target and route the registry actions.
 fn install_banner_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
-    let row = Rc::clone(adapter);
-    let row_weak = window.as_weak();
-    window.on_banner_row_activated(move |index| {
-        let Some(window) = row_weak.upgrade() else {
-            return;
-        };
-        let mut a = row.borrow_mut();
-        let Some(banner_row) = banner_row(&a, index) else {
-            return;
-        };
-        a.view_state.set_focused(Some(banner_row.task));
-        a.reminder_target = Some(banner_row.target);
-        a.refresh_forced(&window);
+    install_seam!(window: window.on_banner_row_activated, adapter: adapter;
+    bind (a, window), args (index), {        let Some(banner_row) = banner_row(&a, index) else {
+        return;
+    };
+    a.view_state.set_focused(Some(banner_row.task));
+    a.reminder_target = Some(banner_row.target);
+    a.refresh_forced(&window);
+
     });
 
-    let snooze = Rc::clone(adapter);
-    let snooze_weak = window.as_weak();
-    window.on_banner_snooze_clicked(move |index| {
-        let Some(window) = snooze_weak.upgrade() else {
-            return;
-        };
-        let mut a = snooze.borrow_mut();
-        let Some(banner_row) = banner_row(&a, index) else {
-            return;
-        };
-        a.reminder_target = Some(banner_row.target);
-        a.route(&window, ActionId::ReminderSnooze);
+    install_seam!(window: window.on_banner_snooze_clicked, adapter: adapter;
+    bind (a, window), args (index), {        let Some(banner_row) = banner_row(&a, index) else {
+        return;
+    };
+    a.reminder_target = Some(banner_row.target);
+    a.route(&window, ActionId::ReminderSnooze);
+
     });
 
-    let mute = Rc::clone(adapter);
-    let mute_weak = window.as_weak();
-    window.on_banner_mute_clicked(move |index| {
-        let Some(window) = mute_weak.upgrade() else {
-            return;
-        };
-        let mut a = mute.borrow_mut();
-        let Some(banner_row) = banner_row(&a, index) else {
-            return;
-        };
-        a.reminder_target = Some(banner_row.target);
-        a.route(&window, ActionId::ReminderMute);
+    install_seam!(window: window.on_banner_mute_clicked, adapter: adapter;
+    bind (a, window), args (index), {        let Some(banner_row) = banner_row(&a, index) else {
+        return;
+    };
+    a.reminder_target = Some(banner_row.target);
+    a.route(&window, ActionId::ReminderMute);
+
     });
 }
 
@@ -7578,84 +7516,65 @@ fn install_focus_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // The scrim / Escape / toggle close: presentation only — the
     // session (the open entry) is untouched by construction (the
     // close outcomes carry no command).
-    let close = Rc::clone(adapter);
-    let close_weak = window.as_weak();
-    window.on_focus_overlay_close_requested(move || {
-        let Some(window) = close_weak.upgrade() else {
-            return;
-        };
-        let mut a = close.borrow_mut();
-        let outcomes = a.view_state.close_focus_mode();
-        a.apply_outcomes(&window, &outcomes);
-        a.finish_mutation(&window);
+    install_seam!(window: window.on_focus_overlay_close_requested, adapter: adapter;
+    bind (a, window), args (), {        let outcomes = a.view_state.close_focus_mode();
+    a.apply_outcomes(&window, &outcomes);
+    a.finish_mutation(&window);
+
     });
 
     // The quick-note mirror (the capture field's discipline).
-    let note = Rc::clone(adapter);
-    window.on_focus_note_edited(move |text| {
-        note.borrow_mut().view_state.set_buffer(text.to_string());
+    install_seam!(window: window.on_focus_note_edited, adapter: adapter; [bare_mut]
+    bind (a), args (text), {        a.view_state.set_buffer(text.to_string());
+
     });
 
     // The note commit: the landed inbox-capture command via the
     // flow's commit funnel — clears the buffer and KEEPS the overlay
     // open (rapid-fire capture semantics; an empty commit is a no-op,
     // never a close).
-    let commit = Rc::clone(adapter);
-    let commit_weak = window.as_weak();
-    window.on_focus_note_accepted(move || {
-        let Some(window) = commit_weak.upgrade() else {
-            return;
-        };
-        let mut a = commit.borrow_mut();
-        let thought = a.view_state.buffer().trim().to_owned();
-        if thought.is_empty() {
-            return; // no-op: the overlay stays as it is
-        }
-        let outcomes = vec![
-            crate::view_state::FlowOutcome::Command(taskboard_domain::StateCommand::CaptureTask {
-                title: thought,
-                board: None,
-            }),
-            crate::view_state::FlowOutcome::RefreshNow,
-        ];
-        a.view_state.set_buffer(String::new());
-        a.apply_outcomes(&window, &outcomes);
-        a.finish_mutation(&window);
+    install_seam!(window: window.on_focus_note_accepted, adapter: adapter;
+    bind (a, window), args (), {        let thought = a.view_state.buffer().trim().to_owned();
+    if thought.is_empty() {
+        return; // no-op: the overlay stays as it is
+    }
+    let outcomes = vec![
+        crate::view_state::FlowOutcome::Command(taskboard_domain::StateCommand::CaptureTask {
+            title: thought,
+            board: None,
+        }),
+        crate::view_state::FlowOutcome::RefreshNow,
+    ];
+    a.view_state.set_buffer(String::new());
+    a.apply_outcomes(&window, &outcomes);
+    a.finish_mutation(&window);
+
     });
 
     // The switcher's start: the selected row's task as the one-shot
     // `track_target`, then the landed `task.track-start` action (the
     // notification-row Start Task precedent — the router arm maps it
     // to `StartTracking { kind: Work }`).
-    let start = Rc::clone(adapter);
-    let start_weak = window.as_weak();
-    window.on_focus_switcher_invoked(move |index| {
-        let Some(window) = start_weak.upgrade() else {
-            return;
-        };
-        let mut a = start.borrow_mut();
-        let selected = usize::try_from(index).unwrap_or(usize::MAX);
-        let state = a.state.load();
-        let Some(task) = crate::presentation::focus_switcher_rows(&state)
-            .get(selected)
-            .map(|row| row.task)
-        else {
-            return; // a stale cursor past the pool: inert
-        };
-        a.track_target = Some(task);
-        a.route(&window, ActionId::TaskTrackStart);
+    install_seam!(window: window.on_focus_switcher_invoked, adapter: adapter;
+    bind (a, window), args (index), {        let selected = usize::try_from(index).unwrap_or(usize::MAX);
+    let state = a.state.load();
+    let Some(task) = crate::presentation::focus_switcher_rows(&state)
+        .get(selected)
+        .map(|row| row.task)
+    else {
+        return; // a stale cursor past the pool: inert
+    };
+    a.track_target = Some(task);
+    a.route(&window, ActionId::TaskTrackStart);
+
     });
 
     // The panel's stop: the payload-free landed stop. The overlay
     // stays open, showing the idle + switcher state (closing the
     // overlay and stopping the session are deliberately orthogonal).
-    let stop = Rc::clone(adapter);
-    let stop_weak = window.as_weak();
-    window.on_focus_stop_clicked(move || {
-        let Some(window) = stop_weak.upgrade() else {
-            return;
-        };
-        stop.borrow_mut().route(&window, ActionId::TaskTrackStop);
+    install_seam!(window: window.on_focus_stop_clicked, adapter: adapter;
+    bind (a, window), args (), {        a.route(&window, ActionId::TaskTrackStop);
+
     });
 }
 
