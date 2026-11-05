@@ -28,14 +28,27 @@
 //!   counting network episodes is `taskboard-app`'s authority's job.
 //!
 //! Module map: typed errors ([`error`]), the verbatim etag newtype and
-//! the in-memory etag store ([`etag`]), the transport seam
-//! ([`transport`]).
+//! the in-memory etag store ([`etag`]), the fixed PROPFIND bodies and
+//! the narrow 207 extractor ([`extract`]), the transport seam
+//! ([`transport`]), the production `WebDAV` client ([`client`]), the
+//! `device.json` ceremony ([`device`]), the status/finding types
+//! ([`status`]), the attach ceremony + cycle state machine
+//! ([`cycle`]), the cycle-level backoff mirror ([`poll`]), the
+//! poll-loop actor ([`actor`]), and the scripted test server
+//! ([`test_support`], behind `test-support`).
 
 #![forbid(unsafe_code)]
 
+pub mod actor;
 pub mod client;
+pub mod cycle;
 pub mod device;
 pub mod error;
 pub mod etag;
 pub mod extract;
+pub mod poll;
+pub mod status;
 pub mod transport;
+
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
