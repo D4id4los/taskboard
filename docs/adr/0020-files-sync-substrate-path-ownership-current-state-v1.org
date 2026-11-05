@@ -1,0 +1,153 @@
+#+title: ADR 0020: The Files Sync Substrate — Server-Enforced Path Ownership, Current-State v1, and the B-full Reservations
+- *Date:* 2026-11-05
+- *Status:* Accepted (lands with DR-8 chunk 1 — the files core crate, #629)
+- *Depends on:* ADR 0004 (LWW over per-field write clocks), ADR 0007 (push-first sync), ADR 0008 (bootstrap/config/secrets), ADR 0010 (standalone-first optional connector)
+- *Carriers:* #629 (this chunk), #630/#631/#632 (transport, engine seam, hardening), #626 (the DR-8 round)
+
+* Context
+
+Per-user app data (the journal first — the v0.2 reflection entities)
+needs to roam between a user's devices, and the fleet's natural medium
+is the Nextcloud account the Deck connector already speaks (one
+account, Q4). The 2026-11-05 design round (DR-8, issue #626) chose a
+*generic files substrate*: per-device path-owned files over WebDAV,
+with the transport as a swappable first adapter (folder-sync-client and
+LAN successors reuse the same pure core). The binding inputs were the
+backbone report's T-model (§5.4/§5.5 layout lineage), the live-tier
+characterization F1–F8, and the session rulings Q1–Q8 — in particular
+Q1 (v1 = per-device *current-state* files on a 5.5-compatible layout,
+with the transition-smoothness debt owed to the committed B-full
+successor) and Q6 (silent per-entry LWW now; automatic merge + manual
+diff/merge fenced as their own phases).
+
+Every shared-path design was rejected because it makes the server a
+dumb mirror: last-writer-wins at *file* granularity, silent whole-file
+clobbering, no typed fork signal. Per-device path ownership turns the
+server into an *enforcer* instead: the conditional-PUT machinery
+(create-once via =If-None-Match: *=, F3; single-writer rewrites via
+=If-Match= with the etag echoed verbatim as served, F4) makes
+"D-SF2's ownership" a property the server itself rejects violations
+of. An unexpected 412 on one's *own* path is the one condition the
+medium cannot otherwise signal — identity duplication (a cloned disk,
+a forked folder) — and it surfaces as a first-class typed fork alarm
+(stop-write, keep-read, loud; the transport chunk's mechanics, the
+contract fixed here).
+
+* Decision
+
+1. *The tree and path ownership* (D-SF1/D-SF2). A visible root-level
+   =taskboard/= folder (Q5) holding =identity.json= (create-once, the
+   create race adjudicated by the server) and per-device subtrees
+   =devices/<device-id>/{info,appdata}.json=. Each device writes only
+   inside its own subtree and reads everything else; =appdata.json=
+   carries the device's *whole current view* (its own rows and
+   everything it folded from peers) — re-publication is how offline
+   peers' data survives a device's death, and the fold is idempotent,
+   so this is safe.
+
+2. *The document and row grammar* (D-SF3 + the chunk's D-FC5). A
+   versioned envelope ={ "format": 1, "sections": { … } }= whose rows
+   mirror the proven =RuleEntry= shape: per-section maps of
+   =Entry{body preserved, clock, author?}= / =Tombstone= / =Verbatim=.
+   The envelope is the *strict* boundary (missing/non-integer =format=
+   is a typed decode failure); rows are *lenient* (an unmodelable
+   shape stays =Verbatim=, never an error that kills a document).
+   Tolerance is *structural relay, not ignoring*: unknown envelope
+   keys, unknown/reserved sections, unknown body keys, and =Verbatim=
+   rows are all carried verbatim, because a device re-publishes its
+   whole view — anything it drops is lost to the fleet on that
+   device's death. A wire row whose =author= value fails its UUID
+   parse demotes the whole row to =Verbatim= (fail-closed: silently
+   de-authoring would change the row's fold rank). The `base_clock`
+   slot (decision 6) needs no special handling under this rule: when a
+   future peer emits it, it rides the =Entry= body preserved.
+
+3. *The fold's total order* (Q2 + D-FC6). The n-ary merge fold is
+   pure, total, and input-order-free: per entry key the winner is the
+   max over =(rank, clock, author, content)= — clocked rows outrank
+   =Verbatim= (the floor), tombstones compete by clock exactly as
+   entries, the Q2 =author= slot orders =None < Some(_)= (a B-full
+   authored row outranks an authorless peer at equal clocks), and the
+   residual equal-=(clock, author)= tie (two devices stamping the same
+   second — plausible at whole-second clocks) resolves by canonical
+   content order, the deterministic totaliser that keeps the fold a
+   pure =max=. The design's "entry-id" leg is the section map key
+   itself — constant within a per-key comparison. Which device
+   published a row never influences the winner. The laws
+   (commutativity incl. the state hash, idempotence, associativity,
+   tombstone clock races, verbatim opacity, adversarial author-None
+   totality, the =Some(author)= forward pin) are proptested as the
+   fold's contract.
+
+4. *The state hash* (D-FC7). =info.json= carries
+   ="fnv1a64:<hex>"= — FNV-1a 64 over the *canonicalised* serialisation
+   (every JSON object rebuilt through a sorted map first, immunising
+   against any future =serde_json/preserve_order= feature leak), the
+   =taskboard-app= IPC precedent's algorithm with its rationale
+   (=DefaultHasher= has no cross-version stability). No =sha2=: the
+   folder is plaintext anyway (Q7) and divergence detection needs a
+   stable *equality fingerprint*, not strength — a collision can only
+   mask a divergence (≈2⁻⁶⁴ per pair), never fire a false alarm. The
+   tag in the string is the upgrade path: a future scheme mints a new
+   prefix, and differently-tagged hashes can never compare equal (the
+   safe direction).
+
+5. *The B-full reservations* (itemised; v1 never emits any of them,
+   and each is tolerated structurally):
+   - the reserved file kinds =ops/*.json= and =snapshot-*.json= (the
+     5.5 kinds) — the core crate defines no payload type for them, so
+     "never parse, never delete, never choke" holds by construction;
+   - the =author= wire slot on rows (decode-only today; Q2);
+   - the =base_clock= body slot (the Q6 three-way-merge seam, carried
+     verbatim by the relay rule);
+   - the reserved section names =settings= and =proofs= (the second
+     slice; relayed verbatim via =sections.unknown=, never emitted).
+   The transition-smoothness debt Q1 records is exactly this list: the
+   B-full transition lands as *new file kinds and wire slots the v1
+   fold already understands well enough to relay*.
+
+6. *The conflict posture* (Q6/D-SF16). v1 resolves concurrent entry
+   edits silently by the decision-3 order — documented, not secret.
+   The fenced eventual goal (automatic merge where possible,
+   comfortable manual diff/merge where it fails) is the
+   read-base-clock direction; v1's rows reserve the =base_clock= slot
+   so it lands without a wire break. No merge UI, no surfaced
+   conflicts in B-min.
+
+* Chunk-level settlements
+
+The stage-1 plan
+(=.artifacts/plans/2026-11-05-sync-files-core-plan.md=, §3/§4) is the
+normative record of the chunk-level settlements this ADR names: the
+crate skeleton and module map, the exact wire shapes, the codec's
+decode-rule priority order, the fold API, the canonicalisation rule,
+and the proptest catalogue. The ADR states decisions; the plan states
+mechanics.
+
+* Consequences
+
+- *Mixed-fleet relay guarantees*: an old device never corrupts,
+  errors on, or drops what a newer peer publishes — it relays it
+  verbatim — and a newer peer's decoded understanding propagates over
+  an old peer's opaque relay (=clocked > verbatim=).
+- *Divergence surfacing bounds*: a hash collision can mask a
+  divergence, never fake convergence in the alarm direction
+  (unequal-tagged hashes can never compare equal); freshness findings
+  remain the second line.
+- *Whole-document re-PUT growth* is bounded at journal scale (options
+  report §7); the reserved =ops/= chunk kind is the measured-need
+  escape — never built speculatively.
+- *The =preserve_order= hazard*: a feature leak through a future
+  dependency would make naive serialisation order-dependent; the
+  canonicalisation pass immunises the hash and is pinned by a
+  behavioral test.
+- *Sequencing*: chunks 1–2 (core, transport) are journal-independent
+  and run parallel to v0.2; chunk 3 (engine seam + the journal import,
+  the first consumer) is gated on the v0.2 journal entity landing;
+  chunk 4 surfaces freshness/divergence and writes the fork/trashbin
+  runbooks.
+- *Rejected alternatives*: whole-file shared-path sync (file-level
+  LWW, no typed fork signal — see Context); cryptographic hashes
+  (strength without a threat model — decision 4); verbatim-outranks-
+  clocked folds (would freeze old peers' blind spots over newer
+  peers' understanding — decision 3).
