@@ -165,6 +165,20 @@ fn arbitrary_action() -> impl Strategy<Value = PersistenceAction> {
     let entry_delete = any::<u128>().prop_map(|raw| {
         PersistenceAction::DeleteTimeEntry(taskboard_domain::TimeEntryId::from(uuid(raw)))
     });
+    let reflection_upsert = any::<u128>().prop_map(|raw| {
+        PersistenceAction::UpsertReflectionEntry(taskboard_domain::ReflectionEntry {
+            id: taskboard_domain::ReflectionId::from(uuid(raw)),
+            cadence: taskboard_domain::ReviewCadence::Day,
+            day: chrono::NaiveDate::from_ymd_opt(2026, 11, 5).unwrap(),
+            window_start: ts(1),
+            window_end: ts(1 + 86_400),
+            text: "r".into(),
+            attributes: taskboard_domain::ReflectionAttributes::default(),
+            created_at: ts(1),
+            updated_at: ts(1),
+            deleted: false,
+        })
+    });
     prop_oneof![
         board,
         stack,
@@ -175,6 +189,7 @@ fn arbitrary_action() -> impl Strategy<Value = PersistenceAction> {
         fail,
         entry_upsert,
         entry_delete,
+        reflection_upsert,
         Just(PersistenceAction::UpsertSyncStatus(
             taskboard_domain::BoardId::from(uuid::Uuid::from_u128(1)),
             taskboard_domain::SyncStatus {
@@ -245,6 +260,7 @@ proptest! {
             reminders: persisted.reminders.clone(),
             tracking: persisted.tracking.clone(),
             habits: taskboard_domain::HabitState::default(),
+            reflection: taskboard_domain::ReflectionState::default(),
             sync: persisted.sync.clone(),
             last_updated: None,
         };
@@ -673,6 +689,7 @@ fn drive_sequence(steps: &[Step]) -> Result<(), TestCaseError> {
                 reminders: disk_derived.reminders,
                 tracking: disk_derived.tracking,
                 habits: taskboard_domain::HabitState::default(),
+                reflection: taskboard_domain::ReflectionState::default(),
                 sync: disk_derived.sync,
                 last_updated: mem_after.last_updated,
             };

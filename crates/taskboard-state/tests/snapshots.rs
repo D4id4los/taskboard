@@ -170,6 +170,10 @@ impl Scenario {
             "memory ≡ disk: reminders"
         );
         assert_eq!(app.tracking, persisted.tracking, "memory ≡ disk: tracking");
+        assert_eq!(
+            app.reflection, persisted.reflection,
+            "memory ≡ disk: reflection"
+        );
         assert_sync_stored(&app.sync, &persisted.sync);
         // The undo projection is derived from the persisted journal —
         // derive-and-compare pins the derivation (ADR 0019).

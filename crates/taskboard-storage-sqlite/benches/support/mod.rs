@@ -339,6 +339,7 @@ pub fn build_fixture(n: usize) -> Fixture {
         },
         tracking: taskboard_domain::TrackingState::default(),
         habits: taskboard_domain::HabitState::default(),
+        reflection: taskboard_domain::reflection::ReflectionState::default(),
     };
 
     Fixture {

@@ -18,6 +18,7 @@ use taskboard_domain::outbox::{OpId, PendingOp};
 use taskboard_domain::persistence::{
     BoxFuture, PersistedState, PersistenceAction, RepositoryError, SyncValidators, TaskRepository,
 };
+use taskboard_domain::reflection::Rating;
 use taskboard_domain::reminders::{
     AdhocAlarm, AtInstant, BreakRule, ReminderDelivery, ReminderDismissal, ReminderKind,
     ReminderOffset, ReminderRef, ReminderRule, ReminderSnoozeKey, ReminderState,
@@ -1179,6 +1180,10 @@ impl SqliteTaskRepository {
                 }
                 habits
             },
+            // Sqlite cannot carry reflection data before chunk 2's
+            // migration 0022 (#637): default-empty is truthful, not
+            // lossy — there is no table to have lost rows from.
+            reflection: taskboard_domain::ReflectionState::default(),
             journal: taskboard_domain::JournalState {
                 entries: journal_entries,
                 head,
@@ -1279,6 +1284,15 @@ async fn execute_batch(
     // other lane.
     let mut habit_upserts = Vec::new();
     let mut habit_log_rows = Vec::new();
+    // DR-7 chunk 1 (R-11 exception, the tracking DR-5/1 precedent):
+    // reflection upserts are buffered and written by a runtime-checked
+    // statement against the `reflection_entries` table — which does not
+    // exist until chunk 2's migration 0022 (#637). A reflection-bearing
+    // batch reaching sqlite before that migration fails loudly at
+    // runtime ("no such table") and rolls the batch back — honest
+    // failure, never silent loss. Nothing in chunk 1's suites reaches
+    // this arm.
+    let mut reflection_upserts = Vec::new();
     // ADR 0019 (undo/1): the three journal buckets — appends (each with
     // the D11 eviction mirror), head moves, flag flips. The journal
     // references op ids by value only (no FK constraints; the eviction
@@ -1328,6 +1342,9 @@ async fn execute_batch(
             PersistenceAction::UpsertHabit(habit) => habit_upserts.push(habit),
             PersistenceAction::RecordHabitLog(key, entry) => {
                 habit_log_rows.push((key, entry));
+            }
+            PersistenceAction::UpsertReflectionEntry(entry) => {
+                reflection_upserts.push(entry);
             }
             PersistenceAction::RecordJournal(entry) => journal_appends.push(entry),
             PersistenceAction::MarkJournalPushed(id) => journal_pushed.push(*id),
@@ -1707,6 +1724,59 @@ async fn execute_batch(
         .await
         .map_err(|e| stmt_error(&e))?;
         tracing::trace!(habit = ?habit.id, "habit upserted");
+    }
+    // DR-7 chunk 1 (R-11): the runtime-checked reflection write —
+    // dead until #637 creates the table. Compile-checked macros replace
+    // this in chunk 2, together with the load codec.
+    for entry in reflection_upserts {
+        sqlx::query(
+            r"INSERT INTO reflection_entries (entry_id, cadence, day, window_start, window_end,
+                         text, mood, energy, flags, extra_flags, created_at, updated_at, deleted)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(entry_id) DO UPDATE SET
+                       cadence = excluded.cadence,
+                       day = excluded.day,
+                       window_start = excluded.window_start,
+                       window_end = excluded.window_end,
+                       text = excluded.text,
+                       mood = excluded.mood,
+                       energy = excluded.energy,
+                       flags = excluded.flags,
+                       extra_flags = excluded.extra_flags,
+                       created_at = excluded.created_at,
+                       updated_at = excluded.updated_at,
+                       deleted = excluded.deleted",
+        )
+        .bind(codec::uuid_to_text(entry.id.as_uuid()))
+        .bind(entry.cadence.text_form())
+        .bind(entry.day.to_string())
+        .bind(entry.window_start.to_rfc3339())
+        .bind(entry.window_end.to_rfc3339())
+        .bind(&entry.text)
+        .bind(entry.attributes.mood.map(Rating::get))
+        .bind(entry.attributes.energy.map(Rating::get))
+        .bind(
+            serde_json::to_string(
+                &entry
+                    .attributes
+                    .flags
+                    .iter()
+                    .map(|f| f.text_form())
+                    .collect::<Vec<_>>(),
+            )
+            .expect("flag names serialize"),
+        )
+        .bind(
+            serde_json::to_string(&entry.attributes.extra_flags.iter().collect::<Vec<_>>())
+                .expect("flag name strings serialize"),
+        )
+        .bind(entry.created_at.to_rfc3339())
+        .bind(entry.updated_at.to_rfc3339())
+        .bind(entry.deleted)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| stmt_error(&e))?;
+        tracing::trace!(entry = ?entry.id, "reflection entry upserted");
     }
     for (key, entry) in habit_log_rows {
         // The LWW guard lives in the SQL: a strictly-older batch row
