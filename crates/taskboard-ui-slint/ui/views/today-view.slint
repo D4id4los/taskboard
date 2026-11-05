@@ -23,8 +23,14 @@ import { TimersSection, TimerRowModel } from "../compositions/timers.slint";
 import { FieldValidity } from "../widgets/text-field.slint";
 import { HabitsSection, HabitRowModel } from "../compositions/habits.slint";
 import { TrackedTodaySection, TrackedTodayRowModel } from "../compositions/tracked-today.slint";
+import { TodayAnchorFacts } from "../today-anchor.slint";
 
 export struct TodayRowModel {
+    // The row's stable task key (#592): the extent cache and the
+    // anchor facts address rows by task id, never by position (the
+    // diff's rebind cascade shifts positions under every membership
+    // change).
+    id: string,
     card: TaskCardModel,
     // The stack title, or "<board> › <stack>" on a multi-board
     // desktop (D-V3); suppressed on kiosk (no badges).
@@ -57,6 +63,10 @@ export component TodayView inherits FocusScope {
     // re-enters the page's own layout info and binds in a loop.
     in property <length> viewport-height;
     callback row-activated(int, int);
+    // #592: a live row reports its rendered extent (the C-2 height
+    // cache's source — exact extents for ever-live rows; deduped
+    // adapter-side, so repeated no-op reports cost one map insert).
+    callback row-extent(string, length);
     callback row-clicked(int, int);
     callback row-context(int, int, float, float);
     // The done checkbox's toggle (r3 D6): (section, row) — the adapter
@@ -249,7 +259,43 @@ export component TodayView inherits FocusScope {
                             ? ScrollPageHint.nonce
                             : -1;
                         total-rows: section.rows.length;
+                        // #592: the today sections opt into the
+                        // row-anchored mode; the facts are this
+                        // section's payload only (the FocusScrollHint
+                        // filter pattern).
+                        row-anchored: true;
+                        anchor-first-change: TodayAnchorFacts.section == sindex
+                            ? TodayAnchorFacts.first-change
+                            : -1;
+                        anchor-row-delta: TodayAnchorFacts.section == sindex
+                            ? TodayAnchorFacts.row-delta
+                            : 0;
+                        anchor-extent: TodayAnchorFacts.section == sindex
+                            ? TodayAnchorFacts.extent
+                            : 0px;
+                        anchor-nonce: TodayAnchorFacts.section == sindex
+                            ? TodayAnchorFacts.nonce
+                            : -1;
                         for row[rindex] in section.rows: today-row := VerticalLayout {
+                            // The extent report rides `changed height`,
+                            // gated to a real change: an ungated report
+                            // crosses into Rust on every layout pass,
+                            // while the last-report gate makes the
+                            // steady-state body a no-op comparison and
+                            // a fresh height (a rebind under the
+                            // rebind cascade, a context-line flip)
+                            // reports exactly once. The paired A/B
+                            // bench (stage-3 re-measurement, recorded
+                            // in the #592 stage-2 report §5) shows no
+                            // draw-lane delta against the report's
+                            // before runs.
+                            property <length> last-extent: -1px;
+                            changed height => {
+                                if (Math.abs(self.height - self.last-extent) > 0.5px) {
+                                    self.last-extent = self.height;
+                                    root.row-extent(row.id, self.height);
+                                }
+                            }
                             spacing: Theme.space-1;
                             vertical-stretch: 0;
                             // The explicit height carries the card's

@@ -1,0 +1,19 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The today sections' row-anchor facts (#592, the FocusScrollHint
+// pattern): the models pass writes one payload per section whose
+// membership structurally changed above the viewport's window — the
+// first changed row index, the signed row delta, and the changed
+// row's extent (0px = never observed live; the consuming ListView
+// falls back to its own runtime average). Each today-section ListView
+// filters the facts by its own section index and compensates
+// `content-y` on the nonce edge — one commit, one consume; a stale
+// nonce is never queued, so manual scrolling afterwards is never
+// fought (the round-3 D20c scale-commit discipline).
+
+export global TodayAnchorFacts {
+    in property <int> section: -1;
+    in property <int> first-change: -1;
+    in property <int> row-delta: 0;
+    in property <length> extent: 0px;
+    in property <int> nonce: 0;
+}

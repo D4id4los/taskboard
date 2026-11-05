@@ -175,6 +175,7 @@ const SEAM_INVENTORY: &[&str] = &[
     "today_row_clicked",
     "today_row_context_requested",
     "today_row_done_toggled",
+    "today_row_extent",
     "today_tracked_activated",
     "toolbar_inbox_clicked",
     "toolbar_menu_clicked",

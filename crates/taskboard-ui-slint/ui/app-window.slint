@@ -47,6 +47,7 @@ import { TooltipState, TooltipPanel } from "widgets/tooltip.slint";
 import { TaskCard } from "widgets/task-card.slint";
 import { DragState } from "drag-state.slint";
 import { FocusScrollHint } from "focus-scroll.slint";
+import { TodayAnchorFacts } from "today-anchor.slint";
 import { ScrollPageHint } from "scroll-page.slint";
 import { TextField, FieldValidity } from "widgets/text-field.slint";
 export { FieldValidity }
@@ -60,7 +61,7 @@ export { AlarmWindow, AlarmRowModel }
 
 // Re-export the globals so the generated Rust module exposes them
 // (mount/adapter read/write them through the generated accessors).
-export { Theme, Typography, Semantic, Responsive, TooltipState, MenuPanelFacts, SettingsScrollFacts, SettingsBoardFacts, DragState, FocusScrollHint, ScrollPageHint, EditingFacts, TaskViewWalkFacts, TrackPanelFacts, TrackPanelWalkFacts, DropdownLadder }
+export { Theme, Typography, Semantic, Responsive, TooltipState, MenuPanelFacts, SettingsScrollFacts, SettingsBoardFacts, DragState, FocusScrollHint, ScrollPageHint, EditingFacts, TaskViewWalkFacts, TrackPanelFacts, TrackPanelWalkFacts, DropdownLadder, TodayAnchorFacts }
 export { BoardBarModel, BoardSegmentModel, BoardBarFacts }
 
 export enum KeyFeedback {
@@ -367,6 +368,7 @@ export component AppWindow inherits Window {
                 today: root.today-model;
                 viewport-height: root.window-height;
                 row-activated(s, r) => root.today-row-activated(s, r);
+                row-extent(id, h) => root.today-row-extent(id, h);
                 row-clicked(s, r) => root.today-row-clicked(s, r);
                 row-context(s, r, x, y) => root.today-row-context-requested(s, r, x, y);
                 row-done-toggled(s, r) => root.today-row-done-toggled(s, r);
@@ -1000,6 +1002,7 @@ export component AppWindow inherits Window {
     pure callback focus-switcher-invoked(int);
     pure callback focus-stop-clicked();
     pure callback today-row-activated(int, int);
+    pure callback today-row-extent(string, length);
     pure callback today-row-clicked(int, int);
     pure callback today-row-context-requested(int, int, float, float);
     // The done checkbox's toggles on the today rows and the

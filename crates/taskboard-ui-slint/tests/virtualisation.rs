@@ -862,25 +862,37 @@ fn mount_today(
     (handle, engine, state)
 }
 
-/// Anchor-on-insertion (#461 stage-1 plan D-2 case 2, pinned-actual):
-/// with the Today overdue viewport driven deep by the keyboard walk,
-/// inserting a new head row into the section (a synthetic task older
-/// than every fixture stamp — the shape a capture landing at the
-/// Overdue head takes) keeps the viewport's content offset: the page
-/// does not scroll (the section header rests), and the live rows
-/// reflow **down** by the inserted row's extent, uniformly — the slint
-/// 1.18.1 `ListView` repeater is content-anchored, not row-anchored (it
-/// even prepends the inserted row into the live window, clipped). The
-/// stage-1 plan D-2 "rows resting" statement was corrected to this
-/// pinned actual; see the stage-2 report's finding.
+/// Anchor-on-insertion (#461 stage-1 plan D-2 case 2; extended by
+/// #592's row-anchored mode): with the Today overdue viewport driven
+/// deep by the keyboard walk, inserting a new head row into the
+/// section (a synthetic task older than every fixture stamp — the
+/// shape a capture landing at the Overdue head takes) must not scroll
+/// the page (the section header rests) and must not reflow the live
+/// rows by the full inserted extent. The mode compensates by the
+/// runtime-average extent (the inserted row is new — never live, so
+/// no observed extent exists; the C-2 sanctioned fallback), which
+/// leaves a small residual: the witness shift is strictly smaller
+/// than one ordinary row extent, uniformly across the window (the
+/// mode-off shape shifted by the full inserted extent, ~1.3 row
+/// extents — the stage-2 measurement's insert-head campaign case).
 #[test]
-fn an_insertion_above_the_today_viewport_reflows_by_the_inserted_extent() {
+fn an_insertion_above_the_today_viewport_reflows_less_than_one_extent() {
     support::driver::run(
         DriverOptions {
             headless_renderer: false,
         },
         |driver| {
             let (handle, _engine, state) = mount_today(driver, 600);
+
+            // One ordinary row extent, measured while the section
+            // head is on-screen (the residual's comparison scale).
+            let head = driver
+                .find_by_label(&bench_label(3))
+                .unwrap_or_else(|| panic!("the Overdue head renders pre-walk"));
+            let successor = driver
+                .find_by_label(&bench_label(6))
+                .unwrap_or_else(|| panic!("the Overdue head's successor renders pre-walk"));
+            let extent = successor.absolute_position().y - head.absolute_position().y;
 
             // Drive the walk deep (the landed removal pin's setup):
             // 30 strokes enter at overdue row 0 and end at overdue
@@ -937,9 +949,10 @@ fn an_insertion_above_the_today_viewport_reflows_by_the_inserted_extent() {
                 .unwrap_or_else(|| panic!("the focused card stays live across the insertion"));
             let shifted = focused.absolute_position().y - rest.y;
             assert!(
-                shifted > 0.0,
-                "the insertion above the viewport reflows the live rows down by the \
-                 inserted row's extent (content-anchored viewport), got shift {shifted}"
+                shifted.abs() < extent,
+                "the compensated insertion reflows the live rows by less than one \
+                 ordinary row extent (the average-estimator residual), got shift {shifted} \
+                 against extent {extent}"
             );
             // The reflow is uniform: the anchor row and its
             // successor shift by the same extent (the section's list
@@ -964,39 +977,30 @@ fn an_insertion_above_the_today_viewport_reflows_by_the_inserted_extent() {
     );
 }
 
-/// Anchor-on-removal above the viewport (#461 stage-1 plan D-2 case 1,
-/// pinned-actual): the catalogue's case 1 with a task that really sits
-/// in the Overdue section. The landed
+/// Anchor-on-removal above the viewport (#461 stage-1 plan D-2 case
+/// 1; extended to pixel-still by #592's row-anchored mode): the
+/// catalogue's case 1 with a task that really sits in the Overdue
+/// section. The landed
 /// `a_removal_above_the_today_viewport_leaves_the_rows_resting` pin
 /// flips the fixture's task 0, whose order (0) makes it `done` by the
 /// fixture's every-10th pattern — it was never an Overdue row, so its
-/// flip inserts into Done-today (a separate, lower `ListView`) and pins
-/// nothing about this case. This pin flips the true Overdue head
-/// (order 3): the viewport's content offset is preserved (the page
-/// does not scroll, the header rests) while the live rows reflow
-/// **up** by exactly the removed row's extent — the slint 1.18.1
-/// `ListView` repeater is content-anchored, not row-anchored (the
-/// stage-1 plan D-2 "rows resting" statement was corrected to this
-/// pinned actual; see the stage-2 report's finding).
+/// flip inserts into Done-today (a separate, lower `ListView`) and
+/// pins nothing about this case. This pin flips the true Overdue head
+/// (order 3): under the mode the compensation carries the removed
+/// row's **observed** extent (it rendered on-screen at mount, so the
+/// C-2 height cache is exact), and the live rows are **pixel-still**
+/// — the witness rests at exactly its pre-change y (the mode-off
+/// shape reflowed up by the removed extent; the stage-2 measurement's
+/// remove-head campaign case). The page never scrolls (the header
+/// rests).
 #[test]
-fn a_true_removal_above_the_today_viewport_reflows_by_the_removed_extent() {
+fn a_true_removal_above_the_today_viewport_is_pixel_still() {
     support::driver::run(
         DriverOptions {
             headless_renderer: false,
         },
         |driver| {
             let (handle, _engine, state) = mount_today(driver, 600);
-
-            // The removed row's extent, measured before the walk: the
-            // Overdue head (order 3) and its successor (order 6) both
-            // start on-screen.
-            let head = driver
-                .find_by_label(&bench_label(3))
-                .unwrap_or_else(|| panic!("the Overdue head renders"));
-            let successor = driver
-                .find_by_label(&bench_label(6))
-                .unwrap_or_else(|| panic!("the Overdue head's successor renders"));
-            let extent = successor.absolute_position().y - head.absolute_position().y;
 
             // Drive the walk deep: the window ends far from the
             // section head, so the removal is entirely above the
@@ -1037,9 +1041,9 @@ fn a_true_removal_above_the_today_viewport_reflows_by_the_removed_extent() {
                 .unwrap_or_else(|| panic!("the focused card stays live across the removal"));
             let shifted = rest.y - focused.absolute_position().y;
             assert_eq!(
-                shifted, extent,
-                "the removal above the viewport reflows the live rows up by exactly the \
-                 removed row's extent (content-anchored viewport)"
+                shifted, 0.0,
+                "the compensated removal above the viewport leaves the witness pixel-still \
+                 (the removed row's observed extent is exact — it rendered at mount)"
             );
             let header = driver
                 .find_by_label("Overdue")

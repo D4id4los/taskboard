@@ -279,6 +279,11 @@ pub struct PushModels {
     /// re-instantiate the cards (the r2 D9 discipline).
     today_sections: [MirroredRows<TodayRowModel>; 4],
     today: MirroredRows<TodaySectionModel>,
+    /// The today rows' observed extents (#592, the C-2 height cache):
+    /// task-id keyed rendered heights, reported by the live delegates
+    /// (the row-extent seam) — exact for ever-live rows, the fallback
+    /// source for an above-viewport change's compensation extent.
+    pub(crate) today_row_extents: std::collections::HashMap<SharedString, f32>,
     /// The plan-next-day surface's pane row handles (#622): the same
     /// diff pattern — stable identity across refreshes.
     plan_boxes: MirroredRows<PlanRowModel>,
@@ -346,6 +351,45 @@ impl<T> Default for MirroredRows<T> {
             mirror: Vec::new(),
         }
     }
+}
+
+/// The structural half of one positional diff (#592): the first
+/// index where old and desired disagree, and the tail's membership
+/// counts. Pure over `(old, desired)` — the same comparison
+/// [`diff_rows`] performs, minus the model mutations; the push
+/// discipline turns any head/mid membership change into a rebind
+/// cascade from `first_change` down plus tail mutations, so
+/// `first_change` is where the visible reflow begins.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct RowAnchorSummary {
+    pub(crate) first_change: usize,
+    pub(crate) removed: usize,
+    pub(crate) inserted: usize,
+}
+
+/// One section's compensable change (#592): the first changed row,
+/// the signed membership delta, and the compensation extent (0.0 =
+/// never observed live; the [`ListView`](crate) falls back to its
+/// average).
+#[derive(Default, Clone)]
+struct SectionAnchor {
+    first_change: usize,
+    delta: i32,
+    extent: f32,
+}
+
+/// `None` = no row over the common length differs: either nothing
+/// changed, or only the tail's membership moved (a tail change
+/// reflows nothing — the push discipline removes/appends at the end,
+/// below every live row).
+fn row_anchor_summary<T: PartialEq>(old: &[T], desired: &[T]) -> Option<RowAnchorSummary> {
+    let common = old.len().min(desired.len());
+    let first_change = (0..common).find(|&i| old[i] != desired[i])?;
+    Some(RowAnchorSummary {
+        first_change,
+        removed: old.len().saturating_sub(desired.len()),
+        inserted: desired.len().saturating_sub(old.len()),
+    })
 }
 
 /// Applies `desired` onto the persistent model through a positional
@@ -2361,6 +2405,9 @@ fn push_today(
     let mut section_models: Vec<TodaySectionModel> = Vec::with_capacity(4);
     let mut today_tasks: Vec<taskboard_domain::TaskId> = Vec::new();
     let mut section_rows = tables.today_section_rows;
+    // #592: one anchor slot per section (default = nothing to
+    // compensate), written to the facts global after the diffs.
+    let mut section_anchors = vec![SectionAnchor::default(); 4];
     for (index, (ids, label)) in display.iter().enumerate() {
         let handle = models.today_sections[index].handle_or_insert_with();
         let mut rows: Vec<TodayRowModel> = Vec::with_capacity(ids.len());
@@ -2383,6 +2430,7 @@ fn push_today(
             filtered.push(*id);
             today_tasks.push(*id);
             rows.push(TodayRowModel {
+                id: SharedString::from(task.id.as_uuid().to_string()),
                 card: task_card_model(
                     task,
                     sets,
@@ -2398,7 +2446,45 @@ fn push_today(
                 )),
             });
         }
+        // #592: the structural summary against the pre-diff mirror —
+        // the changed row's id (old side for a removal, desired side
+        // for an insertion) addresses the extent cache; the id gate
+        // (ids must differ at first_change) rejects a pure in-place
+        // content edit, which reflows nothing.
+        let anchor = row_anchor_summary(&models.today_sections[index].mirror, &rows);
+        let compensable = anchor.as_ref().is_some_and(|a| {
+            a.removed != a.inserted
+                && models.today_sections[index].mirror[a.first_change].id != rows[a.first_change].id
+        });
+        let anchor = if compensable {
+            let a = anchor.expect("compensable implies a summary");
+            // The changed row's stable key: the desired side for an
+            // insertion (the new row), the old mirror for a removal
+            // (the departing row).
+            let extent_id = if a.inserted > a.removed {
+                rows[a.first_change].id.clone()
+            } else {
+                models.today_sections[index].mirror[a.first_change]
+                    .id
+                    .clone()
+            };
+            SectionAnchor {
+                first_change: a.first_change,
+                // Slint ints are i32; section row counts stay far
+                // below i32 reach (the hint-writer's cast idiom).
+                #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+                delta: a.inserted as i32 - a.removed as i32,
+                extent: models
+                    .today_row_extents
+                    .get(&extent_id)
+                    .copied()
+                    .unwrap_or(0.0),
+            }
+        } else {
+            SectionAnchor::default()
+        };
         mutations += models.today_sections[index].diff(&rows);
+        section_anchors[index] = anchor;
         section_rows[index] = filtered.len();
         // All four sections always push (the model arity is fixed —
         // the repetition-probe discipline); the empty groups COLLAPSE
@@ -2411,6 +2497,33 @@ fn push_today(
     }
     // Prune the handles of sections that vanished (none can — fixed
     // arity — but the discipline keeps the map honest).
+    // #592: the anchor facts — one nonce edge per section with a
+    // compensable above-viewport membership change; each section's
+    // ListView filters on its own index (the FocusScrollHint
+    // pattern). Pruning rides the same pass: a task outside the
+    // filtered today set will not render again, so its cache entry is
+    // spendable (the average is the fallback). The live set is hashed
+    // once per pass, never re-scanned per cache entry.
+    let live_ids = today_tasks
+        .iter()
+        .map(|task| task.as_uuid().to_string())
+        .collect::<std::collections::HashSet<String>>();
+    models
+        .today_row_extents
+        .retain(|id, _| live_ids.contains(id.as_str()));
+    let facts = window.global::<crate::TodayAnchorFacts>();
+    let mut nonce = facts.get_nonce();
+    for (index, anchor) in section_anchors.iter().enumerate() {
+        if anchor.delta == 0 {
+            continue;
+        }
+        nonce = nonce.wrapping_add(1);
+        facts.set_section(i32::try_from(index).unwrap_or(i32::MAX));
+        facts.set_first_change(i32::try_from(anchor.first_change).unwrap_or(i32::MAX));
+        facts.set_row_delta(anchor.delta);
+        facts.set_extent(anchor.extent);
+        facts.set_nonce(nonce);
+    }
     tables.today_tasks = today_tasks;
     tables.today_section_rows = section_rows;
     let sections_handle = models.today.handle_or_insert_with();
@@ -2785,6 +2898,37 @@ mod tests {
         // The mirror tracked every mutation in lockstep (#464).
         assert_eq!(mirror, rows_of(&model));
         assert_eq!(reordered_mirror, rows_of(&reordered));
+    }
+
+    /// #592 — the structural summary: the first differing index and
+    /// the tail membership counts; no differing row over the common
+    /// length (unchanged, content-edit-only, or tail-only) is `None`.
+    #[test]
+    fn row_anchor_summary_locates_the_first_structural_change() {
+        use super::RowAnchorSummary as S;
+        let s = |first_change: usize, removed: usize, inserted: usize| {
+            Some(S {
+                first_change,
+                removed,
+                inserted,
+            })
+        };
+        // Unchanged → nothing.
+        assert_eq!(row_anchor_summary(&[1, 2, 3], &[1, 2, 3]), None);
+        // Content edit only (same length, one differing row) → a
+        // summary exists, but the caller's id gate rejects it.
+        assert_eq!(row_anchor_summary(&[1, 2, 3], &[1, 9, 3]), s(1, 0, 0));
+        // Head removal: the cascade starts at 0.
+        assert_eq!(row_anchor_summary(&[1, 2, 3], &[2, 3]), s(0, 1, 0));
+        // Head insertion: same.
+        assert_eq!(row_anchor_summary(&[2, 3], &[0, 2, 3]), s(0, 0, 1));
+        // Mid removal and mid insertion.
+        assert_eq!(row_anchor_summary(&[1, 2, 3, 4], &[1, 3, 4]), s(1, 1, 0));
+        assert_eq!(row_anchor_summary(&[1, 3, 4], &[1, 2, 3, 4]), s(1, 0, 1));
+        // Tail-only membership: no row over the common length
+        // differs — no reflow, nothing to compensate.
+        assert_eq!(row_anchor_summary(&[1, 2], &[1, 2, 3]), None);
+        assert_eq!(row_anchor_summary(&[1, 2, 3], &[1, 2]), None);
     }
 
     /// #592's mechanism fact: a head (above-viewport) membership
