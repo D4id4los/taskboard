@@ -12821,3 +12821,348 @@ fn a_general_op_in_flight_gates_the_other_settings_ops() {
         },
     );
 }
+
+// ---- #622: the plan-next-day surface's journeys ------------------------
+
+/// J-P1 — the opener routes to the planner and Escape restores the
+/// exact return view (the J3 shape): open from the board, Escape back
+/// onto the board, re-open, and the toggle closes.
+#[test]
+fn planner_open_closes_and_toggles() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            assert_eq!(harness.handle.window().get_current_view(), View::Board);
+
+            harness.press(ActionId::ViewPlanNextDay);
+            assert_eq!(
+                harness.handle.window().get_current_view(),
+                View::PlanNextDay,
+                "the opener opened the planner"
+            );
+            assert_eq!(
+                harness.chain(),
+                vec![
+                    ContextId::PlanNextDay,
+                    ContextId::ViNormal,
+                    ContextId::Global,
+                ],
+                "the planner context heads the chain"
+            );
+
+            // Escape (the planner-context binding) restores the exact
+            // return view.
+            harness.stroke(parse("Escape").expect("Escape"));
+            assert_eq!(
+                harness.handle.window().get_current_view(),
+                View::Board,
+                "Escape restored the exact previous view"
+            );
+
+            // Re-open, then the toggle: a second opener dispatch closes.
+            harness.press(ActionId::ViewPlanNextDay);
+            assert_eq!(
+                harness.handle.window().get_current_view(),
+                View::PlanNextDay
+            );
+            harness.press(ActionId::ViewPlanNextDay);
+            assert_eq!(harness.handle.window().get_current_view(), View::Board);
+        },
+    );
+}
+
+/// J-P2 — cycle exclusion: with the planner open the next/prev-view
+/// verbs change nothing; from the return view the full cycle never
+/// lands on the planner (the J4 shape).
+#[test]
+fn the_view_cycle_never_passes_through_the_planner() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+
+            harness.press(ActionId::ViewPlanNextDay);
+            assert_eq!(
+                harness.handle.window().get_current_view(),
+                View::PlanNextDay
+            );
+            harness.press(ActionId::NavNextView);
+            harness.press(ActionId::NavPrevView);
+            assert_eq!(
+                harness.handle.window().get_current_view(),
+                View::PlanNextDay,
+                "the cycle verbs are inert while the planner is open"
+            );
+            harness.press(ActionId::ViewPlanNextDay);
+
+            // A full cycle walk from the board: the planner is never a
+            // member.
+            for expected in [
+                View::StackDetail,
+                View::TaskDetail,
+                View::Review,
+                View::Today,
+                View::Board,
+            ] {
+                harness.press(ActionId::NavNextView);
+                assert_eq!(harness.handle.window().get_current_view(), expected);
+            }
+        },
+    );
+}
+
+/// J-P3 — the placement: pick a pool row, type the time-of-day and an
+/// effort, commit — ONE `UpdateTask` with both masks reaches the
+/// boundary; the row moves to the placed pane; `AppUndo` routes the
+/// undo step.
+#[test]
+#[allow(clippy::too_many_lines)] // the placement journey's ceremony
+fn the_placement_routes_one_mask_and_undo_returns_it() {
+    let (fixture, state) = fixture::golden_state();
+    let task0 = fixture.task0;
+    let title = state.tasks.get(&task0).expect("fixture task").title.clone();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.set_window_size(1000, 900);
+            harness.press(ActionId::ViewPlanNextDay);
+            harness.driver.advance_time(0);
+
+            // The pool renders the candidate: pick task0 (the
+            // row affordance's addressable label).
+            let row = harness
+                .driver
+                .find_by_label(&format!("Place {title}"))
+                .unwrap_or_else(|| panic!("task0's pool row is mounted"));
+            row.invoke_default_action();
+            harness.driver.advance_time(0);
+            assert!(
+                harness.handle.window().get_plan_model().placing,
+                "the placement form armed"
+            );
+
+            // Type the time-of-day and the optional effort, commit.
+            click_field_centre(&mut harness, "Time");
+            harness.type_text("09:30");
+            click_field_centre(&mut harness, "Effort (optional)");
+            harness.type_text("30");
+            harness.stroke(parse("Return").expect("Return"));
+            harness.driver.advance_time(0);
+
+            // The one honest write: both masks in one command.
+            let day_start = UiSettings::default().day_start;
+            let (next_start, _) =
+                taskboard_domain::days::next_day_window(harness_now(), day_start.0, day_start.1);
+            let date = next_start.date_naive();
+            let time = chrono::NaiveTime::from_hms_opt(9, 30, 0).expect("09:30");
+            let expected_instant = taskboard_domain::DayCalendar {
+                day_start_time: day_start.0,
+                offset: day_start.1,
+            }
+            .instant(date, time);
+            match harness.engine.drain().as_slice() {
+                [StateCommand::UpdateTask { id, changes }] => {
+                    assert_eq!(*id, task0, "the addressed row");
+                    assert_eq!(changes.scheduled, Some(Some(expected_instant)));
+                    assert_eq!(
+                        changes.effort,
+                        Some(Some(
+                            taskboard_domain::Effort::parse_text_form("30").expect("30 parses")
+                        ))
+                    );
+                }
+                other => panic!("one placement write, got {other:?}"),
+            }
+
+            // The fake engine folds the write in (fixture
+            // continuity): the row moved to the placed pane; the pool
+            // shrank.
+            harness.engine.settle(&harness.handle);
+            let plan = harness.handle.window().get_plan_model();
+            assert_eq!(plan.boxes.row_count(), 1, "the box rendered");
+            assert_eq!(plan.pool.row_count(), 2, "the pool shrank");
+            assert!(!plan.placing, "the form disarmed on commit");
+
+            // The undo arm: AppUndo routes the engine's undo verb (the
+            // engine semantics are the undo suite's own contract).
+            harness.press(ActionId::AppUndo);
+            match harness.engine.drain().as_slice() {
+                [StateCommand::Undo] => {}
+                other => panic!("one undo step, got {other:?}"),
+            }
+        },
+    );
+}
+
+/// J-P4 — the reorder: two placed boxes; "Move box later" on the
+/// earlier box routes the two honest `UpdateTask` swap writes; two
+/// undo steps route back.
+#[test]
+fn the_reorder_routes_the_two_swap_writes() {
+    let (fixture, mut state) = fixture::golden_state();
+    let (task0, task1) = (fixture.task0, fixture.task1);
+    // Two boxes tomorrow: 09:00 and 11:00 UTC (the default day-start
+    // pair makes tomorrow's window the next UTC midnight block).
+    let day_start = UiSettings::default().day_start;
+    let (next_start, _) =
+        taskboard_domain::days::next_day_window(chrono::Utc::now(), day_start.0, day_start.1);
+    let early = next_start + TimeDelta::hours(9);
+    let late = next_start + TimeDelta::hours(11);
+    state.tasks.get_mut(&task0).expect("task0").scheduled = Some(early);
+    state.tasks.get_mut(&task1).expect("task1").scheduled = Some(late);
+    let title0 = state.tasks.get(&task0).expect("task0").title.clone();
+    let title1 = state.tasks.get(&task1).expect("task1").title.clone();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.set_window_size(1000, 900);
+            harness.press(ActionId::ViewPlanNextDay);
+            harness.driver.advance_time(0);
+
+            // Both boxes render, the earlier one first (the day
+            // shape's scheduled order).
+            assert!(
+                harness
+                    .driver
+                    .find_by_label(&format!("Box {title0}"))
+                    .is_some(),
+                "the earlier box renders"
+            );
+            assert_eq!(
+                harness.handle.window().get_plan_model().boxes.row_count(),
+                2
+            );
+
+            // "Move box later" on the earlier box: the two swap
+            // writes, instants exchanged, ids preserved.
+            let row = harness
+                .driver
+                .find_by_label("Move box later")
+                .unwrap_or_else(|| panic!("the later affordance is mounted"));
+            row.invoke_default_action();
+            harness.driver.advance_time(0);
+            match harness.engine.drain().as_slice() {
+                [
+                    a @ StateCommand::UpdateTask { .. },
+                    b @ StateCommand::UpdateTask { .. },
+                ] => {
+                    for (command, expected_id, expected_instant) in
+                        [(a, task0, late), (b, task1, early)]
+                    {
+                        let StateCommand::UpdateTask { id, changes } = command else {
+                            unreachable!("matched above")
+                        };
+                        assert_eq!(*id, expected_id, "the swap's ids");
+                        assert_eq!(changes.scheduled, Some(Some(expected_instant)));
+                    }
+                }
+                other => panic!("two swap writes, got {other:?}"),
+            }
+
+            // The fake engine folds the swap in: the display order
+            // flips (the late box now leads, `(scheduled, order, id)`).
+            harness.engine.settle(&harness.handle);
+            let boxes = harness.handle.window().get_plan_model().boxes;
+            assert_eq!(boxes.row_count(), 2);
+            assert_eq!(
+                boxes.row_data(0).expect("box").card.title.to_string(),
+                title1,
+                "the late box leads after the swap"
+            );
+
+            // The undo arms: two honest steps back.
+            harness.press(ActionId::AppUndo);
+            harness.press(ActionId::AppUndo);
+            let drained = harness.engine.drain();
+            assert_eq!(drained.len(), 2, "the swap steps back as two writes");
+            assert!(drained.iter().all(|c| matches!(c, StateCommand::Undo)));
+        },
+    );
+}
+
+/// J-P5 — the planner is reachable from every cycle view by its
+/// action and escapable everywhere: no dead ends (the walk's reach
+/// contract, D-4).
+#[test]
+fn the_planner_is_reachable_and_escapable_from_every_cycle_view() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            // Visit every cycle member; from each, the opener reaches
+            // the planner and Escape restores that exact member.
+            let members = [
+                (ActionId::NavNextView, View::StackDetail),
+                (ActionId::NavNextView, View::TaskDetail),
+                (ActionId::NavNextView, View::Review),
+                (ActionId::NavNextView, View::Today),
+                (ActionId::NavNextView, View::Board),
+            ];
+            for (_, expected) in members {
+                harness.press(ActionId::NavNextView);
+                assert_eq!(harness.handle.window().get_current_view(), expected);
+                harness.press(ActionId::ViewPlanNextDay);
+                assert_eq!(
+                    harness.handle.window().get_current_view(),
+                    View::PlanNextDay
+                );
+                harness.stroke(parse("Escape").expect("Escape"));
+                assert_eq!(
+                    harness.handle.window().get_current_view(),
+                    expected,
+                    "Escape restored the exact member"
+                );
+            }
+        },
+    );
+}
+
+/// J-P6 (the kiosk pin's journey half): a kiosk mount never shows the
+/// planner and its opener dispatch is structurally inert.
+#[test]
+fn the_kiosk_mount_never_shows_the_planner() {
+    let (_fixture, state) = fixture::golden_state();
+    let settings = UiSettings {
+        kiosk: true,
+        ..UiSettings::default()
+    };
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount_with_settings(SlintDriver::default(), state, settings);
+            harness.press(ActionId::ViewPlanNextDay);
+            assert_ne!(
+                harness.handle.window().get_current_view(),
+                View::PlanNextDay,
+                "the kiosk dispatch is inert"
+            );
+            assert_eq!(harness.handle.window().get_current_view(), View::Board);
+        },
+    );
+}
+
+/// The harness-time `now` (the journeys' wall-clock anchor for the
+/// placement's expected instant — the adapter derives the window from
+/// its own pass-time `now`; a minute-boundary straddle is the same
+/// recorded golden-class residual).
+fn harness_now() -> chrono::DateTime<chrono::Utc> {
+    chrono::Utc::now()
+}

@@ -726,6 +726,7 @@ impl Adapter {
         ctx.timer_target = self.timer_target.take();
         ctx.track_entry_draft = self.track_entry_draft.take();
         ctx.track_entry_target = self.track_entry_target.take();
+        ctx.plan_target = self.plan_target.take();
         ctx.track_target = self.track_target.take();
         ctx.habit_target = self.habit_target.take();
         ctx.habit_move = self.habit_move.take();
@@ -5845,12 +5846,16 @@ fn install_today_row_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
 
     });
 
-    install_seam!(window: window.on_plan_place_edited, adapter: adapter;
-    bind mut (a, _window), args (time, effort), {        // The D9 mirror rule: the adapter-held buffers update per
+    install_seam!(window: window.on_plan_time_edited, adapter: adapter;
+    bind mut (a, _window), args (text), {        // The D9 mirror rule: the adapter-held buffers update per
     // keystroke; a refresh never clobbers them while the flow
-    // holds them. The property writes are the echo only.
-    a.plan_time_text = time.to_string();
-    a.plan_effort_text = effort.to_string();
+    // holds them.
+    a.plan_time_text = text.to_string();
+
+    });
+
+    install_seam!(window: window.on_plan_effort_edited, adapter: adapter;
+    bind mut (a, _window), args (text), {        a.plan_effort_text = text.to_string();
 
     });
 

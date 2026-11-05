@@ -10,6 +10,23 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 ### Added
 
+- The plan-next-day surface (#622, the v0.2 wave's interactive
+  placement ruling): a desktop-only `PlanNextDay` view off the view
+  cycle (the Settings precedent), opened by the routed
+  `view.plan-next-day` action (`Ctrl+Shift+P`, toggle; Escape closes
+  onto the exact return view). The candidate-pool derivation lives in
+  `taskboard-domain`'s `days.rs` — `next_day_window` plus
+  `plan_next_day`, today's projection evaluated as of tomorrow's
+  opening (the shared read, no parallel projection) — partitioning
+  every live open task into placed-scheduled, placed-due, carried
+  misses, and the pickable pool. Placement writes ride the landed
+  `UpdateTask` masks only: a pick arms an inline form (time of day +
+  optional effort, the due-editor's parsers verbatim) committing ONE
+  atomic scheduled/effort edit; reorder swaps two boxes' start
+  instants (the instant set invariant — no arithmetic, R-6); unplace
+  clears the scheduled slot. Kiosk is excluded structurally (the
+  rotation never selects it; the dispatch no-ops). The review walk's
+  reachability seam is this one dispatchable action.
 - The focus mode's auto-chain and long-break cadence (#600, the
   pomodoro follow-ups): with `[focus] chain = true` a runtime-driven
   break end no longer parks in idle — the next focus block starts
@@ -33,6 +50,7 @@ The workspace carries a single global version (see `docs/architecture.org`);
   ladder rung), and prunes its receipts on `DeleteHabit` (the log
   outlives the tracker). Zero new CLI verbs: `habits add/update --at`
   was already the edit surface.
+||||||| parent of bc6b2e6b (test(ui-slint): the plan-next-day journeys and the #622 changelog entry)
 - The Nextcloud files transport, `taskboard-sync-files-nextcloud`
   (#630): a WebDAV client over the workspace reqwest stack (closed
   verb set — MKCOL, PROPFIND, GET, conditional PUT; no DELETE/MOVE by
@@ -51,6 +69,7 @@ The workspace carries a single global version (see `docs/architecture.org`);
   characterization facts F3–F6 plus the fork/MKCOL server facts.
   Status findings emit on a `tokio::sync::watch`; surfacing is
   chunk 4's.
+||||||| parent of 12bff3cd (test(ui-slint): the plan-next-day journeys and the #622 changelog entry)
 - The files-sync substrate's pure core crate, `taskboard-sync-files`
   (#629, ADR 0020): the substrate tree's layout types and file-kind
   classifier (reserved `ops/`/`snapshot-` kinds unparseable by

@@ -46,7 +46,8 @@ export component PlanNextDayView inherits FocusScope {
     callback box-earlier(int);
     callback box-later(int);
     callback box-remove(int);
-    callback place-edited(string, string);
+    callback time-edited(string);
+    callback effort-edited(string);
     callback place-commit();
     callback place-cancel();
 
@@ -82,12 +83,25 @@ export component PlanNextDayView inherits FocusScope {
                         vertical-stretch: 0;
                         spacing: Theme.space-2;
 
-                        TouchArea {
+                        box-activate := FocusScope {
                             width: box-row-card.preferred-width;
                             height: box-row-card.preferred-height;
-                            clicked => { root.box-activated(bindex); }
-                            box-row-card := TaskCard {
-                                model: box.card;
+                            accessible-role: AccessibleRole.button;
+                            accessible-label: "Box " + box.card.title;
+                            accessible-action-default => { root.box-activated(bindex); }
+                            key-pressed(event) => {
+                                if (event.text == Key.Return || event.text == " ") {
+                                    root.box-activated(bindex);
+                                    accept
+                                } else {
+                                    reject
+                                }
+                            }
+                            box-touch := TouchArea {
+                                clicked => { root.box-activated(bindex); }
+                                box-row-card := TaskCard {
+                                    model: box.card;
+                                }
                             }
                         }
                         VerticalLayout {
@@ -108,63 +122,110 @@ export component PlanNextDayView inherits FocusScope {
                             }
                         }
                         // The pointer-grade row verbs (D-6): no preset
-                        // bindings, the affordance is the invocation.
+                        // bindings, the affordance is the invocation
+                        // (the tracked-row activation shape — the AT
+                        // default action is the click equivalence).
                         HorizontalLayout {
                             vertical-stretch: 0;
                             spacing: Theme.space-1;
                             alignment: end;
 
-                            box-earlier-hit := TouchArea {
+                            earlier-hit := FocusScope {
                                 width: Theme.space-5;
                                 height: Theme.space-5;
-                                clicked => { root.box-earlier(bindex); }
-                                Rectangle {
-                                    width: 100%;
-                                    height: 100%;
-                                    border-radius: Theme.radius-small;
-                                    background: box-earlier-hit.has-hover
-                                        ? Theme.surface-hover
-                                        : transparent;
-                                    RoleText {
-                                        text: "↑";
-                                        vertical-alignment: center;
-                                        horizontal-alignment: center;
+                                focus-on-tab-navigation: false;
+                                accessible-role: AccessibleRole.button;
+                                accessible-label: "Move box earlier";
+                                accessible-action-default => { root.box-earlier(bindex); }
+                                key-pressed(event) => {
+                                    if (event.text == Key.Return || event.text == " ") {
+                                        root.box-earlier(bindex);
+                                        accept
+                                    } else {
+                                        reject
+                                    }
+                                }
+                                box-earlier-touch := TouchArea {
+                                    mouse-cursor: MouseCursor.pointer;
+                                    clicked => { root.box-earlier(bindex); }
+                                    Rectangle {
+                                        width: 100%;
+                                        height: 100%;
+                                        border-radius: Theme.radius-small;
+                                        background: box-earlier-touch.has-hover
+                                            ? Theme.surface-hover
+                                            : transparent;
+                                        RoleText {
+                                            text: "\u{2191}";
+                                            vertical-alignment: center;
+                                            horizontal-alignment: center;
+                                        }
                                     }
                                 }
                             }
-                            box-later-hit := TouchArea {
+                            later-hit := FocusScope {
                                 width: Theme.space-5;
                                 height: Theme.space-5;
-                                clicked => { root.box-later(bindex); }
-                                Rectangle {
-                                    width: 100%;
-                                    height: 100%;
-                                    border-radius: Theme.radius-small;
-                                    background: box-later-hit.has-hover
-                                        ? Theme.surface-hover
-                                        : transparent;
-                                    RoleText {
-                                        text: "↓";
-                                        vertical-alignment: center;
-                                        horizontal-alignment: center;
+                                focus-on-tab-navigation: false;
+                                accessible-role: AccessibleRole.button;
+                                accessible-label: "Move box later";
+                                accessible-action-default => { root.box-later(bindex); }
+                                key-pressed(event) => {
+                                    if (event.text == Key.Return || event.text == " ") {
+                                        root.box-later(bindex);
+                                        accept
+                                    } else {
+                                        reject
+                                    }
+                                }
+                                box-later-touch := TouchArea {
+                                    mouse-cursor: MouseCursor.pointer;
+                                    clicked => { root.box-later(bindex); }
+                                    Rectangle {
+                                        width: 100%;
+                                        height: 100%;
+                                        border-radius: Theme.radius-small;
+                                        background: box-later-touch.has-hover
+                                            ? Theme.surface-hover
+                                            : transparent;
+                                        RoleText {
+                                            text: "\u{2193}";
+                                            vertical-alignment: center;
+                                            horizontal-alignment: center;
+                                        }
                                     }
                                 }
                             }
-                            box-remove-hit := TouchArea {
+                            remove-hit := FocusScope {
                                 width: Theme.space-5;
                                 height: Theme.space-5;
-                                clicked => { root.box-remove(bindex); }
-                                Rectangle {
-                                    width: 100%;
-                                    height: 100%;
-                                    border-radius: Theme.radius-small;
-                                    background: box-remove-hit.has-hover
-                                        ? Theme.surface-hover
-                                        : transparent;
-                                    RoleText {
-                                        text: "✕";
-                                        vertical-alignment: center;
-                                        horizontal-alignment: center;
+                                focus-on-tab-navigation: false;
+                                accessible-role: AccessibleRole.button;
+                                accessible-label: "Remove box";
+                                accessible-action-default => { root.box-remove(bindex); }
+                                key-pressed(event) => {
+                                    if (event.text == Key.Return || event.text == " ") {
+                                        root.box-remove(bindex);
+                                        accept
+                                    } else {
+                                        reject
+                                    }
+                                }
+                                box-remove-touch := TouchArea {
+                                    mouse-cursor: MouseCursor.pointer;
+                                    clicked => { root.box-remove(bindex); }
+                                    Rectangle {
+                                        width: 100%;
+                                        height: 100%;
+                                        border-radius: Theme.radius-small;
+                                        background: box-remove-touch.has-hover
+                                            ? Theme.surface-hover
+                                            : transparent;
+                                        RoleText {
+                                            text: "\u{2715}";
+                                            vertical-alignment: center;
+                                            horizontal-alignment: center;
+                                        }
                                     }
                                 }
                             }
@@ -195,12 +256,26 @@ export component PlanNextDayView inherits FocusScope {
                             background: pool-row.overdue ? Semantic.overdue : transparent;
                             border-radius: Theme.radius-small;
                         }
-                        pool-hit := TouchArea {
+                        pool-hit := FocusScope {
                             width: pool-card.preferred-width;
                             height: pool-card.preferred-height;
-                            clicked => { root.pool-activated(pindex); }
-                            pool-card := TaskCard {
-                                model: pool-row.card;
+                            accessible-role: AccessibleRole.button;
+                            accessible-label: "Place " + pool-row.card.title;
+                            accessible-action-default => { root.pool-activated(pindex); }
+                            key-pressed(event) => {
+                                if (event.text == Key.Return || event.text == " ") {
+                                    root.pool-activated(pindex);
+                                    accept
+                                } else {
+                                    reject
+                                }
+                            }
+                            pool-touch := TouchArea {
+                                mouse-cursor: MouseCursor.pointer;
+                                clicked => { root.pool-activated(pindex); }
+                                pool-card := TaskCard {
+                                    model: pool-row.card;
+                                }
                             }
                         }
                     }
@@ -224,14 +299,14 @@ export component PlanNextDayView inherits FocusScope {
                         label: "Time";
                         initial-text: root.time-text;
                         accepted(_) => { root.place-commit(); }
-                        edited(t) => { root.place-edited(t, root.effort-text); }
+                        edited(t) => { root.time-edited(t); }
                     }
                     TextField {
                         placeholder: "30, 1h30m…";
                         label: "Effort (optional)";
                         initial-text: root.effort-text;
                         accepted(_) => { root.place-commit(); }
-                        edited(t) => { root.place-edited(root.time-text, t); }
+                        edited(t) => { root.effort-edited(t); }
                     }
                     RoleText {
                         role: Typography.caption;

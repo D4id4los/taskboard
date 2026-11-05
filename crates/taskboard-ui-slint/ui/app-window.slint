@@ -144,7 +144,8 @@ export component AppWindow inherits Window {
     callback plan-box-earlier(int);
     callback plan-box-later(int);
     callback plan-box-remove(int);
-    callback plan-place-edited(string, string);
+    callback plan-time-edited(string);
+    callback plan-effort-edited(string);
     callback plan-place-commit();
     callback plan-place-cancel();
     in-out property <string> toolbar-title;
@@ -425,7 +426,8 @@ export component AppWindow inherits Window {
                 box-earlier(i) => root.plan-box-earlier(i);
                 box-later(i) => root.plan-box-later(i);
                 box-remove(i) => root.plan-box-remove(i);
-                place-edited(t, e) => root.plan-place-edited(t, e);
+                time-edited(t) => root.plan-time-edited(t);
+                effort-edited(t) => root.plan-effort-edited(t);
                 place-commit() => root.plan-place-commit();
                 place-cancel() => root.plan-place-cancel();
             }
