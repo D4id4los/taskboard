@@ -4590,10 +4590,10 @@ impl Adapter {
 /// the same evidence form — do not grow arms ad hoc.
 macro_rules! install_seam {
     (window: $window:ident . $on:ident, adapter: $adapter:expr;
-     bind ($a:ident, $w:ident), args ($($arg:ident),*), $body:block) => {{
+     bind ($a:ident, $w:ident), args ($($arg:tt)*), $body:block) => {{
         let seam_adapter = ::std::rc::Rc::clone($adapter);
         let seam_weak = $window.as_weak();
-        $window.$on(move |$($arg),*| {
+        $window.$on(move |$($arg)*| {
             let Some($w) = seam_weak.upgrade() else {
                 return;
             };
@@ -4601,11 +4601,11 @@ macro_rules! install_seam {
             $body
         });
     }};
-    (window: $window:ident . $on:ident, adapter: $adapter:expr; [else $guard_return:expr]
-     bind ($a:ident, $w:ident), args ($($arg:ident),*), $body:block) => {{
+    (window: $window:ident . $on:ident, adapter: $adapter:expr; [else ($guard_return:expr)]
+     bind ($a:ident, $w:ident), args ($($arg:tt)*), $body:block) => {{
         let seam_adapter = ::std::rc::Rc::clone($adapter);
         let seam_weak = $window.as_weak();
-        $window.$on(move |$($arg),*| {
+        $window.$on(move |$($arg)*| {
             let Some($w) = seam_weak.upgrade() else {
                 return $guard_return;
             };
@@ -4614,26 +4614,26 @@ macro_rules! install_seam {
         });
     }};
     (window: $window:ident . $on:ident, adapter: $adapter:expr; [bare_mut]
-     bind ($a:ident), args ($($arg:ident),*), $body:block) => {{
+     bind ($a:ident), args ($($arg:tt)*), $body:block) => {{
         let seam_adapter = ::std::rc::Rc::clone($adapter);
-        $window.$on(move |$($arg),*| {
+        $window.$on(move |$($arg)*| {
             let mut $a = seam_adapter.borrow_mut();
             $body
         });
     }};
     (window: $window:ident . $on:ident, adapter: $adapter:expr; [bare_ref]
-     bind ($a:ident), args ($($arg:ident),*), $body:block) => {{
+     bind ($a:ident), args ($($arg:tt)*), $body:block) => {{
         let seam_adapter = ::std::rc::Rc::clone($adapter);
-        $window.$on(move |$($arg),*| {
+        $window.$on(move |$($arg)*| {
             let $a = seam_adapter.borrow();
             $body
         });
     }};
     (window: $window:ident . $on:ident, adapter: $adapter:expr; [try]
-     bind ($a:ident, $w:ident), args ($($arg:ident),*), $body:block) => {{
+     bind ($a:ident, $w:ident), args ($($arg:tt)*), $body:block) => {{
         let seam_adapter = ::std::rc::Rc::clone($adapter);
         let seam_weak = $window.as_weak();
-        $window.$on(move |$($arg),*| {
+        $window.$on(move |$($arg)*| {
             let Some($w) = seam_weak.upgrade() else {
                 return;
             };
@@ -5652,48 +5652,38 @@ impl Adapter {
 
 /// A board card's right click (round-1 D13): resolve, focus, open.
 fn install_board_context_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
-    let adapter = Rc::clone(adapter);
-    let weak = window.as_weak();
-    window.on_board_task_context_requested(move |column, row, x, y| {
-        let Some(window) = weak.upgrade() else {
-            return;
-        };
-        let (Ok(column), Ok(row)) = (usize::try_from(column), usize::try_from(row)) else {
-            return;
-        };
-        let mut a = adapter.borrow_mut();
-        settle_pointer_conflict(&mut a, &window);
-        let Some((stack, task)) = a.tables.board_task(column, row) else {
-            return;
-        };
-        let outcomes = a.view_state.activate_card(task, stack);
-        a.apply_outcomes(&window, &outcomes);
-        a.open_task_context_menu(&window, x, y);
+    install_seam!(window: window.on_board_task_context_requested, adapter: adapter;
+    bind (a, window), args (column, row, x, y), {        let (Ok(column), Ok(row)) = (usize::try_from(column), usize::try_from(row)) else {
+        return;
+    };
+    settle_pointer_conflict(&mut a, &window);
+    let Some((stack, task)) = a.tables.board_task(column, row) else {
+        return;
+    };
+    let outcomes = a.view_state.activate_card(task, stack);
+    a.apply_outcomes(&window, &outcomes);
+    a.open_task_context_menu(&window, x, y);
+
     });
 }
 
 /// A stack-detail card's right click (round-1 D13).
 fn install_stack_context_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
-    let adapter = Rc::clone(adapter);
-    let weak = window.as_weak();
-    window.on_stack_task_context_requested(move |row, x, y| {
-        let Some(window) = weak.upgrade() else {
-            return;
-        };
-        let Ok(row) = usize::try_from(row) else {
-            return;
-        };
-        let mut a = adapter.borrow_mut();
-        settle_pointer_conflict(&mut a, &window);
-        let Some(task) = a.tables.stack_task(row) else {
-            return;
-        };
-        let Some(stack) = a.view_state.subject_stack() else {
-            return;
-        };
-        let outcomes = a.view_state.activate_card(task, stack);
-        a.apply_outcomes(&window, &outcomes);
-        a.open_task_context_menu(&window, x, y);
+    install_seam!(window: window.on_stack_task_context_requested, adapter: adapter;
+    bind (a, window), args (row, x, y), {        let Ok(row) = usize::try_from(row) else {
+        return;
+    };
+    settle_pointer_conflict(&mut a, &window);
+    let Some(task) = a.tables.stack_task(row) else {
+        return;
+    };
+    let Some(stack) = a.view_state.subject_stack() else {
+        return;
+    };
+    let outcomes = a.view_state.activate_card(task, stack);
+    a.apply_outcomes(&window, &outcomes);
+    a.open_task_context_menu(&window, x, y);
+
     });
 }
 
@@ -5826,23 +5816,13 @@ fn open_stack_context(a: &mut Adapter, window: &AppWindow, column: i32, x: f32, 
 /// right-down context arm and the left-click select arm — one home so
 /// they cannot drift from the header's pair.
 fn install_body_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
-    let body = Rc::clone(adapter);
-    let body_weak = window.as_weak();
-    window.on_board_body_context_requested(move |column, x, y| {
-        let Some(window) = body_weak.upgrade() else {
-            return;
-        };
-        let mut a = body.borrow_mut();
-        open_stack_context(&mut a, &window, column, x, y);
+    install_seam!(window: window.on_board_body_context_requested, adapter: adapter;
+    bind (a, window), args (column, x, y), {        open_stack_context(&mut a, &window, column, x, y);
+
     });
-    let body_click = Rc::clone(adapter);
-    let body_click_weak = window.as_weak();
-    window.on_board_body_activated(move |column| {
-        let Some(window) = body_click_weak.upgrade() else {
-            return;
-        };
-        let mut a = body_click.borrow_mut();
-        select_column(&mut a, &window, column);
+    install_seam!(window: window.on_board_body_activated, adapter: adapter;
+    bind (a, window), args (column), {        select_column(&mut a, &window, column);
+
     });
 }
 
@@ -5941,16 +5921,13 @@ fn install_object_context_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter
 /// routing the same close path the Escape binding takes — an adapter
 /// method, not a registry action (closing is not a routable intent).
 fn install_settings_back_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
-    let adapter = Rc::clone(adapter);
-    let weak = window.as_weak();
-    window.on_settings_back_clicked(move || {
-        let Some(window) = weak.upgrade() else { return };
-        Adapter::dismiss_tooltip(&window);
-        let mut a = adapter.borrow_mut();
-        let outcomes = a.view_state.close_settings();
-        a.apply_outcomes(&window, &outcomes);
-        a.sync_view_context();
-        a.sync(&window);
+    install_seam!(window: window.on_settings_back_clicked, adapter: adapter;
+    bind (a, window), args (), {        Adapter::dismiss_tooltip(&window);
+    let outcomes = a.view_state.close_settings();
+    a.apply_outcomes(&window, &outcomes);
+    a.sync_view_context();
+    a.sync(&window);
+
     });
 }
 
@@ -5958,11 +5935,9 @@ fn install_settings_back_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
 /// `nav.focus-board` — the existing `focus_board` outcome, no new
 /// view-state semantics.
 fn install_task_back_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
-    let adapter = Rc::clone(adapter);
-    let weak = window.as_weak();
-    window.on_task_back_clicked(move || {
-        let Some(window) = weak.upgrade() else { return };
-        adapter.borrow_mut().route(&window, ActionId::NavFocusBoard);
+    install_seam!(window: window.on_task_back_clicked, adapter: adapter;
+    bind (a, window), args (), {        a.route(&window, ActionId::NavFocusBoard);
+
     });
 }
 
@@ -5972,22 +5947,17 @@ fn install_task_back_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
 /// action equivalent (§7.1). A stale index against an older pass is
 /// absorbed silently.
 fn install_board_bar_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
-    let adapter = Rc::clone(adapter);
-    let weak = window.as_weak();
-    window.on_board_bar_segment_activated(move |index| {
-        let Some(window) = weak.upgrade() else {
-            return;
-        };
-        let Ok(index) = usize::try_from(index) else {
-            return;
-        };
-        let mut a = adapter.borrow_mut();
-        settle_pointer_conflict(&mut a, &window);
-        let Some(board) = a.tables.board_ids.get(index).copied() else {
-            return;
-        };
-        a.board_target = Some(board);
-        a.route(&window, ActionId::BoardSelect);
+    install_seam!(window: window.on_board_bar_segment_activated, adapter: adapter;
+    bind (a, window), args (index), {        let Ok(index) = usize::try_from(index) else {
+        return;
+    };
+    settle_pointer_conflict(&mut a, &window);
+    let Some(board) = a.tables.board_ids.get(index).copied() else {
+        return;
+    };
+    a.board_target = Some(board);
+    a.route(&window, ActionId::BoardSelect);
+
     });
 }
 
@@ -6037,15 +6007,14 @@ fn install_stack_create_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
 /// The stack-detail done checkbox (r3 D6): the toggled command, the
 /// board cards' seam verbatim (a stale index absorbed).
 fn install_stack_done_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
-    let done = Rc::clone(adapter);
-    window.on_stack_task_done_toggled(move |row| {
-        let a = done.borrow();
-        let Ok(row) = usize::try_from(row) else {
-            return;
-        };
-        if let Some(task) = a.tables.stack_task(row) {
-            send_toggled_done(&a, task);
-        }
+    install_seam!(window: window.on_stack_task_done_toggled, adapter: adapter; [bare_ref]
+    bind (a), args (row), {        let Ok(row) = usize::try_from(row) else {
+        return;
+    };
+    if let Some(task) = a.tables.stack_task(row) {
+        send_toggled_done(&a, task);
+    }
+
     });
 }
 
@@ -6526,17 +6495,14 @@ fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
 /// grid holds focus, and never masks (Escape resolves `ModeNormal`
 /// from `ViInsert` regardless).
 fn install_picker_grid_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
-    let grid = Rc::clone(adapter);
-    let weak = window.as_weak();
-    window.on_date_picker_grid_focus_changed(move |focused: bool| {
-        let Some(window) = weak.upgrade() else { return };
-        let mut a = grid.borrow_mut();
-        a.shell.date_picker_grid = focused;
-        // The mirror rides with the seam (the Down-in-field path
-        // lands here without a `sync` around it).
-        window
-            .global::<KeyboardState>()
-            .set_date_picker_grid(focused);
+    install_seam!(window: window.on_date_picker_grid_focus_changed, adapter: adapter;
+    bind (a, window), args (focused: bool), {        a.shell.date_picker_grid = focused;
+    // The mirror rides with the seam (the Down-in-field path
+    // lands here without a `sync` around it).
+    window
+        .global::<KeyboardState>()
+        .set_date_picker_grid(focused);
+
     });
 }
 
