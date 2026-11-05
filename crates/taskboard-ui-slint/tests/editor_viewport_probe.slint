@@ -1,0 +1,263 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The viewport-growth probe (round-5 chunk 2, plan §5): the box/
+// viewport split (D-MLE-1) decides the fence at text-field.slint's
+// multiline flavour — growth rides the Flickable's content-height,
+// never the widget's own layout constraint. This fixture hosts the
+// EDIT-MODE PROTOTYPE (a Flickable + TextInput + the scrollbar strip,
+// house mechanics re-implemented from the mechanism inventory, not
+// copied); the slice-2 widget replaces the prototype in this fixture
+// and the P-arms stay verbatim.
+//
+// The prototype implements exactly the probe-relevant mechanics: the
+// viewport growth binding, the cursor-follow scroll, the Shift+Return
+// key arm, the focus latch grammar (replicated per D-MLE-5), and the
+// scrollbar visibility/thumb math. The full widget contract (a11y,
+// placeholder, commit affordance, view mode) is slice 2's.
+
+import { Theme } from "../ui/theme.slint";
+import { EditingFacts } from "../ui/editing-facts.slint";
+
+// The probe's fact surface (plan §5.1): every mechanism the P-arms
+// assert, published by the prototype's change handlers.
+export global ProbeFacts {
+    in-out property <length> input-preferred-height;
+    in-out property <length> viewport-height;
+    in-out property <length> viewport-y;
+    in-out property <length> inner-height;
+    in-out property <length> line-height;
+    in-out property <length> box-height;
+    in-out property <string> buffer;
+    in-out property <int> accepted-count;
+    in-out property <int> newline-count;
+    in-out property <int> focus-lost-count;
+    in-out property <bool> cursor-ok: true;
+    in-out property <bool> thumb-visible;
+    in-out property <length> thumb-height;
+    in-out property <length> thumb-y;
+    public function reset() {
+        accepted-count = 0;
+        newline-count = 0;
+        focus-lost-count = 0;
+        cursor-ok = true;
+    }
+}
+
+component ProbeEditor inherits Rectangle {
+    in-out property <string> buffer <=> input.text;
+    callback edited(string);
+    callback accepted(string);
+    callback focus-lost();
+    // The box never binds to the input's preferred-height — the r3
+    // recorded width-dependent layout cycle; growth rides the
+    // viewport (history: r3 plan §9).
+    out property <length> natural-height: 3 * line-height + 2 * Theme.space-2;
+    public function grab-focus() {
+        input.focus();
+    }
+
+    background: Theme.surface-raised;
+    clip: true;
+    border-radius: Theme.radius-small;
+    min-width: Theme.space-15;
+    min-height: natural-height;
+
+    // D-MLE-1's measurement element: one hidden single-line input in
+    // the platform-default font — the derived line height (not the
+    // reference grammar's hardcoded 20px).
+    line-metric := TextInput {
+        visible: false;
+        width: Theme.focus-ring-width;
+        height: Theme.focus-ring-width;
+    }
+    property <length> line-height: line-metric.preferred-height;
+
+    // The focus latch grammar, replicated from text-field.slint per
+    // D-MLE-5 (the init publish + the generation re-baseline; chunk 7
+    // generalizes focus publication).
+    property <bool> input-has-focus: input.has-focus;
+    property <bool> focus-counted: false;
+    property <int> counted-generation: -1;
+    changed input-has-focus => {
+        if (self.counted-generation != EditingFacts.generation) {
+            counted-generation = EditingFacts.generation;
+            focus-counted = self.input-has-focus;
+            if (self.input-has-focus) {
+                EditingFacts.text-focus-count += 1;
+            }
+        } else if (self.input-has-focus != focus-counted) {
+            EditingFacts.text-focus-count += self.input-has-focus ? 1 : -1;
+            focus-counted = self.input-has-focus;
+        }
+        if (!input-has-focus) {
+            ProbeFacts.focus-lost-count += 1;
+            root.focus-lost();
+        }
+    }
+
+    // The scrollbar strip's geometry (D-MLE-3), house tokens only.
+    property <length> inner-height: edit-flick.height;
+    property <bool> overflow: edit-flick.content-height > edit-flick.height;
+    property <length> thumb-height: max(Theme.space-6,
+        inner-height * inner-height / max(edit-flick.content-height, 1px * Theme.base-scale));
+    property <float> drag-ratio: max(edit-flick.content-height - inner-height, 1px * Theme.base-scale)
+        / inner-height;
+    property <length> thumb-y: (inner-height - thumb-height)
+        * (min(0px * Theme.base-scale, -edit-flick.content-y)
+            / max(edit-flick.content-height - inner-height, 1px * Theme.base-scale));
+
+    function publish() {
+        ProbeFacts.input-preferred-height = input.preferred-height;
+        ProbeFacts.viewport-height = edit-flick.content-height;
+        ProbeFacts.viewport-y = edit-flick.content-y;
+        ProbeFacts.inner-height = inner-height;
+        ProbeFacts.line-height = line-height;
+        ProbeFacts.box-height = self.height;
+        ProbeFacts.buffer = input.text;
+        ProbeFacts.thumb-visible = overflow;
+        ProbeFacts.thumb-height = thumb-height;
+        ProbeFacts.thumb-y = thumb-y;
+    }
+
+    init => {
+        input.focus();
+        // The latch's init publish: a mount already holding focus
+        // never sees a `changed` for its gain.
+        counted-generation = EditingFacts.generation;
+        if (input.has-focus) {
+            EditingFacts.text-focus-count += 1;
+            focus-counted = true;
+        }
+        publish();
+    }
+
+    edit-flick := Flickable {
+        x: Theme.space-2;
+        y: Theme.space-2;
+        width: parent.width - 2 * Theme.space-2;
+        height: parent.height - 2 * Theme.space-2;
+        // The cycle-break binding: the content extent grows with the
+        // input's preferred-height; no edge leads back into any width.
+        content-height: max(self.height, input.preferred-height);
+        changed content-y => { publish(); }
+
+        input := TextInput {
+            width: parent.width;
+            height: max(parent.height, self.preferred-height);
+            single-line: false;
+            wrap: word-wrap;
+            vertical-alignment: TextVerticalAlignment.top;
+            // PageUp/PageDown page exactly one viewport (D-MLE-4).
+            page-height: parent.height;
+            color: Theme.text-primary;
+            changed preferred-height => { publish(); }
+            changed text => { publish(); }
+            edited() => { root.edited(self.text); }
+            // The key grammar (D-MLE-6): Shift+Return is the commit
+            // seam and inserts nothing; plain Return falls through to
+            // the native newline (counted here for the probe fact).
+            key-pressed(event) => {
+                if (event.text == "\n" && event.modifiers.shift) {
+                    root.accepted(self.text);
+                    return accept;
+                }
+                if (event.text == "\n") {
+                    ProbeFacts.newline-count += 1;
+                }
+                return reject;
+            }
+            // Cursor-follow scroll (D-MLE-4), re-implemented: cpos is
+            // the input's coordinate space; keep the cursor line
+            // inside [0, inner − line-height].
+            cursor-position-changed(cpos) => {
+                if (cpos.y + edit-flick.content-y < 0px * Theme.base-scale) {
+                    edit-flick.content-y = -cpos.y;
+                } else if (cpos.y + edit-flick.content-y > edit-flick.height - line-height) {
+                    edit-flick.content-y = edit-flick.height - line-height - cpos.y;
+                }
+                ProbeFacts.cursor-ok =
+                    cpos.y + edit-flick.content-y >= 0px * Theme.base-scale
+                    && cpos.y + edit-flick.content-y <= edit-flick.height - line-height;
+                publish();
+            }
+        }
+    }
+
+    // The strip rides over the viewport's right padding band; it sits
+    // AFTER the flick in tree order so its TouchArea wins the pointer
+    // in its band and never flicks the content.
+    if (overflow): Rectangle {
+        x: parent.width - Theme.space-1 - Theme.space-2;
+        y: Theme.space-2;
+        width: Theme.space-1;
+        height: parent.height - 2 * Theme.space-2;
+        Rectangle {
+            width: parent.width;
+            height: thumb-height;
+            y: thumb-y;
+            border-radius: Theme.radius-small;
+            background: thumb-touch.has-hover || thumb-touch.pressed
+                ? Theme.text-secondary : Theme.border;
+            thumb-touch := TouchArea {
+                // The drag anchor: where within the thumb the press
+                // landed; deltas read against it while dragged.
+                property <length> drag-anchor: 0px;
+                changed pressed => {
+                    drag-anchor = self.mouse-y;
+                }
+                moved => {
+                    // The drag maps 1:1 through the ratio.
+                    edit-flick.content-y = clamp(
+                        edit-flick.content-y
+                            - (self.mouse-y - drag-anchor) * drag-ratio,
+                        inner-height - edit-flick.content-height,
+                        0px * Theme.base-scale,
+                    );
+                    drag-anchor = self.mouse-y;
+                }
+            }
+        }
+    }
+}
+
+export component EditorViewportProbeWindow inherits Window {
+    // Preferred, not bound width/height (the app-window rule: a
+    // Window's own width/height binding swallows the Resized event).
+    preferred-width: Theme.space-15 * 4;
+    preferred-height: Theme.space-15 * 3;
+    // The test-side seams: buffer seeding (two-way through the
+    // input), a re-grab function, and the click targets' centres.
+    in-out property <string> seed <=> probe.buffer;
+    public function focus-probe() {
+        probe.grab-focus();
+    }
+    out property <length> sibling-cx: sibling.x + sibling.width / 2;
+    out property <length> sibling-cy: sibling.y + sibling.height / 2;
+    out property <length> dead-cx: dead.x + dead.width / 2;
+    out property <length> dead-cy: dead.y + dead.height / 2;
+    probe := ProbeEditor {
+        edited(text) => { ProbeFacts.buffer = text; }
+        accepted(text) => { ProbeFacts.accepted-count += 1; }
+        focus-lost() => {}
+        x: Theme.space-2;
+        y: Theme.space-2;
+        width: parent.width - 2 * Theme.space-2;
+        // An explicit token-sized box (the window would stretch its
+        // child otherwise); the box stays fixed across every P-arm —
+        // exactly what P1 pins constant against the growing extent.
+        height: Theme.space-8;
+    }
+    // The focus-steal sibling (the P4 seam arm): a real FocusScope.
+    sibling := FocusScope {
+        x: parent.width - Theme.space-6;
+        y: parent.height - Theme.space-6;
+        width: Theme.space-6;
+        height: Theme.space-6;
+    }
+    dead := Rectangle {
+        x: parent.width - Theme.space-6;
+        y: 0px * Theme.base-scale;
+        width: Theme.space-6;
+        height: Theme.space-6;
+        dead-touch := TouchArea { clicked => {} }
+    }
+}

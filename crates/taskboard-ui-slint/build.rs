@@ -120,4 +120,16 @@ fn main() {
     )
     .expect("board bar probe compilation failed");
     println!("cargo:rerun-if-changed={}", bar_source.display());
+
+    // The editor-viewport probe (round-5 chunk 2): the box/viewport
+    // split's growth gate — the fence-lifting verdict's host, same
+    // include shape.
+    let viewport_source = manifest.join("tests/editor_viewport_probe.slint");
+    slint_build::compile_with_output_path(
+        &viewport_source,
+        out.join("editor_viewport_probe.rs"),
+        slint_build::CompilerConfiguration::new().with_debug_info(true),
+    )
+    .expect("editor viewport probe compilation failed");
+    println!("cargo:rerun-if-changed={}", viewport_source.display());
 }
