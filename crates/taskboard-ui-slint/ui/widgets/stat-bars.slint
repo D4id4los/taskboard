@@ -1,0 +1,74 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The stat-bars strip (#623 slice A, D-S4): a hand-rolled, minimal
+// horizontal bar chart — R-3's ruling (no chart crate). One equal-
+// stretch bar per day, two stacked segments (Work bottom, Respite
+// top) whose heights are pushed fractions of the strip maximum; a day
+// with no tracked time renders a baseline hairline tick so the bar
+// count always equals the window's day count (D-9 tier 2: the shape
+// collapses, never the structure).
+//
+// Composition-only geometry (VF-8): every height is `fraction × strip
+// height` — the push pass normalizes the values presentation-side;
+// the widget computes nothing but geometry. The strip shows *shape*:
+// fractions hide absolute magnitude — the magnitudes live in the
+// consuming section's stat cells. No labels, ticks, tooltips, or
+// value overlays (v1; the R-3 honest-minimal-chart posture).
+//
+// The segment colours are `in` properties defaulting to theme tokens,
+// so a second consumer (slice B's mood/energy series) re-instances
+// the widget rather than forking it.
+
+import { Theme, Semantic } from "../theme.slint";
+
+export struct StatBarModel {
+    // The day's Work fraction of the strip maximum (0.0..=1.0).
+    work: float,
+    // The day's Respite fraction (stacked above the Work segment).
+    respite: float,
+}
+
+export component StatBars inherits Rectangle {
+    in property <[StatBarModel]> bars;
+    in property <color> work-color: Semantic.success;
+    in property <color> respite-color: Semantic.warning;
+    // The strip's fixed plot height (the consumer's layout decides the
+    // placement; the height is a theme-scaled token expression).
+    in property <length> plot-height: 48px * Theme.base-scale;
+
+    height: root.plot-height + 2 * Theme.space-1;
+    background: Theme.surface;
+    border-radius: Theme.radius-small;
+    clip: true;
+
+    HorizontalLayout {
+        padding: Theme.space-1;
+        spacing: Theme.space-1;
+        for bar in root.bars: Rectangle {
+            horizontal-stretch: 1;
+            clip: true;
+            border-radius: Theme.radius-small;
+            background: Theme.background;
+            VerticalLayout {
+                alignment: end;
+                // Respite over Work: the segment pair stacks from the
+                // strip's baseline.
+                Rectangle {
+                    height: bar.respite * root.plot-height;
+                    background: root.respite-color;
+                }
+                Rectangle {
+                    height: bar.work * root.plot-height;
+                    background: root.work-color;
+                }
+                // The empty day's baseline tick — a day with nothing
+                // reads as "nothing", never as a missing bar.
+                Rectangle {
+                    height: bar.work + bar.respite == 0
+                            ? Theme.hairline-width
+                            : 0;
+                    background: Theme.border;
+                }
+            }
+        }
+    }
+}

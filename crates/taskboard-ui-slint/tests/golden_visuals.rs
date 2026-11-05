@@ -789,7 +789,14 @@ fn the_review_empty_golden_holds() {
             headless_renderer: true,
         },
         move |driver| {
-            let state = Arc::new(ArcSwap::from_pointee(fixture::golden_state().1));
+            let (_fixture, mut state) = fixture::golden_state();
+            // D-S9's tier-1 extension (#623 slice A): tracked time
+            // alone keeps the view standing, and `golden_state` seeds
+            // a running timer — so the empty tier's fixture must be
+            // genuinely tracking-free (the board chrome stays; the
+            // toolbar's timer chip goes with the entry).
+            state.tracking.entries.clear();
+            let state = Arc::new(ArcSwap::from_pointee(state));
             capture_golden(
                 driver,
                 state,
