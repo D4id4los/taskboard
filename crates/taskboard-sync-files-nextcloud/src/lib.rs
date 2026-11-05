@@ -35,4 +35,5 @@
 
 pub mod error;
 pub mod etag;
+pub mod extract;
 pub mod transport;
