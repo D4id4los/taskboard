@@ -42,8 +42,15 @@
 
 #![forbid(unsafe_code)]
 
+pub mod document;
 pub mod hash;
 pub mod heartbeat;
 pub mod identity;
 pub mod ids;
 pub mod layout;
+
+/// Compiled for our own tests (dev-dep `proptest`) and for downstream
+/// crates that enable the `test-support` feature (the engine tests of
+/// the seam chunk consume the document strategies).
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
