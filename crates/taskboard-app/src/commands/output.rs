@@ -345,6 +345,129 @@ pub fn sidecar_view(health: taskboard_domain::SidecarHealth) -> Option<SidecarHe
     Some(view)
 }
 
+/// The files-sync findings' wire projection (DR-8 chunk 4, D-FH4):
+/// a faithful mirror of the transport crate's `FilesSyncStatus` — the
+/// app owns the serde view (the UI/CLI never name the IO crate's
+/// types; the orphan rule forbids a `From` impl across foreign
+/// types, so the mapping is this plain constructor). Sets become
+/// sorted vecs; presence is "the actor spawned", not "findings exist".
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FilesSyncStatusView {
+    /// How the last cycle ended (`None` = none yet).
+    pub last_cycle: Option<CycleOutcomeView>,
+    /// When this device last wrote its own heartbeat.
+    pub last_heartbeat_written: Option<DateTime<Utc>>,
+    /// The fork alarm's stop-write paths, sorted (substrate paths).
+    pub forked: Vec<String>,
+    /// Parked peer paths and why, sorted by path.
+    pub parked: Vec<ParkedPathView>,
+    /// Latest decoded peer heartbeats, sorted by device.
+    pub peers: Vec<PeerFreshnessView>,
+    /// Peers whose published view disagrees with ours past the
+    /// quiescence window, sorted (device-id strings).
+    pub diverged_from: Vec<String>,
+}
+
+/// The cycle outcome's wire shape (`{"ok": {..}}` / `"failed"`).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CycleOutcomeView {
+    Ok {
+        published: bool,
+        read_devices: usize,
+        /// Peer journal rows this build could not import (still
+        /// relayed); absent in documents from builds before the count.
+        #[serde(default)]
+        import_rejected: usize,
+    },
+    Failed,
+}
+
+/// One parked path's typed finding: the faithful `ParkKind` mirror
+/// (`"quarantined"` / `"newer_format"`), machine-readable, not new
+/// taxonomy.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ParkedPathView {
+    /// The substrate path.
+    pub path: String,
+    /// The park kind string.
+    pub kind: String,
+    /// The peer's too-new document format (`newer_format` only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<u32>,
+}
+
+/// One peer's heartbeat freshness instants (ages are derived at
+/// render, never stored).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PeerFreshnessView {
+    /// The peer device's uuid string.
+    pub device: String,
+    /// When the peer last wrote its heartbeat.
+    pub written_at: DateTime<Utc>,
+    /// The newest entry clock the peer has folded.
+    pub last_clock: DateTime<Utc>,
+}
+
+impl FilesSyncStatusView {
+    /// Projects the transport status; never leaks the transport crate's
+    /// serde (it has none — the view is the only wire shape).
+    #[must_use]
+    pub fn new(status: &taskboard_sync_files_nextcloud::status::FilesSyncStatus) -> Self {
+        Self {
+            last_cycle: status.last_cycle.as_ref().map(|outcome| match outcome {
+                taskboard_sync_files_nextcloud::status::CycleOutcome::Ok {
+                    published,
+                    read_devices,
+                    import_rejected,
+                } => CycleOutcomeView::Ok {
+                    published: *published,
+                    read_devices: *read_devices,
+                    import_rejected: *import_rejected,
+                },
+                taskboard_sync_files_nextcloud::status::CycleOutcome::Failed => {
+                    CycleOutcomeView::Failed
+                }
+            }),
+            last_heartbeat_written: status.last_heartbeat_written,
+            forked: status.forked_paths.iter().cloned().collect(),
+            parked: status
+                .parked
+                .iter()
+                .map(|(path, kind)| {
+                    let (name, format) = match kind {
+                        taskboard_sync_files_nextcloud::status::ParkKind::Quarantined => {
+                            ("quarantined", None)
+                        }
+                        taskboard_sync_files_nextcloud::status::ParkKind::NewerFormat {
+                            format,
+                        } => ("newer_format", Some(*format)),
+                    };
+                    ParkedPathView {
+                        path: path.clone(),
+                        kind: name.to_owned(),
+                        format,
+                    }
+                })
+                .collect(),
+            peers: status
+                .peers
+                .iter()
+                .map(|(device, freshness)| PeerFreshnessView {
+                    device: device.to_string(),
+                    written_at: freshness.written_at,
+                    last_clock: freshness.last_clock,
+                })
+                .collect(),
+            diverged_from: status
+                .diverged_from
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
+        }
+    }
+}
+
 /// The kebab-case sync failure classification (structural, matched in
 /// tests by value — never message text).
 #[must_use]

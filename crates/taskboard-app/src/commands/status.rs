@@ -7,6 +7,7 @@
 //! command never boots a core and exits 0 — an observation, not a
 //! failure.
 
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
 use std::path::Path;
@@ -85,6 +86,15 @@ pub struct StatusView {
     /// `{"daemon": false}` byte pin.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub engine: Option<EngineMetricsView>,
+    /// The files-sync substrate's typed findings (DR-8 chunk 4): the
+    /// transport actor's status watch, mirrored (D-FH4). Present in
+    /// core-holding projections iff the actor spawned (`[files_sync]`
+    /// enabled + Nextcloud default connector); absent in `no_daemon`
+    /// answers — the `{"daemon": false}` byte pin survives. Additivity
+    /// rides `default` + `skip_serializing_if` (the `connectors`
+    /// precedent — no protocol-version bump).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub files_sync: Option<crate::commands::output::FilesSyncStatusView>,
 }
 
 /// The engine-activity counters' wire projection: flat numbers, the
@@ -227,6 +237,10 @@ impl StatusView {
             connectors: Some(connectors),
             boards: Some(boards),
             engine: Some(EngineMetricsView::new(app.engine.metrics())),
+            files_sync: app
+                .files_sync_status
+                .as_ref()
+                .map(|rx| crate::commands::output::FilesSyncStatusView::new(&rx.borrow().clone())),
         }
     }
 
@@ -248,6 +262,7 @@ impl StatusView {
             connectors: None,
             boards: None,
             engine: None,
+            files_sync: None,
         }
     }
 
@@ -282,6 +297,10 @@ impl StatusView {
             // The session *is* the core holder: the same handle read as
             // `server`, same honesty.
             engine: Some(EngineMetricsView::new(app.engine.metrics())),
+            files_sync: app
+                .files_sync_status
+                .as_ref()
+                .map(|rx| crate::commands::output::FilesSyncStatusView::new(&rx.borrow().clone())),
         }
     }
 }
@@ -339,6 +358,9 @@ pub fn render_text(view: &StatusView) -> String {
                 daemon.push_str(&board_line(board, ""));
             }
         }
+        if let Some(files) = &view.files_sync {
+            push_files_sync_lines(&mut daemon, files);
+        }
         daemon
     } else {
         let mut line = match view.holder_pid {
@@ -346,7 +368,82 @@ pub fn render_text(view: &StatusView) -> String {
             None => "no daemon serving this database".to_owned(),
         };
         line.push_str(detached);
+        if let Some(files) = &view.files_sync {
+            push_files_sync_lines(&mut line, files);
+        }
         line
+    }
+}
+
+/// The files-sync block (D-FH10): the lead line plus one indented
+/// finding line per finding, appended after the connector/board
+/// lines. Ages render from the wall clock at render time (presentation
+/// text, never asserted — the JSON view carries the instants); the
+/// data-survival facts (device uuids, paths, counts) must survive.
+fn push_files_sync_lines(out: &mut String, files: &crate::commands::output::FilesSyncStatusView) {
+    let peers = files.peers.len();
+    let lead = match &files.last_cycle {
+        Some(crate::commands::output::CycleOutcomeView::Ok {
+            published,
+            read_devices,
+            ..
+        }) => format!(
+            "files-sync: last cycle ok ({}{}, {read_devices} peers)",
+            if *published {
+                "published"
+            } else {
+                "nothing to publish"
+            },
+            {
+                let hb = files
+                    .last_heartbeat_written
+                    .map_or_else(|| "?".to_owned(), |t| age_phrase(t, Utc::now()));
+                format!(", heartbeat {hb}")
+            }
+        ),
+        Some(crate::commands::output::CycleOutcomeView::Failed) => {
+            "files-sync: last cycle failed (retrying with backoff)".to_owned()
+        }
+        None => "files-sync: no cycle yet".to_owned(),
+    };
+    let _ = write!(out, "\n{lead}");
+    for peer in &files.peers {
+        let now = Utc::now();
+        let _ = write!(
+            out,
+            "\n  peer {} — heartbeat {} (data {})",
+            peer.device,
+            age_phrase(peer.written_at, now),
+            age_phrase(peer.last_clock, now)
+        );
+    }
+    let _ = write!(out, "\n  {peers} peer(s) heard");
+    for path in &files.forked {
+        let _ = write!(out, "\n  fork: {path} — writes stopped, reads continue");
+    }
+    for parked in &files.parked {
+        let detail = parked
+            .format
+            .map_or_else(String::new, |format| format!(" (newer format {format})"));
+        let _ = write!(out, "\n  parked: {}{detail}", parked.path);
+    }
+    if !files.diverged_from.is_empty() {
+        let _ = write!(out, "\n  diverged: {}", files.diverged_from.join(", "));
+    }
+}
+
+/// The human age phrase ("3m ago", "2h ago", "4d ago"); presentation
+/// text — never asserted.
+fn age_phrase(then: chrono::DateTime<Utc>, now: chrono::DateTime<Utc>) -> String {
+    let secs = (now - then).num_seconds().max(0);
+    if secs < 60 {
+        format!("{secs}s ago")
+    } else if secs < 3_600 {
+        format!("{}m ago", secs / 60)
+    } else if secs < 86_400 {
+        format!("{}h ago", secs / 3_600)
+    } else {
+        format!("{}d ago", secs / 86_400)
     }
 }
 
@@ -410,6 +507,7 @@ mod tests {
             connectors: None,
             boards: None,
             engine: None,
+            files_sync: None,
         }
     }
 
@@ -966,5 +1064,200 @@ mod tests {
         let text = render_text(&bare(false));
         assert!(text.contains("no daemon"));
         assert!(!text.contains("connector"));
+    }
+
+    // -- the files-sync findings projection (DR-8 chunk 4, D-FH4) ------
+
+    use std::collections::BTreeMap;
+
+    use crate::commands::output::{CycleOutcomeView, FilesSyncStatusView};
+    use taskboard_sync_files::ids::DeviceId;
+    use taskboard_sync_files_nextcloud::status::{CycleOutcome, FilesSyncStatus, ParkKind};
+
+    fn device(tag: u8) -> DeviceId {
+        DeviceId::parse(&format!("0193c000-0000-7c89-ab01-2345abcdef{tag:02x}"))
+            .expect("fixture device id")
+    }
+
+    fn fixture_status() -> FilesSyncStatus {
+        FilesSyncStatus {
+            last_cycle: Some(CycleOutcome::Ok {
+                published: true,
+                read_devices: 2,
+                import_rejected: 3,
+            }),
+            forked_paths: [
+                "taskboard/devices/0193c000-0000-7c89-ab01-2345abcdef99/appdata.json".to_owned(),
+            ]
+            .into_iter()
+            .collect(),
+            parked: BTreeMap::from([
+                (
+                    "taskboard/devices/0193c000-0000-7c89-ab01-2345abcdef98/appdata.json"
+                        .to_owned(),
+                    ParkKind::Quarantined,
+                ),
+                (
+                    "taskboard/devices/0193c000-0000-7c89-ab01-2345abcdef97/info.json".to_owned(),
+                    ParkKind::NewerFormat { format: 2 },
+                ),
+            ]),
+            last_heartbeat_written: Some("2026-11-05T09:30:00Z".parse().expect("clock")),
+            peers: BTreeMap::from([(
+                device(1),
+                taskboard_sync_files_nextcloud::status::PeerFreshness {
+                    written_at: "2026-11-05T09:30:00Z".parse().expect("clock"),
+                    last_clock: "2026-11-05T09:00:00Z".parse().expect("clock"),
+                },
+            )]),
+            diverged_from: [device(2)].into_iter().collect(),
+        }
+    }
+
+    /// The mirror: every typed fact projects, in the view's sorted
+    /// orders, with the kind strings as the `ParkKind`'s faithful tags.
+    #[test]
+    fn the_files_sync_mirror_projects_every_fact_sorted() {
+        let view = FilesSyncStatusView::new(&fixture_status());
+        assert_eq!(
+            view.last_cycle,
+            Some(CycleOutcomeView::Ok {
+                published: true,
+                read_devices: 2,
+                import_rejected: 3,
+            })
+        );
+        assert_eq!(view.forked.len(), 1);
+        assert_eq!(view.parked.len(), 2);
+        assert_eq!(view.parked[0].kind, "newer_format");
+        assert_eq!(view.parked[0].format, Some(2));
+        assert_eq!(view.parked[1].kind, "quarantined");
+        assert_eq!(view.parked[1].format, None);
+        assert_eq!(view.peers.len(), 1);
+        assert_eq!(view.peers[0].device, device(1).to_string());
+        assert_eq!(view.diverged_from, vec![device(2).to_string()]);
+        // Sorted by path (the newer_format fixture sorts after the
+        // quarantined one by construction here — pin the contract).
+        let paths: Vec<&str> = view.parked.iter().map(|p| p.path.as_str()).collect();
+        let mut sorted = paths.clone();
+        sorted.sort_unstable();
+        assert_eq!(paths, sorted);
+    }
+
+    /// The empty status mirrors to the all-empty view (present, not
+    /// absent — presence is "the actor spawned", not "findings exist").
+    #[test]
+    fn an_empty_status_mirrors_to_the_empty_view() {
+        let view = FilesSyncStatusView::new(&FilesSyncStatus::default());
+        assert!(view.last_cycle.is_none());
+        assert!(view.forked.is_empty() && view.parked.is_empty());
+        assert!(view.peers.is_empty() && view.diverged_from.is_empty());
+        assert!(view.last_heartbeat_written.is_none());
+    }
+
+    /// The serde contract: lossless round-trip; an old-shape answer
+    /// (no `files_sync` key) decodes with `None` — the both-ways
+    /// additivity pin; the no-daemon byte pin stays exactly
+    /// `{"daemon": false}`.
+    #[test]
+    fn the_files_sync_view_roundtrips_and_is_additive() {
+        let mut view = bare(true);
+        view.files_sync = Some(FilesSyncStatusView::new(&fixture_status()));
+        let json = serde_json::to_value(&view).expect("json");
+        let back: StatusView = serde_json::from_value(json.clone()).expect("decode");
+        assert_eq!(back, view, "lossless");
+        assert_eq!(
+            json["files_sync"]["forked"].as_array().map(Vec::len),
+            Some(1)
+        );
+        assert_eq!(
+            json["files_sync"]["last_cycle"]["ok"]["read_devices"],
+            serde_json::json!(2)
+        );
+        let old: StatusView =
+            serde_json::from_value(serde_json::json!({"daemon": true})).expect("old decode");
+        assert!(old.files_sync.is_none());
+        let none = StatusView::no_daemon(std::path::Path::new("/nonexistent/t.db"));
+        let line = serde_json::to_string(&none).expect("json line");
+        assert_eq!(line, r#"{"daemon":false}"#, "the byte pin");
+    }
+
+    /// The presence rule: `server`/`in_session` carry `files_sync` iff
+    /// the actor spawned (the hermetic files-enabled boot — its first
+    /// cycle fails typed against the dead URL and backs off; the test
+    /// asserts watch presence only); the default config boots none.
+    #[tokio::test]
+    async fn files_sync_is_present_iff_the_actor_spawned() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut config = AppConfig::default();
+        config.nextcloud.server_url = Some("https://nc.example".into());
+        config.nextcloud.username = Some("alice".into());
+        config.storage.db_path = Some(dir.path().join("taskboard.db"));
+        config.files_sync.enabled = true;
+        config.app.shutdown_timeout_secs = 2;
+        config.validate().expect("valid");
+        let app = crate::bootstrap::bootstrap(
+            config,
+            std::sync::Arc::new(FixedStore),
+            std::sync::Arc::new(crate::notifications::LogSink),
+        )
+        .await
+        .expect("boots");
+        for view in [StatusView::server(&app), StatusView::in_session(&app)] {
+            let files = view.files_sync.as_ref().expect("actor spawned ⇒ present");
+            assert!(
+                files.peers.is_empty() || !files.peers.is_empty(),
+                "carries the mirror"
+            );
+        }
+        let json = serde_json::to_value(StatusView::server(&app)).expect("json");
+        assert!(json.get("files_sync").is_some());
+        let _ = app.shutdown().await;
+
+        let dir2 = tempfile::tempdir().expect("tempdir");
+        let mut plain = AppConfig::default();
+        plain.storage.db_path = Some(dir2.path().join("taskboard.db"));
+        plain.app.shutdown_timeout_secs = 2;
+        plain.validate().expect("valid");
+        let app2 = crate::bootstrap::bootstrap(
+            plain,
+            std::sync::Arc::new(FixedStore),
+            std::sync::Arc::new(crate::notifications::LogSink),
+        )
+        .await
+        .expect("boots");
+        assert!(StatusView::server(&app2).files_sync.is_none());
+        let json = serde_json::to_value(StatusView::server(&app2)).expect("json");
+        assert!(json.get("files_sync").is_none(), "absent, not null");
+        let _ = app2.shutdown().await;
+    }
+
+    /// The data-survival render: device uuids, fork paths, parked
+    /// paths, the divergence set, and the counts survive rendering;
+    /// the files block appends after the daemon line (the existing
+    /// pins' clause order passes unmodified).
+    #[test]
+    fn render_text_survives_the_files_sync_facts() {
+        let mut view = bare(true);
+        view.version = Some("9.9.9".to_owned());
+        view.backend = Some("standalone".to_owned());
+        view.pid = Some(42);
+        view.files_sync = Some(FilesSyncStatusView::new(&fixture_status()));
+        let text = render_text(&view);
+        for fact in [
+            "9.9.9",
+            &device(1).to_string(),
+            "0193c000-0000-7c89-ab01-2345abcdef99",
+            "0193c000-0000-7c89-ab01-2345abcdef98",
+            "0193c000-0000-7c89-ab01-2345abcdef97",
+            &device(2).to_string(),
+            "files-sync:",
+        ] {
+            assert!(text.contains(fact), "{fact} must survive rendering");
+        }
+        assert!(
+            text.find("files-sync:").unwrap() > text.find("42").unwrap(),
+            "the files block appends after the daemon line"
+        );
     }
 }

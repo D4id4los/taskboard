@@ -31,6 +31,7 @@ pdf-export = ["dep:krilla", "dep:skrifa"]
 taskboard-domain.workspace = true
 taskboard-state.workspace = true
 taskboard-sync-nextcloud.workspace = true
+taskboard-sync-files.workspace = true
 taskboard-sync-files-nextcloud.workspace = true
 taskboard-storage-sqlite.workspace = true
 taskboard-ui-slint.workspace = true
