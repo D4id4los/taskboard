@@ -260,6 +260,10 @@ pub(crate) struct Adapter {
     /// The habits row's habit (DR-6/6, D-P13): consumed by the next
     /// `habit.log` dispatch, then cleared (one-shot, the timer-target
     /// precedent).
+    /// The planner row's task (#622, D-6): set by the adapter when a
+    /// planner row affordance activates; the placement/reorder verbs
+    /// route from it (the one-shot target pattern).
+    plan_target: Option<TaskId>,
     habit_target: Option<taskboard_domain::HabitId>,
     /// The reorder's resolved (habit, order) (DR-6/6): consumed by the
     /// next `habit.move` dispatch, then cleared.
@@ -4941,6 +4945,7 @@ pub(crate) fn install(
         track_entry_target: None,
         track_form: None,
         track_target: None,
+        plan_target: None,
         habit_target: None,
         habit_move: None,
         habit_repair: None,
@@ -5756,12 +5761,122 @@ fn install_stack_context_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
 /// context — every one focuses the row first (the board card's §7.1
 /// discipline, with the selection-follows-focus retarget), then the
 /// activation/context seams route through the action layer's verbs.
+#[allow(clippy::too_many_lines)] // one seam block, kept flat
 fn install_today_row_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     install_seam!(window: window.on_today_row_clicked, adapter: adapter;
     bind mut (a, window), args (section, row), {        settle_pointer_conflict(&mut a, &window);
     focus_today_row(&mut a, &window, section, row);
 
     });
+    // -- the plan-next-day surface (#622, D-3/D-6) --
+    install_seam!(window: window.on_plan_box_activated, adapter: adapter;
+    bind mut (a, window), args (index), {        let Some(task) = a
+        .tables
+        .plan_rows
+        .get(usize::try_from(index).unwrap_or(usize::MAX))
+        .copied()
+    else {
+        return; // a stale index degrades to a no-op
+    };
+    a.plan_target = Some(task);
+    a.route(&window, ActionId::PlanBeginPlace);
+
+    });
+
+    install_seam!(window: window.on_plan_pool_activated, adapter: adapter;
+    bind mut (a, window), args (index), {        let Some(task) = a
+        .tables
+        .plan_rows
+        .get(
+            a.tables
+                .plan_box_count
+                .saturating_add(usize::try_from(index).unwrap_or(usize::MAX)),
+        )
+        .copied()
+    else {
+        return; // a stale index degrades to a no-op
+    };
+    a.plan_time_text.clear();
+    a.plan_effort_text.clear();
+    a.plan_target = Some(task);
+    a.route(&window, ActionId::PlanBeginPlace);
+
+    });
+
+    install_seam!(window: window.on_plan_box_earlier, adapter: adapter;
+    bind mut (a, window), args (index), {        let Some(task) = a
+        .tables
+        .plan_rows
+        .get(usize::try_from(index).unwrap_or(usize::MAX))
+        .copied()
+    else {
+        return;
+    };
+    a.plan_target = Some(task);
+    a.route(&window, ActionId::PlanBoxEarlier);
+
+    });
+
+    install_seam!(window: window.on_plan_box_later, adapter: adapter;
+    bind mut (a, window), args (index), {        let Some(task) = a
+        .tables
+        .plan_rows
+        .get(usize::try_from(index).unwrap_or(usize::MAX))
+        .copied()
+    else {
+        return;
+    };
+    a.plan_target = Some(task);
+    a.route(&window, ActionId::PlanBoxLater);
+
+    });
+
+    install_seam!(window: window.on_plan_box_remove, adapter: adapter;
+    bind mut (a, window), args (index), {        let Some(task) = a
+        .tables
+        .plan_rows
+        .get(usize::try_from(index).unwrap_or(usize::MAX))
+        .copied()
+    else {
+        return;
+    };
+    a.plan_target = Some(task);
+    a.route(&window, ActionId::PlanRemoveBox);
+
+    });
+
+    install_seam!(window: window.on_plan_place_edited, adapter: adapter;
+    bind mut (a, _window), args (time, effort), {        // The D9 mirror rule: the adapter-held buffers update per
+    // keystroke; a refresh never clobbers them while the flow
+    // holds them. The property writes are the echo only.
+    a.plan_time_text = time.to_string();
+    a.plan_effort_text = effort.to_string();
+
+    });
+
+    install_seam!(window: window.on_plan_place_commit, adapter: adapter;
+    bind mut (a, window), args (), {        a.route(&window, ActionId::PlanCommitPlace);
+    if matches!(a.view_state.flow(), crate::view_state::Flow::PlanPlace { .. }) {
+        // The parse refusal kept the form: echo the typed text back
+        // (the due editor's validity flavour, minus the tint).
+        window
+            .set_plan_time_text(SharedString::from(a.plan_time_text.clone()));
+        window
+            .set_plan_effort_text(SharedString::from(a.plan_effort_text.clone()));
+    } else {
+        window.set_plan_time_text(SharedString::new());
+        window.set_plan_effort_text(SharedString::new());
+    }
+
+    });
+
+    install_seam!(window: window.on_plan_place_cancel, adapter: adapter;
+    bind mut (a, _window), args (), {        a.plan_time_text.clear();
+    a.plan_effort_text.clear();
+    a.view_state.close_plan_place();
+
+    });
+
     install_seam!(window: window.on_today_row_activated, adapter: adapter;
     bind mut (a, window), args (section, row), {        settle_pointer_conflict(&mut a, &window);
     if focus_today_row(&mut a, &window, section, row).is_some() {

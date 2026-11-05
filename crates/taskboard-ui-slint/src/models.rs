@@ -27,10 +27,10 @@ use crate::view_state::{DateField, Flow, ViewState};
 use crate::{
     AppWindow, BannerRowModel, BoardBarModel, BoardModel, BoardSegmentModel,
     Breakpoint as SlintBreakpoint, DecorationKind, DragState, DueDayModel, DueKind as SlintDueKind,
-    FlowHintModel, HabitRowModel, NotificationRowModel, PaletteRowModel, ReviewModel,
-    ReviewRowModel, ReviewWindowModel, RuleRowModel, StackColumnModel, StackDetailModel,
-    SyncBadgeModel, SyncPhaseUi, TaskCardModel, TaskDecoration, TaskDetailModel, Theme,
-    TimerRowModel, TodayModel, TodayRowModel, TodaySectionModel, Tone, TrackEntryRowModel,
+    FlowHintModel, HabitRowModel, NotificationRowModel, PaletteRowModel, PlanModel, PlanRowModel,
+    ReviewModel, ReviewRowModel, ReviewWindowModel, RuleRowModel, StackColumnModel,
+    StackDetailModel, SyncBadgeModel, SyncPhaseUi, TaskCardModel, TaskDecoration, TaskDetailModel,
+    Theme, TimerRowModel, TodayModel, TodayRowModel, TodaySectionModel, Tone, TrackEntryRowModel,
     TrackedTodayRowModel, View,
 };
 
@@ -109,6 +109,13 @@ pub struct IdTables {
     /// index-aligned with the pushed section model — row activation
     /// opens the addressed task.
     pub tracked_today: Vec<TaskId>,
+    /// The plan-next-day surface's rows (#622): the placed boxes then
+    /// the pool, in reading order — the focus walk's domain and the
+    /// placement/reorder seams' resolution base; empty on kiosk.
+    pub plan_rows: Vec<TaskId>,
+    /// How many of `plan_rows`' head entries are placed boxes (the
+    /// two panes resolve `(pane, row)` against the split).
+    pub plan_box_count: usize,
 }
 
 impl IdTables {
@@ -173,6 +180,25 @@ impl IdTables {
     #[must_use]
     pub fn stack_position(&self, task: TaskId) -> Option<usize> {
         self.stack_tasks.iter().position(|t| *t == task)
+    }
+
+    /// The plan-next-day pane and row holding `task` (#622): pane 0
+    /// is the placed boxes, pane 1 the pool.
+    #[must_use]
+    pub fn plan_position(&self, task: TaskId) -> Option<(usize, usize)> {
+        let flat = self.plan_rows.iter().position(|t| *t == task)?;
+        if flat < self.plan_box_count {
+            Some((0, flat))
+        } else {
+            Some((1, flat - self.plan_box_count))
+        }
+    }
+
+    /// The plan-next-day row at `(pane, row)`, if the tables know it.
+    #[must_use]
+    pub fn plan_row(&self, pane: usize, row: usize) -> Option<TaskId> {
+        let offset = if pane == 0 { 0 } else { self.plan_box_count };
+        self.plan_rows.get(offset + row).copied()
     }
 }
 
@@ -253,6 +279,10 @@ pub struct PushModels {
     /// re-instantiate the cards (the r2 D9 discipline).
     today_sections: [MirroredRows<TodayRowModel>; 4],
     today: MirroredRows<TodaySectionModel>,
+    /// The plan-next-day surface's pane row handles (#622): the same
+    /// diff pattern — stable identity across refreshes.
+    plan_boxes: MirroredRows<PlanRowModel>,
+    plan_pool: MirroredRows<PlanRowModel>,
     /// The review ledger's persistent row handle (#214): the same diff
     /// pattern — stable identity across refreshes.
     review: MirroredRows<ReviewRowModel>,
@@ -889,6 +919,17 @@ pub fn push(
         calendar,
     );
     mutations += push_review(window, state, day, calendar, kiosk, models);
+    mutations += push_plan_next_day(
+        window,
+        state,
+        vs,
+        &sets,
+        day,
+        calendar,
+        kiosk,
+        &mut tables,
+        models,
+    );
     mutations += push_status_bar(
         window,
         state,
@@ -1370,6 +1411,7 @@ fn push_board(
     models: &mut PushModels,
 ) -> usize {
     let flow = vs.flow().clone();
+
     let tracked_task = presentation::tracking_open_task(state);
     // The resolved explicit-width row (r4 D5): one assembly, pushed
     // column by column below. Its reads (Theme scale, window width)
@@ -2334,6 +2376,133 @@ fn push_today(
     mutations
 }
 
+/// The plan-next-day surface's pass (#622, D-8): the domain
+/// derivation (`plan_next_day` — today's projection evaluated as of
+/// tomorrow's opening, the shared read) rendered as two panes — the
+/// placed boxes in scheduled order with time-of-day and effort
+/// phrases, then the candidate pool (carried misses included). The
+/// kiosk gate lives HERE (the review pass's precedent): the empty
+/// model on the appliance — the rotation can never route to the view
+/// anyway (D-5). Rollover rides the pass's fresh `DayCtx` (the
+/// `push_today` two-push rule — no timer, no sleeps). Slint computes
+/// nothing: every phrase is derived here or in `presentation`.
+#[allow(clippy::too_many_arguments)] // the pass-shaped parameter list, like `push_today`
+fn push_plan_next_day(
+    window: &AppWindow,
+    state: &AppState,
+    vs: &ViewState,
+    sets: &presentation::DueSets,
+    day: crate::view_state::DayCtx,
+    calendar: taskboard_domain::DayCalendar,
+    kiosk: bool,
+    tables: &mut IdTables,
+    models: &mut PushModels,
+) -> usize {
+    fn plan_row(
+        models: &mut PushModels,
+        task: &Task,
+        sets: &presentation::DueSets,
+        vs: &ViewState,
+        tracked_task: Option<TaskId>,
+        calendar: taskboard_domain::DayCalendar,
+        now: DateTime<Utc>,
+        time: &str,
+        overdue: bool,
+    ) -> PlanRowModel {
+        PlanRowModel {
+            card: task_card_model(
+                task,
+                sets,
+                vs,
+                now,
+                decorations_model(models, task, tracked_task, calendar, now),
+            ),
+            time: SharedString::from(time),
+            effort: SharedString::from(presentation::effort_phrase(task.effort)),
+            overdue,
+        }
+    }
+    if kiosk {
+        tables.plan_rows.clear();
+        tables.plan_box_count = 0;
+        window.set_plan_model(PlanModel {
+            boxes: ModelRc::new(VecModel::from(Vec::new())),
+            pool: ModelRc::new(VecModel::from(Vec::new())),
+            placing: false,
+        });
+        return 0;
+    }
+    let sections = taskboard_domain::days::plan_next_day(
+        &state.tasks,
+        day.now,
+        calendar.day_start_time,
+        calendar.offset,
+    );
+    let tracked_task = presentation::tracking_open_task(state);
+    let next_start =
+        taskboard_domain::days::next_day_window(day.now, calendar.day_start_time, calendar.offset)
+            .0;
+    let mut mutations = 0;
+    let mut plan_rows: Vec<TaskId> = Vec::new();
+
+    let mut boxes: Vec<PlanRowModel> = Vec::with_capacity(sections.placed_scheduled.len());
+    for id in &sections.placed_scheduled {
+        let Some(task) = state.tasks.get(id) else {
+            continue;
+        };
+        if presentation::is_anchor_task(task) {
+            continue;
+        }
+        plan_rows.push(*id);
+        boxes.push(plan_row(
+            models,
+            task,
+            sets,
+            vs,
+            tracked_task,
+            calendar,
+            day.now,
+            &presentation::plan_box_time_phrase(task.scheduled, calendar),
+            false,
+        ));
+    }
+    let boxes_handle = models.plan_boxes.handle_or_insert_with();
+    mutations += models.plan_boxes.diff(&boxes);
+
+    let mut pool: Vec<PlanRowModel> = Vec::with_capacity(sections.candidates.len());
+    for id in &sections.candidates {
+        let Some(task) = state.tasks.get(id) else {
+            continue;
+        };
+        if presentation::is_anchor_task(task) {
+            continue;
+        }
+        plan_rows.push(*id);
+        pool.push(plan_row(
+            models,
+            task,
+            sets,
+            vs,
+            tracked_task,
+            calendar,
+            day.now,
+            "",
+            task.duedate.is_some_and(|d| d < next_start),
+        ));
+    }
+    let pool_handle = models.plan_pool.handle_or_insert_with();
+    mutations += models.plan_pool.diff(&pool);
+
+    tables.plan_rows = plan_rows;
+    tables.plan_box_count = boxes.len();
+    window.set_plan_model(PlanModel {
+        boxes: ModelRc::from(boxes_handle.clone()),
+        pool: ModelRc::from(pool_handle.clone()),
+        placing: matches!(vs.flow(), crate::view_state::Flow::PlanPlace { .. }),
+    });
+    mutations
+}
+
 /// The sync recency caption (D11): only when a sync succeeded within
 /// the last hour — a caption, not a badge fact.
 fn recency_caption(last_success: Option<DateTime<Utc>>, now: DateTime<Utc>) -> String {
@@ -2885,6 +3054,134 @@ mod tests {
                 &due,
                 crate::models::RecurRowPush::default(),
             )
+        }
+
+        // -- the plan-next-day pass (#622, D-8) ----------------------------------
+
+        /// One board, three tasks: placed (scheduled tomorrow 09:xx with
+        /// an effort), carried (due yesterday), candidate (no stamps) —
+        /// the ids vec is in that order.
+        fn plan_state() -> (AppState, StackId, Vec<TaskId>) {
+            let b = taskboard_domain::BoardId::from_uuid(uuid::Uuid::now_v7());
+            let sa = StackId::from_uuid(uuid::Uuid::now_v7());
+            let mut state = AppState::default();
+            state.boards.insert(b, board(b, "alpha"));
+            state.stacks.insert(sa, stack(sa, b));
+            let placed = TaskId::from_uuid(uuid::Uuid::now_v7());
+            let mut t = task(placed, sa, "placed");
+            t.order = 0;
+            t.scheduled = Some(stamp(31_630_000)); // tomorrow 09:20 UTC
+            t.effort = Some(taskboard_domain::Effort::new(1_800));
+            state.tasks.insert(placed, t);
+            let carried = TaskId::from_uuid(uuid::Uuid::now_v7());
+            let mut t = task(carried, sa, "carried");
+            t.order = 1;
+            t.duedate = Some(stamp(31_500_000)); // yesterday: overdue at tomorrow's open
+            state.tasks.insert(carried, t);
+            let candidate = TaskId::from_uuid(uuid::Uuid::now_v7());
+            let mut t = task(candidate, sa, "candidate");
+            t.order = 2;
+            state.tasks.insert(candidate, t);
+            (state, sa, vec![placed, carried, candidate])
+        }
+
+        #[test]
+        fn the_plan_pass_renders_boxes_pool_and_tables() {
+            on_slint_thread(|| {
+                let (state, _sa, ids) = plan_state();
+                let window = crate::AppWindow::new().expect("window on the testing backend");
+                let vs = ViewState::default();
+                let mut models = PushModels::default();
+                let tables = push_pass(&window, &state, &vs, day(31_563_600), false, &mut models);
+
+                // Reading order: the placed boxes then the pool; the
+                // carried miss is a pool row (the partition rule).
+                assert_eq!(tables.plan_rows, ids);
+                assert_eq!(tables.plan_box_count, 1);
+                assert_eq!(tables.plan_position(ids[0]), Some((0, 0)));
+                assert_eq!(tables.plan_position(ids[1]), Some((1, 0)));
+                assert_eq!(tables.plan_position(ids[2]), Some((1, 1)));
+                assert_eq!(tables.plan_row(0, 0), Some(ids[0]));
+                assert_eq!(tables.plan_row(1, 0), Some(ids[1]));
+
+                let plan = window.get_plan_model();
+                assert_eq!(plan.boxes.row_count(), 1);
+                assert_eq!(plan.pool.row_count(), 2);
+                assert!(!plan.placing);
+                // The box's phrases arrive derived: the time phrase
+                // matches the pure presentation helper over the same
+                // stamp, the effort phrase the effort one.
+                let calendar = calendar();
+                let box_row = plan.boxes.row_data(0).expect("box");
+                assert_eq!(
+                    box_row.time.to_string(),
+                    presentation::plan_box_time_phrase(Some(stamp(31_630_000)), calendar)
+                );
+                assert_eq!(
+                    box_row.time.to_string().len(),
+                    5,
+                    "HH:mm is five characters"
+                );
+                assert_eq!(
+                    box_row.effort.to_string(),
+                    presentation::effort_phrase(Some(taskboard_domain::Effort::new(1_800)))
+                );
+                assert!(!box_row.overdue);
+                // The pool excludes the placed box; the carried miss is
+                // overdue-marked, the plain candidate is not.
+                let carried_row = plan.pool.row_data(0).expect("carried");
+                assert!(carried_row.overdue);
+                let candidate_row = plan.pool.row_data(1).expect("candidate");
+                assert!(!candidate_row.overdue);
+            });
+        }
+
+        #[test]
+        fn a_stepped_now_moves_the_window_and_the_boxes() {
+            on_slint_thread(|| {
+                let (state, _sa, ids) = plan_state();
+                let window = crate::AppWindow::new().expect("window on the testing backend");
+                let vs = ViewState::default();
+                let mut models = PushModels::default();
+                let _ = push_pass(&window, &state, &vs, day(31_563_600), false, &mut models);
+
+                // Tomorrow's box is today's at the rollover: the window
+                // advanced with the pass's fresh `DayCtx`, the box
+                // re-derives into the pool (a plain candidate — nothing
+                // disappeared).
+                let mut models = PushModels::default();
+                let tables = push_pass(
+                    &window,
+                    &state,
+                    &vs,
+                    day(31_563_600 + 86_400),
+                    false,
+                    &mut models,
+                );
+                assert_eq!(tables.plan_box_count, 0);
+                // The pool holds all three (carried miss included), in
+                // `(order, id)` order.
+                assert_eq!(tables.plan_rows, ids, "pool: (order, id)");
+                let plan = window.get_plan_model();
+                assert_eq!(plan.boxes.row_count(), 0);
+                assert_eq!(plan.pool.row_count(), 3);
+            });
+        }
+
+        #[test]
+        fn the_kiosk_plan_pass_is_the_empty_model() {
+            on_slint_thread(|| {
+                let (state, _sa, _ids) = plan_state();
+                let window = crate::AppWindow::new().expect("window on the testing backend");
+                let vs = ViewState::default();
+                let mut models = PushModels::default();
+                let tables = push_pass(&window, &state, &vs, day(31_563_600), true, &mut models);
+                assert_eq!(tables.plan_rows, [] as [TaskId; 0]);
+                assert_eq!(tables.plan_box_count, 0);
+                let plan = window.get_plan_model();
+                assert_eq!(plan.boxes.row_count(), 0);
+                assert_eq!(plan.pool.row_count(), 0);
+            });
         }
 
         #[test]
