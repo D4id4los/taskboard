@@ -96,6 +96,13 @@ local_id!(
     /// tie-break stays stable across devices).
     JournalId
 );
+local_id!(
+    /// Local identity of a reflection entry (`UUIDv7`, generated
+    /// client-side). Roaming family — the entry UUID is the future
+    /// import-fold's wire key (device-local in v0.2; the *family* is
+    /// the roaming-readiness, DR-7 D-J5).
+    ReflectionId
+);
 
 macro_rules! remote_id {
     ($(#[$doc:meta])* $name:ident) => {

@@ -128,6 +128,10 @@ impl IdGenerator for CountingIds {
         JournalId::from(Uuid::from_u128(self.next()))
     }
 
+    fn new_reflection_id(&self) -> crate::ids::ReflectionId {
+        crate::ids::ReflectionId::from(Uuid::from_u128(self.next()))
+    }
+
     fn new_op_id(&self) -> OpId {
         OpId(Uuid::from_u128(self.next()))
     }

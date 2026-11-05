@@ -30,7 +30,8 @@
 //! journal substrate ([`journal`]), the title reconcile pass
 //! ([`reconcile`]), time tracking ([`tracking`]), the undo planning
 //! layer ([`undo`]), reminders ([`reminders`]), day boundaries
-//! ([`days`]), recurring-series rules ([`recur`]). The private `verify`
+//! ([`days`]), recurring-series rules ([`recur`]), reflection entries
+//! ([`reflection`]). The private `verify`
 //! module holds the kani bounded-model harnesses.
 
 #![forbid(unsafe_code)]
@@ -56,6 +57,7 @@ pub mod pipeline;
 pub mod push;
 pub mod reconcile;
 pub mod recur;
+pub mod reflection;
 pub mod reminders;
 pub mod remote;
 pub mod state;
@@ -107,9 +109,9 @@ pub use habit::{
 };
 pub use idgen::{IdGenerator, UuidV7Generator};
 pub use ids::{
-    AdhocAlarmId, BoardId, BreakRuleId, ConnectorId, HabitId, JournalId, LabelId, ReminderRuleId,
-    RemoteBoardBinding, RemoteBoardId, RemoteCardId, RemoteCardRef, RemoteLabelId, RemoteLabelRef,
-    RemoteStackId, RemoteStackRef, SeriesId, StackId, TaskId, TimeEntryId,
+    AdhocAlarmId, BoardId, BreakRuleId, ConnectorId, HabitId, JournalId, LabelId, ReflectionId,
+    ReminderRuleId, RemoteBoardBinding, RemoteBoardId, RemoteCardId, RemoteCardRef, RemoteLabelId,
+    RemoteLabelRef, RemoteStackId, RemoteStackRef, SeriesId, StackId, TaskId, TimeEntryId,
 };
 pub use journal::{
     EntityStamps, JOURNAL_AGE_FLOOR, JOURNAL_CAP, JournalEntity, JournalEntry, JournalState,
@@ -142,6 +144,10 @@ pub use recur::{
     OccurrenceCount, OccurrenceOutcome, RecurBound, RecurPattern, RecurRule, WeekdaySet,
     next_after, next_occurrence, occurrence_outcome, occurs_on, roll_reference_date, roll_target,
     schedule, series_reference_date,
+};
+pub use reflection::{
+    DEFAULT_TEMPLATES, HealthFlag, InvalidRating, Rating, ReflectionAttributes, ReflectionEntry,
+    ReflectionState, ReflectionTemplate, ReviewCadence, UnknownHealthFlag,
 };
 pub use reminders::{
     AdhocAlarm, AdhocWhen, AtInstant, BreakRule, Insistence, InvalidAtInstant,
