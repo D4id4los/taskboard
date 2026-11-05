@@ -1,0 +1,395 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The multi-line editor (round-5 chunk 2, F2–F7/F12, plan §4): one L1
+// widget, two inner mounts over `editing` — the view mode (a wrapped,
+// inset `RoleText` in a scroll viewport) and the edit mode (a
+// multi-line `TextInput` in the same viewport class). Activation
+// (click-to-open, hover, tooltip, ActivationStop) is the HOST's
+// concern around the view mount — never editor machinery.
+//
+// The layout constraint that names this widget's whole geometry
+// design: the box NEVER binds to the input's preferred-height — that
+// is the width-dependent layout cycle recorded at the r3 plan §9
+// (the retired text-field multiline fence). Growth rides the
+// viewport: `content-height: max(inner, preferred)` on the Flickable;
+// the chain `preferred-height ← input.width ← flick.width ←
+// ancestors` has no edge back from any height into a width. The
+// probe suite (tests/editor_viewport_probe_tests.rs) pins the split
+// empirically — growth with a constant box, width-change re-wrap,
+// cursor-follow, the key grammar, and the scrollbar math.
+//
+// Key grammar (D-MLE-6, the D1 field-level redefinition): plain
+// Return inserts a native newline; Shift+Return fires `accepted`
+// (commit ≡ the checkmark ≡ focus-loss settle, per the adapter's
+// existing funnel); Escape is the action layer's (the capture tunnel
+// delivers bound strokes ahead of any widget handler — a widget
+// discard callback would be dead code).
+//
+// Focus facts: the EditingFacts latch grammar is REPLICATED from
+// text-field.slint (the init publish + the generation re-baseline),
+// not extracted — a shared component cannot reach into another
+// component's `TextInput`; chunk 7 generalizes focus publication and
+// carries the dedup decision. The probe's P4b arm pins the replica.
+
+import { Theme, Semantic, RoleText, Typography } from "../theme.slint";
+import { EditingFacts } from "../editing-facts.slint";
+
+export component MultiLineEditor inherits Rectangle {
+    // The mode switch: the host mounts the editor twice (a display
+    // mount and an edit mount of separate instantiations), so the
+    // edit mount's init re-seeds `initial-text` per open — the buffer
+    // lifecycle belongs to the view state.
+    in property <bool> editing;
+    // The display source (view mode), live.
+    in property <string> text;
+    // The edit seed, one-shot at the edit mount's init.
+    in property <string> initial-text;
+    in property <string> placeholder;
+    // The a11y label (D16).
+    in property <string> label;
+    in property <bool> autofocus: true;
+    // The checkmark commit affordance (the text-field grammar): while
+    // the input holds focus and the buffer is non-empty; click fires
+    // the same `accepted` seam — click ≡ Shift+Return.
+    in property <bool> commit-affordance: false;
+
+    callback edited(string);
+    callback accepted(string);
+    callback focus-lost();
+
+    // The derived line heights, one per role — never a hardcoded
+    // constant (the reference's FIXME'd 20px is the precedent against):
+    // `line-height` (the bundled body role's one-line measure) is the
+    // box floor's unit and MUST be machine-independent — a
+    // platform-default measure here drifted the CI goldens. The
+    // cursor-follow band instead uses `input-line-height`, measured
+    // in the input's OWN platform-default font — the band must match
+    // the rendered line, or the bottom line can stick out past the
+    // fold on hosts whose default font is smaller than the theme's
+    // (CI's P3 failure).
+    out property <length> line-height: line-metric.preferred-height;
+    out property <length> input-line-height: input-metric.preferred-height;
+
+    // The geometry mirrors (the probe's fact surface and chunk 7's
+    // attachment contract): the live content extent, the scroll
+    // position (two-way — the thumb drag writes it), the viewport
+    // inner height, the growth source, the buffer, and the
+    // cursor-follow invariant.
+    out property <length> content-preferred;
+    out property <length> content-extent;
+    in-out property <length> scroll-y;
+    out property <length> viewport-inner;
+    out property <bool> overflow: content-extent > viewport-inner;
+    out property <string> buffer;
+    out property <bool> cursor-in-view: true;
+    // The inner input's focus mirror — the focus ring, the commit
+    // affordance's visibility rule, and the host's EditingFacts
+    // reads all consult it.
+    out property <bool> input-has-focus;
+
+    // The programmatic focus seam: the branch observes the token and
+    // grabs (a root function cannot reach into the conditional
+    // branch's input directly).
+    in-out property <int> focus-token: 0;
+    public function grab-focus() {
+        focus-token += 1;
+    }
+
+    // The scrollbar strip's geometry (D-MLE-3), house tokens only.
+    out property <length> thumb-height: max(Theme.space-6,
+        viewport-inner * viewport-inner / max(content-extent, 1px * Theme.base-scale));
+    property <float> drag-ratio: max(content-extent - viewport-inner, 1px * Theme.base-scale)
+        / viewport-inner;
+    out property <length> thumb-y: (viewport-inner - thumb-height)
+        * (-scroll-y
+            / max(content-extent - viewport-inner, 1px * Theme.base-scale));
+
+    // The closed-cell grammar: the box floor is the three-line
+    // measure from the same platform-default font the editor renders
+    // in (the measurement element below) — the r3 fence's
+    // placeholder-derived floor is retired with it.
+    background: Theme.surface-raised;
+    border-radius: Theme.radius-small;
+    border-width: input-has-focus ? Theme.focus-ring-width : 0;
+    border-color: Semantic.focus-ring;
+    clip: true;
+    min-width: Theme.space-15;
+    min-height: 3 * line-height + 2 * Theme.space-2;
+
+    accessible-role: AccessibleRole.text-input;
+    accessible-label: root.label;
+    accessible-value: root.editing ? root.buffer : root.text;
+
+    // D-MLE-1's measurement element: one hidden one-line `RoleText` in
+    // the bundled body role — NOT a hidden `TextInput`. The input
+    // renders in its platform-default font (the recorded text-field
+    // negative: the token lint forbids font attributes outside the
+    // theme, and the theme cannot reach into a primitive's input),
+    // whose metrics resolve through the host's fontconfig — golden
+    // drift across machines (CI's task-view-1.5-500 failure) is the
+    // proof. The theme-role measure is deterministic; as the box
+    // floor's unit it must be, and as the cursor-follow band it is an
+    // approximation of the input's own line height (the reference's
+    // hardcoded 20px is the precedent for approximating).
+    line-metric := RoleText {
+        role: Typography.body;
+        visible: false;
+        text: "Ag";
+        width: Theme.focus-ring-width;
+        height: self.preferred-height;
+    }
+    input-metric := TextInput {
+        visible: false;
+        text: "Ag";
+        width: Theme.focus-ring-width;
+        height: self.preferred-height;
+    }
+
+    // -- the view mount (F2/F5/F6) --
+    if (!root.editing): view-flick := Flickable {
+        x: Theme.space-2;
+        y: Theme.space-2;
+        width: parent.width - 2 * Theme.space-2;
+        height: parent.height - 2 * Theme.space-2;
+        // The F2 fix: the inset means ink never starts under the
+        // focus ring; the pinned width engages word-wrap (F6).
+        content-height: max(self.height, view-text.preferred-height);
+        content-y <=> root.scroll-y;
+        changed content-height => {
+            root.content-extent = self.content-height;
+            root.viewport-inner = self.height;
+        }
+        changed height => {
+            root.viewport-inner = self.height;
+        }
+        init => {
+            root.content-extent = self.content-height;
+            root.viewport-inner = self.height;
+        }
+        view-text := RoleText {
+            role: Typography.body;
+            width: parent.width;
+            height: self.preferred-height;
+            wrap: word-wrap;
+            text: root.text == "" ? root.placeholder : root.text;
+            changed preferred-height => {
+                root.content-preferred = self.preferred-height;
+            }
+        }
+    }
+
+    // -- the edit mount --
+    if (root.editing): edit-flick := Flickable {
+        x: Theme.space-2;
+        y: Theme.space-2;
+        width: parent.width - 2 * Theme.space-2;
+        height: parent.height - 2 * Theme.space-2;
+        // The cycle-break binding (see the header): the extent grows
+        // with the input's preferred-height; no edge leads back into
+        // any width.
+        content-height: max(self.height, input.preferred-height);
+        content-y <=> root.scroll-y;
+        changed content-height => {
+            root.content-extent = self.content-height;
+            root.viewport-inner = self.height;
+        }
+        changed height => {
+            root.viewport-inner = self.height;
+        }
+        init => {
+            root.content-extent = self.content-height;
+            root.viewport-inner = self.height;
+            root.content-preferred = input.preferred-height;
+        }
+        input := TextInput {
+            width: parent.width;
+            height: max(parent.height, self.preferred-height);
+            single-line: false;
+            wrap: word-wrap;
+            vertical-alignment: TextVerticalAlignment.top;
+            // PageUp/PageDown page exactly one viewport (D-MLE-4).
+            page-height: parent.height;
+            // The font is TextInput's platform default (the
+            // text-field recorded negative); the colour flows from
+            // tokens.
+            color: Theme.text-primary;
+            // The seed, one-shot at the edit mount's init (D-MLE-2:
+            // a fresh instantiation per open re-seeds).
+            init => {
+                self.text = root.initial-text;
+                root.buffer = self.text;
+                if (root.autofocus) {
+                    self.focus();
+                }
+                // The latch's init publish: a mount already holding
+                // focus never sees a `changed` for its gain.
+                counted-generation = EditingFacts.generation;
+                if (self.has-focus) {
+                    EditingFacts.text-focus-count += 1;
+                    focus-counted = true;
+                }
+                root.input-has-focus = self.has-focus;
+            }
+            changed has-focus => {
+                root.input-has-focus = self.has-focus;
+                if (counted-generation != EditingFacts.generation) {
+                    // A reset seam ran since this field last
+                    // published: re-baseline against the fresh
+                    // counts — never a stale decrement into them.
+                    counted-generation = EditingFacts.generation;
+                    focus-counted = self.has-focus;
+                    if (self.has-focus) {
+                        EditingFacts.text-focus-count += 1;
+                    }
+                } else if (self.has-focus != focus-counted) {
+                    EditingFacts.text-focus-count += self.has-focus ? 1 : -1;
+                    focus-counted = self.has-focus;
+                }
+                if (!self.has-focus) {
+                    root.focus-lost();
+                }
+            }
+            property <bool> focus-counted: false;
+            property <int> counted-generation: -1;
+            // The focus seam via the token (grab-focus's delivery):
+            // a local two-way mirror, since `changed` observes only
+            // the element's own properties.
+            property <int> grab-token <=> root.focus-token;
+            changed grab-token => {
+                if (grab-token > 0) {
+                    self.focus();
+                }
+            }
+            // Live mirrors: the buffer for the affordances/ATs and
+            // the probe's facts.
+            changed text => {
+                root.buffer = self.text;
+            }
+            // Width-driven re-wraps change preferred-height with no
+            // text change — the mirror must follow (the P2 arm).
+            changed preferred-height => {
+                root.content-preferred = self.preferred-height;
+            }
+            edited() => {
+                root.edited(self.text);
+            }
+            // The key grammar (D-MLE-6): Shift+Return is the commit
+            // seam and inserts nothing; plain Return falls through to
+            // the native newline; every other key is rejected so
+            // native editing keeps it.
+            key-pressed(event) => {
+                if (event.text == "\n" && event.modifiers.shift) {
+                    root.accepted(self.text);
+                    return accept;
+                }
+                return reject;
+            }
+            // Cursor-follow scroll (D-MLE-4), re-implemented (the
+            // reference grammar consulted, never copied): cpos is the
+            // input's coordinate space; keep the cursor line inside
+            // [0, inner − line-height]. No horizontal arm — word-wrap
+            // makes the column the width.
+            cursor-position-changed(cpos) => {
+                if (cpos.y + root.scroll-y < 0px * Theme.base-scale) {
+                    root.scroll-y = clamp(-cpos.y,
+                        root.viewport-inner - root.content-extent,
+                        0px * Theme.base-scale);
+                } else if (cpos.y + root.scroll-y
+                    > parent.height - root.input-line-height) {
+                    root.scroll-y = clamp(
+                        parent.height - root.input-line-height - cpos.y,
+                        root.viewport-inner - root.content-extent,
+                        0px * Theme.base-scale);
+                }
+                root.cursor-in-view =
+                    cpos.y + root.scroll-y >= 0px * Theme.base-scale
+                    && cpos.y + root.scroll-y
+                        <= parent.height - root.input-line-height;
+            }
+        }
+        // The empty-buffer affordance: the placeholder reads through
+        // the same font mirror as the input's own.
+        placeholder-text := RoleText {
+            role: Typography.body;
+            text-color: Theme.text-secondary;
+            text: root.placeholder;
+            visible: root.buffer == "";
+            // Aligned with the input's origin (the flick already
+            // carries the cell inset) and its top alignment.
+            x: 0px * Theme.base-scale;
+            y: 0px * Theme.base-scale;
+        }
+    }
+
+    // The scrollbar strip (D-MLE-3): rides the viewport's right
+    // padding band in BOTH modes (whichever flick is mounted reads
+    // the same mirrors); a sibling AFTER the flicks in tree order so
+    // its TouchArea wins the pointer in its band and never flicks
+    // the content. Visible iff the live extent strictly exceeds the
+    // inner height.
+    if (root.overflow): Rectangle {
+        x: parent.width - Theme.space-1 - Theme.space-2;
+        y: Theme.space-2;
+        width: Theme.space-1;
+        height: parent.height - 2 * Theme.space-2;
+        Rectangle {
+            width: parent.width;
+            height: root.thumb-height;
+            y: root.thumb-y;
+            border-radius: Theme.radius-small;
+            background: thumb-touch.has-hover || thumb-touch.pressed
+                ? Theme.text-secondary : Theme.border;
+            thumb-touch := TouchArea {
+                // The drag anchor: where within the thumb the press
+                // landed; deltas read against it while dragged.
+                property <length> drag-anchor: 0px;
+                changed pressed => {
+                    drag-anchor = self.mouse-y;
+                }
+                moved => {
+                    // The drag maps 1:1 through the ratio.
+                    root.scroll-y = clamp(
+                        root.scroll-y - (self.mouse-y - drag-anchor) * root.drag-ratio,
+                        root.viewport-inner - root.content-extent,
+                        0px * Theme.base-scale,
+                    );
+                    drag-anchor = self.mouse-y;
+                }
+            }
+        }
+    }
+
+    // The commit affordance (the text-field grammar verbatim, r2
+    // D23): TouchArea-only — click and AT activation fire the same
+    // `accepted` seam as Shift+Return.
+    if (root.commit-affordance && input-has-focus && buffer != ""): commit-button := Rectangle {
+        x: parent.width - self.width - Theme.space-1;
+        y: (parent.height - self.height) / 2;
+        width: Theme.space-6;
+        height: Theme.space-6;
+        border-radius: Theme.radius-small;
+        background: commit-touch.has-hover ? Theme.surface-hover : transparent;
+        accessible-role: AccessibleRole.button;
+        accessible-label: "Commit";
+        accessible-description: root.label;
+        accessible-action-default => {
+            root.accepted(root.buffer);
+        }
+        commit-touch := TouchArea {
+            clicked => {
+                root.accepted(root.buffer);
+            }
+        }
+        Path {
+            width: Theme.space-3;
+            height: Theme.space-3;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            commands: "M 2 6 L 5 9 L 10 3";
+            stroke: commit-touch.has-hover ? Theme.text-primary : Theme.text-secondary;
+            stroke-width: Theme.focus-ring-width;
+            fill: transparent;
+            viewbox-width: 12;
+            viewbox-height: 12;
+        }
+    }
+}

@@ -40,6 +40,21 @@ fn key(window: &EditorViewportProbeWindow, k: K, pressed: bool) {
     window.window().dispatch_event(event);
 }
 
+/// Types a string through the real key path — newlines ride Return
+/// (the widget's native newline), the only buffer-seeding seam the
+/// production widget exposes (no two-way text in v1, D-MLE-5).
+fn type_text(window: &EditorViewportProbeWindow, text: &str) {
+    for c in text.chars() {
+        if c == '\n' {
+            key(window, K::Return, true);
+            key(window, K::Return, false);
+        } else {
+            type_char(window, c);
+        }
+    }
+    advance_probe_clock(0);
+}
+
 fn type_char(window: &EditorViewportProbeWindow, c: char) {
     window.window().dispatch_event(WindowEvent::KeyPressed {
         text: c.to_string().into(),
@@ -74,44 +89,42 @@ fn set_window_width(window: &EditorViewportProbeWindow, width: f32) {
 fn p1_the_viewport_grows_with_the_buffer_and_the_box_stays() {
     run_probe(|window| {
         advance_probe_clock(0);
-        let facts = || window.global::<ProbeFacts>();
-        let inner = facts().get_inner_height();
-        let box_before = facts().get_box_height();
+        let inner = window.get_inner_height();
+        let box_before = window.get_box_height();
         assert_eq!(
-            facts().get_viewport_height(),
+            window.get_viewport_height(),
             inner,
             "empty buffer: no overflow"
         );
 
-        window.set_seed("l1\nl2\nl3\nl4".into());
+        type_text(window, "l1\nl2\nl3\nl4");
         advance_probe_clock(0);
-        let preferred = facts().get_input_preferred_height();
+        let preferred = window.get_input_preferred_height();
         assert!(
-            preferred > facts().get_line_height(),
+            preferred > window.get_line_height(),
             "three embedded newlines exceed one line"
         );
         assert_eq!(
-            facts().get_viewport_height(),
+            window.get_viewport_height(),
             inner.max(preferred),
             "the extent binding is exact"
         );
-        assert_eq!(facts().get_box_height(), box_before, "the box never grows");
+        assert_eq!(window.get_box_height(), box_before, "the box never grows");
+        let previous_preferred = preferred;
 
-        window.set_seed("l1\nl2\nl3\nl4\nl5\nl6".into());
-        advance_probe_clock(0);
-        let preferred = facts().get_input_preferred_height();
+        type_text(window, "\nl5\nl6");
+        let preferred = window.get_input_preferred_height();
         assert!(
-            preferred > facts().get_viewport_height() - f32::EPSILON
-                || facts().get_viewport_height() > inner,
+            preferred > previous_preferred,
             "appending lines grows the extent again"
         );
         assert_eq!(
-            facts().get_viewport_height(),
+            window.get_viewport_height(),
             inner.max(preferred),
             "the extent binding stays exact"
         );
         assert_eq!(
-            facts().get_box_height(),
+            window.get_box_height(),
             box_before,
             "the box stays constant"
         );
@@ -125,25 +138,24 @@ fn p1_the_viewport_grows_with_the_buffer_and_the_box_stays() {
 fn p2_narrowing_the_window_re_wraps_and_the_extent_tracks() {
     run_probe(|window| {
         advance_probe_clock(0);
-        let facts = || window.global::<ProbeFacts>();
-        let long = "word ".repeat(60);
-        window.set_seed(long.as_str().into());
         set_window_width(window, 384.0);
-        let wide_preferred = facts().get_input_preferred_height();
-        let box_before = facts().get_box_height();
+        let long = "word ".repeat(60);
+        type_text(window, long.as_str());
+        let wide_preferred = window.get_input_preferred_height();
+        let box_before = window.get_box_height();
 
         set_window_width(window, 192.0);
-        let narrow_preferred = facts().get_input_preferred_height();
+        let narrow_preferred = window.get_input_preferred_height();
         assert!(
             narrow_preferred > wide_preferred,
             "half the width re-wraps taller ({narrow_preferred} vs {wide_preferred})"
         );
         assert_eq!(
-            facts().get_viewport_height(),
-            facts().get_inner_height().max(narrow_preferred),
+            window.get_viewport_height(),
+            window.get_inner_height().max(narrow_preferred),
             "the extent tracked the re-wrap"
         );
-        assert_eq!(facts().get_box_height(), box_before, "the box never grows");
+        assert_eq!(window.get_box_height(), box_before, "the box never grows");
     });
 }
 
@@ -154,15 +166,15 @@ fn p2_narrowing_the_window_re_wraps_and_the_extent_tracks() {
 fn p3_the_cursor_follow_pulls_the_viewport() {
     run_probe(|window| {
         advance_probe_clock(0);
-        let facts = || window.global::<ProbeFacts>();
-        let body = (0..12).map(|i| format!("line {i}")).collect::<Vec<_>>();
-        window.set_seed(body.join("\n").as_str().into());
         window.invoke_focus_probe();
         advance_probe_clock(0);
-        assert_eq!(
-            facts().get_viewport_y(),
-            0.0,
-            "the cursor starts at the top"
+        let body = (0..12).map(|i| format!("line {i}")).collect::<Vec<_>>();
+        type_text(window, body.join("\n").as_str());
+        // Typing itself moves the cursor; the follow may already be
+        // scrolled — it must never scroll past the top, though.
+        assert!(
+            window.get_viewport_y() <= 0.0,
+            "the follow never scrolls past the top"
         );
 
         // Jump to the last line: End-of-line, then Down through the
@@ -175,10 +187,10 @@ fn p3_the_cursor_follow_pulls_the_viewport() {
         }
         advance_probe_clock(0);
         assert!(
-            facts().get_viewport_y() < 0.0,
+            window.get_viewport_y() < 0.0,
             "the cursor's pull scrolled the viewport"
         );
-        assert!(facts().get_cursor_ok(), "the cursor line is fully visible");
+        assert!(window.get_cursor_ok(), "the cursor line is fully visible");
     });
 }
 
@@ -188,32 +200,20 @@ fn p3_the_cursor_follow_pulls_the_viewport() {
 fn p4a_return_newlines_and_shift_return_commits() {
     run_probe(|window| {
         advance_probe_clock(0);
-        let facts = || window.global::<ProbeFacts>();
         window.invoke_focus_probe();
         advance_probe_clock(0);
 
-        type_char(window, 'a');
-        advance_probe_clock(0);
-        key(window, K::Return, true);
-        key(window, K::Return, false);
-        advance_probe_clock(0);
-        type_char(window, 'b');
-        advance_probe_clock(0);
-        assert_eq!(facts().get_buffer(), "a\nb", "Return inserted the newline");
-        assert_eq!(facts().get_newline_count(), 1);
-        assert_eq!(
-            facts().get_accepted_count(),
-            0,
-            "plain Return never commits"
-        );
+        type_text(window, "a\nb");
+        assert_eq!(window.get_buffer(), "a\nb", "Return inserted the newline");
+        assert_eq!(window.get_accepted_count(), 0, "plain Return never commits");
 
         key(window, K::Shift, true);
         key(window, K::Return, true);
         key(window, K::Return, false);
         key(window, K::Shift, false);
         advance_probe_clock(0);
-        assert_eq!(facts().get_accepted_count(), 1, "Shift+Return commits once");
-        assert_eq!(facts().get_buffer(), "a\nb", "the commit inserted nothing");
+        assert_eq!(window.get_accepted_count(), 1, "Shift+Return commits once");
+        assert_eq!(window.get_buffer(), "a\nb", "the commit inserted nothing");
     });
 }
 
@@ -224,20 +224,19 @@ fn p4a_return_newlines_and_shift_return_commits() {
 fn p4b_the_focus_latch_fires_once_per_real_loss() {
     run_probe(|window| {
         advance_probe_clock(0);
-        let facts = || window.global::<ProbeFacts>();
-        assert_eq!(facts().get_focus_lost_count(), 0, "no loss at mount");
+        assert_eq!(window.get_focus_lost_count(), 0, "no loss at mount");
 
         click(window, window.get_dead_cx(), window.get_dead_cy());
         advance_probe_clock(0);
         assert_eq!(
-            facts().get_focus_lost_count(),
+            window.get_focus_lost_count(),
             0,
             "a TouchArea click never moves focus"
         );
 
         click(window, window.get_sibling_cx(), window.get_sibling_cy());
         advance_probe_clock(0);
-        assert_eq!(facts().get_focus_lost_count(), 1, "one loss per steal");
+        assert_eq!(window.get_focus_lost_count(), 1, "one loss per steal");
     });
 }
 
@@ -248,26 +247,38 @@ fn p4b_the_focus_latch_fires_once_per_real_loss() {
 fn p4c_the_scrollbar_appears_exactly_at_overflow() {
     run_probe(|window| {
         advance_probe_clock(0);
-        let facts = || window.global::<ProbeFacts>();
-        assert!(!facts().get_thumb_visible(), "no overflow, no strip");
+        assert!(!window.get_thumb_visible(), "no overflow, no strip");
 
         let body = (0..12).map(|i| format!("line {i}")).collect::<Vec<_>>();
-        window.set_seed(body.join("\n").as_str().into());
-        advance_probe_clock(0);
-        assert!(facts().get_thumb_visible(), "overflow shows the strip");
+        type_text(window, body.join("\n").as_str());
+        assert!(window.get_thumb_visible(), "overflow shows the strip");
 
-        let inner = facts().get_inner_height();
-        let extent = facts().get_viewport_height();
-        let thumb = facts().get_thumb_height();
+        let inner = window.get_inner_height();
+        let extent = window.get_viewport_height();
+        let thumb = window.get_thumb_height();
         let unfloored = inner * inner / extent;
         assert!(
             thumb >= unfloored - 0.5 && thumb <= inner + 0.5,
             "thumb {thumb} is the floored proportion of {unfloored}, within the inner {inner}"
         );
-        let thumb_y = facts().get_thumb_y();
+        let thumb_y = window.get_thumb_y();
         assert!(
             thumb_y >= 0.0 && thumb_y + thumb <= inner + 0.5,
             "the thumb sits inside the strip band"
+        );
+        // The typing pulled the cursor (and the follow) to the buffer's
+        // end, so the thumb must have left the strip's top — the
+        // position tracks the scroll, not a pinned 0.
+        assert!(
+            window.get_viewport_y() < 0.0 && thumb_y > 0.0,
+            "the thumb tracks the scroll (y {}, viewport {})",
+            thumb_y,
+            window.get_viewport_y(),
+        );
+        let expected_y = (inner - thumb) * (-window.get_viewport_y()) / (extent - inner);
+        assert!(
+            (thumb_y - expected_y).abs() <= 0.5,
+            "the thumb position is the scroll's proportion ({thumb_y} vs {expected_y})"
         );
     });
 }
