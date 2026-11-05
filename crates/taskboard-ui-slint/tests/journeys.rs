@@ -12360,6 +12360,13 @@ fn general_snapshot() -> SettingsSnapshot {
         "sync.backoff_initial_secs",
         "sync.backoff_max_secs",
         "ui.due_soon_days",
+        "focus.enabled",
+        "focus.work_mins",
+        "focus.break_mins",
+        "focus.chain",
+        "focus.long_break_mins",
+        "focus.long_break_every",
+        "focus.notify",
     ] {
         applies.insert(key.to_owned(), SectionApply::OnRestart);
     }
@@ -12373,6 +12380,13 @@ fn general_snapshot() -> SettingsSnapshot {
         backoff_initial_secs: 5,
         backoff_max_secs: 300,
         due_soon_days: 1,
+        focus_enabled: true,
+        focus_work_mins: 25,
+        focus_break_mins: 5,
+        focus_chain: false,
+        focus_long_break_mins: 15,
+        focus_long_break_every: 4,
+        focus_notify: true,
         env_overridden: BTreeSet::new(),
         facts: vec![
             SettingsFact {

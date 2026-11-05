@@ -135,6 +135,15 @@ pub enum Field {
     BackoffInitial,
     BackoffMax,
     DueSoonDays,
+    // The `[focus]` section's editor rows (the focus settings editor
+    // chunk, #625): one variant per knob, the same per-field lattice.
+    FocusEnabled,
+    FocusWorkMins,
+    FocusBreakMins,
+    FocusChain,
+    FocusLongBreakMins,
+    FocusLongBreakEvery,
+    FocusNotify,
 }
 
 /// How a field failed.
@@ -157,6 +166,11 @@ pub enum InvalidKind {
 /// process-boot state); the reply carries it empty and the UI retains
 /// its hand-over set.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+// A config-file projection, not a state machine: each bool mirrors one
+// independent `[focus]`/`[reminders]` knob the editor renders a row
+// for — grouping them into enums would invent couplings the config
+// does not have.
+#[allow(clippy::struct_excessive_bools)]
 pub struct SettingsSnapshot {
     /// The effective editable values, typed (the file layer's decode).
     pub day_start_time: chrono::NaiveTime,
@@ -169,6 +183,15 @@ pub struct SettingsSnapshot {
     pub backoff_initial_secs: u64,
     pub backoff_max_secs: u64,
     pub due_soon_days: u32,
+    /// The `[focus]` section's typed values (the focus settings
+    /// editor, #625): the seven knobs the editor renders rows for.
+    pub focus_enabled: bool,
+    pub focus_work_mins: u64,
+    pub focus_break_mins: u64,
+    pub focus_chain: bool,
+    pub focus_long_break_mins: u64,
+    pub focus_long_break_every: u64,
+    pub focus_notify: bool,
     /// The dotted keys whose effective value is env-overridden (the
     /// plan D1/D16 per-key honesty overlay). Filled only at hand-over;
     /// empty on write replies (the UI keeps its hand-over set).
@@ -346,6 +369,46 @@ pub enum UiRequest {
     /// Persists `[ui] due_soon_days` (0 legal — an empty soon set).
     SetDueSoonDays {
         days: u32,
+        reply: oneshot::Sender<Result<SettingsSnapshot, SettingsError>>,
+    },
+    // -- the `[focus]` section's commits (the focus settings editor,
+    //    #625): the same closed-enum rule — no variant's payload could
+    //    carry a credential; every reply carries the fresh file-layer
+    //    [`SettingsSnapshot`].
+    /// Persists `[focus] enabled`.
+    SetFocusEnabled {
+        enabled: bool,
+        reply: oneshot::Sender<Result<SettingsSnapshot, SettingsError>>,
+    },
+    /// Persists `[focus] work_mins` (typed u64; the gate proves the
+    /// whole document).
+    SetFocusWorkMins {
+        mins: u64,
+        reply: oneshot::Sender<Result<SettingsSnapshot, SettingsError>>,
+    },
+    /// Persists `[focus] break_mins`.
+    SetFocusBreakMins {
+        mins: u64,
+        reply: oneshot::Sender<Result<SettingsSnapshot, SettingsError>>,
+    },
+    /// Persists `[focus] chain` (the auto-chain knob, #600).
+    SetFocusChain {
+        enabled: bool,
+        reply: oneshot::Sender<Result<SettingsSnapshot, SettingsError>>,
+    },
+    /// Persists `[focus] long_break_mins`.
+    SetFocusLongBreakMins {
+        mins: u64,
+        reply: oneshot::Sender<Result<SettingsSnapshot, SettingsError>>,
+    },
+    /// Persists `[focus] long_break_every`.
+    SetFocusLongBreakEvery {
+        every: u64,
+        reply: oneshot::Sender<Result<SettingsSnapshot, SettingsError>>,
+    },
+    /// Persists `[focus] notify` (the boundary-notification knob, #600).
+    SetFocusNotify {
+        enabled: bool,
         reply: oneshot::Sender<Result<SettingsSnapshot, SettingsError>>,
     },
 }

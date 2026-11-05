@@ -397,21 +397,9 @@ pub fn settings_snapshot_from_config(
                 .map_or_else(|| "derived".to_owned(), |secs| secs.to_string()),
             Apply::OnRestart,
         ),
-        fact(
-            "focus.enabled",
-            config.focus.enabled.to_string(),
-            Apply::OnRestart,
-        ),
-        fact(
-            "focus.work_mins",
-            config.focus.work_mins.to_string(),
-            Apply::OnRestart,
-        ),
-        fact(
-            "focus.break_mins",
-            config.focus.break_mins.to_string(),
-            Apply::OnRestart,
-        ),
+        // The three pomodoro-era focus facts left the list when they
+        // became editable rows (the focus settings editor, #625): a key
+        // renders exactly once, never both editable and read-only.
         fact(
             "ui.keymap.overrides",
             config.ui.keymap.overrides.len().to_string(),
@@ -446,6 +434,15 @@ pub fn settings_snapshot_from_config(
         "sync.backoff_initial_secs",
         "sync.backoff_max_secs",
         "ui.due_soon_days",
+        // The `[focus]` knobs (the focus settings editor, #625): the
+        // runtime reads config once at boot, so every key is OnRestart.
+        "focus.enabled",
+        "focus.work_mins",
+        "focus.break_mins",
+        "focus.chain",
+        "focus.long_break_mins",
+        "focus.long_break_every",
+        "focus.notify",
     ] {
         applies.insert(key.to_owned(), Apply::OnRestart);
     }
@@ -468,6 +465,13 @@ pub fn settings_snapshot_from_config(
         backoff_initial_secs: config.sync.backoff_initial_secs,
         backoff_max_secs: config.sync.backoff_max_secs,
         due_soon_days: config.ui.due_soon_days,
+        focus_enabled: config.focus.enabled,
+        focus_work_mins: config.focus.work_mins,
+        focus_break_mins: config.focus.break_mins,
+        focus_chain: config.focus.chain,
+        focus_long_break_mins: config.focus.long_break_mins,
+        focus_long_break_every: config.focus.long_break_every,
+        focus_notify: config.focus.notify,
         env_overridden: std::collections::BTreeSet::new(),
         facts,
         applies,
@@ -772,6 +776,13 @@ mod tests {
         config.sync.backoff_max_secs = 600;
         config.ui.due_soon_days = 14;
         config.web.token = Some("sekrit-token".into());
+        config.focus.enabled = true;
+        config.focus.work_mins = 50;
+        config.focus.break_mins = 10;
+        config.focus.chain = true;
+        config.focus.long_break_mins = 20;
+        config.focus.long_break_every = 6;
+        config.focus.notify = false;
 
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("taskboard.toml");
@@ -792,11 +803,18 @@ mod tests {
         assert_eq!(snapshot.backoff_initial_secs, 10);
         assert_eq!(snapshot.backoff_max_secs, 600);
         assert_eq!(snapshot.due_soon_days, 14);
+        assert!(snapshot.focus_enabled);
+        assert_eq!(snapshot.focus_work_mins, 50);
+        assert_eq!(snapshot.focus_break_mins, 10);
+        assert!(snapshot.focus_chain);
+        assert_eq!(snapshot.focus_long_break_mins, 20);
+        assert_eq!(snapshot.focus_long_break_every, 6);
+        assert!(!snapshot.focus_notify);
 
         // The apply map: exhaustive over the editable groups.
         assert_eq!(
             snapshot.applies.len(),
-            9,
+            16,
             "one apply fact per editable field"
         );
         for key in [
@@ -809,6 +827,13 @@ mod tests {
             "sync.backoff_initial_secs",
             "sync.backoff_max_secs",
             "ui.due_soon_days",
+            "focus.enabled",
+            "focus.work_mins",
+            "focus.break_mins",
+            "focus.chain",
+            "focus.long_break_mins",
+            "focus.long_break_every",
+            "focus.notify",
         ] {
             assert_eq!(
                 snapshot.applies.get(key),
@@ -835,6 +860,14 @@ mod tests {
         assert_eq!(find("app.mode").apply, SectionApply::OnRestart);
         assert_eq!(find("web.token").value, "true", "presence, never the value");
         assert!(!format!("{snapshot:?}").contains("sekrit-token"));
+        // The promoted keys left the facts (D-FS2): a key renders
+        // exactly once, never both editable and read-only.
+        for key in ["focus.enabled", "focus.work_mins", "focus.break_mins"] {
+            assert!(
+                snapshot.facts.iter().all(|fact| fact.key != key),
+                "{key} is an editable row, not a fact"
+            );
+        }
 
         // S-2: the set + snapshot travel to UiSettings structurally.
         let settings = taskboard_ui_slint::UiSettings {

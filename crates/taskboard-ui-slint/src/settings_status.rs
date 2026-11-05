@@ -196,6 +196,62 @@ pub(crate) fn invalid_text(field: Field, kind: InvalidKind) -> &'static str {
             InvalidKind::OutOfRange => "The horizon must stay within ten years.",
             InvalidKind::Duplicate => "That horizon is already set.",
         },
+        Field::FocusEnabled => match kind {
+            InvalidKind::Empty
+            | InvalidKind::NotKebab
+            | InvalidKind::BadUrl
+            | InvalidKind::NotFinite => "Pick whether focus mode is on or off.",
+            InvalidKind::OutOfRange => "That toggle is not available.",
+            InvalidKind::Duplicate => "Focus mode is already set that way.",
+        },
+        Field::FocusWorkMins => match kind {
+            InvalidKind::Empty => "Enter the focus-block length in minutes.",
+            InvalidKind::NotKebab | InvalidKind::BadUrl | InvalidKind::NotFinite => {
+                "Enter a whole number of minutes, e.g. 25."
+            }
+            InvalidKind::OutOfRange => "The focus block must be between 1 and 240 minutes.",
+            InvalidKind::Duplicate => "That block length is already set.",
+        },
+        Field::FocusBreakMins => match kind {
+            InvalidKind::Empty => "Enter the break length in minutes.",
+            InvalidKind::NotKebab | InvalidKind::BadUrl | InvalidKind::NotFinite => {
+                "Enter a whole number of minutes, e.g. 5."
+            }
+            InvalidKind::OutOfRange => "The break must be between 1 and 240 minutes.",
+            InvalidKind::Duplicate => "That break length is already set.",
+        },
+        Field::FocusChain => match kind {
+            InvalidKind::Empty
+            | InvalidKind::NotKebab
+            | InvalidKind::BadUrl
+            | InvalidKind::NotFinite => "Pick whether blocks chain automatically.",
+            InvalidKind::OutOfRange => "That toggle is not available.",
+            InvalidKind::Duplicate => "Chaining is already set that way.",
+        },
+        Field::FocusLongBreakMins => match kind {
+            InvalidKind::Empty => "Enter the long-break length in minutes.",
+            InvalidKind::NotKebab | InvalidKind::BadUrl | InvalidKind::NotFinite => {
+                "Enter a whole number of minutes, e.g. 15."
+            }
+            InvalidKind::OutOfRange => "The long break must be between 1 and 240 minutes.",
+            InvalidKind::Duplicate => "That long-break length is already set.",
+        },
+        Field::FocusLongBreakEvery => match kind {
+            InvalidKind::Empty => "Enter how many blocks make a long break.",
+            InvalidKind::NotKebab | InvalidKind::BadUrl | InvalidKind::NotFinite => {
+                "Enter a whole number of blocks, e.g. 4."
+            }
+            InvalidKind::OutOfRange => "A long break comes after 1 to 24 blocks.",
+            InvalidKind::Duplicate => "That cadence is already set.",
+        },
+        Field::FocusNotify => match kind {
+            InvalidKind::Empty
+            | InvalidKind::NotKebab
+            | InvalidKind::BadUrl
+            | InvalidKind::NotFinite => "Pick whether phase boundaries are announced.",
+            InvalidKind::OutOfRange => "That toggle is not available.",
+            InvalidKind::Duplicate => "Announcements are already set that way.",
+        },
     }
 }
 
@@ -226,6 +282,19 @@ pub const HELP_DUE_SOON: &str =
 pub const HELP_REMINDERS: &str =
     "Whether the reminder engine runs at all. Edited values apply at the next restart.";
 pub const HELP_SINK: &str = "Which notifier delivers fired reminders: auto resolves by app mode.";
+// The `[focus]` section's rows (the focus settings editor, #625).
+pub const HELP_FOCUS_ENABLED: &str =
+    "Whether the pomodoro focus runtime runs. Edited values apply at the next restart.";
+pub const HELP_FOCUS_WORK_MINS: &str =
+    "The focus-block length in whole minutes, 1 to 240. Type it and press Return.";
+pub const HELP_FOCUS_BREAK_MINS: &str = "The short-break length in whole minutes, 1 to 240.";
+pub const HELP_FOCUS_CHAIN: &str =
+    "Whether the next focus block auto-starts when a runtime-driven break ends.";
+pub const HELP_FOCUS_LONG_BREAK_MINS: &str = "The long-break length in whole minutes, 1 to 240.";
+pub const HELP_FOCUS_LONG_BREAK_EVERY: &str =
+    "Every N completed work blocks the next break is long, 1 to 24.";
+pub const HELP_FOCUS_NOTIFY: &str =
+    "A gentle toast and chime at each runtime-driven phase boundary.";
 
 #[cfg(test)]
 mod tests {
@@ -251,6 +320,13 @@ mod tests {
             Field::BackoffInitial,
             Field::BackoffMax,
             Field::DueSoonDays,
+            Field::FocusEnabled,
+            Field::FocusWorkMins,
+            Field::FocusBreakMins,
+            Field::FocusChain,
+            Field::FocusLongBreakMins,
+            Field::FocusLongBreakEvery,
+            Field::FocusNotify,
         ] {
             for kind in [
                 InvalidKind::Empty,
@@ -340,6 +416,13 @@ mod tests {
             HELP_DUE_SOON,
             HELP_REMINDERS,
             HELP_SINK,
+            HELP_FOCUS_ENABLED,
+            HELP_FOCUS_WORK_MINS,
+            HELP_FOCUS_BREAK_MINS,
+            HELP_FOCUS_CHAIN,
+            HELP_FOCUS_LONG_BREAK_MINS,
+            HELP_FOCUS_LONG_BREAK_EVERY,
+            HELP_FOCUS_NOTIFY,
         ] {
             assert_ne!(text, "");
         }
@@ -386,6 +469,13 @@ mod tests {
             Just(Field::BackoffInitial),
             Just(Field::BackoffMax),
             Just(Field::DueSoonDays),
+            Just(Field::FocusEnabled),
+            Just(Field::FocusWorkMins),
+            Just(Field::FocusBreakMins),
+            Just(Field::FocusChain),
+            Just(Field::FocusLongBreakMins),
+            Just(Field::FocusLongBreakEvery),
+            Just(Field::FocusNotify),
         ]
     }
 
