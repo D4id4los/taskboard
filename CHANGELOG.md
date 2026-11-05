@@ -10,6 +10,14 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 ### Added
 
+- Tracked-time statistics in the Review view (#623 slice A): two
+  new tracking sections over the landed 7/30-day windows — Work and
+  Respite totals, per-day bar strips (shape only; the stat cells
+  carry the magnitudes), and Work-block readings (count + duration).
+  A window with no tracked time collapses its values while the
+  section skeleton stays; tracked time alone now keeps the Review
+  view standing even without comparable completed tasks. Kiosk is
+  untouched.
 - The plan-next-day surface (#622, the v0.2 wave's interactive
   placement ruling): a desktop-only `PlanNextDay` view off the view
   cycle (the Settings precedent), opened by the routed
