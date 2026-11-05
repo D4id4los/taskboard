@@ -19,7 +19,8 @@ use std::fmt::Write as _;
 use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, TimeDelta, TimeZone, Utc};
 use taskboard_domain::{
     AdhocAlarmId, AppState, Board, BoardId, Effort, ReminderRef, SidecarHealth, Stack, StackId,
-    SyncPhase, Task, TaskId, TimeEntryId, TimeEntryKind, focus::FocusTiming, tracking::TimeEntry,
+    SyncPhase, Task, TaskId, TimeEntryId, TimeEntryKind, focus::FocusTiming,
+    focus::focus_break_is_long, tracking::TimeEntry,
 };
 
 /// The due-soon window (design §4): a presentation constant, not
@@ -877,6 +878,14 @@ pub fn focus_remaining_phrase(deadline: DateTime<Utc>, now: DateTime<Utc>) -> St
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FocusOverlay {
     pub phase: FocusPhase,
+    /// Whether the open break is the cycle's long break (issue #600).
+    /// Inference-only: the walk over published entry history cannot
+    /// see the runtime's owned long-break decision, so after an
+    /// externally-aborted long break this flag (and the countdown
+    /// with it) can disagree with the runtime until the next boundary
+    /// — recorded leniency (R-1); always `false` while a focus block
+    /// runs or the mode is idle.
+    pub long_break: bool,
     /// The countdown text: `mm:ss` to the phase deadline while a
     /// phase runs, empty while idle.
     pub remaining_text: String,
@@ -884,26 +893,43 @@ pub struct FocusOverlay {
     pub task_title: String,
 }
 
-/// See [`FocusOverlay`]. `open` is the caller's newest-open pick.
+/// See [`FocusOverlay`]. `open` is the caller's newest-open pick. The
+/// deadline is derived through the same domain walk the runtime uses
+/// (issue #600, D-FF11): an open break at the cadence arms the long
+/// length, everything else keeps the landed lengths.
 #[must_use]
 pub fn focus_overlay(state: &AppState, timing: &FocusTiming, now: DateTime<Utc>) -> FocusOverlay {
     let open = state.tracking.newest_open();
     let phase = FocusPhase::from_entry(open);
     match open {
         Some(entry) => {
-            let deadline = entry.start
-                + match entry.kind {
-                    TimeEntryKind::Work => timing.work(),
-                    TimeEntryKind::Respite => timing.respite(),
-                };
+            let long_break = match entry.kind {
+                TimeEntryKind::Work => false,
+                TimeEntryKind::Respite => {
+                    focus_break_is_long(&state.tracking.entries, entry, timing, None)
+                }
+            };
+            let block = match entry.kind {
+                TimeEntryKind::Work => timing.work(),
+                TimeEntryKind::Respite => {
+                    if long_break {
+                        timing.long_break()
+                    } else {
+                        timing.respite()
+                    }
+                }
+            };
+            let deadline = entry.start + block;
             FocusOverlay {
                 phase,
+                long_break,
                 remaining_text: focus_remaining_phrase(deadline, now),
                 task_title: entry.task_title.clone(),
             }
         }
         None => FocusOverlay {
             phase,
+            long_break: false,
             remaining_text: String::new(),
             task_title: String::new(),
         },
@@ -5288,6 +5314,136 @@ mod habit_section_tests {
         let overlay = focus_overlay(&state, &timing, OVERLAY_T0 + TimeDelta::seconds(1));
         assert_eq!(overlay.phase, FocusPhase::Break);
         assert_eq!(overlay.remaining_text, "04:59");
+    }
+
+    /// A walk-seeded state: `rows` are (kind, start, end) minutes
+    /// relative to `OVERLAY_T0` (end `None` = open), plus the given
+    /// open entry.
+    fn overlay_state_seeded(
+        rows: &[(taskboard_domain::tracking::TimeEntryKind, i64, Option<i64>)],
+        open_kind: taskboard_domain::tracking::TimeEntryKind,
+        open_start_min: i64,
+    ) -> AppState {
+        use taskboard_domain::ids::{TaskId, TimeEntryId};
+        let mut entries = std::collections::BTreeMap::new();
+        for (kind, start, end) in rows {
+            let e = TimeEntry {
+                id: TimeEntryId::from_uuid(uuid::Uuid::now_v7()),
+                task: TaskId::from_uuid(uuid::Uuid::now_v7()),
+                task_title: "the subject".into(),
+                start: OVERLAY_T0 + TimeDelta::minutes(*start),
+                end: end.map(|mins| OVERLAY_T0 + TimeDelta::minutes(mins)),
+                created_at: OVERLAY_T0,
+                updated_at: OVERLAY_T0,
+                kind: *kind,
+            };
+            entries.insert(e.id, e);
+        }
+        let mut open = TimeEntry {
+            id: TimeEntryId::from_uuid(uuid::Uuid::now_v7()),
+            task: TaskId::from_uuid(uuid::Uuid::now_v7()),
+            task_title: "the subject".into(),
+            start: OVERLAY_T0 + TimeDelta::minutes(open_start_min),
+            end: None,
+            created_at: OVERLAY_T0,
+            updated_at: OVERLAY_T0,
+            kind: open_kind,
+        };
+        open.created_at = open.start;
+        open.updated_at = open.start;
+        entries.insert(open.id, open.clone());
+        AppState {
+            tracking: taskboard_domain::TrackingState { entries },
+            ..AppState::default()
+        }
+    }
+
+    #[test]
+    fn focus_overlay_flags_the_long_break_and_derives_its_deadline() {
+        let timing = overlay_timing(); // 25 / 5 / 15 / every 4
+
+        // Cold break: position 0 ⇒ short, unchanged.
+        let state =
+            overlay_state_seeded(&[], taskboard_domain::tracking::TimeEntryKind::Respite, 0);
+        let overlay = focus_overlay(&state, &timing, OVERLAY_T0 + TimeDelta::seconds(1));
+        assert!(!overlay.long_break);
+        assert_eq!(
+            overlay.remaining_text, "04:59",
+            "the cold break keeps the short length"
+        );
+
+        // Three closed works (short breaks between) put the open
+        // break at cadence position 4 ⇒ long: remaining counts to
+        // start + 15m, and the structural flag carries it.
+        let rows = [
+            (
+                taskboard_domain::tracking::TimeEntryKind::Work,
+                0i64,
+                Some(25i64),
+            ),
+            (
+                taskboard_domain::tracking::TimeEntryKind::Respite,
+                25,
+                Some(30),
+            ),
+            (
+                taskboard_domain::tracking::TimeEntryKind::Work,
+                30,
+                Some(55),
+            ),
+            (
+                taskboard_domain::tracking::TimeEntryKind::Respite,
+                55,
+                Some(60),
+            ),
+            (
+                taskboard_domain::tracking::TimeEntryKind::Work,
+                60,
+                Some(85),
+            ),
+            (
+                taskboard_domain::tracking::TimeEntryKind::Respite,
+                85,
+                Some(90),
+            ),
+            (
+                taskboard_domain::tracking::TimeEntryKind::Work,
+                90,
+                Some(115),
+            ),
+        ];
+        let state = overlay_state_seeded(
+            &rows,
+            taskboard_domain::tracking::TimeEntryKind::Respite,
+            115,
+        );
+        let overlay = focus_overlay(
+            &state,
+            &timing,
+            OVERLAY_T0 + TimeDelta::minutes(115) + TimeDelta::seconds(1),
+        );
+        assert!(
+            overlay.long_break,
+            "position 4: the break is structurally long"
+        );
+        assert_eq!(overlay.phase, FocusPhase::Break);
+        assert_eq!(
+            overlay.remaining_text, "14:59",
+            "the long break counts to start + long_break, not respite"
+        );
+
+        // The same history under an open WORK entry: the flag stays
+        // false and the work length holds (the walk never touches the
+        // focus path's deadline).
+        let state =
+            overlay_state_seeded(&rows, taskboard_domain::tracking::TimeEntryKind::Work, 115);
+        let overlay = focus_overlay(
+            &state,
+            &timing,
+            OVERLAY_T0 + TimeDelta::minutes(115) + TimeDelta::seconds(1),
+        );
+        assert!(!overlay.long_break);
+        assert_eq!(overlay.remaining_text, "24:59");
     }
 
     #[allow(clippy::too_many_lines)] // the task fixture dominates the count
