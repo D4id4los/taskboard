@@ -30,6 +30,17 @@ The workspace carries a single global version (see `docs/architecture.org`);
   focus runtime reads config at boot only). The three pomodoro-era
   read-only focus facts left the Deployment list — a key renders
   exactly once.
+- The today view's row-anchored scrolling (#592): an above-viewport
+  membership change in a Today section (a background sync inserting
+  or removing an older task while you are deep-scrolled) no longer
+  reflows the visible rows by the changed row's height — the viewport
+  stays pixel-still for removals of rows it has shown (the common
+  background case) and moves by only a small average-estimator
+  residual for never-seen insertions. Within-viewport changes (the
+  click-flip) keep their exact close-up geometry, and no other
+  ListView consumer changes behaviour (the mode is opt-in per call
+  site; only the Today sections opt in).
+
 - The plan-next-day surface (#622, the v0.2 wave's interactive
   placement ruling): a desktop-only `PlanNextDay` view off the view
   cycle (the Settings precedent), opened by the routed
