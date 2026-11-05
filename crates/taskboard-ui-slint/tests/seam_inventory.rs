@@ -190,8 +190,21 @@ fn install_counts() -> Vec<(String, usize)> {
     SEAM_INVENTORY
         .iter()
         .map(|name| {
-            let needle = format!("window.on_{name}(");
-            ((*name).to_owned(), ADAPTER_SOURCE.matches(&needle).count())
+            // A seam is spelled `window.on_<name>(` when wired
+            // explicitly and `window.on_<name>,` at an
+            // `install_seam!` invocation; a longer name extending
+            // this one must not count.
+            let needle = format!("window.on_{name}");
+            let count = ADAPTER_SOURCE
+                .match_indices(&needle)
+                .filter(|(at, _)| {
+                    ADAPTER_SOURCE[at + needle.len()..]
+                        .chars()
+                        .next()
+                        .is_none_or(|next| !matches!(next, 'a'..='z' | '0'..='9' | '_'))
+                })
+                .count();
+            ((*name).to_owned(), count)
         })
         .collect()
 }
