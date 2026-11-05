@@ -207,6 +207,21 @@ The workspace carries a single global version (see `docs/architecture.org`);
 
 ### Fixed
 
+- The task description surface was rebuilt as the `MultiLineEditor`
+  L1 widget (round-5, #611's F2–F7/F12): the display branch renders
+  inset and word-wrapped (the em-dash no longer draws under the
+  focus ring, the text actually wraps at the column edge) inside a
+  scroll viewport that grows with the body in both modes — the old
+  fixed three-line window is gone, replaced by a Flickable viewport
+  whose content extent tracks the buffer (the r3 layout-cycle trap
+  is fenced by the widget's own geometry contract, verified by the
+  viewport probe), with a token-styled scrollbar appearing exactly
+  at overflow (thumb-drag, wheel/flick, PageUp/PageDown, and
+  cursor-following scroll). The key grammar is the D1 redefinition:
+  plain Return inserts a newline and never commits; Shift+Return
+  (or the checkmark) commits; Escape discards as before; focus loss
+  settles exactly as it did — no Rust-side funnel change.
+
 - Queued sync operations on a deleted board no longer retry forever
   (#282): when a pull confirms a board dead, the deletion cascade now
   cancels *every* queued operation attributed to that board — stack

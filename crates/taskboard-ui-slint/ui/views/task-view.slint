@@ -8,6 +8,8 @@
 import { Theme, Typography, Semantic, RoleText, Tone, DueKind } from "../theme.slint";
 import { IconButton, IconKind } from "../widgets/icon-button.slint";
 import { TippedField } from "../widgets/tipped-field.slint";
+import { MultiLineEditor } from "../widgets/multi-line-editor.slint";
+import { InfoTip } from "../widgets/info-tip.slint";
 import { RuleList, RuleRowModel } from "../compositions/rule-list.slint";
 import { DueEditor } from "../compositions/due-editor.slint";
 import { DueDayModel } from "../compositions/date-picker.slint";
@@ -828,20 +830,21 @@ export component TaskView inherits FocusScope {
                 }
             }
 
-            // The description (round-3 D15/#228): the read-only body
-            // reads interactive (the closed cells' grammar) and
-            // click-opens the multiline editor — commit on Return and
-            // on the checkmark; Escape's discard rides the action
-            // layer; focus loss settles per the text-flow rule.
-            // Markup rendering stays POST-1.0/R10.
+            // The description (round-3 D15/#228, round-5 chunk 2):
+            // the read-only body reads interactive (the closed
+            // cells' grammar) and click-opens the MultiLineEditor —
+            // commit on Shift+Return and on the checkmark; plain
+            // Return inserts a newline; Escape's discard rides the
+            // action layer; focus loss settles per the text-flow
+            // rule. Markup rendering stays POST-1.0/R10.
             //
             // r4 D16d (F10): THE flexible element — the section (and
             // both branches inside it) absorbs the view's leftover
             // height; the old trailing spacer is gone. Every other
             // row stays content-height. No max-line cap: growth is
-            // the layout stretch, not the content (the
-            // input.preferred-height binding stays fenced — the
-            // width-dependent cycle trap).
+            // the layout stretch, not the content (the editor's
+            // viewport rides its Flickable — the r3 cycle trap stays
+            // fenced by the widget's own geometry contract).
             VerticalLayout {
                 vertical-stretch: 1;
                 RoleText {
@@ -867,11 +870,18 @@ export component TaskView inherits FocusScope {
                         background: Theme.surface-raised;
                         border-radius: Theme.radius-small;
                     }
-                    RoleText {
-                        role: Typography.body;
-                        text: root.task.description == "" ? "—" : root.task.description;
-                        wrap: word-wrap;
-                        horizontal-stretch: 1;
+                    // The view mount (F2/F5/F6): the inset and the
+                    // pinned width live in the widget; the em-dash
+                    // rides the placeholder slot (the empty-display
+                    // convention, unchanged).
+                    MultiLineEditor {
+                        editing: false;
+                        text: root.task.description;
+                        placeholder: "—";
+                        label: "Description";
+                        autofocus: false;
+                        width: 100%;
+                        height: 100%;
                     }
                     description-touch := TouchArea {
                         mouse-cursor: MouseCursor.pointer;
@@ -896,18 +906,27 @@ export component TaskView inherits FocusScope {
                         }
                     }
                 }
-                if (root.task.description-edit-open): TippedField {
-                    label: "Description";
-                    help: "The task's longer body text; rendered as plain text.";
-                    placeholder: "Describe the task";
-                    multiline: true;
-                    commit-affordance: true;
-                    initial-text: root.task.description-initial;
+                // The edit mount (D-MLE-8): the TippedField visual
+                // grammar composed manually — the multiline flavour
+                // this pair carried is retired with the adoption.
+                if (root.task.description-edit-open): HorizontalLayout {
                     horizontal-stretch: 1;
                     vertical-stretch: 1;
-                    accepted(text) => root.description-committed(text);
-                    edited(text) => root.description-edited(text);
-                    focus-lost() => root.text-flow-focus-lost();
+                    MultiLineEditor {
+                        editing: true;
+                        label: "Description";
+                        placeholder: "Describe the task";
+                        commit-affordance: true;
+                        initial-text: root.task.description-initial;
+                        horizontal-stretch: 1;
+                        accepted(text) => root.description-committed(text);
+                        edited(text) => root.description-edited(text);
+                        focus-lost() => root.text-flow-focus-lost();
+                    }
+                    InfoTip {
+                        about: "Description";
+                        help: "The task's longer body text; rendered as plain text.";
+                    }
                 }
             }
         }
