@@ -48,3 +48,39 @@ export component ListViewProbe inherits Window {
         }
     }
 }
+
+// The row-anchored compensation probe (#592): the real in-house
+// ListView with its compensation seams driven from test properties —
+// the widget-level contract pins (mode off = the content-anchored
+// law; mode on = the commanded compensation, its extent sources, and
+// the above-window discriminator) live in tests/virtualisation.rs.
+export component RowAnchoredProbe inherits Window {
+    width: Theme.space-15;
+    height: Theme.space-8 * 5;
+    in property <[string]> items;
+    in property <int> req-row: -1;
+    in property <int> req-nonce: 0;
+    in property <int> total: 0;
+    in property <bool> anchored: false;
+    in property <int> anchor-first-change: -1;
+    in property <int> anchor-row-delta: 0;
+    in property <length> anchor-extent: 0px;
+    in property <int> anchor-nonce: -1;
+    lv := ListView {
+        width: 100%;
+        height: 100%;
+        request-row: root.req-row;
+        request-nonce: root.req-nonce;
+        total-rows: root.total;
+        row-anchored: root.anchored;
+        anchor-first-change: root.anchor-first-change;
+        anchor-row-delta: root.anchor-row-delta;
+        anchor-extent: root.anchor-extent;
+        anchor-nonce: root.anchor-nonce;
+        for row in root.items: item := Rectangle {
+            height: Theme.space-8;
+            accessible-role: text;
+            accessible-label: row;
+        }
+    }
+}

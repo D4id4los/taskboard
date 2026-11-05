@@ -55,13 +55,51 @@ export component ListView inherits Flickable {
             return;
         }
         let avg-est = self.content-height / self.total-rows;
-        if (avg-est <= 0) {
+        if (avg-est <= 0px) {
             return;
         }
         let top = row * avg-est;
         if (top < -self.content-y
                 || top + avg-est > -self.content-y + self.visible-height) {
             self.content-y = -top;
+        }
+    }
+    // The row-anchored compensation seam (#592): opt-in per call site
+    // (defaults off — the content-anchored contract every other
+    // consumer is pinned on). The consumer binds the anchor facts
+    // (its section's first changed row, the signed row delta, the
+    // changed row's extent — 0px = never observed live, the runtime
+    // average is the fallback) and drives the nonce edge per commit;
+    // a compensation is a synthetic scroll by `-delta × extent`,
+    // clamped to the content, guarded to changes strictly above the
+    // estimated window head (`floor(-content-y / avg)` minus a
+    // one-average-row guard band — ambiguity never compensates).
+    // Measured (stage-2): the write survives the runtime's own
+    // per-pass content-y rewrite and settles without oscillation.
+    in property <bool> row-anchored: false;
+    in property <int> anchor-first-change: -1;
+    in property <int> anchor-row-delta: 0;
+    in property <length> anchor-extent: 0px;
+    in property <int> anchor-nonce: -1;
+    changed anchor-nonce => {
+        if (self.row-anchored
+                && self.anchor-first-change >= 0
+                && self.anchor-row-delta != 0) {
+            let avg-est = self.total-rows > 0
+                ? self.content-height / self.total-rows
+                : 0px;
+            let extent = self.anchor-extent > 0px
+                ? self.anchor-extent
+                : avg-est;
+            if (avg-est > 0px && extent > 0px) {
+                let head = Math.floor(-self.content-y / avg-est);
+                if (self.anchor-first-change < head - 1) {
+                    self.content-y = Math.max(
+                        -self.content-height,
+                        Math.min(0px, self.content-y - self.anchor-row-delta * extent),
+                    );
+                }
+            }
         }
     }
 }

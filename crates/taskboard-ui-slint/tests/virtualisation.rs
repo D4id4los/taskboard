@@ -25,7 +25,7 @@ use support::driver::{
 
 include!(concat!(env!("OUT_DIR"), "/virtualisation_probe.rs"));
 
-use slint::ComponentHandle as _;
+use slint::{ComponentHandle as _, Model as _};
 
 fn run_probe(job: impl FnOnce(&mut SlintDriver) + Send + 'static) {
     support::driver::run(
@@ -135,6 +135,183 @@ fn the_seek_makes_a_deep_row_live_and_visible() {
             "the sought row sits fully inside the 400 px viewport, got y={} h={}",
             position.y,
             size.height
+        );
+    });
+}
+
+// -- the row-anchored compensation legs (#592 stage 2) ---------------------
+
+/// The probe-side mount for the compensation contract: 300 uniform
+/// 64 px rows in a 400 px viewport, seek-driven to a deep window.
+fn mount_anchor_probe(
+    driver: &mut SlintDriver,
+    anchored: bool,
+) -> (
+    RowAnchoredProbe,
+    std::rc::Rc<slint::VecModel<slint::SharedString>>,
+) {
+    let probe = RowAnchoredProbe::new().expect("the row-anchor probe instantiates");
+    probe.show().expect("show on the testing platform");
+    let model: std::rc::Rc<slint::VecModel<slint::SharedString>> =
+        std::rc::Rc::new(slint::VecModel::from(
+            (0..300)
+                .map(|i| slint::format!("card-{i}"))
+                .collect::<Vec<_>>(),
+        ));
+    probe.set_items(model.clone().into());
+    probe.set_total(300);
+    probe.set_anchored(anchored);
+    driver.advance_time(0);
+    // Seek deep: the window head lands at row 200.
+    probe.set_req_row(200);
+    probe.set_req_nonce(1);
+    driver.advance_time(0);
+    (probe, model)
+}
+
+/// The push discipline's removal shape at `index`: a `set_row_data`
+/// rebind cascade from the change point down plus one tail remove
+/// (models.rs's `diff_rows`, the M-A mechanism fact).
+fn probe_remove_at(model: &slint::VecModel<slint::SharedString>, index: usize, n: usize) {
+    for i in index..n - 1 {
+        let successor = slint::format!("card-{}", i + 1);
+        model.set_row_data(i, successor);
+    }
+    model.remove(n - 1);
+}
+
+fn probe_witness_y(probe: &RowAnchoredProbe, label: &str) -> f32 {
+    find_by_label_on(probe, label)
+        .unwrap_or_else(|| panic!("witness {label} must be live"))
+        .absolute_position()
+        .y
+}
+
+/// The mode-off contract at the widget level (#592, the M-B control
+/// made permanent): a head-model removal under a stable content
+/// offset reflows the live rows up by exactly the removed row's
+/// extent — the content-anchored law the default (mode-off) shape is
+/// pinned on. With the mode ON and the exact extent supplied, the
+/// same change is pixel-still: the compensation write survives the
+/// runtime's own per-pass content-y rewrite and settles (two further
+/// stable passes move the witness by zero).
+#[test]
+fn the_row_anchored_mode_compensates_the_above_viewport_removal() {
+    run_probe(|driver| {
+        const N: usize = 300;
+        // Mode off: the content-anchored law.
+        let (probe, model) = mount_anchor_probe(driver, false);
+        let rest = probe_witness_y(&probe, "card-203");
+        probe_remove_at(&model, 0, N);
+        driver.advance_time(0);
+        let shifted = probe_witness_y(&probe, "card-203") - rest;
+        assert_eq!(
+            shifted, -64.0,
+            "mode off: the head removal reflows up by the extent"
+        );
+
+        // Mode on, exact extent: pixel-still, and it settles.
+        let (probe, model) = mount_anchor_probe(driver, true);
+        let rest = probe_witness_y(&probe, "card-203");
+        probe.set_anchor_first_change(0);
+        probe.set_anchor_row_delta(-1);
+        probe.set_anchor_extent(64.0_f32);
+        probe_remove_at(&model, 0, N);
+        probe.set_anchor_nonce(1);
+        driver.advance_time(0);
+        assert_eq!(
+            probe_witness_y(&probe, "card-203"),
+            rest,
+            "mode on with the exact extent: the witness is pixel-still"
+        );
+        driver.advance_time(0);
+        driver.advance_time(0);
+        assert_eq!(
+            probe_witness_y(&probe, "card-203"),
+            rest,
+            "the compensation settles: no oscillation on further passes"
+        );
+    });
+}
+
+/// The extent sources: a supplied non-average extent is used verbatim
+/// (the compensation is exactly `-delta × extent`); an unobserved
+/// extent (0 px) falls back to the runtime average — exact here
+/// because the probe's rows are uniform.
+#[test]
+fn the_compensation_uses_the_supplied_extent_and_falls_back_to_the_average() {
+    run_probe(|driver| {
+        const N: usize = 300;
+        let (probe, model) = mount_anchor_probe(driver, true);
+        let rest = probe_witness_y(&probe, "card-203");
+        probe.set_anchor_first_change(0);
+        probe.set_anchor_row_delta(-1);
+        probe.set_anchor_extent(48.0_f32);
+        probe_remove_at(&model, 0, N);
+        probe.set_anchor_nonce(1);
+        driver.advance_time(0);
+        // Under-compensated by 64 - 48 = 16 px.
+        assert_eq!(
+            probe_witness_y(&probe, "card-203") - rest,
+            -16.0,
+            "the supplied extent drives the compensation verbatim"
+        );
+
+        let (probe, model) = mount_anchor_probe(driver, true);
+        let rest = probe_witness_y(&probe, "card-203");
+        probe.set_anchor_first_change(0);
+        probe.set_anchor_row_delta(-1);
+        // extent stays 0px: never observed live
+        probe_remove_at(&model, 0, N);
+        probe.set_anchor_nonce(1);
+        driver.advance_time(0);
+        assert_eq!(
+            probe_witness_y(&probe, "card-203"),
+            rest,
+            "an unobserved extent falls back to the runtime average"
+        );
+    });
+}
+
+/// The discriminator (G-2's widget half): a change whose first
+/// changed row is at or below the estimated window head never
+/// compensates — the within-viewport close-up and the boundary band
+/// keep the mode-off geometry (ambiguity falls back, never worse).
+#[test]
+fn within_window_and_boundary_changes_never_compensate() {
+    run_probe(|driver| {
+        const N: usize = 300;
+        // A within-window removal (first change 201, one row into
+        // the window): the rows below close up by the extent, no
+        // compensation fights it.
+        let (probe, model) = mount_anchor_probe(driver, true);
+        let below = probe_witness_y(&probe, "card-203");
+        probe.set_anchor_first_change(201);
+        probe.set_anchor_row_delta(-1);
+        probe.set_anchor_extent(64.0_f32);
+        probe_remove_at(&model, 201, N);
+        probe.set_anchor_nonce(1);
+        driver.advance_time(0);
+        assert_eq!(
+            probe_witness_y(&probe, "card-203") - below,
+            -64.0,
+            "a within-window removal closes the rows below uncompensated"
+        );
+
+        // The boundary guard band: a change exactly at the estimated
+        // window head (row 200) does not compensate.
+        let (probe, model) = mount_anchor_probe(driver, true);
+        let rest = probe_witness_y(&probe, "card-203");
+        probe.set_anchor_first_change(200);
+        probe.set_anchor_row_delta(-1);
+        probe.set_anchor_extent(64.0_f32);
+        probe_remove_at(&model, 200, N);
+        probe.set_anchor_nonce(1);
+        driver.advance_time(0);
+        assert_eq!(
+            probe_witness_y(&probe, "card-203") - rest,
+            -64.0,
+            "the one-average-row guard band at the window head never compensates"
         );
     });
 }
