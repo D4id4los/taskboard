@@ -526,6 +526,11 @@ impl ReviewWindow {
 /// The output satisfies [`ReviewWindow::try_new`] by construction and
 /// `calendar.calendar_date(window.day())` equals the floored
 /// period-start date (the label law — both pinned by property).
+///
+/// # Panics
+///
+/// Panics only via `period_start`'s day-1 construction (impossible for
+/// real calendar months) — never an input condition.
 #[must_use]
 pub fn review_window(
     cadence: ReviewCadence,
@@ -549,9 +554,66 @@ pub fn review_window(
     }
 }
 
+/// The window's carry-forward list (DR-7 D-J8): every **live, open**
+/// task whose anchor instant — `scheduled` or `duedate` — fell inside
+/// the window *and* before `now`, ordered by
+/// `(anchor, order, id)` ascending (the scheduled section's
+/// `(scheduled, order, id)` precedent generalized over the mixed
+/// anchor set). A task carrying both fields qualifies through either;
+/// its sort anchor is the earliest qualifying instant. Ids only — the
+/// caller reads entities from its own map (the `TodaySections`
+/// discipline). Pure; `now` and the window are data.
+#[must_use]
+pub fn window_misses(
+    tasks: &BTreeMap<crate::ids::TaskId, crate::entities::Task>,
+    now: DateTime<Utc>,
+    window: (DateTime<Utc>, DateTime<Utc>),
+) -> Vec<crate::ids::TaskId> {
+    let (start, end) = window;
+    let mut misses: Vec<(DateTime<Utc>, i64, crate::ids::TaskId)> = Vec::new();
+    for task in tasks.values() {
+        if !task.is_live() || !task.is_open() {
+            continue;
+        }
+        let qualifies = |instant: DateTime<Utc>| instant >= start && instant < end && instant < now;
+        let anchor = [task.scheduled, task.duedate]
+            .into_iter()
+            .flatten()
+            .filter(|instant| qualifies(*instant))
+            .min();
+        if let Some(anchor) = anchor {
+            misses.push((anchor, task.order, task.id));
+        }
+    }
+    misses.sort();
+    misses.into_iter().map(|(_, _, id)| id).collect()
+}
+
+/// The window's completion list (DR-7 D-J8): every **live** task whose
+/// `done` stamp fell inside the half-open window, ordered
+/// `(done, id)` ascending — the `today_sections.done_today` shape
+/// verbatim. Ids only; pure; the window is data.
+#[must_use]
+pub fn window_done(
+    tasks: &BTreeMap<crate::ids::TaskId, crate::entities::Task>,
+    window: (DateTime<Utc>, DateTime<Utc>),
+) -> Vec<crate::ids::TaskId> {
+    let (start, end) = window;
+    let mut dones: Vec<(DateTime<Utc>, crate::ids::TaskId)> = tasks
+        .values()
+        .filter_map(|task| {
+            let done = task.done?;
+            (task.is_live() && done >= start && done < end).then_some((done, task.id))
+        })
+        .collect();
+    dones.sort();
+    dones.into_iter().map(|(_, id)| id).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ids::TaskId;
     use crate::test_support::{proptest_config, timestamp_strategy};
     use proptest::prelude::*;
 
@@ -834,6 +896,306 @@ mod tests {
             ReviewCadence::Week,
             ReviewCadence::Month,
         ])
+    }
+
+    /// A task fixture with exactly the fields the projections read
+    /// (everything else inert defaults).
+    #[allow(clippy::too_many_arguments)]
+    fn task_fixture(
+        raw: u128,
+        scheduled: Option<DateTime<Utc>>,
+        duedate: Option<DateTime<Utc>>,
+        done: Option<DateTime<Utc>>,
+        order: i64,
+        deleted: bool,
+    ) -> crate::entities::Task {
+        let clock = ts(1);
+        crate::entities::Task {
+            id: TaskId::from(uuid::Uuid::from_u128(raw)),
+            remote: None,
+            title: String::new(),
+            description: String::new(),
+            duedate,
+            scheduled,
+            done,
+            stack: crate::ids::StackId::from(uuid::Uuid::from_u128(1)),
+            order,
+            label_memberships: BTreeMap::new(),
+            effort: None,
+            importance: None,
+            urgency: None,
+            recur: None,
+            kind: crate::entities::TaskKind::Standard,
+            archived: false,
+            deleted,
+            clocks: crate::entities::TaskClocks {
+                title: clock,
+                description: clock,
+                duedate: clock,
+                scheduled: clock,
+                done: clock,
+                position: clock,
+                effort: clock,
+                importance: clock,
+                urgency: clock,
+                recur: clock,
+                kind: clock,
+                archived: clock,
+                deleted: clock,
+            },
+            remote_seen: None,
+            remote_baseline: None,
+        }
+    }
+
+    fn task_map(values: &[crate::entities::Task]) -> BTreeMap<TaskId, crate::entities::Task> {
+        values.iter().map(|t| (t.id, t.clone())).collect()
+    }
+
+    /// The miss predicate's exact-shape table: anchors at exactly `now`,
+    /// outside the half-open window, done tasks, and tombstones are all
+    /// not-missed; both anchors qualify through either field.
+    #[test]
+    fn window_misses_predicate_shapes() {
+        let start = ts(100_000);
+        let end = ts(100_000 + 86_400);
+        let now = ts(100_000 + 3_600);
+        let in_window = |minutes: i64| ts(100_000 + 60 * minutes);
+        let tasks = task_map(&[
+            // scheduled inside, before now: the canonical miss.
+            task_fixture(1, Some(in_window(30)), None, None, 0, false),
+            // duedate inside, before now: the overdue miss.
+            task_fixture(2, None, Some(in_window(45)), None, 0, false),
+            // both anchors inside: qualifies through either.
+            task_fixture(3, Some(in_window(30)), Some(in_window(45)), None, 0, false),
+            // scheduled inside but at exactly `now`: not yet missed.
+            task_fixture(4, Some(now), None, None, 0, false),
+            // scheduled inside but after `now`: the future.
+            task_fixture(5, Some(in_window(12 * 60)), None, None, 0, false),
+            // anchor before the window: outside (half-open low edge).
+            task_fixture(
+                6,
+                Some(start - chrono::TimeDelta::try_seconds(1).unwrap()),
+                None,
+                None,
+                0,
+                false,
+            ),
+            // anchor at `end`: outside (exclusive high edge).
+            task_fixture(7, Some(end), None, None, 0, false),
+            // done inside the window: the open gate excludes it.
+            task_fixture(8, Some(in_window(30)), None, Some(in_window(45)), 0, false),
+            // a miss, tombstoned: the live gate excludes it.
+            task_fixture(9, Some(in_window(90)), None, None, 0, true),
+            // scheduled qualifies (90min) while the duedate sits outside
+            // the window: qualifies through the scheduled anchor alone.
+            task_fixture(
+                10,
+                Some(in_window(45)),
+                Some(start - chrono::TimeDelta::try_seconds(1).unwrap()),
+                None,
+                5,
+                false,
+            ),
+        ]);
+        let misses = window_misses(&tasks, now, (start, end));
+        // Ordered (anchor, order, id): 1 and 3 tie at 30min (order 0 →
+        // id break), then 2 at 45min, then 10 at 90min.
+        assert_eq!(
+            misses,
+            vec![
+                TaskId::from(uuid::Uuid::from_u128(1)),
+                TaskId::from(uuid::Uuid::from_u128(3)),
+                TaskId::from(uuid::Uuid::from_u128(2)),
+                TaskId::from(uuid::Uuid::from_u128(10)),
+            ],
+            "anchor-chronological with (order, id) tie-breaks"
+        );
+    }
+
+    /// The done list: live ∧ `done ∈ [start, end)`, ordered
+    /// `(done, id)`; tombstoned and out-of-window dones excluded.
+    #[test]
+    fn window_done_predicate_shapes() {
+        let start = ts(100_000);
+        let end = ts(100_000 + 86_400);
+        let tasks = task_map(&[
+            task_fixture(1, None, None, Some(ts(100_500)), 0, false),
+            task_fixture(2, None, None, Some(ts(100_200)), 0, false),
+            // equal to `start` (inclusive low edge) — sorts first.
+            task_fixture(3, None, None, Some(start), 0, false),
+            // at `end`: excluded (exclusive high edge).
+            task_fixture(4, None, None, Some(end), 0, false),
+            // done outside (before window): excluded.
+            task_fixture(5, None, None, Some(ts(90_000)), 0, false),
+            // tombstoned: excluded.
+            task_fixture(6, None, None, Some(ts(100_100)), 0, true),
+        ]);
+        assert_eq!(
+            window_done(&tasks, (start, end)),
+            vec![
+                TaskId::from(uuid::Uuid::from_u128(3)),
+                TaskId::from(uuid::Uuid::from_u128(2)),
+                TaskId::from(uuid::Uuid::from_u128(1)),
+            ]
+        );
+    }
+
+    /// One generated anchor tuple: `(scheduled offset, due offset, done
+    /// offset, order, has-scheduled, has-due, tombstone, id raw)`,
+    /// offsets in seconds from the window start; a negative done offset
+    /// means "no done stamp".
+    type AnchorTuple = (i64, i64, i64, i64, bool, bool, bool, u128);
+
+    fn generated_tasks(anchors: &[AnchorTuple]) -> BTreeMap<TaskId, crate::entities::Task> {
+        anchors
+            .iter()
+            .map(
+                |&(sched, due, done, order, with_sched, with_due, deleted, raw)| {
+                    let t = task_fixture(
+                        raw,
+                        with_sched.then(|| ts(100_000 + sched)),
+                        with_due.then(|| ts(100_000 + due)),
+                        (done >= 0).then(|| ts(100_000 + done)),
+                        order,
+                        deleted,
+                    );
+                    (t.id, t)
+                },
+            )
+            .collect()
+    }
+
+    fn anchor_set() -> impl Strategy<Value = Vec<AnchorTuple>> {
+        proptest::collection::vec(
+            (
+                -2_i64 * 86_400..=2 * 86_400,
+                -2_i64 * 86_400..=2 * 86_400,
+                -2_i64 * 86_400..=2 * 86_400,
+                -100_i64..=100,
+                any::<bool>(),
+                any::<bool>(),
+                any::<bool>(),
+                any::<u128>(),
+            ),
+            0..20,
+        )
+    }
+
+    proptest! {
+        #![proptest_config(proptest_config(256))]
+
+        /// Generated task sets with anchors wandering ±2 days around a
+        /// fixed window: the projections are deterministic, the miss
+        /// list is output-ordered `(anchor, order, id)`, and both lists
+        /// only ever contain live tasks (the gates are structural
+        /// facts of the output; the predicate itself is pinned by the
+        /// unit tables and the today_sections consistency pins).
+        #[test]
+        fn projections_are_deterministic_ordered_and_gated(
+            anchors in anchor_set(),
+        ) {
+            let start = ts(100_000);
+            let end = ts(100_000 + 86_400);
+            let now = ts(100_000 + 3_600);
+            let tasks = generated_tasks(&anchors);
+            let first = window_misses(&tasks, now, (start, end));
+            prop_assert_eq!(&first, &window_misses(&tasks, now, (start, end)), "determinism");
+            // Output ordering: consecutive rows are non-decreasing in
+            // (anchor, order, id).
+            for pair in first.windows(2) {
+                let qualifies = |x: DateTime<Utc>| x >= start && x < end && x < now;
+                let key = |id: &TaskId| {
+                    let t = &tasks[id];
+                    let anchor = [t.scheduled, t.duedate]
+                        .into_iter()
+                        .flatten()
+                        .filter(|x| qualifies(*x))
+                        .min()
+                        .expect("a listed miss carries a qualifying anchor");
+                    (anchor, t.order, *id)
+                };
+                prop_assert!(key(&pair[0]) <= key(&pair[1]), "(anchor, order, id) order");
+            }
+            for id in &first {
+                let t = &tasks[id];
+                prop_assert!(t.is_live() && t.is_open(), "misses gate on live ∧ open");
+            }
+            let done_first = window_done(&tasks, (start, end));
+            prop_assert_eq!(&done_first, &window_done(&tasks, (start, end)), "done determinism");
+            for id in &done_first {
+                let t = &tasks[id];
+                prop_assert!(t.is_live(), "done gates on live");
+                let done = t.done.expect("a listed done carries a stamp");
+                prop_assert!(done >= start && done < end, "done inside the window");
+            }
+        }
+
+        /// Consistency pin 11 (the no-second-classification guarantee):
+        /// every miss is classified by `today_sections`' overdue or
+        /// scheduled section (anchor-qualifying), and every
+        /// anchor-qualifying member of those two sections is a miss —
+        /// a two-sided set equality.
+        #[test]
+        fn day_misses_are_the_anchor_qualifying_overdue_and_scheduled(
+            anchors in anchor_set(),
+        ) {
+            let start = ts(100_000);
+            let end = ts(100_000 + 86_400);
+            let now = ts(100_000 + 3_600);
+            let tasks = generated_tasks(&anchors);
+            let sections = crate::days::today_sections(&tasks, now, (start, end));
+            // "Anchor-qualifying" is task-level (either anchor qualifies):
+            // an overdue-classified task whose *scheduled* anchor sits in
+            // the window still misses through that anchor.
+            let anchor_qualifies = |id: &TaskId| {
+                let t = &tasks[id];
+                let in_past_window = |x: DateTime<Utc>| x >= start && x < end && x < now;
+                t.scheduled.is_some_and(in_past_window)
+                    || t.duedate.is_some_and(in_past_window)
+            };
+            let expected: BTreeSet<TaskId> = sections
+                .overdue
+                .into_iter()
+                .chain(sections.scheduled)
+                .filter(|id| anchor_qualifies(id))
+                .collect();
+            prop_assert_eq!(
+                window_misses(&tasks, now, (start, end)).into_iter().collect::<BTreeSet<_>>(),
+                expected,
+                "no third classification exists"
+            );
+        }
+
+        /// Consistency pin 12: for the day window, `window_done` equals
+        /// `today_sections.done_today` exactly — predicate and order.
+        #[test]
+        fn day_done_equals_the_done_today_section(
+            anchors in proptest::collection::vec(
+                (
+                    -2_i64 * 86_400..=2 * 86_400,
+                    -2_i64 * 86_400..=2 * 86_400,
+                    0_i64..=2 * 86_400,
+                    -100_i64..=100,
+                    any::<bool>(),
+                    any::<bool>(),
+                    any::<bool>(),
+                    any::<u128>(),
+                ),
+                0..20,
+            ),
+        ) {
+            let start = ts(100_000);
+            let end = ts(100_000 + 86_400);
+            let now = ts(100_000 + 3_600);
+            let tasks = generated_tasks(&anchors);
+            let sections = crate::days::today_sections(&tasks, now, (start, end));
+            prop_assert_eq!(
+                window_done(&tasks, (start, end)),
+                sections.done_today,
+                "predicate and order"
+            );
+        }
     }
 
     proptest! {
