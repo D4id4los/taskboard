@@ -27,6 +27,7 @@ tokio-console = ["dep:console-subscriber", "tokio/tracing"]
 taskboard-domain.workspace = true
 taskboard-state.workspace = true
 taskboard-sync-nextcloud.workspace = true
+taskboard-sync-files-nextcloud.workspace = true
 taskboard-storage-sqlite.workspace = true
 taskboard-ui-slint.workspace = true
 

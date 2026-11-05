@@ -6880,6 +6880,7 @@ dependencies = [
  "taskboard-domain",
  "taskboard-state",
  "taskboard-storage-sqlite",
+ "taskboard-sync-files-nextcloud",
  "taskboard-sync-nextcloud",
  "taskboard-ui-slint",
  "tempfile",
