@@ -26,9 +26,20 @@ fn read_cfg(prefix: &str) -> Option<LiveCfg> {
     Some(LiveCfg { url, user, token })
 }
 
+/// Reads the hosted-tier credentials (the `TASKBOARD_IT_NEXTCLOUD`
+/// prefix, the repo-root `.env` convention — `dotenvy::dotenv()`
+/// first, exactly the Deck crate's live helper); `None` when unset —
+/// skip, never fail.
+#[allow(dead_code)] // each tests/* binary compiles this module separately
+pub(crate) fn live_config() -> Option<LiveCfg> {
+    let _ = dotenvy::dotenv();
+    read_cfg("TASKBOARD_IT_NEXTCLOUD")
+}
+
 /// Reads the dockerized-tier credentials (the `TASKBOARD_IT_DOCKER`
 /// prefix, exported by `scripts/nextcloud_it_setup.sh up`); `None`
 /// when unset — skip, never fail.
+#[allow(dead_code)] // each tests/* binary compiles this module separately
 pub(crate) fn live_docker_config() -> Option<LiveCfg> {
     read_cfg("TASKBOARD_IT_DOCKER")
 }
