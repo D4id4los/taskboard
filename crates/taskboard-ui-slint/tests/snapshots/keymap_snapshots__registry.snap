@@ -707,6 +707,60 @@ expression: rows
   menu_rank: 270
   description: "Routes the confirmed series-to-habit conversion with the pattern's default quota."
   menu_group: task
+- id: view.plan-next-day
+  label: Plan next day
+  contexts:
+    - global
+  category: navigation
+  enabled: true
+  menu_rank: 65
+  description: "Opens or closes the plan-next-day surface: tomorrow's placed boxes and the candidate pool. Placement writes ride the ordinary scheduled/effort edits."
+  menu_group: view-nav
+- id: plan.begin-place
+  label: Place task
+  contexts:
+    - plan-next-day
+  category: navigation
+  enabled: true
+  menu_rank: 280
+  description: Arms the placement form over the addressed pool row (re-opening a placed row edits that box).
+  menu_group: ~
+- id: plan.commit-place
+  label: Commit placement
+  contexts:
+    - plan-next-day
+  category: navigation
+  enabled: true
+  menu_rank: 290
+  description: "Routes the parsed time-of-day and optional effort as one scheduled/effort edit — atomic, one undo step."
+  menu_group: ~
+- id: plan.box-earlier
+  label: Move box earlier
+  contexts:
+    - plan-next-day
+  category: navigation
+  enabled: true
+  menu_rank: 300
+  description: "Swaps the addressed box's start instant with the earlier neighbor's (the instant set is invariant; no arithmetic)."
+  menu_group: ~
+- id: plan.box-later
+  label: Move box later
+  contexts:
+    - plan-next-day
+  category: navigation
+  enabled: true
+  menu_rank: 310
+  description: "Swaps the addressed box's start instant with the later neighbor's."
+  menu_group: ~
+- id: plan.remove-box
+  label: Remove box
+  contexts:
+    - plan-next-day
+  category: navigation
+  enabled: true
+  menu_rank: 320
+  description: "Clears the addressed box's scheduled start; the task returns to the candidate pool."
+  menu_group: ~
 - id: habit.move
   label: Reorder habit
   contexts:

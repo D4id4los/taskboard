@@ -54,6 +54,11 @@ pub enum ViewId {
     /// The settings surface (round-1 D5/D24b): reachable only through
     /// `open_settings` — never a member of the `step_view` cycle.
     Settings,
+    /// The plan-next-day surface (#622, D-1): reachable only through
+    /// `open_plan_next_day` — never a member of the `step_view`
+    /// cycle (the Settings precedent; the wave's only interactive
+    /// editing workspace must not become a casual cycle stop).
+    PlanNextDay,
 }
 
 /// The kiosk ambient display's modes (issue #363): the two
@@ -245,6 +250,13 @@ pub enum Flow {
     /// precedent, and the model push derives the ghost/dim/highlight
     /// from the flow. Refresh-survival is model-push by construction.
     DragMove { task: TaskId, target: StackId },
+    /// The plan-next-day placement form (#622, D-3): subject-affine
+    /// like the entries form (the third tenant of that pattern) —
+    /// `reconcile` drops it when the subject dies, but a view change
+    /// does *not* drop it (the mount gate keys on the subject, not
+    /// the view). The time/effort text lives adapter-side (the due
+    /// buffers' lifecycle); the flow only carries the addressed box.
+    PlanPlace { task: TaskId },
 }
 
 /// What a view-state transition asks the adapter to do (D9):
@@ -319,6 +331,9 @@ pub struct ViewState {
     /// "returns to the exact previous view" is this snapshot, not a
     /// cycle walk.
     settings_return: Option<ViewId>,
+    /// The view to restore when the plan-next-day surface closes
+    /// (#622, D-1): the `settings_return` twin.
+    planner_return: Option<ViewId>,
 }
 
 /// The canonical append position in `stack`: max canonical order + 1.
@@ -388,6 +403,7 @@ impl ViewState {
             buffer: String::new(),
             stack_widths: BTreeMap::new(),
             settings_return: None,
+            planner_return: None,
         }
     }
 
@@ -489,6 +505,7 @@ impl ViewState {
             ViewId::TaskDetail => ContextId::TaskDetail,
             ViewId::Review => ContextId::Review,
             ViewId::Settings => ContextId::Settings,
+            ViewId::PlanNextDay => ContextId::PlanNextDay,
         }
     }
 
@@ -526,7 +543,7 @@ impl ViewState {
     /// Inert while Settings is open (round-1 D5: the cycle never
     /// passes through the settings surface).
     pub fn next_view(&mut self, state: &AppState) -> Vec<FlowOutcome> {
-        if self.view == ViewId::Settings {
+        if matches!(self.view, ViewId::Settings | ViewId::PlanNextDay) {
             return Vec::new();
         }
         self.step_view(state, 1)
@@ -535,7 +552,7 @@ impl ViewState {
     /// `nav.prev-view`: the cycle backwards; inert while Settings is
     /// open (round-1 D5).
     pub fn prev_view(&mut self, state: &AppState) -> Vec<FlowOutcome> {
-        if self.view == ViewId::Settings {
+        if matches!(self.view, ViewId::Settings | ViewId::PlanNextDay) {
             return Vec::new();
         }
         self.step_view(state, -1)
@@ -553,6 +570,22 @@ impl ViewState {
     /// the board when none was recorded.
     pub fn close_settings(&mut self) -> Vec<FlowOutcome> {
         self.view = self.settings_return.take().unwrap_or(ViewId::Board);
+        vec![FlowOutcome::RefreshNow]
+    }
+
+    /// Opens the plan-next-day surface (#622, D-4): records the
+    /// current view for the exact restore and enters the planner (the
+    /// `open_settings` twin).
+    pub fn open_plan_next_day(&mut self) -> Vec<FlowOutcome> {
+        self.planner_return = Some(self.view);
+        self.view = ViewId::PlanNextDay;
+        vec![FlowOutcome::RefreshNow]
+    }
+
+    /// Closes the plan-next-day surface: restores the recorded return
+    /// view, the board when none was recorded.
+    pub fn close_plan_next_day(&mut self) -> Vec<FlowOutcome> {
+        self.view = self.planner_return.take().unwrap_or(ViewId::Board);
         vec![FlowOutcome::RefreshNow]
     }
 
@@ -625,8 +658,10 @@ impl ViewState {
                 }
             }
             // The settings surface never enters through the cycle
-            // (round-1 D5): only `open_settings` reaches it.
-            ViewId::Settings => false,
+            // (round-1 D5): only `open_settings` reaches it. The
+            // plan-next-day surface likewise (D-1): only
+            // `open_plan_next_day` reaches it.
+            ViewId::Settings | ViewId::PlanNextDay => false,
         }
     }
 
@@ -672,8 +707,10 @@ impl ViewState {
     /// (nothing recorded reads as the board).
     #[must_use]
     pub fn switcher_selection(&self) -> usize {
-        let view = if self.view == ViewId::Settings {
-            self.settings_return.unwrap_or(ViewId::Board)
+        let view = if matches!(self.view, ViewId::Settings | ViewId::PlanNextDay) {
+            self.settings_return
+                .or(self.planner_return)
+                .unwrap_or(ViewId::Board)
         } else {
             self.view
         };
@@ -1142,7 +1179,7 @@ impl ViewState {
             // is the create path there. The settings surface hosts no
             // create flow either (round-1 D5).
             // Review is subjectless like Today (#214 D-1).
-            ViewId::Today | ViewId::Settings | ViewId::Review => None,
+            ViewId::Today | ViewId::Settings | ViewId::Review | ViewId::PlanNextDay => None,
             ViewId::Board => self
                 .focused_stack(state)
                 .or(self.selected_stack)
@@ -1584,6 +1621,55 @@ impl ViewState {
         vec![FlowOutcome::SetMode(Mode::Normal), FlowOutcome::RefreshNow]
     }
 
+    // -- plan-next-day placement (#622, D-3) -------------------------------
+
+    /// `plan.begin-place`: arms the placement form over the candidate
+    /// row's task (re-opening on an already-placed row edits that box
+    /// — the same funnel seeds from the row's instant adapter-side).
+    pub fn open_plan_place(&mut self, task: TaskId) -> Vec<FlowOutcome> {
+        self.flow = Flow::PlanPlace { task };
+        vec![FlowOutcome::RefreshNow]
+    }
+
+    /// The placement form's discard (the Escape ladder's form → pane
+    /// rung): ends the flow, keeps the surface.
+    pub fn close_plan_place(&mut self) -> Vec<FlowOutcome> {
+        if matches!(self.flow, Flow::PlanPlace { .. }) {
+            self.flow = Flow::None;
+            vec![FlowOutcome::RefreshNow]
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Ends an open placement flow whose subject was `task` (the
+    /// commit/discard tails call this after their own work; the
+    /// adapter owns the parse, so the command is built there).
+    pub fn end_plan_place(&mut self) {
+        if matches!(self.flow, Flow::PlanPlace { .. }) {
+            self.flow = Flow::None;
+        }
+    }
+
+    /// `plan.remove-box` (#622, D-3): routes `UpdateTask { scheduled:
+    /// Some(None) }` — the unplace write, one honest command; an open
+    /// placement flow on the same subject ends with it. No new write
+    /// vocabulary: this is the landed `UpdateTask` mask.
+    #[must_use]
+    pub fn remove_plan_box(&mut self, task: TaskId) -> Vec<FlowOutcome> {
+        self.end_plan_place();
+        vec![
+            FlowOutcome::Command(StateCommand::UpdateTask {
+                id: task,
+                changes: taskboard_domain::TaskChanges {
+                    scheduled: Some(None),
+                    ..taskboard_domain::TaskChanges::default()
+                },
+            }),
+            FlowOutcome::RefreshNow,
+        ]
+    }
+
     /// `view.inbox` (chunk 10 D9, D-V7): jumps to the global Inbox's
     /// canonical-first stack — read-side only. Quietly no-ops (no
     /// repaint, no creation) when no live Inbox board exists: an empty
@@ -1784,6 +1870,10 @@ impl ViewState {
     pub fn settle_flow(&mut self, state: &AppState) -> Vec<FlowOutcome> {
         match self.flow.clone() {
             Flow::None => Vec::new(),
+            // The placement form's settle is its own close path (the
+            // overlay cells' shape): a foreign settle discards it
+            // without effect.
+            Flow::PlanPlace { .. } => self.close_plan_place(),
             Flow::Create { .. }
             | Flow::CreateStack
             | Flow::CreateBoard
@@ -2050,6 +2140,11 @@ impl ViewState {
             // drops the flow...
             Flow::TrackEntries { task } if !is_live(task) => self.flow = Flow::None,
             Flow::TrackEntryForm { task, .. } if !is_live(task) => self.flow = Flow::None,
+            // The placement form (#622): a dead subject drops it; a
+            // view change does NOT (the mount gate keys on the
+            // subject — the entries overlay's predicate minus the
+            // view strand, D-3's reconciliation risk).
+            Flow::PlanPlace { task } if !is_live(task) => self.flow = Flow::None,
             _ => {}
         }
         // ...and so does a view change: the overlay is mounted only
@@ -2570,10 +2665,16 @@ mod tests {
             let mut rotation =
                 KioskRotation::new(modes, std::time::Duration::from_secs(1)).expect("mints");
             for _ in 0..4 {
+                let view = rotation.tick().view();
                 assert_ne!(
-                    rotation.tick().view(),
+                    view,
                     ViewId::Review,
                     "the kiosk rotation never renders the review surface"
+                );
+                assert_ne!(
+                    view,
+                    ViewId::PlanNextDay,
+                    "the kiosk rotation never renders the planner surface"
                 );
             }
         }
@@ -4320,6 +4421,102 @@ mod settings_surface_tests {
             vs.next_view(&state);
             assert_ne!(vs.view(), ViewId::Settings);
         }
+    }
+
+    // -- plan-next-day surface (#622, D-1/D-4): the Settings twin --
+
+    #[test]
+    fn the_plan_next_day_surface_choreography_is_exact() {
+        let stack = StackId::from_uuid(uuid::Uuid::now_v7());
+        let state = editing_state(stack);
+
+        // From StackDetail: open → context + record; close → exact
+        // restore (the `settings_return` twin).
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        assert!(vs.enter(&state, ViewId::StackDetail));
+        assert_eq!(vs.context(), ContextId::StackDetail);
+        assert_eq!(vs.open_plan_next_day(), vec![FlowOutcome::RefreshNow]);
+        assert_eq!(vs.view(), ViewId::PlanNextDay);
+        assert_eq!(vs.context(), ContextId::PlanNextDay);
+        assert_eq!(vs.close_plan_next_day(), vec![FlowOutcome::RefreshNow]);
+        assert_eq!(vs.view(), ViewId::StackDetail);
+
+        // The board default: closing with nothing recorded lands on
+        // the board.
+        let mut vs = ViewState::new();
+        vs.open_plan_next_day();
+        vs.close_plan_next_day();
+        assert_eq!(vs.view(), ViewId::Board);
+
+        // The cycle verbs are inert while open (both directions).
+        let mut vs = ViewState::new();
+        vs.open_plan_next_day();
+        assert_eq!(vs.next_view(&state), Vec::new());
+        assert_eq!(vs.prev_view(&state), Vec::new());
+        assert_eq!(vs.view(), ViewId::PlanNextDay);
+
+        // The surface never enters through the cycle (the enter-guard
+        // arm): the ring walk from the board never reaches it, from
+        // any cycle member.
+        let mut vs = ViewState::new();
+        for _ in 0..5 {
+            vs.next_view(&state);
+            assert_ne!(vs.view(), ViewId::PlanNextDay);
+            assert_ne!(vs.view(), ViewId::Settings);
+        }
+        for _ in 0..5 {
+            vs.prev_view(&state);
+            assert_ne!(vs.view(), ViewId::PlanNextDay);
+        }
+    }
+
+    #[test]
+    fn the_plan_place_flow_reconciles_on_subject_death_only() {
+        let (state, _, _, _, [task, ..]) = two_board_fixture();
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        assert_eq!(vs.open_plan_place(task), vec![FlowOutcome::RefreshNow]);
+        assert!(matches!(vs.flow(), Flow::PlanPlace { task: t } if *t == task));
+
+        // A view change does NOT drop it (the mount gate keys on the
+        // subject, not the view — the entries overlay's predicate
+        // minus the view strand).
+        vs.set_view(ViewId::Board);
+        vs.reconcile(&state);
+        assert!(matches!(vs.flow(), Flow::PlanPlace { .. }));
+
+        // The subject dying drops it.
+        let mut fresh = state.clone();
+        let dead = fresh.tasks.get_mut(&task).expect("live");
+        dead.deleted = true;
+        vs.reconcile(&fresh);
+        assert!(matches!(vs.flow(), Flow::None));
+
+        // The discard is the form → pane rung; from no flow it is
+        // inert.
+        let mut vs = ViewState::new();
+        vs.open_plan_place(task);
+        assert_eq!(vs.close_plan_place(), vec![FlowOutcome::RefreshNow]);
+        assert!(matches!(vs.flow(), Flow::None));
+        assert_eq!(vs.close_plan_place(), Vec::new());
+    }
+
+    #[test]
+    fn remove_plan_box_routes_the_unplace_mask_and_ends_the_flow() {
+        let (state, _, _, _, [task, ..]) = two_board_fixture();
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        vs.open_plan_place(task);
+        let outcomes = vs.remove_plan_box(task);
+        assert_eq!(outcomes.len(), 2);
+        assert!(matches!(
+            &outcomes[0],
+            FlowOutcome::Command(StateCommand::UpdateTask { id, changes })
+                if *id == task && changes.scheduled == Some(None)
+        ));
+        assert_eq!(outcomes[1], FlowOutcome::RefreshNow);
+        assert!(matches!(vs.flow(), Flow::None));
     }
 
     // -- nav.show-task (round-3 D23) ---------------------------------------

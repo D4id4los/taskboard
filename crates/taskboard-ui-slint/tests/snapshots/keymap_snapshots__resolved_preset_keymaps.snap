@@ -1,6 +1,5 @@
 ---
 source: crates/taskboard-ui-slint/tests/keymap_snapshots.rs
-assertion_line: 115
 expression: rows
 ---
 - preset: standard
@@ -31,6 +30,9 @@ expression: rows
         - sequence:
             - Ctrl+Shift+M
           action: app.menu
+        - sequence:
+            - Ctrl+Shift+P
+          action: view.plan-next-day
         - sequence:
             - Ctrl+Q
           action: app.exit
@@ -254,6 +256,11 @@ expression: rows
         - sequence:
             - PageDown
           action: view.scroll-down
+    - context: plan-next-day
+      bindings:
+        - sequence:
+            - Escape
+          action: view.plan-next-day
     - context: menu
       bindings:
         - sequence:

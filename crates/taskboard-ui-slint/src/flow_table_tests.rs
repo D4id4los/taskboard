@@ -49,6 +49,9 @@ enum FK {
     // distinct kinds.
     TrackList,
     TrackForm,
+    /// The plan-next-day placement form (#622): the planner's own
+    /// form kind — the kept planner arms own it, settle closes it.
+    PlanForm,
 }
 
 /// The eleven effect classes the matrix columns range over.
@@ -67,6 +70,7 @@ enum EC {
     Title,
     Picker,
     TrackOverlay,
+    PlanSurface,
 }
 
 fn kind_of(flow: &Flow) -> FK {
@@ -87,6 +91,7 @@ fn kind_of(flow: &Flow) -> FK {
         Flow::FocusMode { .. } => FK::FocusOverlay,
         Flow::TrackEntries { .. } => FK::TrackList,
         Flow::TrackEntryForm { .. } => FK::TrackForm,
+        Flow::PlanPlace { .. } => FK::PlanForm,
     }
 }
 
@@ -145,6 +150,13 @@ enum EK {
     /// The recur row's intents (issue #506): flag flips over the
     /// subject — no flow moves, no command routes.
     RecurIntent,
+    /// The plan-next-day family (#622): the surface toggle and the
+    /// placement row verbs.
+    PlanOpen,
+    PlanBegin,
+    PlanCommit,
+    PlanBox,
+    PlanRemove,
 }
 
 fn key_of(effect: &UiEffect) -> EK {
@@ -202,6 +214,11 @@ fn key_of(effect: &UiEffect) -> EK {
             EK::RecurIntent
         }
         UiEffect::TrackEntryDismiss => EK::TrackEntryDismiss,
+        UiEffect::OpenPlanNextDay => EK::PlanOpen,
+        UiEffect::PlanBeginPlace(_) => EK::PlanBegin,
+        UiEffect::PlanCommitPlace => EK::PlanCommit,
+        UiEffect::PlanBoxEarlier(_) | UiEffect::PlanBoxLater(_) => EK::PlanBox,
+        UiEffect::PlanRemoveBox(_) => EK::PlanRemove,
         // The picker keys are applied in `apply_effect`, before the
         // table — the matrix never sees them (the menu-family
         // pattern). Their class cell is exercised via `class_of`.
@@ -228,6 +245,7 @@ fn class_of(effect: &UiEffect) -> EC {
         crate::router::EffectClass::Title => EC::Title,
         crate::router::EffectClass::Picker => EC::Picker,
         crate::router::EffectClass::TrackOverlay => EC::TrackOverlay,
+        crate::router::EffectClass::PlanSurface => EC::PlanSurface,
     }
 }
 
@@ -266,6 +284,7 @@ use FK::Due as KDue;
 use FK::FocusOverlay as KFoc;
 use FK::Move as KMove;
 use FK::Palette as KPal;
+use FK::PlanForm as KPlanForm;
 use FK::Text as KTxt;
 use FK::TrackForm as KTrackForm;
 use FK::TrackList as KTrackList;
@@ -390,7 +409,49 @@ fn class_table() -> Vec<(FK, EC, Exp)> {
         }
         row(kind, C::TrackOverlay, exp(Z, N));
     }
+    // PLAN FORM (#622, D-3): the same settle-then-run family — the
+    // settle is the form's own close; the kept PlanSurface arms are
+    // the pair overrides above.
+    for class in [C::Nav, C::Lifecycle, C::Begin, C::Title, C::Cancel] {
+        row(FK::PlanForm, class, exp(Z, N));
+    }
+    row(FK::PlanForm, C::OpenPalette, exp(Z, K(KPal)));
+    row(FK::PlanForm, C::FocusOverlay, exp(Z, K(KFoc)));
+    row(FK::PlanForm, C::BeginCapture, exp(Z, K(KCap)));
+    for class in [C::Edit, C::Menu, C::System, C::Picker] {
+        row(FK::PlanForm, class, exp(Z, K(KPlanForm)));
+    }
+    row(FK::PlanForm, C::TrackOverlay, exp(Z, N));
+    row(FK::PlanForm, C::PlanSurface, exp(Z, K(KPlanForm)));
     row(FK::None, C::TrackOverlay, exp(Z, N));
+    // A held foreign flow under the plan-surface class: the named
+    // inert keeps the flow (the modal discipline; Escape out first).
+    for kind in [
+        FK::Text,
+        FK::Due,
+        FK::Move,
+        FK::Drag,
+        FK::Palette,
+        FK::Capture,
+        FK::FocusOverlay,
+        FK::TrackList,
+        FK::TrackForm,
+    ] {
+        let keep = match kind {
+            FK::Text => K(KTxt),
+            FK::Due => K(KDue),
+            FK::Move => K(KMove),
+            FK::Drag => K(KDrag),
+            FK::Palette => K(KPal),
+            FK::Capture => K(KCap),
+            FK::FocusOverlay => K(KFoc),
+            FK::TrackList => K(KTrackList),
+            FK::TrackForm => K(KTrackForm),
+            FK::PlanForm | FK::None => unreachable!("the loop never names them"),
+        };
+        row(kind, C::PlanSurface, exp(Z, keep));
+    }
+    row(FK::None, C::PlanSurface, exp(Z, N));
     // Every foreign kind under the overlay class: the settle is the
     // terminator; the dismissal re-run against the settled `None` is
     // the honest no-op close (the open request's effect-shaped cells
@@ -430,6 +491,7 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
         FK::FocusOverlay,
         FK::TrackList,
         FK::TrackForm,
+        FK::PlanForm,
     ] {
         let keep = match kind {
             FK::Text => K(KTxt),
@@ -441,6 +503,7 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
             FK::FocusOverlay => K(KFoc),
             FK::TrackList => K(KTrackList),
             FK::TrackForm => K(KTrackForm),
+            FK::PlanForm => K(KPlanForm),
             FK::None => unreachable!("the loop never names None"),
         };
         row(kind, E::RecurIntent, exp(Z, keep));
@@ -617,6 +680,71 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
         row(kind, E::StackMove, exp(Z, K(KMove)));
         row(kind, E::OpenPalette, exp(Z, K(KPal)));
     }
+    // The begin/rename/deletes under the armed placement form: the
+    // settle closes it, the re-run arms its fresh flow (the overlay
+    // family's effect-shaped set).
+    row(FK::PlanForm, E::BeginCreate, exp(Z, K(KTxt)));
+    row(FK::PlanForm, E::BeginCreateStack, exp(Z, K(KTxt)));
+    row(FK::PlanForm, E::RequestMove, exp(Z, K(KMove)));
+    row(FK::PlanForm, E::BeginTitleEdit, exp(Z, K(KTxt)));
+    row(FK::PlanForm, E::StackDelete, exp(NZ, N));
+    row(FK::PlanForm, E::BoardDelete, exp(NZ, N));
+    row(FK::PlanForm, E::StackRename, exp(Z, K(KTxt)));
+    row(FK::PlanForm, E::BoardRename, exp(Z, K(KTxt)));
+    row(FK::PlanForm, E::BoardCreate, exp(Z, K(KTxt)));
+    row(FK::PlanForm, E::StackMove, exp(Z, K(KMove)));
+    row(FK::PlanForm, E::TrackEntriesOpen, exp(Z, K(KTrackList)));
+    // -- PLAN SURFACE rows (#622, D-3/D-4): from None the open
+    //    toggles the view (flow-free), begin-place arms the form,
+    //    remove-box is the one honest write; the swaps are inert
+    //    without placed boxes. Under the armed form the open is the
+    //    Escape rung (form → pane), the commit with empty buffers is
+    //    the typed inert, the other planner verbs keep the form.
+    row(FK::None, E::PlanOpen, exp(Z, N));
+    row(FK::None, E::PlanBegin, exp(Z, K(KPlanForm)));
+    row(FK::None, E::PlanCommit, exp(Z, N));
+    row(FK::None, E::PlanBox, exp(Z, N));
+    row(FK::None, E::PlanRemove, exp(NZ, N));
+    row(FK::PlanForm, E::PlanOpen, exp(Z, N));
+    row(FK::PlanForm, E::PlanBegin, exp(Z, K(KPlanForm)));
+    row(FK::PlanForm, E::PlanCommit, exp(Z, K(KPlanForm)));
+    row(FK::PlanForm, E::PlanBox, exp(Z, K(KPlanForm)));
+    row(FK::PlanForm, E::PlanRemove, exp(Z, K(KPlanForm)));
+    // A held foreign flow keeps every planner intent inert (the
+    // modal discipline verbatim: Escape out of the flow first).
+    for kind in [
+        FK::Text,
+        FK::Due,
+        FK::Move,
+        FK::Drag,
+        FK::Palette,
+        FK::Capture,
+        FK::FocusOverlay,
+        FK::TrackList,
+        FK::TrackForm,
+    ] {
+        let keep = match kind {
+            FK::Text => K(KTxt),
+            FK::Due => K(KDue),
+            FK::Move => K(KMove),
+            FK::Drag => K(KDrag),
+            FK::Palette => K(KPal),
+            FK::Capture => K(KCap),
+            FK::FocusOverlay => K(KFoc),
+            FK::TrackList => K(KTrackList),
+            FK::TrackForm => K(KTrackForm),
+            FK::PlanForm | FK::None => unreachable!("the loop never names them"),
+        };
+        for key in [
+            E::PlanOpen,
+            E::PlanBegin,
+            E::PlanCommit,
+            E::PlanBox,
+            E::PlanRemove,
+        ] {
+            row(kind, key, exp(Z, keep));
+        }
+    }
     t
 }
 
@@ -782,6 +910,9 @@ fn all_flows(fx: &Fixture) -> Vec<Flow> {
             task: a,
             seed: None,
         },
+        // The placement form (#622): the rig views the subject, so
+        // reconcile keeps it alive.
+        Flow::PlanPlace { task: a },
     ]
 }
 
@@ -844,6 +975,13 @@ fn all_effects(fx: &Fixture) -> Vec<UiEffect> {
         UiEffect::SeriesPauseOpen,
         UiEffect::HabitConvertArm,
         UiEffect::SeriesConvertArm,
+        // The plan-next-day family (#622).
+        UiEffect::OpenPlanNextDay,
+        UiEffect::PlanBeginPlace(fx.tasks[0]),
+        UiEffect::PlanCommitPlace,
+        UiEffect::PlanBoxEarlier(fx.tasks[0]),
+        UiEffect::PlanBoxLater(fx.tasks[0]),
+        UiEffect::PlanRemoveBox(fx.tasks[0]),
     ]
 }
 
@@ -1082,7 +1220,7 @@ fn the_matrix_covers_every_class_cell() {
     let cells = class_table();
     assert_eq!(
         cells.len(),
-        10 * 13,
+        11 * 14,
         "one row per (FlowKind, EffectClass) cell"
     );
     let mut seen = std::collections::BTreeSet::new();
@@ -1940,6 +2078,9 @@ fn dismiss_class(effect: &UiEffect) -> DismissClass {
         | UiEffect::BoardSelect(_)
         | UiEffect::Activate
         | UiEffect::OpenSettings
+        // The plan-next-day toggle (#622): it swaps the mounted
+        // surface like the settings opener.
+        | UiEffect::OpenPlanNextDay
         | UiEffect::ShowTask
         | UiEffect::InvokeSelected => DismissClass::IdentitySwap,
         UiEffect::OpenMenu
@@ -1980,6 +2121,13 @@ fn dismiss_class(effect: &UiEffect) -> DismissClass {
         | UiEffect::CancelMove
         | UiEffect::BeginTitleEdit
         | UiEffect::PickerKey(_)
+        // The plan-next-day row verbs (#622): they mutate the model
+        // in place, no anchor moves.
+        | UiEffect::PlanBeginPlace(_)
+        | UiEffect::PlanCommitPlace
+        | UiEffect::PlanBoxEarlier(_)
+        | UiEffect::PlanBoxLater(_)
+        | UiEffect::PlanRemoveBox(_)
         | UiEffect::StackDelete
         | UiEffect::StackRename
         | UiEffect::StackMove

@@ -177,6 +177,26 @@ pub enum UiEffect {
     // excluded from the view cycle; the adapter toggles it.
     /// Open the settings view (or close it — toggle semantics).
     OpenSettings,
+    // --- the plan-next-day surface (#622, D-4/D-3): the routed
+    // reachability seam plus the placement interaction. All pure
+    // view intents (never a parallel write path — the placement
+    // rides `UpdateTask`'s landed masks); the adapter's
+    // interpretation table owns them.
+    /// Open the plan-next-day surface (or close it — toggle
+    /// semantics; the Escape rung reuses this action). A held flow
+    /// keeps it inert (the modal discipline: Escape out first).
+    OpenPlanNextDay,
+    /// Arm the placement form over the addressed task.
+    PlanBeginPlace(TaskId),
+    /// Commit the placement form: the adapter parses its buffers and
+    /// routes the one `UpdateTask` (invalid input stays typed-inert).
+    PlanCommitPlace,
+    /// Swap the addressed placed box with the earlier neighbor.
+    PlanBoxEarlier(TaskId),
+    /// Swap the addressed placed box with the later neighbor.
+    PlanBoxLater(TaskId),
+    /// Unplace the addressed box (back to the pool).
+    PlanRemoveBox(TaskId),
 }
 
 /// The effect classes the flow-settle matrix ranges over (round-3
@@ -218,6 +238,11 @@ pub enum EffectClass {
     /// The picker keys: applied in `apply_effect`, before the table
     /// (the menu-family pattern) — unreachable in the resolver.
     Picker,
+    /// The plan-next-day family (#622): the surface is a deliberate
+    /// workspace — a held flow keeps every planner intent inert (the
+    /// modal discipline verbatim; Escape out of the flow first), so
+    /// the resolver cell is a named inert, not settle-then-run.
+    PlanSurface,
 }
 
 impl UiEffect {
@@ -259,6 +284,12 @@ impl UiEffect {
             Self::OpenPalette => EffectClass::OpenPalette,
             Self::ToggleFocusMode => EffectClass::FocusOverlay,
             Self::TrackEntriesOpen | Self::TrackEntryDismiss => EffectClass::TrackOverlay,
+            Self::OpenPlanNextDay
+            | Self::PlanBeginPlace(_)
+            | Self::PlanCommitPlace
+            | Self::PlanBoxEarlier(_)
+            | Self::PlanBoxLater(_)
+            | Self::PlanRemoveBox(_) => EffectClass::PlanSurface,
             // The habit trio's intents are flag flips over the subject
             // (issue #506): no flow moves, no command routes — the
             // nav bucket's contract (the adapter's interpretation
@@ -406,6 +437,10 @@ pub struct DispatchCtx {
     /// default mapping the adapter computed from the rule; consumed by
     /// the confirm dispatch.
     pub convert_target: Option<taskboard_domain::HabitTarget>,
+    /// The planner row's task (#622, D-6): set by the adapter when a
+    /// planner row affordance activates; the placement/reorder verbs
+    /// route from it (`NoTarget` without one).
+    pub plan_target: Option<TaskId>,
     /// Whether the focused task is done (round 2, D19): the reopen
     /// verb's enablement gate — `task.reopen` routes only for a
     /// focused *completed* task (the `task.complete` machinery
@@ -794,6 +829,27 @@ impl ActionRouter {
             ActionId::StackNarrower => DispatchOutcome::UiEffect(UiEffect::StackNarrower),
             // Round-1 chunk 3 (D28b): the settings opener is live.
             ActionId::AppSettings => DispatchOutcome::UiEffect(UiEffect::OpenSettings),
+            // The plan-next-day surface (#622, D-4/D-6): the opener is
+            // the routed reachability seam; the row verbs resolve
+            // their one-shot target (`NoTarget` without one).
+            ActionId::ViewPlanNextDay => DispatchOutcome::UiEffect(UiEffect::OpenPlanNextDay),
+            ActionId::PlanBeginPlace => match ctx.plan_target {
+                Some(task) => DispatchOutcome::UiEffect(UiEffect::PlanBeginPlace(task)),
+                None => DispatchOutcome::NoTarget,
+            },
+            ActionId::PlanCommitPlace => DispatchOutcome::UiEffect(UiEffect::PlanCommitPlace),
+            ActionId::PlanBoxEarlier => match ctx.plan_target {
+                Some(task) => DispatchOutcome::UiEffect(UiEffect::PlanBoxEarlier(task)),
+                None => DispatchOutcome::NoTarget,
+            },
+            ActionId::PlanBoxLater => match ctx.plan_target {
+                Some(task) => DispatchOutcome::UiEffect(UiEffect::PlanBoxLater(task)),
+                None => DispatchOutcome::NoTarget,
+            },
+            ActionId::PlanRemoveBox => match ctx.plan_target {
+                Some(task) => DispatchOutcome::UiEffect(UiEffect::PlanRemoveBox(task)),
+                None => DispatchOutcome::NoTarget,
+            },
             // Reserved (§5.8) — PaletteSearch opens the palette; the
             // only disabled row left (D6) is AppHelp (the undo rows
             // dispatch at the top of the match).
@@ -828,6 +884,7 @@ mod tests {
             habit_repair: None,
             habit_convert_target: None,
             pattern_draft: None,
+            plan_target: None,
             series_target: None,
             pause_draft: None,
             convert_target: None,
@@ -1413,6 +1470,47 @@ mod tests {
         assert_eq!(
             ActionRouter::dispatch(ActionId::HabitConvertToSeries, &ctx),
             DispatchOutcome::Command(StateCommand::ConvertHabitToSeries { habit, pattern })
+        );
+    }
+
+    /// The plan-next-day surface (#622, D-4/D-6): the opener is the
+    /// routed reachability seam; the row verbs resolve their one-shot
+    /// target (`NoTarget` without one) and never a parallel write
+    /// path.
+    #[test]
+    fn the_plan_next_day_actions_route_their_effects() {
+        let task = TaskId::from_uuid(Uuid::now_v7());
+        let mut ctx = ctx(false);
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::ViewPlanNextDay, &ctx),
+            DispatchOutcome::UiEffect(UiEffect::OpenPlanNextDay)
+        );
+        for action in [
+            ActionId::PlanBeginPlace,
+            ActionId::PlanBoxEarlier,
+            ActionId::PlanBoxLater,
+            ActionId::PlanRemoveBox,
+        ] {
+            assert_eq!(
+                ActionRouter::dispatch(action, &ctx),
+                DispatchOutcome::NoTarget,
+                "{action} without a row target"
+            );
+            ctx.plan_target = Some(task);
+            assert_eq!(
+                ActionRouter::dispatch(action, &ctx),
+                DispatchOutcome::UiEffect(match action {
+                    ActionId::PlanBeginPlace => UiEffect::PlanBeginPlace(task),
+                    ActionId::PlanBoxEarlier => UiEffect::PlanBoxEarlier(task),
+                    ActionId::PlanBoxLater => UiEffect::PlanBoxLater(task),
+                    _ => UiEffect::PlanRemoveBox(task),
+                })
+            );
+            ctx.plan_target = None;
+        }
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::PlanCommitPlace, &ctx),
+            DispatchOutcome::UiEffect(UiEffect::PlanCommitPlace)
         );
     }
 }

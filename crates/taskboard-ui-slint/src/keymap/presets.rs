@@ -85,6 +85,18 @@ static STANDARD: &[(ActionId, ContextId, &[&str])] = &[
     // presets (P10's promise); view.inbox and task.due-today stay
     // menu-reachable without default strokes.
     (ActionId::ViewToday, ContextId::Global, &["Ctrl+T"]),
+    // The plan-next-day surface (#622, D-6): the one new binding —
+    // the opener (toggle; the planner-context Escape row closes).
+    (
+        ActionId::ViewPlanNextDay,
+        ContextId::Global,
+        &["Ctrl+Shift+P"],
+    ),
+    (
+        ActionId::ViewPlanNextDay,
+        ContextId::PlanNextDay,
+        &["Escape"],
+    ),
     (ActionId::NavNextView, ContextId::Global, &["Ctrl+PageDown"]),
     (ActionId::NavPrevView, ContextId::Global, &["Ctrl+PageUp"]),
     (ActionId::NavFocusBoard, ContextId::Global, &["Alt+1"]),

@@ -172,6 +172,14 @@ pub(crate) struct Adapter {
     /// repaint driver consults it per tick. Kiosk is structurally and
     /// explicitly excluded.
     pub(crate) seconds_surfaces_active: bool,
+    /// The plan-next-day placement form's two text mirrors (#622,
+    /// D-3): the due buffers' lifecycle — updated by the view's
+    /// keystroke seams, read only at the commit funnel, cleared
+    /// whenever the flow ends (commit, discard, unplace) or the
+    /// subject dies (D9 rule 4: a refresh never clears them while
+    /// the flow holds them).
+    plan_time_text: String,
+    plan_effort_text: String,
     /// The last [`Self::apply_outcomes`] pass's flow liveness (the
     /// flowless enum variant replaces a bool — clippy's
     /// excessive-bools wall). The D15 focus hand-off (and the r4 D20
@@ -940,6 +948,99 @@ impl Adapter {
         let now = chrono::Utc::now();
         let window = taskboard_domain::days::day_window(now, self.day_start.0, self.day_start.1);
         crate::view_state::DayCtx { now, window }
+    }
+    /// The placement commit funnel (#622, D-3/D-8): parse the two
+    /// buffers through the due-editor's parsers verbatim, then route
+    /// ONE `UpdateTask` with both masks (the effort mask present
+    /// only when entered — untouched otherwise), one undo step. A
+    /// parse refusal dispatches nothing and keeps the typed text.
+    fn commit_plan_place(&mut self, task: TaskId) -> Vec<FlowOutcome> {
+        let Some(time) = crate::due_edit::parse_time_lenient(&self.plan_time_text) else {
+            return Vec::new();
+        };
+        let effort = if self.plan_effort_text.trim().is_empty() {
+            None
+        } else {
+            match taskboard_domain::Effort::parse_text_form(&self.plan_effort_text) {
+                Some(effort) => Some(effort),
+                None => return Vec::new(),
+            }
+        };
+        let day = self.day_ctx();
+        let cal = self.calendar();
+        let (next_start, _) =
+            taskboard_domain::days::next_day_window(day.now, self.day_start.0, self.day_start.1);
+        let date = cal.calendar_date(next_start);
+        let instant = cal.instant(date, time);
+        self.view_state.end_plan_place();
+        self.plan_time_text.clear();
+        self.plan_effort_text.clear();
+        vec![
+            FlowOutcome::Command(taskboard_domain::StateCommand::UpdateTask {
+                id: task,
+                changes: taskboard_domain::TaskChanges {
+                    scheduled: Some(Some(instant)),
+                    effort: effort.map(Some),
+                    ..taskboard_domain::TaskChanges::default()
+                },
+            }),
+            FlowOutcome::RefreshNow,
+        ]
+    }
+
+    /// The box swap (#622, D-3): the addressed box's scheduled
+    /// instant and the temporal neighbor's exchange — two honest
+    /// `UpdateTask` writes (each journal-armed); the instant set is
+    /// invariant, so reorder never creates or needs arithmetic. An
+    /// edge box (no neighbor that way) or a boxless neighbor is
+    /// inert.
+    fn swap_plan_box(
+        &mut self,
+        task: TaskId,
+        earlier: bool,
+        state: &taskboard_domain::AppState,
+    ) -> Vec<FlowOutcome> {
+        let day = self.day_ctx();
+        let placed = taskboard_domain::days::plan_next_day(
+            &state.tasks,
+            day.now,
+            self.day_start.0,
+            self.day_start.1,
+        )
+        .placed_scheduled;
+        let Some(index) = placed.iter().position(|id| *id == task) else {
+            return Vec::new();
+        };
+        let neighbor = if earlier {
+            if index == 0 {
+                return Vec::new();
+            }
+            placed[index - 1]
+        } else {
+            let Some(neighbor) = placed.get(index + 1) else {
+                return Vec::new();
+            };
+            *neighbor
+        };
+        let mine = state.tasks.get(&task).and_then(|t| t.scheduled);
+        let theirs = state.tasks.get(&neighbor).and_then(|t| t.scheduled);
+        let (Some(mine), Some(theirs)) = (mine, theirs) else {
+            return Vec::new();
+        };
+        let swap = |id: TaskId, instant: chrono::DateTime<chrono::Utc>| {
+            FlowOutcome::Command(taskboard_domain::StateCommand::UpdateTask {
+                id,
+                changes: taskboard_domain::TaskChanges {
+                    scheduled: Some(Some(instant)),
+                    ..taskboard_domain::TaskChanges::default()
+                },
+            })
+        };
+        vec![
+            swap(task, theirs),
+            swap(neighbor, mine),
+            FlowOutcome::RefreshNow,
+        ]
     }
 
     /// The per-second tick's single gate (r4 D17, §2 decision 5): the
@@ -2012,6 +2113,58 @@ impl Adapter {
                     self.view_state.open_settings()
                 }
             }
+            // -- the plan-next-day surface (#622, D-4/D-3) --
+            // Kiosk: the dispatch is structurally inert (the
+            // entries-overlay refusal's layer 3 — D-5).
+            (
+                _,
+                _effect @ (UiEffect::PlanBeginPlace(_)
+                | UiEffect::PlanCommitPlace
+                | UiEffect::PlanBoxEarlier(_)
+                | UiEffect::PlanBoxLater(_)
+                | UiEffect::PlanRemoveBox(_)),
+            ) if self.kiosk => Vec::new(),
+            (_, UiEffect::OpenPlanNextDay) if self.kiosk => Vec::new(),
+            // A held flow keeps the planner intents inert (the modal
+            // discipline: Escape out of the flow first) — the
+            // placement form's own rung excepted: form → pane.
+            (Flow::PlanPlace { .. }, UiEffect::OpenPlanNextDay) => {
+                self.plan_time_text.clear();
+                self.plan_effort_text.clear();
+                self.view_state.close_plan_place()
+            }
+            // The commit funnel: parse → mask → ONE command (the
+            // view never sees a `StateCommand`); invalid input
+            // dispatches nothing — the typed refusal keeps the text.
+            (Flow::PlanPlace { task }, UiEffect::PlanCommitPlace) => self.commit_plan_place(*task),
+            (Flow::None, UiEffect::PlanCommitPlace) => Vec::new(),
+            // Toggle semantics (the settings opener's twin); the
+            // planner-context Escape row rides the same route.
+            (Flow::None, UiEffect::OpenPlanNextDay) => {
+                if self.view_state.view() == crate::view_state::ViewId::PlanNextDay {
+                    self.view_state.close_plan_next_day()
+                } else {
+                    self.view_state.open_plan_next_day()
+                }
+            }
+            // The row verbs (dispatch-time gating: the rows only
+            // render on the surface; a stale target is inert).
+            (Flow::None, UiEffect::PlanBeginPlace(task)) => {
+                self.plan_time_text.clear();
+                self.plan_effort_text.clear();
+                self.view_state.open_plan_place(task)
+            }
+            (Flow::None, UiEffect::PlanRemoveBox(task)) => {
+                self.plan_time_text.clear();
+                self.plan_effort_text.clear();
+                self.view_state.remove_plan_box(task)
+            }
+            (Flow::None, effect @ (UiEffect::PlanBoxEarlier(_) | UiEffect::PlanBoxLater(_))) => {
+                let (UiEffect::PlanBoxEarlier(task) | UiEffect::PlanBoxLater(task)) = effect else {
+                    unreachable!("arm matched")
+                };
+                self.swap_plan_box(task, effect == UiEffect::PlanBoxEarlier(task), &state)
+            }
             // nav.show-task (round-3 D23): acts on the palette's
             // selection — the Task retarget rides `palette_jump`'s
             // `show_task` arm, the other targets keep today's
@@ -2108,6 +2261,11 @@ impl Adapter {
                 column.map(|c| (FAMILY_STACK, to_hint_index(c)))
             }
             (crate::view_state::ViewId::StackDetail, _) => Some((FAMILY_STACK, -1)),
+            // The planner's two panes are a fixed surface (#622): no
+            // paging container — a typed inert like the task detail.
+            (crate::view_state::ViewId::PlanNextDay | crate::view_state::ViewId::TaskDetail, _) => {
+                None
+            }
             (crate::view_state::ViewId::Today, _) => self
                 .view_state
                 .focused_task()
@@ -2117,7 +2275,6 @@ impl Adapter {
                 Self::page_settings(window, down);
                 return;
             }
-            (crate::view_state::ViewId::TaskDetail, _) => None,
             // The review page (#214): one whole-page viewport, the
             // view's own ListView pages as family 4.
             (crate::view_state::ViewId::Review, _) => Some((FAMILY_REVIEW, -1)),
@@ -2190,7 +2347,10 @@ impl Adapter {
             // facts path and the detail's own container.
             crate::view_state::ViewId::TaskDetail
             | crate::view_state::ViewId::Settings
-            | crate::view_state::ViewId::Review => None,
+            | crate::view_state::ViewId::Review
+            // The planner's panes are a fixed surface (#622): no
+            // paging container — the same typed inert.
+            | crate::view_state::ViewId::PlanNextDay => None,
         };
         let Some((target_a, target_b)) = hint else {
             return;
@@ -2403,6 +2563,10 @@ impl Adapter {
             Flow::FocusMode { .. }
             | Flow::TrackEntries { .. }
             | Flow::TrackEntryForm { .. }
+            // The placement form (#622): the kept planner arms own
+            // its intents and settle leaves the form (its exits are
+            // its close paths) — the overlay cells' shape.
+            | Flow::PlanPlace { .. }
             | Flow::None => FlowKind::None,
             Flow::Create { .. }
             | Flow::CreateStack
@@ -2502,6 +2666,10 @@ impl Adapter {
             (_, C::Nav | C::Lifecycle | C::OpenPalette | C::FocusOverlay | C::TrackOverlay) => {
                 R::SettleThenRun
             }
+            // The plan-next-day family (#622): a held flow keeps
+            // every planner intent inert (the modal discipline
+            // verbatim — Escape out of the flow first).
+            (_, C::PlanSurface) => R::Inert,
             // EDIT residue (the effects the kept arms don't own —
             // SetMode(Insert) under a text/due flow): named inert.
             (_, C::Edit) => R::Inert,
@@ -2676,7 +2844,16 @@ impl Adapter {
             // in the arms.
             | UiEffect::SeriesPauseOpen
             | UiEffect::HabitConvertArm
-            | UiEffect::SeriesConvertArm => self.interpret(window, effect),
+            | UiEffect::SeriesConvertArm
+            // The plan-next-day family (#622): the surface's intents
+            // interpret like every view intent — the kiosk/modal
+            // refusals live in the arms.
+            | UiEffect::OpenPlanNextDay
+            | UiEffect::PlanBeginPlace(_)
+            | UiEffect::PlanCommitPlace
+            | UiEffect::PlanBoxEarlier(_)
+            | UiEffect::PlanBoxLater(_)
+            | UiEffect::PlanRemoveBox(_) => self.interpret(window, effect),
         }
         // The pass's tail: the identity diff decides (see the entry
         // comment). The explicit dismisses below (the menu's
@@ -4774,6 +4951,8 @@ pub(crate) fn install(
         convert_target: None,
         recur_pause_open: false,
         recur_confirm_armed: false,
+        plan_time_text: String::new(),
+        plan_effort_text: String::new(),
         habit_convert_armed: None,
         walk_reentry: Rc::clone(&walk_flag),
         walk_timer: slint::Timer::default(),
@@ -7579,6 +7758,7 @@ impl crate::UiHandle {
             Some(ContextId::TaskDetail) => crate::view_state::ViewId::TaskDetail,
             Some(ContextId::Review) => crate::view_state::ViewId::Review,
             Some(ContextId::Settings) => crate::view_state::ViewId::Settings,
+            Some(ContextId::PlanNextDay) => crate::view_state::ViewId::PlanNextDay,
             // The overlay's context maps to no view: like the other
             // non-routable contexts, the adapter is left untouched
             // (the modal masks the chain; no derive rides it).

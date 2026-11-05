@@ -35,6 +35,11 @@ pub enum ContextId {
     /// resolution stays total over the view set (the plan's D-8).
     Review,
     Settings,
+    /// The plan-next-day surface (#622): a non-masking view context
+    /// like `Today` — the planner's walking verbs live here; the
+    /// placement form's text fields ride the existing `ViInsert`
+    /// masking (no new mask context).
+    PlanNextDay,
     Menu,
     /// The jump-to search palette (#348): a total mask like `Menu`.
     Palette,
@@ -67,6 +72,7 @@ impl ContextId {
             Self::TaskDetail => "task-detail",
             Self::Review => "review",
             Self::Settings => "settings",
+            Self::PlanNextDay => "plan-next-day",
             Self::Menu => "menu",
             Self::Palette => "palette",
             Self::FocusMode => "focus-mode",
@@ -296,6 +302,28 @@ pub enum ActionId {
     /// The series → habit confirm's dispatch: routes
     /// `ConvertSeriesToHabit` with the pattern's default quota (D-2).
     SeriesConvertToHabit,
+    /// The plan-next-day surface's opener (#622, D-4): the routed
+    /// reachability seam — the same dispatchable intent the review
+    /// walk's final leg takes. Toggle semantics (the settings
+    /// opener's twin); a held flow keeps it inert (the modal
+    /// discipline).
+    ViewPlanNextDay,
+    // The planner's pointer-grade row verbs (#622, D-6): registry
+    // rows with no preset bindings, dispatch-time gating only (the
+    // habits verbs' rule; the kiosk gate empties the affordances).
+    /// Arm the placement form over the addressed candidate row.
+    PlanBeginPlace,
+    /// Commit the placement form: routes the parsed `UpdateTask`
+    /// mask (both slots atomic; one undo step).
+    PlanCommitPlace,
+    /// Swap the addressed placed box's scheduled instant with the
+    /// earlier temporal neighbor's (two `UpdateTask` writes).
+    PlanBoxEarlier,
+    /// Swap the addressed placed box with the later neighbor's.
+    PlanBoxLater,
+    /// Unplace the addressed box (`UpdateTask { scheduled:
+    /// Some(None) }`); the task returns to the pool.
+    PlanRemoveBox,
     MenuNext,
     MenuPrevious,
     MenuInvoke,
@@ -389,6 +417,12 @@ impl ActionId {
             Self::SeriesResume => "series.resume",
             Self::SeriesConvertArm => "series.convert-arm",
             Self::SeriesConvertToHabit => "series.convert-to-habit",
+            Self::ViewPlanNextDay => "view.plan-next-day",
+            Self::PlanBeginPlace => "plan.begin-place",
+            Self::PlanCommitPlace => "plan.commit-place",
+            Self::PlanBoxEarlier => "plan.box-earlier",
+            Self::PlanBoxLater => "plan.box-later",
+            Self::PlanRemoveBox => "plan.remove-box",
             Self::MenuNext => "menu.next",
             Self::MenuPrevious => "menu.previous",
             Self::MenuInvoke => "menu.invoke",
@@ -1231,6 +1265,69 @@ pub const REGISTRY: &[ActionEntry] = &[
         menu_group: Some(MenuGroup::Task),
     },
     ActionEntry {
+        id: ActionId::ViewPlanNextDay,
+        label: "Plan next day",
+        contexts: GLOBAL,
+        category: Category::Navigation,
+        enabled: true,
+        menu_rank: 65,
+        description: "Opens or closes the plan-next-day surface: tomorrow's placed boxes and the candidate pool. Placement writes ride the ordinary scheduled/effort edits.",
+        menu_group: Some(MenuGroup::ViewNav),
+    },
+    // The planner's row verbs (#622, D-6): section-scoped (see
+    // HabitLog) — the row's own affordance is the only invocation,
+    // the menu surface is untouched.
+    ActionEntry {
+        id: ActionId::PlanBeginPlace,
+        label: "Place task",
+        contexts: &[ContextId::PlanNextDay],
+        category: Category::Navigation,
+        enabled: true,
+        menu_rank: 280,
+        description: "Arms the placement form over the addressed pool row (re-opening a placed row edits that box).",
+        menu_group: None,
+    },
+    ActionEntry {
+        id: ActionId::PlanCommitPlace,
+        label: "Commit placement",
+        contexts: &[ContextId::PlanNextDay],
+        category: Category::Navigation,
+        enabled: true,
+        menu_rank: 290,
+        description: "Routes the parsed time-of-day and optional effort as one scheduled/effort edit — atomic, one undo step.",
+        menu_group: None,
+    },
+    ActionEntry {
+        id: ActionId::PlanBoxEarlier,
+        label: "Move box earlier",
+        contexts: &[ContextId::PlanNextDay],
+        category: Category::Navigation,
+        enabled: true,
+        menu_rank: 300,
+        description: "Swaps the addressed box's start instant with the earlier neighbor's (the instant set is invariant; no arithmetic).",
+        menu_group: None,
+    },
+    ActionEntry {
+        id: ActionId::PlanBoxLater,
+        label: "Move box later",
+        contexts: &[ContextId::PlanNextDay],
+        category: Category::Navigation,
+        enabled: true,
+        menu_rank: 310,
+        description: "Swaps the addressed box's start instant with the later neighbor's.",
+        menu_group: None,
+    },
+    ActionEntry {
+        id: ActionId::PlanRemoveBox,
+        label: "Remove box",
+        contexts: &[ContextId::PlanNextDay],
+        category: Category::Navigation,
+        enabled: true,
+        menu_rank: 320,
+        description: "Clears the addressed box's scheduled start; the task returns to the candidate pool.",
+        menu_group: None,
+    },
+    ActionEntry {
         id: ActionId::HabitMove,
         label: "Reorder habit",
         contexts: GLOBAL,
@@ -1496,6 +1593,12 @@ mod tests {
             ActionId::SeriesResume,
             ActionId::SeriesConvertArm,
             ActionId::SeriesConvertToHabit,
+            ActionId::ViewPlanNextDay,
+            ActionId::PlanBeginPlace,
+            ActionId::PlanCommitPlace,
+            ActionId::PlanBoxEarlier,
+            ActionId::PlanBoxLater,
+            ActionId::PlanRemoveBox,
             ActionId::MenuNext,
             ActionId::MenuPrevious,
             ActionId::MenuInvoke,

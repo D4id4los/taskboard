@@ -844,6 +844,7 @@ pub fn push(
         crate::view_state::ViewId::TaskDetail => View::TaskDetail,
         crate::view_state::ViewId::Review => View::Review,
         crate::view_state::ViewId::Settings => View::Settings,
+        crate::view_state::ViewId::PlanNextDay => View::PlanNextDay,
     });
 
     let mut tables = IdTables {
