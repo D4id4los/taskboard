@@ -1969,6 +1969,81 @@ pub fn review_window(aggregate: &taskboard_domain::CalibrationAggregate) -> Revi
     }
 }
 
+/// Phrases for one Review tracking section (#623 slice A, D-S7): the
+/// Work total, the Respite total, and the Work-block reading (count +
+/// duration in one phrase), each through [`review_seconds_phrase`]
+/// (the second-granular precision contract). A window with no tracked
+/// time of either kind collapses all three phrases to `""` — the view
+/// renders the dashes structurally (D-9 tier 2). A zero block count
+/// inside a non-empty section is an observed fact and stays phrased;
+/// the dash is reserved for the collapsed section.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TrackingSectionPhrases {
+    pub work: String,
+    pub respite: String,
+    pub blocks: String,
+    pub empty: bool,
+}
+
+/// Derives one tracking section's phrases from the domain folds.
+#[must_use]
+pub fn review_tracking_section(
+    split: &taskboard_domain::WindowSplit,
+    blocks: &taskboard_domain::WorkBlockReading,
+) -> TrackingSectionPhrases {
+    if split.is_empty() {
+        return TrackingSectionPhrases {
+            empty: true,
+            ..TrackingSectionPhrases::default()
+        };
+    }
+    let duration = |delta: chrono::TimeDelta| {
+        review_seconds_phrase(delta.num_seconds().max(0).cast_unsigned())
+    };
+    TrackingSectionPhrases {
+        work: duration(split.work),
+        respite: duration(split.respite),
+        blocks: format!("{} · {}", blocks.blocks, duration(blocks.total)),
+        empty: false,
+    }
+}
+
+/// One day-bar's pushed fractions (the pure half of D-S4): Work and
+/// Respite heights as fractions of the strip's maximum day total. The
+/// push pass maps this onto the view's `StatBarModel` — the pure layer
+/// stays free of generated types.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct ReviewBar {
+    pub work: f32,
+    pub respite: f32,
+}
+
+/// The strip's bar fractions (D-S4's normalization): per day,
+/// `work = work_seconds / strip_max` and `respite = respite_seconds /
+/// strip_max`, where `strip_max` is the greatest day total (work +
+/// respite) on the strip; an all-zero strip stays all zeros (never
+/// NaN); every fraction is finite and ≤ 1.0. The strip shows *shape* —
+/// absolute magnitudes live in the section's stat cells.
+#[must_use]
+pub fn review_bar_fractions(series: &[taskboard_domain::DayTotal]) -> Vec<ReviewBar> {
+    #[allow(clippy::cast_precision_loss)] // a bar-height ratio at f32 granularity
+    let seconds = |delta: chrono::TimeDelta| delta.num_seconds().max(0) as f32;
+    let strip_max = series
+        .iter()
+        .map(|day| seconds(day.split.work) + seconds(day.split.respite))
+        .fold(0.0_f32, f32::max);
+    if strip_max <= 0.0 {
+        return vec![ReviewBar::default(); series.len()];
+    }
+    series
+        .iter()
+        .map(|day| ReviewBar {
+            work: (seconds(day.split.work) / strip_max).min(1.0),
+            respite: (seconds(day.split.respite) / strip_max).min(1.0),
+        })
+        .collect()
+}
+
 /// The open/closed predicate: open iff the awaiting set is not empty.
 #[must_use]
 pub fn alarm_window_open(rows: &[AlarmRow]) -> bool {
@@ -6136,9 +6211,9 @@ mod review_tracking_tests {
         };
         let collapsed = review_tracking_section(&empty, &reading(0, 0));
         assert!(collapsed.empty);
-        assert!(collapsed.work.is_empty());
-        assert!(collapsed.respite.is_empty());
-        assert!(collapsed.blocks.is_empty());
+        assert_eq!(collapsed.work, "");
+        assert_eq!(collapsed.respite, "");
+        assert_eq!(collapsed.blocks, "");
 
         let split = WindowSplit {
             work: secs(3_600),
@@ -6146,9 +6221,9 @@ mod review_tracking_tests {
         };
         let populated = review_tracking_section(&split, &reading(2, 7_200));
         assert!(!populated.empty);
-        assert!(!populated.work.is_empty());
-        assert!(!populated.respite.is_empty());
-        assert!(!populated.blocks.is_empty());
+        assert_ne!(populated.work, "");
+        assert_ne!(populated.respite, "");
+        assert_ne!(populated.blocks, "");
         // Distinct inputs, distinct forms (the phrases carry the
         // magnitudes, unlike the fractions).
         let longer = review_tracking_section(
@@ -6162,7 +6237,7 @@ mod review_tracking_tests {
         // A zero count is an observed fact, phrased — the dash is
         // reserved for the collapsed section.
         let unblocked = review_tracking_section(&split, &reading(0, 0));
-        assert!(!unblocked.blocks.is_empty());
+        assert_ne!(unblocked.blocks, "");
         assert_ne!(unblocked.blocks, populated.blocks);
     }
 
@@ -6189,16 +6264,19 @@ mod review_tracking_tests {
             "fractions clamp at 1.0"
         );
         assert!(
-            bars.iter().all(
-                |bar| bar.work.is_finite() && bar.respite.is_finite()
-            ),
+            bars.iter()
+                .all(|bar| bar.work.is_finite() && bar.respite.is_finite()),
             "never NaN"
         );
 
         // The all-zero strip: all zeros, never NaN.
         let zeros = review_bar_fractions(&[day(0, 0), day(0, 0)]);
-        assert!(zeros.iter().all(|bar| bar.work == 0.0 && bar.respite == 0.0));
+        assert!(
+            zeros
+                .iter()
+                .all(|bar| bar.work == 0.0 && bar.respite == 0.0)
+        );
 
-        assert!(review_bar_fractions(&[]).is_empty());
+        assert_eq!(review_bar_fractions(&[]), Vec::<ReviewBar>::new());
     }
 }
