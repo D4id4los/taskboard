@@ -12144,9 +12144,12 @@ fn the_entries_overlay_walks_rows_and_the_escape_ladder_steps_back() {
                 ActionId::TaskEdit,
             );
             harness.driver.advance_time(0);
-            // Open through the affordance's seam (click ≡ key); the
-            // second loop turn delivers the deferred nonce bump (the
-            // mount pass ran in the first).
+            // Open through the window-level dispatch seam; the
+            // affordance's real click path (button → component
+            // callback → mount forwarding → this seam) is the
+            // through-the-real-mount journey's pin. The second loop
+            // turn delivers the deferred nonce bump (the mount pass
+            // ran in the first).
             harness.handle.window().invoke_task_track_entries_clicked();
             harness.driver.advance_time(0);
             harness.driver.advance_time(0);
@@ -12220,6 +12223,78 @@ fn the_entries_overlay_walks_rows_and_the_escape_ladder_steps_back() {
             assert!(
                 !harness.handle.window().get_task_model().track_entries_open,
                 "the second Escape closes the overlay"
+            );
+        },
+    );
+}
+
+/// The entries affordance's real click path (round-5 F1): the
+/// "Time entries" button fires the view component's
+/// `task-track-entries-clicked`, the window mount forwards it to the
+/// window-level seam, and the overlay opens over the subject. The
+/// window-level invoke alone is NOT this path — a dead mount
+/// forwarding silently no-ops the click (F1), invisible to a
+/// window-level journey.
+#[test]
+fn the_time_entries_affordance_opens_the_overlay_through_the_real_mount() {
+    let (fx, mut state) = fixture::golden_state();
+    // One closed entry on the subject: the overlay's row pins the
+    // open went over fx.task0 (no other task carries entries).
+    let start = chrono::Utc::now() - chrono::TimeDelta::hours(1);
+    let id = taskboard_domain::TimeEntryId::from_uuid(uuid::Uuid::now_v7());
+    state.tracking.entries.insert(
+        id,
+        taskboard_domain::TimeEntry {
+            id,
+            task: fx.task0,
+            task_title: "task-0".to_owned(),
+            start,
+            end: Some(start + chrono::TimeDelta::minutes(30)),
+            created_at: start,
+            updated_at: start,
+            kind: taskboard_domain::tracking::TimeEntryKind::Work,
+        },
+    );
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            press_preset(
+                &mut harness,
+                taskboard_ui_slint::keymap::Preset::Standard,
+                ActionId::NavNextItem,
+            );
+            press_preset(
+                &mut harness,
+                taskboard_ui_slint::keymap::Preset::Standard,
+                ActionId::TaskEdit,
+            );
+            harness.driver.advance_time(0);
+            // The real click: the button's accessible default action
+            // IS the IconButton's `clicked` handler (§7.1's
+            // click-equivalence seam — no coordinate arithmetic). The
+            // overlay panel shares the label but is unmounted at
+            // click time, so the address is unique.
+            harness.driver.click_by_label("Time entries");
+            harness.driver.advance_time(0);
+            harness.driver.advance_time(0);
+            let window = harness.handle.window();
+            assert!(
+                window.get_task_model().track_entries_open,
+                "the overlay mounts over the subject through the real click"
+            );
+            assert_eq!(
+                window.get_task_model().track_entries.row_count(),
+                1,
+                "the subject's entry renders a row"
+            );
+            let start_local = start.with_timezone(&chrono::Local);
+            let row_label = start_local.format("%Y-%m-%d %H:%M").to_string();
+            assert!(
+                harness.driver.find_by_label(row_label.as_str()).is_some(),
+                "the row is the subject entry's local span"
             );
         },
     );
