@@ -793,7 +793,9 @@ mod tests {
         let rule = ReminderRef::Rule(taskboard_domain::ids::ReminderRuleId::from(id(7)));
         let default = ReminderRef::Default(TaskId::from(id(8)));
         let alarm = ReminderRef::Adhoc(taskboard_domain::ids::AdhocAlarmId::from(id(9)));
-        for reminder in [rule, default, alarm] {
+        let break_rule = ReminderRef::Break(taskboard_domain::ids::BreakRuleId::from(id(10)));
+        let tracker = ReminderRef::Tracker(taskboard_domain::ids::HabitId::from(id(11)));
+        for reminder in [rule, default, alarm, break_rule, tracker] {
             assert_eq!(
                 reminder_ref_from_text(&reminder_ref_to_text(reminder)),
                 Ok(reminder)
@@ -803,6 +805,11 @@ mod tests {
         assert_eq!(reminder_ref_from_text("rule:not-a-uuid"), Err(CodecError));
         assert_eq!(reminder_ref_from_text("alarm:not-a-uuid"), Err(CodecError));
         assert_eq!(reminder_ref_from_text("alarm:"), Err(CodecError));
+        assert_eq!(
+            reminder_ref_from_text("tracker:not-a-uuid"),
+            Err(CodecError)
+        );
+        assert_eq!(reminder_ref_from_text("tracker:"), Err(CodecError));
         assert_eq!(reminder_ref_from_text(""), Err(CodecError));
     }
 
