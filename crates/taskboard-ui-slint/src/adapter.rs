@@ -6173,6 +6173,13 @@ fn install_today_row_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
 
     });
 
+    // #592: the live rows' extent reports feed the height cache
+    // (deduped — a no-op report costs one map insert comparison).
+    install_seam!(window: window.on_today_row_extent, adapter: adapter; [bare_mut]
+    bind mut (a), args (id, extent), {
+        a.models.today_row_extents.insert(id, extent);
+    });
+
     install_seam!(window: window.on_today_row_activated, adapter: adapter;
     bind mut (a, window), args (section, row), {        settle_pointer_conflict(&mut a, &window);
     if focus_today_row(&mut a, &window, section, row).is_some() {
