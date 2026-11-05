@@ -26,6 +26,7 @@ wiremock.workspace = true
 tempfile.workspace = true
 uuid.workspace = true
 tracing-subscriber.workspace = true
+base64.workspace = true
 # Additive dev-only feature: tokio::time::pause()/start_paused for
 # deterministic actor-timing assertions (docs/testing_strategy.org §6/§8).
 tokio = { workspace = true, features = ["test-util"] }
