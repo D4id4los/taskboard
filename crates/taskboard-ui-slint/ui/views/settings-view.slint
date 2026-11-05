@@ -178,6 +178,46 @@ export global SettingsModel {
     in-out property <bool> sink-env-locked: false;
     in-out property <bool> sink-on-restart: false;
     in-out property <string> help-sink: "";
+    // -- the [focus] section's rows (the focus settings editor, #625):
+    //    the minutes ride the general text-field grammar (indices
+    //    12–15 of the field-edited contract), the bools the segmented
+    //    On/Off grammar (commit on pick).
+    in-out property <int> focus-enabled-index: 0;
+    in-out property <bool> focus-enabled-env-locked: false;
+    in-out property <bool> focus-enabled-on-restart: false;
+    in-out property <string> help-focus-enabled: "";
+    in-out property <string> focus-work-echo: "";
+    in-out property <FieldValidity> validity-focus-work: FieldValidity.neutral;
+    in-out property <string> error-focus-work: "";
+    in-out property <bool> focus-work-env-locked: false;
+    in-out property <bool> focus-work-on-restart: false;
+    in-out property <string> help-focus-work: "";
+    in-out property <string> focus-break-echo: "";
+    in-out property <FieldValidity> validity-focus-break: FieldValidity.neutral;
+    in-out property <string> error-focus-break: "";
+    in-out property <bool> focus-break-env-locked: false;
+    in-out property <bool> focus-break-on-restart: false;
+    in-out property <string> help-focus-break: "";
+    in-out property <int> focus-chain-index: 0;
+    in-out property <bool> focus-chain-env-locked: false;
+    in-out property <bool> focus-chain-on-restart: false;
+    in-out property <string> help-focus-chain: "";
+    in-out property <string> focus-long-break-echo: "";
+    in-out property <FieldValidity> validity-focus-long-break: FieldValidity.neutral;
+    in-out property <string> error-focus-long-break: "";
+    in-out property <bool> focus-long-break-env-locked: false;
+    in-out property <bool> focus-long-break-on-restart: false;
+    in-out property <string> help-focus-long-break: "";
+    in-out property <string> focus-every-echo: "";
+    in-out property <FieldValidity> validity-focus-every: FieldValidity.neutral;
+    in-out property <string> error-focus-every: "";
+    in-out property <bool> focus-every-env-locked: false;
+    in-out property <bool> focus-every-on-restart: false;
+    in-out property <string> help-focus-every: "";
+    in-out property <int> focus-notify-index: 0;
+    in-out property <bool> focus-notify-env-locked: false;
+    in-out property <bool> focus-notify-on-restart: false;
+    in-out property <string> help-focus-notify: "";
 }
 
 
@@ -520,11 +560,17 @@ export component SettingsView inherits FocusScope {
     // Return (the scale field's grammar) and discard on focus loss;
     // the choice controls commit on pick (the keymap preset
     // grammar). Field indices ride the `field-edited` contract
-    // (5..11 = the general text fields).
+    // (5..11 = the general text fields, 12..15 = the focus minutes).
     callback general-committed(int, string);
     callback general-focus-lost(int);
     callback reminders-picked(int);
     callback sink-picked(int);
+    // The [focus] section's pick seams (#625): the segmented On/Off
+    // toggles, commit on pick. The minute rows ride the general
+    // seams above (field indices 12..15).
+    callback focus-enabled-picked(int);
+    callback focus-chain-picked(int);
+    callback focus-notify-picked(int);
 
     init => {
         root.view-mounted();
@@ -973,6 +1019,195 @@ export component SettingsView inherits FocusScope {
             }
             focus-lost(i) => {
                 root.general-focus-lost(i);
+            }
+        }
+
+        // -- focus (the focus settings editor, #625) ------------------------
+        HorizontalLayout {
+            spacing: Theme.space-2;
+            RoleText {
+                role: Typography.title;
+                text: "Focus";
+            }
+            InfoTip {
+                about: "Focus";
+                help: SettingsModel.help-focus-enabled;
+            }
+        }
+        VerticalLayout {
+            spacing: Theme.space-1;
+            RoleText {
+                role: Typography.body;
+                text: "Focus mode";
+                min-width: Theme.space-8;
+                vertical-alignment: center;
+            }
+            SegmentedControl {
+                options: ["On", "Off"];
+                segment-enabled: [
+                    !SettingsModel.focus-enabled-env-locked,
+                    !SettingsModel.focus-enabled-env-locked,
+                ];
+                selected-index: SettingsModel.focus-enabled-index;
+                group-label: "Focus mode";
+                picked(i) => {
+                    root.focus-enabled-picked(i);
+                }
+            }
+            if SettingsModel.focus-enabled-env-locked: RoleText {
+                role: Typography.caption;
+                text: "Overridden by an environment variable; edit the file or the env.";
+                text-color: Semantic.warning;
+            }
+            if SettingsModel.focus-enabled-on-restart
+                && !SettingsModel.focus-enabled-env-locked: RoleText {
+                role: Typography.caption;
+                text: "Takes effect at the next restart.";
+                text-color: Theme.text-secondary;
+            }
+        }
+        GeneralField {
+            label: "Focus block (minutes)";
+            placeholder: "25";
+            help: SettingsModel.help-focus-work;
+            field-index: 12;
+            text <=> SettingsModel.focus-work-echo;
+            validity: SettingsModel.validity-focus-work;
+            error-text: SettingsModel.error-focus-work;
+            env-locked: SettingsModel.focus-work-env-locked;
+            on-restart: SettingsModel.focus-work-on-restart;
+            edited(i, t) => {
+                root.field-edited(i, t);
+            }
+            committed(i, t) => {
+                root.general-committed(i, t);
+            }
+            focus-lost(i) => {
+                root.general-focus-lost(i);
+            }
+        }
+        GeneralField {
+            label: "Break (minutes)";
+            placeholder: "5";
+            help: SettingsModel.help-focus-break;
+            field-index: 13;
+            text <=> SettingsModel.focus-break-echo;
+            validity: SettingsModel.validity-focus-break;
+            error-text: SettingsModel.error-focus-break;
+            env-locked: SettingsModel.focus-break-env-locked;
+            on-restart: SettingsModel.focus-break-on-restart;
+            edited(i, t) => {
+                root.field-edited(i, t);
+            }
+            committed(i, t) => {
+                root.general-committed(i, t);
+            }
+            focus-lost(i) => {
+                root.general-focus-lost(i);
+            }
+        }
+        VerticalLayout {
+            spacing: Theme.space-1;
+            RoleText {
+                role: Typography.body;
+                text: "Auto-chain blocks";
+                min-width: Theme.space-8;
+                vertical-alignment: center;
+            }
+            SegmentedControl {
+                options: ["On", "Off"];
+                segment-enabled: [
+                    !SettingsModel.focus-chain-env-locked,
+                    !SettingsModel.focus-chain-env-locked,
+                ];
+                selected-index: SettingsModel.focus-chain-index;
+                group-label: "Auto-chain blocks";
+                picked(i) => {
+                    root.focus-chain-picked(i);
+                }
+            }
+            if SettingsModel.focus-chain-env-locked: RoleText {
+                role: Typography.caption;
+                text: "Overridden by an environment variable; edit the file or the env.";
+                text-color: Semantic.warning;
+            }
+            if SettingsModel.focus-chain-on-restart
+                && !SettingsModel.focus-chain-env-locked: RoleText {
+                role: Typography.caption;
+                text: "Takes effect at the next restart.";
+                text-color: Theme.text-secondary;
+            }
+        }
+        GeneralField {
+            label: "Long break (minutes)";
+            placeholder: "15";
+            help: SettingsModel.help-focus-long-break;
+            field-index: 14;
+            text <=> SettingsModel.focus-long-break-echo;
+            validity: SettingsModel.validity-focus-long-break;
+            error-text: SettingsModel.error-focus-long-break;
+            env-locked: SettingsModel.focus-long-break-env-locked;
+            on-restart: SettingsModel.focus-long-break-on-restart;
+            edited(i, t) => {
+                root.field-edited(i, t);
+            }
+            committed(i, t) => {
+                root.general-committed(i, t);
+            }
+            focus-lost(i) => {
+                root.general-focus-lost(i);
+            }
+        }
+        GeneralField {
+            label: "Long break every (blocks)";
+            placeholder: "4";
+            help: SettingsModel.help-focus-every;
+            field-index: 15;
+            text <=> SettingsModel.focus-every-echo;
+            validity: SettingsModel.validity-focus-every;
+            error-text: SettingsModel.error-focus-every;
+            env-locked: SettingsModel.focus-every-env-locked;
+            on-restart: SettingsModel.focus-every-on-restart;
+            edited(i, t) => {
+                root.field-edited(i, t);
+            }
+            committed(i, t) => {
+                root.general-committed(i, t);
+            }
+            focus-lost(i) => {
+                root.general-focus-lost(i);
+            }
+        }
+        VerticalLayout {
+            spacing: Theme.space-1;
+            RoleText {
+                role: Typography.body;
+                text: "Boundary notifications";
+                min-width: Theme.space-8;
+                vertical-alignment: center;
+            }
+            SegmentedControl {
+                options: ["On", "Off"];
+                segment-enabled: [
+                    !SettingsModel.focus-notify-env-locked,
+                    !SettingsModel.focus-notify-env-locked,
+                ];
+                selected-index: SettingsModel.focus-notify-index;
+                group-label: "Boundary notifications";
+                picked(i) => {
+                    root.focus-notify-picked(i);
+                }
+            }
+            if SettingsModel.focus-notify-env-locked: RoleText {
+                role: Typography.caption;
+                text: "Overridden by an environment variable; edit the file or the env.";
+                text-color: Semantic.warning;
+            }
+            if SettingsModel.focus-notify-on-restart
+                && !SettingsModel.focus-notify-env-locked: RoleText {
+                role: Typography.caption;
+                text: "Takes effect at the next restart.";
+                text-color: Theme.text-secondary;
             }
         }
 
