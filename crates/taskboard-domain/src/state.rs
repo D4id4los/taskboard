@@ -42,6 +42,9 @@ pub struct AppState {
     /// Habit trackers and their count log (DR-6/5): a window's state is
     /// its log row — no derived running/completed bit exists anywhere.
     pub habits: crate::habit::HabitState,
+    /// Reflection entries (DR-7, ADR 0021): tombstones stay in the map,
+    /// reads filter through `live_entries`.
+    pub reflection: crate::reflection::ReflectionState,
     /// Current sync status, keyed per board (the surfaces read the
     /// `aggregate()` fold).
     pub sync: SyncStates,

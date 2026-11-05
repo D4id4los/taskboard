@@ -103,6 +103,8 @@ pub struct PersistedState {
     pub tracking: crate::tracking::TrackingState,
     /// Habit trackers and their count log (DR-6/5).
     pub habits: crate::habit::HabitState,
+    /// Reflection entries (DR-7, ADR 0021).
+    pub reflection: crate::reflection::ReflectionState,
     /// The undo journal (ADR 0019): the tree of journaled commands and
     /// the persisted line head (R-U10 — the head moves on undo/redo
     /// without a new node, so it cannot be derived).
@@ -119,6 +121,7 @@ impl From<PersistedState> for AppState {
             reminders: persisted.reminders,
             tracking: persisted.tracking,
             habits: persisted.habits,
+            reflection: persisted.reflection,
             sync: persisted.sync,
             undo: crate::journal::UndoView::derive(&persisted.journal),
             last_updated: None,
@@ -279,6 +282,12 @@ pub enum PersistenceAction {
     /// Insert or replace a habit (entity upsert discipline — replace by
     /// id; the tombstone rides the row).
     UpsertHabit(crate::habit::Habit),
+    /// Insert or replace a reflection entry (entity upsert discipline —
+    /// replace by id; the tombstone rides the row, so delete is an
+    /// upsert — DR-7 D-J13). Device-local: never enters a sync lane.
+    /// Storage writes this via a runtime-checked statement until
+    /// migration 0022 lands (#637, the R-11 exception).
+    UpsertReflectionEntry(crate::reflection::ReflectionEntry),
     /// Record a habit window's count. Keyed set-union on the
     /// `(habit, window)` key: insert when absent; on collision keep the
     /// row with the **strictly newer** clock (count LWW under the row
@@ -428,6 +437,9 @@ pub fn apply_actions(state: &mut PersistedState, actions: &[PersistenceAction]) 
                 if habit.deleted {
                     crate::reminders::remove_habit_nudge(&mut state.reminders, habit.id);
                 }
+            }
+            PersistenceAction::UpsertReflectionEntry(entry) => {
+                state.reflection.entries.insert(entry.id, entry.clone());
             }
             PersistenceAction::RecordHabitLog(key, entry) => {
                 match state.habits.log.get(key) {

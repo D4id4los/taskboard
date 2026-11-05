@@ -1471,6 +1471,7 @@ pub fn apply_sync_report(
         // document carrying them folds into this copy (§5b), an absent
         // one carries the local truth through untouched.
         habits: folded_habits.unwrap_or_else(|| current.habits.clone()),
+        reflection: current.reflection.clone(),
         // The undo projection is derived from the persisted journal at
         // publish (core.rs); the pipeline's working copy carries the
         // current one through untouched.
@@ -1684,6 +1685,7 @@ pub fn apply_push_report(
         // ride chunk DR-6/6's sidecar sections; both carry through
         // untouched.
         habits: current.habits.clone(),
+        reflection: current.reflection.clone(),
         // The undo projection is derived from the persisted journal at
         // publish (core.rs); the pipeline's working copy carries the
         // current one through untouched.

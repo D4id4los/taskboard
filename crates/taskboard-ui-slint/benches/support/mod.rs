@@ -171,6 +171,7 @@ pub fn build_state(n: usize) -> AppState {
         reminders: taskboard_domain::reminders::ReminderState::default(),
         tracking: taskboard_domain::tracking::TrackingState::default(),
         habits: taskboard_domain::habit::HabitState::default(),
+        reflection: taskboard_domain::reflection::ReflectionState::default(),
         sync: SyncStates::new(),
         last_updated: None,
     }

@@ -112,6 +112,8 @@ tracking:
 habits:
   habits: {}
   log: {}
+reflection:
+  entries: {}
 journal:
   entries: []
   head: ~

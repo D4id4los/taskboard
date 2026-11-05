@@ -105,6 +105,8 @@ tracking:
 habits:
   habits: {}
   log: {}
+reflection:
+  entries: {}
 journal:
   entries:
     - id: 00000000-0000-0000-0000-000000000003

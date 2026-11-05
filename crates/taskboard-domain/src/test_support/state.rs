@@ -402,6 +402,7 @@ fn raw_app_state_strategy() -> impl Strategy<Value = AppState> {
                 sync: SyncStates::new(),
                 last_updated: None,
                 habits: crate::habit::HabitState::default(),
+                reflection: crate::reflection::ReflectionState::default(),
             }
         },
     )
@@ -521,6 +522,7 @@ pub fn persisted_state_strategy() -> impl Strategy<Value = PersistedState> {
                     reminders: state.reminders,
                     tracking: state.tracking,
                     habits: state.habits,
+                    reflection: state.reflection,
                 }
             },
         )

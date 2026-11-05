@@ -3212,6 +3212,7 @@ mod tests {
             ),
             last_updated: None,
             habits: crate::habit::HabitState::default(),
+            reflection: crate::reflection::ReflectionState::default(),
         };
         let task_id = TaskId::from(uuid::Uuid::from_u128(u128::from(TASK)));
         let label_id = LabelId::from(uuid::Uuid::from_u128(u128::from(LABEL)));
@@ -5013,6 +5014,7 @@ mod tests {
             sync: crate::state::SyncStates::new(),
             last_updated: None,
             habits: crate::habit::HabitState::default(),
+            reflection: crate::reflection::ReflectionState::default(),
         };
         // Give the board content so bind tests exercise a non-empty board.
         let stack = stack(901, false);
@@ -6412,6 +6414,7 @@ mod tests {
             sync: crate::state::SyncStates::new(),
             last_updated: None,
             habits: crate::habit::HabitState::default(),
+            reflection: crate::reflection::ReflectionState::default(),
         };
         assert_eq!(
             run(&app, &[], &StateCommand::ResetBoard { board: board_id }),
@@ -10119,6 +10122,7 @@ mod proptests {
                 sync: persisted.sync,
                 last_updated: None,
                 habits: crate::habit::HabitState::default(),
+                reflection: crate::reflection::ReflectionState::default(),
             };
             let outbox = persisted.outbox.clone();
             let result = plan_command(
@@ -10235,6 +10239,7 @@ mod proptests {
                 sync: persisted.sync,
                 last_updated: None,
                 habits: crate::habit::HabitState::default(),
+                reflection: crate::reflection::ReflectionState::default(),
             };
             let result = live_board_of(&app, board);
             match app.boards.get(&board) {
