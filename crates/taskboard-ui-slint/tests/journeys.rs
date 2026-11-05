@@ -12081,6 +12081,14 @@ fn the_review_surface_ledgers_and_returns() {
             let second = model.rows.row_data(1).expect("row 1");
             assert_eq!(second.title, "compared-a");
             assert!(!second.gap.is_empty(), "the settled comparison speaks");
+            // The tracking sections (#623 slice A) speak structurally:
+            // the planted work span keeps them populated and the strips
+            // carry the windows' day counts — the read-only contract
+            // below is unaffected.
+            assert!(!model.tracking_month.empty);
+            assert!(!model.tracking_month.work.is_empty());
+            assert_eq!(model.tracking_week.bars.row_count(), 7);
+            assert_eq!(model.tracking_month.bars.row_count(), 30);
 
             // nav.focus-board returns from everywhere (the walk's
             // contract).
