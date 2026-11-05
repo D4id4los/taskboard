@@ -16,19 +16,20 @@
 //!   current view (its own rows and everything it has folded from
 //!   peers): re-publication is how offline peers' data survives a
 //!   device's death, and the fold is idempotent, so this is safe.
-//! - **Tolerant relay.** Unknown envelope keys, unknown/reserved
-//!   sections, unknown body keys, and unmodelable rows are *carried*
-//!   verbatim (the document codec) — a device re-publishes its whole
+//! - **Tolerant relay** ([`document`]). Unknown envelope keys,
+//!   unknown/reserved sections, unknown body keys, and unmodelable
+//!   rows are *carried* verbatim — a device re-publishes its whole
 //!   view, so anything it drops is lost to the fleet on that device's
 //!   death. Reserved section names (`settings`, `proofs`) are relayed
 //!   when seen and never emitted.
-//! - **A total, input-order-free fold**: per entry key the winner is
-//!   the max over `(rank, clock, author, content)` — no input
-//!   permutation can change any winner, which is what makes the
+//! - **A total, input-order-free fold** ([`fold`]): per entry key the
+//!   winner is the max over `(rank, clock, author, content)` — no
+//!   input permutation can change any winner, which is what makes the
 //!   commutativity/idempotence/associativity laws hold by
 //!   construction (they are proptested as the fold's contract).
-//! - **A tagged state hash** over the canonicalised merged document,
-//!   so heartbeat hashes and published files agree by construction.
+//! - **A tagged state hash** ([`hash`]) over the canonicalised merged
+//!   document, so heartbeat hashes and published files agree by
+//!   construction.
 //!
 //! Crate invariant: **zero IO** — no filesystem, no network, no async
 //! runtime, no UI dependency. Everything here is a pure function over
@@ -38,11 +39,13 @@
 //!
 //! Module map: identifiers ([`ids`]), the tree taxonomy ([`layout`]),
 //! identity payloads ([`identity`]), the heartbeat payload
-//! ([`heartbeat`]), the state-hash token ([`hash`]).
+//! ([`heartbeat`]), the per-user document codec ([`document`]), the
+//! merge fold ([`fold`]), the state hash ([`hash`]).
 
 #![forbid(unsafe_code)]
 
 pub mod document;
+pub mod fold;
 pub mod hash;
 pub mod heartbeat;
 pub mod identity;
