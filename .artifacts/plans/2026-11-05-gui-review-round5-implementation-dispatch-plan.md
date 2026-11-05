@@ -8,10 +8,10 @@
   (normative: §2 root-cause map, §3 decisions D1–D8, §4.1–§4.8 chunk
   designs, §6 test hooks, §7 chunk mapping, §8 risks), plus the
   user's 2026-11-05 session rulings Q1–Q6 recorded there as D1–D6
-  (D7 pending — see chunk 8's gate).
-- **Status**: READY except **chunk 8** (gated on the user's D7
-  account-first flow ruling and on DR-8 chunk 2 / #630 landing or the
-  config-detection fallback) and the deferred items in §5 of the
+  (D7 ruled accepted 2026-11-05 — see chunk 8's remaining gate).
+- **Status**: READY except **chunk 8** (gated only on DR-8 chunk 2 /
+  #630 landing or the config-detection fallback; the D7 account-first
+  flow was ruled accepted by the user on 2026-11-05) and the deferred items in §5 of the
   origin (markdown view-mode chunk D1b dispatches after its spike is
   written into a follow-up; W5b hostable sub-surfaces is a separate
   future design round, deliberately not dispatched here).
@@ -27,7 +27,7 @@
 | 5 | §4.5, D3 | `feat/app-live-settings` | Domain `SettingsSnapshot` + `UpdateSettings`; engine ownership + `SettingsChanged`; actor live re-reads; UI live badges + apply-semantics registry | L |
 | 6 | §4.6, D2 | `feat/state-deadline-reminders` | Deadline-driven firing loop; tick default 30→1; per-tick cost audit + sweep gating | M |
 | 7 | §4.7, D4 | `refactor/ui-slint-keybind-scopes` | The registered key-scope stack; the editor scope + preset command tables (emacs/vi, single-slot clipboard); the printable monopoly; retire the four intercept special cases | L |
-| 8 | §4.8, D7 (gated) | `feat/app-account-connections` | Account-first connections section; `ListRemoteBoards`; explicit remote bind; create-local-from-remote | M |
+| 8 | §4.8, D7 | `feat/app-account-connections` | Account-first connections section; `ListRemoteBoards`; explicit remote bind; create-local-from-remote | M |
 
 **Dependency graph**: default dispatch order 1 → 2 → 3 → 4 → 7 → 5 →
 6 → 8. Chunks 1, 2, 3 are mutually order-independent (disjoint files
@@ -35,7 +35,8 @@ except small `app-window.slint` mount blocks — parallel lanes
 acceptable, rebase-light); 4 may parallel 3; **7 is gated on 2
 merging** (the editor is the scope's first consumer); **6 is gated on
 5** (the same engine loop; tick becomes live-adjustable); **8 is
-gated on the human D7 ruling + DR-8 #630 or config detection**.
+gated on DR-8 #630 or config detection (the human D7 ruling landed
+2026-11-05)**.
 
 **Dispatch mechanics**: one agent session per prompt, in order
 (N.1 → N.2 → N.3 within a chunk); independent chunks may run
@@ -581,7 +582,7 @@ Report: verdict, findings, fixes, PR URL, green checks, worktree removed. Never 
 
 ## 9. Chunk 8 — account-first connections (`feat/app-account-connections`)
 
-- **Covers**: origin §4.8 + D7, normative-pending-ruling. The
+- **Covers**: origin §4.8 + D7, normative. The
   account-card connections section (sign-in form; account list
   grouped from connectors by `(server_url, username)`; per-account
   service toggles — Deck = connector presence, Files =
@@ -589,9 +590,9 @@ Report: verdict, findings, fixes, PR URL, green checks, worktree removed. Never 
   `ListRemoteBoards` request; explicit remote-id bind (title-match
   adoption retires); create-local-from-remote (`CreateBoard` +
   `BindBoard`); keyboard operability via the stop grammar; the
-  local-board picker reuses the overlay dropdown. **Gated on: (a)
-  the user's D7 ruling; (b) DR-8 chunk 2 (#630) landed or the Files
-  toggle hidden behind config detection.** Non-goals: `[[accounts]]`
+  local-board picker reuses the overlay dropdown. **Gated on: DR-8 chunk 2
+  (#630) landed or the Files toggle hidden behind config detection
+  (the user's D7 ruling landed 2026-11-05).** Non-goals: `[[accounts]]`
   config reshaping (fenced), Deck board-creation push (backlog),
   account-removal cascade (backlog), any filesync crate changes.
 - **Acceptance**: the fake-engine journey completes sign-in →
@@ -607,7 +608,7 @@ Report: verdict, findings, fixes, PR URL, green checks, worktree removed. Never 
 ```text
 You are the stage-1 PLANNING agent for chunk 8 of GUI review round 5 ("account-first connections", branch feat/app-account-connections) in the taskboard repo at /home/viktoria/src/taskboard.
 
-Preconditions: (a) the user must have ruled D7 (account-first flow) in the round plan's status header or in chat — if the ruling is absent, STOP and report instead of planning. (b) DR-8 chunk 2 (#630) merged in origin/main, OR the plan takes the config-detection fallback for the Files toggle — verify and record which.
+Precondition: DR-8 chunk 2 (#630) must be merged in origin/main, OR this plan takes the config-detection fallback for the Files toggle — verify and record which. (The D7 account-first ruling landed 2026-11-05; no human gate remains.)
 
 1. Read AGENTS.md, then the round plan §2 (row F14), §3 D7 (including the rejected alternatives and the three-layer concept model), §4.8 — normative — and this dispatch plan §1/§9. Also the r4 connections plan .artifacts/plans/2026-11-01-ui-r4-settings-connections-plan.md (what D39 built and which of its decisions this chunk supersedes) and the filesync round's D-SF10 (config/credential shape this must not disturb).
 2. Read the current machinery: settings-view.slint connections section (640-847) + BoardPicker (366-430); src/adapter.rs settings seams (4058-4190) + push_settings/board_selector_model (3552-3718); src/requests.rs (the settings request surface + ConnectionsSnapshot 36-62); taskboard-app/src/ui_requests.rs (attach_connection 662-767 — the title-match arm being retired, SaveConnection 537-606, current_connections 920-959); connectors.rs + connections.rs (config groupings, overlay writes); secrets.rs (the account-shaped credential key); taskboard-domain BindBoard/UnbindBoard (command.rs 1734-1863).

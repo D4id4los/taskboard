@@ -1,12 +1,13 @@
 # [Plan] GUI Review Round 5 — Fix Round (multi-line editing, anchored flyouts, focus coverage, live settings, deadline-driven reminders, keybind context stack, account-first connections)
 
 - **Date**: 2026-11-05
-- **Status**: ACCEPTED-PENDING-FLOW-RULING — written from the user's
+- **Status**: ACCEPTED — written from the user's
   2026-11-05 GUI review round 5 (19 findings, R5-F1…R5-F19 below).
   Session rulings Q1–Q6 of 2026-11-05 are confirmed and recorded as
-  §3 decisions D1–D8; **D7 (the account-first connection flow) is the
-  recommended design awaiting the user's explicit ruling** — the plan
-  is otherwise dispatchable. Companion dispatch plan:
+  §3 decisions D1–D8; **D7 (the account-first connection flow) was
+  ruled ACCEPTED by the user on 2026-11-05** — every chunk is
+  dispatchable, chunk 8 additionally gated on DR-8 chunk 2 (#630)
+  or its config-detection fallback. Companion dispatch plan:
   `.artifacts/plans/2026-11-05-gui-review-round5-implementation-dispatch-plan.md`
   — **8 chunks**, serial default with named gates.
 - **Scope**: `taskboard-ui-slint` (most chunks) + `taskboard-domain` /
@@ -196,8 +197,8 @@ D1's view-mode staging follows from this.
    **overrides the recorded "no window overlay" decision** at
    `dropdown.slint:251-257` (r4 D39's frugality clause); the
    coordinate-space defect (F9) is subsumed.
-7. **D7 — account-first connections (F14, Q6b — **recommended,
-   awaiting the user's ruling**)**: see §4.8. The concept model is
+7. **D7 — account-first connections (F14, Q6b — ruled ACCEPTED by
+   the user, 2026-11-05)**: see §4.8. The concept model is
    three-layer — **account** (server + username + credential; the
    keyring key `(server_url, username)` is already account-shaped) →
    **services** enabled per account (Deck boards = the connector;
