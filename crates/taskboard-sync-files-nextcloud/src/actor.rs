@@ -208,7 +208,10 @@ mod tests {
     use taskboard_sync_files::document::{UserDocument, UserRecord, UserSections};
     use taskboard_sync_files::ids::AuthorId;
 
-    use crate::status::{CycleOutcome, FilesSyncStatus, ParkKind};
+    use taskboard_sync_files::hash::StateHash;
+    use taskboard_sync_files::ids::DeviceId;
+
+    use crate::status::{CycleOutcome, FilesSyncStatus, ParkKind, PeerFreshness};
     use crate::test_support::{Effect, FakeFilesTransport, RecordedRequest};
 
     const SELF: &str = "0193a1b2-c3d4-7cc9-8a2e-5f1e2d3c4b5a";
@@ -1314,5 +1317,214 @@ mod tests {
         let (dead_key, dead_record) = encode_row(&dead);
         assert_eq!(rows[&dead_key], dead_record);
         assert!(matches!(rows[&dead_key], UserRecord::Tombstone { .. }));
+    }
+
+    // -- chunk 4's findings: peer freshness + the divergence window ----
+
+    fn peer_id() -> DeviceId {
+        DeviceId::parse(PEER).expect("fixture peer id")
+    }
+
+    /// A heartbeat fixture with a chosen `state_hash` (the type decodes
+    /// any tagged string, so a disagreement is just a different one).
+    fn heartbeat_bytes(state_hash: &str) -> Vec<u8> {
+        serde_json::json!({
+            "app_version": "test",
+            "format_version": 1,
+            "last_clock": "2026-11-05T09:00:00Z",
+            "state_hash": state_hash,
+            "written_at": "2026-11-05T09:30:00Z"
+        })
+        .to_string()
+        .into_bytes()
+    }
+
+    /// The view hash this fleet would converge on for the given peer
+    /// text: read off the *published* own appdata (the honest source —
+    /// the fold's output, not a fixture-side recomputation).
+    fn published_view_hash(fake: &FakeFilesTransport) -> String {
+        let published = fake.file(&appdata_path(SELF)).expect("published");
+        let document: UserDocument = serde_json::from_slice(&published).expect("decodes");
+        StateHash::of(&document).to_string()
+    }
+
+    /// 16 — a peer heartbeat lands in the watch: `status.peers` maps
+    /// the decoded `info.json` facts.
+    #[tokio::test(start_paused = true)]
+    async fn matrix_16_peer_heartbeat_lands_in_the_watch() {
+        let fake = FakeFilesTransport::new();
+        seed_peer(&fake, "v1");
+        fake.seed_file(&info_path(PEER), heartbeat_bytes("fnv1a64:whatever"));
+        let harness = spawn_actor(fake);
+        let status = next_status(&harness).await;
+        assert!(ok(&status), "{status:?}");
+        let freshness = status.peers.get(&peer_id()).expect("peer freshness");
+        assert_eq!(
+            freshness,
+            &PeerFreshness {
+                written_at: "2026-11-05T09:30:00Z".parse().expect("clock"),
+                last_clock: "2026-11-05T09:00:00Z".parse().expect("clock"),
+            }
+        );
+    }
+
+    /// 17 — divergence never fires while writes pend: a changing peer
+    /// keeps the view moving (published every cycle ⇒ busy), so the
+    /// disagreeing heartbeat can never close the window.
+    #[tokio::test(start_paused = true)]
+    async fn matrix_17_divergence_never_fires_while_writes_pend() {
+        let fake = FakeFilesTransport::new();
+        seed_peer(&fake, "v1");
+        fake.seed_file(&info_path(PEER), heartbeat_bytes("fnv1a64:disagreeing"));
+        let harness = spawn_actor(fake);
+        for round in 0..3 {
+            harness
+                .fake
+                .seed_file(&appdata_path(PEER), doc_bytes(&doc(&format!("v{round}"))));
+            let status = next_cycle(&harness).await;
+            assert!(ok(&status), "{status:?}");
+            assert!(
+                status.diverged_from.is_empty(),
+                "busy cycle must reset, not fire: {status:?}"
+            );
+            assert!(status.peers.contains_key(&peer_id()));
+        }
+    }
+
+    /// 18 — the window fires: a disagreeing heartbeat observed on the
+    /// first quiet cycle does not fire; the second consecutive quiet
+    /// cycle does.
+    #[tokio::test(start_paused = true)]
+    async fn matrix_18_the_quiescence_window_is_two_cycles() {
+        let fake = FakeFilesTransport::new();
+        seed_peer(&fake, "v1");
+        let harness = spawn_actor(fake);
+        let status = next_status(&harness).await;
+        assert!(ok(&status));
+        // Rewrite only the heartbeat: disagreeing hash, content same.
+        harness.fake.stage(Effect::Pass);
+        harness
+            .fake
+            .seed_file(&info_path(PEER), heartbeat_bytes("fnv1a64:disagreeing"));
+        let status = next_cycle(&harness).await;
+        assert!(ok(&status));
+        assert!(
+            status.diverged_from.is_empty(),
+            "the first quiet cycle must not fire: {status:?}"
+        );
+        let status = next_cycle(&harness).await;
+        assert!(ok(&status));
+        assert_eq!(
+            status.diverged_from,
+            std::collections::BTreeSet::from([peer_id()]),
+            "the second quiet cycle closes the window: {status:?}"
+        );
+    }
+
+    /// 19 — agreement clears: a restored matching heartbeat empties
+    /// the finding on the next quiet cycle.
+    #[tokio::test(start_paused = true)]
+    async fn matrix_19_agreement_clears_the_finding() {
+        let fake = FakeFilesTransport::new();
+        seed_peer(&fake, "v1");
+        let harness = spawn_actor(fake);
+        let status = next_status(&harness).await;
+        assert!(ok(&status));
+        harness
+            .fake
+            .seed_file(&info_path(PEER), heartbeat_bytes("fnv1a64:disagreeing"));
+        let _ = next_cycle(&harness).await;
+        let status = next_cycle(&harness).await;
+        assert_eq!(
+            status.diverged_from,
+            std::collections::BTreeSet::from([peer_id()])
+        );
+        let matching = published_view_hash(&harness.fake);
+        harness.fake.stage(Effect::Pass);
+        harness
+            .fake
+            .seed_file(&info_path(PEER), heartbeat_bytes(&matching));
+        let status = next_cycle(&harness).await;
+        assert!(ok(&status));
+        assert!(
+            status.diverged_from.is_empty(),
+            "agreement is evidence too: {status:?}"
+        );
+    }
+
+    /// 20 — parked exclusion: a garbage peer document quarantines the
+    /// park, and the (healthy, disagreeing) heartbeat can never fire
+    /// divergence for a peer this device cannot fold.
+    #[tokio::test(start_paused = true)]
+    async fn matrix_20_parked_peer_is_never_diverged() {
+        let fake = FakeFilesTransport::new();
+        let dirs = dirs_of(&[SELF, PEER]);
+        let refs: Vec<&str> = dirs.iter().map(String::as_str).collect();
+        fake.seed_dirs(&refs);
+        fake.seed_file(&appdata_path(PEER), b"{{{ not json".to_vec());
+        fake.seed_file(&info_path(PEER), heartbeat_bytes("fnv1a64:disagreeing"));
+        let harness = spawn_actor(fake);
+        let status = next_status(&harness).await;
+        assert!(ok(&status));
+        assert_eq!(
+            status.parked.get(&appdata_path(PEER)),
+            Some(&ParkKind::Quarantined)
+        );
+        assert!(status.diverged_from.is_empty());
+    }
+
+    /// 21 — vanish: after the finding is active, the peer subtree's
+    /// removal drops it from `peers` and `diverged_from` on the next
+    /// Ok cycle.
+    #[tokio::test(start_paused = true)]
+    async fn matrix_21_vanished_peer_drops_from_freshness_and_divergence() {
+        let fake = FakeFilesTransport::new();
+        seed_peer(&fake, "v1");
+        fake.seed_file(&info_path(PEER), heartbeat_bytes("fnv1a64:disagreeing"));
+        let harness = spawn_actor(fake);
+        let _ = next_status(&harness).await;
+        // Attach was busy; two quiet cycles close the window.
+        let _ = next_cycle(&harness).await;
+        let status = next_cycle(&harness).await;
+        assert!(status.diverged_from.contains(&peer_id()));
+        harness
+            .fake
+            .remove_device_subtree(&format!("taskboard/devices/{PEER}"));
+        let status = next_cycle(&harness).await;
+        assert!(ok(&status));
+        assert!(!status.peers.contains_key(&peer_id()), "{status:?}");
+        assert!(status.diverged_from.is_empty(), "{status:?}");
+    }
+
+    /// 22 — the Failed row of the rule table: a transport failure
+    /// between the two quiet cycles holds the streak (it neither
+    /// advances nor resets), so the window still closes on the next
+    /// quiet cycle.
+    #[tokio::test(start_paused = true)]
+    async fn matrix_22_a_failed_cycle_holds_the_window() {
+        let fake = FakeFilesTransport::new();
+        seed_peer(&fake, "v1");
+        let harness = spawn_actor(fake);
+        let status = next_status(&harness).await;
+        assert!(ok(&status));
+        // Quiet cycle 1: the disagreeing heartbeat is observed.
+        harness.fake.stage(Effect::Pass);
+        harness
+            .fake
+            .seed_file(&info_path(PEER), heartbeat_bytes("fnv1a64:disagreeing"));
+        let _ = next_cycle(&harness).await;
+        // A failing cycle: the PROPFIND (the cycle's first request)
+        // answers 503 — no evidence, the streak must hold at 1.
+        harness.fake.stage(Effect::Status(503));
+        let status = next_cycle(&harness).await;
+        assert_eq!(status.last_cycle, Some(CycleOutcome::Failed));
+        // Quiet cycle 2 (the peer is still dirty): the window closes.
+        let status = next_cycle(&harness).await;
+        assert!(ok(&status));
+        assert_eq!(
+            status.diverged_from,
+            std::collections::BTreeSet::from([peer_id()]),
+            "the failure held the streak, it did not reset it: {status:?}"
+        );
     }
 }

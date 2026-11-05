@@ -10,6 +10,20 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, Utc};
 
+use taskboard_sync_files::ids::DeviceId;
+
+/// A peer device's latest decoded heartbeat — the freshness inputs
+/// (design Part F's "synced as of N min ago" consumer). Presence
+/// facts only; the divergence comparison consumes `info.json`'s
+/// `state_hash` actor-side and never surfaces it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerFreshness {
+    /// When the peer last wrote its heartbeat (presence freshness).
+    pub written_at: DateTime<Utc>,
+    /// The newest entry clock the peer has folded (data freshness).
+    pub last_clock: DateTime<Utc>,
+}
+
 /// How the last cycle ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CycleOutcome {
@@ -49,4 +63,12 @@ pub struct FilesSyncStatus {
     pub parked: BTreeMap<String, ParkKind>,
     /// When this device last wrote its own heartbeat (`info.json`).
     pub last_heartbeat_written: Option<DateTime<Utc>>,
+    /// Latest decoded heartbeat per peer (freshness is an age display,
+    /// never an alarm — no thresholds live here).
+    pub peers: BTreeMap<DeviceId, PeerFreshness>,
+    /// Peers whose heartbeat state hash disagrees with this device's
+    /// current view past the quiescence window (two consecutive quiet
+    /// cycles — the pure derivation in `cycle.rs`). Empty means
+    /// converged — or not yet judgeable.
+    pub diverged_from: BTreeSet<DeviceId>,
 }
