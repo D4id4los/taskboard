@@ -108,11 +108,17 @@ yanked = "warn"
 # upgrade exists below that stack; revisit at the zbus-6 refresh
 # (#440 — successor of the closed #311, whose CI-failure half these
 # ignores remediated).
+#
+# RUSTSEC-2026-0441: `pin-utils` is unmaintained (archived 2026-10-01,
+# no vulnerability known) — arrives transitively via slint →
+# i-slint-renderer-skia → spin_on; no safe upgrade exists below that
+# stack (same class as the entries above).
 ignore = [
     "RUSTSEC-2026-0192",
     "RUSTSEC-2026-0370",
     "RUSTSEC-2026-0371",
     "RUSTSEC-2026-0372",
+    "RUSTSEC-2026-0441",
 ]
 
 [sources]
