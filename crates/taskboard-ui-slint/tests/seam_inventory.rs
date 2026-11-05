@@ -15,9 +15,10 @@
 
 const ADAPTER_SOURCE: &str = include_str!("../src/adapter.rs");
 
-/// The 172 installed window callbacks in `adapter.rs` as of the
-/// chunk-4.2 base (plan §2.1 census; the #275 close comment counted
-/// 110 at `5d8c0751` — the seam surface grows ~30 installs per GUI
+/// The 175 installed window callbacks in `adapter.rs` as of the
+/// focus-settings-editor chunk (plan §2.1 census; the #275 close
+/// comment counted 110 at `5d8c0751` — the seam surface grows ~30
+/// installs per GUI
 /// round, so this list changes on purpose when a new seam lands, and
 /// both test sides force the list to stay honest).
 const SEAM_INVENTORY: &[&str] = &[
@@ -103,6 +104,9 @@ const SEAM_INVENTORY: &[&str] = &[
     "settings_board_selected",
     "settings_detach_selected",
     "settings_field_edited",
+    "settings_focus_chain_picked",
+    "settings_focus_enabled_picked",
+    "settings_focus_notify_picked",
     "settings_general_committed",
     "settings_general_focus_lost",
     "settings_preset_picked",

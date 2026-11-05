@@ -197,6 +197,11 @@ export component AppWindow inherits Window {
     callback settings-general-focus-lost(int);
     callback settings-reminders-picked(int);
     callback settings-sink-picked(int);
+    // The [focus] section's pick seams (the focus settings editor,
+    // #625).
+    callback settings-focus-enabled-picked(int);
+    callback settings-focus-chain-picked(int);
+    callback settings-focus-notify-picked(int);
     in-out property <BoardModel> board-model;
     in-out property <BoardBarModel> board-bar-model;
     in-out property <StackDetailModel> stack-model;
@@ -416,6 +421,9 @@ export component AppWindow inherits Window {
                 general-focus-lost(f) => root.settings-general-focus-lost(f);
                 reminders-picked(i) => root.settings-reminders-picked(i);
                 sink-picked(i) => root.settings-sink-picked(i);
+                focus-enabled-picked(i) => root.settings-focus-enabled-picked(i);
+                focus-chain-picked(i) => root.settings-focus-chain-picked(i);
+                focus-notify-picked(i) => root.settings-focus-notify-picked(i);
             }
             if (root.current-view == View.plan-next-day): PlanNextDayView {
                 plan: root.plan-model;

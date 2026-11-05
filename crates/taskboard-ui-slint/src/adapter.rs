@@ -3129,6 +3129,12 @@ struct SettingsVm {
     backoff_initial_draft: Option<String>,
     backoff_max_draft: Option<String>,
     due_soon_draft: Option<String>,
+    /// The focus minutes' staged buffers (the focus settings editor,
+    /// #625): the same grammar as the other general text fields.
+    focus_work_draft: Option<String>,
+    focus_break_draft: Option<String>,
+    focus_long_break_draft: Option<String>,
+    focus_every_draft: Option<String>,
 }
 
 impl SettingsVm {
@@ -3193,11 +3199,21 @@ enum GeneralField {
     BackoffInitial,
     BackoffMax,
     DueSoonDays,
+    FocusWorkMins,
+    FocusBreakMins,
+    FocusLongBreakMins,
+    FocusLongBreakEvery,
 }
 
 impl GeneralField {
     /// The `field-edited` index contract the view's general rows
-    /// carry (the connector form owns 0–3, the scale field 4).
+    /// carry (the connector form owns 0–3, the scale field 4, the
+    /// general fields 5–11, the focus minutes 12–15).
+    const FOCUS_WORK_INDEX: usize = 12;
+    const FOCUS_BREAK_INDEX: usize = 13;
+    const FOCUS_LONG_BREAK_INDEX: usize = 14;
+    const FOCUS_EVERY_INDEX: usize = 15;
+
     fn from_index(index: usize) -> Option<Self> {
         match index {
             5 => Some(Self::DayStart),
@@ -3207,6 +3223,10 @@ impl GeneralField {
             9 => Some(Self::BackoffInitial),
             10 => Some(Self::BackoffMax),
             11 => Some(Self::DueSoonDays),
+            Self::FOCUS_WORK_INDEX => Some(Self::FocusWorkMins),
+            Self::FOCUS_BREAK_INDEX => Some(Self::FocusBreakMins),
+            Self::FOCUS_LONG_BREAK_INDEX => Some(Self::FocusLongBreakMins),
+            Self::FOCUS_EVERY_INDEX => Some(Self::FocusLongBreakEvery),
             _ => None,
         }
     }
@@ -3222,6 +3242,10 @@ impl GeneralField {
             Self::BackoffInitial => "sync.backoff_initial_secs",
             Self::BackoffMax => "sync.backoff_max_secs",
             Self::DueSoonDays => "ui.due_soon_days",
+            Self::FocusWorkMins => "focus.work_mins",
+            Self::FocusBreakMins => "focus.break_mins",
+            Self::FocusLongBreakMins => "focus.long_break_mins",
+            Self::FocusLongBreakEvery => "focus.long_break_every",
         }
     }
 
@@ -3234,6 +3258,10 @@ impl GeneralField {
             Self::BackoffInitial => crate::requests::Field::BackoffInitial,
             Self::BackoffMax => crate::requests::Field::BackoffMax,
             Self::DueSoonDays => crate::requests::Field::DueSoonDays,
+            Self::FocusWorkMins => crate::requests::Field::FocusWorkMins,
+            Self::FocusBreakMins => crate::requests::Field::FocusBreakMins,
+            Self::FocusLongBreakMins => crate::requests::Field::FocusLongBreakMins,
+            Self::FocusLongBreakEvery => crate::requests::Field::FocusLongBreakEvery,
         }
     }
 
@@ -3247,6 +3275,10 @@ impl GeneralField {
             }
             Self::ReminderBefore => settings_form::before_invalid_kind(text),
             Self::DueSoonDays => settings_form::due_soon_invalid_kind(text),
+            Self::FocusWorkMins | Self::FocusBreakMins | Self::FocusLongBreakMins => {
+                settings_form::focus_mins_invalid_kind(text)
+            }
+            Self::FocusLongBreakEvery => settings_form::focus_every_invalid_kind(text),
         }
     }
 
@@ -3272,6 +3304,10 @@ impl GeneralField {
             Self::BackoffInitial => snapshot.backoff_initial_secs.to_string(),
             Self::BackoffMax => snapshot.backoff_max_secs.to_string(),
             Self::DueSoonDays => snapshot.due_soon_days.to_string(),
+            Self::FocusWorkMins => snapshot.focus_work_mins.to_string(),
+            Self::FocusBreakMins => snapshot.focus_break_mins.to_string(),
+            Self::FocusLongBreakMins => snapshot.focus_long_break_mins.to_string(),
+            Self::FocusLongBreakEvery => snapshot.focus_long_break_every.to_string(),
         }
     }
 }
@@ -3935,6 +3971,10 @@ impl Adapter {
             (GeneralField::BackoffInitial, &vm.backoff_initial_draft),
             (GeneralField::BackoffMax, &vm.backoff_max_draft),
             (GeneralField::DueSoonDays, &vm.due_soon_draft),
+            (GeneralField::FocusWorkMins, &vm.focus_work_draft),
+            (GeneralField::FocusBreakMins, &vm.focus_break_draft),
+            (GeneralField::FocusLongBreakMins, &vm.focus_long_break_draft),
+            (GeneralField::FocusLongBreakEvery, &vm.focus_every_draft),
         ] {
             let predicate: fn(&str) -> Option<settings_form::InvalidKind> = match gf {
                 GeneralField::DayStart => settings_form::day_start_invalid_kind,
@@ -3944,6 +3984,10 @@ impl Adapter {
                 | GeneralField::BackoffMax => settings_form::secs_invalid_kind,
                 GeneralField::ReminderBefore => settings_form::before_invalid_kind,
                 GeneralField::DueSoonDays => settings_form::due_soon_invalid_kind,
+                GeneralField::FocusWorkMins
+                | GeneralField::FocusBreakMins
+                | GeneralField::FocusLongBreakMins => settings_form::focus_mins_invalid_kind,
+                GeneralField::FocusLongBreakEvery => settings_form::focus_every_invalid_kind,
             };
             let status = draft
                 .as_deref()
@@ -4015,6 +4059,34 @@ impl Adapter {
                     global.set_due_soon_env_locked(env_locked);
                     global.set_due_soon_on_restart(on_restart);
                 }
+                GeneralField::FocusWorkMins => {
+                    global.set_focus_work_echo(echo);
+                    global.set_validity_focus_work(validity);
+                    global.set_error_focus_work(error.into());
+                    global.set_focus_work_env_locked(env_locked);
+                    global.set_focus_work_on_restart(on_restart);
+                }
+                GeneralField::FocusBreakMins => {
+                    global.set_focus_break_echo(echo);
+                    global.set_validity_focus_break(validity);
+                    global.set_error_focus_break(error.into());
+                    global.set_focus_break_env_locked(env_locked);
+                    global.set_focus_break_on_restart(on_restart);
+                }
+                GeneralField::FocusLongBreakMins => {
+                    global.set_focus_long_break_echo(echo);
+                    global.set_validity_focus_long_break(validity);
+                    global.set_error_focus_long_break(error.into());
+                    global.set_focus_long_break_env_locked(env_locked);
+                    global.set_focus_long_break_on_restart(on_restart);
+                }
+                GeneralField::FocusLongBreakEvery => {
+                    global.set_focus_every_echo(echo);
+                    global.set_validity_focus_every(validity);
+                    global.set_error_focus_every(error.into());
+                    global.set_focus_every_env_locked(env_locked);
+                    global.set_focus_every_on_restart(on_restart);
+                }
             }
         }
         // The choice echoes and facts.
@@ -4034,6 +4106,26 @@ impl Adapter {
         global.set_sink_env_locked(vm.snapshot.env_overridden.contains("reminders.sink"));
         global.set_sink_on_restart(
             vm.snapshot.applies.get("reminders.sink").copied()
+                == Some(crate::requests::SectionApply::OnRestart),
+        );
+        // The focus choice echoes (commit-on-pick, the reminders
+        // grammar): index 0 = On, 1 = Off.
+        global.set_focus_enabled_index(i32::from(!vm.snapshot.focus_enabled));
+        global.set_focus_enabled_env_locked(vm.snapshot.env_overridden.contains("focus.enabled"));
+        global.set_focus_enabled_on_restart(
+            vm.snapshot.applies.get("focus.enabled").copied()
+                == Some(crate::requests::SectionApply::OnRestart),
+        );
+        global.set_focus_chain_index(i32::from(!vm.snapshot.focus_chain));
+        global.set_focus_chain_env_locked(vm.snapshot.env_overridden.contains("focus.chain"));
+        global.set_focus_chain_on_restart(
+            vm.snapshot.applies.get("focus.chain").copied()
+                == Some(crate::requests::SectionApply::OnRestart),
+        );
+        global.set_focus_notify_index(i32::from(!vm.snapshot.focus_notify));
+        global.set_focus_notify_env_locked(vm.snapshot.env_overridden.contains("focus.notify"));
+        global.set_focus_notify_on_restart(
+            vm.snapshot.applies.get("focus.notify").copied()
                 == Some(crate::requests::SectionApply::OnRestart),
         );
         let rows: Vec<crate::SettingsFactRow> = vm
@@ -4110,6 +4202,26 @@ impl Adapter {
             }
             11 => {
                 self.settings.due_soon_draft = Some(text.to_owned());
+                self.push_settings(window);
+                return;
+            }
+            GeneralField::FOCUS_WORK_INDEX => {
+                self.settings.focus_work_draft = Some(text.to_owned());
+                self.push_settings(window);
+                return;
+            }
+            GeneralField::FOCUS_BREAK_INDEX => {
+                self.settings.focus_break_draft = Some(text.to_owned());
+                self.push_settings(window);
+                return;
+            }
+            GeneralField::FOCUS_LONG_BREAK_INDEX => {
+                self.settings.focus_long_break_draft = Some(text.to_owned());
+                self.push_settings(window);
+                return;
+            }
+            GeneralField::FOCUS_EVERY_INDEX => {
+                self.settings.focus_every_draft = Some(text.to_owned());
                 self.push_settings(window);
                 return;
             }
@@ -4483,6 +4595,10 @@ impl Adapter {
     /// the committed counterpart, the error attributed to the
     /// offending field; the app-side gate re-proves the whole
     /// document authoritatively.
+    // The minting match is one arm per field of the closed
+    // GeneralField table — the arm count tracks the table, not the
+    // seam's own complexity.
+    #[allow(clippy::too_many_lines)]
     pub(crate) fn settings_general_committed(
         &mut self,
         window: &AppWindow,
@@ -4574,6 +4690,22 @@ impl Adapter {
                 days: trimmed.parse().expect("validated days parse"),
                 reply,
             },
+            GeneralField::FocusWorkMins => UiRequest::SetFocusWorkMins {
+                mins: trimmed.parse().expect("validated focus-minutes parse"),
+                reply,
+            },
+            GeneralField::FocusBreakMins => UiRequest::SetFocusBreakMins {
+                mins: trimmed.parse().expect("validated focus-minutes parse"),
+                reply,
+            },
+            GeneralField::FocusLongBreakMins => UiRequest::SetFocusLongBreakMins {
+                mins: trimmed.parse().expect("validated focus-minutes parse"),
+                reply,
+            },
+            GeneralField::FocusLongBreakEvery => UiRequest::SetFocusLongBreakEvery {
+                every: trimmed.parse().expect("validated focus-every parse"),
+                reply,
+            },
         };
         self.clear_general_draft(gf);
         let sent = self.settings.send(
@@ -4622,6 +4754,122 @@ impl Adapter {
             &self.requests,
             request,
             PendingKind::General(crate::requests::Field::RemindersEnabled),
+            PendingReply::Snapshot(reply_rx),
+            "",
+        );
+        self.set_settings_outcome(
+            window,
+            if sent {
+                SettingsOutcome::Busy
+            } else {
+                SettingsOutcome::Failed
+            },
+            None,
+        );
+    }
+
+    /// The focus mode toggle's seam (commit-on-pick, the reminders
+    /// grammar): index 0 = On, 1 = Off.
+    pub(crate) fn settings_focus_enabled_picked(&mut self, window: &AppWindow, index: usize) {
+        let Some(enabled) = [true, false].get(index).copied() else {
+            return;
+        };
+        if self.settings.pending.is_some() {
+            self.set_settings_outcome(window, SettingsOutcome::Rejected, None);
+            return;
+        }
+        if self
+            .settings
+            .snapshot
+            .env_overridden
+            .contains("focus.enabled")
+        {
+            tracing::debug!("focus enabled pick on an env-locked row; absorbed");
+            return;
+        }
+        let (reply, reply_rx) = oneshot::channel();
+        let request = UiRequest::SetFocusEnabled { enabled, reply };
+        let sent = self.settings.send(
+            &self.requests,
+            request,
+            PendingKind::General(crate::requests::Field::FocusEnabled),
+            PendingReply::Snapshot(reply_rx),
+            "",
+        );
+        self.set_settings_outcome(
+            window,
+            if sent {
+                SettingsOutcome::Busy
+            } else {
+                SettingsOutcome::Failed
+            },
+            None,
+        );
+    }
+
+    /// The auto-chain toggle's seam (commit-on-pick): 0 = On, 1 = Off.
+    pub(crate) fn settings_focus_chain_picked(&mut self, window: &AppWindow, index: usize) {
+        let Some(enabled) = [true, false].get(index).copied() else {
+            return;
+        };
+        if self.settings.pending.is_some() {
+            self.set_settings_outcome(window, SettingsOutcome::Rejected, None);
+            return;
+        }
+        if self
+            .settings
+            .snapshot
+            .env_overridden
+            .contains("focus.chain")
+        {
+            tracing::debug!("focus chain pick on an env-locked row; absorbed");
+            return;
+        }
+        let (reply, reply_rx) = oneshot::channel();
+        let request = UiRequest::SetFocusChain { enabled, reply };
+        let sent = self.settings.send(
+            &self.requests,
+            request,
+            PendingKind::General(crate::requests::Field::FocusChain),
+            PendingReply::Snapshot(reply_rx),
+            "",
+        );
+        self.set_settings_outcome(
+            window,
+            if sent {
+                SettingsOutcome::Busy
+            } else {
+                SettingsOutcome::Failed
+            },
+            None,
+        );
+    }
+
+    /// The boundary-notification toggle's seam (commit-on-pick):
+    /// 0 = On, 1 = Off.
+    pub(crate) fn settings_focus_notify_picked(&mut self, window: &AppWindow, index: usize) {
+        let Some(enabled) = [true, false].get(index).copied() else {
+            return;
+        };
+        if self.settings.pending.is_some() {
+            self.set_settings_outcome(window, SettingsOutcome::Rejected, None);
+            return;
+        }
+        if self
+            .settings
+            .snapshot
+            .env_overridden
+            .contains("focus.notify")
+        {
+            tracing::debug!("focus notify pick on an env-locked row; absorbed");
+            return;
+        }
+        let (reply, reply_rx) = oneshot::channel();
+        let request = UiRequest::SetFocusNotify { enabled, reply };
+        let sent = self.settings.send(
+            &self.requests,
+            request,
+            PendingKind::General(crate::requests::Field::FocusNotify),
             PendingReply::Snapshot(reply_rx),
             "",
         );
@@ -4696,6 +4944,12 @@ impl Adapter {
             GeneralField::BackoffInitial => self.settings.backoff_initial_draft.take().is_some(),
             GeneralField::BackoffMax => self.settings.backoff_max_draft.take().is_some(),
             GeneralField::DueSoonDays => self.settings.due_soon_draft.take().is_some(),
+            GeneralField::FocusWorkMins => self.settings.focus_work_draft.take().is_some(),
+            GeneralField::FocusBreakMins => self.settings.focus_break_draft.take().is_some(),
+            GeneralField::FocusLongBreakMins => {
+                self.settings.focus_long_break_draft.take().is_some()
+            }
+            GeneralField::FocusLongBreakEvery => self.settings.focus_every_draft.take().is_some(),
         };
         if cleared {
             self.push_settings(window);
@@ -4711,6 +4965,10 @@ impl Adapter {
             GeneralField::BackoffInitial => self.settings.backoff_initial_draft = None,
             GeneralField::BackoffMax => self.settings.backoff_max_draft = None,
             GeneralField::DueSoonDays => self.settings.due_soon_draft = None,
+            GeneralField::FocusWorkMins => self.settings.focus_work_draft = None,
+            GeneralField::FocusBreakMins => self.settings.focus_break_draft = None,
+            GeneralField::FocusLongBreakMins => self.settings.focus_long_break_draft = None,
+            GeneralField::FocusLongBreakEvery => self.settings.focus_every_draft = None,
         }
     }
 
@@ -4731,6 +4989,10 @@ impl Adapter {
         self.settings.backoff_initial_draft = None;
         self.settings.backoff_max_draft = None;
         self.settings.due_soon_draft = None;
+        self.settings.focus_work_draft = None;
+        self.settings.focus_break_draft = None;
+        self.settings.focus_long_break_draft = None;
+        self.settings.focus_every_draft = None;
         self.push_settings(window);
     }
 
@@ -5078,6 +5340,13 @@ pub(crate) fn install(
         global.set_help_due_soon(status::HELP_DUE_SOON.into());
         global.set_help_reminders(status::HELP_REMINDERS.into());
         global.set_help_sink(status::HELP_SINK.into());
+        global.set_help_focus_enabled(status::HELP_FOCUS_ENABLED.into());
+        global.set_help_focus_work(status::HELP_FOCUS_WORK_MINS.into());
+        global.set_help_focus_break(status::HELP_FOCUS_BREAK_MINS.into());
+        global.set_help_focus_chain(status::HELP_FOCUS_CHAIN.into());
+        global.set_help_focus_long_break(status::HELP_FOCUS_LONG_BREAK_MINS.into());
+        global.set_help_focus_every(status::HELP_FOCUS_LONG_BREAK_EVERY.into());
+        global.set_help_focus_notify(status::HELP_FOCUS_NOTIFY.into());
     }
 
     {
@@ -7864,6 +8133,38 @@ fn install_settings_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
                 return;
             };
             a.settings_sink_picked(&window, index);
+
+        });
+    }
+    // The focus section's pick seams (the focus settings editor,
+    // #625): the reminders grammar, one block per toggle.
+    {
+        install_seam!(window: window.on_settings_focus_enabled_picked, adapter: adapter;
+        bind mut (a, window), args (index), {            let Ok(index) = usize::try_from(index) else {
+                return;
+            };
+            a
+                .settings_focus_enabled_picked(&window, index);
+
+        });
+    }
+    {
+        install_seam!(window: window.on_settings_focus_chain_picked, adapter: adapter;
+        bind mut (a, window), args (index), {            let Ok(index) = usize::try_from(index) else {
+                return;
+            };
+            a
+                .settings_focus_chain_picked(&window, index);
+
+        });
+    }
+    {
+        install_seam!(window: window.on_settings_focus_notify_picked, adapter: adapter;
+        bind mut (a, window), args (index), {            let Ok(index) = usize::try_from(index) else {
+                return;
+            };
+            a
+                .settings_focus_notify_picked(&window, index);
 
         });
     }
