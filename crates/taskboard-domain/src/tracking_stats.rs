@@ -1,8 +1,166 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! The tracking-statistics projection (#623 slice A) — the pure folds
-//! behind the Review view's tracking sections. Red first: the laws
-//! below name the module's contract; the implementation lands in the
-//! follow-up commit.
+//! The tracking-statistics projection (#623 slice A) — the pure
+//! tracked-time folds behind the Review view's tracking sections (the
+//! `calibration.rs` precedent: `&entries` + window bounds + `now` in,
+//! typed readings out — no IO, no clock reads; `now` and every bound
+//! arrive as data and the consumer derives them per refresh pass).
+//!
+//! **Conventions** (each pinned by a law in the test module):
+//!
+//! - Every duration rides [`tracked_in_window`] — the single
+//!   overlap-sum clipping oracle; spans are conceptually split at day
+//!   boundaries, rows are never physically split, and no second
+//!   window-splitting implementation exists here.
+//! - Day buckets tile [`trailing_days_window`] exactly, composed
+//!   through [`window_start`] per local date (DST-safe by the
+//!   fixed-offset rule).
+//!
+//! **Known limitation (D-S5)**: time entries carry no focus-mode
+//! marker — the focus runtime is stateless and stamps nothing into
+//! [`TimeEntry`], so a tracked hour under focus mode and a plain
+//! tracked hour are indistinguishable in history. "Work blocks" are
+//! [`TimeEntryKind::Work`]-marked entries, never focus-mode spans;
+//! real focus-session statistics would need an entry-level marker (a
+//! future entity change, out of scope).
+
+use std::num::NonZeroU32;
+
+use chrono::{DateTime, Days, FixedOffset, NaiveDate, Utc};
+
+use crate::days::{trailing_days_window, window_start};
+use crate::tracking::{TimeEntry, TimeEntryKind, tracked_in_window};
+
+/// The Work/Respite split of one window's tracked time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct WindowSplit {
+    /// The `Work`-kind side — the `work_in_window` shape.
+    pub work: chrono::TimeDelta,
+    /// The `Respite`-kind side (break activity).
+    pub respite: chrono::TimeDelta,
+}
+
+impl WindowSplit {
+    /// The two arms summed — the whole equals `tracked_in_window` over
+    /// all rows (law L-1's tile).
+    #[must_use]
+    pub fn total(self) -> chrono::TimeDelta {
+        self.work + self.respite
+    }
+
+    /// True when neither kind tracked anything in the window.
+    #[must_use]
+    pub fn is_empty(self) -> bool {
+        self.total() == chrono::TimeDelta::zero()
+    }
+}
+
+/// The Work/Respite split of `window` as of `now`: both kinds fold
+/// through [`tracked_in_window`] — the single clipping oracle (the
+/// work side the `work_in_window` shape, the respite side its
+/// kind-filtered sibling). The kind filter is local here; no third
+/// window function joins the public family.
+#[must_use]
+pub fn window_split<'a>(
+    entries: impl IntoIterator<Item = &'a TimeEntry>,
+    window: (DateTime<Utc>, DateTime<Utc>),
+    now: DateTime<Utc>,
+) -> WindowSplit {
+    let rows: Vec<&TimeEntry> = entries.into_iter().collect();
+    let of_kind = |kind: TimeEntryKind| {
+        tracked_in_window(
+            rows.iter().copied().filter(|entry| entry.kind == kind),
+            window,
+            now,
+        )
+    };
+    WindowSplit {
+        work: of_kind(TimeEntryKind::Work),
+        respite: of_kind(TimeEntryKind::Respite),
+    }
+}
+
+/// One local day's split (the bucket identity rides along; the push
+/// pass consumes only the values — dates never cross into the model).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DayTotal {
+    /// The bucket's local (window) date.
+    pub date: NaiveDate,
+    /// That day-window's tracked-time split.
+    pub split: WindowSplit,
+}
+
+/// The trailing `days` local-day buckets, oldest first, tiling
+/// [`trailing_days_window`] exactly (law L-3): bucket *i* spans
+/// `[window_start(dateᵢ), window_start(dateᵢ₊₁))` over the trailing
+/// local dates — never `now − n·24h`. Per bucket:
+/// [`window_split`] over that bucket's own window, so the boundary
+/// split is performed by the oracle and never re-implemented here.
+#[must_use]
+pub fn daily_split_series<'a>(
+    entries: impl IntoIterator<Item = &'a TimeEntry>,
+    days: NonZeroU32,
+    day_start_time: chrono::NaiveTime,
+    offset: FixedOffset,
+    now: DateTime<Utc>,
+) -> Vec<DayTotal> {
+    let rows: Vec<&TimeEntry> = entries.into_iter().collect();
+    let (window_start_instant, _) = trailing_days_window(now, day_start_time, offset, days);
+    let first_date = window_start_instant.with_timezone(&offset).date_naive();
+    (0..days.get())
+        .map(|index| {
+            let date = first_date + Days::new(u64::from(index));
+            let start = window_start(date, day_start_time, offset);
+            let end = window_start(date + Days::new(1), day_start_time, offset);
+            DayTotal {
+                date,
+                split: window_split(rows.iter().copied(), (start, end), now),
+            }
+        })
+        .collect()
+}
+
+/// The Work-block reading of a window (#623 slice A, D-S5): **blocks
+/// are [`TimeEntryKind::Work`]-marked entries, not focus-mode spans** —
+/// time entries carry no focus-mode marker, so the vocabulary stays
+/// "Work blocks" (see the module doc's recorded limitation).
+///
+/// Membership mirrors the calibration precedent: the entry's *start*
+/// lies in the window (`start ∈ [window.start, window.end)`), and the
+/// work is never clipped — durations are full
+/// ([`TimeEntry::duration`](crate::tracking::TimeEntry::duration):
+/// open entries accrue to `now`, inverted spans clamp 0), so count and
+/// duration stay coherent (count × mean = total). A block started
+/// before the window is uncounted here while its in-window time still
+/// shows in [`window_split`] — two stated semantics, both honest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct WorkBlockReading {
+    /// How many Work-kind entries started in the window.
+    pub blocks: usize,
+    /// Their full summed duration as of `now`.
+    pub total: chrono::TimeDelta,
+}
+
+/// Derives the Work-block reading — see [`WorkBlockReading`].
+#[must_use]
+pub fn work_blocks<'a>(
+    entries: impl IntoIterator<Item = &'a TimeEntry>,
+    window: (DateTime<Utc>, DateTime<Utc>),
+    now: DateTime<Utc>,
+) -> WorkBlockReading {
+    entries
+        .into_iter()
+        .filter(|entry| {
+            entry.kind == TimeEntryKind::Work && entry.start >= window.0 && entry.start < window.1
+        })
+        .fold(
+            WorkBlockReading::default(),
+            |mut reading, entry: &TimeEntry| {
+                reading.blocks += 1;
+                reading.total += entry.duration(now);
+                reading
+            },
+        )
+}
 
 #[cfg(test)]
 mod tests {
@@ -124,7 +282,7 @@ mod tests {
                 offset_hours(2),
                 now,
             );
-            for (i, total) in series.iter().enumerate() {
+            for total in &series {
                 let b0 = crate::days::window_start(
                     total.date,
                     day_start_time,
@@ -136,7 +294,7 @@ mod tests {
                     offset_hours(2),
                 );
                 let oracle = window_split(&entries, (b0, b1), now);
-                prop_assert_eq!(total.split, oracle, "bucket {i} re-derives from the oracle");
+                prop_assert_eq!(total.split, oracle, "the bucket re-derives from the oracle");
             }
         }
     }
@@ -149,7 +307,7 @@ mod tests {
         let now = ts(1_781_524_800); // 2026-06-15 12:00 UTC
         for n in [1_u32, 7, 30] {
             let series = daily_split_series(
-                &[] as [&crate::tracking::TimeEntry; 0],
+                std::iter::empty::<&crate::tracking::TimeEntry>(),
                 days(n),
                 time(0, 0),
                 offset_hours(0),
@@ -238,7 +396,9 @@ mod tests {
         // The same window's split still shows the straddler's
         // in-window time (two stated semantics, both honest).
         let split = window_split(entries, window, now);
-        assert_eq!(split.work, secs(7_500), "the straddler clips in the split");
+        // The straddler's 7_500 in-window clip plus the inside block's
+        // full 1_000.
+        assert_eq!(split.work, secs(8_500), "the straddler clips in the split");
         // An open block accrues to `now`.
         let running = work(3, 9_000, None);
         let reading = work_blocks([&running], window, now);

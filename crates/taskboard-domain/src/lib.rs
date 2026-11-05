@@ -164,4 +164,7 @@ pub use tracking::{
     ClosedSpan, SpanRejected, TimeEntry, TimeEntryKind, TrackingState, WorkThreshold,
     accumulated_work, break_crossing, tracked_in_window, work_in_window,
 };
+pub use tracking_stats::{
+    DayTotal, WindowSplit, WorkBlockReading, daily_split_series, window_split, work_blocks,
+};
 pub use undo::{journal_push_marks, plan_journaled_command, plan_redo, plan_undo, pre_images};
