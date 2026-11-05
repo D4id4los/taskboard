@@ -23,6 +23,11 @@ pub enum TransportError {
     /// GET/PUT body).
     #[error("json encode/decode failure")]
     Json(#[from] serde_json::Error),
+    /// A 207 body the extractor rejected as not a well-formed
+    /// `multistatus` document (the hosted-tier drift posture: a
+    /// surprise is typed, never a crash).
+    #[error("malformed propfind listing")]
+    PropfindListing(#[from] crate::extract::PropfindParseError),
     /// Authentication failed (HTTP 401).
     #[error("authentication failed")]
     Unauthorized,
