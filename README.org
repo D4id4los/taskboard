@@ -73,6 +73,8 @@ taskboard/
     ├── taskboard-domain/         # Pure domain entities, message enums, and trait boundaries
     ├── taskboard-state/          # State Engine actor & ArcSwap state management
     ├── taskboard-sync-nextcloud/ # Nextcloud Deck OCS REST client actor (IO)
+    ├── taskboard-sync-files/     # Files-sync pure core (layout, codecs, fold, state hash)
+    ├── taskboard-sync-files-nextcloud/ # Files-sync WebDAV transport actor (IO)
     ├── taskboard-storage-sqlite/ # Local SQLite disk caching actor (IO)
     ├── taskboard-ui-slint/       # Slint presentation UI layer
     └── taskboard-app/            # Application runner & channel wiring binary
@@ -178,6 +180,25 @@ pixels) so it reopens where the user left it. It is device-local,
 never synced, and never needs hand-editing: delete the table to fall
 back to the default placement; an off-screen restore clamps back to
 the current monitor.
+
+*Files-sync* (optional): the per-user app-data roaming substrate
+(ADR 0020) over the same Nextcloud account the Deck connector uses —
+one account, one credential. Enable it with the =[files_sync]= table
+(absent table = off; nothing spawns):
+
+#+begin_src toml
+[files_sync]
+enabled = true
+poll_secs = 30          # optional; rides the Deck sync cadence by default
+#+end_src
+
+When enabled, the app keeps a =taskboard/= folder visible at the top
+of your Nextcloud file home and roams your per-user data across your
+devices. Status shows in two places: the status-bar chip (the desktop
+UI, when the substrate is running) and ~taskboard status~ (the
+=files-sync= block: last cycle, peer freshness, and any finding — a
+fork alarm, parked peer files, or diverged devices; recovery
+procedures live in =docs/files-sync-runbook.org=).
 
 =[preferences] day_start_time= accepts =HH:MM[:SS]= and sets the
 wall-clock time at which "today" begins (drives the today view's

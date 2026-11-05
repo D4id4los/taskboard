@@ -345,6 +345,33 @@ Hard rules binding the real-server tiers (2 and 3):
   tokens): repeated failures against a real server trip its brute-force
   protection and can lock the test account out.
 
+** The files transport (DR-8, ADR 0020)
+
+The files-sync substrate's two crates ride the same tier ladder, with
+a wire-tier flavour instead of OCS payloads:
+
+- *Tier 1 — hermetic.* The pure core's fold laws and codec roundtrips
+  are proptested/fuzzed in =taskboard-sync-files=; the transport
+  actor's fake-transport matrix (the scripted in-process WebDAV model
+  behind the =test-support= feature) pins every cycle behavior
+  deterministically under =tokio::time= pause — attach, adoption,
+  quarantine, the fork alarm, the quiescence-window divergence
+  finding, vanish semantics.
+- *Tier 2 — wiremock + docker.* The client's wire shapes against
+  wiremock; the =it_nextcloud_docker_files_*= pins re-prove the
+  characterization facts (F3 create-once, F4 lost-update guard with
+  the verbatim-etag rule, F5 etag churn, F6 tree etags) against the
+  controlled =nextcloud:= image.
+- *Tier 3 — hosted (local, manual only, =#[ignore]=).* The
+  =it_nextcloud_live_files_*= pins (=crates/taskboard-sync-files-
+  nextcloud/tests/it_live.rs=) re-point F3–F6 — plus the F8
+  trashbin-presence pin behind the runbook's recovery path — at the
+  real hosted tier, because a provider-managed server can drift at
+  upgrade time. Same =.env= convention as the Deck tier
+  (=TASKBOARD_IT_NEXTCLOUD_URL/USER/TOKEN=); skip-never-fail without
+  it. Drift between a pin and the hosted reality goes into the
+  known-server matrix above — never a hermetic-suite break.
+
 ** App-level E2E (binary-driving, tier-2 reuse)
 
 Phase 6 adds a fourth live surface to Tier 2: the =it_nextcloud_docker_cli_*=
