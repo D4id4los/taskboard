@@ -10,6 +10,17 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 ### Added
 
+- The focus mode's auto-chain and long-break cadence (#600, the
+  pomodoro follow-ups): with `[focus] chain = true` a runtime-driven
+  break end no longer parks in idle — the next focus block starts
+  itself on the same task, and the break after every Nth completed
+  work block (`[focus] long_break_every`, default 4) runs the long
+  length (`[focus] long_break_mins`, default 15). Chain position is
+  re-derived from tracked-entry history at every step (never stored),
+  so restarts mid-cycle resume the correct cadence; the user's own
+  Stop always wins and never chains. Gentle toast + chime at each
+  phase boundary by default (`[focus] notify = false` silences) —
+  focus users get boundary sounds from this version.
 - The files-sync substrate's pure core crate, `taskboard-sync-files`
   (#629, ADR 0020): the substrate tree's layout types and file-kind
   classifier (reserved `ops/`/`snapshot-` kinds unparseable by
