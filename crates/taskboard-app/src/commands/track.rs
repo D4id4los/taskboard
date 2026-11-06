@@ -20,7 +20,7 @@ use taskboard_domain::{
     AppState, CommandOutcome, DayCalendar, StateCommand, TimeEntryId, TrackingState,
 };
 
-use crate::cli::{ExportFormat, TrackCmd};
+use crate::cli::{ExportFormat, ExportWhat, TrackCmd};
 use crate::commands::CommandError;
 use crate::commands::output::{
     ExportRow, TrackAdjustReceipt, TrackDeleteReceipt, TrackEntryRow, TrackListView,
@@ -434,6 +434,70 @@ pub fn list_on(
 /// Only via `expect` on the day successor — unreachable for any
 /// representable filter date (the `day_start` comment).
 pub fn export_on(app: &crate::App, query: &ExportQuery) -> Result<ExportPayload, CommandError> {
+    match query.what {
+        ExportWhat::Reflection => export_reflection_on(app, query),
+        ExportWhat::Tracking => export_tracking_on(app, query),
+    }
+}
+
+/// The journal leg (D-J12): the live entries under the inclusive
+/// `window_start` day filters, canonical `(window_start, id)` order.
+/// `--task`/`--board` under `--what journal` is a typed rejection —
+/// the ruling names `--since`/`--until` the journal leg's only
+/// filters, and silently ignoring a passed filter is the worst
+/// outcome for a data command.
+///
+/// # Errors
+///
+/// [`CommandError::ExportFiltersNotApplicable`] — tracking-only
+/// filters under the journal leg.
+///
+/// # Panics
+///
+/// Only via `expect` on the day successor — unreachable for any
+/// representable filter date (the `day_start` comment).
+fn export_reflection_on(
+    app: &crate::App,
+    query: &ExportQuery,
+) -> Result<ExportPayload, CommandError> {
+    if query.task.is_some() || query.board.is_some() {
+        return Err(CommandError::ExportFiltersNotApplicable);
+    }
+    let state = app.engine.shared_state().load_full();
+    let since_stamp = query.since.map(day_start);
+    let until_stamp = query
+        .until
+        .map(|date| date.succ_opt().expect("tomorrow exists"))
+        .map(day_start);
+    let mut rows: Vec<&taskboard_domain::ReflectionEntry> = state
+        .reflection
+        .live_entries()
+        .filter(|entry| since_stamp.is_none_or(|start| entry.window_start >= start))
+        .filter(|entry| until_stamp.is_none_or(|end| entry.window_start < end))
+        .collect();
+    rows.sort_by_key(|entry| (entry.window_start, entry.id));
+    Ok(ExportPayload::Reflection {
+        rows: rows.iter().map(|e| reflection_export_row(e)).collect(),
+        format: query.format.unwrap_or_default(),
+    })
+}
+
+/// The tracking leg — today's body verbatim (the default arm compiles
+/// to the same code path the bare verb always ran; the byte-compat pin
+/// is structural: default == explicit `--what tracking`).
+///
+/// # Errors
+///
+/// [`CommandError`] — typed, see the variant docs.
+///
+/// # Panics
+///
+/// Only via `expect` on the day successor — unreachable for any
+/// representable filter date (the `day_start` comment).
+fn export_tracking_on(
+    app: &crate::App,
+    query: &ExportQuery,
+) -> Result<ExportPayload, CommandError> {
     let state = app.engine.shared_state().load_full();
     let task = query
         .task
@@ -461,7 +525,7 @@ pub fn export_on(app: &crate::App, query: &ExportQuery) -> Result<ExportPayload,
         .filter(|entry| board.is_none_or(|board| stack_belongs_to_board(&state, entry, board)))
         .collect();
     rows.sort_by_key(|entry| (entry.start, entry.id));
-    Ok(ExportPayload {
+    Ok(ExportPayload::Tracking {
         rows: rows.iter().map(|entry| entry_row(entry, now)).collect(),
         format: query.format.unwrap_or_default(),
     })
@@ -655,6 +719,9 @@ pub fn collapse(cmd: TrackCmd) -> Option<TrackInvocation> {
 /// are the invocation (no collapse — D-TC2).
 #[derive(Debug, Clone, Default)]
 pub struct ExportQuery {
+    /// The data family to emit (`Tracking` when omitted — the
+    /// byte-compat default).
+    pub what: ExportWhat,
     /// The payload format (`Csv` when omitted).
     pub format: Option<ExportFormat>,
     /// Entries starting on/after this UTC day (inclusive).
@@ -672,22 +739,42 @@ pub struct ExportQuery {
 /// site. Deliberately never `emit_to`'d — the payload bypasses the
 /// `--json` receipt envelope (D-TC10's recorded exception).
 #[derive(Debug, Clone)]
-pub struct ExportPayload {
-    /// The entry rows, canonical `(start, id)` ascending.
-    pub rows: Vec<ExportRow>,
-    /// The selected payload format.
-    pub format: ExportFormat,
+pub enum ExportPayload {
+    /// The D-T15 tracking payload (rows canonical `(start, id)`
+    /// ascending).
+    Tracking {
+        /// The entry rows.
+        rows: Vec<ExportRow>,
+        /// The selected payload format.
+        format: ExportFormat,
+    },
+    /// The D-J12 journal payload (rows canonical `(window_start, id)`
+    /// ascending; the ruled eleven columns, live entries only).
+    Reflection {
+        /// The reflection rows.
+        rows: Vec<ReflectionExportRow>,
+        /// The selected payload format.
+        format: ExportFormat,
+    },
 }
 
 /// Renders the payload to its wire bytes: CSV (RFC-4180, header row,
 /// RFC-3339 stamps, an open row's empty `end` cell) or a single-line,
 /// newline-terminated JSON array (`"end": null` for open rows). Pure —
-/// zero rows are header-only CSV / `[]`, success.
+/// zero rows are header-only CSV / `[]`, success. The payload bypasses
+/// the `--json` receipt envelope for both families (the recorded
+/// D-T15/D-TC10 exception; D-J12 inherits it).
 #[must_use]
 pub fn render_payload(payload: &ExportPayload) -> String {
-    match payload.format {
-        ExportFormat::Csv => render_csv(&payload.rows),
-        ExportFormat::Json => render_json(&payload.rows),
+    match payload {
+        ExportPayload::Tracking { rows, format } => match format {
+            ExportFormat::Csv => render_csv(rows),
+            ExportFormat::Json => render_json(rows),
+        },
+        ExportPayload::Reflection { rows, format } => match format {
+            ExportFormat::Csv => render_reflection_csv(rows),
+            ExportFormat::Json => render_reflection_json(rows),
+        },
     }
 }
 
@@ -721,6 +808,120 @@ pub fn render_csv(rows: &[ExportRow]) -> String {
 /// Never: the projection serialization is total.
 #[must_use]
 pub fn render_json(rows: &[ExportRow]) -> String {
+    let mut line = serde_json::to_string(rows).expect("row serialization is total");
+    line.push('\n');
+    line
+}
+
+/// One `--what journal` export row: the ruled eleven columns exactly
+/// (D-J12 — `extra_flags` and tombstones are deliberately not
+/// exportable in v0.2; both survive in storage/state, a recorded
+/// limitation, not an accident). The JSON object shape is the
+/// contract.
+#[derive(Debug, Clone, serde::Serialize, PartialEq)]
+pub struct ReflectionExportRow {
+    /// The entry's uuid.
+    pub entry_id: String,
+    /// The window-date label (`YYYY-MM-DD`).
+    pub day: NaiveDate,
+    /// The cadence's text form (`"day"` / `"week"` / `"month"`).
+    pub cadence: String,
+    /// The reviewed window's opening instant.
+    pub window_start: DateTime<Utc>,
+    /// The reviewed window's closing instant (exclusive).
+    pub window_end: DateTime<Utc>,
+    /// Mood rating, `1..=5` (`null`/empty when unset).
+    pub mood: Option<u8>,
+    /// Energy rating, `1..=5`.
+    pub energy: Option<u8>,
+    /// The curated flag names (a real JSON array in the JSON payload;
+    /// the JSON-array text in the CSV cell — the storage encoding).
+    pub flags: Vec<String>,
+    /// The free-text body.
+    pub text: String,
+    /// Row creation stamp.
+    pub created_at: DateTime<Utc>,
+    /// The last mutation stamp.
+    pub updated_at: DateTime<Utc>,
+}
+
+/// The journal CSV header: the ruled column list, in ruled order (the
+/// header is data, not a label — the key-set pin makes any addition a
+/// red test).
+const REFLECTION_EXPORT_CSV_HEADER: &str =
+    "entry_id,day,cadence,window_start,window_end,mood,energy,flags,text,created_at,updated_at";
+
+/// Projects a live entry onto its export row.
+#[must_use]
+pub fn reflection_export_row(entry: &taskboard_domain::ReflectionEntry) -> ReflectionExportRow {
+    ReflectionExportRow {
+        entry_id: entry.id.as_uuid().to_string(),
+        day: entry.day,
+        cadence: entry.cadence.text_form().to_owned(),
+        window_start: entry.window_start,
+        window_end: entry.window_end,
+        mood: entry
+            .attributes
+            .mood
+            .map(taskboard_domain::reflection::Rating::get),
+        energy: entry
+            .attributes
+            .energy
+            .map(taskboard_domain::reflection::Rating::get),
+        flags: entry
+            .attributes
+            .flags
+            .iter()
+            .map(|f| f.text_form().to_owned())
+            .collect(),
+        text: entry.text.clone(),
+        created_at: entry.created_at,
+        updated_at: entry.updated_at,
+    }
+}
+
+/// The journal CSV rendering: the ruled header, then one row per live
+/// entry; `day` as `YYYY-MM-DD`, stamps RFC-3339, unset ratings as
+/// empty cells, `flags` as the JSON-array text (the storage encoding),
+/// `text` through [`csv_field`].
+///
+/// # Panics
+///
+/// Never: the flag names serialize (the storage encoding's totality).
+#[must_use]
+pub fn render_reflection_csv(rows: &[ReflectionExportRow]) -> String {
+    let mut out = String::from(REFLECTION_EXPORT_CSV_HEADER);
+    out.push('\n');
+    for row in rows {
+        let flags_cell = serde_json::to_string(&row.flags).expect("flag names serialize");
+        let cells = [
+            csv_field(&row.entry_id),
+            row.day.to_string(),
+            csv_field(&row.cadence),
+            row.window_start.to_rfc3339(),
+            row.window_end.to_rfc3339(),
+            row.mood.map_or(String::new(), |m| m.to_string()),
+            row.energy.map_or(String::new(), |e| e.to_string()),
+            csv_field(&flags_cell),
+            csv_field(&row.text),
+            row.created_at.to_rfc3339(),
+            row.updated_at.to_rfc3339(),
+        ];
+        out.push_str(&cells.join(","));
+        out.push('\n');
+    }
+    out
+}
+
+/// The journal JSON rendering: a single-line, newline-terminated array
+/// of the eleven ruled keys (`null` ratings, real flag arrays — `jq`
+/// is the consumer). Pure — zero rows is `[]`, success.
+///
+/// # Panics
+///
+/// Never: the projection serialization is total.
+#[must_use]
+pub fn render_reflection_json(rows: &[ReflectionExportRow]) -> String {
     let mut line = serde_json::to_string(rows).expect("row serialization is total");
     line.push('\n');
     line

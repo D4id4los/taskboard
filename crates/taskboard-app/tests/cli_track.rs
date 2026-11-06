@@ -53,6 +53,7 @@ fn parse_export(argv: &[&str]) -> ExportQuery {
     cmdline.extend_from_slice(argv);
     let cli = Cli::try_parse_from(&cmdline).expect("the argv parses");
     let Some(Command::Export {
+        what,
         format,
         since,
         until,
@@ -63,6 +64,7 @@ fn parse_export(argv: &[&str]) -> ExportQuery {
         panic!("the argv selects export");
     };
     ExportQuery {
+        what: what.unwrap_or_default(),
         format,
         since,
         until,
@@ -729,6 +731,7 @@ async fn t11_the_session_lane_routes_track_and_export() {
             ),
             (
                 Command::Export {
+                    what: None,
                     format: Some(ExportFormat::Json),
                     since: None,
                     until: None,
@@ -739,6 +742,7 @@ async fn t11_the_session_lane_routes_track_and_export() {
             ),
             (
                 Command::Export {
+                    what: None,
                     format: None,
                     since: None,
                     until: None,

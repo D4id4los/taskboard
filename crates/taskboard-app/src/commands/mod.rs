@@ -261,6 +261,12 @@ pub enum CommandError {
         /// The matched entries' full uuids.
         candidates: Vec<String>,
     },
+    /// `--what journal` received a tracking-only filter (`--task`/
+    /// `--board`): the ruling names `--since`/`--until` the journal
+    /// leg's only filters, and silently ignoring a passed filter is
+    /// the worst outcome for a data command.
+    #[error("--task/--board do not apply to --what journal (use --since/--until)")]
+    ExportFiltersNotApplicable,
     /// No habit matches the selector (exact uuid | ≥8-char prefix |
     /// exact live title).
     #[error("no habit matches {selector:?}")]
@@ -504,6 +510,7 @@ impl CommandError {
             Self::AmbiguousTimeEntry { .. } => "ambiguous-time-entry",
             Self::UnknownReflectionEntry { .. } => "unknown-reflection-entry",
             Self::AmbiguousReflectionEntry { .. } => "ambiguous-reflection-entry",
+            Self::ExportFiltersNotApplicable => "filters-not-applicable",
             Self::UnknownHabit { .. } => "unknown-habit",
             Self::AmbiguousHabit { .. } => "ambiguous-habit",
             Self::NoStacks => "no-stacks",
@@ -1286,6 +1293,7 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
             None => unreachable!("the journal grammar has no vacuous branch"),
         },
         Command::Export {
+            what,
             format,
             since,
             until,
@@ -1296,6 +1304,7 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
                 &mut ctx.io,
                 ctx.config_path.clone(),
                 track::ExportQuery {
+                    what: what.unwrap_or_default(),
                     format,
                     since,
                     until,
@@ -1723,6 +1732,7 @@ pub async fn dispatch_line(
             None => unreachable!("the journal grammar has no vacuous branch"),
         },
         Command::Export {
+            what,
             format,
             since,
             until,
@@ -1732,6 +1742,7 @@ pub async fn dispatch_line(
             app,
             io,
             &track::ExportQuery {
+                what: what.unwrap_or_default(),
                 format,
                 since,
                 until,
@@ -2490,6 +2501,7 @@ mod ipc_routing_tests {
                 },
             },
             Command::Export {
+                what: None,
                 format: None,
                 since: None,
                 until: None,

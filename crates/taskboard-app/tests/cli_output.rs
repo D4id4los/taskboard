@@ -344,6 +344,7 @@ fn o3_error_kinds_cover_every_variant() {
             CommandError::AmbiguousTimeEntry { .. } => "ambiguous-time-entry",
             CommandError::UnknownReflectionEntry { .. } => "unknown-reflection-entry",
             CommandError::AmbiguousReflectionEntry { .. } => "ambiguous-reflection-entry",
+            CommandError::ExportFiltersNotApplicable => "filters-not-applicable",
             CommandError::UnknownHabit { .. } => "unknown-habit",
             CommandError::AmbiguousHabit { .. } => "ambiguous-habit",
             CommandError::NoStacks => "no-stacks",
@@ -407,6 +408,7 @@ fn o3_error_kinds_cover_every_variant() {
         CommandError::AmbiguousReflectionEntry {
             candidates: vec!["e1".to_owned(), "e2".to_owned()],
         },
+        CommandError::ExportFiltersNotApplicable,
         CommandError::UnknownLabel("lab".to_owned()),
         CommandError::AmbiguousLabel {
             candidates: vec!["l1".to_owned(), "l2".to_owned()],
