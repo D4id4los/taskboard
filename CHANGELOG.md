@@ -10,6 +10,23 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 ### Added
 
+- The reflection family's storage and CLI tier (#637, DR-7 chunk 2):
+  migration 0022 ships the device-local `reflection_entries` table
+  (tombstone-in-place rows, JSON-array flag columns, no foreign keys)
+  and the write arm converts to compile-checked macros; the load codec
+  decodes strictly (a corrupt id, date, stamp or out-of-range rating is
+  typed corruption) while unknown flag names park verbatim into
+  `extra_flags` at the decode seam. The `taskboard journal` verb family
+  lands over the in-process core — capture-at-speed `add`
+  (`--cadence/--day/--mood/--energy/--flag`, an empty line records
+  nothing), pure `list`/`show` reads, change-mask `edit` with explicit
+  `--clear-*` forms and flag-delta `--flag/--unflag`, and tombstone
+  `delete`; selectors resolve exact uuid → unique ≥8-char prefix over
+  live entries only. `export --what journal` emits the ruled eleven
+  columns as raw stdout data (live entries, inclusive `window_start`
+  day edges), bare `export` stays byte-compatible, and the IPC relay
+  carries every byte verbatim. Device-local throughout — no outbox op,
+  no sync lane. **This merge unblocks nextcloud-files-sync (#631).**
 - The reflection family's domain and engine tier (#636, DR-7 chunk 1,
   ADR 0021): the `ReflectionEntry` entity (roaming-family UUID,
   stored window instants, embedded LWW clocks, tombstone-in-place
