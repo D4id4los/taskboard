@@ -2653,6 +2653,10 @@ impl Adapter {
             // its intents and settle leaves the form (its exits are
             // its close paths) — the overlay cells' shape.
             | Flow::PlanPlace { .. }
+            // The review walk (#638): the fifth modal — its kept arms
+            // own the walk's intents; settle is its close (the
+            // palette family's terminator).
+            | Flow::ReviewWalk { .. }
             | Flow::None => FlowKind::None,
             Flow::Create { .. }
             | Flow::CreateStack

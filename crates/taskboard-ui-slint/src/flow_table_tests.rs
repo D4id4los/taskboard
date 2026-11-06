@@ -52,6 +52,9 @@ enum FK {
     /// The plan-next-day placement form (#622): the planner's own
     /// form kind — the kept planner arms own it, settle closes it.
     PlanForm,
+    /// The review walk (#638): the fifth modal — the kept walk arms
+    /// own its intents, settle closes it (the palette family).
+    ReviewWalk,
 }
 
 /// The eleven effect classes the matrix columns range over.
@@ -92,6 +95,7 @@ fn kind_of(flow: &Flow) -> FK {
         Flow::TrackEntries { .. } => FK::TrackList,
         Flow::TrackEntryForm { .. } => FK::TrackForm,
         Flow::PlanPlace { .. } => FK::PlanForm,
+        Flow::ReviewWalk { .. } => FK::ReviewWalk,
     }
 }
 
@@ -285,6 +289,7 @@ use FK::FocusOverlay as KFoc;
 use FK::Move as KMove;
 use FK::Palette as KPal;
 use FK::PlanForm as KPlanForm;
+use FK::ReviewWalk as KWalk;
 use FK::Text as KTxt;
 use FK::TrackForm as KTrackForm;
 use FK::TrackList as KTrackList;
@@ -392,6 +397,19 @@ fn class_table() -> Vec<(FK, EC, Exp)> {
     for class in [C::Edit, C::Menu, C::System, C::Picker] {
         row(FK::FocusOverlay, class, exp(Z, K(KFoc)));
     }
+    // REVIEW WALK (#638): the same overlay family — the settle is its
+    // own close (the palette terminator rule); the kept walk arms are
+    // the pair overrides below.
+    for class in [C::Nav, C::Lifecycle, C::Begin, C::Title, C::Cancel] {
+        row(FK::ReviewWalk, class, exp(Z, N));
+    }
+    row(FK::ReviewWalk, C::OpenPalette, exp(Z, K(KPal)));
+    row(FK::ReviewWalk, C::BeginCapture, exp(Z, K(KCap)));
+    row(FK::ReviewWalk, C::FocusOverlay, exp(Z, K(KFoc)));
+    row(FK::ReviewWalk, C::TrackOverlay, exp(Z, N));
+    for class in [C::Edit, C::Menu, C::System, C::Picker] {
+        row(FK::ReviewWalk, class, exp(Z, K(KWalk)));
+    }
     // TRACK OVERLAY (r4 chunk 10, D-TS2): the same settle-then-run
     // family — the settle is the overlay's own close; the kept
     // TrackOverlay arms are the pair overrides below (the open
@@ -436,6 +454,7 @@ fn class_table() -> Vec<(FK, EC, Exp)> {
         FK::FocusOverlay,
         FK::TrackList,
         FK::TrackForm,
+        FK::ReviewWalk,
     ] {
         let keep = match kind {
             FK::Text => K(KTxt),
@@ -447,6 +466,7 @@ fn class_table() -> Vec<(FK, EC, Exp)> {
             FK::FocusOverlay => K(KFoc),
             FK::TrackList => K(KTrackList),
             FK::TrackForm => K(KTrackForm),
+            FK::ReviewWalk => K(KWalk),
             FK::PlanForm | FK::None => unreachable!("the loop never names them"),
         };
         row(kind, C::PlanSurface, exp(Z, keep));
@@ -492,6 +512,7 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
         FK::TrackList,
         FK::TrackForm,
         FK::PlanForm,
+        FK::ReviewWalk,
     ] {
         let keep = match kind {
             FK::Text => K(KTxt),
@@ -504,6 +525,7 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
             FK::TrackList => K(KTrackList),
             FK::TrackForm => K(KTrackForm),
             FK::PlanForm => K(KPlanForm),
+            FK::ReviewWalk => K(KWalk),
             FK::None => unreachable!("the loop never names None"),
         };
         row(kind, E::RecurIntent, exp(Z, keep));
@@ -694,6 +716,25 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
     row(FK::PlanForm, E::BoardCreate, exp(Z, K(KTxt)));
     row(FK::PlanForm, E::StackMove, exp(Z, K(KMove)));
     row(FK::PlanForm, E::TrackEntriesOpen, exp(Z, K(KTrackList)));
+    // -- REVIEW WALK rows (#638): from None the walk does not exist
+    //    yet (the open effect lands with the walk verbs commit); under
+    //    a live walk the settle-then-run re-run is effect-shaped like
+    //    the other modals', the named inerts keep the walk.
+    row(FK::ReviewWalk, E::BeginCreate, exp(Z, K(KTxt)));
+    row(FK::ReviewWalk, E::BeginCreateStack, exp(Z, K(KTxt)));
+    row(FK::ReviewWalk, E::RequestMove, exp(Z, K(KMove)));
+    row(FK::ReviewWalk, E::BeginTitleEdit, exp(Z, K(KTxt)));
+    row(FK::ReviewWalk, E::StackDelete, exp(NZ, N));
+    row(FK::ReviewWalk, E::BoardDelete, exp(NZ, N));
+    row(FK::ReviewWalk, E::StackRename, exp(Z, K(KTxt)));
+    row(FK::ReviewWalk, E::BoardRename, exp(Z, K(KTxt)));
+    row(FK::ReviewWalk, E::BoardCreate, exp(Z, K(KTxt)));
+    row(FK::ReviewWalk, E::StackMove, exp(Z, K(KMove)));
+    row(FK::ReviewWalk, E::TrackEntriesOpen, exp(Z, K(KTrackList)));
+    row(FK::ReviewWalk, E::Activate, exp(Z, K(KWalk)));
+    row(FK::ReviewWalk, E::SetModeNormal, exp(Z, K(KWalk)));
+    row(FK::ReviewWalk, E::SetModeInsert, exp(Z, K(KWalk)));
+    row(FK::ReviewWalk, E::CancelMove, exp(Z, N)); // CancelOnly: the settle closes
     // -- PLAN SURFACE rows (#622, D-3/D-4): from None the open
     //    toggles the view (flow-free), begin-place arms the form,
     //    remove-box is the one honest write; the swaps are inert
@@ -722,6 +763,7 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
         FK::FocusOverlay,
         FK::TrackList,
         FK::TrackForm,
+        FK::ReviewWalk,
     ] {
         let keep = match kind {
             FK::Text => K(KTxt),
@@ -733,6 +775,7 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
             FK::FocusOverlay => K(KFoc),
             FK::TrackList => K(KTrackList),
             FK::TrackForm => K(KTrackForm),
+            FK::ReviewWalk => K(KWalk),
             FK::PlanForm | FK::None => unreachable!("the loop never names them"),
         };
         for key in [
@@ -913,6 +956,14 @@ fn all_flows(fx: &Fixture) -> Vec<Flow> {
         // The placement form (#622): the rig views the subject, so
         // reconcile keeps it alive.
         Flow::PlanPlace { task: a },
+        // The review walk (#638): subject-free — any stage reconciles
+        // fine over the fixture.
+        Flow::ReviewWalk {
+            cadence: taskboard_domain::ReviewCadence::Day,
+            reference: chrono::NaiveDate::from_ymd_opt(2026, 11, 5).expect("date"),
+            stage: crate::view_state::WalkStage::Inbox { filing: None },
+            cursor: 0,
+        },
     ]
 }
 
@@ -1220,7 +1271,7 @@ fn the_matrix_covers_every_class_cell() {
     let cells = class_table();
     assert_eq!(
         cells.len(),
-        11 * 14,
+        12 * 14,
         "one row per (FlowKind, EffectClass) cell"
     );
     let mut seen = std::collections::BTreeSet::new();
