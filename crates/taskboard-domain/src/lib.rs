@@ -150,6 +150,7 @@ pub use reflection::{
     DEFAULT_TEMPLATES, HealthFlag, InvalidRating, InvalidReviewWindow, Rating,
     ReflectionAttributes, ReflectionEntry, ReflectionState, ReflectionTemplate, ReviewCadence,
     ReviewDue, ReviewWindow, UnknownHealthFlag, compose_reflection_text, review_due, review_window,
+    window_done, window_misses,
 };
 pub use reminders::{
     AdhocAlarm, AdhocWhen, AtInstant, BreakRule, Insistence, InvalidAtInstant,

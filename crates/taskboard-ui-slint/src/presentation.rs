@@ -16,7 +16,9 @@
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
-use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, TimeDelta, TimeZone, Utc};
+use chrono::{
+    DateTime, Datelike as _, NaiveDate, NaiveDateTime, NaiveTime, TimeDelta, TimeZone, Utc,
+};
 use taskboard_domain::{
     AdhocAlarmId, AppState, Board, BoardId, Effort, ReminderRef, SidecarHealth, Stack, StackId,
     SyncPhase, Task, TaskId, TimeEntryId, TimeEntryKind, focus::FocusTiming,
@@ -1917,6 +1919,193 @@ pub struct ReviewWindow {
     pub gap: String,
     pub compared: String,
     pub empty: bool,
+}
+
+// -- the review walk's phrase vocabulary (DR-7 chunk 3, plan D-W7) -----
+//
+// The walk's and the surfacing card's copy lives here, in pure phrase
+// fns over data (the dumb-client line: slint computes nothing). The
+// ruled strings (DR-7 D-J9, C1–C8/C10/C11 approved verbatim) are the
+// phrase fns' own units' to assert — no other test may assert walk
+// text (AGENTS §5). The vocabulary guard unit pins the P9 rule: no
+// verdict language in any walk/card phrase.
+
+/// One today-view surfacing card (DR-7 D-J10): at most one — the
+/// title, the effort-transparent body, the click affordance.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewCardRow {
+    pub title: String,
+    pub body: String,
+    pub action: String,
+}
+
+/// The card's title (C1): the cadence noun, not an instruction.
+#[must_use]
+pub fn review_card_title(cadence: taskboard_domain::ReviewCadence) -> String {
+    let noun = match cadence {
+        taskboard_domain::ReviewCadence::Day => "Day",
+        taskboard_domain::ReviewCadence::Week => "Week",
+        taskboard_domain::ReviewCadence::Month => "Month",
+    };
+    format!("{noun} review")
+}
+
+/// The count as a spelled word (the ruled text for 4); mechanical —
+/// zero..=twelve spelled, "many" beyond (no ruled text exists there).
+fn count_word(count: usize) -> &'static str {
+    const WORDS: [&str; 13] = [
+        "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+        "eleven", "twelve",
+    ];
+    WORDS.get(count).unwrap_or(&"many")
+}
+
+/// The card's body (C2, as amended to four prompts): effort-transparent,
+/// no obligation language. Both the effort estimate and the prompt
+/// count derive from the template data; for the ruled four-prompt day
+/// template this reproduces the approved C2 text verbatim.
+#[must_use]
+pub fn review_card_body(
+    cadence: taskboard_domain::ReviewCadence,
+    day: chrono::NaiveDate,
+) -> String {
+    let template = taskboard_domain::DEFAULT_TEMPLATES
+        .iter()
+        .find(|template| template.cadence == cadence)
+        .unwrap_or(&taskboard_domain::DEFAULT_TEMPLATES[0]);
+    let prompts = template.prompts.len();
+    let minutes = prompts.div_ceil(2);
+    format!(
+        "A review for {} is open — about {} minutes, {} prompts.",
+        review_day_phrase(day),
+        count_word(minutes),
+        count_word(prompts)
+    )
+}
+
+/// The card's click affordance (C3).
+#[must_use]
+pub fn review_card_action(day: chrono::NaiveDate) -> String {
+    format!("Review {}", review_day_phrase(day))
+}
+
+/// The house day phrase for review surfaces: the ISO date
+/// (`date_naive()` convention — the review ledger's date-column form).
+/// No second formatter exists to reuse — this is the one (the
+/// today/planner headers carry no date).
+#[must_use]
+pub fn review_day_phrase(day: chrono::NaiveDate) -> String {
+    day.to_string()
+}
+
+/// The walk's header (C4): `Review — {date}` for the day cadence,
+/// `Review — week of {date}` for the week, `Review — {month year}` for
+/// the month (the offset-local reading).
+#[must_use]
+pub fn walk_header(
+    cadence: taskboard_domain::ReviewCadence,
+    reference: chrono::NaiveDate,
+) -> String {
+    match cadence {
+        taskboard_domain::ReviewCadence::Day => {
+            format!("Review — {}", review_day_phrase(reference))
+        }
+        taskboard_domain::ReviewCadence::Week => {
+            format!("Review — week of {}", review_day_phrase(reference))
+        }
+        taskboard_domain::ReviewCadence::Month => format!(
+            "Review — {} {}",
+            reference.format("%B").to_string().to_lowercase(),
+            reference.year()
+        ),
+    }
+}
+
+/// The progress strip's stage headers (C5/C7/C10): the two neutral
+/// stage nouns and the template's own name for the prompts stage.
+#[must_use]
+pub fn walk_stage_header(
+    stage: crate::view_state::WalkStage,
+    template: &taskboard_domain::ReflectionTemplate,
+) -> String {
+    match stage {
+        crate::view_state::WalkStage::Inbox { .. } => "Inbox".to_owned(),
+        crate::view_state::WalkStage::CarryForward { .. } => "Carry forward".to_owned(),
+        crate::view_state::WalkStage::Prompts => template.name.to_owned(),
+    }
+}
+
+/// The skipped/empty stage's b-line (C5b/C7b); the prompts stage has
+/// none (empty).
+#[must_use]
+pub const fn walk_stage_empty_line(stage: crate::view_state::WalkStage) -> &'static str {
+    match stage {
+        crate::view_state::WalkStage::Inbox { .. } => "The inbox is empty.",
+        crate::view_state::WalkStage::CarryForward { .. } => "Nothing to carry forward.",
+        crate::view_state::WalkStage::Prompts => "",
+    }
+}
+
+/// The Inbox row verbs (C6).
+#[must_use]
+pub const fn walk_inbox_actions() -> (&'static str, &'static str) {
+    ("File to…", "Keep in inbox")
+}
+
+/// The Carry forward row verbs (C8).
+#[must_use]
+pub const fn walk_carry_actions() -> (&'static str, &'static str, &'static str) {
+    ("Move to tomorrow", "Pick a date…", "Leave as is")
+}
+
+/// The Prompts commit verbs (C11): equal-prominence exits (P12).
+#[must_use]
+pub const fn walk_commit_actions() -> (&'static str, &'static str) {
+    ("Record", "Finish without recording")
+}
+
+/// The walk's inbox rows (plan D-W4): the one shared inbox reading —
+/// the same ids the toolbar chip counts, in the same order.
+#[must_use]
+pub fn walk_inbox_rows(state: &AppState) -> Vec<TaskId> {
+    inbox_tasks(state)
+}
+
+/// The walk's carry-forward rows (plan D-W4): for the Day cadence the
+/// today sections read **verbatim** as the ordered, de-duplicated
+/// union `overdue ++ scheduled ++ due_today` (first occurrence wins —
+/// VF-9: no parallel classification); for Week/Month the domain's
+/// `window_misses` over the window (the structural arm, unreachable
+/// from the v0.2 day-only openers, unit-covered).
+#[must_use]
+pub fn walk_carry_rows(
+    tasks: &std::collections::BTreeMap<TaskId, Task>,
+    cadence: taskboard_domain::ReviewCadence,
+    window: taskboard_domain::ReviewWindow,
+    now: DateTime<Utc>,
+) -> Vec<TaskId> {
+    match cadence {
+        taskboard_domain::ReviewCadence::Day => {
+            let sections = taskboard_domain::days::today_sections(tasks, now, window.bounds());
+            let mut rows: Vec<TaskId> = Vec::with_capacity(
+                sections.overdue.len() + sections.scheduled.len() + sections.due_today.len(),
+            );
+            for id in sections
+                .overdue
+                .into_iter()
+                .chain(sections.scheduled)
+                .chain(sections.due_today)
+            {
+                if !rows.contains(&id) {
+                    rows.push(id);
+                }
+            }
+            rows
+        }
+        taskboard_domain::ReviewCadence::Week | taskboard_domain::ReviewCadence::Month => {
+            taskboard_domain::window_misses(tasks, now, window.bounds())
+        }
+    }
 }
 
 /// Second-granular duration glue over the [`TrackedTotal`] parts —
@@ -4261,6 +4450,324 @@ mod tests {
                 .map(|s| (s.order, s.id))
                 .collect();
             prop_assert_eq!(got, expected);
+        }
+    }
+
+    // -- the review walk's phrase vocabulary (DR-7 chunk 3, D-W7) --
+    // The phrase fns OWN their strings: these are the only tests in
+    // the tree allowed to assert walk/card text.
+
+    fn walk_calendar() -> taskboard_domain::DayCalendar {
+        taskboard_domain::DayCalendar {
+            day_start_time: chrono::NaiveTime::MIN,
+            offset: chrono::FixedOffset::east_opt(0).expect("utc"),
+        }
+    }
+
+    fn walk_day() -> chrono::NaiveDate {
+        chrono::NaiveDate::from_ymd_opt(2026, 11, 5).expect("date")
+    }
+
+    #[test]
+    fn the_review_card_phrases_carry_the_ruled_strings() {
+        let day = walk_day();
+        assert_eq!(
+            review_card_title(taskboard_domain::ReviewCadence::Day),
+            "Day review"
+        );
+        assert_eq!(
+            review_card_body(taskboard_domain::ReviewCadence::Day, day),
+            "A review for 2026-11-05 is open — about two minutes, four prompts.",
+            "C2 as amended (four prompts; the effort estimate derives from the prompt count)"
+        );
+        assert_eq!(review_card_action(day), "Review 2026-11-05");
+    }
+
+    #[test]
+    fn the_walk_header_phrases_carry_the_ruled_strings_per_cadence() {
+        let day = walk_day();
+        assert_eq!(
+            walk_header(taskboard_domain::ReviewCadence::Day, day),
+            "Review — 2026-11-05"
+        );
+        assert_eq!(
+            walk_header(taskboard_domain::ReviewCadence::Week, day),
+            "Review — week of 2026-11-05"
+        );
+        assert_eq!(
+            walk_header(taskboard_domain::ReviewCadence::Month, day),
+            "Review — november 2026"
+        );
+    }
+
+    #[test]
+    fn the_walk_stage_and_action_phrases_carry_the_ruled_strings() {
+        let day = &taskboard_domain::DEFAULT_TEMPLATES[0];
+        let week = &taskboard_domain::DEFAULT_TEMPLATES[1];
+
+        assert_eq!(
+            walk_stage_header(crate::view_state::WalkStage::Inbox { filing: None }, day),
+            "Inbox"
+        );
+        assert_eq!(
+            walk_stage_header(
+                crate::view_state::WalkStage::CarryForward {
+                    picking_date: false
+                },
+                day
+            ),
+            "Carry forward"
+        );
+        assert_eq!(
+            walk_stage_header(crate::view_state::WalkStage::Prompts, week),
+            week.name
+        );
+        assert_eq!(
+            walk_stage_empty_line(crate::view_state::WalkStage::Inbox { filing: None }),
+            "The inbox is empty."
+        );
+        assert_eq!(
+            walk_stage_empty_line(crate::view_state::WalkStage::CarryForward {
+                picking_date: false
+            }),
+            "Nothing to carry forward."
+        );
+        assert_eq!(
+            walk_stage_empty_line(crate::view_state::WalkStage::Prompts),
+            ""
+        );
+        let (file, keep) = walk_inbox_actions();
+        assert_eq!((file, keep), ("File to…", "Keep in inbox"));
+        let (tomorrow, pick, leave) = walk_carry_actions();
+        assert_eq!(
+            (tomorrow, pick, leave),
+            ("Move to tomorrow", "Pick a date…", "Leave as is")
+        );
+        let (record, finish) = walk_commit_actions();
+        assert_eq!((record, finish), ("Record", "Finish without recording"));
+    }
+
+    /// The P9 vocabulary guard (a floor on the copy, not a label
+    /// test): no walk or card phrase ever carries verdict language —
+    /// "missed", "failed", or "overdue". If the code got strictly
+    /// better copy this still passes.
+    #[test]
+    fn the_walk_vocabulary_never_carries_verdict_language() {
+        let day = walk_day();
+        let day_template = &taskboard_domain::DEFAULT_TEMPLATES[0];
+        let stages = [
+            crate::view_state::WalkStage::Inbox { filing: None },
+            crate::view_state::WalkStage::Inbox {
+                filing: Some(StackId::from_uuid(uuid::Uuid::now_v7())),
+            },
+            crate::view_state::WalkStage::CarryForward {
+                picking_date: false,
+            },
+            crate::view_state::WalkStage::CarryForward { picking_date: true },
+            crate::view_state::WalkStage::Prompts,
+        ];
+        for cadence in [
+            taskboard_domain::ReviewCadence::Day,
+            taskboard_domain::ReviewCadence::Week,
+            taskboard_domain::ReviewCadence::Month,
+        ] {
+            let phrases = vec![
+                review_card_title(cadence),
+                review_card_body(cadence, day),
+                review_card_action(day),
+                walk_header(cadence, day),
+            ];
+            for phrase in phrases {
+                let lower = phrase.to_lowercase();
+                for verdict in ["missed", "failed", "overdue"] {
+                    assert!(
+                        !lower.contains(verdict),
+                        "verdict language {verdict:?} leaked into {phrase:?}"
+                    );
+                }
+            }
+        }
+        for stage in stages {
+            for phrase in [
+                walk_stage_header(stage, day_template).clone(),
+                walk_stage_empty_line(stage).to_owned(),
+            ] {
+                let lower = phrase.to_lowercase();
+                for verdict in ["missed", "failed", "overdue"] {
+                    assert!(
+                        !lower.contains(verdict),
+                        "verdict language {verdict:?} leaked into {phrase:?}"
+                    );
+                }
+            }
+        }
+        let actions = [
+            walk_inbox_actions().0.to_owned(),
+            walk_inbox_actions().1.to_owned(),
+            walk_carry_actions().0.to_owned(),
+            walk_carry_actions().1.to_owned(),
+            walk_carry_actions().2.to_owned(),
+            walk_commit_actions().0.to_owned(),
+            walk_commit_actions().1.to_owned(),
+        ];
+        for phrase in actions {
+            let lower = phrase.to_lowercase();
+            for verdict in ["missed", "failed", "overdue"] {
+                assert!(!lower.contains(verdict), "verdict language in {phrase:?}");
+            }
+        }
+    }
+
+    // -- the carry-forward rows (plan D-W4): the verbatim union pin --
+
+    fn walk_task(
+        raw: u128,
+        scheduled: Option<DateTime<Utc>>,
+        duedate: Option<DateTime<Utc>>,
+        order: i64,
+    ) -> Task {
+        let mut t = task(
+            TaskId::from_uuid(uuid::Uuid::from_u128(raw)),
+            StackId::from_uuid(uuid::Uuid::from_u128(1)),
+            order,
+        );
+        t.scheduled = scheduled;
+        t.duedate = duedate;
+        t
+    }
+
+    #[test]
+    fn the_day_carry_rows_are_the_sections_union_deduplicated_in_order() {
+        let start = epoch();
+        let now = start + TimeDelta::hours(1);
+        let end = start + TimeDelta::hours(24);
+        let cal = walk_calendar();
+        let window = taskboard_domain::review_window(
+            taskboard_domain::ReviewCadence::Day,
+            cal.today(now),
+            cal,
+        );
+        // Task 3 carries both anchors: classified overdue (first
+        // match), so the union lists it once.
+        let tasks = std::collections::BTreeMap::from([
+            (
+                TaskId::from_uuid(uuid::Uuid::from_u128(1)),
+                walk_task(1, None, Some(start + TimeDelta::hours(5)), 0),
+            ),
+            (
+                TaskId::from_uuid(uuid::Uuid::from_u128(2)),
+                walk_task(2, Some(start + TimeDelta::hours(3)), None, 0),
+            ),
+            (
+                TaskId::from_uuid(uuid::Uuid::from_u128(3)),
+                walk_task(
+                    3,
+                    Some(start + TimeDelta::hours(2)),
+                    Some(start + TimeDelta::hours(6)),
+                    0,
+                ),
+            ),
+            (
+                TaskId::from_uuid(uuid::Uuid::from_u128(4)),
+                walk_task(4, Some(start + TimeDelta::hours(12)), None, 0),
+            ),
+        ]);
+        let sections = taskboard_domain::days::today_sections(&tasks, now, (start, end));
+        let mut expected: Vec<TaskId> = Vec::new();
+        for id in sections
+            .overdue
+            .iter()
+            .chain(&sections.scheduled)
+            .chain(&sections.due_today)
+        {
+            if !expected.contains(id) {
+                expected.push(*id);
+            }
+        }
+        assert_eq!(
+            walk_carry_rows(&tasks, taskboard_domain::ReviewCadence::Day, window, now),
+            expected,
+            "first occurrence wins, section order preserved"
+        );
+    }
+
+    proptest! {
+        #![proptest_config(proptest::test_runner::Config::with_cases(64))]
+
+        /// The equality pin (plan §3 step 4): for any generated task
+        /// set, the Day cadence's carry rows are exactly the
+        /// de-duplicated `today_sections` union — no second
+        /// classification exists (VF-9).
+        #[test]
+        fn day_carry_rows_equal_the_sections_union_over_generated_states(
+            anchors in proptest::collection::vec(
+                (
+                    -2_i64..=30 * 3600,
+                    -2_i64..=30 * 3600,
+                    -100_i64..=100,
+                    proptest::bool::ANY,
+                    proptest::bool::ANY,
+                    proptest::arbitrary::any::<u128>(),
+                ),
+                0..15,
+            ),
+        ) {
+            let start = epoch();
+            let now = start + TimeDelta::hours(3);
+            let cal = walk_calendar();
+            let window = taskboard_domain::review_window(
+                taskboard_domain::ReviewCadence::Day,
+                cal.today(now),
+                cal,
+            );
+            let tasks: std::collections::BTreeMap<TaskId, Task> = anchors
+                .iter()
+                .map(|&(sched, due, order, with_sched, with_due, raw)| {
+                    let t = walk_task(
+                        raw,
+                        with_sched.then(|| start + TimeDelta::seconds(sched)),
+                        with_due.then(|| start + TimeDelta::seconds(due)),
+                        order,
+                    );
+                    (t.id, t)
+                })
+                .collect();
+            let sections = taskboard_domain::days::today_sections(
+                &tasks,
+                now,
+                window.bounds(),
+            );
+            let mut expected: Vec<TaskId> = Vec::new();
+            for id in sections
+                .overdue
+                .iter()
+                .chain(&sections.scheduled)
+                .chain(&sections.due_today)
+            {
+                if !expected.contains(id) {
+                    expected.push(*id);
+                }
+            }
+            prop_assert_eq!(
+                walk_carry_rows(
+                    &tasks,
+                    taskboard_domain::ReviewCadence::Day,
+                    window,
+                    now
+                ),
+                expected
+            );
+            // The structural Week/Month arm reads the domain's
+            // window_misses over the same window.
+            prop_assert_eq!(
+                walk_carry_rows(
+                    &tasks,
+                    taskboard_domain::ReviewCadence::Week,
+                    window,
+                    now
+                ),
+                taskboard_domain::window_misses(&tasks, now, window.bounds())
+            );
         }
     }
 }
