@@ -309,3 +309,39 @@ from glyph-area over the 32×24 cell grid, not a measured regen diff —
 batch 2 makes it moot. The audit did not execute any test; windows are
 derived from the code and cross-checked against the observed capture
 records on the issues.
+
+## 9. Addendum (2026-11-06, ~13:30 UTC) — the audit missed one live instance, caught by CI hours after publication
+
+PR #663 (this branch, docs-only) failed its required Test Execution
+check on `the_review_ledger_golden_holds` — the test §4.2's B3 row and
+§5's #660 reconciliation had classified *fixed*. The failure is the
+audit's own B1 mechanism (dual read) hiding inside the #660 fix: the
+journey pins the clock and its *added* seeds, but the state comes from
+`fixture::golden_state()`, whose open entry is stamped at the real
+`Utc::now() − 12 m` (`fixture.rs:348-353`). Whenever the wall clock
+sits **after** the pinned instant (12:00 UTC), that entry lies in the
+frozen day-window's future, the frozen pass clips it away, and the
+render loses ~4 h of counted work (luma 83–100). Failure window:
+**[12:00, 24:00) UTC daily** — main's green 08:30 UTC run and the
+13:06 UTC PR failure bracket it exactly; reproduced locally at
+13:17 UTC.
+
+The lesson generalizes the §6.2 rule by one clause: **pinning a
+journey's clock freezes its oracle — every fixture the journey
+inherits must then be audited against the *frozen* instant, not just
+the seeds the fix adds**. A seed that was harmless under the real
+clock (self-consistent: elapsed ≈ 12 m at any wall time, which is why
+the unseamed board goldens pass) becomes a boundary bomb the moment
+the oracle freezes.
+
+Fix (landed on this branch, `fix(ui-slint)` commit): the review
+journey re-stamps the inherited open entry to `PINNED_NOW − 12 m`;
+golden regenerated once and the PNG diff reviewed region-by-region —
+every changed pixel is the open entry's counted-work expression
+(7/30-day Work totals, the yesterday bar rescaled by the new window
+max, the footer chip `task-1 · 4h → · 12m`), verified by a visual
+judge; the full binary passes under `TZ=Pacific/Kiritimati` and
+`TZ=Etc/GMT+12`. Chunk 2's systematic `golden_state_at(PINNED_NOW)`
+remains the durable shape; until it lands, any *new* journey that
+pins the clock while consuming `golden_state()` unmodified inherits
+this exact bomb — the dispatch plan's chunk-2 prompts now say so.

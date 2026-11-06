@@ -225,6 +225,17 @@ The rendered chip text becomes `· 12m` frozen — byte-stable at any
 wall time and any run duration. Regen once (D-4); all nine PNGs'
 diffs must be chip/row strips only (review-verifiable).
 
+**The #663 correction (2026-11-06, after this plan was written)**:
+the review-ledger golden, though outside the nine above, turned out
+to carry the same class one level deeper — its inherited
+`golden_state()` open entry (real `now − 12m`) is a boundary bomb
+against its *frozen* oracle for the whole [12:00, 24:00) UTC band.
+It was pinned and regenerated on the docs branch itself (PR #663;
+audit report §9). Chunk 2's `golden_state_at(PINNED_NOW)` variant
+below supersedes that in-journey re-stamp, and every pin-the-clock
+conversion in this chunk must audit the seeds it *inherits*, not
+just the ones it adds.
+
 **Acceptance**: the nine journeys + the two B1 journeys + A1 pass
 under the D-5 TZ matrix; `cargo nextest run -p taskboard-ui-slint`
 green; goldens compare (not regen) green post-regen; the

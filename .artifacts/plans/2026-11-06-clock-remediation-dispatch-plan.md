@@ -304,15 +304,20 @@ Never merge; never touch main.
   production diffs of any kind (the seam exists), no other
   `closed_entry_on` call-site conversions, no assertion weakening
   (the rows/`vec![task_two]`/"1 h" semantics stay exact).
-- **Acceptance**: (a) the eleven touched tests + the untouched
-  review-ledger/empty goldens pass under the D-5 TZ matrix (`TZ=UTC`,
+- **Acceptance**: (a) the eleven touched tests + the review-empty
+  golden pass under the D-5 TZ matrix (`TZ=UTC`,
   `TZ=Pacific/Kiritimati`, `TZ=Etc/GMT+12`) — structural zone
-  independence; (b) the regen diff is confined to chip/row strips
-  (stage 3 eyeballs the rendered PNGs on the PR); (c) `cargo nextest
-  run -p taskboard-ui-slint` green; (d) full §10 gates green; (e) a
-  grep of the touched tests shows no remaining `Utc::now()`/`Local::
-  now()` in their bodies (the pinned constant is the only time
-  source).
+  independence; (a′) the review-ledger golden is NOT touched by this
+  chunk — its inherited chip seed was pinned and regenerated on the
+  docs branch (#663, audit report §9 addendum), and chunk 2 must
+  rebase onto that commit; any *new* pin-the-clock journey in this
+  chunk must audit the `golden_state()` seeds it inherits against
+  the frozen instant (the #663 lesson); (b) the regen diff is
+  confined to chip/row strips (stage 3 eyeballs the rendered PNGs on
+  the PR); (c) `cargo nextest run -p taskboard-ui-slint` green; (d)
+  full §10 gates green; (e) a grep of the touched tests shows no
+  remaining `Utc::now()`/`Local::now()` in their bodies (the pinned
+  constant is the only time source).
 
 **Prompt 2.1 (planning):**
 
