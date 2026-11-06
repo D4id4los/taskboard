@@ -14580,3 +14580,61 @@ fn the_slider_steps_from_the_keyboard_and_commits_on_release() {
         },
     );
 }
+
+/// The ring-coloured pixel count inside `rect` (a channel delta < 24
+/// from `Semantic.focus-ring` counts as ring ink).
+fn ring_ink(harness: &mut Harness, rect: (f32, f32, f32, f32)) -> u32 {
+    let ring = harness
+        .handle
+        .window()
+        .global::<taskboard_ui_slint::Semantic>()
+        .get_focus_ring();
+    let image = harness.driver.snapshot();
+    let (x, y, width, height) = rect;
+    let mut count = 0;
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // UI px
+    for row in (y as u32)..((y + height) as u32).min(image.height) {
+        for col in (x as u32)..((x + width) as u32).min(image.width) {
+            let i = (row as usize * image.width as usize + col as usize) * 4;
+            let near = [ring.red(), ring.green(), ring.blue()]
+                .iter()
+                .zip(&image.data[i..i + 3])
+                .all(|(a, b)| a.abs_diff(*b) < 24);
+            if near {
+                count += 1;
+            }
+        }
+    }
+    count
+}
+
+/// F19 "visibly focused" — a focused segment, the slider, and Save
+/// each carry ring ink, and strictly more than the same rect once the
+/// walk moves on (a floor-vs-floor comparison, never a ceiling).
+#[test]
+fn focused_settings_controls_render_the_ring() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::AppSettings);
+            harness.driver.set_window_size(1000, 6000);
+            harness.driver.advance_time(0);
+            for label in ["Emacs", "Scale slider", "Save"] {
+                tab_to(&mut harness, label);
+                let rect = harness.driver.focused_rect().expect("a stop holds focus");
+                let focused = ring_ink(&mut harness, rect);
+                harness.stroke(parse("Tab").expect("tab"));
+                harness.driver.advance_time(0);
+                let unfocused = ring_ink(&mut harness, rect);
+                assert!(
+                    focused >= 40 && focused > unfocused,
+                    "{label}: focused ring ink {focused} vs unfocused {unfocused}"
+                );
+            }
+        },
+    );
+}
