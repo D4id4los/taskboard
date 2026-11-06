@@ -18,11 +18,19 @@ use tokio::sync::{broadcast, mpsc};
 
 use super::LIVE_DEADLINE;
 
+/// The cadences the engine is seeded with (the actor reads them live
+/// through the engine facet): whole seconds, the snapshot's unit.
+fn settings() -> taskboard_domain::SettingsSnapshot {
+    taskboard_domain::SettingsSnapshot {
+        poll_interval_secs: taskboard_domain::TickSecs::new(1).expect("nonzero"),
+        backoff_initial_secs: taskboard_domain::TickSecs::new(1).expect("nonzero"),
+        backoff_max_secs: taskboard_domain::TickSecs::new(2).expect("nonzero"),
+        ..taskboard_domain::SettingsSnapshot::default()
+    }
+}
+
 fn cfg() -> SyncActorConfig {
     SyncActorConfig {
-        poll_interval: Duration::from_millis(300),
-        backoff_initial: Duration::from_millis(200),
-        backoff_max: Duration::from_millis(800),
         // The docker tier runs against a real server: real timing is the
         // subject, injected explicitly through the seam.
         clock: Arc::new(taskboard_domain::SystemClock),
@@ -61,7 +69,7 @@ pub(crate) async fn boot_pair(client: DeckClient) -> SyncPair {
         system_tx.clone(),
         system_engine_rx,
         notifier,
-        taskboard_domain::SettingsSnapshot::default(),
+        settings(),
         taskboard_state::DayRollConfig::disabled(),
     )
     .await

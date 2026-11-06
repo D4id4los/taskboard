@@ -169,8 +169,9 @@ fn c7_explicit_missing_file_is_file_not_found() {
     assert!(matches!(err, ConfigError::FileNotFound(_)));
 }
 
-/// C8: `sync_actor_config()` maps the seconds fields onto the actor's
-/// knobs (the `spawn_sync_actor` doc example's values are the defaults).
+/// C8: the `[sync]` seconds fields reach the actor through the live
+/// settings snapshot (the actor re-reads them per cycle); the defaults
+/// are the documented ones.
 #[test]
 fn c8_sync_actor_config_mapping() {
     let mut config = AppConfig::default();
@@ -178,10 +179,16 @@ fn c8_sync_actor_config_mapping() {
     config.nextcloud.username = Some("alice".into());
     config.storage.db_path = Some(PathBuf::from("/tmp/x.db"));
     config.validate().expect("valid");
-    let cfg = config.sync_actor_config();
-    assert_eq!(cfg.poll_interval.as_secs(), DEFAULT_POLL_INTERVAL_SECS);
-    assert_eq!(cfg.backoff_initial.as_secs(), DEFAULT_BACKOFF_INITIAL_SECS);
-    assert_eq!(cfg.backoff_max.as_secs(), DEFAULT_BACKOFF_MAX_SECS);
+    let snapshot = config.settings_snapshot();
+    assert_eq!(
+        snapshot.poll_interval_secs.get(),
+        DEFAULT_POLL_INTERVAL_SECS
+    );
+    assert_eq!(
+        snapshot.backoff_initial_secs.get(),
+        DEFAULT_BACKOFF_INITIAL_SECS
+    );
+    assert_eq!(snapshot.backoff_max_secs.get(), DEFAULT_BACKOFF_MAX_SECS);
 }
 
 /// C9 (serde round trip lives in `config.rs` units): the

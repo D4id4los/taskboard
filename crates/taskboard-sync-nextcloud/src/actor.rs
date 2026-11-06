@@ -44,16 +44,13 @@ use crate::model::{Board, Label, Stack};
 use crate::poll::poll_backoff;
 use crate::push_exec::{BindingOverlay, GroupOutcome, PushExecutor};
 
-/// Knobs the Phase 5 bootstrap wires from figment's `[sync]` table; tests
-/// inject tiny/paused values.
+/// The actor's boot-fixed seams. The cadence triple — poll interval,
+/// initial backoff, backoff saturation — is **not** here since round-5
+/// chunk 5: it is read per cycle through
+/// [`SyncStateReader::read_settings`] (the engine's live settings
+/// snapshot), so a settings edit applies without a respawn.
 #[derive(Debug, Clone)]
 pub struct SyncActorConfig {
-    /// Idle wait between cycles after a success.
-    pub poll_interval: Duration,
-    /// First failure backoff (`initial * 2^(streak-1)`).
-    pub backoff_initial: Duration,
-    /// Backoff saturation.
-    pub backoff_max: Duration,
     /// Wall-clock seam for every stamp the actor mints (`read_at`,
     /// dead-board tombstones, archive-mismatch corrections) — the same
     /// seam the engine runs on. Production injects `SystemClock`; the
@@ -84,7 +81,6 @@ pub struct SyncActorConfig {
 ///
 /// ```no_run
 /// use std::sync::Arc;
-/// use std::time::Duration;
 ///
 /// use taskboard_domain::{
 ///     PersistedState, RepositoryError, SyncCommand, SyncReport, SyncStateReader,
@@ -103,6 +99,10 @@ pub struct SyncActorConfig {
 ///     ) -> taskboard_domain::BoxFuture<'_, Result<PersistedState, RepositoryError>> {
 ///         Box::pin(async { Ok(PersistedState::default()) })
 ///     }
+///
+///     fn read_settings(&self) -> taskboard_domain::SettingsSnapshot {
+///         taskboard_domain::SettingsSnapshot::default()
+///     }
 /// }
 ///
 /// # fn main() {
@@ -113,9 +113,6 @@ pub struct SyncActorConfig {
 /// let (system_tx, _system_rx) = broadcast::channel::<SystemEvent>(16);
 ///
 /// let cfg = SyncActorConfig {
-///     poll_interval: Duration::from_secs(30),
-///     backoff_initial: Duration::from_secs(5),
-///     backoff_max: Duration::from_secs(300),
 ///     clock: Arc::new(SystemClock),
 ///     day: taskboard_domain::days::DayCalendar {
 ///         day_start_time: chrono::NaiveTime::MIN,
@@ -250,7 +247,7 @@ async fn run(
             cmd = commands.recv() => match cmd {
                 Some(SyncCommand::SyncNow) => {
                     cycle(&id, &client, &state, &reports, &system, &mut st, &cfg, true).await;
-                    deadline = reschedule(&st, &cfg);
+                    deadline = reschedule(&st, &state.read_settings());
                 }
                 Some(SyncCommand::Detach) => {
                     // Connector-only detach (WI-H): the credential dies
@@ -267,7 +264,7 @@ async fn run(
 
             () = tokio::time::sleep_until(deadline) => {
                 cycle(&id, &client, &state, &reports, &system, &mut st, &cfg, false).await;
-                deadline = reschedule(&st, &cfg);
+                deadline = reschedule(&st, &state.read_settings());
             },
 
             event = sys_rx.recv(), if sys_open => match event {
@@ -275,10 +272,17 @@ async fn run(
                     tracing::info!("sync actor stopping: shutdown event");
                     return;
                 }
+                Ok(SystemEvent::SettingsChanged) => {
+                    // The min rule: a shortened cadence applies at once,
+                    // a lengthened one never postpones an armed
+                    // deadline. The candidate goes through `reschedule`
+                    // so a failure streak keeps its backoff curve
+                    // instead of collapsing to the poll interval.
+                    deadline = deadline.min(reschedule(&st, &state.read_settings()));
+                }
                 Ok(
                     SystemEvent::StorageFailed
                         | SystemEvent::TaskResurrected(_)
-                        | SystemEvent::SettingsChanged
                         | SystemEvent::NetworkLost
                         | SystemEvent::NetworkRestored
                         | SystemEvent::ConnectorLost(_)
@@ -350,15 +354,18 @@ async fn probe_features(client: &DeckClient) -> DeckFeatures {
 }
 
 /// The next wake-up: `poll_interval` after success, the failure backoff
-/// after a failure streak.
-fn reschedule(st: &LoopState, cfg: &SyncActorConfig) -> tokio::time::Instant {
+/// after a failure streak — both from the per-cycle settings read.
+fn reschedule(
+    st: &LoopState,
+    settings: &taskboard_domain::SettingsSnapshot,
+) -> tokio::time::Instant {
     let delay = if st.failure_streak == 0 {
-        cfg.poll_interval
+        settings.poll_interval_secs.duration()
     } else {
         poll_backoff(
             st.failure_streak,
-            cfg.backoff_initial,
-            cfg.backoff_max,
+            settings.backoff_initial_secs.duration(),
+            settings.backoff_max_secs.duration(),
             st.retry_after_floor,
         )
     };

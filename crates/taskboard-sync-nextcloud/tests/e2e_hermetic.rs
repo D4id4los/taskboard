@@ -43,11 +43,19 @@ fn board_labels() -> serde_json::Value {
     serde_json::json!([{ "id": 3, "title": "urgent", "color": "ff0000", "boardId": BOARD }])
 }
 
+/// The cadences the engine is seeded with (the actor reads them live
+/// through the engine facet): whole seconds, the snapshot's unit.
+fn settings() -> taskboard_domain::SettingsSnapshot {
+    taskboard_domain::SettingsSnapshot {
+        poll_interval_secs: taskboard_domain::TickSecs::new(1).expect("nonzero"),
+        backoff_initial_secs: taskboard_domain::TickSecs::new(1).expect("nonzero"),
+        backoff_max_secs: taskboard_domain::TickSecs::new(4).expect("nonzero"),
+        ..taskboard_domain::SettingsSnapshot::default()
+    }
+}
+
 fn cfg(clock: Arc<dyn Clock>) -> SyncActorConfig {
     SyncActorConfig {
-        poll_interval: Duration::from_millis(200),
-        backoff_initial: Duration::from_millis(100),
-        backoff_max: Duration::from_millis(400),
         clock,
         day: taskboard_domain::DayCalendar {
             day_start_time: chrono::NaiveTime::MIN,
@@ -104,7 +112,7 @@ async fn boot_with_ids(
         system_tx.clone(),
         system_engine_rx,
         notifier,
-        taskboard_domain::SettingsSnapshot::default(),
+        settings(),
         taskboard_state::DayRollConfig::disabled(),
     )
     .await

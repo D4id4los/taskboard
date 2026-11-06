@@ -1600,13 +1600,12 @@ impl AppConfig {
             .expect("db path resolved by load()")
     }
 
-    /// The `[sync]` table mapped onto the sync actor's knobs.
+    /// The sync actor's boot-fixed seams. The `[sync]` cadence triple
+    /// is no longer wired here: the actor reads it per cycle from the
+    /// engine's live settings ([`Self::settings_snapshot`]).
     #[must_use]
     pub fn sync_actor_config(&self) -> SyncActorConfig {
         SyncActorConfig {
-            poll_interval: Duration::from_secs(self.sync.poll_interval_secs),
-            backoff_initial: Duration::from_secs(self.sync.backoff_initial_secs),
-            backoff_max: Duration::from_secs(self.sync.backoff_max_secs),
             // Stateless: engine and actor read one wall source. A fresh
             // Arc of the zero-sized clock is that same source.
             clock: std::sync::Arc::new(taskboard_domain::SystemClock),
@@ -2402,12 +2401,23 @@ mod tests {
         assert!(result.is_err());
     }
 
+    /// The `[sync]` cadence triple reaches the actor through the live
+    /// settings snapshot, not the boot config.
     #[test]
-    fn sync_actor_config_maps_the_seconds_fields() {
-        let cfg = valid().sync_actor_config();
-        assert_eq!(cfg.poll_interval, Duration::from_secs(30));
-        assert_eq!(cfg.backoff_initial, Duration::from_secs(5));
-        assert_eq!(cfg.backoff_max, Duration::from_secs(300));
+    fn settings_snapshot_maps_the_sync_seconds_fields() {
+        let snapshot = valid().settings_snapshot();
+        assert_eq!(
+            snapshot.poll_interval_secs.duration(),
+            Duration::from_secs(30)
+        );
+        assert_eq!(
+            snapshot.backoff_initial_secs.duration(),
+            Duration::from_secs(5)
+        );
+        assert_eq!(
+            snapshot.backoff_max_secs.duration(),
+            Duration::from_secs(300)
+        );
     }
 
     #[test]
