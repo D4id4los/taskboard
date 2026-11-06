@@ -3003,6 +3003,13 @@ fn arm_task_view(
 fn the_track_form_add_commit_routes_logtime_with_the_exact_instants() {
     on_slint_thread(|| {
         use chrono::{Datelike as _, TimeZone as _};
+        // Single-read capture (D-3/R3): `today` is this test's only
+        // clock read; every expected instant derives from it. Residual
+        // (accepted, R2/R3): the adapter's `seed_track_form` and
+        // `commit_track_form` keep their own `Local::now().date_naive()`
+        // reads — a local midnight falling between this capture and the
+        // adapter's read is the accepted millisecond-wide window.
+        let today = chrono::Local::now().date_naive();
         let (state, fx) = fixture();
         let [a_id, _b, _c] = fx.tasks;
         let [s0, _s1] = fx.stacks;
@@ -3029,7 +3036,6 @@ fn the_track_form_add_commit_routes_logtime_with_the_exact_instants() {
         }
         assert!(rig.handle.window().get_track_form_open());
         // The add seed: today's date, both times unset.
-        let today = chrono::Local::now().date_naive();
         assert_eq!(
             rig.handle.window().get_track_form_date_text(),
             today.format("%Y-%m-%d").to_string(),
@@ -3405,6 +3411,13 @@ fn the_tracked_today_section_opens_its_task_and_an_empty_day_collapses() {
 fn the_add_commit_routes_over_the_form_subject_not_the_focus() {
     on_slint_thread(|| {
         use chrono::{Datelike as _, TimeZone as _};
+        // Single-read capture (D-3/R3): `today` is this test's only
+        // clock read; every expected instant derives from it. Residual
+        // (accepted, R2/R3): the adapter's `seed_track_form` and
+        // `commit_track_form` keep their own `Local::now().date_naive()`
+        // reads — a local midnight falling between this capture and the
+        // adapter's read is the accepted millisecond-wide window.
+        let today = chrono::Local::now().date_naive();
         let (state, fx) = fixture();
         let [a_id, _b, _c] = fx.tasks;
         let [s0, _s1] = fx.stacks;
@@ -3440,7 +3453,6 @@ fn the_add_commit_routes_over_the_form_subject_not_the_focus() {
             let ok = a.commit_track_form_for_test(rig.handle.window());
             assert!(ok, "a parsed span commits");
         }
-        let today = chrono::Local::now().date_naive();
         let expected_start = chrono::Local
             .with_ymd_and_hms(today.year(), today.month(), today.day(), 20, 0, 0)
             .single()
