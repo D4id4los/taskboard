@@ -88,6 +88,69 @@ Task reminders and Kiosk screen rotations depend on time passing. Standard
   instantly. Strict timeouts, delayed API retries, and task deadlines are
   tested deterministically.
 
+** 6.1 Wall-clock dependence: the seam inventory (2026-11-06)
+
+Mock tokio time (above) covers *scheduling*; it does not cover code
+that reads the wall clock (=Utc::now()= / =Local::now()=) to derive
+*content* — day-window membership, "tracked today" rows, review bars,
+elapsed phrases, due phrases. That is the flaky class behind watchlist
+issues #627/#610/#658/#659/#660. The full audit, inventory, and
+remediation backlog lives in
+=.artifacts/reports/2026-11-06-clock-seam-audit-report.md=; the
+binding rules are restated here.
+
+*The failure-window law:* a fixture stamped =now − Δ= changes
+bucket/date class exactly while the wall clock sits in
+=[day-window start, day-window start + Δ)=. The boundary is the
+calendar's window start (UTC midnight under the UI's default
+=day_start=), never a fixed 03:00/06:00 hour — those observed hours
+are midnight + the fixture offsets. Multi-hour Δ ⇒ multi-hour daily
+failure bands, which CI schedules can sit inside (the weekly Miri and
+benchmark lanes fire at 03:00/04:00 UTC).
+
+*The tools, each with a jurisdiction:*
+
+1. *Now-as-data* — pure functions take =now= (and the calendar) as
+   parameters; callers capture at the boundary. Universal below the
+   handler layer (domain, presentation).
+2. *Injected =Arc<dyn Clock>=* — for actors that stamp time as data
+   across a long life: the state engine, the sync actors, escalation,
+   focus. Tests inject =FixedClock=/=SteppingClock= + paused tokio
+   time (the =advance_both= lockstep, =tests/reminders.rs=).
+3. *The render-pass content freeze* — =UiSettings::clock=
+   (=Some= freezes =Adapter::day_ctx='s =now=; every production
+   hand-over passes =None=). Freezes *content*, never *cadence*: the
+   repaint tick and mock clock keep running.
+4. *Fixture anchoring* — clamp seeds into the running bucket's
+   interior: =start = max(now − Δ, window_start)= (the #658 fix).
+5. *Zone pinning* — =pin_utc_zone= (=TZ=UTC=) makes device-local
+   render machine-independent; it does nothing for time-of-day drift.
+6. *Single-read capture* — one =let now= shared by a test's seed and
+   its expectation (the bracket/flank idiom); collapses dual-read
+   boundary races on the test side.
+
+** 6.2 The seam-vs-anchor decision rule (2026-11-06 ruling)
+
+Match the tool to the *assertion's oracle*, not to the test. Ask what
+the assertion compares against, then take the cheapest tool that
+fully determines the oracle's inputs:
+
+| The assertion's oracle | The tool |
+|---|---|
+| Relative / invariant (positivity, membership, counts; expectation from a captured =now=) | *Anchor the fixture* into the window interior — test-only diff |
+| Committed artifact (golden/snapshot) whose bytes embed clock-derived *text* (absolute dates, elapsed phrases, bar distributions) | *Freeze through the content seam* — pin =UiSettings::clock=, seed relative to the pinned instant, regenerate once; anchoring is provably insufficient (absolute dates rotate at every midnight regardless of seeds) |
+| Exact instants committed through a live form, no artifact | *Single-read capture* (bracket/flank); a pin also works when the path flows through =day_ctx= |
+| An actor stamping time as state | *Injected =Arc<dyn Clock>=* — the only tool that is a production change |
+| A pure function's boundary behavior | *Now-as-data* — pass any instant |
+| Machine-dependent local render | *Zone pin* (composes with all of the above) |
+
+Tie-breakers: anchor over seam when both work (smaller diff);
+extend an existing seam rather than adding a new one; never freeze
+cadence; a seam's *scope must match the artifact's content paths* —
+extend the freeze to a new pass only when an exact-artifact test
+actually renders that pass's content (need-driven, never
+prophylactic); never weaken a correct assertion to avoid the work.
+
 * 7. UI Testing: Tiers & Pins (ADR 0015)
 
 Slint ships no public =slint::testing= API (the design round's

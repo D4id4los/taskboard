@@ -80,6 +80,41 @@ grounded in the survey of the same date) and are binding for new code.
   becomes a criterion only when the maintainer explicitly nominates a
   crate for extraction/reuse, at that time.
 
+** 2.2 Clock Discipline (2026-11-06 ruling)
+
+Where reading the wall clock is legal, and where it is not. The
+test-side half of this rule (which fixture tool to use for which
+assertion oracle) lives in =docs/testing_strategy.org= §6.1–6.2; the
+audit behind both is
+=.artifacts/reports/2026-11-06-clock-seam-audit-report.md=.
+
+- *One sanctioned wall read:* =SystemClock=
+  (=taskboard-domain/src/clock.rs=) is the only production =Utc::now()=
+  in the workspace's own code (plus =Uuid::now_v7= inside the injected
+  id generator). Nothing else calls =Utc::now()=/=Local::now()= to
+  *stamp* state.
+- *Actors that stamp time inject the clock:* =Arc<dyn Clock>= at
+  spawn (state engine, sync actors, escalation, focus); tests inject
+  =FixedClock=/=SteppingClock=. A new actor that writes =now= into
+  state or an outbox takes the clock as a configuration field — it
+  never reads chrono directly.
+- *Pure derivations take =now= as data:* every domain/presentation
+  function receives =now= (and the calendar) as parameters; the
+  *caller captures once at the invocation boundary* — the D-F6
+  consumers contract. CLI handlers follow it: the command entry
+  captures =now= next to its calendar resolution and threads both
+  down (=track::status= is the exemplar); a handler body never
+  re-reads the clock mid-flight.
+- *The render pass freezes content, never cadence:* =UiSettings::
+  clock= (=None= in every production hand-over) freezes the derive
+  pass's =day_ctx= =now= for exact-artifact tests; the repaint tick,
+  the mock clock, and the alarm scheduler keep reading real time.
+  Extend the freeze to another pass only when an exact-artifact test
+  renders that pass's content — never prophylactically.
+- *Boot-time resolution is config, not a clock read:* the day
+  calendar's fixed offset and the =TZ=-dependent defaults resolve once
+  at hand-over and travel as data (=days.rs= D-F6 doc); the audit's
+  seam inventory (report §2) is the map of what is already covered.
 
 * 3. Error Handling
 
