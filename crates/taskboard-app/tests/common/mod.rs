@@ -282,11 +282,14 @@ pub fn card_json(id: u64, title: &str) -> serde_json::Value {
     // A real Deck stamps a card response with its *current* write time —
     // a create echo with a stale stamp reads as unsynced local work
     // against the listing (the #130 carve-out's input). Whole seconds,
-    // like the server's wire format.
-    let now = chrono::Utc::now().timestamp();
+    // like the server's wire format — and deliberately +1 s in the
+    // future: the local edit stamps sub-second *before* this fixture is
+    // built, so a same-second echo floored to the whole second would
+    // read older than it (clock-seam audit row B6).
+    let stamp = (chrono::Utc::now() + chrono::TimeDelta::try_seconds(1).unwrap()).timestamp();
     serde_json::json!({
         "id": id, "title": title, "stackId": STACK, "type": "plain",
-        "order": 0, "lastModified": now, "labels": [], "archived": false,
+        "order": 0, "lastModified": stamp, "labels": [], "archived": false,
         "duedate": null, "done": null
     })
 }
