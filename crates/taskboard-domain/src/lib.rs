@@ -127,8 +127,8 @@ pub use merge::{
     merge_label, merge_stack, merge_task, tombstone_label, tombstone_stack, tombstone_task,
 };
 pub use messages::{
-    AppDataEvidence, AppDataUnreadable, EngineSignal, HabitChanges, LabelChanges, StateCommand,
-    SyncCommand, SyncReport, SystemEvent, TaskChanges,
+    AppDataEvidence, AppDataUnreadable, EngineSignal, HabitChanges, ImportedReflection,
+    LabelChanges, StateCommand, SyncCommand, SyncReport, SystemEvent, TaskChanges, UserDataReport,
 };
 pub use outbox::{LocalOp, OpId, PendingOp};
 pub use persistence::{
@@ -148,9 +148,9 @@ pub use recur::{
 };
 pub use reflection::{
     DEFAULT_TEMPLATES, HealthFlag, InvalidRating, InvalidReviewWindow, Rating,
-    ReflectionAttributes, ReflectionEntry, ReflectionState, ReflectionTemplate, ReviewCadence,
-    ReviewDue, ReviewWindow, UnknownHealthFlag, compose_reflection_text, review_due, review_window,
-    window_done, window_misses,
+    ReflectionAttributes, ReflectionEntry, ReflectionImport, ReflectionState, ReflectionTemplate,
+    ReviewCadence, ReviewDue, ReviewWindow, UnknownHealthFlag, compose_reflection_text,
+    import_reflections, review_due, review_window, window_done, window_misses,
 };
 pub use reminders::{
     AdhocAlarm, AdhocWhen, AtInstant, BreakRule, Insistence, InvalidAtInstant,

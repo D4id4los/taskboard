@@ -928,11 +928,69 @@ pub enum SyncReport {
     },
 }
 
+/// Files-substrate actor → engine (DR-8 D-SF11 / D-ES1): the merged
+/// per-user sections whose rows differ from what the actor last
+/// derived from published state. Never board-shaped — it rides its own
+/// engine lane beside [`SyncReport`], never through the board pipeline,
+/// and nothing it carries can reach the outbox.
+///
+/// The domain cannot see the wire crate, so the report carries decoded
+/// domain rows: one field per typed section (v1: `journal`); a future
+/// section is a new field. `Verbatim` wire rows and undecodable bodies
+/// never cross this seam (the connector drops and counts them).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct UserDataReport {
+    /// The `journal` wire section's decoded rows (the domain vocabulary
+    /// is `reflection` — `journal` is the wire name only).
+    pub journal: Vec<ImportedReflection>,
+}
+
+/// One decoded row of the `journal` wire section.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ImportedReflection {
+    /// A decoded live row; `entry.updated_at` is the wire clock and
+    /// `entry.deleted == false`.
+    Entry(crate::reflection::ReflectionEntry),
+    /// A wire tombstone: id + clock only (the wire grammar carries no
+    /// body; the local row keeps its body in place).
+    Tombstone {
+        id: crate::ids::ReflectionId,
+        clock: chrono::DateTime<chrono::Utc>,
+    },
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_support;
     use proptest::prelude::*;
+
+    /// The DR-8 chunk-3 pin: `SyncReport` is not widened by the
+    /// per-user lane. An exhaustive match with no wildcard arm —
+    /// adding a variant fails compilation here, and the per-user
+    /// report is a separate type that cannot be placed in the board
+    /// lane's channel.
+    #[test]
+    fn sync_report_keeps_exactly_its_two_board_shaped_variants() {
+        fn classify(report: &SyncReport) -> bool {
+            match report {
+                SyncReport::Completed { .. } => true,
+                SyncReport::Failed { .. } => false,
+            }
+        }
+        let failed = SyncReport::Failed {
+            connector: test_support::test_connector(),
+            kind: SyncErrorKind::Network,
+            pushes: Vec::new(),
+            read_at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH,
+            board: None,
+            duration: std::time::Duration::ZERO,
+            features: crate::capabilities::DeckFeatures::default(),
+        };
+        assert!(!classify(&failed));
+        let user_data = UserDataReport::default();
+        assert_eq!(user_data.journal, Vec::new());
+    }
 
     proptest! {
         #![proptest_config(proptest::test_runner::Config::with_cases(256))]

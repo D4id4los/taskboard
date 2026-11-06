@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 use crate::days::{DayCalendar, window_start};
 use crate::habit::{PeriodKind, period_after, period_start};
 use crate::ids::ReflectionId;
+use crate::persistence::PersistenceAction;
 
 /// How wide the reviewed window is — which walk or verb produced the
 /// entry, and the only calendar parameter the stored row keeps. Its own
@@ -344,6 +345,102 @@ impl ReflectionState {
     pub fn live_entries(&self) -> impl Iterator<Item = &ReflectionEntry> {
         self.entries.values().filter(|entry| entry.is_live())
     }
+}
+
+/// What one [`import_reflections`] pass did: the persistence batch
+/// (every action is `UpsertReflectionEntry` — the import persists
+/// through the same action the commands use, no new action kind) and
+/// the per-row verdict counts.
+#[derive(Debug, Default, PartialEq)]
+pub struct ReflectionImport {
+    /// `UpsertReflectionEntry` per applied row, in input order.
+    pub actions: Vec<PersistenceAction>,
+    /// Rows that changed the home.
+    pub applied: usize,
+    /// Rows the clock guard declined (older than local) or that were
+    /// identical to the local row already (the idempotence skip).
+    pub skipped_stale: usize,
+    /// Tombstones for ids the home never held (no ghost row is minted).
+    pub skipped_absent_tombstone: usize,
+}
+
+/// Folds imported rows into the reflection home (DR-8 D-ES3). Pure;
+/// mutates `state` only for applied rows; reads no clock, mints no id.
+/// Rows fold sequentially; the idempotence and order-freedom laws are
+/// stated for **one row per id** — the shape every report has, since
+/// the connector derives it from a keyed wire section.
+///
+/// **The clock guard is `>=` — ties go to the imported row** (D-ES4,
+/// the sidecar folds' rule in `merge.rs`). This is not merely precedent:
+/// the row the connector reports is the winner of the files fold over
+/// `local ∪ peers`, whose equal-clock tie is broken by a content
+/// totaliser. If the engine kept its local row on ties, a device whose
+/// local row lost the totaliser would *publish* the peer's row while
+/// *holding* its own, and the two devices' state hashes would disagree
+/// forever. With `>=` both engines adopt the fold's winner — convergence
+/// by construction. The guard's real job is the race: a local edit
+/// committed after the connector snapshotted its local document carries
+/// a later `updated_at` than anything the report holds, so the stale
+/// report row is skipped and the next cycle publishes the edit.
+///
+/// Per row, against the local row of the same id:
+/// - `Entry`, absent locally → inserted.
+/// - `Entry`, present → replaces iff its clock is `>=` local *and* the
+///   row differs (an identical row is a no-op: idempotence). A newer
+///   entry **un-deletes** a local tombstone (later edit beats older
+///   tombstone — the `RuleEntry` semantics).
+/// - `Tombstone`, present → tombstoned in place (body kept, ADR 0021)
+///   iff its clock is `>=` local, unless the row is already that very
+///   tombstone.
+/// - `Tombstone`, absent → **skipped** (`skipped_absent_tombstone`).
+///   Deliberate leniency: the entity's fields (cadence, day, window)
+///   cannot be invented and the contract forbids placeholder rows. The
+///   tombstone keeps winning in every *published* view because the
+///   connector relays it, so no peer can resurrect the entry through
+///   this device.
+pub fn import_reflections(
+    state: &mut ReflectionState,
+    rows: &[crate::messages::ImportedReflection],
+) -> ReflectionImport {
+    use crate::messages::ImportedReflection;
+    let mut report = ReflectionImport::default();
+    for row in rows {
+        match row {
+            ImportedReflection::Entry(entry) => {
+                let adopt = match state.entries.get(&entry.id) {
+                    None => true,
+                    Some(local) => entry.updated_at >= local.updated_at && entry != local,
+                };
+                if adopt {
+                    state.entries.insert(entry.id, entry.clone());
+                    report
+                        .actions
+                        .push(PersistenceAction::UpsertReflectionEntry(entry.clone()));
+                    report.applied += 1;
+                } else {
+                    report.skipped_stale += 1;
+                }
+            }
+            ImportedReflection::Tombstone { id, clock } => {
+                let Some(local) = state.entries.get_mut(id) else {
+                    report.skipped_absent_tombstone += 1;
+                    continue;
+                };
+                let already = local.deleted && local.updated_at == *clock;
+                if *clock >= local.updated_at && !already {
+                    local.deleted = true;
+                    local.updated_at = *clock;
+                    report
+                        .actions
+                        .push(PersistenceAction::UpsertReflectionEntry(local.clone()));
+                    report.applied += 1;
+                } else {
+                    report.skipped_stale += 1;
+                }
+            }
+        }
+    }
+    report
 }
 
 /// A curated reflection template: typed data, not config (DR-7 D-J4 —
@@ -1042,7 +1139,274 @@ mod tests {
             String::new(),
         ];
         assert_eq!(compose_reflection_text(template, &answers), "");
+
         assert_eq!(compose_reflection_text(template, &[]), "");
+    }
+
+    // ---- the import fold (DR-8 D-ES3/D-ES4), one table row per test ----
+
+    use crate::messages::ImportedReflection;
+
+    fn home(entries: &[ReflectionEntry]) -> ReflectionState {
+        ReflectionState {
+            entries: entries.iter().map(|e| (e.id, e.clone())).collect(),
+        }
+    }
+
+    fn upserts(report: &ReflectionImport) -> Vec<&ReflectionEntry> {
+        report
+            .actions
+            .iter()
+            .map(|action| match action {
+                PersistenceAction::UpsertReflectionEntry(entry) => entry,
+                other => panic!("the import emits only reflection upserts, got {other:?}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn import_inserts_an_absent_entry() {
+        let mut state = ReflectionState::default();
+        let incoming = entry(1);
+        let report = import_reflections(
+            &mut state,
+            std::slice::from_ref(&ImportedReflection::Entry(incoming.clone())),
+        );
+        assert_eq!(report.applied, 1);
+        assert_eq!(report.skipped_stale, 0);
+        assert_eq!(upserts(&report), vec![&incoming]);
+        assert_eq!(state.entries[&incoming.id], incoming);
+    }
+
+    #[test]
+    fn import_replaces_a_present_entry_with_a_newer_clock() {
+        let local = entry(1);
+        let mut state = home(std::slice::from_ref(&local));
+        let mut newer = local.clone();
+        newer.text = "edited elsewhere".into();
+        newer.updated_at = local.updated_at + chrono::TimeDelta::try_seconds(1).unwrap();
+        let report = import_reflections(
+            &mut state,
+            std::slice::from_ref(&ImportedReflection::Entry(newer.clone())),
+        );
+        assert_eq!(report.applied, 1);
+        assert_eq!(state.entries[&local.id], newer);
+    }
+
+    /// The `>=` guard (D-ES4): an equal clock with different content
+    /// adopts the imported row — the fold's totaliser winner.
+    #[test]
+    fn import_adopts_an_equal_clock_row_with_different_content() {
+        let local = entry(1);
+        let mut state = home(std::slice::from_ref(&local));
+        let mut tied = local.clone();
+        tied.text = "the totaliser's pick".into();
+        let report = import_reflections(
+            &mut state,
+            std::slice::from_ref(&ImportedReflection::Entry(tied.clone())),
+        );
+        assert_eq!(report.applied, 1);
+        assert_eq!(state.entries[&local.id], tied);
+    }
+
+    #[test]
+    fn import_of_an_identical_row_is_a_no_op() {
+        let local = entry(1);
+        let mut state = home(std::slice::from_ref(&local));
+        let report = import_reflections(
+            &mut state,
+            std::slice::from_ref(&ImportedReflection::Entry(local.clone())),
+        );
+        assert_eq!(report.applied, 0);
+        assert_eq!(report.skipped_stale, 1);
+        assert_eq!(report.actions, Vec::new());
+        assert_eq!(state, home(&[local]));
+    }
+
+    #[test]
+    fn import_skips_an_older_entry() {
+        let local = entry(1);
+        let mut state = home(std::slice::from_ref(&local));
+        let mut older = local.clone();
+        older.text = "stale".into();
+        older.updated_at = local.updated_at - chrono::TimeDelta::try_seconds(1).unwrap();
+        let report = import_reflections(&mut state, &[ImportedReflection::Entry(older)]);
+        assert_eq!(report.applied, 0);
+        assert_eq!(report.skipped_stale, 1);
+        assert_eq!(state.entries[&local.id], local);
+    }
+
+    #[test]
+    fn import_tombstones_in_place_keeping_the_body() {
+        let local = entry(1);
+        let mut state = home(std::slice::from_ref(&local));
+        let clock = local.updated_at + chrono::TimeDelta::try_seconds(5).unwrap();
+        let report = import_reflections(
+            &mut state,
+            &[ImportedReflection::Tombstone {
+                id: local.id,
+                clock,
+            }],
+        );
+        assert_eq!(report.applied, 1);
+        let stored = &state.entries[&local.id];
+        assert!(stored.deleted);
+        assert_eq!(stored.updated_at, clock);
+        assert_eq!(stored.text, local.text, "the body stays in place");
+        assert_eq!(stored.created_at, local.created_at);
+        assert_eq!(upserts(&report), vec![stored]);
+    }
+
+    #[test]
+    fn import_skips_a_tombstone_older_than_the_local_row() {
+        let local = entry(1);
+        let mut state = home(std::slice::from_ref(&local));
+        let report = import_reflections(
+            &mut state,
+            &[ImportedReflection::Tombstone {
+                id: local.id,
+                clock: local.updated_at - chrono::TimeDelta::try_seconds(1).unwrap(),
+            }],
+        );
+        assert_eq!(report.applied, 0);
+        assert_eq!(report.skipped_stale, 1);
+        assert!(state.entries[&local.id].is_live());
+    }
+
+    /// The tombstone the home already holds (same clock) is a no-op —
+    /// the second half of idempotence.
+    #[test]
+    fn import_of_the_already_held_tombstone_is_a_no_op() {
+        let mut local = entry(1);
+        local.deleted = true;
+        let mut state = home(std::slice::from_ref(&local));
+        let report = import_reflections(
+            &mut state,
+            &[ImportedReflection::Tombstone {
+                id: local.id,
+                clock: local.updated_at,
+            }],
+        );
+        assert_eq!(report.applied, 0);
+        assert_eq!(report.actions, Vec::new());
+        assert_eq!(state.entries[&local.id], local);
+    }
+
+    /// Later edit beats older tombstone (D-SF5, the `RuleEntry`
+    /// semantics): a newer entry un-deletes.
+    #[test]
+    fn import_of_a_newer_entry_undeletes_a_local_tombstone() {
+        let mut local = entry(1);
+        local.deleted = true;
+        let mut state = home(std::slice::from_ref(&local));
+        let mut revived = local.clone();
+        revived.deleted = false;
+        revived.updated_at = local.updated_at + chrono::TimeDelta::try_seconds(1).unwrap();
+        let report = import_reflections(
+            &mut state,
+            std::slice::from_ref(&ImportedReflection::Entry(revived.clone())),
+        );
+        assert_eq!(report.applied, 1);
+        assert_eq!(state.entries[&local.id], revived);
+    }
+
+    /// No ghost rows: a tombstone for an id the home never held is
+    /// counted and skipped, never materialised.
+    #[test]
+    fn import_skips_and_counts_an_absent_target_tombstone() {
+        let mut state = ReflectionState::default();
+        let report = import_reflections(
+            &mut state,
+            &[ImportedReflection::Tombstone {
+                id: ReflectionId::from(uuid::Uuid::from_u128(9)),
+                clock: ts(500),
+            }],
+        );
+        assert_eq!(report.skipped_absent_tombstone, 1);
+        assert_eq!(report.applied, 0);
+        assert!(state.entries.is_empty(), "no ghost row");
+        assert_eq!(report.actions, Vec::new());
+    }
+
+    proptest! {
+        #![proptest_config(proptest_config(256))]
+
+        /// Idempotence: importing the same keyed report twice, the
+        /// second pass applies nothing (no actions, no state change).
+        #[test]
+        fn import_is_idempotent(
+            mut state in crate::test_support::reflection_home_strategy(),
+            rows in crate::test_support::unique_imported_reflections_strategy(),
+        ) {
+            let _ = import_reflections(&mut state, &rows);
+            let after_first = state.clone();
+            let second = import_reflections(&mut state, &rows);
+            prop_assert!(second.actions.is_empty());
+            prop_assert_eq!(second.applied, 0);
+            prop_assert_eq!(state, after_first);
+        }
+
+        /// Order-freedom: for unique ids, every permutation of the
+        /// report yields the same home.
+        #[test]
+        fn import_of_unique_ids_is_order_free(
+            state in crate::test_support::reflection_home_strategy(),
+            rows in crate::test_support::unique_imported_reflections_strategy(),
+            seed in any::<u64>(),
+        ) {
+            let mut forward = state.clone();
+            let _ = import_reflections(&mut forward, &rows);
+            // A deterministic shuffle keyed by the seed (no RNG dependency).
+            let mut keyed: Vec<(u64, &ImportedReflection)> = rows
+                .iter()
+                .enumerate()
+                .map(|(i, row)| {
+                    let i = u32::try_from(i).expect("small");
+                    (seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).rotate_left(i % 64) ^ u64::from(i), row)
+                })
+                .collect();
+            keyed.sort_by_key(|(key, _)| *key);
+            let shuffled: Vec<ImportedReflection> = keyed.into_iter().map(|(_, row)| row.clone()).collect();
+            let mut permuted = state;
+            let _ = import_reflections(&mut permuted, &shuffled);
+            prop_assert_eq!(forward, permuted);
+        }
+
+        /// Monotone clocks: no row's `updated_at` ever moves backwards
+        /// through an import, and no row leaves the home.
+        #[test]
+        fn import_never_moves_a_clock_backwards(
+            state in crate::test_support::reflection_home_strategy(),
+            rows in crate::test_support::imported_reflections_strategy(),
+        ) {
+            let before = state.clone();
+            let mut after = state;
+            let _ = import_reflections(&mut after, &rows);
+            for (id, prior) in &before.entries {
+                let now = after.entries.get(id).expect("rows never leave the home");
+                prop_assert!(now.updated_at >= prior.updated_at);
+            }
+        }
+
+        /// Actions mirror state: replaying the emitted batch through the
+        /// persistence interpreter over the prior home yields exactly
+        /// the post-import home (the engine's memory ≡ disk discipline
+        /// holds for the import path).
+        #[test]
+        fn import_actions_replay_to_the_resulting_home(
+            state in crate::test_support::reflection_home_strategy(),
+            rows in crate::test_support::imported_reflections_strategy(),
+        ) {
+            let mut persisted = crate::persistence::PersistedState {
+                reflection: state.clone(),
+                ..Default::default()
+            };
+            let mut folded = state;
+            let report = import_reflections(&mut folded, &rows);
+            prop_assert_eq!(report.actions.len(), report.applied);
+            crate::persistence::apply_actions(&mut persisted, &report.actions);
+            prop_assert_eq!(persisted.reflection, folded);
+        }
     }
 
     /// A bounded reference-date domain: every cadence's flooring
