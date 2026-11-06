@@ -24,24 +24,23 @@ use taskboard_domain::test_support::{CountingIds, InMemoryRepository};
 use taskboard_domain::{
     AdhocWhen, AppState, Board, CommandOutcome, EngineSignal, Insistence, Notification,
     ReminderAnchor, ReminderDefaults, ReminderDelivery, ReminderOffset, ReminderRef, ReminderRule,
-    ReminderRuleId, ReminderSnoozeKey, Stack, StackClocks, StateCommand, SyncCommand, SyncReport,
-    SystemEvent, Task, TaskClocks,
+    ReminderRuleId, ReminderSnoozeKey, SettingsSnapshot, Stack, StackClocks, StateCommand,
+    SyncCommand, SyncReport, SystemEvent, Task, TaskClocks, TickSecs,
 };
-use taskboard_state::{EngineHandle, ReminderEngineConfig, spawn_state_engine};
+use taskboard_state::{EngineHandle, spawn_state_engine};
 
 mod common;
 
 use common::{CountingRepository, FixedClock, FlakyRepository, T0, ts};
 
-/// The enabled tick config used by the R-series: a 1 s cadence (many
+/// The enabled tick settings used by the R-series: a 1 s cadence (many
 /// ticks per advance window) and an at-due implicit default.
-fn tick_config() -> ReminderEngineConfig {
-    ReminderEngineConfig {
-        enabled: true,
-        tick: Duration::from_secs(1),
-        defaults: ReminderDefaults {
-            default_before: ReminderOffset::at_due(),
-        },
+fn tick_config() -> SettingsSnapshot {
+    SettingsSnapshot {
+        reminders_enabled: true,
+        tick_secs: TickSecs::new(1).expect("nonzero"),
+        reminder_before: ReminderOffset::at_due(),
+        ..SettingsSnapshot::default()
     }
 }
 
@@ -127,7 +126,7 @@ fn seeded_task_state(duedate_secs: i64) -> (PersistedState, taskboard_domain::Ta
 struct Spawner {
     repo: Arc<dyn TaskRepository>,
     clock: Arc<FixedClock>,
-    reminders: ReminderEngineConfig,
+    reminders: SettingsSnapshot,
 }
 
 impl Default for Spawner {
@@ -873,7 +872,7 @@ async fn r7_quiet_ticks_are_invisible() {
 #[tokio::test(start_paused = true)]
 async fn r8_disabled_engine_never_ticks_under_auto_advance() {
     let mut h = spawn(Spawner {
-        reminders: ReminderEngineConfig::disabled(),
+        reminders: taskboard_domain::SettingsSnapshot::default(),
         ..Spawner::default()
     })
     .await;

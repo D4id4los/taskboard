@@ -422,7 +422,7 @@ async fn the_engine_execute_path_routes_like_the_planner() {
     use std::sync::Arc;
     use taskboard_domain::persistence::TaskRepository;
     use taskboard_domain::test_support::InMemoryRepository;
-    use taskboard_state::{ReminderEngineConfig, spawn_state_engine};
+    use taskboard_state::spawn_state_engine;
 
     let mut state = PersistedState::default();
     apply_actions(
@@ -474,7 +474,7 @@ async fn the_engine_execute_path_routes_like_the_planner() {
         system_tx,
         system_rx,
         notifier,
-        ReminderEngineConfig::disabled(),
+        taskboard_domain::SettingsSnapshot::default(),
         taskboard_state::DayRollConfig::disabled(),
     )
     .await

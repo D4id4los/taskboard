@@ -244,7 +244,7 @@ pub async fn repeat_on(
         return Ok(repeat_receipt(
             task,
             task_id,
-            app.config.day_calendar().calendar,
+            app.config.resolved_day_calendar(),
             now,
         ));
     }
@@ -252,7 +252,7 @@ pub async fn repeat_on(
         &invocation,
         task,
         &selector,
-        app.config.day_calendar().calendar,
+        app.config.resolved_day_calendar(),
         now,
     )?;
     drop(state);
@@ -277,7 +277,7 @@ pub async fn repeat_on(
     Ok(repeat_receipt(
         task,
         task_id,
-        app.config.day_calendar().calendar,
+        app.config.resolved_day_calendar(),
         now,
     ))
 }

@@ -49,7 +49,10 @@ fn cfg(clock: Arc<dyn Clock>) -> SyncActorConfig {
         backoff_initial: Duration::from_millis(100),
         backoff_max: Duration::from_millis(400),
         clock,
-        day: taskboard_state::DayRollConfig::disabled().calendar,
+        day: taskboard_domain::DayCalendar {
+            day_start_time: chrono::NaiveTime::MIN,
+            offset: taskboard_state::DayRollConfig::disabled().offset,
+        },
     }
 }
 
@@ -101,7 +104,7 @@ async fn boot_with_ids(
         system_tx.clone(),
         system_engine_rx,
         notifier,
-        taskboard_state::ReminderEngineConfig::disabled(),
+        taskboard_domain::SettingsSnapshot::default(),
         taskboard_state::DayRollConfig::disabled(),
     )
     .await

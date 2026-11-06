@@ -846,7 +846,7 @@ mod tests {
             system_tx.clone(),
             system_rx,
             notifier,
-            taskboard_state::ReminderEngineConfig::disabled(),
+            taskboard_domain::SettingsSnapshot::default(),
             taskboard_state::DayRollConfig::disabled(),
         )
         .await
@@ -1238,7 +1238,7 @@ mod tests {
             system_tx.clone(),
             system_rx,
             notifier,
-            taskboard_state::ReminderEngineConfig::disabled(),
+            taskboard_domain::SettingsSnapshot::default(),
             taskboard_state::DayRollConfig::disabled(),
         )
         .await
@@ -1666,7 +1666,7 @@ mod tests {
             system_tx.clone(),
             system_rx,
             notifier,
-            taskboard_state::ReminderEngineConfig::disabled(),
+            taskboard_domain::SettingsSnapshot::default(),
             taskboard_state::DayRollConfig::disabled(),
         )
         .await
@@ -1881,7 +1881,7 @@ mod tests {
             system_tx.clone(),
             system_rx,
             notifier,
-            taskboard_state::ReminderEngineConfig::disabled(),
+            taskboard_domain::SettingsSnapshot::default(),
             taskboard_state::DayRollConfig::disabled(),
         )
         .await
@@ -2011,7 +2011,7 @@ mod tests {
                 system_tx.clone(),
                 system_rx,
                 notifier,
-                taskboard_state::ReminderEngineConfig::disabled(),
+                taskboard_domain::SettingsSnapshot::default(),
                 taskboard_state::DayRollConfig::disabled(),
             )
             .await

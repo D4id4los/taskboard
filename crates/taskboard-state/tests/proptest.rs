@@ -29,7 +29,7 @@ use taskboard_domain::{
     SyncPhase, Task, TaskClocks, TaskId, apply_sync_report,
 };
 use taskboard_domain::{StateCommand, SyncCounters};
-use taskboard_state::{EngineCore, ReminderEngineConfig, spawn_state_engine};
+use taskboard_state::{EngineCore, spawn_state_engine};
 
 mod common;
 
@@ -545,7 +545,7 @@ fn drive_sequence(steps: &[Step]) -> Result<(), TestCaseError> {
             system_tx,
             system_rx,
             notifier,
-            ReminderEngineConfig::disabled(),
+            taskboard_domain::SettingsSnapshot::default(),
             taskboard_state::DayRollConfig::disabled(),
         )
         .await

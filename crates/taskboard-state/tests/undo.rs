@@ -13,7 +13,7 @@ use taskboard_domain::{
     RemoteBoard, RemoteBoardSnapshot, StateCommand, SyncCommand, SyncReport, SystemEvent,
     TaskRepository, persistence::RepositoryError,
 };
-use taskboard_state::{DayRollConfig, ExecuteError, ReminderEngineConfig, spawn_state_engine};
+use taskboard_state::{DayRollConfig, ExecuteError, spawn_state_engine};
 
 mod common;
 
@@ -94,7 +94,7 @@ impl Rig {
             system_tx.clone(),
             system_rx,
             notifier,
-            ReminderEngineConfig::disabled(),
+            taskboard_domain::SettingsSnapshot::default(),
             DayRollConfig::disabled(),
         )
         .await
@@ -233,7 +233,7 @@ async fn a_storage_failure_leaves_the_journal_and_head_untouched() {
         system_tx,
         system_rx,
         notifier,
-        ReminderEngineConfig::disabled(),
+        taskboard_domain::SettingsSnapshot::default(),
         DayRollConfig::disabled(),
     )
     .await

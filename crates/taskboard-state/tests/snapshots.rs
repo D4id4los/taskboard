@@ -25,7 +25,7 @@ use taskboard_domain::{
     RemoteBoardSnapshot, StateCommand, SyncCommand, SyncErrorKind, SyncPhase, SyncReport,
     SystemEvent,
 };
-use taskboard_state::{DayRollConfig, ReminderEngineConfig, spawn_state_engine};
+use taskboard_state::{DayRollConfig, spawn_state_engine};
 
 use insta::assert_yaml_snapshot;
 
@@ -70,7 +70,7 @@ impl Scenario {
             system_tx.clone(),
             system_rx,
             notifier,
-            ReminderEngineConfig::disabled(),
+            taskboard_domain::SettingsSnapshot::default(),
             DayRollConfig::disabled(),
         )
         .await
@@ -105,13 +105,10 @@ impl Scenario {
             system_tx.clone(),
             system_rx,
             notifier,
-            ReminderEngineConfig::disabled(),
+            taskboard_domain::SettingsSnapshot::default(),
             DayRollConfig {
                 enabled: true,
-                calendar: taskboard_domain::DayCalendar {
-                    day_start_time: chrono::NaiveTime::MIN,
-                    offset: chrono::FixedOffset::east_opt(0).expect("zero offset"),
-                },
+                offset: chrono::FixedOffset::east_opt(0).expect("zero offset"),
             },
         )
         .await
@@ -1421,7 +1418,7 @@ async fn s39_reflection_rows_enter_the_disk_contract() {
 // completion spawn (s37a–c) and the day-boundary roll (s38a–c) enter
 // the disk contract. Existing scenarios are untouched: the roll
 // scenarios opt in via their own fixture, and every other scenario's
-// `ReminderEngineConfig::disabled()` + disabled day roll never arms the
+// `taskboard_domain::SettingsSnapshot::default()` + disabled day roll never arms the
 // timer.
 // ---------------------------------------------------------------------
 

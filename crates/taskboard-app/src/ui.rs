@@ -644,7 +644,7 @@ pub async fn run_desktop(
     // The reminder defaults ride the hand-over (R3 chunk C): the
     // notification surface derives from the same value the engine
     // evaluates with.
-    ui_settings.reminder_defaults = config.reminder_engine_config().defaults;
+    ui_settings.reminder_defaults = config.settings_snapshot().reminder_defaults();
     // The focus timings ride the hand-over (#496): the overlay's
     // countdown derives from the same validated value the runtime
     // was spawned with (the kiosk gate lives at the spawn decision —
