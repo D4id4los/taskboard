@@ -146,12 +146,19 @@ pub(crate) struct TrackFormState {
 )]
 pub(crate) struct Adapter {
     keymap: Keymap,
-    /// The today window's derivation pair (chunk 10 D4): held, never
-    /// re-read from config; `day_ctx` recomputes the window per pass.
+    /// The device's fixed UTC offset (the one genuinely boot-fixed
+    /// value the day derivations need; `UiSettings::boot_offset`).
+    boot_offset: chrono::FixedOffset,
+    /// The today window's derivation pair: the live
+    /// `settings.day_start_time` paired with `boot_offset`, re-derived
+    /// from the published state at every refresh pass
+    /// ([`Self::sync_settings`], round-5 chunk 5) — never hand-over
+    /// state; `day_ctx` recomputes the window per pass.
     day_start: (chrono::NaiveTime, chrono::FixedOffset),
-    /// The due-soon horizon (round-3 D14/#230): handed over typed at
-    /// install — one horizon for the sets and the grid tint.
-    due_soon_horizon: chrono::TimeDelta,
+    /// The due-soon horizon (round-3 D14/#230): the live
+    /// `settings.due_soon_days`, re-derived per refresh — one horizon
+    /// for the sets and the grid tint.
+    pub(crate) due_soon_horizon: chrono::TimeDelta,
     /// The run mode's one UI bit (Q8): on kiosk the today pass filters
     /// to the focused board's subset; the desktop is cross-board.
     kiosk: bool,
@@ -160,16 +167,17 @@ pub(crate) struct Adapter {
     /// render time-independently; production always holds `None` and
     /// the pass reads the wall clock.
     frozen_now: Option<chrono::DateTime<chrono::Utc>>,
-    /// The injected reminder defaults (R3 chunk C): the derivation
-    /// input `active_notifications` needs for the implicit default's
-    /// occurrence — held, never re-read from config (the `day_start`
-    /// consumers contract).
-    reminder_defaults: taskboard_domain::ReminderDefaults,
-    /// The injected focus timings (#496): `None` while the mode is
-    /// off — the overlay action never lights and the countdown has no
-    /// input. Held, never re-read from config (the `day_start`
-    /// consumers contract).
-    focus: Option<taskboard_domain::focus::FocusTiming>,
+    /// The reminder defaults (R3 chunk C): the derivation input
+    /// `active_notifications` needs for the implicit default's
+    /// occurrence — the live `settings.reminder_before`, re-derived
+    /// per refresh.
+    pub(crate) reminder_defaults: taskboard_domain::ReminderDefaults,
+    /// The focus timings (#496): `None` while the mode is off (or on
+    /// kiosk — the hand-over contract that a kiosk never carries a
+    /// timing) — the overlay action never lights and the countdown
+    /// has no input. The live `settings.live_focus()`, re-derived per
+    /// refresh.
+    pub(crate) focus: Option<taskboard_domain::focus::FocusTiming>,
     /// The per-second tick's display-changes-per-second condition
     /// (r4 D17, decision 5): true only while a mounted surface's
     /// displayed value moves with the wall second. Computed once per
@@ -950,10 +958,28 @@ impl Adapter {
         facts.set_generation(facts.get_generation() + 1);
     }
 
+    /// The per-refresh settings mirror (round-5 chunk 5, D-5.7): every
+    /// settings-derived input the pass reads comes from the published
+    /// snapshot, so a committed setting is visible at the next refresh
+    /// — the publish itself swaps the state Arc, which is what makes
+    /// [`Self::refresh`] run the forced pass.
+    fn sync_settings(&mut self, settings: &taskboard_domain::SettingsSnapshot) {
+        self.day_start = (settings.day_start_time, self.boot_offset);
+        self.due_soon_horizon = settings.due_soon_days.horizon();
+        self.reminder_defaults = settings.reminder_defaults();
+        // A kiosk never carries a timing (the spawn exclusion's first
+        // layer; the overlay's action gate re-checks anyway).
+        self.focus = if self.kiosk {
+            None
+        } else {
+            settings.live_focus()
+        };
+    }
+
     /// The injected day-boundary vocabulary ([`Self::day_ctx`]'s
     /// sibling): the held `day_start` pair as the domain `DayCalendar`
     /// the recurring badge's derivations read (DR-6/4).
-    fn calendar(&self) -> taskboard_domain::DayCalendar {
+    pub(crate) fn calendar(&self) -> taskboard_domain::DayCalendar {
         taskboard_domain::DayCalendar {
             day_start_time: self.day_start.0,
             offset: self.day_start.1,
@@ -963,7 +989,7 @@ impl Adapter {
     /// The pass's time bundle (chunk 10 D4): a fresh `now` and the
     /// window derived from the held pair — recomputed on every pass,
     /// so the rollover rides the existing minute-boundary repaint.
-    fn day_ctx(&self) -> crate::view_state::DayCtx {
+    pub(crate) fn day_ctx(&self) -> crate::view_state::DayCtx {
         let now = self.frozen_now.unwrap_or_else(chrono::Utc::now);
         let window = taskboard_domain::days::day_window(now, self.day_start.0, self.day_start.1);
         crate::view_state::DayCtx { now, window }
@@ -1164,6 +1190,7 @@ impl Adapter {
     pub(crate) fn refresh_forced(&mut self, window: &AppWindow) {
         self.sync_view_context();
         let state = self.state.load_full();
+        self.sync_settings(&state.settings);
         self.view_state.reconcile(&state);
         // After the reconcile — the reconciled view-state is what the
         // term reads. The pass's clock read feeds the timers term (r4
@@ -5185,13 +5212,10 @@ pub(crate) fn install(
     requests: mpsc::Sender<crate::requests::UiRequest>,
     stack_widths: BTreeMap<uuid::Uuid, BTreeMap<uuid::Uuid, u32>>,
     connectors: Vec<ConnectorInfo>,
-    day_start: (chrono::NaiveTime, chrono::FixedOffset),
-    due_soon_horizon: chrono::TimeDelta,
+    boot_offset: chrono::FixedOffset,
     kiosk: bool,
     frozen_now: Option<chrono::DateTime<chrono::Utc>>,
     rotation: Option<crate::view_state::KioskRotation>,
-    reminder_defaults: taskboard_domain::ReminderDefaults,
-    focus: Option<taskboard_domain::focus::FocusTiming>,
     general: crate::requests::SettingsSnapshot,
     state: Arc<ArcSwap<AppState>>,
     status_timer: Rc<slint::Timer>,
@@ -5228,14 +5252,23 @@ pub(crate) fn install(
         |rotation| rotation.active().view(),
     );
     let walk_flag = Rc::new(std::cell::Cell::new(false));
+    // The settings mirror seeds from the state the hand-over carries
+    // (the engine published its boot snapshot before any UI mounted)
+    // and follows every later publish through `sync_settings`.
+    let boot_settings = state.load().settings.clone();
     let adapter = Rc::new(RefCell::new(Adapter {
         keymap,
-        day_start,
-        due_soon_horizon,
+        boot_offset,
+        day_start: (boot_settings.day_start_time, boot_offset),
+        due_soon_horizon: boot_settings.due_soon_days.horizon(),
         kiosk,
         frozen_now,
-        reminder_defaults,
-        focus,
+        reminder_defaults: boot_settings.reminder_defaults(),
+        focus: if kiosk {
+            None
+        } else {
+            boot_settings.live_focus()
+        },
         seconds_surfaces_active: false,
         shell: KeymapShell::default(),
         resolver: KeymapResolver::new(),

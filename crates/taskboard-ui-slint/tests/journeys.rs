@@ -13724,7 +13724,10 @@ fn the_placement_routes_one_mask_and_undo_returns_it() {
             // The one honest write: both masks in one command (the
             // window derives from the same pinned instant the mount
             // froze — no clock read on either side).
-            let day_start = UiSettings::default().day_start;
+            let day_start = (
+                taskboard_domain::SettingsSnapshot::default().day_start_time,
+                UiSettings::default().boot_offset,
+            );
             let (next_start, _) =
                 taskboard_domain::days::next_day_window(now, day_start.0, day_start.1);
             let date = next_start.date_naive();
@@ -13782,7 +13785,10 @@ fn the_reorder_routes_the_two_swap_writes() {
     // Two boxes tomorrow: 09:00 and 11:00 off the frozen next-day
     // window (the default day-start pair makes it the next UTC
     // midnight block).
-    let day_start = UiSettings::default().day_start;
+    let day_start = (
+        taskboard_domain::SettingsSnapshot::default().day_start_time,
+        UiSettings::default().boot_offset,
+    );
     let (next_start, _) = taskboard_domain::days::next_day_window(now, day_start.0, day_start.1);
     let early = next_start + TimeDelta::hours(9);
     let late = next_start + TimeDelta::hours(11);

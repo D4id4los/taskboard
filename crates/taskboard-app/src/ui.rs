@@ -192,7 +192,7 @@ pub fn bare_invocation_route(mode: crate::config::AppMode, tty: bool, display: b
 #[must_use]
 pub fn resolve_ui_settings(
     ui: &crate::config::UiSection,
-    day_start: (chrono::NaiveTime, chrono::FixedOffset),
+    boot_offset: chrono::FixedOffset,
 ) -> (
     taskboard_ui_slint::UiSettings,
     Vec<taskboard_ui_slint::keymap::Finding>,
@@ -235,21 +235,12 @@ pub fn resolve_ui_settings(
             crate::config::KeymapPreset::Emacs => taskboard_ui_slint::keymap::Preset::Emacs,
             crate::config::KeymapPreset::Vi => taskboard_ui_slint::keymap::Preset::Vi,
         },
-        // The today window's derivation pair (chunk 10 D4): resolved
-        // once here — nothing reads config mid-flight.
-        day_start,
-        // The due-soon horizon (round-3 D14/#230): the validated
-        // `[ui] due_soon_days` as a typed delta (0 is legal — an
-        // empty soon set).
-        due_soon_horizon: chrono::TimeDelta::try_days(i64::from(ui.due_soon_days))
-            .unwrap_or(taskboard_ui_slint::presentation::DUE_SOON_HORIZON),
-        // Overwritten by the lifecycle from the engine config right
-        // after this returns (the kiosk/connectors/boards precedent).
-        reminder_defaults: taskboard_domain::ReminderDefaults::default(),
-        // Overwritten by the lifecycle from the validated `[focus]`
-        // table right after this returns (the reminder_defaults
-        // precedent) — `None` while the mode is off.
-        focus: None,
+        // The device's fixed offset (chunk 10 D4's pair, halved by
+        // round-5 chunk 5): the day-start time, the due-soon horizon,
+        // the reminder defaults, and the focus timings now ride the
+        // engine's published settings — the adapter re-derives them
+        // per refresh, nothing is resolved here.
+        boot_offset,
         // The general snapshot: filled by the lifecycle from the full
         // config (the connectors/boards precedent).
         general: taskboard_ui_slint::requests::SettingsSnapshot::default(),
@@ -708,17 +699,7 @@ pub async fn run_desktop(
     observe_scale_escape_hatch();
 
     let (mut ui_settings, keymap_findings) =
-        resolve_ui_settings(&config.ui, resolve_day_start(&config));
-    // The reminder defaults ride the hand-over (R3 chunk C): the
-    // notification surface derives from the same value the engine
-    // evaluates with.
-    ui_settings.reminder_defaults = config.settings_snapshot().reminder_defaults();
-    // The focus timings ride the hand-over (#496): the overlay's
-    // countdown derives from the same validated value the runtime
-    // was spawned with (the kiosk gate lives at the spawn decision —
-    // a kiosk hand-over never carries a timing because the runtime
-    // is not spawned; the overlay's action gate re-checks anyway).
-    ui_settings.focus = config.focus_config();
+        resolve_ui_settings(&config.ui, resolve_day_start(&config).1);
     surface_keymap_findings(&keymap_findings);
     let store = crate::secrets::resolve_credential_store(
         config.nextcloud.credential_store,
@@ -1173,21 +1154,11 @@ mod keymap_resolution_tests {
             },
             due_soon_days: 7,
         };
-        let (settings, findings) = resolve_ui_settings(
-            &ui,
-            (
-                chrono::NaiveTime::MIN,
-                chrono::FixedOffset::east_opt(0).expect("zero"),
-            ),
-        );
+        let (settings, findings) =
+            resolve_ui_settings(&ui, chrono::FixedOffset::east_opt(0).expect("zero"));
 
         // Structural asserts on the handed-over map (no strings).
         assert_eq!(settings.scale.get(), 1.25);
-        assert_eq!(
-            settings.due_soon_horizon,
-            chrono::TimeDelta::try_days(7).unwrap(),
-            "the knob hands over as a typed horizon"
-        );
         assert_eq!(
             settings.startup.keymap_findings,
             u32::try_from(findings.len()).expect("findings fit u32")
@@ -1225,13 +1196,8 @@ mod keymap_resolution_tests {
             },
             ..crate::config::UiSection::default()
         };
-        let (settings, findings) = resolve_ui_settings(
-            &ui,
-            (
-                chrono::NaiveTime::MIN,
-                chrono::FixedOffset::east_opt(0).expect("zero"),
-            ),
-        );
+        let (settings, findings) =
+            resolve_ui_settings(&ui, chrono::FixedOffset::east_opt(0).expect("zero"));
         assert_eq!(findings, Vec::new());
         let colon = taskboard_ui_slint::keymap::stroke::parse(":").expect("parses");
         assert_eq!(
@@ -1255,13 +1221,8 @@ mod keymap_resolution_tests {
             stack_widths: BTreeMap::from([(board, BTreeMap::from([(stack, 240u32)]))]),
             ..crate::config::UiSection::default()
         };
-        let (settings, _) = resolve_ui_settings(
-            &ui,
-            (
-                chrono::NaiveTime::MIN,
-                chrono::FixedOffset::east_opt(0).expect("zero"),
-            ),
-        );
+        let (settings, _) =
+            resolve_ui_settings(&ui, chrono::FixedOffset::east_opt(0).expect("zero"));
         assert_eq!(
             settings
                 .stack_widths
@@ -1288,10 +1249,7 @@ mod keymap_resolution_tests {
                 window_geometry: Some(geometry),
                 ..crate::config::UiSection::default()
             },
-            (
-                chrono::NaiveTime::MIN,
-                chrono::FixedOffset::east_opt(0).expect("zero"),
-            ),
+            chrono::FixedOffset::east_opt(0).expect("zero"),
         );
         let minted = settings.window_geometry.expect("the valid table mints");
         assert_eq!(
@@ -1325,10 +1283,7 @@ mod keymap_resolution_tests {
                     window_geometry: Some(hostile),
                     ..crate::config::UiSection::default()
                 },
-                (
-                    chrono::NaiveTime::MIN,
-                    chrono::FixedOffset::east_opt(0).expect("zero"),
-                ),
+                chrono::FixedOffset::east_opt(0).expect("zero"),
             );
             assert_eq!(settings.window_geometry, None, "a hostile table hands None");
         }
@@ -1336,10 +1291,7 @@ mod keymap_resolution_tests {
         // Absent: `None`, same as refused.
         let (settings, _) = resolve_ui_settings(
             &crate::config::UiSection::default(),
-            (
-                chrono::NaiveTime::MIN,
-                chrono::FixedOffset::east_opt(0).expect("zero"),
-            ),
+            chrono::FixedOffset::east_opt(0).expect("zero"),
         );
         assert_eq!(settings.window_geometry, None);
     }
