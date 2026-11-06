@@ -6951,6 +6951,8 @@ dependencies = [
  "proptest",
  "serde",
  "serde_json",
+ "taskboard-domain",
+ "thiserror 2.0.21",
  "uuid",
 ]
 
