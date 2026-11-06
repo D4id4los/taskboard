@@ -104,6 +104,9 @@ pub trait JourneyDriver {
     /// The accessible label of the item holding keyboard focus (an
     /// address for walking to a stop, never assertion text).
     fn focused_label(&self) -> Option<String>;
+    /// The focused item's window-space rect `(x, y, width, height)`
+    /// in logical px — the focus-ring pixel probes' region.
+    fn focused_rect(&self) -> Option<(f32, f32, f32, f32)>;
 }
 
 /// One addressed element: an [`ElementHandle`] behind only the a11y
@@ -338,6 +341,20 @@ impl JourneyDriver for SlintDriver {
                 i_slint_core::accessibility::AccessibleStringProperty::Label,
             )
             .map(Into::into)
+    }
+
+    fn focused_rect(&self) -> Option<(f32, f32, f32, f32)> {
+        let component = self.window();
+        let inner = i_slint_core::window::WindowInner::from_pub(component.window());
+        let focused = inner.focus_item.borrow().upgrade()?;
+        let geometry = focused.geometry();
+        let origin = focused.map_to_window(geometry.origin);
+        Some((
+            origin.x,
+            origin.y,
+            geometry.size.width,
+            geometry.size.height,
+        ))
     }
 }
 
