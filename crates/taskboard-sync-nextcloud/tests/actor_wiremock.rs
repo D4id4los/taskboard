@@ -11,7 +11,7 @@
 //! exactly while the test waits for an expected report — never between
 //! assertions. The wait helpers' deadline is wall-clock
 //! (`std::time::Instant`): the stepping is virtual, but the actor's
-//! progress depends on real wiremock I/O. `cfg().poll_interval` sits far beyond every test horizon, so
+//! progress depends on real wiremock I/O. `settings().poll_interval_secs` sits far beyond every test horizon, so
 //! cycles are nudge/backoff-driven only and wiremock request
 //! counts stay an exact observable of how many cycles ran.
 
@@ -36,14 +36,21 @@ use common::hermetic::{
     start_server, ts, uuid, wait_subscribed,
 };
 
+/// The cadences the fake reader answers with (the actor reads them
+/// live per cycle — round-5 chunk 5): no poll ticks inside a test
+/// horizon, so cycles fire only on nudges and backoff deadlines (all
+/// test-driven), keeping the request-count observables exact.
+fn settings() -> taskboard_domain::SettingsSnapshot {
+    taskboard_domain::SettingsSnapshot {
+        poll_interval_secs: taskboard_domain::TickSecs::new(3_600).expect("nonzero"),
+        backoff_initial_secs: taskboard_domain::TickSecs::new(1).expect("nonzero"),
+        backoff_max_secs: taskboard_domain::TickSecs::new(4).expect("nonzero"),
+        ..taskboard_domain::SettingsSnapshot::default()
+    }
+}
+
 fn cfg() -> SyncActorConfig {
     SyncActorConfig {
-        // No poll ticks inside a test horizon: cycles fire only on nudges,
-        // nudges, and backoff deadlines (all test-driven), keeping the
-        // request-count observables exact.
-        poll_interval: Duration::from_secs(3_600),
-        backoff_initial: Duration::from_millis(100),
-        backoff_max: Duration::from_millis(400),
         // Every LWW-participating stamp the actor mints is `T + 1000` —
         // after every fixture stamp, preserving the real-clock orderings.
         clock: Arc::new(FixedClock(ts(T + 1000))),
@@ -250,6 +257,17 @@ fn spawn_with_cfg(
     repo: Arc<InMemoryRepository>,
     cfg: SyncActorConfig,
 ) -> Actor {
+    spawn_with_settings(server, repo, cfg, settings())
+}
+
+/// The fake reader carries the given live settings from the spawn on.
+fn spawn_with_settings(
+    server: &MockServer,
+    repo: Arc<InMemoryRepository>,
+    cfg: SyncActorConfig,
+    settings: taskboard_domain::SettingsSnapshot,
+) -> Actor {
+    repo.set_settings(settings);
     let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
     let (commands, command_rx) = mpsc::channel(16);
     let (report_tx, report_rx) = mpsc::channel(16);
@@ -527,7 +545,7 @@ async fn a7_offline_episode_broadcasts_lost_once_then_restored() {
         }
     ));
     assert!(
-        lost_at.elapsed() >= cfg().backoff_initial,
+        lost_at.elapsed() >= settings().backoff_initial_secs.duration(),
         "the second cycle respected the initial backoff"
     );
     assert!(
@@ -947,25 +965,19 @@ async fn a5_a6_rejection_outcomes_travel_in_the_report() {
 
 /// A14: a `Retry-After` advertisement on the exhausting 429 becomes a
 /// floor on the *autonomous* backoff deadline. The advertised 2 s sits
-/// strictly between the 100 ms initial backoff and the 30 s cap — the
+/// strictly between the 1 s initial backoff and the 30 s cap — the
 /// discriminating zone. The observable is the server-side request count
 /// over paused time: within the window before the advertised deadline
 /// the only limited requests are the first cycle's exhausted retries
 /// (3); a floor-ignoring implementation would fire the next cycle after
-/// the 100 ms curve and add more. Flipping healthy lets the cycle
+/// the 1 s curve and add more. Flipping healthy lets the cycle
 /// succeed; the floor is gone with the streak (success schedules
 /// `poll_interval`).
 #[tokio::test(start_paused = true)]
 async fn a14_rate_limited_poll_waits_the_advertised_retry_after() {
-    let cfg_rate = SyncActorConfig {
-        poll_interval: Duration::from_secs(3_600),
-        backoff_initial: Duration::from_millis(100),
-        backoff_max: Duration::from_secs(30),
-        clock: Arc::new(FixedClock(ts(T + 1000))),
-        day: taskboard_domain::DayCalendar {
-            day_start_time: chrono::NaiveTime::MIN,
-            offset: taskboard_state::DayRollConfig::disabled().offset,
-        },
+    let settings_rate = taskboard_domain::SettingsSnapshot {
+        backoff_max_secs: taskboard_domain::TickSecs::new(30).expect("nonzero"),
+        ..settings()
     };
     let server = start_server().await;
     let limited = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -996,7 +1008,8 @@ async fn a14_rate_limited_poll_waits_the_advertised_retry_after() {
         .mount(&server)
         .await;
 
-    let mut actor = spawn_with_cfg(&server, repo_with(&[(2, STACK)], &[]), cfg_rate);
+    let mut actor =
+        spawn_with_settings(&server, repo_with(&[(2, STACK)], &[]), cfg(), settings_rate);
     let first = nudge_and_report(&mut actor).await;
     assert!(matches!(first, SyncReport::Completed { .. }));
 
@@ -1939,7 +1952,8 @@ async fn a26_unreadable_state_backs_off_then_recovers() {
     repo.set_read_failure(true);
     actor.commands.send(SyncCommand::SyncNow).await.unwrap();
     let failure_window_start = tokio::time::Instant::now();
-    for _ in 0..30 {
+    // 110 × 10 ms: strictly past the 1 s initial backoff.
+    for _ in 0..110 {
         assert!(
             actor.reports.try_recv().is_err(),
             "a read failure produces no report"
@@ -1952,7 +1966,7 @@ async fn a26_unreadable_state_backs_off_then_recovers() {
         tokio::time::advance(Duration::from_millis(10)).await;
     }
     assert!(
-        failure_window_start.elapsed() >= cfg().backoff_initial,
+        failure_window_start.elapsed() >= settings().backoff_initial_secs.duration(),
         "the failing cycle consumed the backoff window"
     );
     assert!(
@@ -5335,5 +5349,145 @@ async fn t17_a_cold_cache_converges_on_the_next_full_pass() {
     assert_eq!(
         uploaded["sections"]["tasks"]["500"], origin_doc["sections"]["tasks"]["500"],
         "the pass-2 migration is the same structural clone"
+    );
+}
+
+// ---- the live cadence (GUI review round 5, chunk 5) ----------------------
+
+fn live(poll: u64, initial: u64, max: u64) -> taskboard_domain::SettingsSnapshot {
+    taskboard_domain::SettingsSnapshot {
+        poll_interval_secs: taskboard_domain::TickSecs::new(poll).expect("nonzero"),
+        backoff_initial_secs: taskboard_domain::TickSecs::new(initial).expect("nonzero"),
+        backoff_max_secs: taskboard_domain::TickSecs::new(max).expect("nonzero"),
+        ..taskboard_domain::SettingsSnapshot::default()
+    }
+}
+
+/// L1: the poll re-arm — armed at a 3 600 s interval, the doorbell with
+/// a 5 s interval brings the next poll cycle within one *new* interval
+/// (simulated time), never the old one.
+#[tokio::test(start_paused = true)]
+async fn l1_a_shorter_poll_interval_re_arms_within_one_new_cycle() {
+    let server = start_server().await;
+    mount_conditional_pull(&server, &serde_json::json!([])).await;
+    let repo = repo_with(&[(2, STACK)], &[]);
+    let mut actor = spawn_with_settings(&server, repo.clone(), cfg(), live(3_600, 1, 4));
+    let first = nudge_and_report(&mut actor).await;
+    assert!(matches!(first, SyncReport::Completed { .. }));
+
+    repo.set_settings(live(5, 1, 4));
+    let rung_at = tokio::time::Instant::now();
+    actor
+        .system_tx
+        .send(SystemEvent::SettingsChanged)
+        .expect("the actor subscribes");
+    let polled = next_report(&mut actor).await;
+    assert!(matches!(polled, SyncReport::Completed { .. }));
+    // Floors are exact under the paused clock; the ceiling is loose
+    // (virtual time advances while real wiremock I/O is in flight) yet
+    // far below the old hour — the discriminating alternative.
+    let waited = rung_at.elapsed();
+    assert!(
+        waited >= Duration::from_secs(5) && waited < Duration::from_secs(60),
+        "the poll fired at the new 5 s interval, not the old hour: {waited:?}"
+    );
+}
+
+/// L2: the min rule — a lengthened interval never postpones an
+/// already-armed deadline (the 5 s deadline armed before the doorbell
+/// still fires on time; the 3 600 s value applies from the next
+/// reschedule on).
+#[tokio::test(start_paused = true)]
+async fn l2_a_longer_poll_interval_never_postpones_an_armed_deadline() {
+    let server = start_server().await;
+    mount_conditional_pull(&server, &serde_json::json!([])).await;
+    let repo = repo_with(&[(2, STACK)], &[]);
+    let mut actor = spawn_with_settings(&server, repo.clone(), cfg(), live(5, 1, 4));
+    let first = nudge_and_report(&mut actor).await;
+    assert!(matches!(first, SyncReport::Completed { .. }));
+    let armed_at = tokio::time::Instant::now();
+
+    // 4 s into the 5 s window the interval becomes an hour.
+    for _ in 0..400 {
+        tokio::time::advance(Duration::from_millis(10)).await;
+    }
+    repo.set_settings(live(3_600, 1, 4));
+    actor
+        .system_tx
+        .send(SystemEvent::SettingsChanged)
+        .expect("the actor subscribes");
+    let polled = next_report(&mut actor).await;
+    assert!(matches!(polled, SyncReport::Completed { .. }));
+    let waited = armed_at.elapsed();
+    assert!(
+        waited >= Duration::from_secs(5) && waited < Duration::from_secs(60),
+        "the armed 5 s deadline fired on time, not an hour later: {waited:?}"
+    );
+}
+
+/// L3: the backoff knobs apply at the next post-failure reschedule —
+/// after the first failure (1 s backoff) the initial backoff becomes
+/// 3 s; the second retry's wait is the doubled *new* value (6 s), not
+/// the old curve's 2 s.
+#[tokio::test(start_paused = true)]
+async fn l3_new_backoff_values_shape_the_next_retry() {
+    let server = start_server().await;
+    let responder = |_req: &wiremock::Request| ResponseTemplate::new(503);
+    Mock::given(method("GET"))
+        .respond_with(responder)
+        .mount(&server)
+        .await;
+    let repo = repo_with(&[(2, STACK)], &[]);
+    let mut actor = spawn_with_settings(&server, repo.clone(), cfg(), live(3_600, 1, 60));
+
+    let first = nudge_and_report(&mut actor).await;
+    assert!(matches!(first, SyncReport::Failed { .. }));
+    // Streak 1 is armed at 1 s; the new initial backoff lands for the
+    // streak-2 reschedule.
+    repo.set_settings(live(3_600, 3, 60));
+    let second_at = {
+        let second = next_report(&mut actor).await;
+        assert!(matches!(second, SyncReport::Failed { .. }));
+        tokio::time::Instant::now()
+    };
+    let third = next_report(&mut actor).await;
+    assert!(matches!(third, SyncReport::Failed { .. }));
+    // The old curve would retry at 2 s; the new one at 6 s (floor
+    // exact; the ceiling loose for the in-flight I/O drift, well below
+    // the 60 s cap).
+    let gap = second_at.elapsed();
+    assert!(
+        gap >= Duration::from_secs(6) && gap < Duration::from_secs(30),
+        "streak 2 waited the new 3 s × 2 curve: {gap:?}"
+    );
+}
+
+/// L4: the doorbell never cuts a failure backoff short — mid-streak a
+/// settings change re-arms through the backoff curve, not the (shorter)
+/// success poll interval.
+#[tokio::test(start_paused = true)]
+async fn l4_a_settings_change_mid_streak_keeps_the_backoff() {
+    let server = start_server().await;
+    let responder = |_req: &wiremock::Request| ResponseTemplate::new(503);
+    Mock::given(method("GET"))
+        .respond_with(responder)
+        .mount(&server)
+        .await;
+    let repo = repo_with(&[(2, STACK)], &[]);
+    let mut actor = spawn_with_settings(&server, repo.clone(), cfg(), live(1, 20, 60));
+
+    let first = nudge_and_report(&mut actor).await;
+    assert!(matches!(first, SyncReport::Failed { .. }));
+    let failed_at = tokio::time::Instant::now();
+    actor
+        .system_tx
+        .send(SystemEvent::SettingsChanged)
+        .expect("the actor subscribes");
+    let retry = next_report(&mut actor).await;
+    assert!(matches!(retry, SyncReport::Failed { .. }));
+    let waited = failed_at.elapsed();
+    assert!(
+        waited >= Duration::from_secs(20),
+        "the retry honoured the 20 s backoff, not the 1 s poll: {waited:?}"
     );
 }

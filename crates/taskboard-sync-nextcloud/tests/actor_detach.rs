@@ -32,8 +32,14 @@ impl SyncStateReader for BoardlessView {
         Box::pin(async { Ok(PersistedState::default()) })
     }
 
+    /// No poll ticks inside the test horizon; a 1 s backoff.
     fn read_settings(&self) -> taskboard_domain::SettingsSnapshot {
-        taskboard_domain::SettingsSnapshot::default()
+        taskboard_domain::SettingsSnapshot {
+            poll_interval_secs: taskboard_domain::TickSecs::new(3600).expect("nonzero"),
+            backoff_initial_secs: taskboard_domain::TickSecs::new(1).expect("nonzero"),
+            backoff_max_secs: taskboard_domain::TickSecs::new(1).expect("nonzero"),
+            ..taskboard_domain::SettingsSnapshot::default()
+        }
     }
 }
 
@@ -44,9 +50,6 @@ async fn d1_detach_stops_the_actor_after_the_queued_cycle() {
     let (system, _system_rx) = broadcast::channel::<SystemEvent>(16);
     let client = DeckClient::new("http://127.0.0.1:9", "u", "t").expect("valid base url");
     let cfg = SyncActorConfig {
-        poll_interval: Duration::from_secs(3600),
-        backoff_initial: Duration::from_secs(1),
-        backoff_max: Duration::from_secs(1),
         clock: Arc::new(FixedClock(ts(T + 1000))),
         day: taskboard_domain::DayCalendar {
             day_start_time: chrono::NaiveTime::MIN,

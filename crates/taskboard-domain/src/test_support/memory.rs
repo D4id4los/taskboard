@@ -20,6 +20,10 @@ use crate::persistence::{
 pub struct InMemoryRepository {
     state: Mutex<PersistedState>,
     fail_reads: std::sync::atomic::AtomicBool,
+    /// The settings facet's answer (`SyncStateReader::read_settings`):
+    /// the test-policy default unless a journey seeds its cadences
+    /// through [`Self::set_settings`].
+    settings: Mutex<crate::settings::SettingsSnapshot>,
 }
 
 impl InMemoryRepository {
@@ -35,7 +39,19 @@ impl InMemoryRepository {
         Self {
             state: Mutex::new(state),
             fail_reads: std::sync::atomic::AtomicBool::new(false),
+            settings: Mutex::new(crate::settings::SettingsSnapshot::default()),
         }
+    }
+
+    /// Test seam: the settings the fake's `read_settings` facet
+    /// answers from here on (the sync-actor journeys' cadence knob —
+    /// a stand-in for the engine's published snapshot).
+    ///
+    /// # Panics
+    ///
+    /// On a poisoned fake lock (a panicking test thread).
+    pub fn set_settings(&self, settings: crate::settings::SettingsSnapshot) {
+        *self.settings.lock().expect("fake settings lock") = settings;
     }
 
     /// Test seam: while set, every read (`load` and `read_state`) fails
@@ -101,11 +117,8 @@ impl SyncStateReader for InMemoryRepository {
         Box::pin(async { self.read() })
     }
 
-    /// The fake carries no settings surface: the test-policy default is
-    /// the contract (the sync-actor journeys that need real cadences
-    /// swap in their own reader fake).
     fn read_settings(&self) -> crate::settings::SettingsSnapshot {
-        crate::settings::SettingsSnapshot::default()
+        self.settings.lock().expect("fake settings lock").clone()
     }
 }
 
