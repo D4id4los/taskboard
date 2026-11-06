@@ -218,6 +218,9 @@ pub fn resolve_ui_settings(
             keymap_findings: built.findings.len().try_into().unwrap_or(u32::MAX),
         },
         keymap: built.keymap,
+        // Production always reads the real wall clock; the freeze seam
+        // is the golden journeys' alone (UiSettings::clock doc).
+        clock: None,
         kiosk: false, // the desktop hand-over; the kiosk appliance (K3) sets this
         // The desktop hand-over never rotates (K13): only the kiosk
         // appliance maps the validated `[kiosk.rotation]` table.

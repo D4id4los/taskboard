@@ -94,6 +94,14 @@ pub struct UiSettings {
     /// resolved once at hand-over (the consumers contract — nothing
     /// reads config mid-flight). Defaults to midnight + UTC.
     pub day_start: (chrono::NaiveTime, chrono::FixedOffset),
+    /// The push pass's clock seam (#660): `None` = the real wall
+    /// clock (every production hand-over); `Some(instant)` freezes
+    /// the derive pass's `now` (`day_ctx`) so pixel goldens over
+    /// clock-derived content (the review ledger's bars and date
+    /// phrases) render identically at any wall-clock time. The
+    /// repaint tick still reads the real clock — the seam freezes
+    /// *content*, never the cadence.
+    pub clock: Option<chrono::DateTime<chrono::Utc>>,
     /// The live local boards for the settings board selector (r2
     /// D32): secret-free rows with the binding name, resolved
     /// app-side at hand-over; refreshed only from reply snapshots.
@@ -157,6 +165,7 @@ impl Default for UiSettings {
                 chrono::NaiveTime::MIN,
                 chrono::FixedOffset::east_opt(0).expect("zero"),
             ),
+            clock: None,
             reminder_defaults: taskboard_domain::ReminderDefaults::default(),
             due_soon_horizon: presentation::DUE_SOON_HORIZON,
             focus: None,
@@ -363,6 +372,7 @@ pub fn mount(
         settings.day_start,
         settings.due_soon_horizon,
         settings.kiosk,
+        settings.clock,
         settings.kiosk_rotation,
         settings.reminder_defaults,
         settings.focus,
