@@ -2539,6 +2539,36 @@ fn push_today(
     mutations
 }
 
+#[allow(clippy::too_many_arguments)] // the pass-shaped parameter list
+fn plan_row(
+    models: &mut PushModels,
+    task: &Task,
+    sets: &presentation::DueSets,
+    vs: &ViewState,
+    tracked_task: Option<TaskId>,
+    calendar: taskboard_domain::DayCalendar,
+    now: DateTime<Utc>,
+    time: &str,
+    overdue: bool,
+) -> PlanRowModel {
+    PlanRowModel {
+        // No done box: the planner never wires the toggle (#665).
+        card: TaskCardModel {
+            can_done: false,
+            ..task_card_model(
+                task,
+                sets,
+                vs,
+                now,
+                decorations_model(models, task, tracked_task, calendar, now),
+            )
+        },
+        time: SharedString::from(time),
+        effort: SharedString::from(presentation::effort_phrase(task.effort)),
+        overdue,
+    }
+}
+
 /// The plan-next-day surface's pass (#622, D-8): the domain
 /// derivation (`plan_next_day` — today's projection evaluated as of
 /// tomorrow's opening, the shared read) rendered as two panes — the
@@ -2561,30 +2591,6 @@ fn push_plan_next_day(
     tables: &mut IdTables,
     models: &mut PushModels,
 ) -> usize {
-    fn plan_row(
-        models: &mut PushModels,
-        task: &Task,
-        sets: &presentation::DueSets,
-        vs: &ViewState,
-        tracked_task: Option<TaskId>,
-        calendar: taskboard_domain::DayCalendar,
-        now: DateTime<Utc>,
-        time: &str,
-        overdue: bool,
-    ) -> PlanRowModel {
-        PlanRowModel {
-            card: task_card_model(
-                task,
-                sets,
-                vs,
-                now,
-                decorations_model(models, task, tracked_task, calendar, now),
-            ),
-            time: SharedString::from(time),
-            effort: SharedString::from(presentation::effort_phrase(task.effort)),
-            overdue,
-        }
-    }
     if kiosk {
         tables.plan_rows.clear();
         tables.plan_box_count = 0;
