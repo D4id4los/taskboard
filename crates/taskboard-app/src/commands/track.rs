@@ -61,14 +61,16 @@ pub async fn stop(
     super::tasks::with_core(config, store, async |app| stop_on(app).await).await
 }
 
-/// The `track status` steps on a booted core. `day` travels as data
-/// (the D-F6 consumer contract): the caller resolves it once per
-/// invocation from the validated config
-/// ([`AppConfig::resolved_day_calendar`]) — never mid-flight.
+/// The `track status` steps on a booted core. `day` *and* `now`
+/// travel as data (the D-F6 consumer contract): the caller resolves
+/// both once per invocation — `day` from the validated config
+/// ([`AppConfig::resolved_day_calendar`]), `now` from a single clock
+/// capture — never mid-flight, and the handler never re-reads the
+/// clock.
 #[must_use]
-pub fn status_on(app: &crate::App, day: DayCalendar) -> TrackStatusView {
+pub fn status_on(app: &crate::App, day: DayCalendar, now: DateTime<Utc>) -> TrackStatusView {
     let state = app.engine.shared_state().load_full();
-    status_view(&state.tracking, day, Utc::now())
+    status_view(&state.tracking, day, now)
 }
 
 /// # Errors
@@ -78,8 +80,9 @@ pub async fn status(
     config: AppConfig,
     store: Arc<dyn CredentialStore>,
     day: DayCalendar,
+    now: DateTime<Utc>,
 ) -> Result<TrackStatusView, CommandError> {
-    super::tasks::with_core(config, store, async |app| Ok(status_on(app, day))).await
+    super::tasks::with_core(config, store, async |app| Ok(status_on(app, day, now))).await
 }
 
 /// # Errors
@@ -1199,7 +1202,8 @@ pub async fn track_command(
         TrackInvocation::Status => {
             super::run_core(io, config_path, render_text_status, |config, store| {
                 let day = config.resolved_day_calendar();
-                async move { status(config, store, day).await }
+                let now = Utc::now();
+                async move { status(config, store, day, now).await }
             })
             .await
         }
@@ -1276,7 +1280,10 @@ pub async fn track_line(
 ) -> u8 {
     match invocation {
         TrackInvocation::Status => {
-            crate::commands::emit_result(io, Ok(status_on(app, day)), render_text_status)
+            // One clock capture per dispatch line, inside the arm so
+            // non-status verbs pay nothing; `now` travels as data.
+            let now = Utc::now();
+            crate::commands::emit_result(io, Ok(status_on(app, day, now)), render_text_status)
         }
         TrackInvocation::List { task, since } => {
             crate::commands::emit_result(io, list_on(app, task.as_deref(), since), render_text_list)

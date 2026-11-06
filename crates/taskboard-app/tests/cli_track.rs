@@ -212,9 +212,13 @@ async fn run_delete(config: &AppConfig, selector: &str) -> TrackDeleteReceipt {
     }
 }
 
-async fn run_status(config: &AppConfig, day: taskboard_domain::DayCalendar) -> TrackStatusView {
+async fn run_status(
+    config: &AppConfig,
+    day: taskboard_domain::DayCalendar,
+    now: chrono::DateTime<chrono::Utc>,
+) -> TrackStatusView {
     match parse_track(&["track", "status"]) {
-        TrackInvocation::Status => track::status(config.clone(), forbidden_store(), day)
+        TrackInvocation::Status => track::status(config.clone(), forbidden_store(), day, now)
             .await
             .expect("status boots"),
         _ => panic!("the argv selects status"),
@@ -263,7 +267,7 @@ async fn t1_start_stamps_an_open_entry_that_survives_a_fresh_boot() {
     // Fresh boot: the open entry is still there, and its elapsed time
     // can only have grown — nothing ticks, the duration is derived at
     // read (no fixed sleep: the monotone bound is the assertion).
-    let view = run_status(&config, day_calendar()).await;
+    let view = run_status(&config, day_calendar(), chrono::Utc::now()).await;
     assert_eq!(view.open.len(), 1, "durable across a fresh boot");
     assert_eq!(view.open[0].entry_id, receipt.entry.entry_id);
     assert!(
@@ -288,7 +292,7 @@ async fn t2_starting_b_closes_a() {
         vec![first.entry.entry_id],
         "the start closed the previously running entry"
     );
-    let view = run_status(&config, day_calendar()).await;
+    let view = run_status(&config, day_calendar(), chrono::Utc::now()).await;
     assert_eq!(view.open.len(), 1);
     assert_eq!(view.open[0].entry_id, second.entry.entry_id);
 }
@@ -332,7 +336,7 @@ async fn t3b_starting_the_running_break_while_work_runs_switches() {
         "the fresh entry counts as respite"
     );
     assert!(break_.entry.end.is_none(), "the fresh entry is open");
-    let view = run_status(&config, day_calendar()).await;
+    let view = run_status(&config, day_calendar(), chrono::Utc::now()).await;
     assert_eq!(
         view.open.len(),
         1,
@@ -621,7 +625,10 @@ async fn t10_status_over_a_constructed_day_window() {
         "the open entry starts inside the window"
     );
 
-    let view = run_status(&config, day).await;
+    // The same captured `now` feeds the fixture stamps and the status
+    // read — one clock capture, no second read to step a day past the
+    // fixture (docs/testing_strategy.org §6.2).
+    let view = run_status(&config, day, now).await;
     assert_eq!(view.open.len(), 1);
     assert_eq!(view.open[0].entry_id, started.entry.entry_id);
     // Floor: the fully-inside hour is there, plus the spanning entry's
@@ -1319,14 +1326,23 @@ async fn t_kind_status_tracked_today_excludes_respite() {
     let dir = tempdir();
     let config = standalone_config(dir.path(), "track-kind.db");
     let task_id = seed_task(&config, "status break task").await;
-    // 1000s of work and 1000s of respite inside today's window (the
-    // spans anchor at now — the day window is calendar-relative).
+    // The one clock capture of the test: both fixture stamps and the
+    // status read consume this same `now` (the clock-discipline rule,
+    // docs/testing_strategy.org §6.2 — the handler takes `now` as
+    // data, so no second read races the fixture). The spans sit
+    // strictly inside the window the production view clips against —
+    // derived from the same calendar the handler consumes, not
+    // hand-computed — so the counted total is exactly the work span's
+    // 2_000 s at any wall time or zone.
     let now = chrono::Utc::now();
+    let day = day_calendar();
+    let (window_start, _) = taskboard_domain::day_window(now, day.day_start_time, day.offset);
+    let at = |secs: i64| window_start + chrono::TimeDelta::try_seconds(secs).unwrap();
     let _ = track::log(
         config.clone(),
         forbidden_store(),
         &task_id,
-        track::LogMode::Span(now - chrono::TimeDelta::try_seconds(2_000).unwrap(), now),
+        track::LogMode::Span(at(4_000), at(6_000)),
         taskboard_domain::tracking::TimeEntryKind::Work,
     )
     .await
@@ -1335,15 +1351,12 @@ async fn t_kind_status_tracked_today_excludes_respite() {
         config.clone(),
         forbidden_store(),
         &task_id,
-        track::LogMode::Span(
-            now - chrono::TimeDelta::try_seconds(4_000).unwrap(),
-            now - chrono::TimeDelta::try_seconds(3_000).unwrap(),
-        ),
+        track::LogMode::Span(at(1_000), at(2_000)),
         taskboard_domain::tracking::TimeEntryKind::Respite,
     )
     .await
     .expect("log respite boots");
-    let status = track::status(config.clone(), forbidden_store(), day_calendar())
+    let status = track::status(config.clone(), forbidden_store(), day, now)
         .await
         .expect("status boots");
     assert_eq!(
