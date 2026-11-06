@@ -948,6 +948,7 @@ mod tests {
                     ContextId::Palette,
                     ContextId::FocusMode,
                     ContextId::TrackEntries,
+                    ContextId::ReviewWalk,
                 ],
                 "every modal surface masks; nothing else does"
             );

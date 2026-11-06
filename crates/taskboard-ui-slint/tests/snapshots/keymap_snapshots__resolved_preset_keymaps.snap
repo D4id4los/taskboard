@@ -351,6 +351,17 @@ expression: rows
         - sequence:
             - Escape
           action: task.track-entry-dismiss
+    - context: review-walk
+      bindings:
+        - sequence:
+            - Escape
+          action: review.walk-back
+        - sequence:
+            - Up
+          action: review.walk-cursor-up
+        - sequence:
+            - Down
+          action: review.walk-cursor-down
 - preset: emacs
   contexts:
     - context: global
@@ -739,6 +750,20 @@ expression: rows
         - sequence:
             - Ctrl+p
           action: nav.prev-control
+    - context: review-walk
+      bindings:
+        - sequence:
+            - Escape
+          action: review.walk-back
+        - sequence:
+            - Ctrl+g
+          action: review.walk-back
+        - sequence:
+            - Ctrl+n
+          action: review.walk-cursor-down
+        - sequence:
+            - Ctrl+p
+          action: review.walk-cursor-up
 - preset: vi
   contexts:
     - context: global
@@ -1028,3 +1053,14 @@ expression: rows
         - sequence:
             - Escape
           action: task.track-entry-dismiss
+    - context: review-walk
+      bindings:
+        - sequence:
+            - Escape
+          action: review.walk-back
+        - sequence:
+            - Up
+          action: review.walk-cursor-up
+        - sequence:
+            - Down
+          action: review.walk-cursor-down

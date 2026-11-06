@@ -2760,6 +2760,11 @@ impl Adapter {
             // every planner intent inert (the modal discipline
             // verbatim — Escape out of the flow first).
             (_, C::PlanSurface) => R::Inert,
+            // The review walk family (#638): the overlay-family shape
+            // — a foreign flow settles, then the walk opens over it
+            // (R3 settle-then-run); the walk's kept intents are the
+            // pair overrides.
+            (_, C::ReviewWalk) => R::SettleThenRun,
             // EDIT residue (the effects the kept arms don't own —
             // SetMode(Insert) under a text/due flow): named inert.
             (_, C::Edit) => R::Inert,
@@ -2954,7 +2959,12 @@ impl Adapter {
             | UiEffect::PlanCommitPlace
             | UiEffect::PlanBoxEarlier(_)
             | UiEffect::PlanBoxLater(_)
-            | UiEffect::PlanRemoveBox(_) => self.interpret(window, effect),
+            | UiEffect::PlanRemoveBox(_)
+            // The review walk family (#638): the opener and the
+            // carrier intents interpret like every view intent — the
+            // kiosk refusal and the walk arms live in the table.
+            | UiEffect::OpenReviewWalk
+            | UiEffect::ReviewWalk(_) => self.interpret(window, effect),
         }
         // The pass's tail: the identity diff decides (see the entry
         // comment). The explicit dismisses below (the menu's
@@ -8485,6 +8495,7 @@ impl crate::UiHandle {
                 | ContextId::Palette
                 | ContextId::DatePicker
                 | ContextId::TrackEntries
+                | ContextId::ReviewWalk
                 | ContextId::ViNormal
                 | ContextId::ViInsert,
             ) => return,

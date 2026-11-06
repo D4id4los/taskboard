@@ -59,6 +59,7 @@ impl Preset {
             ContextId::Palette,
             ContextId::FocusMode,
             ContextId::TrackEntries,
+            ContextId::ReviewWalk,
         ]
     }
 }
@@ -289,6 +290,16 @@ static STANDARD: &[(ActionId, ContextId, &[&str])] = &[
         ContextId::TrackEntries,
         &["Shift+Tab"],
     ),
+    // The review walk (DR-7 chunk 3, #638): the cursor/back rows only
+    // — the row verbs are reached by focus + Enter on the mounted
+    // buttons (mount-driven focus) and the pointer.
+    (ActionId::ReviewWalkCursorUp, ContextId::ReviewWalk, &["Up"]),
+    (
+        ActionId::ReviewWalkCursorDown,
+        ContextId::ReviewWalk,
+        &["Down"],
+    ),
+    (ActionId::ReviewWalkBack, ContextId::ReviewWalk, &["Escape"]),
 ];
 
 /// `emacs` — default-emacs-authentic (the review's tmux standard):
@@ -537,6 +548,21 @@ static EMACS: &[(ActionId, ContextId, &[&str])] = &[
         ContextId::TrackEntries,
         &["Ctrl+p"],
     ),
+    // The review walk (DR-7 chunk 3, #638): the emacs vocabulary —
+    // the ladder's Escape + its C-g alternate; the cursor rides the
+    // source-editor C-p/C-n pair.
+    (
+        ActionId::ReviewWalkCursorUp,
+        ContextId::ReviewWalk,
+        &["Ctrl+p"],
+    ),
+    (
+        ActionId::ReviewWalkCursorDown,
+        ContextId::ReviewWalk,
+        &["Ctrl+n"],
+    ),
+    (ActionId::ReviewWalkBack, ContextId::ReviewWalk, &["Escape"]),
+    (ActionId::ReviewWalkBack, ContextId::ReviewWalk, &["Ctrl+g"]),
 ];
 
 /// `vi` — vim-authentic: everything lives in `ViNormal` (the honest
@@ -692,4 +718,14 @@ static VI: &[(ActionId, ContextId, &[&str])] = &[
         ContextId::TrackEntries,
         &["Shift+Tab"],
     ),
+    // The review walk (DR-7 chunk 3, #638): the honest vim model has
+    // no modal of its own — the arrows are this overlay's cursors
+    // (the menu-cursor vocabulary) and Escape is the ladder.
+    (ActionId::ReviewWalkCursorUp, ContextId::ReviewWalk, &["Up"]),
+    (
+        ActionId::ReviewWalkCursorDown,
+        ContextId::ReviewWalk,
+        &["Down"],
+    ),
+    (ActionId::ReviewWalkBack, ContextId::ReviewWalk, &["Escape"]),
 ];

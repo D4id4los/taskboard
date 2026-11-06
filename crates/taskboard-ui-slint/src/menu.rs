@@ -594,7 +594,10 @@ mod tests {
             // go-to verbs and the inbox jump.
             ActionId::ViewPlanNextDay, // 65
             ActionId::ViewInbox,       // 70
-            ActionId::NavFocusBoard,   // 80
+            // The review walk's opener (DR-7 chunk 3, #638): rank 75,
+            // after the inbox jump, before the board focus.
+            ActionId::ReviewOpen,     // 75
+            ActionId::NavFocusBoard,  // 80
             ActionId::NavShowTask, // 90 (palette-only availability: not chain-visible over the board chain)
             ActionId::NavNextView, // 100
             ActionId::NavPrevView, // 110
