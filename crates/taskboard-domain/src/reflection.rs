@@ -346,25 +346,6 @@ impl ReflectionState {
     }
 }
 
-/// The nine ruled kebab names, in declaration order — the strategy and
-/// table-test feed (a test-side enumeration of the curated set).
-#[must_use]
-pub fn all_health_flag_names() -> Vec<&'static str> {
-    // Kept in sync with the variant declaration order by the
-    // declaration-order pin in this module's tests.
-    vec![
-        "migraine",
-        "minor-headache",
-        "medium-headache",
-        "cold-or-flu",
-        "allergies",
-        "cramps",
-        "poor-sleep",
-        "overwhelmed",
-        "good-day",
-    ]
-}
-
 /// A curated reflection template: typed data, not config (DR-7 D-J4 —
 /// no `[templates]` TOML section, no stored rows in v1). The type shape
 /// is the roaming-ready seam for stored templates (#639): rows keyed by
@@ -636,17 +617,12 @@ mod tests {
     use crate::test_support::{proptest_config, timestamp_strategy};
     use proptest::prelude::*;
 
-    const RULED_FLAG_NAMES: [&str; 9] = [
-        "migraine",
-        "minor-headache",
-        "medium-headache",
-        "cold-or-flu",
-        "allergies",
-        "cramps",
-        "poor-sleep",
-        "overwhelmed",
-        "good-day",
-    ];
+    /// The ruled kebab names, in declaration order — the test-side
+    /// enumeration of the curated set (kept in sync with the variant
+    /// declaration order by the declaration-order pin below).
+    fn ruled_flag_names() -> Vec<&'static str> {
+        crate::test_support::all_health_flag_names()
+    }
 
     use chrono::{Datelike as _, FixedOffset, TimeZone as _};
 
@@ -697,7 +673,7 @@ mod tests {
 
     #[test]
     fn health_flag_mint_accepts_exactly_the_nine_ruled_names() {
-        for (i, name) in RULED_FLAG_NAMES.iter().enumerate() {
+        for (i, name) in ruled_flag_names().iter().enumerate() {
             let flag = HealthFlag::try_new(name).unwrap();
             assert_eq!(flag.text_form(), *name);
             // Declaration order: the ruled set's order is the enum's
@@ -723,7 +699,7 @@ mod tests {
 
     #[test]
     fn health_flag_serde_wire_form_is_the_kebab_name() {
-        for name in RULED_FLAG_NAMES {
+        for name in ruled_flag_names() {
             let flag = HealthFlag::parse_text_form(name).unwrap();
             let json = serde_json::to_string(&flag).unwrap();
             assert_eq!(json, format!(r#""{name}""#), "unit name is the wire form");
@@ -1388,7 +1364,7 @@ mod tests {
             mood in proptest::option::of(1_u8..=5),
             energy in proptest::option::of(1_u8..=5),
             flags in proptest::collection::vec(
-                proptest::sample::select(RULED_FLAG_NAMES.to_vec()),
+                proptest::sample::select(ruled_flag_names()),
                 0..9,
             ),
         ) {
