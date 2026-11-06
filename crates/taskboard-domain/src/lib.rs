@@ -60,6 +60,7 @@ pub mod recur;
 pub mod reflection;
 pub mod reminders;
 pub mod remote;
+pub mod settings;
 pub mod state;
 pub mod tracking;
 pub mod tracking_stats;
@@ -162,6 +163,10 @@ pub use reminders::{
 pub use remote::{
     BoardPullValidators, PushOutcome, PushResult, RemoteBoard, RemoteBoardSnapshot, RemoteEcho,
     RemoteIndex, RemoteLabel, RemoteStack, RemoteTask, resolve_label,
+};
+pub use settings::{
+    DueSoonDays, InvalidDueSoonDays, InvalidTickSecs, ReminderSinkChoice, SettingsSnapshot,
+    TickSecs,
 };
 pub use state::{
     AppState, SidecarHealth, SyncCounters, SyncErrorKind, SyncPhase, SyncStates, SyncStatus,
