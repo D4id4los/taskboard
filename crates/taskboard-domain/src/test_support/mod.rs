@@ -46,10 +46,16 @@ pub use reminders::{
 };
 pub use remote::{push_outcome_strategy, remote_task_strategy, snapshot_strategy};
 pub use state::{app_state_strategy, persisted_state_strategy};
+pub mod reflection_strategies;
 pub mod tracking_strategies;
 pub use habit_strategies::{
     HabitFixture, habit_fixture_strategy, habit_strategy, habit_target_strategy,
     period_kind_strategy, quota_strategy,
+};
+pub use reflection_strategies::{
+    imported_reflection_with_id, imported_reflections_strategy, pooled_reflection_ids,
+    rating_strategy, reflection_attributes_strategy, reflection_entry_strategy,
+    reflection_entry_with_id, reflection_home_strategy, unique_imported_reflections_strategy,
 };
 pub use tracking_strategies::{time_entry_strategy, tracking_state_strategy};
 
