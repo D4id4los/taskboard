@@ -93,7 +93,7 @@ mod tests {
     fn device_identity_roundtrips_over_the_newtype_serde() {
         let identity = DeviceIdentity {
             device_id: DeviceId::mint(),
-            created_at: chrono::Utc::now(),
+            created_at: "2026-11-05T09:15:32Z".parse().expect("rfc3339"),
         };
         let raw = serde_json::to_value(&identity).expect("serializes");
         assert_eq!(
