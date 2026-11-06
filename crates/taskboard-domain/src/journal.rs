@@ -118,6 +118,17 @@ pub enum NotUndoableReason {
     /// lossiness; D24), and an `UpdateHabit` addressing the conversion
     /// seam (no clock slot to watermark against; D25).
     HabitSurface,
+    /// Reflection verbs are not undoable in v1 (DR-7 D-J7), for three
+    /// recorded reasons: (i) the inverse of a record is a tombstone —
+    /// a *different stored fact* than row-absence, exactly the lossiness
+    /// that made `LogHabit` `HabitSurface`; (ii) un-delete would
+    /// resurrect with a minted-then-inverted clock — the tracking
+    /// close/reopen asymmetry (ADR 0017) in mirror; (iii) the family's
+    /// own `UpdateReflection`/`DeleteReflection` verbs are the recovery
+    /// surface — cheaper than undo for self-authored text — and the
+    /// task operations a review walk dispatches ride existing,
+    /// classified commands, so P9's "undo everywhere" is served there.
+    ReflectionSurface,
 }
 
 /// The pre-image of one entity the batch upserted. `before: None` = the
@@ -376,6 +387,9 @@ pub fn command_label(command: &StateCommand) -> String {
         StateCommand::LogHabit { .. } => "Log habit".into(),
         StateCommand::AdjustHabitLog { .. } => "Adjust habit log".into(),
         StateCommand::DeleteHabit { .. } => "Delete habit".into(),
+        StateCommand::RecordReflection { .. } => "Record reflection".into(),
+        StateCommand::UpdateReflection { .. } => "Edit reflection".into(),
+        StateCommand::DeleteReflection { .. } => "Delete reflection".into(),
         StateCommand::RestoreTask { .. } => "Restore task".into(),
         StateCommand::PauseSeries { .. } => "Pause series".into(),
         StateCommand::ConvertSeriesToHabit { .. } => "Convert series to habit".into(),

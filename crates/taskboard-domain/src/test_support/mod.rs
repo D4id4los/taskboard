@@ -239,6 +239,7 @@ id_strategy!(label_id_strategy, LabelId);
 id_strategy!(time_entry_id_strategy, TimeEntryId);
 id_strategy!(habit_id_strategy, crate::ids::HabitId);
 id_strategy!(series_id_strategy, crate::ids::SeriesId);
+id_strategy!(reflection_id_strategy, crate::ids::ReflectionId);
 
 /// A positive remote board id (0 is the epoch-0 sentinel of old servers).
 pub fn remote_board_id_strategy() -> impl Strategy<Value = crate::ids::RemoteBoardId> {

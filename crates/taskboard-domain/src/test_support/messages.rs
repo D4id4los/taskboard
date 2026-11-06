@@ -194,6 +194,51 @@ pub fn state_command_strategy() -> impl Strategy<Value = crate::messages::StateC
                 kind: None
             }),
         super::time_entry_id_strategy().prop_map(|id| StateCommand::DeleteTimeEntry { id }),
+        // 2: reflection commands (DR-7). Record feeds accepted sign
+        // domains (a valid Day window, ratings in 1..=5, curated flags);
+        // the rejection paths are unit tests.
+        (
+            prop::option::of(1_u8..=5),
+            prop::option::of(1_u8..=5),
+            prop::collection::vec(
+                prop::sample::select(crate::reflection::all_health_flag_names()),
+                0..9,
+            ),
+            string_strategy(),
+        )
+            .prop_map(
+                |(mood, energy, flag_names, text)| StateCommand::RecordReflection {
+                    cadence: crate::reflection::ReviewCadence::Day,
+                    day: chrono::NaiveDate::from_ymd_opt(2026, 11, 5).unwrap(),
+                    window: (
+                        chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2026, 11, 5, 0, 0, 0)
+                            .unwrap(),
+                        chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2026, 11, 6, 0, 0, 0)
+                            .unwrap(),
+                    ),
+                    text,
+                    mood,
+                    energy,
+                    flags: flag_names
+                        .iter()
+                        .filter_map(|f| crate::reflection::HealthFlag::parse_text_form(f))
+                        .collect(),
+                }
+            ),
+        (
+            super::reflection_id_strategy(),
+            prop::option::of(string_strategy()),
+            prop::option::of(prop::option::of(1_u8..=5)),
+            prop::option::of(prop::option::of(1_u8..=5)),
+        )
+            .prop_map(|(id, text, mood, energy)| StateCommand::UpdateReflection {
+                id,
+                text,
+                mood,
+                energy,
+                flags_add: std::collections::BTreeSet::new(),
+                flags_remove: std::collections::BTreeSet::new(),
+            }),
         // 1: sync request
         Just(StateCommand::RequestSync),
     ]

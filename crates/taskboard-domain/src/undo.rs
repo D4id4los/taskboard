@@ -233,6 +233,15 @@ fn record_entry(
             // log-row delete action exists.
             UndoFacts::NotUndoable(NotUndoableReason::HabitSurface)
         }
+        StateCommand::RecordReflection { .. }
+        | StateCommand::UpdateReflection { .. }
+        | StateCommand::DeleteReflection { .. } => {
+            // DR-7 D-J7: the inverse of a record is a tombstone (a
+            // different stored fact than absence); un-delete would
+            // resurrect with a minted-then-inverted clock; the family's
+            // own verbs are the recovery surface.
+            UndoFacts::NotUndoable(NotUndoableReason::ReflectionSurface)
+        }
         StateCommand::DeleteHabit { .. } => {
             // No `RestoreHabit` verb; tombstone-only delete.
             UndoFacts::NotUndoable(NotUndoableReason::HabitSurface)
@@ -332,6 +341,11 @@ fn touched_board(app: &AppState, command: &StateCommand) -> Option<crate::ids::B
         // CreateBoard mints its id inside the planner — the receipt
         // names it; the tag stays honest `None` here.
         StateCommand::CreateBoard { .. } => None,
+        // Reflection entries are not board-scoped (device-local, no
+        // board reference in the row).
+        StateCommand::RecordReflection { .. }
+        | StateCommand::UpdateReflection { .. }
+        | StateCommand::DeleteReflection { .. } => None,
         // Ambiguous or not board-scoped: honest `None`.
         StateCommand::SnoozeReminder { .. }
         | StateCommand::DismissReminder { .. }
@@ -739,6 +753,9 @@ impl JournalEntry {
             | StateCommand::DeleteTimeEntry { .. }
             | StateCommand::LogHabit { .. }
             | StateCommand::DeleteHabit { .. }
+            | StateCommand::RecordReflection { .. }
+            | StateCommand::UpdateReflection { .. }
+            | StateCommand::DeleteReflection { .. }
             | StateCommand::ConvertSeriesToHabit { .. }
             | StateCommand::ConvertHabitToSeries { .. }
             | StateCommand::Undo
