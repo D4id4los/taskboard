@@ -437,6 +437,27 @@ pub(crate) struct JournalPayload {
     pub ops: Vec<taskboard_domain::OpId>,
 }
 
+// ---- The reflection family (0022, DR-7 D-J13) -------------------------------
+
+/// The `flags` column's JSON-array text: the curated kebab names, in
+/// `BTreeSet` order — the storage encoding the export's CSV cell
+/// reuses verbatim. The empty set is `"[]"`.
+#[must_use]
+pub fn reflection_flags_to_json(
+    flags: &std::collections::BTreeSet<taskboard_domain::reflection::HealthFlag>,
+) -> String {
+    let names: Vec<&'static str> = flags.iter().map(|f| f.text_form()).collect();
+    serde_json::to_string(&names).expect("flag names serialize")
+}
+
+/// The `extra_flags` column's JSON-array text: the parked unknown
+/// names verbatim, sorted by the set. The empty set is `"[]"`.
+#[must_use]
+pub fn reflection_extra_flags_to_json(extra_flags: &std::collections::BTreeSet<String>) -> String {
+    let names: Vec<&String> = extra_flags.iter().collect();
+    serde_json::to_string(&names).expect("flag name strings serialize")
+}
+
 /// Encodes one journal entry's `{ command, facts }` payload.
 pub(crate) fn journal_payload_to_json(
     command: &taskboard_domain::messages::StateCommand,
@@ -1121,5 +1142,47 @@ mod journal_payload_tests {
         ));
         assert_eq!(back.facts, facts);
         assert_eq!(back.ops, ops);
+    }
+}
+
+#[cfg(test)]
+mod reflection_flags_tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn empty_flag_sets_encode_the_empty_json_array() {
+        assert_eq!(
+            reflection_flags_to_json(&BTreeSet::new()),
+            "[]",
+            "the storage encoding of no flags"
+        );
+        assert_eq!(reflection_extra_flags_to_json(&BTreeSet::new()), "[]");
+    }
+
+    #[test]
+    fn flag_sets_encode_sorted_kebab_names_round_trip_verbatim() {
+        use taskboard_domain::reflection::HealthFlag;
+        let mut extra = BTreeSet::new();
+        extra.insert("poor-sleep".to_owned());
+        extra.insert("newer-flag".to_owned());
+        let json = reflection_extra_flags_to_json(&extra);
+        assert_eq!(json, r#"["newer-flag","poor-sleep"]"#);
+
+        let flags = BTreeSet::from([HealthFlag::Migraine, HealthFlag::MinorHeadache]);
+        let json = reflection_flags_to_json(&flags);
+        let parsed: Vec<String> = serde_json::from_str(&json).expect("json array");
+        assert_eq!(
+            parsed.iter().map(String::as_str).collect::<Vec<_>>(),
+            vec!["migraine", "minor-headache"],
+            "the curated names in set order (declaration order)"
+        );
+        // Every encoded name re-mints (the decode seam's invariant).
+        for name in parsed {
+            assert!(
+                HealthFlag::parse_text_form(&name).is_some(),
+                "{name} re-mints"
+            );
+        }
     }
 }

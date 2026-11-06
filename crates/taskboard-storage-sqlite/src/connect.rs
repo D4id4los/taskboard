@@ -199,9 +199,97 @@ mod tests {
             .fetch_one(&raw)
             .await
             .expect("migration bookkeeping");
-        assert_eq!(applied, 21, "each shipped migration recorded exactly once");
+        assert_eq!(applied, 22, "each shipped migration recorded exactly once");
         raw.close().await;
         second.close().await;
+    }
+
+    /// A pre-0022 database (no `reflection_entries` table) upgrades
+    /// cleanly: the migration re-applies as one plain `CREATE TABLE`,
+    /// `load()` folds the empty table into the default `ReflectionState`
+    /// (the upgrade pin — the empty line then accepts writes, tombstones
+    /// and parked unknown flags included, and a round-trip through a
+    /// reopen is faithful).
+    #[tokio::test]
+    async fn migration_0022_upgrades_a_pre_reflection_database() {
+        let file = tempfile::Builder::new().suffix(".db").tempfile().unwrap();
+        let raw = SqlitePool::connect(&format!("sqlite://{}?mode=rwc", file.path().display()))
+            .await
+            .expect("raw connect");
+        // Simulate a pre-0022 database: run the shipped migrations,
+        // strip the 0022 artifact and its bookkeeping row.
+        sqlx::migrate!("./migrations")
+            .run(&raw)
+            .await
+            .expect("migrate");
+        sqlx::query("DROP TABLE reflection_entries")
+            .execute(&raw)
+            .await
+            .expect("strip reflection_entries");
+        sqlx::query("DELETE FROM _sqlx_migrations WHERE version = 22")
+            .execute(&raw)
+            .await
+            .expect("strip bookkeeping");
+        raw.close().await;
+
+        let repo = open(file.path(), test_connector())
+            .await
+            .expect("migrating open");
+        let state = repo.load().await.expect("load");
+        assert_eq!(
+            state.reflection,
+            taskboard_domain::ReflectionState::default(),
+            "an upgraded database folds into the default reflection state"
+        );
+        // The empty line accepts writes and the batch round-trips —
+        // a live row and a tombstone, one carrying a parked unknown
+        // flag name (the decode seam's tolerance is storage-native).
+        let stamp = chrono::TimeZone::timestamp_opt(&chrono::Utc, 100, 0).unwrap();
+        let live = taskboard_domain::ReflectionEntry {
+            id: taskboard_domain::ids::ReflectionId::from(uuid::Uuid::from_u128(1)),
+            cadence: taskboard_domain::reflection::ReviewCadence::Week,
+            day: chrono::NaiveDate::from_ymd_opt(2026, 11, 2).unwrap(),
+            window_start: stamp,
+            window_end: chrono::TimeZone::timestamp_opt(&chrono::Utc, 100 + 7 * 24 * 3600, 0)
+                .unwrap(),
+            text: "the week closed loud".to_owned(),
+            attributes: taskboard_domain::ReflectionAttributes {
+                mood: taskboard_domain::reflection::Rating::try_new(3).ok(),
+                energy: None,
+                flags: std::collections::BTreeSet::from([
+                    taskboard_domain::reflection::HealthFlag::Migraine,
+                ]),
+                extra_flags: std::collections::BTreeSet::from(["newer-flag".to_owned()]),
+            },
+            created_at: stamp,
+            updated_at: stamp,
+            deleted: false,
+        };
+        let gone = taskboard_domain::ReflectionEntry {
+            id: taskboard_domain::ids::ReflectionId::from(uuid::Uuid::from_u128(2)),
+            cadence: taskboard_domain::reflection::ReviewCadence::Day,
+            day: chrono::NaiveDate::from_ymd_opt(2026, 11, 3).unwrap(),
+            window_start: stamp,
+            window_end: chrono::TimeZone::timestamp_opt(&chrono::Utc, 100 + 24 * 3600, 0).unwrap(),
+            text: String::new(),
+            attributes: taskboard_domain::ReflectionAttributes::default(),
+            created_at: stamp,
+            updated_at: stamp,
+            deleted: true,
+        };
+        repo.apply(vec![
+            taskboard_domain::PersistenceAction::UpsertReflectionEntry(live.clone()),
+            taskboard_domain::PersistenceAction::UpsertReflectionEntry(gone.clone()),
+        ])
+        .await
+        .expect("apply on the upgraded line");
+        repo.close().await;
+
+        let reopened = open(file.path(), test_connector()).await.expect("reopen");
+        let state = reopened.load().await.expect("load");
+        assert_eq!(state.reflection.entries[&live.id], live);
+        assert_eq!(state.reflection.entries[&gone.id], gone);
+        reopened.close().await;
     }
 
     /// A pre-0017 database (no `habits`/`habit_log` tables) upgrades
