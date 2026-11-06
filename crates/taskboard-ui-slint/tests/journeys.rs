@@ -23,7 +23,10 @@ use arc_swap::ArcSwap;
 use slint::ComponentHandle as _;
 use slint::Model as _;
 use std::sync::Arc;
-use taskboard_domain::{AppState, StateCommand, TaskId};
+use taskboard_domain::{
+    AppState, Rating, ReflectionAttributes, ReflectionEntry, ReflectionId, ReviewCadence,
+    StateCommand, TaskId,
+};
 use taskboard_ui_slint::actions::{ActionId, ContextId};
 use taskboard_ui_slint::keymap::stroke::{self, parse};
 use taskboard_ui_slint::{FieldValidity, SettingsOutcome, UiSettings, View};
@@ -12259,6 +12262,29 @@ fn notification_rows_drop_the_done_button_for_a_tracker() {
     );
 }
 
+/// A Day-cadence reflection entry whose stored window opens at
+/// `start` (the journeys' seed shape for the reflection sections).
+fn seeded_reflection_entry(
+    raw: u128,
+    start: chrono::DateTime<chrono::Utc>,
+    mood: Option<u8>,
+) -> ReflectionEntry {
+    let mut row = ReflectionEntry {
+        id: ReflectionId::from_uuid(uuid::Uuid::from_u128(raw)),
+        cadence: ReviewCadence::Day,
+        day: start.date_naive(),
+        window_start: start,
+        window_end: start + chrono::TimeDelta::try_hours(24).unwrap(),
+        text: format!("entry {raw}"),
+        attributes: ReflectionAttributes::default(),
+        created_at: start + chrono::TimeDelta::try_hours(25).unwrap(),
+        updated_at: start + chrono::TimeDelta::try_hours(25).unwrap(),
+        deleted: false,
+    };
+    row.attributes.mood = mood.map(|m| Rating::try_new(m).unwrap());
+    row
+}
+
 /// #214 — the review surface journey: the cycle's backwards wrap
 /// lands on Review, the ledger model matches the fixture's completed
 /// set (structure over text — row counts, emptiness flags, and the
@@ -12290,6 +12316,27 @@ fn the_review_surface_ledgers_and_returns() {
         Some(600),
         None,
     );
+    // The reflection entries (#623 slice B): two live Day entries
+    // anchored relative to `now` (the stored window_start lands inside
+    // both trailing windows at any wall-clock hour) and one tombstone
+    // that must vanish everywhere.
+    let reflected = |raw: u128, age: chrono::TimeDelta, mood: Option<u8>| {
+        seeded_reflection_entry(raw, now - age, mood)
+    };
+    let mut newest = reflected(1, chrono::TimeDelta::try_hours(3).unwrap(), Some(4));
+    newest
+        .attributes
+        .flags
+        .insert(taskboard_domain::HealthFlag::GoodDay);
+    let mut dead = reflected(3, chrono::TimeDelta::try_hours(2).unwrap(), Some(5));
+    dead.deleted = true;
+    for row in [
+        newest,
+        reflected(2, chrono::TimeDelta::try_days(3).unwrap(), None),
+        dead,
+    ] {
+        state.reflection.entries.insert(row.id, row);
+    }
     support::driver::run(
         DriverOptions {
             headless_renderer: true,
@@ -12327,6 +12374,27 @@ fn the_review_surface_ledgers_and_returns() {
             assert!(!model.tracking_month.work.is_empty());
             assert_eq!(model.tracking_week.bars.row_count(), 7);
             assert_eq!(model.tracking_month.bars.row_count(), 30);
+
+            // The reflection sections + the entries ledger (#623
+            // slice B): populated in both windows, the tombstone gone,
+            // the strips full-length.
+            assert!(!model.reflection_week.empty);
+            assert!(!model.reflection_month.empty);
+            assert!(!model.reflection_week.mood.is_empty());
+            assert!(!model.reflection_week.per_flag.is_empty());
+            assert_eq!(model.reflection_week.bars.row_count(), 7);
+            assert_eq!(model.reflection_month.bars.row_count(), 30);
+            // Two live seeded rows + the fixture's own review-card pin
+            // row (an unrated Day entry for yesterday, #638); the
+            // tombstone never surfaces.
+            assert_eq!(model.reflection_rows.row_count(), 3);
+            let entry = model.reflection_rows.row_data(0).expect("row 0");
+            assert!(
+                !entry.mood.is_empty(),
+                "the newest-first row is the rated one"
+            );
+            assert!(!entry.day.is_empty());
+            assert!(!entry.cadence.is_empty());
 
             // nav.focus-board returns from everywhere (the walk's
             // contract).
@@ -14929,16 +14997,15 @@ fn a_recorded_day_entry_clears_the_card() {
     };
     let now = chrono::Utc::now();
     let yesterday = calendar.today(now).pred_opt().expect("yesterday");
-    let window =
-        taskboard_domain::review_window(taskboard_domain::ReviewCadence::Day, yesterday, calendar);
-    let entry = taskboard_domain::ReflectionEntry {
-        id: taskboard_domain::ReflectionId::from_uuid(uuid::Uuid::now_v7()),
-        cadence: taskboard_domain::ReviewCadence::Day,
+    let window = taskboard_domain::review_window(ReviewCadence::Day, yesterday, calendar);
+    let entry = ReflectionEntry {
+        id: ReflectionId::from_uuid(uuid::Uuid::now_v7()),
+        cadence: ReviewCadence::Day,
         day: window.day(),
         window_start: window.start(),
         window_end: window.end(),
         text: "done".to_owned(),
-        attributes: taskboard_domain::ReflectionAttributes::default(),
+        attributes: ReflectionAttributes::default(),
         created_at: now,
         updated_at: now,
         deleted: false,
@@ -14980,19 +15047,15 @@ fn the_card_appears_at_the_boundary_without_dispatching() {
             offset: day_start.1,
         };
         let yesterday = calendar.today(t0).pred_opt().expect("yesterday");
-        let window = taskboard_domain::review_window(
-            taskboard_domain::ReviewCadence::Day,
-            yesterday,
-            calendar,
-        );
-        let entry = taskboard_domain::ReflectionEntry {
-            id: taskboard_domain::ReflectionId::from_uuid(uuid::Uuid::now_v7()),
-            cadence: taskboard_domain::ReviewCadence::Day,
+        let window = taskboard_domain::review_window(ReviewCadence::Day, yesterday, calendar);
+        let entry = ReflectionEntry {
+            id: ReflectionId::from_uuid(uuid::Uuid::now_v7()),
+            cadence: ReviewCadence::Day,
             day: window.day(),
             window_start: window.start(),
             window_end: window.end(),
             text: "done".to_owned(),
-            attributes: taskboard_domain::ReflectionAttributes::default(),
+            attributes: ReflectionAttributes::default(),
             created_at: t0,
             updated_at: t0,
             deleted: false,
@@ -15044,16 +15107,15 @@ fn the_opener_falls_back_to_the_current_day() {
     };
     let now = chrono::Utc::now();
     let yesterday = calendar.today(now).pred_opt().expect("yesterday");
-    let window =
-        taskboard_domain::review_window(taskboard_domain::ReviewCadence::Day, yesterday, calendar);
-    let entry = taskboard_domain::ReflectionEntry {
-        id: taskboard_domain::ReflectionId::from_uuid(uuid::Uuid::now_v7()),
-        cadence: taskboard_domain::ReviewCadence::Day,
+    let window = taskboard_domain::review_window(ReviewCadence::Day, yesterday, calendar);
+    let entry = ReflectionEntry {
+        id: ReflectionId::from_uuid(uuid::Uuid::now_v7()),
+        cadence: ReviewCadence::Day,
         day: window.day(),
         window_start: window.start(),
         window_end: window.end(),
         text: String::new(),
-        attributes: taskboard_domain::ReflectionAttributes::default(),
+        attributes: ReflectionAttributes::default(),
         created_at: now,
         updated_at: now,
         deleted: false,
@@ -15238,11 +15300,7 @@ fn carry_tomorrow_moves_to_the_next_window_start() {
             };
             let now = chrono::Utc::now();
             let today = calendar.today(now);
-            let next = taskboard_domain::review_window(
-                taskboard_domain::ReviewCadence::Day,
-                today,
-                calendar,
-            );
+            let next = taskboard_domain::review_window(ReviewCadence::Day, today, calendar);
             match drained.as_slice() {
                 [StateCommand::UpdateTask { id, changes }] => {
                     assert_eq!(*id, task0, "the cursor row");
@@ -15455,18 +15513,17 @@ fn recording_routes_one_entry_and_clears_the_card() {
     };
     let now = chrono::Utc::now();
     let yesterday = calendar.today(now).pred_opt().expect("yesterday");
-    let expected_window =
-        taskboard_domain::review_window(taskboard_domain::ReviewCadence::Day, yesterday, calendar);
+    let expected_window = taskboard_domain::review_window(ReviewCadence::Day, yesterday, calendar);
     let published = {
         let mut state = state.clone();
-        let entry = taskboard_domain::ReflectionEntry {
-            id: taskboard_domain::ReflectionId::from_uuid(uuid::Uuid::now_v7()),
-            cadence: taskboard_domain::ReviewCadence::Day,
+        let entry = ReflectionEntry {
+            id: ReflectionId::from_uuid(uuid::Uuid::now_v7()),
+            cadence: ReviewCadence::Day,
             day: expected_window.day(),
             window_start: expected_window.start(),
             window_end: expected_window.end(),
             text: "shipped the walk".to_owned(),
-            attributes: taskboard_domain::ReflectionAttributes::default(),
+            attributes: ReflectionAttributes::default(),
             created_at: now,
             updated_at: now,
             deleted: false,
@@ -15518,7 +15575,7 @@ fn recording_routes_one_entry_and_clears_the_card() {
                         flags,
                     },
                 ] => {
-                    assert_eq!(*cadence, taskboard_domain::ReviewCadence::Day);
+                    assert_eq!(*cadence, ReviewCadence::Day);
                     assert_eq!(*day, yesterday);
                     assert_eq!(*window, expected_window.bounds());
                     assert!(text.contains("shipped the walk"));
