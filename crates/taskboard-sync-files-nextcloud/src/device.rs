@@ -118,6 +118,12 @@ mod tests {
         (dir, path)
     }
 
+    /// A fixed clock at the module's fixture stamp: the ceremony is
+    /// deterministic under it and no fixture builder reads the clock.
+    fn fixed_clock() -> FixedClock {
+        FixedClock("2026-11-05T09:15:32Z".parse().unwrap())
+    }
+
     #[tokio::test]
     async fn create_once_mints_writes_and_rereads_the_identity() {
         let (_dir, path) = temp_dir();
@@ -136,7 +142,7 @@ mod tests {
     #[tokio::test]
     async fn the_atomic_write_leaves_no_temp_residue() {
         let (_dir, path) = temp_dir();
-        let clock = FixedClock(Utc::now());
+        let clock = fixed_clock();
         let _ = load_or_create(&path, &clock).await.expect("creates");
         let mut siblings = tokio::fs::read_dir(path.parent().unwrap()).await.unwrap();
         while let Some(entry) = siblings.next_entry().await.unwrap() {
@@ -153,7 +159,7 @@ mod tests {
         let (_dir, path) = temp_dir();
         let corrupt = b"{{{ not json at all";
         tokio::fs::write(&path, corrupt).await.unwrap();
-        let clock = FixedClock(Utc::now());
+        let clock = fixed_clock();
         match load_or_create(&path, &clock).await {
             Err(DeviceIdentityError::Unusable { path: p }) => assert_eq!(p, path),
             other => panic!("expected Unusable, got {other:?}"),
@@ -172,7 +178,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let identity = load_or_create(&path, &FixedClock(Utc::now()))
+        let identity = load_or_create(&path, &fixed_clock())
             .await
             .expect("decodes");
         assert_eq!(
@@ -188,7 +194,7 @@ mod tests {
         // The atomic write's temp file sits beside the target, so the
         // Io failure's offending path names a sibling of `path` — the
         // structural fact (no rename ever happened) is what matters.
-        match load_or_create(&path, &FixedClock(Utc::now())).await {
+        match load_or_create(&path, &fixed_clock()).await {
             Err(DeviceIdentityError::Io { path: p, .. }) => {
                 assert_eq!(p.parent(), path.parent());
                 assert!(p.to_string_lossy().contains(".tmp-"));
