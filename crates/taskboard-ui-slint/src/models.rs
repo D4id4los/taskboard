@@ -28,10 +28,11 @@ use crate::{
     AppWindow, BannerRowModel, BoardBarModel, BoardModel, BoardSegmentModel,
     Breakpoint as SlintBreakpoint, DecorationKind, DragState, DueDayModel, DueKind as SlintDueKind,
     FlowHintModel, HabitRowModel, NotificationRowModel, PaletteRowModel, PlanModel, PlanRowModel,
-    ReviewModel, ReviewRowModel, ReviewWindowModel, RuleRowModel, StackColumnModel,
-    StackDetailModel, StatBarModel, SyncBadgeModel, SyncPhaseUi, TaskCardModel, TaskDecoration,
-    TaskDetailModel, Theme, TimerRowModel, TodayModel, TodayRowModel, TodaySectionModel, Tone,
-    TrackEntryRowModel, TrackedTodayRowModel, TrackingSectionModel, View,
+    ReflectionRowModel, ReflectionSectionModel, ReviewModel, ReviewRowModel, ReviewWindowModel,
+    RuleRowModel, StackColumnModel, StackDetailModel, StatBarModel, SyncBadgeModel, SyncPhaseUi,
+    TaskCardModel, TaskDecoration, TaskDetailModel, Theme, TimerRowModel, TodayModel,
+    TodayRowModel, TodaySectionModel, Tone, TrackEntryRowModel, TrackedTodayRowModel,
+    TrackingSectionModel, View,
 };
 
 /// The layout cap of the banner slot (D12): the truth is the row
@@ -296,6 +297,11 @@ pub struct PushModels {
     /// The review ledger's persistent row handle (#214): the same diff
     /// pattern — stable identity across refreshes.
     review: MirroredRows<ReviewRowModel>,
+    /// The journal-entries ledger's row handle (#623 slice B, D-B7):
+    /// the entries set is unbounded and mutation-prone (journal verbs
+    /// run mid-session), so it rows-diffs like the calibration ledger
+    /// instead of riding the whole-struct set.
+    review_entries: MirroredRows<ReflectionRowModel>,
     settings_rows: MirroredRows<crate::ConnectionRow>,
     // The connections selector's dropdown options and their uuid
     // strings (r4 D39 — the per-row handles the positional diff
@@ -1110,7 +1116,7 @@ fn push_review(
     // The kiosk belt (D-10(b)): the empty model on the appliance,
     // even though the rotation can never route to the view.
     if kiosk {
-        return push_review_model(window, models, empty_review_model(), &[]);
+        return push_review_model(window, models, empty_review_model(), &[], &[]);
     }
     // The bounds are derived per pass and passed into `calibrate` as
     // data (constraint 2: the projection never reads a clock).
@@ -1176,46 +1182,149 @@ fn push_review(
     // row-diffed.
     let entries: Vec<&taskboard_domain::TimeEntry> = state.tracking.entries.values().collect();
     let to_tracking = |split_window, strip_days: u32| {
-        let split = taskboard_domain::window_split(entries.iter().copied(), split_window, now);
-        let blocks = taskboard_domain::work_blocks(entries.iter().copied(), split_window, now);
-        let phrases = presentation::review_tracking_section(&split, &blocks);
-        let series = taskboard_domain::daily_split_series(
-            entries.iter().copied(),
-            std::num::NonZeroU32::new(strip_days).expect("non-zero constant"),
-            calendar.day_start_time,
-            calendar.offset,
-            now,
-        );
-        let bars: Vec<StatBarModel> = presentation::review_bar_fractions(&series)
-            .into_iter()
-            .map(|bar| StatBarModel {
-                base: bar.work,
-                stack: bar.respite,
-            })
-            .collect();
-        TrackingSectionModel {
-            work: SharedString::from(phrases.work),
-            respite: SharedString::from(phrases.respite),
-            blocks: SharedString::from(phrases.blocks),
-            bars: ModelRc::new(slint::VecModel::from(bars)),
-            empty: phrases.empty,
-        }
+        tracking_section_model(&entries, split_window, strip_days, calendar, now)
     };
     let tracking_week = to_tracking(week_window, week_days);
     let tracking_month = to_tracking(month_window, month_days);
     let tracking_month_empty = tracking_month.empty;
+    // The reflection pair (#623 slice B, D-B7): the same per-pass
+    // windows feed the pure folds — the stored `window_start` stamps
+    // are the membership key (D-B2); the strips carry the fixed-scale
+    // fractions. The entries ledger is derived once per pass over the
+    // whole live set (no window), newest first.
+    let reflection: Vec<&taskboard_domain::ReflectionEntry> =
+        state.reflection.entries.values().collect();
+    let to_reflection = |fold_window, strip_days: u32| {
+        reflection_section_model(&reflection, fold_window, strip_days, calendar, now)
+    };
+    let reflection_week = to_reflection(week_window, week_days);
+    let reflection_month = to_reflection(month_window, month_days);
+    let reflection_month_empty = reflection_month.empty;
+    let reflection_rows = rows_of_past_entries(&state.reflection);
     let model = ReviewModel {
         week: to_window(&week_report.aggregate),
         month: to_window(&month_report.aggregate),
         tracking_week,
         tracking_month,
+        reflection_week,
+        reflection_month,
         rows: ModelRc::default(),
-        // Whole-view collapse (D-9 tier 1, D-S9's extension): the
-        // 30-day ledger empty AND nothing tracked in the 30-day
-        // window — tracked time alone keeps the view standing.
-        empty: month_report.rows.is_empty() && tracking_month_empty,
+        reflection_rows: ModelRc::default(),
+        // Whole-view collapse (D-9 tier 1, D-S9's extension twice):
+        // the 30-day ledger empty AND nothing tracked in the 30-day
+        // window AND no reflection entries in the windows AND no
+        // stored journal entries — any content keeps the view
+        // standing.
+        empty: month_report.rows.is_empty()
+            && tracking_month_empty
+            && reflection_month_empty
+            && reflection_rows.is_empty(),
     };
-    push_review_model(window, models, model, &rows)
+    push_review_model(window, models, model, &rows, &reflection_rows)
+}
+
+/// One window's tracking-section model (D-S6 step 3): the domain folds
+/// over the per-pass window and the strip-max fractions (Work →
+/// `base`, Respite → `stack`).
+fn tracking_section_model(
+    entries: &[&taskboard_domain::TimeEntry],
+    split_window: (chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>),
+    strip_days: u32,
+    calendar: taskboard_domain::DayCalendar,
+    now: chrono::DateTime<chrono::Utc>,
+) -> TrackingSectionModel {
+    let split = taskboard_domain::window_split(entries.iter().copied(), split_window, now);
+    let blocks = taskboard_domain::work_blocks(entries.iter().copied(), split_window, now);
+    let phrases = presentation::review_tracking_section(&split, &blocks);
+    let series = taskboard_domain::daily_split_series(
+        entries.iter().copied(),
+        std::num::NonZeroU32::new(strip_days).expect("non-zero constant"),
+        calendar.day_start_time,
+        calendar.offset,
+        now,
+    );
+    let bars: Vec<StatBarModel> = presentation::review_bar_fractions(&series)
+        .into_iter()
+        .map(|bar| StatBarModel {
+            base: bar.work,
+            stack: bar.respite,
+        })
+        .collect();
+    TrackingSectionModel {
+        work: SharedString::from(phrases.work),
+        respite: SharedString::from(phrases.respite),
+        blocks: SharedString::from(phrases.blocks),
+        bars: ModelRc::new(slint::VecModel::from(bars)),
+        empty: phrases.empty,
+    }
+}
+
+/// One window's reflection-section model (D-B7 step 3): the domain
+/// fold over the per-pass window (stored stamps are the membership
+/// key, D-B2), the phrases, and the fixed-scale strip fractions
+/// (Mood → `base`, Energy → `stack`).
+fn reflection_section_model(
+    reflection: &[&taskboard_domain::ReflectionEntry],
+    fold_window: (chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>),
+    strip_days: u32,
+    calendar: taskboard_domain::DayCalendar,
+    now: chrono::DateTime<chrono::Utc>,
+) -> ReflectionSectionModel {
+    let fold = taskboard_domain::window_ratings(reflection.iter().copied(), fold_window);
+    let phrases = presentation::review_reflection_section(&fold);
+    let series = taskboard_domain::daily_rating_series(
+        reflection.iter().copied(),
+        std::num::NonZeroU32::new(strip_days).expect("non-zero constant"),
+        calendar.day_start_time,
+        calendar.offset,
+        now,
+    );
+    let bars: Vec<StatBarModel> = presentation::review_rating_fractions(&series)
+        .into_iter()
+        .map(|bar| StatBarModel {
+            base: bar.mood,
+            stack: bar.energy,
+        })
+        .collect();
+    ReflectionSectionModel {
+        mood: SharedString::from(phrases.mood),
+        energy: SharedString::from(phrases.energy),
+        flags: SharedString::from(phrases.flags),
+        per_flag: SharedString::from(phrases.per_flag),
+        bars: ModelRc::new(slint::VecModel::from(bars)),
+        empty: phrases.empty,
+    }
+}
+
+/// The journal-entries ledger rows (D-B5): every live stored entry,
+/// newest first, read verbatim — the stored `day` label, the cadence
+/// text form, the text body, the ratings ("" = unrated, the dash
+/// renders structurally), and the flags in declaration order with the
+/// parked names verbatim behind the curated set. No window, no cap.
+fn rows_of_past_entries(reflection: &taskboard_domain::ReflectionState) -> Vec<ReflectionRowModel> {
+    taskboard_domain::past_entries(reflection)
+        .into_iter()
+        .map(|row| ReflectionRowModel {
+            day: SharedString::from(row.day.to_string()),
+            cadence: SharedString::from(row.cadence.text_form()),
+            text: SharedString::from(row.text.clone()),
+            mood: row.attributes.mood.map_or_else(SharedString::new, |r| {
+                SharedString::from(r.get().to_string())
+            }),
+            energy: row.attributes.energy.map_or_else(SharedString::new, |r| {
+                SharedString::from(r.get().to_string())
+            }),
+            flags: SharedString::from(
+                row.attributes
+                    .flags
+                    .iter()
+                    .map(|flag| flag.text_form())
+                    .chain(row.attributes.extra_flags.iter().map(String::as_str))
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            ),
+        })
+        .collect()
 }
 
 /// The review windows' fixed sizes (D-4): the smallest defensible
@@ -1229,10 +1338,14 @@ fn push_review_model(
     models: &mut PushModels,
     mut model: ReviewModel,
     rows: &[ReviewRowModel],
+    entries: &[ReflectionRowModel],
 ) -> usize {
     let handle = models.review.handle_or_insert_with();
-    let mutations = models.review.diff(rows);
+    let mut mutations = models.review.diff(rows);
+    let entries_handle = models.review_entries.handle_or_insert_with();
+    mutations += models.review_entries.diff(entries);
     model.rows = ModelRc::from(handle);
+    model.reflection_rows = ModelRc::from(entries_handle);
     window.set_review_model(model);
     mutations
 }
@@ -1256,12 +1369,27 @@ fn empty_review_model() -> ReviewModel {
         bars: ModelRc::default(),
         empty: true,
     };
+    // The belt's collapsed reflection sections (D-B7/D-B8(b)): empty
+    // phrases and empty strips — the appliance never projects the
+    // surface (the belt model is never rendered; the belt test
+    // asserts the collapsed fields).
+    let collapsed_reflection = ReflectionSectionModel {
+        mood: SharedString::new(),
+        energy: SharedString::new(),
+        flags: SharedString::new(),
+        per_flag: SharedString::new(),
+        bars: ModelRc::default(),
+        empty: true,
+    };
     ReviewModel {
         week: collapsed.clone(),
         month: collapsed,
         tracking_week: collapsed_tracking.clone(),
         tracking_month: collapsed_tracking,
+        reflection_week: collapsed_reflection.clone(),
+        reflection_month: collapsed_reflection,
         rows: ModelRc::default(),
+        reflection_rows: ModelRc::default(),
         empty: true,
     }
 }
@@ -4440,6 +4568,200 @@ mod tests {
                 assert_eq!(section.work, "");
                 assert_eq!(section.bars.row_count(), 0);
             }
+        });
+    }
+
+    // -- the reflection sections + the entries ledger (#623 slice B, M-13..M-16) --
+
+    /// A Day-cadence entry whose stored window opens `age` before the
+    /// pinned render clock (the same seed discipline as `tracked`).
+    fn reflected(
+        raw: u128,
+        age: chrono::TimeDelta,
+        mood: Option<u8>,
+        energy: Option<u8>,
+    ) -> taskboard_domain::ReflectionEntry {
+        let start = crate::test_platform::PINNED_NOW - age;
+        let mut row = taskboard_domain::ReflectionEntry {
+            id: taskboard_domain::ReflectionId::from_uuid(uuid::Uuid::from_u128(raw)),
+            cadence: taskboard_domain::ReviewCadence::Day,
+            day: start.date_naive(),
+            window_start: start,
+            window_end: start + chrono::TimeDelta::try_hours(24).unwrap(),
+            text: format!("entry {raw}"),
+            attributes: taskboard_domain::ReflectionAttributes::default(),
+            created_at: start + chrono::TimeDelta::try_hours(25).unwrap(),
+            updated_at: start + chrono::TimeDelta::try_hours(25).unwrap(),
+            deleted: false,
+        };
+        let to_rating = |n| taskboard_domain::Rating::try_new(n).unwrap();
+        row.attributes.mood = mood.map(to_rating);
+        row.attributes.energy = energy.map(to_rating);
+        row
+    }
+
+    fn seed_reflection(state: &mut AppState, row: taskboard_domain::ReflectionEntry) {
+        state.reflection.entries.insert(row.id, row);
+    }
+
+    #[test]
+    fn the_review_model_mirrors_the_reflection_folds() {
+        on_slint_thread(|| {
+            let mut state = AppState::default();
+            // The newest entry, rated + flagged.
+            let mut newest = reflected(1, chrono::TimeDelta::try_hours(3).unwrap(), Some(4), None);
+            newest
+                .attributes
+                .flags
+                .insert(taskboard_domain::HealthFlag::GoodDay);
+            seed_reflection(&mut state, newest);
+            // An older entry, energy-rated only.
+            seed_reflection(
+                &mut state,
+                reflected(2, chrono::TimeDelta::try_days(3).unwrap(), None, Some(3)),
+            );
+            // A tombstone: never surfaces anywhere.
+            let mut dead = reflected(3, chrono::TimeDelta::try_hours(2).unwrap(), Some(5), None);
+            dead.deleted = true;
+            seed_reflection(&mut state, dead);
+
+            let handle = review_rig(state, UiSettings::default());
+            handle
+                .test_adapter()
+                .borrow_mut()
+                .refresh_forced(handle.window());
+            let model = handle.window().get_review_model();
+
+            for section in [
+                model.reflection_week.clone(),
+                model.reflection_month.clone(),
+            ] {
+                assert!(!section.empty, "live entries sit in both windows");
+                assert!(!section.mood.is_empty());
+                assert!(!section.energy.is_empty());
+                assert!(!section.flags.is_empty());
+                assert!(
+                    !section.per_flag.is_empty(),
+                    "the counts line speaks when a flag occurred"
+                );
+            }
+            assert_eq!(model.reflection_week.bars.row_count(), 7);
+            assert_eq!(model.reflection_month.bars.row_count(), 30);
+            let last = model
+                .reflection_week
+                .bars
+                .row_data(6)
+                .expect("the running day's bar");
+            assert!(
+                last.base > 0.0,
+                "the seeded mood sits in the running bucket"
+            );
+            // The ledger: newest first, tombstones gone, unrated is
+            // the dash.
+            assert_eq!(model.reflection_rows.row_count(), 2);
+            let first = model.reflection_rows.row_data(0).expect("row 0");
+            assert!(!first.mood.is_empty());
+            assert!(!first.flags.is_empty());
+            assert!(!first.text.is_empty());
+            let second = model.reflection_rows.row_data(1).expect("row 1");
+            assert!(second.mood.is_empty(), "unrated is the dash");
+            assert!(!second.energy.is_empty());
+            assert_ne!(
+                first.day, second.day,
+                "the two entries carry distinct stored day labels"
+            );
+        });
+    }
+
+    #[test]
+    fn the_reflection_empty_state_collapses_in_tiers() {
+        on_slint_thread(|| {
+            // Tier 1 + 2 on the bare fixture: the whole view folds.
+            let handle = review_rig(AppState::default(), UiSettings::default());
+            handle
+                .test_adapter()
+                .borrow_mut()
+                .refresh_forced(handle.window());
+            let model = handle.window().get_review_model();
+            assert!(model.empty);
+            assert_eq!(model.reflection_rows.row_count(), 0);
+            for (section, days) in [
+                (model.reflection_week.clone(), 7),
+                (model.reflection_month.clone(), 30),
+            ] {
+                assert!(section.empty, "tier 2: the section collapses");
+                assert_eq!(section.mood, "");
+                assert_eq!(section.energy, "");
+                assert_eq!(section.flags, "");
+                assert_eq!(section.per_flag, "");
+                assert_eq!(section.bars.row_count(), days, "the skeleton stays");
+                for i in 0..days {
+                    let bar = section.bars.row_data(i).expect("bar");
+                    assert!(bar.base == 0.0 && bar.stack == 0.0, "baseline ticks only");
+                }
+            }
+
+            // Tier 1's extension: a journals-only state stands the
+            // view — reflection entries alone are content.
+            let mut state = AppState::default();
+            seed_reflection(
+                &mut state,
+                reflected(1, chrono::TimeDelta::try_hours(3).unwrap(), Some(2), None),
+            );
+            let handle = review_rig(state, UiSettings::default());
+            handle
+                .test_adapter()
+                .borrow_mut()
+                .refresh_forced(handle.window());
+            let model = handle.window().get_review_model();
+            assert!(!model.empty, "journals alone keep the view standing");
+            assert!(!model.reflection_month.empty);
+            assert!(
+                model.week.empty && model.tracking_month.empty,
+                "the untouched families still collapse"
+            );
+        });
+    }
+
+    #[test]
+    fn the_entries_ledger_diffs_against_mutation() {
+        on_slint_thread(|| {
+            let mut state = AppState::default();
+            let older = reflected(1, chrono::TimeDelta::try_hours(5).unwrap(), Some(3), None);
+            seed_reflection(&mut state, older.clone());
+            let handle = review_rig(state, UiSettings::default());
+            handle
+                .test_adapter()
+                .borrow_mut()
+                .refresh_forced(handle.window());
+            let model = handle.window().get_review_model();
+            assert_eq!(model.reflection_rows.row_count(), 1);
+            let row = model.reflection_rows.row_data(0).expect("row");
+            assert_eq!(row.day, older.day.to_string(), "the stored label verbatim");
+
+            // A journal verb between passes: one entry added, one
+            // tombstoned — the ledger tracks the live set newest-first.
+            let mut next = handle.test_state().load_full().as_ref().clone();
+            seed_reflection(
+                &mut next,
+                reflected(2, chrono::TimeDelta::try_hours(2).unwrap(), None, Some(4)),
+            );
+            let mut dead = reflected(1, chrono::TimeDelta::try_hours(5).unwrap(), Some(3), None);
+            dead.deleted = true;
+            next.reflection.entries.insert(dead.id, dead);
+            handle.test_state().store(std::sync::Arc::new(next));
+            handle
+                .test_adapter()
+                .borrow_mut()
+                .refresh_forced(handle.window());
+            let model = handle.window().get_review_model();
+            assert_eq!(model.reflection_rows.row_count(), 1, "the tombstone left");
+            let row = model.reflection_rows.row_data(0).expect("row");
+            assert!(
+                row.mood.is_empty() && !row.energy.is_empty(),
+                "the surviving row is the new energy-rated entry"
+            );
+            assert_eq!(model.reflection_rows.row_count(), 1);
         });
     }
 }

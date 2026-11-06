@@ -41,6 +41,37 @@ export struct ReviewRowModel {
     gap: string,
 }
 
+// One reflection section's pushed values (#623 slice B): the three
+// stat cells' phrases, the per-flag counts line, and the per-day
+// mood/energy strip (fixed five-point scale, not strip-max). `bars`
+// always carries the window's day count — unrated days are baseline
+// ticks. A collapsed section (no live entries in the window) phrases
+// empty strings and keeps the full-length all-zero strip.
+export struct ReflectionSectionModel {
+    // Collapsed or unrated → "" — the dash renders structurally.
+    mood: string,
+    energy: string,
+    // The window's total flag occurrences ("N", phrased even at 0
+    // once any entry exists).
+    flags: string,
+    // The joined per-flag counts line; "" = no flags occurred.
+    per-flag: string,
+    bars: [StatBarModel],
+    // No live entries in the window (D-9 tier 2).
+    empty: bool,
+}
+
+// One journal-entry ledger row (#623 slice B): the stored row read
+// verbatim — no excerpting, no inference. "" = unrated / no flags.
+export struct ReflectionRowModel {
+    day: string,
+    cadence: string,
+    text: string,
+    mood: string,
+    energy: string,
+    flags: string,
+}
+
 // One tracking section's pushed values (#623 slice A): the three stat
 // cells' phrases plus the per-day bar strip. `bars` always carries the
 // window's day count (7 / 30) — zero days are baseline ticks, never
@@ -66,9 +97,19 @@ export struct ReviewModel {
     // signature stays intact.
     tracking-week: TrackingSectionModel,
     tracking-month: TrackingSectionModel,
+    // The reflection pair (#623 slice B, D-B1): appended after the
+    // tracking pair — appending keeps the skeleton's visual signature
+    // intact.
+    reflection-week: ReflectionSectionModel,
+    reflection-month: ReflectionSectionModel,
     rows: [ReviewRowModel],
-    // Whole-view collapse (D-9 tier 1): nothing comparable AND nothing
-    // tracked anywhere.
+    // The journal-entries ledger (#623 slice B, D-B5): every live
+    // stored entry, newest first — not windowed ("one place to look
+    // back"); rows-diffed like the calibration ledger.
+    reflection-rows: [ReflectionRowModel],
+    // Whole-view collapse (D-9 tier 1): nothing comparable, nothing
+    // tracked, no reflection entries in the windows, and no stored
+    // journal entries anywhere — any content keeps the view standing.
     empty: bool,
 }
 
@@ -173,6 +214,56 @@ component TrackingSection inherits VerticalLayout {
     }
 }
 
+// One reflection window's section (#623 slice B, D-B1): the caption
+// row, three stat cells (Mood, Energy, Flags), the per-flag counts
+// line, and the per-day mood/energy strip. Read-only like everything
+// here. The skeleton is fixed — only the values collapse (D-9 tier 2:
+// an empty window renders dashes and baseline ticks, never a vanished
+// section).
+component ReflectionSection inherits VerticalLayout {
+    in property <string> caption;
+    in property <ReflectionSectionModel> model;
+    VerticalLayout {
+        spacing: Theme.space-1;
+        vertical-stretch: 0;
+        RoleText {
+            role: Typography.heading;
+            text: root.caption;
+        }
+        HorizontalLayout {
+            spacing: Theme.space-4;
+            StatCell {
+                label: "Mood";
+                value: root.model.mood;
+                collapsed: root.model.empty;
+            }
+            StatCell {
+                label: "Energy";
+                value: root.model.energy;
+                collapsed: root.model.empty;
+            }
+            StatCell {
+                label: "Flags";
+                value: root.model.flags;
+                collapsed: root.model.empty;
+            }
+        }
+        if (!root.model.empty && root.model.per-flag != ""): RoleText {
+            role: Typography.caption;
+            text-color: Theme.text-secondary;
+            text: root.model.per-flag;
+            wrap: no-wrap;
+            overflow: elide;
+            vertical-stretch: 0;
+        }
+        StatBars {
+            bars: root.model.bars;
+            base-color: Semantic.sync-active;
+            stack-color: Semantic.success;
+        }
+    }
+}
+
 export component ReviewView inherits FocusScope {
     in property <ReviewModel> review;
     // The window's logical height, pushed from the app window (the
@@ -227,6 +318,99 @@ export component ReviewView inherits FocusScope {
                     TrackingSection {
                         caption: "Tracking · last 30 days";
                         model: root.review.tracking-month;
+                    }
+
+                    // The reflection pair (#623 slice B, D-B1):
+                    // appended after the tracking pair, each captioned
+                    // with its window.
+                    ReflectionSection {
+                        caption: "Reflection · last 7 days";
+                        model: root.review.reflection-week;
+                    }
+                    ReflectionSection {
+                        caption: "Reflection · last 30 days";
+                        model: root.review.reflection-month;
+                    }
+
+                    // The journal-entries ledger (#623 slice B, D-B5):
+                    // every live stored entry, newest first, read
+                    // verbatim — read-only (D-B10): no activation, no
+                    // walk targets; editing rides the walk/CLI verbs.
+                    // The landed ledger-row pattern inline (family 4
+                    // paging, the #373 viewport bound, the explicit
+                    // row height) — not extracted: the row bodies
+                    // differ per ledger and the pattern is short.
+                    RoleText {
+                        role: Typography.heading;
+                        text: "Journal entries";
+                        vertical-stretch: 0;
+                    }
+                    entries-clip := Rectangle {
+                        clip: true;
+                        entries := ListView {
+                            height: 100%;
+                            visible-height: Math.max(root.viewport-height - 2 * Theme.space-3, 0);
+                            changed content-height => {
+                                parent.height = Math.min(
+                                    self.content-height,
+                                    Math.max(root.viewport-height - 2 * Theme.space-3, 0),
+                                );
+                            }
+                            request-row: -1;
+                            request-nonce: 0;
+                            page-request: ScrollPageHint.family == 4 ? ScrollPageHint.page : 0;
+                            page-nonce: ScrollPageHint.family == 4 ? ScrollPageHint.nonce : -1;
+                            total-rows: root.review.reflection-rows.length;
+                            for row[rindex] in root.review.reflection-rows: entry-row := HorizontalLayout {
+                                spacing: Theme.space-3;
+                                vertical-stretch: 0;
+                                height: entry-text.preferred-height;
+                                RoleText {
+                                    role: Typography.caption;
+                                    text-color: Theme.text-secondary;
+                                    width: 100px * Theme.base-scale;
+                                    text: row.day;
+                                    vertical-alignment: center;
+                                }
+                                RoleText {
+                                    role: Typography.caption;
+                                    text-color: Theme.text-secondary;
+                                    width: 70px * Theme.base-scale;
+                                    text: row.cadence;
+                                    vertical-alignment: center;
+                                }
+                                entry-text := RoleText {
+                                    role: Typography.body;
+                                    text: row.text;
+                                    horizontal-stretch: 1;
+                                    overflow: elide;
+                                    wrap: no-wrap;
+                                    vertical-alignment: center;
+                                }
+                                RoleText {
+                                    role: Typography.caption;
+                                    text-color: Theme.text-secondary;
+                                    width: 80px * Theme.base-scale;
+                                    text: "mood " + (row.mood == "" ? "—" : row.mood);
+                                    vertical-alignment: center;
+                                }
+                                RoleText {
+                                    role: Typography.caption;
+                                    text-color: Theme.text-secondary;
+                                    width: 90px * Theme.base-scale;
+                                    text: "energy " + (row.energy == "" ? "—" : row.energy);
+                                    vertical-alignment: center;
+                                }
+                                RoleText {
+                                    role: Typography.caption;
+                                    text-color: Theme.text-secondary;
+                                    width: 160px * Theme.base-scale;
+                                    text: row.flags;
+                                    overflow: elide;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
                     }
 
                     // The ledger (D-8): ONE per-task list over the
@@ -308,6 +492,10 @@ export component ReviewView inherits FocusScope {
                     changed watch-viewport-height => {
                         ledger-clip.height = Math.min(
                             ledger.content-height,
+                            Math.max(root.viewport-height - 2 * Theme.space-3, 0),
+                        );
+                        entries-clip.height = Math.min(
+                            entries.content-height,
                             Math.max(root.viewport-height - 2 * Theme.space-3, 0),
                         );
                     }
