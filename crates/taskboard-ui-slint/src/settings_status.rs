@@ -43,7 +43,7 @@ const UNAVAILABLE_GENERIC: &str = "The server or store is unreachable.";
 const FAILED_GENERIC: &str = "The operation failed.";
 
 /// One typed failure's sentence (r2 D28/F21): short, present tense,
-/// user-actionable. Exhaustive, 14 arms — no wildcard.
+/// user-actionable. Exhaustive, 15 arms — no wildcard.
 fn error_text(err: &SettingsError) -> &'static str {
     match err {
         SettingsError::Invalid { field, kind } => invalid_text(*field, *kind),
@@ -71,6 +71,9 @@ fn error_text(err: &SettingsError) -> &'static str {
         }
         SettingsError::BindRefused => {
             "That board is already bound to another connection; detach it there first."
+        }
+        SettingsError::EnvLocked { .. } => {
+            "This value is set by an environment variable; change it there."
         }
     }
 }
@@ -363,8 +366,11 @@ mod tests {
             SettingsError::Gone,
             SettingsError::NoRemoteMatch,
             SettingsError::BindRefused,
+            SettingsError::EnvLocked {
+                field: Field::TickSecs,
+            },
         ];
-        assert_eq!(all.len(), 14, "the variant list is the enum's totality");
+        assert_eq!(all.len(), 15, "the variant list is the enum's totality");
         for err in all {
             assert_ne!(
                 status_text(SettingsOutcome::Rejected, Some(&err)),
@@ -450,6 +456,7 @@ mod tests {
             Just(SettingsError::Gone),
             Just(SettingsError::NoRemoteMatch),
             Just(SettingsError::BindRefused),
+            any_field().prop_map(|field| SettingsError::EnvLocked { field }),
         ]
     }
 
@@ -510,6 +517,7 @@ mod tests {
             SettingsError::Gone => "gone",
             SettingsError::NoRemoteMatch => "no-remote-match",
             SettingsError::BindRefused => "bind-refused",
+            SettingsError::EnvLocked { .. } => "env-locked",
         }
     }
 

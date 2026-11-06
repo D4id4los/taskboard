@@ -3220,7 +3220,8 @@ impl SettingsVm {
             | SettingsError::PersistRejected
             | SettingsError::Gone
             | SettingsError::NoRemoteMatch
-            | SettingsError::BindRefused => SettingsOutcome::Rejected,
+            | SettingsError::BindRefused
+            | SettingsError::EnvLocked { .. } => SettingsOutcome::Rejected,
             SettingsError::VerifyUnreachable | SettingsError::StoreFailed => {
                 SettingsOutcome::Unavailable
             }

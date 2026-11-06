@@ -113,6 +113,11 @@ pub enum SettingsError {
     /// The engine refused the bind/unbind (board/remote already bound,
     /// stale board id) (r2 D33).
     BindRefused,
+    /// The field's effective value is pinned by a `TASKBOARD_*` env
+    /// override (round-5 chunk 5, D-5.3): the app refused the write
+    /// before touching the file — the adapter's hand-over gating
+    /// prevents the attempt, the app-side guard is the authority.
+    EnvLocked { field: Field },
 }
 
 /// The validated field of a [`SettingsError::Invalid`].

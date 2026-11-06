@@ -314,11 +314,132 @@ pub fn resolve_settings_snapshot(
 /// stays empty — the hand-over wrapper fills it, and write replies
 /// carry it empty by contract (the UI retains its hand-over set).
 #[must_use]
-#[allow(clippy::too_many_lines)] // the §3 inventory: one fact row per read-only key
 pub fn settings_snapshot_from_config(
     config: &crate::config::AppConfig,
 ) -> taskboard_ui_slint::requests::SettingsSnapshot {
-    use taskboard_ui_slint::requests::{ReminderSink, SectionApply as Apply, SettingsSnapshot};
+    use taskboard_ui_slint::requests::{ReminderSink, SettingsSnapshot};
+
+    let day_start_time = config
+        .preferences
+        .day_start_time
+        .parse::<chrono::NaiveTime>()
+        .unwrap_or_default();
+    SettingsSnapshot {
+        day_start_time,
+        reminders_enabled: config.reminders.enabled,
+        reminder_tick_secs: config.reminders.tick_secs,
+        reminder_before: config.reminders.default_before.clone(),
+        reminder_sink: match config.reminders.sink {
+            crate::config::SinkChoice::Auto => ReminderSink::Auto,
+            crate::config::SinkChoice::Log => ReminderSink::Log,
+            crate::config::SinkChoice::Desktop => ReminderSink::Desktop,
+        },
+        poll_interval_secs: config.sync.poll_interval_secs,
+        backoff_initial_secs: config.sync.backoff_initial_secs,
+        backoff_max_secs: config.sync.backoff_max_secs,
+        due_soon_days: config.ui.due_soon_days,
+        focus_enabled: config.focus.enabled,
+        focus_work_mins: config.focus.work_mins,
+        focus_break_mins: config.focus.break_mins,
+        focus_chain: config.focus.chain,
+        focus_long_break_mins: config.focus.long_break_mins,
+        focus_long_break_every: config.focus.long_break_every,
+        focus_notify: config.focus.notify,
+        env_overridden: std::collections::BTreeSet::new(),
+        facts: settings_facts(config),
+        applies: settings_applies(),
+    }
+}
+
+/// The post-apply reply snapshot (round-5 chunk 5, D-5.3): the editable
+/// values echo the **engine's published settings** — one source of
+/// truth, never the file re-decode — while the read-only facts and the
+/// apply semantics still render from the config (the domain snapshot
+/// carries neither). The env-override set stays empty (the hand-over
+/// contract).
+#[must_use]
+pub fn settings_snapshot_from_domain(
+    config: &crate::config::AppConfig,
+    settings: &taskboard_domain::SettingsSnapshot,
+) -> taskboard_ui_slint::requests::SettingsSnapshot {
+    use taskboard_ui_slint::requests::{ReminderSink, SettingsSnapshot};
+
+    let mins = |delta: chrono::TimeDelta| u64::try_from(delta.num_minutes()).unwrap_or_default();
+    SettingsSnapshot {
+        day_start_time: settings.day_start_time,
+        reminders_enabled: settings.reminders_enabled,
+        reminder_tick_secs: settings.tick_secs.get(),
+        reminder_before: settings.reminder_before.text_form(),
+        reminder_sink: match settings.reminder_sink {
+            taskboard_domain::ReminderSinkChoice::Auto => ReminderSink::Auto,
+            taskboard_domain::ReminderSinkChoice::Log => ReminderSink::Log,
+            taskboard_domain::ReminderSinkChoice::Desktop => ReminderSink::Desktop,
+        },
+        poll_interval_secs: settings.poll_interval_secs.get(),
+        backoff_initial_secs: settings.backoff_initial_secs.get(),
+        backoff_max_secs: settings.backoff_max_secs.get(),
+        due_soon_days: settings.due_soon_days.get(),
+        focus_enabled: settings.focus_enabled,
+        // The timings travel minted; an absent mint (unreachable over a
+        // validated config) falls back to the config's own numbers.
+        focus_work_mins: settings
+            .focus
+            .map_or(config.focus.work_mins, |t| mins(t.work())),
+        focus_break_mins: settings
+            .focus
+            .map_or(config.focus.break_mins, |t| mins(t.respite())),
+        focus_chain: settings.focus_chain,
+        focus_long_break_mins: settings
+            .focus
+            .map_or(config.focus.long_break_mins, |t| mins(t.long_break())),
+        focus_long_break_every: settings.focus.map_or(config.focus.long_break_every, |t| {
+            u64::from(t.long_break_every())
+        }),
+        focus_notify: settings.focus_notify,
+        env_overridden: std::collections::BTreeSet::new(),
+        facts: settings_facts(config),
+        applies: settings_applies(),
+    }
+}
+
+/// The per-editable-key apply semantics (plan D12 — the config owner
+/// states them; the UI never hardcodes).
+fn settings_applies()
+-> std::collections::BTreeMap<String, taskboard_ui_slint::requests::SectionApply> {
+    use taskboard_ui_slint::requests::SectionApply as Apply;
+    let mut applies = std::collections::BTreeMap::new();
+    for key in [
+        "preferences.day_start_time",
+        "reminders.enabled",
+        "reminders.tick_secs",
+        "reminders.default_before",
+        "reminders.sink",
+        "sync.poll_interval_secs",
+        "sync.backoff_initial_secs",
+        "sync.backoff_max_secs",
+        "ui.due_soon_days",
+        // The `[focus]` knobs (the focus settings editor, #625): the
+        // runtime reads config once at boot, so every key is OnRestart.
+        "focus.enabled",
+        "focus.work_mins",
+        "focus.break_mins",
+        "focus.chain",
+        "focus.long_break_mins",
+        "focus.long_break_every",
+        "focus.notify",
+    ] {
+        applies.insert(key.to_owned(), Apply::OnRestart);
+    }
+    applies
+}
+
+/// The read-only deployment facts (the §3 inventory: one fact row per
+/// read-only key).
+#[allow(clippy::too_many_lines)] // the §3 inventory: one fact row per read-only key
+fn settings_facts(
+    config: &crate::config::AppConfig,
+) -> Vec<taskboard_ui_slint::requests::SettingsFact> {
+    use taskboard_ui_slint::requests::SectionApply as Apply;
 
     let mode_word = match config.app.mode {
         crate::config::AppMode::Daemon => "daemon",
@@ -330,7 +451,7 @@ pub fn settings_snapshot_from_config(
         crate::config::CredentialStoreKind::Env => "env",
         crate::config::CredentialStoreKind::File => "file",
     };
-    let facts = vec![
+    vec![
         fact("app.mode", mode_word.to_owned(), Apply::OnRestart),
         fact(
             "app.shutdown_timeout_secs",
@@ -425,60 +546,7 @@ pub fn settings_snapshot_from_config(
             },
             Apply::Live,
         ),
-    ];
-    let mut applies = std::collections::BTreeMap::new();
-    for key in [
-        "preferences.day_start_time",
-        "reminders.enabled",
-        "reminders.tick_secs",
-        "reminders.default_before",
-        "reminders.sink",
-        "sync.poll_interval_secs",
-        "sync.backoff_initial_secs",
-        "sync.backoff_max_secs",
-        "ui.due_soon_days",
-        // The `[focus]` knobs (the focus settings editor, #625): the
-        // runtime reads config once at boot, so every key is OnRestart.
-        "focus.enabled",
-        "focus.work_mins",
-        "focus.break_mins",
-        "focus.chain",
-        "focus.long_break_mins",
-        "focus.long_break_every",
-        "focus.notify",
-    ] {
-        applies.insert(key.to_owned(), Apply::OnRestart);
-    }
-    let day_start_time = config
-        .preferences
-        .day_start_time
-        .parse::<chrono::NaiveTime>()
-        .unwrap_or_default();
-    SettingsSnapshot {
-        day_start_time,
-        reminders_enabled: config.reminders.enabled,
-        reminder_tick_secs: config.reminders.tick_secs,
-        reminder_before: config.reminders.default_before.clone(),
-        reminder_sink: match config.reminders.sink {
-            crate::config::SinkChoice::Auto => ReminderSink::Auto,
-            crate::config::SinkChoice::Log => ReminderSink::Log,
-            crate::config::SinkChoice::Desktop => ReminderSink::Desktop,
-        },
-        poll_interval_secs: config.sync.poll_interval_secs,
-        backoff_initial_secs: config.sync.backoff_initial_secs,
-        backoff_max_secs: config.sync.backoff_max_secs,
-        due_soon_days: config.ui.due_soon_days,
-        focus_enabled: config.focus.enabled,
-        focus_work_mins: config.focus.work_mins,
-        focus_break_mins: config.focus.break_mins,
-        focus_chain: config.focus.chain,
-        focus_long_break_mins: config.focus.long_break_mins,
-        focus_long_break_every: config.focus.long_break_every,
-        focus_notify: config.focus.notify,
-        env_overridden: std::collections::BTreeSet::new(),
-        facts,
-        applies,
-    }
+    ]
 }
 
 /// One read-only fact row: every deployment row applies at restart
