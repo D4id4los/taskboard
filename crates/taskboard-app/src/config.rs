@@ -53,8 +53,11 @@ pub const UI_SCALE_MIN: f64 = taskboard_ui_slint::UiScale::MIN;
 /// See [`UI_SCALE_MIN`].
 pub const UI_SCALE_MAX: f64 = taskboard_ui_slint::UiScale::MAX;
 
-/// `[reminders] tick_secs`: engine tick cadence.
-pub const DEFAULT_REMINDER_TICK_SECS: u64 = 30;
+/// `[reminders] tick_secs`: the engine's fallback-sweep cadence —
+/// firing itself is deadline-driven (round-5 chunk 6), so the tick
+/// only bounds the worst-case lag of the now-dependent reminder
+/// families; 1 s keeps it at one second.
+pub const DEFAULT_REMINDER_TICK_SECS: u64 = 1;
 /// `[reminders] default_before`: the implicit reminder's offset.
 pub const DEFAULT_REMINDER_BEFORE: &str = "5m";
 
@@ -1982,7 +1985,7 @@ mod tests {
 
     const DIFF_SEED: &str = "[ui]\nscale = 1.5\ndue_soon_days = 3\n\
          [sync]\npoll_interval_secs = 30\n\
-         [reminders]\ntick_secs = 30\n";
+         [reminders]\ntick_secs = 1\n";
 
     /// The effective decode the W-10 cases inject env overrides
     /// through: a map-backed provider (never process env — the

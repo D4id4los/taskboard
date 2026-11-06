@@ -342,3 +342,82 @@ ceiling, not a success ceiling).
 `EngineCore` delegate ≈ 15; loop reshape + recompute points ≈ 60;
 state paused-clock suites ≈ 180; default/copy/docs ≈ 40 (net of
 churn). One branch, commits per §8 stage (6–8, each standalone).
+
+---
+
+## 11. Stage-2 audit note & deviations (recorded on the implementation branch)
+
+### The per-tick cost audit (Decision 5's measurement follow-up)
+
+Release-mode one-off harness (thrown away after the run, never
+committed — wall-clock timing is the flake class AGENTS §5 bans), 10⁴
+iterations, synthetic state, full delivery receipts (the evaluator
+consults every pair and rejects it):
+
+| state | due_firings | stale_deliveries | next_due_instant |
+|---|---|---|---|
+| 100 tasks / 100 rules | 53 µs | 0.3 µs | 50 µs |
+| 1 000 tasks / 1 000 rules | 6.2 ms | 6 µs | 5.7 ms |
+
+- The **sweep is trivially cheap** (≤ 6 µs at the saturated ceiling —
+  the pure scan's linear pass over reminder rows). **Decision 5
+  stands: no sweep gating lands.** The pre-authorized modulo-60
+  fallback is not exercised (it would have saved nothing — the sweep
+  is 0.1% of the tick cost).
+- The **firing evaluation is the tick's whole cost**, and it is
+  quadratic in tasks × rules (the per-task rule lookup is a linear
+  scan of the rule map; the receipt checks are linear scans of the
+  delivery set). At kiosk scale (≤ 100 tasks) the idle tick is ~53 µs
+  — 0.005% of the 1 Hz budget; at the 1 000/1 000 saturated ceiling it
+  is 6.2 ms ≈ 0.6% of one core at 1 Hz. Accepted; the tick is
+  adjustable live if a user outgrows it. The per-task rule lookup is
+  the obvious future optimization (a task → rules index beside
+  `ReminderState`); recorded as a backlog idea, not this chunk.
+- The deadline query rides the same complexity (it mirrors the
+  evaluator) and additionally runs per executed command / ingested
+  report — the same scale argument applies.
+
+### Deviations from this plan (and why)
+
+1. **Break rules read the crossing at a horizon**, not at `now`
+   (Decision 1 §"evaluated at now"): an open work entry keeps accruing
+   past `now`, so the at-`now` clipped read misses crossings that land
+   strictly in the future — P1 of the proptest caught the gap in
+   design review before a line was written. The horizon read
+   (every span edge + one threshold of accrual + 1 day) returns the
+   unclipped curve's exact first touch, which the evaluator reproduces
+   at every later instant.
+2. **The day-boundary floor candidate joins only when a live anchored
+   habit exists** (Decision 1 §3 said unconditionally): otherwise an
+   all-quiet state would wake once per day for nothing and
+   "None on an all-quiet state" (Decision 3's unit list) would be
+   unreachable.
+3. **The boot tick stays immediate** (`next_wake = now`, round plan
+   §4.6 verbatim: "First tick stays immediate"), not Decision 5's
+   "quiet boot rides now + tick". Two reasons: the round plan is
+   normative, and the stage-2 implementation found the floor-shaped
+   boot wake makes every first-timer test depend on the engine task's
+   timer registration racing the test's first `advance()` — the
+   immediate boot tick (a ready-at-first-poll future) is robust by
+   construction. The deadline machinery takes over at the post-tick
+   re-arm.
+4. **The tick's serde leniency stays type-level at 30**
+   (Decision 7 said leniency 1): `TickSecs` is shared by both lanes,
+   and the leniency target is the type's `Default`. The sync lane's 30
+   is normative, so the reminder lane's *snapshot* default is minted
+   explicitly (1) while zero-decode leniency falls back to 30 for both
+   — a decode-ghost fallback, never a trust-boundary path.
+5. **Chunk 5's `a_tick_cadence_change_re_arms_at_the_next_wake` was
+   rewritten** to `a_past_due_mutation_fires_on_the_re_arm_not_the_old_cadence`:
+   it pinned exactly the fixed-cadence latency this chunk replaces (a
+   mutation-created past-due waits out the old 60 s cadence). AGENTS
+   §5's "a new test failing can be a bug": the bug was in the old
+   production behavior; the new contract is pinned with the same
+   fixtures.
+6. **`EngineMetrics` gained a `ticks` counter** (not in Decision 5):
+   the stuck-deadline clamp journey needs a bounded-wake observation,
+   and the tick count is the engine-activity number the audit's
+   claims ride on.
+7. **`execute_command` returned a `settings_applied` bool that fed the
+   old re-arm point; it is gone** — the recompute after every executed
+   command supersedes it (Decision 4's posture).
