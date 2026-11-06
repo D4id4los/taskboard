@@ -2799,18 +2799,15 @@ fn the_overlay_push_follows_the_published_state_and_the_mode_gate() {
 
 // -- the tracking surfaces' commit journeys (r4 chunk 10, D-TS4) -----
 
-/// Mints one CLOSED entry with exact local instants on `task`, at
-/// `hour` and `hour + 1` in the device-local zone (the fixed-zone
-/// trick: the test asserts exact instants, so the seed and the
-/// expectation derive from the same local wall-clock).
-fn closed_entry_on(state: &mut AppState, task: TaskId, hour: u32) -> taskboard_domain::TimeEntryId {
-    use chrono::{Datelike as _, TimeZone as _};
-    let today = chrono::Local::now().date_naive();
-    let start = chrono::Local
-        .with_ymd_and_hms(today.year(), today.month(), today.day(), hour.min(22), 0, 0)
-        .single()
-        .expect("resolvable local wall-clock")
-        .with_timezone(&chrono::Utc);
+/// Mints one CLOSED one-hour entry on `task` at the absolute instant
+/// `start` (`[start, start + 1 h)`), no clock read — the fixed-clock
+/// sibling of `closed_entry_on` for tests whose render pass is
+/// pinned through `UiSettings::clock`.
+fn closed_entry_at(
+    state: &mut AppState,
+    task: TaskId,
+    start: chrono::DateTime<chrono::Utc>,
+) -> taskboard_domain::TimeEntryId {
     let end = start + chrono::TimeDelta::hours(1);
     let id = taskboard_domain::TimeEntryId::from_uuid(uuid::Uuid::now_v7());
     state.tracking.entries.insert(
@@ -2827,6 +2824,21 @@ fn closed_entry_on(state: &mut AppState, task: TaskId, hour: u32) -> taskboard_d
         },
     );
     id
+}
+
+/// Mints one CLOSED entry with exact local instants on `task`, at
+/// `hour` and `hour + 1` in the device-local zone (the fixed-zone
+/// trick: the test asserts exact instants, so the seed and the
+/// expectation derive from the same local wall-clock).
+fn closed_entry_on(state: &mut AppState, task: TaskId, hour: u32) -> taskboard_domain::TimeEntryId {
+    use chrono::{Datelike as _, TimeZone as _};
+    let today = chrono::Local::now().date_naive();
+    let start = chrono::Local
+        .with_ymd_and_hms(today.year(), today.month(), today.day(), hour.min(22), 0, 0)
+        .single()
+        .expect("resolvable local wall-clock")
+        .with_timezone(&chrono::Utc);
+    closed_entry_at(state, task, start)
 }
 
 /// Arms the task-detail view over `task` on the rig (the matrix
@@ -3551,10 +3563,15 @@ fn the_kiosk_tracked_section_filters_to_the_viewed_board() {
                 },
             );
         }
-        // One tracked hour per board (today, local — the helper's
-        // clamped-hour shape).
-        closed_entry_on(&mut state, task_one, 10);
-        closed_entry_on(&mut state, task_two, 12);
+        // One tracked hour per board, at absolute instants strictly
+        // inside the frozen UTC day window (docs/testing_strategy.org
+        // §6.2, #627): task_one 09:00–10:00Z, task_two 11:00–12:00Z.
+        // A closed entry counts in full wherever it lies in the window
+        // (`tracked_in_window` clamps only open accrual at `now`), so
+        // every input to the rows/total oracle is the constant.
+        let now = crate::test_platform::PINNED_NOW;
+        closed_entry_at(&mut state, task_one, now - chrono::TimeDelta::hours(3));
+        closed_entry_at(&mut state, task_two, now - chrono::TimeDelta::hours(1));
 
         let swap = Arc::new(arc_swap::ArcSwap::from_pointee(state));
         let (commands_tx, _commands_rx) = mpsc::channel(64);
@@ -3569,6 +3586,10 @@ fn the_kiosk_tracked_section_filters_to_the_viewed_board() {
             requests_tx,
             UiSettings {
                 kiosk: true,
+                // The render pass's clock frozen at the seed instant
+                // (`docs/testing_strategy.org` §6.2, #627): every
+                // input to the rows/total oracle is the constant.
+                clock: Some(now),
                 ..UiSettings::default()
             },
             health,

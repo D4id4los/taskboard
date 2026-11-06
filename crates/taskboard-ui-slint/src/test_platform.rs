@@ -24,6 +24,22 @@ use slint::platform::software_renderer::{
 use slint::platform::{Platform, PlatformError, Renderer, WindowAdapter, WindowEvent};
 use slint::{PhysicalPosition, PhysicalSize, Window, WindowPosition, WindowSize};
 
+/// The pinned render clock of every clock-exposed test in the lib's
+/// test binary (`docs/testing_strategy.org` §6.2, #660): a fixed
+/// mid-day UTC instant — the review-ledger template's capture class,
+/// identical to `tests/support/fixture.rs::PINNED_NOW`. Seeds derive
+/// from it; the mount freezes `day_ctx` at it. Never read the wall
+/// clock next to it.
+pub(crate) const PINNED_NOW: chrono::DateTime<chrono::Utc> = {
+    let Some(date) = chrono::NaiveDate::from_ymd_opt(2026, 11, 6) else {
+        panic!("2026-11-06 is a calendar date");
+    };
+    let Some(instant) = date.and_hms_opt(12, 0, 0) else {
+        panic!("12:00:00 is a wall time");
+    };
+    instant.and_utc()
+};
+
 /// A platform that hands out null window adapters: no event loop can
 /// run (tests never call `run_event_loop`); drawing happens only
 /// through the adapter's explicit render pass-through.
