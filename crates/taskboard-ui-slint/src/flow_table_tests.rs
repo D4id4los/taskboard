@@ -2955,18 +2955,29 @@ fn closed_entry_at(
 }
 
 /// Mints one CLOSED entry with exact local instants on `task`, at
-/// `hour` and `hour + 1` in the device-local zone (the fixed-zone
+/// `hour` and `hour + 1` on the *given* local date (the fixed-zone
 /// trick: the test asserts exact instants, so the seed and the
-/// expectation derive from the same local wall-clock).
-fn closed_entry_on(state: &mut AppState, task: TaskId, hour: u32) -> taskboard_domain::TimeEntryId {
+/// expectation derive from the same local wall-clock — one capture
+/// the test owns, per D-3/R3).
+fn closed_entry_on_date(
+    state: &mut AppState,
+    task: TaskId,
+    hour: u32,
+    today: chrono::NaiveDate,
+) -> taskboard_domain::TimeEntryId {
     use chrono::{Datelike as _, TimeZone as _};
-    let today = chrono::Local::now().date_naive();
     let start = chrono::Local
         .with_ymd_and_hms(today.year(), today.month(), today.day(), hour.min(22), 0, 0)
         .single()
         .expect("resolvable local wall-clock")
         .with_timezone(&chrono::Utc);
     closed_entry_at(state, task, start)
+}
+
+/// `closed_entry_on_date` at the *device's current* local date — for
+/// the already-fine call sites whose oracle is relative.
+fn closed_entry_on(state: &mut AppState, task: TaskId, hour: u32) -> taskboard_domain::TimeEntryId {
+    closed_entry_on_date(state, task, hour, chrono::Local::now().date_naive())
 }
 
 /// Arms the task-detail view over `task` on the rig (the matrix
