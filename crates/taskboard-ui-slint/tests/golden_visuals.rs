@@ -83,6 +83,11 @@ fn regen_requested() -> bool {
 fn scale_settings(scale: f64) -> UiSettings {
     UiSettings {
         scale: taskboard_ui_slint::UiScale::new(scale).expect("valid"),
+        // The render pass's content clock frozen at the binary's pin
+        // (`docs/testing_strategy.org` §6.2): every caller is a
+        // clock-exposed golden, so the chip's minute phrase is
+        // byte-stable by construction.
+        clock: Some(fixture::PINNED_NOW),
         ..UiSettings::default()
     }
 }
@@ -167,7 +172,9 @@ fn the_board_goldens_hold_across_the_scale_breakpoint_matrix() {
 }
 
 fn capture_and_compare(driver: &mut SlintDriver, scale: f64, width: u32, regen: bool) {
-    let state = Arc::new(ArcSwap::from_pointee(fixture::golden_state().1));
+    let state = Arc::new(ArcSwap::from_pointee(
+        fixture::golden_state_at(fixture::PINNED_NOW).1,
+    ));
     capture_golden(
         driver,
         state,
@@ -199,7 +206,9 @@ fn the_focused_cell_golden_pins_the_ring() {
                 "{}/tests/goldens/task-view-focus-cell-1.0-900.png",
                 env!("CARGO_MANIFEST_DIR")
             ));
-            let state = Arc::new(ArcSwap::from_pointee(fixture::golden_state().1));
+            let state = Arc::new(ArcSwap::from_pointee(
+                fixture::golden_state_at(fixture::PINNED_NOW).1,
+            ));
             let (commands, _engine) = support::fake_engine::FakeEngine::channel(Arc::clone(&state));
             let (requests_tx, _requests_rx) = tokio::sync::mpsc::channel(16);
             let handle = taskboard_ui_slint::mount(
@@ -208,7 +217,10 @@ fn the_focused_cell_golden_pins_the_ring() {
                 dummy_system(),
                 commands,
                 requests_tx,
-                UiSettings::default(),
+                UiSettings {
+                    clock: Some(fixture::PINNED_NOW),
+                    ..UiSettings::default()
+                },
                 detached_health(),
             )
             .expect("mount succeeds on the testing backend");
@@ -265,9 +277,10 @@ fn dummy_system() -> tokio::sync::broadcast::Receiver<taskboard_domain::SystemEv
 /// breakpoint extremes as the board's, through the same mount path
 /// (the bare-window model push does not produce the mounted render).
 /// Phrase stability: the fixture stamps its rows relative to the
-/// fixture-build `now` (−30 min), so every run renders the identical
-/// "30m overdue" captions — a run never lives long enough to cross
-/// the minute bucket.
+/// pinned render clock (`fixture::PINNED_NOW`) and the pass's clock
+/// is frozen at the same instant (`scale_settings`), so every run
+/// renders the identical overdue captions — byte-stable by
+/// construction, not by run brevity.
 #[test]
 fn the_today_goldens_hold_across_the_scale_breakpoint_matrix() {
     pin_utc_zone();
@@ -298,7 +311,9 @@ fn today_golden_path(scale: f64, width: u32) -> PathBuf {
 }
 
 fn capture_today(driver: &mut SlintDriver, scale: f64, width: u32, regen: bool) {
-    let state = Arc::new(ArcSwap::from_pointee(fixture::today_overdue_state().1));
+    let state = Arc::new(ArcSwap::from_pointee(
+        fixture::today_overdue_state_at(fixture::PINNED_NOW).1,
+    ));
     capture_golden(
         driver,
         state,
@@ -330,6 +345,10 @@ fn kiosk_rotation_settings() -> UiSettings {
             )
             .expect("two distinct modes mint"),
         ),
+        // The render pass's content clock frozen at the binary's pin
+        // (`docs/testing_strategy.org` §6.2) — same capture class as
+        // `scale_settings`; cadence stays on the mock clock.
+        clock: Some(fixture::PINNED_NOW),
         ..UiSettings::default()
     }
 }
@@ -352,9 +371,13 @@ fn capture_kiosk(driver: &mut SlintDriver, mode: &str, regen: bool) {
     // phrase-stable subject) — its pinned-board degeneration is the
     // golden's point.
     let state = if mode == "today" {
-        Arc::new(ArcSwap::from_pointee(fixture::today_overdue_state().1))
+        Arc::new(ArcSwap::from_pointee(
+            fixture::today_overdue_state_at(fixture::PINNED_NOW).1,
+        ))
     } else {
-        Arc::new(ArcSwap::from_pointee(fixture::golden_state().1))
+        Arc::new(ArcSwap::from_pointee(
+            fixture::golden_state_at(fixture::PINNED_NOW).1,
+        ))
     };
     capture_golden(
         driver,
@@ -422,9 +445,11 @@ fn the_kiosk_today_golden_holds() {
 /// helpers. The row then renders dismiss(circle-x) ∥ done(check) ∥
 /// play ∥ snooze ∥ mute ∥ remove — the dismiss/done distinctness
 /// evidence (F1). Scale 3.0 for glyph detail, the matrix's mid
-/// breakpoint. Phrase stability rides the today fixture's protocol:
-/// occurrences are stamped −30 min off fixture-build `now`, so every
-/// run renders the identical "fired 30m ago" captions.
+/// breakpoint. Phrase stability rides the pinned render clock:
+/// occurrences are stamped −30 min off `fixture::PINNED_NOW` and the
+/// pass's clock is frozen at the same instant, so every run renders
+/// the identical "fired 30m ago" captions — byte-stable by
+/// construction.
 #[test]
 fn the_notification_golden_holds() {
     pin_utc_zone();
@@ -434,22 +459,24 @@ fn the_notification_golden_holds() {
             headless_renderer: true,
         },
         move |driver| {
-            let (fixture, mut state) = fixture::golden_state();
+            let (fixture, mut state) = fixture::golden_state_at(fixture::PINNED_NOW);
             // The task's due (and with it the at-due rule's whole
             // firing — the row's occurrence IS the effective
-            // occurrence) is midnight-aligned yesterday: due phrases
-            // render date-only (no wall-clock suffix), and the
-            // notification row's elapsed sits in [24 h, 48 h) all day,
-            // so "fired 1d ago" never crosses a bucket mid-day.
-            let due = (chrono::Utc::now() - chrono::TimeDelta::days(1))
+            // occurrence) is midnight-aligned yesterday at the pin:
+            // due phrases render date-only (no wall-clock suffix),
+            // and the notification row's elapsed sits in [24 h, 48 h)
+            // at the frozen now, so "fired 1d ago" never crosses a
+            // bucket.
+            let due = (fixture::PINNED_NOW - chrono::TimeDelta::try_days(1).unwrap())
                 .date_naive()
                 .and_hms_opt(0, 0, 0)
                 .expect("midnight")
                 .and_utc();
             fixture::deliver_task_notification(&mut state, fixture.task0, due);
-            // The alarm carries no due phrase; its −30 min stamp rides
-            // the today fixture's minute-bucket stability.
-            let fired = chrono::Utc::now() - chrono::TimeDelta::minutes(30);
+            // The alarm carries no due phrase; its −30 min stamp
+            // derives from the same pinned instant the pass renders
+            // with.
+            let fired = fixture::PINNED_NOW - chrono::TimeDelta::try_minutes(30).unwrap();
             let alarm = fixture::add_alarm(&mut state, "alarm-0", fired);
             fixture::deliver_alarm(&mut state, alarm, fired);
             capture_golden(
@@ -495,10 +522,10 @@ fn task_view_golden_path(scale: f64, height: u32) -> PathBuf {
 /// height over the walked-into task detail. Pins one content-height
 /// header row, the summary row, and the description region as the
 /// flexible element. Phrase stability: the fixture's open entry is
-/// minute-bucketed text-free here — the total phrase is second-
-/// precise, but a capture run never lives long enough to cross a
-/// second between build and snapshot (the today goldens' stability
-/// argument, tighter).
+/// stamped against the pinned render clock (`fixture::PINNED_NOW`)
+/// and the pass's clock is frozen at the same instant, so the
+/// second-precise total phrase is byte-stable by construction (the
+/// today goldens' pin argument, tighter).
 #[test]
 fn the_task_view_goldens_hold_across_the_scale_height_matrix() {
     pin_utc_zone();
@@ -522,7 +549,9 @@ fn the_task_view_goldens_hold_across_the_scale_height_matrix() {
 }
 
 fn capture_task_view(driver: &mut SlintDriver, scale: f64, height: u32, regen: bool) {
-    let state = Arc::new(ArcSwap::from_pointee(fixture::golden_state().1));
+    let state = Arc::new(ArcSwap::from_pointee(
+        fixture::golden_state_at(fixture::PINNED_NOW).1,
+    ));
     let (commands, _engine) = support::fake_engine::FakeEngine::channel(Arc::clone(&state));
     let (requests_tx, _requests_rx) = tokio::sync::mpsc::channel(16);
     let handle = taskboard_ui_slint::mount(
@@ -533,6 +562,7 @@ fn capture_task_view(driver: &mut SlintDriver, scale: f64, height: u32, regen: b
         requests_tx,
         UiSettings {
             scale: taskboard_ui_slint::UiScale::new(scale).expect("valid"),
+            clock: Some(fixture::PINNED_NOW),
             ..UiSettings::default()
         },
         detached_health(),
@@ -575,23 +605,26 @@ fn capture_task_view(driver: &mut SlintDriver, scale: f64, height: u32, regen: b
 /// the mid scale/breakpoint — phase caption, the switcher pool, the
 /// quick-note field, and the stop affordance, over the board fixture.
 ///
-/// The captured phase is the **idle** overlay (no open entry):
-/// deterministic by construction. A live session's countdown is
-/// second-precise text whose digits depend on the wall second between
-/// entry stamp and snapshot — a regen run and a compare run can
-/// disagree in those pixels (the today goldens' minute-bucket argument
-/// does not transfer). The live countdown's derivation stays covered
-/// by the structural unit pins; this golden pins the panel's
-/// composition.
+/// The captured phase is a **running work block**: the board
+/// fixture's open entry (12 min old at `fixture::PINNED_NOW`) is the
+/// newest-open pick, so the overlay renders the Work caption and the
+/// `mm:ss` countdown to `start + 25 min` — `13:00` at the pinned
+/// render clock. The seeds and the mount share the one instant
+/// (`docs/testing_strategy.org` §6.2), so the second-precise digits
+/// are byte-stable by construction; the zone pin matches the sibling
+/// goldens.
 #[test]
 fn the_focus_overlay_golden_holds() {
+    pin_utc_zone();
     let regen = regen_requested();
     support::driver::run(
         DriverOptions {
             headless_renderer: true,
         },
         move |driver| {
-            let state = Arc::new(ArcSwap::from_pointee(fixture::golden_state().1));
+            let state = Arc::new(ArcSwap::from_pointee(
+                fixture::golden_state_at(fixture::PINNED_NOW).1,
+            ));
             let (commands, _engine) = support::fake_engine::FakeEngine::channel(Arc::clone(&state));
             let (requests_tx, _requests_rx) = tokio::sync::mpsc::channel(16);
             let handle = taskboard_ui_slint::mount(
@@ -609,6 +642,7 @@ fn the_focus_overlay_golden_holds() {
                     )
                     .map(Some)
                     .expect("positive timings"),
+                    clock: Some(fixture::PINNED_NOW),
                     ..UiSettings::default()
                 },
                 detached_health(),
@@ -672,7 +706,7 @@ fn the_track_entries_golden_holds() {
             headless_renderer: true,
         },
         move |driver| {
-            let (fx, mut state) = fixture::golden_state();
+            let (fx, mut state) = fixture::golden_state_at(fixture::PINNED_NOW);
             // Two closed spans at fixed absolute instants (UTC-pinned
             // zone): an evening span crossing local midnight (the
             // `+1d` mark, newest-first) over an afternoon span.
@@ -723,7 +757,10 @@ fn the_track_entries_golden_holds() {
                 dummy_system(),
                 commands,
                 requests_tx,
-                UiSettings::default(),
+                UiSettings {
+                    clock: Some(fixture::PINNED_NOW),
+                    ..UiSettings::default()
+                },
                 detached_health(),
             )
             .expect("mount succeeds on the testing backend");
@@ -837,27 +874,14 @@ fn the_review_ledger_golden_holds() {
             headless_renderer: true,
         },
         move |driver| {
-            use chrono::TimeZone as _;
-            let (fixture, mut state) = fixture::golden_state();
-            // The journey's clock: a fixed mid-day UTC instant, held
-            // by the mount (the clock seam) and by the seeds alike.
-            let now = chrono::Utc
-                .with_ymd_and_hms(2026, 11, 6, 12, 0, 0)
-                .single()
-                .expect("fixed instant");
-            // The inherited chip seed joins the frozen clock (#663):
-            // `golden_state` stamps its open entry at the real
-            // `now − 12m`, which lies in the frozen day-window's
-            // future once the wall clock passes the pinned instant —
-            // the frozen pass clips it away and the golden drifts
-            // (the 12:00–24:00 UTC band; CI 13:06 UTC fail vs main's
-            // green 08:30 UTC run). Pinned to the same 12-minute-old
-            // shape the fixture renders elsewhere.
-            for entry in state.tracking.entries.values_mut() {
-                if entry.task == fixture.task1 && entry.end.is_none() {
-                    entry.start = now - chrono::TimeDelta::try_minutes(12).unwrap();
-                }
-            }
+            // The journey's clock: the binary's pinned mid-day UTC
+            // instant (`fixture::PINNED_NOW`), held by the mount (the
+            // settings below) and by the seeds alike — the `_at`
+            // builder stamps the inherited chip seed against the same
+            // instant (#663), so no seed can land in the frozen day's
+            // future.
+            let now = fixture::PINNED_NOW;
+            let (fixture, mut state) = fixture::golden_state_at(now);
             let span = |start: chrono::TimeDelta, secs: i64| {
                 (
                     now + start,
