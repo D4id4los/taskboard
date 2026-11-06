@@ -2258,6 +2258,104 @@ pub fn review_bar_fractions(series: &[taskboard_domain::DayTotal]) -> Vec<Review
         .collect()
 }
 
+/// Phrases for one Review reflection section (#623 slice B, D-B4):
+/// the Mood and Energy means, the flag-occurrence total, and the
+/// counts-only per-flag line. Counts and phrases only — no inference,
+/// no advice (the X9 fence). A window with no live entries collapses
+/// every phrase to `""` (D-9 tier 2 — the view renders the dashes
+/// structurally); inside a standing section an unanswered rating is
+/// the dash (never a zero) while a zero flag total is an observed fact
+/// and stays phrased.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ReflectionSectionPhrases {
+    pub mood: String,
+    pub energy: String,
+    pub flags: String,
+    /// The joined per-flag counts; `""` when no flag occurred — a
+    /// missing line is the honest "no flags", not a collapsed section.
+    pub per_flag: String,
+    pub empty: bool,
+}
+
+/// Derives one reflection section's phrases from the domain fold.
+#[must_use]
+pub fn review_reflection_section(
+    ratings: &taskboard_domain::WindowRatings,
+) -> ReflectionSectionPhrases {
+    if ratings.entries == 0 {
+        return ReflectionSectionPhrases {
+            empty: true,
+            ..ReflectionSectionPhrases::default()
+        };
+    }
+    let mean = |fold: &taskboard_domain::RatingMean| {
+        fold.mean()
+            .map_or_else(String::new, |value| format!("{value:.1} / 5"))
+    };
+    let per_flag = reflection_flag_counts(&ratings.flags)
+        .into_iter()
+        .map(|(name, count)| format!("{name} ×{count}"))
+        .collect::<Vec<_>>()
+        .join(" · ");
+    ReflectionSectionPhrases {
+        mood: mean(&ratings.mood),
+        energy: mean(&ratings.energy),
+        flags: ratings.flags.total().to_string(),
+        per_flag,
+        empty: false,
+    }
+}
+
+/// The per-flag counts line's typed order (D-B4): curated ∪ extra
+/// occurrences, count descending then name ascending — curated names
+/// by their kebab form, parked names verbatim.
+#[must_use]
+pub fn reflection_flag_counts(flags: &taskboard_domain::FlagOccurrences) -> Vec<(String, usize)> {
+    let mut rows: Vec<(String, usize)> = flags
+        .curated
+        .iter()
+        .map(|(flag, count)| (flag.text_form().to_owned(), *count))
+        .chain(
+            flags
+                .extra
+                .iter()
+                .map(|(name, count)| (name.clone(), *count)),
+        )
+        .collect();
+    rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    rows
+}
+
+/// One day-bar's pushed rating fractions (the pure half of D-B6): the
+/// Mood and Energy means as fractions of the five-point scale. The push
+/// pass maps Mood → `base`, Energy → `stack` on the strip.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct ReflectionBar {
+    pub mood: f32,
+    pub energy: f32,
+}
+
+/// The reflection strip's bar fractions (D-B6): **fixed-scale**
+/// normalization — `mean / 5` per rated bucket, no strip-max rescaling
+/// (ratings own a natural scale; normalizing by the strip's maximum
+/// would hide the absolute level, which for ratings IS the reading).
+/// An unrated bucket is `0.0` (the baseline tick); every fraction is
+/// finite and ≤ 1.0; the length equals the series' length.
+#[must_use]
+pub fn review_rating_fractions(series: &[taskboard_domain::DayRatings]) -> Vec<ReflectionBar> {
+    let fraction = |fold: &taskboard_domain::RatingMean| {
+        fold.mean()
+            .map_or(0.0_f32, |mean| (mean / 5.0).clamp(0.0, 1.0))
+    };
+    series
+        .iter()
+        .map(|day| ReflectionBar {
+            mood: fraction(&day.ratings.mood),
+            energy: fraction(&day.ratings.energy),
+        })
+        .collect()
+}
+
 /// The open/closed predicate: open iff the awaiting set is not empty.
 #[must_use]
 pub fn alarm_window_open(rows: &[AlarmRow]) -> bool {
@@ -6719,7 +6817,7 @@ mod track_surfaces_tests {
 #[cfg(test)]
 mod review_tracking_tests {
     use super::*;
-    use taskboard_domain::{DayTotal, WindowSplit, WorkBlockReading};
+    use taskboard_domain::{DayTotal, WindowRatings, WindowSplit, WorkBlockReading};
 
     fn secs(n: i64) -> chrono::TimeDelta {
         chrono::TimeDelta::try_seconds(n).unwrap()
@@ -6820,5 +6918,118 @@ mod review_tracking_tests {
         );
 
         assert_eq!(review_bar_fractions(&[]), Vec::<ReviewBar>::new());
+    }
+
+    // ---- #623 slice B: the reflection phrases + fractions ----------------
+
+    fn ratings(entries: usize, mood: (u32, usize), energy: (u32, usize)) -> WindowRatings {
+        WindowRatings {
+            entries,
+            mood: taskboard_domain::RatingMean {
+                total: mood.0,
+                count: mood.1,
+            },
+            energy: taskboard_domain::RatingMean {
+                total: energy.0,
+                count: energy.1,
+            },
+            flags: taskboard_domain::FlagOccurrences::default(),
+        }
+    }
+
+    // 10: the section collapses only on zero entries; entries without
+    // ratings dash the rating cells while the flags fact still speaks.
+    #[test]
+    fn review_reflection_section_phrases_collapse_only_on_zero_entries() {
+        let collapsed = review_reflection_section(&ratings(0, (0, 0), (0, 0)));
+        assert!(collapsed.empty);
+        assert_eq!(collapsed.mood, "");
+        assert_eq!(collapsed.energy, "");
+        assert_eq!(collapsed.flags, "");
+        assert_eq!(collapsed.per_flag, "");
+
+        let unrated = review_reflection_section(&ratings(2, (0, 0), (0, 0)));
+        assert!(!unrated.empty, "entries exist: the skeleton stands");
+        assert_eq!(unrated.mood, "", "unanswered is the dash");
+        assert_eq!(unrated.energy, "");
+        assert_ne!(unrated.flags, "", "zero occurrences is an observed fact");
+        assert_eq!(unrated.per_flag, "", "no flags → no counts line");
+
+        let rated = review_reflection_section(&ratings(2, (7, 2), (4, 1)));
+        assert_ne!(rated.mood, "");
+        assert_ne!(rated.energy, "");
+        assert_ne!(rated.mood, rated.energy, "distinct means, distinct forms");
+        let mut with_flags = ratings(2, (7, 2), (4, 1));
+        with_flags
+            .flags
+            .curated
+            .insert(taskboard_domain::HealthFlag::Cramps, 2);
+        let flagged = review_reflection_section(&with_flags);
+        assert_ne!(flagged.per_flag, "");
+        assert_ne!(flagged.flags, unrated.flags, "the total moved");
+    }
+
+    // 11: the counts line's deterministic double sort — count desc,
+    // then name asc, extra names verbatim among the curated.
+    #[test]
+    fn the_per_flag_line_sorts_count_desc_then_name_asc() {
+        let mut flags = taskboard_domain::FlagOccurrences::default();
+        flags
+            .curated
+            .insert(taskboard_domain::HealthFlag::PoorSleep, 2);
+        flags
+            .curated
+            .insert(taskboard_domain::HealthFlag::Allergies, 2);
+        flags
+            .curated
+            .insert(taskboard_domain::HealthFlag::GoodDay, 3);
+        flags.extra.insert("solar-flare".to_owned(), 2);
+        let counts = reflection_flag_counts(&flags);
+        assert_eq!(
+            counts,
+            vec![
+                ("good-day".to_owned(), 3),
+                ("allergies".to_owned(), 2),
+                ("poor-sleep".to_owned(), 2),
+                ("solar-flare".to_owned(), 2),
+            ]
+        );
+        assert_eq!(
+            reflection_flag_counts(&taskboard_domain::FlagOccurrences::default()),
+            Vec::<(String, usize)>::new()
+        );
+    }
+
+    fn rated_day(mood: (u32, usize), energy: (u32, usize)) -> taskboard_domain::DayRatings {
+        taskboard_domain::DayRatings {
+            date: chrono::NaiveDate::from_ymd_opt(2026, 6, 15).unwrap(),
+            ratings: ratings(1, mood, energy),
+        }
+    }
+
+    // 12: fixed-scale normalization — mean 4 → 0.8, unrated → 0.0,
+    // never above 1.0, never NaN, no strip-max rescaling.
+    #[test]
+    fn review_rating_fractions_normalize_by_the_five_point_scale() {
+        let series = [
+            rated_day((4, 1), (0, 0)),
+            rated_day((5, 1), (10, 2)),
+            rated_day((0, 0), (0, 0)),
+        ];
+        let bars = review_rating_fractions(&series);
+        assert_eq!(bars.len(), series.len());
+        assert!((bars[0].mood - 0.8_f32).abs() < 1e-6, "mean 4 of 5");
+        assert_eq!(bars[0].energy, 0.0, "unrated is the baseline tick");
+        assert!((bars[1].mood - 1.0_f32).abs() < 1e-6);
+        assert!((bars[1].energy - 1.0_f32).abs() < 1e-6);
+        assert!(bars[2].mood == 0.0 && bars[2].energy == 0.0);
+        // No strip-max rescaling: a lone mean-2 day stays at 0.4.
+        let lone = review_rating_fractions(&[rated_day((2, 1), (0, 0))]);
+        assert!((lone[0].mood - 0.4_f32).abs() < 1e-6);
+        assert!(bars.iter().all(|bar| bar.mood <= 1.0
+            && bar.energy <= 1.0
+            && bar.mood.is_finite()
+            && bar.energy.is_finite()));
+        assert_eq!(review_rating_fractions(&[]), Vec::<ReflectionBar>::new());
     }
 }
