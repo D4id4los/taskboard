@@ -610,6 +610,65 @@ pub fn window_done(
     dones.into_iter().map(|(_, id)| id).collect()
 }
 
+/// The surfacing verdict (DR-7 D-J10): the latest closed day window
+/// that no live day-cadence entry has reviewed. Private field + getter:
+/// the value exists only as [`review_due`]'s output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReviewDue {
+    window: ReviewWindow,
+}
+
+impl ReviewDue {
+    /// The un-reviewed window.
+    #[must_use]
+    pub const fn window(&self) -> ReviewWindow {
+        self.window
+    }
+}
+
+/// The derived-at-read surfacing check (DR-7 D-J10): takes the most
+/// recent day window that has already closed — the window of
+/// `calendar.today(now)`'s predecessor — and returns it iff no **live**
+/// `Day` entry carries that window's day label. Matching on the label
+/// (not the stored instants) is deliberate: a changed `day_start_time`
+/// shifts instants, but the user still means "that day". Only this one
+/// window is ever examined — older gaps never surface (P12: inform,
+/// never nag). Week/Month have no auto-surfacing and no parameter here.
+///
+/// Pure: `&ReflectionState`, a calendar, and `now` as data — no engine
+/// handle, no tick, no persistence (the signature is the no-machinery
+/// pin). `None` also at chrono's date floor (no predecessor day).
+#[must_use]
+pub fn review_due(
+    reflection: &ReflectionState,
+    calendar: DayCalendar,
+    now: DateTime<Utc>,
+) -> Option<ReviewDue> {
+    let latest_closed = calendar.today(now).pred_opt()?;
+    let window = review_window(ReviewCadence::Day, latest_closed, calendar);
+    let reviewed = reflection
+        .live_entries()
+        .any(|entry| entry.cadence == ReviewCadence::Day && entry.day == window.day());
+    (!reviewed).then_some(ReviewDue { window })
+}
+
+/// The prompted walk's entry text (DR-7 D-J9 stage 4): the non-blank
+/// answers in prompt order, each as `prompt\nanswer`, separated by one
+/// blank line; blank answers are omitted, and all-blank composes to the
+/// empty string (the caller's "record nothing" signal). Domain-side
+/// because the text is entry data every lane reads back verbatim.
+#[must_use]
+pub fn compose_reflection_text(template: &ReflectionTemplate, answers: &[String]) -> String {
+    template
+        .prompts
+        .iter()
+        .zip(answers)
+        .filter(|(_, answer)| !answer.trim().is_empty())
+        .map(|(prompt, answer)| format!("{prompt}\n{answer}"))
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -851,6 +910,139 @@ mod tests {
         let got: Vec<_> = state.live_entries().map(|e| e.id).collect();
         assert_eq!(got, vec![ReflectionId::from(uuid::Uuid::from_u128(1))]);
         assert_eq!(state.entries.len(), 2, "the tombstone stays in the map");
+    }
+
+    // ---- the review-due derivation (DR-7 D-J10, chunk 3) ----
+
+    /// A UTC-midnight calendar: `today(now)` is the UTC date.
+    fn utc_calendar() -> DayCalendar {
+        DayCalendar {
+            day_start_time: chrono::NaiveTime::MIN,
+            offset: FixedOffset::east_opt(0).unwrap(),
+        }
+    }
+
+    /// `now` = 2026-11-06 10:00Z; the latest closed day window is
+    /// 2026-11-05.
+    fn due_now() -> DateTime<Utc> {
+        chrono::Utc.with_ymd_and_hms(2026, 11, 6, 10, 0, 0).unwrap()
+    }
+
+    fn day_entry(id: u128, day: NaiveDate, cadence: ReviewCadence) -> ReflectionEntry {
+        let window = review_window(cadence, day, utc_calendar());
+        let mut row = entry(id);
+        row.cadence = cadence;
+        row.day = window.day();
+        row.window_start = window.start();
+        row.window_end = window.end();
+        row
+    }
+
+    fn state_of(rows: Vec<ReflectionEntry>) -> ReflectionState {
+        ReflectionState {
+            entries: rows.into_iter().map(|row| (row.id, row)).collect(),
+        }
+    }
+
+    #[test]
+    fn review_due_with_no_entries_names_yesterdays_window() {
+        let due = review_due(&ReflectionState::default(), utc_calendar(), due_now())
+            .expect("an empty journal leaves the latest closed day un-reviewed");
+        let expected = review_window(
+            ReviewCadence::Day,
+            NaiveDate::from_ymd_opt(2026, 11, 5).unwrap(),
+            utc_calendar(),
+        );
+        assert_eq!(due.window(), expected);
+        assert!(due.window().end() <= due_now(), "the window has closed");
+    }
+
+    #[test]
+    fn review_due_is_cleared_by_a_live_day_entry_for_that_day() {
+        let yesterday = NaiveDate::from_ymd_opt(2026, 11, 5).unwrap();
+        let state = state_of(vec![day_entry(1, yesterday, ReviewCadence::Day)]);
+        assert_eq!(review_due(&state, utc_calendar(), due_now()), None);
+    }
+
+    #[test]
+    fn review_due_ignores_a_tombstoned_entry() {
+        let yesterday = NaiveDate::from_ymd_opt(2026, 11, 5).unwrap();
+        let mut row = day_entry(1, yesterday, ReviewCadence::Day);
+        row.deleted = true;
+        let state = state_of(vec![row]);
+        assert!(review_due(&state, utc_calendar(), due_now()).is_some());
+    }
+
+    #[test]
+    fn review_due_examines_only_the_latest_closed_window() {
+        // An entry for an older day only: the latest closed window is
+        // still due; and conversely, the older gap never surfaces once
+        // yesterday is journaled.
+        let older = NaiveDate::from_ymd_opt(2026, 11, 3).unwrap();
+        let yesterday = NaiveDate::from_ymd_opt(2026, 11, 5).unwrap();
+        let state = state_of(vec![day_entry(1, older, ReviewCadence::Day)]);
+        let due = review_due(&state, utc_calendar(), due_now()).expect("yesterday is due");
+        assert_eq!(due.window().day(), yesterday);
+        let state = state_of(vec![day_entry(2, yesterday, ReviewCadence::Day)]);
+        assert_eq!(
+            review_due(&state, utc_calendar(), due_now()),
+            None,
+            "older gaps never surface"
+        );
+    }
+
+    #[test]
+    fn review_due_matches_the_cadence_not_just_the_day() {
+        // A Week entry whose window covers yesterday does not satisfy
+        // the Day cadence's review.
+        let yesterday = NaiveDate::from_ymd_opt(2026, 11, 5).unwrap();
+        let state = state_of(vec![day_entry(1, yesterday, ReviewCadence::Week)]);
+        assert!(review_due(&state, utc_calendar(), due_now()).is_some());
+    }
+
+    /// The label match is deliberate: an entry minted under a
+    /// different `day_start_time` carries different instants for the
+    /// same day label — it still means "that day".
+    #[test]
+    fn review_due_matches_on_the_day_label_not_the_stored_instants() {
+        let yesterday = NaiveDate::from_ymd_opt(2026, 11, 5).unwrap();
+        let mut row = day_entry(1, yesterday, ReviewCadence::Day);
+        row.window_start += chrono::TimeDelta::try_hours(5).unwrap();
+        row.window_end += chrono::TimeDelta::try_hours(5).unwrap();
+        let state = state_of(vec![row]);
+        assert_eq!(review_due(&state, utc_calendar(), due_now()), None);
+    }
+
+    #[test]
+    fn compose_reflection_text_keeps_prompt_order_and_omits_blanks() {
+        let template = &DEFAULT_TEMPLATES[0];
+        let answers = vec![
+            "shipped the walk".to_owned(),
+            "   ".to_owned(),
+            String::new(),
+            "the planner leg".to_owned(),
+        ];
+        let text = compose_reflection_text(template, &answers);
+        assert_eq!(
+            text,
+            format!(
+                "{}\nshipped the walk\n\n{}\nthe planner leg",
+                template.prompts[0], template.prompts[3]
+            )
+        );
+    }
+
+    #[test]
+    fn compose_reflection_text_of_all_blank_answers_is_empty() {
+        let template = &DEFAULT_TEMPLATES[0];
+        let answers = vec![
+            String::new(),
+            " ".to_owned(),
+            "\n".to_owned(),
+            String::new(),
+        ];
+        assert_eq!(compose_reflection_text(template, &answers), "");
+        assert_eq!(compose_reflection_text(template, &[]), "");
     }
 
     /// A bounded reference-date domain: every cadence's flooring
@@ -1160,6 +1352,27 @@ mod tests {
                 expected,
                 "no third classification exists"
             );
+        }
+
+        /// The derivation names the latest closed day window and
+        /// nothing older: `Some(d)` implies `d.window().end() <= now`
+        /// and `now - d.window().end() < 24h` (a wider gap would mean
+        /// an older window surfaced).
+        #[test]
+        fn review_due_names_the_latest_closed_window_only(
+            now in timestamp_strategy(),
+            cal in calendar(),
+        ) {
+            let Some(due) = review_due(&ReflectionState::default(), cal, now) else {
+                // Only chrono's date floor can make `pred` fail; the
+                // generated stamps never reach it.
+                return Err(TestCaseError::fail("an empty journal is always due"));
+            };
+            let window = due.window();
+            prop_assert_eq!(window.cadence(), ReviewCadence::Day);
+            prop_assert!(window.end() <= now, "the window has closed");
+            prop_assert!(now - window.end() < DAY, "the latest closed, not an older one");
+            prop_assert_eq!(window, review_window(ReviewCadence::Day, window.day(), cal), "the label law");
         }
 
         /// Consistency pin 12: for the day window, `window_done` equals
