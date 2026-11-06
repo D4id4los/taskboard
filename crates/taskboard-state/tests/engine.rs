@@ -1528,7 +1528,7 @@ async fn unbind_arm_executes_publishes_and_repeats_as_noop() {
         SyncPhase::Failed {
             last_error: SyncErrorKind::Network,
         },
-        Some(chrono::Utc::now()),
+        Some(common::ts(common::T0)),
     );
     let h = spawn(Spawner {
         repo: Arc::new(InMemoryRepository::with_state(seeded)),
