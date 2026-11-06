@@ -6,6 +6,25 @@ use proptest::prelude::*;
 use super::reminders::insistence_strategy;
 use super::{string_strategy, timestamp_strategy};
 
+/// The nine ruled kebab health-flag names, in the enum's declaration
+/// order — the curated set's test-side enumeration (the reflection
+/// strategies and table tests feed from it; the declaration-order pin
+/// in `reflection.rs`'s tests keeps it synced).
+#[must_use]
+pub fn all_health_flag_names() -> Vec<&'static str> {
+    vec![
+        "migraine",
+        "minor-headache",
+        "medium-headache",
+        "cold-or-flu",
+        "allergies",
+        "cramps",
+        "poor-sleep",
+        "overwhelmed",
+        "good-day",
+    ]
+}
+
 /// Sparse task changes.
 pub fn task_changes_strategy() -> impl Strategy<Value = crate::messages::TaskChanges> {
     (
@@ -200,10 +219,7 @@ pub fn state_command_strategy() -> impl Strategy<Value = crate::messages::StateC
         (
             prop::option::of(1_u8..=5),
             prop::option::of(1_u8..=5),
-            prop::collection::vec(
-                prop::sample::select(crate::reflection::all_health_flag_names()),
-                0..9,
-            ),
+            prop::collection::vec(prop::sample::select(all_health_flag_names()), 0..9,),
             string_strategy(),
         )
             .prop_map(

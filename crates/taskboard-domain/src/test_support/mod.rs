@@ -31,7 +31,9 @@ pub use entities::{
     membership_state_strategy, remote_task_baseline_strategy, stack_clocks_strategy,
     task_clocks_strategy, task_strategy, urgency_strategy,
 };
-pub use messages::{label_changes_strategy, state_command_strategy, task_changes_strategy};
+pub use messages::{
+    all_health_flag_names, label_changes_strategy, state_command_strategy, task_changes_strategy,
+};
 pub use recur::{
     naive_date_strategy, occurrence_count_strategy, recur_pattern_strategy, recur_rule_strategy,
     weekday_set_strategy, weekday_strategy,
