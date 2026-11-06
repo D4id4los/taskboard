@@ -10,6 +10,27 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 ### Added
 
+- Live settings (GUI review round 5, chunk 5): every editable General /
+  Reminders / Sync-Timing / Display setting now applies to the running
+  app without a restart. The engine owns a typed `SettingsSnapshot`
+  (seeded from the validated config at boot, published on `AppState`,
+  memory-only — the config-file overlay stays the store); a settings
+  commit still prove-and-writes the file, then re-decodes the effective
+  config and sends `UpdateSettings`, so the engine's reminder cadence,
+  enabled flag, implicit-reminder defaults and day-start time, the
+  sync actor's poll interval and backoff curve (re-armed by
+  `SystemEvent::SettingsChanged` under the min rule), the escalation
+  driver's and focus runtime's inputs, and the UI's day window,
+  due-soon horizon, reminder defaults and focus timings all re-read the
+  published value. The settings editor's reply echoes the engine; an
+  env-pinned field refuses typed (`EnvLocked`) before the file is
+  touched; a failed write sends no command. The per-key apply registry
+  makes `Live` the default — `reminders.sink`, `focus.enabled` and
+  `focus.notify` stay `OnRestart` with written, test-enforced
+  justifications (the notifier sink and the focus boundary posture are
+  one boot arc per process; the focus spawn decision is boot-time).
+  Files-sync keeps its boot-captured cadence (no engine facet — a
+  recorded follow-up).
 - The reflection family's storage and CLI tier (#637, DR-7 chunk 2):
   migration 0022 ships the device-local `reflection_entries` table
   (tombstone-in-place rows, JSON-array flag columns, no foreign keys)
