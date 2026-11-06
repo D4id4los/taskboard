@@ -34,6 +34,17 @@ fn main() {
     .expect("virtualisation probe compilation failed");
     println!("cargo:rerun-if-changed={}", probe_source.display());
 
+    // The focus-coverage invariant's item-walk self-guard (#665):
+    // the arm matches element ids, so the host needs debug info.
+    let coverage_source = manifest.join("tests/focus_coverage_probe.slint");
+    slint_build::compile_with_output_path(
+        &coverage_source,
+        out.join("focus_coverage_probe.rs"),
+        slint_build::CompilerConfiguration::new().with_debug_info(true),
+    )
+    .expect("focus coverage probe compilation failed");
+    println!("cargo:rerun-if-changed={}", coverage_source.display());
+
     // The focus-seam probe (round-3 L1): the real TextField's seam
     // against sibling focus containers, same include shape.
     let seam_source = manifest.join("tests/focus_seam_probe.slint");
