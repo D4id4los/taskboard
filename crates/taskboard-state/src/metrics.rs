@@ -27,6 +27,11 @@ pub struct EngineMetrics {
     /// repaint trigger, including zero-receiver sends: the honest
     /// engine-activity number.
     signals: AtomicU64,
+    /// Timer wakes serviced (the tick arm's entry). The deadline-driven
+    /// wake's honest activity number: the anti-busy-loop clamp's
+    /// observation point (a stuck deadline must degrade to the tick
+    /// cadence, and this counter is what pins the bound).
+    ticks: AtomicU64,
 }
 
 /// A consistent-enough point-in-time read of [`EngineMetrics`] (each
@@ -39,6 +44,8 @@ pub struct EngineMetricsSnapshot {
     pub rejections: u64,
     /// Publish/repaint signals sent (attempted sends included).
     pub signals: u64,
+    /// Timer wakes serviced.
+    pub ticks: u64,
 }
 
 impl EngineMetrics {
@@ -57,6 +64,11 @@ impl EngineMetrics {
         let _ = self.signals.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Increments the timer-wake counter (Relaxed).
+    pub fn count_tick(&self) {
+        let _ = self.ticks.fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Point-in-time read into a copyable snapshot (Relaxed loads).
     #[must_use]
     pub fn snapshot(&self) -> EngineMetricsSnapshot {
@@ -64,6 +76,7 @@ impl EngineMetrics {
             commands: self.commands.load(Ordering::Relaxed),
             rejections: self.rejections.load(Ordering::Relaxed),
             signals: self.signals.load(Ordering::Relaxed),
+            ticks: self.ticks.load(Ordering::Relaxed),
         }
     }
 }
@@ -81,17 +94,20 @@ mod tests {
                 commands: 0,
                 rejections: 0,
                 signals: 0,
+                ticks: 0,
             }
         );
         metrics.count_command();
         metrics.count_command();
         metrics.count_signal();
+        metrics.count_tick();
         assert_eq!(
             metrics.snapshot(),
             EngineMetricsSnapshot {
                 commands: 2,
                 rejections: 0,
                 signals: 1,
+                ticks: 1,
             }
         );
     }

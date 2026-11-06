@@ -163,6 +163,28 @@ impl EngineCore {
         )
     }
 
+    /// The next instant a reminder can become due at or after `now` —
+    /// the deadline-driven wake's pure query, the same zero-clone
+    /// delegate discipline as [`EngineCore::due_reminder_firings`]
+    /// (the brain stays in the domain; the core stays a state capsule).
+    #[must_use]
+    pub fn next_reminder_deadline(
+        &self,
+        day: taskboard_domain::DayCalendar,
+        defaults: &taskboard_domain::ReminderDefaults,
+        now: DateTime<Utc>,
+    ) -> Option<DateTime<Utc>> {
+        taskboard_domain::next_due_instant(
+            &self.state.tasks,
+            &self.state.tracking,
+            &self.state.habits,
+            day,
+            &self.state.reminders,
+            defaults,
+            now,
+        )
+    }
+
     /// The habit map (the tracker-nudge pass's rows).
     #[must_use]
     pub fn habits(&self) -> &taskboard_domain::habit::HabitState {

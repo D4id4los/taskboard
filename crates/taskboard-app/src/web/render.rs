@@ -521,6 +521,7 @@ mod tests {
             commands: 7,
             rejections: 1,
             signals: 9,
+            ticks: 11,
         }
     }
 
@@ -647,6 +648,7 @@ mod tests {
                 commands: 0,
                 rejections: 0,
                 signals: 0,
+                ticks: 0,
             },
             &c,
         );

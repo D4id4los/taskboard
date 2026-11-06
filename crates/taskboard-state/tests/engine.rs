@@ -2575,6 +2575,7 @@ async fn k8_the_handle_counts_commands_rejections_and_signals() {
             commands: 1,
             rejections: 0,
             signals: 1,
+            ticks: 0,
         }
     );
     let rejected = h
@@ -2595,6 +2596,7 @@ async fn k8_the_handle_counts_commands_rejections_and_signals() {
             commands: 2,
             rejections: 1,
             signals: 1,
+            ticks: 0,
         }
     );
 }

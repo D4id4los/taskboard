@@ -62,6 +62,99 @@ pub fn board(title: &str) -> Board {
     }
 }
 
+/// The suites' standard stack row: "backlog", order 1, clocks at `T0`.
+#[must_use]
+pub fn backlog_stack(
+    id: taskboard_domain::StackId,
+    board: taskboard_domain::BoardId,
+) -> taskboard_domain::Stack {
+    taskboard_domain::Stack {
+        id,
+        remote: None,
+        board,
+        title: "backlog".into(),
+        order: 1,
+        archived: false,
+        deleted: false,
+        clocks: taskboard_domain::StackClocks {
+            title: ts(T0),
+            order: ts(T0),
+            deleted: ts(T0),
+        },
+        remote_seen: None,
+    }
+}
+
+/// The suites' standard open task row: "task", order 1, clocks at `T0`,
+/// due at `duedate_secs` when given.
+#[must_use]
+pub fn due_task(
+    id: TaskId,
+    stack: taskboard_domain::StackId,
+    duedate_secs: Option<i64>,
+) -> taskboard_domain::Task {
+    use taskboard_domain::{Task, TaskClocks};
+
+    Task {
+        id,
+        remote: None,
+        title: "task".into(),
+        description: String::new(),
+        duedate: duedate_secs.map(ts),
+        scheduled: None,
+        done: None,
+        stack,
+        order: 1,
+        label_memberships: std::collections::BTreeMap::new(),
+        effort: None,
+        importance: None,
+        urgency: None,
+        recur: None,
+        kind: taskboard_domain::entities::TaskKind::Standard,
+        archived: false,
+        deleted: false,
+        clocks: TaskClocks {
+            title: ts(T0),
+            description: ts(T0),
+            duedate: ts(T0),
+            scheduled: ts(T0),
+            done: ts(T0),
+            position: ts(T0),
+            effort: ts(T0),
+            importance: ts(T0),
+            urgency: ts(T0),
+            recur: ts(T0),
+            kind: ts(T0),
+            archived: ts(T0),
+            deleted: ts(T0),
+        },
+        remote_seen: None,
+        remote_baseline: None,
+    }
+}
+
+/// A live board + one stack ("backlog", id 500) + one open task (id 600)
+/// due at `duedate_secs` — the minimal engine seed for the settings and
+/// reminder suites (single stack/task, so "the" task is well-defined).
+#[must_use]
+pub fn seed_stack_with_due_task(duedate_secs: Option<i64>) -> PersistedState {
+    let board = board("board");
+    let stack = backlog_stack(
+        taskboard_domain::StackId::from_uuid(uuid::Uuid::from_u128(500)),
+        board.id,
+    );
+    let task = due_task(
+        TaskId::from_uuid(uuid::Uuid::from_u128(600)),
+        stack.id,
+        duedate_secs,
+    );
+    let mut state = PersistedState::default();
+    state.boards.insert(board.id, board);
+    state.stacks.insert(stack.id, stack);
+    state.tasks.insert(task.id, task);
+    state
+}
+
 /// A persisted state holding exactly one live board.
 pub fn seed_board_state(title: &str) -> PersistedState {
     let board = board(title);

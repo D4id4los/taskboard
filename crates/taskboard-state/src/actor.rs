@@ -439,12 +439,14 @@ async fn run_loop(
     // reports channel closes — the sync actor owns the sender, so its
     // exit is exactly when the last cycle's evidence has landed.
     let mut draining = false;
-    // The reminder tick arm (design §5.2): the first tick is immediate —
-    // an undelivered reminder from before a reboot fires on the next
-    // boot's first tick — and every wake re-arms at the *live* cadence
-    // (`settings.tick_secs`, re-read at each wake and re-armed on an
-    // `UpdateSettings` apply so a cadence change is visible at the very
-    // next wake). With reminders disabled and the day roll off the
+    // The reminder tick arm (design §5.2), deadline-driven (D2): the
+    // wake is `min(next due instant, now + tick)` at the *live*
+    // `settings.tick_secs` — the tick is the fallback sweep, never the
+    // firing mechanism — recomputed after every wake, executed command,
+    // and ingested sync report. The boot tick stays immediate
+    // (`next_wake = now`): an undelivered reminder from before a reboot
+    // fires on the first loop pass. With reminders disabled and the day
+    // roll off the
     // select! precondition keeps the sleep future from ever being
     // constructed, so such an engine performs zero timer work (the
     // paused-time suites stay auto-advance-free); the precondition is
@@ -453,7 +455,7 @@ async fn run_loop(
     // (D-E8): either engine arming the timer is enough — the accepted
     // coupling is one clock read + date compare per wake on a
     // reminders-off kiosk.
-    let mut next_tick = tokio::time::Instant::now();
+    let mut next_wake = tokio::time::Instant::now();
     // The day roll's watermark (D-E9): engine-internal edge state like
     // `storage_failing`, never persisted as user state — a restart
     // re-scans once, which is the boot catch-up path and is idempotent
@@ -487,7 +489,7 @@ async fn run_loop(
                         continue;
                     }
                     metrics.count_command();
-                    let settings_applied = execute_command(
+                    execute_command(
                         &mut core,
                         &shared,
                         &signals,
@@ -506,12 +508,18 @@ async fn run_loop(
                         &mut storage_failing,
                     )
                     .await;
-                    if settings_applied {
-                        // The re-arm: a cadence change is visible at
-                        // the very next wake, never one stale tick
-                        // later.
-                        next_tick =
-                            tokio::time::Instant::now() + core.settings().tick_secs.duration();
+                    // The re-arm, superset-shaped (round-5 chunk 6): every
+                    // executed command can change a due, a rule, a
+                    // receipt, an eligibility input, or the cadence (the
+                    // exhaustive per-variant list lives in the chunk
+                    // plan's re-arm table) — recomputing from
+                    // post-command state after every command is pure,
+                    // idempotent, and cannot miss a variant. The
+                    // due-now-honoring flavor makes a mutation that
+                    // created a past-due reminder fire on the timer's
+                    // next poll, not the next tick.
+                    if timer_armed {
+                        next_wake = arm_next_wake(&core, clock.as_ref(), day_roll.offset, true);
                     }
                 }
                 Some(EngineEnvelope::Flush { reply }) => {
@@ -557,6 +565,12 @@ async fn run_loop(
                         day,
                     )
                     .await;
+                    // A merged report can change dues and the sidecar
+                    // folds change rules and receipts: the same
+                    // recompute as the command arm.
+                    if timer_armed {
+                        next_wake = arm_next_wake(&core, clock.as_ref(), day_roll.offset, true);
+                    }
                 }
                 None => {
                     if draining {
@@ -661,7 +675,8 @@ async fn run_loop(
                 }
             },
 
-            () = tokio::time::sleep_until(next_tick), if timer_armed => {
+            () = tokio::time::sleep_until(next_wake), if timer_armed => {
+                metrics.count_tick();
                 // Each tick runs under its own flag: an engine with only
                 // one of the two enabled performs only that engine's work.
                 // Both flags and the calendar are live reads.
@@ -701,7 +716,13 @@ async fn run_loop(
                     )
                     .await;
                 }
-                next_tick = tokio::time::Instant::now() + core.settings().tick_secs.duration();
+                // The post-wake re-arm, clamped: the tick floor stands
+                // (the fallback sweep's cadence and the anti-busy-loop
+                // guarantee — a permanently-unresolvable deadline, e.g. a
+                // delivery persist that keeps failing, degrades to this
+                // cadence instead of a spin), and only a deadline
+                // strictly ahead of `now` pulls it earlier.
+                next_wake = arm_next_wake(&core, clock.as_ref(), day_roll.offset, false);
             }
         }
     }
@@ -737,6 +758,45 @@ fn publish<S: SignalSink>(
     sink.signal_updated();
 }
 
+/// The deadline-driven wake computation (round-5 chunk 6, D2): the tick
+/// floor pulled earlier to the next reminder due instant when one
+/// exists. `honor_due_now` selects the flavor —
+///
+/// - `true` (boot, command re-arm, report re-arm): a deadline at or
+///   before `now` maps to the current instant, so the timer's next poll
+///   wakes immediately (the boot first tick; a mutation that created a
+///   past-due reminder fires at once).
+/// - `false` (the post-wake re-arm): only a deadline strictly ahead of
+///   `now` is honored — the tick floor is the anti-busy-loop clamp, so
+///   a permanently-unresolvable deadline (a delivery persist that keeps
+///   failing) degrades to the tick cadence instead of spinning.
+///
+/// Disarmed engines (`reminders_enabled` false) ride the floor alone:
+/// the deadline query serves the reminder families only, and the day
+/// roll keeps the tick coupling it has always had.
+fn arm_next_wake(
+    core: &EngineCore,
+    clock: &dyn Clock,
+    boot_offset: chrono::FixedOffset,
+    honor_due_now: bool,
+) -> tokio::time::Instant {
+    let floor = tokio::time::Instant::now() + core.settings().tick_secs.duration();
+    if !core.settings().reminders_enabled {
+        return floor;
+    }
+    let now = clock.now();
+    let day = core.settings().day_calendar(boot_offset);
+    let deadline = core.next_reminder_deadline(day, &core.settings().reminder_defaults(), now);
+    let Some(deadline) = deadline.filter(|due| honor_due_now || *due > now) else {
+        return floor;
+    };
+    let due_instant = match (deadline - now).to_std() {
+        Ok(delta) => tokio::time::Instant::now() + delta,
+        Err(_) => tokio::time::Instant::now(),
+    };
+    floor.min(due_instant)
+}
+
 /// The command path's injected seams.
 struct Seams<'a> {
     repo: &'a Arc<dyn TaskRepository>,
@@ -747,8 +807,6 @@ struct Seams<'a> {
     notifier: &'a mpsc::Sender<NotifierMessage>,
 }
 
-/// Returns whether the command replaced the live settings (the loop
-/// re-arms its tick deadline on `true`).
 #[allow(clippy::too_many_arguments)] // the seams + receipt + metrics are the context
 async fn execute_command(
     core: &mut EngineCore,
@@ -760,7 +818,7 @@ async fn execute_command(
     command: StateCommand,
     reply: Option<oneshot::Sender<Result<CommandOutcome, ExecuteError>>>,
     storage_failing: &mut bool,
-) -> bool {
+) {
     let Seams {
         repo,
         ids,
@@ -787,7 +845,7 @@ async fn execute_command(
         if let Some(reply) = reply {
             let _ = reply.send(Ok(outcome));
         }
-        return false;
+        return;
     }
 
     if let StateCommand::UpdateSettings { settings } = command {
@@ -807,7 +865,7 @@ async fn execute_command(
         if let Some(reply) = reply {
             let _ = reply.send(Ok(CommandOutcome::SettingsApplied));
         }
-        return true;
+        return;
     }
 
     // Live reads: the planner's implicit-reminder defaults and the day
@@ -831,7 +889,7 @@ async fn execute_command(
             if let Some(reply) = reply {
                 let _ = reply.send(Err(ExecuteError::Rejected(rejection)));
             }
-            return false;
+            return;
         }
     };
 
@@ -840,7 +898,7 @@ async fn execute_command(
         if let Some(reply) = reply {
             let _ = reply.send(Ok(plan.outcome));
         }
-        return false;
+        return;
     }
 
     if let Err(err) = repo.apply(plan.actions.clone()).await {
@@ -851,7 +909,7 @@ async fn execute_command(
         if let Some(reply) = reply {
             let _ = reply.send(Err(ExecuteError::Storage(err)));
         }
-        return false;
+        return;
     }
     *storage_failing = false;
     let changed = core.interpret(&plan.actions, now);
@@ -877,7 +935,6 @@ async fn execute_command(
     if let Some(reply) = reply {
         let _ = reply.send(Ok(plan.outcome));
     }
-    false
 }
 
 /// Fire-and-forget nudge, fanned out to every registered connector.
