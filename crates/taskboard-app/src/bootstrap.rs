@@ -1284,7 +1284,6 @@ async fn bootstrap_with_modules(
     // Audio constructs only when the mode is Desktop AND the resolved
     // sink is Desktop (D-9); a failed open degrades to visual-only,
     // logged once, never fatal (D-8).
-    let reminder_defaults = config.settings_snapshot().reminder_defaults();
     let audio_allowed = config.app.mode == crate::config::AppMode::Desktop
         && crate::notifications::resolve_sink(config.reminders.sink, config.app.mode)
             == crate::notifications::SinkKind::Desktop;
@@ -1294,8 +1293,10 @@ async fn bootstrap_with_modules(
     let chime = crate::escalation::mount_chime(audio_allowed, crate::escalation::RodioChime::open);
     let escalation_join = crate::escalation::spawn_escalation_driver(
         engine.shared_state(),
-        reminder_defaults,
-        config.resolved_day_calendar(),
+        // Only the boot-fixed offset travels: the defaults and the
+        // day-start time are per-iteration reads of the published
+        // settings (round-5 chunk 5).
+        config.resolved_day_calendar().offset,
         escalation_sink,
         chime.clone(),
         engine.subscribe(),
@@ -1314,8 +1315,12 @@ async fn bootstrap_with_modules(
     // boundary surface rides the same sink matrix (notify = false ⇒
     // disabled; kiosk resolves to log; the chime arc is the process's
     // shared one, disabled when audio is not allowed).
+    // The timings and the chain knob are no spawn arguments: the
+    // runtime reads them live from the published settings (round-5
+    // chunk 5) — only the spawn decision and the boundary posture are
+    // boot-captured.
     let focus_join = crate::focus::focus_spawn_decision(config.app.mode, config.focus_config())
-        .map(|timing| {
+        .map(|_timing| {
             let boundaries = crate::notifications::mount_focus_boundaries(
                 config.focus.notify,
                 crate::notifications::resolve_sink(config.reminders.sink, config.app.mode),
@@ -1323,8 +1328,6 @@ async fn bootstrap_with_modules(
             );
             crate::focus::spawn_focus_runtime(
                 engine.shared_state(),
-                timing,
-                config.focus.chain,
                 boundaries,
                 engine.clone(),
                 engine.subscribe(),

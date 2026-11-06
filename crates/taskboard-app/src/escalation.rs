@@ -20,9 +20,7 @@ use std::sync::Arc;
 use chrono::{DateTime, TimeDelta, Utc};
 use tokio::sync::broadcast;
 
-use taskboard_domain::{
-    AppState, Clock, EngineSignal, Insistence, Notification, ReminderDefaults, ReminderRef,
-};
+use taskboard_domain::{AppState, Clock, EngineSignal, Insistence, Notification, ReminderRef};
 
 use crate::notifications::NotificationSink;
 
@@ -251,20 +249,23 @@ pub(crate) fn chime_samples() -> Vec<f32> {
 /// Every `alarm`-insistent notification currently awaiting the user:
 /// the domain's own derivation, filtered one step. Insistence never
 /// influences *when* something fires — only what escalates after.
+///
+/// The implicit-reminder defaults and the day calendar are read from
+/// the published snapshot's own `settings` (round-5 chunk 5, D-5.5):
+/// only the device's UTC offset is boot-fixed state the caller holds.
 #[must_use]
 pub(crate) fn awaiting_alarms(
     state: &AppState,
-    defaults: &ReminderDefaults,
-    day: taskboard_domain::DayCalendar,
+    offset: chrono::FixedOffset,
     now: DateTime<Utc>,
 ) -> Vec<Notification> {
     taskboard_domain::active_notifications(
         &state.tasks,
         &state.tracking,
         &state.habits,
-        day,
+        state.settings.day_calendar(offset),
         &state.reminders,
-        defaults,
+        &state.settings.reminder_defaults(),
         now,
     )
     .into_iter()
@@ -483,8 +484,7 @@ async fn apply(sink: &dyn NotificationSink, chime: &dyn ChimeSink, action: Escal
 #[must_use]
 pub(crate) fn spawn_escalation_driver(
     state: Arc<arc_swap::ArcSwap<AppState>>,
-    defaults: ReminderDefaults,
-    day: taskboard_domain::DayCalendar,
+    offset: chrono::FixedOffset,
     sink: Arc<dyn NotificationSink>,
     chime: Arc<dyn ChimeSink>,
     mut signals: broadcast::Receiver<EngineSignal>,
@@ -495,7 +495,10 @@ pub(crate) fn spawn_escalation_driver(
         let mut memory = LadderMemory::default();
         loop {
             let now = clock.now();
-            let awaiting = awaiting_alarms(&state.load(), &defaults, day, now);
+            // Per-iteration read: the defaults and the day-start time
+            // ride the published settings (the publish fires
+            // `StateUpdated`, which this driver already selects on).
+            let awaiting = awaiting_alarms(&state.load(), offset, now);
             if awaiting.is_empty() {
                 // Bookkeeping dies with the set (D-12); park on the
                 // signal lane with NO timer armed.
@@ -904,18 +907,9 @@ mod tests {
 
     #[test]
     fn a_normal_tracker_row_never_enters_the_awaiting_set_and_disturbs_no_alarm() {
-        let day = taskboard_domain::days::DayCalendar {
-            day_start_time: chrono::NaiveTime::MIN,
-            offset: chrono::FixedOffset::east_opt(0).unwrap(),
-        };
         // The tracker row alone: the ladder sees nothing.
         assert_eq!(
-            awaiting_alarms(
-                &tracker_row_state(),
-                &defaults(),
-                day,
-                T0 + TimeDelta::minutes(1)
-            ),
+            awaiting_alarms(&tracker_row_state(), utc(), T0 + TimeDelta::minutes(1)),
             [] as [taskboard_domain::Notification; 0]
         );
         // Beside an awaiting alarm: exactly the alarm, unperturbed.
@@ -926,15 +920,15 @@ mod tests {
             .reminders
             .deliveries
             .extend(tracker.reminders.deliveries.iter().copied());
-        let awaiting = awaiting_alarms(&state, &defaults(), day, T0 + TimeDelta::minutes(1));
+        let awaiting = awaiting_alarms(&state, utc(), T0 + TimeDelta::minutes(1));
         assert_eq!(awaiting.len(), 1);
         assert!(
             matches!(awaiting[0].anchor, taskboard_domain::ReminderAnchor::Alarm(a) if a == alarm_id)
         );
     }
 
-    fn defaults() -> ReminderDefaults {
-        ReminderDefaults::default()
+    fn utc() -> chrono::FixedOffset {
+        chrono::FixedOffset::east_opt(0).unwrap()
     }
 
     /// The fake clock: a nanos-timestamp cell the test drives.
@@ -1037,15 +1031,7 @@ mod tests {
                 occurrence: T0,
                 delivered_at: T0,
             });
-        let awaiting = awaiting_alarms(
-            &state,
-            &defaults(),
-            taskboard_domain::days::DayCalendar {
-                day_start_time: chrono::NaiveTime::MIN,
-                offset: chrono::FixedOffset::east_opt(0).unwrap(),
-            },
-            T0 + TimeDelta::minutes(1),
-        );
+        let awaiting = awaiting_alarms(&state, utc(), T0 + TimeDelta::minutes(1));
         assert_eq!(awaiting.len(), 1, "only the alarm-insistent row survives");
         assert_eq!(awaiting[0].insistence, Insistence::Alarm);
         assert_eq!(awaiting[0].reminder, ReminderRef::Adhoc(id));
@@ -1112,11 +1098,7 @@ mod tests {
         clock.set(T0);
         let driver = spawn_escalation_driver(
             Arc::clone(&state),
-            defaults(),
-            taskboard_domain::days::DayCalendar {
-                day_start_time: chrono::NaiveTime::MIN,
-                offset: chrono::FixedOffset::east_opt(0).unwrap(),
-            },
+            utc(),
             Arc::clone(&sink) as Arc<dyn NotificationSink>,
             disabled_chime(),
             signals_tx.subscribe(),
@@ -1209,11 +1191,7 @@ mod tests {
         clock.set(T0 + TimeDelta::minutes(30));
         let driver = spawn_escalation_driver(
             state,
-            defaults(),
-            taskboard_domain::days::DayCalendar {
-                day_start_time: chrono::NaiveTime::MIN,
-                offset: chrono::FixedOffset::east_opt(0).unwrap(),
-            },
+            utc(),
             Arc::clone(&sink) as Arc<dyn NotificationSink>,
             disabled_chime(),
             rx,
@@ -1236,11 +1214,7 @@ mod tests {
         let clock = Arc::new(FakeClock::default());
         let driver = spawn_escalation_driver(
             state,
-            defaults(),
-            taskboard_domain::days::DayCalendar {
-                day_start_time: chrono::NaiveTime::MIN,
-                offset: chrono::FixedOffset::east_opt(0).unwrap(),
-            },
+            utc(),
             Arc::new(crate::notifications::LogSink) as Arc<dyn NotificationSink>,
             disabled_chime(),
             rx,
