@@ -619,6 +619,68 @@ fn editor_field_key(field: Field) -> &'static str {
     }
 }
 
+/// Every editor-lattice key (the apply registry's comparison term):
+/// each `Field` variant listed once — a variant added to the lane's
+/// enum fails the totality match below until it is listed here, so the
+/// registry test cannot silently drift from the editor.
+#[cfg(test)]
+pub(crate) fn editor_field_keys() -> std::collections::BTreeSet<&'static str> {
+    const ALL: [Field; 21] = [
+        Field::Name,
+        Field::ServerUrl,
+        Field::Username,
+        Field::Password,
+        Field::Scale,
+        Field::DayStart,
+        Field::RemindersEnabled,
+        Field::TickSecs,
+        Field::ReminderSink,
+        Field::ReminderBefore,
+        Field::PollInterval,
+        Field::BackoffInitial,
+        Field::BackoffMax,
+        Field::DueSoonDays,
+        Field::FocusEnabled,
+        Field::FocusWorkMins,
+        Field::FocusBreakMins,
+        Field::FocusChain,
+        Field::FocusLongBreakMins,
+        Field::FocusLongBreakEvery,
+        Field::FocusNotify,
+    ];
+    // Totality: the compiler refuses this match the moment `Field`
+    // grows a variant the list above does not carry.
+    for field in ALL {
+        match field {
+            Field::Name
+            | Field::ServerUrl
+            | Field::Username
+            | Field::Password
+            | Field::Scale
+            | Field::DayStart
+            | Field::RemindersEnabled
+            | Field::TickSecs
+            | Field::ReminderSink
+            | Field::ReminderBefore
+            | Field::PollInterval
+            | Field::BackoffInitial
+            | Field::BackoffMax
+            | Field::DueSoonDays
+            | Field::FocusEnabled
+            | Field::FocusWorkMins
+            | Field::FocusBreakMins
+            | Field::FocusChain
+            | Field::FocusLongBreakMins
+            | Field::FocusLongBreakEvery
+            | Field::FocusNotify => {}
+        }
+    }
+    ALL.into_iter()
+        .map(editor_field_key)
+        .filter(|key| !key.is_empty())
+        .collect()
+}
+
 /// The invalidity kind each editor field's own-blame refusal carries.
 fn editor_invalid_kind(field: Field) -> InvalidKind {
     match field {

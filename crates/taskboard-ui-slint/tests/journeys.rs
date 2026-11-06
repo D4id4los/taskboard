@@ -12649,7 +12649,9 @@ fn the_bar_dropdown_ladder_declines_the_action_layer_under_every_preset() {
 // reached the lane boundary; label/status text is never matched.
 
 use std::collections::BTreeSet;
-use taskboard_ui_slint::requests::{ReminderSink, SectionApply, SettingsFact, SettingsSnapshot};
+use taskboard_ui_slint::requests::{
+    ApplySemantics, ReminderSink, SectionApply, SettingsFact, SettingsSnapshot,
+};
 
 /// The general snapshot fixture (the hand-over's shape): typed
 /// editable values, the exhaustive apply map, and the read-only
@@ -12674,7 +12676,7 @@ fn general_snapshot() -> SettingsSnapshot {
         "focus.long_break_every",
         "focus.notify",
     ] {
-        applies.insert(key.to_owned(), SectionApply::OnRestart);
+        applies.insert(key.to_owned(), ApplySemantics::on_restart("fixture"));
     }
     SettingsSnapshot {
         day_start_time: chrono::NaiveTime::from_hms_opt(5, 30, 0).expect("t"),
@@ -12782,6 +12784,48 @@ fn the_general_sections_render_the_snapshot() {
             assert!(model().get_reminders_enabled_on_restart());
             assert!(model().get_due_soon_on_restart());
 
+            assert!(
+                harness.drain_requests().is_empty(),
+                "rendering dispatches nothing"
+            );
+        },
+    );
+}
+
+/// The apply badges render the registry's verdicts mechanically
+/// (round-5 chunk 5, D-5.6): a `Live` key renders without the restart
+/// badge, a justified `OnRestart` key with it — the structural
+/// `on-restart` property, never label text.
+#[test]
+fn the_apply_badges_follow_the_registry_verdicts() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut snapshot = general_snapshot();
+            snapshot
+                .applies
+                .insert("reminders.tick_secs".to_owned(), ApplySemantics::live());
+            snapshot.applies.insert(
+                "preferences.day_start_time".to_owned(),
+                ApplySemantics::live(),
+            );
+            snapshot.applies.insert(
+                "reminders.sink".to_owned(),
+                ApplySemantics::on_restart("the sink is one boot arc"),
+            );
+            let mut harness = general_harness(state, snapshot);
+            harness.press(ActionId::AppSettings);
+            let window = harness.handle.window();
+            let model = || window.global::<taskboard_ui_slint::SettingsModel>();
+            assert!(
+                !model().get_tick_on_restart(),
+                "a live key carries no badge"
+            );
+            assert!(!model().get_day_start_on_restart());
+            assert!(model().get_sink_on_restart(), "a justified key carries it");
             assert!(
                 harness.drain_requests().is_empty(),
                 "rendering dispatches nothing"

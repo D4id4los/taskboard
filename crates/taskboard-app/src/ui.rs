@@ -393,35 +393,73 @@ pub fn settings_snapshot_from_domain(
     }
 }
 
-/// The per-editable-key apply semantics (plan D12 — the config owner
-/// states them; the UI never hardcodes).
+/// The apply-semantics registry (round-5 chunk 5, D-5.6; plan D12's
+/// authority rule — the config owner states the verdicts, the UI
+/// renders them): every editable key applies **live** through the
+/// persist-then-command path unless it carries a written
+/// justification for `OnRestart`. The registry test refuses an
+/// unjustified `OnRestart` and any drift from the editor's field
+/// lattice.
+///
+/// Deviation from D3's "empty exception list", recorded: three knobs
+/// cannot honestly apply live without rebuilding boot-glue arcs; a
+/// `Live` badge on a value that does not move is the pretend-live
+/// failure D5 exists to prevent, so they stay `OnRestart` with their
+/// reasons.
+#[must_use]
+pub fn settings_apply_registry()
+-> std::collections::BTreeMap<&'static str, taskboard_ui_slint::requests::ApplySemantics> {
+    use taskboard_ui_slint::requests::ApplySemantics as Apply;
+    [
+        ("preferences.day_start_time", Apply::live()),
+        ("reminders.enabled", Apply::live()),
+        ("reminders.tick_secs", Apply::live()),
+        ("reminders.default_before", Apply::live()),
+        (
+            "reminders.sink",
+            Apply::on_restart(
+                "the notifier sink is one boot Arc per process (D-R13); a live swap must \
+                 rebuild the sink chain and the escalation/focus posture with it — \
+                 deferred to a dedicated chunk",
+            ),
+        ),
+        ("sync.poll_interval_secs", Apply::live()),
+        ("sync.backoff_initial_secs", Apply::live()),
+        ("sync.backoff_max_secs", Apply::live()),
+        ("ui.due_soon_days", Apply::live()),
+        (
+            "focus.enabled",
+            Apply::on_restart(
+                "the runtime spawn decision is boot-time (focus_spawn_decision); a \
+                 boot-disabled runtime cannot be live-enabled without a respawn path — \
+                 the live-disable/inert direction applies to an already-spawned runtime, \
+                 the asymmetric half is restart-scoped",
+            ),
+        ),
+        ("focus.work_mins", Apply::live()),
+        ("focus.break_mins", Apply::live()),
+        ("focus.chain", Apply::live()),
+        ("focus.long_break_mins", Apply::live()),
+        ("focus.long_break_every", Apply::live()),
+        (
+            "focus.notify",
+            Apply::on_restart(
+                "the boundary posture is resolved into the sink arc at boot \
+                 (mount_focus_boundaries); it rides the sink's restart semantics",
+            ),
+        ),
+    ]
+    .into_iter()
+    .collect()
+}
+
+/// The registry as the snapshot's wire map (owned keys).
 fn settings_applies()
--> std::collections::BTreeMap<String, taskboard_ui_slint::requests::SectionApply> {
-    use taskboard_ui_slint::requests::SectionApply as Apply;
-    let mut applies = std::collections::BTreeMap::new();
-    for key in [
-        "preferences.day_start_time",
-        "reminders.enabled",
-        "reminders.tick_secs",
-        "reminders.default_before",
-        "reminders.sink",
-        "sync.poll_interval_secs",
-        "sync.backoff_initial_secs",
-        "sync.backoff_max_secs",
-        "ui.due_soon_days",
-        // The `[focus]` knobs (the focus settings editor, #625): the
-        // runtime reads config once at boot, so every key is OnRestart.
-        "focus.enabled",
-        "focus.work_mins",
-        "focus.break_mins",
-        "focus.chain",
-        "focus.long_break_mins",
-        "focus.long_break_every",
-        "focus.notify",
-    ] {
-        applies.insert(key.to_owned(), Apply::OnRestart);
-    }
-    applies
+-> std::collections::BTreeMap<String, taskboard_ui_slint::requests::ApplySemantics> {
+    settings_apply_registry()
+        .into_iter()
+        .map(|(key, semantics)| (key.to_owned(), semantics))
+        .collect()
 }
 
 /// The read-only deployment facts (the §3 inventory: one fact row per
@@ -863,36 +901,8 @@ mod tests {
         assert_eq!(snapshot.focus_long_break_every, 6);
         assert!(!snapshot.focus_notify);
 
-        // The apply map: exhaustive over the editable groups.
-        assert_eq!(
-            snapshot.applies.len(),
-            16,
-            "one apply fact per editable field"
-        );
-        for key in [
-            "preferences.day_start_time",
-            "reminders.enabled",
-            "reminders.tick_secs",
-            "reminders.default_before",
-            "reminders.sink",
-            "sync.poll_interval_secs",
-            "sync.backoff_initial_secs",
-            "sync.backoff_max_secs",
-            "ui.due_soon_days",
-            "focus.enabled",
-            "focus.work_mins",
-            "focus.break_mins",
-            "focus.chain",
-            "focus.long_break_mins",
-            "focus.long_break_every",
-            "focus.notify",
-        ] {
-            assert_eq!(
-                snapshot.applies.get(key),
-                Some(&SectionApply::OnRestart),
-                "{key} applies at restart"
-            );
-        }
+        // The apply map rides the registry (the verdicts test below).
+        assert_eq!(snapshot.applies.len(), 16);
 
         // The env set: no env overrides over the empty fixture file.
         assert!(snapshot.env_overridden.is_empty());
@@ -927,6 +937,73 @@ mod tests {
             ..taskboard_ui_slint::UiSettings::default()
         };
         assert_eq!(settings.general, snapshot);
+    }
+
+    /// The snapshot's verdicts are the registry's verdicts (the
+    /// exhaustiveness rides the lattice test below).
+    #[test]
+    fn the_snapshot_applies_carry_the_registry_verdicts() {
+        let snapshot = crate::ui::settings_snapshot_from_config(&{
+            let mut config = crate::config::AppConfig::default();
+            config.storage.db_path = Some(std::path::PathBuf::from("/tmp/x.db"));
+            config.validate().expect("valid");
+            config
+        });
+        for key in [
+            "preferences.day_start_time",
+            "reminders.enabled",
+            "reminders.tick_secs",
+            "reminders.default_before",
+            "sync.poll_interval_secs",
+            "sync.backoff_initial_secs",
+            "sync.backoff_max_secs",
+            "ui.due_soon_days",
+            "focus.work_mins",
+            "focus.break_mins",
+            "focus.chain",
+            "focus.long_break_mins",
+            "focus.long_break_every",
+        ] {
+            assert_eq!(
+                snapshot.applies.get(key).map(|a| a.apply),
+                Some(SectionApply::Live),
+                "{key} applies live"
+            );
+        }
+        for key in ["reminders.sink", "focus.enabled", "focus.notify"] {
+            assert_eq!(
+                snapshot.applies.get(key).map(|a| a.apply),
+                Some(SectionApply::OnRestart),
+                "{key} applies at restart (justified)"
+            );
+        }
+    }
+
+    /// The registry's enforcement (round-5 chunk 5, D-5.6): every
+    /// `OnRestart` entry carries a written justification — an
+    /// unjustified restart badge is the pretend-decision this test
+    /// refuses.
+    #[test]
+    fn every_on_restart_registry_entry_is_justified() {
+        for (key, semantics) in settings_apply_registry() {
+            match semantics.apply {
+                SectionApply::Live => {}
+                SectionApply::OnRestart => assert!(
+                    !semantics.justification.trim().is_empty(),
+                    "{key} is OnRestart without a justification"
+                ),
+            }
+        }
+    }
+
+    /// The registry covers exactly the editor's field lattice: a key
+    /// added to the editor without a registry entry — or a registry
+    /// key the editor never writes — fails here.
+    #[test]
+    fn the_registry_covers_exactly_the_editor_field_lattice() {
+        let registry: std::collections::BTreeSet<&'static str> =
+            settings_apply_registry().into_keys().collect();
+        assert_eq!(registry, crate::ui_requests::editor_field_keys());
     }
 
     use std::sync::{Arc, Mutex};

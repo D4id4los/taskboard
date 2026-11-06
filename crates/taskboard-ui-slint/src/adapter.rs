@@ -4082,8 +4082,11 @@ impl Adapter {
                 .unwrap_or_else(|| gf.echo_of(&vm.snapshot))
                 .into();
             let env_locked = vm.snapshot.env_overridden.contains(gf.key());
-            let on_restart = vm.snapshot.applies.get(gf.key()).copied()
-                == Some(crate::requests::SectionApply::OnRestart);
+            let on_restart = vm
+                .snapshot
+                .applies
+                .get(gf.key())
+                .is_some_and(|a| a.apply == crate::requests::SectionApply::OnRestart);
             match gf {
                 GeneralField::DayStart => {
                     global.set_day_start_echo(echo);
@@ -4169,8 +4172,10 @@ impl Adapter {
         let enabled_locked = vm.snapshot.env_overridden.contains("reminders.enabled");
         global.set_reminders_enabled_env_locked(enabled_locked);
         global.set_reminders_enabled_on_restart(
-            vm.snapshot.applies.get("reminders.enabled").copied()
-                == Some(crate::requests::SectionApply::OnRestart),
+            vm.snapshot
+                .applies
+                .get("reminders.enabled")
+                .is_some_and(|a| a.apply == crate::requests::SectionApply::OnRestart),
         );
         let sink_index = match vm.snapshot.reminder_sink {
             crate::requests::ReminderSink::Auto => 0,
@@ -4180,28 +4185,36 @@ impl Adapter {
         global.set_sink_index(sink_index);
         global.set_sink_env_locked(vm.snapshot.env_overridden.contains("reminders.sink"));
         global.set_sink_on_restart(
-            vm.snapshot.applies.get("reminders.sink").copied()
-                == Some(crate::requests::SectionApply::OnRestart),
+            vm.snapshot
+                .applies
+                .get("reminders.sink")
+                .is_some_and(|a| a.apply == crate::requests::SectionApply::OnRestart),
         );
         // The focus choice echoes (commit-on-pick, the reminders
         // grammar): index 0 = On, 1 = Off.
         global.set_focus_enabled_index(i32::from(!vm.snapshot.focus_enabled));
         global.set_focus_enabled_env_locked(vm.snapshot.env_overridden.contains("focus.enabled"));
         global.set_focus_enabled_on_restart(
-            vm.snapshot.applies.get("focus.enabled").copied()
-                == Some(crate::requests::SectionApply::OnRestart),
+            vm.snapshot
+                .applies
+                .get("focus.enabled")
+                .is_some_and(|a| a.apply == crate::requests::SectionApply::OnRestart),
         );
         global.set_focus_chain_index(i32::from(!vm.snapshot.focus_chain));
         global.set_focus_chain_env_locked(vm.snapshot.env_overridden.contains("focus.chain"));
         global.set_focus_chain_on_restart(
-            vm.snapshot.applies.get("focus.chain").copied()
-                == Some(crate::requests::SectionApply::OnRestart),
+            vm.snapshot
+                .applies
+                .get("focus.chain")
+                .is_some_and(|a| a.apply == crate::requests::SectionApply::OnRestart),
         );
         global.set_focus_notify_index(i32::from(!vm.snapshot.focus_notify));
         global.set_focus_notify_env_locked(vm.snapshot.env_overridden.contains("focus.notify"));
         global.set_focus_notify_on_restart(
-            vm.snapshot.applies.get("focus.notify").copied()
-                == Some(crate::requests::SectionApply::OnRestart),
+            vm.snapshot
+                .applies
+                .get("focus.notify")
+                .is_some_and(|a| a.apply == crate::requests::SectionApply::OnRestart),
         );
         let rows: Vec<crate::SettingsFactRow> = vm
             .snapshot
