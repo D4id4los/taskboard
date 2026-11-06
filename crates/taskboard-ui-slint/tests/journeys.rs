@@ -10940,6 +10940,14 @@ fn the_setter_composes_the_custom_row_grammar() {
             headless_renderer: true,
         },
         move |_driver| {
+            // Single-read capture (D-3/R3): `today` is this test's only
+            // clock read; the expected `At` instant derives from it.
+            // Residual (accepted, R2/R3): the adapter's
+            // `recompose_timer_setter` keeps its own `Utc::now()` read
+            // feeding `compose_timer_at` — a local midnight falling
+            // between this capture and the compose is the accepted
+            // millisecond-wide window.
+            let today = chrono::Local::now().date_naive();
             let mut harness = Harness::mount(SlintDriver::default(), state);
             harness.press(ActionId::ViewToday);
             harness.driver.advance_time(0);
@@ -10995,10 +11003,9 @@ fn the_setter_composes_the_custom_row_grammar() {
             harness.driver.advance_time(0);
             match harness.engine.drain().as_slice() {
                 [StateCommand::CreateAdhocAlarm { when, .. }] => {
-                    let tomorrow = (chrono::Local::now().date_naive()
-                        + chrono::TimeDelta::try_days(1).expect("one day"))
-                    .and_hms_opt(9, 30, 0)
-                    .expect("09:30");
+                    let tomorrow = (today + chrono::TimeDelta::try_days(1).expect("one day"))
+                        .and_hms_opt(9, 30, 0)
+                        .expect("09:30");
                     let expected = chrono::Local
                         .from_local_datetime(&tomorrow)
                         .single()
