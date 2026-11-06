@@ -58,6 +58,11 @@ pub enum ContextId {
     /// overlay holds; the form's fields ride `ViInsert` masking and
     /// the overlay's own rows (dismiss + the walk) live here.
     TrackEntries,
+    /// The review walk overlay (DR-7 chunk 3, #638): a total mask like
+    /// `TrackEntries` — the modal context while `Flow::ReviewWalk`
+    /// holds; the prompt fields ride `ViInsert` masking, the walk's
+    /// own verbs (cursor, row verbs, commit, back) live here.
+    ReviewWalk,
 }
 
 impl ContextId {
@@ -80,6 +85,7 @@ impl ContextId {
             Self::ViInsert => "vi-insert",
             Self::DatePicker => "date-picker",
             Self::TrackEntries => "track-entries",
+            Self::ReviewWalk => "review-walk",
         }
     }
 }
@@ -324,6 +330,51 @@ pub enum ActionId {
     /// Unplace the addressed box (`UpdateTask { scheduled:
     /// Some(None) }`); the task returns to the pool.
     PlanRemoveBox,
+    // The review walk's verbs (DR-7 chunk 3, #638): the opener is the
+    // global routed reachability seam (no preset binding — P7:
+    // reachable, not promoted); the in-walk verbs are section-scoped
+    // to `ContextId::ReviewWalk` (the #622 planner-verb rule) — the
+    // row verbs are reached by focus + Enter on the mounted buttons
+    // and the pointer; the cursor/back rows carry the preset bindings.
+    /// The walk's opener: routes `OpenReviewWalk`; the adapter derives
+    /// the reference (the due window's day when one is due, else the
+    /// current day window) and gates on kiosk.
+    ReviewOpen,
+    /// Step the walk's cursor up a row.
+    ReviewWalkCursorUp,
+    /// Step the walk's cursor down a row.
+    ReviewWalkCursorDown,
+    /// The walk's Escape ladder: sub-state → stage-back → close.
+    ReviewWalkBack,
+    /// Advance the stage (Inbox → Carry forward; out of Carry forward
+    /// this is the planner handoff — the adapter's shape-B arm).
+    ReviewWalkAdvance,
+    /// Arm the File-to picker on the cursor inbox row.
+    ReviewInboxFile,
+    /// Keep the cursor inbox row in the inbox (no command) and step.
+    ReviewInboxKeep,
+    /// Move the armed File-to pick to the previous candidate stack.
+    ReviewFileTargetPrev,
+    /// Move the armed File-to pick to the next candidate stack.
+    ReviewFileTargetNext,
+    /// Commit the armed File-to pick: routes `MoveTask` (end-of-stack).
+    ReviewFileCommit,
+    /// Carry the cursor row to the next window's opening instant
+    /// (`UpdateTask { scheduled }`; due dates are never touched).
+    ReviewCarryTomorrow,
+    /// Arm the Pick-a-date field on the cursor carry row.
+    ReviewCarryPickDate,
+    /// Leave the cursor carry row as is (no command) and step.
+    ReviewCarryLeave,
+    /// Commit the date field's text (parsed by the due-edit parser;
+    /// unparseable input dispatches nothing and keeps the text).
+    ReviewCarryDateCommit,
+    /// Commit the prompts as one `RecordReflection`; an all-blank
+    /// record dispatches nothing (the gentle end) — both exits close
+    /// the walk.
+    ReviewRecord,
+    /// End the walk without recording (the equal-prominence exit).
+    ReviewFinish,
     MenuNext,
     MenuPrevious,
     MenuInvoke,
@@ -344,6 +395,7 @@ pub enum ActionId {
 impl ActionId {
     /// The stable dotted id (config override keys, menu models).
     #[must_use]
+    #[allow(clippy::too_many_lines)] // the registry's one id table
     pub const fn id(self) -> &'static str {
         match self {
             Self::AppExit => "app.exit",
@@ -423,6 +475,22 @@ impl ActionId {
             Self::PlanBoxEarlier => "plan.box-earlier",
             Self::PlanBoxLater => "plan.box-later",
             Self::PlanRemoveBox => "plan.remove-box",
+            Self::ReviewOpen => "review.open",
+            Self::ReviewWalkCursorUp => "review.walk-cursor-up",
+            Self::ReviewWalkCursorDown => "review.walk-cursor-down",
+            Self::ReviewWalkBack => "review.walk-back",
+            Self::ReviewWalkAdvance => "review.walk-advance",
+            Self::ReviewInboxFile => "review.inbox-file",
+            Self::ReviewInboxKeep => "review.inbox-keep",
+            Self::ReviewFileTargetPrev => "review.file-target-prev",
+            Self::ReviewFileTargetNext => "review.file-target-next",
+            Self::ReviewFileCommit => "review.file-commit",
+            Self::ReviewCarryTomorrow => "review.carry-tomorrow",
+            Self::ReviewCarryPickDate => "review.carry-pick-date",
+            Self::ReviewCarryLeave => "review.carry-leave",
+            Self::ReviewCarryDateCommit => "review.carry-date-commit",
+            Self::ReviewRecord => "review.record",
+            Self::ReviewFinish => "review.finish",
             Self::MenuNext => "menu.next",
             Self::MenuPrevious => "menu.previous",
             Self::MenuInvoke => "menu.invoke",
@@ -1327,6 +1395,172 @@ pub const REGISTRY: &[ActionEntry] = &[
         description: "Clears the addressed box's scheduled start; the task returns to the candidate pool.",
         menu_group: None,
     },
+    // The review walk (DR-7 chunk 3, #638): the opener is
+    // palette/menu-reachable with NO preset binding (P7: reachable,
+    // not promoted; kiosk greys it in `entry_states` — layer 2 of the
+    // three-layer exclusion). The in-walk verbs are section-scoped
+    // (see the variant docs): no menu section, no preset bindings
+    // beyond the cursor/back rows.
+    ActionEntry {
+        id: ActionId::ReviewOpen,
+        label: "Review",
+        contexts: GLOBAL,
+        category: Category::Navigation,
+        enabled: true,
+        menu_rank: 75,
+        description: "Opens the review walk over the latest closed, un-reviewed day (or the current day when none is open): inbox triage, carry forward, the plan-next-day surface, then the day's prompts.",
+        menu_group: Some(MenuGroup::ViewNav),
+    },
+    ActionEntry {
+        id: ActionId::ReviewWalkCursorUp,
+        label: "Walk cursor up",
+        contexts: &[ContextId::ReviewWalk],
+        category: Category::Navigation,
+        enabled: true,
+        menu_rank: 330,
+        description: "Steps the walk's cursor to the previous row of the current stage (clamped; the ends hold).",
+        menu_group: None,
+    },
+    ActionEntry {
+        id: ActionId::ReviewWalkCursorDown,
+        label: "Walk cursor down",
+        contexts: &[ContextId::ReviewWalk],
+        category: Category::Navigation,
+        enabled: true,
+        menu_rank: 340,
+        description: "Steps the walk's cursor to the next row of the current stage (clamped; the row verbs pass the last row).",
+        menu_group: None,
+    },
+    ActionEntry {
+        id: ActionId::ReviewWalkBack,
+        label: "Walk back",
+        contexts: &[ContextId::ReviewWalk],
+        category: Category::Navigation,
+        enabled: true,
+        menu_rank: 350,
+        description: "Steps the walk back one level: an armed picker or date field disengages first, then the stage steps back, then the walk closes — never dispatching a command.",
+        menu_group: None,
+    },
+    ActionEntry {
+        id: ActionId::ReviewWalkAdvance,
+        label: "Advance the walk",
+        contexts: &[ContextId::ReviewWalk],
+        category: Category::Navigation,
+        enabled: true,
+        menu_rank: 360,
+        description: "Moves the walk to its next stage; advancing out of Carry forward hands off to the plan-next-day surface.",
+        menu_group: None,
+    },
+    ActionEntry {
+        id: ActionId::ReviewInboxFile,
+        label: "File to…",
+        contexts: &[ContextId::ReviewWalk],
+        category: Category::Navigation,
+        enabled: true,
+        menu_rank: 370,
+        description: "Arms the File-to picker on the cursor inbox row; the pick commits an ordinary end-of-stack move.",
+        menu_group: None,
+    },
+    ActionEntry {
+        id: ActionId::ReviewInboxKeep,
+        label: "Keep in inbox",
+        contexts: &[ContextId::ReviewWalk],
+        category: Category::Navigation,
+        enabled: true,
+        menu_rank: 380,
+        description: "Keeps the cursor inbox row where it is and steps to the next row — dispatches nothing.",
+        menu_group: None,
+    },
+    ActionEntry {
+        id: ActionId::ReviewFileTargetPrev,
+        label: "Previous file target",
+        contexts: &[ContextId::ReviewWalk],
+        category: Category::Navigation,
+        enabled: true,
+        menu_rank: 390,
+        description: "Moves the armed File-to pick to the previous candidate stack (wrapping).",
+        menu_group: None,
+    },
+    ActionEntry {
+        id: ActionId::ReviewFileTargetNext,
+        label: "Next file target",
+        contexts: &[ContextId::ReviewWalk],
+        category: Category::Navigation,
+        enabled: true,
+        menu_rank: 400,
+        description: "Moves the armed File-to pick to the next candidate stack (wrapping).",
+        menu_group: None,
+    },
+    ActionEntry {
+        id: ActionId::ReviewFileCommit,
+        label: "Commit file",
+        contexts: &[ContextId::ReviewWalk],
+        category: Category::Navigation,
+        enabled: true,
+        menu_rank: 410,
+        description: "Commits the armed pick: one MoveTask to the picked stack's end, the ordinary move verb.",
+        menu_group: None,
+    },
+    ActionEntry {
+        id: ActionId::ReviewCarryTomorrow,
+        label: "Move to tomorrow",
+        contexts: &[ContextId::ReviewWalk],
+        category: Category::Navigation,
+        enabled: true,
+        menu_rank: 420,
+        description: "Reschedules the cursor row to the next reviewed window's opening instant — due dates are never touched.",
+        menu_group: None,
+    },
+    ActionEntry {
+        id: ActionId::ReviewCarryPickDate,
+        label: "Pick a date",
+        contexts: &[ContextId::ReviewWalk],
+        category: Category::Navigation,
+        enabled: true,
+        menu_rank: 430,
+        description: "Arms the date field on the cursor carry row; the typed date commits the scheduled edit.",
+        menu_group: None,
+    },
+    ActionEntry {
+        id: ActionId::ReviewCarryLeave,
+        label: "Leave as is",
+        contexts: &[ContextId::ReviewWalk],
+        category: Category::Navigation,
+        enabled: true,
+        menu_rank: 440,
+        description: "Leaves the cursor carry row unchanged and steps to the next row — dispatches nothing.",
+        menu_group: None,
+    },
+    ActionEntry {
+        id: ActionId::ReviewCarryDateCommit,
+        label: "Commit the picked date",
+        contexts: &[ContextId::ReviewWalk],
+        category: Category::Navigation,
+        enabled: true,
+        menu_rank: 450,
+        description: "Commits the armed date field's text as the row's scheduled instant; an unparseable date dispatches nothing.",
+        menu_group: None,
+    },
+    ActionEntry {
+        id: ActionId::ReviewRecord,
+        label: "Record",
+        contexts: &[ContextId::ReviewWalk],
+        category: Category::Navigation,
+        enabled: true,
+        menu_rank: 460,
+        description: "Commits the prompt answers as one reflection entry (an all-blank record commits nothing) and closes the walk.",
+        menu_group: None,
+    },
+    ActionEntry {
+        id: ActionId::ReviewFinish,
+        label: "Finish without recording",
+        contexts: &[ContextId::ReviewWalk],
+        category: Category::Navigation,
+        enabled: true,
+        menu_rank: 470,
+        description: "Ends the walk without recording anything — the equal-prominence exit.",
+        menu_group: None,
+    },
     ActionEntry {
         id: ActionId::HabitMove,
         label: "Reorder habit",
@@ -1520,6 +1754,7 @@ mod tests {
     /// The registry is the one definition site: every enum variant
     /// must have exactly one row.
     #[test]
+    #[allow(clippy::too_many_lines)] // the enumerated variant list
     fn registry_covers_every_action_exactly_once() {
         const ALL: &[ActionId] = &[
             ActionId::AppExit,
@@ -1599,6 +1834,22 @@ mod tests {
             ActionId::PlanBoxEarlier,
             ActionId::PlanBoxLater,
             ActionId::PlanRemoveBox,
+            ActionId::ReviewOpen,
+            ActionId::ReviewWalkCursorUp,
+            ActionId::ReviewWalkCursorDown,
+            ActionId::ReviewWalkBack,
+            ActionId::ReviewWalkAdvance,
+            ActionId::ReviewInboxFile,
+            ActionId::ReviewInboxKeep,
+            ActionId::ReviewFileTargetPrev,
+            ActionId::ReviewFileTargetNext,
+            ActionId::ReviewFileCommit,
+            ActionId::ReviewCarryTomorrow,
+            ActionId::ReviewCarryPickDate,
+            ActionId::ReviewCarryLeave,
+            ActionId::ReviewCarryDateCommit,
+            ActionId::ReviewRecord,
+            ActionId::ReviewFinish,
             ActionId::MenuNext,
             ActionId::MenuPrevious,
             ActionId::MenuInvoke,

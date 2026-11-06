@@ -54,6 +54,12 @@ pub struct KeymapShell {
     /// makes it total. Mirrored from the view-state flow by the
     /// adapter's `sync_view_context` (the `palette` precedent).
     pub track_entries: bool,
+    /// The review walk overlay is open (DR-7 chunk 3, #638): the
+    /// fifth modal context — `chain` flips to
+    /// `[ReviewWalk, ViInsert, Global]` and the `ReviewWalk` mask
+    /// makes it total. Mirrored from the view-state flow by the
+    /// adapter's `sync_view_context` (the `palette` precedent).
+    pub review_walk: bool,
     pub view: Option<ContextId>,
     /// The [`crate::router::DispatchCtx`] carried to the router.
     pub focused_task: Option<taskboard_domain::TaskId>,
@@ -105,6 +111,18 @@ impl KeymapShell {
             // `TrackEntries` context, Ctrl-chords keep working.
             return vec![
                 ContextId::TrackEntries,
+                ContextId::ViInsert,
+                ContextId::Global,
+            ];
+        }
+        if self.review_walk {
+            // The review walk is the fifth modal context (DR-7 chunk
+            // 3, #638): the palette/focus shape — the prompt fields
+            // ride `ViInsert` masking, the walk's own verbs (cursor,
+            // row verbs, commit, back) live in the `ReviewWalk`
+            // context, Ctrl-chords keep working.
+            return vec![
+                ContextId::ReviewWalk,
                 ContextId::ViInsert,
                 ContextId::Global,
             ];
@@ -278,7 +296,12 @@ impl KeymapShell {
             | UiEffect::TrackEntryDismiss
             | UiEffect::SeriesPauseOpen
             | UiEffect::HabitConvertArm
-            | UiEffect::SeriesConvertArm => {}
+            | UiEffect::SeriesConvertArm
+            // The review walk's intents are adapter-interpreted view
+            // intents (DR-7 chunk 3, #638); the shell records nothing
+            // (the flow is the truth; `sync_view_context` mirrors it).
+            | UiEffect::OpenReviewWalk
+            | UiEffect::ReviewWalk(_) => {}
         }
         true
     }

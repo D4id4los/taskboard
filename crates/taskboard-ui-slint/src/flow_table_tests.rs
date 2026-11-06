@@ -74,6 +74,7 @@ enum EC {
     Picker,
     TrackOverlay,
     PlanSurface,
+    ReviewWalk,
 }
 
 fn kind_of(flow: &Flow) -> FK {
@@ -161,6 +162,11 @@ enum EK {
     PlanCommit,
     PlanBox,
     PlanRemove,
+    /// The review walk family (#638): the opener and the walk's
+    /// carrier intents (the `WalkIntent` payload is uniform — the
+    /// matrix's cells are payload-blind).
+    ReviewOpen,
+    WalkIntent,
 }
 
 fn key_of(effect: &UiEffect) -> EK {
@@ -223,6 +229,8 @@ fn key_of(effect: &UiEffect) -> EK {
         UiEffect::PlanCommitPlace => EK::PlanCommit,
         UiEffect::PlanBoxEarlier(_) | UiEffect::PlanBoxLater(_) => EK::PlanBox,
         UiEffect::PlanRemoveBox(_) => EK::PlanRemove,
+        UiEffect::OpenReviewWalk => EK::ReviewOpen,
+        UiEffect::ReviewWalk(_) => EK::WalkIntent,
         // The picker keys are applied in `apply_effect`, before the
         // table — the matrix never sees them (the menu-family
         // pattern). Their class cell is exercised via `class_of`.
@@ -250,6 +258,7 @@ fn class_of(effect: &UiEffect) -> EC {
         crate::router::EffectClass::Picker => EC::Picker,
         crate::router::EffectClass::TrackOverlay => EC::TrackOverlay,
         crate::router::EffectClass::PlanSurface => EC::PlanSurface,
+        crate::router::EffectClass::ReviewWalk => EC::ReviewWalk,
     }
 }
 
@@ -487,6 +496,27 @@ fn class_table() -> Vec<(FK, EC, Exp)> {
     ] {
         row(kind, C::TrackOverlay, exp(Z, N));
     }
+    // REVIEW WALK (#638): the settle-then-run family's interim rows —
+    // the settle runs (a non-empty TEXT buffer commits, the overlay
+    // families close), the re-run consumes the effect (the walk's
+    // interpret arms land with the walk commit, which flips these
+    // cells to the effect-shaped opens/keeps).
+    for kind in [
+        FK::None,
+        FK::Due,
+        FK::Move,
+        FK::Drag,
+        FK::Palette,
+        FK::Capture,
+        FK::FocusOverlay,
+        FK::TrackList,
+        FK::TrackForm,
+        FK::PlanForm,
+        FK::ReviewWalk,
+    ] {
+        row(kind, C::ReviewWalk, exp(Z, N));
+    }
+    row(FK::Text, C::ReviewWalk, exp(NZ, N));
     t
 }
 
@@ -1033,6 +1063,11 @@ fn all_effects(fx: &Fixture) -> Vec<UiEffect> {
         UiEffect::PlanBoxEarlier(fx.tasks[0]),
         UiEffect::PlanBoxLater(fx.tasks[0]),
         UiEffect::PlanRemoveBox(fx.tasks[0]),
+        // The review walk family (#638): the opener plus one carrier
+        // row (the intents are payload-uniform in the matrix).
+        UiEffect::OpenReviewWalk,
+        UiEffect::ReviewWalk(crate::router::WalkIntent::Advance),
+        UiEffect::ReviewWalk(crate::router::WalkIntent::Record),
     ]
 }
 
@@ -1271,7 +1306,7 @@ fn the_matrix_covers_every_class_cell() {
     let cells = class_table();
     assert_eq!(
         cells.len(),
-        12 * 14,
+        12 * 15,
         "one row per (FlowKind, EffectClass) cell"
     );
     let mut seen = std::collections::BTreeSet::new();
@@ -2179,6 +2214,11 @@ fn dismiss_class(effect: &UiEffect) -> DismissClass {
         | UiEffect::PlanBoxEarlier(_)
         | UiEffect::PlanBoxLater(_)
         | UiEffect::PlanRemoveBox(_)
+        // The review walk's intents (#638): the overlay mutates in
+        // place; the opener's mount (commit 6) swaps the view — it
+        // rides the identity diff when it lands.
+        | UiEffect::OpenReviewWalk
+        | UiEffect::ReviewWalk(_)
         | UiEffect::StackDelete
         | UiEffect::StackRename
         | UiEffect::StackMove

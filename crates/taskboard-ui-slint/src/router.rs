@@ -197,6 +197,39 @@ pub enum UiEffect {
     PlanBoxLater(TaskId),
     /// Unplace the addressed box (back to the pool).
     PlanRemoveBox(TaskId),
+    // --- the review walk (DR-7 chunk 3, #638): the routed opener plus
+    // one carrier enum for the in-walk verbs (keeps the effect enum
+    // flat — plan R4). All pure view intents; the adapter's table owns
+    // them, the kiosk gate empties them.
+    /// Open the review walk (the `review.open` action; the Today
+    /// card's activation). The adapter derives the reference date and
+    /// refuses on kiosk (the structural exclusion).
+    OpenReviewWalk,
+    /// An in-walk verb, resolved against `Flow::ReviewWalk`'s stage.
+    ReviewWalk(crate::router::WalkIntent),
+}
+
+/// The walk's verb vocabulary (DR-7 D-J9; plan D-W6): one carrier
+/// enum so the effect enum grows two variants, not fifteen. The row
+/// verbs resolve adapter-side against the flow's stage and the pass's
+/// rows (typed inert outside their stage).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WalkIntent {
+    CursorUp,
+    CursorDown,
+    Back,
+    Advance,
+    InboxFile,
+    InboxKeep,
+    FileTargetPrev,
+    FileTargetNext,
+    FileCommit,
+    CarryTomorrow,
+    CarryPickDate,
+    CarryLeave,
+    CarryDateCommit,
+    Record,
+    Finish,
 }
 
 /// The effect classes the flow-settle matrix ranges over (round-3
@@ -243,6 +276,10 @@ pub enum EffectClass {
     /// modal discipline verbatim; Escape out of the flow first), so
     /// the resolver cell is a named inert, not settle-then-run.
     PlanSurface,
+    /// The review walk family (#638): the opener settle-then-runs (the
+    /// overlay-family shape — a foreign flow settles, then the walk
+    /// opens over it); the walk's own intents are its kept arms.
+    ReviewWalk,
 }
 
 impl UiEffect {
@@ -290,6 +327,7 @@ impl UiEffect {
             | Self::PlanBoxEarlier(_)
             | Self::PlanBoxLater(_)
             | Self::PlanRemoveBox(_) => EffectClass::PlanSurface,
+            Self::OpenReviewWalk | Self::ReviewWalk(_) => EffectClass::ReviewWalk,
             // The habit trio's intents are flag flips over the subject
             // (issue #506): no flow moves, no command routes — the
             // nav bucket's contract (the adapter's interpretation
@@ -850,6 +888,57 @@ impl ActionRouter {
                 Some(task) => DispatchOutcome::UiEffect(UiEffect::PlanRemoveBox(task)),
                 None => DispatchOutcome::NoTarget,
             },
+            // The review walk (DR-7 chunk 3, #638): the opener and the
+            // in-walk verbs are pure view intents — the adapter's
+            // interpretation table owns them (the planner family's
+            // shape; the reference-date derivation and the kiosk
+            // refusal live there).
+            ActionId::ReviewOpen => DispatchOutcome::UiEffect(UiEffect::OpenReviewWalk),
+            ActionId::ReviewWalkCursorUp => {
+                DispatchOutcome::UiEffect(UiEffect::ReviewWalk(WalkIntent::CursorUp))
+            }
+            ActionId::ReviewWalkCursorDown => {
+                DispatchOutcome::UiEffect(UiEffect::ReviewWalk(WalkIntent::CursorDown))
+            }
+            ActionId::ReviewWalkBack => {
+                DispatchOutcome::UiEffect(UiEffect::ReviewWalk(WalkIntent::Back))
+            }
+            ActionId::ReviewWalkAdvance => {
+                DispatchOutcome::UiEffect(UiEffect::ReviewWalk(WalkIntent::Advance))
+            }
+            ActionId::ReviewInboxFile => {
+                DispatchOutcome::UiEffect(UiEffect::ReviewWalk(WalkIntent::InboxFile))
+            }
+            ActionId::ReviewInboxKeep => {
+                DispatchOutcome::UiEffect(UiEffect::ReviewWalk(WalkIntent::InboxKeep))
+            }
+            ActionId::ReviewFileTargetPrev => {
+                DispatchOutcome::UiEffect(UiEffect::ReviewWalk(WalkIntent::FileTargetPrev))
+            }
+            ActionId::ReviewFileTargetNext => {
+                DispatchOutcome::UiEffect(UiEffect::ReviewWalk(WalkIntent::FileTargetNext))
+            }
+            ActionId::ReviewFileCommit => {
+                DispatchOutcome::UiEffect(UiEffect::ReviewWalk(WalkIntent::FileCommit))
+            }
+            ActionId::ReviewCarryTomorrow => {
+                DispatchOutcome::UiEffect(UiEffect::ReviewWalk(WalkIntent::CarryTomorrow))
+            }
+            ActionId::ReviewCarryPickDate => {
+                DispatchOutcome::UiEffect(UiEffect::ReviewWalk(WalkIntent::CarryPickDate))
+            }
+            ActionId::ReviewCarryLeave => {
+                DispatchOutcome::UiEffect(UiEffect::ReviewWalk(WalkIntent::CarryLeave))
+            }
+            ActionId::ReviewCarryDateCommit => {
+                DispatchOutcome::UiEffect(UiEffect::ReviewWalk(WalkIntent::CarryDateCommit))
+            }
+            ActionId::ReviewRecord => {
+                DispatchOutcome::UiEffect(UiEffect::ReviewWalk(WalkIntent::Record))
+            }
+            ActionId::ReviewFinish => {
+                DispatchOutcome::UiEffect(UiEffect::ReviewWalk(WalkIntent::Finish))
+            }
             // Reserved (§5.8) — PaletteSearch opens the palette; the
             // only disabled row left (D6) is AppHelp (the undo rows
             // dispatch at the top of the match).

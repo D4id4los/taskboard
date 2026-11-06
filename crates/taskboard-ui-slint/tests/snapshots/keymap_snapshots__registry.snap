@@ -761,6 +761,150 @@ expression: rows
   menu_rank: 320
   description: "Clears the addressed box's scheduled start; the task returns to the candidate pool."
   menu_group: ~
+- id: review.open
+  label: Review
+  contexts:
+    - global
+  category: navigation
+  enabled: true
+  menu_rank: 75
+  description: "Opens the review walk over the latest closed, un-reviewed day (or the current day when none is open): inbox triage, carry forward, the plan-next-day surface, then the day's prompts."
+  menu_group: view-nav
+- id: review.walk-cursor-up
+  label: Walk cursor up
+  contexts:
+    - review-walk
+  category: navigation
+  enabled: true
+  menu_rank: 330
+  description: "Steps the walk's cursor to the previous row of the current stage (clamped; the ends hold)."
+  menu_group: ~
+- id: review.walk-cursor-down
+  label: Walk cursor down
+  contexts:
+    - review-walk
+  category: navigation
+  enabled: true
+  menu_rank: 340
+  description: "Steps the walk's cursor to the next row of the current stage (clamped; the row verbs pass the last row)."
+  menu_group: ~
+- id: review.walk-back
+  label: Walk back
+  contexts:
+    - review-walk
+  category: navigation
+  enabled: true
+  menu_rank: 350
+  description: "Steps the walk back one level: an armed picker or date field disengages first, then the stage steps back, then the walk closes — never dispatching a command."
+  menu_group: ~
+- id: review.walk-advance
+  label: Advance the walk
+  contexts:
+    - review-walk
+  category: navigation
+  enabled: true
+  menu_rank: 360
+  description: Moves the walk to its next stage; advancing out of Carry forward hands off to the plan-next-day surface.
+  menu_group: ~
+- id: review.inbox-file
+  label: File to…
+  contexts:
+    - review-walk
+  category: navigation
+  enabled: true
+  menu_rank: 370
+  description: Arms the File-to picker on the cursor inbox row; the pick commits an ordinary end-of-stack move.
+  menu_group: ~
+- id: review.inbox-keep
+  label: Keep in inbox
+  contexts:
+    - review-walk
+  category: navigation
+  enabled: true
+  menu_rank: 380
+  description: Keeps the cursor inbox row where it is and steps to the next row — dispatches nothing.
+  menu_group: ~
+- id: review.file-target-prev
+  label: Previous file target
+  contexts:
+    - review-walk
+  category: navigation
+  enabled: true
+  menu_rank: 390
+  description: Moves the armed File-to pick to the previous candidate stack (wrapping).
+  menu_group: ~
+- id: review.file-target-next
+  label: Next file target
+  contexts:
+    - review-walk
+  category: navigation
+  enabled: true
+  menu_rank: 400
+  description: Moves the armed File-to pick to the next candidate stack (wrapping).
+  menu_group: ~
+- id: review.file-commit
+  label: Commit file
+  contexts:
+    - review-walk
+  category: navigation
+  enabled: true
+  menu_rank: 410
+  description: "Commits the armed pick: one MoveTask to the picked stack's end, the ordinary move verb."
+  menu_group: ~
+- id: review.carry-tomorrow
+  label: Move to tomorrow
+  contexts:
+    - review-walk
+  category: navigation
+  enabled: true
+  menu_rank: 420
+  description: "Reschedules the cursor row to the next reviewed window's opening instant — due dates are never touched."
+  menu_group: ~
+- id: review.carry-pick-date
+  label: Pick a date
+  contexts:
+    - review-walk
+  category: navigation
+  enabled: true
+  menu_rank: 430
+  description: Arms the date field on the cursor carry row; the typed date commits the scheduled edit.
+  menu_group: ~
+- id: review.carry-leave
+  label: Leave as is
+  contexts:
+    - review-walk
+  category: navigation
+  enabled: true
+  menu_rank: 440
+  description: Leaves the cursor carry row unchanged and steps to the next row — dispatches nothing.
+  menu_group: ~
+- id: review.carry-date-commit
+  label: Commit the picked date
+  contexts:
+    - review-walk
+  category: navigation
+  enabled: true
+  menu_rank: 450
+  description: "Commits the armed date field's text as the row's scheduled instant; an unparseable date dispatches nothing."
+  menu_group: ~
+- id: review.record
+  label: Record
+  contexts:
+    - review-walk
+  category: navigation
+  enabled: true
+  menu_rank: 460
+  description: Commits the prompt answers as one reflection entry (an all-blank record commits nothing) and closes the walk.
+  menu_group: ~
+- id: review.finish
+  label: Finish without recording
+  contexts:
+    - review-walk
+  category: navigation
+  enabled: true
+  menu_rank: 470
+  description: Ends the walk without recording anything — the equal-prominence exit.
+  menu_group: ~
 - id: habit.move
   label: Reorder habit
   contexts:
