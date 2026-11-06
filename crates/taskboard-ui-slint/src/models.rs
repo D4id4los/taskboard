@@ -3892,14 +3892,25 @@ mod tests {
     }
 
     fn tracked(state: &mut AppState, t: &Task, secs: i64) {
+        use chrono::TimeZone as _;
         let now = chrono::Utc::now();
+        // Anchored inside the running UTC day's bucket (#658): a plain
+        // `now − 3h` crosses into yesterday's bar when the wall clock
+        // sits between UTC midnight and 03:00. The review rigs use the
+        // `UiSettings` default calendar (UTC-midnight day start), so
+        // the running bucket's interior begins at UTC midnight; the
+        // clip at `now` keeps the counted time positive for any instant
+        // after midnight (the end stamp may sit in the future — the
+        // single clipping oracle folds it back to `now`).
+        let date = now.date_naive();
+        let midnight = chrono::Utc
+            .with_ymd_and_hms(date.year(), date.month(), date.day(), 0, 0, 0)
+            .unwrap();
+        let start = (now - chrono::TimeDelta::try_hours(3).unwrap()).max(midnight);
         let e = work_entry(
             t.id,
-            now - chrono::TimeDelta::try_hours(3).unwrap(),
-            Some(
-                now - chrono::TimeDelta::try_hours(3).unwrap()
-                    + chrono::TimeDelta::try_seconds(secs).unwrap(),
-            ),
+            start,
+            Some(start + chrono::TimeDelta::try_seconds(secs).unwrap()),
         );
         state.tracking.entries.insert(e.id, e);
     }
