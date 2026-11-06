@@ -220,12 +220,18 @@ pub(crate) fn focus_step(
 /// signal-wakened step still re-derives from published state, so a
 /// surprise between dispatch and wake is corrected at the next step,
 /// never fought.
+///
+/// The timings and the chain knob are **live reads** of the published
+/// `AppState::settings` per iteration (round-5 chunk 5, D-5.5): a
+/// timing change lands at the next boundary; a live `focus.enabled =
+/// false` parks the runtime inert (no transitions) until re-enabled —
+/// the spawn decision itself stays boot-time
+/// ([`focus_spawn_decision`]), so a boot-disabled runtime cannot be
+/// live-enabled (the registry's justified `OnRestart` half).
 #[allow(clippy::too_many_lines)] // the park/live/fire loop, one flat shape
 #[must_use]
 pub(crate) fn spawn_focus_runtime(
     state: Arc<arc_swap::ArcSwap<AppState>>,
-    timing: FocusTiming,
-    chain: bool,
     boundaries: Arc<dyn FocusBoundarySink>,
     engine: EngineHandle,
     mut signals: broadcast::Receiver<EngineSignal>,
@@ -239,6 +245,20 @@ pub(crate) fn spawn_focus_runtime(
         loop {
             let now = clock.now();
             let snapshot = state.load();
+            let Some(timing) = snapshot.settings.live_focus() else {
+                // Disabled live (or never minted): park inert on the
+                // signal lane with NO timer armed; a re-enable
+                // publishes and wakes this park.
+                drop(snapshot);
+                match signals.recv().await {
+                    Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => {
+                        tracing::debug!("focus: signal channel closed, runtime exiting");
+                        return;
+                    }
+                }
+            };
+            let chain = snapshot.settings.focus_chain;
             let step = focus_step(&snapshot.tracking, &timing, chain, now, &memory);
             drop(snapshot);
             if step.actions.is_empty() {
@@ -890,6 +910,22 @@ mod tests {
         open
     }
 
+    /// Publishes the focus timings and the chain knob the runtime
+    /// reads live (the former spawn arguments).
+    async fn apply_focus(engine: &EngineHandle, timing: FocusTiming, chain: bool) {
+        engine
+            .execute(StateCommand::UpdateSettings {
+                settings: taskboard_domain::SettingsSnapshot {
+                    focus_enabled: true,
+                    focus: Some(timing),
+                    focus_chain: chain,
+                    ..taskboard_domain::SettingsSnapshot::default()
+                },
+            })
+            .await
+            .expect("settings apply");
+    }
+
     async fn start_work(engine: &EngineHandle, task: TaskId) {
         engine
             .execute(StateCommand::StartTracking {
@@ -929,16 +965,110 @@ mod tests {
         }
     }
 
+    /// A live `focus.enabled = false` parks a spawned runtime inert:
+    /// the work deadline passes with no hand-off; a live re-enable
+    /// resumes and the (now overdue) hand-off fires at the next step.
+    #[tokio::test(start_paused = true)]
+    async fn a_live_disable_parks_the_runtime_and_a_re_enable_resumes() {
+        let (engine, state, clock) = harness().await;
+        let timing = timing();
+        let sink = recording_sink();
+        let task = live_task(&engine).await;
+        apply_focus(&engine, timing, false).await;
+        let runtime = spawn_focus_runtime(
+            Arc::clone(&state),
+            sink.clone(),
+            engine.clone(),
+            engine.subscribe(),
+            clock.clone() as Arc<dyn Clock>,
+        );
+        start_work(&engine, task).await;
+
+        // Disabled live, mid-block.
+        engine
+            .execute(StateCommand::UpdateSettings {
+                settings: taskboard_domain::SettingsSnapshot {
+                    focus_enabled: false,
+                    focus: Some(timing),
+                    ..taskboard_domain::SettingsSnapshot::default()
+                },
+            })
+            .await
+            .expect("settings apply");
+        tick(&clock, T0 + TimeDelta::minutes(25) + TimeDelta::seconds(5)).await;
+        tick(&clock, T0 + TimeDelta::minutes(40)).await;
+        let snapshot = state.load();
+        let open = open_entries(&snapshot);
+        assert_eq!(open.len(), 1);
+        assert_eq!(
+            open[0].kind,
+            TimeEntryKind::Work,
+            "no transition while disabled: the work entry is still open"
+        );
+        assert!(sink.recorded().is_empty(), "no boundary fired while parked");
+
+        // Re-enabled live: the overdue hand-off fires at the next step.
+        apply_focus(&engine, timing, false).await;
+        tick(&clock, T0 + TimeDelta::minutes(40) + TimeDelta::seconds(2)).await;
+        let snapshot = state.load();
+        let open = open_entries(&snapshot);
+        assert_eq!(open.len(), 1);
+        assert_eq!(
+            open[0].kind,
+            TimeEntryKind::Respite,
+            "the re-enable resumed"
+        );
+        runtime.abort();
+    }
+
+    /// A timing change lands at the next boundary: the work block
+    /// shortened live from 25 to 10 minutes hands off at +10, never
+    /// waiting for the spawn-time 25.
+    #[tokio::test(start_paused = true)]
+    async fn a_timing_change_lands_at_the_next_boundary() {
+        let (engine, state, clock) = harness().await;
+        let sink = recording_sink();
+        let task = live_task(&engine).await;
+        apply_focus(&engine, timing(), false).await;
+        let runtime = spawn_focus_runtime(
+            Arc::clone(&state),
+            sink.clone(),
+            engine.clone(),
+            engine.subscribe(),
+            clock.clone() as Arc<dyn Clock>,
+        );
+        start_work(&engine, task).await;
+        tick(&clock, T0 + TimeDelta::minutes(5)).await;
+
+        let shorter = FocusTiming::try_new(
+            TimeDelta::minutes(10),
+            TimeDelta::minutes(5),
+            TimeDelta::minutes(15),
+            4,
+        )
+        .expect("positive timings");
+        apply_focus(&engine, shorter, false).await;
+        tick(&clock, T0 + TimeDelta::minutes(10) + TimeDelta::seconds(5)).await;
+        let snapshot = state.load();
+        let open = open_entries(&snapshot);
+        assert_eq!(open.len(), 1);
+        assert_eq!(
+            open[0].kind,
+            TimeEntryKind::Respite,
+            "the hand-off landed at the new 10-minute boundary"
+        );
+        runtime.abort();
+    }
+
     #[tokio::test(start_paused = true)]
     async fn a_focus_session_hands_off_to_the_break_at_the_deadline() {
         let (engine, state, clock) = harness().await;
         let timing = timing();
         let sink = recording_sink();
         let task = live_task(&engine).await;
+        apply_focus(&engine, timing, false).await;
         let runtime = spawn_focus_runtime(
             Arc::clone(&state),
-            timing,
-            false,
             sink.clone(),
             engine.clone(),
             engine.subscribe(),
@@ -989,10 +1119,9 @@ mod tests {
         let timing = timing();
         let sink = recording_sink();
         let task = live_task(&engine).await;
+        apply_focus(&engine, timing, false).await;
         let runtime = spawn_focus_runtime(
             Arc::clone(&state),
-            timing,
-            false,
             sink.clone(),
             engine.clone(),
             engine.subscribe(),
@@ -1033,10 +1162,9 @@ mod tests {
         let timing = timing();
         let sink = recording_sink();
         let task = live_task(&engine).await;
+        apply_focus(&engine, timing, false).await;
         let runtime = spawn_focus_runtime(
             Arc::clone(&state),
-            timing,
-            false,
             sink.clone(),
             engine.clone(),
             engine.subscribe(),
@@ -1075,10 +1203,9 @@ mod tests {
         let sink = recording_sink();
         let task_a = live_task(&engine).await;
         let task_b = live_task(&engine).await;
+        apply_focus(&engine, timing, false).await;
         let runtime = spawn_focus_runtime(
             Arc::clone(&state),
-            timing,
-            false,
             sink.clone(),
             engine.clone(),
             engine.subscribe(),
@@ -1123,10 +1250,9 @@ mod tests {
         let timing = timing();
         let sink = recording_sink();
         let task = live_task(&engine).await;
+        apply_focus(&engine, timing, false).await;
         let runtime = spawn_focus_runtime(
             Arc::clone(&state),
-            timing,
-            false,
             sink.clone(),
             engine.clone(),
             engine.subscribe(),
@@ -1246,10 +1372,9 @@ mod tests {
         let _ = report_tx;
         let published = engine.shared_state();
         let sink = recording_sink();
+        apply_focus(&engine, timing(), false).await;
         let runtime = spawn_focus_runtime(
             Arc::clone(&published),
-            timing(),
-            false,
             sink.clone(),
             engine.clone(),
             engine.subscribe(),
@@ -1305,10 +1430,9 @@ mod tests {
         let timing = timing();
         let sink = recording_sink();
         let task = live_task(&engine).await;
+        apply_focus(&engine, timing, false).await;
         let runtime = spawn_focus_runtime(
             Arc::clone(&state),
-            timing,
-            false,
             sink.clone(),
             engine.clone(),
             engine.subscribe(),
@@ -1350,10 +1474,9 @@ mod tests {
         let timing = timing();
         let sink = recording_sink();
         let task = live_task(&engine).await;
+        apply_focus(&engine, timing, false).await;
         let runtime = spawn_focus_runtime(
             Arc::clone(&state),
-            timing,
-            false,
             sink.clone(),
             engine.clone(),
             engine.subscribe(),
@@ -1409,10 +1532,9 @@ mod tests {
         let timing = timing();
         let sink = recording_sink();
         let task = live_task(&engine).await;
+        apply_focus(&engine, timing, true).await;
         let runtime = spawn_focus_runtime(
             Arc::clone(&state),
-            timing,
-            true,
             sink.clone(),
             engine.clone(),
             engine.subscribe(),
@@ -1481,10 +1603,9 @@ mod tests {
         let timing = timing();
         let sink = recording_sink();
         let task = live_task(&engine).await;
+        apply_focus(&engine, timing, true).await;
         let runtime = spawn_focus_runtime(
             Arc::clone(&state),
-            timing,
-            true,
             sink.clone(),
             engine.clone(),
             engine.subscribe(),
@@ -1530,10 +1651,9 @@ mod tests {
         let sink = recording_sink();
         let task_a = live_task(&engine).await;
         let task_b = live_task(&engine).await;
+        apply_focus(&engine, timing, true).await;
         let runtime = spawn_focus_runtime(
             Arc::clone(&state),
-            timing,
-            true,
             sink.clone(),
             engine.clone(),
             engine.subscribe(),
@@ -1674,10 +1794,9 @@ mod tests {
         let _ = report_tx;
         let published = engine.shared_state();
         let sink = recording_sink();
+        apply_focus(&engine, timing(), false).await;
         let runtime = spawn_focus_runtime(
             Arc::clone(&published),
-            timing(),
-            false,
             sink.clone(),
             engine.clone(),
             engine.subscribe(),
@@ -1730,10 +1849,9 @@ mod tests {
         let timing = timing();
         let sink = recording_sink();
         let task = live_task(&engine).await;
+        apply_focus(&engine, timing, true).await;
         let runtime = spawn_focus_runtime(
             Arc::clone(&state),
-            timing,
-            true,
             sink.clone(),
             engine.clone(),
             engine.subscribe(),
@@ -1889,10 +2007,9 @@ mod tests {
         let _ = report_tx;
         let published = engine.shared_state();
         let sink = recording_sink();
+        apply_focus(&engine, timing(), true).await;
         let runtime = spawn_focus_runtime(
             Arc::clone(&published),
-            timing(),
-            true,
             sink.clone(),
             engine.clone(),
             engine.subscribe(),
@@ -1949,10 +2066,9 @@ mod tests {
         let timing = timing();
         let sink = recording_sink();
         let task = live_task(&engine).await;
+        apply_focus(&engine, timing, true).await;
         let runtime = spawn_focus_runtime(
             Arc::clone(&state),
-            timing,
-            true,
             sink.clone(),
             engine.clone(),
             engine.subscribe(),
@@ -2020,15 +2136,9 @@ mod tests {
             let _ = system_tx;
             engine
         };
-        let runtime = spawn_focus_runtime(
-            state,
-            timing(),
-            false,
-            recording_sink(),
-            engine,
-            rx,
-            clock as Arc<dyn Clock>,
-        );
+        apply_focus(&engine, timing(), false).await;
+        let runtime =
+            spawn_focus_runtime(state, recording_sink(), engine, rx, clock as Arc<dyn Clock>);
         tokio::time::timeout(std::time::Duration::from_secs(1), runtime)
             .await
             .expect("the runtime exits on Closed")
