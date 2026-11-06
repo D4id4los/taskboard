@@ -37,10 +37,10 @@ use crate::requests::{
     SettingsError, UiRequest,
 };
 use crate::resolver::{KeymapResolver, Resolution};
-use crate::router::{ActionRouter, DispatchOutcome, EffectClass, Mode, UiEffect};
+use crate::router::{ActionRouter, DispatchOutcome, EffectClass, Mode, UiEffect, WalkIntent};
 use crate::settings_form::{self, ConnectionDraft};
 use crate::shell::KeymapShell;
-use crate::view_state::{Flow, FlowOutcome, FocusEdge, ViewState};
+use crate::view_state::{Flow, FlowOutcome, FocusEdge, ViewState, WalkStage, WalkStep};
 use crate::{AppWindow, Breakpoint, KeyFeedback, KeyboardState, Responsive, UiStatus};
 
 /// The repaint cadence (D1): the UI-owned timer's tick, in
@@ -141,6 +141,13 @@ pub(crate) struct TrackFormState {
     end_text: String,
 }
 
+/// The walk's planner-handoff return hint (see the field docs on
+/// `Adapter`).
+struct WalkResume {
+    cadence: taskboard_domain::ReviewCadence,
+    reference: chrono::NaiveDate,
+}
+
 #[allow(
     clippy::struct_excessive_bools // one flag per synced gate (the house shape)
 )]
@@ -193,6 +200,14 @@ pub(crate) struct Adapter {
     /// the flow holds them).
     plan_time_text: String,
     plan_effort_text: String,
+    /// The review walk's adapter-owned state (DR-7 chunk 3, #638; the
+    /// plan buffers' pattern): the return hint, the prompt answers
+    /// (one slot per template prompt; survives stage-back and the
+    /// planner leg), and the armed date field's text. Cleared at
+    /// every walk close path (the buffers never outlive the flow).
+    walk_resume: Option<WalkResume>,
+    walk_answers: Vec<String>,
+    walk_date_text: String,
     /// The last [`Self::apply_outcomes`] pass's flow liveness (the
     /// flowless enum variant replaces a bool — clippy's
     /// excessive-bools wall). The D15 focus hand-off (and the r4 D20
@@ -494,6 +509,9 @@ impl Adapter {
                 ActionId::FocusModeToggle,
                 !self.kiosk && self.focus.is_some(),
             ),
+            // The review walk's opener (#638): desktop-only (layer 2
+            // of the exclusion, D-J14 — the `FocusModeToggle` gate).
+            (ActionId::ReviewOpen, !self.kiosk),
             // Undo v1 surfaces (undo/2, ADR 0019): availability reads
             // the published `UndoView` (memory-only, derived at every
             // publish) — the whole v1 binding. A `NotUndoable` head
@@ -815,6 +833,10 @@ impl Adapter {
             self.view_state.flow(),
             crate::view_state::Flow::TrackEntries { .. }
                 | crate::view_state::Flow::TrackEntryForm { .. }
+        );
+        self.shell.review_walk = matches!(
+            self.view_state.flow(),
+            crate::view_state::Flow::ReviewWalk { .. }
         );
         // Round 2 (D19): the reopen gate's done stamp, from the same
         // focused task — the router stays pure.
@@ -1187,11 +1209,31 @@ impl Adapter {
     /// The unguarded D1 pass: reconcile + full re-derive + the cheap
     /// tail. Every caller whose inputs moved outside the state Arc
     /// calls this directly (the plan §5 audit's forced set).
+    #[allow(clippy::too_many_lines)] // the pass is one linear pipeline
     pub(crate) fn refresh_forced(&mut self, window: &AppWindow) {
         self.sync_view_context();
         let state = self.state.load_full();
         self.sync_settings(&state.settings);
         self.view_state.reconcile(&state);
+        // The walk's refresh-time normalization (plan D-W2): the
+        // cursor clamps against the pushed row count, an emptied
+        // stage advances structurally, a dead candidate disarms. And
+        // the return hint's abandon rule (plan D-W3): a view that
+        // left the planner by any other route drops the hint — the
+        // user went elsewhere; the walk never ambushes later.
+        if let Flow::ReviewWalk {
+            cadence, reference, ..
+        } = self.view_state.flow().clone()
+        {
+            let (rows, _) = self.walk_rows(&state, cadence, reference);
+            let candidates = crate::presentation::walk_file_candidates(&state);
+            self.view_state.clamp_review_walk(rows, &candidates);
+        }
+        if self.walk_resume.is_some()
+            && self.view_state.view() != crate::view_state::ViewId::PlanNextDay
+        {
+            self.walk_resume = None;
+        }
         // After the reconcile — the reconciled view-state is what the
         // term reads. The pass's clock read feeds the timers term (r4
         // D32: one derivation, no second list to drift).
@@ -1741,6 +1783,323 @@ impl Adapter {
         }
     }
 
+    // -- the review walk (DR-7 chunk 3, #638; plan D-W3) ----------------
+
+    /// The per-pass row bundle for the walk (plan D-W2/D-W4): every
+    /// row set derives from `AppState` + the flow's window on every
+    /// read — nothing about the rows is stored.
+    fn walk_rows(
+        &self,
+        state: &taskboard_domain::AppState,
+        cadence: taskboard_domain::ReviewCadence,
+        reference: chrono::NaiveDate,
+    ) -> (crate::view_state::WalkRows, taskboard_domain::ReviewWindow) {
+        let calendar = self.calendar();
+        let now = self.day_ctx().now;
+        let window = taskboard_domain::review_window(cadence, reference, calendar);
+        let rows = crate::view_state::WalkRows {
+            inbox: crate::presentation::walk_inbox_rows(state).len(),
+            carry: crate::presentation::walk_carry_rows(&state.tasks, cadence, window, now).len(),
+        };
+        (rows, window)
+    }
+
+    /// The opener's reference date (plan D-W6): the due window's day
+    /// when `review_due` names one, else the current day window (the
+    /// evening review before the boundary).
+    fn walk_reference(&self, state: &taskboard_domain::AppState) -> chrono::NaiveDate {
+        let calendar = self.calendar();
+        let now = self.day_ctx().now;
+        taskboard_domain::review_due(&state.reflection, calendar, now)
+            .map_or_else(|| calendar.today(now), |due| due.window().day())
+    }
+
+    /// Clears the walk's adapter-owned buffers (the answers and the
+    /// date field) — called at every close path (commit, finish, the
+    /// settle, the handoff). The buffers never outlive the flow (the
+    /// due buffers' rule).
+    fn clear_walk_buffers(&mut self) {
+        self.walk_answers.clear();
+        self.walk_date_text.clear();
+    }
+
+    /// The shape-B handoff (plan D-W3): the adapter-local return hint
+    /// is set, the walk closes (no command — there is nothing to
+    /// commit), and the planner opens through the EXISTING
+    /// `(Flow::None, OpenPlanNextDay)` route — the walk reaches the
+    /// planner exactly the way the action does, zero shared state
+    /// beyond `AppState`. If the view is already `PlanNextDay` (the
+    /// walk was opened over the planner) the route is skipped: the
+    /// toggle would close it.
+    fn hand_off_to_planner(
+        &mut self,
+        window: &AppWindow,
+        cadence: taskboard_domain::ReviewCadence,
+        reference: chrono::NaiveDate,
+    ) {
+        self.walk_resume = Some(WalkResume { cadence, reference });
+        self.clear_walk_buffers();
+        let outcomes = self.view_state.close_review_walk();
+        self.apply_outcomes(window, &outcomes);
+        if self.view_state.view() != crate::view_state::ViewId::PlanNextDay {
+            self.interpret(window, UiEffect::OpenPlanNextDay);
+        }
+    }
+
+    /// The walk's intents (the `ReviewWalk(WalkIntent)` carrier's
+    /// interpretation): the cursor/back/advance verbs resolve against
+    /// the view state with the pass-derived rows; the row verbs
+    /// resolve the cursor row from the pass's row ids and route the
+    /// honest commands. Typed inert outside its stage; a `Handoff`
+    /// from the advance runs the planner transition.
+    #[allow(clippy::too_many_lines)] // one verb table, kept flat
+    fn interpret_walk(
+        &mut self,
+        window: &AppWindow,
+        cadence: taskboard_domain::ReviewCadence,
+        reference: chrono::NaiveDate,
+        intent: WalkIntent,
+        state: &taskboard_domain::AppState,
+    ) -> Vec<FlowOutcome> {
+        let (rows, window_bounds) = self.walk_rows(state, cadence, reference);
+        let calendar = self.calendar();
+        match intent {
+            WalkIntent::CursorUp => self.view_state.review_walk_cursor(-1, rows),
+            WalkIntent::CursorDown => self.view_state.review_walk_cursor(1, rows),
+            WalkIntent::Advance => match self.view_state.advance_review_walk() {
+                WalkStep::Handoff => {
+                    self.hand_off_to_planner(window, cadence, reference);
+                    Vec::new()
+                }
+                WalkStep::Advanced => vec![FlowOutcome::RefreshNow],
+                WalkStep::Inert => Vec::new(),
+            },
+            WalkIntent::Back => {
+                let outcomes = self.view_state.back_review_walk(rows);
+                if !matches!(self.view_state.flow(), Flow::ReviewWalk { .. }) {
+                    // The close rung: the buffers die with the flow.
+                    self.clear_walk_buffers();
+                }
+                outcomes
+            }
+            // -- the inbox row verbs --
+            WalkIntent::InboxFile => {
+                let candidates = crate::presentation::walk_file_candidates(state);
+                self.view_state.review_walk_file(&candidates)
+            }
+            WalkIntent::InboxKeep | WalkIntent::CarryLeave => {
+                self.step_walk_row(window, cadence, reference, rows)
+            }
+            WalkIntent::FileTargetPrev => {
+                let candidates = crate::presentation::walk_file_candidates(state);
+                self.view_state.review_walk_file_target(-1, &candidates)
+            }
+            WalkIntent::FileTargetNext => {
+                let candidates = crate::presentation::walk_file_candidates(state);
+                self.view_state.review_walk_file_target(1, &candidates)
+            }
+            WalkIntent::FileCommit => {
+                let Flow::ReviewWalk {
+                    stage:
+                        WalkStage::Inbox {
+                            filing: Some(target),
+                        },
+                    cursor,
+                    ..
+                } = self.view_state.flow()
+                else {
+                    return Vec::new();
+                };
+                let target = *target;
+                let row = crate::presentation::walk_inbox_rows(state)
+                    .get(*cursor)
+                    .copied();
+                let Some(task) = row else {
+                    return Vec::new();
+                };
+                // The end-of-stack append the move flow computes — no
+                // new arithmetic (plan D-W4).
+                let order = crate::view_state::append_order(state, target);
+                let mut outcomes = vec![FlowOutcome::Command(
+                    taskboard_domain::StateCommand::MoveTask {
+                        id: task,
+                        stack: target,
+                        order,
+                    },
+                )];
+                match self.view_state.review_walk_next_row(rows) {
+                    WalkStep::Handoff => {
+                        self.apply_outcomes(window, &outcomes);
+                        self.hand_off_to_planner(window, cadence, reference);
+                        return Vec::new();
+                    }
+                    WalkStep::Advanced => outcomes.push(FlowOutcome::RefreshNow),
+                    WalkStep::Inert => {}
+                }
+                outcomes
+            }
+            // -- the carry row verbs --
+            WalkIntent::CarryTomorrow => {
+                let Some(task) = self.walk_cursor_task(state, cadence, reference, rows) else {
+                    return Vec::new();
+                };
+                // "Tomorrow" is relative to the REVIEWED day (plan
+                // D-W4): the task lands at the next window's opening
+                // instant; the planner leg that follows re-times it.
+                // Due dates are never touched.
+                let next = taskboard_domain::review_window(
+                    cadence,
+                    reference.succ_opt().unwrap_or(reference),
+                    calendar,
+                );
+                let step = vec![FlowOutcome::Command(
+                    taskboard_domain::StateCommand::UpdateTask {
+                        id: task,
+                        changes: taskboard_domain::TaskChanges {
+                            scheduled: Some(Some(next.start())),
+                            ..taskboard_domain::TaskChanges::default()
+                        },
+                    },
+                )];
+                self.finish_walk_row(window, cadence, reference, rows, step)
+            }
+            WalkIntent::CarryPickDate => self.view_state.review_walk_pick_date(),
+            WalkIntent::CarryDateCommit => {
+                let Flow::ReviewWalk {
+                    stage: WalkStage::CarryForward { picking_date: true },
+                    ..
+                } = self.view_state.flow()
+                else {
+                    return Vec::new();
+                };
+                let Some(task) = self.walk_cursor_task(state, cadence, reference, rows) else {
+                    return Vec::new();
+                };
+                // The due editor's parser verbatim (plan D-W4); an
+                // unparseable date dispatches nothing and keeps the
+                // text (the planner-form rule).
+                let Ok(Some(instant)) = crate::due_edit::parse(
+                    &self.walk_date_text,
+                    self.day_ctx().now,
+                    &calendar.offset,
+                ) else {
+                    return Vec::new();
+                };
+                let step = vec![FlowOutcome::Command(
+                    taskboard_domain::StateCommand::UpdateTask {
+                        id: task,
+                        changes: taskboard_domain::TaskChanges {
+                            scheduled: Some(Some(instant)),
+                            ..taskboard_domain::TaskChanges::default()
+                        },
+                    },
+                )];
+                let outcomes = self.finish_walk_row(window, cadence, reference, rows, step);
+                self.walk_date_text.clear();
+                outcomes
+            }
+            // -- the prompt commit verbs --
+            WalkIntent::Record => {
+                let template = taskboard_domain::DEFAULT_TEMPLATES
+                    .iter()
+                    .find(|template| template.cadence == cadence)
+                    .expect("a curated template per cadence");
+                let text = taskboard_domain::compose_reflection_text(template, &self.walk_answers);
+                if text.is_empty() {
+                    // The gentle end (DR-7 D-J9): an all-blank record
+                    // dispatches nothing — never relying on a NoOp.
+                    let outcomes = self.view_state.close_review_walk();
+                    self.clear_walk_buffers();
+                    return outcomes;
+                }
+                let step = vec![FlowOutcome::Command(
+                    taskboard_domain::StateCommand::RecordReflection {
+                        cadence,
+                        day: window_bounds.day(),
+                        window: window_bounds.bounds(),
+                        text,
+                        mood: None,
+                        energy: None,
+                        flags: std::collections::BTreeSet::new(),
+                    },
+                )];
+                let mut outcomes = step;
+                outcomes.extend(self.view_state.close_review_walk());
+                self.clear_walk_buffers();
+                outcomes
+            }
+            WalkIntent::Finish => {
+                let outcomes = self.view_state.close_review_walk();
+                self.clear_walk_buffers();
+                outcomes
+            }
+        }
+    }
+
+    /// The cursor row's task id in the Carry forward stage (typed
+    /// inert outside it or past the rows).
+    fn walk_cursor_task(
+        &self,
+        state: &taskboard_domain::AppState,
+        cadence: taskboard_domain::ReviewCadence,
+        reference: chrono::NaiveDate,
+        rows: crate::view_state::WalkRows,
+    ) -> Option<TaskId> {
+        let Flow::ReviewWalk { cursor, .. } = self.view_state.flow() else {
+            return None;
+        };
+        let window = taskboard_domain::review_window(cadence, reference, self.calendar());
+        crate::presentation::walk_carry_rows(&state.tasks, cadence, window, self.day_ctx().now)
+            .get(*cursor)
+            .copied()
+            .filter(|_| rows.carry > 0)
+    }
+
+    /// A commandless row step (`Keep in inbox`, `Leave as is`); a
+    /// stage-passing step into the handoff runs the transition.
+    fn step_walk_row(
+        &mut self,
+        window: &AppWindow,
+        cadence: taskboard_domain::ReviewCadence,
+        reference: chrono::NaiveDate,
+        rows: crate::view_state::WalkRows,
+    ) -> Vec<FlowOutcome> {
+        match self.view_state.review_walk_next_row(rows) {
+            WalkStep::Handoff => {
+                self.hand_off_to_planner(window, cadence, reference);
+                Vec::new()
+            }
+            WalkStep::Advanced => vec![FlowOutcome::RefreshNow],
+            WalkStep::Inert => Vec::new(),
+        }
+    }
+
+    /// A row step that dispatches `step` first (the carry commits):
+    /// the command lands, then the cursor advances (or the handoff
+    /// runs after the write).
+    fn finish_walk_row(
+        &mut self,
+        window: &AppWindow,
+        cadence: taskboard_domain::ReviewCadence,
+        reference: chrono::NaiveDate,
+        rows: crate::view_state::WalkRows,
+        step: Vec<FlowOutcome>,
+    ) -> Vec<FlowOutcome> {
+        let mut outcomes = step;
+        match self.view_state.review_walk_next_row(rows) {
+            WalkStep::Handoff => {
+                self.apply_outcomes(window, &outcomes);
+                self.hand_off_to_planner(window, cadence, reference);
+                Vec::new()
+            }
+            WalkStep::Advanced => {
+                outcomes.push(FlowOutcome::RefreshNow);
+                outcomes
+            }
+            WalkStep::Inert => outcomes,
+        }
+    }
+
     /// The leaving rule (D9, factored out of the table): a view
     /// switch by effect settles the flow through the same per-kind
     /// rule every other trigger uses (round-3 R1–R3). Its r2 D13
@@ -1806,6 +2165,8 @@ impl Adapter {
         self.due_picker = None;
         self.width_drag = None;
         self.scale_drag = None;
+        self.walk_resume = None;
+        self.clear_walk_buffers();
     }
 
     /// The date editor's adapter-owned buffers, for the §8 invariant
@@ -2206,11 +2567,54 @@ impl Adapter {
             // dispatches nothing — the typed refusal keeps the text.
             (Flow::PlanPlace { task }, UiEffect::PlanCommitPlace) => self.commit_plan_place(*task),
             (Flow::None, UiEffect::PlanCommitPlace) => Vec::new(),
+            // -- the review walk (DR-7 chunk 3, #638) --
+            // Kiosk: the dispatch is structurally inert (layer 2 of
+            // the three-layer exclusion, D-J14 — the pinned gate).
+            (_, UiEffect::OpenReviewWalk | UiEffect::ReviewWalk(_)) if self.kiosk => Vec::new(),
+            // Already in the walk: the opener is not a toggle (the
+            // modal discipline — Escape out first; the walk-over-
+            // planner leg rides the handoff's skip instead).
+            (Flow::ReviewWalk { .. }, UiEffect::OpenReviewWalk) => Vec::new(),
+            // The opener (the action, the Today card, the menu): the
+            // reference derives from `review_due` when a window is
+            // due, else the current day window (the evening review
+            // before the boundary).
+            (Flow::None, UiEffect::OpenReviewWalk) => {
+                let reference = self.walk_reference(&state);
+                let cadence = taskboard_domain::ReviewCadence::Day;
+                let (rows, _) = self.walk_rows(&state, cadence, reference);
+                self.view_state.open_review_walk(cadence, reference, rows)
+            }
+            // The carrier's intents: the verb table.
+            (
+                Flow::ReviewWalk {
+                    cadence, reference, ..
+                },
+                UiEffect::ReviewWalk(intent),
+            ) => self.interpret_walk(window, *cadence, *reference, intent, &state),
             // Toggle semantics (the settings opener's twin); the
             // planner-context Escape row rides the same route.
             (Flow::None, UiEffect::OpenPlanNextDay) => {
                 if self.view_state.view() == crate::view_state::ViewId::PlanNextDay {
-                    self.view_state.close_plan_next_day()
+                    let outcomes = self.view_state.close_plan_next_day();
+                    // The walk's return (plan D-W3): closing the
+                    // planner is the built-in skip (P12) and resumes
+                    // the same way — the walk re-opens at Prompts over
+                    // the restored view. Placed tasks reach it as
+                    // plain state (they are `UpdateTask` writes in the
+                    // published snapshot).
+                    if let Some(WalkResume { cadence, reference }) = self.walk_resume.take() {
+                        self.clear_walk_buffers();
+                        let mut resumed = self.view_state.open_review_walk_at(
+                            cadence,
+                            reference,
+                            WalkStage::Prompts,
+                        );
+                        resumed.extend(outcomes);
+                        resumed
+                    } else {
+                        outcomes
+                    }
                 } else {
                     self.view_state.open_plan_next_day()
                 }
@@ -5353,6 +5757,9 @@ pub(crate) fn install(
         recur_confirm_armed: false,
         plan_time_text: String::new(),
         plan_effort_text: String::new(),
+        walk_resume: None,
+        walk_answers: Vec::new(),
+        walk_date_text: String::new(),
         habit_convert_armed: None,
         walk_reentry: Rc::clone(&walk_flag),
         walk_timer: slint::Timer::default(),
@@ -5605,6 +6012,7 @@ fn install_view_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     install_timer_seams(window, adapter);
     install_tracking_seams(window, adapter);
     install_focus_seams(window, adapter);
+    install_review_walk_seams(window, adapter);
     install_habit_seams(window, adapter);
     install_recur_seams(window, adapter);
     install_settings_seams(window, adapter);
@@ -8165,6 +8573,83 @@ fn install_focus_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     });
 }
 
+/// The review walk's seams (DR-7 chunk 3, #638): every button routes
+/// the landed registry action — one dispatch path, the adapter's verb
+/// table owns the semantics (the focus overlay's rule). The two text
+/// mirrors (the answers, the date field) ride the plan buffers'
+/// discipline; the candidate click arms the pick directly (the
+/// one-shot target pattern).
+fn install_review_walk_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
+    install_seam!(window: window.on_walk_scrim_clicked, adapter: adapter;
+    bind mut (a, window), args (), {        a.route(&window, ActionId::ReviewWalkBack);
+    });
+    install_seam!(window: window.on_walk_file_clicked, adapter: adapter;
+    bind mut (a, window), args (), {        a.route(&window, ActionId::ReviewInboxFile);
+    });
+    install_seam!(window: window.on_walk_keep_clicked, adapter: adapter;
+    bind mut (a, window), args (), {        a.route(&window, ActionId::ReviewInboxKeep);
+    });
+    install_seam!(window: window.on_walk_file_prev_clicked, adapter: adapter;
+    bind mut (a, window), args (), {        a.route(&window, ActionId::ReviewFileTargetPrev);
+    });
+    install_seam!(window: window.on_walk_file_next_clicked, adapter: adapter;
+    bind mut (a, window), args (), {        a.route(&window, ActionId::ReviewFileTargetNext);
+    });
+    install_seam!(window: window.on_walk_candidate_activated, adapter: adapter;
+    bind mut (a, window), args (index), {        let index = usize::try_from(index).unwrap_or(usize::MAX);
+    let state = a.state.load();
+    let candidates = crate::presentation::walk_file_candidates(&state);
+    let Some(stack) = candidates.get(index).copied() else {
+        return; // a stale index past the candidates: inert
+    };
+    if let Flow::ReviewWalk {
+        stage: crate::view_state::WalkStage::Inbox { filing },
+        ..
+    } = a.view_state.flow_mut()
+    {
+        *filing = Some(stack);
+    }
+    a.apply_outcomes(&window, &[FlowOutcome::RefreshNow]);
+    a.finish_mutation(&window);
+    });
+    install_seam!(window: window.on_walk_file_commit_clicked, adapter: adapter;
+    bind mut (a, window), args (), {        a.route(&window, ActionId::ReviewFileCommit);
+    });
+    install_seam!(window: window.on_walk_tomorrow_clicked, adapter: adapter;
+    bind mut (a, window), args (), {        a.route(&window, ActionId::ReviewCarryTomorrow);
+    });
+    install_seam!(window: window.on_walk_pick_clicked, adapter: adapter;
+    bind mut (a, window), args (), {        a.route(&window, ActionId::ReviewCarryPickDate);
+    });
+    install_seam!(window: window.on_walk_leave_clicked, adapter: adapter;
+    bind mut (a, window), args (), {        a.route(&window, ActionId::ReviewCarryLeave);
+    });
+    install_seam!(window: window.on_walk_date_edited, adapter: adapter; [bare_mut]
+    bind mut (a), args (text), {        a.walk_date_text = text.to_string();
+    });
+    install_seam!(window: window.on_walk_date_commit_clicked, adapter: adapter;
+    bind mut (a, window), args (), {        a.route(&window, ActionId::ReviewCarryDateCommit);
+    });
+    install_seam!(window: window.on_walk_answer_edited, adapter: adapter; [bare_mut]
+    bind mut (a), args (index, text), {        let index = usize::try_from(index).unwrap_or(usize::MAX);
+    if index >= a.walk_answers.len() {
+        a.walk_answers.resize(index + 1, String::new());
+    }
+    a.walk_answers[index] = text.to_string();
+    });
+    install_seam!(window: window.on_walk_record_clicked, adapter: adapter;
+    bind mut (a, window), args (), {        a.route(&window, ActionId::ReviewRecord);
+    });
+    install_seam!(window: window.on_walk_finish_clicked, adapter: adapter;
+    bind mut (a, window), args (), {        a.route(&window, ActionId::ReviewFinish);
+    });
+    // The Today card's activation: the routed opener (the same
+    // dispatch as the action — the reference derivation and the
+    // kiosk refusal live in the adapter's arms).
+    install_seam!(window: window.on_review_card_clicked, adapter: adapter;
+    bind mut (a, window), args (), {        a.route(&window, ActionId::ReviewOpen);
+    });
+}
 /// The notification surface's seams (R3 chunk C, design D-10): each
 /// button dispatches exactly one engine command and nothing else (the
 /// thin-client rule).

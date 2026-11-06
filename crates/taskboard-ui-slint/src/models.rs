@@ -274,6 +274,11 @@ pub struct PushModels {
     /// the per-second countdown push must never clobber a field the
     /// user is typing into (the capture-overlay's init-seed rule).
     focus_overlay_was_open: bool,
+    /// The review walk's prompts-stage mount-only answer seed (#638):
+    /// the mirror texts are written exactly on the closed→Prompts
+    /// transition — a re-push must never clobber a field the user is
+    /// typing into (the focus-overlay seed's rule).
+    walk_prompts_open: bool,
     /// The today view's per-section row handles (chunk 10 D7): fixed
     /// to the four display sections — a rollover refresh must not
     /// re-instantiate the cards (the r2 D9 discipline).
@@ -1016,6 +1021,7 @@ pub fn push(
         models,
     );
     push_focus_overlay(window, state, vs, focus, now, models);
+    push_review_walk(window, state, vs, day, calendar, kiosk, models);
     // The decoration handles of tasks this pass dropped from every
     // surface are unreachable from the views.
     let pass = std::mem::take(&mut models.pass_tasks);
@@ -2526,6 +2532,29 @@ fn push_today(
     }
     tables.today_tasks = today_tasks;
     tables.today_section_rows = section_rows;
+    // The surfacing card (DR-7 D-J10, #638): derived-at-read on the
+    // existing wall-minute repaint — no tick, no persistence, no
+    // dismissal state. The kiosk gate lives HERE (model-side, the
+    // `push_notifications` pattern): the appliance never receives a
+    // card, even if the flow layers drifted.
+    let card = if kiosk {
+        None
+    } else {
+        taskboard_domain::review_due(&state.reflection, calendar, day.now).map(|due| {
+            let due_day = due.window().day();
+            presentation::ReviewCardRow {
+                title: presentation::review_card_title(taskboard_domain::ReviewCadence::Day),
+                body: presentation::review_card_body(taskboard_domain::ReviewCadence::Day, due_day),
+                action: presentation::review_card_action(due_day),
+            }
+        })
+    };
+    window.set_review_card_visible(card.is_some());
+    if let Some(card) = card {
+        window.set_review_card_title(SharedString::from(card.title));
+        window.set_review_card_body(SharedString::from(card.body));
+        window.set_review_card_action(SharedString::from(card.action));
+    }
     let sections_handle = models.today.handle_or_insert_with();
     mutations += models.today.diff(&section_models);
     window.set_today_model(TodayModel {
@@ -2567,6 +2596,198 @@ fn plan_row(
         effort: SharedString::from(presentation::effort_phrase(task.effort)),
         overdue,
     }
+}
+
+/// The review walk overlay's pass (DR-7 chunk 3, #638): the header,
+/// the progress strip, the current stage's rows, the cursor emphasis,
+/// the armed picker/date-field state, and every button label — all
+/// derived per pass from the published state and the flow's window
+/// (the dumb-client line; slint computes nothing). Visibility mirrors
+/// the `Flow::ReviewWalk` flow. The kiosk gate lives HERE (layer 3 of
+/// D-J14's exclusion — the `push_notifications` pattern): the empty
+/// model on the appliance even if the flow drifted. Returns the diff's
+/// mutation count (the strip/rows ride plain whole-struct sets —
+/// small, capped row counts).
+#[allow(clippy::too_many_lines)] // one stage-table pass, kept flat
+fn push_review_walk(
+    window: &AppWindow,
+    state: &AppState,
+    vs: &ViewState,
+    day: crate::view_state::DayCtx,
+    calendar: taskboard_domain::DayCalendar,
+    kiosk: bool,
+    models: &mut PushModels,
+) -> usize {
+    let empty = || crate::ReviewWalkModel {
+        open: false,
+        header: SharedString::new(),
+        strip: ModelRc::new(VecModel::<crate::WalkStageStripRow>::from(Vec::new())),
+        rows: ModelRc::new(VecModel::<crate::WalkRowModel>::from(Vec::new())),
+        stage_kind: 0,
+        filing: false,
+        candidates: ModelRc::new(VecModel::<SharedString>::from(Vec::new())),
+        candidate_index: 0,
+        file_label: SharedString::new(),
+        keep_label: SharedString::new(),
+        picking: false,
+        date_text: SharedString::new(),
+        tomorrow_label: SharedString::new(),
+        pick_label: SharedString::new(),
+        leave_label: SharedString::new(),
+        record_label: SharedString::new(),
+        finish_label: SharedString::new(),
+    };
+    let crate::view_state::Flow::ReviewWalk {
+        cadence,
+        reference,
+        stage,
+        cursor,
+    } = vs.flow().clone()
+    else {
+        models.walk_prompts_open = false;
+        window.set_walk_model(empty());
+        window.set_walk_answer_seeds(ModelRc::new(VecModel::<SharedString>::from(Vec::new())));
+        return 0;
+    };
+    // The kiosk belt (D-J14 layer 3): the empty model on the
+    // appliance, regardless of a drifted flow.
+    if kiosk {
+        models.walk_prompts_open = false;
+        window.set_walk_model(empty());
+        return 0;
+    }
+    let walk_window = taskboard_domain::review_window(cadence, reference, calendar);
+    let strip: Vec<crate::WalkStageStripRow> = [
+        crate::view_state::WalkStage::Inbox { filing: None },
+        crate::view_state::WalkStage::CarryForward {
+            picking_date: false,
+        },
+        crate::view_state::WalkStage::Prompts,
+    ]
+    .into_iter()
+    .map(|strip_stage| {
+        let template = taskboard_domain::DEFAULT_TEMPLATES
+            .iter()
+            .find(|template| template.cadence == cadence)
+            .expect("a curated template per cadence");
+        crate::WalkStageStripRow {
+            label: SharedString::from(presentation::walk_stage_header(strip_stage, template)),
+            note: SharedString::from(presentation::walk_stage_empty_line(strip_stage)),
+        }
+    })
+    .collect();
+    let (rows, stage_kind, candidates, candidate_index, filing, picking) = match stage {
+        crate::view_state::WalkStage::Inbox { filing } => {
+            let rows: Vec<crate::WalkRowModel> = presentation::walk_inbox_rows(state)
+                .into_iter()
+                .enumerate()
+                .map(|(index, id)| crate::WalkRowModel {
+                    title: SharedString::from(
+                        state
+                            .tasks
+                            .get(&id)
+                            .map_or(String::new(), |task| task.title.clone()),
+                    ),
+                    emphasis: index == cursor,
+                })
+                .collect();
+            let candidate_ids = presentation::walk_file_candidates(state);
+            let candidates: Vec<SharedString> = candidate_ids
+                .iter()
+                .map(|stack| {
+                    SharedString::from(
+                        state
+                            .stacks
+                            .get(stack)
+                            .map_or(String::new(), |stack| stack.title.clone()),
+                    )
+                })
+                .collect();
+            let candidate_index = filing
+                .and_then(|armed| candidate_ids.iter().position(|stack| stack == &armed))
+                .unwrap_or(0);
+            (
+                rows,
+                0,
+                candidates,
+                candidate_index,
+                filing.is_some(),
+                false,
+            )
+        }
+        crate::view_state::WalkStage::CarryForward { picking_date } => {
+            let rows: Vec<crate::WalkRowModel> =
+                presentation::walk_carry_rows(&state.tasks, cadence, walk_window, day.now)
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, id)| crate::WalkRowModel {
+                        title: SharedString::from(
+                            state
+                                .tasks
+                                .get(&id)
+                                .map_or(String::new(), |task| task.title.clone()),
+                        ),
+                        emphasis: index == cursor,
+                    })
+                    .collect();
+            (rows, 1, Vec::new(), 0, false, picking_date)
+        }
+        crate::view_state::WalkStage::Prompts => {
+            let template = taskboard_domain::DEFAULT_TEMPLATES
+                .iter()
+                .find(|template| template.cadence == cadence)
+                .expect("a curated template per cadence");
+            let rows: Vec<crate::WalkRowModel> = template
+                .prompts
+                .iter()
+                .map(|prompt| crate::WalkRowModel {
+                    title: SharedString::from(*prompt),
+                    emphasis: false,
+                })
+                .collect();
+            let mount = !models.walk_prompts_open;
+            models.walk_prompts_open = true;
+            if mount {
+                // The mount-only seed (the focus-overlay note rule):
+                // the answers mirror adapter-side afterwards.
+                window.set_walk_answer_seeds(ModelRc::new(VecModel::from(
+                    template
+                        .prompts
+                        .iter()
+                        .map(|_| SharedString::new())
+                        .collect::<Vec<_>>(),
+                )));
+            }
+            (rows, 2, Vec::new(), 0, false, false)
+        }
+    };
+    if stage_kind != 2 {
+        models.walk_prompts_open = false;
+    }
+    let (file_label, keep_label) = presentation::walk_inbox_actions();
+    let (tomorrow_label, pick_label, leave_label) = presentation::walk_carry_actions();
+    let (record_label, finish_label) = presentation::walk_commit_actions();
+    window.set_walk_model(crate::ReviewWalkModel {
+        open: true,
+        header: SharedString::from(presentation::walk_header(cadence, reference)),
+        strip: ModelRc::new(VecModel::from(strip)),
+        rows: ModelRc::new(VecModel::from(rows)),
+        stage_kind,
+        filing,
+        candidates: ModelRc::new(VecModel::from(candidates)),
+        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+        candidate_index: i32::try_from(candidate_index).unwrap_or(i32::MAX),
+        file_label: SharedString::from(file_label),
+        keep_label: SharedString::from(keep_label),
+        picking,
+        date_text: SharedString::new(),
+        tomorrow_label: SharedString::from(tomorrow_label),
+        pick_label: SharedString::from(pick_label),
+        leave_label: SharedString::from(leave_label),
+        record_label: SharedString::from(record_label),
+        finish_label: SharedString::from(finish_label),
+    });
+    0
 }
 
 /// The plan-next-day surface's pass (#622, D-8): the domain

@@ -13,6 +13,7 @@ import { Responsive, Breakpoint } from "responsive.slint";
 import { ActionMenu, MenuEntryModel } from "compositions/action-menu.slint";
 import { SearchPalette, PaletteRowModel } from "compositions/search-palette.slint";
 import { CaptureOverlay } from "compositions/capture-overlay.slint";
+import { ReviewWalkOverlay, ReviewWalkModel } from "views/review-walk-overlay.slint";
 import { FocusOverlay, FocusRowModel } from "compositions/focus-overlay.slint";
 import { Toolbar } from "compositions/toolbar.slint";
 import { StatusBar, SyncBadgeModel, BannerRowModel, FlowHintModel } from "compositions/status-bar.slint";
@@ -66,6 +67,7 @@ export { AlarmWindow, AlarmRowModel }
 // Re-export the globals so the generated Rust module exposes them
 // (mount/adapter read/write them through the generated accessors).
 export { Theme, Typography, Semantic, Responsive, TooltipState, MenuPanelFacts, SettingsScrollFacts, SettingsBoardFacts, DragState, FocusScrollHint, ScrollPageHint, EditingFacts, TaskViewWalkFacts, TrackPanelFacts, TrackPanelWalkFacts, DropdownLadder, DropdownFacts, TimeFieldFacts, TodayAnchorFacts }
+export { ReviewWalkModel }
 export { BoardBarModel, BoardSegmentModel, BoardBarFacts }
 export { SettingsBoardCopy }
 
@@ -254,6 +256,38 @@ export component AppWindow inherits Window {
     in-out property <int> palette-selected-index: 0;
     in-out property <[PaletteRowModel]> palette-model: [];
     in-out property <int> palette-overflow: 0;
+    // The review walk overlay (DR-7 chunk 3, #638): the whole model
+    // arrives from the Rust pass (the dumb client); the kiosk gate
+    // empties it model-side.
+    in-out property <ReviewWalkModel> walk-model;
+    // The prompts' one-shot answer seeds (the mount-transition push).
+    in-out property <[string]> walk-answer-seeds: [];
+    // The walk's seams: scrim, the row verbs (cursor row only), the
+    // armed picker and date field, the prompt mirrors, and the commit
+    // exits.
+    callback walk-scrim-clicked();
+    callback walk-file-clicked();
+    callback walk-keep-clicked();
+    callback walk-file-prev-clicked();
+    callback walk-file-next-clicked();
+    callback walk-candidate-activated(int);
+    callback walk-file-commit-clicked();
+    callback walk-tomorrow-clicked();
+    callback walk-pick-clicked();
+    callback walk-leave-clicked();
+    callback walk-date-edited(string);
+    callback walk-date-commit-clicked();
+    callback walk-answer-edited(int, string);
+    callback walk-record-clicked();
+    callback walk-finish-clicked();
+    // The today view's surfacing card (DR-7 D-J10): at most one, the
+    // whole copy arrives pushed (the phrase fns' output); kiosk never
+    // receives it (the model-side gate).
+    in-out property <bool> review-card-visible: false;
+    in-out property <string> review-card-title;
+    in-out property <string> review-card-body;
+    in-out property <string> review-card-action;
+    callback review-card-clicked();
     // The concentration overlay (#496): the derived frame values and
     // the switcher arrive from the Rust pass (the dumb client); the
     // callbacks route the landed tracking verbs and the capture
@@ -398,6 +432,11 @@ export component AppWindow inherits Window {
                 habits-convert-cancelled() => root.habits-convert-cancelled();
                 habits-convert-armed-row: root.habits-convert-armed-row;
                 tracked-activated(i) => root.today-tracked-activated(i);
+                review-card-visible: root.review-card-visible;
+                review-card-title: root.review-card-title;
+                review-card-body: root.review-card-body;
+                review-card-action: root.review-card-action;
+                review-card-clicked() => root.review-card-clicked();
             }
             if (root.current-view == View.stack-detail): StackView {
                 stack: root.stack-model;
@@ -1072,6 +1111,38 @@ export component AppWindow inherits Window {
         // (the capture-overlay precedent; the later sibling wins the
         // hit test, so an outside click lands on the scrim and closes
         // — the session keeps running; the overlay is presentation).
+        // The review walk's scrim (the focus overlay's precedent): an
+        // outside click steps the walk back one level — never past a
+        // command (the ladder shape).
+        if (root.walk-model.open): TouchArea {
+            width: 100%;
+            height: 100%;
+            clicked => root.walk-scrim-clicked();
+        }
+        if (root.walk-model.open): ReviewWalkOverlay {
+            width: min(root.width - 2 * Theme.space-2, 560px * Theme.base-scale);
+            x: (root.width - self.width) / 2;
+            y: max(Theme.space-4,
+                   min((root.height - status.height - self.height) / 2,
+                       status.y - self.height - Theme.space-2));
+            model: root.walk-model;
+            answer-seeds: root.walk-answer-seeds;
+            scrim-clicked() => root.walk-scrim-clicked();
+            file-clicked() => root.walk-file-clicked();
+            keep-clicked() => root.walk-keep-clicked();
+            file-prev-clicked() => root.walk-file-prev-clicked();
+            file-next-clicked() => root.walk-file-next-clicked();
+            candidate-activated(index) => root.walk-candidate-activated(index);
+            file-commit-clicked() => root.walk-file-commit-clicked();
+            tomorrow-clicked() => root.walk-tomorrow-clicked();
+            pick-clicked() => root.walk-pick-clicked();
+            leave-clicked() => root.walk-leave-clicked();
+            date-edited(text) => root.walk-date-edited(text);
+            date-commit-clicked() => root.walk-date-commit-clicked();
+            answer-edited(index, text) => root.walk-answer-edited(index, text);
+            record-clicked() => root.walk-record-clicked();
+            finish-clicked() => root.walk-finish-clicked();
+        }
         if (root.focus-overlay-open): focus-overlay-backdrop := TouchArea {
             width: 100%;
             height: 100%;
