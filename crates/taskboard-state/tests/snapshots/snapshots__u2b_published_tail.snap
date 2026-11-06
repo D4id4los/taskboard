@@ -1,0 +1,11 @@
+---
+source: crates/taskboard-state/tests/snapshots.rs
+expression: "&tail"
+---
+sync: {}
+undo:
+  can_undo: false
+  can_redo: false
+  head_label: ~
+  recent: []
+last_updated: "1970-01-01T10:00:00Z"

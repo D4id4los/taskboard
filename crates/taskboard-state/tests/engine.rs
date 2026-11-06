@@ -20,11 +20,15 @@ use taskboard_domain::persistence::{
 };
 use taskboard_domain::test_support::{CountingIds, InMemoryRepository};
 use taskboard_domain::{
-    AppState, Clock, CommandOutcome, EngineSignal, IdGenerator, NotifierMessage, RemoteBoard,
-    RemoteBoardId, RemoteBoardSnapshot, SettingsSnapshot, Stack, StackClocks, StackId,
-    StateCommand, SyncCommand, SyncErrorKind, SyncPhase, SyncReport, SystemEvent, TickSecs,
+    AppState, Clock, CommandOutcome, EngineSignal, IdGenerator, ImportedReflection,
+    NotifierMessage, ReflectionEntry, RemoteBoard, RemoteBoardId, RemoteBoardSnapshot,
+    SettingsSnapshot, Stack, StackClocks, StackId, StateCommand, SyncCommand, SyncErrorKind,
+    SyncPhase, SyncReport, SystemEvent, TickSecs, UserDataReport,
 };
-use taskboard_state::{DayRollConfig, EngineStartupError, ExecuteError, spawn_state_engine};
+use taskboard_state::{
+    DayRollConfig, EngineStartupError, ExecuteError, spawn_state_engine,
+    spawn_state_engine_with_user_data,
+};
 
 mod common;
 
@@ -51,6 +55,16 @@ impl RecordingRepository {
 
     fn batches(&self) -> Vec<Vec<PersistenceAction>> {
         self.log.lock().expect("poisoned").clone()
+    }
+
+    /// The persisted outbox (the board lane's queue).
+    fn inner_outbox(&self) -> Vec<taskboard_domain::PendingOp> {
+        self.inner.snapshot().outbox
+    }
+
+    /// The persisted undo journal.
+    fn inner_journal(&self) -> taskboard_domain::JournalState {
+        self.inner.snapshot().journal
     }
 }
 
@@ -117,6 +131,9 @@ struct Harness {
     handle: taskboard_state::EngineHandle,
     sync_in: tokio::sync::mpsc::Receiver<SyncCommand>,
     report_tx: tokio::sync::mpsc::Sender<SyncReport>,
+    /// The user-data lane's sender (the files actor's half); the U-series
+    /// delivers through it, and dropping it pins the closed-lane latch.
+    user_data_tx: tokio::sync::mpsc::Sender<UserDataReport>,
     system_tx: tokio::sync::broadcast::Sender<SystemEvent>,
     /// The engine's notifier out half: the withdraw direction's witness
     /// (the reminder suite owns fire-path coverage).
@@ -127,14 +144,16 @@ struct Harness {
 async fn spawn(spawner: Spawner) -> Harness {
     let (sync_out, sync_in) = tokio::sync::mpsc::channel::<SyncCommand>(8);
     let (report_tx, report_rx) = tokio::sync::mpsc::channel::<SyncReport>(8);
+    let (user_data_tx, user_data) = tokio::sync::mpsc::channel::<UserDataReport>(4);
     let (system_tx, system_rx) = tokio::sync::broadcast::channel::<SystemEvent>(8);
     let (notifier, notifications) = tokio::sync::mpsc::channel::<NotifierMessage>(64);
-    let (handle, join) = spawn_state_engine(
+    let (handle, join) = spawn_state_engine_with_user_data(
         spawner.repo,
         spawner.ids,
         spawner.clock,
         sync_out,
         report_rx,
+        user_data,
         system_tx.clone(),
         system_rx,
         notifier,
@@ -147,6 +166,7 @@ async fn spawn(spawner: Spawner) -> Harness {
         handle,
         sync_in,
         report_tx,
+        user_data_tx,
         system_tx,
         notifications,
         join,
@@ -634,6 +654,7 @@ async fn a7f_draining_engine_ignores_connector_events() {
     );
 
     drop(h.report_tx);
+    drop(h.user_data_tx); // the files actor exiting is the lane's closure
     tokio::time::timeout(Duration::from_secs(60), h.join)
         .await
         .expect("engine exits after drain")
@@ -646,7 +667,8 @@ async fn a7f_draining_engine_ignores_connector_events() {
 async fn a8_shutdown_drains_then_exits_when_reports_close() {
     let h = harness().await;
     h.system_tx.send(SystemEvent::Shutdown).expect("broadcast");
-    drop(h.report_tx); // the sync actor exiting is what ends the drain
+    drop(h.report_tx);
+    drop(h.user_data_tx); // the files actor exiting is the lane's closure // the sync actor exiting is what ends the drain
     tokio::time::timeout(Duration::from_secs(60), h.join)
         .await
         .expect("engine exits after drain")
@@ -805,6 +827,7 @@ async fn a10_execute_after_shutdown_is_engine_gone() {
     assert!(matches!(result, Err(ExecuteError::EngineGone)));
 
     drop(h.report_tx);
+    drop(h.user_data_tx); // the files actor exiting is the lane's closure
     tokio::time::timeout(Duration::from_secs(60), h.join)
         .await
         .expect("engine exits after drain")
@@ -1268,6 +1291,7 @@ async fn g1_shutdown_keeps_ingesting_reports() {
     .await;
 
     drop(h.report_tx);
+    drop(h.user_data_tx); // the files actor exiting is the lane's closure
     tokio::time::timeout(Duration::from_secs(60), h.join)
         .await
         .expect("engine exits after drain")
@@ -1297,6 +1321,7 @@ async fn g2_drain_declines_execute_and_answers_flush() {
         .expect("drain-mode flush answers promptly");
 
     drop(h.report_tx);
+    drop(h.user_data_tx); // the files actor exiting is the lane's closure
     tokio::time::timeout(Duration::from_secs(60), h.join)
         .await
         .expect("engine exits after drain")
@@ -1311,6 +1336,7 @@ async fn g3_reports_close_ends_the_drain() {
     let h = harness().await;
     h.system_tx.send(SystemEvent::Shutdown).expect("broadcast");
     drop(h.report_tx);
+    drop(h.user_data_tx); // the files actor exiting is the lane's closure
     tokio::time::timeout(Duration::from_secs(60), h.join)
         .await
         .expect("drain ends when reports close")
@@ -1323,6 +1349,7 @@ async fn g3_reports_close_ends_the_drain() {
 async fn g4_shutdown_with_reports_already_closed_exits_immediately() {
     let h = harness().await;
     drop(h.report_tx);
+    drop(h.user_data_tx); // the files actor exiting is the lane's closure
     // Let the engine observe the closure first (it logs and keeps
     // running as a daemon); the shutdown then drains an empty channel.
     eventually_idle(&h.handle).await;
@@ -1360,6 +1387,7 @@ async fn g5_pre_shutdown_reports_ingest_before_drain() {
     .await;
 
     drop(h.report_tx);
+    drop(h.user_data_tx); // the files actor exiting is the lane's closure
     tokio::time::timeout(Duration::from_secs(60), h.join)
         .await
         .expect("engine exits after drain")
@@ -1374,6 +1402,7 @@ async fn g6_second_shutdown_during_drain_is_ignored() {
     h.system_tx.send(SystemEvent::Shutdown).expect("broadcast");
     h.system_tx.send(SystemEvent::Shutdown).expect("broadcast");
     drop(h.report_tx);
+    drop(h.user_data_tx); // the files actor exiting is the lane's closure
     tokio::time::timeout(Duration::from_secs(60), h.join)
         .await
         .expect("engine exits after drain")
@@ -1616,6 +1645,7 @@ async fn h1_engine_continues_without_sync_after_the_reports_channel_closes() {
 
     // The connector dies: the reports sender drops (the actor's exit).
     drop(h.report_tx);
+    drop(h.user_data_tx); // the files actor exiting is the lane's closure
 
     // Local editing keeps working: create a stack and a task.
     let stack = h
@@ -2196,6 +2226,7 @@ async fn j5_attach_during_drain_is_declined_typed() {
     assert_eq!(receipt, taskboard_state::AttachReceipt::Draining);
 
     drop(h.report_tx);
+    drop(h.user_data_tx); // the files actor exiting is the lane's closure
     tokio::time::timeout(RECV_DEADLINE, h.join)
         .await
         .expect("the engine drains and stops within the deadline")
@@ -3751,4 +3782,189 @@ async fn break_rules_and_reserved_entry_fold_into_engine_state() {
         h.notifications.try_recv().is_err(),
         "a re-folded row is not re-withdrawn"
     );
+}
+
+// ---------------------------------------------------------------------
+// U-series — the user-data lane (DR-8 chunk 3, D-ES2/D-ES6). One
+// behavior per test at the engine-thread layer only: the import fold's
+// semantics are pinned in the domain, the journeys in the snapshot
+// suite; these pin the *routing*: the batch grammar, the board
+// machinery's silence, the no-op path, the closed-lane latch.
+// ---------------------------------------------------------------------
+
+/// A live imported entry with an explicit clock (the wire carries
+/// foreign clocks; the engine stamps nothing).
+fn wire_entry(id_raw: u128, text: &str, updated_secs: i64) -> ImportedReflection {
+    ImportedReflection::Entry(ReflectionEntry {
+        id: taskboard_domain::ReflectionId::from(uuid::Uuid::from_u128(id_raw)),
+        cadence: taskboard_domain::ReviewCadence::Day,
+        day: chrono::NaiveDate::from_ymd_opt(2026, 11, 5).expect("date"),
+        window_start: common::ts(1_000),
+        window_end: common::ts(1_000 + 86_400),
+        text: text.to_owned(),
+        attributes: taskboard_domain::ReflectionAttributes::default(),
+        created_at: common::ts(900),
+        updated_at: common::ts(updated_secs),
+        deleted: false,
+    })
+}
+
+/// Polls until the shared pointer is stable across two successive
+/// samples — the quiescence signal for "nothing else published after
+/// this point" (an idle loop never publishes spontaneously).
+async fn quiesced_pointer(handle: &taskboard_state::EngineHandle) -> Arc<AppState> {
+    let mut last = handle.shared_state().load_full();
+    loop {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        let now = handle.shared_state().load_full();
+        if Arc::ptr_eq(&now, &last) {
+            return now;
+        }
+        last = now;
+    }
+}
+
+/// The no-board-ops pin (D-SF11/D-ES6, one journey): an import lands in
+/// the reflection home and the persistence batches carry only
+/// `UpsertReflectionEntry`; the outbox, the undo journal, and the sync
+/// rows are byte-identical; an absent-target tombstone materialises no
+/// ghost row.
+#[tokio::test]
+async fn u1_import_lands_without_touching_any_board_machinery() {
+    let repo = Arc::new(RecordingRepository::seeded());
+    let h = spawn(Spawner {
+        repo: repo.clone(),
+        ..Spawner::default()
+    })
+    .await;
+
+    let outbox_before = repo.inner_outbox();
+    let journal_before = repo.inner_journal();
+    let sync_before = h.handle.shared_state().load().sync.clone();
+
+    let absent_id = uuid::Uuid::from_u128(777);
+    h.user_data_tx
+        .send(UserDataReport {
+            journal: vec![
+                wire_entry(42, "from the fleet", 5_000),
+                ImportedReflection::Tombstone {
+                    id: taskboard_domain::ReflectionId::from(absent_id),
+                    clock: common::ts(5_001),
+                },
+            ],
+        })
+        .await
+        .expect("lane open");
+    eventually(&h.handle, |app| {
+        app.reflection
+            .entries
+            .contains_key(&taskboard_domain::ReflectionId::from(
+                uuid::Uuid::from_u128(42),
+            ))
+    })
+    .await;
+
+    let app = h.handle.shared_state().load_full();
+    // Only the entry landed; the absent-target tombstone minted nothing.
+    assert_eq!(app.reflection.entries.len(), 1);
+    // The batch grammar: only reflection upserts, ever.
+    for batch in repo.batches() {
+        assert!(
+            batch
+                .iter()
+                .all(|a| matches!(a, PersistenceAction::UpsertReflectionEntry(_))),
+            "batch: {batch:?}"
+        );
+    }
+    // The board machinery's silence.
+    assert_eq!(repo.inner_outbox(), outbox_before, "no outbox op");
+    assert_eq!(repo.inner_journal(), journal_before, "no undo entry");
+    assert_eq!(app.sync, sync_before, "no sync-status row");
+    assert_eq!(
+        app.undo,
+        taskboard_domain::UndoView::derive(&repo.inner_journal()),
+        "the undo projection is untouched"
+    );
+}
+
+/// The no-op pin: a report whose rows are all absent-stale applies no
+/// batch and publishes nothing — after a marker command's publish has
+/// quiesced, the shared pointer is exactly the marker's.
+#[tokio::test]
+async fn u2_noop_report_writes_and_publishes_nothing() {
+    let repo = Arc::new(RecordingRepository::seeded());
+    let h = spawn(Spawner {
+        repo: repo.clone(),
+        ..Spawner::default()
+    })
+    .await;
+    let reflection_before = h.handle.shared_state().load().reflection.clone();
+
+    // Empty report, then an all-stale one for an id the home never held.
+    h.user_data_tx
+        .send(UserDataReport {
+            journal: Vec::new(),
+        })
+        .await
+        .expect("lane open");
+    h.user_data_tx
+        .send(UserDataReport {
+            journal: vec![ImportedReflection::Tombstone {
+                id: taskboard_domain::ReflectionId::from(uuid::Uuid::from_u128(778)),
+                clock: common::ts(5_002),
+            }],
+        })
+        .await
+        .expect("lane open");
+
+    // (An absent id always inserts — that is u1's journey; the stale
+    // skip is the snapshot suite's u4. The no-op family here is: an
+    // empty report and an absent-target tombstone.)
+
+    // The marker: a real command publishes; wait for it to land.
+    let marker = h
+        .handle
+        .execute(StateCommand::CreateStack {
+            board: h.board_id(),
+            title: "marker".into(),
+            order: 1,
+        })
+        .await
+        .expect("accepted");
+    assert!(matches!(marker, CommandOutcome::CreatedStack(_)));
+    let after_marker = quiesced_pointer(&h.handle).await;
+
+    // Nothing after the marker published: the no-ops wrote nothing.
+    let app = h.handle.shared_state().load_full();
+    assert!(
+        Arc::ptr_eq(&app, &after_marker),
+        "no publish after the marker"
+    );
+    assert_eq!(app.reflection, reflection_before, "the home is untouched");
+    for batch in repo.batches() {
+        assert!(!batch.is_empty(), "a no-op never applies an empty batch");
+    }
+}
+
+/// The latch pin: a closed user-data lane is inert, never fatal — the
+/// loop keeps serving commands (and the same daemon rule holds for the
+/// lane the harness dropped).
+#[tokio::test]
+async fn u3_closed_user_data_lane_keeps_serving_commands() {
+    let mut h = harness().await;
+    let (closed_tx, _) = tokio::sync::mpsc::channel::<UserDataReport>(1);
+    drop(std::mem::replace(&mut h.user_data_tx, closed_tx));
+    // Give the loop a chance to observe the closure, then prove it is
+    // alive and serving.
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let outcome = h
+        .handle
+        .execute(StateCommand::CreateStack {
+            board: h.board_id(),
+            title: "after closure".into(),
+            order: 2,
+        })
+        .await
+        .expect("the engine still serves commands");
+    assert!(matches!(outcome, CommandOutcome::CreatedStack(_)));
 }
