@@ -1765,27 +1765,34 @@ pub fn live_boards(state: &AppState) -> Vec<&Board> {
         .collect()
 }
 
-/// The global inbox's open count (chunk 10 D9): live, open,
-/// anchor-filtered tasks whose stack belongs to the global Inbox
-/// board — one inbox, one number, the `due_sets` template. Zero when
-/// no Inbox board exists (an empty inbox is triage-done).
+/// The global inbox's open tasks (chunk 10 D9; the one inbox reading
+/// — the toolbar chip counts it, the review walk's Inbox stage lists
+/// it): live, open, anchor-filtered tasks whose stack belongs to the
+/// global Inbox board, in stack order then canonical `(order, id)`.
+/// Empty when no Inbox board exists (an empty inbox is triage-done).
+#[must_use]
+pub fn inbox_tasks(state: &AppState) -> Vec<TaskId> {
+    let Some(inbox) = state.inbox_board() else {
+        return Vec::new();
+    };
+    let mut tasks: Vec<(i64, StackId, i64, TaskId)> = state
+        .tasks
+        .values()
+        .filter(|task| task.is_live() && task.is_open() && !is_anchor_task(task))
+        .filter_map(|task| {
+            let stack = state.stacks.get(&task.stack)?;
+            (stack.board == inbox).then_some((stack.order, stack.id, task.order, task.id))
+        })
+        .collect();
+    tasks.sort();
+    tasks.into_iter().map(|(_, _, _, id)| id).collect()
+}
+
+/// The global inbox's open count: `inbox_tasks`' length — one inbox,
+/// one number, the `due_sets` template.
 #[must_use]
 pub fn inbox_count(state: &AppState) -> usize {
-    state.inbox_board().map_or(0, |inbox| {
-        state
-            .tasks
-            .values()
-            .filter(|task| {
-                task.is_live()
-                    && task.is_open()
-                    && !is_anchor_task(task)
-                    && state
-                        .stacks
-                        .get(&task.stack)
-                        .is_some_and(|stack| stack.board == inbox)
-            })
-            .count()
-    })
+    inbox_tasks(state).len()
 }
 
 /// The today row's context line (chunk 10 D7, D-V3): the stack title
@@ -4590,14 +4597,19 @@ mod connector_status_tests {
             }
             t
         };
-        state.tasks.insert(
-            TaskId::from_uuid(uuid::Uuid::now_v7()),
-            mk(inbox_stack, "one", false, false),
-        );
-        state.tasks.insert(
-            TaskId::from_uuid(uuid::Uuid::now_v7()),
-            mk(inbox_stack, "two", false, false),
-        );
+        // "one" sits later in the stack than "two": the reading
+        // orders by canonical `(order, id)`, never by insertion.
+        // "one" sits later in the stack than "two": the reading
+        // orders by canonical `(order, id)`, never by insertion. The
+        // rows are keyed by their own ids (the one reading lists
+        // `task.id`, the map's key here).
+        let mut one = mk(inbox_stack, "one", false, false);
+        one.order = 5;
+        let one_id = one.id;
+        state.tasks.insert(one_id, one);
+        let two = mk(inbox_stack, "two", false, false);
+        let two_id = two.id;
+        state.tasks.insert(two_id, two);
         let done_id = TaskId::from_uuid(uuid::Uuid::now_v7());
         state
             .tasks
@@ -4624,6 +4636,11 @@ mod connector_status_tests {
             inbox_count(&state),
             2,
             "live ∧ open ∧ inbox-stacked ∧ not anchor"
+        );
+        assert_eq!(
+            inbox_tasks(&state),
+            vec![two_id, one_id],
+            "the one reading lists the same set in canonical stack order"
         );
     }
 
