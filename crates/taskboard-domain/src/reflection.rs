@@ -346,6 +346,25 @@ impl ReflectionState {
     }
 }
 
+/// The nine ruled kebab names, in declaration order — the strategy and
+/// table-test feed (a test-side enumeration of the curated set).
+#[must_use]
+pub fn all_health_flag_names() -> Vec<&'static str> {
+    // Kept in sync with the variant declaration order by the
+    // declaration-order pin in this module's tests.
+    vec![
+        "migraine",
+        "minor-headache",
+        "medium-headache",
+        "cold-or-flu",
+        "allergies",
+        "cramps",
+        "poor-sleep",
+        "overwhelmed",
+        "good-day",
+    ]
+}
+
 /// A curated reflection template: typed data, not config (DR-7 D-J4 —
 /// no `[templates]` TOML section, no stored rows in v1). The type shape
 /// is the roaming-ready seam for stored templates (#639): rows keyed by

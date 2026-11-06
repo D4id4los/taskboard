@@ -631,6 +631,13 @@ fn domain_error_kind(err: &taskboard_domain::CommandError) -> &'static str {
         D::TargetNotUndoable(_) => "target-not-undoable",
         D::TargetNoLongerInvertible { .. } => "target-not-invertible",
         D::UndoTargetHasDependents { .. } => "undo-target-has-dependents",
+        // DR-7 chunk 1: the reflection verbs exist as engine commands
+        // only; the CLI's `journal` verb family (chunk 2, #637) will map
+        // its own rejections — until then these kinds surface the typed
+        // facts in the JSON error shape.
+        D::UnknownReflection(_) => "unknown-reflection",
+        D::InvalidReviewWindow => "invalid-review-window",
+        D::InvalidRating => "invalid-rating",
     }
 }
 
@@ -645,6 +652,7 @@ fn not_undoable_reason_kind(reason: taskboard_domain::NotUndoableReason) -> &'st
         R::ReminderSurface => "reminder-surface",
         R::TrackingSurface => "tracking-surface",
         R::HabitSurface => "habit-surface",
+        R::ReflectionSurface => "reflection-surface",
     }
 }
 

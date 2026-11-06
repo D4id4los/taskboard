@@ -47,6 +47,7 @@ use crate::recur::{
     RecurBound, RecurRule, lift_to_live, next_live_after, roll_reference_date, roll_target,
     series_reference_date,
 };
+use crate::reflection::{Rating, ReflectionAttributes, ReflectionEntry, ReviewWindow};
 use crate::reminders::{
     Insistence, ReminderDefaults, ReminderDismissal, ReminderRef, ReminderRule, ReminderSnooze,
     active_notifications,
@@ -173,6 +174,17 @@ pub enum CommandError {
         /// The offending window.
         window: WindowStart,
     },
+    /// No reflection entry with this id exists.
+    #[error("unknown reflection entry")]
+    UnknownReflection(crate::ids::ReflectionId),
+    /// A reflection payload's window failed the structural mint (the
+    /// calendar-blind validation: duration vs. cadence, or non-monotone).
+    #[error("review window does not match its cadence")]
+    InvalidReviewWindow,
+    /// A reflection rating input sits outside `1..=5` — the planner
+    /// minted it, never clamped.
+    #[error("rating must be between 1 and 5")]
+    InvalidRating,
     /// An engine-routed command (`Undo`/`Redo`) reached the ordinary
     /// catalogue — unreachable through the journal wrapper, which plans
     /// them itself before `plan_command` sees them (ADR 0019). The arm
@@ -310,6 +322,22 @@ pub enum CommandOutcome {
         window: WindowStart,
         /// The window's post-write count.
         count: u32,
+    },
+    /// The command recorded the reflection entry (post-write row —
+    /// minted id and `now`-stamped clocks included).
+    ReflectionRecorded {
+        /// The freshly minted entry.
+        entry: crate::reflection::ReflectionEntry,
+    },
+    /// The command applied the change mask (post-write row).
+    ReflectionUpdated {
+        /// The updated entry.
+        entry: crate::reflection::ReflectionEntry,
+    },
+    /// The command tombstoned the named entry in place.
+    ReflectionDeleted {
+        /// The tombstoned entry's id.
+        id: crate::ids::ReflectionId,
     },
     /// The command muted or unmuted a task's reminder firings.
     ReminderMuted {
@@ -2650,6 +2678,157 @@ pub fn plan_command(
                     board_flush(habit.board, ids, now),
                 ],
                 outcome: CommandOutcome::Applied,
+            })
+        }
+        StateCommand::RecordReflection {
+            cadence,
+            day,
+            window,
+            text,
+            mood,
+            energy,
+            flags,
+        } => {
+            // Validation precedes no-op detection (the `LogTime` order,
+            // P-7): a malformed payload is a typed rejection even when
+            // the record would have been empty. The planner is
+            // calendar-blind (D-J6): the window is caller data,
+            // validated structurally through the mint.
+            let minted = ReviewWindow::try_new(*cadence, *day, window.0, window.1)
+                .map_err(|_| CommandError::InvalidReviewWindow)?;
+            let mood_rating = mood
+                .map(Rating::try_new)
+                .transpose()
+                .map_err(|_| CommandError::InvalidRating)?;
+            let energy_rating = energy
+                .map(Rating::try_new)
+                .transpose()
+                .map_err(|_| CommandError::InvalidRating)?;
+            if text.is_empty()
+                && mood_rating.is_none()
+                && energy_rating.is_none()
+                && flags.is_empty()
+            {
+                // An empty record was never an event: zero actions (the
+                // journal's empty-batch rule then journals nothing).
+                return Ok(no_op());
+            }
+            let id = ids.new_reflection_id();
+            let entry = ReflectionEntry {
+                id,
+                cadence: *cadence,
+                // Label and instants stored verbatim from the minted
+                // window — device-local data, never re-derived at read.
+                day: minted.day(),
+                window_start: minted.start(),
+                window_end: minted.end(),
+                text: text.clone(),
+                attributes: ReflectionAttributes {
+                    mood: mood_rating,
+                    energy: energy_rating,
+                    flags: flags.clone(),
+                    // Write paths never park: `extra_flags` is the
+                    // tolerant decode's parking lot only.
+                    extra_flags: std::collections::BTreeSet::new(),
+                },
+                // The mutation clocks are the planner's `now`, never
+                // window data (the `LogTime` R-14 rule).
+                created_at: now,
+                updated_at: now,
+                deleted: false,
+            };
+            Ok(CommandPlan {
+                // The contract (§3-A): device-local — no `EnqueueOp` of
+                // any kind (pinned by test).
+                actions: vec![PersistenceAction::UpsertReflectionEntry(entry.clone())],
+                outcome: CommandOutcome::ReflectionRecorded { entry },
+            })
+        }
+        StateCommand::UpdateReflection {
+            id,
+            text,
+            mood,
+            energy,
+            flags_add,
+            flags_remove,
+        } => {
+            let stored = app
+                .reflection
+                .entries
+                .get(id)
+                .ok_or(CommandError::UnknownReflection(*id))?;
+            if stored.deleted {
+                // Idempotent repeat against a tombstone (D-J6).
+                return Ok(no_op());
+            }
+            // The double-Option masks: validate before the no-op check
+            // (P-7) — a bad masked rating is a rejection even when the
+            // rest of the mask is unchanged.
+            let new_mood = match mood {
+                None => stored.attributes.mood,
+                Some(None) => None,
+                Some(Some(raw)) => {
+                    Some(Rating::try_new(*raw).map_err(|_| CommandError::InvalidRating)?)
+                }
+            };
+            let new_energy = match energy {
+                None => stored.attributes.energy,
+                Some(None) => None,
+                Some(Some(raw)) => {
+                    Some(Rating::try_new(*raw).map_err(|_| CommandError::InvalidRating)?)
+                }
+            };
+            // Delta flags, never whole-set replace: the untouched rest
+            // of the set survives a fat-fingered edit.
+            let mut new_flags = stored.attributes.flags.clone();
+            new_flags.extend(flags_add.iter().copied());
+            for flag in flags_remove {
+                new_flags.remove(flag);
+            }
+            let new_text = text.clone().unwrap_or_else(|| stored.text.clone());
+            if new_text == stored.text
+                && new_mood == stored.attributes.mood
+                && new_energy == stored.attributes.energy
+                && new_flags == stored.attributes.flags
+            {
+                // A mask naming only unchanged values cannot churn
+                // `updated_at` (the `AdjustTimeEntry` mask-no-churn
+                // rule).
+                return Ok(no_op());
+            }
+            let mut entry = stored.clone();
+            entry.text = new_text;
+            entry.attributes.mood = new_mood;
+            entry.attributes.energy = new_energy;
+            entry.attributes.flags = new_flags;
+            entry.updated_at = now;
+            Ok(CommandPlan {
+                actions: vec![PersistenceAction::UpsertReflectionEntry(entry.clone())],
+                outcome: CommandOutcome::ReflectionUpdated { entry },
+            })
+        }
+        StateCommand::DeleteReflection { id } => {
+            // Decision P-6: absence is a typed rejection, deliberately
+            // unlike `DeleteTimeEntry`'s accepted no-op — the
+            // device-local family has no sync fold that could have
+            // removed a row underneath a selector.
+            let stored = app
+                .reflection
+                .entries
+                .get(id)
+                .ok_or(CommandError::UnknownReflection(*id))?;
+            if stored.deleted {
+                // Repeat delete (D-J6).
+                return Ok(no_op());
+            }
+            let mut entry = stored.clone();
+            entry.deleted = true;
+            entry.updated_at = now;
+            Ok(CommandPlan {
+                // Delete *is* an upsert (the tombstone-in-place ruling,
+                // D-J13) — the one-action shape, and still no outbox op.
+                actions: vec![PersistenceAction::UpsertReflectionEntry(entry)],
+                outcome: CommandOutcome::ReflectionDeleted { id: *id },
             })
         }
         StateCommand::PauseSeries { head, until } => {
@@ -10056,6 +10235,522 @@ mod tests {
         assert!(
             matches!(err, CommandError::UnknownHabit(id) if uuid::Uuid::from_u128(655) == id.as_uuid())
         );
+    }
+    // ---- DR-7 chunk 1: the reflection planner semantics (§5.2) ----
+
+    fn reflection_window() -> (chrono::NaiveDate, (DateTime<Utc>, DateTime<Utc>)) {
+        // A Day window derived the caller-side way (UTC midnight
+        // calendar): [2026-11-05 00:00, 2026-11-06 00:00).
+        let day = ymd(2026, 11, 5);
+        let start = Utc.with_ymd_and_hms(2026, 11, 5, 0, 0, 0).unwrap();
+        let end = Utc.with_ymd_and_hms(2026, 11, 6, 0, 0, 0).unwrap();
+        (day, (start, end))
+    }
+
+    fn record_command(text: &str) -> StateCommand {
+        let (day, window) = reflection_window();
+        StateCommand::RecordReflection {
+            cadence: crate::reflection::ReviewCadence::Day,
+            day,
+            window,
+            text: text.to_owned(),
+            mood: None,
+            energy: None,
+            flags: std::collections::BTreeSet::new(),
+        }
+    }
+
+    fn reflection_app(deleted: bool) -> AppState {
+        let (mut app, _outbox) = base();
+        let (day, window) = reflection_window();
+        let id = crate::ids::ReflectionId::from(uuid::Uuid::from_u128(700));
+        app.reflection.entries.insert(
+            id,
+            crate::reflection::ReflectionEntry {
+                id,
+                cadence: crate::reflection::ReviewCadence::Day,
+                day,
+                window_start: window.0,
+                window_end: window.1,
+                text: "original".into(),
+                attributes: crate::reflection::ReflectionAttributes {
+                    mood: crate::reflection::Rating::try_new(3).ok(),
+                    energy: None,
+                    flags: std::collections::BTreeSet::from([
+                        crate::reflection::HealthFlag::GoodDay,
+                    ]),
+                    extra_flags: std::collections::BTreeSet::new(),
+                },
+                created_at: ts(T0 - 7_200),
+                updated_at: ts(T0 - 7_200),
+                deleted,
+            },
+        );
+        app
+    }
+
+    fn enqueue_count(plan: &CommandPlan) -> usize {
+        plan.actions
+            .iter()
+            .filter(|action| matches!(action, PersistenceAction::EnqueueOp(_)))
+            .count()
+    }
+
+    #[test]
+    fn record_reflection_mints_the_row_with_now_clocks_and_verbatim_window() {
+        let (app, outbox) = base();
+        let ids = CountingIds::new();
+        let mut command = record_command("shipped the review");
+        let StateCommand::RecordReflection {
+            mood,
+            energy,
+            flags,
+            ..
+        } = &mut command
+        else {
+            unreachable!()
+        };
+        *mood = Some(4);
+        *energy = Some(2);
+        *flags = std::collections::BTreeSet::from([
+            crate::reflection::HealthFlag::PoorSleep,
+            crate::reflection::HealthFlag::GoodDay,
+        ]);
+        let plan = plan_command(
+            &app,
+            &outbox,
+            &command,
+            &ids,
+            &ReminderDefaults::default(),
+            test_day(),
+            now(),
+        )
+        .expect("accepted");
+        let CommandOutcome::ReflectionRecorded { entry } = plan.outcome else {
+            panic!("wrong receipt");
+        };
+        let (day, window) = reflection_window();
+        assert_eq!(entry.day, day, "the label stores verbatim");
+        assert_eq!(entry.window_start, window.0, "byte-equal instants");
+        assert_eq!(entry.window_end, window.1);
+        assert_eq!(entry.created_at, now(), "clocks are the planner's now");
+        assert_eq!(entry.updated_at, now());
+        assert_eq!(entry.cadence, crate::reflection::ReviewCadence::Day);
+        assert_eq!(
+            entry.attributes.mood,
+            crate::reflection::Rating::try_new(4).ok()
+        );
+        assert_eq!(
+            entry.attributes.energy,
+            crate::reflection::Rating::try_new(2).ok()
+        );
+        assert_eq!(
+            entry.attributes.flags.len(),
+            2,
+            "flags round-trip into the row"
+        );
+        assert!(
+            entry.attributes.extra_flags.is_empty(),
+            "write paths never park"
+        );
+        assert_eq!(plan.actions.len(), 1);
+        assert!(matches!(
+            &plan.actions[0],
+            PersistenceAction::UpsertReflectionEntry(row) if row.id == entry.id
+        ));
+    }
+
+    /// The §3-A contract pin: reflection plans enqueue no outbox op of
+    /// any kind — the device-local ruling, enforced here.
+    #[test]
+    fn reflection_commands_enqueue_zero_outbox_ops() {
+        let (app, outbox) = base();
+        let ids = CountingIds::new();
+        for command in [
+            record_command("text only"),
+            StateCommand::UpdateReflection {
+                id: crate::ids::ReflectionId::from(uuid::Uuid::from_u128(700)),
+                text: None,
+                mood: Some(Some(1)),
+                energy: None,
+                flags_add: std::collections::BTreeSet::new(),
+                flags_remove: std::collections::BTreeSet::new(),
+            },
+            StateCommand::DeleteReflection {
+                id: crate::ids::ReflectionId::from(uuid::Uuid::from_u128(1)),
+            },
+        ] {
+            // Only the record/update arms are expected to be accepted
+            // against `base()` (no rows); the delete rejects typed —
+            // either way zero ops are enqueued.
+            if let Ok(plan) = plan_command(
+                &app,
+                &outbox,
+                &command,
+                &ids,
+                &ReminderDefaults::default(),
+                test_day(),
+                now(),
+            ) {
+                assert_eq!(enqueue_count(&plan), 0, "no EnqueueOp, ever");
+                assert!(
+                    plan.actions
+                        .iter()
+                        .all(|a| matches!(a, PersistenceAction::UpsertReflectionEntry(_))),
+                    "the only action shape is the reflection upsert"
+                );
+            } else {
+                // Against the empty state the update/delete arms reject
+                // typed (P-6) — still without enqueueing anything.
+                assert!(matches!(
+                    command,
+                    StateCommand::UpdateReflection { .. } | StateCommand::DeleteReflection { .. }
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn empty_records_are_accepted_no_ops_with_zero_actions() {
+        let (app, outbox) = base();
+        let ids = CountingIds::new();
+        let empty_variants = vec![
+            record_command(""),
+            // Attributes-only-empty: ratings set but text still empty
+            // and no flags — mood alone IS an attribute, so use the
+            // truly empty shape: no text, no ratings, no flags.
+        ];
+        for command in empty_variants {
+            let plan = plan_command(
+                &app,
+                &outbox,
+                &command,
+                &ids,
+                &ReminderDefaults::default(),
+                test_day(),
+                now(),
+            )
+            .expect("accepted");
+            assert_eq!(plan.outcome, CommandOutcome::NoOp);
+            assert!(
+                plan.actions.is_empty(),
+                "an empty record was never an event"
+            );
+        }
+        // A mood-only record is NOT empty — it is a real event.
+        let mut mood_only = record_command("");
+        let StateCommand::RecordReflection { mood, .. } = &mut mood_only else {
+            unreachable!()
+        };
+        *mood = Some(3);
+        let plan = plan_command(
+            &app,
+            &outbox,
+            &mood_only,
+            &ids,
+            &ReminderDefaults::default(),
+            test_day(),
+            now(),
+        )
+        .expect("accepted");
+        assert!(matches!(
+            plan.outcome,
+            CommandOutcome::ReflectionRecorded { .. }
+        ));
+    }
+
+    #[test]
+    fn invalid_windows_and_ratings_are_typed_rejections() {
+        let (app, outbox) = base();
+        let ids = CountingIds::new();
+        let (day, (start, end)) = reflection_window();
+        let hour = chrono::TimeDelta::try_hours(1).unwrap();
+        let cases = vec![
+            // Day ≠ 24h.
+            StateCommand::RecordReflection {
+                cadence: crate::reflection::ReviewCadence::Day,
+                day,
+                window: (start, end + hour),
+                text: "x".into(),
+                mood: None,
+                energy: None,
+                flags: std::collections::BTreeSet::new(),
+            },
+            // Inverted.
+            StateCommand::RecordReflection {
+                cadence: crate::reflection::ReviewCadence::Day,
+                day,
+                window: (end, start),
+                text: "x".into(),
+                mood: None,
+                energy: None,
+                flags: std::collections::BTreeSet::new(),
+            },
+            // Week ≠ 168h.
+            StateCommand::RecordReflection {
+                cadence: crate::reflection::ReviewCadence::Week,
+                day,
+                window: (start, end),
+                text: "x".into(),
+                mood: None,
+                energy: None,
+                flags: std::collections::BTreeSet::new(),
+            },
+        ];
+        for command in cases {
+            assert_eq!(
+                plan_command(
+                    &app,
+                    &outbox,
+                    &command,
+                    &ids,
+                    &ReminderDefaults::default(),
+                    test_day(),
+                    now()
+                ),
+                Err(CommandError::InvalidReviewWindow),
+                "typed window rejection"
+            );
+        }
+        for bad in [0_u8, 6] {
+            let mut command = record_command("rated");
+            let StateCommand::RecordReflection { mood, energy, .. } = &mut command else {
+                unreachable!()
+            };
+            *mood = Some(bad);
+            *energy = Some(3);
+            assert_eq!(
+                plan_command(
+                    &app,
+                    &outbox,
+                    &command,
+                    &ids,
+                    &ReminderDefaults::default(),
+                    test_day(),
+                    now()
+                ),
+                Err(CommandError::InvalidRating),
+                "rating 0 and 6+ are typed rejections, never clamps"
+            );
+            // The row is not written: the empty state stays empty.
+            assert_eq!(app.reflection.entries.len(), 0);
+        }
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // the mask matrix is the contract table
+    fn update_mask_semantics_and_mask_no_churn() {
+        let ids = CountingIds::new();
+        let id = crate::ids::ReflectionId::from(uuid::Uuid::from_u128(700));
+        let set_flag = std::collections::BTreeSet::from([crate::reflection::HealthFlag::Cramps]);
+        // Text clear (`Some("")` is the legal clear), mood clear, energy
+        // set, flag add + remove — all in one mask.
+        let plan = plan_command(
+            &reflection_app(false),
+            &[],
+            &StateCommand::UpdateReflection {
+                id,
+                text: Some(String::new()),
+                mood: Some(None),
+                energy: Some(Some(5)),
+                flags_add: set_flag.clone(),
+                flags_remove: std::collections::BTreeSet::from([
+                    crate::reflection::HealthFlag::GoodDay,
+                ]),
+            },
+            &ids,
+            &ReminderDefaults::default(),
+            test_day(),
+            now(),
+        )
+        .expect("accepted");
+        let CommandOutcome::ReflectionUpdated { entry } = plan.outcome else {
+            panic!("wrong receipt");
+        };
+        assert_eq!(entry.text, "", "Some(\"\") clears");
+        assert_eq!(entry.attributes.mood, None, "Some(None) clears");
+        assert_eq!(
+            entry.attributes.energy,
+            crate::reflection::Rating::try_new(5).ok(),
+            "Some(Some(v)) sets"
+        );
+        assert_eq!(
+            entry.attributes.flags, set_flag,
+            "delta moves flags without replacing"
+        );
+        assert_eq!(entry.updated_at, now(), "the mask churned the clock once");
+        assert_eq!(entry.created_at, ts(T0 - 7_200), "creation stamp untouched");
+
+        // All-unchanged: the accepted no-op with `updated_at` unmoved.
+        let plan = plan_command(
+            &reflection_app(false),
+            &[],
+            &StateCommand::UpdateReflection {
+                id,
+                text: Some("original".into()),
+                mood: Some(Some(3)),
+                energy: None,
+                flags_add: std::collections::BTreeSet::new(),
+                flags_remove: std::collections::BTreeSet::new(),
+            },
+            &ids,
+            &ReminderDefaults::default(),
+            test_day(),
+            now(),
+        )
+        .expect("accepted");
+        assert_eq!(plan.outcome, CommandOutcome::NoOp);
+        assert_eq!(plan.actions, Vec::new());
+
+        // A tombstoned target is the accepted no-op; an unknown id is
+        // the typed rejection (P-6).
+        assert_eq!(
+            plan_command(
+                &reflection_app(true),
+                &[],
+                &StateCommand::UpdateReflection {
+                    id,
+                    text: Some("x".into()),
+                    mood: None,
+                    energy: None,
+                    flags_add: std::collections::BTreeSet::new(),
+                    flags_remove: std::collections::BTreeSet::new(),
+                },
+                &ids,
+                &ReminderDefaults::default(),
+                test_day(),
+                now(),
+            )
+            .expect("accepted")
+            .outcome,
+            CommandOutcome::NoOp
+        );
+        let stranger = crate::ids::ReflectionId::from(uuid::Uuid::from_u128(999));
+        assert_eq!(
+            plan_command(
+                &reflection_app(false),
+                &[],
+                &StateCommand::UpdateReflection {
+                    id: stranger,
+                    text: Some("x".into()),
+                    mood: None,
+                    energy: None,
+                    flags_add: std::collections::BTreeSet::new(),
+                    flags_remove: std::collections::BTreeSet::new(),
+                },
+                &ids,
+                &ReminderDefaults::default(),
+                test_day(),
+                now(),
+            ),
+            Err(CommandError::UnknownReflection(stranger))
+        );
+
+        // A bad masked rating rejects even when the rest of the mask is
+        // unchanged.
+        assert_eq!(
+            plan_command(
+                &reflection_app(false),
+                &[],
+                &StateCommand::UpdateReflection {
+                    id,
+                    text: None,
+                    mood: Some(Some(0)),
+                    energy: None,
+                    flags_add: std::collections::BTreeSet::new(),
+                    flags_remove: std::collections::BTreeSet::new(),
+                },
+                &ids,
+                &ReminderDefaults::default(),
+                test_day(),
+                now(),
+            ),
+            Err(CommandError::InvalidRating)
+        );
+    }
+
+    #[test]
+    fn delete_tombstones_in_place_and_repeats_no_op() {
+        let ids = CountingIds::new();
+        let id = crate::ids::ReflectionId::from(uuid::Uuid::from_u128(700));
+        let plan = plan_command(
+            &reflection_app(false),
+            &[],
+            &StateCommand::DeleteReflection { id },
+            &ids,
+            &ReminderDefaults::default(),
+            test_day(),
+            now(),
+        )
+        .expect("accepted");
+        assert_eq!(plan.outcome, CommandOutcome::ReflectionDeleted { id });
+        assert_eq!(plan.actions.len(), 1, "delete is an upsert (D-J13)");
+        let plan = plan_command(
+            &reflection_app(true),
+            &[],
+            &StateCommand::DeleteReflection { id },
+            &ids,
+            &ReminderDefaults::default(),
+            test_day(),
+            now(),
+        )
+        .expect("accepted");
+        assert_eq!(plan.outcome, CommandOutcome::NoOp);
+        let stranger = crate::ids::ReflectionId::from(uuid::Uuid::from_u128(999));
+        assert_eq!(
+            plan_command(
+                &reflection_app(false),
+                &[],
+                &StateCommand::DeleteReflection { id: stranger },
+                &ids,
+                &ReminderDefaults::default(),
+                test_day(),
+                now(),
+            ),
+            Err(CommandError::UnknownReflection(stranger))
+        );
+    }
+
+    /// The journal leg: accepted reflection commands journal with the
+    /// typed `ReflectionSurface` fact; no-ops journal nothing.
+    #[test]
+    fn reflection_journal_classification_and_empty_batch_rule() {
+        let (app, outbox) = base();
+        let ids = CountingIds::new();
+        let journal = crate::journal::JournalState::default();
+        let plan = crate::undo::plan_journaled_command(
+            &app,
+            &outbox,
+            &journal,
+            &record_command("journaled"),
+            &ids,
+            &ReminderDefaults::default(),
+            test_day(),
+            now(),
+        )
+        .expect("accepted");
+        let Some(PersistenceAction::RecordJournal(entry)) = plan.actions.last() else {
+            panic!("the journal append is the last action");
+        };
+        assert!(matches!(
+            entry.facts,
+            crate::journal::UndoFacts::NotUndoable(
+                crate::journal::NotUndoableReason::ReflectionSurface
+            )
+        ));
+        // The empty-batch rule: a no-op journals nothing.
+        let empty = crate::undo::plan_journaled_command(
+            &app,
+            &outbox,
+            &journal,
+            &record_command(""),
+            &ids,
+            &ReminderDefaults::default(),
+            test_day(),
+            now(),
+        )
+        .expect("accepted");
+        assert_eq!(empty.actions, Vec::new(), "no-ops journal nothing");
     }
 }
 

@@ -513,6 +513,75 @@ pub enum StateCommand {
         /// Habit to delete.
         habit: HabitId,
     },
+    /// Record one reflection entry for the caller-derived window
+    /// (DR-7 D-J6). The planner is calendar-blind: it validates the
+    /// window structurally ([`crate::reflection::ReviewWindow::try_new`])
+    /// and stores the caller's window verbatim. An empty record (no
+    /// text ∧ no attributes) is the accepted no-op. Device-local: never
+    /// enqueues an outbox op of any kind.
+    RecordReflection {
+        /// The reviewed window's cadence.
+        cadence: crate::reflection::ReviewCadence,
+        /// The window-date label.
+        day: chrono::NaiveDate,
+        /// The reviewed window, caller-derived (open instant, exclusive
+        /// close instant).
+        window: (chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>),
+        /// The free-text body (may be empty).
+        text: String,
+        /// The mood mint input (`Some(1..=5)`); the planner mints — bad
+        /// numbers are typed rejections, never clamps.
+        mood: Option<u8>,
+        /// The energy mint input.
+        energy: Option<u8>,
+        /// The curated health flags (typed — an unknown name cannot
+        /// reach the planner).
+        flags: std::collections::BTreeSet<crate::reflection::HealthFlag>,
+    },
+    /// Edit one reflection entry. Every slot is a change mask (`None` =
+    /// unchanged); the rating slots are double-Options (`Some(None)` =
+    /// clear, `Some(Some(v))` = set, minted at the planner — bad numbers
+    /// are typed rejections, never clamps). Flags move by delta
+    /// (`flags_add`/`flags_remove`), never whole-set replace — a
+    /// fat-fingered edit cannot wipe the flag set. Text `Some("")` is
+    /// the legal clear. All-unchanged is the accepted no-op (clocks
+    /// untouched). A tombstoned target is the accepted no-op.
+    UpdateReflection {
+        /// The entry to edit.
+        id: crate::ids::ReflectionId,
+        /// The new text, or unchanged.
+        text: Option<String>,
+        /// The mood change mask.
+        #[serde(
+            default,
+            deserialize_with = "deserialize_double_option",
+            skip_serializing_if = "Option::is_none"
+        )]
+        mood: Option<Option<u8>>,
+        /// The energy change mask.
+        #[serde(
+            default,
+            deserialize_with = "deserialize_double_option",
+            skip_serializing_if = "Option::is_none"
+        )]
+        energy: Option<Option<u8>>,
+        /// Flags to add to the set (the delta's positive half; empty by
+        /// default so old payloads decode clean).
+        #[serde(default)]
+        flags_add: std::collections::BTreeSet<crate::reflection::HealthFlag>,
+        /// Flags to remove from the set (the delta's negative half).
+        #[serde(default)]
+        flags_remove: std::collections::BTreeSet<crate::reflection::HealthFlag>,
+    },
+    /// Tombstone one reflection entry in place (the row survives;
+    /// DR-7 D-J2). A repeat on an already-deleted entry is the accepted
+    /// no-op; an unknown id is a typed rejection (decision P-6 — the
+    /// device-local family has no sync fold that could have removed a
+    /// row underneath a selector, so absence is a genuine user error).
+    DeleteReflection {
+        /// The entry to tombstone.
+        id: crate::ids::ReflectionId,
+    },
     /// Undo the line head's journaled command (ADR 0019). Engine-routed:
     /// the journal wrapper plans it (`plan_undo`) before the ordinary
     /// catalogue sees it — a direct dispatch is a typed rejection, not a
