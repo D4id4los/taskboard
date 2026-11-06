@@ -1118,8 +1118,8 @@ mod tests {
 
         // Word 0: groups + flat verbs + REPL exits; refusals excluded.
         for verb in [
-            "boards", "stacks", "tasks", "labels", "timers", "track", "export", "sync", "status",
-            "exit", "quit",
+            "boards", "stacks", "tasks", "labels", "timers", "track", "journal", "export", "sync",
+            "status", "exit", "quit",
         ] {
             assert!(
                 spec.offered_verbs.iter().any(|v| v == verb),
@@ -1199,6 +1199,7 @@ mod tests {
                 "track",
                 vec!["adjust", "delete", "list", "log", "start", "status", "stop"],
             ),
+            ("journal", vec!["add", "delete", "edit", "list", "show"]),
         ] {
             let walked = spec.groups.get(group).expect("group walked");
             for sub in subs {
@@ -1268,6 +1269,22 @@ mod tests {
             kinds(["track", "delete"]),
             &[Kind::None],
             "no dynamic entry-id completion (the D17 static-tokens ruling)"
+        );
+        for path in [
+            ["journal", "show"],
+            ["journal", "edit"],
+            ["journal", "delete"],
+        ] {
+            assert_eq!(
+                kinds(path),
+                &[Kind::None],
+                "no dynamic reflection-entry completion (the D17 static-tokens ruling)"
+            );
+        }
+        assert_eq!(
+            kinds(["journal", "add"]),
+            &[Kind::None],
+            "the body words are free text"
         );
 
         // Value flags.

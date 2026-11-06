@@ -342,6 +342,8 @@ fn o3_error_kinds_cover_every_variant() {
             CommandError::AmbiguousAdhocAlarm { .. } => "ambiguous-adhoc-alarm",
             CommandError::UnknownTimeEntry { .. } => "unknown-time-entry",
             CommandError::AmbiguousTimeEntry { .. } => "ambiguous-time-entry",
+            CommandError::UnknownReflectionEntry { .. } => "unknown-reflection-entry",
+            CommandError::AmbiguousReflectionEntry { .. } => "ambiguous-reflection-entry",
             CommandError::UnknownHabit { .. } => "unknown-habit",
             CommandError::AmbiguousHabit { .. } => "ambiguous-habit",
             CommandError::NoStacks => "no-stacks",
@@ -398,6 +400,12 @@ fn o3_error_kinds_cover_every_variant() {
         CommandError::UnknownTask("abc".to_owned()),
         CommandError::AmbiguousTask {
             candidates: vec!["x".to_owned(), "y".to_owned()],
+        },
+        CommandError::UnknownReflectionEntry {
+            selector: "abc123".to_owned(),
+        },
+        CommandError::AmbiguousReflectionEntry {
+            candidates: vec!["e1".to_owned(), "e2".to_owned()],
         },
         CommandError::UnknownLabel("lab".to_owned()),
         CommandError::AmbiguousLabel {
