@@ -28,9 +28,9 @@ use taskboard_domain::{
     AppState, Clock, CommandOutcome, DeckFeatures, EngineSignal, IdGenerator, Notification,
     NotifierMessage, PersistedState, PersistenceAction, ReminderFiring, RepositoryError,
     SettingsSnapshot, SidecarHealth, StateCommand, SyncCommand, SyncCounters, SyncPhase,
-    SyncStateReader, SyncStates, SyncStatus, SystemEvent, TaskRepository, ValidatorKey,
-    apply_push_report, apply_sync_report, journal_push_marks, notifications_for, plan_day_rolls,
-    plan_journaled_command,
+    SyncStateReader, SyncStates, SyncStatus, SystemEvent, TaskRepository, UserDataReport,
+    ValidatorKey, apply_push_report, apply_sync_report, import_reflections, journal_push_marks,
+    notifications_for, plan_day_rolls, plan_journaled_command,
 };
 
 use crate::config::DayRollConfig;
@@ -264,6 +264,12 @@ impl SyncStateReader for EngineHandle {
 /// snapshot is published with the hydrated state — the first
 /// `AppState` a reader sees already carries it.
 ///
+/// Spawns the State Engine **without** the files-substrate user-data
+/// lane (the `spawn_state_engine_with_user_data` delegation): the lane
+/// is created and its sender dropped immediately, so the engine's
+/// user-data arm latches closed and stays inert — the exact shape every
+/// harness and consumer without a files actor wants.
+///
 /// # Errors
 ///
 /// [`EngineStartupError::Load`] when the boot hydration failed; the
@@ -275,6 +281,52 @@ pub async fn spawn_state_engine(
     clock: Arc<dyn Clock>,
     sync_out: mpsc::Sender<SyncCommand>,
     sync_reports: mpsc::Receiver<taskboard_domain::SyncReport>,
+    system_out: broadcast::Sender<SystemEvent>,
+    system: broadcast::Receiver<SystemEvent>,
+    notifier: mpsc::Sender<NotifierMessage>,
+    settings: SettingsSnapshot,
+    day_roll: DayRollConfig,
+) -> Result<(EngineHandle, JoinHandle<()>), EngineStartupError> {
+    let (user_data_tx, user_data) = mpsc::channel::<UserDataReport>(USER_DATA_REPORT_CAPACITY);
+    drop(user_data_tx);
+    spawn_state_engine_with_user_data(
+        repo,
+        ids,
+        clock,
+        sync_out,
+        sync_reports,
+        user_data,
+        system_out,
+        system,
+        notifier,
+        settings,
+        day_roll,
+    )
+    .await
+}
+
+/// The user-data lane's capacity (DR-8 D-ES2): a files actor reports at
+/// most once per poll cycle; four absorbed reports cannot fall behind a
+/// human-observable cadence.
+pub const USER_DATA_REPORT_CAPACITY: usize = 4;
+
+/// Spawns the State Engine with the files-substrate user-data lane
+/// (DR-8 D-ES2): a sibling `mpsc::Receiver<UserDataReport>` beside the
+/// sync-report lane, same loop, same ingest seams, same publish
+/// discipline. A closed lane is inert (the latch), never fatal.
+///
+/// # Errors
+///
+/// [`EngineStartupError::Load`] when the boot hydration failed; the
+/// engine is not started in that case.
+#[allow(clippy::too_many_arguments)] // the injected seams ARE the constructor
+pub async fn spawn_state_engine_with_user_data(
+    repo: Arc<dyn TaskRepository>,
+    ids: Arc<dyn IdGenerator>,
+    clock: Arc<dyn Clock>,
+    sync_out: mpsc::Sender<SyncCommand>,
+    sync_reports: mpsc::Receiver<taskboard_domain::SyncReport>,
+    user_data: mpsc::Receiver<UserDataReport>,
     system_out: broadcast::Sender<SystemEvent>,
     system: broadcast::Receiver<SystemEvent>,
     notifier: mpsc::Sender<NotifierMessage>,
@@ -325,6 +377,7 @@ pub async fn spawn_state_engine(
         signals,
         command_rx,
         sync_reports,
+        user_data,
         system,
     ));
     Ok((handle, join))
@@ -345,7 +398,8 @@ struct EngineParts {
 
 #[allow(
         clippy::single_match_else, // select! arms read best as match arms
-        clippy::too_many_lines // one biased loop; the arms ARE the design
+        clippy::too_many_lines, // one biased loop; the arms ARE the design
+        clippy::too_many_arguments // the injected seams ARE the constructor
 )]
 async fn run_loop(
     mut core: EngineCore,
@@ -354,6 +408,7 @@ async fn run_loop(
     signals: broadcast::Sender<EngineSignal>,
     mut commands: mpsc::Receiver<EngineEnvelope>,
     mut sync_reports: mpsc::Receiver<taskboard_domain::SyncReport>,
+    mut user_data: mpsc::Receiver<UserDataReport>,
     mut system: broadcast::Receiver<SystemEvent>,
 ) {
     let EngineParts {
@@ -377,6 +432,7 @@ async fn run_loop(
     let mut sync_outs = vec![sync_out];
     let mut commands_open = true;
     let mut reports_open = true;
+    let mut user_data_open = true;
     let mut system_open = true;
     // Drain mode (ADR 0008): after `SystemEvent::Shutdown` the engine
     // declines new work but keeps ingesting sync reports until the
@@ -405,11 +461,11 @@ async fn run_loop(
     let mut last_roll: Option<NaiveDate> = None;
 
     loop {
-        if draining && !reports_open {
+        if draining && !reports_open && !user_data_open {
             tracing::info!("state engine stopped: drain complete");
             return;
         }
-        if !draining && !commands_open && !reports_open && !system_open {
+        if !draining && !commands_open && !reports_open && !user_data_open && !system_open {
             break;
         }
         // Drain disarms the timer outright: timer wakes are not
@@ -513,6 +569,27 @@ async fn run_loop(
                         tracing::warn!("sync report channel closed; continuing without sync");
                     }
                     reports_open = false;
+                }
+            },
+
+            maybe_user = user_data.recv(), if user_data_open => match maybe_user {
+                Some(report) => {
+                    ingest_user_data_report(
+                        &mut core,
+                        &shared,
+                        &repo,
+                        clock.as_ref(),
+                        &signals,
+                        &metrics,
+                        report,
+                    )
+                    .await;
+                }
+                None => {
+                    // Same daemon rule as the sync lane: a closed lane
+                    // is inert, never fatal.
+                    tracing::debug!("user-data lane closed; continuing without it");
+                    user_data_open = false;
                 }
             },
 
@@ -1023,6 +1100,45 @@ async fn ingest_sync_report(
         // section never re-withdraws already-settled occurrences.
         send_withdrawals(notifier, withdrawals_for(&actions)).await;
     }
+}
+
+/// Ingests one files-substrate user-data report (DR-8 D-ES6): the pure
+/// import fold over a clone of the reflection home, then — **iff** it
+/// applied a row — the same persist-then-interpret batch path every
+/// command uses, and a publish. A no-op report does nothing: no batch,
+/// no write, no publish, no stamp. Never any board machinery: no
+/// outbox op, no `LocalOp`, no undo journal entry (an import is not a
+/// user command — it is not undoable and must not shadow the undo
+/// vocabulary), no sync-status row.
+async fn ingest_user_data_report(
+    core: &mut EngineCore,
+    shared: &Arc<ArcSwap<AppState>>,
+    repo: &Arc<dyn TaskRepository>,
+    clock: &dyn Clock,
+    signals: &broadcast::Sender<EngineSignal>,
+    metrics: &EngineMetrics,
+    report: UserDataReport,
+) {
+    tracing::debug!(rows = report.journal.len(), "user-data report ingested");
+    let mut candidate = core.app().reflection.clone();
+    let outcome = import_reflections(&mut candidate, &report.journal);
+    if outcome.applied == 0 {
+        return;
+    }
+    // The emitted batch replays to exactly the folded home (the
+    // domain's actions-mirror-state law), so persisting then
+    // interpreting the batch lands the same home — memory ≡ disk by
+    // the engine's single-advance rule (ADR 0006), never a second
+    // write path.
+    let actions = outcome.actions;
+    if let Err(err) = repo.apply(actions.clone()).await {
+        // Discard the report: state unchanged; the next cycle's delta
+        // re-delivers the same rows.
+        tracing::error!(?err, "user-data batch lost; report discarded");
+        return;
+    }
+    core.interpret(&actions, clock.now());
+    publish(core, shared, signals, metrics);
 }
 
 /// The local board whose tagged binding matches `(connector, remote)` —

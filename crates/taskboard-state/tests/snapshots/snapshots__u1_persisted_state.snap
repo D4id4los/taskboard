@@ -1,0 +1,44 @@
+---
+source: crates/taskboard-state/tests/snapshots.rs
+expression: "&persisted"
+---
+boards: {}
+stacks: {}
+tasks: {}
+labels: {}
+outbox: []
+validators: {}
+sync: {}
+reminders:
+  rules: {}
+  deliveries: []
+  dismissals: []
+  snoozes: {}
+  muted: []
+  alarms: {}
+  break_rules: {}
+tracking:
+  entries: {}
+habits:
+  habits: {}
+  log: {}
+reflection:
+  entries:
+    00000000-0000-0000-0000-00000000000a:
+      id: 00000000-0000-0000-0000-00000000000a
+      cadence: day
+      day: 2026-11-05
+      window_start: "2026-11-05T00:00:00Z"
+      window_end: "2026-11-06T00:00:00Z"
+      text: arrived from the fleet
+      attributes:
+        mood: ~
+        energy: ~
+        flags: []
+        extra_flags: []
+      created_at: "1970-01-01T00:15:00Z"
+      updated_at: "1970-01-01T01:23:20Z"
+      deleted: false
+journal:
+  entries: []
+  head: ~

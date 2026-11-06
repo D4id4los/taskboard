@@ -21,11 +21,11 @@ use std::sync::Arc;
 use taskboard_domain::ReminderKind;
 use taskboard_domain::test_support::{CountingIds, InMemoryRepository};
 use taskboard_domain::{
-    Color, CommandOutcome, LocalOp, NotifierMessage, PushOutcome, PushResult, RemoteBoard,
-    RemoteBoardSnapshot, StateCommand, SyncCommand, SyncErrorKind, SyncPhase, SyncReport,
-    SystemEvent,
+    Color, CommandOutcome, ImportedReflection, LocalOp, NotifierMessage, PushOutcome, PushResult,
+    ReflectionEntry, RemoteBoard, RemoteBoardSnapshot, StateCommand, SyncCommand, SyncErrorKind,
+    SyncPhase, SyncReport, SystemEvent, UserDataReport,
 };
-use taskboard_state::{DayRollConfig, spawn_state_engine};
+use taskboard_state::{DayRollConfig, spawn_state_engine_with_user_data};
 
 use insta::assert_yaml_snapshot;
 
@@ -40,6 +40,9 @@ struct Scenario {
     handle: taskboard_state::EngineHandle,
     repo: Arc<InMemoryRepository>,
     report_tx: tokio::sync::mpsc::Sender<SyncReport>,
+    /// The user-data lane's sender (the files actor's half; the U-series
+    /// delivers reports through it).
+    user_data_tx: tokio::sync::mpsc::Sender<UserDataReport>,
     system_tx: tokio::sync::broadcast::Sender<SystemEvent>,
     clock: Arc<FixedClock>,
 }
@@ -59,14 +62,16 @@ impl Scenario {
         let clock = FixedClock::new(T0);
         let (sync_out, _sync_in) = tokio::sync::mpsc::channel::<SyncCommand>(8);
         let (report_tx, report_rx) = tokio::sync::mpsc::channel::<SyncReport>(8);
+        let (user_data_tx, user_data) = tokio::sync::mpsc::channel::<UserDataReport>(4);
         let (system_tx, system_rx) = tokio::sync::broadcast::channel::<SystemEvent>(8);
         let (notifier, _notifications) = tokio::sync::mpsc::channel::<NotifierMessage>(64);
-        let (handle, _join) = spawn_state_engine(
+        let (handle, _join) = spawn_state_engine_with_user_data(
             repo.clone(),
             Arc::new(CountingIds::new()),
             clock.clone(),
             sync_out,
             report_rx,
+            user_data,
             system_tx.clone(),
             system_rx,
             notifier,
@@ -79,6 +84,7 @@ impl Scenario {
             handle,
             repo,
             report_tx,
+            user_data_tx,
             system_tx,
             clock,
         }
@@ -94,14 +100,16 @@ impl Scenario {
         let clock = FixedClock::new(clock_secs);
         let (sync_out, _sync_in) = tokio::sync::mpsc::channel::<SyncCommand>(8);
         let (report_tx, report_rx) = tokio::sync::mpsc::channel::<SyncReport>(8);
+        let (user_data_tx, user_data) = tokio::sync::mpsc::channel::<UserDataReport>(4);
         let (system_tx, system_rx) = tokio::sync::broadcast::channel::<SystemEvent>(8);
         let (notifier, _notifications) = tokio::sync::mpsc::channel::<NotifierMessage>(64);
-        let (handle, _join) = spawn_state_engine(
+        let (handle, _join) = spawn_state_engine_with_user_data(
             repo.clone(),
             Arc::new(CountingIds::new()),
             clock.clone(),
             sync_out,
             report_rx,
+            user_data,
             system_tx.clone(),
             system_rx,
             notifier,
@@ -117,6 +125,7 @@ impl Scenario {
             handle,
             repo,
             report_tx,
+            user_data_tx,
             system_tx,
             clock,
         }
@@ -2403,4 +2412,141 @@ async fn s52_a_not_undoable_head_journals_and_refuses() {
     // never moved) plus the still-can_undo projection.
     let _rejected = s.run_raw(StateCommand::Undo).await;
     s.snap("s52");
+}
+
+// ---------------------------------------------------------------------
+// U-series — the user-data import journeys (DR-8 chunk 3, D-ES3/4):
+// how foreign wire rows enter the disk contract. The rows carry their
+// own clocks (the engine stamps nothing); the disk contract shows the
+// tombstone-in-place grammar and the stale skip.
+// ---------------------------------------------------------------------
+
+/// A wire entry with explicit foreign clocks.
+fn wire_entry(id_raw: u128, text: &str, created: i64, updated: i64) -> ImportedReflection {
+    ImportedReflection::Entry(ReflectionEntry {
+        id: taskboard_domain::ReflectionId::from(uuid::Uuid::from_u128(id_raw)),
+        cadence: taskboard_domain::ReviewCadence::Day,
+        day: chrono::NaiveDate::from_ymd_opt(2026, 11, 5).expect("date"),
+        window_start: common::ts(1_793_836_800),
+        window_end: common::ts(1_793_836_800 + 86_400),
+        text: text.to_owned(),
+        attributes: taskboard_domain::ReflectionAttributes::default(),
+        created_at: common::ts(created),
+        updated_at: common::ts(updated),
+        deleted: false,
+    })
+}
+
+impl Scenario {
+    /// Delivers a user-data report and waits until the engine has
+    /// applied it (the reflection home in the *published* state equals
+    /// the persisted one — the ingest is durable before `snap`).
+    async fn deliver(&mut self, journal: Vec<ImportedReflection>) {
+        self.user_data_tx
+            .send(UserDataReport { journal })
+            .await
+            .expect("lane open");
+        // Determinism by construction: the loop is sequential — the next
+        // command/flush observes everything the report did. A no-op
+        // command (`RequestSync` with no connectors) is the barrier.
+        let _ = self.handle.execute(StateCommand::RequestSync).await;
+    }
+}
+
+/// u1 — an import into an empty home: the entry lands verbatim; the
+/// absent-target tombstone materialises no ghost row (counted, never
+/// minted).
+#[cfg_attr(miri, ignore)]
+#[tokio::test]
+async fn u1_import_into_empty_home() {
+    let mut s = Scenario::start_empty().await;
+    s.deliver(vec![
+        wire_entry(10, "arrived from the fleet", 900, 5_000),
+        ImportedReflection::Tombstone {
+            id: taskboard_domain::ReflectionId::from(uuid::Uuid::from_u128(11)),
+            clock: common::ts(5_001),
+        },
+    ])
+    .await;
+    s.snap("u1");
+}
+
+/// u2 — a newer edit replaces: the second report's row (clock strictly
+/// newer, content different) replaces the imported row; the `created_at`
+/// is the winner's own (taken verbatim, never re-stamped).
+#[cfg_attr(miri, ignore)]
+#[tokio::test]
+async fn u2_import_newer_edit() {
+    let mut s = Scenario::start_empty().await;
+    s.deliver(vec![wire_entry(10, "first sight", 900, 5_000)])
+        .await;
+    s.snap("u2a");
+    s.deliver(vec![wire_entry(10, "edited on the peer", 900, 6_000)])
+        .await;
+    s.snap("u2b");
+}
+
+/// u3 — a tombstone applies in place: the body survives (the wire
+/// grammar carries none; the local row keeps it), the clock moves to
+/// the tombstone's.
+#[cfg_attr(miri, ignore)]
+#[tokio::test]
+async fn u3_import_tombstone_in_place() {
+    let mut s = Scenario::start_empty().await;
+    s.deliver(vec![wire_entry(10, "about to be deleted", 900, 5_000)])
+        .await;
+    s.deliver(vec![ImportedReflection::Tombstone {
+        id: taskboard_domain::ReflectionId::from(uuid::Uuid::from_u128(10)),
+        clock: common::ts(7_000),
+    }])
+    .await;
+    s.snap("u3");
+}
+
+/// u4 — a local edit out-ranks a stale report row: the local
+/// `UpdateReflection` at T2 (the engine's own clock), then a report row
+/// carrying the pre-edit clock T1 — skipped; the home is unchanged.
+#[cfg_attr(miri, ignore)]
+#[tokio::test]
+async fn u4_stale_row_skipped_after_local_edit() {
+    let mut s = Scenario::start().await;
+    let (day, window) = (
+        chrono::NaiveDate::from_ymd_opt(2026, 11, 5).unwrap(),
+        (
+            common::ts(1_793_836_800),
+            common::ts(1_793_836_800 + 86_400),
+        ),
+    );
+    let CommandOutcome::ReflectionRecorded { entry } = s
+        .run(StateCommand::RecordReflection {
+            cadence: taskboard_domain::ReviewCadence::Day,
+            day,
+            window,
+            text: "the local truth".into(),
+            mood: None,
+            energy: None,
+            flags: std::collections::BTreeSet::new(),
+        })
+        .await
+    else {
+        panic!("wrong receipt");
+    };
+    s.run(StateCommand::UpdateReflection {
+        id: entry.id,
+        text: Some("the newer local truth".into()),
+        mood: None,
+        energy: None,
+        flags_add: std::collections::BTreeSet::new(),
+        flags_remove: std::collections::BTreeSet::new(),
+    })
+    .await;
+    // The stale competitor: the recorded row's own first clock, pre-edit
+    // content (T1 < the update's T2).
+    let stale = ImportedReflection::Entry(ReflectionEntry {
+        updated_at: entry.created_at,
+        text: "the fleet's stale copy".into(),
+        ..entry.clone()
+    });
+    s.deliver(vec![stale]).await;
+    s.snap("u4");
 }

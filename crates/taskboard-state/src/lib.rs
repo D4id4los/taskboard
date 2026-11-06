@@ -80,7 +80,10 @@ pub(crate) mod core;
 pub mod error;
 pub mod metrics;
 
-pub use actor::{AttachError, AttachReceipt, EngineEnvelope, EngineHandle, spawn_state_engine};
+pub use actor::{
+    AttachError, AttachReceipt, EngineEnvelope, EngineHandle, USER_DATA_REPORT_CAPACITY,
+    spawn_state_engine, spawn_state_engine_with_user_data,
+};
 pub use config::DayRollConfig;
 pub use core::EngineCore;
 pub use error::{EngineStartupError, ExecuteError};
