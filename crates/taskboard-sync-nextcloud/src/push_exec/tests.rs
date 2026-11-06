@@ -39,11 +39,20 @@ fn label_id(raw: u128) -> taskboard_domain::LabelId {
     taskboard_domain::LabelId::from(uid(raw))
 }
 
+/// The fixture epoch: one per file, shared with `board_json`'s
+/// `lastModified` so row clocks and wire fixtures read one time family.
+const T0: i64 = 1_700_000_000;
+
+fn ts(secs: i64) -> chrono::DateTime<chrono::Utc> {
+    use chrono::TimeZone as _;
+    chrono::Utc.timestamp_opt(secs, 0).unwrap()
+}
+
 fn op(raw: u128, kind: LocalOp) -> PendingOp {
     PendingOp {
         op_id: taskboard_domain::OpId(uid(raw)),
         op: kind,
-        queued_at: chrono::Utc::now(),
+        queued_at: ts(T0 + i64::try_from(raw).expect("small fixture id")),
     }
 }
 
@@ -100,7 +109,6 @@ fn label_json(id: u64, title: &str, color: &str) -> String {
 }
 
 fn stack_row(raw: u128, title: &str, order: i64) -> taskboard_domain::Stack {
-    let now = chrono::Utc::now();
     taskboard_domain::Stack {
         id: stack_id(raw),
         remote: None,
@@ -110,16 +118,15 @@ fn stack_row(raw: u128, title: &str, order: i64) -> taskboard_domain::Stack {
         archived: false,
         deleted: false,
         clocks: taskboard_domain::StackClocks {
-            title: now,
-            order: now,
-            deleted: now,
+            title: ts(T0 + 1),
+            order: ts(T0 + 2),
+            deleted: ts(T0 + 3),
         },
         remote_seen: None,
     }
 }
 
 fn label_row(raw: u128, title: &str, color: &str) -> taskboard_domain::Label {
-    let now = chrono::Utc::now();
     taskboard_domain::Label {
         id: label_id(raw),
         remote: None,
@@ -128,9 +135,9 @@ fn label_row(raw: u128, title: &str, color: &str) -> taskboard_domain::Label {
         color: taskboard_domain::Color::new(color),
         deleted: false,
         clocks: taskboard_domain::LabelClocks {
-            title: now,
-            color: now,
-            deleted: now,
+            title: ts(T0 + 1),
+            color: ts(T0 + 2),
+            deleted: ts(T0 + 3),
         },
         remote_seen: None,
     }
@@ -153,7 +160,6 @@ fn board_id(raw: u128) -> taskboard_domain::BoardId {
 }
 
 fn board_row(raw: u128, title: &str) -> taskboard_domain::Board {
-    let now = chrono::Utc::now();
     taskboard_domain::Board {
         id: taskboard_domain::BoardId::from(uid(raw)),
         remote: Some(taskboard_domain::RemoteBoardBinding {
@@ -165,10 +171,10 @@ fn board_row(raw: u128, title: &str) -> taskboard_domain::Board {
         archived: false,
         deleted: false,
         clocks: taskboard_domain::BoardClocks {
-            title: now,
-            color: now,
-            archived: now,
-            deleted: now,
+            title: ts(T0 + 1),
+            color: ts(T0 + 2),
+            archived: ts(T0 + 3),
+            deleted: ts(T0 + 4),
         },
         remote_seen: None,
     }
