@@ -21,7 +21,7 @@ use crate::days::DayCalendar;
 use crate::entities::Task;
 use crate::habit::{Habit, HabitLogKey, HabitState, WindowStart};
 use crate::ids::{AdhocAlarmId, BreakRuleId, HabitId, ReminderRuleId, TaskId};
-use crate::tracking::{TrackingState, WorkThreshold};
+use crate::tracking::{TrackingState, WorkThreshold, break_crossing};
 
 /// A due-anchored offset that can only be "at or before" the due date:
 /// the inner `chrono::TimeDelta` is ≤ 0 and whole-second by
@@ -1452,6 +1452,36 @@ fn tracker_firings(
 /// `now` and neither delivered nor dismissed (the local receipt guards
 /// the OS toast on this device; a dismissal — local or synced-in —
 /// suppresses the occurrence everywhere, R3).
+/// The task-side `(task, reminder)` candidate pairs every evaluator
+/// pass consults ([`due_firings`], [`active_notifications`],
+/// [`next_due_instant`]): the implicit default when the task holds no
+/// explicit rules, else one pair per rule (explicit replaces default —
+/// derived, nothing stored). Eligibility: remindable (live, open,
+/// due-anchored) and unmuted.
+fn task_side_candidates(
+    tasks: &BTreeMap<TaskId, Task>,
+    reminders: &ReminderState,
+) -> Vec<(TaskId, ReminderRef)> {
+    let mut pairs = Vec::new();
+    for task in tasks.values() {
+        if !is_remindable(task) || reminders.muted.contains(&task.id) {
+            continue;
+        }
+        let rules: Vec<&ReminderRule> = reminders
+            .rules
+            .values()
+            .filter(|rule| rule.task == task.id)
+            .collect();
+        let candidates: Vec<ReminderRef> = if rules.is_empty() {
+            vec![ReminderRef::Default(task.id)]
+        } else {
+            rules.iter().map(|r| ReminderRef::Rule(r.id)).collect()
+        };
+        pairs.extend(candidates.into_iter().map(|reminder| (task.id, reminder)));
+    }
+    pairs
+}
+
 #[must_use]
 pub fn due_firings(
     tasks: &BTreeMap<TaskId, Task>,
@@ -1463,33 +1493,17 @@ pub fn due_firings(
     now: DateTime<Utc>,
 ) -> Vec<ReminderFiring> {
     let mut firings = Vec::new();
-    for task in tasks.values() {
-        if !is_remindable(task) || reminders.muted.contains(&task.id) {
-            continue;
-        }
-        let rules: Vec<&ReminderRule> = reminders
-            .rules
-            .values()
-            .filter(|rule| rule.task == task.id)
-            .collect();
-        let candidates: Vec<ReminderRef> = if rules.is_empty() {
-            // Explicit rules replace the default — derived, nothing stored.
-            vec![ReminderRef::Default(task.id)]
-        } else {
-            rules.iter().map(|r| ReminderRef::Rule(r.id)).collect()
-        };
-        for reminder in candidates {
-            if let Some(effective) = reminders.effective_occurrence(&reminder, tasks, defaults)
-                && effective <= now
-                && !reminders.is_delivered(&reminder, &effective)
-                && !reminders.is_dismissed(&reminder, &effective)
-            {
-                firings.push(ReminderFiring {
-                    reminder,
-                    anchor: ReminderAnchor::Task(task.id),
-                    occurrence: effective,
-                });
-            }
+    for (task_id, reminder) in task_side_candidates(tasks, reminders) {
+        if let Some(effective) = reminders.effective_occurrence(&reminder, tasks, defaults)
+            && effective <= now
+            && !reminders.is_delivered(&reminder, &effective)
+            && !reminders.is_dismissed(&reminder, &effective)
+        {
+            firings.push(ReminderFiring {
+                reminder,
+                anchor: ReminderAnchor::Task(task_id),
+                occurrence: effective,
+            });
         }
     }
     // The alarms pass: map membership is liveness, no mute check (the
@@ -1520,6 +1534,165 @@ pub fn due_firings(
     firings
 }
 
+/// The earliest instant `t ≥ now` at which [`due_firings`] can become
+/// non-empty — `Some(now)` when firings are already due (the engine's
+/// wake-at-boot path), `None` when no candidate exists (the engine then
+/// rides its tick cadence alone). The deadline-driven firing loop's
+/// pure query: the engine sleeps until `min(next_due_instant, now +
+/// tick)` instead of the raw tick.
+///
+/// The exact mirror of [`due_firings`]' eligibility, family for family:
+/// every candidate pair `(reminder, effective occurrence)` the firing
+/// evaluation could consult is collected under the same gates, keeping
+/// only occurrences strictly in the future that are neither delivered
+/// nor dismissed (receipts are keyed by the effective occurrence and
+/// change only via engine writes, so the predicate is stable between
+/// wakes). Two now-dependent shapes get explicit treatment:
+///
+/// - **Break rules**: the threshold-crossing instant is read at a
+///   horizon beyond every span edge plus a full threshold of accrual —
+///   the unclipped accrual curve's true first touch — because an open
+///   work entry keeps accruing past `now` and a mid-window crossing the
+///   at-`now` read cannot see would otherwise be woken late. The
+///   evaluator agrees with this reading at every later instant (its
+///   per-`now` clipping is a prefix of the same curve).
+/// - **Tracker nudges**: the anchor is read inside the current day
+///   window at `now`; the next day-boundary instant joins the
+///   candidate set whenever a live anchored habit exists, because the
+///   window/quota gate rolls at the boundary and a nudge can become due
+///   exactly there without any occurrence crossing.
+///
+/// The property suite ties this query to [`due_firings`] on the same
+/// generator (never-late, prompt-at-now, tightness-with-the-day-
+/// exception); the engine additionally keeps its tick as the
+/// correctness net — the deadline is a latency optimization, never
+/// load-bearing.
+#[must_use]
+pub fn next_due_instant(
+    tasks: &BTreeMap<TaskId, Task>,
+    tracking: &TrackingState,
+    habits: &HabitState,
+    day: DayCalendar,
+    reminders: &ReminderState,
+    defaults: &ReminderDefaults,
+    now: DateTime<Utc>,
+) -> Option<DateTime<Utc>> {
+    if !due_firings(tasks, tracking, habits, day, reminders, defaults, now).is_empty() {
+        return Some(now);
+    }
+    let mut best: Option<DateTime<Utc>> = None;
+    let mut consider = |candidate: DateTime<Utc>| {
+        if candidate > now && best.is_none_or(|earliest| candidate < earliest) {
+            best = Some(candidate);
+        }
+    };
+    // Task side: the implicit default, or the task's explicit rules in
+    // the evaluator's candidates shape (explicit replaces default).
+    for (_, reminder) in task_side_candidates(tasks, reminders) {
+        if let Some(effective) = reminders.effective_occurrence(&reminder, tasks, defaults)
+            && !reminders.is_delivered(&reminder, &effective)
+            && !reminders.is_dismissed(&reminder, &effective)
+        {
+            consider(effective);
+        }
+    }
+    // The `At` pass: absolute-instant rules, due-date independent,
+    // live/open/unmuted gated exactly like [`at_rule_firings`].
+    for rule in reminders.rules.values() {
+        if !matches!(rule.kind, ReminderKind::At(_))
+            || !at_rule_eligible(rule.task, tasks, &reminders.muted)
+        {
+            continue;
+        }
+        let reminder = ReminderRef::Rule(rule.id);
+        if let Some(effective) = at_rule_occurrence(reminders, rule.id)
+            && !reminders.is_delivered(&reminder, &effective)
+            && !reminders.is_dismissed(&reminder, &effective)
+        {
+            consider(effective);
+        }
+    }
+    // The alarms pass: map membership is eligibility, no mute check.
+    for &id in reminders.alarms.keys() {
+        let reminder = ReminderRef::Adhoc(id);
+        if let Some(effective) = alarm_occurrence(reminders, id)
+            && !reminders.is_delivered(&reminder, &effective)
+            && !reminders.is_dismissed(&reminder, &effective)
+        {
+            consider(effective);
+        }
+    }
+    // The break pass: the unclipped curve's first touch (see the doc
+    // comment for why the at-`now` read is not enough).
+    for rule in reminders.break_rules.values() {
+        if let Some(crossing) = break_crossing_at_horizon(tracking, rule, now) {
+            let reminder = ReminderRef::Break(rule.id);
+            let effective = walk_chain(crossing, reminder, &reminders.snoozes);
+            if !reminders.is_delivered(&reminder, &effective)
+                && !reminders.is_dismissed(&reminder, &effective)
+            {
+                consider(effective);
+            }
+        }
+    }
+    // The tracker pass: the anchor inside the current day window, gated
+    // on the current period's quota (the same gate both readers use).
+    for habit in habits.habits.values() {
+        if tracker_eligible(habit, habits, day, now)
+            && let Some(effective) = tracker_effective_occurrence(habit, day, reminders, now)
+        {
+            let reminder = ReminderRef::Tracker(habit.id);
+            if !reminders.is_delivered(&reminder, &effective)
+                && !reminders.is_dismissed(&reminder, &effective)
+            {
+                consider(effective);
+            }
+        }
+    }
+    // The day-boundary floor: only an anchored live habit makes the
+    // boundary a real candidate (the window/quota roll is the only
+    // family that can become due there without a crossing); an
+    // all-quiet state returns `None` and the engine rides its tick.
+    if habits
+        .habits
+        .values()
+        .any(|habit| habit.is_live() && habit.anchor_time.is_some())
+    {
+        consider(day.next_boundary(now));
+    }
+    best
+}
+
+/// The unclipped accrual curve's first threshold touch for one break
+/// rule: [`break_crossing`] evaluated at a horizon beyond every span
+/// edge plus a full threshold of accrual. A work span that is open (or
+/// future-dated) keeps accruing past `now`, so the at-`now` clipping
+/// can miss a touch that lands strictly in the future; the horizon
+/// read sees the whole future the evaluator's per-instant clipping
+/// would ever reveal, and the evaluator at any `t ≥ touch` reproduces
+/// the same instant (its curve is a prefix of the unclipped one).
+/// `None` ⇔ the curve never touches the threshold, or the horizon
+/// arithmetic saturates (a span edge beyond chrono's range — the same
+/// totality posture as the evaluator's checked occurrence arithmetic).
+fn break_crossing_at_horizon(
+    tracking: &TrackingState,
+    rule: &BreakRule,
+    now: DateTime<Utc>,
+) -> Option<DateTime<Utc>> {
+    let mut latest_edge = now;
+    for entry in tracking.entries.values() {
+        if let Some(end) = entry.end {
+            latest_edge = latest_edge.max(end);
+        }
+        latest_edge = latest_edge.max(entry.start);
+    }
+    let day = chrono::TimeDelta::try_days(1)?;
+    let horizon = latest_edge
+        .checked_add_signed(rule.threshold.as_duration())
+        .and_then(|edge| edge.checked_add_signed(day))?;
+    break_crossing(tracking.entries.values(), rule.threshold, horizon)
+}
+
 /// The in-app notification surface (R3, design D-6): one
 /// [`Notification`] per occurrence this device **fired** (a delivery
 /// receipt exists for `(reminder, effective occurrence)`) that is **not
@@ -1546,32 +1719,17 @@ pub fn active_notifications(
     now: DateTime<Utc>,
 ) -> Vec<Notification> {
     let mut firings = Vec::new();
-    for task in tasks.values() {
-        if !is_remindable(task) || reminders.muted.contains(&task.id) {
-            continue;
-        }
-        let rules: Vec<&ReminderRule> = reminders
-            .rules
-            .values()
-            .filter(|rule| rule.task == task.id)
-            .collect();
-        let candidates: Vec<ReminderRef> = if rules.is_empty() {
-            vec![ReminderRef::Default(task.id)]
-        } else {
-            rules.iter().map(|r| ReminderRef::Rule(r.id)).collect()
-        };
-        for reminder in candidates {
-            if let Some(effective) = reminders.effective_occurrence(&reminder, tasks, defaults)
-                && effective <= now
-                && reminders.is_delivered(&reminder, &effective)
-                && !reminders.is_dismissed(&reminder, &effective)
-            {
-                firings.push(ReminderFiring {
-                    reminder,
-                    anchor: ReminderAnchor::Task(task.id),
-                    occurrence: effective,
-                });
-            }
+    for (task_id, reminder) in task_side_candidates(tasks, reminders) {
+        if let Some(effective) = reminders.effective_occurrence(&reminder, tasks, defaults)
+            && effective <= now
+            && reminders.is_delivered(&reminder, &effective)
+            && !reminders.is_dismissed(&reminder, &effective)
+        {
+            firings.push(ReminderFiring {
+                reminder,
+                anchor: ReminderAnchor::Task(task_id),
+                occurrence: effective,
+            });
         }
     }
     for &id in reminders.alarms.keys() {
@@ -5346,5 +5504,329 @@ mod tests {
         );
         assert_eq!(firings.len(), 1);
         assert_eq!(firings[0].occurrence, t_star);
+    }
+
+    // ---- The deadline query (round-5 chunk 6, D2) ----------------------
+
+    const BASE: i64 = 1_000_000;
+
+    fn tasks_of(tasks: &[Task]) -> BTreeMap<TaskId, Task> {
+        tasks.iter().map(|task| (task.id, task.clone())).collect()
+    }
+
+    fn next_of(
+        tasks: &BTreeMap<TaskId, Task>,
+        tracking: &TrackingState,
+        habits: &HabitState,
+        day: DayCalendar,
+        reminders: &ReminderState,
+        now: DateTime<Utc>,
+    ) -> Option<DateTime<Utc>> {
+        next_due_instant(
+            tasks,
+            tracking,
+            habits,
+            day,
+            reminders,
+            &ReminderDefaults::default(),
+            now,
+        )
+    }
+
+    fn next_for_tasks(tasks: &[Task], reminders: &ReminderState) -> Option<DateTime<Utc>> {
+        next_of(
+            &tasks_of(tasks),
+            &TrackingState::default(),
+            &HabitState::default(),
+            day(),
+            reminders,
+            ts(BASE),
+        )
+    }
+
+    #[test]
+    fn next_due_instant_pins_now_for_an_already_due_occurrence() {
+        let task = live_task(1, Some(ts(BASE - 3_600)), 0);
+        assert_eq!(
+            next_for_tasks(&[task], &ReminderState::default()),
+            Some(ts(BASE))
+        );
+    }
+
+    #[test]
+    fn next_due_instant_is_the_future_occurrence_itself() {
+        let task = live_task(1, Some(ts(BASE + 600)), 0);
+        assert_eq!(
+            next_for_tasks(&[task], &ReminderState::default()),
+            Some(ts(BASE + 600))
+        );
+    }
+
+    #[test]
+    fn next_due_instant_follows_the_snooze_chain() {
+        let task = live_task(1, Some(ts(BASE)), 0);
+        let mut reminders = ReminderState::default();
+        reminders.snoozes.insert(
+            ReminderSnoozeKey {
+                reminder: ReminderRef::Default(task.id),
+                occurrence: ts(BASE),
+            },
+            ts(BASE + 600),
+        );
+        assert_eq!(next_for_tasks(&[task], &reminders), Some(ts(BASE + 600)));
+    }
+
+    #[test]
+    fn next_due_instant_skips_delivered_and_dismissed_occurrences() {
+        let task = live_task(1, Some(ts(BASE + 600)), 0);
+        let reminder = ReminderRef::Default(task.id);
+        let mut delivered = ReminderState::default();
+        delivered.deliveries.insert(ReminderDelivery {
+            reminder,
+            occurrence: ts(BASE + 600),
+            delivered_at: ts(BASE),
+        });
+        assert_eq!(
+            next_for_tasks(std::slice::from_ref(&task), &delivered),
+            None
+        );
+        let mut dismissed = ReminderState::default();
+        dismissed.dismissals.insert(ReminderDismissal {
+            reminder,
+            occurrence: ts(BASE + 600),
+            dismissed_at: ts(BASE),
+        });
+        assert_eq!(next_for_tasks(&[task], &dismissed), None);
+    }
+
+    #[test]
+    fn next_due_instant_honors_mute_and_the_open_gate() {
+        let task = live_task(1, Some(ts(BASE + 600)), 0);
+        let mut muted = ReminderState::default();
+        muted.muted.insert(task.id);
+        assert_eq!(next_for_tasks(std::slice::from_ref(&task), &muted), None);
+        let done = Task {
+            done: Some(ts(BASE)),
+            ..task
+        };
+        assert_eq!(next_for_tasks(&[done], &ReminderState::default()), None);
+    }
+
+    #[test]
+    fn next_due_instant_is_none_on_an_all_quiet_state() {
+        assert_eq!(next_for_tasks(&[], &ReminderState::default()), None);
+    }
+
+    #[test]
+    fn next_due_instant_sees_an_open_entry_crossing_after_now() {
+        // 100 s of open work at `now`, a 300 s threshold: the crossing
+        // lies 200 s ahead — invisible to an at-`now` crossing read.
+        let mut tracking = TrackingState::default();
+        let entry = work_entry(7, BASE - 100, None);
+        tracking.entries.insert(entry.id, entry);
+        let mut reminders = ReminderState::default();
+        let rule = break_rule(9, 300, "break", Insistence::Normal);
+        reminders.break_rules.insert(rule.id, rule);
+        assert_eq!(
+            next_of(
+                &BTreeMap::new(),
+                &tracking,
+                &HabitState::default(),
+                day(),
+                &reminders,
+                ts(BASE)
+            ),
+            Some(ts(BASE + 200))
+        );
+    }
+
+    #[test]
+    fn next_due_instant_wakes_at_an_anchored_nudge_with_an_unmet_quota() {
+        let habit = tracker_habit(
+            9,
+            HabitTarget::PerDay(NonZeroCount::new(1).unwrap()),
+            Some(at(9, 0)),
+        );
+        let habits = habits_of(&[habit]);
+        assert_eq!(
+            next_of(
+                &BTreeMap::new(),
+                &TrackingState::default(),
+                &habits,
+                day5(),
+                &ReminderState::default(),
+                stamp(D.0, D.1, D.2, 8, 0)
+            ),
+            Some(stamp(D.0, D.1, D.2, 9, 0))
+        );
+    }
+
+    #[test]
+    fn next_due_instant_wakes_at_the_day_boundary_once_the_quota_is_met() {
+        let habit = tracker_habit(
+            9,
+            HabitTarget::PerDay(NonZeroCount::new(1).unwrap()),
+            Some(at(9, 0)),
+        );
+        let mut habits = habits_of(std::slice::from_ref(&habit));
+        log_count(&mut habits, &habit, ymd(D.0, D.1, D.2), 1);
+        // Met today: no nudge candidate, only the window roll (05:00
+        // the next morning under `day5`).
+        assert_eq!(
+            next_of(
+                &BTreeMap::new(),
+                &TrackingState::default(),
+                &habits,
+                day5(),
+                &ReminderState::default(),
+                stamp(D.0, D.1, D.2, 8, 0)
+            ),
+            Some(stamp(D.0, D.1, D.2 + 1, 5, 0))
+        );
+    }
+
+    /// The deadline-property input: the shared reminder universe
+    /// (`app_state_strategy` — tasks, rules, receipts, snoozes, mute,
+    /// alarms, tracking entries) extended with the families its row
+    /// builder does not mint: `At` rules on generated tasks, break
+    /// rules, and anchored habits with logs around `now`'s window, under
+    /// a varied day convention.
+    #[allow(clippy::type_complexity)] // the evaluator's own parameter list
+    fn deadline_input() -> impl Strategy<
+        Value = (
+            BTreeMap<TaskId, Task>,
+            TrackingState,
+            HabitState,
+            DayCalendar,
+            ReminderState,
+            ReminderDefaults,
+            DateTime<Utc>,
+        ),
+    > {
+        (
+            test_support::app_state_strategy(),
+            test_support::reminder_offset_strategy(),
+            test_support::timestamp_strategy(),
+            prop::collection::vec(test_support::timestamp_strategy(), 0..=3),
+            prop::collection::vec(1_i64..=7_200, 0..=2),
+            prop::collection::vec(test_support::habit_strategies::habit_strategy(), 0..=3),
+            prop::collection::vec(0_u32..=3, 9),
+            0_usize..3,
+            0_usize..4,
+        )
+            .prop_map(
+                |(app, offset, now, at_instants, thresholds, habit_rows, counts, start, zone)| {
+                    let day = DayCalendar {
+                        day_start_time: [at(0, 0), at(5, 0), at(22, 0)][start],
+                        offset: chrono::FixedOffset::east_opt([0, 7_200, -25_200, 19_800][zone])
+                            .expect("in-range offset"),
+                    };
+                    let tasks = app.tasks;
+                    let mut reminders = app.reminders;
+                    let task_ids: Vec<TaskId> = tasks.keys().copied().collect();
+                    for (i, instant) in at_instants.into_iter().enumerate() {
+                        let Some(&task) = task_ids.get(i % task_ids.len().max(1)) else {
+                            continue;
+                        };
+                        let id = ReminderRuleId::from(uuid::Uuid::from_u128(0xD0_0000 + i as u128));
+                        reminders.rules.insert(
+                            id,
+                            ReminderRule {
+                                insistence: Insistence::Normal,
+                                id,
+                                task,
+                                kind: ReminderKind::At(
+                                    AtInstant::whole_second(instant).expect("whole seconds"),
+                                ),
+                                created_at: ts(100),
+                                updated_at: ts(100),
+                            },
+                        );
+                    }
+                    for (i, secs) in thresholds.into_iter().enumerate() {
+                        let rule =
+                            break_rule(0xE0_0000 + i as u128, secs, "break", Insistence::Normal);
+                        reminders.break_rules.insert(rule.id, rule);
+                    }
+                    let mut habits = HabitState::default();
+                    let today = day.today(now);
+                    for (h, habit) in habit_rows.into_iter().enumerate() {
+                        for (w, date) in [today.pred_opt(), Some(today), today.succ_opt()]
+                            .into_iter()
+                            .flatten()
+                            .enumerate()
+                        {
+                            log_count(
+                                &mut habits,
+                                &habit,
+                                date,
+                                counts[(h * 3 + w) % counts.len()],
+                            );
+                        }
+                        habits.habits.insert(habit.id, habit);
+                    }
+                    (
+                        tasks,
+                        app.tracking,
+                        habits,
+                        day,
+                        reminders,
+                        ReminderDefaults {
+                            default_before: offset,
+                        },
+                        now,
+                    )
+                },
+            )
+    }
+
+    proptest! {
+        #![proptest_config(test_support::proptest_config(256))]
+
+        /// P1 (never late) + P2 (prompt at `now`) + P3 (tight, with the
+        /// day-boundary exception): the deadline query and the firing
+        /// evaluation never disagree on the same state.
+        #[test]
+        fn next_due_instant_agrees_with_the_firing_evaluation(
+            (tasks, tracking, habits, day, reminders, defaults, now) in deadline_input(),
+        ) {
+            let firings_at = |t: DateTime<Utc>| {
+                due_firings(&tasks, &tracking, &habits, day, &reminders, &defaults, t)
+            };
+            let next = next_due_instant(&tasks, &tracking, &habits, day, &reminders, &defaults, now);
+            if !firings_at(now).is_empty() {
+                prop_assert_eq!(next, Some(now), "P2: due firings pin the deadline to now");
+                return Ok(());
+            }
+            let Some(deadline) = next else {
+                return Ok(());
+            };
+            prop_assert!(deadline > now, "a quiet state's deadline lies strictly ahead");
+            let span = (deadline - now).num_seconds();
+            let mut probes = vec![now];
+            for quarter in 1..=3 {
+                if let Some(step) = chrono::TimeDelta::try_seconds(span / 4 * quarter) {
+                    probes.extend(now.checked_add_signed(step));
+                }
+            }
+            probes.extend(
+                deadline
+                    .checked_sub_signed(chrono::TimeDelta::try_seconds(1).expect("one second"))
+                    .filter(|probe| *probe >= now),
+            );
+            for probe in probes.into_iter().filter(|probe| *probe < deadline) {
+                prop_assert!(
+                    firings_at(probe).is_empty(),
+                    "P1: a firing became due at {} before the deadline {}",
+                    probe,
+                    deadline
+                );
+            }
+            prop_assert!(
+                deadline == day.next_boundary(now) || !firings_at(deadline).is_empty(),
+                "P3: the deadline {} is neither the day boundary nor a due instant",
+                deadline
+            );
+        }
     }
 }

@@ -145,6 +145,16 @@ impl DayCalendar {
     pub fn instant(&self, date: NaiveDate, time_of_day: chrono::NaiveTime) -> DateTime<Utc> {
         offset_local_to_utc(date.and_time(time_of_day), self.offset)
     }
+
+    /// The next day-window boundary after `now`: the opening instant of
+    /// the window following `now`'s — the instant the window-date rolls
+    /// (the deadline-driven reminder loop's floor candidate, since the
+    /// tracker pass's window and quota gate roll exactly there). Always
+    /// strictly after `now`.
+    #[must_use]
+    pub fn next_boundary(&self, now: DateTime<Utc>) -> DateTime<Utc> {
+        day_window(now, self.day_start_time, self.offset).1
+    }
 }
 
 /// Back-converts an offset-local wall-clock reading to its instant:
