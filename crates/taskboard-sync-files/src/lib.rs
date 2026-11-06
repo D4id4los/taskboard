@@ -40,7 +40,8 @@
 //! Module map: identifiers ([`ids`]), the tree taxonomy ([`layout`]),
 //! identity payloads ([`identity`]), the heartbeat payload
 //! ([`heartbeat`]), the per-user document codec ([`document`]), the
-//! merge fold ([`fold`]), the state hash ([`hash`]).
+//! merge fold ([`fold`]), the state hash ([`hash`]), the `journal`
+//! section's entity codec ([`journal`]).
 
 #![forbid(unsafe_code)]
 
@@ -50,6 +51,7 @@ pub mod hash;
 pub mod heartbeat;
 pub mod identity;
 pub mod ids;
+pub mod journal;
 pub mod layout;
 
 /// Compiled for our own tests (dev-dep `proptest`) and for downstream

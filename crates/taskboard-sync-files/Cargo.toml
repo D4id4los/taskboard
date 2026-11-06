@@ -9,16 +9,21 @@ license = "MIT OR Apache-2.0"
 description = "Pure files-sync substrate core: tree layout types, tolerant per-user document codecs, the merge fold, and heartbeat types"
 
 [dependencies]
+# The journal codec (DR-8 chunk 3): entity ↔ wire row. Pure → pure; the
+# domain is the dependency root and never sees this crate.
+taskboard-domain.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 chrono.workspace = true
 uuid.workspace = true
+thiserror.workspace = true
 
 # Optional: powers the `test-support` feature (document/row strategies
 # shared with chunk 3's engine tests, which cannot use our dev-dependencies).
 proptest = { workspace = true, optional = true }
 
 [dev-dependencies]
+taskboard-domain = { workspace = true, features = ["test-support"] }
 proptest.workspace = true
 serde_json.workspace = true
 
