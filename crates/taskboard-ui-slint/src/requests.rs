@@ -204,10 +204,11 @@ pub struct SettingsSnapshot {
     /// The read-only deployment facts (the §3 read-only inventory),
     /// each with its apply semantics.
     pub facts: Vec<SettingsFact>,
-    /// The apply semantics per editable field group (plan D12: the
-    /// config owner states them; the UI never hardcodes). Keys are the
-    /// editable fields' dotted config keys.
-    pub applies: std::collections::BTreeMap<String, SectionApply>,
+    /// The apply semantics per editable field (plan D12: the config
+    /// owner states them; the UI never hardcodes — the app's registry
+    /// is the authority, round-5 chunk 5 D-5.6). Keys are the editable
+    /// fields' dotted config keys.
+    pub applies: std::collections::BTreeMap<String, ApplySemantics>,
 }
 
 /// When an edited setting takes effect for the running processes
@@ -219,6 +220,37 @@ pub struct SettingsSnapshot {
 pub enum SectionApply {
     Live,
     OnRestart,
+}
+
+/// One editable key's apply verdict with its reason (round-5 chunk 5,
+/// D-5.6): `Live` is the default and needs no text; an `OnRestart`
+/// entry carries the written justification the app's registry test
+/// enforces — the documented-decision mechanism that keeps a restart
+/// badge honest instead of a pretend-live one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ApplySemantics {
+    pub apply: SectionApply,
+    pub justification: &'static str,
+}
+
+impl ApplySemantics {
+    /// The live verdict (no justification needed).
+    #[must_use]
+    pub const fn live() -> Self {
+        Self {
+            apply: SectionApply::Live,
+            justification: "",
+        }
+    }
+
+    /// A restart-scoped verdict with its reason.
+    #[must_use]
+    pub const fn on_restart(justification: &'static str) -> Self {
+        Self {
+            apply: SectionApply::OnRestart,
+            justification,
+        }
+    }
 }
 
 /// One read-only settings row (the "Deployment" group's inventory):
