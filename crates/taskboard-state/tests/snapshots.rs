@@ -1362,6 +1362,61 @@ async fn s36_tracking_rows_enter_the_disk_contract() {
 }
 
 // ---------------------------------------------------------------------
+// S39 — the reflection journey (DR-7 chunk 1): record → update →
+// delete enters the disk contract. The tombstone rides the upsert
+// (delete is an upsert, D-J13), and no scenario ever enqueues an
+// outbox op for the family (the §3-A device-local contract).
+// ---------------------------------------------------------------------
+
+/// The serialized entry shape — stored window instants, the LWW
+/// clocks, the curated flags — is the contract chunk 2's codec must
+/// round-trip, and the tombstone row is the delete's whole story.
+#[cfg_attr(miri, ignore)]
+#[tokio::test]
+async fn s39_reflection_rows_enter_the_disk_contract() {
+    let mut s = Scenario::start().await;
+    let (day, window) = (
+        chrono::NaiveDate::from_ymd_opt(2026, 11, 5).unwrap(),
+        (
+            common::ts(1_793_836_800),
+            common::ts(1_793_836_800 + 86_400),
+        ),
+    );
+    let CommandOutcome::ReflectionRecorded { entry } = s
+        .run(StateCommand::RecordReflection {
+            cadence: taskboard_domain::ReviewCadence::Day,
+            day,
+            window,
+            text: "shipped the reflection family".into(),
+            mood: Some(4),
+            energy: Some(2),
+            flags: std::collections::BTreeSet::from([
+                taskboard_domain::HealthFlag::GoodDay,
+                taskboard_domain::HealthFlag::PoorSleep,
+            ]),
+        })
+        .await
+    else {
+        panic!("wrong receipt");
+    };
+    s.snap("s39a");
+
+    s.run(StateCommand::UpdateReflection {
+        id: entry.id,
+        text: Some("shipped it, and fixed the flake".into()),
+        mood: Some(None),
+        energy: None,
+        flags_add: std::collections::BTreeSet::from([taskboard_domain::HealthFlag::Cramps]),
+        flags_remove: std::collections::BTreeSet::from([taskboard_domain::HealthFlag::PoorSleep]),
+    })
+    .await;
+    s.snap("s39b");
+
+    s.run(StateCommand::DeleteReflection { id: entry.id }).await;
+    s.snap("s39c");
+}
+
+// ---------------------------------------------------------------------
 // S37/S38 — the recurring series materialization (DR-6/2): the
 // completion spawn (s37a–c) and the day-boundary roll (s38a–c) enter
 // the disk contract. Existing scenarios are untouched: the roll
