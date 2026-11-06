@@ -27,12 +27,13 @@ use tokio::task::JoinHandle;
 use taskboard_domain::{
     AppState, Clock, CommandOutcome, DeckFeatures, EngineSignal, IdGenerator, Notification,
     NotifierMessage, PersistedState, PersistenceAction, ReminderFiring, RepositoryError,
-    SidecarHealth, StateCommand, SyncCommand, SyncCounters, SyncPhase, SyncStateReader, SyncStates,
-    SyncStatus, SystemEvent, TaskRepository, ValidatorKey, apply_push_report, apply_sync_report,
-    journal_push_marks, notifications_for, plan_day_rolls, plan_journaled_command,
+    SettingsSnapshot, SidecarHealth, StateCommand, SyncCommand, SyncCounters, SyncPhase,
+    SyncStateReader, SyncStates, SyncStatus, SystemEvent, TaskRepository, ValidatorKey,
+    apply_push_report, apply_sync_report, journal_push_marks, notifications_for, plan_day_rolls,
+    plan_journaled_command,
 };
 
-use crate::config::{DayRollConfig, ReminderEngineConfig};
+use crate::config::DayRollConfig;
 use crate::core::EngineCore;
 use crate::error::{EngineStartupError, ExecuteError};
 use crate::metrics::{EngineMetrics, EngineMetricsSnapshot};
@@ -256,6 +257,13 @@ impl SyncStateReader for EngineHandle {
 /// producer's) strong sender owns that channel's lifetime, and when the
 /// last of them drops, the engine exits.
 ///
+/// `settings` seeds the live settings snapshot (round-5 chunk 5): the
+/// reminder scheduler's enabled/tick/defaults, the day-start time, and
+/// every other editable knob are read from it per loop iteration and
+/// replaced wholesale by `StateCommand::UpdateSettings`. The boot
+/// snapshot is published with the hydrated state — the first
+/// `AppState` a reader sees already carries it.
+///
 /// # Errors
 ///
 /// [`EngineStartupError::Load`] when the boot hydration failed; the
@@ -270,7 +278,7 @@ pub async fn spawn_state_engine(
     system_out: broadcast::Sender<SystemEvent>,
     system: broadcast::Receiver<SystemEvent>,
     notifier: mpsc::Sender<NotifierMessage>,
-    reminder_cfg: ReminderEngineConfig,
+    settings: SettingsSnapshot,
     day_roll: DayRollConfig,
 ) -> Result<(EngineHandle, JoinHandle<()>), EngineStartupError> {
     let persisted = repo.load().await.map_err(EngineStartupError::Load)?;
@@ -284,7 +292,8 @@ pub async fn spawn_state_engine(
         outbox = persisted.outbox.len(),
         "state engine hydrated"
     );
-    let core = EngineCore::from_persisted(persisted);
+    let mut core = EngineCore::from_persisted(persisted);
+    core.set_settings(settings);
 
     let shared = Arc::new(ArcSwap::from_pointee(core.app()));
     let (commands, command_rx) = mpsc::channel(COMMAND_BUFFER);
@@ -310,7 +319,6 @@ pub async fn spawn_state_engine(
             // reachable.
             system_out: system_out.downgrade(),
             notifier,
-            reminders: reminder_cfg,
             day_roll,
         },
         shared,
@@ -332,7 +340,6 @@ struct EngineParts {
     metrics: Arc<EngineMetrics>,
     system_out: broadcast::WeakSender<SystemEvent>,
     notifier: mpsc::Sender<NotifierMessage>,
-    reminders: ReminderEngineConfig,
     day_roll: DayRollConfig,
 }
 
@@ -357,7 +364,6 @@ async fn run_loop(
         metrics,
         system_out,
         notifier,
-        reminders: reminder_cfg,
         day_roll,
     } = parts;
     // Edge-trigger state for `StorageFailed`: the event fires on the
@@ -379,15 +385,19 @@ async fn run_loop(
     let mut draining = false;
     // The reminder tick arm (design §5.2): the first tick is immediate —
     // an undelivered reminder from before a reboot fires on the next
-    // boot's first tick — and every wake re-arms at the fixed cadence.
-    // With `enabled == false` the select! precondition keeps the sleep
-    // future from ever being constructed, so a disabled engine performs
-    // zero timer work (the paused-time suites stay auto-advance-free).
-    // The day-boundary roll shares the wake (D-E8): either engine arming
-    // the timer is enough — the accepted coupling is one clock read +
-    // date compare per wake on a reminders-off kiosk.
+    // boot's first tick — and every wake re-arms at the *live* cadence
+    // (`settings.tick_secs`, re-read at each wake and re-armed on an
+    // `UpdateSettings` apply so a cadence change is visible at the very
+    // next wake). With reminders disabled and the day roll off the
+    // select! precondition keeps the sleep future from ever being
+    // constructed, so such an engine performs zero timer work (the
+    // paused-time suites stay auto-advance-free); the precondition is
+    // re-evaluated per loop iteration, so a live disable stops
+    // constructing the sleep. The day-boundary roll shares the wake
+    // (D-E8): either engine arming the timer is enough — the accepted
+    // coupling is one clock read + date compare per wake on a
+    // reminders-off kiosk.
     let mut next_tick = tokio::time::Instant::now();
-    let mut timer_armed = reminder_cfg.enabled || day_roll.enabled;
     // The day roll's watermark (D-E9): engine-internal edge state like
     // `storage_failing`, never persisted as user state — a restart
     // re-scans once, which is the boot catch-up path and is idempotent
@@ -402,6 +412,10 @@ async fn run_loop(
         if !draining && !commands_open && !reports_open && !system_open {
             break;
         }
+        // Drain disarms the timer outright: timer wakes are not
+        // ignored, they never happen. An undelivered reminder survives
+        // to the next boot's first tick.
+        let timer_armed = !draining && (day_roll.enabled || core.settings().reminders_enabled);
         tokio::select! {
             biased; // deterministic drain order: commands, reports, system
 
@@ -417,7 +431,7 @@ async fn run_loop(
                         continue;
                     }
                     metrics.count_command();
-                    execute_command(
+                    let settings_applied = execute_command(
                         &mut core,
                         &shared,
                         &signals,
@@ -430,13 +444,19 @@ async fn run_loop(
                             notifier: &notifier,
                         },
                         &metrics,
-                        &reminder_cfg.defaults,
-                        day_roll.calendar,
+                        day_roll.offset,
                         command,
                         reply,
                         &mut storage_failing,
                     )
                     .await;
+                    if settings_applied {
+                        // The re-arm: a cadence change is visible at
+                        // the very next wake, never one stale tick
+                        // later.
+                        next_tick =
+                            tokio::time::Instant::now() + core.settings().tick_secs.duration();
+                    }
                 }
                 Some(EngineEnvelope::Flush { reply }) => {
                     // FIFO: everything before this was applied, interpreted,
@@ -464,6 +484,7 @@ async fn run_loop(
 
             maybe_report = sync_reports.recv(), if reports_open => match maybe_report {
                 Some(report) => {
+                    let day = core.settings().day_calendar(day_roll.offset);
                     ingest_sync_report(
                         &mut core,
                         &shared,
@@ -477,7 +498,7 @@ async fn run_loop(
                         &metrics,
                         &system_out,
                         report,
-                        day_roll.calendar,
+                        day,
                     )
                     .await;
                 }
@@ -503,11 +524,6 @@ async fn run_loop(
                     } else {
                         tracing::info!("state engine entering shutdown drain");
                         draining = true;
-                        // Drain disarms the timer outright: timer wakes
-                        // are not ignored, they never happen. An
-                        // undelivered reminder survives to the next
-                        // boot's first tick.
-                        timer_armed = false;
                     }
                 }
                 Ok(SystemEvent::NetworkLost) if !draining => {
@@ -571,7 +587,9 @@ async fn run_loop(
             () = tokio::time::sleep_until(next_tick), if timer_armed => {
                 // Each tick runs under its own flag: an engine with only
                 // one of the two enabled performs only that engine's work.
-                if reminder_cfg.enabled {
+                // Both flags and the calendar are live reads.
+                let day = core.settings().day_calendar(day_roll.offset);
+                if core.settings().reminders_enabled {
                     reminder_tick(
                         &mut core,
                         &shared,
@@ -583,8 +601,7 @@ async fn run_loop(
                             notifier: &notifier,
                         },
                         &metrics,
-                        &reminder_cfg,
-                        day_roll.calendar,
+                        day,
                         &mut storage_failing,
                     )
                     .await;
@@ -601,13 +618,13 @@ async fn run_loop(
                             system_out: &system_out,
                         },
                         &metrics,
-                        &day_roll,
+                        day,
                         &mut last_roll,
                         &mut storage_failing,
                     )
                     .await;
                 }
-                next_tick = tokio::time::Instant::now() + reminder_cfg.tick;
+                next_tick = tokio::time::Instant::now() + core.settings().tick_secs.duration();
             }
         }
     }
@@ -653,6 +670,8 @@ struct Seams<'a> {
     notifier: &'a mpsc::Sender<NotifierMessage>,
 }
 
+/// Returns whether the command replaced the live settings (the loop
+/// re-arms its tick deadline on `true`).
 #[allow(clippy::too_many_arguments)] // the seams + receipt + metrics are the context
 async fn execute_command(
     core: &mut EngineCore,
@@ -660,12 +679,11 @@ async fn execute_command(
     signals: &broadcast::Sender<EngineSignal>,
     seams: Seams<'_>,
     metrics: &EngineMetrics,
-    reminder_defaults: &taskboard_domain::ReminderDefaults,
-    day: taskboard_domain::DayCalendar,
+    boot_offset: chrono::FixedOffset,
     command: StateCommand,
     reply: Option<oneshot::Sender<Result<CommandOutcome, ExecuteError>>>,
     storage_failing: &mut bool,
-) {
+) -> bool {
     let Seams {
         repo,
         ids,
@@ -692,16 +710,40 @@ async fn execute_command(
         if let Some(reply) = reply {
             let _ = reply.send(Ok(outcome));
         }
-        return;
+        return false;
     }
 
+    if let StateCommand::UpdateSettings { settings } = command {
+        // The live-settings apply (round-5 chunk 5, D-5.2): memory-only
+        // like `last_updated` — no journal row, no outbox op, no sqlite
+        // write (the file overlay is the store). The snapshot arrived
+        // already minted; the newtypes make an invalid value
+        // unrepresentable, which *is* the validation. Publish first so
+        // every ArcSwap reader woken by `StateUpdated` sees the new
+        // values; the system doorbell then wakes the actors that do
+        // not read the engine-signal bus.
+        core.set_settings(settings);
+        publish(core, shared, signals, metrics);
+        if let Some(system_out) = system_out.upgrade() {
+            let _ = system_out.send(SystemEvent::SettingsChanged);
+        }
+        if let Some(reply) = reply {
+            let _ = reply.send(Ok(CommandOutcome::SettingsApplied));
+        }
+        return true;
+    }
+
+    // Live reads: the planner's implicit-reminder defaults and the day
+    // calendar come from the current snapshot, never a spawn capture.
+    let reminder_defaults = core.settings().reminder_defaults();
+    let day = core.settings().day_calendar(boot_offset);
     let plan = match plan_journaled_command(
         &core.app(),
         core.outbox(),
         core.journal(),
         &command,
         ids,
-        reminder_defaults,
+        &reminder_defaults,
         day,
         now,
     ) {
@@ -712,7 +754,7 @@ async fn execute_command(
             if let Some(reply) = reply {
                 let _ = reply.send(Err(ExecuteError::Rejected(rejection)));
             }
-            return;
+            return false;
         }
     };
 
@@ -721,7 +763,7 @@ async fn execute_command(
         if let Some(reply) = reply {
             let _ = reply.send(Ok(plan.outcome));
         }
-        return;
+        return false;
     }
 
     if let Err(err) = repo.apply(plan.actions.clone()).await {
@@ -732,7 +774,7 @@ async fn execute_command(
         if let Some(reply) = reply {
             let _ = reply.send(Err(ExecuteError::Storage(err)));
         }
-        return;
+        return false;
     }
     *storage_failing = false;
     let changed = core.interpret(&plan.actions, now);
@@ -758,6 +800,7 @@ async fn execute_command(
     if let Some(reply) = reply {
         let _ = reply.send(Ok(plan.outcome));
     }
+    false
 }
 
 /// Fire-and-forget nudge, fanned out to every registered connector.
@@ -1215,7 +1258,6 @@ async fn reminder_tick(
     signals: &broadcast::Sender<EngineSignal>,
     seams: TickSeams<'_>,
     metrics: &EngineMetrics,
-    cfg: &ReminderEngineConfig,
     day: taskboard_domain::DayCalendar,
     storage_failing: &mut bool,
 ) {
@@ -1226,7 +1268,10 @@ async fn reminder_tick(
         notifier,
     } = seams;
     let now = clock.now();
-    let firings = core.due_reminder_firings(day, &cfg.defaults, now);
+    // The live defaults (round-5 chunk 5): read at the tick, never a
+    // spawn capture.
+    let defaults = core.settings().reminder_defaults();
+    let firings = core.due_reminder_firings(day, &defaults, now);
     // Issue #201: the tick also emits the stale-delivery sweep —
     // delivery rows no reader consults whose occurrence has aged past
     // the horizon. The sweep rides the reminder tick (the same
@@ -1240,7 +1285,7 @@ async fn reminder_tick(
         core.habits(),
         day,
         core.reminders(),
-        &cfg.defaults,
+        &defaults,
         now,
         taskboard_domain::reminders::delivery_prune_age(),
     );
@@ -1278,7 +1323,7 @@ async fn day_tick(
     signals: &broadcast::Sender<EngineSignal>,
     seams: DaySeams<'_>,
     metrics: &EngineMetrics,
-    cfg: &DayRollConfig,
+    day: taskboard_domain::DayCalendar,
     last_roll: &mut Option<NaiveDate>,
     storage_failing: &mut bool,
 ) {
@@ -1289,11 +1334,16 @@ async fn day_tick(
         system_out,
     } = seams;
     let now = clock.now();
-    let today = cfg.calendar.today(now);
+    // `day` is re-minted per tick from the live day-start time. The
+    // watermark keeps its same-date guard: a day-start change that
+    // moves "today" forward rolls at this tick; a backwards move that
+    // re-enters the already-rolled date does NOT re-roll — intended
+    // semantics (pinned by the engine suite), not debt.
+    let today = day.today(now);
     if *last_roll == Some(today) {
         return; // the quiet fast path
     }
-    let actions = plan_day_rolls(&core.app(), today, cfg.calendar, ids, now);
+    let actions = plan_day_rolls(&core.app(), today, day, ids, now);
     if actions.is_empty() {
         // A quiet day: the watermark advance is the whole effect.
         *last_roll = Some(today);

@@ -1251,7 +1251,10 @@ async fn bootstrap_with_modules(
         system.clone(),
         system_rx_engine,
         notifier,
-        config.reminder_engine_config(),
+        // The boot seed (round-5 chunk 5): the engine owns the live
+        // settings from here on; the UI's commits replace them via
+        // `UpdateSettings`.
+        config.settings_snapshot(),
         config.day_calendar(),
     )
     .await;
@@ -1281,7 +1284,7 @@ async fn bootstrap_with_modules(
     // Audio constructs only when the mode is Desktop AND the resolved
     // sink is Desktop (D-9); a failed open degrades to visual-only,
     // logged once, never fatal (D-8).
-    let reminder_cfg = config.reminder_engine_config();
+    let reminder_defaults = config.settings_snapshot().reminder_defaults();
     let audio_allowed = config.app.mode == crate::config::AppMode::Desktop
         && crate::notifications::resolve_sink(config.reminders.sink, config.app.mode)
             == crate::notifications::SinkKind::Desktop;
@@ -1291,7 +1294,7 @@ async fn bootstrap_with_modules(
     let chime = crate::escalation::mount_chime(audio_allowed, crate::escalation::RodioChime::open);
     let escalation_join = crate::escalation::spawn_escalation_driver(
         engine.shared_state(),
-        reminder_cfg.defaults,
+        reminder_defaults,
         config.resolved_day_calendar(),
         escalation_sink,
         chime.clone(),
@@ -2516,7 +2519,7 @@ mod flush_budget_tests {
     use taskboard_domain::idgen::IdGenerator as _;
     use taskboard_domain::persistence::{BoxFuture, RepositoryError, TaskRepository};
     use taskboard_domain::test_support::{CountingIds, InMemoryRepository};
-    use taskboard_state::{DayRollConfig, ReminderEngineConfig};
+    use taskboard_state::DayRollConfig;
     use tokio::sync::oneshot;
 
     /// A constant logical clock (the state suite's `FixedClock` shape,
@@ -2618,7 +2621,7 @@ mod flush_budget_tests {
                 system_tx.clone(),
                 system_rx,
                 notifier,
-                ReminderEngineConfig::disabled(),
+                taskboard_domain::SettingsSnapshot::default(),
                 DayRollConfig::disabled(),
             )
             .await

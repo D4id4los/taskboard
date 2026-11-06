@@ -22,7 +22,7 @@ use taskboard_domain::{
     CommandOutcome, HabitLogKey, NotifierMessage, StateCommand, SyncCommand, SystemEvent,
     WindowStart,
 };
-use taskboard_state::{EngineHandle, ReminderEngineConfig, spawn_state_engine};
+use taskboard_state::{EngineHandle, spawn_state_engine};
 
 mod common;
 
@@ -49,7 +49,7 @@ async fn spawn_over(repo: Arc<InMemoryRepository>, clock: Arc<FixedClock>) -> Ha
         system_tx.clone(),
         system_rx,
         notifier,
-        ReminderEngineConfig::disabled(),
+        taskboard_domain::SettingsSnapshot::default(),
         taskboard_state::DayRollConfig::disabled(),
     )
     .await

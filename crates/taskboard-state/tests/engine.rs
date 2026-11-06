@@ -21,12 +21,10 @@ use taskboard_domain::persistence::{
 use taskboard_domain::test_support::{CountingIds, InMemoryRepository};
 use taskboard_domain::{
     AppState, Clock, CommandOutcome, EngineSignal, IdGenerator, NotifierMessage, RemoteBoard,
-    RemoteBoardId, RemoteBoardSnapshot, Stack, StackClocks, StackId, StateCommand, SyncCommand,
-    SyncErrorKind, SyncPhase, SyncReport, SystemEvent,
+    RemoteBoardId, RemoteBoardSnapshot, SettingsSnapshot, Stack, StackClocks, StackId,
+    StateCommand, SyncCommand, SyncErrorKind, SyncPhase, SyncReport, SystemEvent, TickSecs,
 };
-use taskboard_state::{
-    DayRollConfig, EngineStartupError, ExecuteError, ReminderEngineConfig, spawn_state_engine,
-};
+use taskboard_state::{DayRollConfig, EngineStartupError, ExecuteError, spawn_state_engine};
 
 mod common;
 
@@ -93,7 +91,7 @@ struct Spawner {
     repo: Arc<dyn TaskRepository>,
     ids: Arc<dyn IdGenerator>,
     clock: Arc<dyn Clock>,
-    reminders: ReminderEngineConfig,
+    reminders: SettingsSnapshot,
     /// The day roll is disabled by default (the same auto-advance
     /// policy); the day-tick tests opt in via this field.
     day_roll: DayRollConfig,
@@ -108,7 +106,7 @@ impl Default for Spawner {
             repo: Arc::new(InMemoryRepository::with_state(seed_board_state("board"))),
             ids: Arc::new(CountingIds::new()),
             clock: FixedClock::new(T0),
-            reminders: ReminderEngineConfig::disabled(),
+            reminders: taskboard_domain::SettingsSnapshot::default(),
             day_roll: DayRollConfig::disabled(),
         }
     }
@@ -848,7 +846,7 @@ async fn a12_boot_failure_surfaces_load_error() {
         system_tx,
         system_rx,
         notifier,
-        ReminderEngineConfig::disabled(),
+        taskboard_domain::SettingsSnapshot::default(),
         DayRollConfig::disabled(),
     )
     .await;
@@ -2858,7 +2856,7 @@ fn utc_calendar() -> taskboard_domain::DayCalendar {
 fn day_roll_enabled() -> DayRollConfig {
     DayRollConfig {
         enabled: true,
-        calendar: utc_calendar(),
+        offset: utc_calendar().offset,
     }
 }
 
@@ -3106,7 +3104,7 @@ async fn storage_failure_defers_the_roll_until_it_heals() {
         system_tx,
         boot_rx,
         notifier,
-        ReminderEngineConfig::disabled(),
+        taskboard_domain::SettingsSnapshot::default(),
         day_roll_enabled(),
     )
     .await
@@ -3173,10 +3171,10 @@ async fn the_roll_re_arms_reminders_by_construction() {
         system_tx,
         system_rx,
         notifier,
-        ReminderEngineConfig {
-            enabled: true,
-            tick: Duration::from_secs(1),
-            defaults: taskboard_domain::ReminderDefaults::default(),
+        SettingsSnapshot {
+            reminders_enabled: true,
+            tick_secs: TickSecs::new(1).expect("nonzero"),
+            ..SettingsSnapshot::default()
         },
         day_roll_enabled(),
     )

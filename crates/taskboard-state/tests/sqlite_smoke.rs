@@ -14,7 +14,7 @@ use taskboard_domain::NotifierMessage;
 use taskboard_domain::persistence::TaskRepository;
 use taskboard_domain::test_support::CountingIds;
 use taskboard_domain::{CommandOutcome, StateCommand, SyncCommand, SyncReport, SystemEvent};
-use taskboard_state::{ReminderEngineConfig, spawn_state_engine};
+use taskboard_state::spawn_state_engine;
 
 mod common;
 
@@ -58,7 +58,7 @@ async fn i1_engine_roundtrips_durably_through_the_sqlite_actor() {
             system_tx.clone(),
             system_rx,
             notifier,
-            ReminderEngineConfig::disabled(),
+            taskboard_domain::SettingsSnapshot::default(),
             taskboard_state::DayRollConfig::disabled(),
         )
         .await
@@ -255,12 +255,11 @@ async fn reloaded_rule_never_refires_a_delivered_occurrence() {
             system_tx.clone(),
             system_rx,
             notifier,
-            taskboard_state::ReminderEngineConfig {
-                enabled: true,
-                tick: std::time::Duration::from_secs(1),
-                defaults: ReminderDefaults {
-                    default_before: ReminderOffset::at_due(),
-                },
+            taskboard_domain::SettingsSnapshot {
+                reminders_enabled: true,
+                tick_secs: taskboard_domain::TickSecs::new(1).expect("nonzero"),
+                reminder_before: ReminderOffset::at_due(),
+                ..taskboard_domain::SettingsSnapshot::default()
             },
             taskboard_state::DayRollConfig::disabled(),
         )
@@ -366,7 +365,7 @@ async fn i2_undo_line_survives_a_restart_over_sqlite() {
             system_tx.clone(),
             system_rx,
             notifier,
-            ReminderEngineConfig::disabled(),
+            taskboard_domain::SettingsSnapshot::default(),
             taskboard_state::DayRollConfig::disabled(),
         )
         .await

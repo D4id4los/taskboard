@@ -47,7 +47,10 @@ fn cfg() -> SyncActorConfig {
         // Every LWW-participating stamp the actor mints is `T + 1000` —
         // after every fixture stamp, preserving the real-clock orderings.
         clock: Arc::new(FixedClock(ts(T + 1000))),
-        day: taskboard_state::DayRollConfig::disabled().calendar,
+        day: taskboard_domain::DayCalendar {
+            day_start_time: chrono::NaiveTime::MIN,
+            offset: taskboard_state::DayRollConfig::disabled().offset,
+        },
     }
 }
 
@@ -959,7 +962,10 @@ async fn a14_rate_limited_poll_waits_the_advertised_retry_after() {
         backoff_initial: Duration::from_millis(100),
         backoff_max: Duration::from_secs(30),
         clock: Arc::new(FixedClock(ts(T + 1000))),
-        day: taskboard_state::DayRollConfig::disabled().calendar,
+        day: taskboard_domain::DayCalendar {
+            day_start_time: chrono::NaiveTime::MIN,
+            offset: taskboard_state::DayRollConfig::disabled().offset,
+        },
     };
     let server = start_server().await;
     let limited = Arc::new(std::sync::atomic::AtomicBool::new(false));

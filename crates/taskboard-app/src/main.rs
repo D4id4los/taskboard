@@ -794,7 +794,7 @@ async fn run_kiosk(
             );
             ui_settings.kiosk = true;
             ui_settings.kiosk_rotation = kiosk_rotation_handover(&app.config);
-            ui_settings.reminder_defaults = app.config.reminder_engine_config().defaults;
+            ui_settings.reminder_defaults = app.config.settings_snapshot().reminder_defaults();
             // No `focus` hand-over: the kiosk exclusion's first layer
             // never spawns the runtime, and the overlay's hand-over
             // contract is that a kiosk never carries a timing (the

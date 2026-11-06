@@ -122,7 +122,7 @@ pub async fn add_on(
     let offset = match before {
         Some(dur) => ReminderOffset::before(-dur)
             .expect("a parsed before-duration negates into the domain's sign domain"),
-        None => app.config.reminder_engine_config().defaults.default_before,
+        None => app.config.settings_snapshot().reminder_before,
     };
     drop(state);
     let outcome = app

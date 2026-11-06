@@ -402,9 +402,9 @@ fn c13_reminders_strict_table_and_typed_durations() {
     assert_eq!(err.kind(), "invalid-duration");
 }
 
-/// C14: the `[reminders]` → `ReminderEngineConfig` mapping through the
-/// real chain — enabled passthrough, tick seconds, and the sign flip
-/// (`"0s"` maps to the at-due offset).
+/// C14: the `[reminders]` → settings-snapshot mapping through the real
+/// chain — enabled passthrough, tick seconds, and the sign flip (`"0s"`
+/// maps to the at-due offset).
 #[test]
 fn c14_reminders_engine_config_mapping() {
     let mut config = AppConfig::default();
@@ -412,17 +412,17 @@ fn c14_reminders_engine_config_mapping() {
     config.reminders.default_before = "2m".into();
     config.storage.db_path = Some(PathBuf::from("/tmp/x.db"));
     config.validate().expect("validates");
-    let engine = config.reminder_engine_config();
-    assert!(engine.enabled);
-    assert_eq!(engine.tick, std::time::Duration::from_secs(12));
+    let snapshot = config.settings_snapshot();
+    assert!(snapshot.reminders_enabled);
     assert_eq!(
-        engine.defaults.default_before.as_duration().num_seconds(),
-        -120
+        snapshot.tick_secs.duration(),
+        std::time::Duration::from_secs(12)
     );
+    assert_eq!(snapshot.reminder_before.as_duration().num_seconds(), -120);
 
     config.reminders.default_before = "0s".into();
     assert_eq!(
-        config.reminder_engine_config().defaults.default_before,
+        config.settings_snapshot().reminder_before,
         taskboard_domain::ReminderOffset::at_due()
     );
 }

@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use taskboard_domain::test_support::{CountingIds, InMemoryRepository};
 use taskboard_domain::{CommandOutcome, NotifierMessage, StateCommand, SyncCommand, SystemEvent};
-use taskboard_state::{EngineHandle, ExecuteError, ReminderEngineConfig, spawn_state_engine};
+use taskboard_state::{EngineHandle, ExecuteError, spawn_state_engine};
 
 mod common;
 
@@ -45,7 +45,7 @@ async fn spawn_over(repo: Arc<InMemoryRepository>, clock: Arc<FixedClock>) -> Ha
         system_tx.clone(),
         system_rx,
         notifier,
-        ReminderEngineConfig::disabled(),
+        taskboard_domain::SettingsSnapshot::default(),
         taskboard_state::DayRollConfig::disabled(),
     )
     .await

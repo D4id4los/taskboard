@@ -1616,30 +1616,80 @@ impl AppConfig {
         }
     }
 
-    /// The `[reminders]` table mapped onto the engine's scheduler knobs.
-    /// The config speaks "before"; the domain speaks "added to duedate" —
-    /// the negation is the whole mapping. Call after
+    /// The live settings snapshot minted over the validated config
+    /// (round-5 chunk 5, D-5.5): the ONE mint the engine is seeded with
+    /// at boot and the app lane re-mints after every proven settings
+    /// write. Absorbs the typing the scattered accessors used to do —
+    /// the `default_before` sign flip (the config speaks "before"; the
+    /// domain speaks "added to duedate"), the `day_start_time` parse,
+    /// the focus-timing mint. Call after
     /// [`AppConfig::load`]/[`AppConfig::validate`].
+    ///
+    /// The focus timings mint whenever the four numbers validate — also
+    /// while the section is disabled (validation applies the bounds
+    /// flag-blind), so a live disable/re-enable cycle of an
+    /// already-spawned runtime resumes with its timings; the
+    /// snapshot's `live_focus` guards on the flag.
     ///
     /// # Panics
     ///
-    /// Never on a validated config (an unparseable `default_before` is
-    /// rejected by [`AppConfig::validate`]).
+    /// Never on a validated config (every scalar here is a
+    /// [`AppConfig::validate`] rule).
     #[must_use]
-    pub fn reminder_engine_config(&self) -> taskboard_state::ReminderEngineConfig {
+    pub fn settings_snapshot(&self) -> taskboard_domain::SettingsSnapshot {
+        use taskboard_domain::{DueSoonDays, ReminderSinkChoice, SettingsSnapshot, TickSecs};
         let parsed =
             parse_before(&self.reminders.default_before).expect("default_before validated");
-        let default_before = if parsed.is_zero() {
+        let reminder_before = if parsed.is_zero() {
             taskboard_domain::ReminderOffset::at_due()
         } else {
             taskboard_domain::ReminderOffset::before(-parsed)
                 .expect("a positive before-duration negates to the domain's sign domain")
         };
-        taskboard_state::ReminderEngineConfig {
-            enabled: self.reminders.enabled,
-            tick: Duration::from_secs(self.reminders.tick_secs),
-            defaults: taskboard_domain::ReminderDefaults { default_before },
+        let focus = Some(self.focus_timing().expect("focus timing validated"));
+        SettingsSnapshot {
+            day_start_time: self
+                .preferences
+                .day_start_time
+                .parse::<chrono::NaiveTime>()
+                .expect("day_start_time validated"),
+            reminders_enabled: self.reminders.enabled,
+            tick_secs: TickSecs::new(self.reminders.tick_secs).expect("tick_secs validated"),
+            reminder_before,
+            reminder_sink: match self.reminders.sink {
+                SinkChoice::Auto => ReminderSinkChoice::Auto,
+                SinkChoice::Log => ReminderSinkChoice::Log,
+                SinkChoice::Desktop => ReminderSinkChoice::Desktop,
+            },
+            poll_interval_secs: TickSecs::new(self.sync.poll_interval_secs)
+                .expect("poll_interval_secs validated"),
+            backoff_initial_secs: TickSecs::new(self.sync.backoff_initial_secs)
+                .expect("backoff_initial_secs validated"),
+            backoff_max_secs: TickSecs::new(self.sync.backoff_max_secs)
+                .expect("backoff_max_secs validated"),
+            due_soon_days: DueSoonDays::new(self.ui.due_soon_days)
+                .expect("due_soon_days validated"),
+            focus_enabled: self.focus.enabled,
+            focus,
+            focus_chain: self.focus.chain,
+            focus_notify: self.focus.notify,
         }
+    }
+
+    /// The `[focus]` numbers through the domain mint, flag-blind (the
+    /// shared body of [`Self::focus_config`] and
+    /// [`Self::settings_snapshot`]).
+    fn focus_timing(
+        &self,
+    ) -> Result<taskboard_domain::focus::FocusTiming, taskboard_domain::focus::InvalidFocusTiming>
+    {
+        let mins = |m: u64| chrono::TimeDelta::minutes(i64::try_from(m).unwrap_or(i64::MAX));
+        taskboard_domain::focus::FocusTiming::try_new(
+            mins(self.focus.work_mins),
+            mins(self.focus.break_mins),
+            mins(self.focus.long_break_mins),
+            u32::try_from(self.focus.long_break_every).unwrap_or(u32::MAX),
+        )
     }
 
     /// The validated `[preferences] day_start_time` plus the device's
@@ -1669,20 +1719,15 @@ impl AppConfig {
 
     /// The day-boundary roll's injected config (DR-6/2 D-E8): always
     /// enabled (no user-facing knob — the roll is the recurring-series
-    /// feature's core materialization), with the calendar built from the
-    /// validated `[preferences] day_start_time` and the device's fixed
-    /// UTC offset resolved once at boot (the `resolve_day_start`
-    /// convention; the UI keeps its own derivation).
-    ///
-    /// # Panics
-    ///
-    /// Never on a validated config (an unparseable `day_start_time` is
-    /// rejected by [`AppConfig::validate`]).
+    /// feature's core materialization), carrying the device's fixed UTC
+    /// offset resolved once at boot (the `resolve_day_start`
+    /// convention). The day-start *time* travels in the live settings
+    /// snapshot ([`Self::settings_snapshot`]), not here.
     #[must_use]
     pub fn day_calendar(&self) -> taskboard_state::DayRollConfig {
         taskboard_state::DayRollConfig {
             enabled: true,
-            calendar: self.resolved_day_calendar(),
+            offset: self.resolved_day_calendar().offset,
         }
     }
 
@@ -1700,17 +1745,7 @@ impl AppConfig {
         if !self.focus.enabled {
             return None;
         }
-        let mins =
-            |m: u64| chrono::TimeDelta::minutes(i64::try_from(m).expect("focus minutes fit i64"));
-        Some(
-            taskboard_domain::focus::FocusTiming::try_new(
-                mins(self.focus.work_mins),
-                mins(self.focus.break_mins),
-                mins(self.focus.long_break_mins),
-                u32::try_from(self.focus.long_break_every).expect("focus cadence validated"),
-            )
-            .expect("focus timing validated"),
-        )
+        Some(self.focus_timing().expect("focus timing validated"))
     }
 
     /// The `[files_sync]` table mapped onto the transport crate's
@@ -2443,28 +2478,81 @@ mod tests {
     }
 
     #[test]
-    fn reminder_engine_config_maps_the_table_with_the_sign_flip() {
+    fn settings_snapshot_maps_the_reminders_table_with_the_sign_flip() {
         let mut c = valid();
-        let engine = c.reminder_engine_config();
-        assert!(engine.enabled);
-        assert_eq!(engine.tick, Duration::from_secs(DEFAULT_REMINDER_TICK_SECS));
+        let snapshot = c.settings_snapshot();
+        assert!(snapshot.reminders_enabled);
+        assert_eq!(snapshot.tick_secs.get(), DEFAULT_REMINDER_TICK_SECS);
         assert_eq!(
-            engine.defaults.default_before.as_duration().num_seconds(),
+            snapshot.reminder_before.as_duration().num_seconds(),
             -300,
             "the '5m' default speaks before (negative in domain terms)"
         );
 
         c.reminders.default_before = "0s".into();
         assert_eq!(
-            c.reminder_engine_config().defaults.default_before,
+            c.settings_snapshot().reminder_before,
             taskboard_domain::ReminderOffset::at_due()
         );
 
         c.reminders.enabled = false;
         c.reminders.tick_secs = 7;
-        let engine = c.reminder_engine_config();
-        assert!(!engine.enabled);
-        assert_eq!(engine.tick, Duration::from_secs(7));
+        let snapshot = c.settings_snapshot();
+        assert!(!snapshot.reminders_enabled);
+        assert_eq!(snapshot.tick_secs.get(), 7);
+    }
+
+    /// The whole-snapshot mint over a hand-built validated config:
+    /// every editable field lands typed (the boot seed the engine is
+    /// published with).
+    #[test]
+    fn settings_snapshot_mints_every_editable_field() {
+        let mut c = valid();
+        c.preferences.day_start_time = "05:30".into();
+        c.reminders.sink = SinkChoice::Desktop;
+        c.sync.poll_interval_secs = 11;
+        c.sync.backoff_initial_secs = 2;
+        c.sync.backoff_max_secs = 40;
+        c.ui.due_soon_days = 3;
+        c.focus.enabled = true;
+        c.focus.work_mins = 50;
+        c.focus.break_mins = 10;
+        c.focus.long_break_mins = 20;
+        c.focus.long_break_every = 3;
+        c.focus.chain = true;
+        c.focus.notify = true;
+        c.validate().expect("validates");
+        let snapshot = c.settings_snapshot();
+        assert_eq!(
+            snapshot.day_start_time,
+            chrono::NaiveTime::from_hms_opt(5, 30, 0).unwrap()
+        );
+        assert_eq!(
+            snapshot.reminder_sink,
+            taskboard_domain::ReminderSinkChoice::Desktop
+        );
+        assert_eq!(snapshot.poll_interval_secs.get(), 11);
+        assert_eq!(snapshot.backoff_initial_secs.get(), 2);
+        assert_eq!(snapshot.backoff_max_secs.get(), 40);
+        assert_eq!(snapshot.due_soon_days.get(), 3);
+        assert!(snapshot.focus_enabled);
+        assert!(snapshot.focus_chain);
+        assert!(snapshot.focus_notify);
+        let timing = snapshot.focus.expect("enabled mints");
+        assert_eq!(timing.work(), chrono::TimeDelta::minutes(50));
+        assert_eq!(timing.long_break_every(), 3);
+        assert_eq!(snapshot.live_focus(), Some(timing));
+    }
+
+    /// A disabled focus table with valid numbers still mints its
+    /// timings (a live re-enable resumes with them); the live view is
+    /// `None` while the flag is off.
+    #[test]
+    fn settings_snapshot_focus_timings_follow_the_disabled_table() {
+        let mut c = valid();
+        c.focus.enabled = false;
+        assert!(c.settings_snapshot().focus.is_some());
+        assert_eq!(c.settings_snapshot().live_focus(), None);
     }
 
     #[test]

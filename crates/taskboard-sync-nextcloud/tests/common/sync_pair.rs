@@ -61,7 +61,7 @@ pub(crate) async fn boot_pair(client: DeckClient) -> SyncPair {
         system_tx.clone(),
         system_engine_rx,
         notifier,
-        taskboard_state::ReminderEngineConfig::disabled(),
+        taskboard_domain::SettingsSnapshot::default(),
         taskboard_state::DayRollConfig::disabled(),
     )
     .await

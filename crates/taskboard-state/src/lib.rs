@@ -48,7 +48,7 @@
 //!     system_tx.clone(),
 //!     system_rx,
 //!     notifier,
-//!     taskboard_state::ReminderEngineConfig::disabled(),
+//!     taskboard_domain::SettingsSnapshot::default(),
 //!     taskboard_state::DayRollConfig::disabled(),
 //! )
 //! .await?;
@@ -81,7 +81,7 @@ pub mod error;
 pub mod metrics;
 
 pub use actor::{AttachError, AttachReceipt, EngineEnvelope, EngineHandle, spawn_state_engine};
-pub use config::{DayRollConfig, ReminderEngineConfig};
+pub use config::DayRollConfig;
 pub use core::EngineCore;
 pub use error::{EngineStartupError, ExecuteError};
 pub use metrics::{EngineMetrics, EngineMetricsSnapshot};

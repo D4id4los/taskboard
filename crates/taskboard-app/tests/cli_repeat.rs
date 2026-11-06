@@ -518,7 +518,7 @@ async fn p2_anchor_chain_scheduled_duedate_then_window_today() {
     // the verb reads (no reimplementation). The two clock reads flank
     // the verb call, so the answer must sit inside their window-date
     // neighborhood.
-    let before = config.day_calendar().calendar.today(Utc::now());
+    let before = config.resolved_day_calendar().today(Utc::now());
     let receipt = repeat::repeat(
         config.clone(),
         forbidden_store(),
@@ -526,7 +526,7 @@ async fn p2_anchor_chain_scheduled_duedate_then_window_today() {
     )
     .await
     .expect("dateless anchor");
-    let after = config.day_calendar().calendar.today(Utc::now());
+    let after = config.resolved_day_calendar().today(Utc::now());
     let anchor = receipt.rule.expect("rule").anchor;
     let neighbors = [
         before.pred_opt().expect("a date has a predecessor"),
@@ -544,7 +544,7 @@ async fn p2_anchor_chain_scheduled_duedate_then_window_today() {
     let mut owl = standalone_config(dir.path(), "p2.db");
     owl.preferences.day_start_time = "23:59".to_owned();
     seed(&owl, "Todo", "Owl one").await;
-    let owl_before = owl.day_calendar().calendar.today(Utc::now());
+    let owl_before = owl.resolved_day_calendar().today(Utc::now());
     let receipt = repeat::repeat(
         owl.clone(),
         forbidden_store(),
