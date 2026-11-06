@@ -155,6 +155,84 @@ fn task(
     }
 }
 
+/// The reflection entries the whole-state proptest overlays onto the
+/// generated state (memory ≡ disk for the 0022 codec: mixed cadences,
+/// ratings present/absent, flag sets including parked unknown names,
+/// live and tombstoned rows). Ids are drawn from a fixed counter, so
+/// the overlay is deterministic per generated case.
+fn reflection_entries_strategy()
+-> impl proptest::strategy::Strategy<Value = taskboard_domain::ReflectionState> {
+    use taskboard_domain::reflection::{
+        HealthFlag, Rating, ReflectionAttributes, ReflectionEntry, ReviewCadence,
+    };
+
+    let rating = proptest::option::of(1_u8..=5);
+    let flag_names = prop::collection::btree_set(
+        proptest::prop_oneof![
+            Just("migraine".to_owned()),
+            Just("poor-sleep".to_owned()),
+            Just("good-day".to_owned()),
+            // A parked unknown name — the decode seam's tolerance is
+            // storage-native (D-J13).
+            Just("newer-flag".to_owned()),
+        ],
+        0..4,
+    );
+    prop::collection::vec(
+        (
+            any::<u128>(),
+            proptest::prop_oneof![
+                Just(ReviewCadence::Day),
+                Just(ReviewCadence::Week),
+                Just(ReviewCadence::Month),
+            ],
+            rating.clone(),
+            rating,
+            flag_names,
+            any::<bool>(),
+            1_000_i64..2_000,
+        ),
+        0..6,
+    )
+    .prop_map(|rows| {
+        let mut entries = BTreeMap::new();
+        for (seed, cadence, mood, energy, names, deleted, stamp) in rows {
+            let id = taskboard_domain::ids::ReflectionId::from(uuid::Uuid::from_u128(seed));
+            let mut flags = BTreeSet::new();
+            let mut extra_flags = BTreeSet::new();
+            for name in names {
+                match HealthFlag::parse_text_form(&name) {
+                    Some(flag) => {
+                        flags.insert(flag);
+                    }
+                    None => {
+                        extra_flags.insert(name);
+                    }
+                }
+            }
+            let entry = ReflectionEntry {
+                id,
+                cadence,
+                day: chrono::NaiveDate::from_ymd_opt(2026, 11, 2).unwrap(),
+                window_start: Utc.timestamp_opt(stamp, 0).unwrap(),
+                window_end: Utc.timestamp_opt(stamp + 24 * 3600, 0).unwrap(),
+                text: String::new(),
+                attributes: ReflectionAttributes {
+                    mood: mood.map(Rating::try_new).transpose().ok().flatten(),
+                    energy: energy.map(Rating::try_new).transpose().ok().flatten(),
+                    flags,
+                    extra_flags,
+                },
+                created_at: Utc.timestamp_opt(stamp, 0).unwrap(),
+                updated_at: Utc.timestamp_opt(stamp, 0).unwrap(),
+                deleted,
+            };
+            entries.insert(id, entry);
+        }
+        taskboard_domain::ReflectionState { entries }
+    })
+}
+
 // P1 — full-state round trip through one apply batch: everything comes
 // back identical except `sync.pending_ops`, which is re-derived from the
 // outbox depth.
@@ -164,7 +242,12 @@ proptest! {
     #[test]
     fn persisted_state_roundtrips_through_sqlite(
         state in taskboard_domain::test_support::persisted_state_strategy(),
+        reflection in reflection_entries_strategy(),
     ) {
+        let state = PersistedState {
+            reflection,
+            ..state
+        };
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -183,6 +266,8 @@ proptest! {
                 prop_assert_eq!(loaded.validators, state.validators);
                 prop_assert_eq!(loaded.reminders, state.reminders);
                 prop_assert_eq!(loaded.tracking, state.tracking);
+                prop_assert_eq!(loaded.reflection, state.reflection,
+                    "the reflection codec cannot drift from the entity (Q-14)");
                 prop_assert_eq!(loaded.sync.aggregate().phase, state.sync.aggregate().phase);
                 prop_assert_eq!(loaded.sync.aggregate().last_success, state.sync.aggregate().last_success);
                 prop_assert_eq!(
