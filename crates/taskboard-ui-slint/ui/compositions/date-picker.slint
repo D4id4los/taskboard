@@ -187,7 +187,7 @@ export component DatePicker inherits Rectangle {
             for row[row-index] in root.grid: HorizontalLayout {
                 spacing: Theme.space-1 / 2;
                 vertical-stretch: 0;
-                for cell[cell-index] in row: Rectangle {
+                for cell[cell-index] in row: day-cell := Rectangle {
                     border-radius: Theme.radius-small;
                     border-width: cell.cursor || cell.today ? Theme.focus-ring-width : 0;
                     border-color: cell.cursor ? Semantic.success : Semantic.focus-ring;
