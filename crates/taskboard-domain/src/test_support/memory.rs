@@ -100,6 +100,13 @@ impl SyncStateReader for InMemoryRepository {
     fn read_state(&self) -> BoxFuture<'_, Result<PersistedState, RepositoryError>> {
         Box::pin(async { self.read() })
     }
+
+    /// The fake carries no settings surface: the test-policy default is
+    /// the contract (the sync-actor journeys that need real cadences
+    /// swap in their own reader fake).
+    fn read_settings(&self) -> crate::settings::SettingsSnapshot {
+        crate::settings::SettingsSnapshot::default()
+    }
 }
 
 #[cfg(test)]

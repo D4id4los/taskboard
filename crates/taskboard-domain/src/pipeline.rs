@@ -1477,6 +1477,9 @@ pub fn apply_sync_report(
         // current one through untouched.
         undo: current.undo.clone(),
         sync,
+        // Settings are memory-only engine state; the pipeline's merge
+        // carries `current`'s snapshot through untouched.
+        settings: current.settings.clone(),
         // Sync ingestion is an engine mutation from a foreign source:
         // stamp it like a local command would be.
         last_updated: Some(now),
@@ -1691,6 +1694,7 @@ pub fn apply_push_report(
         // current one through untouched.
         undo: current.undo.clone(),
         sync,
+        settings: current.settings.clone(),
         last_updated: Some(now),
     };
     crate::state::derive_sync_states(

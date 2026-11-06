@@ -396,6 +396,7 @@ pub fn command_label(command: &StateCommand) -> String {
         StateCommand::ConvertHabitToSeries { .. } => "Convert habit to series".into(),
         StateCommand::Undo | StateCommand::Redo => "Undo/redo".into(),
         StateCommand::RequestSync => "Sync".into(),
+        StateCommand::UpdateSettings { .. } => "Update settings".into(),
     }
 }
 

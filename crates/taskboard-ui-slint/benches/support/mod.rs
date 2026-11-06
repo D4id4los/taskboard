@@ -174,6 +174,7 @@ pub fn build_state(n: usize) -> AppState {
         reflection: taskboard_domain::reflection::ReflectionState::default(),
         sync: SyncStates::new(),
         last_updated: None,
+        settings: taskboard_domain::SettingsSnapshot::default(),
     }
 }
 

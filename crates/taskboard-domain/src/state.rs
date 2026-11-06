@@ -55,6 +55,13 @@ pub struct AppState {
     /// Time of the last engine mutation from ANY source (local command or
     /// sync ingestion), stamped via the injected `Clock`.
     pub last_updated: Option<DateTime<Utc>>,
+    /// The live settings snapshot the engine owns (round-5 chunk 5,
+    /// D-5.8) — memory-only like `last_updated`: seeded from the
+    /// validated config at boot, replaced wholesale by
+    /// `StateCommand::UpdateSettings`, never part of `PersistedState`
+    /// (the config-file overlay is the store). Every consuming actor
+    /// re-reads it from the published state per iteration.
+    pub settings: crate::settings::SettingsSnapshot,
 }
 
 /// Sync status summary for the UI badge and CLI output.

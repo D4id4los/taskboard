@@ -236,6 +236,13 @@ impl SyncStateReader for EngineHandle {
             rx.await.map_err(|_| RepositoryError::Unavailable)?
         })
     }
+
+    /// The published snapshot's settings — lock-free, never an
+    /// envelope: the value a stopped engine last published is still
+    /// the honest answer (its file remains the boot authority).
+    fn read_settings(&self) -> taskboard_domain::SettingsSnapshot {
+        self.state.load().settings.clone()
+    }
 }
 
 /// Spawns the State Engine onto the current runtime.
@@ -547,9 +554,14 @@ async fn run_loop(
                     tracing::debug!("network event ignored: engine draining");
                 }
                 // The engine never acts on its own StorageFailed, and
-                // it is `TaskResurrected`'s producer too: both are
-                // emit-upstream-only verdicts (compiler-forced arm).
-                Ok(SystemEvent::StorageFailed | SystemEvent::TaskResurrected(_)) => {}
+                // it is `TaskResurrected`'s and `SettingsChanged`'s
+                // producer too: all three are emit-upstream-only
+                // verdicts (compiler-forced arm).
+                Ok(
+                    SystemEvent::StorageFailed
+                    | SystemEvent::TaskResurrected(_)
+                    | SystemEvent::SettingsChanged,
+                ) => {}
                 Err(broadcast::error::RecvError::Closed) => system_open = false,
                 Err(broadcast::error::RecvError::Lagged(missed)) => {
                     tracing::warn!(missed, "system event backlog overflowed");

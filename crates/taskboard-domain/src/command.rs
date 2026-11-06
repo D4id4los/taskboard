@@ -396,6 +396,9 @@ pub enum CommandOutcome {
     },
     /// Sync request accepted; the engine forwards it to the sync actor.
     SyncRequested,
+    /// The settings snapshot was applied and published (the
+    /// `UpdateSettings` receipt).
+    SettingsApplied,
 }
 
 /// The named board, refusing typed when the id names nothing or a
@@ -3045,6 +3048,13 @@ pub fn plan_command(
             actions: Vec::new(),
             outcome: CommandOutcome::SyncRequested,
         }),
+        // Engine-applied, never persisted: the engine's special arm
+        // handles it before the planner (the `RequestSync` shape); this
+        // arm is totality only.
+        StateCommand::UpdateSettings { .. } => Ok(CommandPlan {
+            actions: Vec::new(),
+            outcome: CommandOutcome::SettingsApplied,
+        }),
     }
 }
 
@@ -3356,6 +3366,7 @@ mod tests {
         let stack_id = StackId::from(uuid::Uuid::from_u128(u128::from(STACK)));
         let app = AppState {
             undo: crate::journal::UndoView::default(),
+            settings: crate::settings::SettingsSnapshot::default(),
             boards: [(
                 board_id,
                 crate::entities::Board {
@@ -5165,6 +5176,7 @@ mod tests {
         let board_id = BoardId::from(uuid::Uuid::from_u128(u128::from(BOARD)));
         let mut app = AppState {
             undo: crate::journal::UndoView::default(),
+            settings: crate::settings::SettingsSnapshot::default(),
             boards: [(
                 board_id,
                 crate::entities::Board {
@@ -6565,6 +6577,7 @@ mod tests {
         let board_id = BoardId::from(uuid::Uuid::from_u128(u128::from(BOARD)));
         let app = AppState {
             undo: crate::journal::UndoView::default(),
+            settings: crate::settings::SettingsSnapshot::default(),
             boards: [(
                 board_id,
                 crate::entities::Board {
@@ -10816,6 +10829,7 @@ mod proptests {
                 tracking: persisted.tracking.clone(),
                 sync: persisted.sync,
                 last_updated: None,
+                settings: crate::settings::SettingsSnapshot::default(),
                 habits: crate::habit::HabitState::default(),
                 reflection: crate::reflection::ReflectionState::default(),
             };
@@ -10933,6 +10947,7 @@ mod proptests {
                 tracking: persisted.tracking.clone(),
                 sync: persisted.sync,
                 last_updated: None,
+                settings: crate::settings::SettingsSnapshot::default(),
                 habits: crate::habit::HabitState::default(),
                 reflection: crate::reflection::ReflectionState::default(),
             };

@@ -12,8 +12,8 @@ use std::collections::BTreeMap;
 use chrono::{DateTime, Utc};
 
 use taskboard_domain::{
-    AppState, BoardId, PendingOp, PersistedState, PersistenceAction, SyncCounters, SyncValidators,
-    ValidatorKey, apply_actions,
+    AppState, BoardId, PendingOp, PersistedState, PersistenceAction, SettingsSnapshot,
+    SyncCounters, SyncValidators, ValidatorKey, apply_actions,
 };
 
 /// The engine's private working state: the persisted shape plus the one
@@ -28,6 +28,11 @@ pub struct EngineCore {
     /// the published rows; a restart re-hydrates rows without counters —
     /// cumulative-since-boot by construction.
     sync_counters: BTreeMap<BoardId, SyncCounters>,
+    /// The live settings snapshot (round-5 chunk 5, D-5.5): memory-only
+    /// like the counters — seeded by `spawn_state_engine` from the
+    /// validated config, replaced wholesale by `set_settings`, never
+    /// entering `interpret`'s batches or `PersistedState`.
+    settings: SettingsSnapshot,
 }
 
 impl EngineCore {
@@ -49,7 +54,25 @@ impl EngineCore {
             state,
             last_updated: None,
             sync_counters: BTreeMap::new(),
+            // The test-policy default (reminders off); the spawn
+            // overwrites it with the app's minted snapshot before the
+            // first publish.
+            settings: SettingsSnapshot::default(),
         }
+    }
+
+    /// The live settings (every per-iteration consumer read goes
+    /// through here or through the published `AppState::settings`).
+    #[must_use]
+    pub fn settings(&self) -> &SettingsSnapshot {
+        &self.settings
+    }
+
+    /// Replaces the settings wholesale (the `UpdateSettings` apply and
+    /// the boot seed). Strictly outside the persistence pipeline: no
+    /// batch, no `last_updated` stamp — the file overlay is the store.
+    pub fn set_settings(&mut self, settings: SettingsSnapshot) {
+        self.settings = settings;
     }
 
     /// Advance memory by exactly the batch that was persisted, stamp
@@ -87,6 +110,7 @@ impl EngineCore {
             sync,
             undo: taskboard_domain::UndoView::derive(&self.state.journal),
             last_updated: self.last_updated,
+            settings: self.settings.clone(),
         }
     }
 

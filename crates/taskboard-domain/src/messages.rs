@@ -608,6 +608,17 @@ pub enum StateCommand {
     /// User-visible refresh request; the engine forwards it to the sync
     /// actor.
     RequestSync,
+    /// Replace the engine's live settings wholesale (round-5 chunk 5,
+    /// D-5.2): the app lane mints the full snapshot from the freshly
+    /// proven config file after every per-field commit. Never
+    /// journaled, never persisted (the file overlay is the store); the
+    /// engine applies, publishes, and announces
+    /// [`SystemEvent::SettingsChanged`]. A value, not a patch — no
+    /// partial-update variant exists by design.
+    UpdateSettings {
+        /// The already-minted snapshot (no raw strings cross here).
+        settings: crate::settings::SettingsSnapshot,
+    },
 }
 
 /// Sparse task edit: `None` = untouched, `Some(_)` = set. Stamp the
@@ -755,6 +766,15 @@ pub enum SystemEvent {
     /// surfacing only — status line / CLI line / tracing, never a
     /// prompt (kiosk and daemon sessions must not block).
     TaskResurrected(TaskId),
+    /// The engine applied a new settings snapshot (round-5 chunk 5,
+    /// D-5.4): the doorbell for actors that do not read the
+    /// engine-signal bus (the sync actors re-arm their poll deadline).
+    /// The *value* lives in the published `AppState::settings`; this
+    /// event carries nothing. A `Lagged` consumer misses at most one
+    /// re-arm until its next natural wake (poll deadline, state
+    /// publish) — consumers re-read the value per iteration, so a
+    /// missed doorbell costs one stale-cadence cycle, never a value.
+    SettingsChanged,
 }
 
 /// Engine → UI repaint trigger (broadcast payload).
