@@ -31,7 +31,7 @@
 //! ([`reconcile`]), time tracking ([`tracking`]), the undo planning
 //! layer ([`undo`]), reminders ([`reminders`]), day boundaries
 //! ([`days`]), recurring-series rules ([`recur`]), reflection entries
-//! ([`reflection`]). The private `verify`
+//! ([`reflection`]) and their statistics ([`reflection_stats`]). The private `verify`
 //! module holds the kani bounded-model harnesses.
 
 #![forbid(unsafe_code)]
@@ -58,6 +58,7 @@ pub mod push;
 pub mod reconcile;
 pub mod recur;
 pub mod reflection;
+pub mod reflection_stats;
 pub mod reminders;
 pub mod remote;
 pub mod settings;
@@ -151,6 +152,10 @@ pub use reflection::{
     ReflectionAttributes, ReflectionEntry, ReflectionImport, ReflectionState, ReflectionTemplate,
     ReviewCadence, ReviewDue, ReviewWindow, UnknownHealthFlag, compose_reflection_text,
     import_reflections, review_due, review_window, window_done, window_misses,
+};
+pub use reflection_stats::{
+    DayRatings, FlagOccurrences, RatingMean, WindowRatings, daily_rating_series, past_entries,
+    window_ratings,
 };
 pub use reminders::{
     AdhocAlarm, AdhocWhen, AtInstant, BreakRule, Insistence, InvalidAtInstant,
