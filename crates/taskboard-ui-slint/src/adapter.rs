@@ -2841,6 +2841,17 @@ impl Adapter {
                         .palette_cursor(i32::from(direction) * 2 - 1, visible);
                     self.apply_outcomes(window, &outcomes);
                     self.finish_mutation(window);
+                } else if matches!(self.view_state.flow(), Flow::FocusMode { .. }) {
+                    // The focus overlay's switcher (the FocusMode
+                    // preset's Down/Up): the palette-cursor ring over
+                    // the rendered rows.
+                    let visible = slint::Model::row_count(&window.get_focus_switcher_model());
+                    let direction = matches!(effect, UiEffect::MenuNext);
+                    let outcomes = self
+                        .view_state
+                        .focus_mode_cursor(i32::from(direction) * 2 - 1, visible);
+                    self.apply_outcomes(window, &outcomes);
+                    self.finish_mutation(window);
                 } else {
                     self.shell.apply(&effect, self.menu_entries.len());
                 }
