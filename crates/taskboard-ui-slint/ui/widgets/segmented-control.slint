@@ -12,13 +12,12 @@
 // order the adapter's request seam maps back to presets. Documented
 // at the use site; segment labels are markup-owned strings.
 //
-// Keyboard operability, recorded honestly (r2 D26): AT activation
-// (tab + default action) is the keyboard path — the app's action
-// layer has no `settings.preset-*` registry action and this chunk
-// does not invent one; the picker is pointer- and AT-operable,
-// matching the icon-button precedent.
+// Keyboard operability (round-5 F19): every segment is a tab stop
+// with the always-rendered focus ring and the IconButton raw-key
+// half — bare Return/Space pick the focused segment. Pointer, raw
+// keys, and the AT default action all funnel into `picked`.
 
-import { Theme, Typography, RoleText } from "../theme.slint";
+import { Theme, Semantic, Typography, RoleText } from "../theme.slint";
 
 export component SegmentedControl inherits Rectangle {
     in property <[string]> options;
@@ -57,6 +56,8 @@ export component SegmentedControl inherits Rectangle {
                 : (root.enabled-at(index) && seg-touch.has-hover) ? Theme.surface-hover
                 : transparent;
             border-radius: Theme.radius-small;
+            border-width: seg-focus.has-focus ? Theme.focus-ring-width : 0;
+            border-color: Semantic.focus-ring;
             min-height: seg-label.preferred-height + 2 * Theme.space-2;
 
             HorizontalLayout {
@@ -87,7 +88,25 @@ export component SegmentedControl inherits Rectangle {
                         root.picked(index);
                     }
                 }
+                // A disabled segment still absorbs the stroke (r2 D32:
+                // the pick is swallowed, not passed on).
+                key-pressed(event) => {
+                    if ((event.text == Key.Return || event.text == " ")
+                            && !event.modifiers.control && !event.modifiers.alt
+                            && !event.modifiers.shift && !event.modifiers.meta) {
+                        if (root.enabled-at(index)) {
+                            root.picked(index);
+                        }
+                        accept
+                    } else {
+                        reject
+                    }
+                }
             }
+            // A click picks without taking focus: the timers form's
+            // click-a-rung-then-Return-to-submit flow keeps Return in
+            // the field (the TextField "click never moves focus"
+            // precedent).
             seg-touch := TouchArea {
                 clicked => {
                     if (root.enabled-at(index)) {
