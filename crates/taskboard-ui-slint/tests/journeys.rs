@@ -8301,6 +8301,124 @@ fn the_combobox_is_the_only_time_path() {
     );
 }
 
+/// Round-5 F8/F10 (the mouse-only quick-time session): with the picker
+/// opened through the field's own affordances (no keyboard), the
+/// quick-times chevron opens the quick list without settling the
+/// armed editor — the picker stays open — and a set time still seeds
+/// the FULL 96-slot list at open (the typed-digit narrowing is armed
+/// by keystrokes, not by the value mirror).
+#[test]
+fn the_quick_time_button_opens_the_menu_without_closing_the_picker() {
+    let (fixture, mut state) = fixture::journey_state();
+    // The timed value is what makes both halves red: the settle ends
+    // the whole flow on the chevron's focus steal (F8), and the value
+    // mirror filters the list to the one matching slot (F10).
+    state
+        .tasks
+        .get_mut(&fixture.task1)
+        .expect("fixture task")
+        .duedate = Some(local_wall(2030, 1, 31, 14, 30));
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavNextView);
+            harness.press(ActionId::NavNextView);
+            harness.driver.click_by_label("Edit due date");
+            harness.driver.advance_time(0);
+            assert!(harness.handle.window().get_task_model().date_picker_open);
+
+            // Mouse only: the chevron click must not settle the armed
+            // editor — the picker stays open under the quick list.
+            harness.driver.click_by_label("Quick times");
+            harness.driver.advance_time(0);
+            // The second loop turn delivers the deferred anchor-geometry
+            // mirror (the mount pass ran in the first — the nonce
+            // bump's recorded delivery shape).
+            harness.driver.advance_time(0);
+            assert!(
+                harness.handle.window().get_task_model().date_picker_open,
+                "the quick-time click leaves the picker open"
+            );
+            {
+                let facts = harness
+                    .handle
+                    .window()
+                    .global::<taskboard_ui_slint::TimeFieldFacts>();
+                assert!(facts.get_open(), "the quick list flyout is open");
+                // Below the anchor: the realized panel sits under the
+                // field row (the clamp/flip grammar's default leg).
+                assert!(
+                    facts.get_panel_y() >= facts.get_anchor_y() + facts.get_anchor_height(),
+                    "the flyout mounts below its anchor (panel-y={:?} anchor-y={:?} anchor-h={:?} anchor-x={:?})",
+                    facts.get_panel_y(),
+                    facts.get_anchor_y(),
+                    facts.get_anchor_height(),
+                    facts.get_anchor_x()
+                );
+            }
+            // The full 96-slot list at open — a set time must not seed
+            // the one-row mirror-filtered list.
+            let slots = harness.handle.window().get_task_model().date_time_slots;
+            assert_eq!(
+                slots.row_count(),
+                96,
+                "the quick list opens unfiltered over the quarter-hour grid"
+            );
+        },
+    );
+}
+
+/// Round-5 F10's other half: typed-digit narrowing keeps working per
+/// keystroke after an open that seeded the full list — the first
+/// keystroke re-arms the digit filter over the value mirror.
+#[test]
+fn the_quick_list_narrows_per_keystroke_after_an_open_with_a_set_time() {
+    let (fixture, mut state) = fixture::journey_state();
+    state
+        .tasks
+        .get_mut(&fixture.task1)
+        .expect("fixture task")
+        .duedate = Some(local_wall(2030, 1, 31, 14, 30));
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavNextView);
+            harness.press(ActionId::NavNextView);
+            harness.driver.click_by_label("Edit due date");
+            harness.driver.advance_time(0);
+            assert!(harness.handle.window().get_task_model().date_picker_open);
+            harness.driver.click_by_label("Quick times");
+            harness.driver.advance_time(0);
+            let slots = harness.handle.window().get_task_model().date_time_slots;
+            assert_eq!(slots.row_count(), 96, "the open seeds the full list");
+
+            // The first keystroke narrows again: the mirror's digits
+            // ("1430" + the typed text) filter the grid per keystroke.
+            harness
+                .handle
+                .window()
+                .invoke_task_date_time_edited("143".into());
+            harness.driver.advance_time(0);
+            let slots = harness.handle.window().get_task_model().date_time_slots;
+            let narrowed = slots.row_count();
+            assert!(
+                narrowed > 0 && narrowed < 96,
+                "typed digits narrow the list (got {narrowed})"
+            );
+        },
+    );
+}
+
 /// R4 D25 — the calendar picker's two-phase ladder and live sync
 /// (reworks the r2 boundary journey's Enter leg): grid-Enter hands
 /// focus to the field and dispatches nothing, the typed path and
@@ -13797,4 +13915,477 @@ fn the_kiosk_mount_never_shows_the_planner() {
 /// recorded golden-class residual).
 fn harness_now() -> chrono::DateTime<chrono::Utc> {
     chrono::Utc::now()
+}
+
+// -- round-5 chunk 3: the anchored flyouts (F8/F9/F10/F14, D6) ----------
+
+/// The quick-list flyout's realized facts, flattened for the journey
+/// assertions: `(open, site, panel-x, panel-y, anchor-x, anchor-y,
+/// anchor-height)` (the global handle borrows the window; the tuple
+/// crosses the borrow out).
+fn quick_list_facts(
+    window: &taskboard_ui_slint::AppWindow,
+) -> (bool, i32, f32, f32, f32, f32, f32) {
+    let facts = window.global::<taskboard_ui_slint::TimeFieldFacts>();
+    (
+        facts.get_open(),
+        facts.get_site(),
+        facts.get_panel_x(),
+        facts.get_panel_y(),
+        facts.get_anchor_x(),
+        facts.get_anchor_y(),
+        facts.get_anchor_height(),
+    )
+}
+
+/// Round-5 F8's calendar-toggle seam (D-3.4 seam 2): the calendar
+/// button's click grab must not settle the armed editor — the toggle
+/// opens the picker over the typed buffer, the flow stays armed, and
+/// the field keeps focus (the default-open contract).
+#[test]
+fn the_calendar_toggle_keeps_the_armed_editor_and_refocuses_the_field() {
+    let (_fixture, state) = fixture::journey_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavNextView);
+            harness.press(ActionId::NavNextView);
+            harness.driver.click_by_label("Edit due date");
+            harness.driver.advance_time(0);
+            assert!(harness.handle.window().get_task_model().date_picker_open);
+            // Close the picker again: the toggle's close arm sets the
+            // latch too (the button's grab must not settle here).
+            harness.handle.window().invoke_task_date_picker_toggled();
+            harness.driver.advance_time(0);
+            assert!(
+                !harness.handle.window().get_task_model().date_picker_open,
+                "the toggle's close arm closes the picker"
+            );
+
+            // Type a parseable buffer, then toggle the calendar open:
+            // the flow survives the button's click grab, the buffer is
+            // untouched, and the field keeps focus.
+            harness.clear_seeded();
+            harness.type_text("2030-03-01");
+            harness.driver.click_by_label("Calendar");
+            harness.driver.advance_time(0);
+            harness.driver.advance_time(0);
+            let model = harness.handle.window().get_task_model();
+            assert!(
+                model.date_picker_open,
+                "the toggle opened the picker over the armed editor"
+            );
+            assert!(model.due_open, "the armed editor survived the toggle");
+            assert_eq!(
+                model.due_text, "2030-03-01",
+                "the toggle never settled the typed buffer"
+            );
+            assert!(
+                model.date_field_focus,
+                "the field keeps focus on the default open"
+            );
+        },
+    );
+}
+
+/// Round-5 F14: with no live boards, the settings picker renders the
+/// visible empty state — the field is non-interactive (a click opens
+/// nothing, the lane stays empty) and the consumer's caption renders.
+#[test]
+fn the_empty_board_list_renders_the_disabled_picker_with_its_caption() {
+    let state = AppState::default();
+    // A connector without boards: the picker's rows project the
+    // state's live boards — none exist.
+    let settings = UiSettings {
+        connectors: vec![connector_row("work")],
+        ..UiSettings::default()
+    };
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount_with_settings(SlintDriver::default(), state, settings);
+            harness.press(ActionId::AppSettings);
+            harness.driver.advance_time(0);
+            let window = harness.handle.window();
+            let copy = window.global::<taskboard_ui_slint::SettingsBoardCopy>();
+            assert!(
+                options(&harness).is_empty(),
+                "the zero-board state projects no rows"
+            );
+
+            // The field click opens nothing (the disabled state).
+            harness.driver.click_by_label(&copy.get_label());
+            harness.driver.advance_time(0);
+            let facts = window.global::<taskboard_ui_slint::DropdownFacts>();
+            assert!(
+                !facts.get_open(),
+                "the empty picker's field click opens nothing"
+            );
+            assert!(
+                harness.drain_requests().is_empty(),
+                "the empty state dispatched nothing"
+            );
+
+            // The caption renders (the address lookup — the copy
+            // constant is the element's a11y label, never asserted).
+            assert!(
+                harness
+                    .driver
+                    .find_by_label(&copy.get_empty_hint())
+                    .is_some(),
+                "the empty state's caption renders"
+            );
+        },
+    );
+}
+
+/// Round-5 D6's per-site matrix, dropdown site 0 (the settings board
+/// picker): the flyout mounts window-level below the anchor, the
+/// ladder still moves through the decline arm, and an outside click
+/// dismisses only the flyout.
+#[test]
+fn the_settings_picker_flyout_mounts_below_its_anchor_and_dismisses() {
+    let mut state = AppState::default();
+    let home = uuid::Uuid::new_v4();
+    let away = uuid::Uuid::new_v4();
+    state_board(&mut state, home, "home", None);
+    state_board(&mut state, away, "away", Some("work"));
+    let settings = UiSettings {
+        connectors: vec![connector_row("work")],
+        ..UiSettings::default()
+    };
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount_with_settings(SlintDriver::default(), state, settings);
+            harness.driver.set_window_size(1000, 900);
+            harness.press(ActionId::AppSettings);
+            harness.driver.advance_time(0);
+            let window = harness.handle.window();
+
+            // Open via the field click — the proven coordinate seam
+            // (the a11y default action alone is racy right after the
+            // view swap).
+            click_selector_field(&mut harness.driver);
+            harness.driver.advance_time(0);
+            harness.driver.advance_time(0);
+            {
+                let facts = window.global::<taskboard_ui_slint::DropdownFacts>();
+                assert!(facts.get_open(), "the field click opens the flyout");
+                assert!(
+                    facts.get_panel_y() >= facts.get_anchor_y() + facts.get_anchor_height(),
+                    "the flyout mounts below its anchor"
+                );
+            }
+
+            // The ladder still moves (the decline arm hands the stroke
+            // to the field; the lane stays empty).
+            let anchor = board_facts(&harness).get_highlight();
+            raw_key(&harness, slint::platform::Key::DownArrow);
+            harness.driver.advance_time(0);
+            assert_eq!(
+                board_facts(&harness).get_highlight(),
+                anchor + 1,
+                "Down moves the ladder"
+            );
+            assert!(
+                harness.drain_requests().is_empty(),
+                "the arrow dispatched nothing"
+            );
+
+            // Outside click: a real coordinate click onto another
+            // control's spot — the window-level underlay receives it
+            // and dismisses only the flyout (the Detach button's
+            // enabled gate stays untouched).
+            let detach = harness
+                .driver
+                .find_by_label("Detach")
+                .expect("the Detach button renders");
+            let (x, y) = support::driver::centre(&detach);
+            harness.driver.click_at(x, y);
+            harness.driver.advance_time(0);
+            assert!(
+                !window
+                    .global::<taskboard_ui_slint::DropdownFacts>()
+                    .get_open(),
+                "the outside click dismissed the flyout"
+            );
+        },
+    );
+}
+
+/// Round-5 D6's per-site matrix, dropdown site 1 (the board-bar
+/// switcher): same grammar over the bar's dropdown mode.
+#[test]
+fn the_board_bar_flyout_mounts_below_its_anchor_and_dismisses() {
+    let mut state = AppState::default();
+    let boards: Vec<_> = (0..9)
+        .map(|i| (uuid::Uuid::new_v4(), format!("board-{i}")))
+        .collect();
+    for (id, title) in &boards {
+        state_board(&mut state, *id, title, None);
+    }
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.set_window_size(1000, 900);
+            harness.driver.advance_time(0);
+
+            let mut field = None;
+            for _ in 0..20 {
+                harness.driver.advance_time(0);
+                let found = harness.driver.find_all_by_id("BoardBar::bar-dd");
+                if let Some(first) = found.into_iter().next() {
+                    field = Some(first);
+                    break;
+                }
+            }
+            let field = field.expect("the bar dropdown renders past the budget");
+            let pos = field.absolute_position();
+            let size = field.size();
+            let (x, y) = (pos.x + size.width / 2.0, pos.y + size.height / 2.0);
+            harness.driver.click_at(x, y);
+            harness.driver.advance_time(0);
+            harness.driver.advance_time(0);
+
+            let window = harness.handle.window();
+            {
+                let facts = window.global::<taskboard_ui_slint::DropdownFacts>();
+                assert!(facts.get_open(), "the field click opens the flyout");
+                assert!(
+                    facts.get_panel_y() >= facts.get_anchor_y() + facts.get_anchor_height(),
+                    "the flyout mounts below its anchor"
+                );
+            }
+
+            // Outside click onto the status bar's spot dismisses only
+            // the flyout.
+            let stop = harness
+                .driver
+                .find_by_label("Boards")
+                .expect("the bar's a11y container renders");
+            let (bx, by) = support::driver::centre(&stop);
+            harness.driver.click_at(bx, by + 200.0);
+            harness.driver.advance_time(0);
+            assert!(
+                !window
+                    .global::<taskboard_ui_slint::DropdownFacts>()
+                    .get_open(),
+                "the outside click dismissed the flyout"
+            );
+            assert!(
+                harness.drain_requests().is_empty(),
+                "the dismissal selected nothing"
+            );
+        },
+    );
+}
+
+/// Round-5 D6's per-site matrix, time-field site 1 (the timer
+/// setter's combobox): the quick list opens under its field, the
+/// setter stays open, and an outside click dismisses only the list.
+#[test]
+fn the_setter_quick_list_takes_the_flip_leg_and_dismisses() {
+    let (_fixture, state) = fixture::journey_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.set_window_size(1000, 900);
+            // The setter's header button lives in the today view's
+            // section (the harness's mount escape routes to Board).
+            harness.press(ActionId::ViewToday);
+            harness.driver.advance_time(0);
+            open_setter(&mut harness);
+            assert!(harness.handle.window().get_timer_setter_open());
+
+            harness
+                .driver
+                .find_by_label("Quick times")
+                .expect("the setter's chevron renders")
+                .invoke_default_action();
+            harness.driver.advance_time(0);
+            harness.driver.advance_time(0);
+
+            let window = harness.handle.window();
+            {
+                let facts = window.global::<taskboard_ui_slint::TimeFieldFacts>();
+                assert!(facts.get_open(), "the chevron opened the quick list");
+                assert_eq!(facts.get_site(), 1, "the setter's site discriminates");
+                // The setter's combobox sits low in the popover over a
+                // 900px window, so the list takes the clamp/flip
+                // grammar's flip leg: above the anchor, inside the
+                // window.
+                assert!(
+                    facts.get_panel_y() <= facts.get_anchor_y(),
+                    "the low anchor flips the panel above (py={:?} ay={:?} ah={:?})",
+                    facts.get_panel_y(),
+                    facts.get_anchor_y(),
+                    facts.get_anchor_height()
+                );
+                assert!(facts.get_panel_y() >= 0.0, "the panel stays in the window");
+            }
+            assert!(
+                window.get_timer_setter_open(),
+                "the setter stays open under the quick list"
+            );
+            let slots = window.get_timer_setter_time_slots();
+            assert_eq!(
+                slots.row_count(),
+                96,
+                "the open seeds the full quarter-hour grid"
+            );
+
+            // Outside click at the window corner dismisses only the
+            // quick list — the popover stays.
+            harness.driver.click_at(2.0, 2.0);
+            harness.driver.advance_time(0);
+            assert!(
+                !window
+                    .global::<taskboard_ui_slint::TimeFieldFacts>()
+                    .get_open(),
+                "the outside click dismissed the quick list"
+            );
+            assert!(
+                window.get_timer_setter_open(),
+                "the setter survived the quick list's dismissal"
+            );
+        },
+    );
+}
+
+/// Round-5 D6's per-site matrix, time-field sites 2 and 3 (the
+/// track-form's start and end fields — side-by-side in one row, so
+/// they share an anchor y and differ in x): each field opens its own
+/// full-grid list keyed on the site discriminator, each panel mounts
+/// under its own anchor's x, and the dismissal leaves the form open.
+/// (The clamp/flip leg is journeyed at the timer-setter site — the
+/// track form's row layout cannot produce a low anchor.)
+#[test]
+fn the_track_form_quick_lists_open_per_field_and_dismiss() {
+    let (_fx, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            press_preset(
+                &mut harness,
+                taskboard_ui_slint::keymap::Preset::Standard,
+                ActionId::NavNextItem,
+            );
+            press_preset(
+                &mut harness,
+                taskboard_ui_slint::keymap::Preset::Standard,
+                ActionId::TaskEdit,
+            );
+            harness.driver.click_by_label("Time entries");
+            harness.driver.advance_time(0);
+            assert!(harness.handle.window().get_task_model().track_entries_open);
+            harness.handle.window().invoke_track_form_add_requested();
+            harness.driver.advance_time(0);
+            harness.driver.advance_time(0);
+            assert!(harness.handle.window().get_track_form_open());
+
+            let open_field = |harness: &Harness, index: usize| {
+                let chevrons = harness.driver.find_all_by_label("Quick times");
+                assert!(
+                    chevrons.len() >= 2,
+                    "the track form mounts both time fields"
+                );
+                chevrons
+                    .into_iter()
+                    .nth(index)
+                    .expect("the field's chevron renders")
+                    .invoke_default_action();
+                // The facts read happens at the call site (the global
+                // handle borrows the window).
+            };
+
+            // The start field (site 2): opens its own list under the
+            // below leg (the upper field's panel fits between the
+            // anchor and the status bar), seeded unfiltered.
+            open_field(&harness, 0);
+            harness.driver.advance_time(0);
+            harness.driver.advance_time(0);
+            {
+                let (open, site, panel_x, panel_y, anchor_x, anchor_y, anchor_h) =
+                    quick_list_facts(harness.handle.window());
+                assert!(open, "the start chevron opened the list");
+                assert_eq!(site, 2, "the start field discriminates");
+                assert!(
+                    panel_y >= anchor_y + anchor_h,
+                    "the start field's panel takes the below leg (panel-y={panel_y:?} anchor-y={anchor_y:?})",
+                );
+                assert!(
+                    (panel_x - anchor_x).abs() < 1.0,
+                    "the start panel aligns with its own anchor (panel-x={panel_x:?} anchor-x={anchor_x:?})",
+                );
+            }
+            assert_eq!(
+                harness
+                    .handle
+                    .window()
+                    .get_track_form_start_slots()
+                    .row_count(),
+                96,
+                "the start list seeds the full grid"
+            );
+            harness.driver.click_at(2.0, 2.0);
+            harness.driver.advance_time(0);
+            assert!(
+                !quick_list_facts(harness.handle.window()).0,
+                "the outside click dismissed the start list"
+            );
+            assert!(
+                harness.handle.window().get_track_form_open(),
+                "the form survived the dismissal"
+            );
+
+            // The end field (site 3): the same grammar, its own list —
+            // same anchor y, a different anchor x, so the panel's
+            // alignment proves the mirror follows this field's anchor.
+            open_field(&harness, 1);
+            harness.driver.advance_time(0);
+            harness.driver.advance_time(0);
+            {
+                let (open, site, panel_x, panel_y, anchor_x, anchor_y, anchor_h) =
+                    quick_list_facts(harness.handle.window());
+                assert!(open, "the end chevron opened the list");
+                assert_eq!(site, 3, "the end field discriminates");
+                assert!(
+                    (panel_x - anchor_x).abs() < 1.0,
+                    "the end panel aligns with its own anchor (panel-x={panel_x:?} anchor-x={anchor_x:?})",
+                );
+                assert!(
+                    panel_y >= anchor_y + anchor_h,
+                    "the end field's panel takes the below leg (panel-y={panel_y:?} anchor-y={anchor_y:?})",
+                );
+            }
+            assert_eq!(
+                harness
+                    .handle
+                    .window()
+                    .get_track_form_end_slots()
+                    .row_count(),
+                96,
+                "the end list seeds the full grid"
+            );
+        },
+    );
 }
