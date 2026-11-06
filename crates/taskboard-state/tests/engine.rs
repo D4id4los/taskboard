@@ -2982,9 +2982,11 @@ fn head_task(app: &AppState) -> taskboard_domain::Task {
         .expect("the seeded recurring head")
 }
 
-/// One timer wake: the engine's tick cadence is the (disabled)
-/// reminders config's 30 s, so a 31 s paused-time step lands exactly
-/// one wake, plus a grace step for the spawned work to settle.
+/// One timer wake: the engine's tick cadence is the default snapshot's
+/// 1 s, so a 31 s paused-time step lands a wake at every second within
+/// the window, plus a grace step for the spawned work to settle (the
+/// day-roll journeys ride the watermark's fast path, so extra quiet
+/// wakes are invisible).
 async fn one_wake() {
     tokio::time::advance(Duration::from_secs(31)).await;
     tokio::time::advance(Duration::from_millis(200)).await;

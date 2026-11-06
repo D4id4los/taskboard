@@ -401,11 +401,18 @@ dependency hierarchies.
    =SystemEvent::ConnectorLost(c)= arm scopes =go_offline= to =c='s
    boards (derived from the engine's own binding tags) while
    =ConnectorRestored(c)= forwards the nudge. Scheduling rides a
-   =sleep_until= select *tick arm* (first tick immediate, so reminders
-   left undelivered before a shutdown fire on the next boot; disarmed
-   while the engine drains) that runs the pure reminder evaluator over
-   =EngineCore=, persists delivery markers, interprets, publishes, and
-   only then notifies (ADR 0013). The engine's *sidecar half* (the
+   =sleep_until= select *tick arm* that is *deadline-driven* (round-5
+   chunk 6): the wake is =min(next due instant, now + tick)= — the pure
+   =next_due_instant= query (proptested against the firing evaluator)
+   pulls the wake earlier than the tick, and every executed command and
+   ingested sync report re-arms from post-command state, so a reminder
+   fires *at* its due instant. The tick (=tick_secs=, default 1 s) is
+   the fallback sweep for the now-dependent reminder families and the
+   anti-busy-loop clamp; the first tick stays immediate, so reminders
+   left undelivered before a shutdown fire on the next boot; the timer
+   disarms while the engine drains. The arm runs the pure reminder
+   evaluator over =EngineCore=, persists delivery markers, interprets,
+   publishes, and only then notifies (ADR 0013). The engine's *sidecar half* (the
    daily-driver wave): =apply_sync_report= runs =fold_task_app_data=
    and =fold_reminder_rules= over the downloaded document after the
    task merge loop, behind the self-clobber guard mirror (=UpdateAppData=

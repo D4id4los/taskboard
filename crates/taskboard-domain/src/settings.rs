@@ -29,11 +29,17 @@ use crate::days::DayCalendar;
 use crate::focus::FocusTiming;
 use crate::reminders::{ReminderDefaults, ReminderOffset};
 
-/// The production cadence default (`[reminders] tick_secs`,
-/// `[sync] poll_interval_secs`): the serde-leniency target and the
-/// snapshot's `Default`. Kept here so the type's default is a named
-/// number, not a magic literal.
+/// The `[sync] poll_interval_secs` default: the sync lane keeps its
+/// 30 s cadence — the deadline-driven reminder chunk (round-5 chunk 6)
+/// split the reminder lane off this shared default. Also
+/// [`TickSecs`]'s serde-leniency target (zero decodes to it) — the
+/// leniency is type-level, so both lanes share the fallback; the
+/// reminder lane's *snapshot* default is minted explicitly below.
 const DEFAULT_SECS: u64 = 30;
+/// The `[reminders] tick_secs` default (round-5 chunk 6, D2): the tick
+/// is the fallback sweep, never the firing mechanism — 1 s keeps the
+/// worst-case firing lag at one second on a quiet deadline query.
+const DEFAULT_TICK_SECS: u64 = 1;
 /// The `[sync] backoff_initial_secs` default.
 const DEFAULT_BACKOFF_INITIAL_SECS: u64 = 5;
 /// The `[sync] backoff_max_secs` default.
@@ -89,7 +95,9 @@ impl TickSecs {
 }
 
 impl Default for TickSecs {
-    /// The production cadence default (30 s).
+    /// The sync lane's cadence default (30 s) and the serde leniency
+    /// target (the shared type cannot split the lanes' leniency; the
+    /// reminder lane's snapshot default is minted explicitly).
     fn default() -> Self {
         Self(DEFAULT_SECS)
     }
@@ -252,7 +260,9 @@ impl Default for SettingsSnapshot {
         Self {
             day_start_time: chrono::NaiveTime::MIN,
             reminders_enabled: false,
-            tick_secs: TickSecs::default(),
+            // The reminder lane's own default (1 s), minted explicitly —
+            // `TickSecs::default` is the sync lane's 30 s.
+            tick_secs: TickSecs(DEFAULT_TICK_SECS),
             reminder_before: ReminderOffset::at_due(),
             reminder_sink: ReminderSinkChoice::Auto,
             poll_interval_secs: TickSecs::default(),
