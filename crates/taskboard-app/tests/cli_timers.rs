@@ -89,12 +89,25 @@ async fn t2_at_grammars() {
     );
 
     // (b) HH:MM host-local, rolled forward when already past: the
-    // instant's local wall clock equals the requested time and it is
-    // strictly in the future.
+    // typed wall clock is the requested time and the resolved day is
+    // today or tomorrow relative to a pre-parse capture — the
+    // production resolver reads after `before`, so a midnight step
+    // mid-parse can only pick the successor (docs/testing_strategy.org
+    // §6.2; no format-string text, no pinned date).
+    let before = chrono::Local::now();
     let receipt = run_add(&config, "time", &["--at", "09:30"]).await;
     let local: chrono::DateTime<chrono::Local> = receipt.fire_at.into();
-    assert_eq!(local.format("%H:%M").to_string(), "09:30");
-    assert!(receipt.fire_at > chrono::Utc::now(), "rolled to the future");
+    assert_eq!(
+        local.time(),
+        chrono::NaiveTime::from_hms_opt(9, 30, 0).expect("09:30"),
+        "the local wall clock is the requested time"
+    );
+    let today = before.date_naive();
+    let tomorrow = today.succ_opt().expect("a date has a successor");
+    assert!(
+        today == local.date_naive() || tomorrow == local.date_naive(),
+        "the rolled day is today or tomorrow relative to the pre-parse capture"
+    );
 
     // (c) YYYY-MM-DD host-local midnight: the local date matches and
     // the wall clock is 00:00.
