@@ -563,7 +563,7 @@ export component AppWindow inherits Window {
             // min-viewport fallback is the menu's narrow-window
             // shape.
             if (root.current-view == View.task-detail
-                    && root.task-model.date-picker-open): TouchArea {
+                    && root.task-model.date-picker-open): date-picker-backdrop := TouchArea {
                 width: 100%;
                 height: 100%;
                 clicked => root.date-picker-dismiss-requested();
@@ -616,7 +616,7 @@ export component AppWindow inherits Window {
         // the adapter's setter-local state. The panel sits below the
         // header button when it fits, else above, both clamped into
         // the window (status bar included).
-        if (root.timer-setter-open): TouchArea {
+        if (root.timer-setter-open): timer-setter-backdrop := TouchArea {
             width: 100%;
             height: 100%;
             clicked => root.timer-setter-dismiss-requested();
@@ -667,7 +667,7 @@ export component AppWindow inherits Window {
     // fits (above the status bar), else above, clamped into the
     // window — the date-picker's exact `y` expression shape.
     if (root.current-view == View.task-detail
-            && root.task-model.track-entries-open): TouchArea {
+            && root.task-model.track-entries-open): track-entries-backdrop := TouchArea {
         width: 100%;
         height: 100%;
         clicked => root.track-entries-dismiss-requested();
@@ -753,7 +753,7 @@ export component AppWindow inherits Window {
     // geometry is the date-picker mount's exact expression shape:
     // below the anchor when it fits between the anchor and the status
     // bar, else flipped above, both clamped into the window margins.
-    if (DropdownFacts.open): TouchArea {
+    if (DropdownFacts.open): dropdown-backdrop := TouchArea {
         width: 100%;
         height: 100%;
         clicked => {
@@ -816,7 +816,7 @@ export component AppWindow inherits Window {
             TooltipState.unhover();
         }
     }
-    if (TimeFieldFacts.open): TouchArea {
+    if (TimeFieldFacts.open): time-field-backdrop := TouchArea {
         width: 100%;
         height: 100%;
         clicked => {
@@ -908,7 +908,7 @@ export component AppWindow inherits Window {
         // receives exactly the clicks the panel does not absorb (probe
         // P1). No visual. A stolen hamburger click lands here too and
         // converges on the same full close.
-        if (KeyboardState.menu-open): TouchArea {
+        if (KeyboardState.menu-open): menu-backdrop := TouchArea {
             width: 100%;
             height: 100%;
             init => TooltipState.unhover();
@@ -1010,7 +1010,7 @@ export component AppWindow inherits Window {
         // panel uses, shrinking to the window (the palette's rows are
         // fixed-count, so unlike the menu there is no preferred-width
         // term); height by content, clamped above the status bar.
-        if (root.palette-open): TouchArea {
+        if (root.palette-open): palette-backdrop := TouchArea {
             width: 100%;
             height: 100%;
             clicked => root.palette-dismiss-requested();
@@ -1023,7 +1023,7 @@ export component AppWindow inherits Window {
                 }
             }
         }
-        if (root.capture-open): TouchArea {
+        if (root.capture-open): capture-backdrop := TouchArea {
             // The modal scrim: an outside click discards-and-closes
             // (the palette-dismiss precedent routed to ModeNormal).
             width: 100%;
@@ -1072,7 +1072,7 @@ export component AppWindow inherits Window {
         // (the capture-overlay precedent; the later sibling wins the
         // hit test, so an outside click lands on the scrim and closes
         // — the session keeps running; the overlay is presentation).
-        if (root.focus-overlay-open): TouchArea {
+        if (root.focus-overlay-open): focus-overlay-backdrop := TouchArea {
             width: 100%;
             height: 100%;
             clicked => root.focus-overlay-close-requested();

@@ -56,12 +56,12 @@ export component SearchPalette inherits Rectangle {
             focus-lost() => root.text-flow-focus-lost();
         }
 
-        for row[index] in root.rows: ListRow {
+        for row[index] in root.rows: palette-row := ListRow {
             vertical-stretch: 0;
             text: row.text;
             meta: row.meta;
             emphasis: index == root.selected-index;
-            TouchArea {
+            row-touch := TouchArea {
                 clicked => root.row-activated(index);
             }
         }

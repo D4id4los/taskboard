@@ -106,11 +106,11 @@ export component FocusOverlay inherits Rectangle {
             }
         }
 
-        for row[index] in root.rows: ListRow {
+        for row[index] in root.rows: switcher-row := ListRow {
             vertical-stretch: 0;
             text: row.text;
             emphasis: index == root.selected-index;
-            TouchArea {
+            row-touch := TouchArea {
                 clicked => root.switcher-activated(index);
             }
         }
