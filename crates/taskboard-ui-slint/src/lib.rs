@@ -89,11 +89,13 @@ pub struct UiSettings {
     /// app-side via `configured_connectors` at hand-over, so the
     /// settings list is populated before the first open.
     pub connectors: Vec<requests::ConnectorInfo>,
-    /// The today window's derivation pair (chunk 10 D4): the parsed
-    /// `[preferences] day_start_time` plus the device's fixed offset,
-    /// resolved once at hand-over (the consumers contract — nothing
-    /// reads config mid-flight). Defaults to midnight + UTC.
-    pub day_start: (chrono::NaiveTime, chrono::FixedOffset),
+    /// The device's fixed UTC offset, resolved once at hand-over (the
+    /// `resolve_day_start` convention — genuinely boot-fixed state).
+    /// The day-start *time*, the due-soon horizon, the reminder
+    /// defaults, and the focus timings are no hand-over values since
+    /// round-5 chunk 5: the adapter re-derives them from the published
+    /// `AppState::settings` on every refresh pass. Defaults to UTC.
+    pub boot_offset: chrono::FixedOffset,
     /// The push pass's clock seam (#660): `None` = the real wall
     /// clock (every production hand-over); `Some(instant)` freezes
     /// the derive pass's `now` (`day_ctx`) so pixel goldens over
@@ -109,17 +111,6 @@ pub struct UiSettings {
     /// The `[ui.keymap] preset` word's typed value (round-1 D9): the
     /// settings picker's initial selection.
     pub keymap_preset: keymap::Preset,
-    /// The injected reminder defaults (R3 chunk C): the derivation
-    /// input the in-app notification surface's `active_notifications`
-    /// read needs for the implicit default reminder's occurrence —
-    /// resolved app-side at hand-over, held, never re-read (the
-    /// `day_start` consumers contract).
-    pub reminder_defaults: taskboard_domain::ReminderDefaults,
-    /// The due-soon horizon (round-3 D14/#230): `[ui] due_soon_days`
-    /// converted to a typed delta at hand-over — the consumers
-    /// contract, nothing reads config mid-flight. Defaults to the
-    /// presentation constant (the pre-config behaviour).
-    pub due_soon_horizon: chrono::TimeDelta,
     /// The device-local main-window geometry (#412): the minted
     /// restore value (`None` = today's default placement — a refused
     /// or absent stored value never blocks UI start). The mount
@@ -132,12 +123,6 @@ pub struct UiSettings {
     /// hand-over carries typed values only. `None` is no rotation:
     /// the desktop path is structurally inert (no state, no timer).
     pub kiosk_rotation: Option<view_state::KioskRotation>,
-    /// The injected focus timings (#496): `None` while the mode is
-    /// off (the overlay's action never lights); `Some` feeds the
-    /// overlay's countdown derivation. Minted app-side from the
-    /// validated `[focus]` table at hand-over — held, never re-read
-    /// from config (the `day_start` consumers contract).
-    pub focus: Option<taskboard_domain::focus::FocusTiming>,
     /// The settings editor's general snapshot (the GUI settings
     /// editor chunk): the typed editable values, the env-override key
     /// set (sampled once at hand-over — process-boot state), the
@@ -161,14 +146,8 @@ impl Default for UiSettings {
             connectors: Vec::new(),
             boards: Vec::new(),
             keymap_preset: keymap::Preset::Standard,
-            day_start: (
-                chrono::NaiveTime::MIN,
-                chrono::FixedOffset::east_opt(0).expect("zero"),
-            ),
+            boot_offset: chrono::FixedOffset::east_opt(0).expect("zero"),
             clock: None,
-            reminder_defaults: taskboard_domain::ReminderDefaults::default(),
-            due_soon_horizon: presentation::DUE_SOON_HORIZON,
-            focus: None,
             general: requests::SettingsSnapshot::default(),
         }
     }
@@ -251,12 +230,10 @@ struct AlarmLanes {
     /// with the button callbacks (the index→row map) and the pass.
     rows: std::rc::Rc<std::cell::RefCell<Vec<presentation::AlarmRow>>>,
 
-    /// The derivation defaults injected at hand-over (the same
-    /// consumers contract as the notification surface's).
-    defaults: taskboard_domain::ReminderDefaults,
-    /// The day convention injected at hand-over (the tracker pass's
-    /// window derivation; the adapter's `calendar()` contract).
-    calendar: taskboard_domain::DayCalendar,
+    /// The device's fixed offset (the one boot-fixed value): the
+    /// derivation defaults and the day convention are read from the
+    /// published `AppState::settings` at every pass (round-5 chunk 5).
+    boot_offset: chrono::FixedOffset,
 }
 
 // -- test seams (the lib flow/buffer harnesses; never shipped) ------
@@ -348,11 +325,7 @@ pub fn mount(
         let commands = commands.clone();
         Some(std::rc::Rc::new(install_alarm_lanes(
             commands,
-            settings.reminder_defaults,
-            taskboard_domain::DayCalendar {
-                day_start_time: settings.day_start.0,
-                offset: settings.day_start.1,
-            },
+            settings.boot_offset,
         )))
     };
     let status_timer = std::rc::Rc::new(slint::Timer::default());
@@ -369,13 +342,10 @@ pub fn mount(
         requests,
         settings.stack_widths,
         settings.connectors,
-        settings.day_start,
-        settings.due_soon_horizon,
+        settings.boot_offset,
         settings.kiosk,
         settings.clock,
         settings.kiosk_rotation,
-        settings.reminder_defaults,
-        settings.focus,
         settings.general,
         Arc::clone(&state),
         Rc::clone(&status_timer),
@@ -505,15 +475,13 @@ pub const TOOLTIP_DELAY_MS: u64 = 600;
 /// degrades to a no-op.
 fn install_alarm_lanes(
     commands: mpsc::Sender<StateCommand>,
-    defaults: taskboard_domain::ReminderDefaults,
-    calendar: taskboard_domain::DayCalendar,
+    boot_offset: chrono::FixedOffset,
 ) -> AlarmLanes {
     AlarmLanes {
         window: std::cell::RefCell::new(None),
         commands,
         rows: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
-        defaults,
-        calendar,
+        boot_offset,
     }
 }
 
@@ -773,7 +741,14 @@ fn run_alarm_pass(
     minute_boundary: bool,
 ) {
     let now = chrono::Utc::now();
-    let rows = presentation::alarm_window_rows(&state.load(), &lanes.defaults, lanes.calendar, now);
+    let published = state.load();
+    let rows = presentation::alarm_window_rows(
+        &published,
+        &published.settings.reminder_defaults(),
+        published.settings.day_calendar(lanes.boot_offset),
+        now,
+    );
+    drop(published);
     let gained = presentation::attention_due(&rows, &lanes.rows.borrow());
     if presentation::alarm_window_open(&rows) {
         // Lazy build (the mount grows no window until an alarm waits):

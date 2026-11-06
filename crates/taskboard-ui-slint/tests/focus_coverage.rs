@@ -345,11 +345,12 @@ fn board_empty_fixture() -> Mounted {
 /// Today with overdue rows, a running timer, a tracked-today entry, an
 /// alarm (the timers section and chip) and a delivered notification.
 fn today_fixture() -> Mounted {
-    today_fixture_with(UiSettings::default())
+    today_fixture_with(taskboard_domain::SettingsSnapshot::default())
 }
 
-fn today_fixture_with(settings: UiSettings) -> Mounted {
+fn today_fixture_with(settings: taskboard_domain::SettingsSnapshot) -> Mounted {
     let (two, mut state, [overdue, _]) = fixture::today_overdue_state();
+    state.settings = settings;
     let now = chrono::Utc::now();
     let _ = fixture::add_completed_task(
         &mut state,
@@ -361,7 +362,7 @@ fn today_fixture_with(settings: UiSettings) -> Mounted {
     );
     let _ = fixture::add_alarm(&mut state, "tea", now + chrono::TimeDelta::hours(2));
     fixture::deliver_task_notification(&mut state, overdue, now - chrono::TimeDelta::minutes(5));
-    let mut mounted = mount(state, settings, TALL);
+    let mut mounted = mount(state, UiSettings::default(), TALL);
     press_all(&mut mounted, &[ActionId::ViewToday]);
     assert_view(&mounted, View::Today);
     mounted
@@ -407,9 +408,11 @@ fn review_fixture() -> Mounted {
 /// pool (the reorder journey's grammar).
 fn plan_next_day_fixture() -> Mounted {
     let (fixture, mut state) = fixture::golden_state();
-    let day_start = UiSettings::default().day_start;
-    let (next_start, _) =
-        taskboard_domain::days::next_day_window(chrono::Utc::now(), day_start.0, day_start.1);
+    let (next_start, _) = taskboard_domain::days::next_day_window(
+        chrono::Utc::now(),
+        state.settings.day_start_time,
+        UiSettings::default().boot_offset,
+    );
     state
         .tasks
         .get_mut(&fixture.task0)
@@ -491,9 +494,10 @@ fn focus_overlay_fixture() -> Mounted {
         4,
     )
     .expect("positive timings");
-    let mut mounted = today_fixture_with(UiSettings {
+    let mut mounted = today_fixture_with(taskboard_domain::SettingsSnapshot {
+        focus_enabled: true,
         focus: Some(timing),
-        ..UiSettings::default()
+        ..taskboard_domain::SettingsSnapshot::default()
     });
     press_all(&mut mounted, &[ActionId::FocusModeToggle]);
     assert!(mounted.handle.window().get_focus_overlay_open());

@@ -2509,6 +2509,10 @@ fn focus_timing() -> FocusTiming {
 /// precondition) and one open entry on task A (a live session).
 fn focus_rig(mut state: AppState, fx: &Fixture, kiosk: bool) -> Rig {
     open_entry_on(&mut state, fx.tasks[0]);
+    // The timings ride the published settings (round-5 chunk 5), not
+    // the hand-over.
+    state.settings.focus_enabled = true;
+    state.settings.focus = Some(focus_timing());
     let state = Arc::new(arc_swap::ArcSwap::from_pointee(state));
     let (commands_tx, commands_rx) = mpsc::channel(64);
     let (requests_tx, _requests_rx) = mpsc::channel(16);
@@ -2522,7 +2526,6 @@ fn focus_rig(mut state: AppState, fx: &Fixture, kiosk: bool) -> Rig {
         requests_tx,
         UiSettings {
             kiosk,
-            focus: Some(focus_timing()),
             ..UiSettings::default()
         },
         health,
@@ -3634,7 +3637,10 @@ fn the_placed_box_reopen_seeds_the_form_from_the_instant() {
         // placed instant, both rigs' render passes and the stale arm
         // all derive from PINNED_NOW — no wall-clock read anywhere.
         let now = crate::test_platform::PINNED_NOW;
-        let day_start = UiSettings::default().day_start;
+        let day_start = (
+            taskboard_domain::SettingsSnapshot::default().day_start_time,
+            UiSettings::default().boot_offset,
+        );
         let (next_start, _) =
             taskboard_domain::days::next_day_window(now, day_start.0, day_start.1);
         let instant = next_start + chrono::TimeDelta::hours(2);
@@ -3701,6 +3707,116 @@ fn the_placed_box_reopen_seeds_the_form_from_the_instant() {
         assert!(
             plan_rig.drain_commands().is_empty(),
             "the unseeded commit dispatches nothing"
+        );
+    });
+}
+
+// -- the live settings mirror (GUI review round 5, chunk 5, D-5.7) ------
+
+/// Publishes a copy of the rig's state with `edit` applied to its
+/// settings and runs one refresh — the engine's publish shape (a fresh
+/// Arc), so the guarded refresh takes the forced pass.
+fn publish_settings(rig: &Rig, edit: impl FnOnce(&mut taskboard_domain::SettingsSnapshot)) {
+    let shared = rig.handle.test_state();
+    let mut next = (**shared.load()).clone();
+    edit(&mut next.settings);
+    shared.store(Arc::new(next));
+    rig.adapter().borrow_mut().refresh(rig.handle.window());
+}
+
+/// A day-start change moves the today window's boundary at the next
+/// refresh: the pass derives the window from the published settings,
+/// never from a hand-over value.
+#[test]
+fn a_day_start_change_moves_the_window_at_the_next_refresh() {
+    on_slint_thread(|| {
+        let (state, _fx) = fixture();
+        let rig = rig(state);
+        rig.adapter().borrow_mut().refresh(rig.handle.window());
+        let before = rig.adapter().borrow().day_ctx().window;
+        assert_eq!(
+            before.0.time(),
+            chrono::NaiveTime::MIN,
+            "the default day start opens the window at midnight"
+        );
+
+        publish_settings(&rig, |s| {
+            s.day_start_time = chrono::NaiveTime::from_hms_opt(5, 0, 0).expect("05:00");
+        });
+        let after = rig.adapter().borrow().day_ctx().window;
+        assert_ne!(after.0, before.0, "the window boundary moved");
+        assert_eq!(
+            after.0.time(),
+            chrono::NaiveTime::from_hms_opt(5, 0, 0).expect("05:00"),
+            "the window now opens at the live day start"
+        );
+        assert_eq!(
+            rig.adapter().borrow().calendar().day_start_time,
+            chrono::NaiveTime::from_hms_opt(5, 0, 0).expect("05:00")
+        );
+    });
+}
+
+/// The due-soon horizon and the reminder defaults follow the published
+/// settings at the next refresh — the sets' boundary and the
+/// notification surface's derivation input both move.
+#[test]
+fn the_horizon_and_the_defaults_follow_the_published_settings() {
+    on_slint_thread(|| {
+        let (state, _fx) = fixture();
+        let rig = rig(state);
+        rig.adapter().borrow_mut().refresh(rig.handle.window());
+        assert_eq!(
+            rig.adapter().borrow().due_soon_horizon,
+            chrono::TimeDelta::days(1)
+        );
+        assert_eq!(
+            rig.adapter().borrow().reminder_defaults.default_before,
+            taskboard_domain::ReminderOffset::at_due()
+        );
+
+        let before = taskboard_domain::ReminderOffset::before(chrono::TimeDelta::minutes(-15))
+            .expect("a before offset");
+        publish_settings(&rig, |s| {
+            s.due_soon_days = taskboard_domain::DueSoonDays::new(3).expect("in range");
+            s.reminder_before = before;
+        });
+        assert_eq!(
+            rig.adapter().borrow().due_soon_horizon,
+            chrono::TimeDelta::days(3),
+            "the horizon moved with the setting"
+        );
+        assert_eq!(
+            rig.adapter().borrow().reminder_defaults.default_before,
+            before,
+            "the defaults moved with the setting"
+        );
+    });
+}
+
+/// The focus timings follow the published settings: a live enable
+/// lights the overlay action, a live disable parks it — and a kiosk
+/// never carries a timing regardless.
+#[test]
+fn the_focus_timings_follow_the_published_settings() {
+    on_slint_thread(|| {
+        let (state, _fx) = fixture();
+        let rig = rig(state);
+        rig.adapter().borrow_mut().refresh(rig.handle.window());
+        assert!(rig.adapter().borrow().focus.is_none());
+
+        publish_settings(&rig, |s| {
+            s.focus_enabled = true;
+            s.focus = Some(focus_timing());
+        });
+        assert_eq!(rig.adapter().borrow().focus, Some(focus_timing()));
+
+        publish_settings(&rig, |s| {
+            s.focus_enabled = false;
+        });
+        assert!(
+            rig.adapter().borrow().focus.is_none(),
+            "a live disable parks the overlay input"
         );
     });
 }

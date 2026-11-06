@@ -622,9 +622,20 @@ fn the_focus_overlay_golden_holds() {
             headless_renderer: true,
         },
         move |driver| {
-            let state = Arc::new(ArcSwap::from_pointee(
-                fixture::golden_state_at(fixture::PINNED_NOW).1,
-            ));
+            let mut golden = fixture::golden_state_at(fixture::PINNED_NOW).1;
+            // The timings ride the published settings (round-5 chunk
+            // 5), not the hand-over.
+            golden.settings.focus_enabled = true;
+            golden.settings.focus = Some(
+                taskboard_domain::focus::FocusTiming::try_new(
+                    chrono::TimeDelta::minutes(25),
+                    chrono::TimeDelta::minutes(5),
+                    chrono::TimeDelta::minutes(15),
+                    4,
+                )
+                .expect("positive timings"),
+            );
+            let state = Arc::new(ArcSwap::from_pointee(golden));
             let (commands, _engine) = support::fake_engine::FakeEngine::channel(Arc::clone(&state));
             let (requests_tx, _requests_rx) = tokio::sync::mpsc::channel(16);
             let handle = taskboard_ui_slint::mount(
@@ -634,14 +645,6 @@ fn the_focus_overlay_golden_holds() {
                 commands,
                 requests_tx,
                 UiSettings {
-                    focus: taskboard_domain::focus::FocusTiming::try_new(
-                        chrono::TimeDelta::minutes(25),
-                        chrono::TimeDelta::minutes(5),
-                        chrono::TimeDelta::minutes(15),
-                        4,
-                    )
-                    .map(Some)
-                    .expect("positive timings"),
                     clock: Some(fixture::PINNED_NOW),
                     ..UiSettings::default()
                 },
