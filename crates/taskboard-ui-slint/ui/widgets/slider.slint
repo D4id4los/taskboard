@@ -14,6 +14,12 @@
 // probe count it); no surface wires it anymore. The AT actions
 // (increment/decrement) step ±step and go through the SAME commit —
 // one AT action is one commit (the AT has no gesture to release).
+//
+// Keyboard (round-5 F19): the slider is a tab stop with the focus
+// ring; Left/Down and Right/Up step one tick, Home/End jump to the
+// range ends. Keys are a degenerate gesture — the first stroke fires
+// `pressed`, each stroke previews widget-internally, the key release
+// (or focus loss) commits once.
 
 import { Theme, Semantic } from "../theme.slint";
 
@@ -27,6 +33,79 @@ export component Slider inherits Rectangle {
     // The gesture began (the adapter records the revert point here —
     // the width-drag press precedent).
     callback pressed();
+    // The a11y name (the slider's tab stop carries it).
+    in property <string> label;
+
+    // The keyboard gesture state: a held key auto-repeats steps
+    // (each stroke previews widget-internally); the release commits
+    // once through the drag's seam. Tab-ing away mid-steps commits
+    // too (the field's commit-on-loss grammar) — a half-gesture is
+    // never silently discarded.
+    property <bool> key-gesturing: false;
+    // One keyboard stroke: the first opens the gesture (`pressed`),
+    // each previews `target` without committing.
+    function key-step(target: float) {
+        if (!root.key-gesturing) {
+            root.key-gesturing = true;
+            root.pressed();
+        }
+        root.gesture-value = target;
+        root.preview(target);
+    }
+    scope := FocusScope {
+        width: 100%;
+        height: 100%;
+        focus-on-tab-navigation: true;
+        // The a11y triple rides the stop (the focused item is what
+        // the AT reads).
+        accessible-role: AccessibleRole.slider;
+        accessible-label: root.label;
+        accessible-value: root.rendered-value;
+        accessible-value-minimum: root.minimum;
+        accessible-value-maximum: root.maximum;
+        accessible-value-step: root.step;
+        accessible-action-increment => {
+            root.step-by(1);
+        }
+        accessible-action-decrement => {
+            root.step-by(-1);
+        }
+        key-pressed(event) => {
+            if (event.text == Key.LeftArrow || event.text == Key.DownArrow) {
+                root.key-step(root.stepped(-1));
+                accept
+            } else if (event.text == Key.RightArrow || event.text == Key.UpArrow) {
+                root.key-step(root.stepped(1));
+                accept
+            } else if (event.text == Key.Home) {
+                root.key-step(root.minimum);
+                accept
+            } else if (event.text == Key.End) {
+                root.key-step(root.maximum);
+                accept
+            } else {
+                reject
+            }
+        }
+        key-released(event) => {
+            if (root.key-gesturing
+                    && (event.text == Key.LeftArrow || event.text == Key.RightArrow
+                        || event.text == Key.UpArrow || event.text == Key.DownArrow
+                        || event.text == Key.Home || event.text == Key.End)) {
+                root.key-gesturing = false;
+                root.committed(root.gesture-value);
+                accept
+            } else {
+                reject
+            }
+        }
+        changed has-focus => {
+            if (!self.has-focus && root.key-gesturing) {
+                root.key-gesturing = false;
+                root.committed(root.gesture-value);
+            }
+        }
+    }
 
     // The drag's local truth: written per move (the snapped, clamped
     // pointer value; seeded on press so a plain click jumps the thumb).
@@ -35,21 +114,12 @@ export component Slider inherits Rectangle {
     // otherwise. The a11y value reads this too — mid-drag it is the
     // honest reading, and it is the probe's typed observation seam.
     out property <float> rendered-value:
-        touch.pressed ? root.gesture-value : root.value;
-
-    accessible-role: AccessibleRole.slider;
-    accessible-value: root.rendered-value;
-    accessible-value-minimum: root.minimum;
-    accessible-value-maximum: root.maximum;
-    accessible-value-step: root.step;
-    accessible-action-increment => {
-        root.step-by(1);
-    }
-    accessible-action-decrement => {
-        root.step-by(-1);
-    }
+        touch.pressed || root.key-gesturing ? root.gesture-value : root.value;
 
     min-height: thumb.min-height + 2 * Theme.space-1;
+    border-radius: Theme.radius-small;
+    border-width: scope.has-focus ? Theme.focus-ring-width : 0;
+    border-color: Semantic.focus-ring;
 
     // One AT action = one commit: snap the current value onto the
     // tick grid, step one tick, and go through the gesture's release
@@ -59,12 +129,13 @@ export component Slider inherits Rectangle {
         root.committed(root.stepped(direction));
     }
 
-    // The current value snapped onto the tick grid, moved `direction`
+    // The rendered value (mid-gesture: the keyboard's running value)
+    // snapped onto the tick grid, moved `direction`
     // ticks, clamped into the range.
     public function stepped(direction: int) -> float {
         return clamp(
             root.minimum
-                + (round((root.value - root.minimum) / root.step) + direction)
+                + (round((root.rendered-value - root.minimum) / root.step) + direction)
                     * root.step,
             root.minimum,
             root.maximum,
