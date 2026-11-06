@@ -3084,10 +3084,18 @@ fn the_track_form_add_commit_routes_logtime_with_the_exact_instants() {
 fn the_track_form_edit_commit_routes_the_exact_adjust_mask() {
     on_slint_thread(|| {
         use chrono::{Datelike as _, TimeZone as _};
+        // Single-read capture (D-3/R3): `today` is this test's only
+        // clock read; the entry seed and every expected instant derive
+        // from it. Residual (accepted, R2/R3): the adapter's
+        // `seed_track_form` and `commit_track_form` keep their own
+        // `Local::now().date_naive()` reads — a local midnight falling
+        // between this capture and the adapter's read is the accepted
+        // millisecond-wide window.
+        let today = chrono::Local::now().date_naive();
         let (mut state, fx) = fixture();
         let [a_id, _b, _c] = fx.tasks;
         let [s0, _s1] = fx.stacks;
-        let entry = closed_entry_on(&mut state, a_id, 10);
+        let entry = closed_entry_on_date(&mut state, a_id, 10, today);
         let mut rig = rig(state);
         let adapter = rig.adapter();
         arm_task_view(&rig, &adapter, a_id, s0);
@@ -3109,14 +3117,7 @@ fn the_track_form_edit_commit_routes_the_exact_adjust_mask() {
         // The seeded fields are the entry's local wall-clocks (the
         // echo-local rule); the closed end seeds its time.
         let start_local = chrono::Local
-            .with_ymd_and_hms(
-                chrono::Local::now().date_naive().year(),
-                chrono::Local::now().date_naive().month(),
-                chrono::Local::now().date_naive().day(),
-                10,
-                0,
-                0,
-            )
+            .with_ymd_and_hms(today.year(), today.month(), today.day(), 10, 0, 0)
             .single()
             .expect("resolvable");
         assert_eq!(
@@ -3138,14 +3139,7 @@ fn the_track_form_edit_commit_routes_the_exact_adjust_mask() {
         }
         let expected_start = start_local.with_timezone(&chrono::Utc);
         let expected_end = chrono::Local
-            .with_ymd_and_hms(
-                chrono::Local::now().date_naive().year(),
-                chrono::Local::now().date_naive().month(),
-                chrono::Local::now().date_naive().day(),
-                12,
-                30,
-                0,
-            )
+            .with_ymd_and_hms(today.year(), today.month(), today.day(), 12, 30, 0)
             .single()
             .expect("resolvable")
             .with_timezone(&chrono::Utc);
