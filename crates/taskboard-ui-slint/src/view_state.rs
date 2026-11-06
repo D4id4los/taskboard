@@ -13,9 +13,9 @@
 
 use std::collections::BTreeMap;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use taskboard_domain::{
-    AppState, BoardId, SearchTarget, StackId, StateCommand, TaskChanges, TaskId,
+    AppState, BoardId, ReviewCadence, SearchTarget, StackId, StateCommand, TaskChanges, TaskId,
 };
 
 use crate::actions::ContextId;
@@ -173,6 +173,52 @@ pub enum DateField {
     Scheduled,
 }
 
+/// The review walk's stage machine (DR-7 D-J9; plan D-W2): three
+/// rendered stages — the plan-tomorrow leg between Carry forward and
+/// Prompts is a **handoff transition** into the plan-next-day surface
+/// (shape B), never a stage here. Each stage's sub-state is the armed
+/// row affordance (the File-to picker, the Pick-a-date field); the
+/// Escape ladder clears the sub-state first, then steps a stage back,
+/// then closes (the `TrackEntryDismiss` shape).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WalkStage {
+    /// Inbox triage (P1): `Some` = the File-to picker is armed on the
+    /// cursor row, addressing that candidate stack.
+    Inbox { filing: Option<StackId> },
+    /// Carry forward (P9): `true` = the Pick-a-date field is armed on
+    /// the cursor row.
+    CarryForward { picking_date: bool },
+    /// The prompted entry (P7/P13) — the cadence template's fields
+    /// over one `RecordReflection`.
+    Prompts,
+}
+
+/// The walk's per-stage row counts as the pass pushed them (the view
+/// state holds only the cursor and the sub-state; every row set is
+/// re-derived from `AppState` on every push, so the counts arrive as
+/// data — the palette's `visible` argument generalized).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct WalkRows {
+    pub inbox: usize,
+    pub carry: usize,
+}
+
+/// What a walk advance asked of the adapter (plan D-W3): the stage
+/// moved on, or the walk reached the end of Carry forward and the
+/// adapter performs the planner handoff (the one transition the pure
+/// state cannot express — it mounts a view through the landed
+/// planner route, zero shared state).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WalkStep {
+    /// The stage changed (or the cursor moved within it).
+    Advanced,
+    /// Carry forward is done: hand off to the plan-next-day surface.
+    Handoff,
+    /// Nothing to advance to (no walk, or Prompts — whose exits are
+    /// the commit verbs).
+    Inert,
+}
+
 /// The active flow (D9): at most one — edit (create row or title) XOR
 /// move. `refresh` never touches text properties while a flow holds
 /// the buffers (D9 rule 4).
@@ -257,6 +303,24 @@ pub enum Flow {
     /// the view). The time/effort text lives adapter-side (the due
     /// buffers' lifecycle); the flow only carries the addressed box.
     PlanPlace { task: TaskId },
+    /// The review walk (DR-7 D-J8/D-J9, #638): a subjectless XOR flow
+    /// like the palette/capture/focus overlay — `reconcile` leaves it
+    /// alone, any other flow replaces it without committing, opening
+    /// it replaces any other flow. `cadence` + `reference` name the
+    /// reviewed window, re-derived on every read as
+    /// `review_window(cadence, reference, calendar)` (plan D-W1: the
+    /// reference date pins the window against a wall-clock boundary
+    /// crossing mid-walk — windows are data, never stored instants);
+    /// `stage` is the machine, `cursor` the stage's row index (the
+    /// palette-cursor-in-flow precedent; clamped against the pushed
+    /// row count on refresh). Cadence-generic by construction: only
+    /// the openers pin `Day` in v0.2 (#640 widens the openers).
+    ReviewWalk {
+        cadence: ReviewCadence,
+        reference: NaiveDate,
+        stage: WalkStage,
+        cursor: usize,
+    },
 }
 
 /// What a view-state transition asks the adapter to do (D9):
@@ -1621,6 +1685,252 @@ impl ViewState {
         vec![FlowOutcome::SetMode(Mode::Normal), FlowOutcome::RefreshNow]
     }
 
+    // -- the review walk (DR-7 D-J9, #638; plan D-W2) ----------------------
+
+    /// `review.open` / the Today card: opens the walk over
+    /// `(cadence, reference)` at its first non-empty stage — an empty
+    /// inbox is skipped structurally (DR-7 D-J9: empty stages
+    /// auto-advance; the strip still renders the skipped header with
+    /// its empty line). Carry forward is never skipped on open: its
+    /// advance is the planner handoff, useful regardless of misses.
+    /// Replaces any in-progress flow WITHOUT committing it (the XOR
+    /// rule — `begin_capture`'s opening).
+    pub fn open_review_walk(
+        &mut self,
+        cadence: ReviewCadence,
+        reference: NaiveDate,
+        rows: WalkRows,
+    ) -> Vec<FlowOutcome> {
+        let stage = if rows.inbox > 0 {
+            WalkStage::Inbox { filing: None }
+        } else {
+            WalkStage::CarryForward {
+                picking_date: false,
+            }
+        };
+        self.open_review_walk_at(cadence, reference, stage)
+    }
+
+    /// The planner's return (plan D-W3): re-opens the walk at `stage`
+    /// (Prompts) over the restored view; the cursor starts at 0.
+    pub fn open_review_walk_at(
+        &mut self,
+        cadence: ReviewCadence,
+        reference: NaiveDate,
+        stage: WalkStage,
+    ) -> Vec<FlowOutcome> {
+        self.flow = Flow::ReviewWalk {
+            cadence,
+            reference,
+            stage,
+            cursor: 0,
+        };
+        self.buffer.clear();
+        vec![FlowOutcome::SetMode(Mode::Normal), FlowOutcome::RefreshNow]
+    }
+
+    /// Every walk exit that means close-without-effect: the Inbox
+    /// Escape rung, `Finish without recording`, the post-`Record`
+    /// close, the handoff's own close, a foreign settle. No command
+    /// rides it (the `close_palette` shape).
+    pub fn close_review_walk(&mut self) -> Vec<FlowOutcome> {
+        self.flow = Flow::None;
+        self.buffer.clear();
+        vec![FlowOutcome::SetMode(Mode::Normal), FlowOutcome::RefreshNow]
+    }
+
+    /// The current stage's row count under `rows`.
+    const fn walk_stage_rows(stage: WalkStage, rows: WalkRows) -> usize {
+        match stage {
+            WalkStage::Inbox { .. } => rows.inbox,
+            WalkStage::CarryForward { .. } => rows.carry,
+            WalkStage::Prompts => 0,
+        }
+    }
+
+    /// `Up`/`Down` in the walk: moves the cursor by `direction` inside
+    /// the stage's rows, clamped at both ends (no wrap — the ends hold;
+    /// the row verbs are what pass the last row). Inert on Prompts
+    /// (no rows) and outside the walk.
+    pub fn review_walk_cursor(&mut self, direction: i32, rows: WalkRows) -> Vec<FlowOutcome> {
+        let Flow::ReviewWalk { stage, cursor, .. } = &mut self.flow else {
+            return Vec::new();
+        };
+        let len = Self::walk_stage_rows(*stage, rows);
+        if len == 0 {
+            return Vec::new();
+        }
+        let next = i64::try_from(*cursor).unwrap_or(0) + i64::from(direction);
+        let clamped = next.clamp(0, i64::try_from(len - 1).unwrap_or(0));
+        *cursor = usize::try_from(clamped).unwrap_or(0);
+        vec![FlowOutcome::RefreshNow]
+    }
+
+    /// A row verb's cursor step (`Keep in inbox`, `Leave as is`, and
+    /// the post-commit step of `Move to tomorrow`/the date pick): the
+    /// cursor moves to the next row; passing the last row advances the
+    /// stage (the Keep-on-the-last-row rule). The sub-state clears.
+    pub fn review_walk_next_row(&mut self, rows: WalkRows) -> WalkStep {
+        let Flow::ReviewWalk { stage, cursor, .. } = &mut self.flow else {
+            return WalkStep::Inert;
+        };
+        *stage = Self::cleared_substate(*stage);
+        let len = Self::walk_stage_rows(*stage, rows);
+        if *cursor + 1 < len {
+            *cursor += 1;
+            return WalkStep::Advanced;
+        }
+        self.advance_review_walk()
+    }
+
+    /// `review.walk-advance`: Inbox → Carry forward; Carry forward →
+    /// the planner handoff (the adapter's arm, plan D-W3); Prompts has
+    /// no advance (its exits are the commit verbs).
+    pub fn advance_review_walk(&mut self) -> WalkStep {
+        let Flow::ReviewWalk { stage, cursor, .. } = &mut self.flow else {
+            return WalkStep::Inert;
+        };
+        match stage {
+            WalkStage::Inbox { .. } => {
+                *stage = WalkStage::CarryForward {
+                    picking_date: false,
+                };
+                *cursor = 0;
+                WalkStep::Advanced
+            }
+            WalkStage::CarryForward { .. } => WalkStep::Handoff,
+            WalkStage::Prompts => WalkStep::Inert,
+        }
+    }
+
+    /// The Escape ladder (plan D-W2): sub-state → stage-back → close.
+    /// Prompts steps back to Carry forward (never back into the
+    /// planner — P12: no forced detour); Carry forward steps back to
+    /// the Inbox when it has rows (an empty inbox was skipped on the
+    /// way in and is skipped on the way back — the close); the Inbox
+    /// closes. Inert outside the walk.
+    pub fn back_review_walk(&mut self, rows: WalkRows) -> Vec<FlowOutcome> {
+        let Flow::ReviewWalk { stage, cursor, .. } = &mut self.flow else {
+            return Vec::new();
+        };
+        let cleared = Self::cleared_substate(*stage);
+        if cleared != *stage {
+            *stage = cleared;
+            return vec![FlowOutcome::RefreshNow];
+        }
+        match stage {
+            WalkStage::Prompts => {
+                *stage = WalkStage::CarryForward {
+                    picking_date: false,
+                };
+                *cursor = 0;
+                vec![FlowOutcome::RefreshNow]
+            }
+            WalkStage::CarryForward { .. } if rows.inbox > 0 => {
+                *stage = WalkStage::Inbox { filing: None };
+                *cursor = 0;
+                vec![FlowOutcome::RefreshNow]
+            }
+            WalkStage::CarryForward { .. } | WalkStage::Inbox { .. } => self.close_review_walk(),
+        }
+    }
+
+    const fn cleared_substate(stage: WalkStage) -> WalkStage {
+        match stage {
+            WalkStage::Inbox { .. } => WalkStage::Inbox { filing: None },
+            WalkStage::CarryForward { .. } => WalkStage::CarryForward {
+                picking_date: false,
+            },
+            WalkStage::Prompts => WalkStage::Prompts,
+        }
+    }
+
+    /// `File to…`: arms the picker on the cursor row addressing the
+    /// first candidate stack; inert without candidates, outside the
+    /// Inbox stage, or outside the walk.
+    pub fn review_walk_file(&mut self, candidates: &[StackId]) -> Vec<FlowOutcome> {
+        let Flow::ReviewWalk {
+            stage: WalkStage::Inbox { filing },
+            ..
+        } = &mut self.flow
+        else {
+            return Vec::new();
+        };
+        let Some(first) = candidates.first() else {
+            return Vec::new();
+        };
+        *filing = Some(*first);
+        vec![FlowOutcome::RefreshNow]
+    }
+
+    /// The picker's left/right: moves the armed candidate by
+    /// `direction` over `candidates`, wrapping (the menu-cursor ring).
+    /// Inert unless the picker is armed.
+    pub fn review_walk_file_target(
+        &mut self,
+        direction: i32,
+        candidates: &[StackId],
+    ) -> Vec<FlowOutcome> {
+        let Flow::ReviewWalk {
+            stage: WalkStage::Inbox {
+                filing: Some(armed),
+            },
+            ..
+        } = &mut self.flow
+        else {
+            return Vec::new();
+        };
+        if candidates.is_empty() {
+            return Vec::new();
+        }
+        let current = candidates.iter().position(|s| s == armed).unwrap_or(0);
+        *armed = candidates[wrapped_index(current, direction, candidates.len())];
+        vec![FlowOutcome::RefreshNow]
+    }
+
+    /// `Pick a date…`: arms the date field on the cursor row; inert
+    /// outside the Carry forward stage.
+    pub fn review_walk_pick_date(&mut self) -> Vec<FlowOutcome> {
+        let Flow::ReviewWalk {
+            stage: WalkStage::CarryForward { picking_date },
+            ..
+        } = &mut self.flow
+        else {
+            return Vec::new();
+        };
+        *picking_date = true;
+        vec![FlowOutcome::RefreshNow]
+    }
+
+    /// The refresh-time normalization (the palette's shrunk-list
+    /// clamp, generalized): the cursor clamps against the pushed row
+    /// count; an Inbox stage whose rows vanished (the last row was
+    /// filed) advances structurally to Carry forward; an armed picker
+    /// whose candidate died disarms. Pure — called by the push pass
+    /// with the rows it just derived; no command, no repaint request
+    /// (the pass is already repainting).
+    pub fn clamp_review_walk(&mut self, rows: WalkRows, candidates: &[StackId]) {
+        let Flow::ReviewWalk { stage, cursor, .. } = &mut self.flow else {
+            return;
+        };
+        if let WalkStage::Inbox {
+            filing: Some(armed),
+        } = stage
+            && !candidates.contains(armed)
+        {
+            *stage = WalkStage::Inbox { filing: None };
+        }
+        if matches!(stage, WalkStage::Inbox { .. }) && rows.inbox == 0 {
+            *stage = WalkStage::CarryForward {
+                picking_date: false,
+            };
+            *cursor = 0;
+            return;
+        }
+        let len = Self::walk_stage_rows(*stage, rows);
+        *cursor = (*cursor).min(len.saturating_sub(1));
+    }
+
     // -- plan-next-day placement (#622, D-3) -------------------------------
 
     /// `plan.begin-place`: arms the placement form over the candidate
@@ -1918,6 +2228,10 @@ impl ViewState {
             // the Escape ladder / the outside click (the
             // close-without-effect shape — no command rides it).
             Flow::TrackEntries { .. } | Flow::TrackEntryForm { .. } => self.close_track_entries(),
+            // The review walk closes like the palette (DR-7 D-J8: any
+            // other flow replaces it without committing — there is
+            // nothing to commit; the entry is one `Record` at the end).
+            Flow::ReviewWalk { .. } => self.close_review_walk(),
         }
     }
 
@@ -4676,5 +4990,245 @@ mod settings_surface_tests {
         vs.next_view(&state);
         vs.open_settings();
         assert_eq!(vs.switcher_selection(), 0);
+    }
+
+    // -- the review walk's stage machine (DR-7 D-J9; plan D-W2) ----
+
+    const DAY: ReviewCadence = ReviewCadence::Day;
+    fn reference() -> chrono::NaiveDate {
+        chrono::NaiveDate::from_ymd_opt(2026, 11, 5).expect("date")
+    }
+    fn rows(inbox: usize, carry: usize) -> WalkRows {
+        WalkRows { inbox, carry }
+    }
+    fn walk_flow(vs: &ViewState) -> (ReviewCadence, chrono::NaiveDate, WalkStage, usize) {
+        match vs.flow() {
+            Flow::ReviewWalk {
+                cadence,
+                reference,
+                stage,
+                cursor,
+            } => (*cadence, *reference, *stage, *cursor),
+            other => panic!("not a walk: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_walk_opens_at_its_first_non_empty_stage_and_is_xor() {
+        let (state, _, _, _, [task, ..]) = two_board_fixture();
+        let mut vs = ViewState::new();
+        vs.open_review_walk(DAY, reference(), rows(2, 0));
+        assert!(
+            matches!(walk_flow(&vs), (DAY, r, WalkStage::Inbox { filing: None }, 0) if r == reference()),
+            "a non-empty inbox opens the triage stage"
+        );
+
+        // An empty inbox is skipped structurally; carry forward never
+        // is (its advance is the handoff).
+        vs.open_review_walk(DAY, reference(), rows(0, 3));
+        assert!(matches!(
+            walk_flow(&vs),
+            (
+                DAY,
+                _,
+                WalkStage::CarryForward {
+                    picking_date: false
+                },
+                0
+            )
+        ));
+
+        // XOR both ways: capture replaces the walk; the walk replaces
+        // capture — without committing either.
+        vs.begin_capture();
+        assert!(matches!(vs.flow(), Flow::Capture));
+        vs.open_review_walk(DAY, reference(), rows(1, 0));
+        assert!(matches!(vs.flow(), Flow::ReviewWalk { .. }));
+
+        // `reconcile` leaves it alone (subject-free, the palette rule).
+        vs.reconcile(&state);
+        assert!(matches!(vs.flow(), Flow::ReviewWalk { .. }));
+
+        // The resume-at seam opens at the given stage over the same
+        // reference.
+        vs.open_review_walk_at(DAY, reference(), WalkStage::Prompts);
+        assert!(matches!(walk_flow(&vs), (DAY, _, WalkStage::Prompts, 0)));
+        let _ = task;
+    }
+
+    #[test]
+    fn the_walk_cursor_clamps_and_row_verbs_pass_the_last_row() {
+        let mut vs = ViewState::new();
+        vs.open_review_walk(DAY, reference(), rows(3, 2));
+
+        // Cursor: clamped at both ends, no wrap.
+        vs.review_walk_cursor(-1, rows(3, 2));
+        assert_eq!(walk_flow(&vs).3, 0, "the top end holds");
+        vs.review_walk_cursor(1, rows(3, 2));
+        vs.review_walk_cursor(1, rows(3, 2));
+        assert_eq!(walk_flow(&vs).3, 2);
+        vs.review_walk_cursor(1, rows(3, 2));
+        assert_eq!(walk_flow(&vs).3, 2, "the bottom end holds");
+
+        // A row verb on the last row advances the stage.
+        assert_eq!(vs.review_walk_next_row(rows(3, 2)), WalkStep::Advanced);
+        assert!(matches!(
+            walk_flow(&vs),
+            (DAY, _, WalkStage::CarryForward { .. }, 0)
+        ));
+
+        // Mid-stage it just moves the cursor and clears the sub-state.
+        vs.review_walk_pick_date();
+        assert!(matches!(
+            walk_flow(&vs),
+            (DAY, _, WalkStage::CarryForward { picking_date: true }, 0)
+        ));
+        assert_eq!(vs.review_walk_next_row(rows(3, 2)), WalkStep::Advanced);
+        assert!(matches!(
+            walk_flow(&vs),
+            (
+                DAY,
+                _,
+                WalkStage::CarryForward {
+                    picking_date: false
+                },
+                1
+            )
+        ));
+
+        // Advancing out of Carry forward is the handoff request.
+        assert_eq!(vs.review_walk_next_row(rows(3, 2)), WalkStep::Handoff);
+        // Prompts has no advance (its exits are the commit verbs).
+        vs.open_review_walk_at(DAY, reference(), WalkStage::Prompts);
+        assert_eq!(vs.review_walk_next_row(rows(0, 0)), WalkStep::Inert);
+        assert_eq!(vs.advance_review_walk(), WalkStep::Inert);
+    }
+
+    #[test]
+    fn the_escape_ladder_steps_substate_then_stage_then_closes() {
+        let mut vs = ViewState::new();
+        let candidates = [StackId::from_uuid(uuid::Uuid::now_v7())];
+
+        // Sub-state first: an armed picker clears, the stage stays.
+        vs.open_review_walk(DAY, reference(), rows(1, 0));
+        vs.review_walk_file(&candidates);
+        assert!(matches!(
+            walk_flow(&vs),
+            (DAY, _, WalkStage::Inbox { filing: Some(_) }, _)
+        ));
+        vs.back_review_walk(rows(1, 0));
+        assert!(matches!(
+            walk_flow(&vs),
+            (DAY, _, WalkStage::Inbox { filing: None }, _)
+        ));
+
+        // Stage back: Carry forward → Inbox when the inbox has rows.
+        vs.advance_review_walk();
+        vs.review_walk_pick_date();
+        vs.back_review_walk(rows(1, 0));
+        assert!(matches!(
+            walk_flow(&vs),
+            (
+                DAY,
+                _,
+                WalkStage::CarryForward {
+                    picking_date: false
+                },
+                _
+            )
+        ));
+        vs.back_review_walk(rows(1, 0));
+        assert!(matches!(
+            walk_flow(&vs),
+            (DAY, _, WalkStage::Inbox { .. }, 0)
+        ));
+
+        // The Inbox rung closes, no command (the close outcome set).
+        assert_eq!(
+            vs.back_review_walk(rows(1, 0)),
+            vec![
+                FlowOutcome::SetMode(crate::router::Mode::Normal),
+                FlowOutcome::RefreshNow
+            ]
+        );
+        assert!(matches!(vs.flow(), Flow::None));
+
+        // An empty inbox is skipped backwards too: Carry forward's
+        // Escape closes (P12 — never into a dead end).
+        vs.open_review_walk(DAY, reference(), rows(0, 1));
+        assert_eq!(vs.back_review_walk(rows(0, 1)).len(), 2);
+        assert!(matches!(vs.flow(), Flow::None));
+
+        // Prompts steps back to Carry forward, never into the planner.
+        vs.open_review_walk_at(DAY, reference(), WalkStage::Prompts);
+        vs.back_review_walk(rows(1, 1));
+        assert!(matches!(
+            walk_flow(&vs),
+            (DAY, _, WalkStage::CarryForward { .. }, 0)
+        ));
+    }
+
+    #[test]
+    fn the_walk_file_picker_wraps_and_the_clamp_normalizes() {
+        let mut vs = ViewState::new();
+        let (state, _, _, [s0, s1, _], _) = two_board_fixture();
+        let candidates = [s0, s1];
+        vs.open_review_walk(DAY, reference(), rows(2, 0));
+        vs.review_walk_file(&candidates);
+        assert!(matches!(
+            walk_flow(&vs),
+            (DAY, _, WalkStage::Inbox { filing: Some(f) }, _) if f == s0
+        ));
+        vs.review_walk_file_target(1, &candidates);
+        assert!(matches!(
+            walk_flow(&vs),
+            (DAY, _, WalkStage::Inbox { filing: Some(f) }, _) if f == s1
+        ));
+        vs.review_walk_file_target(1, &candidates);
+        assert!(
+            matches!(
+                walk_flow(&vs),
+                (DAY, _, WalkStage::Inbox { filing: Some(f) }, _) if f == s0
+            ),
+            "the ring wraps"
+        );
+
+        // The refresh clamp: the cursor clamps against the pushed
+        // count; a vanished candidate list disarms the picker; a
+        // vanished inbox advances structurally.
+        vs.review_walk_cursor(1, rows(2, 0));
+        vs.clamp_review_walk(rows(1, 0), &candidates);
+        assert_eq!(walk_flow(&vs).3, 0, "the cursor clamps");
+        vs.clamp_review_walk(rows(1, 0), &[]);
+        assert!(matches!(
+            walk_flow(&vs),
+            (DAY, _, WalkStage::Inbox { filing: None }, _)
+        ));
+        vs.clamp_review_walk(rows(0, 2), &candidates);
+        assert!(matches!(
+            walk_flow(&vs),
+            (DAY, _, WalkStage::CarryForward { .. }, 0)
+        ));
+        // Carry forward's cursor clamps against its own rows.
+        vs.review_walk_cursor(5, rows(0, 2));
+        assert_eq!(walk_flow(&vs).3, 1);
+        vs.clamp_review_walk(rows(0, 1), &candidates);
+        assert_eq!(walk_flow(&vs).3, 0);
+        let _ = state;
+    }
+
+    #[test]
+    fn the_walk_settles_to_a_commandless_close() {
+        let (state, _, _, _, _) = two_board_fixture();
+        let mut vs = ViewState::new();
+        vs.open_review_walk(DAY, reference(), rows(1, 1));
+        let outcomes = vs.settle_flow(&state);
+        assert!(matches!(vs.flow(), Flow::None));
+        assert!(
+            !outcomes
+                .iter()
+                .any(|o| matches!(o, FlowOutcome::Command(_))),
+            "a settle never dispatches — there is nothing to commit"
+        );
     }
 }
