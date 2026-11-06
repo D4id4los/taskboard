@@ -1159,6 +1159,82 @@ pub struct HabitDeleteReceipt {
     pub log_rows: usize,
 }
 
+// ---- The `journal` family (DR-7 D-J11) --------------------------------------
+// (`JournalReceipt` is the undo substrate's durable receipt above — the
+// reflection family's types are `Reflection*` by the D-J1 ruling, not by
+// style.)
+
+/// One reflection-entry row: the whole entry as state truth (projected
+/// from the published snapshot, never an input echo). The interactive
+/// surface shows `extra_flags` too (parked names are data the user
+/// wrote); the export leg stays at its ruled columns.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ReflectionRow {
+    /// The entry's uuid.
+    pub entry_id: String,
+    /// The cadence's text form (`"day"` / `"week"` / `"month"`).
+    pub cadence: String,
+    /// The window-date label.
+    pub day: chrono::NaiveDate,
+    /// The reviewed window's opening instant.
+    pub window_start: DateTime<Utc>,
+    /// The reviewed window's closing instant (exclusive).
+    pub window_end: DateTime<Utc>,
+    /// The free-text body (may be empty).
+    pub text: String,
+    /// Mood rating, `1..=5` (`None` = unanswered).
+    pub mood: Option<u8>,
+    /// Energy rating, `1..=5`.
+    pub energy: Option<u8>,
+    /// The curated flag names, in set order.
+    pub flags: Vec<String>,
+    /// The parked unknown flag names, verbatim.
+    pub extra_flags: Vec<String>,
+    /// Row creation stamp.
+    pub created_at: DateTime<Utc>,
+    /// The last mutation stamp.
+    pub updated_at: DateTime<Utc>,
+}
+
+/// The `journal add` receipt. `created: false` is the empty record's
+/// accepted no-op (`entry: None` — nothing was stored, success, not an
+/// error).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ReflectionAddReceipt {
+    /// `false` = the empty record (no text, no attributes).
+    pub created: bool,
+    /// The minted row, read back from the published snapshot.
+    pub entry: Option<ReflectionRow>,
+}
+
+/// The `journal edit` receipt. `changed: false` is the unchanged-mask
+/// (or tombstoned-target) no-op carrying the current row.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ReflectionEditReceipt {
+    /// `false` = the mask named only unchanged values.
+    pub changed: bool,
+    /// The edited row (the current one on a no-op).
+    pub entry: ReflectionRow,
+}
+
+/// The `journal delete` receipt: the pre-execute row (post-execute the
+/// row is tombstoned — the `timers cancel` pre-state discipline).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ReflectionDeleteReceipt {
+    /// The tombstoned entry's uuid.
+    pub entry_id: String,
+    /// The deleted row's pre-state.
+    pub entry: ReflectionRow,
+}
+
+/// The `journal list` payload: rows in canonical `(window_start, id)`
+/// order.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ReflectionsList {
+    /// The live rows.
+    pub entries: Vec<ReflectionRow>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

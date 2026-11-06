@@ -139,6 +139,16 @@ pub enum Command {
         #[command(subcommand)]
         cmd: HabitsCmd,
     },
+    /// Review-journal verbs over the in-process core: capture a
+    /// reflection entry with ratings and health flags, browse and edit
+    /// them, tombstone them. Device-local — never synced. (The clap
+    /// name is the user-facing verb; the code symbols stay
+    /// `Reflection*` — the D-J1 vocabulary ruling, ADR 0021.)
+    #[command(name = "journal")]
+    Reflection {
+        #[command(subcommand)]
+        cmd: ReflectionCmd,
+    },
     /// Export time entries to stdout as data (D-T15): CSV by default,
     /// JSON optional. Pipes are the contract — no file writing, no
     /// clipboard — and the payload deliberately bypasses the `--json`
@@ -1260,6 +1270,133 @@ pub enum HabitsCmd {
         /// The habit (uuid | prefix | exact live title).
         habit: String,
     },
+}
+
+/// The review-journal verb family (DR-7 D-J11) over the in-process
+/// core: capture-at-speed `add`, `list`/`show` reads, change-mask
+/// `edit`, tombstone `delete`. Device-local — never synced. (The clap
+/// name is the user-facing verb; the code symbols stay `Reflection*` —
+/// the D-J1 vocabulary ruling, ADR 0021.)
+#[derive(Debug, Subcommand)]
+pub enum ReflectionCmd {
+    /// Record one reflection entry: positional text words join into the
+    /// body; ratings and flags are optional. An empty line records
+    /// nothing (the accepted no-op, never an error — P1
+    /// capture-at-speed).
+    Add {
+        /// The reviewed window's cadence (`day` when omitted).
+        #[arg(long, value_enum)]
+        cadence: Option<CadenceSpec>,
+        /// The reference date the window derives from (a mid-week day
+        /// floors to its week; today when omitted).
+        #[arg(long, value_parser = parse_date_flag)]
+        day: Option<chrono::NaiveDate>,
+        /// Mood rating, `1..=5`; an out-of-range number is the typed
+        /// `invalid-rating` refusal (the domain's law, not the parse's).
+        #[arg(long)]
+        mood: Option<u8>,
+        /// Energy rating, `1..=5`.
+        #[arg(long)]
+        energy: Option<u8>,
+        /// A curated health flag (repeatable; set semantics dedup).
+        #[arg(long, value_parser = parse_health_flag)]
+        flag: Vec<taskboard_domain::reflection::HealthFlag>,
+        /// The entry body's words (joined with single spaces).
+        #[arg(value_name = "TEXT", num_args = 0..)]
+        text_words: Vec<String>,
+    },
+    /// List live entries in canonical `(window_start, id)` order
+    /// (pure read).
+    List {
+        /// Only this cadence.
+        #[arg(long, value_enum)]
+        cadence: Option<CadenceSpec>,
+        /// Only entries whose window opens on/after this UTC date
+        /// (YYYY-MM-DD).
+        #[arg(long, value_parser = parse_date_flag)]
+        since: Option<chrono::NaiveDate>,
+        /// Only entries whose window opens before the day after this
+        /// UTC date — inclusive of the named day (YYYY-MM-DD).
+        #[arg(long, value_parser = parse_date_flag)]
+        until: Option<chrono::NaiveDate>,
+    },
+    /// Show one live entry (uuid | unique ≥8-char uuid prefix).
+    Show {
+        /// The entry selector.
+        selector: String,
+    },
+    /// Edit one live entry. Every flag is a *change mask*: omitted =
+    /// unchanged; each value has an explicit `--clear-*` form. Flags
+    /// move by delta (`--flag`/`--unflag`), never whole-set replace.
+    /// A zero-flag edit is the typed no-op.
+    Edit {
+        /// The entry selector.
+        selector: String,
+        /// New body text.
+        #[arg(long, conflicts_with = "clear_text")]
+        text: Option<String>,
+        /// Clear the body (the payload's legal empty text).
+        #[arg(long)]
+        clear_text: bool,
+        /// New mood rating, `1..=5`.
+        #[arg(long, conflicts_with = "clear_mood")]
+        mood: Option<u8>,
+        /// Clear the mood rating.
+        #[arg(long)]
+        clear_mood: bool,
+        /// New energy rating, `1..=5`.
+        #[arg(long, conflicts_with = "clear_energy")]
+        energy: Option<u8>,
+        /// Clear the energy rating.
+        #[arg(long)]
+        clear_energy: bool,
+        /// Flags to add (repeatable).
+        #[arg(long, value_parser = parse_health_flag)]
+        flag: Vec<taskboard_domain::reflection::HealthFlag>,
+        /// Flags to remove (repeatable).
+        #[arg(long, value_parser = parse_health_flag)]
+        unflag: Vec<taskboard_domain::reflection::HealthFlag>,
+    },
+    /// Delete one live entry — the row tombstones in place (history
+    /// stays in storage; a deleted entry's selector is a typed unknown).
+    Delete {
+        /// The entry selector.
+        selector: String,
+    },
+}
+
+/// The `--cadence` values (the `FindType` `ValueEnum` precedent:
+/// validation is the parse; the kebab names are the domain's serde
+/// unit names).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum CadenceSpec {
+    /// One day window.
+    Day,
+    /// One ISO week (Monday-start).
+    Week,
+    /// One calendar month.
+    Month,
+}
+
+impl CadenceSpec {
+    /// The domain cadence this spec names.
+    #[must_use]
+    pub fn cadence(self) -> taskboard_domain::reflection::ReviewCadence {
+        match self {
+            Self::Day => taskboard_domain::reflection::ReviewCadence::Day,
+            Self::Week => taskboard_domain::reflection::ReviewCadence::Week,
+            Self::Month => taskboard_domain::reflection::ReviewCadence::Month,
+        }
+    }
+}
+
+/// A curated health-flag name (`--flag`/`--unflag`): the mint's typed
+/// rejection is consumed at the clap boundary (chunk-1 plan §3.3's
+/// declared consumer) — an unknown name is a usage error (exit 2),
+/// never a planner rejection.
+fn parse_health_flag(raw: &str) -> Result<taskboard_domain::reflection::HealthFlag, String> {
+    taskboard_domain::reflection::HealthFlag::try_new(raw)
+        .map_err(|_| "unknown health flag (see the curated nine)".to_owned())
 }
 
 /// The `habits update --at` value: a time-of-day, or `none` (clear).

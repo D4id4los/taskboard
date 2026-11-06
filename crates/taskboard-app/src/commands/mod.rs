@@ -22,6 +22,7 @@ pub mod habits;
 pub mod labels;
 pub mod logout;
 pub mod output;
+pub mod reflection;
 pub mod reminders;
 pub mod repeat;
 pub mod stacks;
@@ -242,6 +243,21 @@ pub enum CommandError {
     /// uuids (deterministic entry-id order).
     #[error("entry selector matches several entries — pass one of {}", candidates.join(" | "))]
     AmbiguousTimeEntry {
+        /// The matched entries' full uuids.
+        candidates: Vec<String>,
+    },
+    /// No live reflection entry matches the selector (exact uuid |
+    /// ≥8-char prefix; tombstoned entries are gone from the family's
+    /// own recovery surface — Q-7).
+    #[error("no reflection entry matches {selector:?}")]
+    UnknownReflectionEntry {
+        /// The rejected selector, verbatim.
+        selector: String,
+    },
+    /// The reflection-entry selector matches several live entries;
+    /// carries their full uuids (deterministic entry-id order).
+    #[error("reflection entry selector matches several entries — pass one of {}", candidates.join(" | "))]
+    AmbiguousReflectionEntry {
         /// The matched entries' full uuids.
         candidates: Vec<String>,
     },
@@ -486,6 +502,8 @@ impl CommandError {
             Self::AmbiguousAdhocAlarm { .. } => "ambiguous-adhoc-alarm",
             Self::UnknownTimeEntry { .. } => "unknown-time-entry",
             Self::AmbiguousTimeEntry { .. } => "ambiguous-time-entry",
+            Self::UnknownReflectionEntry { .. } => "unknown-reflection-entry",
+            Self::AmbiguousReflectionEntry { .. } => "ambiguous-reflection-entry",
             Self::UnknownHabit { .. } => "unknown-habit",
             Self::AmbiguousHabit { .. } => "ambiguous-habit",
             Self::NoStacks => "no-stacks",
@@ -574,12 +592,14 @@ impl CommandError {
             | Self::UnknownReminderRule(sel)
             | Self::UnknownAdhocAlarm(sel)
             | Self::UnknownBreakRule(sel)
-            | Self::UnknownTimeEntry { selector: sel } => Some(sel.clone()),
+            | Self::UnknownTimeEntry { selector: sel }
+            | Self::UnknownReflectionEntry { selector: sel } => Some(sel.clone()),
             Self::AmbiguousTask { candidates }
             | Self::AmbiguousStack { candidates }
             | Self::AmbiguousReminderRule { candidates }
             | Self::AmbiguousAdhocAlarm { candidates }
             | Self::AmbiguousTimeEntry { candidates }
+            | Self::AmbiguousReflectionEntry { candidates }
             | Self::AmbiguousBoard { candidates } => Some(candidates.join(", ")),
             Self::SyncFailed(kind) => Some(output::sync_error_kind(*kind).to_owned()),
             Self::IpcVersion { server_v } => Some(server_v.to_string()),
@@ -1258,6 +1278,13 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
             habits::habits_command(&mut ctx.io, ctx.config_path.clone(), habits::collapse(cmd))
                 .await
         }
+        Command::Reflection { cmd } => match reflection::collapse(cmd) {
+            Some(invocation) => {
+                reflection::reflection_command(&mut ctx.io, ctx.config_path.clone(), invocation)
+                    .await
+            }
+            None => unreachable!("the journal grammar has no vacuous branch"),
+        },
         Command::Export {
             format,
             since,
@@ -1683,6 +1710,18 @@ pub async fn dispatch_line(
             None => unreachable!("clap requires exactly one log mode (--for | --from --to)"),
         },
         Command::Habits { cmd } => habits::habits_line(app, io, habits::collapse(cmd)).await,
+        Command::Reflection { cmd } => match reflection::collapse(cmd) {
+            Some(invocation) => {
+                reflection::reflection_line(
+                    app,
+                    session.session_config().resolved_day_calendar(),
+                    io,
+                    invocation,
+                )
+                .await
+            }
+            None => unreachable!("the journal grammar has no vacuous branch"),
+        },
         Command::Export {
             format,
             since,
@@ -2148,6 +2187,11 @@ pub fn route_for_ipc(command: &Command) -> IpcRoute {
         // boot would write a *different* database's data when a daemon
         // serves the db (the D-TC1 argument verbatim).
         | Command::Habits { .. }
+        // The journal family rides the same lane: its mutating verbs
+        // must land in the daemon's engine (the reflection rows live
+        // in the serving database), and `journal list` answers that
+        // database's truth too (the D-TC1 argument verbatim).
+        | Command::Reflection { .. }
         | Command::Export { .. }
         | Command::Find { .. }
         // Capture rides the mutation lane (boot-local over the core,
