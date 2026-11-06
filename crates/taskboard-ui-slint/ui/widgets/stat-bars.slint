@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // The stat-bars strip (#623 slice A, D-S4): a hand-rolled, minimal
 // horizontal bar chart — R-3's ruling (no chart crate). One equal-
-// stretch bar per day, two stacked segments (Work bottom, Respite
-// top) whose heights are pushed fractions of the strip maximum; a day
-// with no tracked time renders a baseline hairline tick so the bar
-// count always equals the window's day count (D-9 tier 2: the shape
-// collapses, never the structure).
+// stretch bar per day, two stacked segments (`base` at the bottom,
+// `stack` above it) whose heights are pushed fractions; a day with
+// nothing renders a baseline hairline tick so the bar count always
+// equals the window's day count (D-9 tier 2: the shape collapses,
+// never the structure).
 //
 // Composition-only geometry (VF-8): every height is `fraction × strip
 // height` — the push pass normalizes the values presentation-side;
@@ -14,23 +14,25 @@
 // consuming section's stat cells. No labels, ticks, tooltips, or
 // value overlays (v1; the R-3 honest-minimal-chart posture).
 //
-// The segment colours are `in` properties defaulting to theme tokens,
-// so a second consumer (slice B's mood/energy series) re-instances
-// the widget rather than forking it.
+// The vocabulary is neutral strip vocabulary on purpose (slice B's
+// D-B6): the tracking sections map Work → `base` / Respite → `stack`,
+// the reflection sections Mood → `base` / Energy → `stack`. The
+// segment colours are `in` properties defaulting to theme tokens, so
+// each consumer re-instances the widget rather than forking it.
 
 import { Theme, Semantic } from "../theme.slint";
 
 export struct StatBarModel {
-    // The day's Work fraction of the strip maximum (0.0..=1.0).
-    work: float,
-    // The day's Respite fraction (stacked above the Work segment).
-    respite: float,
+    // The lower segment's fraction (0.0..=1.0).
+    base: float,
+    // The upper segment's fraction (stacked above `base`).
+    stack: float,
 }
 
 export component StatBars inherits Rectangle {
     in property <[StatBarModel]> bars;
-    in property <color> work-color: Semantic.success;
-    in property <color> respite-color: Semantic.warning;
+    in property <color> base-color: Semantic.success;
+    in property <color> stack-color: Semantic.warning;
     // The strip's fixed plot height (the consumer's layout decides the
     // placement; the height is a theme-scaled token expression).
     in property <length> plot-height: 48px * Theme.base-scale;
@@ -50,20 +52,20 @@ export component StatBars inherits Rectangle {
             background: Theme.background;
             VerticalLayout {
                 alignment: end;
-                // Respite over Work: the segment pair stacks from the
+                // `stack` over `base`: the segment pair stacks from the
                 // strip's baseline.
                 Rectangle {
-                    height: bar.respite * root.plot-height;
-                    background: root.respite-color;
+                    height: bar.stack * root.plot-height;
+                    background: root.stack-color;
                 }
                 Rectangle {
-                    height: bar.work * root.plot-height;
-                    background: root.work-color;
+                    height: bar.base * root.plot-height;
+                    background: root.base-color;
                 }
                 // The empty day's baseline tick — a day with nothing
                 // reads as "nothing", never as a missing bar.
                 Rectangle {
-                    height: bar.work + bar.respite == 0
+                    height: bar.base + bar.stack == 0
                             ? Theme.hairline-width
                             : 0;
                     background: Theme.border;

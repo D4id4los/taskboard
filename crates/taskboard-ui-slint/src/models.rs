@@ -1189,8 +1189,8 @@ fn push_review(
         let bars: Vec<StatBarModel> = presentation::review_bar_fractions(&series)
             .into_iter()
             .map(|bar| StatBarModel {
-                work: bar.work,
-                respite: bar.respite,
+                base: bar.work,
+                stack: bar.respite,
             })
             .collect();
         TrackingSectionModel {
@@ -4336,10 +4336,10 @@ mod tests {
                     .row_data(section.bars.row_count() - 1)
                     .expect("the running day's bar");
                 assert!(
-                    last.work > 0.0,
+                    last.base > 0.0,
                     "the running day's work fraction is strictly positive"
                 );
-                assert!(last.respite == 0.0, "no respite was planted");
+                assert!(last.stack == 0.0, "no respite was planted");
             }
             assert_eq!(model.tracking_week.bars.row_count(), 7);
             assert_eq!(model.tracking_month.bars.row_count(), 30);
@@ -4368,7 +4368,7 @@ mod tests {
                 assert!(len == 7 || len == 30, "the skeleton never vanishes");
                 for i in 0..len {
                     let bar = section.bars.row_data(i).expect("bar");
-                    assert!(bar.work == 0.0 && bar.respite == 0.0, "all-zero strip");
+                    assert!(bar.base == 0.0 && bar.stack == 0.0, "all-zero strip");
                 }
             }
         });
