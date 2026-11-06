@@ -33,7 +33,7 @@ import { IconButton, IconKind } from "icon-button.slint";
 // track-form end — the track form mounts two simultaneously). The
 // widget mirrors its own `open` and the anchor's realized geometry;
 // the ladder's highlight/seek stay panel-local (the ladder moved into
-// `QuickListFlyout`), so they are not globalled.
+// `QuickListFlyout`); the highlight is mirrored out read-only.
 export global TimeFieldFacts {
     in-out property <bool> open: false;
     in-out property <int> site: -1;
@@ -45,6 +45,9 @@ export global TimeFieldFacts {
     // precedent) — the flip/clamp journeys' observation seam.
     in-out property <length> panel-x;
     in-out property <length> panel-y;
+    // The open flyout's highlighted row, mirrored by the panel (the
+    // `DropdownFacts.highlight` observation seam; never read back).
+    in-out property <int> highlight: 0;
 }
 
 // One quick-list row: the slot's canonical rendering plus its

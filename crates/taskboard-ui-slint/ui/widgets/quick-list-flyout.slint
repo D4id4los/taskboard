@@ -63,6 +63,7 @@ export component QuickListFlyout inherits Rectangle {
     property <int> seek-nonce: 0;
     changed highlight => {
         root.seek-nonce += 1;
+        TimeFieldFacts.highlight = root.highlight;
     }
     // The adapter-bumped nonce re-grab (the TimerSetter precedent):
     // at the component root, where the `in property` lives.
@@ -83,6 +84,7 @@ export component QuickListFlyout inherits Rectangle {
                 Math.max(root.rows.length - 1, 0),
             );
             root.seek-nonce += 1;
+            TimeFieldFacts.highlight = root.highlight;
             self.focus();
         }
         // The flyout holds focus while open (the widget-internal
