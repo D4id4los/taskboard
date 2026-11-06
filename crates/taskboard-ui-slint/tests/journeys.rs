@@ -14389,3 +14389,79 @@ fn the_track_form_quick_lists_open_per_field_and_dismiss() {
         },
     );
 }
+
+// ---- round 5 chunk 4 (F19): the segmented and slider keyboard paths ------
+
+/// Tabs (raw) until the stop labelled `label` holds focus. The bound
+/// is structural (the settings stop count with headroom).
+fn tab_to(harness: &mut Harness, label: &str) {
+    for _ in 0..200 {
+        if harness.driver.focused_label().as_deref() == Some(label) {
+            return;
+        }
+        harness.stroke(parse("Tab").expect("tab"));
+        harness.driver.advance_time(0);
+    }
+    panic!("the walk never reached the stop {label:?}");
+}
+
+/// F19a — a focused segment activates on bare Return and Space, once
+/// per stroke, through the same `picked` seam pointer and AT use; a
+/// disabled segment swallows the stroke.
+#[test]
+fn segments_activate_on_return_and_space() {
+    use taskboard_ui_slint::keymap::Preset;
+    use taskboard_ui_slint::requests::UiRequest;
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::AppSettings);
+            harness.driver.set_window_size(1000, 6000);
+
+            tab_to(&mut harness, "Standalone");
+            harness.stroke(parse("Return").expect("Return"));
+            harness.driver.advance_time(0);
+            assert!(
+                harness.drain_requests().is_empty(),
+                "a disabled segment swallows the pick"
+            );
+
+            tab_to(&mut harness, "Emacs");
+            harness.stroke(parse("Return").expect("Return"));
+            harness.driver.advance_time(0);
+            let requests = harness.drain_requests();
+            assert!(
+                matches!(
+                    requests.as_slice(),
+                    [UiRequest::SetKeymapPreset {
+                        preset: Preset::Emacs,
+                        ..
+                    }]
+                ),
+                "Return picks the focused segment exactly once: {requests:?}"
+            );
+            // Settle the busy machine: a dropped reply ends the op.
+            drop(requests);
+            harness.handle.drain_setting_replies();
+
+            tab_to(&mut harness, "Vi");
+            harness.stroke(parse("Space").expect("Space"));
+            harness.driver.advance_time(0);
+            let requests = harness.drain_requests();
+            assert!(
+                matches!(
+                    requests.as_slice(),
+                    [UiRequest::SetKeymapPreset {
+                        preset: Preset::Vi,
+                        ..
+                    }]
+                ),
+                "Space picks the focused segment exactly once: {requests:?}"
+            );
+        },
+    );
+}

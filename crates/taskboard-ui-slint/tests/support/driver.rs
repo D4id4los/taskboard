@@ -97,6 +97,13 @@ pub trait JourneyDriver {
     /// default action (§7.1's click-equivalence seam — no coordinate
     /// arithmetic).
     fn click_by_label(&mut self, label: &str);
+    /// Releases the stroke's key (the `KeyReleased` half
+    /// `press_stroke` never sends) — the slider's commit-on-release
+    /// seam. Modifiers are not re-pressed.
+    fn release_stroke(&mut self, stroke: Stroke);
+    /// The accessible label of the item holding keyboard focus (an
+    /// address for walking to a stop, never assertion text).
+    fn focused_label(&self) -> Option<String>;
 }
 
 /// One addressed element: an [`ElementHandle`] behind only the a11y
@@ -313,6 +320,24 @@ impl JourneyDriver for SlintDriver {
             .find_by_label(label)
             .unwrap_or_else(|| panic!("the labelled element {label:?} is present"));
         element.invoke_default_action();
+    }
+
+    fn release_stroke(&mut self, stroke: Stroke) {
+        let component = self.window();
+        let mut key = String::new();
+        key.push(stroke.key);
+        dispatch(component.window(), SharedString::from(key), false);
+    }
+
+    fn focused_label(&self) -> Option<String> {
+        let component = self.window();
+        let inner = i_slint_core::window::WindowInner::from_pub(component.window());
+        let focused = inner.focus_item.borrow().upgrade()?;
+        focused
+            .accessible_string_property(
+                i_slint_core::accessibility::AccessibleStringProperty::Label,
+            )
+            .map(Into::into)
     }
 }
 
