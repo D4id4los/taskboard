@@ -8,109 +8,20 @@
 
 #![forbid(unsafe_code)]
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use taskboard_domain::idgen::IdGenerator as _;
 use taskboard_domain::persistence::{PersistedState, TaskRepository};
 use taskboard_domain::test_support::{CountingIds, InMemoryRepository};
 use taskboard_domain::{
-    AppState, Board, CommandOutcome, EngineSignal, NotifierMessage, ReminderOffset,
-    SettingsSnapshot, Stack, StackClocks, StateCommand, SyncCommand, SyncReport, SyncStateReader,
-    SystemEvent, Task, TaskClocks, TickSecs,
+    AppState, CommandOutcome, EngineSignal, NotifierMessage, ReminderOffset, SettingsSnapshot,
+    StateCommand, SyncCommand, SyncReport, SyncStateReader, SystemEvent, TickSecs,
 };
 use taskboard_state::{DayRollConfig, EngineHandle, spawn_state_engine};
 
 mod common;
 
-use common::{CountingRepository, FixedClock, T0, ts};
-
-// -- fixtures ------------------------------------------------------------
-
-fn board() -> Board {
-    let ids = CountingIds::new();
-    Board {
-        id: ids.new_board_id(),
-        remote: None,
-        title: "board".into(),
-        color: taskboard_domain::Color::new("0000ff"),
-        archived: false,
-        deleted: false,
-        clocks: taskboard_domain::BoardClocks {
-            title: taskboard_domain::BoardClocks::epoch(),
-            color: taskboard_domain::BoardClocks::epoch(),
-            archived: taskboard_domain::BoardClocks::epoch(),
-            deleted: taskboard_domain::BoardClocks::epoch(),
-        },
-        remote_seen: None,
-    }
-}
-
-fn task(id: u128, stack: taskboard_domain::StackId, duedate: Option<i64>) -> Task {
-    Task {
-        id: taskboard_domain::TaskId::from_uuid(uuid::Uuid::from_u128(id)),
-        remote: None,
-        title: "task".into(),
-        description: String::new(),
-        duedate: duedate.map(ts),
-        scheduled: None,
-        done: None,
-        stack,
-        order: 1,
-        label_memberships: BTreeMap::new(),
-        effort: None,
-        importance: None,
-        urgency: None,
-        recur: None,
-        kind: taskboard_domain::entities::TaskKind::Standard,
-        archived: false,
-        deleted: false,
-        clocks: TaskClocks {
-            title: ts(T0),
-            description: ts(T0),
-            duedate: ts(T0),
-            scheduled: ts(T0),
-            done: ts(T0),
-            position: ts(T0),
-            effort: ts(T0),
-            importance: ts(T0),
-            urgency: ts(T0),
-            recur: ts(T0),
-            kind: ts(T0),
-            archived: ts(T0),
-            deleted: ts(T0),
-        },
-        remote_seen: None,
-        remote_baseline: None,
-    }
-}
-
-/// A live board + stack + one open task due at `duedate_secs`.
-fn seeded(duedate_secs: Option<i64>) -> PersistedState {
-    let board = board();
-    let stack = Stack {
-        id: taskboard_domain::StackId::from_uuid(uuid::Uuid::from_u128(500)),
-        remote: None,
-        board: board.id,
-        title: "backlog".into(),
-        order: 1,
-        archived: false,
-        deleted: false,
-        clocks: StackClocks {
-            title: ts(T0),
-            order: ts(T0),
-            deleted: ts(T0),
-        },
-        remote_seen: None,
-    };
-    let task = task(600, stack.id, duedate_secs);
-    let mut state = PersistedState::default();
-    state.boards.insert(board.id, board);
-    state.stacks.insert(stack.id, stack);
-    state.tasks.insert(task.id, task);
-    state
-}
+use common::{CountingRepository, FixedClock, T0, seed_stack_with_due_task, ts};
 
 fn enabled(tick_secs: u64) -> SettingsSnapshot {
     SettingsSnapshot {
@@ -218,7 +129,9 @@ async fn the_boot_seed_is_published_with_the_hydrated_state() {
         ..SettingsSnapshot::default()
     };
     let h = spawn(
-        Arc::new(InMemoryRepository::with_state(seeded(None))),
+        Arc::new(InMemoryRepository::with_state(seed_stack_with_due_task(
+            None,
+        ))),
         FixedClock::new(T0),
         seed.clone(),
         DayRollConfig::disabled(),
@@ -231,7 +144,9 @@ async fn the_boot_seed_is_published_with_the_hydrated_state() {
 #[tokio::test(start_paused = true)]
 async fn update_settings_replaces_the_snapshot_wholesale() {
     let h = spawn(
-        Arc::new(InMemoryRepository::with_state(seeded(None))),
+        Arc::new(InMemoryRepository::with_state(seed_stack_with_due_task(
+            None,
+        ))),
         FixedClock::new(T0),
         SettingsSnapshot::default(),
         DayRollConfig::disabled(),
@@ -265,7 +180,9 @@ async fn update_settings_replaces_the_snapshot_wholesale() {
 #[tokio::test(start_paused = true)]
 async fn update_settings_publishes_a_signal_and_rings_the_system_doorbell() {
     let mut h = spawn(
-        Arc::new(InMemoryRepository::with_state(seeded(None))),
+        Arc::new(InMemoryRepository::with_state(seed_stack_with_due_task(
+            None,
+        ))),
         FixedClock::new(T0),
         SettingsSnapshot::default(),
         DayRollConfig::disabled(),
@@ -288,9 +205,11 @@ async fn update_settings_publishes_a_signal_and_rings_the_system_doorbell() {
 // -- the tick arm's live reads ---------------------------------------------
 
 #[tokio::test(start_paused = true)]
-async fn a_tick_cadence_change_re_arms_at_the_next_wake() {
+async fn a_past_due_mutation_fires_on_the_re_arm_not_the_old_cadence() {
     // Reminders enabled at a 60 s cadence; nothing due at boot.
-    let repo = Arc::new(InMemoryRepository::with_state(seeded(None)));
+    let repo = Arc::new(InMemoryRepository::with_state(seed_stack_with_due_task(
+        None,
+    )));
     let mut h = spawn(
         repo,
         FixedClock::new(T0),
@@ -301,8 +220,9 @@ async fn a_tick_cadence_change_re_arms_at_the_next_wake() {
     settle().await;
     assert_eq!(fired(&mut h.notifications), 0);
 
-    // A past-due task created mid-cadence: its implicit reminder is
-    // due but the next wake is ~60 s away.
+    // A past-due task created mid-cadence: the deadline re-arm wakes
+    // the engine at once (round-5 chunk 6) — the firing must not wait
+    // out the old 60 s cadence.
     let stack = *published(&h.handle).stacks.keys().next().expect("stack");
     h.handle
         .execute(StateCommand::CreateTask {
@@ -332,26 +252,17 @@ async fn a_tick_cadence_change_re_arms_at_the_next_wake() {
     settle().await;
     assert_eq!(
         fired(&mut h.notifications),
-        0,
-        "the old cadence has not woken"
-    );
-
-    // The cadence drops to 5 s: the wake re-arms from the apply, so
-    // the firing lands within one *new* tick — not at the old 60 s.
-    apply(&h.handle, enabled(5)).await;
-    advance_both(&h.clock, 6).await;
-    settle().await;
-    assert_eq!(
-        fired(&mut h.notifications),
         1,
-        "fired within the new cadence"
+        "fired on the re-arm, not the old cadence"
     );
 }
 
 #[tokio::test(start_paused = true)]
 async fn a_live_disable_stops_the_tick_and_a_re_enable_resumes_it() {
     // Past-due task: the first (immediate) tick fires it.
-    let repo = Arc::new(InMemoryRepository::with_state(seeded(Some(T0 - 3_600))));
+    let repo = Arc::new(InMemoryRepository::with_state(seed_stack_with_due_task(
+        Some(T0 - 3_600),
+    )));
     let mut h = spawn(
         repo,
         FixedClock::new(T0),
@@ -417,7 +328,9 @@ async fn a_live_disable_stops_the_tick_and_a_re_enable_resumes_it() {
 #[tokio::test(start_paused = true)]
 async fn the_implicit_reminder_reads_the_live_defaults() {
     // The task is due in 5 min; with an at-due default nothing fires.
-    let repo = Arc::new(InMemoryRepository::with_state(seeded(Some(T0 + 300))));
+    let repo = Arc::new(InMemoryRepository::with_state(seed_stack_with_due_task(
+        Some(T0 + 300),
+    )));
     let mut h = spawn(
         repo,
         FixedClock::new(T0),
@@ -449,7 +362,7 @@ async fn the_implicit_reminder_reads_the_live_defaults() {
 // -- the day calendar's live read --------------------------------------------
 
 fn daily_head(day_secs: i64) -> PersistedState {
-    let mut state = seeded(None);
+    let mut state = seed_stack_with_due_task(None);
     let head = state.tasks.values_mut().next().expect("the task");
     head.scheduled = Some(ts(day_secs));
     head.recur = Some(taskboard_domain::RecurRule {

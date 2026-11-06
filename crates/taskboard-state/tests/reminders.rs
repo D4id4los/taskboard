@@ -22,10 +22,10 @@ use taskboard_domain::idgen::IdGenerator as _;
 use taskboard_domain::persistence::{PersistedState, TaskRepository};
 use taskboard_domain::test_support::{CountingIds, InMemoryRepository};
 use taskboard_domain::{
-    AdhocWhen, AppState, Board, CommandOutcome, EngineSignal, Insistence, Notification,
-    ReminderAnchor, ReminderDefaults, ReminderDelivery, ReminderOffset, ReminderRef, ReminderRule,
-    ReminderRuleId, ReminderSnoozeKey, SettingsSnapshot, Stack, StackClocks, StateCommand,
-    SyncCommand, SyncReport, SystemEvent, Task, TaskClocks, TickSecs,
+    AdhocWhen, AppState, CommandOutcome, EngineSignal, Insistence, Notification, ReminderAnchor,
+    ReminderDefaults, ReminderDelivery, ReminderOffset, ReminderRef, ReminderRule, ReminderRuleId,
+    ReminderSnoozeKey, SettingsSnapshot, StateCommand, SyncCommand, SyncReport, SystemEvent,
+    TickSecs,
 };
 use taskboard_state::{EngineHandle, spawn_state_engine};
 
@@ -47,74 +47,10 @@ fn tick_config() -> SettingsSnapshot {
 /// A live board + stack + one live open task with the given due date.
 fn seeded_task_state(duedate_secs: i64) -> (PersistedState, taskboard_domain::TaskId) {
     let ids = CountingIds::new();
-    let board = Board {
-        id: ids.new_board_id(),
-        remote: None,
-        title: "board".into(),
-        color: taskboard_domain::Color::new("0000ff"),
-        archived: false,
-        deleted: false,
-        clocks: taskboard_domain::BoardClocks {
-            title: taskboard_domain::BoardClocks::epoch(),
-            color: taskboard_domain::BoardClocks::epoch(),
-            archived: taskboard_domain::BoardClocks::epoch(),
-            deleted: taskboard_domain::BoardClocks::epoch(),
-        },
-        remote_seen: None,
-    };
-    let stack = Stack {
-        id: ids.new_stack_id(),
-        remote: None,
-        board: board.id,
-        title: "backlog".into(),
-        order: 1,
-        archived: false,
-        deleted: false,
-        clocks: StackClocks {
-            title: ts(T0),
-            order: ts(T0),
-            deleted: ts(T0),
-        },
-        remote_seen: None,
-    };
-    let task = Task {
-        id: ids.new_task_id(),
-        remote: None,
-        title: "due task".into(),
-        description: String::new(),
-        duedate: Some(ts(duedate_secs)),
-        scheduled: None,
-        done: None,
-        stack: stack.id,
-        order: 1,
-        label_memberships: std::collections::BTreeMap::new(),
-        effort: None,
-        importance: None,
-        urgency: None,
-        recur: None,
-        kind: taskboard_domain::entities::TaskKind::Standard,
-
-        archived: false,
-        deleted: false,
-        clocks: TaskClocks {
-            title: ts(T0),
-            description: ts(T0),
-            duedate: ts(T0),
-            scheduled: ts(T0),
-            done: ts(T0),
-            position: ts(T0),
-            effort: ts(T0),
-            importance: ts(T0),
-            urgency: ts(T0),
-            recur: ts(T0),
-            kind: ts(T0),
-
-            archived: ts(T0),
-            deleted: ts(T0),
-        },
-        remote_seen: None,
-        remote_baseline: None,
-    };
+    let board = common::board("board");
+    let stack = common::backlog_stack(ids.new_stack_id(), board.id);
+    let mut task = common::due_task(ids.new_task_id(), stack.id, Some(duedate_secs));
+    task.title = "due task".into();
     let task_id = task.id;
     let mut state = PersistedState::default();
     state.boards.insert(board.id, board);
