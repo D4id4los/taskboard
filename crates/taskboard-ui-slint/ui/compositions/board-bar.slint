@@ -83,6 +83,9 @@ export component BoardBar inherits Rectangle {
         height: parent.height - 2 * Theme.space-1;
         rows: root.bar.rows;
         selected-index: root.bar.selected;
+        // The class-facts site discriminator (round-5 D6): the
+        // switcher's flyout renders window-level, keyed on site 1.
+        flyout-site: 1;
         field-text: root.bar.segments.length > 0
             ? root.bar.segments[root.bar.selected].title
             : "";

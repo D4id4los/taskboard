@@ -328,6 +328,15 @@ pub(crate) struct Adapter {
     /// phase steps hand focus across seams; the settle funnel
     /// consumes it and skips the commit/discard rule for that steal.
     due_focus_steal: bool,
+    /// The quick-list digit filters' armed flags (round-5 F10,
+    /// D-3.5): armed by the field's own `edited` keystroke; disarmed
+    /// at every open (the quick toggles), every picker-source mirror
+    /// write, and the mirrors' reset funnel — the list seeds
+    /// unfiltered at open and narrows per keystroke only.
+    time_filter_armed: bool,
+    setter_filter_armed: bool,
+    track_start_filter_armed: bool,
+    track_end_filter_armed: bool,
     /// The custom-offset field's typed draft (r4 D27): the validity
     /// probe reads it per pass; the accepted seam clears it (both
     /// outcomes clear the field).
@@ -1162,7 +1171,14 @@ impl Adapter {
         // quick-list rows over the static slots, and the nearest-slot
         // seek index against the picker's current time.
         let time_slots: Vec<chrono::NaiveTime> = if self.due_picker.is_some() {
-            let digits = crate::due_edit::filter_digits(&self.time_text);
+            // The armed gate (round-5 F10): disarmed = the full
+            // 96-slot grid (empty digits match everything); the first
+            // keystroke re-arms the per-keystroke narrowing.
+            let digits = if self.time_filter_armed {
+                crate::due_edit::filter_digits(&self.time_text)
+            } else {
+                String::new()
+            };
             crate::due_edit::quarter_slots()
                 .into_iter()
                 .filter(|slot| crate::due_edit::quick_list_matches(&digits, *slot))
@@ -1301,6 +1317,7 @@ impl Adapter {
     /// Clears the setter's draft state (dismiss and commit share it —
     /// drafts are widget-local, nothing survives the panel).
     fn clear_timer_setter(&mut self) {
+        self.setter_filter_armed = false;
         self.setter_time = None;
         "--:--".clone_into(&mut self.setter_time_text);
         self.setter_day_offset = 0;
@@ -1315,7 +1332,11 @@ impl Adapter {
     /// buffer only when the picker state moved, never while the user
     /// types (the typed text echoes verbatim through the draft).
     fn push_timer_setter(&self, window: &AppWindow) {
-        let digits = crate::due_edit::filter_digits(&self.setter_time_text);
+        let digits = if self.setter_filter_armed {
+            crate::due_edit::filter_digits(&self.setter_time_text)
+        } else {
+            String::new()
+        };
         let slots: Vec<chrono::NaiveTime> = crate::due_edit::quarter_slots()
             .into_iter()
             .filter(|slot| crate::due_edit::quick_list_matches(&digits, *slot))
@@ -1370,6 +1391,10 @@ impl Adapter {
         let flow_form = matches!(self.view_state.flow(), Flow::TrackEntryForm { .. });
         if !flow_form {
             self.track_form = None;
+            // The wipe's filter passengers (D-3.5): the armed flags
+            // never outlive their fields.
+            self.track_start_filter_armed = false;
+            self.track_end_filter_armed = false;
         }
         // The armed delete dies with the overlay (D-TS5's
         // disarm-on-close; state-truth, nothing ticks) — but it
@@ -1425,15 +1450,19 @@ impl Adapter {
                     .collect::<Vec<crate::TimeSlotRow>>(),
             ))
         };
-        let slots_for = |text: &str| -> Vec<chrono::NaiveTime> {
-            let digits = crate::due_edit::filter_digits(text);
+        let slots_for = |text: &str, armed: bool| -> Vec<chrono::NaiveTime> {
+            let digits = if armed {
+                crate::due_edit::filter_digits(text)
+            } else {
+                String::new()
+            };
             crate::due_edit::quarter_slots()
                 .into_iter()
                 .filter(|slot| crate::due_edit::quick_list_matches(&digits, *slot))
                 .collect()
         };
-        let start_slots = slots_for(&form.start_text);
-        let end_slots = slots_for(&form.end_text);
+        let start_slots = slots_for(&form.start_text, self.track_start_filter_armed);
+        let end_slots = slots_for(&form.end_text, self.track_end_filter_armed);
         let grid = form.picker.as_ref().map_or_else(
             || ModelRc::new(slint::VecModel::from(Vec::new())),
             |picker| {
@@ -1536,6 +1565,8 @@ impl Adapter {
         let today = chrono::Local::now().date_naive();
         let entry = seed.and_then(|id| state.tracking.entries.get(&id));
         let start_local = entry.map(|e| chrono::Local.from_utc_datetime(&e.start.naive_utc()));
+        self.track_start_filter_armed = false;
+        self.track_end_filter_armed = false;
         self.track_form = Some(TrackFormState {
             seed,
             picker: None,
@@ -5208,6 +5239,10 @@ pub(crate) fn install(
         due_picker: None,
         focus_handover: FocusHandover::None,
         due_focus_steal: false,
+        time_filter_armed: false,
+        setter_filter_armed: false,
+        track_start_filter_armed: false,
+        track_end_filter_armed: false,
         rule_offset_draft: String::new(),
         timer_when_draft: String::new(),
         setter_time: None,
@@ -6893,10 +6928,20 @@ fn install_due_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     });
 
     install_seam!(window: window.on_task_date_picker_toggled, adapter: adapter;
-    bind mut (a, window), args (), {        if a.due_picker.take().is_some() {
+    bind mut (a, window), args (), {        // Both arms set the steal latch (round-5 F8, D-3.4): the
+    // calendar button's click grab can settle the armed editor
+    // before/around the toggle arrives, ending the flow the toggle
+    // is supposed to serve. The open arm additionally hands focus
+    // back to the field (the default-open contract: visible,
+    // click-armed, idle, the text field keeps focus).
+    if a.due_picker.take().is_some() {
+        a.due_focus_steal = true;
         a.refresh_forced(&window);
     } else {
+        a.due_focus_steal = true;
         a.open_due_picker(&window, false);
+        a.focus_handover = FocusHandover::Field;
+        a.refresh_forced(&window);
     }
 
     });
@@ -6933,23 +6978,33 @@ fn install_due_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     });
 
     install_seam!(window: window.on_task_date_time_edited, adapter: adapter;
-    bind mut (a, window), args (text), {        // The field's value echo seeds its buffer ("--:--" while no
-    // time exists), so the first keystroke's text carries it as a
-    // prefix — strip the echo, keep the typed digits.
-    let mut text = text.to_string();
-    if let Some(stripped) = text.strip_prefix("--:--") {
-        text = stripped.to_owned();
-    }
-    a.time_text.clone_from(&text);
-    // Buffer-source seeding (r4 D26): a lenient-parse hit moves
-    // the picker's time live; junk/partial leaves it untouched
-    // (the validity flavour shows the state).
-    if let Some(time) = crate::due_edit::parse_time_lenient(&text)
-        && let Some(picker) = a.due_picker.as_mut()
-    {
-        picker.set_time(Some(time));
-    }
+    bind mut (a, window), args (text), {        apply_due_time_edited(&mut a, &window, &text);
+
+    });
+
+    // The quick list's typed-shim seam (round-5 D6): the flyout scope
+    // forwards the raw key text; the adapter appends it to the mirror
+    // and runs the field's own edited logic (the old in-widget shim
+    // appended to the field buffer, which the adapter echoes verbatim
+    // — the mirror is the same single writer).
+    install_seam!(window: window.on_task_date_quick_typed, adapter: adapter;
+    bind mut (a, window), args (key), {        let mut text = a.time_text.clone();
+    text.push_str(&key);
+    apply_due_time_edited(&mut a, &window, &text);
+
+    });
+
+    // The quick-times chevron's seam (round-5 F8): the latch skips
+    // the settle funnel the chevron's click-grab would otherwise
+    // trigger, the digit filter disarms for this open (the full list
+    // seeds), and the focus nonce re-grabs the fresh panel (the P5
+    // record — an init grab alone does not take).
+    install_seam!(window: window.on_task_date_quick_toggled, adapter: adapter;
+    bind mut (a, window), args (), {        a.due_focus_steal = true;
+    a.time_filter_armed = false;
     a.refresh_forced(&window);
+    let nonce = window.get_date_quick_nonce();
+    window.set_date_quick_nonce(nonce.wrapping_add(1));
 
     });
 
@@ -6961,6 +7016,9 @@ fn install_due_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         return;
     };
     picker.set_time(Some(time));
+    // The pick is a picker-source write — the typing session's
+    // filter disarms (round-5 F10: the next open seeds unfiltered).
+    a.time_filter_armed = false;
     // Picker-source sync (r4 D26): the canonical rendering wins
     // the field mirror, and the due buffer re-renders from the
     // selection.
@@ -6971,7 +7029,8 @@ fn install_due_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     });
 
     install_seam!(window: window.on_task_date_time_accepted, adapter: adapter;
-    bind mut (a, window), args (text), {        match crate::due_edit::parse_time_lenient(&text) {
+    bind mut (a, window), args (text), {        a.time_filter_armed = false;
+    match crate::due_edit::parse_time_lenient(&text) {
         // A refusal keeps the typed text — the validity flavour
         // makes it visible — and dispatches nothing.
         None => {
@@ -7101,6 +7160,9 @@ impl Adapter {
         if matches!(key, K::TimeBack | K::TimeForward)
             && let Some(picker) = self.due_picker.as_ref()
         {
+            // A picker-source write disarms the digit filter
+            // (round-5 F10).
+            self.time_filter_armed = false;
             self.time_text = picker
                 .time()
                 .map_or("--:--".to_owned(), crate::due_edit::format_time_hm);
@@ -7148,8 +7210,38 @@ impl Adapter {
             .as_ref()
             .and_then(super::due_edit::DuePickerState::time)
             .map_or("--:--".to_owned(), crate::due_edit::format_time_hm);
+        // A fresh open seeds the quick list unfiltered (round-5 F10):
+        // the value mirror is the filter's input, but only a typed
+        // keystroke arms it.
+        self.time_filter_armed = false;
         self.refresh_forced(window);
     }
+}
+
+/// The due combobox's edited logic (r4 D26), shared by the field's
+/// `edited` seam and the quick list's typed-shim seam (round-5 D6 —
+/// the shim appends to the mirror, then runs this same body).
+fn apply_due_time_edited(a: &mut Adapter, window: &AppWindow, text: &str) {
+    // The keystroke arms the digit filter (round-5 F10, D-3.5):
+    // narrowing is per-keystroke only, never an open-time seed.
+    a.time_filter_armed = true;
+    // The field's value echo seeds its buffer ("--:--" while no
+    // time exists), so the first keystroke's text carries it as a
+    // prefix — strip the echo, keep the typed digits.
+    let mut text = text.to_string();
+    if let Some(stripped) = text.strip_prefix("--:--") {
+        text = stripped.to_owned();
+    }
+    a.time_text.clone_from(&text);
+    // Buffer-source seeding (r4 D26): a lenient-parse hit moves
+    // the picker's time live; junk/partial leaves it untouched
+    // (the validity flavour shows the state).
+    if let Some(time) = crate::due_edit::parse_time_lenient(&text)
+        && let Some(picker) = a.due_picker.as_mut()
+    {
+        picker.set_time(Some(time));
+    }
+    a.refresh_forced(window);
 }
 
 /// The picker-source buffer sync (r4 D26, the §4.3 helper's Picker
@@ -7188,6 +7280,9 @@ fn settle_date_editor(a: &mut Adapter, window: &AppWindow) -> bool {
         a.due_focus_steal = false;
         return false;
     }
+    // The typing session ends with the flow (the armed filter never
+    // outlives the buffer it filters — D-3.5's funnel passenger).
+    a.time_filter_armed = false;
     let text = a.due_buffer.clone();
     let now = chrono::Utc::now();
     // Non-empty and parseable: click-away ≡ Return.
@@ -7420,14 +7515,43 @@ fn install_timer_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
 
     });
     install_seam!(window: window.on_timer_setter_time_edited, adapter: adapter;
-    bind mut (a, window), args (text), {        a.setter_time_text = text.to_string();
+    bind mut (a, window), args (text), {        // The keystroke arms the digit filter (round-5 F10, D-3.5).
+    a.setter_filter_armed = true;
+    a.setter_time_text = text.to_string();
     a.setter_time = crate::due_edit::parse_time_lenient(&text);
     a.recompose_timer_setter();
     a.refresh_forced(&window);
 
     });
+
+    // The quick list's typed-shim seam (round-5 D6): append to the
+    // mirror, run the field's own edited logic.
+    install_seam!(window: window.on_timer_setter_quick_typed, adapter: adapter;
+    bind mut (a, window), args (key), {        let mut text = a.setter_time_text.clone();
+    text.push_str(&key);
+    a.setter_filter_armed = true;
+    a.setter_time = crate::due_edit::parse_time_lenient(&text);
+    a.setter_time_text = text;
+    a.recompose_timer_setter();
+    a.refresh_forced(&window);
+
+    });
+
+    // The quick-times chevron's seam (round-5 F8): the filter
+    // disarms for this open; no settle funnel rides the setter
+    // surface (the recorded asymmetry — the latch is the due
+    // editor's). The nonce re-grabs the fresh panel.
+    install_seam!(window: window.on_timer_setter_quick_toggled, adapter: adapter;
+    bind mut (a, window), args (), {        a.setter_filter_armed = false;
+    a.refresh_forced(&window);
+    let nonce = window.get_timer_setter_quick_nonce();
+    window.set_timer_setter_quick_nonce(nonce.wrapping_add(1));
+
+    });
     install_seam!(window: window.on_timer_setter_time_stepped, adapter: adapter;
-    bind mut (a, window), args (n), {        // Seed-on-step (r4 D23's semantics): an unset time anchors at
+    bind mut (a, window), args (n), {        // A picker-source write disarms the digit filter (round-5 F10).
+    a.setter_filter_armed = false;
+    // Seed-on-step (r4 D23's semantics): an unset time anchors at
     // midnight first — the first `+` yields 00:15, the first `−`
     // wraps to 23:45. The wrap stays within the picked day (the
     // day offset is an explicit choice; the step never flips it).
@@ -7440,7 +7564,8 @@ fn install_timer_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
 
     });
     install_seam!(window: window.on_timer_setter_time_picked, adapter: adapter;
-    bind mut (a, window), args (minutes), {        let Some(time) = crate::due_edit::time_of_minutes(minutes) else {
+    bind mut (a, window), args (minutes), {        a.setter_filter_armed = false;
+    let Some(time) = crate::due_edit::time_of_minutes(minutes) else {
         return;
     };
     a.setter_time = Some(time);
@@ -7687,17 +7812,64 @@ fn install_tracking_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
 
     });
     install_seam!(window: window.on_track_form_start_edited, adapter: adapter;
-    bind mut (a, window), args (text), {        if let Some(form) = a.track_form.as_mut() {
+    bind mut (a, window), args (text), {        // The keystroke arms the digit filter (round-5 F10, D-3.5).
+    a.track_start_filter_armed = true;
+    if let Some(form) = a.track_form.as_mut() {
         form.start_text = text.to_string();
     }
     a.refresh_forced(&window);
 
     });
     install_seam!(window: window.on_track_form_end_edited, adapter: adapter;
-    bind mut (a, window), args (text), {        if let Some(form) = a.track_form.as_mut() {
+    bind mut (a, window), args (text), {        // The keystroke arms the digit filter (round-5 F10, D-3.5).
+    a.track_end_filter_armed = true;
+    if let Some(form) = a.track_form.as_mut() {
         form.end_text = text.to_string();
     }
     a.refresh_forced(&window);
+
+    });
+
+    // The quick lists' typed-shim seams (round-5 D6): append to the
+    // field's mirror, run the field's own edited logic.
+    install_seam!(window: window.on_track_form_start_quick_typed, adapter: adapter;
+    bind mut (a, window), args (key), {        a.track_start_filter_armed = true;
+    if let Some(form) = a.track_form.as_mut() {
+        let mut text = form.start_text.clone();
+        text.push_str(&key);
+        form.start_text = text;
+    }
+    a.refresh_forced(&window);
+
+    });
+    install_seam!(window: window.on_track_form_end_quick_typed, adapter: adapter;
+    bind mut (a, window), args (key), {        a.track_end_filter_armed = true;
+    if let Some(form) = a.track_form.as_mut() {
+        let mut text = form.end_text.clone();
+        text.push_str(&key);
+        form.end_text = text;
+    }
+    a.refresh_forced(&window);
+
+    });
+
+    // The quick-times chevrons' seams (round-5 F8): the filter
+    // disarms for this open (the track surface has no settle funnel —
+    // the recorded asymmetry). The shared nonce re-grabs the fresh
+    // panel (one panel mounts per group at a time — the site
+    // discriminator picks which).
+    install_seam!(window: window.on_track_form_start_quick_toggled, adapter: adapter;
+    bind mut (a, window), args (), {        a.track_start_filter_armed = false;
+    a.refresh_forced(&window);
+    let nonce = window.get_track_form_quick_nonce();
+    window.set_track_form_quick_nonce(nonce.wrapping_add(1));
+
+    });
+    install_seam!(window: window.on_track_form_end_quick_toggled, adapter: adapter;
+    bind mut (a, window), args (), {        a.track_end_filter_armed = false;
+    a.refresh_forced(&window);
+    let nonce = window.get_track_form_quick_nonce();
+    window.set_track_form_quick_nonce(nonce.wrapping_add(1));
 
     });
     for (name, which, pick) in [
@@ -7710,6 +7882,13 @@ fn install_tracking_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         let seam_weak = window.as_weak();
         let handler = move |window: &AppWindow, arg: i32| {
             let mut a = seam.borrow_mut();
+            // A picker-source write disarms the field's digit filter
+            // (round-5 F10).
+            if which == 0 {
+                a.track_start_filter_armed = false;
+            } else {
+                a.track_end_filter_armed = false;
+            }
             if let Some(form) = a.track_form.as_mut() {
                 if pick {
                     let minutes = arg;

@@ -18,10 +18,34 @@
 // Slint negative), so a click on another panel TouchArea is absorbed
 // by that surface's own grammar instead.
 
+// The flyout renders window-level (round-5 D6): the widget mirrors
+// its open state and the anchor's realized window-space geometry into
+// `TimeFieldFacts`; the app window mounts the `QuickListFlyout` panel
+// and the dismissal underlay from those facts. This replaces the old
+// in-widget displaced underlay (the F9 coordinate-space defect).
 import { Theme, Typography, RoleText, Semantic } from "../theme.slint";
 import { TextField, FieldValidity } from "text-field.slint";
 import { IconButton, IconKind } from "icon-button.slint";
-import { ListView } from "listview.slint";
+
+// The time-field class's mount-truth facts (round-5 D6): one global
+// for the widget class, `site` discriminating the mounted instances
+// (0 = due picker, 1 = timer setter, 2 = track-form start, 3 =
+// track-form end — the track form mounts two simultaneously). The
+// widget mirrors its own `open` and the anchor's realized geometry;
+// the ladder's highlight/seek stay panel-local (the ladder moved into
+// `QuickListFlyout`), so they are not globalled.
+export global TimeFieldFacts {
+    in-out property <bool> open: false;
+    in-out property <int> site: -1;
+    in-out property <length> anchor-x;
+    in-out property <length> anchor-y;
+    in-out property <length> anchor-width;
+    in-out property <length> anchor-height;
+    // The realized panel geometry (the `MenuPanelFacts.flyout-*`
+    // precedent) — the flip/clamp journeys' observation seam.
+    in-out property <length> panel-x;
+    in-out property <length> panel-y;
+}
 
 // One quick-list row: the slot's canonical rendering plus its
 // minutes-of-day (the seam carries numbers, not dates — D2's rule at
@@ -52,15 +76,51 @@ export component TimeField inherits Rectangle {
     // into that list (00:00 when unset — the adapter's decision).
     in property <[TimeSlotRow]> slot-rows;
     in property <int> nearest-row: 0;
-    // The highlighted slot inside `slot-rows` (the cursor-ring visual
-    // language); keyboard-operated, widget-local. Widget-local state,
-    // re-anchored from `nearest-row` on open.
-    in-out property <int> highlight: 0;
+    // The mount-site discriminator (round-5 D6): which instance's
+    // state the class facts global carries.
+    in property <int> flyout-site: -1;
     in-out property <bool> open: false;
-    // The widget-local seek nonce: every highlight move seeks the
-    // list (the ListView's focus-into-view seam), the open-time
-    // anchor included.
-    property <int> seek-nonce: 0;
+
+    // The window-mirror loop (round-5 D6): widget → window (open) via
+    // the derived-property wrap, window → widget (close) via the
+    // site-guarded fact read. Both directions are site-guarded; the
+    // loop converges (a close write re-enters as an already-false
+    // no-op, and a closed sibling's guard never fires).
+    property <bool> open-mirrored: root.open;
+    changed open-mirrored => {
+        TimeFieldFacts.site = root.flyout-site;
+        TimeFieldFacts.open = self.open-mirrored;
+        // The anchor geometry rides the open flip too: at click time
+        // the absolute position is realized, and the testing backend
+        // does not deliver `changed` for the pre-attach layout pass
+        // (the unreliable-mirroring record). The `anchor-abs-*` hooks
+        // below keep the mirror live across host scrolls.
+        TimeFieldFacts.anchor-x = flyout-anchor.absolute-position.x;
+        TimeFieldFacts.anchor-y = flyout-anchor.absolute-position.y;
+        TimeFieldFacts.anchor-width = flyout-anchor.width;
+        TimeFieldFacts.anchor-height = flyout-anchor.height;
+    }
+    property <bool> fact-open: TimeFieldFacts.open && TimeFieldFacts.site == root.flyout-site;
+    changed fact-open => {
+        if (!self.fact-open && root.open) {
+            root.open = false;
+        }
+    }
+    // The anchor geometry, mirrored one-way: window-space by
+    // definition (the F9 fix — a host scroll keeps the mirror live
+    // because `absolute-position` tracks it).
+    property <length> anchor-abs-x: flyout-anchor.absolute-position.x;
+    property <length> anchor-abs-y: flyout-anchor.absolute-position.y;
+    changed anchor-abs-x => {
+        TimeFieldFacts.anchor-x = self.anchor-abs-x;
+        TimeFieldFacts.anchor-width = flyout-anchor.width;
+        TimeFieldFacts.anchor-height = flyout-anchor.height;
+    }
+    changed anchor-abs-y => {
+        TimeFieldFacts.anchor-y = self.anchor-abs-y;
+        TimeFieldFacts.anchor-width = flyout-anchor.width;
+        TimeFieldFacts.anchor-height = flyout-anchor.height;
+    }
 
     // The intents (§5.1: no inline side effects).
     callback edited(string);
@@ -71,6 +131,10 @@ export component TimeField inherits Rectangle {
     callback stepped(int);
     // A quick-list pick: minutes-of-day.
     callback picked(int);
+    // The chevron's notification half (round-5 F8): the toggle stays
+    // widget-local (D-3.3); the callback lets the consumer's seam set
+    // the steal latch and disarm the digit filter for this open.
+    callback quick-toggled();
 
     height: field.natural-height;
     border-radius: Theme.radius-small;
@@ -91,10 +155,6 @@ export component TimeField inherits Rectangle {
         if (field.text != root.time-text) {
             field.text = root.time-text;
         }
-    }
-
-    changed highlight => {
-        root.seek-nonce += 1;
     }
 
     // The row: typable field, − / + steppers, the dropdown toggle —
@@ -129,124 +189,15 @@ export component TimeField inherits Rectangle {
             description: "Opens the quarter-hour quick list.";
             clicked => {
                 root.open = !root.open;
-            }
-        }
-    }
-
-    // The quick-list flyout (§5.4): a plain conditional sibling in
-    // the panel's coordinate space — no second window-level layer,
-    // no dismissal-layer interaction. The window-sized underlay is
-    // the outside-click closer at widget scale (the panel's own
-    // dismissal-layer pattern, P1's hit-test order); the flyout is
-    // the later sibling and hit-tested first.
-    if (root.open): Rectangle {
-        // The underlay covers the window from the widget's coordinate
-        // space outward (a Theme-token multiple exceeding any
-        // viewport); its click closes the flyout and is absorbed.
-        x: -flyout-anchor.absolute-position.x;
-        y: -flyout-anchor.absolute-position.y;
-        width: Theme.space-15 * 64;
-        height: Theme.space-15 * 64;
-        underlay := TouchArea {
-            clicked => {
-                root.open = false;
-            }
-        }
-        flyout := Rectangle {
-            x: 0;
-            // Just below the combobox row (the anchor's own height).
-            y: flyout-anchor.height + Theme.space-1;
-            width: flyout-anchor.width;
-            height: min(root.slot-rows.length * Theme.space-6, Theme.space-6 * 6);
-            background: Theme.surface-raised;
-            border-radius: Theme.radius-small;
-            border-width: Theme.focus-ring-width;
-            border-color: Semantic.focus-ring;
-            drop-shadow-blur: Theme.space-2;
-            drop-shadow-color: Theme.surface-hover;
-            clip: true;
-
-            flyout-scope := FocusScope {
-                width: 100%;
-                height: 100%;
-                init => {
-                    // The open-time anchor: the nearest-slot seek index
-                    // (00:00 when unset — the adapter's decision), then
-                    // the grab (the flyout holds focus while open).
-                    root.highlight = Math.clamp(
-                        root.nearest-row,
-                        0,
-                        Math.max(root.slot-rows.length - 1, 0),
-                    );
-                    root.seek-nonce += 1;
-                    self.focus();
-                }
-                // The flyout holds focus while open (the widget-internal
-                // grammar below); editing keys are *forwarded* into the
-                // field's buffer so filter-as-you-type works without a
-                // focus fight (the append shim covers the filter's
-                // digit-prefix use; free cursor editing re-enters
-                // through the field itself, which closes the flyout on
-                // focus gain — the outside-click closer).
-                key-pressed(event) => {
-                    if (event.text == Key.UpArrow && root.slot-rows.length > 0) {
-                        root.highlight = Math.max(root.highlight - 1, 0);
-                        accept
-                    } else if (event.text == Key.DownArrow && root.slot-rows.length > 0) {
-                        root.highlight = Math.min(root.highlight + 1, root.slot-rows.length - 1);
-                        accept
-                    } else if (event.text == Key.Return && root.highlight < root.slot-rows.length) {
-                        root.picked(root.slot-rows[root.highlight].minutes);
-                        root.open = false;
-                        accept
-                    } else if (event.text == Key.Escape) {
-                        // Widget-internal Escape: closes the flyout
-                        // only — the action layer never sees it.
-                        root.open = false;
-                        accept
-                    } else if (event.text == Key.Tab) {
-                        root.open = false;
-                        reject
-                    } else if (event.text != Key.Backspace && event.text != Key.Delete) {
-                        field.text = field.text + event.text;
-                        root.edited(field.text);
-                        accept
-                    } else {
-                        reject
-                    }
-                }
-
-                list := ListView {
-                    request-row: root.highlight;
-                    request-nonce: root.seek-nonce;
-                    total-rows: root.slot-rows.length;
-                    width: 100%;
-                    height: 100%;
-
-                    for row[row-index] in root.slot-rows: Rectangle {
-                        height: Theme.space-6;
-                        background: row-index == root.highlight
-                            ? Theme.surface-hover : transparent;
-                        pick := TouchArea {
-                            clicked => {
-                                root.picked(row.minutes);
-                                root.open = false;
-                            }
-                        }
-                        row-label := RoleText {
-                            role: Typography.mono;
-                            x: Theme.space-2;
-                            y: (parent.height - self.preferred-height) / 2;
-                            text: row.label;
-                        }
-                    }
+                if (root.open) {
+                    root.quick-toggled();
                 }
             }
         }
     }
 
-    // Named after the declaration order so the flyout's geometry can
-    // anchor on the row (the conditional flyout's sibling above).
+    // Named after the declaration order; the window-level flyout
+    // (round-5 D6) anchors on this rect's realized geometry.
     property <length> row-height: field.natural-height;
     flyout-anchor := Rectangle {
         x: 0;

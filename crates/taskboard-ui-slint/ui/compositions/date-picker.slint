@@ -72,6 +72,11 @@ export component DatePicker inherits Rectangle {
     callback time-edited(string);
     callback time-picked(int);
     callback time-accepted(string);
+    // The quick-times chevron's notification half (round-5 F8): the
+    // consumer's seam sets the steal latch and disarms the digit
+    // filter. The date-only track-form mount (show-time: false)
+    // cannot fire it — the mount-inventory exemption covers it.
+    callback quick-toggled();
 
     // The combobox's pushed half (r4 D26): the validity flavour, the
     // filtered quick-list rows, and the scroll-to-nearest index. The
@@ -148,6 +153,7 @@ export component DatePicker inherits Rectangle {
             // value echo (r4 D23's display rule); the adapter owns
             // the parse, the seed-on-step, and the filter.
             if (root.show-time): TimeField {
+                flyout-site: 0;
                 time-text: root.time-text;
                 validity: root.time-validity;
                 error-hint: root.time-error-hint;
@@ -159,6 +165,7 @@ export component DatePicker inherits Rectangle {
                 edited(text) => { root.time-edited(text); }
                 picked(minutes) => { root.time-picked(minutes); }
                 accepted(text) => { root.time-accepted(text); }
+                quick-toggled() => { root.quick-toggled(); }
             }
 
             // The weekday initials row (Monday-first, the grid's

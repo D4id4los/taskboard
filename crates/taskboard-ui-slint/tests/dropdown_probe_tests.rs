@@ -175,9 +175,11 @@ fn escape_and_outside_click_close_without_selecting() {
 
         click(window, x, y);
         assert!(window.get_open());
-        // Outside click: far corner of the window (the underlay's
-        // body — no widget there).
-        click(window, window.get_field_x() + 400.0, 300.0);
+        // Outside click: the window's bottom-left corner (the
+        // window-level underlay's body — no widget there). The
+        // round-5 overlay grammar's underlay is window-sized, so the
+        // point must be inside the window.
+        click(window, 2.0, window.get_field_y() + 250.0);
         assert!(!window.get_open(), "the outside click closes");
         assert_eq!(
             window.global::<DropdownProbe>().get_activated(),

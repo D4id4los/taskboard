@@ -367,6 +367,10 @@ const EXEMPTIONS: &[Exemption] = &[
         reason: "the back row renders only under compact && active-group >= 0; same mount-condition exclusion — structurally unreachable",
     },
     Exemption::date_only(
+        "quick-toggled",
+        "the quick-times chevron lives in the time section under if (root.show-time); the track-form grid mount is date-only — structurally unreachable while the predicate holds",
+    ),
+    Exemption::date_only(
         "time-edited",
         "the time section renders under if (root.show-time); the track-form grid mount is date-only — structurally unreachable while the predicate holds",
     ),

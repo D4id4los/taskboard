@@ -19,18 +19,19 @@
 // Tooltip policy is the consumer's: the widget reports
 // `row-hovered(index, x, y, w, h)` / `row-unhovered()` — it knows
 // nothing about `TooltipState`.
+//
+// The flyout renders window-level (round-5 D6): the widget mirrors its
+// open state, anchor geometry, and ladder state into `DropdownFacts`;
+// the app window mounts the `DropdownFlyout` panel and the dismissal
+// underlay from those facts. This overrides the r4 D39 "no window
+// overlay" decision that lived at the old in-widget flyout — the
+// coordinate-space defect (F9: panel-local geometry under a displaced
+// underlay) and the settings `Flickable` clip (F14) are subsumed by
+// the date-picker overlay grammar.
 
 import { Theme, Typography, RoleText, Semantic } from "../theme.slint";
 
-// The ladder's typed move counter — the journeys' observation seam
-// (the changed-hook-free fact: a global counter survives the
-// backend's unreliable `changed` mirroring).
-export global DropdownLadder {
-    in-out property <int> moves: 0;
-}
-
 import { Icon, IconKind } from "icon.slint";
-import { ListView } from "listview.slint";
 
 export enum DropdownIndicator {
     none,
@@ -57,6 +58,59 @@ export struct DropdownRow {
     busy: bool,
 }
 
+// The dropdown class's mount-truth facts (round-5 D6): one global for
+// the widget class, `site` discriminating the mounted instances (0 =
+// settings board picker, 1 = board-bar switcher). The widget mirrors
+// its own `open`, the anchor's realized window-space geometry, and the
+// ladder's highlight/seek into it; the window mounts the flyout panel
+// and the dismissal underlay from it. The per-site observation globals
+// (`SettingsBoardFacts`/`BoardBarFacts`) stay the journeys' seams —
+// both are written from the same widget property.
+export global DropdownFacts {
+    in-out property <bool> open: false;
+    in-out property <int> site: -1;
+    in-out property <length> anchor-x;
+    in-out property <length> anchor-y;
+    in-out property <length> anchor-width;
+    in-out property <length> anchor-height;
+    // The realized panel geometry (the `MenuPanelFacts.flyout-*`
+    // precedent) — the flip/clamp journeys' observation seam.
+    in-out property <length> panel-x;
+    in-out property <length> panel-y;
+    // The ladder's state, read by the window-level panel (the ladder
+    // stays in the field's scope; the rows render window-side).
+    in-out property <int> highlight: 0;
+    in-out property <int> seek-nonce: 0;
+
+    // The row-render mappings' canonical home (round-5 D6: the
+    // rendering moved window-side into `DropdownFlyout`, the one
+    // source stays here). The indicator→glyph mapping: the widget's
+    // own three-arm total (`none` → nothing — the markup guards the
+    // slot; the terminal else is the loud warn fallback, the
+    // icon.slint convention).
+    public pure function indicator-kind(indicator: DropdownIndicator) -> IconKind {
+        return indicator == DropdownIndicator.link ? IconKind.link
+            : indicator == DropdownIndicator.link-off ? IconKind.link-off
+            : IconKind.warn;
+    }
+
+    // The tone→colour mapping (RowDot's exact language).
+    public pure function tone-color(tone: DropdownTone) -> color {
+        return tone == DropdownTone.success ? Semantic.success
+            : tone == DropdownTone.accent ? Semantic.focus-ring
+            : tone == DropdownTone.warning ? Semantic.warning
+            : tone == DropdownTone.danger ? Semantic.danger
+            : Theme.text-secondary;
+    }
+}
+
+// The ladder's typed move counter — the journeys' observation seam
+// (the changed-hook-free fact: a global counter survives the
+// backend's unreliable `changed` mirroring).
+export global DropdownLadder {
+    in-out property <int> moves: 0;
+}
+
 export component Dropdown inherits Rectangle {
     // The pushed rows and the closed field's rendering (the selected
     // row's label, or the caller's empty-state placeholder).
@@ -69,6 +123,15 @@ export component Dropdown inherits Rectangle {
     // The selection's mid-ceremony marker (r2 D34): renders the busy
     // pulse in the field's dot slot.
     in property <bool> field-busy: false;
+    // The empty-rows caption (round-5 F14's visible-state half):
+    // consumer-owned copy, rendered under the disabled field when the
+    // row list is empty; empty string = no caption (the board bar's
+    // never-empty dropdown mode renders byte-identical).
+    in property <string> empty-hint: "";
+    // The mount-site discriminator (round-5 D6): which instance's
+    // state the class facts global carries (0 = settings board
+    // picker, 1 = board-bar switcher).
+    in property <int> flyout-site: -1;
 
     // The intents (no inline side effects).
     callback row-activated(int);
@@ -100,22 +163,73 @@ export component Dropdown inherits Rectangle {
     out property <bool> field-focused: field-scope.has-focus;
     out property <bool> flyout-focused;
 
-    // The indicator→glyph mapping: the widget's own three-arm total
-    // (`none` → nothing — the markup guards the slot; the terminal
-    // else is the loud warn fallback, the icon.slint convention).
+    // The window-mirror loop (round-5 D6): widget → window (open) via
+    // the derived-property wrap (the `SettingsBoardFacts` mirroring
+    // idiom, moved inside the widget so every mount site gets it), and
+    // window → widget (close) via the site-guarded fact read — a
+    // window-side close lands as `close()`, which refocuses the field
+    // before the panel unmounts (the recorded walk contract). Both
+    // directions are site-guarded; the loop converges (a close write
+    // re-enters as an already-false no-op).
+    property <bool> open-mirrored: root.open;
+    changed open-mirrored => {
+        DropdownFacts.site = root.flyout-site;
+        DropdownFacts.open = self.open-mirrored;
+        // The anchor geometry rides the open flip too: at click time
+        // the absolute position is realized, and the testing backend
+        // does not deliver `changed` for the pre-attach layout pass
+        // (the unreliable-mirroring record). The `anchor-abs-*` hooks
+        // below keep the mirror live across host scrolls.
+        DropdownFacts.anchor-x = flyout-anchor.absolute-position.x;
+        DropdownFacts.anchor-y = flyout-anchor.absolute-position.y;
+        DropdownFacts.anchor-width = flyout-anchor.width;
+        DropdownFacts.anchor-height = flyout-anchor.height;
+    }
+    property <bool> fact-open: DropdownFacts.open && DropdownFacts.site == root.flyout-site;
+    changed fact-open => {
+        if (!self.fact-open && root.open) {
+            root.close();
+        }
+    }
+    // The anchor geometry, mirrored one-way: window-space by
+    // definition (the F9 fix — the settings `Flickable` scroll keeps
+    // the mirror live because `absolute-position` tracks it).
+    property <length> anchor-abs-x: flyout-anchor.absolute-position.x;
+    property <length> anchor-abs-y: flyout-anchor.absolute-position.y;
+    changed anchor-abs-x => {
+        DropdownFacts.anchor-x = self.anchor-abs-x;
+        DropdownFacts.anchor-width = flyout-anchor.width;
+        DropdownFacts.anchor-height = flyout-anchor.height;
+    }
+    changed anchor-abs-y => {
+        DropdownFacts.anchor-y = self.anchor-abs-y;
+        DropdownFacts.anchor-width = flyout-anchor.width;
+        DropdownFacts.anchor-height = flyout-anchor.height;
+    }
+    // The ladder's state, mirrored for the window-level panel's
+    // `ListView` (both writers bumped together, so either changed
+    // hook re-writes both facts).
+    property <int> highlight-mirrored: root.highlight;
+    property <int> seek-mirrored: root.seek-nonce;
+    changed highlight-mirrored => {
+        DropdownFacts.highlight = root.highlight;
+        DropdownFacts.seek-nonce = root.seek-nonce;
+    }
+    changed seek-mirrored => {
+        DropdownFacts.highlight = root.highlight;
+        DropdownFacts.seek-nonce = root.seek-nonce;
+    }
+
+    // The indicator→glyph and tone→colour mappings live on the
+    // `DropdownFacts` global (the window-level flyout's source);
+    // these delegates keep the component API (the probe's seam).
     public pure function indicator-kind(indicator: DropdownIndicator) -> IconKind {
-        return indicator == DropdownIndicator.link ? IconKind.link
-            : indicator == DropdownIndicator.link-off ? IconKind.link-off
-            : IconKind.warn;
+        return DropdownFacts.indicator-kind(indicator);
     }
 
     // The tone→colour mapping (RowDot's exact language).
     public pure function tone-color(tone: DropdownTone) -> color {
-        return tone == DropdownTone.success ? Semantic.success
-            : tone == DropdownTone.accent ? Semantic.focus-ring
-            : tone == DropdownTone.warning ? Semantic.warning
-            : tone == DropdownTone.danger ? Semantic.danger
-            : Theme.text-secondary;
+        return DropdownFacts.tone-color(tone);
     }
 
     height: field-scope.preferred-height + 2 * Theme.space-1;
@@ -127,6 +241,10 @@ export component Dropdown inherits Rectangle {
         width: 100%;
         height: field-row.preferred-height + 2 * Theme.space-1;
         focus-on-tab-navigation: true;
+        // The empty-rows state (F14): the walk legitimately skips a
+        // disabled control — the picker names its emptiness instead
+        // of sitting as a dead stop.
+        enabled: root.rows.length > 0;
         accessible-role: AccessibleRole.button;
         accessible-label: root.field-label;
         accessible-description: root.field-description;
@@ -233,6 +351,10 @@ export component Dropdown inherits Rectangle {
         // so the ladder works after a click-open without depending on
         // the flyout's grab).
         field-touch := TouchArea {
+            // The empty-rows state (F14): a disabled, non-interactive
+            // click target — the open gates above become unreachable
+            // by construction, and the caption below names the state.
+            enabled: root.rows.length > 0;
             clicked => {
                 field-scope.focus();
                 root.open = !root.open;
@@ -247,131 +369,17 @@ export component Dropdown inherits Rectangle {
     border-color: Semantic.focus-ring;
     background: Theme.surface-raised;
 
-    // The flyout (the time-field grammar verbatim): a conditional
-    // sibling in the panel's coordinate space — no window-level
-    // overlay, no dismissal-layer interaction. The window-sized
-    // underlay is the outside-click closer (a TouchArea click never
-    // moves focus, so it is absorbed); the flyout is the later sibling
-    // and hit-tested first. NO focus grab on open: the walk stays in
-    // the field (its ladder arm routes the keys), and the field's
-    // walk-away seam closes the flyout when the traversal moves on.
-    if (root.open): Rectangle {
-        x: -flyout-anchor.absolute-position.x;
-        y: -flyout-anchor.absolute-position.y;
-        width: Theme.space-15 * 64;
-        height: Theme.space-15 * 64;
-        underlay := TouchArea {
-            clicked => {
-                root.close();
-            }
-        }
-        flyout := Rectangle {
-            x: 0;
-            y: flyout-anchor.height + Theme.space-1;
-            width: flyout-anchor.width;
-            // Six-row cap; `ListView` scrolls the rest.
-            height: min(root.rows.length * Theme.space-6, Theme.space-6 * 6);
-            background: Theme.surface-raised;
-            border-radius: Theme.radius-small;
-            border-width: Theme.focus-ring-width;
-            border-color: Semantic.focus-ring;
-            drop-shadow-blur: Theme.space-2;
-            drop-shadow-color: Theme.surface-hover;
-            clip: true;
-
-            // A plain a11y list container — deliberately NOT a
-            // FocusScope: the walk must never be able to land here
-            // (the ladder lives in the field; a traversal target inside
-            // the flyout would be unmounted by the close, taking the
-            // walk's focus down with it — the recorded negative).
-            flyout-scope := Rectangle {
-                width: 100%;
-                height: 100%;
-                accessible-role: AccessibleRole.list;
-
-                list := ListView {
-                    request-row: root.highlight;
-                    request-nonce: root.seek-nonce;
-                    total-rows: root.rows.length;
-                    width: 100%;
-                    height: 100%;
-
-                    for row[row-index] in root.rows: Rectangle {
-                        height: Theme.space-6;
-                        accessible-role: AccessibleRole.list-item;
-                        // The hover-union background (F29's feedback).
-                        background: row-index == root.highlight || row-touch.has-hover
-                            ? Theme.surface-hover : transparent;
-                        row-touch := TouchArea {
-                            width: 100%;
-                            height: 100%;
-                            changed has-hover => {
-                                if (self.has-hover) {
-                                    root.row-hovered(row-index,
-                                        self.absolute-position.x, self.absolute-position.y,
-                                        self.width, self.height);
-                                } else {
-                                    root.row-unhovered();
-                                }
-                            }
-                            clicked => {
-                                root.row-activated(row-index);
-                                root.close();
-                            }
-                            pointer-event(event) => {
-                                if (event.kind == PointerEventKind.down
-                                        && event.button == PointerEventButton.right) {
-                                    root.row-context(row-index,
-                                        (self.absolute-position.x + self.mouse-x) / 1px,
-                                        (self.absolute-position.y + self.mouse-y) / 1px);
-                                }
-                            }
-                        }
-                        HorizontalLayout {
-                            padding-left: Theme.space-2;
-                            padding-right: Theme.space-2;
-                            spacing: Theme.space-1;
-                            // The indicator/busy dot slot: busy wins
-                            // (the r2 D34 ceremony), otherwise the
-                            // indicator glyph colourized by tone
-                            // (`none` collapses the slot). A plain
-                            // Rectangle holder — a layout would own
-                            // the cross-axis and forbid the children's
-                            // vertical centering.
-                            Rectangle {
-                                width: (row.busy
-                                    || row.indicator != DropdownIndicator.none) ? Theme.space-2 : 0;
-                                if row.busy: Rectangle {
-                                    width: Theme.space-2;
-                                    height: self.width;
-                                    y: (parent.height - self.height) / 2;
-                                    border-radius: self.width / 2;
-                                    background: Semantic.sync-active;
-                                    states [
-                                        pulse when true: {
-                                            opacity: 0.45;
-                                            in { animate opacity { duration: 600ms; iteration-count: -1; } }
-                                        }
-                                    ]
-                                }
-                                if !row.busy && row.indicator != DropdownIndicator.none: Icon {
-                                    kind: root.indicator-kind(row.indicator);
-                                    colorize: root.tone-color(row.tone);
-                                    y: (parent.height - self.height) / 2;
-                                }
-                            }
-                            row-label := RoleText {
-                                role: row.selected ? Typography.body-emphasized : Typography.body;
-                                text: row.label;
-                                vertical-alignment: center;
-                                overflow: elide;
-                                horizontal-stretch: 1;
-                            }
-                        }
-                    }
-                }
-            }
-        }
+    // The flyout is window-level now (round-5 D6 — the override note
+    // lives at the global and at the app-window overlay group); the
+    // widget renders only the field and mirrors its state into
+    // `DropdownFacts`. The empty-rows caption (F14) is the
+    // TimeField error-hint's shape (overflowing the field height by
+    // design); the walk legitimately skips the disabled field.
+    if (root.rows.length == 0 && root.empty-hint != ""): empty-hint-line := RoleText {
+        role: Typography.caption;
+        text-color: Theme.text-secondary;
+        y: field-scope.height + Theme.space-1;
+        text: root.empty-hint;
     }
 
     // The geometry anchor: the closed field's box (the flyout anchors

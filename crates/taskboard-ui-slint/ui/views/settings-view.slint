@@ -398,6 +398,9 @@ export global SettingsBoardCopy {
     in-out property <string> row-description:
         "Binds this board to the selected connector; it does not switch the board view.";
     in-out property <string> placeholder: "No board selected";
+    // The empty-rows caption (round-5 F14): shown under the disabled
+    // picker field while no live board exists to select.
+    in-out property <string> empty-hint: "No local boards to connect yet";
 }
 
 // The picker row (r4 D39 §3.2): the shared Dropdown + the Detach
@@ -418,6 +421,11 @@ component BoardPicker inherits HorizontalLayout {
         field-label: SettingsBoardCopy.label;
         field-description: SettingsBoardCopy.description;
         field-busy: SettingsModel.busy && SettingsModel.busy-target != "";
+        // The class-facts site discriminator (round-5 D6) and the
+        // empty-rows caption (F14): the flyout's rows render
+        // window-level, keyed on site 0.
+        flyout-site: 0;
+        empty-hint: SettingsBoardCopy.empty-hint;
         row-activated(i) => {
             root.board-selected(SettingsModel.board-ids[i]);
         }

@@ -1,0 +1,150 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The quick-list flyout's window-level panel (round-5 D6): the
+// TimeField ladder's new home — the ladder moved verbatim from the
+// old in-widget flyout scope (whose displaced underlay carried the
+// F9 coordinate-space defect). Mounted by the app window from
+// `TimeFieldFacts` with the date-picker overlay's clamp/flip grammar;
+// the highlight/seek are panel-local, re-anchored from `nearest-row`
+// on mount. Editing keys are *forwarded* to the host field through
+// `typed` (the append shim — the filter's digit-prefix use), keeping
+// the buffer ownership in the widget.
+
+import { Theme, Typography, RoleText, Semantic } from "../theme.slint";
+import { TimeSlotRow, TimeFieldFacts } from "time-field.slint";
+import { ListView } from "listview.slint";
+
+export component QuickListFlyout inherits Rectangle {
+    // The filtered quick-list rows, pushed by the adapter (the mount
+    // binds the same model the field renders).
+    in property <[TimeSlotRow]> rows;
+    // The open-time scroll-to-nearest index (the highlight's anchor).
+    in property <int> nearest-row: 0;
+    // The adapter-bumped focus nonce (the TimerSetter precedent): a
+    // fresh conditional's init grab alone does not reliably take
+    // (the P5 record), so every open bumps the nonce and this panel
+    // re-grabs on the change.
+    in property <int> focus-nonce: 0;
+    // The intents: a quick-list pick (minutes-of-day) and the raw
+    // typed key text (the append shim's half).
+    callback picked(int);
+    callback typed(string);
+
+    height: min(root.rows.length * Theme.space-6, Theme.space-6 * 6);
+    background: Theme.surface-raised;
+    border-radius: Theme.radius-small;
+    border-width: Theme.focus-ring-width;
+    border-color: Semantic.focus-ring;
+    drop-shadow-blur: Theme.space-2;
+    drop-shadow-color: Theme.surface-hover;
+    clip: true;
+
+    // The realized-geometry mirror into the class facts (the
+    // action-menu's mirror-facts shape): `init` writes the mount-time
+    // value (a `changed` hook alone misses it — the initial binding
+    // evaluation fires no change), the derived-property wraps cover
+    // every later re-layout.
+    init => {
+        TimeFieldFacts.panel-x = self.x;
+        TimeFieldFacts.panel-y = self.y;
+    }
+    property <length> panel-x-mirrored: self.x;
+    property <length> panel-y-mirrored: self.y;
+    changed panel-x-mirrored => {
+        TimeFieldFacts.panel-x = self.panel-x-mirrored;
+    }
+    changed panel-y-mirrored => {
+        TimeFieldFacts.panel-y = self.panel-y-mirrored;
+    }
+
+    // The highlight (the cursor-ring visual language) and the seek
+    // nonce: panel-local (the ladder lives here now), re-anchored
+    // from `nearest-row` on mount.
+    property <int> highlight: 0;
+    property <int> seek-nonce: 0;
+    changed highlight => {
+        root.seek-nonce += 1;
+    }
+    // The adapter-bumped nonce re-grab (the TimerSetter precedent):
+    // at the component root, where the `in property` lives.
+    changed focus-nonce => {
+        flyout-scope.focus();
+    }
+
+    flyout-scope := FocusScope {
+        width: 100%;
+        height: 100%;
+        init => {
+            // The open-time anchor: the nearest-slot seek index
+            // (00:00 when unset — the adapter's decision), then the
+            // grab (the flyout holds focus while open).
+            root.highlight = Math.clamp(
+                root.nearest-row,
+                0,
+                Math.max(root.rows.length - 1, 0),
+            );
+            root.seek-nonce += 1;
+            self.focus();
+        }
+        // The flyout holds focus while open (the widget-internal
+        // grammar); editing keys are *forwarded* into the field's
+        // buffer so filter-as-you-type works without a focus fight
+        // (the append shim covers the filter's digit-prefix use; free
+        // cursor editing re-enters through the field itself, which
+        // closes the flyout on focus gain). The arms are the old
+        // in-widget ladder verbatim.
+        key-pressed(event) => {
+            if (event.text == Key.UpArrow && root.rows.length > 0) {
+                root.highlight = Math.max(root.highlight - 1, 0);
+                accept
+            } else if (event.text == Key.DownArrow && root.rows.length > 0) {
+                root.highlight = Math.min(root.highlight + 1, root.rows.length - 1);
+                accept
+            } else if (event.text == Key.Return && root.highlight < root.rows.length) {
+                root.picked(root.rows[root.highlight].minutes);
+                TimeFieldFacts.open = false;
+                accept
+            } else if (event.text == Key.Escape) {
+                // Widget-internal Escape: closes the flyout only —
+                // the action layer never sees it.
+                TimeFieldFacts.open = false;
+                accept
+            } else if (event.text == Key.Tab) {
+                TimeFieldFacts.open = false;
+                reject
+            } else if (event.text != Key.Backspace && event.text != Key.Delete) {
+                root.typed(event.text);
+                accept
+            } else {
+                reject
+            }
+        }
+
+        list := ListView {
+            request-row: root.highlight;
+            request-nonce: root.seek-nonce;
+            total-rows: root.rows.length;
+            width: 100%;
+            height: 100%;
+
+            for row[row-index] in root.rows: Rectangle {
+                height: Theme.space-6;
+                background: row-index == root.highlight
+                    ? Theme.surface-hover : transparent;
+                pick := TouchArea {
+                    clicked => {
+                        root.picked(row.minutes);
+                        // The window-side close: the fact write lands
+                        // as the widget's guard close.
+                        TimeFieldFacts.open = false;
+                    }
+                }
+                row-label := RoleText {
+                    role: Typography.mono;
+                    x: Theme.space-2;
+                    y: (parent.height - self.preferred-height) / 2;
+                    text: row.label;
+                }
+            }
+        }
+    }
+}

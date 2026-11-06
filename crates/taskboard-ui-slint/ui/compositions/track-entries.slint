@@ -80,6 +80,10 @@ export component TrackEntriesPanel inherits Rectangle {
     callback date-grid-toggled();
     callback date-grid-key(int);
     callback date-day-clicked(int);
+    // The quick-times chevrons' notification halves (round-5 F8's
+    // track surface): the seams disarm each field's digit filter.
+    callback start-quick-toggled();
+    callback end-quick-toggled();
     callback start-edited(string);
     callback start-stepped(int);
     callback start-picked(int);
@@ -205,6 +209,7 @@ export component TrackEntriesPanel inherits Rectangle {
                             spacing: Theme.space-2;
                             TimeField {
                                 horizontal-stretch: 1;
+                                flyout-site: 2;
                                 time-text: root.form-start-text;
                                 validity: root.form-start-validity;
                                 error-hint: root.form-start-hint;
@@ -215,9 +220,11 @@ export component TrackEntriesPanel inherits Rectangle {
                                 edited(text) => { root.start-edited(text); }
                                 stepped(n) => { root.start-stepped(n); }
                                 picked(m) => { root.start-picked(m); }
+                                quick-toggled() => { root.start-quick-toggled(); }
                             }
                             TimeField {
                                 horizontal-stretch: 1;
+                                flyout-site: 3;
                                 time-text: root.form-end-text;
                                 validity: root.form-end-validity;
                                 error-hint: root.form-end-hint;
@@ -228,6 +235,7 @@ export component TrackEntriesPanel inherits Rectangle {
                                 edited(text) => { root.end-edited(text); }
                                 stepped(n) => { root.end-stepped(n); }
                                 picked(m) => { root.end-picked(m); }
+                                quick-toggled() => { root.end-quick-toggled(); }
                                 accepted(text) => {
                                     // The commit steps the surface
                                     // back to the list on `true`
