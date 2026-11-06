@@ -19,8 +19,8 @@ use crate::cycle::{LocalDocument, LoopState, SyncContext};
 use crate::device::{self, DeviceIdentityError};
 use crate::poll::poll_backoff;
 use crate::transport::FilesTransport;
-use taskboard_domain::SystemEvent;
-use tokio::sync::{broadcast, watch};
+use taskboard_domain::{SystemEvent, UserDataReport};
+use tokio::sync::{broadcast, mpsc, watch};
 use tokio::task::JoinHandle;
 
 /// Knobs the bootstrap wires from figment's `[files_sync]` + `[sync]`
@@ -70,6 +70,7 @@ pub fn spawn_files_sync_actor<T: FilesTransport>(
     transport: T,
     device_json_path: PathBuf,
     local: Arc<dyn LocalDocument>,
+    report_tx: mpsc::Sender<UserDataReport>,
     system: broadcast::Sender<SystemEvent>,
     cfg: FilesSyncConfig,
 ) -> (
@@ -77,7 +78,15 @@ pub fn spawn_files_sync_actor<T: FilesTransport>(
     watch::Receiver<crate::status::FilesSyncStatus>,
 ) {
     let (status, status_rx) = watch::channel(crate::status::FilesSyncStatus::default());
-    let join = tokio::spawn(run(transport, device_json_path, local, system, cfg, status));
+    let join = tokio::spawn(run(
+        transport,
+        device_json_path,
+        local,
+        report_tx,
+        system,
+        cfg,
+        status,
+    ));
     (join, status_rx)
 }
 
@@ -85,6 +94,7 @@ async fn run<T: FilesTransport>(
     transport: T,
     device_json_path: PathBuf,
     local: Arc<dyn LocalDocument>,
+    report_tx: mpsc::Sender<UserDataReport>,
     system: broadcast::Sender<SystemEvent>,
     cfg: FilesSyncConfig,
     status: watch::Sender<crate::status::FilesSyncStatus>,
@@ -119,6 +129,7 @@ async fn run<T: FilesTransport>(
         app_version: cfg.app_version.clone(),
         clock: cfg.clock.clone(),
         local,
+        report_tx,
     });
     let mut st = LoopState::default();
     let mut sys_rx = system.subscribe();
@@ -189,7 +200,8 @@ fn reschedule(st: &LoopState, cfg: &FilesSyncConfig) -> tokio::time::Instant {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::sync::Arc as StdArc;
 
     use chrono::{DateTime, Utc};
     use serde_json::json;
@@ -298,6 +310,8 @@ mod tests {
         /// receiver (`changed().await` is the only reliable
         /// change-signal; a fresh clone would re-see old values).
         status: std::cell::RefCell<watch::Receiver<FilesSyncStatus>>,
+        /// The user-data lane's receiving half (the engine stand-in).
+        reports: std::cell::RefCell<mpsc::Receiver<UserDataReport>>,
         /// The subscription made *before* the spawn: the authority pin
         /// reads it (broadcast receivers are not `Clone`).
         system_rx: (
@@ -320,7 +334,27 @@ mod tests {
 
     /// Spawns the actor over the fixture device.json in a temp dir.
     #[allow(clippy::unused_async)] // the spawn joins the ambient runtime
-    async fn spawn_actor(fake: FakeFilesTransport) -> Harness {
+    fn spawn_actor(fake: FakeFilesTransport) -> Harness {
+        spawn_actor_with(fake, Arc::new(crate::cycle::EmptyDocument))
+    }
+
+    /// Spawns the actor over an explicit local-document seam (the
+    /// journal tests stand in the engine with a `PublishedJournal`).
+    fn spawn_actor_with(
+        fake: FakeFilesTransport,
+        local: Arc<dyn crate::cycle::LocalDocument>,
+    ) -> Harness {
+        spawn_actor_with_reports(fake, local, mpsc::channel(4))
+    }
+
+    /// Spawns with an explicit lane pair (the fingerprint tests keep
+    /// the sender to drive further cycles).
+    fn spawn_actor_with_reports(
+        fake: FakeFilesTransport,
+        local: Arc<dyn crate::cycle::LocalDocument>,
+        lane: (mpsc::Sender<UserDataReport>, mpsc::Receiver<UserDataReport>),
+    ) -> Harness {
+        let (report_tx, report_rx) = lane;
         let dir = tempfile::tempdir().expect("temp dir");
         let device_path = dir.path().join("device.json");
         write_device_identity(&device_path);
@@ -329,13 +363,15 @@ mod tests {
         let (_join, status) = spawn_files_sync_actor(
             FakeHandle { fake: fake.clone() },
             device_path,
-            Arc::new(crate::cycle::EmptyDocument),
+            local,
+            report_tx,
             system.clone(),
             cfg(),
         );
         Harness {
             fake,
             status: std::cell::RefCell::new(status),
+            reports: std::cell::RefCell::new(report_rx),
             system_rx: (system, system_rx),
             _dir: dir,
         }
@@ -415,6 +451,22 @@ mod tests {
         next_status(harness).await
     }
 
+    /// Waits (wall-clock bounded) for the engine stand-in to receive a
+    /// report, advancing paused time so the actor runs.
+    async fn next_report(harness: &Harness) -> UserDataReport {
+        let deadline = std::time::Instant::now() + WALL;
+        loop {
+            if let Ok(report) = harness.reports.borrow_mut().try_recv() {
+                return report;
+            }
+            tokio::time::advance(Duration::from_millis(10)).await;
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no user-data report arrived"
+            );
+        }
+    }
+
     fn ok(status: &FilesSyncStatus) -> bool {
         matches!(status.last_cycle, Some(CycleOutcome::Ok { .. }))
     }
@@ -437,7 +489,7 @@ mod tests {
     /// publish; the exact verb/header sequence.
     #[tokio::test(start_paused = true)]
     async fn matrix_1_attach_journey_pins_the_verb_and_header_sequence() {
-        let harness = spawn_actor(FakeFilesTransport::new()).await;
+        let harness = spawn_actor(FakeFilesTransport::new());
         let status = next_status(&harness).await;
         assert!(ok(&status), "attach must complete: {status:?}");
         let expected: [(&str, String, bool); 7] = [
@@ -470,7 +522,7 @@ mod tests {
         // A former install already minted *something* create-once at
         // the identity path — the loser adopts whatever is served.
         fake.seed_file(&identity_path(), b"{\"folder_id\":\"0193b400-0000-7c89-ab01-2345abcdef01\",\"format_version\":1,\"created_at\":\"2026-11-04T00:00:00Z\"}".to_vec());
-        let harness = spawn_actor(fake).await;
+        let harness = spawn_actor(fake);
         let status = next_status(&harness).await;
         assert!(ok(&status), "the losing device adopts: {status:?}");
         assert!(
@@ -486,7 +538,7 @@ mod tests {
     async fn matrix_3_quiet_fleet_costs_zero_gets_and_puts() {
         let fake = FakeFilesTransport::new();
         seed_std(&fake);
-        let harness = spawn_actor(fake).await;
+        let harness = spawn_actor(fake);
         next_status(&harness).await;
         let (gets_before, puts_before, propfinds_before) = (
             gets(&harness.fake),
@@ -514,7 +566,7 @@ mod tests {
     async fn matrix_4_changed_peer_two_gets_and_publish_iff_hash_differs() {
         let fake = FakeFilesTransport::new();
         seed_peer(&fake, "v1");
-        let harness = spawn_actor(fake).await;
+        let harness = spawn_actor(fake);
         next_status(&harness).await;
         let (gets_before, puts_before) = (
             gets(&harness.fake),
@@ -591,7 +643,7 @@ mod tests {
                     },
                 ]));
             }
-            let harness = spawn_actor(fake).await;
+            let harness = spawn_actor(fake);
             next_status(&harness).await;
             published.push(harness.fake.file(&appdata_path(SELF)).expect("published"));
         }
@@ -607,7 +659,7 @@ mod tests {
         let refs: Vec<&str> = dirs.iter().map(String::as_str).collect();
         fake.seed_dirs(&refs);
         fake.seed_file(&appdata_path(PEER), b"{{{ definitely not json".to_vec());
-        let harness = spawn_actor(fake).await;
+        let harness = spawn_actor(fake);
         let status = next_status(&harness).await;
         assert!(ok(&status), "a quarantined peer is not a cycle failure");
         assert_eq!(
@@ -631,7 +683,7 @@ mod tests {
         let mut newer = doc("future");
         newer.format = 2;
         fake.seed_file(&appdata_path(PEER), doc_bytes(&newer));
-        let harness = spawn_actor(fake).await;
+        let harness = spawn_actor(fake);
         let status = next_status(&harness).await;
         assert!(ok(&status));
         assert_eq!(
@@ -656,7 +708,7 @@ mod tests {
     async fn matrix_8_failed_get_fails_the_cycle_then_retries_honestly() {
         let fake = FakeFilesTransport::new();
         seed_peer(&fake, "real-value");
-        let harness = spawn_actor(fake).await;
+        let harness = spawn_actor(fake);
         next_status(&harness).await;
         // The next steady cycle: its PROPFIND passes (the Pass effect),
         // the peer GET fails (a 503 the real server can produce). The
@@ -687,7 +739,7 @@ mod tests {
     async fn matrix_9_own_path_412_with_content_forks_and_stops_writes() {
         let fake = FakeFilesTransport::new();
         seed_peer(&fake, "v1");
-        let harness = spawn_actor(fake).await;
+        let harness = spawn_actor(fake);
         next_status(&harness).await;
         let appdata = appdata_path(SELF);
         let puts_before = puts(&harness.fake, &appdata);
@@ -722,7 +774,7 @@ mod tests {
     async fn matrix_10_own_path_412_then_404_vanishes_and_recreates() {
         let fake = FakeFilesTransport::new();
         seed_peer(&fake, "v1");
-        let harness = spawn_actor(fake).await;
+        let harness = spawn_actor(fake);
         next_status(&harness).await;
         let appdata = appdata_path(SELF);
         harness.fake.answer_412_once(&appdata);
@@ -777,7 +829,7 @@ mod tests {
             &appdata_path(SELF),
             doc_bytes(&doc_with_row_key("adopted-row", SEED_ROW)),
         );
-        let harness = spawn_actor(fake).await;
+        let harness = spawn_actor(fake);
         let status = next_status(&harness).await;
         assert!(ok(&status));
         let contains_row = |fake: &FakeFilesTransport| {
@@ -837,7 +889,7 @@ mod tests {
     async fn matrix_12_vanished_device_drops_its_rows_with_one_publish() {
         let fake = FakeFilesTransport::new();
         seed_peer(&fake, "peer-row");
-        let harness = spawn_actor(fake).await;
+        let harness = spawn_actor(fake);
         next_status(&harness).await;
         let puts_before = puts(&harness.fake, &appdata_path(SELF));
         harness
@@ -868,7 +920,7 @@ mod tests {
         let fake = FakeFilesTransport::new();
         seed_std(&fake);
         fake.seed_file(&appdata_path(SELF), doc_bytes(&doc("cold")));
-        let harness = spawn_actor(fake).await;
+        let harness = spawn_actor(fake);
         next_status(&harness).await;
         let requests = log(&harness.fake);
         let appdata = appdata_path(SELF);
@@ -896,7 +948,7 @@ mod tests {
     async fn matrix_14_the_actor_never_publishes_on_the_broadcast() {
         let fake = FakeFilesTransport::new();
         seed_peer(&fake, "v1");
-        let harness = spawn_actor(fake).await;
+        let harness = spawn_actor(fake);
         next_status(&harness).await;
         harness.fake.stage(Effect::Status(503));
         let failed = next_cycle(&harness).await;
@@ -922,10 +974,12 @@ mod tests {
         std::fs::write(&device_path, corrupt).expect("write corrupt file");
         let (system, _system_rx) = broadcast::channel(16);
         let fake = Arc::new(fake);
+        let (report_tx, _report_rx) = mpsc::channel(4);
         let (_join, mut watch_rx) = spawn_files_sync_actor(
             FakeHandle { fake: fake.clone() },
             device_path.clone(),
             Arc::new(crate::cycle::EmptyDocument),
+            report_tx,
             system,
             cfg(),
         );
@@ -946,5 +1000,288 @@ mod tests {
             corrupt,
             "the corrupt identity is never rewritten"
         );
+    }
+
+    // -----------------------------------------------------------------
+    // X-series — the import step (DR-8 chunk 3, D-ES5/D-ES8): the
+    // state-derived local document, the fold-first attach, the
+    // fingerprint dedupe, the rejection counting. The engine is a
+    // stand-in: an `Arc<ArcSwap<AppState>>` behind `PublishedJournal`
+    // plus the lane's receiving half.
+    // -----------------------------------------------------------------
+
+    use arc_swap::ArcSwap;
+    use taskboard_domain::reflection::{
+        HealthFlag, Rating, ReflectionAttributes, ReflectionEntry, ReflectionState, ReviewCadence,
+    };
+    use taskboard_sync_files::journal::encode_row;
+
+    use taskboard_domain::AppState;
+
+    fn entry(id_raw: u128, text: &str, updated: chrono::DateTime<Utc>) -> ReflectionEntry {
+        ReflectionEntry {
+            id: taskboard_domain::ReflectionId::from(uuid::Uuid::from_u128(id_raw)),
+            cadence: ReviewCadence::Day,
+            day: chrono::NaiveDate::from_ymd_opt(2026, 11, 5).expect("date"),
+            window_start: "2026-11-05T00:00:00Z".parse().expect("instant"),
+            window_end: "2026-11-06T00:00:00Z".parse().expect("instant"),
+            text: text.to_owned(),
+            attributes: ReflectionAttributes {
+                mood: Some(Rating::try_new(3).expect("in range")),
+                energy: None,
+                flags: BTreeSet::from([HealthFlag::GoodDay]),
+                extra_flags: BTreeSet::new(),
+            },
+            created_at: "2026-11-05T06:00:00Z".parse().expect("instant"),
+            updated_at: updated,
+            deleted: false,
+        }
+    }
+
+    /// A peer document whose journal section is the encoded form of the
+    /// given entries.
+    fn journal_doc(entries: &[ReflectionEntry]) -> UserDocument {
+        let rows: BTreeMap<String, UserRecord> = entries.iter().map(encode_row).collect();
+        UserDocument {
+            format: 1,
+            sections: UserSections {
+                journal: Some(rows),
+                unknown: BTreeMap::new(),
+            },
+            unknown: BTreeMap::new(),
+        }
+    }
+
+    /// An engine stand-in over a reflection home.
+    fn engine_swap(reflection: ReflectionState) -> StdArc<ArcSwap<AppState>> {
+        StdArc::new(ArcSwap::from_pointee(AppState {
+            reflection,
+            ..AppState::default()
+        }))
+    }
+
+    /// Applies the domain fold to the stand-in the way the engine arm
+    /// does (the in-memory half of persist-then-interpret).
+    fn apply_report(swap: &StdArc<ArcSwap<AppState>>, report: &UserDataReport) {
+        let mut home = swap.load().reflection.clone();
+        let _outcome = taskboard_domain::import_reflections(&mut home, &report.journal);
+        swap.store(StdArc::new(AppState {
+            reflection: home,
+            ..AppState::default()
+        }));
+    }
+
+    /// X1 — fold-first attach (the pinned ordering, D-ES5): with a peer
+    /// journal at first contact and the lane deliberately full, the
+    /// attach **blocks inside the import step** — the own appdata
+    /// create-PUT cannot be issued. Draining one report releases it.
+    /// A device that published before importing could resurrect its own
+    /// tombstones over peers' deletes; the ordering is the pin.
+    #[tokio::test(start_paused = true)]
+    async fn x1_attach_imports_before_it_publishes() {
+        let fake = FakeFilesTransport::new();
+        let dirs = dirs_of(&[SELF, PEER]);
+        let refs: Vec<&str> = dirs.iter().map(String::as_str).collect();
+        fake.seed_dirs(&refs);
+        fake.seed_file(
+            &appdata_path(PEER),
+            doc_bytes(&journal_doc(&[entry(
+                0x1000,
+                "the peer's review",
+                "2026-11-05T10:00:00Z".parse().unwrap(),
+            )])),
+        );
+        // The full lane: capacity 4, pre-filled — the attach's send
+        // suspends inside `import_step`.
+        let (report_tx, report_rx) = mpsc::channel(4);
+        for _ in 0..4 {
+            report_tx
+                .send(UserDataReport {
+                    journal: Vec::new(),
+                })
+                .await
+                .expect("pre-fill");
+        }
+        let swap = engine_swap(ReflectionState::default());
+        let local = StdArc::new(crate::cycle::PublishedJournal::new(swap.clone()));
+        let harness = spawn_actor_with_reports(fake, local, (report_tx, report_rx));
+
+        // Let the attach run up to the blocked send: no publish yet.
+        tokio::time::advance(Duration::from_secs(60)).await;
+        assert!(
+            puts(&harness.fake, &appdata_path(SELF)) == 0,
+            "fold-first: the import blocks the first publish; log: {:?}",
+            log(&harness.fake)
+        );
+        // Release slots until the real delta crosses (the pre-fill's
+        // four empty reports come off the queue first — FIFO).
+        let mut report;
+        loop {
+            report = next_report(&harness).await;
+            if !report.journal.is_empty() {
+                break;
+            }
+        }
+        assert_eq!(report.journal.len(), 1);
+        let taskboard_domain::ImportedReflection::Entry(imported) = &report.journal[0] else {
+            panic!("a live peer row imports as an entry");
+        };
+        assert_eq!(imported.text, "the peer's review");
+        let status = next_status(&harness).await;
+        assert!(ok(&status), "attach completes: {status:?}");
+        assert_eq!(
+            puts(&harness.fake, &appdata_path(SELF)),
+            1,
+            "the first publish follows the import"
+        );
+
+        // The steady state: the stand-in applies the report; the next
+        // cycle is fully quiet — no report, no PUT.
+        apply_report(&swap, &report);
+        let (puts_before, status_before) = (
+            puts(&harness.fake, &appdata_path(SELF)),
+            harness_reports_pending(&harness),
+        );
+        let status = next_cycle(&harness).await;
+        assert!(ok(&status));
+        assert_eq!(puts(&harness.fake, &appdata_path(SELF)), puts_before);
+        assert_eq!(harness_reports_pending(&harness), status_before);
+    }
+
+    /// Whether a report is pending on the stand-in's lane.
+    fn harness_reports_pending(harness: &Harness) -> bool {
+        harness.reports.borrow_mut().try_recv().is_ok()
+    }
+
+    /// X2 — a peer tombstone for an id the home never held: reported
+    /// once; later cycles stay silent (the fingerprint dedupes the
+    /// forever-different delta; the engine is independently no-op-safe).
+    #[tokio::test(start_paused = true)]
+    async fn x2_absent_target_tombstone_is_reported_exactly_once() {
+        let fake = FakeFilesTransport::new();
+        let dirs = dirs_of(&[SELF, PEER]);
+        let refs: Vec<&str> = dirs.iter().map(String::as_str).collect();
+        fake.seed_dirs(&refs);
+        let mut dead = entry(
+            0x1001,
+            "deleted before we ever saw it",
+            "2026-11-05T11:00:00Z".parse().unwrap(),
+        );
+        dead.deleted = true;
+        fake.seed_file(&appdata_path(PEER), doc_bytes(&journal_doc(&[dead])));
+        let swap = engine_swap(ReflectionState::default());
+        let local = StdArc::new(crate::cycle::PublishedJournal::new(swap.clone()));
+        let harness = spawn_actor_with(fake, local);
+        let report = next_report(&harness).await;
+        assert!(
+            matches!(
+                report.journal.as_slice(),
+                [taskboard_domain::ImportedReflection::Tombstone { .. }]
+            ),
+            "the tombstone crosses as a tombstone"
+        );
+        let status = next_status(&harness).await;
+        assert!(ok(&status));
+        // The engine skips the absent-target tombstone (no ghost rows);
+        // the stand-in applies nothing. Later cycles: no report, no PUT.
+        let status = next_cycle(&harness).await;
+        assert!(ok(&status));
+        assert!(
+            !harness_reports_pending(&harness),
+            "the fingerprint dedupes the forever-different delta"
+        );
+    }
+
+    /// X3 — a peer row with a bad body (a newer build's out-of-range
+    /// rating) is not reported, is counted on the cycle outcome, and is
+    /// still relayed in the published document.
+    #[tokio::test(start_paused = true)]
+    async fn x3_bad_body_row_is_counted_but_still_relayed() {
+        let fake = FakeFilesTransport::new();
+        seed_peer(&fake, "unused");
+        let (key, mut record) = encode_row(&entry(
+            0x1002,
+            "unreadable to this build",
+            "2026-11-05T12:00:00Z".parse().unwrap(),
+        ));
+        let taskboard_sync_files::document::UserRecord::Entry { body, .. } = &mut record else {
+            panic!("live shape");
+        };
+        body.insert("attributes".to_owned(), serde_json::json!({ "mood": 6 }));
+        let mut rows = BTreeMap::new();
+        rows.insert(key, record);
+        let doc = UserDocument {
+            format: 1,
+            sections: UserSections {
+                journal: Some(rows),
+                unknown: BTreeMap::new(),
+            },
+            unknown: BTreeMap::new(),
+        };
+        fake.seed_file(&appdata_path(PEER), doc_bytes(&doc));
+        let harness = spawn_actor_with(fake, Arc::new(crate::cycle::EmptyDocument));
+        let status = next_status(&harness).await;
+        assert!(ok(&status));
+        assert_eq!(
+            status.last_cycle,
+            Some(CycleOutcome::Ok {
+                published: true,
+                read_devices: 1,
+                import_rejected: 1,
+            }),
+            "the bad body is counted, not swallowed: {status:?}"
+        );
+        assert!(
+            !harness_reports_pending(&harness),
+            "an undecodable row never crosses the seam"
+        );
+        let published = harness.fake.file(&appdata_path(SELF)).expect("published");
+        let document: UserDocument = serde_json::from_slice(&published).unwrap();
+        assert!(
+            document
+                .sections
+                .journal
+                .expect("the section relays")
+                .contains_key(&key_of(0x1002)),
+            "the row still relays in the merged view"
+        );
+    }
+
+    /// The UUID-text key the fixture entries encode under.
+    fn key_of(id_raw: u128) -> String {
+        uuid::Uuid::from_u128(id_raw).to_string()
+    }
+
+    /// X4 — the state-derived local document (D-ES8): a live entry
+    /// encodes as the entity's wire body (no `id`/`updated_at`/`deleted`
+    /// out of band); a tombstoned entry emits the wire tombstone —
+    /// silent absence would let a peer resurrect a deleted entry.
+    #[test]
+    fn x4_published_journal_materialises_tombstones_and_entries() {
+        let mut home = ReflectionState::default();
+        let live = entry(
+            0x1003,
+            "still here",
+            "2026-11-05T13:00:00Z".parse().unwrap(),
+        );
+        let mut dead = entry(0x1004, "gone", "2026-11-05T14:00:00Z".parse().unwrap());
+        dead.deleted = true;
+        home.entries.insert(live.id, live.clone());
+        home.entries.insert(dead.id, dead.clone());
+        let document = crate::cycle::PublishedJournal::new(engine_swap(home)).document();
+        assert_eq!(
+            document.format,
+            taskboard_sync_files::document::DOCUMENT_FORMAT
+        );
+        let rows = document
+            .sections
+            .journal
+            .expect("a non-empty home publishes the section");
+        assert_eq!(rows.len(), 2, "tombstones included");
+        let (key, record) = encode_row(&live);
+        assert_eq!(rows[&key], record);
+        let (dead_key, dead_record) = encode_row(&dead);
+        assert_eq!(rows[&dead_key], dead_record);
+        assert!(matches!(rows[&dead_key], UserRecord::Tombstone { .. }));
     }
 }

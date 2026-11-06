@@ -10,6 +10,8 @@ description = "Nextcloud WebDAV files transport for the taskboard files-sync sub
 
 [dependencies]
 taskboard-domain.workspace = true
+# The published-state read seam (D-ES8): lock-free snapshot per cycle.
+arc-swap.workspace = true
 taskboard-sync-files.workspace = true
 reqwest.workspace = true
 serde.workspace = true

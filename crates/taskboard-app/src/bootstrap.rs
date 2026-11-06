@@ -65,7 +65,7 @@ use tokio::task::JoinHandle;
 use taskboard_domain::{
     SyncCommand, SyncPhase, SyncReport, SyncStateReader, SystemEvent, TaskRepository,
 };
-use taskboard_state::{AttachReceipt, EngineHandle, spawn_state_engine};
+use taskboard_state::{AttachReceipt, EngineHandle, spawn_state_engine_with_user_data};
 use taskboard_storage_sqlite::{StorageHandle, spawn_storage_actor};
 use taskboard_sync_nextcloud::{DeckClient, spawn_sync_actor};
 use taskboard_ui_slint::presentation::DeliveryHealth;
@@ -75,7 +75,7 @@ use crate::lockfile::{InstanceLock, LockError};
 use crate::notifications::{NOTIFIER_CAPACITY, NotificationSink};
 use taskboard_sync_files_nextcloud::actor::spawn_files_sync_actor;
 use taskboard_sync_files_nextcloud::client::WebDavFilesTransport;
-use taskboard_sync_files_nextcloud::cycle::EmptyDocument;
+use taskboard_sync_files_nextcloud::cycle::PublishedJournal;
 use taskboard_sync_files_nextcloud::status::FilesSyncStatus;
 
 use crate::secrets::{CredentialError, CredentialStore};
@@ -159,6 +159,8 @@ async fn files_sync_spawn(
     credentials: Arc<dyn CredentialStore>,
     config: &AppConfig,
     system: broadcast::Sender<SystemEvent>,
+    shared: Arc<arc_swap::ArcSwap<taskboard_domain::AppState>>,
+    report_tx: tokio::sync::mpsc::Sender<taskboard_domain::UserDataReport>,
 ) -> Result<
     (
         JoinHandle<()>,
@@ -187,7 +189,11 @@ async fn files_sync_spawn(
     let (join, status_rx) = spawn_files_sync_actor(
         transport,
         device_json,
-        Arc::new(EmptyDocument),
+        // The journal push side (DR-8 D-ES8): the published state
+        // materialised per cycle; and the engine's user-data lane for
+        // the import step (D-ES5).
+        Arc::new(PublishedJournal::new(shared)),
+        report_tx,
         // The broadcast is the engine's system feed; the actor consumes
         // only `Shutdown` and publishes nothing on it.
         system,
@@ -1214,6 +1220,12 @@ async fn bootstrap_with_modules(
     let (system, system_rx_engine) = broadcast::channel::<SystemEvent>(SYSTEM_BROADCAST_CAPACITY);
     let (sync_commands, sync_rx) = mpsc::channel::<SyncCommand>(SYNC_COMMAND_CAPACITY);
     let (reports, report_rx) = mpsc::channel::<SyncReport>(SYNC_REPORT_CAPACITY);
+    // The user-data lane (DR-8 D-ES2): created unconditionally — cheap;
+    // the sender goes to the files actor only when the substrate spawns,
+    // otherwise it is dropped here and the engine's arm latches closed.
+    let (user_data_tx, user_data_rx) = mpsc::channel::<taskboard_domain::UserDataReport>(
+        taskboard_state::USER_DATA_REPORT_CAPACITY,
+    );
     let (notifier, notifications) =
         mpsc::channel::<taskboard_domain::NotifierMessage>(NOTIFIER_CAPACITY);
 
@@ -1242,12 +1254,13 @@ async fn bootstrap_with_modules(
     // The engine reaches the database only through the storage actor
     // (single-writer discipline): the handle *is* the port adapter.
     let repo_port: Arc<dyn TaskRepository> = Arc::new(storage.clone());
-    let spawned = spawn_state_engine(
+    let spawned = spawn_state_engine_with_user_data(
         repo_port,
         Arc::new(taskboard_domain::idgen::UuidV7Generator),
         Arc::new(taskboard_domain::SystemClock),
         sync_commands.clone(),
         report_rx,
+        user_data_rx,
         system.clone(),
         system_rx_engine,
         notifier,
@@ -1424,9 +1437,17 @@ async fn bootstrap_with_modules(
     // guaranteed the shape. A gate failure (credential / URL / data
     // dir) unwinds the boot exactly like a module failure — the user
     // enabled the feature; fail loudly, run nothing half-wired.
-    let (files_sync_join, files_sync_status) = match files_sync_spawn_decision(&config) {
-        Some(spec) => {
-            let gate = files_sync_spawn(&spec, credentials.clone(), &config, system.clone()).await;
+    let (files_sync_join, files_sync_status) =
+        if let Some(spec) = files_sync_spawn_decision(&config) {
+            let gate = files_sync_spawn(
+                &spec,
+                credentials.clone(),
+                &config,
+                system.clone(),
+                engine.shared_state(),
+                user_data_tx,
+            )
+            .await;
             match gate {
                 Ok((join, status_rx)) => (Some(join), Some(status_rx)),
                 Err(err) => {
@@ -1450,9 +1471,12 @@ async fn bootstrap_with_modules(
                     return Err(BootstrapError::from(err));
                 }
             }
-        }
-        None => (None, None),
-    };
+        } else {
+            // The substrate is off: the lane's sender drops and the
+            // engine's arm latches closed (the D-ES2 inert-closed pin).
+            drop(user_data_tx);
+            (None, None)
+        };
     tracing::info!("actor graph spawned: storage, state engine, notifier");
 
     let connectors = Arc::new(std::sync::Mutex::new(connectors));
@@ -2297,6 +2321,19 @@ mod connector_module_tests {
         .await
         .expect("boot");
         assert!(app.files_sync_status.is_none(), "nothing spawned");
+        // The lane routing (DR-8 D-ES2): with the substrate off, the
+        // lane's sender dropped at boot and the engine's arm latched
+        // closed — the loop keeps serving commands regardless.
+        let outcome = app
+            .engine
+            .execute(taskboard_domain::StateCommand::RequestSync)
+            .await
+            .expect("the engine serves with the lane closed");
+        assert!(matches!(
+            outcome,
+            taskboard_domain::CommandOutcome::NoOp
+                | taskboard_domain::CommandOutcome::SyncRequested
+        ));
         app.shutdown().await;
     }
 
