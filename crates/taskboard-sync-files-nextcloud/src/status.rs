@@ -14,10 +14,13 @@ use chrono::{DateTime, Utc};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CycleOutcome {
     /// The cycle ran to its end; `published` says whether a PUT went
-    /// out, `read_devices` how many peers contributed.
+    /// out, `read_devices` how many peers contributed, and
+    /// `import_rejected` how many peer rows could not become engine
+    /// inputs (still relayed — the counter is chunk 4's surface).
     Ok {
         published: bool,
         read_devices: usize,
+        import_rejected: usize,
     },
     /// The cycle failed (typed transport outcome or a loud finding);
     /// the actor's backoff reschedules.

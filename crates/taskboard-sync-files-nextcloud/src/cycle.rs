@@ -29,17 +29,19 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use taskboard_domain::Clock;
+use taskboard_domain::{AppState, UserDataReport};
 use taskboard_sync_files::document::{DOCUMENT_FORMAT, UserDocument, UserRecord, UserSections};
 use taskboard_sync_files::fold::fold;
 use taskboard_sync_files::hash::StateHash;
 use taskboard_sync_files::heartbeat::DeviceInfo;
 use taskboard_sync_files::identity::{DeviceIdentity, FolderIdentity};
 use taskboard_sync_files::ids::DeviceId;
+use taskboard_sync_files::journal::{decode_journal, journal_section};
 use taskboard_sync_files::layout::{
     self, APPDATA_FILE_NAME, DEVICES_DIR_NAME, IDENTITY_FILE_NAME, ROOT_FOLDER_NAME,
     TREE_FORMAT_VERSION,
 };
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 
 use crate::error::TransportError;
 use crate::etag::EtagStore;
@@ -53,6 +55,46 @@ use crate::transport::{FilesTransport, PropfindListing, PutOutcome};
 /// chunk adds an implementation to, no surgery on the loop.
 pub trait LocalDocument: Send + Sync {
     fn document(&self) -> UserDocument;
+}
+
+/// The chunk-3 production local contribution (D-ES8): the device's
+/// published `AppState`, materialised into the `journal` section —
+/// D-SF12's derive-from-state, no outbox, no command, no `LocalOp`
+/// lane. One coherent `load()` per call; **every** entry encodes,
+/// tombstones included (silent absence would let a peer resurrect a
+/// deleted entry). An empty home omits the section; `EmptyDocument`
+/// stays as the test/legacy impl.
+pub struct PublishedJournal {
+    state: Arc<arc_swap::ArcSwap<AppState>>,
+}
+
+impl PublishedJournal {
+    /// Over the engine's published-state swap (the read side only).
+    #[must_use]
+    pub fn new(state: Arc<arc_swap::ArcSwap<AppState>>) -> Self {
+        Self { state }
+    }
+}
+
+impl std::fmt::Debug for PublishedJournal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PublishedJournal").finish_non_exhaustive()
+    }
+}
+
+impl LocalDocument for PublishedJournal {
+    fn document(&self) -> UserDocument {
+        let snapshot = self.state.load_full();
+        let rows = journal_section(&snapshot.reflection);
+        UserDocument {
+            format: DOCUMENT_FORMAT,
+            sections: UserSections {
+                journal: (!rows.is_empty()).then_some(rows),
+                unknown: BTreeMap::default(),
+            },
+            unknown: BTreeMap::default(),
+        }
+    }
 }
 
 /// The chunk-2 production local contribution: nothing. The cycle,
@@ -83,6 +125,10 @@ pub struct SyncContext {
     pub clock: Arc<dyn Clock>,
     /// The local contribution to the fold.
     pub local: Arc<dyn LocalDocument>,
+    /// The engine's user-data lane (D-ES5): the import step's delivery
+    /// seam. A closed lane logs once per delta and the actor keeps
+    /// syncing — publishing still relays everything.
+    pub report_tx: mpsc::Sender<UserDataReport>,
 }
 
 /// The actor's mutable state, process-local (decision D-FT4). A
@@ -118,6 +164,12 @@ pub struct LoopState {
     pub retry_after_floor: Duration,
     /// When this device last wrote its own heartbeat.
     last_heartbeat_at: Option<DateTime<Utc>>,
+    /// The fingerprint of the last import delta the engine was told
+    /// about (D-ES5's dedupe): absent-tombstone and undecodable-row
+    /// deltas differ from the local view *forever* by design; without
+    /// the fingerprint every cycle would re-send a no-op report. The
+    /// engine is independently no-op-safe (D-ES6).
+    last_import_fingerprint: Option<StateHash>,
 }
 
 /// How a cycle ended, for the actor's rescheduling.
@@ -172,7 +224,7 @@ pub async fn run_cycle<T: FilesTransport>(
         attach(transport, ctx, st).await
     };
     match verdict {
-        Ok((published, read_devices)) => {
+        Ok((published, read_devices, import_rejected)) => {
             st.failure_streak = 0;
             st.retry_after_floor = Duration::ZERO;
             publish_status(
@@ -180,6 +232,7 @@ pub async fn run_cycle<T: FilesTransport>(
                 Some(&CycleOutcome::Ok {
                     published,
                     read_devices,
+                    import_rejected,
                 }),
                 st,
             );
@@ -245,7 +298,7 @@ async fn attach<T: FilesTransport>(
     transport: &T,
     ctx: &SyncContext,
     st: &mut LoopState,
-) -> Result<(bool, usize), TransportError> {
+) -> Result<(bool, usize, usize), TransportError> {
     let self_dir = rooted(&format!("{DEVICES_DIR_NAME}/{}", ctx.identity.device_id));
     mkcol_exists_ok(transport, ROOT_FOLDER_NAME).await?;
     mkcol_exists_ok(transport, &rooted(DEVICES_DIR_NAME)).await?;
@@ -290,9 +343,13 @@ async fn attach<T: FilesTransport>(
     // view). A 412 ⇒ adopt: the served content seeds the next
     // publish; a corrupt seed stops writes to the path (fail closed —
     // publishing an empty merged view over an unrecoverable own
-    // history is data loss).
+    // history is data loss). Fold-first (D-ES5): the peers' history
+    // enters the engine *before* this device's first document claims
+    // the view — a device that published before importing could
+    // resurrect its own tombstones over peers' deletes.
     let appdata_path = rooted(&layout::device_appdata_path(ctx.identity.device_id));
     let merged = merged_view(ctx, st);
+    let import_rejected = import_step(ctx, st, &merged).await;
     let appdata_bytes = serde_json::to_vec(&merged)?;
     match transport.put_create(&appdata_path, &appdata_bytes).await {
         Ok(outcome) => {
@@ -324,7 +381,7 @@ async fn attach<T: FilesTransport>(
     }
 
     st.attached = true;
-    Ok((true, st.docs.len()))
+    Ok((true, st.docs.len(), import_rejected))
 }
 
 /// The adopting read (adoption arms): GET the own file and store its
@@ -372,7 +429,7 @@ async fn steady_cycle<T: FilesTransport>(
     transport: &T,
     ctx: &SyncContext,
     st: &mut LoopState,
-) -> Result<(bool, usize), TransportError> {
+) -> Result<(bool, usize, usize), TransportError> {
     // 1. PROPFIND devices/ → dirty / vanished sets.
     let listing = transport.propfind_devices().await?;
     for device in ingest_listing(&listing, ctx, st) {
@@ -390,6 +447,13 @@ async fn steady_cycle<T: FilesTransport>(
 
     // 3. fold over local + seed + peers.
     let merged = merged_view(ctx, st);
+    // 3½. the import step (D-ES5): the merged rows that differ from
+    // the local-derived rows cross to the engine before this cycle's
+    // publish — fold-first is an ordering of intent. What the device
+    // publishes is identical either way (`merged` already contains
+    // local ∪ peers); the next cycle's local read then equals the
+    // merged journal ⇒ empty delta ⇒ no report ⇒ no PUT.
+    let import_rejected = import_step(ctx, st, &merged).await;
     // 4. the local-hash skip-compare (never a server etag, F5).
     let hash = StateHash::of(&merged);
     let skip = st.published_hash.as_ref() == Some(&hash);
@@ -402,7 +466,7 @@ async fn steady_cycle<T: FilesTransport>(
     if st.pending_heartbeat {
         write_heartbeat(transport, ctx, st, &merged).await?;
     }
-    Ok((published, st.docs.len()))
+    Ok((published, st.docs.len(), import_rejected))
 }
 
 /// Updates the store from a listing; returns the devices that vanished
@@ -550,6 +614,78 @@ fn record_put(st: &mut LoopState, path: &str, outcome: &PutOutcome) {
     if let Some(etag) = etag {
         st.etags.record_file(path, etag);
     }
+}
+
+/// The merged journal rows that differ from the local-derived rows
+/// (absent locally, or a different record) — the import step's input
+/// (D-ES5).
+fn journal_delta(
+    merged: &UserDocument,
+    local: &UserDocument,
+) -> std::collections::BTreeMap<String, UserRecord> {
+    let local_rows = local.sections.journal.as_ref();
+    merged
+        .sections
+        .journal
+        .as_ref()
+        .map(|rows| {
+            rows.iter()
+                .filter(|(key, record)| {
+                    local_rows.and_then(|local| local.get(*key)) != Some(record)
+                })
+                .map(|(key, record)| (key.clone(), record.clone()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The import step (D-ES5, D-ES7): the delta's rows decode into the
+/// engine's report family; `Verbatim` rows and undecodable bodies are
+/// dropped from the report (they still relay in the published view)
+/// and counted. A fingerprint over the delta dedupes forever-different
+/// views (absent-target tombstones, rejected rows) so no cycle re-sends
+/// a no-op report. Returns the rejected count for the cycle outcome.
+async fn import_step(ctx: &SyncContext, st: &mut LoopState, merged: &UserDocument) -> usize {
+    let delta = journal_delta(merged, &ctx.local.document());
+    if delta.is_empty() {
+        return 0;
+    }
+    let fingerprint = StateHash::of(&UserDocument {
+        format: DOCUMENT_FORMAT,
+        sections: UserSections {
+            journal: Some(delta.clone()),
+            unknown: BTreeMap::default(),
+        },
+        unknown: BTreeMap::default(),
+    });
+    if st.last_import_fingerprint.as_ref() == Some(&fingerprint) {
+        return 0;
+    }
+    let (rows, rejected) = decode_journal(&delta);
+    if rejected > 0 {
+        tracing::warn!(
+            event = "files_sync.import_rejected",
+            rejected,
+            "files-sync finding"
+        );
+    }
+    if !rows.is_empty()
+        && ctx
+            .report_tx
+            .send(UserDataReport { journal: rows })
+            .await
+            .is_err()
+    {
+        // The engine's lane is closed; recorded once per delta by
+        // the fingerprint below — the actor keeps syncing, and
+        // publishing still relays everything.
+        tracing::warn!(
+            event = "files_sync.import_lane_closed",
+            "files-sync finding"
+        );
+    }
+    st.last_import_fingerprint = Some(fingerprint);
+    rejected
 }
 
 /// The merged view: local contribution + the retained seed + every
