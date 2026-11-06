@@ -533,10 +533,11 @@ async fn j14_json_envelopes_on_the_session_lane() {
         listed["entries"][0]["entry_id"], added["entry"]["entry_id"],
         "the listed row is the added row"
     );
-    let stderr = String::from_utf8_lossy(&err);
-    assert!(
-        stderr.contains("\"unknown-reflection-entry\""),
-        "the miss rides the typed error envelope: {stderr}"
+    let miss: serde_json::Value = serde_json::from_str(String::from_utf8_lossy(&err).trim())
+        .expect("the miss rides the typed error envelope");
+    assert_eq!(
+        miss["error"]["kind"], "unknown-reflection-entry",
+        "the typed discriminator, not prose"
     );
 }
 
@@ -616,4 +617,428 @@ async fn j15_session_lane_matches_the_one_shot_lane() {
     assert_eq!(listed.len(), 1, "the tombstone is out of the live set");
     assert_eq!(listed[0].entry_id, two_row.entry_id);
     assert_eq!(listed[0].mood, Some(5), "the session-lane edit landed");
+}
+
+/// Runs one `export …` argv through the session lane, returning the
+/// raw stdout bytes (the payload lane — never an envelope).
+async fn run_export_bytes(
+    session: &impl taskboard_app::commands::CoreSession,
+    app: &taskboard_app::App,
+    io_out: &mut Vec<u8>,
+    args: &[&str],
+) -> u8 {
+    let mut cmdline = vec!["taskboard"];
+    cmdline.extend_from_slice(args);
+    let cli = Cli::try_parse_from(cmdline).expect("the export grammar accepts the argv");
+    let Some(Command::Export { .. }) = cli.command else {
+        panic!("the argv selects export");
+    };
+    let mut err = Vec::new();
+    {
+        let mut io = CommandIo {
+            out: io_out,
+            err: &mut err,
+            json: true,
+        };
+        taskboard_app::commands::dispatch_line(session, app, cli.command.unwrap(), &mut io).await
+    }
+}
+
+/// J16: the byte-compat pin — bare `export` and explicit
+/// `--what tracking` produce byte-identical stdout over the same
+/// state (CSV and JSON both); the default arm is the same code path,
+/// structurally.
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // one seed per lane, kept flat
+async fn j16_bare_export_is_byte_compatible_with_explicit_tracking() {
+    let dir = tempdir();
+    let config = standalone_config(dir.path(), "j16.db");
+    let store = forbidden_store();
+    let app = taskboard_app::bootstrap::bootstrap(
+        config.clone(),
+        store.clone(),
+        Arc::new(taskboard_app::notifications::LogSink),
+    )
+    .await
+    .expect("session boots");
+    let session = BasicSession {
+        config: config.clone(),
+        store,
+        config_path: None,
+    };
+
+    // Seed one tracking entry (a capture plus a fixed-stamp log) so
+    // the tracking payload carries a row, and one journal entry.
+    let mut out = Vec::new();
+    {
+        let mut err = Vec::new();
+        let mut io = CommandIo {
+            out: &mut out,
+            err: &mut err,
+            json: true,
+        };
+        let code = taskboard_app::commands::dispatch_line(
+            &session,
+            &app,
+            Command::Capture {
+                title: "seed task".into(),
+                board: None,
+            },
+            &mut io,
+        )
+        .await;
+        assert_eq!(code, 0);
+    }
+    {
+        let mut err = Vec::new();
+        let mut io = CommandIo {
+            out: &mut out,
+            err: &mut err,
+            json: true,
+        };
+        let cli = Cli::try_parse_from([
+            "taskboard",
+            "track",
+            "log",
+            "seed task",
+            "--from",
+            "2026-04-01T08:00:00Z",
+            "--to",
+            "2026-04-01T09:30:00Z",
+        ])
+        .expect("the track grammar accepts the argv");
+        let code =
+            taskboard_app::commands::dispatch_line(&session, &app, cli.command.unwrap(), &mut io)
+                .await;
+        assert_eq!(code, 0);
+    }
+    {
+        let mut err = Vec::new();
+        let mut io = CommandIo {
+            out: &mut out,
+            err: &mut err,
+            json: true,
+        };
+        let cli = Cli::try_parse_from([
+            "taskboard",
+            "journal",
+            "add",
+            "--day",
+            "2026-11-03",
+            "the",
+            "journal",
+            "row",
+        ])
+        .expect("the journal grammar accepts the argv");
+        let code =
+            taskboard_app::commands::dispatch_line(&session, &app, cli.command.unwrap(), &mut io)
+                .await;
+        assert_eq!(code, 0);
+    }
+
+    for format in ["csv", "json"] {
+        let mut bare = Vec::new();
+        let code =
+            run_export_bytes(&session, &app, &mut bare, &["export", "--format", format]).await;
+        assert_eq!(code, 0);
+        let mut explicit = Vec::new();
+        let code = run_export_bytes(
+            &session,
+            &app,
+            &mut explicit,
+            &["export", "--format", format, "--what", "tracking"],
+        )
+        .await;
+        assert_eq!(code, 0);
+        assert_eq!(
+            bare, explicit,
+            "default == explicit --what tracking, byte-for-byte ({format})"
+        );
+        assert!(!bare.is_empty(), "the tracking payload carries the row");
+    }
+    app.shutdown().await;
+}
+
+/// J17: the journal CSV golden — the ruled header, fixed-stamp rows
+/// byte-for-byte (a full row with ratings, flags and quoted text; a
+/// minimal row with empty cells), a tombstoned row absent, and the
+/// `--since`/`--until` window-start edges boundary-inclusive. The
+/// goldens are data, not labels: the only words are the ruled column
+/// list and the entry payloads the test wrote itself.
+#[tokio::test]
+async fn j17_journal_csv_golden() {
+    let dir = tempdir();
+    let config = standalone_config(dir.path(), "j17.db");
+    let full = run_add(
+        &config,
+        &[
+            "--day",
+            "2026-11-02",
+            "--mood",
+            "3",
+            "--energy",
+            "4",
+            "--flag",
+            "migraine",
+            "--flag",
+            "poor-sleep",
+            "a, \"quoted\" day",
+        ],
+    )
+    .await;
+    let full = full.entry.as_ref().expect("row");
+    // The minimal row (no ratings, no flags, empty text) is reachable
+    // only through an edit — a bare add with no text is the accepted
+    // no-op (J5).
+    let seeded = run_add(&config, &["--day", "2026-11-03", "seed"]).await;
+    let minimal = run_edit(
+        &config,
+        &["--clear-text", &seeded.entry.as_ref().unwrap().entry_id],
+    )
+    .await
+    .expect("the text clears")
+    .entry;
+
+    // A tombstone never exports (the live journal's data only).
+    run_delete(&config, &[&minimal.entry_id])
+        .await
+        .expect("deletes");
+
+    let query = taskboard_app::commands::track::ExportQuery {
+        what: taskboard_app::cli::ExportWhat::Reflection,
+        format: Some(taskboard_app::cli::ExportFormat::Csv),
+        since: None,
+        until: None,
+        task: None,
+        board: None,
+    };
+    let payload =
+        taskboard_app::commands::track::export(config.clone(), forbidden_store(), query.clone())
+            .await
+            .expect("the export boots");
+    let taskboard_app::commands::track::ExportPayload::Reflection { rows, .. } = &payload else {
+        panic!("the journal leg yields journal rows");
+    };
+    assert_eq!(rows.len(), 1, "the tombstone is skipped");
+
+    // The golden: assembled from the receipt's own state-truth fields
+    // (fixed days, RFC-3339 stamps), one byte-exact block.
+    // The flags cell is the JSON-array text (the storage encoding),
+    // RFC-4180-quoted as a whole because it embeds quotes.
+    let flags_cell = r#""[""migraine"",""poor-sleep""]""#;
+    let expected = format!(
+        "entry_id,day,cadence,window_start,window_end,mood,energy,flags,text,created_at,updated_at\n\
+         {},2026-11-02,day,{},{},3,4,{},\"a, \"\"quoted\"\" day\",{},{}\n",
+        full.entry_id,
+        full.window_start.to_rfc3339(),
+        full.window_end.to_rfc3339(),
+        flags_cell,
+        full.created_at.to_rfc3339(),
+        full.updated_at.to_rfc3339(),
+    );
+    assert_eq!(
+        taskboard_app::commands::track::render_payload(&payload),
+        expected,
+        "the journal CSV golden"
+    );
+
+    // The day edges are inclusive on window_start: `until` naming the
+    // full row's own UTC day keeps it; the next day drops it.
+    let day = full.window_start.date_naive().to_string();
+    let query = taskboard_app::commands::track::ExportQuery {
+        since: Some(full.window_start.date_naive()),
+        until: Some(full.window_start.date_naive()),
+        ..query.clone()
+    };
+    let payload =
+        taskboard_app::commands::track::export(config.clone(), forbidden_store(), query.clone())
+            .await
+            .expect("the filtered export boots");
+    let taskboard_app::commands::track::ExportPayload::Reflection { rows, .. } = &payload else {
+        panic!("the journal leg yields journal rows");
+    };
+    assert_eq!(rows.len(), 1, "the boundary day lands inside");
+    let _ = day;
+    let query = taskboard_app::commands::track::ExportQuery {
+        since: Some(full.window_start.date_naive().succ_opt().unwrap()),
+        until: None,
+        ..query.clone()
+    };
+    let payload =
+        taskboard_app::commands::track::export(config.clone(), forbidden_store(), query.clone())
+            .await
+            .expect("the filtered export boots");
+    let taskboard_app::commands::track::ExportPayload::Reflection { rows, .. } = &payload else {
+        panic!("the journal leg yields journal rows");
+    };
+    assert!(rows.is_empty(), "the next day drops the entry");
+}
+
+/// J18: the journal JSON golden — a single-line array, `null` unset
+/// ratings, real flag arrays, and the eleven ruled keys exactly (the
+/// key-set pin; `extra_flags` is absent by ruling).
+#[tokio::test]
+async fn j18_journal_json_golden() {
+    let dir = tempdir();
+    let config = standalone_config(dir.path(), "j18.db");
+    let full = run_add(
+        &config,
+        &[
+            "--day",
+            "2026-11-02",
+            "--mood",
+            "3",
+            "--flag",
+            "migraine",
+            "body",
+        ],
+    )
+    .await;
+    let full = full.entry.as_ref().expect("row");
+    let seeded = run_add(&config, &["--day", "2026-11-03", "seed"]).await;
+    let minimal = run_edit(
+        &config,
+        &["--clear-text", &seeded.entry.as_ref().unwrap().entry_id],
+    )
+    .await
+    .expect("the text clears")
+    .entry;
+
+    let query = taskboard_app::commands::track::ExportQuery {
+        what: taskboard_app::cli::ExportWhat::Reflection,
+        format: Some(taskboard_app::cli::ExportFormat::Json),
+        since: None,
+        until: None,
+        task: None,
+        board: None,
+    };
+    let payload =
+        taskboard_app::commands::track::export(config.clone(), forbidden_store(), query.clone())
+            .await
+            .expect("the export boots");
+    let rendered = taskboard_app::commands::track::render_payload(&payload);
+    let parsed: serde_json::Value =
+        serde_json::from_str(rendered.trim()).expect("the payload parses");
+    let rows_json = parsed.as_array().expect("a JSON array");
+
+    let ruled = [
+        "entry_id",
+        "day",
+        "cadence",
+        "window_start",
+        "window_end",
+        "mood",
+        "energy",
+        "flags",
+        "text",
+        "created_at",
+        "updated_at",
+    ];
+    assert_eq!(rows_json.len(), 2);
+    for (row, expected_row) in rows_json.iter().zip([full, &minimal]) {
+        let mut keys: Vec<&str> = row
+            .as_object()
+            .expect("row objects")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        let mut ruled_sorted = ruled.to_vec();
+        ruled_sorted.sort_unstable();
+        assert_eq!(keys, ruled_sorted, "the ruled eleven keys exactly");
+        assert_eq!(row["entry_id"], expected_row.entry_id);
+    }
+    assert_eq!(rows_json[0]["mood"], 3);
+    assert_eq!(
+        rows_json[0]["flags"],
+        serde_json::Value::Array(vec![serde_json::Value::String("migraine".into())]),
+        "flags are a real array, not a stringified one"
+    );
+    assert_eq!(rows_json[1]["mood"], serde_json::Value::Null);
+    assert_eq!(rows_json[1]["flags"], serde_json::Value::Array(vec![]));
+    assert!(
+        rows_json[0].get("extra_flags").is_none(),
+        "extra_flags is deliberately not exportable (Q-11)"
+    );
+}
+
+/// J19: tracking-only filters under the journal leg are a typed
+/// rejection; the tracking leg keeps accepting them.
+#[tokio::test]
+async fn j19_filters_not_applicable_is_typed() {
+    let dir = tempdir();
+    let config = standalone_config(dir.path(), "j19.db");
+    let task = taskboard_app::commands::track::ExportQuery {
+        what: taskboard_app::cli::ExportWhat::Reflection,
+        format: None,
+        since: None,
+        until: None,
+        task: Some("no such task".into()),
+        board: None,
+    };
+    let err =
+        taskboard_app::commands::track::export(config.clone(), forbidden_store(), task.clone())
+            .await
+            .expect_err("the journal leg refuses --task");
+    assert_eq!(err.error_kind(), "filters-not-applicable");
+
+    let board = taskboard_app::commands::track::ExportQuery {
+        what: taskboard_app::cli::ExportWhat::Reflection,
+        board: Some("no such board".into()),
+        ..task
+    };
+    let err = taskboard_app::commands::track::export(config.clone(), forbidden_store(), board)
+        .await
+        .expect_err("the journal leg refuses --board");
+    assert_eq!(err.error_kind(), "filters-not-applicable");
+}
+
+/// J20's stdout half, pre-relay: `export --what journal` under
+/// `--json` still writes the raw payload on stdout — the envelope
+/// never wraps it (the byte-verbatim relay's source side).
+#[tokio::test]
+async fn j20_journal_export_is_raw_under_json() {
+    let dir = tempdir();
+    let config = standalone_config(dir.path(), "j20.db");
+    let receipt = run_add(&config, &["raw", "payload"]).await;
+    let row = receipt.entry.as_ref().expect("row");
+
+    let store = forbidden_store();
+    let app = taskboard_app::bootstrap::bootstrap(
+        config.clone(),
+        store.clone(),
+        Arc::new(taskboard_app::notifications::LogSink),
+    )
+    .await
+    .expect("session boots");
+    let session = BasicSession {
+        config: config.clone(),
+        store,
+        config_path: None,
+    };
+    let mut out = Vec::new();
+    let code = run_export_bytes(
+        &session,
+        &app,
+        &mut out,
+        &["--json", "export", "--what", "journal", "--format", "csv"],
+    )
+    .await;
+    app.shutdown().await;
+    assert_eq!(code, 0);
+    let rendered = String::from_utf8(out).expect("utf8 stdout");
+    assert!(
+        rendered.starts_with(
+            "entry_id,day,cadence,window_start,window_end,mood,energy,flags,text,created_at,updated_at\n"
+        ),
+        "the raw CSV header rides stdout even under --json"
+    );
+    assert!(
+        rendered.contains(&row.entry_id),
+        "the payload carries the row"
+    );
+    assert!(
+        !rendered.contains("filters-not-applicable") && !rendered.contains("\"created\""),
+        "no receipt envelope wrapped the payload"
+    );
 }

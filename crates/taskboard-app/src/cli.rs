@@ -154,6 +154,10 @@ pub enum Command {
     /// clipboard — and the payload deliberately bypasses the `--json`
     /// receipt envelope (the recorded D-T15 exception).
     Export {
+        /// Which data family to export (`tracking` by default — bare
+        /// `export` is byte-compatible with today).
+        #[arg(long, value_enum)]
+        what: Option<ExportWhat>,
         /// Output format (csv by default).
         #[arg(long, value_enum)]
         format: Option<ExportFormat>,
@@ -940,6 +944,20 @@ pub enum BreaksCmd {
         /// The rule selector.
         selector: String,
     },
+}
+
+/// Which data family `export` emits (D-J12). `Tracking` is the
+/// default, so bare `export` compiles to today's code path untouched
+/// (the byte-compat ruling).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum ExportWhat {
+    /// The time entries (the default; the D-T15 payload).
+    #[default]
+    Tracking,
+    /// The live reflection entries (the ruled eleven columns;
+    /// tombstones are bookkeeping and stay out).
+    #[value(name = "journal")]
+    Reflection,
 }
 
 /// The export payload format. `Csv` is the default; a malformed value
