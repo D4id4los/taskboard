@@ -2064,6 +2064,24 @@ pub const fn walk_commit_actions() -> (&'static str, &'static str) {
     ("Record", "Finish without recording")
 }
 
+/// The File-to picker's candidate stacks (plan D-W4): every live
+/// non-inbox stack in board/stack order — board canonical order, each
+/// board's stacks in order. The walk never offers the inbox itself
+/// (filing to the inbox is a no-op).
+#[must_use]
+pub fn walk_file_candidates(state: &AppState) -> Vec<StackId> {
+    let inbox = state.inbox_board();
+    let mut candidates: Vec<StackId> = Vec::new();
+    for board in live_boards(state) {
+        for stack in stacks_in_board(state, board.id) {
+            if Some(stack.board) != inbox {
+                candidates.push(stack.id);
+            }
+        }
+    }
+    candidates
+}
+
 /// The walk's inbox rows (plan D-W4): the one shared inbox reading —
 /// the same ids the toolbar chip counts, in the same order.
 #[must_use]

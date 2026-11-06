@@ -1,0 +1,291 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The review walk overlay (DR-7 chunk 3, #638; L2 composition): the
+// progress strip (three stage headers with their empty b-lines), the
+// current stage's rows, the cursor row's verb strip, and the equal-
+// prominence commit exits. Presentation only (the dumb client): the
+// header, the strip, the row titles, the emphasis, and every button
+// label arrive derived from the Rust pass; the tree computes nothing.
+// The File-to picker and the date field render only while armed (the
+// pushed booleans); the prompts stage renders one multi-line editor
+// per prompt (the seeds ride the mount transition — a re-push never
+// clobbers typing). The scrim lives in the app window (the focus
+// overlay's precedent); Escape is the action layer's (the walk
+// context binds it), never a widget handler.
+
+import { Theme, Typography, RoleText, Semantic } from "../theme.slint";
+import { MultiLineEditor } from "../widgets/multi-line-editor.slint";
+import { TextField } from "../widgets/text-field.slint";
+import { ListView } from "../widgets/listview.slint";
+
+export struct WalkStageStripRow {
+    // The stage header (C5/C7/C10).
+    label: string,
+    // The skipped stage's b-line (C5b/C7b); empty = nothing renders.
+    note: string,
+}
+
+export struct WalkRowModel {
+    // The row's title (the task's title, or the prompt's text).
+    title: string,
+    // The cursor ring (`index == the pushed cursor`).
+    emphasis: bool,
+}
+
+export struct ReviewWalkModel {
+    // The overlay's visibility mirrors the `Flow::ReviewWalk` flow.
+    open: bool,
+    // The walk header (C4).
+    header: string,
+    // The progress strip: all three stages, in walk order.
+    strip: [WalkStageStripRow],
+    // The current stage's rows.
+    rows: [WalkRowModel],
+    // The stage discriminator: 0 inbox, 1 carry forward, 2 prompts.
+    stage-kind: int,
+    // -- the inbox stage --
+    // `true` = the File-to picker is armed on the cursor row.
+    filing: bool,
+    // The candidate stacks' titles, in offer order.
+    candidates: [string],
+    candidate-index: int,
+    file-label: string,
+    keep-label: string,
+    // -- the carry stage --
+    // `true` = the Pick-a-date field is armed on the cursor row.
+    picking: bool,
+    date-text: string,
+    tomorrow-label: string,
+    pick-label: string,
+    leave-label: string,
+    // -- the prompts stage --
+    record-label: string,
+    finish-label: string,
+}
+
+component StripRow inherits VerticalLayout {
+    in property <string> label;
+    in property <string> note;
+    VerticalLayout {
+        vertical-stretch: 0;
+        spacing: Theme.space-1;
+        RoleText {
+            vertical-stretch: 0;
+            role: Typography.caption;
+            text: root.label;
+        }
+        RoleText {
+            vertical-stretch: 0;
+            role: Typography.caption;
+            text-color: Theme.text-secondary;
+            text: root.note;
+            visible: root.note != "";
+        }
+    }
+}
+
+component VerbButton inherits Rectangle {
+    in property <string> label;
+    callback clicked();
+    min-width: label-text.preferred-width + 2 * Theme.space-2;
+    height: Theme.space-5;
+    vertical-stretch: 0;
+    background: touch.pressed || touch.has-hover ? Theme.surface-hover : Theme.surface;
+    border-radius: Theme.radius-small;
+    border-width: Theme.focus-ring-width;
+    border-color: Semantic.focus-ring;
+    label-text := RoleText {
+        role: Typography.caption;
+        text-color: Theme.text-primary;
+        text: root.label;
+        text-halign: center;
+        vertical-alignment: center;
+    }
+    touch := TouchArea {
+        clicked => root.clicked();
+    }
+}
+
+export component ReviewWalkOverlay inherits Rectangle {
+    in property <ReviewWalkModel> model;
+    // The prompts' one-shot answer seeds (the mount-transition push).
+    in property <[string]> answer-seeds;
+    callback scrim-clicked();
+    callback file-clicked();
+    callback keep-clicked();
+    callback file-prev-clicked();
+    callback file-next-clicked();
+    callback candidate-activated(int);
+    callback file-commit-clicked();
+    callback tomorrow-clicked();
+    callback pick-clicked();
+    callback leave-clicked();
+    callback date-edited(string);
+    callback date-commit-clicked();
+    callback answer-edited(int, string);
+    callback record-clicked();
+    callback finish-clicked();
+
+    background: Theme.surface-raised;
+    border-radius: Theme.radius-medium;
+    border-width: Theme.focus-ring-width;
+    border-color: Semantic.focus-ring;
+    drop-shadow-blur: 12px;
+
+    VerticalLayout {
+        padding: Theme.space-3;
+        spacing: Theme.space-2;
+
+        RoleText {
+            vertical-stretch: 0;
+            role: Typography.display;
+            text: root.model.header;
+        }
+
+        HorizontalLayout {
+            vertical-stretch: 0;
+            spacing: Theme.space-3;
+            for stage[index] in root.model.strip: StripRow {
+                vertical-stretch: 0;
+                label: stage.label;
+                note: stage.note;
+            }
+        }
+
+        // The rows: content-sized below the page bound, capped above
+        // it (the today sections' viewport discipline).
+        rows-clip := Rectangle {
+            clip: true;
+            vertical-stretch: 1;
+            rows := ListView {
+                height: 100%;
+                for row[index] in root.model.rows: VerticalLayout {
+                    vertical-stretch: 0;
+                    spacing: Theme.space-1;
+                    RoleText {
+                        vertical-stretch: 0;
+                        role: Typography.body;
+                        text: row.title;
+                        overflow: elide;
+                        text-color: row.emphasis ? Theme.text-primary : Theme.text-secondary;
+                    }
+                    // The prompts stage: one editor per prompt row (the
+                    // seed is one-shot; edits mirror adapter-side).
+                    if (root.model.stage-kind == 2): MultiLineEditor {
+                        vertical-stretch: 0;
+                        // The prompts' edit mount: a fixed three-line
+                        // box (the task-view's edit mount fills a
+                        // layout; here the rows live in a ListView —
+                        // a content-derived height would bind a loop,
+                        // the widget doc's whole geometry design).
+                        height: Theme.space-6 * 3;
+                        editing: true;
+                        text: root.answer-seeds[index];
+                        initial-text: root.answer-seeds[index];
+                        label: row.title;
+                        edited(text) => root.answer-edited(index, text);
+                    }
+                }
+            }
+        }
+
+        // -- the cursor row's verb strips (one per stage kind) --
+        if (root.model.stage-kind == 0 && !root.model.filing): HorizontalLayout {
+            vertical-stretch: 0;
+            spacing: Theme.space-2;
+            VerbButton {
+                label: root.model.file-label;
+                clicked => root.file-clicked();
+            }
+            VerbButton {
+                label: root.model.keep-label;
+                clicked => root.keep-clicked();
+            }
+        }
+        // The armed File-to picker: the candidate list + the commit.
+        if (root.model.stage-kind == 0 && root.model.filing): VerticalLayout {
+            vertical-stretch: 0;
+            spacing: Theme.space-1;
+            for candidate[index] in root.model.candidates: HorizontalLayout {
+                vertical-stretch: 0;
+                candidate-text := RoleText {
+                    vertical-stretch: 0;
+                    role: Typography.caption;
+                    text: candidate;
+                    text-color: index == root.model.candidate-index
+                        ? Theme.text-primary
+                        : Theme.text-secondary;
+                }
+                TouchArea {
+                    width: candidate-text.preferred-width;
+                    height: candidate-text.preferred-height;
+                    clicked => root.candidate-activated(index);
+                }
+            }
+            HorizontalLayout {
+                vertical-stretch: 0;
+                spacing: Theme.space-2;
+                VerbButton {
+                    label: "<";
+                    clicked => root.file-prev-clicked();
+                }
+                VerbButton {
+                    label: ">";
+                    clicked => root.file-next-clicked();
+                }
+                VerbButton {
+                    label: root.model.file-label;
+                    clicked => root.file-commit-clicked();
+                }
+            }
+        }
+        if (root.model.stage-kind == 1 && !root.model.picking): HorizontalLayout {
+            vertical-stretch: 0;
+            spacing: Theme.space-2;
+            VerbButton {
+                label: root.model.tomorrow-label;
+                clicked => root.tomorrow-clicked();
+            }
+            VerbButton {
+                label: root.model.pick-label;
+                clicked => root.pick-clicked();
+            }
+            VerbButton {
+                label: root.model.leave-label;
+                clicked => root.leave-clicked();
+            }
+        }
+        if (root.model.stage-kind == 1 && root.model.picking): VerticalLayout {
+            vertical-stretch: 0;
+            spacing: Theme.space-1;
+            TextField {
+                height: Theme.space-5;
+                vertical-stretch: 0;
+                label: root.model.pick-label;
+                text: root.model.date-text;
+                edited(text) => root.date-edited(text);
+                accepted() => root.date-commit-clicked();
+            }
+            HorizontalLayout {
+                vertical-stretch: 0;
+                spacing: Theme.space-2;
+                VerbButton {
+                    label: root.model.pick-label;
+                    clicked => root.date-commit-clicked();
+                }
+            }
+        }
+        // The prompts' equal-prominence exits (C11; P12: no guilt path).
+        if (root.model.stage-kind == 2): HorizontalLayout {
+            vertical-stretch: 0;
+            spacing: Theme.space-2;
+            VerbButton {
+                label: root.model.record-label;
+                clicked => root.record-clicked();
+            }
+            VerbButton {
+                label: root.model.finish-label;
+                clicked => root.finish-clicked();
+            }
+        }
+    }
+}

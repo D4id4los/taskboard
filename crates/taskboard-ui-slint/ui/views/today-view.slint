@@ -107,6 +107,17 @@ export component TodayView inherits FocusScope {
     // resolves the row against the tracked-today table and opens the
     // task (the today-row-activated precedent).
     callback tracked-activated(int);
+    // The review walk's surfacing card (DR-7 D-J10, #638): the whole
+    // copy arrives pushed (the phrase fns' output); visibility is the
+    // model-side gate (kiosk never receives a card). The card sits
+    // in the header slot — above and OUTSIDE the sections'
+    // `ListView`s, so the row-anchored compensation (#592) never
+    // sees it.
+    in property <bool> review-card-visible;
+    in property <string> review-card-title;
+    in property <string> review-card-body;
+    in property <string> review-card-action;
+    callback review-card-clicked();
 
     focus-on-tab-navigation: true;
     accessible-role: AccessibleRole.region;
@@ -169,6 +180,38 @@ export component TodayView inherits FocusScope {
                     convert-confirmed(r) => root.habits-convert-confirmed(r);
                     convert-cancelled() => root.habits-convert-cancelled();
                     convert-armed-row: root.habits-convert-armed-row;
+                }
+                // The surfacing card (DR-7 D-J10): the header slot,
+                // above the sections — outside every `ListView` (the
+                // #592 anchor keys on list rows; the card is not one).
+                if (root.review-card-visible): Rectangle {
+                    vertical-stretch: 0;
+                    background: Theme.surface;
+                    border-radius: Theme.radius-medium;
+                    border-width: Theme.focus-ring-width;
+                    border-color: Semantic.focus-ring;
+                    min-height: card-title.preferred-height + card-body.preferred-height
+                        + 2 * Theme.space-2;
+                    VerticalLayout {
+                        padding: Theme.space-2;
+                        spacing: Theme.space-1;
+                        card-title := RoleText {
+                            vertical-stretch: 0;
+                            role: Typography.caption;
+                            text: root.review-card-title;
+                        }
+                        card-body := RoleText {
+                            vertical-stretch: 0;
+                            role: Typography.caption;
+                            text-color: Theme.text-secondary;
+                            text: root.review-card-body;
+                        }
+                    }
+                    accessible-role: AccessibleRole.button;
+                    accessible-label: root.review-card-action;
+                    TouchArea {
+                        clicked => root.review-card-clicked();
+                    }
                 }
                 if (root.today.empty): EmptyState {
                     text: "Nothing due today";

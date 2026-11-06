@@ -162,11 +162,13 @@ enum EK {
     PlanCommit,
     PlanBox,
     PlanRemove,
-    /// The review walk family (#638): the opener and the walk's
-    /// carrier intents (the `WalkIntent` payload is uniform — the
-    /// matrix's cells are payload-blind).
+    /// The review walk family (#638): the opener plus three intent
+    /// keys — advance keeps the walk, the exit intents close it, the
+    /// row verbs keep it (the fixture's stage decides the exits).
     ReviewOpen,
-    WalkIntent,
+    WalkAdvance,
+    WalkExit,
+    WalkVerb,
 }
 
 fn key_of(effect: &UiEffect) -> EK {
@@ -230,7 +232,11 @@ fn key_of(effect: &UiEffect) -> EK {
         UiEffect::PlanBoxEarlier(_) | UiEffect::PlanBoxLater(_) => EK::PlanBox,
         UiEffect::PlanRemoveBox(_) => EK::PlanRemove,
         UiEffect::OpenReviewWalk => EK::ReviewOpen,
-        UiEffect::ReviewWalk(_) => EK::WalkIntent,
+        UiEffect::ReviewWalk(crate::router::WalkIntent::Advance) => EK::WalkAdvance,
+        UiEffect::ReviewWalk(
+            crate::router::WalkIntent::Record | crate::router::WalkIntent::Finish,
+        ) => EK::WalkExit,
+        UiEffect::ReviewWalk(_) => EK::WalkVerb,
         // The picker keys are applied in `apply_effect`, before the
         // table — the matrix never sees them (the menu-family
         // pattern). Their class cell is exercised via `class_of`.
@@ -496,11 +502,11 @@ fn class_table() -> Vec<(FK, EC, Exp)> {
     ] {
         row(kind, C::TrackOverlay, exp(Z, N));
     }
-    // REVIEW WALK (#638): the settle-then-run family's interim rows —
-    // the settle runs (a non-empty TEXT buffer commits, the overlay
-    // families close), the re-run consumes the effect (the walk's
-    // interpret arms land with the walk commit, which flips these
-    // cells to the effect-shaped opens/keeps).
+    // REVIEW WALK (#638): the intents are the class default — inert
+    // under `None` (no walk to act on) and settle-then-inert under a
+    // foreign flow (the settle closes the foreign flow, the re-run
+    // finds no walk; a non-empty TEXT buffer commits on the way). The
+    // opener's effect-shaped opens/keeps are the pair overrides below.
     for kind in [
         FK::None,
         FK::Due,
@@ -765,6 +771,32 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
     row(FK::ReviewWalk, E::SetModeNormal, exp(Z, K(KWalk)));
     row(FK::ReviewWalk, E::SetModeInsert, exp(Z, K(KWalk)));
     row(FK::ReviewWalk, E::CancelMove, exp(Z, N)); // CancelOnly: the settle closes
+    // -- REVIEW WALK rows (#638): the opener opens over every flow
+    //    (the settle is the terminator; the re-run arms the walk);
+    //    under the live walk it is the kept inert. The intents: the
+    //    advance and the row verbs keep the walk, the exit intents
+    //    close it (the fixture's Inbox stage decides — Back closes
+    //    there, Record closes gently with blank answers); from None
+    //    and under a foreign flow the intents are the class rows.
+    row(FK::None, E::ReviewOpen, exp(Z, K(KWalk)));
+    row(FK::Text, E::ReviewOpen, exp(NZ, K(KWalk)));
+    for kind in [
+        FK::Due,
+        FK::Move,
+        FK::Drag,
+        FK::Palette,
+        FK::Capture,
+        FK::FocusOverlay,
+        FK::TrackList,
+        FK::TrackForm,
+        FK::PlanForm,
+        FK::ReviewWalk,
+    ] {
+        row(kind, E::ReviewOpen, exp(Z, K(KWalk)));
+    }
+    row(FK::ReviewWalk, E::WalkAdvance, exp(Z, K(KWalk)));
+    row(FK::ReviewWalk, E::WalkVerb, exp(Z, K(KWalk)));
+    row(FK::ReviewWalk, E::WalkExit, exp(Z, N));
     // -- PLAN SURFACE rows (#622, D-3/D-4): from None the open
     //    toggles the view (flow-free), begin-place arms the form,
     //    remove-box is the one honest write; the swaps are inert
@@ -1063,11 +1095,13 @@ fn all_effects(fx: &Fixture) -> Vec<UiEffect> {
         UiEffect::PlanBoxEarlier(fx.tasks[0]),
         UiEffect::PlanBoxLater(fx.tasks[0]),
         UiEffect::PlanRemoveBox(fx.tasks[0]),
-        // The review walk family (#638): the opener plus one carrier
-        // row (the intents are payload-uniform in the matrix).
+        // The review walk family (#638): the opener plus one intent
+        // per matrix cell class (advance keeps, record exits, file
+        // arms — the row verbs share the keep cell).
         UiEffect::OpenReviewWalk,
         UiEffect::ReviewWalk(crate::router::WalkIntent::Advance),
         UiEffect::ReviewWalk(crate::router::WalkIntent::Record),
+        UiEffect::ReviewWalk(crate::router::WalkIntent::InboxFile),
     ]
 }
 
