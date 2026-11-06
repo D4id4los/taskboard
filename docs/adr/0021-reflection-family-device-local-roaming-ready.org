@@ -1,0 +1,144 @@
+#+title: ADR 0021: The Reflection Family — Device-Local by Ruling, Roaming-Ready by Construction
+- *Date:* 2026-11-05
+- *Status:* Accepted (lands with the v0.2 completion dispatch chunk 1, #636; storage + CLI are chunk 2 #637, the review walk chunk 3 #638)
+- *Depends on:* ADR 0019 (the undo command journal and its =NotUndoable= classification this family joins), ADR 0017 (the close/reopen asymmetry the undo refusal mirrors)
+- *Carriers:* #636 (this chunk), #637/#638 (the later chunks), the DR-7 design round; the fences #639–#642, #623 slice B, the =nextcloud-files-sync= milestone
+
+* Context
+
+#621's review-journal mandate and the R-1 device-local ruling (options
+report option C) ask for a self-contained review journal the user
+writes against day/week/month windows. Two collisions shaped the
+round: the *vocabulary collision* (VF-3) — =journal= is taken by the
+undo command journal (=JournalEntry=, =JournalId=, =JournalState= are
+exported names; =ViewId::Review= is taken by statistics) — and the
+*storage collision* (ADR 0019's substrate already owns every
+journal-shaped table name candidate in prose, if not in schema). The
+binding cross-milestone contract (impl-plan round-1 §3, quoted in the
+DR-7 round §3-A) fixes the shape:
+
+> 1. *Local-only home*: a domain entity + sqlite table + (per R-1) no
+>    appdata sidecar section, no board attachment, no new sync lane.
+>    Nothing journal-shaped enqueues =UpdateAppData=.
+> 2. *Roaming-ready shape*: =BTreeMap= home keyed by a roaming-family
+>    UUID (v7); embedded per-entry mutation clock; deletes are
+>    tombstone-shaped rows, never silent absence; hand-written tolerant
+>    serde for any future wire row; A1 newtypes at the trust boundary;
+>    unknown-field tolerance in any serialized form.
+> 3. *Vocabulary*: =journal= is taken by the undo substrate; nothing
+>    may shadow or overload the undo names.
+> 4. *The import-fold expectation*: per-entry clock LWW union across
+>    devices' files; append-only entries union cleanly; edits/deletes
+>    are possible, so tombstone discipline is not optional even
+>    device-local.
+
+Rulings consumed: R-2 (boundary-generic review primitive), R-5
+(curated flags, append-only), R-7 (gentle surfacing), P9/P12/P13 (undo
+everywhere, effort transparency, the review walk).
+
+* Decision
+
+1. *The vocabulary split* (D-J1). All code symbols are =Reflection*=
+   (module =reflection.rs=; =ReflectionEntry=, =ReflectionId=,
+   =ReflectionState=, =ReflectionTemplate=, =ReflectionAttributes=,
+   =HealthFlag=, =ReviewCadence=, =ReviewWindow=); the user-facing
+   selector is =journal= (chunk 2's CLI verb family and the export
+   domain). Guard rules: no new =Journal*= code symbol outside the
+   undo substrate's frozen-at-base homes (enforced by the domain
+   crate's vocabulary-guard test), the sqlite table is
+   =reflection_entries= (never =journal_entries=), and =Review= stays
+   with statistics — the walk surface is =ReviewWalk= everywhere.
+
+2. *The entity* (D-J2, D-J5). =ReflectionEntry= is a self-contained,
+   editable, tombstone-in-place row: roaming-family v7 id, cadence +
+   day label + *stored* window instants (never re-derived at read —
+   the day-window preference is device-local and may differ across
+   devices, so a stored entry means the same window everywhere), free
+   text, attributes, =created_at=/=updated_at= LWW clocks, and a
+   =deleted= tombstone that flips in place (delete *is* an upsert).
+   The state home is =ReflectionState { entries: BTreeMap }= nested on
+   =AppState.reflection= like =TrackingState=; tombstoned rows stay in
+   the map and reads filter through the one =live_entries()= seam.
+
+3. *Curated enums behind A1 mints + tolerant serde* (D-J3, D-J4).
+   =Rating= is one hand-rolled A1 newtype (strict decode — mints
+   decode strictly, leniency lives one layer up); =HealthFlag= is a
+   curated, append-only kebab enum (the ruled v1 set: =migraine=,
+   =minor-headache=, =medium-headache=, =cold-or-flu=, =allergies=,
+   =cramps=, =poor-sleep=, =overwhelmed=, =good-day=); unknown flag
+   *names* on a decode path park verbatim in =extra_flags= and
+   re-serialize byte-stably (decode → encode is stable). The
+   four-prompt template core (achievements, gratitude, improvement
+   ideas, open loops — the amended 2026-11-05 ruling) ships as
+   compiled-in curated data (=DEFAULT_TEMPLATES=), not config, not
+   rows; the type shape is the seam for #639's stored templates.
+
+4. *The command family* (D-J6). Three verbs —
+   =RecordReflection=, =UpdateReflection=, =DeleteReflection= — with
+   *windows as data*: the caller derives the window through the pure
+   =review_window(cadence, reference, calendar)= and the planner stays
+   calendar-blind, validating structurally through the
+   =ReviewWindow= A1 mint (Day exactly 24h, Week exactly 168h, Month
+   monotonicity only; the day label taken on trust). Edits are
+   change-mask + flag-delta (never whole-set replace); validation
+   precedes no-op detection; idempotent repeats and the
+   mask-no-churn rule are the accepted =NoOp=. *Zero =UpdateAppData=*
+   — no outbox op of any kind is ever enqueued for the family (pinned
+   by test).
+
+5. *The undo arm* (D-J7). The three verbs journal with the typed
+   =NotUndoableReason::ReflectionSurface=, for three recorded reasons:
+   (i) the inverse of a record is a tombstone — a *different stored
+   fact* than row-absence (the =LogHabit= lossiness); (ii) un-delete
+   would resurrect with a minted-then-inverted clock (ADR 0017's
+   close/reopen asymmetry in mirror); (iii) the family's own verbs are
+   the recovery surface for self-authored text, and the task
+   operations a review walk dispatches ride existing, classified
+   commands — P9's undo everywhere is served there.
+
+6. *The boundary-generic review primitive* (D-J8). =ReviewCadence= +
+   =review_window= compose the *one* period flooring
+   (=habit::period_start=/=period_after=, decision P-8 keeps it in
+   =habit.rs=) with =days::window_start= — one flooring
+   implementation, two consumers (habits, review). The read
+   projections =window_misses= (live ∧ open, either anchor qualifying,
+   ordered =(anchor, order, id)=) and =window_done= (live ∧ done in
+   window, ordered =(done, id)=) are pure and pin the
+   no-second-classification consistency against =today_sections=.
+
+7. *Derived-at-read gentle surfacing* (D-J10) — recorded here,
+   shipped by chunk 3: =review_due= is a pure derivation ("any live
+   entry for the window" is the check), one surfacing card, no
+   machinery; the reminders-pipeline ride-in and the tick ride-in were
+   declined. =review_due= is deliberately *not* in this chunk.
+
+* Consequences
+
+- *Device-local in v0.2, with the import-fold readiness stated by
+  construction*: rows are read exactly as stored; the future union
+  keys on the entry UUID; tombstones are rows, so the fold needs no
+  derivation machinery; the embedded LWW clock and the tolerant serde
+  are the wire row's whole shape. The first consumer is the
+  files-sync import fold (#631, milestone =nextcloud-files-sync=,
+  unblocked at chunk 2's merge).
+- *Storage is the R-11 exception*: chunk 1 lands the
+  =UpsertReflectionEntry= action and a runtime-checked dead write arm
+  (loud failure, batch rollback) until chunk 2's migration 0022
+  converts it to compile-checked macros and adds the load codec (#637
+  names the hydrating chunk). Nothing in chunk 1's suites reaches the
+  dead arm.
+- *Retention/GC is future work*: the scale sanity (~0.5–2 KB/day) makes
+  unbounded growth tolerable for the milestone; a tombstone/prune
+  policy rides the sync-files GC design, not this family.
+- *The fences* (#639–#642, #623 slice B, the =nextcloud-files-sync=
+  milestone): stored/editable templates, trend mining, the walk
+  surfaces, the CLI family, and the export leg are separately
+  dispatched chunks — this ADR constrains their shapes, it does not
+  ship them.
+- *Numbering note* (D-J15): the DR-7 round's §1 anchor named 0020 as
+  the next free ADR; that number was taken by the files-sync
+  substrate before dispatch. Re-verified at the chunk base
+  (2026-11-05, =8ea54d77=): the next free number was 0021, written
+  here; migration 0021 was also taken (=0021_break_rule_board.sql=),
+  so chunk 2's migration is 0022. Renumbering at rebase is the
+  sanctioned mechanical response if another collision appears.
