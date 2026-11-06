@@ -149,7 +149,7 @@ pub use recur::{
 pub use reflection::{
     DEFAULT_TEMPLATES, HealthFlag, InvalidRating, InvalidReviewWindow, Rating,
     ReflectionAttributes, ReflectionEntry, ReflectionState, ReflectionTemplate, ReviewCadence,
-    ReviewWindow, UnknownHealthFlag, review_window,
+    ReviewDue, ReviewWindow, UnknownHealthFlag, compose_reflection_text, review_due, review_window,
 };
 pub use reminders::{
     AdhocAlarm, AdhocWhen, AtInstant, BreakRule, Insistence, InvalidAtInstant,
