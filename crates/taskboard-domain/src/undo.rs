@@ -261,7 +261,10 @@ fn record_entry(
         // Never journaled (the wrapper routes Undo/Redo; RequestSync
         // plans an empty batch and never reaches this point — both arms
         // stay for totality).
-        StateCommand::Undo | StateCommand::Redo | StateCommand::RequestSync => {
+        StateCommand::Undo
+        | StateCommand::Redo
+        | StateCommand::RequestSync
+        | StateCommand::UpdateSettings { .. } => {
             UndoFacts::NotUndoable(NotUndoableReason::BoardCeremony)
         }
     };
@@ -361,7 +364,10 @@ fn touched_board(app: &AppState, command: &StateCommand) -> Option<crate::ids::B
         | StateCommand::AdjustHabitLog { habit, .. }
         | StateCommand::DeleteHabit { habit } => app.habits.habits.get(habit).map(|h| h.board),
         StateCommand::RestoreTask { id, .. } => task_board(*id),
-        StateCommand::Undo | StateCommand::Redo | StateCommand::RequestSync => None,
+        StateCommand::Undo
+        | StateCommand::Redo
+        | StateCommand::RequestSync
+        | StateCommand::UpdateSettings { .. } => None,
     }
 }
 
@@ -760,7 +766,8 @@ impl JournalEntry {
             | StateCommand::ConvertHabitToSeries { .. }
             | StateCommand::Undo
             | StateCommand::Redo
-            | StateCommand::RequestSync => Err(CommandError::TargetNotUndoable(
+            | StateCommand::RequestSync
+            | StateCommand::UpdateSettings { .. } => Err(CommandError::TargetNotUndoable(
                 NotUndoableReason::BoardCeremony,
             )),
         }

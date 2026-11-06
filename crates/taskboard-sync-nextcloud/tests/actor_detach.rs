@@ -31,6 +31,10 @@ impl SyncStateReader for BoardlessView {
     ) -> taskboard_domain::BoxFuture<'_, Result<PersistedState, RepositoryError>> {
         Box::pin(async { Ok(PersistedState::default()) })
     }
+
+    fn read_settings(&self) -> taskboard_domain::SettingsSnapshot {
+        taskboard_domain::SettingsSnapshot::default()
+    }
 }
 
 #[tokio::test]

@@ -143,6 +143,7 @@ async fn run<T: FilesTransport>(
                 Ok(
                     SystemEvent::StorageFailed
                         | SystemEvent::TaskResurrected(_)
+                        | SystemEvent::SettingsChanged
                         | SystemEvent::NetworkLost
                         | SystemEvent::NetworkRestored
                         | SystemEvent::ConnectorLost(_)
@@ -151,6 +152,13 @@ async fn run<T: FilesTransport>(
                     // The whole network vocabulary belongs to the
                     // app-layer authority — this actor counts nothing
                     // and publishes nothing (the acceptance pin).
+                    // `SettingsChanged` rides the same ignore arm as a
+                    // recorded limitation (round-5 chunk 5, D-5.5 item
+                    // 7): no engine facet to read live settings through
+                    // (not a board connector — DR-8's boundary), so the
+                    // cadence stays the boot capture; the backlog
+                    // follow-up threads a settings reader into the
+                    // files-sync gate (#673).
                 }
                 Err(broadcast::error::RecvError::Closed) => {
                     tracing::warn!("system broadcast closed; continuing without shutdown watch");

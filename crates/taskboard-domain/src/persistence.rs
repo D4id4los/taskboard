@@ -75,6 +75,13 @@ pub trait SyncStateReader: Send + Sync + std::fmt::Debug {
     /// (stopped or restarting); [`RepositoryError::Corrupted`] is produced
     /// by implementations whose storage backend can fail to decode.
     fn read_state(&self) -> BoxFuture<'_, Result<PersistedState, RepositoryError>>;
+
+    /// The engine's live settings snapshot (round-5 chunk 5, D-5.5):
+    /// the sync actor's per-cycle cadence read. Lock-free in
+    /// production (the engine handle reads its own published
+    /// `ArcSwap`), so no future and no error arm — a stopped engine
+    /// still has a last published value.
+    fn read_settings(&self) -> crate::settings::SettingsSnapshot;
 }
 
 /// The full persisted dataset, hydrated at boot.
@@ -125,6 +132,10 @@ impl From<PersistedState> for AppState {
             sync: persisted.sync,
             undo: crate::journal::UndoView::derive(&persisted.journal),
             last_updated: None,
+            // Memory-only: the engine's spawn seeds the real snapshot;
+            // this conversion (test fakes, doc examples) carries the
+            // default.
+            settings: crate::settings::SettingsSnapshot::default(),
         }
     }
 }

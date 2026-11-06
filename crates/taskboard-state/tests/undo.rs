@@ -59,6 +59,10 @@ impl taskboard_domain::SyncStateReader for FailingRepository {
     ) -> taskboard_domain::BoxFuture<'_, Result<PersistedState, RepositoryError>> {
         self.inner.read_state()
     }
+
+    fn read_settings(&self) -> taskboard_domain::SettingsSnapshot {
+        self.inner.read_settings()
+    }
 }
 
 /// The running engine over a bound board seed (the undo line's e2e

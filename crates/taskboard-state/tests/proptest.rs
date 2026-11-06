@@ -263,6 +263,7 @@ proptest! {
             reflection: taskboard_domain::ReflectionState::default(),
             sync: persisted.sync.clone(),
             last_updated: None,
+            settings: taskboard_domain::SettingsSnapshot::default(),
         };
         let ids = CountingIds::new();
         let (merged, mut actions, _events) = apply_sync_report(
@@ -692,6 +693,10 @@ fn drive_sequence(steps: &[Step]) -> Result<(), TestCaseError> {
                 reflection: taskboard_domain::ReflectionState::default(),
                 sync: disk_derived.sync,
                 last_updated: mem_after.last_updated,
+                // The spawn seed is the test-policy default on both
+                // sides (the memory core carries it from
+                // `from_persisted`'s default).
+                settings: mem_after.settings.clone(),
             };
             prop_assert_eq!(
                 &disk_projection,
