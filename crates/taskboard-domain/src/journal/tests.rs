@@ -378,3 +378,50 @@ fn undo_view_derives_the_line_projection() {
     }
     assert_eq!(UndoView::derive(&journal).recent.len(), UNDO_RECENT_WINDOW);
 }
+
+/// DR-7 D-J7: the reflection arm's serde name is the variant name
+/// (consistent with the sibling surfaces), and the `command_label`
+/// lockstep grew its three arms — compilation is the lockstep; the
+/// labels themselves are presentation-only and unasserted beyond their
+/// existence.
+#[test]
+fn reflection_surface_serde_name_pins_and_labels_carry_the_arms() {
+    let json = serde_json::to_string(&NotUndoableReason::ReflectionSurface).unwrap();
+    assert_eq!(json, r#""ReflectionSurface""#);
+    let back: NotUndoableReason = serde_json::from_str(&json).unwrap();
+    assert_eq!(back, NotUndoableReason::ReflectionSurface);
+    for (command, _label) in [
+        (
+            crate::messages::StateCommand::RecordReflection {
+                cadence: crate::reflection::ReviewCadence::Day,
+                day: chrono::NaiveDate::from_ymd_opt(2026, 11, 5).unwrap(),
+                window: (ts(100), ts(100 + 86_400)),
+                text: String::new(),
+                mood: None,
+                energy: None,
+                flags: std::collections::BTreeSet::new(),
+            },
+            "Record reflection",
+        ),
+        (
+            crate::messages::StateCommand::UpdateReflection {
+                id: crate::ids::ReflectionId::from(uuid::Uuid::from_u128(1)),
+                text: None,
+                mood: None,
+                energy: None,
+                flags_add: std::collections::BTreeSet::new(),
+                flags_remove: std::collections::BTreeSet::new(),
+            },
+            "Edit reflection",
+        ),
+        (
+            crate::messages::StateCommand::DeleteReflection {
+                id: crate::ids::ReflectionId::from(uuid::Uuid::from_u128(1)),
+            },
+            "Delete reflection",
+        ),
+    ] {
+        let label = command_label(&command);
+        assert!(!label.is_empty(), "every arm carries a label");
+    }
+}

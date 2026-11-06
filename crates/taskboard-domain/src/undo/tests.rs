@@ -2601,3 +2601,105 @@ fn both_convert_directions_journal_not_undoable_and_refuse_typed() {
         .expect("the minted head links to the habit");
     assert!(linked.is_live());
 }
+
+// ---- DR-7 chunk 1: the reflection undo arm (§5.3) ----
+
+/// A record → the typed `ReflectionSurface` fact; a later undo of
+/// the reflection head refuses with the same typed reason.
+#[test]
+fn reflection_heads_are_typed_not_undoable() {
+    let mut h = Harness::new();
+    let (day, (start, end)) = reflection_day_window();
+    let recorded = h
+        .exec(&StateCommand::RecordReflection {
+            cadence: crate::reflection::ReviewCadence::Day,
+            day,
+            window: (start, end),
+            text: "the day's close".into(),
+            mood: Some(4),
+            energy: None,
+            flags: std::collections::BTreeSet::from([crate::reflection::HealthFlag::GoodDay]),
+        })
+        .expect("accepted");
+    let CommandOutcome::ReflectionRecorded { entry } = recorded else {
+        panic!("wrong receipt");
+    };
+    let facts = &h.journal.entries.last().expect("journaled").facts;
+    assert!(
+        matches!(
+            facts,
+            UndoFacts::NotUndoable(NotUndoableReason::ReflectionSurface)
+        ),
+        "typed classification, no text"
+    );
+    // The head refuses typed: `TargetNotUndoable(ReflectionSurface)`.
+    let err = plan_undo(
+        &h.app(),
+        &h.outbox,
+        &h.journal,
+        &h.ids,
+        &crate::reminders::ReminderDefaults::default(),
+        Harness::day(),
+        ts(h.now),
+    )
+    .expect_err("the head is not undoable");
+    assert!(matches!(
+        err,
+        CommandError::TargetNotUndoable(NotUndoableReason::ReflectionSurface)
+    ));
+    let _ = entry;
+}
+
+/// An edit and a tombstone classify the same way; a no-op record
+/// journals nothing (the empty-batch rule at the undo tier).
+#[test]
+fn reflection_edits_and_deletes_classify_not_undoable() {
+    let mut h = Harness::new();
+    let (day, (start, end)) = reflection_day_window();
+    let id = crate::ids::ReflectionId::from(uuid::Uuid::from_u128(701));
+    h.disk.reflection.entries.insert(
+        id,
+        crate::reflection::ReflectionEntry {
+            id,
+            cadence: crate::reflection::ReviewCadence::Day,
+            day,
+            window_start: start,
+            window_end: end,
+            text: "seeded".into(),
+            attributes: crate::reflection::ReflectionAttributes::default(),
+            created_at: ts(900_000),
+            updated_at: ts(900_000),
+            deleted: false,
+        },
+    );
+    h.exec(&StateCommand::UpdateReflection {
+        id,
+        text: Some("edited".into()),
+        mood: None,
+        energy: None,
+        flags_add: std::collections::BTreeSet::new(),
+        flags_remove: std::collections::BTreeSet::new(),
+    })
+    .expect("accepted");
+    h.exec(&StateCommand::DeleteReflection { id })
+        .expect("accepted");
+    for entry in &h.journal.entries {
+        assert!(matches!(
+            entry.facts,
+            UndoFacts::NotUndoable(NotUndoableReason::ReflectionSurface)
+        ));
+    }
+    assert_eq!(h.journal.entries.len(), 2);
+    let _ = (day, start, end);
+}
+
+fn reflection_day_window() -> (
+    chrono::NaiveDate,
+    (chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>),
+) {
+    use chrono::TimeZone as _;
+    let day = chrono::NaiveDate::from_ymd_opt(2026, 11, 5).unwrap();
+    let start = chrono::Utc.with_ymd_and_hms(2026, 11, 5, 0, 0, 0).unwrap();
+    let end = chrono::Utc.with_ymd_and_hms(2026, 11, 6, 0, 0, 0).unwrap();
+    (day, (start, end))
+}
