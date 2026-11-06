@@ -5442,6 +5442,24 @@ pub(crate) fn install(
                     return false;
                 }
             }
+            // The quick-list flyout's ladder (round-5 D6) is the same
+            // modal shape: its scope holds focus and owns the arrows,
+            // Return and Escape — without the decline the date
+            // picker's `picker.up/down` steal the arrows and the grid
+            // takes focus back. Its arms carry no C-n/C-p.
+            if window.global::<crate::TimeFieldFacts>().get_open() {
+                let ladder_key = [
+                    slint::platform::Key::UpArrow,
+                    slint::platform::Key::DownArrow,
+                    slint::platform::Key::Escape,
+                    slint::platform::Key::Return,
+                ]
+                .into_iter()
+                .any(|key| text == SharedString::from(key));
+                if ladder_key {
+                    return false;
+                }
+            }
             adapter.borrow_mut().intercept(&window, &text, modifiers)
         });
     }
