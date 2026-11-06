@@ -123,6 +123,16 @@ and fixing bugs. Full strategy: `docs/testing_strategy.org`. Hard rules:
 - **Deterministic by construction**: no fixed sleeps waiting for state;
   poll a predicate with a deadline, join handles, or inject a clock seam.
   Assert terminal state, never transient intermediates or wall-clock time.
+- **Clock discipline (2026-11-06)**: a test whose fixture or asserted
+  output depends on the wall clock must use the tool that matches its
+  assertion's oracle — anchor the fixture for relative oracles, freeze
+  the render clock (`UiSettings::clock`) for committed artifacts that
+  embed clock-derived text, single-read capture for exact instants,
+  injected `Arc<dyn Clock>` for actor stamps. The rule, the seam
+  inventory, and the failure-window law:
+  `docs/testing_strategy.org` §6.1–6.2 and
+  `docs/coding_guidelines.org` §2.2; the audit:
+  `.artifacts/reports/2026-11-06-clock-seam-audit-report.md`.
 - **No pins of "today's behavior"**: if a comment says "current behavior",
   the assertion is probably a limitation, not a contract. Test the desired
   semantics; if undesired behavior must be tolerated temporarily, name the
