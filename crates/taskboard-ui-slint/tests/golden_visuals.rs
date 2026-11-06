@@ -836,6 +836,13 @@ fn the_review_empty_golden_holds() {
             // genuinely tracking-free (the board chrome stays; the
             // toolbar's timer chip goes with the entry).
             state.tracking.entries.clear();
+            // Tier 1's D-B9 extension (#623 slice B): stored journal
+            // entries alone keep the view standing now — and
+            // `golden_state` seeds the review-card pin entry (#638) —
+            // so the empty tier's fixture must be genuinely
+            // reflection-free too (the two-leg clearing above is the
+            // recorded fixture discipline).
+            state.reflection.entries.clear();
             let state = Arc::new(ArcSwap::from_pointee(state));
             capture_golden(
                 driver,
@@ -918,6 +925,30 @@ fn the_review_ledger_golden_holds() {
                 Some(1_800),
                 None,
             );
+            // The reflection sections (#623 slice B): one rated Day
+            // entry anchored to the same pinned instant — its stored
+            // window_start sits inside both trailing windows and the
+            // running day's bucket, so the sections and the journal
+            // row render deterministically under the frozen clock.
+            let mut journal = taskboard_domain::ReflectionEntry {
+                id: taskboard_domain::ReflectionId::from_uuid(uuid::Uuid::from_u128(0x623)),
+                cadence: taskboard_domain::ReviewCadence::Day,
+                day: (now - chrono::TimeDelta::try_hours(3).unwrap()).date_naive(),
+                window_start: now - chrono::TimeDelta::try_hours(3).unwrap(),
+                window_end: now + chrono::TimeDelta::try_hours(21).unwrap(),
+                text: "Refit plan held; the reading nook is done.".to_owned(),
+                attributes: taskboard_domain::ReflectionAttributes::default(),
+                created_at: now,
+                updated_at: now,
+                deleted: false,
+            };
+            journal.attributes.mood = taskboard_domain::Rating::try_new(4).ok();
+            journal.attributes.energy = taskboard_domain::Rating::try_new(2).ok();
+            journal
+                .attributes
+                .flags
+                .insert(taskboard_domain::HealthFlag::PoorSleep);
+            state.reflection.entries.insert(journal.id, journal);
             let state = Arc::new(ArcSwap::from_pointee(state));
             let settings = UiSettings {
                 clock: Some(now),
