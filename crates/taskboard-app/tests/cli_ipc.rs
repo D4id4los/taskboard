@@ -910,3 +910,66 @@ async fn e12_no_ipc_flag_overrides_an_enabled_file() {
         "the daemon survives the refused stop"
     );
 }
+
+/// J20 (extends the T16 shape): the `journal` family over the socket —
+/// a `journal add` relayed through the daemon lands in the *daemon's*
+/// database (the D-TC1 lane pin, reflection-verified: a later fallback
+/// one-shot `journal show` resolves the minted entry), and the
+/// `export --what journal` payload rides the byte-verbatim relay —
+/// byte-identical to the daemon-down fallback run (D-J12's raw-payload
+/// contract under ADR 0012; no relay change).
+#[cfg(unix)]
+#[tokio::test]
+async fn j20_journal_and_its_export_over_the_relay() {
+    let install = Install::new("j20-journal");
+    let mut daemon = install.spawn_daemon();
+    install.wait_ready().await;
+
+    // `journal add` through the socket: the receipt is the typed JSON
+    // payload naming the minted entry.
+    let (code, out, err) = install.run(&["--json", "journal", "add", "relay", "entry"]);
+    assert_eq!(code, Some(0), "{out} {err}");
+    let receipt: serde_json::Value = serde_json::from_str(out.trim()).expect("add receipt json");
+    assert_eq!(receipt["created"], serde_json::Value::Bool(true));
+    let entry_id = receipt["entry"]["entry_id"].as_str().expect("the uuid");
+
+    // The export through the socket is the raw CSV payload (exit 0 —
+    // the envelope exception), carrying the relayed row.
+    let (code, served, err) = install.run(&["export", "--what", "journal", "--format", "csv"]);
+    assert_eq!(code, Some(0), "{err}");
+    assert!(
+        served.starts_with(
+            "entry_id,day,cadence,window_start,window_end,mood,energy,flags,text,created_at,updated_at\n"
+        ),
+        "the raw journal CSV header rides stdout verbatim"
+    );
+    assert_eq!(served.lines().count(), 2, "one live row");
+    assert!(served.contains(entry_id));
+
+    // Daemon down: the fallback one-shot sees the daemon's row (the
+    // mutation landed in the serving database, not a boot-local one).
+    let (code, _, _) = install.run(&["daemon", "stop"]);
+    assert_eq!(code, Some(0));
+    wait_until(
+        || {
+            let (_, out, _) = install.run(&["--json", "status"]);
+            out.contains("\"daemon\":false")
+        },
+        "daemon stopped",
+    )
+    .await;
+    let _ = daemon.0.kill();
+
+    let (code, out, err) = install.run(&["--json", "journal", "show", entry_id]);
+    assert_eq!(code, Some(0), "the relayed entry is durable: {out} {err}");
+    let shown: serde_json::Value = serde_json::from_str(out.trim()).expect("show receipt json");
+    assert_eq!(shown["entry_id"], entry_id);
+    assert_eq!(shown["text"], "relay entry");
+
+    let (code, fallback, err) = install.run(&["export", "--what", "journal", "--format", "csv"]);
+    assert_eq!(code, Some(0), "{err}");
+    assert_eq!(
+        served, fallback,
+        "the journal export payload is byte-identical across the socket and in-process lanes"
+    );
+}
