@@ -10,7 +10,6 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 ### Added
 
-<<<<<<< HEAD
 - Live settings (GUI review round 5, chunk 5): every editable General /
   Reminders / Sync-Timing / Display setting now applies to the running
   app without a restart. The engine owns a typed `SettingsSnapshot`
@@ -32,8 +31,6 @@ The workspace carries a single global version (see `docs/architecture.org`);
   one boot arc per process; the focus spawn decision is boot-time).
   Files-sync keeps its boot-captured cadence (no engine facet — a
   recorded follow-up).
-||||||| parent of b60d1607 (docs(changelog): the review walk entry)
-=======
 - The review walk and its gentle surfacing (#638, #621, DR-7 chunk 3):
   `Flow::ReviewWalk` — the day-cadence walk as a subjectless XOR flow
   with the three-stage machine (Inbox triage over the shared inbox
@@ -52,7 +49,6 @@ The workspace carries a single global version (see `docs/architecture.org`);
   `review.open` action (no preset binding; P7) and desktop-only (the
   kiosk three-layer exclusion, pinned). `compose_reflection_text`
   folds the walk's answers into entry text shared with the CLI.
->>>>>>> b60d1607 (docs(changelog): the review walk entry)
 - The reflection family's storage and CLI tier (#637, DR-7 chunk 2):
   migration 0022 ships the device-local `reflection_entries` table
   (tombstone-in-place rows, JSON-array flag columns, no foreign keys)

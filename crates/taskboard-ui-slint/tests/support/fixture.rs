@@ -15,21 +15,6 @@ use taskboard_domain::{
     TaskClocks, TaskId,
 };
 
-/// The pinned render clock of every clock-exposed test in this
-/// binary (`docs/testing_strategy.org` §6.2, #660): a fixed mid-day UTC
-/// instant — the review-ledger template's capture class. Seeds derive
-/// from it; the mount freezes `day_ctx` at it. Never read the wall
-/// clock next to it.
-pub const PINNED_NOW: chrono::DateTime<chrono::Utc> = {
-    let Some(date) = chrono::NaiveDate::from_ymd_opt(2026, 11, 6) else {
-        panic!("2026-11-06 is a calendar date");
-    };
-    let Some(instant) = date.and_hms_opt(12, 0, 0) else {
-        panic!("12:00:00 is a wall time");
-    };
-    instant.and_utc()
-};
-
 fn epoch() -> chrono::DateTime<chrono::Utc> {
     BoardClocks::epoch()
 }
@@ -332,17 +317,25 @@ pub fn journey_state() -> (Fixture, AppState) {
     (fixture, state)
 }
 
+/// The pinned render clock of every clock-exposed test in this
+/// binary (`docs/testing_strategy.org` §6.2, #660): a fixed mid-day UTC
+/// instant — the review-ledger template's capture class. Seeds derive
+/// from it; the mount freezes `day_ctx` at it. Never read the wall
+/// clock next to it.
+pub const PINNED_NOW: chrono::DateTime<chrono::Utc> = {
+    let Some(date) = chrono::NaiveDate::from_ymd_opt(2026, 11, 6) else {
+        panic!("2026-11-06 is a calendar date");
+    };
+    let Some(instant) = date.and_hms_opt(12, 0, 0) else {
+        panic!("12:00:00 is a wall time");
+    };
+    instant.and_utc()
+};
+
 /// The clean two-stack board (the golden tier's fixture, chunk plan
 /// §7): no overdue banner (banner labels derive from wall-clock
 /// relative time and would flake across hour boundaries), no flow
 /// hint, sync idle.
-///
-/// Delegates to [`golden_state_at`] with the wall clock: the
-/// structural-only journey consumers keep their shape. A test that
-/// commits a clock-derived artifact (a golden) or asserts an exact
-/// instant uses `golden_state_at(PINNED_NOW)` and pins the mount's
-/// `UiSettings::clock` to the same instant (`docs/testing_strategy.org`
-/// §6.2).
 #[must_use]
 pub fn golden_state() -> (Fixture, AppState) {
     golden_state_at(chrono::Utc::now())
@@ -351,6 +344,11 @@ pub fn golden_state() -> (Fixture, AppState) {
 /// [`golden_state`] seeded against an explicit `now`: the running
 /// timer's open entry is stamped `now − 12 m`, so a pass whose clock
 /// is frozen at `now` renders the chip at the same age every run.
+/// The review walk's surfacing card (#638) is state-derived with
+/// wall-clock date text, so the pin lives here: a live Day entry for
+/// the latest closed window clears the card for this run — the walk
+/// journeys that need the due state clear the pin
+/// (`journeys::walk_fixture_state`).
 #[must_use]
 pub fn golden_state_at(now: chrono::DateTime<chrono::Utc>) -> (Fixture, AppState) {
     let board_id = BoardId::from_uuid(uuid::Uuid::now_v7());
@@ -371,10 +369,35 @@ pub fn golden_state_at(now: chrono::DateTime<chrono::Utc>) -> (Fixture, AppState
     state.tasks.insert(task1, task(task1, stack_a, 1));
     state.tasks.insert(task2, task(task2, stack_b, 0));
     // The seeded running timer (DR-5/4, D-TU12): task1 holds the open
-    // entry, 12 minutes old at `now` — the chip and the badge appear
-    // in the golden matrix.
+    // entry, 12 minutes old at fixture construction — the chip and
+    // the badge appear in the golden matrix (wall-clock-derived text
+    // is the established golden class; a minute-boundary straddle is
+    // the recorded residual risk).
     let open_task1 = add_open_entry(&mut state, task1, "task-1", now - TimeDelta::minutes(12));
     debug_assert!(state.tracking.entries.contains_key(&open_task1));
+    // The review-card pin (#638): the latest closed Day window is
+    // already recorded, so the derived card never leaks into a
+    // golden (see `golden_state`'s doc).
+    let calendar = taskboard_domain::DayCalendar {
+        day_start_time: chrono::NaiveTime::MIN,
+        offset: chrono::FixedOffset::east_opt(0).expect("utc"),
+    };
+    let yesterday = calendar.today(now).pred_opt().expect("yesterday");
+    let window =
+        taskboard_domain::review_window(taskboard_domain::ReviewCadence::Day, yesterday, calendar);
+    let entry = taskboard_domain::ReflectionEntry {
+        id: taskboard_domain::ReflectionId::from_uuid(uuid::Uuid::now_v7()),
+        cadence: taskboard_domain::ReviewCadence::Day,
+        day: window.day(),
+        window_start: window.start(),
+        window_end: window.end(),
+        text: String::new(),
+        attributes: taskboard_domain::ReflectionAttributes::default(),
+        created_at: now,
+        updated_at: now,
+        deleted: false,
+    };
+    state.reflection.entries.insert(entry.id, entry);
     (
         Fixture {
             stack_a,
@@ -483,8 +506,6 @@ pub fn two_board_state() -> (TwoBoardFixture, AppState) {
 /// so the journey's walk is deterministic without injecting a
 /// `DayCtx`. Returns the two walked task ids (board one's first, then
 /// board two's task in display order: overdue sorts (order, id)).
-/// Delegates to [`today_overdue_state_at`] with the wall clock — same
-/// contract as [`golden_state`]'s delegation note.
 #[must_use]
 pub fn today_overdue_state() -> (TwoBoardFixture, AppState, [TaskId; 2]) {
     today_overdue_state_at(chrono::Utc::now())
@@ -494,16 +515,38 @@ pub fn today_overdue_state() -> (TwoBoardFixture, AppState, [TaskId; 2]) {
 /// overdue anchor stays midnight-aligned at the *parameter's*
 /// yesterday and the chip entry sits at `now − 12 m`, so a pass
 /// frozen at `now` renders the same rows and captions every run.
+/// The review-card pin (#638) lives here too: the goldens must never
+/// bake in the state-derived card (see `golden_state_at`).
 #[must_use]
 pub fn today_overdue_state_at(
     now: chrono::DateTime<chrono::Utc>,
 ) -> (TwoBoardFixture, AppState, [TaskId; 2]) {
     let (fixture, mut state) = two_board_state();
+    let calendar = taskboard_domain::DayCalendar {
+        day_start_time: chrono::NaiveTime::MIN,
+        offset: chrono::FixedOffset::east_opt(0).expect("utc"),
+    };
+    let yesterday = calendar.today(now).pred_opt().expect("yesterday");
+    let window =
+        taskboard_domain::review_window(taskboard_domain::ReviewCadence::Day, yesterday, calendar);
+    let entry = taskboard_domain::ReflectionEntry {
+        id: taskboard_domain::ReflectionId::from_uuid(uuid::Uuid::now_v7()),
+        cadence: taskboard_domain::ReviewCadence::Day,
+        day: window.day(),
+        window_start: window.start(),
+        window_end: window.end(),
+        text: String::new(),
+        attributes: taskboard_domain::ReflectionAttributes::default(),
+        created_at: now,
+        updated_at: now,
+        deleted: false,
+    };
+    state.reflection.entries.insert(entry.id, entry);
     // Midnight-aligned (round-3 D9): the due phrases carry the UTC
     // `· HH:MM` suffix for non-midnight instants, and a minute-
     // relative stamp flips its caption bucket across minute
-    // boundaries — midnight renders the date-only shape, byte-stable
-    // for a pinned render clock.
+    // boundaries — midnight renders the date-only shape, stable for
+    // the run's lifetime and identical across runs.
     let overdue_stamp = now
         .date_naive()
         .checked_sub_signed(chrono::TimeDelta::try_days(1).unwrap())

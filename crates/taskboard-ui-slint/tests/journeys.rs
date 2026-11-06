@@ -14717,6 +14717,10 @@ use taskboard_domain::{Board, BoardClocks, BoardId, Color, Stack, StackClocks, S
 #[allow(clippy::too_many_lines)] // one fixture builder, kept flat
 fn walk_fixture_state() -> (fixture::Fixture, AppState, StackId, Vec<TaskId>) {
     let (fixture, mut state) = fixture::golden_state();
+    // The golden state pins the review card away (wall-clock text in
+    // goldens is the forbidden class); the walk journeys need the due
+    // state — clear the pin.
+    state.reflection.entries.clear();
     let inbox = BoardId::from_uuid(uuid::Uuid::new_v4());
     state.boards.insert(
         inbox,
