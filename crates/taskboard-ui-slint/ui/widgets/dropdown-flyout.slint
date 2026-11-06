@@ -1,0 +1,150 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The dropdown flyout's window-level panel (round-5 D6): the row
+// rendering moved verbatim out of the in-widget displaced underlay
+// (the F9/F14 fix — the settings `Flickable` can no longer clip it).
+// Mounted by the app window from `DropdownFacts` with the date-picker
+// overlay's clamp/flip grammar; the ladder stays in the field's scope
+// (the widget's), so this panel is deliberately NOT a FocusScope —
+// the walk must never be able to land here (the recorded negative:
+// a traversal target inside the flyout would be unmounted by the
+// close, taking the walk's focus down with it). Row intents report
+// back through callbacks — the widget's surface-neutral contract.
+
+import { Theme, Typography, RoleText, Semantic } from "../theme.slint";
+import { DropdownRow, DropdownIndicator, DropdownFacts } from "dropdown.slint";
+import { Icon } from "icon.slint";
+import { ListView } from "listview.slint";
+
+export component DropdownFlyout inherits Rectangle {
+    // The pushed rows (the mount binds the same model the widget's
+    // field renders — one source, the adapter's push).
+    in property <[DropdownRow]> rows;
+    // The row intents (the widget's own callbacks, re-exposed at the
+    // panel the rows now live in).
+    callback row-activated(int);
+    callback row-context(int, int, int);
+    callback row-hovered(int, length, length, length, length);
+    callback row-unhovered();
+
+    // Six-row cap; `ListView` scrolls the rest.
+    height: min(root.rows.length * Theme.space-6, Theme.space-6 * 6);
+    background: Theme.surface-raised;
+    border-radius: Theme.radius-small;
+    border-width: Theme.focus-ring-width;
+    border-color: Semantic.focus-ring;
+    drop-shadow-blur: Theme.space-2;
+    drop-shadow-color: Theme.surface-hover;
+    clip: true;
+
+    // The realized-geometry mirror into the class facts (the
+    // action-menu's mirror-facts shape): `init` writes the mount-time
+    // value (a `changed` hook alone misses it — the initial binding
+    // evaluation fires no change), the derived-property wraps cover
+    // every later re-layout.
+    init => {
+        DropdownFacts.panel-x = self.x;
+        DropdownFacts.panel-y = self.y;
+    }
+    property <length> panel-x-mirrored: self.x;
+    property <length> panel-y-mirrored: self.y;
+    changed panel-x-mirrored => {
+        DropdownFacts.panel-x = self.panel-x-mirrored;
+    }
+    changed panel-y-mirrored => {
+        DropdownFacts.panel-y = self.panel-y-mirrored;
+    }
+
+    // A plain a11y list container — the ladder's keys arrive at the
+    // field (the widget's scope), the window's capture decline hands
+    // them there; this panel never holds focus.
+    flyout-scope := Rectangle {
+        width: 100%;
+        height: 100%;
+        accessible-role: AccessibleRole.list;
+
+        list := ListView {
+            request-row: DropdownFacts.highlight;
+            request-nonce: DropdownFacts.seek-nonce;
+            total-rows: root.rows.length;
+            width: 100%;
+            height: 100%;
+
+            for row[row-index] in root.rows: Rectangle {
+                height: Theme.space-6;
+                accessible-role: AccessibleRole.list-item;
+                // The hover-union background (F29's feedback).
+                background: row-index == DropdownFacts.highlight || row-touch.has-hover
+                    ? Theme.surface-hover : transparent;
+                row-touch := TouchArea {
+                    width: 100%;
+                    height: 100%;
+                    changed has-hover => {
+                        if (self.has-hover) {
+                            root.row-hovered(row-index,
+                                self.absolute-position.x, self.absolute-position.y,
+                                self.width, self.height);
+                        } else {
+                            root.row-unhovered();
+                        }
+                    }
+                    clicked => {
+                        root.row-activated(row-index);
+                        // The window-side close (round-5 D6): the
+                        // fact write lands as the widget's `close()`
+                        // — the field refocuses before the panel
+                        // unmounts (the recorded walk contract).
+                        DropdownFacts.open = false;
+                    }
+                    pointer-event(event) => {
+                        if (event.kind == PointerEventKind.down
+                                && event.button == PointerEventButton.right) {
+                            root.row-context(row-index,
+                                (self.absolute-position.x + self.mouse-x) / 1px,
+                                (self.absolute-position.y + self.mouse-y) / 1px);
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    padding-left: Theme.space-2;
+                    padding-right: Theme.space-2;
+                    spacing: Theme.space-1;
+                    // The indicator/busy dot slot: busy wins (the r2
+                    // D34 ceremony), otherwise the indicator glyph
+                    // colourized by tone (`none` collapses the slot).
+                    // A plain Rectangle holder — a layout would own
+                    // the cross-axis and forbid the children's
+                    // vertical centering.
+                    Rectangle {
+                        width: (row.busy
+                            || row.indicator != DropdownIndicator.none) ? Theme.space-2 : 0;
+                        if row.busy: Rectangle {
+                            width: Theme.space-2;
+                            height: self.width;
+                            y: (parent.height - self.height) / 2;
+                            border-radius: self.width / 2;
+                            background: Semantic.sync-active;
+                            states [
+                                pulse when true: {
+                                    opacity: 0.45;
+                                    in { animate opacity { duration: 600ms; iteration-count: -1; } }
+                                }
+                            ]
+                        }
+                        if !row.busy && row.indicator != DropdownIndicator.none: Icon {
+                            kind: DropdownFacts.indicator-kind(row.indicator);
+                            colorize: DropdownFacts.tone-color(row.tone);
+                            y: (parent.height - self.height) / 2;
+                        }
+                    }
+                    row-label := RoleText {
+                        role: row.selected ? Typography.body-emphasized : Typography.body;
+                        text: row.label;
+                        vertical-alignment: center;
+                        overflow: elide;
+                        horizontal-stretch: 1;
+                    }
+                }
+            }
+        }
+    }
+}

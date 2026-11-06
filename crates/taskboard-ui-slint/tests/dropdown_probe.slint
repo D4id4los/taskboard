@@ -12,7 +12,8 @@
 // declaration order (the Tab walk reaches it first).
 
 import { Theme } from "../ui/theme.slint";
-import { Dropdown, DropdownRow, DropdownIndicator, DropdownTone } from "../ui/widgets/dropdown.slint";
+import { Dropdown, DropdownFacts, DropdownRow, DropdownIndicator, DropdownTone } from "../ui/widgets/dropdown.slint";
+import { DropdownFlyout } from "../ui/widgets/dropdown-flyout.slint";
 import { IconKind } from "../ui/widgets/icon.slint";
 
 export global DropdownProbe {
@@ -29,6 +30,7 @@ component FourRows inherits Dropdown {
     width: Theme.space-8 * 3;
     x: Theme.space-2;
     y: Theme.space-2;
+    flyout-site: 0;
     field-label: "Probe field";
     field-description: "Opens the probe list.";
     rows: [
@@ -45,6 +47,7 @@ component NineRows inherits Dropdown {
     width: Theme.space-8 * 3;
     x: Theme.space-2;
     y: Theme.space-2 + Theme.space-8;
+    flyout-site: 1;
     rows: [
         { label: "r0", indicator: DropdownIndicator.none, tone: DropdownTone.neutral, selected: false, busy: false },
         { label: "r1", indicator: DropdownIndicator.none, tone: DropdownTone.neutral, selected: false, busy: false },
@@ -109,6 +112,59 @@ export component DropdownProbeWindow inherits Window {
     }
 
     dd9 := NineRows {}
+
+    // The class's overlay grammar (round-5 D6): the flyout renders
+    // window-level, so the probe mounts the same underlay + panels
+    // the app window does — keyed on the two sites, with the same
+    // below-the-anchor placement (no status bar here; the window
+    // bottom is the clamp).
+    if (DropdownFacts.open): TouchArea {
+        width: 100%;
+        height: 100%;
+        clicked => {
+            DropdownFacts.open = false;
+        }
+    }
+    if (DropdownFacts.open && DropdownFacts.site == 0): DropdownFlyout {
+        rows: dd.rows;
+        x: max(Theme.space-2,
+               min(DropdownFacts.anchor-x,
+                   root.width - self.width - Theme.space-2));
+        y: min(DropdownFacts.anchor-y + DropdownFacts.anchor-height + Theme.space-1,
+               root.height - self.height - Theme.space-2);
+        width: DropdownFacts.anchor-width;
+        row-activated(i) => {
+            DropdownProbe.activated += 1;
+            DropdownProbe.activated-index = i;
+        }
+        row-context(i, x, y) => {
+            DropdownProbe.contexts += 1;
+            DropdownProbe.context-index = i;
+        }
+        row-hovered(i, x, y, w, h) => {
+            DropdownProbe.hovered += 1;
+            DropdownProbe.hovered-index = i;
+        }
+        row-unhovered() => {
+            DropdownProbe.unhovered += 1;
+        }
+    }
+    if (DropdownFacts.open && DropdownFacts.site == 1): DropdownFlyout {
+        rows: dd9.rows;
+        x: max(Theme.space-2,
+               min(DropdownFacts.anchor-x,
+                   root.width - self.width - Theme.space-2));
+        y: min(DropdownFacts.anchor-y + DropdownFacts.anchor-height + Theme.space-1,
+               root.height - self.height - Theme.space-2);
+        width: DropdownFacts.anchor-width;
+        row-activated(i) => {
+            DropdownProbe.activated += 1;
+            DropdownProbe.activated-index = i;
+        }
+        row-unhovered() => {
+            DropdownProbe.unhovered += 1;
+        }
+    }
 
     // The mapping facts: root property bindings over the widget's
     // public mappings — the tests read the totals from Rust.

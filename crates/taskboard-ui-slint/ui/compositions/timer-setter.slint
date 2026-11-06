@@ -138,6 +138,10 @@ export component TimerSetter inherits Rectangle {
 
     // The intents (§5.1): no inline side effects.
     callback preset-picked(int);
+    // The quick-times chevron's notification half (round-5 F8's
+    // setter surface): the seam disarms the digit filter for this
+    // open. The setter surface has no settle funnel — no latch rides.
+    callback quick-toggled();
     callback time-edited(string);
     callback time-stepped(int);
     callback time-picked(int);
@@ -189,6 +193,7 @@ export component TimerSetter inherits Rectangle {
                     spacing: Theme.space-2;
                     TimeField {
                         horizontal-stretch: 1;
+                        flyout-site: 1;
                         time-text: root.time-text;
                         validity: root.time-validity;
                         error-hint: root.time-hint;
@@ -199,6 +204,7 @@ export component TimerSetter inherits Rectangle {
                         edited(text) => { root.time-edited(text); }
                         stepped(n) => { root.time-stepped(n); }
                         picked(m) => { root.time-picked(m); }
+                        quick-toggled() => { root.quick-toggled(); }
                     }
                     SegmentedControl {
                         options: ["Today", "Tomorrow"];

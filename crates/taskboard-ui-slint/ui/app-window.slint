@@ -41,6 +41,7 @@ import {
     ConnectionRow,
     SettingsRowStatus,
     SettingsOutcome,
+    SettingsBoardCopy,
 } from "views/settings-view.slint";
 export { SettingsModel, ConnectionRow, SettingsRowStatus, SettingsOutcome }
 import { TooltipState, TooltipPanel } from "widgets/tooltip.slint";
@@ -53,7 +54,10 @@ import { TextField, FieldValidity } from "widgets/text-field.slint";
 export { FieldValidity }
 import { MenuPanelFacts, DatePickerFacts } from "menu-facts.slint";
 import { SettingsScrollFacts, SettingsBoardFacts } from "settings-facts.slint";
-import { DropdownLadder } from "widgets/dropdown.slint";
+import { DropdownLadder, DropdownFacts } from "widgets/dropdown.slint";
+import { DropdownFlyout } from "widgets/dropdown-flyout.slint";
+import { TimeFieldFacts } from "widgets/time-field.slint";
+import { QuickListFlyout } from "widgets/quick-list-flyout.slint";
 import { EditingFacts } from "editing-facts.slint";
 import { TaskViewWalkFacts } from "walk-facts.slint";
 import { AlarmWindow, AlarmRowModel } from "alarm-window.slint";
@@ -61,8 +65,9 @@ export { AlarmWindow, AlarmRowModel }
 
 // Re-export the globals so the generated Rust module exposes them
 // (mount/adapter read/write them through the generated accessors).
-export { Theme, Typography, Semantic, Responsive, TooltipState, MenuPanelFacts, SettingsScrollFacts, SettingsBoardFacts, DragState, FocusScrollHint, ScrollPageHint, EditingFacts, TaskViewWalkFacts, TrackPanelFacts, TrackPanelWalkFacts, DropdownLadder, TodayAnchorFacts }
+export { Theme, Typography, Semantic, Responsive, TooltipState, MenuPanelFacts, SettingsScrollFacts, SettingsBoardFacts, DragState, FocusScrollHint, ScrollPageHint, EditingFacts, TaskViewWalkFacts, TrackPanelFacts, TrackPanelWalkFacts, DropdownLadder, DropdownFacts, TimeFieldFacts, TodayAnchorFacts }
 export { BoardBarModel, BoardSegmentModel, BoardBarFacts }
+export { SettingsBoardCopy }
 
 export enum KeyFeedback {
     none,
@@ -600,6 +605,7 @@ export component AppWindow inherits Window {
                 time-edited(t) => root.task-date-time-edited(t);
                 time-picked(m) => root.task-date-time-picked(m);
                 time-accepted(t) => root.task-date-time-accepted(t);
+                quick-toggled() => root.task-date-quick-toggled();
             }
 
         // The timers setter popover (r4 D33): the date-picker overlay
@@ -643,6 +649,7 @@ export component AppWindow inherits Window {
             commit-enabled: root.timer-setter-commit-enabled;
             focus-nonce: root.timer-setter-focus-nonce;
             preset-picked(index) => root.timer-setter-preset-picked(index);
+            quick-toggled() => root.timer-setter-quick-toggled();
             time-edited(t) => root.timer-setter-time-edited(t);
             time-stepped(n) => root.timer-setter-time-stepped(n);
             time-picked(m) => root.timer-setter-time-picked(m);
@@ -717,6 +724,8 @@ export component AppWindow inherits Window {
         date-grid-toggled() => root.track-form-grid-toggled();
         date-grid-key(k) => root.track-form-grid-key(k);
         date-day-clicked(c) => root.track-form-day-clicked(c);
+        start-quick-toggled() => root.track-form-start-quick-toggled();
+        end-quick-toggled() => root.track-form-end-quick-toggled();
         start-edited(t) => root.track-form-start-edited(t);
         start-stepped(n) => root.track-form-start-stepped(n);
         start-picked(m) => root.track-form-start-picked(m);
@@ -724,6 +733,173 @@ export component AppWindow inherits Window {
         end-stepped(n) => root.track-form-end-stepped(n);
         end-picked(m) => root.track-form-end-picked(m);
         commit-requested() => root.track-form-commit-requested();
+    }
+
+    // The dropdown/quick-list flyouts mount window-level (round-5 D6,
+    // 2026-11-05): this **overrides the r4 D39 "no window overlay"
+    // decision** that lived at the old in-widget flyout — the
+    // coordinate-space defect (F9: panel-local geometry under a
+    // displaced underlay) and the settings `Flickable` clip (F14) are
+    // subsumed by the date-picker overlay grammar (facts-global
+    // geometry, window-level mount, dismissal underlay). Sibling
+    // order per class: the dismissal underlay first, the panels
+    // after — the later sibling is hit-tested first (probe P1), so
+    // the panels absorb their own clicks and the underlay receives
+    // exactly the outside clicks. The groups sit above the
+    // date-picker/timer-setter/track-entries overlays (a click
+    // anywhere dismisses only the flyout first — the standard
+    // stacked-overlay behavior) and below the menu group (the menu is
+    // a modal takeover no flyout can be open under). The panel
+    // geometry is the date-picker mount's exact expression shape:
+    // below the anchor when it fits between the anchor and the status
+    // bar, else flipped above, both clamped into the window margins.
+    if (DropdownFacts.open): TouchArea {
+        width: 100%;
+        height: 100%;
+        clicked => {
+            DropdownFacts.open = false;
+        }
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.down
+                    && event.button == PointerEventButton.right) {
+                DropdownFacts.open = false;
+            }
+        }
+    }
+    if (DropdownFacts.open && DropdownFacts.site == 0): DropdownFlyout {
+        rows: SettingsModel.board-options;
+        x: max(Theme.space-2,
+               min(DropdownFacts.anchor-x,
+                   root.width - self.width - Theme.space-2));
+        y: max(Theme.space-2,
+               min((DropdownFacts.anchor-y + DropdownFacts.anchor-height
+                        + Theme.space-1 + self.height <= status.y
+                    ? DropdownFacts.anchor-y + DropdownFacts.anchor-height
+                        + Theme.space-1
+                    : DropdownFacts.anchor-y - self.height - Theme.space-1),
+                   status.y - self.height - Theme.space-2));
+        width: DropdownFacts.anchor-width;
+        row-activated(i) => root.settings-board-selected(SettingsModel.board-ids[i]);
+        row-hovered(i, x, y, w, h) => {
+            TooltipState.hover(
+                SettingsModel.board-options[i].label,
+                SettingsBoardCopy.row-description,
+                [],
+                x, y, w, h);
+        }
+        row-unhovered() => {
+            TooltipState.unhover();
+        }
+    }
+    if (DropdownFacts.open && DropdownFacts.site == 1): DropdownFlyout {
+        rows: root.board-bar-model.rows;
+        x: max(Theme.space-2,
+               min(DropdownFacts.anchor-x,
+                   root.width - self.width - Theme.space-2));
+        y: max(Theme.space-2,
+               min((DropdownFacts.anchor-y + DropdownFacts.anchor-height
+                        + Theme.space-1 + self.height <= status.y
+                    ? DropdownFacts.anchor-y + DropdownFacts.anchor-height
+                        + Theme.space-1
+                    : DropdownFacts.anchor-y - self.height - Theme.space-1),
+                   status.y - self.height - Theme.space-2));
+        width: DropdownFacts.anchor-width;
+        row-activated(i) => root.board-bar-segment-activated(i);
+        row-hovered(i, x, y, w, h) => {
+            TooltipState.hover(
+                root.board-bar-model.rows[i].label,
+                "Switches to this board.",
+                root.board-segment-hint,
+                x, y, w, h);
+        }
+        row-unhovered() => {
+            TooltipState.unhover();
+        }
+    }
+    if (TimeFieldFacts.open): TouchArea {
+        width: 100%;
+        height: 100%;
+        clicked => {
+            TimeFieldFacts.open = false;
+        }
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.down
+                    && event.button == PointerEventButton.right) {
+                TimeFieldFacts.open = false;
+            }
+        }
+    }
+    if (TimeFieldFacts.open && TimeFieldFacts.site == 0): QuickListFlyout {
+        x: max(Theme.space-2,
+               min(TimeFieldFacts.anchor-x,
+                   root.width - self.width - Theme.space-2));
+        y: max(Theme.space-2,
+               min((TimeFieldFacts.anchor-y + TimeFieldFacts.anchor-height
+                        + Theme.space-1 + self.height <= status.y
+                    ? TimeFieldFacts.anchor-y + TimeFieldFacts.anchor-height
+                        + Theme.space-1
+                    : TimeFieldFacts.anchor-y - self.height - Theme.space-1),
+                   status.y - self.height - Theme.space-2));
+        width: TimeFieldFacts.anchor-width;
+        rows: root.task-model.date-time-slots;
+        nearest-row: root.task-model.date-time-nearest-row;
+        focus-nonce: root.date-quick-nonce;
+        picked(m) => root.task-date-time-picked(m);
+        typed(t) => root.task-date-quick-typed(t);
+    }
+    if (TimeFieldFacts.open && TimeFieldFacts.site == 1): QuickListFlyout {
+        x: max(Theme.space-2,
+               min(TimeFieldFacts.anchor-x,
+                   root.width - self.width - Theme.space-2));
+        y: max(Theme.space-2,
+               min((TimeFieldFacts.anchor-y + TimeFieldFacts.anchor-height
+                        + Theme.space-1 + self.height <= status.y
+                    ? TimeFieldFacts.anchor-y + TimeFieldFacts.anchor-height
+                        + Theme.space-1
+                    : TimeFieldFacts.anchor-y - self.height - Theme.space-1),
+                   status.y - self.height - Theme.space-2));
+        width: TimeFieldFacts.anchor-width;
+        rows: root.timer-setter-time-slots;
+        nearest-row: root.timer-setter-time-nearest-row;
+        focus-nonce: root.timer-setter-quick-nonce;
+        picked(m) => root.timer-setter-time-picked(m);
+        typed(t) => root.timer-setter-quick-typed(t);
+    }
+    if (TimeFieldFacts.open && TimeFieldFacts.site == 2): QuickListFlyout {
+        x: max(Theme.space-2,
+               min(TimeFieldFacts.anchor-x,
+                   root.width - self.width - Theme.space-2));
+        y: max(Theme.space-2,
+               min((TimeFieldFacts.anchor-y + TimeFieldFacts.anchor-height
+                        + Theme.space-1 + self.height <= status.y
+                    ? TimeFieldFacts.anchor-y + TimeFieldFacts.anchor-height
+                        + Theme.space-1
+                    : TimeFieldFacts.anchor-y - self.height - Theme.space-1),
+                   status.y - self.height - Theme.space-2));
+        width: TimeFieldFacts.anchor-width;
+        rows: root.track-form-start-slots;
+        nearest-row: root.track-form-start-nearest-row;
+        focus-nonce: root.track-form-quick-nonce;
+        picked(m) => root.track-form-start-picked(m);
+        typed(t) => root.track-form-start-quick-typed(t);
+    }
+    if (TimeFieldFacts.open && TimeFieldFacts.site == 3): QuickListFlyout {
+        x: max(Theme.space-2,
+               min(TimeFieldFacts.anchor-x,
+                   root.width - self.width - Theme.space-2));
+        y: max(Theme.space-2,
+               min((TimeFieldFacts.anchor-y + TimeFieldFacts.anchor-height
+                        + Theme.space-1 + self.height <= status.y
+                    ? TimeFieldFacts.anchor-y + TimeFieldFacts.anchor-height
+                        + Theme.space-1
+                    : TimeFieldFacts.anchor-y - self.height - Theme.space-1),
+                   status.y - self.height - Theme.space-2));
+        width: TimeFieldFacts.anchor-width;
+        rows: root.track-form-end-slots;
+        nearest-row: root.track-form-end-nearest-row;
+        focus-nonce: root.track-form-quick-nonce;
+        picked(m) => root.track-form-end-picked(m);
+        typed(t) => root.track-form-end-quick-typed(t);
     }
 
         // The D2 outside-click dismissal layer (round 1): a full-window
@@ -1105,6 +1281,21 @@ export component AppWindow inherits Window {
     pure callback task-date-time-edited(string);
     pure callback task-date-time-picked(int);
     pure callback task-date-time-accepted(string);
+    // The quick-times chevrons' seams (round-5 F8): the latch/disarm
+    // half of the chevron toggle, per surface.
+    pure callback task-date-quick-toggled();
+    pure callback timer-setter-quick-toggled();
+    pure callback track-form-start-quick-toggled();
+    pure callback track-form-end-quick-toggled();
+    // The quick list's append shim (round-5 D6): the flyout scope
+    // forwards the typed key text; the adapter appends it to the
+    // field's mirror and runs the same edited logic (the old in-widget
+    // shim appended to the field buffer, which the adapter echoes
+    // verbatim — the mirror is the same single writer).
+    pure callback task-date-quick-typed(string);
+    pure callback timer-setter-quick-typed(string);
+    pure callback track-form-start-quick-typed(string);
+    pure callback track-form-end-quick-typed(string);
     // The armed date editor's focus-loss settle (r4 D24).
     pure callback date-editor-focus-lost();
     // The per-keystroke validity probes (r4 D27).
@@ -1144,6 +1335,16 @@ export component AppWindow inherits Window {
     in-out property <[TimeSlotRow]> track-form-end-slots;
     in-out property <int> track-form-end-nearest-row: 0;
     in-out property <int> timer-setter-focus-nonce: 0;
+    // The quick-list panels' focus nonces (round-5 D-3.3): the
+    // quick-toggled seams bump these after the flyout's facts-open
+    // flip mounts the panel — a fresh conditional's init grab alone
+    // does not reliably take (the P5 record). One shared nonce per
+    // surface group: only one panel mounts per group at a time (the
+    // site discriminator picks which). Window properties, not model
+    // fields — a push pass would rebuild a model field over the bump.
+    in-out property <int> date-quick-nonce: 0;
+    in-out property <int> timer-setter-quick-nonce: 0;
+    in-out property <int> track-form-quick-nonce: 0;
     in-out property <string> timer-setter-time-text: "--:--";
     in-out property <FieldValidity> timer-setter-time-validity: FieldValidity.neutral;
     in-out property <string> timer-setter-time-hint: "";
