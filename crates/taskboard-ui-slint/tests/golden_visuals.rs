@@ -845,6 +845,19 @@ fn the_review_ledger_golden_holds() {
                 .with_ymd_and_hms(2026, 11, 6, 12, 0, 0)
                 .single()
                 .expect("fixed instant");
+            // The inherited chip seed joins the frozen clock (#663):
+            // `golden_state` stamps its open entry at the real
+            // `now − 12m`, which lies in the frozen day-window's
+            // future once the wall clock passes the pinned instant —
+            // the frozen pass clips it away and the golden drifts
+            // (the 12:00–24:00 UTC band; CI 13:06 UTC fail vs main's
+            // green 08:30 UTC run). Pinned to the same 12-minute-old
+            // shape the fixture renders elsewhere.
+            for entry in state.tracking.entries.values_mut() {
+                if entry.task == fixture.task1 && entry.end.is_none() {
+                    entry.start = now - chrono::TimeDelta::try_minutes(12).unwrap();
+                }
+            }
             let span = |start: chrono::TimeDelta, secs: i64| {
                 (
                     now + start,
