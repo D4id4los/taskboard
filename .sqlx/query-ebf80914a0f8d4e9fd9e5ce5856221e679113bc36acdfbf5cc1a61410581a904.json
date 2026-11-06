@@ -1,0 +1,170 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT entry_id, day, cadence, window_start, window_end, text,\n                      mood, energy, flags, extra_flags, created_at, updated_at,\n                      deleted as \"deleted: bool\"\n               FROM reflection_entries ORDER BY entry_id",
+  "describe": {
+    "columns": [
+      {
+        "name": "entry_id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "reflection_entries",
+            "name": "entry_id"
+          }
+        }
+      },
+      {
+        "name": "day",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "reflection_entries",
+            "name": "day"
+          }
+        }
+      },
+      {
+        "name": "cadence",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "reflection_entries",
+            "name": "cadence"
+          }
+        }
+      },
+      {
+        "name": "window_start",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "reflection_entries",
+            "name": "window_start"
+          }
+        }
+      },
+      {
+        "name": "window_end",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "reflection_entries",
+            "name": "window_end"
+          }
+        }
+      },
+      {
+        "name": "text",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "reflection_entries",
+            "name": "text"
+          }
+        }
+      },
+      {
+        "name": "mood",
+        "ordinal": 6,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "reflection_entries",
+            "name": "mood"
+          }
+        }
+      },
+      {
+        "name": "energy",
+        "ordinal": 7,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "reflection_entries",
+            "name": "energy"
+          }
+        }
+      },
+      {
+        "name": "flags",
+        "ordinal": 8,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "reflection_entries",
+            "name": "flags"
+          }
+        }
+      },
+      {
+        "name": "extra_flags",
+        "ordinal": 9,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "reflection_entries",
+            "name": "extra_flags"
+          }
+        }
+      },
+      {
+        "name": "created_at",
+        "ordinal": 10,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "reflection_entries",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "name": "updated_at",
+        "ordinal": 11,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "reflection_entries",
+            "name": "updated_at"
+          }
+        }
+      },
+      {
+        "name": "deleted: bool",
+        "ordinal": 12,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "reflection_entries",
+            "name": "deleted"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "ebf80914a0f8d4e9fd9e5ce5856221e679113bc36acdfbf5cc1a61410581a904"
+}

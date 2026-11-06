@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO reflection_entries (entry_id, cadence, day, window_start, window_end,\n                         text, mood, energy, flags, extra_flags, created_at, updated_at, deleted)\n                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)\n                   ON CONFLICT(entry_id) DO UPDATE SET\n                       cadence = excluded.cadence,\n                       day = excluded.day,\n                       window_start = excluded.window_start,\n                       window_end = excluded.window_end,\n                       text = excluded.text,\n                       mood = excluded.mood,\n                       energy = excluded.energy,\n                       flags = excluded.flags,\n                       extra_flags = excluded.extra_flags,\n                       created_at = excluded.created_at,\n                       updated_at = excluded.updated_at,\n                       deleted = excluded.deleted",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 13
+    },
+    "nullable": []
+  },
+  "hash": "334a3c1179f02814da32873f5c6c9f80f162a13147bdae87c41ed84246e5325a"
+}

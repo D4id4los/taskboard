@@ -222,6 +222,25 @@ struct ReminderDismissalRow {
     dismissed_at: DateTime<Utc>,
 }
 
+/// Raw `reflection_entries` row (0022; the 0008 conventions —
+/// hyphenated-UUID TEXT id, RFC 3339 TEXT stamps, JSON-array flag
+/// columns, `deleted` as the in-place tombstone).
+struct ReflectionEntryRow {
+    entry_id: String,
+    day: String,
+    cadence: String,
+    window_start: String,
+    window_end: String,
+    text: String,
+    mood: Option<i64>,
+    energy: Option<i64>,
+    flags: String,
+    extra_flags: String,
+    created_at: String,
+    updated_at: String,
+    deleted: bool,
+}
+
 fn decode_adhoc_alarm(row: &AdhocAlarmRow) -> Result<AdhocAlarm, RepositoryError> {
     Ok(AdhocAlarm {
         id: AdhocAlarmId::from(decode::uuid(&row.alarm_id)?),
@@ -667,6 +686,80 @@ fn decode_habit(
     ))
 }
 
+/// Decodes one `reflection_entries` row (0022, the `decode_habit`
+/// shape). Strict on load, tolerant on the flag *names* only
+/// (D-J13/D-H12): a curated name mints into `flags`, an unknown name
+/// parks verbatim into `extra_flags` — the decode seam is where the
+/// tolerance lives. Everything else is trusted-written: a corrupt id,
+/// date, stamp, JSON array, or out-of-range rating is a corrupted
+/// database, never a clamped or defaulted value (P-3's strict-decode
+/// posture).
+fn decode_reflection_entry(
+    row: &ReflectionEntryRow,
+) -> Result<
+    (
+        taskboard_domain::ids::ReflectionId,
+        taskboard_domain::ReflectionEntry,
+    ),
+    RepositoryError,
+> {
+    let id = taskboard_domain::ids::ReflectionId::from(decode::uuid(&row.entry_id)?);
+    let cadence = taskboard_domain::reflection::ReviewCadence::parse_text_form(&row.cadence)
+        .ok_or(RepositoryError::Corrupted)?;
+    let day = chrono::NaiveDate::parse_from_str(&row.day, "%Y-%m-%d")
+        .map_err(|_| RepositoryError::Corrupted)?;
+    let window_start: chrono::DateTime<chrono::Utc> = decode::clock(&row.window_start)?;
+    let window_end: chrono::DateTime<chrono::Utc> = decode::clock(&row.window_end)?;
+    let created_at: chrono::DateTime<chrono::Utc> = decode::clock(&row.created_at)?;
+    let updated_at: chrono::DateTime<chrono::Utc> = decode::clock(&row.updated_at)?;
+    // The strict rating decode: a stored 0/6+ is a data error, never a
+    // clamp (the `Rating` mint's documented posture).
+    let rating = |raw: Option<i64>| -> Result<Option<Rating>, RepositoryError> {
+        raw.map(u8::try_from)
+            .transpose()
+            .map_err(|_| RepositoryError::Corrupted)?
+            .map(Rating::try_new)
+            .transpose()
+            .map_err(|_| RepositoryError::Corrupted)
+    };
+    let names = |raw: &str| -> Result<Vec<String>, RepositoryError> {
+        serde_json::from_str(raw).map_err(|_| RepositoryError::Corrupted)
+    };
+    let mut flags = std::collections::BTreeSet::new();
+    let mut extra_flags = std::collections::BTreeSet::new();
+    for name in names(&row.flags)? {
+        match taskboard_domain::reflection::HealthFlag::parse_text_form(&name) {
+            Some(flag) => {
+                flags.insert(flag);
+            }
+            None => {
+                extra_flags.insert(name);
+            }
+        }
+    }
+    extra_flags.extend(names(&row.extra_flags)?);
+    Ok((
+        id,
+        taskboard_domain::ReflectionEntry {
+            id,
+            cadence,
+            day,
+            window_start,
+            window_end,
+            text: row.text.clone(),
+            attributes: taskboard_domain::ReflectionAttributes {
+                mood: rating(row.mood)?,
+                energy: rating(row.energy)?,
+                flags,
+                extra_flags,
+            },
+            created_at,
+            updated_at,
+            deleted: row.deleted,
+        },
+    ))
+}
+
 fn decode_time_entry(row: &TimeEntryRow) -> Result<(TimeEntryId, TimeEntry), RepositoryError> {
     // Strict on load, tolerant on the wire: SQLite rows are
     // trusted-written (validated at their originating planner, ADR
@@ -980,6 +1073,17 @@ impl SqliteTaskRepository {
         .await
         .map_err(|e| stmt_error(&e))?;
 
+        let reflection_rows = sqlx::query_as!(
+            ReflectionEntryRow,
+            r#"SELECT entry_id, day, cadence, window_start, window_end, text,
+                      mood, energy, flags, extra_flags, created_at, updated_at,
+                      deleted as "deleted: bool"
+               FROM reflection_entries ORDER BY entry_id"#
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| stmt_error(&e))?;
+
         let mut boards = BTreeMap::new();
         for row in board_rows {
             let board = decode_board(row, &self.default_connector)?;
@@ -1180,10 +1284,14 @@ impl SqliteTaskRepository {
                 }
                 habits
             },
-            // Sqlite cannot carry reflection data before chunk 2's
-            // migration 0022 (#637): default-empty is truthful, not
-            // lossy — there is no table to have lost rows from.
-            reflection: taskboard_domain::ReflectionState::default(),
+            reflection: {
+                let mut reflection = taskboard_domain::ReflectionState::default();
+                for row in &reflection_rows {
+                    let (id, entry) = decode_reflection_entry(row)?;
+                    reflection.entries.insert(id, entry);
+                }
+                reflection
+            },
             journal: taskboard_domain::JournalState {
                 entries: journal_entries,
                 head,
@@ -1284,14 +1392,9 @@ async fn execute_batch(
     // other lane.
     let mut habit_upserts = Vec::new();
     let mut habit_log_rows = Vec::new();
-    // DR-7 chunk 1 (R-11 exception, the tracking DR-5/1 precedent):
-    // reflection upserts are buffered and written by a runtime-checked
-    // statement against the `reflection_entries` table — which does not
-    // exist until chunk 2's migration 0022 (#637). A reflection-bearing
-    // batch reaching sqlite before that migration fails loudly at
-    // runtime ("no such table") and rolls the batch back — honest
-    // failure, never silent loss. Nothing in chunk 1's suites reaches
-    // this arm.
+    // DR-7 chunk 2 (R-11 exception, the tracking DR-5/1 precedent):
+    // the reflection upserts, written by the compile-checked macro
+    // against migration 0022's table.
     let mut reflection_upserts = Vec::new();
     // ADR 0019 (undo/1): the three journal buckets — appends (each with
     // the D11 eviction mirror), head moves, flag flips. The journal
@@ -1725,12 +1828,14 @@ async fn execute_batch(
         .map_err(|e| stmt_error(&e))?;
         tracing::trace!(habit = ?habit.id, "habit upserted");
     }
-    // DR-7 chunk 1 (R-11): the runtime-checked reflection write —
-    // dead until #637 creates the table. Compile-checked macros replace
-    // this in chunk 2, together with the load codec.
+    // DR-7 chunk 2 (D-J13): the compile-checked reflection upserts —
+    // the habit-write macro's shape, migration 0022's table. Plain
+    // whole-row upserts, no clock predicate (Q-13: engine-ordered
+    // batches + the tombstone-in-place ruling leave an LWW guard
+    // caller-less today; the import fold may add it at #631).
     for entry in reflection_upserts {
-        sqlx::query(
-            r"INSERT INTO reflection_entries (entry_id, cadence, day, window_start, window_end,
+        sqlx::query!(
+            r#"INSERT INTO reflection_entries (entry_id, cadence, day, window_start, window_end,
                          text, mood, energy, flags, extra_flags, created_at, updated_at, deleted)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(entry_id) DO UPDATE SET
@@ -1745,34 +1850,21 @@ async fn execute_batch(
                        extra_flags = excluded.extra_flags,
                        created_at = excluded.created_at,
                        updated_at = excluded.updated_at,
-                       deleted = excluded.deleted",
+                       deleted = excluded.deleted"#,
+            codec::uuid_to_text(entry.id.as_uuid()),
+            entry.cadence.text_form(),
+            entry.day.to_string(),
+            entry.window_start.to_rfc3339(),
+            entry.window_end.to_rfc3339(),
+            entry.text,
+            entry.attributes.mood.map(Rating::get),
+            entry.attributes.energy.map(Rating::get),
+            codec::reflection_flags_to_json(&entry.attributes.flags),
+            codec::reflection_extra_flags_to_json(&entry.attributes.extra_flags),
+            entry.created_at.to_rfc3339(),
+            entry.updated_at.to_rfc3339(),
+            entry.deleted,
         )
-        .bind(codec::uuid_to_text(entry.id.as_uuid()))
-        .bind(entry.cadence.text_form())
-        .bind(entry.day.to_string())
-        .bind(entry.window_start.to_rfc3339())
-        .bind(entry.window_end.to_rfc3339())
-        .bind(&entry.text)
-        .bind(entry.attributes.mood.map(Rating::get))
-        .bind(entry.attributes.energy.map(Rating::get))
-        .bind(
-            serde_json::to_string(
-                &entry
-                    .attributes
-                    .flags
-                    .iter()
-                    .map(|f| f.text_form())
-                    .collect::<Vec<_>>(),
-            )
-            .expect("flag names serialize"),
-        )
-        .bind(
-            serde_json::to_string(&entry.attributes.extra_flags.iter().collect::<Vec<_>>())
-                .expect("flag name strings serialize"),
-        )
-        .bind(entry.created_at.to_rfc3339())
-        .bind(entry.updated_at.to_rfc3339())
-        .bind(entry.deleted)
         .execute(&mut *tx)
         .await
         .map_err(|e| stmt_error(&e))?;

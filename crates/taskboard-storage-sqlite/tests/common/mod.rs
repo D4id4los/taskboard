@@ -54,6 +54,9 @@ pub fn actions_from_state(state: &PersistedState) -> Vec<PersistenceAction> {
     for entry in state.tracking.entries.values() {
         actions.push(PersistenceAction::UpsertTimeEntry(entry.clone()));
     }
+    for entry in state.reflection.entries.values() {
+        actions.push(PersistenceAction::UpsertReflectionEntry(entry.clone()));
+    }
     for (key, validators) in &state.validators {
         actions.push(PersistenceAction::UpsertValidators(
             *key,
