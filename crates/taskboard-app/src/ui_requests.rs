@@ -376,118 +376,188 @@ async fn handle_settings(request: UiRequest, workspace: &ConnectionWorkspace) {
             let _ = reply.send(set_scale(workspace, scale));
         }
         UiRequest::SetDayStart { time, reply } => {
-            let _ = reply.send(run_editor_write(workspace, Field::DayStart, |path| {
-                crate::settings_overlay::set_day_start(path, time)
-            }));
+            let _ = reply.send(
+                run_editor_write(workspace, Field::DayStart, |path| {
+                    crate::settings_overlay::set_day_start(path, time)
+                })
+                .await,
+            );
         }
         UiRequest::SetRemindersEnabled { enabled, reply } => {
-            let _ = reply.send(run_editor_write(
-                workspace,
-                Field::RemindersEnabled,
-                |path| crate::settings_overlay::set_reminders_enabled(path, enabled),
-            ));
+            let _ = reply.send(
+                run_editor_write(workspace, Field::RemindersEnabled, |path| {
+                    crate::settings_overlay::set_reminders_enabled(path, enabled)
+                })
+                .await,
+            );
         }
         UiRequest::SetReminderTick { secs, reply } => {
-            let _ = reply.send(run_editor_write(workspace, Field::TickSecs, |path| {
-                crate::settings_overlay::set_reminder_tick(path, secs)
-            }));
+            let _ = reply.send(
+                run_editor_write(workspace, Field::TickSecs, |path| {
+                    crate::settings_overlay::set_reminder_tick(path, secs)
+                })
+                .await,
+            );
         }
         UiRequest::SetReminderBefore { before, reply } => {
-            let _ = reply.send(run_editor_write(workspace, Field::ReminderBefore, |path| {
-                crate::settings_overlay::set_reminder_before(path, before)
-            }));
+            let _ = reply.send(
+                run_editor_write(workspace, Field::ReminderBefore, |path| {
+                    crate::settings_overlay::set_reminder_before(path, before)
+                })
+                .await,
+            );
         }
         UiRequest::SetReminderSink { sink, reply } => {
-            let _ = reply.send(run_editor_write(workspace, Field::ReminderSink, |path| {
-                crate::settings_overlay::set_reminder_sink(path, map_sink(sink))
-            }));
+            let _ = reply.send(
+                run_editor_write(workspace, Field::ReminderSink, |path| {
+                    crate::settings_overlay::set_reminder_sink(path, map_sink(sink))
+                })
+                .await,
+            );
         }
         UiRequest::SetPollInterval { secs, reply } => {
-            let _ = reply.send(run_editor_write(workspace, Field::PollInterval, |path| {
-                crate::settings_overlay::set_poll_interval(path, secs)
-            }));
+            let _ = reply.send(
+                run_editor_write(workspace, Field::PollInterval, |path| {
+                    crate::settings_overlay::set_poll_interval(path, secs)
+                })
+                .await,
+            );
         }
         UiRequest::SetBackoffInitial { secs, reply } => {
-            let _ = reply.send(run_editor_write(workspace, Field::BackoffInitial, |path| {
-                crate::settings_overlay::set_backoff_initial(path, secs)
-            }));
+            let _ = reply.send(
+                run_editor_write(workspace, Field::BackoffInitial, |path| {
+                    crate::settings_overlay::set_backoff_initial(path, secs)
+                })
+                .await,
+            );
         }
         UiRequest::SetBackoffMax { secs, reply } => {
-            let _ = reply.send(run_editor_write(workspace, Field::BackoffMax, |path| {
-                crate::settings_overlay::set_backoff_max(path, secs)
-            }));
+            let _ = reply.send(
+                run_editor_write(workspace, Field::BackoffMax, |path| {
+                    crate::settings_overlay::set_backoff_max(path, secs)
+                })
+                .await,
+            );
         }
         UiRequest::SetDueSoonDays { days, reply } => {
-            let _ = reply.send(run_editor_write(workspace, Field::DueSoonDays, |path| {
-                crate::settings_overlay::set_due_soon_days(path, days)
-            }));
+            let _ = reply.send(
+                run_editor_write(workspace, Field::DueSoonDays, |path| {
+                    crate::settings_overlay::set_due_soon_days(path, days)
+                })
+                .await,
+            );
         }
         UiRequest::SetFocusEnabled { enabled, reply } => {
-            let _ = reply.send(run_editor_write(workspace, Field::FocusEnabled, |path| {
-                crate::settings_overlay::set_focus_enabled(path, enabled)
-            }));
+            let _ = reply.send(
+                run_editor_write(workspace, Field::FocusEnabled, |path| {
+                    crate::settings_overlay::set_focus_enabled(path, enabled)
+                })
+                .await,
+            );
         }
         UiRequest::SetFocusWorkMins { mins, reply } => {
-            let _ = reply.send(run_editor_write(workspace, Field::FocusWorkMins, |path| {
-                crate::settings_overlay::set_focus_work_mins(path, mins)
-            }));
+            let _ = reply.send(
+                run_editor_write(workspace, Field::FocusWorkMins, |path| {
+                    crate::settings_overlay::set_focus_work_mins(path, mins)
+                })
+                .await,
+            );
         }
         UiRequest::SetFocusBreakMins { mins, reply } => {
-            let _ = reply.send(run_editor_write(workspace, Field::FocusBreakMins, |path| {
-                crate::settings_overlay::set_focus_break_mins(path, mins)
-            }));
+            let _ = reply.send(
+                run_editor_write(workspace, Field::FocusBreakMins, |path| {
+                    crate::settings_overlay::set_focus_break_mins(path, mins)
+                })
+                .await,
+            );
         }
         UiRequest::SetFocusChain { enabled, reply } => {
-            let _ = reply.send(run_editor_write(workspace, Field::FocusChain, |path| {
-                crate::settings_overlay::set_focus_chain(path, enabled)
-            }));
+            let _ = reply.send(
+                run_editor_write(workspace, Field::FocusChain, |path| {
+                    crate::settings_overlay::set_focus_chain(path, enabled)
+                })
+                .await,
+            );
         }
         UiRequest::SetFocusLongBreakMins { mins, reply } => {
-            let _ = reply.send(run_editor_write(
-                workspace,
-                Field::FocusLongBreakMins,
-                |path| crate::settings_overlay::set_focus_long_break_mins(path, mins),
-            ));
+            let _ = reply.send(
+                run_editor_write(workspace, Field::FocusLongBreakMins, |path| {
+                    crate::settings_overlay::set_focus_long_break_mins(path, mins)
+                })
+                .await,
+            );
         }
         UiRequest::SetFocusLongBreakEvery { every, reply } => {
-            let _ = reply.send(run_editor_write(
-                workspace,
-                Field::FocusLongBreakEvery,
-                |path| crate::settings_overlay::set_focus_long_break_every(path, every),
-            ));
+            let _ = reply.send(
+                run_editor_write(workspace, Field::FocusLongBreakEvery, |path| {
+                    crate::settings_overlay::set_focus_long_break_every(path, every)
+                })
+                .await,
+            );
         }
         UiRequest::SetFocusNotify { enabled, reply } => {
-            let _ = reply.send(run_editor_write(workspace, Field::FocusNotify, |path| {
-                crate::settings_overlay::set_focus_notify(path, enabled)
-            }));
+            let _ = reply.send(
+                run_editor_write(workspace, Field::FocusNotify, |path| {
+                    crate::settings_overlay::set_focus_notify(path, enabled)
+                })
+                .await,
+            );
         }
     }
 }
 
-/// One editor write's shared choreography (the GUI settings editor's
-/// write port): the typed writer runs against the workspace's
-/// resolved write path — never a fresh resolution (plan W-8) — and a
-/// success replies the fresh file-layer snapshot (the echo of what
-/// the file now says).
-fn run_editor_write(
+/// One editor write's persist-then-command choreography (the GUI
+/// settings editor's write port; round-5 chunk 5, D-5.3):
+///
+/// 1. the env-lock guard — a field whose effective value is pinned by
+///    a `TASKBOARD_*` override refuses typed before the file is
+///    touched (the adapter's gating prevents the attempt; this is the
+///    authority);
+/// 2. the typed writer runs against the workspace's resolved write
+///    path — never a fresh resolution (plan W-8); the prove gate's
+///    refusal maps typed, **no command is sent**, engine and file
+///    untouched;
+/// 3. the *effective* config (file + the standing env overrides — the
+///    same provider chain the boot seed came from, so an env-pinned
+///    knob never gets clobbered in the engine) re-decodes and mints
+///    the domain snapshot;
+/// 4. `UpdateSettings` carries it to the engine; the reply snapshot
+///    echoes the engine's published settings — one source of truth.
+///
+/// A stopped engine replies [`SettingsError::Gone`]: the file *is*
+/// written (the next boot picks it up) while the running engine keeps
+/// its old values — the typed refusal lets the UI say so; no partial
+/// repair exists or is needed (the file stays the boot authority).
+async fn run_editor_write(
     workspace: &ConnectionWorkspace,
     field: Field,
     write: impl FnOnce(&std::path::Path) -> Result<(), crate::settings_overlay::OverlayError>,
 ) -> Result<SettingsSnapshot, SettingsError> {
-    write(&workspace.config_write_path).map_err(|err| map_overlay_error(field, &err))?;
-    fresh_settings_snapshot(workspace)
-}
-
-/// The reply echo: the freshly written file decoded through the
-/// file-layer chain (env excluded — the echo is what the file now
-/// says; the env overlay is the hand-over's standing set). A failed
-/// read is the typed persist failure.
-fn fresh_settings_snapshot(
-    workspace: &ConnectionWorkspace,
-) -> Result<SettingsSnapshot, SettingsError> {
-    let raw = AppConfig::extract_file_only(Some(&workspace.config_write_path))
-        .map_err(|err| map_config_error(&err))?;
-    Ok(crate::ui::settings_snapshot_from_config(&raw))
+    let path = workspace.config_write_path.as_path();
+    let locked =
+        AppConfig::env_overridden_keys(Some(path)).map_err(|err| map_config_error(&err))?;
+    if locked.contains(editor_field_key(field)) {
+        return Err(SettingsError::EnvLocked { field });
+    }
+    write(path).map_err(|err| map_overlay_error(field, &err))?;
+    let effective = AppConfig::extract_raw(Some(path)).map_err(|err| map_config_error(&err))?;
+    // The gate just proved this document boots; the typed arm stays
+    // (never an `expect` on a file another process may have raced).
+    effective.validate().map_err(|err| map_config_error(&err))?;
+    let settings = effective.settings_snapshot();
+    workspace
+        .engine
+        .execute(StateCommand::UpdateSettings { settings })
+        .await
+        .map_err(|err| {
+            tracing::warn!(%err, "settings written but the engine did not apply them");
+            SettingsError::Gone
+        })?;
+    let published = workspace.engine.shared_state().load();
+    Ok(crate::ui::settings_snapshot_from_domain(
+        &effective,
+        &published.settings,
+    ))
 }
 
 /// The lane's sink mirror → the config's choice.
@@ -1138,6 +1208,17 @@ mod tests {
     /// the width tests never touch the connector path, but the
     /// workspace is a plain value, not a mock — fakes over mocks.
     async fn test_workspace(path: PathBuf) -> ConnectionWorkspace {
+        // The core deliberately leaks for the test's lifetime (the
+        // actors idle on a standalone, boardless db); the workspace
+        // holds only clones.
+        test_workspace_with_app(path).await.0
+    }
+
+    /// The workspace plus its booted core (the engine-gone journey
+    /// needs the system bus to drain the engine).
+    async fn test_workspace_with_app(
+        path: PathBuf,
+    ) -> (ConnectionWorkspace, crate::bootstrap::App) {
         let mut config = AppConfig::default();
         let dir = tempfile::tempdir().expect("tempdir");
         config.storage.db_path = Some(dir.path().join("taskboard.db"));
@@ -1150,15 +1231,13 @@ mod tests {
         )
         .await
         .expect("standalone boot");
-        ConnectionWorkspace {
+        let workspace = ConnectionWorkspace {
             config_write_path: path,
             store: Arc::new(RefusingStore),
             control: app.connector_control(),
             engine: app.engine.clone(),
-        }
-        // The core deliberately leaks for the test's lifetime (the
-        // actors idle on a standalone, boardless db); the workspace
-        // holds only clones.
+        };
+        (workspace, app)
     }
 
     /// A credential-refusing store (the bootstrap test's shape): the
@@ -1990,7 +2069,24 @@ mod tests {
             .await
             .expect("the reply lane is alive")
             .expect("lands");
-        assert_eq!(snapshot.reminder_tick_secs, 45, "the reply echoes the file");
+        assert_eq!(
+            snapshot.reminder_tick_secs, 45,
+            "the reply echoes the engine"
+        );
+        // Persist-then-command (round-5 chunk 5): the engine's published
+        // settings carry the committed value — the reply is read from
+        // there, not from the file.
+        assert_eq!(
+            workspace
+                .engine
+                .shared_state()
+                .load()
+                .settings
+                .tick_secs
+                .get(),
+            45,
+            "the engine applied the written snapshot"
+        );
         assert_eq!(
             snapshot.applies.len(),
             16,
@@ -2030,6 +2126,59 @@ mod tests {
                 .contains("backoff_initial_secs = 5"),
             "the refused write left the file untouched"
         );
+        // A failed prove-and-write sends no command: the engine's
+        // published settings still carry the previous commit, observed
+        // through the ArcSwap.
+        let engine_settings = workspace.engine.shared_state().load().settings.clone();
+        assert_eq!(engine_settings.backoff_initial_secs.get(), 5);
+        assert_eq!(engine_settings.tick_secs.get(), 45);
+    }
+
+    /// The engine-gone arm (D-5.3): with the engine draining, the file
+    /// still takes the write (the next boot's authority) but the reply
+    /// is the typed `Gone` — the running engine keeps its old values.
+    #[tokio::test]
+    async fn an_engine_gone_write_lands_in_the_file_and_replies_gone() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("taskboard.toml");
+        std::fs::write(&path, "[reminders]\ntick_secs = 30\n").expect("seed");
+        let (workspace, app) = test_workspace_with_app(path.clone()).await;
+        let before = workspace.engine.shared_state().load().settings.clone();
+
+        // Drain the engine: every later `execute` answers `EngineGone`.
+        app.system
+            .send(taskboard_domain::SystemEvent::Shutdown)
+            .expect("the engine subscribes");
+        // The drain transition is observable only through a declined
+        // command; poll it (no sleeps — a bounded predicate loop).
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let probe = workspace.engine.execute(StateCommand::RequestSync).await;
+                if matches!(probe, Err(taskboard_state::ExecuteError::EngineGone)) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the engine drained");
+
+        let (reply, reply_rx) = tokio::sync::oneshot::channel();
+        handle_settings(UiRequest::SetReminderTick { secs: 45, reply }, &workspace).await;
+        let outcome = reply_rx.await.expect("the reply lane is alive");
+        assert!(matches!(outcome, Err(SettingsError::Gone)), "{outcome:?}");
+        assert!(
+            std::fs::read_to_string(&path)
+                .expect("read back")
+                .contains("tick_secs = 45"),
+            "the file took the write regardless"
+        );
+        assert_eq!(
+            workspace.engine.shared_state().load().settings,
+            before,
+            "the drained engine kept its values"
+        );
+        let _keep = app;
     }
 
     /// The focus commits persist through the workspace path and the
