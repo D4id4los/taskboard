@@ -222,14 +222,45 @@ mod tests {
     /// exact observables.
     const POLL: Duration = Duration::from_secs(3_600);
 
-    /// An advancing logical clock (30 s per read): heartbeat stamps
-    /// stay distinct without wall time.
-    #[derive(Debug)]
-    struct StepClock;
+    /// The fixture base for minted heartbeat stamps: one hour after the
+    /// seed documents' clock literal (`2026-11-05T08:00:00Z`), so every
+    /// heartbeat compares newer than every fixture stamp.
+    fn heartbeat_base() -> DateTime<Utc> {
+        use chrono::TimeZone as _;
+        chrono::Utc
+            .with_ymd_and_hms(2026, 11, 5, 9, 0, 0)
+            .single()
+            .expect("in-range stamp")
+    }
 
-    impl taskboard_domain::Clock for StepClock {
+    /// A logical stepping clock — 30 s per read from a fixed base:
+    /// heartbeat stamps stay distinct and strictly increasing without
+    /// any wall read.
+    #[derive(Debug)]
+    struct SteppingClock {
+        next_secs: std::sync::atomic::AtomicI64,
+        step_secs: i64,
+    }
+
+    impl SteppingClock {
+        fn new(start: DateTime<Utc>, step_secs: i64) -> Self {
+            Self {
+                next_secs: std::sync::atomic::AtomicI64::new(start.timestamp()),
+                step_secs,
+            }
+        }
+    }
+
+    impl taskboard_domain::Clock for SteppingClock {
         fn now(&self) -> DateTime<Utc> {
-            Utc::now() + chrono::TimeDelta::seconds(30)
+            use chrono::TimeZone as _;
+            let secs = self
+                .next_secs
+                .fetch_add(self.step_secs, std::sync::atomic::Ordering::Relaxed);
+            chrono::Utc
+                .timestamp_opt(secs, 0)
+                .single()
+                .expect("in-range stamp")
         }
     }
 
@@ -238,7 +269,7 @@ mod tests {
             poll_interval: POLL,
             backoff_initial: Duration::from_millis(100),
             backoff_max: Duration::from_millis(400),
-            clock: Arc::new(StepClock),
+            clock: Arc::new(SteppingClock::new(heartbeat_base(), 30)),
             app_version: "test".into(),
         }
     }
