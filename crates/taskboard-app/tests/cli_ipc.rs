@@ -764,7 +764,12 @@ async fn t16_track_and_export_over_the_relay() {
         "daemon stopped",
     )
     .await;
+    // `daemon:false` is the client's socket view — the graceful stop
+    // may not have released the instance lock yet, so the fallback
+    // export waits for the process (and its lock) to actually die
+    // instead of racing it (issue #570).
     let _ = daemon.0.kill();
+    daemon.0.wait().expect("reap the stopped daemon");
 
     let (code, fallback, err) = install.run(&["export", "--format", "csv", "--task", "log work"]);
     assert_eq!(code, Some(0), "{err}");
