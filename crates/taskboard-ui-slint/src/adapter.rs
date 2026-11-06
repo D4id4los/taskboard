@@ -155,6 +155,11 @@ pub(crate) struct Adapter {
     /// The run mode's one UI bit (Q8): on kiosk the today pass filters
     /// to the focused board's subset; the desktop is cross-board.
     kiosk: bool,
+    /// The clock seam (#660, from `UiSettings::clock`): `Some` freezes
+    /// [`Self::day_ctx`]'s `now` so goldens over clock-derived content
+    /// render time-independently; production always holds `None` and
+    /// the pass reads the wall clock.
+    frozen_now: Option<chrono::DateTime<chrono::Utc>>,
     /// The injected reminder defaults (R3 chunk C): the derivation
     /// input `active_notifications` needs for the implicit default's
     /// occurrence — held, never re-read from config (the `day_start`
@@ -959,7 +964,7 @@ impl Adapter {
     /// window derived from the held pair — recomputed on every pass,
     /// so the rollover rides the existing minute-boundary repaint.
     fn day_ctx(&self) -> crate::view_state::DayCtx {
-        let now = chrono::Utc::now();
+        let now = self.frozen_now.unwrap_or_else(chrono::Utc::now);
         let window = taskboard_domain::days::day_window(now, self.day_start.0, self.day_start.1);
         crate::view_state::DayCtx { now, window }
     }
@@ -5171,6 +5176,7 @@ pub(crate) fn install(
     day_start: (chrono::NaiveTime, chrono::FixedOffset),
     due_soon_horizon: chrono::TimeDelta,
     kiosk: bool,
+    frozen_now: Option<chrono::DateTime<chrono::Utc>>,
     rotation: Option<crate::view_state::KioskRotation>,
     reminder_defaults: taskboard_domain::ReminderDefaults,
     focus: Option<taskboard_domain::focus::FocusTiming>,
@@ -5215,6 +5221,7 @@ pub(crate) fn install(
         day_start,
         due_soon_horizon,
         kiosk,
+        frozen_now,
         reminder_defaults,
         focus,
         seconds_surfaces_active: false,

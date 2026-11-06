@@ -823,6 +823,12 @@ fn the_review_empty_golden_holds() {
 /// Phrase stability: closed entries and date-only completion phrases
 /// are deterministic within a run (the second-granular phrases never
 /// cross a second between build and snapshot).
+///
+/// Clock discipline (#660): the journey pins the review pass's clock
+/// through `UiSettings::clock` and seeds every stamp relative to that
+/// same fixed instant — the render (bars, date phrases) is identical
+/// at any wall-clock time, so the golden never drifts with the hour
+/// or the calendar.
 #[test]
 fn the_review_ledger_golden_holds() {
     let regen = regen_requested();
@@ -831,8 +837,14 @@ fn the_review_ledger_golden_holds() {
             headless_renderer: true,
         },
         move |driver| {
+            use chrono::TimeZone as _;
             let (fixture, mut state) = fixture::golden_state();
-            let now = chrono::Utc::now();
+            // The journey's clock: a fixed mid-day UTC instant, held
+            // by the mount (the clock seam) and by the seeds alike.
+            let now = chrono::Utc
+                .with_ymd_and_hms(2026, 11, 6, 12, 0, 0)
+                .single()
+                .expect("fixed instant");
             let span = |start: chrono::TimeDelta, secs: i64| {
                 (
                     now + start,
@@ -867,10 +879,14 @@ fn the_review_ledger_golden_holds() {
                 None,
             );
             let state = Arc::new(ArcSwap::from_pointee(state));
+            let settings = UiSettings {
+                clock: Some(now),
+                ..scale_settings(1.0)
+            };
             capture_golden(
                 driver,
                 state,
-                scale_settings(1.0),
+                settings,
                 |_, handle| enter_review(handle),
                 1000,
                 &PathBuf::from(format!(
