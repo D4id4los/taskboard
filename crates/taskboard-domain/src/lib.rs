@@ -163,8 +163,8 @@ pub use reminders::{
     ReminderDelivery, ReminderDismissal, ReminderFiring, ReminderKind, ReminderOffset, ReminderRef,
     ReminderRule, ReminderSnooze, ReminderSnoozeKey, ReminderState, active_notifications,
     alarm_occurrence, at_rule_occurrence, dismissal_settles_at_rule, due_firings, due_soon,
-    effective_occurrence, notifications_for, occurrence_of, overdue_tasks, prune_settled_alarms,
-    prune_settled_at_rules,
+    effective_occurrence, next_due_instant, notifications_for, occurrence_of, overdue_tasks,
+    prune_settled_alarms, prune_settled_at_rules,
 };
 pub use remote::{
     BoardPullValidators, PushOutcome, PushResult, RemoteBoard, RemoteBoardSnapshot, RemoteEcho,
