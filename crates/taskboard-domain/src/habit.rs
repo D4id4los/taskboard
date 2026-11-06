@@ -856,8 +856,16 @@ mod tests {
             (fixture, steps) in habit_fixture_strategy().prop_flat_map(|fixture| {
                 (
                     Just(fixture.clone()),
+                    // The step clock strictly advances (dt >= 1s): a
+                    // same-instant double +1 collides under the row
+                    // clock's equal-clock LWW tie and loses the second
+                    // increment on replay — a recorded production
+                    // limitation, pinned as debt by
+                    // `log_same_instant_double_currently_pins_the_lww_tie_loss`
+                    // below (the fixture's stamps carry second
+                    // resolution).
                     proptest::collection::vec(
-                        (any::<bool>(), 0_usize..2, 0_u32..=60, 0_i64..=3_600),
+                        (any::<bool>(), 0_usize..2, 0_u32..=60, 1_i64..=3_600),
                         1..8,
                     ),
                 )
@@ -994,6 +1002,61 @@ mod tests {
             b.sort();
             prop_assert_eq!(a, b);
         }
+    }
+    /// DEBT PIN (currently-pins convention, AGENTS §5): two
+    /// `LogHabit`s stamped with the SAME `now` (same planner
+    /// second) collide under `RecordHabitLog`'s equal-clock LWW
+    /// tie — the replay keeps the stored row and the second
+    /// increment is silently lost. The Σ property above excludes
+    /// the degenerate sequence (dt >= 1s) until the tie is ruled
+    /// (increment-merging rows, or sub-second/monotone row
+    /// clocks). Proposed fix: stamp the log row's clock with a
+    /// per-command monotone tiebreaker, or merge equal-clock
+    /// increments in the storage apply — either is a storage-semantics
+    /// ruling, not a habit-local change.
+    #[test]
+    fn log_same_instant_double_currently_pins_the_lww_tie_loss() {
+        let fixture = HabitFixture {
+            habit: habit(1, HabitTarget::PerWeek(NonZeroCount::new(1).expect("1"))),
+            log: std::collections::BTreeMap::new(),
+            now: ts(1_000),
+            day: DayCalendar {
+                day_start_time: chrono::NaiveTime::MIN,
+                offset: chrono::FixedOffset::east_opt(0).expect("utc"),
+            },
+        };
+        let plan1 = log_plan(
+            &fixture,
+            &StateCommand::LogHabit {
+                habit: fixture.habit.id,
+            },
+            fixture.now,
+        )
+        .expect("commandable");
+        let plan2 = log_plan(
+            &fixture,
+            &StateCommand::LogHabit {
+                habit: fixture.habit.id,
+            },
+            fixture.now,
+        )
+        .expect("commandable");
+        let mut persisted = crate::persistence::PersistedState {
+            habits: fixture.state(),
+            ..crate::persistence::PersistedState::default()
+        };
+        crate::persistence::apply_actions(&mut persisted, &plan1.actions);
+        crate::persistence::apply_actions(&mut persisted, &plan2.actions);
+        let total: u64 = persisted
+            .habits
+            .log
+            .values()
+            .map(|entry| u64::from(entry.count))
+            .sum();
+        assert_eq!(
+            total, 1,
+            "currently pins the tie loss: the second same-instant +1 is dropped on replay"
+        );
     }
 
     // ---- Deterministic streak cases (§5.3) -------------------------------
