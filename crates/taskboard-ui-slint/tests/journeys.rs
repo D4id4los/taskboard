@@ -14465,3 +14465,118 @@ fn segments_activate_on_return_and_space() {
         },
     );
 }
+
+/// F19b — the slider steps from the keyboard with the r4 D38
+/// ceremony: strokes preview widget-internally (no request, no theme
+/// move), the release commits once, a stray release commits nothing,
+/// and Tab-ing away mid-gesture commits once.
+#[test]
+fn the_slider_steps_from_the_keyboard_and_commits_on_release() {
+    use taskboard_ui_slint::requests::UiRequest;
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::AppSettings);
+            harness.driver.set_window_size(1000, 6000);
+            let scale = |harness: &Harness| {
+                harness
+                    .handle
+                    .window()
+                    .global::<taskboard_ui_slint::Theme>()
+                    .get_base_scale()
+            };
+            let committed = |requests: &[UiRequest]| -> Vec<f64> {
+                requests
+                    .iter()
+                    .filter_map(|request| match request {
+                        UiRequest::SetScale { scale, .. } => Some(*scale),
+                        _ => None,
+                    })
+                    .collect()
+            };
+            assert_eq!(scale(&harness), 1.0);
+
+            tab_to(&mut harness, "Scale slider");
+            let right = parse("Right").expect("Right");
+            for _ in 0..2 {
+                harness.stroke(right);
+                harness.driver.advance_time(0);
+            }
+            assert!(
+                harness.drain_requests().is_empty(),
+                "no request mid-gesture"
+            );
+            assert_eq!(scale(&harness), 1.0, "the theme holds until release");
+
+            harness.driver.release_stroke(right);
+            harness.driver.advance_time(0);
+            let requests = harness.drain_requests();
+            let scales = committed(&requests);
+            assert_eq!(scales.len(), 1, "one commit per gesture: {requests:?}");
+            assert!((scales[0] - 1.2).abs() < 1e-3, "two ticks up");
+            for request in requests {
+                if let UiRequest::SetScale { reply, .. } = request {
+                    reply.send(Ok(())).expect("the reply lane is alive");
+                }
+            }
+            harness.handle.drain_setting_replies();
+
+            harness.driver.release_stroke(right);
+            harness.driver.advance_time(0);
+            assert!(
+                committed(&harness.drain_requests()).is_empty(),
+                "a release without a stroke commits nothing"
+            );
+
+            harness.stroke(parse("Left").expect("Left"));
+            harness.driver.advance_time(0);
+            harness.stroke(parse("Tab").expect("Tab"));
+            harness.driver.advance_time(0);
+            let requests = harness.drain_requests();
+            let scales = committed(&requests);
+            assert_eq!(scales.len(), 1, "focus loss commits the pending gesture");
+            assert!((scales[0] - 1.1).abs() < 1e-3, "one tick down from 1.2");
+            for request in requests {
+                if let UiRequest::SetScale { reply, .. } = request {
+                    reply.send(Ok(())).expect("the reply lane is alive");
+                }
+            }
+            harness.handle.drain_setting_replies();
+
+            // A refused commit reverts the thumb; the next gesture
+            // steps from the reverted value, not the refused one.
+            tab_to(&mut harness, "Scale slider");
+            harness.stroke(right);
+            harness.driver.advance_time(0);
+            harness.driver.release_stroke(right);
+            harness.driver.advance_time(0);
+            for request in harness.drain_requests() {
+                if let UiRequest::SetScale { reply, .. } = request {
+                    reply
+                        .send(Err(
+                            taskboard_ui_slint::requests::SettingsError::StoreFailed,
+                        ))
+                        .expect("the reply lane is alive");
+                }
+            }
+            harness.handle.drain_setting_replies();
+            harness.driver.advance_time(0);
+            let left = parse("Left").expect("Left");
+            harness.stroke(left);
+            harness.driver.advance_time(0);
+            harness.driver.release_stroke(left);
+            harness.driver.advance_time(0);
+            let scales = committed(&harness.drain_requests());
+            assert_eq!(scales.len(), 1, "one commit per gesture");
+            assert!(
+                (scales[0] - 1.0).abs() < 1e-3,
+                "one tick down from the reverted 1.1, got {}",
+                scales[0]
+            );
+        },
+    );
+}
