@@ -10,6 +10,22 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 ### Added
 
+- The reflection family's domain and engine tier (#636, DR-7 chunk 1,
+  ADR 0021): the `ReflectionEntry` entity (roaming-family UUID,
+  stored window instants, embedded LWW clocks, tombstone-in-place
+  deletes) and its `ReflectionState` home on the app state; the
+  curated attribute vocabulary (the nine ruled health flags behind a
+  case-exact mint, mood/energy ratings, tolerant parking of unknown
+  flag names on decode) and the ruled four-prompt template set as
+  compiled-in data; the calendar-blind `RecordReflection`/
+  `UpdateReflection`/`DeleteReflection` commands with typed receipts
+  and rejections, flag-delta edits, idempotent no-ops, and zero
+  outbox ops (device-local by ruling, roaming-ready by construction);
+  the pure `review_window`/`ReviewWindow`/`window_misses`/
+  `window_done` primitives composing the one period flooring with the
+  day-window vocabulary; the typed `ReflectionSurface` undo refusal.
+  Storage (migration + codec), the `journal` CLI verb family, and the
+  review-walk surfaces are chunks 2–3 (#637/#638).
 - Tracked-time statistics in the Review view (#623 slice A): two
   new tracking sections over the landed 7/30-day windows — Work and
   Respite totals, per-day bar strips (shape only; the stat cells
