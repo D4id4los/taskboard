@@ -269,6 +269,15 @@ export component ReviewView inherits FocusScope {
     // The window's logical height, pushed from the app window (the
     // today view's precedent — never a content-derived height).
     in property <length> viewport-height;
+    // The ledgers' viewport bound (#373): the page height less the
+    // content padding. Assigned, never bound: a binding from
+    // `viewport-height` into any layout constraint closes a loop
+    // through the window's own height (window-height ← layout-info ←
+    // the clip's height), so the handler below copies the value.
+    property <length> page-bound;
+    changed viewport-height => {
+        root.page-bound = Math.max(root.viewport-height - 2 * Theme.space-3, 0);
+    }
 
     accessible-role: AccessibleRole.region;
     accessible-label: "Review";
@@ -347,15 +356,31 @@ export component ReviewView inherits FocusScope {
                     }
                     entries-clip := Rectangle {
                         clip: true;
+                        height: Math.min(
+                            root.review.reflection-rows.length * row-probe.preferred-height,
+                            root.page-bound,
+                        );
+                        // One ledger row's height: every ledger row pins
+                        // itself to its body text's preferred height
+                        // (single line, elided), so a ledger's content
+                        // height is exactly `rows × row height` and both
+                        // clip hosts size from the model length, never
+                        // from the list's content-height (the landed
+                        // assignment pattern left the host flexible to
+                        // the page solver, which shrank it whenever the
+                        // page overflowed — #623 slice B found the rows
+                        // painting over the next heading). The probe
+                        // lives in this non-layout host: a fixed-size
+                        // child on the view's root would enter the
+                        // component's own layout-info.
+                        row-probe := RoleText {
+                            role: Typography.body;
+                            text: "Ag";
+                            visible: false;
+                        }
                         entries := ListView {
                             height: 100%;
-                            visible-height: Math.max(root.viewport-height - 2 * Theme.space-3, 0);
-                            changed content-height => {
-                                parent.height = Math.min(
-                                    self.content-height,
-                                    Math.max(root.viewport-height - 2 * Theme.space-3, 0),
-                                );
-                            }
+                            visible-height: root.page-bound;
                             request-row: -1;
                             request-nonce: 0;
                             page-request: ScrollPageHint.family == 4 ? ScrollPageHint.page : 0;
@@ -415,9 +440,10 @@ export component ReviewView inherits FocusScope {
 
                     // The ledger (D-8): ONE per-task list over the
                     // 30-day window, newest completion first. The
-                    // #373 viewport pattern (the today sections'
-                    // shape): the repeater fills the window-derived
-                    // bound, the clip host owns the content-sized min.
+                    // #373 viewport pattern, uniform-row form: the
+                    // repeater fills the window-derived bound, the clip
+                    // host's height is the declarative
+                    // min(rows × row height, bound) — see `row-probe`.
                     RoleText {
                         role: Typography.heading;
                         text: "Completed tasks";
@@ -425,15 +451,13 @@ export component ReviewView inherits FocusScope {
                     }
                     ledger-clip := Rectangle {
                         clip: true;
+                        height: Math.min(
+                            root.review.rows.length * row-probe.preferred-height,
+                            root.page-bound,
+                        );
                         ledger := ListView {
                             height: 100%;
-                            visible-height: Math.max(root.viewport-height - 2 * Theme.space-3, 0);
-                            changed content-height => {
-                                parent.height = Math.min(
-                                    self.content-height,
-                                    Math.max(root.viewport-height - 2 * Theme.space-3, 0),
-                                );
-                            }
+                            visible-height: root.page-bound;
                             request-row: -1;
                             request-nonce: 0;
                             // The review page pages as family 4 (D-8:
@@ -487,17 +511,6 @@ export component ReviewView inherits FocusScope {
                                 }
                             }
                         }
-                    }
-                    property <length> watch-viewport-height: root.viewport-height;
-                    changed watch-viewport-height => {
-                        ledger-clip.height = Math.min(
-                            ledger.content-height,
-                            Math.max(root.viewport-height - 2 * Theme.space-3, 0),
-                        );
-                        entries-clip.height = Math.min(
-                            entries.content-height,
-                            Math.max(root.viewport-height - 2 * Theme.space-3, 0),
-                        );
                     }
                 }
             }

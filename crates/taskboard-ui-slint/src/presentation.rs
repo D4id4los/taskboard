@@ -2327,25 +2327,33 @@ pub fn reflection_flag_counts(flags: &taskboard_domain::FlagOccurrences) -> Vec<
 }
 
 /// One day-bar's pushed rating fractions (the pure half of D-B6): the
-/// Mood and Energy means as fractions of the five-point scale. The push
-/// pass maps Mood → `base`, Energy → `stack` on the strip.
+/// Mood and Energy means as fractions of the strip's stacked scale.
+/// The push pass maps Mood → `base`, Energy → `stack` on the strip.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct ReflectionBar {
     pub mood: f32,
     pub energy: f32,
 }
 
+/// The two stacked five-point fields' combined scale: a 5/5 pair fills
+/// the plot exactly, so the stack never overflows it.
+const STACKED_RATING_SCALE: f32 = 10.0;
+
 /// The reflection strip's bar fractions (D-B6): **fixed-scale**
-/// normalization — `mean / 5` per rated bucket, no strip-max rescaling
-/// (ratings own a natural scale; normalizing by the strip's maximum
-/// would hide the absolute level, which for ratings IS the reading).
+/// normalization, no strip-max rescaling (ratings own a natural scale;
+/// normalizing by the strip's maximum would hide the absolute level,
+/// which for ratings IS the reading). The strip *stacks* the two
+/// segments, so the fixed scale is the stacked pair's
+/// ([`STACKED_RATING_SCALE`]): `mean / 10` per field — a mean of 5 is
+/// half the plot, and the pair's top edge reads `(mood + energy) / 10`.
 /// An unrated bucket is `0.0` (the baseline tick); every fraction is
-/// finite and ≤ 1.0; the length equals the series' length.
+/// finite, the pair sums to ≤ 1.0, and the length equals the series'.
 #[must_use]
 pub fn review_rating_fractions(series: &[taskboard_domain::DayRatings]) -> Vec<ReflectionBar> {
     let fraction = |fold: &taskboard_domain::RatingMean| {
-        fold.mean()
-            .map_or(0.0_f32, |mean| (mean / 5.0).clamp(0.0, 1.0))
+        fold.mean().map_or(0.0_f32, |mean| {
+            (mean / STACKED_RATING_SCALE).clamp(0.0, 1.0)
+        })
     };
     series
         .iter()
@@ -7007,10 +7015,11 @@ mod review_tracking_tests {
         }
     }
 
-    // 12: fixed-scale normalization — mean 4 → 0.8, unrated → 0.0,
-    // never above 1.0, never NaN, no strip-max rescaling.
+    // 12: fixed-scale normalization over the stacked pair — mean 4 →
+    // 0.4, a 5/5 pair fills the plot, unrated → 0.0, the pair never
+    // exceeds 1.0, never NaN, no strip-max rescaling.
     #[test]
-    fn review_rating_fractions_normalize_by_the_five_point_scale() {
+    fn review_rating_fractions_normalize_by_the_stacked_rating_scale() {
         let series = [
             rated_day((4, 1), (0, 0)),
             rated_day((5, 1), (10, 2)),
@@ -7018,16 +7027,20 @@ mod review_tracking_tests {
         ];
         let bars = review_rating_fractions(&series);
         assert_eq!(bars.len(), series.len());
-        assert!((bars[0].mood - 0.8_f32).abs() < 1e-6, "mean 4 of 5");
+        assert!(
+            (bars[0].mood - 0.4_f32).abs() < 1e-6,
+            "mean 4 of the pair's 10"
+        );
         assert_eq!(bars[0].energy, 0.0, "unrated is the baseline tick");
-        assert!((bars[1].mood - 1.0_f32).abs() < 1e-6);
-        assert!((bars[1].energy - 1.0_f32).abs() < 1e-6);
+        assert!(
+            (bars[1].mood + bars[1].energy - 1.0_f32).abs() < 1e-6,
+            "a 5/5 pair fills the plot exactly"
+        );
         assert!(bars[2].mood == 0.0 && bars[2].energy == 0.0);
-        // No strip-max rescaling: a lone mean-2 day stays at 0.4.
+        // No strip-max rescaling: a lone mean-2 day stays at 0.2.
         let lone = review_rating_fractions(&[rated_day((2, 1), (0, 0))]);
-        assert!((lone[0].mood - 0.4_f32).abs() < 1e-6);
-        assert!(bars.iter().all(|bar| bar.mood <= 1.0
-            && bar.energy <= 1.0
+        assert!((lone[0].mood - 0.2_f32).abs() < 1e-6);
+        assert!(bars.iter().all(|bar| bar.mood + bar.energy <= 1.0 + 1e-6
             && bar.mood.is_finite()
             && bar.energy.is_finite()));
         assert_eq!(review_rating_fractions(&[]), Vec::<ReflectionBar>::new());
