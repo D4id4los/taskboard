@@ -1,0 +1,27 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The item-walk arm's self-guard host (#665 D-V7): compiled by the
+// build script with element debug info (the `slint!` macro cannot
+// carry the element ids the arm matches on). Two repeated delegates,
+// each with a registered-shape touch and an own-verb touch.
+
+import { Theme } from "../ui/theme.slint";
+
+export component ItemWalkPanel inherits Window {
+    width: Theme.space-6 * 8;
+    height: Theme.space-6 * 4;
+    VerticalLayout {
+        for i in 2: row := Rectangle {
+            height: Theme.space-6;
+            hit := TouchArea {
+                width: 50%;
+                x: 0;
+                clicked => {}
+            }
+            own-verb := TouchArea {
+                width: 50%;
+                x: parent.width / 2;
+                clicked => {}
+            }
+        }
+    }
+}
