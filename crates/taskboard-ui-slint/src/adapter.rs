@@ -1840,10 +1840,13 @@ impl Adapter {
         self.walk_resume = Some(WalkResume { cadence, reference });
         self.clear_walk_buffers();
         let outcomes = self.view_state.close_review_walk();
-        self.apply_outcomes(window, &outcomes);
+        // The planner opens BEFORE the close outcomes' refresh runs:
+        // the refresh pass reads the post-open view (the abandon rule
+        // must not mistake the inline handoff for a navigation away).
         if self.view_state.view() != crate::view_state::ViewId::PlanNextDay {
             self.interpret(window, UiEffect::OpenPlanNextDay);
         }
+        self.apply_outcomes(window, &outcomes);
     }
 
     /// The walk's intents (the `ReviewWalk(WalkIntent)` carrier's
@@ -1875,11 +1878,33 @@ impl Adapter {
                 WalkStep::Inert => Vec::new(),
             },
             WalkIntent::Back => {
+                // The TrackEntryDismiss ladder's first rung: a focused
+                // walk field (the armed date field, a prompt editor)
+                // disengages Insert first — the field stays mounted,
+                // the ladder stays put.
+                if self.shell.mode == Mode::Insert {
+                    // The disengage must also retire the focus facts:
+                    // the armed field keeps its latch while the walk
+                    // means "Insert is off" — the pre-arm would
+                    // re-engage on the next stroke otherwise (the
+                    // generation re-baseline absorbs the field's stale
+                    // decrement).
+                    Self::reset_editing_facts(window);
+                    return vec![FlowOutcome::SetMode(Mode::Normal)];
+                }
                 let outcomes = self.view_state.back_review_walk(rows);
                 if !matches!(self.view_state.flow(), Flow::ReviewWalk { .. }) {
                     // The close rung: the buffers die with the flow.
                     self.clear_walk_buffers();
                 }
+                // A rung that unmounted a field (the sub-state clear,
+                // the stage-back out of Prompts) or the walk itself
+                // killed slint focus with it and fired no loss event —
+                // the facts reset is the adapter's documented seam for
+                // exactly that (the modal-open/view-swap precedent),
+                // and the view scope re-anchors (the D15 hand-off).
+                Self::reset_editing_facts(window);
+                window.invoke_refocus_view();
                 outcomes
             }
             // -- the inbox row verbs --
@@ -2010,7 +2035,12 @@ impl Adapter {
                     // dispatches nothing — never relying on a NoOp.
                     let outcomes = self.view_state.close_review_walk();
                     self.clear_walk_buffers();
-                    return outcomes;
+                    self.apply_outcomes(window, &outcomes);
+                    // The prompt editors died with the flow (no loss
+                    // events): reset the facts, re-anchor the focus.
+                    Self::reset_editing_facts(window);
+                    window.invoke_refocus_view();
+                    return Vec::new();
                 }
                 let step = vec![FlowOutcome::Command(
                     taskboard_domain::StateCommand::RecordReflection {
@@ -2026,12 +2056,20 @@ impl Adapter {
                 let mut outcomes = step;
                 outcomes.extend(self.view_state.close_review_walk());
                 self.clear_walk_buffers();
-                outcomes
+                self.apply_outcomes(window, &outcomes);
+                // The prompt editors died with the flow (no loss
+                // events): reset the facts, re-anchor the focus.
+                Self::reset_editing_facts(window);
+                window.invoke_refocus_view();
+                Vec::new()
             }
             WalkIntent::Finish => {
                 let outcomes = self.view_state.close_review_walk();
                 self.clear_walk_buffers();
-                outcomes
+                self.apply_outcomes(window, &outcomes);
+                Self::reset_editing_facts(window);
+                window.invoke_refocus_view();
+                Vec::new()
             }
         }
     }

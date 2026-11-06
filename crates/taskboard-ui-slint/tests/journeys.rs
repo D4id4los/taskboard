@@ -14705,3 +14705,1140 @@ fn focused_settings_controls_render_the_ring() {
         },
     );
 }
+
+// ---- #638: the review walk's journeys (the plan §4 catalogue) ----------
+
+use taskboard_domain::{Board, BoardClocks, BoardId, Color, Stack, StackClocks, StackId, Task};
+
+/// The walk fixture: the golden state plus the global Inbox board
+/// (P1's capture home) with two triage rows, and task0 scheduled
+/// inside yesterday's window (a carry row). Returns the fixture ids
+/// and the state.
+#[allow(clippy::too_many_lines)] // one fixture builder, kept flat
+fn walk_fixture_state() -> (fixture::Fixture, AppState, StackId, Vec<TaskId>) {
+    let (fixture, mut state) = fixture::golden_state();
+    let inbox = BoardId::from_uuid(uuid::Uuid::new_v4());
+    state.boards.insert(
+        inbox,
+        Board {
+            id: inbox,
+            remote: None,
+            title: "Inbox".to_owned(),
+            color: Color::new(""),
+            archived: false,
+            deleted: false,
+            clocks: BoardClocks {
+                title: BoardClocks::epoch(),
+                color: BoardClocks::epoch(),
+                archived: BoardClocks::epoch(),
+                deleted: BoardClocks::epoch(),
+            },
+            remote_seen: None,
+        },
+    );
+    let inbox_stack = StackId::from_uuid(uuid::Uuid::new_v4());
+    state.stacks.insert(
+        inbox_stack,
+        Stack {
+            id: inbox_stack,
+            remote: None,
+            board: inbox,
+            title: "Inbox".to_owned(),
+            order: 0,
+            archived: false,
+            deleted: false,
+            clocks: StackClocks {
+                title: BoardClocks::epoch(),
+                order: BoardClocks::epoch(),
+                deleted: BoardClocks::epoch(),
+            },
+            remote_seen: None,
+        },
+    );
+    let mk = |title: &str, scheduled: Option<chrono::DateTime<chrono::Utc>>| {
+        let mut task = Task {
+            id: TaskId::from_uuid(uuid::Uuid::now_v7()),
+            remote: None,
+            label_memberships: std::collections::BTreeMap::new(),
+            title: title.to_owned(),
+            description: String::new(),
+            duedate: None,
+            scheduled,
+            done: None,
+            stack: inbox_stack,
+            order: 0,
+            effort: None,
+            importance: None,
+            urgency: None,
+            recur: None,
+            kind: taskboard_domain::entities::TaskKind::Standard,
+            archived: false,
+            deleted: false,
+            clocks: taskboard_domain::TaskClocks {
+                title: BoardClocks::epoch(),
+                description: BoardClocks::epoch(),
+                duedate: BoardClocks::epoch(),
+                scheduled: BoardClocks::epoch(),
+                done: BoardClocks::epoch(),
+                position: BoardClocks::epoch(),
+                effort: BoardClocks::epoch(),
+                importance: BoardClocks::epoch(),
+                urgency: BoardClocks::epoch(),
+                recur: BoardClocks::epoch(),
+                kind: BoardClocks::epoch(),
+                archived: BoardClocks::epoch(),
+                deleted: BoardClocks::epoch(),
+            },
+            remote_seen: None,
+            remote_baseline: None,
+        };
+        if let Some(instant) = scheduled {
+            task.scheduled = Some(instant);
+        }
+        (task.id, task)
+    };
+    let mut inbox_ids = Vec::new();
+    for title in ["triage-me", "triage-me-too"] {
+        let (id, task) = mk(title, None);
+        state.tasks.insert(id, task);
+        inbox_ids.push(id);
+    }
+    // task0 carries a scheduled anchor inside yesterday's window (the
+    // midnight-aligned convention: the journey harness's wall-clock
+    // anchor reads the default day-start pair).
+    let day_start = (
+        taskboard_domain::SettingsSnapshot::default().day_start_time,
+        UiSettings::default().boot_offset,
+    );
+    let now = chrono::Utc::now();
+    let calendar = taskboard_domain::DayCalendar {
+        day_start_time: day_start.0,
+        offset: day_start.1,
+    };
+    let yesterday = calendar.today(now).pred_opt().expect("yesterday");
+    let carry = calendar.instant(
+        yesterday,
+        chrono::NaiveTime::from_hms_opt(9, 0, 0).expect("9:00"),
+    );
+    let mut task0 = state.tasks.get(&fixture.task0).expect("task0").clone();
+    task0.scheduled = Some(carry);
+    state.tasks.insert(fixture.task0, task0);
+    (fixture, state, inbox_stack, inbox_ids)
+}
+
+/// Opens the walk over the fixture (the card click — J1's route).
+fn open_walk(harness: &mut Harness) {
+    // The card lives on the Today view — mount it first (a no-op when
+    // the walk is opened from there).
+    harness.press(ActionId::ViewToday);
+    harness.driver.advance_time(0);
+    assert!(
+        harness.handle.window().get_review_card_visible(),
+        "the surfacing card is visible"
+    );
+    let label = format!(
+        "Review {}",
+        chrono::Utc::now()
+            .date_naive()
+            .pred_opt()
+            .expect("yesterday")
+    );
+    // The a11y tree exposes the freshly mounted card on a later
+    // tick (the view-mount settle; the planner pool row's retry).
+    let mut card = None;
+    for _ in 0..20 {
+        harness.driver.advance_time(0);
+        if let Some(found) = harness.driver.find_by_label(&label) {
+            card = Some(found);
+            break;
+        }
+    }
+    let card = card.unwrap_or_else(|| panic!("the surfacing card renders"));
+    card.invoke_default_action();
+    harness.driver.advance_time(0);
+}
+
+fn walk_open(harness: &Harness) -> bool {
+    harness.handle.window().get_walk_model().open
+}
+
+fn walk_stage(harness: &Harness) -> i32 {
+    harness.handle.window().get_walk_model().stage_kind
+}
+
+fn walk_rows(harness: &Harness) -> usize {
+    harness.handle.window().get_walk_model().rows.row_count()
+}
+
+/// J1 — unreviewed closed day → the Today card; the click opens the
+/// walk at the Inbox stage over the due window's reference.
+#[test]
+fn the_card_opens_the_walk_over_the_due_window() {
+    let (_fixture, state, _stack, inbox_ids) = walk_fixture_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::ViewToday);
+            harness.driver.advance_time(0);
+            assert!(
+                harness.handle.window().get_review_card_visible(),
+                "an unreviewed closed day surfaces the card"
+            );
+            open_walk(&mut harness);
+            assert!(walk_open(&harness), "the card opened the walk");
+            assert_eq!(walk_stage(&harness), 0, "the walk opens at the Inbox");
+            assert_eq!(
+                walk_rows(&harness),
+                inbox_ids.len(),
+                "the triage rows are the inbox reading"
+            );
+            assert_eq!(
+                harness.engine.drain(),
+                Vec::new(),
+                "opening dispatches nothing"
+            );
+        },
+    );
+}
+
+/// J2 — a live Day entry for the closed day clears the card.
+#[test]
+fn a_recorded_day_entry_clears_the_card() {
+    let (fixture, mut state, _stack, _inbox_ids) = walk_fixture_state();
+    let day_start = (
+        taskboard_domain::SettingsSnapshot::default().day_start_time,
+        UiSettings::default().boot_offset,
+    );
+    let calendar = taskboard_domain::DayCalendar {
+        day_start_time: day_start.0,
+        offset: day_start.1,
+    };
+    let now = chrono::Utc::now();
+    let yesterday = calendar.today(now).pred_opt().expect("yesterday");
+    let window =
+        taskboard_domain::review_window(taskboard_domain::ReviewCadence::Day, yesterday, calendar);
+    let entry = taskboard_domain::ReflectionEntry {
+        id: taskboard_domain::ReflectionId::from_uuid(uuid::Uuid::now_v7()),
+        cadence: taskboard_domain::ReviewCadence::Day,
+        day: window.day(),
+        window_start: window.start(),
+        window_end: window.end(),
+        text: "done".to_owned(),
+        attributes: taskboard_domain::ReflectionAttributes::default(),
+        created_at: now,
+        updated_at: now,
+        deleted: false,
+    };
+    state.reflection.entries.insert(entry.id, entry.clone());
+    let _ = fixture;
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::ViewToday);
+            harness.driver.advance_time(0);
+            assert!(
+                !harness.handle.window().get_review_card_visible(),
+                "a live entry for the window clears the card"
+            );
+        },
+    );
+}
+
+/// J3 — the boundary crossing rides the render clock seam (the
+/// `UiSettings::clock` freeze): with a live entry for yesterday the
+/// frozen clock just before the next boundary shows no card; frozen
+/// past it, the card appears — with NO command dispatched and no
+/// request sent (D-W11's no-machinery pin).
+#[test]
+fn the_card_appears_at_the_boundary_without_dispatching() {
+    for (past_boundary, expect_card) in [(false, false), (true, true)] {
+        let (_fixture, mut state, _stack, _inbox_ids) = walk_fixture_state();
+        let t0 = chrono::Utc::now();
+        let day_start = (
+            taskboard_domain::SettingsSnapshot::default().day_start_time,
+            UiSettings::default().boot_offset,
+        );
+        let calendar = taskboard_domain::DayCalendar {
+            day_start_time: day_start.0,
+            offset: day_start.1,
+        };
+        let yesterday = calendar.today(t0).pred_opt().expect("yesterday");
+        let window = taskboard_domain::review_window(
+            taskboard_domain::ReviewCadence::Day,
+            yesterday,
+            calendar,
+        );
+        let entry = taskboard_domain::ReflectionEntry {
+            id: taskboard_domain::ReflectionId::from_uuid(uuid::Uuid::now_v7()),
+            cadence: taskboard_domain::ReviewCadence::Day,
+            day: window.day(),
+            window_start: window.start(),
+            window_end: window.end(),
+            text: "done".to_owned(),
+            attributes: taskboard_domain::ReflectionAttributes::default(),
+            created_at: t0,
+            updated_at: t0,
+            deleted: false,
+        };
+        state.reflection.entries.insert(entry.id, entry);
+        // The boundary: a full day past the fixture's `now` — the
+        // latest closed window becomes the day the fixture clock
+        // called "today", which carries no entry.
+        let settings = UiSettings {
+            clock: past_boundary.then(|| t0 + TimeDelta::try_hours(24).expect("day")),
+            ..UiSettings::default()
+        };
+        support::driver::run(
+            DriverOptions {
+                headless_renderer: true,
+            },
+            move |_driver| {
+                let mut harness =
+                    Harness::mount_with_settings(SlintDriver::default(), state, settings);
+                harness.press(ActionId::ViewToday);
+                harness.driver.advance_time(0);
+                assert_eq!(
+                    harness.handle.window().get_review_card_visible(),
+                    expect_card,
+                    "the card follows the frozen clock across the boundary"
+                );
+                assert!(
+                    harness.engine.drain().is_empty(),
+                    "the boundary crossing dispatched nothing"
+                );
+                assert!(harness.drain_requests().is_empty(), "no request rode it");
+            },
+        );
+    }
+}
+
+/// J4 — `review.open` with no closed gap: the walk opens over the
+/// CURRENT day window (the evening review before the boundary).
+#[test]
+fn the_opener_falls_back_to_the_current_day() {
+    let (fixture, mut state, _stack, _inbox_ids) = walk_fixture_state();
+    let day_start = (
+        taskboard_domain::SettingsSnapshot::default().day_start_time,
+        UiSettings::default().boot_offset,
+    );
+    let calendar = taskboard_domain::DayCalendar {
+        day_start_time: day_start.0,
+        offset: day_start.1,
+    };
+    let now = chrono::Utc::now();
+    let yesterday = calendar.today(now).pred_opt().expect("yesterday");
+    let window =
+        taskboard_domain::review_window(taskboard_domain::ReviewCadence::Day, yesterday, calendar);
+    let entry = taskboard_domain::ReflectionEntry {
+        id: taskboard_domain::ReflectionId::from_uuid(uuid::Uuid::now_v7()),
+        cadence: taskboard_domain::ReviewCadence::Day,
+        day: window.day(),
+        window_start: window.start(),
+        window_end: window.end(),
+        text: String::new(),
+        attributes: taskboard_domain::ReflectionAttributes::default(),
+        created_at: now,
+        updated_at: now,
+        deleted: false,
+    };
+    state.reflection.entries.insert(entry.id, entry);
+    let _ = fixture;
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.handle.dispatch_action(ActionId::ReviewOpen);
+            harness.driver.advance_time(0);
+            assert!(walk_open(&harness));
+            let header = harness.handle.window().get_walk_model().header.to_string();
+            let today = calendar.today(now);
+            assert!(
+                header.contains(&today.to_string()),
+                "the header names the current day window ({header})"
+            );
+        },
+    );
+}
+
+/// J5 — File to… → pick a stack → commit: exactly one `MoveTask` with
+/// the end-of-stack order; the row leaves at the next refresh.
+#[test]
+fn filing_commits_one_move_task() {
+    let (fixture, state, _stack, _inbox_ids) = walk_fixture_state();
+    let stack_a = fixture.stack_a;
+    let expected_order = state
+        .tasks
+        .values()
+        .filter(|t| t.stack == stack_a && !t.deleted)
+        .map(|t| t.order)
+        .max()
+        .unwrap_or(0)
+        + 1;
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            open_walk(&mut harness);
+            harness.handle.dispatch_action(ActionId::ReviewInboxFile);
+            harness.driver.advance_time(0);
+            assert!(
+                harness.handle.window().get_walk_model().filing,
+                "File to… armed the picker"
+            );
+            // The first candidate is stack "a" (the fixture board's
+            // first): pick it via the pointer seam and commit.
+            harness.handle.window().invoke_walk_candidate_activated(0);
+            harness.driver.advance_time(0);
+            harness.handle.dispatch_action(ActionId::ReviewFileCommit);
+            harness.driver.advance_time(0);
+            let drained = harness.engine.drain();
+            match drained.as_slice() {
+                [StateCommand::MoveTask { id, stack, order }] => {
+                    assert_eq!(*stack, stack_a, "the picked candidate");
+                    assert_eq!(*order, expected_order, "the end-of-stack append");
+                    assert_ne!(*id, TaskId::from_uuid(uuid::Uuid::nil()));
+                }
+                other => panic!("one MoveTask, got {other:?}"),
+            }
+            // The fake engine folds it in: the row leaves the inbox.
+            harness.engine.settle(&harness.handle);
+            assert_eq!(walk_rows(&harness), 1, "the filed row left the reading");
+        },
+    );
+}
+
+/// J6 — Keep in inbox on the last row: no command, the stage passes
+/// to Carry forward.
+#[test]
+fn keep_on_the_last_row_passes_the_stage() {
+    let (_fixture, state, _stack, inbox_ids) = walk_fixture_state();
+    assert_eq!(inbox_ids.len(), 2, "the fixture's two triage rows");
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            open_walk(&mut harness);
+            // Step to the last row, then keep: the stage passes.
+            harness.stroke(parse("Down").expect("Down"));
+            harness.driver.advance_time(0);
+            harness.handle.dispatch_action(ActionId::ReviewInboxKeep);
+            harness.driver.advance_time(0);
+            assert!(harness.engine.drain().is_empty(), "keep dispatches nothing");
+            assert_eq!(walk_stage(&harness), 1, "the stage passed to Carry forward");
+        },
+    );
+}
+
+/// J7 — an empty inbox opens the walk at Carry forward, the strip
+/// carrying the Inbox empty flag (the b-line is the pushed note).
+#[test]
+fn an_empty_inbox_opens_at_carry_forward() {
+    let (_fixture, mut state, _stack, _inbox_ids) = walk_fixture_state();
+    let inbox_board = state
+        .boards
+        .values()
+        .find(|board| board.title == "Inbox")
+        .expect("the inbox board")
+        .id;
+    let dead: Vec<_> = state
+        .tasks
+        .values()
+        .filter(|task| {
+            state
+                .stacks
+                .get(&task.stack)
+                .is_some_and(|stack| stack.board == inbox_board)
+        })
+        .map(|task| task.id)
+        .collect();
+    for id in dead {
+        state.tasks.get_mut(&id).expect("live").deleted = true;
+    }
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.handle.dispatch_action(ActionId::ReviewOpen);
+            harness.driver.advance_time(0);
+            assert!(walk_open(&harness));
+            assert_eq!(walk_stage(&harness), 1, "the empty inbox is skipped");
+            let strip = harness.handle.window().get_walk_model().strip;
+            let inbox_note = (0..strip.row_count())
+                .find_map(|i| strip.row_data(i))
+                .expect("the inbox strip row");
+            assert!(
+                !inbox_note.note.is_empty(),
+                "the skipped stage's b-line rides the strip"
+            );
+            assert!(
+                harness.engine.drain().is_empty(),
+                "the skip dispatched nothing"
+            );
+        },
+    );
+}
+
+/// J8 — Move to tomorrow: one `UpdateTask` to the next window's
+/// opening instant; the due date is untouched.
+#[test]
+fn carry_tomorrow_moves_to_the_next_window_start() {
+    let (fixture, state, _stack, _inbox_ids) = walk_fixture_state();
+    let task0 = fixture.task0;
+    let due_before = state.tasks.get(&task0).expect("task0").duedate;
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            open_walk(&mut harness);
+            // Pass the inbox (keep both rows), land on Carry forward.
+            harness.handle.dispatch_action(ActionId::ReviewInboxKeep);
+            harness.driver.advance_time(0);
+            harness.handle.dispatch_action(ActionId::ReviewInboxKeep);
+            harness.driver.advance_time(0);
+            assert_eq!(walk_stage(&harness), 1);
+            harness
+                .handle
+                .dispatch_action(ActionId::ReviewCarryTomorrow);
+            harness.driver.advance_time(0);
+            let drained = harness.engine.drain();
+            let day_start = (
+                taskboard_domain::SettingsSnapshot::default().day_start_time,
+                UiSettings::default().boot_offset,
+            );
+            let calendar = taskboard_domain::DayCalendar {
+                day_start_time: day_start.0,
+                offset: day_start.1,
+            };
+            let now = chrono::Utc::now();
+            let today = calendar.today(now);
+            let next = taskboard_domain::review_window(
+                taskboard_domain::ReviewCadence::Day,
+                today,
+                calendar,
+            );
+            match drained.as_slice() {
+                [StateCommand::UpdateTask { id, changes }] => {
+                    assert_eq!(*id, task0, "the cursor row");
+                    assert_eq!(
+                        changes.scheduled,
+                        Some(Some(next.start())),
+                        "the next window's opening instant"
+                    );
+                    assert_eq!(changes.duedate, None, "due dates are never touched");
+                }
+                other => panic!("one carry write, got {other:?}"),
+            }
+            // The row left the carry reading (its anchor moved out of
+            // the window).
+            harness.engine.settle(&harness.handle);
+            assert_eq!(walk_rows(&harness), 0, "the carried row left");
+        },
+    );
+    let _ = due_before;
+}
+
+/// J9 — Pick a date: a parseable date commits one scheduled edit; an
+/// unparseable one dispatches nothing and keeps the text.
+#[test]
+fn the_date_pick_commits_parseable_input_only() {
+    let (fixture, state, _stack, _inbox_ids) = walk_fixture_state();
+    let task0 = fixture.task0;
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            open_walk(&mut harness);
+            for _ in 0..2 {
+                harness.handle.dispatch_action(ActionId::ReviewInboxKeep);
+                harness.driver.advance_time(0);
+            }
+            harness
+                .handle
+                .dispatch_action(ActionId::ReviewCarryPickDate);
+            harness.driver.advance_time(0);
+            // Unparseable: nothing dispatches, the buffer is kept.
+            harness
+                .handle
+                .window()
+                .invoke_walk_date_edited("not a date".into());
+            harness
+                .handle
+                .dispatch_action(ActionId::ReviewCarryDateCommit);
+            harness.driver.advance_time(0);
+            assert!(
+                harness.engine.drain().is_empty(),
+                "an unparseable date dispatches nothing"
+            );
+            // Parseable: one scheduled write.
+            harness
+                .handle
+                .window()
+                .invoke_walk_date_edited("2030-03-01".into());
+            harness
+                .handle
+                .dispatch_action(ActionId::ReviewCarryDateCommit);
+            harness.driver.advance_time(0);
+            let day_start = (
+                taskboard_domain::SettingsSnapshot::default().day_start_time,
+                UiSettings::default().boot_offset,
+            );
+            let calendar = taskboard_domain::DayCalendar {
+                day_start_time: day_start.0,
+                offset: day_start.1,
+            };
+            let expected = calendar.instant(
+                chrono::NaiveDate::from_ymd_opt(2030, 3, 1).expect("date"),
+                chrono::NaiveTime::MIN,
+            );
+            match harness.engine.drain().as_slice() {
+                [StateCommand::UpdateTask { id, changes }] => {
+                    assert_eq!(*id, task0);
+                    assert_eq!(changes.scheduled, Some(Some(expected)));
+                }
+                other => panic!("one dated write, got {other:?}"),
+            }
+        },
+    );
+}
+
+/// J10 — advancing out of Carry forward lands the walk on the
+/// planner: flow `None`, view `PlanNextDay`, the walk's return view
+/// snapshot untouched (the planner's own return seam).
+#[test]
+fn the_advance_hands_off_to_the_planner() {
+    let (_fixture, state, _stack, _inbox_ids) = walk_fixture_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.handle.dispatch_action(ActionId::ReviewOpen);
+            harness.driver.advance_time(0);
+            // Advance through Inbox (empty via keeps? the fixture has
+            // rows — advance twice: once past Inbox, once out of
+            // Carry forward).
+            harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
+            harness.driver.advance_time(0);
+            assert_eq!(walk_stage(&harness), 1);
+            harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
+            harness.driver.advance_time(0);
+            assert!(!walk_open(&harness), "the walk closed at the handoff");
+            assert_eq!(
+                harness.handle.window().get_current_view(),
+                View::PlanNextDay,
+                "the planner is mounted"
+            );
+            assert!(
+                harness.engine.drain().is_empty(),
+                "the handoff dispatched no command"
+            );
+        },
+    );
+}
+
+/// J11 — closing the planner without placing anything is the built-in
+/// skip: the walk resumes at Prompts (P12 — nothing forced, nothing
+/// lost).
+#[test]
+fn closing_the_planner_resumes_at_prompts() {
+    let (_fixture, state, _stack, _inbox_ids) = walk_fixture_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.handle.dispatch_action(ActionId::ReviewOpen);
+            harness.driver.advance_time(0);
+            harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
+            harness.driver.advance_time(0);
+            harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
+            harness.driver.advance_time(0);
+            assert_eq!(
+                harness.handle.window().get_current_view(),
+                View::PlanNextDay
+            );
+            // The planner's Escape rung (its own context binding).
+            harness.stroke(parse("Escape").expect("Escape"));
+            harness.driver.advance_time(0);
+            assert!(walk_open(&harness), "the walk resumed");
+            assert_eq!(walk_stage(&harness), 2, "at Prompts");
+            assert!(
+                harness.engine.drain().is_empty(),
+                "the resume dispatched nothing"
+            );
+        },
+    );
+}
+
+/// J13 — leaving the planner by another route (`view.today`) drops
+/// the hint: no walk resumes, and a later planner close resumes
+/// nothing (the walk never ambushes later).
+#[test]
+fn leaving_the_planner_by_another_route_drops_the_hint() {
+    let (_fixture, state, _stack, _inbox_ids) = walk_fixture_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.handle.dispatch_action(ActionId::ReviewOpen);
+            harness.driver.advance_time(0);
+            harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
+            harness.driver.advance_time(0);
+            harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
+            harness.driver.advance_time(0);
+            assert_eq!(
+                harness.handle.window().get_current_view(),
+                View::PlanNextDay
+            );
+            // Out by the view intent, not the planner's close.
+            harness.handle.dispatch_action(ActionId::ViewToday);
+            harness.driver.advance_time(0);
+            assert!(!walk_open(&harness), "no walk ambushes the Today view");
+            // A later planner open + close resumes nothing.
+            harness.handle.dispatch_action(ActionId::ViewPlanNextDay);
+            harness.driver.advance_time(0);
+            harness.handle.dispatch_action(ActionId::ViewPlanNextDay);
+            harness.driver.advance_time(0);
+            assert!(!walk_open(&harness), "the hint is gone");
+        },
+    );
+}
+
+/// J14 — Record with two answers: exactly one `RecordReflection` with
+/// the reference's cadence/day/window; after the entry lands in the
+/// published state the card is gone.
+#[test]
+fn recording_routes_one_entry_and_clears_the_card() {
+    let (fixture, state, _stack, _inbox_ids) = walk_fixture_state();
+    let task0 = fixture.task0;
+    let _ = task0;
+    let day_start = (
+        taskboard_domain::SettingsSnapshot::default().day_start_time,
+        UiSettings::default().boot_offset,
+    );
+    let calendar = taskboard_domain::DayCalendar {
+        day_start_time: day_start.0,
+        offset: day_start.1,
+    };
+    let now = chrono::Utc::now();
+    let yesterday = calendar.today(now).pred_opt().expect("yesterday");
+    let expected_window =
+        taskboard_domain::review_window(taskboard_domain::ReviewCadence::Day, yesterday, calendar);
+    let published = {
+        let mut state = state.clone();
+        let entry = taskboard_domain::ReflectionEntry {
+            id: taskboard_domain::ReflectionId::from_uuid(uuid::Uuid::now_v7()),
+            cadence: taskboard_domain::ReviewCadence::Day,
+            day: expected_window.day(),
+            window_start: expected_window.start(),
+            window_end: expected_window.end(),
+            text: "shipped the walk".to_owned(),
+            attributes: taskboard_domain::ReflectionAttributes::default(),
+            created_at: now,
+            updated_at: now,
+            deleted: false,
+        };
+        state.reflection.entries.insert(entry.id, entry);
+        state
+    };
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::ViewToday);
+            harness.driver.advance_time(0);
+            open_walk(&mut harness);
+            // Straight to the prompts: the walk advance runs the
+            // handoff and the planner close resumes at Prompts.
+            harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
+            harness.driver.advance_time(0);
+            harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
+            harness.driver.advance_time(0);
+            harness.stroke(parse("Escape").expect("Escape"));
+            harness.driver.advance_time(0);
+            assert_eq!(walk_stage(&harness), 2);
+            // Two answers ride the mirror seam (the editors' path).
+            harness
+                .handle
+                .window()
+                .invoke_walk_answer_edited(0, "shipped the walk".into());
+            harness
+                .handle
+                .window()
+                .invoke_walk_answer_edited(3, "the planner leg".into());
+            harness.handle.dispatch_action(ActionId::ReviewRecord);
+            harness.driver.advance_time(0);
+            let drained = harness.engine.drain();
+            // The advance/handoff legs dispatch nothing; the record is
+            // the journey's ONE command.
+            match drained.as_slice() {
+                [
+                    StateCommand::RecordReflection {
+                        cadence,
+                        day,
+                        window,
+                        text,
+                        mood,
+                        energy,
+                        flags,
+                    },
+                ] => {
+                    assert_eq!(*cadence, taskboard_domain::ReviewCadence::Day);
+                    assert_eq!(*day, yesterday);
+                    assert_eq!(*window, expected_window.bounds());
+                    assert!(text.contains("shipped the walk"));
+                    assert!(text.contains("the planner leg"));
+                    assert_eq!(*mood, None);
+                    assert_eq!(*energy, None);
+                    assert!(flags.is_empty(), "attributes stay the CLI's (D-W9)");
+                }
+                other => panic!("one record, got {other:?}"),
+            }
+            assert!(!walk_open(&harness), "the walk closed on the record");
+            harness.engine.replace_state(published, &harness.handle);
+            assert!(
+                !harness.handle.window().get_review_card_visible(),
+                "the recorded window no longer surfaces"
+            );
+        },
+    );
+}
+
+/// J15 — an all-blank Record and `Finish without recording` both end
+/// the walk gently: no command, flow closed.
+#[test]
+fn blank_records_and_finish_dispatch_nothing() {
+    let (_fixture, state, _stack, _inbox_ids) = walk_fixture_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            for exit in [ActionId::ReviewRecord, ActionId::ReviewFinish] {
+                harness.handle.dispatch_action(ActionId::ReviewOpen);
+                harness.driver.advance_time(0);
+                harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
+                harness.driver.advance_time(0);
+                harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
+                harness.driver.advance_time(0);
+                harness.stroke(parse("Escape").expect("Escape"));
+                harness.driver.advance_time(0);
+                assert_eq!(walk_stage(&harness), 2);
+                harness.handle.dispatch_action(exit);
+                harness.driver.advance_time(0);
+                assert!(
+                    harness.engine.drain().is_empty(),
+                    "{exit:?} dispatched nothing"
+                );
+                assert!(!walk_open(&harness), "{exit:?} closed the walk");
+            }
+        },
+    );
+}
+
+/// J16 — the Escape ladder: an armed date field disengages first
+/// (the focused field's Insert), then the sub-state clears, then the
+/// stage steps back, then the walk closes — no command at any rung.
+#[test]
+fn the_escape_ladder_never_dispatches() {
+    let (_fixture, state, _stack, _inbox_ids) = walk_fixture_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            open_walk(&mut harness);
+            assert!(walk_open(&harness));
+            harness.handle.dispatch_action(ActionId::ReviewInboxKeep);
+            harness.driver.advance_time(0);
+            harness.handle.dispatch_action(ActionId::ReviewInboxKeep);
+            harness.driver.advance_time(0);
+            assert_eq!(walk_stage(&harness), 1);
+            harness
+                .handle
+                .dispatch_action(ActionId::ReviewCarryPickDate);
+            harness.driver.advance_time(0);
+            assert!(harness.handle.window().get_walk_model().picking);
+            // Rung 1: the focused field disengages Insert; the armed
+            // field stays (the TrackEntryDismiss ladder's shape).
+            harness.stroke(parse("Escape").expect("Escape"));
+            harness.driver.advance_time(0);
+            assert!(
+                harness.handle.window().get_walk_model().picking,
+                "the armed field stays on the mode rung"
+            );
+            assert!(
+                harness.engine.drain().is_empty(),
+                "the ladder dispatched nothing"
+            );
+            // Rung 2: the sub-state clears.
+            harness.stroke(parse("Escape").expect("Escape"));
+            harness.driver.advance_time(0);
+            assert!(
+                !harness.handle.window().get_walk_model().picking,
+                "the armed field disengaged"
+            );
+            assert_eq!(walk_stage(&harness), 1, "the stage holds");
+            // Rung 3: the stage steps back to the Inbox.
+            harness.stroke(parse("Escape").expect("Escape"));
+            harness.driver.advance_time(0);
+            assert_eq!(walk_stage(&harness), 0, "the stage stepped back");
+            // Rung 4: the walk closes.
+            harness.stroke(parse("Escape").expect("Escape"));
+            harness.driver.advance_time(0);
+            assert!(!walk_open(&harness));
+            assert!(
+                harness.engine.drain().is_empty(),
+                "no ladder rung dispatched"
+            );
+        },
+    );
+}
+
+/// J17 — Capture opened mid-walk: the walk is replaced without
+/// committing (the XOR rule), nothing dispatched.
+#[test]
+fn capture_replaces_the_walk_without_committing() {
+    let (_fixture, state, _stack, _inbox_ids) = walk_fixture_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.handle.dispatch_action(ActionId::ReviewOpen);
+            harness.driver.advance_time(0);
+            harness.handle.dispatch_action(ActionId::CaptureQuick);
+            harness.driver.advance_time(0);
+            assert!(!walk_open(&harness), "the walk was replaced");
+            assert!(
+                harness
+                    .handle
+                    .window()
+                    .global::<taskboard_ui_slint::KeyboardState>()
+                    .get_vi_insert(),
+                "capture's insert mode engages"
+            );
+            assert!(
+                harness.engine.drain().is_empty(),
+                "the replacement dispatched nothing"
+            );
+        },
+    );
+}
+
+/// J18 — a refresh mid-walk re-derives the rows for the SAME window:
+/// a concurrent engine write moves the rows, the walk stays open with
+/// the reference pinned (no re-target at a state change).
+#[test]
+fn a_mid_walk_refresh_rederives_the_same_window() {
+    let (fixture, state, _stack, _inbox_ids) = walk_fixture_state();
+    let task1 = fixture.task1;
+    let published = {
+        let mut updated = state.clone();
+        updated.tasks.get_mut(&task1).expect("live").done = Some(chrono::Utc::now());
+        updated
+    };
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::ViewToday);
+            harness.driver.advance_time(0);
+            open_walk(&mut harness);
+            let header_before = harness.handle.window().get_walk_model().header.to_string();
+            // A concurrent engine write lands mid-walk: task1 is done.
+            harness.engine.replace_state(published, &harness.handle);
+            harness.driver.advance_time(0);
+            assert!(walk_open(&harness), "the walk survives the refresh");
+            assert_eq!(
+                harness.handle.window().get_walk_model().header.to_string(),
+                header_before,
+                "the reference is pinned — the header cannot drift"
+            );
+            assert!(
+                harness.engine.drain().is_empty(),
+                "the refresh dispatched nothing"
+            );
+        },
+    );
+}
+
+/// J19 — the kiosk pins (D-J14): the `review.open` dispatch is
+/// structurally inert (layer 2) and neither the card nor the walk
+/// model renders (layer 3) even with a due window on the wall.
+#[test]
+fn the_kiosk_mount_never_surfaces_the_walk() {
+    let (_fixture, state, _stack, _inbox_ids) = walk_fixture_state();
+    let settings = UiSettings {
+        kiosk: true,
+        ..UiSettings::default()
+    };
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount_with_settings(SlintDriver::default(), state, settings);
+            harness.press(ActionId::ViewToday);
+            harness.driver.advance_time(0);
+            assert!(
+                !harness.handle.window().get_review_card_visible(),
+                "no card on the appliance (layer 3)"
+            );
+            harness.handle.dispatch_action(ActionId::ReviewOpen);
+            harness.driver.advance_time(0);
+            assert!(!walk_open(&harness), "the dispatch is inert (layer 2)");
+            assert!(
+                harness.engine.drain().is_empty(),
+                "the kiosk dispatch routed nothing"
+            );
+            assert!(
+                !harness
+                    .handle
+                    .window()
+                    .global::<taskboard_ui_slint::KeyboardState>()
+                    .get_date_picker_grid(),
+                "no overlay context leaked"
+            );
+        },
+    );
+}
+
+/// J20 — the walk opened over the planner: advancing out of Carry
+/// forward keeps the planner mounted (no toggle-close — the handoff's
+/// skip-leg).
+#[test]
+fn the_walk_over_the_planner_hands_off_without_closing_it() {
+    let (_fixture, state, _stack, _inbox_ids) = walk_fixture_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            // Open the planner first, then the walk over it.
+            harness.handle.dispatch_action(ActionId::ViewPlanNextDay);
+            harness.driver.advance_time(0);
+            harness.handle.dispatch_action(ActionId::ReviewOpen);
+            harness.driver.advance_time(0);
+            assert_eq!(
+                harness.handle.window().get_current_view(),
+                View::PlanNextDay
+            );
+            assert!(walk_open(&harness));
+            harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
+            harness.driver.advance_time(0);
+            harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
+            harness.driver.advance_time(0);
+            assert_eq!(
+                harness.handle.window().get_current_view(),
+                View::PlanNextDay,
+                "the planner stays mounted (no toggle-close)"
+            );
+            assert!(!walk_open(&harness), "the walk closed at the handoff");
+        },
+    );
+}
+
+/// J12 — the planner leg places a task, then closes: the placement's
+/// `UpdateTask` lands and the walk resumes at Prompts (placed tasks
+/// reach it as plain state).
+#[test]
+fn the_planner_leg_places_then_resumes() {
+    let (fixture, state, _stack, _inbox_ids) = walk_fixture_state();
+    let task0 = fixture.task0;
+    let title = state.tasks.get(&task0).expect("task0").title.clone();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.handle.dispatch_action(ActionId::ReviewOpen);
+            harness.driver.advance_time(0);
+            harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
+            harness.driver.advance_time(0);
+            harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
+            harness.driver.advance_time(0);
+            harness.engine.drain();
+            assert_eq!(
+                harness.handle.window().get_current_view(),
+                View::PlanNextDay
+            );
+            // Place task0 from the pool: the placement form's funnel.
+            let row = harness
+                .driver
+                .find_by_label(&format!("Place {title}"))
+                .unwrap_or_else(|| panic!("task0's pool row is mounted"));
+            row.invoke_default_action();
+            harness.driver.advance_time(0);
+            click_field_centre(&mut harness, "Time");
+            harness.type_text("09:30");
+            harness.stroke(parse("Return").expect("Return"));
+            harness.driver.advance_time(0);
+            let drained = harness.engine.drain();
+            assert!(
+                drained
+                    .iter()
+                    .any(|c| matches!(c, StateCommand::UpdateTask { .. })),
+                "the placement write landed"
+            );
+            // The planner's Escape: the walk resumes at Prompts.
+            harness.stroke(parse("Escape").expect("Escape"));
+            harness.driver.advance_time(0);
+            assert!(walk_open(&harness));
+            assert_eq!(walk_stage(&harness), 2);
+        },
+    );
+}
+
+/// The view-mount inventory row for the overlay (the walk's structural
+/// fact: the overlay is a flow-gated window-level mount, never a view).
+#[test]
+fn the_walk_overlay_mount_is_flow_gated_window_level() {
+    let (_fixture, state, _stack, _inbox_ids) = walk_fixture_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.handle.dispatch_action(ActionId::ReviewOpen);
+            harness.driver.advance_time(0);
+            let window = harness.handle.window();
+            assert!(window.get_walk_model().open);
+            // The overlay is NOT a view: the cycle selector stays on
+            // its surface and the kiosk rotation cannot reach the walk.
+            assert_ne!(window.get_current_view(), View::PlanNextDay);
+        },
+    );
+}

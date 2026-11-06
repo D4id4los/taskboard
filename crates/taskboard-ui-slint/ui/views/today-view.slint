@@ -207,11 +207,12 @@ export component TodayView inherits FocusScope {
                             text: root.review-card-body;
                         }
                     }
-                    accessible-role: AccessibleRole.button;
-                    accessible-label: root.review-card-action;
                     TouchArea {
                         clicked => root.review-card-clicked();
                     }
+                    accessible-role: AccessibleRole.button;
+                    accessible-label: root.review-card-action;
+                    accessible-action-default => { root.review-card-clicked(); }
                 }
                 if (root.today.empty): EmptyState {
                     text: "Nothing due today";
