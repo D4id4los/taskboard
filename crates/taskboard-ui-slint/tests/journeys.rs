@@ -13675,7 +13675,12 @@ fn the_view_cycle_never_passes_through_the_planner() {
 #[test]
 #[allow(clippy::too_many_lines)] // the placement journey's ceremony
 fn the_placement_routes_one_mask_and_undo_returns_it() {
-    let (fixture, state) = fixture::golden_state();
+    // The clock pinned (docs/testing_strategy.org §6.2): the pass's
+    // next-day window and the expected instant derive from the one
+    // `now`, so neither side can straddle a day boundary the other
+    // does not see.
+    let now = fixture::PINNED_NOW;
+    let (fixture, state) = fixture::golden_state_at(now);
     let task0 = fixture.task0;
     let title = state.tasks.get(&task0).expect("fixture task").title.clone();
     support::driver::run(
@@ -13683,7 +13688,14 @@ fn the_placement_routes_one_mask_and_undo_returns_it() {
             headless_renderer: true,
         },
         move |_driver| {
-            let mut harness = Harness::mount(SlintDriver::default(), state);
+            let mut harness = Harness::mount_with_settings(
+                SlintDriver::default(),
+                state,
+                UiSettings {
+                    clock: Some(now),
+                    ..UiSettings::default()
+                },
+            );
             harness.driver.set_window_size(1000, 900);
             harness.press(ActionId::ViewPlanNextDay);
             harness.driver.advance_time(0);
@@ -13709,10 +13721,12 @@ fn the_placement_routes_one_mask_and_undo_returns_it() {
             harness.stroke(parse("Return").expect("Return"));
             harness.driver.advance_time(0);
 
-            // The one honest write: both masks in one command.
+            // The one honest write: both masks in one command (the
+            // window derives from the same pinned instant the mount
+            // froze — no clock read on either side).
             let day_start = UiSettings::default().day_start;
             let (next_start, _) =
-                taskboard_domain::days::next_day_window(harness_now(), day_start.0, day_start.1);
+                taskboard_domain::days::next_day_window(now, day_start.0, day_start.1);
             let date = next_start.date_naive();
             let time = chrono::NaiveTime::from_hms_opt(9, 30, 0).expect("09:30");
             let expected_instant = taskboard_domain::DayCalendar {
@@ -13759,13 +13773,17 @@ fn the_placement_routes_one_mask_and_undo_returns_it() {
 /// undo steps route back.
 #[test]
 fn the_reorder_routes_the_two_swap_writes() {
-    let (fixture, mut state) = fixture::golden_state();
+    // The clock pinned (docs/testing_strategy.org §6.2): the seeds
+    // and the pass both derive from the one `now`, so "tomorrow" is
+    // the same window on both sides of the boundary at any wall time.
+    let now = fixture::PINNED_NOW;
+    let (fixture, mut state) = fixture::golden_state_at(now);
     let (task0, task1) = (fixture.task0, fixture.task1);
-    // Two boxes tomorrow: 09:00 and 11:00 UTC (the default day-start
-    // pair makes tomorrow's window the next UTC midnight block).
+    // Two boxes tomorrow: 09:00 and 11:00 off the frozen next-day
+    // window (the default day-start pair makes it the next UTC
+    // midnight block).
     let day_start = UiSettings::default().day_start;
-    let (next_start, _) =
-        taskboard_domain::days::next_day_window(chrono::Utc::now(), day_start.0, day_start.1);
+    let (next_start, _) = taskboard_domain::days::next_day_window(now, day_start.0, day_start.1);
     let early = next_start + TimeDelta::hours(9);
     let late = next_start + TimeDelta::hours(11);
     state.tasks.get_mut(&task0).expect("task0").scheduled = Some(early);
@@ -13777,7 +13795,14 @@ fn the_reorder_routes_the_two_swap_writes() {
             headless_renderer: true,
         },
         move |_driver| {
-            let mut harness = Harness::mount(SlintDriver::default(), state);
+            let mut harness = Harness::mount_with_settings(
+                SlintDriver::default(),
+                state,
+                UiSettings {
+                    clock: Some(now),
+                    ..UiSettings::default()
+                },
+            );
             harness.driver.set_window_size(1000, 900);
             harness.press(ActionId::ViewPlanNextDay);
             harness.driver.advance_time(0);
@@ -13907,14 +13932,6 @@ fn the_kiosk_mount_never_shows_the_planner() {
             assert_eq!(harness.handle.window().get_current_view(), View::Board);
         },
     );
-}
-
-/// The harness-time `now` (the journeys' wall-clock anchor for the
-/// placement's expected instant — the adapter derives the window from
-/// its own pass-time `now`; a minute-boundary straddle is the same
-/// recorded golden-class residual).
-fn harness_now() -> chrono::DateTime<chrono::Utc> {
-    chrono::Utc::now()
 }
 
 // -- round-5 chunk 3: the anchored flyouts (F8/F9/F10/F14, D6) ----------

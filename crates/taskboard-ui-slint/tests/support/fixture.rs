@@ -15,6 +15,21 @@ use taskboard_domain::{
     TaskClocks, TaskId,
 };
 
+/// The pinned render clock of every clock-exposed test in this
+/// binary (`docs/testing_strategy.org` §6.2, #660): a fixed mid-day UTC
+/// instant — the review-ledger template's capture class. Seeds derive
+/// from it; the mount freezes `day_ctx` at it. Never read the wall
+/// clock next to it.
+pub const PINNED_NOW: chrono::DateTime<chrono::Utc> = {
+    let Some(date) = chrono::NaiveDate::from_ymd_opt(2026, 11, 6) else {
+        panic!("2026-11-06 is a calendar date");
+    };
+    let Some(instant) = date.and_hms_opt(12, 0, 0) else {
+        panic!("12:00:00 is a wall time");
+    };
+    instant.and_utc()
+};
+
 fn epoch() -> chrono::DateTime<chrono::Utc> {
     BoardClocks::epoch()
 }
@@ -321,8 +336,23 @@ pub fn journey_state() -> (Fixture, AppState) {
 /// §7): no overdue banner (banner labels derive from wall-clock
 /// relative time and would flake across hour boundaries), no flow
 /// hint, sync idle.
+///
+/// Delegates to [`golden_state_at`] with the wall clock: the
+/// structural-only journey consumers keep their shape. A test that
+/// commits a clock-derived artifact (a golden) or asserts an exact
+/// instant uses `golden_state_at(PINNED_NOW)` and pins the mount's
+/// `UiSettings::clock` to the same instant (`docs/testing_strategy.org`
+/// §6.2).
 #[must_use]
 pub fn golden_state() -> (Fixture, AppState) {
+    golden_state_at(chrono::Utc::now())
+}
+
+/// [`golden_state`] seeded against an explicit `now`: the running
+/// timer's open entry is stamped `now − 12 m`, so a pass whose clock
+/// is frozen at `now` renders the chip at the same age every run.
+#[must_use]
+pub fn golden_state_at(now: chrono::DateTime<chrono::Utc>) -> (Fixture, AppState) {
     let board_id = BoardId::from_uuid(uuid::Uuid::now_v7());
     let stack_a = StackId::from_uuid(uuid::Uuid::now_v7());
     let stack_b = StackId::from_uuid(uuid::Uuid::now_v7());
@@ -341,16 +371,9 @@ pub fn golden_state() -> (Fixture, AppState) {
     state.tasks.insert(task1, task(task1, stack_a, 1));
     state.tasks.insert(task2, task(task2, stack_b, 0));
     // The seeded running timer (DR-5/4, D-TU12): task1 holds the open
-    // entry, 12 minutes old at fixture construction — the chip and
-    // the badge appear in the golden matrix (wall-clock-derived text
-    // is the established golden class; a minute-boundary straddle is
-    // the recorded residual risk).
-    let open_task1 = add_open_entry(
-        &mut state,
-        task1,
-        "task-1",
-        chrono::Utc::now() - TimeDelta::minutes(12),
-    );
+    // entry, 12 minutes old at `now` — the chip and the badge appear
+    // in the golden matrix.
+    let open_task1 = add_open_entry(&mut state, task1, "task-1", now - TimeDelta::minutes(12));
     debug_assert!(state.tracking.entries.contains_key(&open_task1));
     (
         Fixture {
@@ -460,15 +483,27 @@ pub fn two_board_state() -> (TwoBoardFixture, AppState) {
 /// so the journey's walk is deterministic without injecting a
 /// `DayCtx`. Returns the two walked task ids (board one's first, then
 /// board two's task in display order: overdue sorts (order, id)).
+/// Delegates to [`today_overdue_state_at`] with the wall clock — same
+/// contract as [`golden_state`]'s delegation note.
 #[must_use]
 pub fn today_overdue_state() -> (TwoBoardFixture, AppState, [TaskId; 2]) {
+    today_overdue_state_at(chrono::Utc::now())
+}
+
+/// [`today_overdue_state`] seeded against an explicit `now`: the
+/// overdue anchor stays midnight-aligned at the *parameter's*
+/// yesterday and the chip entry sits at `now − 12 m`, so a pass
+/// frozen at `now` renders the same rows and captions every run.
+#[must_use]
+pub fn today_overdue_state_at(
+    now: chrono::DateTime<chrono::Utc>,
+) -> (TwoBoardFixture, AppState, [TaskId; 2]) {
     let (fixture, mut state) = two_board_state();
-    let now = chrono::Utc::now();
     // Midnight-aligned (round-3 D9): the due phrases carry the UTC
     // `· HH:MM` suffix for non-midnight instants, and a minute-
     // relative stamp flips its caption bucket across minute
-    // boundaries — midnight renders the date-only shape, stable for
-    // the run's lifetime and identical across runs.
+    // boundaries — midnight renders the date-only shape, byte-stable
+    // for a pinned render clock.
     let overdue_stamp = now
         .date_naive()
         .checked_sub_signed(chrono::TimeDelta::try_days(1).unwrap())

@@ -3851,6 +3851,17 @@ mod tests {
         let (requests_tx, _requests_rx) = tokio::sync::mpsc::channel(16);
         let (_health_tx, health) =
             tokio::sync::watch::channel(crate::presentation::DeliveryHealth::default());
+        // The pass's clock frozen at the module's seed instant
+        // (docs/testing_strategy.org §6.2): no test-side `now` can
+        // reach the pass's `now` other than through `UiSettings::clock`
+        // (the rigs build their `DayCtx` through the adapter's mount),
+        // so the pin is the only tool that fully determines the
+        // oracle's inputs — applied over whatever settings a caller
+        // brings.
+        let settings = UiSettings {
+            clock: Some(crate::test_platform::PINNED_NOW),
+            ..settings
+        };
         mount(
             state,
             {
@@ -3874,7 +3885,7 @@ mod tests {
         let mut t = task();
         t.id = TaskId::from_uuid(uuid::Uuid::from_u128(raw));
         t.title = title.to_owned();
-        t.done = Some(chrono::Utc::now() - age);
+        t.done = Some(crate::test_platform::PINNED_NOW - age);
         t.effort = effort.map(taskboard_domain::Effort::new);
         t
     }
@@ -3898,21 +3909,11 @@ mod tests {
     }
 
     fn tracked(state: &mut AppState, t: &Task, secs: i64) {
-        use chrono::TimeZone as _;
-        let now = chrono::Utc::now();
-        // Anchored inside the running UTC day's bucket (#658): a plain
-        // `now − 3h` crosses into yesterday's bar when the wall clock
-        // sits between UTC midnight and 03:00. The review rigs use the
-        // `UiSettings` default calendar (UTC-midnight day start), so
-        // the running bucket's interior begins at UTC midnight; the
-        // clip at `now` keeps the counted time positive for any instant
-        // after midnight (the end stamp may sit in the future — the
-        // single clipping oracle folds it back to `now`).
-        let date = now.date_naive();
-        let midnight = chrono::Utc
-            .with_ymd_and_hms(date.year(), date.month(), date.day(), 0, 0, 0)
-            .unwrap();
-        let start = (now - chrono::TimeDelta::try_hours(3).unwrap()).max(midnight);
+        // Three hours before the pinned render clock (docs/
+        // testing_strategy.org §6.2): from a mid-day instant the start
+        // lies inside the frozen UTC day, so the entry never straddles
+        // the running bucket's window and needs no midnight clamp.
+        let start = crate::test_platform::PINNED_NOW - chrono::TimeDelta::try_hours(3).unwrap();
         let e = work_entry(
             t.id,
             start,
@@ -4160,7 +4161,15 @@ mod tests {
             // collapses, the tracking pair speaks.
             let mut state = AppState::default();
             let open = task();
-            let entry = work_entry(open.id, chrono::Utc::now(), None);
+            // An open entry running for three hours at the frozen
+            // clock: starting it *at* PINNED_NOW would accrue zero
+            // (the open clamp evaluates at `now`), so the seed sits
+            // before the pin like `tracked`'s.
+            let entry = work_entry(
+                open.id,
+                crate::test_platform::PINNED_NOW - chrono::TimeDelta::try_hours(3).unwrap(),
+                None,
+            );
             state.tracking.entries.insert(entry.id, entry);
             state.tasks.insert(open.id, open);
             let handle = review_rig(state, UiSettings::default());

@@ -3630,14 +3630,22 @@ fn the_kiosk_tracked_section_filters_to_the_viewed_board() {
 #[test]
 fn the_placed_box_reopen_seeds_the_form_from_the_instant() {
     on_slint_thread(|| {
+        // The clock pinned (docs/testing_strategy.org §6.2): the
+        // placed instant, both rigs' render passes and the stale arm
+        // all derive from PINNED_NOW — no wall-clock read anywhere.
+        let now = crate::test_platform::PINNED_NOW;
         let day_start = UiSettings::default().day_start;
         let (next_start, _) =
-            taskboard_domain::days::next_day_window(chrono::Utc::now(), day_start.0, day_start.1);
+            taskboard_domain::days::next_day_window(now, day_start.0, day_start.1);
         let instant = next_start + chrono::TimeDelta::hours(2);
+        let pinned_settings = UiSettings {
+            clock: Some(now),
+            ..UiSettings::default()
+        };
 
         let (mut state, fx) = fixture();
         state.tasks.get_mut(&fx.tasks[0]).expect("task").scheduled = Some(instant);
-        let mut plan_rig = rig(state);
+        let mut plan_rig = guard_rig(state, pinned_settings.clone());
         let adapter = plan_rig.adapter();
         {
             let mut a = adapter.borrow_mut();
@@ -3668,12 +3676,15 @@ fn the_placed_box_reopen_seeds_the_form_from_the_instant() {
             "the seeded instant commits untouched"
         );
 
-        // The stale-stamp guard: yesterday's box seeds nothing, the
-        // empty time field refuses the commit (typed inert, form kept).
+        // The stale-stamp guard: a stamp three days before the
+        // frozen `now` seeds nothing, the empty time field refuses
+        // the commit (typed inert, form kept). Relative to the pin,
+        // never the wall clock — a wall-relative stamp drifts into
+        // the frozen day's future and stops being stale (#663).
         let (mut state, fx) = fixture();
         state.tasks.get_mut(&fx.tasks[0]).expect("task").scheduled =
-            Some(chrono::Utc::now() - chrono::TimeDelta::days(3));
-        let mut plan_rig = rig(state);
+            Some(now - chrono::TimeDelta::days(3));
+        let mut plan_rig = guard_rig(state, pinned_settings);
         let adapter = plan_rig.adapter();
         {
             let mut a = adapter.borrow_mut();
