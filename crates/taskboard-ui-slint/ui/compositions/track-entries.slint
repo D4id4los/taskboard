@@ -250,6 +250,10 @@ export component TrackEntriesPanel inherits Rectangle {
             // The list surface (D-TS3): hidden while the form holds.
             if (!root.form-open): VerticalLayout {
             panel-layout := VerticalLayout {
+                // The init seed covers the no-transition case (#665):
+                // an empty list's preferred height is final on its
+                // first evaluation, so `changed` alone never lands.
+                init => { root.list-layout-height = self.preferred-height; }
                 changed preferred-height => { root.list-layout-height = self.preferred-height; }
                 padding: Theme.space-3;
                 spacing: Theme.space-2;
