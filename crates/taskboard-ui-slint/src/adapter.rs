@@ -119,27 +119,7 @@ pub(crate) enum FocusHandover {
     Field,
 }
 
-#[allow(clippy::struct_excessive_bools)] // the view-state flags are the reviewed table shape
-/// The entries form's adapter-owned state (r4 D-TS4): the seed, the
-/// grid (the picker's presence), and the three typed texts — wiped
-/// whenever the flow is not `TrackEntryForm`.
-#[derive(Debug, Clone)]
-pub(crate) struct TrackFormState {
-    seed: Option<taskboard_domain::TimeEntryId>,
-    picker: Option<crate::due_edit::DuePickerState>,
-    #[cfg(test)]
-    pub(crate) date_text: String,
-    #[cfg(not(test))]
-    date_text: String,
-    #[cfg(test)]
-    pub(crate) start_text: String,
-    #[cfg(not(test))]
-    start_text: String,
-    #[cfg(test)]
-    pub(crate) end_text: String,
-    #[cfg(not(test))]
-    end_text: String,
-}
+use crate::level_state::TrackFormState;
 
 /// The walk's planner-handoff return hint (see the field docs on
 /// `Adapter`).
@@ -276,11 +256,6 @@ pub(crate) struct Adapter {
     /// confirm); consumed by the next `-delete` dispatch and cleared
     /// on overlay mutations.
     track_entry_target: Option<taskboard_domain::TimeEntryId>,
-    /// The entries form's adapter-owned state (r4 D-TS4, the
-    /// due-editor's buffers pattern): the seed, the picker (grid
-    /// open), and the three typed texts. Wiped whenever the flow is
-    /// not `TrackEntryForm` — the buffers never outlive the flow.
-    track_form: Option<TrackFormState>,
     /// The notification row's task (DR-5/4, D-TU5); consumed by the
     /// next `task.track-start` dispatch, then cleared (one-shot, the
     /// timer-target precedent).
@@ -367,8 +342,6 @@ pub(crate) struct Adapter {
     /// typing, mouse clicks, native arrow keys).
     editor_cursor: usize,
     editor_cursor_seen: usize,
-    track_start_filter_armed: bool,
-    track_end_filter_armed: bool,
     /// The custom-offset field's typed draft (r4 D27): the validity
     /// probe reads it per pass; the accepted seam clears it (both
     /// outcomes clear the field).
@@ -1674,14 +1647,9 @@ impl Adapter {
     /// (the §8 invariant's track-form twin).
     #[allow(clippy::too_many_lines)] // one pushed half per property, kept flat
     fn push_track_form(&mut self, window: &AppWindow) {
-        let flow_form = matches!(self.view_state.flow(), Flow::TrackEntryForm { .. });
-        if !flow_form {
-            self.track_form = None;
-            // The wipe's filter passengers (D-3.5): the armed flags
-            // never outlive their fields.
-            self.track_start_filter_armed = false;
-            self.track_end_filter_armed = false;
-        }
+        // The buffers live in the form's level (W5b D-H2): the drop
+        // is the wipe, the filter latches ride inside the state — no
+        // per-pass wipe pass here.
         // The armed delete dies with the overlay (D-TS5's
         // disarm-on-close; state-truth, nothing ticks) — but it
         // survives the form surface's ladder step back to the list.
@@ -1707,7 +1675,7 @@ impl Adapter {
         if armed_index < 0 {
             self.track_entry_target = None;
         }
-        let Some(form) = self.track_form.as_ref() else {
+        let Some(form) = self.view_state.track_form() else {
             window.set_track_form_open(false);
             return;
         };
@@ -1747,8 +1715,8 @@ impl Adapter {
                 .filter(|slot| crate::due_edit::quick_list_matches(&digits, *slot))
                 .collect()
         };
-        let start_slots = slots_for(&form.start_text, self.track_start_filter_armed);
-        let end_slots = slots_for(&form.end_text, self.track_end_filter_armed);
+        let start_slots = slots_for(&form.start_text, form.start_filter_armed);
+        let end_slots = slots_for(&form.end_text, form.end_filter_armed);
         let grid = form.picker.as_ref().map_or_else(
             || ModelRc::new(slint::VecModel::from(Vec::new())),
             |picker| {
@@ -1813,8 +1781,8 @@ impl Adapter {
     }
 
     #[cfg(test)]
-    pub(crate) fn track_form_mut_for_test(&mut self) -> &mut Option<TrackFormState> {
-        &mut self.track_form
+    pub(crate) fn track_form_mut_for_test(&mut self) -> Option<&mut TrackFormState> {
+        self.view_state.track_form_mut()
     }
 
     #[cfg(test)]
@@ -1851,9 +1819,10 @@ impl Adapter {
         let today = chrono::Local::now().date_naive();
         let entry = seed.and_then(|id| state.tracking.entries.get(&id));
         let start_local = entry.map(|e| chrono::Local.from_utc_datetime(&e.start.naive_utc()));
-        self.track_start_filter_armed = false;
-        self.track_end_filter_armed = false;
-        self.track_form = Some(TrackFormState {
+        let Some(form) = self.view_state.track_form_mut() else {
+            return;
+        };
+        *form = TrackFormState {
             seed,
             picker: None,
             date_text: start_local.map_or(today.format("%Y-%m-%d").to_string(), |l| {
@@ -1869,7 +1838,10 @@ impl Adapter {
                         .to_string()
                 },
             ),
-        });
+            start_filter_armed: false,
+            end_filter_armed: false,
+            anchor: crate::level_state::FocusAnchor::View,
+        };
     }
 
     /// The commit funnel (D-TS4, F24): the live validity table is
@@ -1885,7 +1857,7 @@ impl Adapter {
     }
 
     fn commit_track_form(&mut self, window: &AppWindow) -> bool {
-        let Some(form) = self.track_form.as_ref() else {
+        let Some(form) = self.view_state.track_form() else {
             return false;
         };
         // The form's subject rides the flow, not the focus: the
@@ -6174,8 +6146,6 @@ pub(crate) fn install(
         editor_cursor: 0,
         editor_cursor_seen: 0,
         setter_filter_armed: false,
-        track_start_filter_armed: false,
-        track_end_filter_armed: false,
         rule_offset_draft: String::new(),
         timer_when_draft: String::new(),
         setter_time: None,
@@ -6191,7 +6161,6 @@ pub(crate) fn install(
         timer_target: None,
         track_entry_draft: None,
         track_entry_target: None,
-        track_form: None,
         track_target: None,
         plan_target: None,
         habit_target: None,
@@ -8697,14 +8666,14 @@ fn install_tracking_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // is pushed and reports what the user did (§5.1). The commit
     // rides the one funnel (`commit_track_form`).
     install_seam!(window: window.on_track_form_date_edited, adapter: adapter;
-    bind mut (a, window), args (text), {        if let Some(form) = a.track_form.as_mut() {
+    bind mut (a, window), args (text), {        if let Some(form) = a.view_state.track_form_mut() {
         form.date_text = text.to_string();
     }
     a.refresh_forced(&window);
 
     });
     install_seam!(window: window.on_track_form_grid_toggled, adapter: adapter;
-    bind mut (a, window), args (), {        let Some(form) = a.track_form.as_mut() else {
+    bind mut (a, window), args (), {        let Some(form) = a.view_state.track_form_mut() else {
         return;
     };
     if form.picker.is_some() {
@@ -8732,7 +8701,7 @@ fn install_tracking_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         let Some(key) = crate::due_edit::DatePickerKey::from_code(code) else {
         return;
     };
-    let Some(form) = a.track_form.as_mut() else {
+    let Some(form) = a.view_state.track_form_mut() else {
         return;
     };
     let Some(picker) = form.picker.as_mut() else {
@@ -8757,8 +8726,8 @@ fn install_tracking_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     });
     install_seam!(window: window.on_track_form_day_clicked, adapter: adapter;
     bind mut (a, window), args (cell), {        let Some(date) = a
-        .track_form
-        .as_ref()
+        .view_state
+        .track_form()
         .and_then(|f| f.picker.as_ref())
         .and_then(|picker| {
             picker
@@ -8769,7 +8738,7 @@ fn install_tracking_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     else {
         return; // a blank or a stale index
     };
-    let form = a.track_form.as_mut().expect("checked above");
+    let form = a.view_state.track_form_mut().expect("checked above");
     if let Some(picker) = form.picker.as_mut() {
         picker.set_cursor(date);
     }
@@ -8779,8 +8748,8 @@ fn install_tracking_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     });
     install_seam!(window: window.on_track_form_start_edited, adapter: adapter;
     bind mut (a, window), args (text), {        // The keystroke arms the digit filter (round-5 F10, D-3.5).
-    a.track_start_filter_armed = true;
-    if let Some(form) = a.track_form.as_mut() {
+    if let Some(form) = a.view_state.track_form_mut() {
+        form.start_filter_armed = true;
         form.start_text = text.to_string();
     }
     a.refresh_forced(&window);
@@ -8788,8 +8757,8 @@ fn install_tracking_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     });
     install_seam!(window: window.on_track_form_end_edited, adapter: adapter;
     bind mut (a, window), args (text), {        // The keystroke arms the digit filter (round-5 F10, D-3.5).
-    a.track_end_filter_armed = true;
-    if let Some(form) = a.track_form.as_mut() {
+    if let Some(form) = a.view_state.track_form_mut() {
+        form.end_filter_armed = true;
         form.end_text = text.to_string();
     }
     a.refresh_forced(&window);
@@ -8799,8 +8768,8 @@ fn install_tracking_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // The quick lists' typed-shim seams (round-5 D6): append to the
     // field's mirror, run the field's own edited logic.
     install_seam!(window: window.on_track_form_start_quick_typed, adapter: adapter;
-    bind mut (a, window), args (key), {        a.track_start_filter_armed = true;
-    if let Some(form) = a.track_form.as_mut() {
+    bind mut (a, window), args (key), {        if let Some(form) = a.view_state.track_form_mut() {
+        form.start_filter_armed = true;
         let mut text = form.start_text.clone();
         text.push_str(&key);
         form.start_text = text;
@@ -8809,8 +8778,8 @@ fn install_tracking_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
 
     });
     install_seam!(window: window.on_track_form_end_quick_typed, adapter: adapter;
-    bind mut (a, window), args (key), {        a.track_end_filter_armed = true;
-    if let Some(form) = a.track_form.as_mut() {
+    bind mut (a, window), args (key), {        if let Some(form) = a.view_state.track_form_mut() {
+        form.end_filter_armed = true;
         let mut text = form.end_text.clone();
         text.push_str(&key);
         form.end_text = text;
@@ -8825,14 +8794,18 @@ fn install_tracking_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // panel (one panel mounts per group at a time — the site
     // discriminator picks which).
     install_seam!(window: window.on_track_form_start_quick_toggled, adapter: adapter;
-    bind mut (a, window), args (), {        a.track_start_filter_armed = false;
+    bind mut (a, window), args (), {        if let Some(form) = a.view_state.track_form_mut() {
+        form.start_filter_armed = false;
+    }
     a.refresh_forced(&window);
     let nonce = window.get_track_form_quick_nonce();
     window.set_track_form_quick_nonce(nonce.wrapping_add(1));
 
     });
     install_seam!(window: window.on_track_form_end_quick_toggled, adapter: adapter;
-    bind mut (a, window), args (), {        a.track_end_filter_armed = false;
+    bind mut (a, window), args (), {        if let Some(form) = a.view_state.track_form_mut() {
+        form.end_filter_armed = false;
+    }
     a.refresh_forced(&window);
     let nonce = window.get_track_form_quick_nonce();
     window.set_track_form_quick_nonce(nonce.wrapping_add(1));
@@ -8850,12 +8823,12 @@ fn install_tracking_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
             let mut a = seam.borrow_mut();
             // A picker-source write disarms the field's digit filter
             // (round-5 F10).
-            if which == 0 {
-                a.track_start_filter_armed = false;
-            } else {
-                a.track_end_filter_armed = false;
-            }
-            if let Some(form) = a.track_form.as_mut() {
+            if let Some(form) = a.view_state.track_form_mut() {
+                if which == 0 {
+                    form.start_filter_armed = false;
+                } else {
+                    form.end_filter_armed = false;
+                }
                 if pick {
                     let minutes = arg;
                     apply_time(form, which, |_| {

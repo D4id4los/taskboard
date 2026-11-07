@@ -240,6 +240,21 @@ impl LevelState {
         }
     }
 
+    pub(crate) fn as_track_form_mut(&mut self) -> Option<&mut TrackFormState> {
+        match self {
+            Self::TrackForm(state) => Some(state),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn as_track_form(&self) -> Option<&TrackFormState> {
+        match self {
+            Self::TrackForm(state) => Some(state),
+            _ => None,
+        }
+    }
+
     #[must_use]
     pub(crate) fn text_buffer(&self) -> Option<&str> {
         match self {

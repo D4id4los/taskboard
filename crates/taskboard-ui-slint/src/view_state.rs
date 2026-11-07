@@ -584,6 +584,26 @@ impl ViewState {
         self.write_flow(flow);
     }
 
+    /// The innermost `TrackForm` level's state (the entries form's
+    /// read seam): `None` without one.
+    #[must_use]
+    pub(crate) fn track_form(&self) -> Option<&crate::level_state::TrackFormState> {
+        self.surfaces
+            .above_levels()
+            .iter()
+            .rev()
+            .find_map(|level| level.state().as_track_form())
+    }
+
+    /// The entries form's write seam.
+    pub(crate) fn track_form_mut(&mut self) -> Option<&mut crate::level_state::TrackFormState> {
+        self.surfaces
+            .above_levels_mut()
+            .iter_mut()
+            .rev()
+            .find_map(|level| level.state_mut().as_track_form_mut())
+    }
+
     /// The innermost `DateEditor` level's state (the due family's
     /// read seam): `None` without one — every reader renders the
     /// wiped state the old enforce pass produced.
@@ -3240,6 +3260,31 @@ mod tests {
         vs.end_edit_date();
         vs.begin_edit_date(&state, DateField::Due);
         assert_eq!(vs.date_editor().expect("the editor armed").buffer, "");
+    }
+
+    #[test]
+    fn the_entries_form_reopens_clean_after_its_level_ends() {
+        let (state, _, _, [a, ..]) = fixture();
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        vs.set_focused(Some(a));
+        vs.activate_focused(&state);
+        // The add form, typed into, then the ladder step back to the
+        // list; a fresh form mints clean — the drop was the wipe.
+        vs.open_track_entry_form(a, None);
+        if let Some(form) = vs.track_form_mut() {
+            form.date_text = "typed".to_owned();
+        }
+        vs.step_back_track_entries();
+        let entry = taskboard_domain::TimeEntryId::from_uuid(uuid::Uuid::now_v7());
+        vs.open_track_entry_form(a, Some(entry));
+        let form = vs.track_form().expect("the form armed");
+        assert_eq!(form.date_text, "");
+        assert!(form.picker.is_none());
+        assert!(!form.start_filter_armed);
+        // Closing the whole overlay retires the form level with it.
+        vs.close_track_entries();
+        assert!(vs.track_form().is_none());
     }
 
     #[test]
