@@ -1411,6 +1411,7 @@ impl Adapter {
             .is_some_and(|derived| Arc::ptr_eq(derived, &state));
         if unchanged {
             self.enforce_due_buffer_invariant(window);
+            self.retire_levels();
             self.push_settings(window);
             return;
         }
@@ -1450,6 +1451,7 @@ impl Adapter {
         // D32: one derivation, no second list to drift).
         self.compute_seconds_surfaces_active(&state, chrono::Utc::now());
         self.enforce_due_buffer_invariant(window);
+        self.retire_levels();
         let chain = self.current_chain(window);
         let day = self.day_ctx();
         // The time combobox's pushed half (r4 D26): the filtered
@@ -1924,6 +1926,19 @@ impl Adapter {
         self.apply_outcomes(window, &outcomes);
         self.finish_mutation(window);
         true
+    }
+
+    /// The retire drain (W5b D3): the retired levels' exit
+    /// side-effects ride here, one consumption per level — never a
+    /// per-flow wipe rule. The flat chain's only parent anchor is
+    /// `View`, whose restore the flowless hand-off in
+    /// `apply_outcomes` already performs, so the drain adds no focus
+    /// call; the date editor's grid disarm is the first side-effect
+    /// consumer (the date family's commit).
+    fn retire_levels(&mut self) {
+        for level in self.view_state.drain_retired() {
+            let _anchor = level.state().anchor();
+        }
     }
 
     /// §8 (W-SM-c): the date editor's buffers never outlive the flow —

@@ -1192,12 +1192,13 @@ fn every_flow_effect_pair_resolves_to_its_matrix_row() {
                     // viewed for the TITLE cells to mean anything).
                     a.view_state
                         .activate_focused(&rig.handle.test_state().load_full());
+                    a.view_state.arm_flow(flow.clone());
                     if matches!(kind_of(flow), FK::Text | FK::Capture) {
                         // The TEXT rows' commit side and capture's
-                        // commit-and-continue thought.
+                        // commit-and-continue thought. Armed first —
+                        // the buffer lives in the flow's own level.
                         a.view_state.set_buffer("typed".to_owned());
                     }
-                    a.view_state.arm_flow(flow.clone());
                 }
                 {
                     let mut a = adapter.borrow_mut();
