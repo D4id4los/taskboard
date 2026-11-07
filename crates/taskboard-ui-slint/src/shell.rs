@@ -3,8 +3,9 @@
 //! The keymap shell state (chunk decision D17): the pure half of the
 //! adapter — menu cursor state, the vi mode, the modal mirrors that
 //! arm the context stack (`keyscope::scope_stack`, round-5 chunk 7 —
-//! `chain` now only delegates to it), and the focused-entity seam. No slint types; the lib adapter is the only
-//! code that syncs this onto window properties.
+//! `chain` now only delegates to it), and the focused-entity seam. No
+//! slint types; the lib adapter is the only code that syncs this onto
+//! window properties.
 
 use crate::actions::{ContextId, MenuGroup};
 use crate::router::{Mode, UiEffect};
