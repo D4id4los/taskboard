@@ -507,6 +507,14 @@ async fn handle_settings(request: UiRequest, workspace: &ConnectionWorkspace) {
                 .await,
             );
         }
+        UiRequest::SetFilesSyncEnabled { enabled, reply } => {
+            let _ = reply.send(
+                run_editor_write(workspace, Field::FilesSyncEnabled, |path| {
+                    crate::settings_overlay::set_files_sync_enabled(path, enabled)
+                })
+                .await,
+            );
+        }
     }
 }
 
@@ -618,6 +626,7 @@ fn editor_field_key(field: Field) -> &'static str {
         Field::FocusLongBreakMins => "focus.long_break_mins",
         Field::FocusLongBreakEvery => "focus.long_break_every",
         Field::FocusNotify => "focus.notify",
+        Field::FilesSyncEnabled => "files_sync.enabled",
         // The connection-form fields never ride the editor writers.
         Field::Name | Field::ServerUrl | Field::Username | Field::Password | Field::Scale => "",
     }
@@ -629,7 +638,7 @@ fn editor_field_key(field: Field) -> &'static str {
 /// registry test cannot silently drift from the editor.
 #[cfg(test)]
 pub(crate) fn editor_field_keys() -> std::collections::BTreeSet<&'static str> {
-    const ALL: [Field; 21] = [
+    const ALL: [Field; 22] = [
         Field::Name,
         Field::ServerUrl,
         Field::Username,
@@ -651,6 +660,7 @@ pub(crate) fn editor_field_keys() -> std::collections::BTreeSet<&'static str> {
         Field::FocusLongBreakMins,
         Field::FocusLongBreakEvery,
         Field::FocusNotify,
+        Field::FilesSyncEnabled,
     ];
     // Totality: the compiler refuses this match the moment `Field`
     // grows a variant the list above does not carry.
@@ -676,7 +686,8 @@ pub(crate) fn editor_field_keys() -> std::collections::BTreeSet<&'static str> {
             | Field::FocusChain
             | Field::FocusLongBreakMins
             | Field::FocusLongBreakEvery
-            | Field::FocusNotify => {}
+            | Field::FocusNotify
+            | Field::FilesSyncEnabled => {}
         }
     }
     ALL.into_iter()
@@ -2244,7 +2255,7 @@ mod tests {
         );
         assert_eq!(
             snapshot.applies.len(),
-            16,
+            17,
             "the reply carries the apply map"
         );
         assert!(
@@ -2375,6 +2386,64 @@ mod tests {
             .expect("lands");
         assert!(snapshot.focus_enabled);
         assert_eq!(snapshot.focus_work_mins, 45, "the earlier write survives");
+    }
+
+    /// The Files toggle (round-5 chunk 8, D-8.6): the write lands
+    /// `[files_sync] enabled` only (`poll_secs` survives), the reply
+    /// echoes it; over a config whose default connector is not
+    /// Nextcloud the gate refuses typed and the file stays untouched.
+    #[tokio::test]
+    async fn the_files_toggle_writes_only_its_key_and_refuses_without_nextcloud() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("taskboard.toml");
+        std::fs::write(
+            &path,
+            "[[sync.connectors]]\nname = \"work\"\nbackend = \"nextcloud\"\n\
+             server_url = \"https://c.example\"\nusername = \"alice\"\n\
+             [files_sync]\npoll_secs = 7\n",
+        )
+        .expect("seed");
+        let workspace = test_workspace(path.clone()).await;
+        let (reply, reply_rx) = tokio::sync::oneshot::channel();
+        handle_settings(
+            UiRequest::SetFilesSyncEnabled {
+                enabled: true,
+                reply,
+            },
+            &workspace,
+        )
+        .await;
+        let snapshot = reply_rx.await.expect("alive").expect("lands");
+        assert!(snapshot.files_sync_enabled, "the reply echoes the file");
+        let written = AppConfig::extract_raw(Some(&path)).expect("decodes");
+        assert!(written.files_sync.enabled);
+        assert_eq!(written.files_sync.poll_secs, Some(7), "poll_secs survives");
+
+        let standalone = dir.path().join("standalone.toml");
+        std::fs::write(&standalone, "[sync]\nbackend = \"standalone\"\n").expect("seed");
+        let before = std::fs::read_to_string(&standalone).expect("read");
+        let workspace = test_workspace(standalone.clone()).await;
+        let (reply, reply_rx) = tokio::sync::oneshot::channel();
+        handle_settings(
+            UiRequest::SetFilesSyncEnabled {
+                enabled: true,
+                reply,
+            },
+            &workspace,
+        )
+        .await;
+        let outcome = reply_rx.await.expect("alive");
+        assert!(
+            matches!(
+                outcome,
+                Err(SettingsError::Invalid {
+                    field: Field::FilesSyncEnabled,
+                    ..
+                })
+            ),
+            "the gate's own-blame refusal is typed: {outcome:?}"
+        );
+        assert_eq!(std::fs::read_to_string(&standalone).expect("read"), before);
     }
 
     /// A garbage minute write reaching the handler from a non-UI lane

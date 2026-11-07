@@ -306,6 +306,16 @@ pub fn set_focus_notify(path: &Path, enabled: bool) -> Result<(), OverlayError> 
     prove_and_write(path, "focus", "notify", toml_edit::value(enabled))
 }
 
+/// Writes `[files_sync] enabled` (round-5 chunk 8, D-8.6) — the only
+/// key of the table this UI writes; `poll_secs` is never touched.
+///
+/// # Errors
+///
+/// [`OverlayError`] — see the module docs.
+pub fn set_files_sync_enabled(path: &Path, enabled: bool) -> Result<(), OverlayError> {
+    prove_and_write(path, "files_sync", "enabled", toml_edit::value(enabled))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -255,6 +255,16 @@ pub(crate) fn invalid_text(field: Field, kind: InvalidKind) -> &'static str {
             InvalidKind::OutOfRange => "That toggle is not available.",
             InvalidKind::Duplicate => "Announcements are already set that way.",
         },
+        Field::FilesSyncEnabled => match kind {
+            InvalidKind::Empty
+            | InvalidKind::NotKebab
+            | InvalidKind::BadUrl
+            | InvalidKind::NotFinite => "Pick whether files sync runs.",
+            InvalidKind::OutOfRange => {
+                "Files sync needs a Nextcloud account as the default connection."
+            }
+            InvalidKind::Duplicate => "Files sync is already set that way.",
+        },
     }
 }
 
@@ -330,6 +340,7 @@ mod tests {
             Field::FocusLongBreakMins,
             Field::FocusLongBreakEvery,
             Field::FocusNotify,
+            Field::FilesSyncEnabled,
         ] {
             for kind in [
                 InvalidKind::Empty,
@@ -483,6 +494,7 @@ mod tests {
             Just(Field::FocusLongBreakMins),
             Just(Field::FocusLongBreakEvery),
             Just(Field::FocusNotify),
+            Just(Field::FilesSyncEnabled),
         ]
     }
 
