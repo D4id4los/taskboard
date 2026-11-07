@@ -8,9 +8,9 @@
   `keyscope.rs`, `router.rs`, the hosting `.slint` compositions). No
   domain/state/engine change: guests dispatch ordinary
   `StateCommand`s; hosts see their effects through `AppState`.
-- **Status**: **DRAFT rev 2** — Q1/Q3/Q4 ruled, Q2 superseded by the recursive redesign; awaiting Q5–Q7 (§5).
-  Every decision below carries a recommendation; none is binding
-  until ruled.
+- **Status**: **ACCEPTED** (2026-11-07, user) — Q1–Q7 ruled (§0);
+  implementation is dispatched by
+  `.artifacts/plans/2026-11-07-hostable-subsurfaces-implementation-dispatch-plan.md`.
 
 ## 1. Context & verified anchors (`main` @ `0448cceb`)
 
@@ -50,6 +50,9 @@ scope wins**. W5b names one protocol for all four.
 | Q2 | **Superseded**: the user rejected the closed-guest / depth-1 shape — the protocol must be general and naturally recursive, with no host/guest annotations and no depth limit (revision 2 below) |
 | Q3 | A foreign settle of a text level follows the **existing text rule** (commit non-empty, discard empty) |
 | Q4 | A level whose subject dies **just disappears** (with everything above it; no exit delivered) |
+| Q5 | Plan **approved** with the amendments; write the implementation dispatch plan |
+| Q6 | **Accepted**: a surface kind at most once per chain — a limitation inherited from Slint's non-recursive components |
+| Q7 | **The current view is the chain root, in this round** — views and flows are levels of one chain |
 
 ## 3. Decisions — revision 2: the recursive surface chain
 
@@ -63,8 +66,9 @@ actual data.
 ### D-H1 — Representation: an owned chain of unchanged flows
 
 ```rust
-pub struct Level { flow: Flow, local: LevelState }   // LevelState: buffers, focus anchor
-pub struct Surfaces { chain: Vec<Level> }            // innermost last; empty = Flow::None today
+pub enum Surface { View(ViewId), Flow(Flow) }
+pub struct Level { surface: Surface, local: LevelState } // LevelState: buffers, focus anchor
+pub struct Surfaces { chain: Vec<Level> }  // chain[0] is always a view; innermost last
 ```
 
 - `Flow` variants are **unchanged**; no variant is marked host or guest.
@@ -73,7 +77,18 @@ pub struct Surfaces { chain: Vec<Level> }            // innermost last; empty = 
 - **Invariant (the only one)**: closing level *i* truncates the chain
   to *i*. A child never outlives its parent. Enforced by making
   `truncate` the sole removal API.
-- The top-level XOR rule is the special case "replacing at depth 0".
+- The top-level XOR rule is the special case "replacing at depth 1"
+  (the first level above the root).
+- **The root is the current view (Q7)**: `chain[0]` is a view level
+  (`Level::View(ViewId)`), every flow level sits above it. The ad-hoc
+  return slots (`settings_return`, `planner_return`) retire: opening
+  Settings or the planner over a view is a view level pushed above it,
+  closing it truncates back — the exact restore by construction.
+  Navigation that *replaces* the view (`view.today`, palette jump)
+  truncates to the root and swaps it. The walk's `walk_resume`
+  handoff (shape B, Q1) is unchanged in behaviour; whether it can be
+  expressed as "walk level stays below the planner level" is a
+  stage-1 decision of the core chunk, not a behaviour change.
 
 ### D-H2 — State ownership: per-level
 
@@ -137,9 +152,10 @@ each kind's declared contexts; still pulled per keystroke (D-KS1).
 
 ### D-H8 — Implementation shape (for the dispatch plan)
 
-1. `Surfaces` core + routing + settle fold + proptest; the flat `Flow`
-   becomes a depth-≤1 chain with behaviour byte-identical (all
-   journeys and `flow_table_tests` green untouched).
+1. `Surfaces` core with the view root (Q7) + routing + settle fold +
+   proptest; `view`/`flow`/the return slots become the chain with
+   behaviour byte-identical (all journeys and `flow_table_tests`
+   green untouched).
 2. Per-level `LevelState` + the `ViewState.buffer` migration.
 3. N2 + N3: the entries-form date picker and the walk's File-to /
    Pick-a-date become child levels; `WalkStage` loses its sub-state
@@ -149,17 +165,12 @@ each kind's declared contexts; still pulled per keystroke (D-KS1).
 
 ## 4. Non-goals / fences
 
-- Views in the chain (Q7) — recorded as the natural extension that
-  would make the embedded planner cheap; not this round unless ruled.
+- The embedded planner stage (Q1 = b): views-as-root makes it cheap
+  later; not built here.
 - Multiple live children per level (a tree): only one focus path is
   ever live; a chain suffices.
 - Any engine/`AppState` change; the #622 contract is kept.
 
 ## 5. Open questions
 
-- **Q6 — The one structural rule**: "a surface kind at most once per
-  chain" (forced by non-recursive rendering). Accept? Recommended.
-- **Q7 — Views as the chain root**: now (widens the round; makes the
-  embedded planner ~free) or recorded for later? Recommend later.
-- **Q5 — Next step** (carried): after Q6/Q7, write the implementation
-  dispatch plan per D-H8 and open a tracking issue.
+None — all rulings in §0.
