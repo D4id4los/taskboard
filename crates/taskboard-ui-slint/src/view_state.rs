@@ -368,8 +368,8 @@ pub struct RowStep<'a> {
 #[derive(Debug, Clone, Default)]
 pub struct ViewState {
     /// The surface chain (W5b D-H1): the root view, the pushed
-    /// over-views, and the flow levels — replacing the flat `view` +
-    /// `flow` + `settings_return`/`planner_return` slots.
+    /// over-views, and the flow levels — one owned chain replacing
+    /// the flat view/flow/return-slot model (chunk 1).
     surfaces: crate::surfaces::Surfaces,
     /// The selected board (design §3.8): `None` only before the seed
     /// rule first runs or with zero boards — `reconcile` seeds and
@@ -982,12 +982,11 @@ impl ViewState {
     /// (nothing recorded reads as the board).
     #[must_use]
     pub fn switcher_selection(&self) -> usize {
-        // While an over-view is pushed, the flat model named the
-        // recorded return (`settings_return.or(planner_return)`); the
-        // recorded return of either over-view is always the view the
-        // chain keeps at the root (both openers record the then-top
-        // view, and a pushed level sits directly above the root), so
-        // the root's id is the byte-equal re-expression (R3).
+        // While an over-view is pushed, the recorded return of either
+        // over-view is always the view the chain keeps at the root
+        // (both openers record the then-top view, and a pushed level
+        // sits directly above the root), so the root's id is the
+        // byte-equal re-expression (chunk 1 R3).
         usize::from(self.surfaces.root() == ViewId::Today)
     }
 
