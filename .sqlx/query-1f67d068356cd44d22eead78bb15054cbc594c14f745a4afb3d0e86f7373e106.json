@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id, board, remote_board_id, remote_stack_id, title, sort_order,\n                      archived as \"archived: bool\", deleted as \"deleted: bool\",\n                      ck_title, ck_sort_order, ck_deleted,\n                      remote_seen as \"remote_seen: DateTime<Utc>\"\n               FROM stacks ORDER BY id",
+  "query": "SELECT id, board, remote_board_id, remote_stack_id, title, sort_order,\n                      archived as \"archived: bool\", deleted as \"deleted: bool\",\n                      ck_title, ck_sort_order, ck_deleted,\n                      au_title, au_sort_order, au_deleted,\n                      remote_seen as \"remote_seen: DateTime<Utc>\"\n               FROM stacks ORDER BY id",
   "describe": {
     "columns": [
       {
@@ -125,8 +125,41 @@
         }
       },
       {
-        "name": "remote_seen: DateTime<Utc>",
+        "name": "au_title",
         "ordinal": 11,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "stacks",
+            "name": "au_title"
+          }
+        }
+      },
+      {
+        "name": "au_sort_order",
+        "ordinal": 12,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "stacks",
+            "name": "au_sort_order"
+          }
+        }
+      },
+      {
+        "name": "au_deleted",
+        "ordinal": 13,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "stacks",
+            "name": "au_deleted"
+          }
+        }
+      },
+      {
+        "name": "remote_seen: DateTime<Utc>",
+        "ordinal": 14,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -151,8 +184,11 @@
       false,
       false,
       false,
+      true,
+      true,
+      true,
       true
     ]
   },
-  "hash": "60589fc0c12cb0adc0d271a147cc0d8062011390042d9a68dedf902b5881d948"
+  "hash": "1f67d068356cd44d22eead78bb15054cbc594c14f745a4afb3d0e86f7373e106"
 }

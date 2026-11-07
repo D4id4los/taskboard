@@ -55,6 +55,10 @@ struct BoardRow {
     ck_color: DateTime<Utc>,
     ck_archived: DateTime<Utc>,
     ck_deleted: DateTime<Utc>,
+    au_title: Option<String>,
+    au_color: Option<String>,
+    au_archived: Option<String>,
+    au_deleted: Option<String>,
     remote_seen: Option<DateTime<Utc>>,
 }
 
@@ -71,6 +75,9 @@ struct StackRow {
     ck_title: String,
     ck_sort_order: String,
     ck_deleted: String,
+    au_title: Option<String>,
+    au_sort_order: Option<String>,
+    au_deleted: Option<String>,
     remote_seen: Option<DateTime<Utc>>,
 }
 
@@ -108,6 +115,19 @@ struct TaskRow {
     ck_kind: String,
     ck_archived: String,
     ck_deleted: String,
+    au_title: Option<String>,
+    au_description: Option<String>,
+    au_duedate: Option<String>,
+    au_scheduled: Option<String>,
+    au_done: Option<String>,
+    au_position: Option<String>,
+    au_effort: Option<String>,
+    au_importance: Option<String>,
+    au_urgency: Option<String>,
+    au_recur: Option<String>,
+    au_kind: Option<String>,
+    au_archived: Option<String>,
+    au_deleted: Option<String>,
     remote_seen: Option<DateTime<Utc>>,
     remote_baseline: Option<String>,
 }
@@ -124,6 +144,9 @@ struct LabelRow {
     ck_title: String,
     ck_color: String,
     ck_deleted: String,
+    au_title: Option<String>,
+    au_color: Option<String>,
+    au_deleted: Option<String>,
     remote_seen: Option<DateTime<Utc>>,
 }
 
@@ -280,9 +303,58 @@ mod decode {
 
     /// An RFC 3339 clock column (`ck_*`, journal stamps, habit-log
     /// clocks). `chrono::DateTime<Utc>::from_str` semantics, unchanged
-    /// at every folded site.
+    /// at every folded site. This decoder *refuses* the `#`-suffix
+    /// forms: the non-family columns never carry an author, and the
+    /// failure is the cheap tripwire that keeps the two vocabularies
+    /// from blurring (T-STORE-4).
     pub(crate) fn clock(text: &str) -> Result<DateTime<Utc>, RepositoryError> {
+        if text.contains('#') {
+            return Err(RepositoryError::Corrupted);
+        }
         text.parse().map_err(|_| RepositoryError::Corrupted)
+    }
+
+    /// The authored clock's grammar (`rfc3339 [# author]`, D-BF2): the
+    /// single parse point for every *text-form* serialized clock+author
+    /// pair. Bare RFC 3339 → `(clock, None)` — old rows decode
+    /// authorless, the tolerant path. Exactly one `#` → the left half
+    /// via [`clock`], the right half strict. Any other shape (two `#`,
+    /// empty suffix, non-UUID suffix) → `Corrupted` — fail-closed,
+    /// because silently de-authoring would change fold rank.
+    ///
+    /// The storage realization is columnar (`au_*` columns composed as
+    /// `[clock]` + `[author]`), so this grammar's first production
+    /// consumers are the files-lane wire codecs (chunk 5); the unit
+    /// tests carry it until then.
+    #[cfg(test)]
+    pub(crate) fn clock_with_author(
+        text: &str,
+    ) -> Result<(DateTime<Utc>, Option<taskboard_domain::ids::AuthorId>), RepositoryError> {
+        let (clock_text, author_text) = match text.split_once('#') {
+            None => (text, None),
+            Some((left, right)) => {
+                if right.is_empty() || right.contains('#') {
+                    return Err(RepositoryError::Corrupted);
+                }
+                (left, Some(right))
+            }
+        };
+        let clock = clock(clock_text)?;
+        let author = author(author_text)?;
+        Ok((clock, author))
+    }
+
+    /// The nullable `au_*` column: NULL → `None` (the backfill), a
+    /// parseable UUID → `Some`, anything else → `Corrupted`.
+    pub(crate) fn author(
+        text: Option<&str>,
+    ) -> Result<Option<taskboard_domain::ids::AuthorId>, RepositoryError> {
+        match text {
+            None => Ok(None),
+            Some(raw) => taskboard_domain::ids::AuthorId::parse(raw)
+                .map(Some)
+                .ok_or(RepositoryError::Corrupted),
+        }
     }
 
     pub(crate) fn remote_opt(cols: &[Option<i64>]) -> Result<Option<Vec<u64>>, RepositoryError> {
@@ -423,7 +495,12 @@ fn decode_board(row: BoardRow, default_connector: &ConnectorId) -> Result<Board,
             archived: row.ck_archived,
             deleted: row.ck_deleted,
         },
-        authors: taskboard_domain::entities::BoardAuthors::default(),
+        authors: taskboard_domain::entities::BoardAuthors {
+            title: decode::author(row.au_title.as_deref())?,
+            color: decode::author(row.au_color.as_deref())?,
+            archived: decode::author(row.au_archived.as_deref())?,
+            deleted: decode::author(row.au_deleted.as_deref())?,
+        },
         remote_seen: row.remote_seen,
     })
 }
@@ -445,7 +522,11 @@ fn decode_stack(row: StackRow) -> Result<Stack, RepositoryError> {
             order: decode::clock(&row.ck_sort_order)?,
             deleted: decode::clock(&row.ck_deleted)?,
         },
-        authors: taskboard_domain::entities::StackAuthors::default(),
+        authors: taskboard_domain::entities::StackAuthors {
+            title: decode::author(row.au_title.as_deref())?,
+            order: decode::author(row.au_sort_order.as_deref())?,
+            deleted: decode::author(row.au_deleted.as_deref())?,
+        },
         remote_seen: row.remote_seen,
     })
 }
@@ -507,7 +588,21 @@ fn decode_task(
             archived: decode::clock(&row.ck_archived)?,
             deleted: decode::clock(&row.ck_deleted)?,
         },
-        authors: taskboard_domain::entities::TaskAuthors::default(),
+        authors: taskboard_domain::entities::TaskAuthors {
+            title: decode::author(row.au_title.as_deref())?,
+            description: decode::author(row.au_description.as_deref())?,
+            duedate: decode::author(row.au_duedate.as_deref())?,
+            scheduled: decode::author(row.au_scheduled.as_deref())?,
+            done: decode::author(row.au_done.as_deref())?,
+            position: decode::author(row.au_position.as_deref())?,
+            effort: decode::author(row.au_effort.as_deref())?,
+            importance: decode::author(row.au_importance.as_deref())?,
+            urgency: decode::author(row.au_urgency.as_deref())?,
+            recur: decode::author(row.au_recur.as_deref())?,
+            kind: decode::author(row.au_kind.as_deref())?,
+            archived: decode::author(row.au_archived.as_deref())?,
+            deleted: decode::author(row.au_deleted.as_deref())?,
+        },
         remote_seen: row.remote_seen,
         remote_baseline: row
             .remote_baseline
@@ -533,7 +628,11 @@ fn decode_label(row: LabelRow) -> Result<Label, RepositoryError> {
             color: decode::clock(&row.ck_color)?,
             deleted: decode::clock(&row.ck_deleted)?,
         },
-        authors: taskboard_domain::entities::LabelAuthors::default(),
+        authors: taskboard_domain::entities::LabelAuthors {
+            title: decode::author(row.au_title.as_deref())?,
+            color: decode::author(row.au_color.as_deref())?,
+            deleted: decode::author(row.au_deleted.as_deref())?,
+        },
         remote_seen: row.remote_seen,
     })
 }
@@ -859,6 +958,7 @@ impl SqliteTaskRepository {
                       ck_color as "ck_color: DateTime<Utc>",
                       ck_archived as "ck_archived: DateTime<Utc>",
                       ck_deleted as "ck_deleted: DateTime<Utc>",
+                      au_title, au_color, au_archived, au_deleted,
                       remote_seen as "remote_seen: DateTime<Utc>"
                FROM boards ORDER BY id"#
         )
@@ -871,6 +971,7 @@ impl SqliteTaskRepository {
             r#"SELECT id, board, remote_board_id, remote_stack_id, title, sort_order,
                       archived as "archived: bool", deleted as "deleted: bool",
                       ck_title, ck_sort_order, ck_deleted,
+                      au_title, au_sort_order, au_deleted,
                       remote_seen as "remote_seen: DateTime<Utc>"
                FROM stacks ORDER BY id"#
         )
@@ -883,6 +984,7 @@ impl SqliteTaskRepository {
             r#"SELECT id, board, remote_board_id, remote_label_id, title, color,
                       deleted as "deleted: bool",
                       ck_title, ck_color, ck_deleted,
+                      au_title, au_color, au_deleted,
                       remote_seen as "remote_seen: DateTime<Utc>"
                FROM labels ORDER BY id"#
         )
@@ -904,6 +1006,9 @@ impl SqliteTaskRepository {
                       ck_title, ck_description, ck_duedate, ck_scheduled, ck_done,
                       ck_position, ck_effort, ck_importance, ck_urgency,
                       ck_recur, ck_kind, ck_archived, ck_deleted,
+                      au_title, au_description, au_duedate, au_scheduled,
+                      au_done, au_position, au_effort, au_importance,
+                      au_urgency, au_recur, au_kind, au_archived, au_deleted,
                       remote_seen as "remote_seen: DateTime<Utc>",
                       remote_baseline
                FROM tasks ORDER BY id"#
@@ -1498,8 +1603,8 @@ async fn execute_batch(
             .as_ref()
             .map_or(default_connector.as_str(), |b| b.connector.as_str());
         sqlx::query!(
-            r#"INSERT INTO boards (id, remote_board_id, title, color, archived, deleted, connector, ck_title, ck_color, ck_archived, ck_deleted, remote_seen)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            r#"INSERT INTO boards (id, remote_board_id, title, color, archived, deleted, connector, ck_title, ck_color, ck_archived, ck_deleted, au_title, au_color, au_archived, au_deleted, remote_seen)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
                        remote_board_id = excluded.remote_board_id,
                        title = excluded.title,
@@ -1511,6 +1616,10 @@ async fn execute_batch(
                        ck_color = excluded.ck_color,
                        ck_archived = excluded.ck_archived,
                        ck_deleted = excluded.ck_deleted,
+                       au_title = excluded.au_title,
+                       au_color = excluded.au_color,
+                       au_archived = excluded.au_archived,
+                       au_deleted = excluded.au_deleted,
                        remote_seen = excluded.remote_seen"#,
             codec::uuid_to_text(board.id.as_uuid()),
             remote,
@@ -1523,6 +1632,10 @@ async fn execute_batch(
             board.clocks.color.to_rfc3339(),
             board.clocks.archived.to_rfc3339(),
             board.clocks.deleted.to_rfc3339(),
+            board.authors.title.map(|a| a.to_string()),
+            board.authors.color.map(|a| a.to_string()),
+            board.authors.archived.map(|a| a.to_string()),
+            board.authors.deleted.map(|a| a.to_string()),
             board.remote_seen,
         )
         .execute(&mut *tx)
@@ -1536,8 +1649,8 @@ async fn execute_batch(
             (Some(b), Some(s))
         });
         sqlx::query!(
-            r#"INSERT INTO stacks (id, board, remote_board_id, remote_stack_id, title, sort_order, archived, deleted, ck_title, ck_sort_order, ck_deleted, remote_seen)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            r#"INSERT INTO stacks (id, board, remote_board_id, remote_stack_id, title, sort_order, archived, deleted, ck_title, ck_sort_order, ck_deleted, au_title, au_sort_order, au_deleted, remote_seen)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
                        board = excluded.board,
                        remote_board_id = excluded.remote_board_id,
@@ -1549,6 +1662,9 @@ async fn execute_batch(
                        ck_title = excluded.ck_title,
                        ck_sort_order = excluded.ck_sort_order,
                        ck_deleted = excluded.ck_deleted,
+                       au_title = excluded.au_title,
+                       au_sort_order = excluded.au_sort_order,
+                       au_deleted = excluded.au_deleted,
                        remote_seen = excluded.remote_seen"#,
             codec::uuid_to_text(stack.id.as_uuid()),
             codec::uuid_to_text(stack.board.as_uuid()),
@@ -1561,6 +1677,9 @@ async fn execute_batch(
             stack.clocks.title.to_rfc3339(),
             stack.clocks.order.to_rfc3339(),
             stack.clocks.deleted.to_rfc3339(),
+            stack.authors.title.map(|a| a.to_string()),
+            stack.authors.order.map(|a| a.to_string()),
+            stack.authors.deleted.map(|a| a.to_string()),
             stack.remote_seen,
         )
         .execute(&mut *tx)
@@ -1574,8 +1693,8 @@ async fn execute_batch(
             (Some(b), Some(l))
         });
         sqlx::query!(
-            r#"INSERT INTO labels (id, board, remote_board_id, remote_label_id, title, color, deleted, ck_title, ck_color, ck_deleted, remote_seen)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            r#"INSERT INTO labels (id, board, remote_board_id, remote_label_id, title, color, deleted, ck_title, ck_color, ck_deleted, au_title, au_color, au_deleted, remote_seen)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
                        board = excluded.board,
                        remote_board_id = excluded.remote_board_id,
@@ -1586,6 +1705,9 @@ async fn execute_batch(
                        ck_title = excluded.ck_title,
                        ck_color = excluded.ck_color,
                        ck_deleted = excluded.ck_deleted,
+                       au_title = excluded.au_title,
+                       au_color = excluded.au_color,
+                       au_deleted = excluded.au_deleted,
                        remote_seen = excluded.remote_seen"#,
             codec::uuid_to_text(label.id.as_uuid()),
             codec::uuid_to_text(label.board.as_uuid()),
@@ -1597,6 +1719,9 @@ async fn execute_batch(
             label.clocks.title.to_rfc3339(),
             label.clocks.color.to_rfc3339(),
             label.clocks.deleted.to_rfc3339(),
+            label.authors.title.map(|a| a.to_string()),
+            label.authors.color.map(|a| a.to_string()),
+            label.authors.deleted.map(|a| a.to_string()),
             label.remote_seen,
         )
         .execute(&mut *tx)
@@ -1617,8 +1742,8 @@ async fn execute_batch(
             .map(|e| i64::try_from(e.seconds()).map_err(|_| RepositoryError::Corrupted))
             .transpose()?;
         sqlx::query!(
-            r#"INSERT INTO tasks (id, stack, remote_board_id, remote_stack_id, remote_card_id, title, description, duedate, scheduled, done, sort_order, effort, importance, urgency, recur, kind, archived, deleted, ck_title, ck_description, ck_duedate, ck_scheduled, ck_done, ck_position, ck_labels, ck_effort, ck_importance, ck_urgency, ck_recur, ck_kind, ck_archived, ck_deleted, remote_seen, remote_baseline)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            r#"INSERT INTO tasks (id, stack, remote_board_id, remote_stack_id, remote_card_id, title, description, duedate, scheduled, done, sort_order, effort, importance, urgency, recur, kind, archived, deleted, ck_title, ck_description, ck_duedate, ck_scheduled, ck_done, ck_position, ck_labels, ck_effort, ck_importance, ck_urgency, ck_recur, ck_kind, ck_archived, ck_deleted, au_title, au_description, au_duedate, au_scheduled, au_done, au_position, au_effort, au_importance, au_urgency, au_recur, au_kind, au_archived, au_deleted, remote_seen, remote_baseline)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
                        stack = excluded.stack,
                        remote_board_id = excluded.remote_board_id,
@@ -1651,6 +1776,19 @@ async fn execute_batch(
                        ck_kind = excluded.ck_kind,
                        ck_archived = excluded.ck_archived,
                        ck_deleted = excluded.ck_deleted,
+                       au_title = excluded.au_title,
+                       au_description = excluded.au_description,
+                       au_duedate = excluded.au_duedate,
+                       au_scheduled = excluded.au_scheduled,
+                       au_done = excluded.au_done,
+                       au_position = excluded.au_position,
+                       au_effort = excluded.au_effort,
+                       au_importance = excluded.au_importance,
+                       au_urgency = excluded.au_urgency,
+                       au_recur = excluded.au_recur,
+                       au_kind = excluded.au_kind,
+                       au_archived = excluded.au_archived,
+                       au_deleted = excluded.au_deleted,
                        remote_seen = excluded.remote_seen,
                        remote_baseline = excluded.remote_baseline"#,
             codec::uuid_to_text(task.id.as_uuid()),
@@ -1693,6 +1831,19 @@ async fn execute_batch(
             task.clocks.kind.to_rfc3339(),
             task.clocks.archived.to_rfc3339(),
             task.clocks.deleted.to_rfc3339(),
+            task.authors.title.map(|a| a.to_string()),
+            task.authors.description.map(|a| a.to_string()),
+            task.authors.duedate.map(|a| a.to_string()),
+            task.authors.scheduled.map(|a| a.to_string()),
+            task.authors.done.map(|a| a.to_string()),
+            task.authors.position.map(|a| a.to_string()),
+            task.authors.effort.map(|a| a.to_string()),
+            task.authors.importance.map(|a| a.to_string()),
+            task.authors.urgency.map(|a| a.to_string()),
+            task.authors.recur.map(|a| a.to_string()),
+            task.authors.kind.map(|a| a.to_string()),
+            task.authors.archived.map(|a| a.to_string()),
+            task.authors.deleted.map(|a| a.to_string()),
             task.remote_seen,
             task
                 .remote_baseline
@@ -2563,5 +2714,84 @@ mod remote_decode_tests {
             decode::remote_card(&[Some(1), Some(2), Some(3), Some(4)]).unwrap_err(),
             RepositoryError::Corrupted
         );
+    }
+}
+
+#[cfg(test)]
+mod author_decode_tests {
+    use super::decode;
+    use taskboard_domain::ids::AuthorId;
+    use taskboard_domain::persistence::RepositoryError;
+
+    fn author(byte: u8) -> AuthorId {
+        let mut bytes = [0u8; 16];
+        bytes[15] = byte;
+        AuthorId::from_uuid(uuid::Uuid::from_bytes(bytes))
+    }
+
+    /// T-STORE-3 (decode grammar table): bare RFC 3339 →
+    /// `(clock, None)`; `#<uuid>` → `Some`; `#garbage`, double-`#`,
+    /// empty suffix → `Corrupted` (typed, no text assertions).
+    #[test]
+    fn authored_clock_grammar_decode_table() {
+        let a = author(0x71);
+        let bare = "2026-11-07T10:00:00+00:00";
+        let (clock, by) = decode::clock_with_author(bare).expect("bare form");
+        assert_eq!(clock.to_rfc3339(), bare);
+        assert_eq!(by, None);
+
+        let (clock, by) = decode::clock_with_author(&format!("{bare}#{a}")).expect("suffix form");
+        assert_eq!(clock.to_rfc3339(), bare);
+        assert_eq!(by, Some(a));
+
+        for bad in [
+            format!("{bare}#garbage"),
+            format!("{bare}#{a}#extra"),
+            format!("{bare}#"),
+            format!("{bare}#{a}#"),
+        ] {
+            assert!(
+                matches!(
+                    decode::clock_with_author(&bad),
+                    Err(RepositoryError::Corrupted)
+                ),
+                "fail closed on {bad}"
+            );
+        }
+        assert!(matches!(
+            decode::clock_with_author("not a clock"),
+            Err(RepositoryError::Corrupted)
+        ));
+    }
+
+    /// The `au_*` column decode: NULL → `None`, parseable → `Some`,
+    /// anything else → `Corrupted` (strict after the split).
+    #[test]
+    fn author_column_decode_table() {
+        let a = author(0x72);
+        assert_eq!(decode::author(None).unwrap(), None);
+        assert_eq!(decode::author(Some(&a.to_string())).unwrap(), Some(a));
+        assert!(matches!(
+            decode::author(Some("not-a-uuid")),
+            Err(RepositoryError::Corrupted)
+        ));
+        assert!(matches!(
+            decode::author(Some("")),
+            Err(RepositoryError::Corrupted)
+        ));
+    }
+
+    /// T-STORE-4 (unit): the non-family clock decoder rejects
+    /// `#`-forms as `Corrupted` — the vocabulary tripwire that keeps
+    /// the authored grammar out of the device-local columns.
+    #[test]
+    fn plain_clock_decoder_rejects_suffix_forms() {
+        assert!(decode::clock("2026-11-07T10:00:00+00:00").is_ok());
+        let a = author(0x73);
+        let suffixed = format!("2026-11-07T10:00:00+00:00#{a}");
+        assert!(matches!(
+            decode::clock(&suffixed),
+            Err(RepositoryError::Corrupted)
+        ));
     }
 }
