@@ -480,3 +480,19 @@ the band; the retirement deletions keep it from L).
 - **Files toggle copy**: `SettingsBoardCopy` keeps its global name
   (re-purposed for the account-card copy) to avoid churning the
   tooltip/flyout wiring.
+
+## Stage-3 review amendments (2026-11-07)
+
+- `RemoteBoardRow` drops `bound_local` (and the sketched
+  `connectable`): no production consumer read it — the adapter
+  re-derives each row's binding from the engine state on every push
+  pass (r4 D39 §2.3), so the app-side projection was dead,
+  duplicated logic. The row is `{ remote_id, title }`.
+- Remote ids cross the UI lane typed: `RemoteBoardRow.remote_id`,
+  `AttachConnector.remote` and `CreateLocalBoard.remote` are
+  `RemoteBoardId`, not raw `u64` (the §2.1 type-driven policy;
+  `board` was already a `BoardId`).
+- `remove_connection`'s account-identity fan-out and its
+  bound-board guard became named helpers
+  (`account_connector_names`, `any_live_board_bound_through`) — one
+  level of abstraction in the choreography.
