@@ -672,31 +672,48 @@ impl Adapter {
                 return false;
             }
         }
-        // The timers setter's Escape (r4 D33): the panel is
-        // presentation state, not a flow — its dismissal is explicit
-        // here, ahead of the resolver (the capture overlay's
-        // action-layer ruling: the root scope's capture tunnel visits
-        // every focused item's ancestors, so a widget-internal grab
-        // can never win; the plan's widget-internal wording is
-        // amended to this house shape). Nothing is committed — the
-        // draft clears with the panel.
-        if window.get_timer_setter_open() && Ok(stroke) == crate::keymap::stroke::parse("Escape") {
+        // -- the scope arms (round-5 chunk 7, D-KS4): the four
+        //    retired special cases as declarative declines, evaluated
+        //    after the monopoly and before the resolver. Each arming
+        //    fact is the retired condition verbatim; each pin journey
+        //    is the acceptance contract. --
+        // The dropdown ladders (special case D, r4 D39/D40, round-5
+        // D6): while a flyout is open, its keys decline the single
+        // key path — the focused field's modal arm owns them.
+        let ladder_open = if window.global::<crate::SettingsBoardFacts>().get_open() {
+            Some(crate::keyscope::LadderGlobal::SettingsBoard)
+        } else if window.global::<crate::BoardBarFacts>().get_open() {
+            Some(crate::keyscope::LadderGlobal::BoardBar)
+        } else if window.global::<crate::TimeFieldFacts>().get_open() {
+            Some(crate::keyscope::LadderGlobal::TimeField)
+        } else {
+            None
+        };
+        if crate::keyscope::dropdown_ladder_declines(ladder_open, stroke) {
+            Self::set_feedback(window, KeyFeedback::None);
+            return false;
+        }
+        // The timer setter's dismissal arm (special case A, r4 D33):
+        // the panel is presentation state, not a flow — its Escape is
+        // an explicit decline routed to the existing dismissal funnel.
+        // Nothing commits; the draft clears with the panel.
+        if crate::keyscope::timer_setter_dismisses(window.get_timer_setter_open(), stroke) {
             self.clear_timer_setter();
             window.set_timer_setter_open(false);
             self.refresh_forced(window);
             return true;
         }
-        // The date editor's Down-in-field opens the picker focused
-        // (r2 D25; round-3 D10): consumed here, ahead of the
-        // resolver, so the insert-mode chain never has to bind it.
-        // With the picker already open (the default-open), the same
-        // stroke is the grid's focus hand-over — the one-shot flag
-        // rides the push, and the panel's `changed` moves focus. The
-        // stroke is the grammar's own Down row — never a
-        // private-use literal.
-        if matches!(self.view_state.flow(), Flow::EditDate { .. })
-            && Ok(stroke) == crate::keymap::stroke::parse("Down")
-        {
+        // The due editor's Down arm (special case B, r2 D25, round-3
+        // D10): consumed ahead of the resolver so the insert-mode
+        // chain never has to bind it. With the picker already open
+        // (the default-open), the same stroke is the grid's focus
+        // hand-over — the one-shot flag rides the push, and the
+        // panel's `changed` moves focus. The stroke is the grammar's
+        // own Down row — never a private-use literal.
+        if crate::keyscope::due_down_arms(
+            matches!(self.view_state.flow(), Flow::EditDate { .. }),
+            stroke,
+        ) {
             if self.due_picker.is_none() {
                 self.open_due_picker(window, true);
             } else {
@@ -715,23 +732,23 @@ impl Adapter {
         // Return/Escape exemption; D-δ2 comes with the editor scope).
         self.sync_view_context();
         let chain = self.chain_with(window, Some(stroke), true);
-        // The D18 activation reservation (r4 §2): while a task-view
-        // activation stop holds focus, bare Return/Space belong to the
-        // focused cell — the resolver is still fed first (prefix
-        // semantics preserved: a pending prefix aborts on Return
-        // exactly as now), but an `Action` answer or `Unhandled`
-        // yields, and the focused cell's `key-pressed` activates. The
-        // modal surfaces reset the fact anyway; the check is the belt.
+        // The activation reservation (special case C, r4 §2 D18):
+        // while a task-view activation stop holds focus, bare
+        // Return/Space belong to the focused cell — the resolver is
+        // still fed first (prefix semantics preserved: a pending
+        // prefix aborts on Return exactly as now), but an `Action`
+        // answer or `Unhandled` yields, and the focused cell's
+        // `key-pressed` activates. The modal surfaces reset the fact
+        // anyway; the check is the belt.
         let reserved = {
             let facts = window.global::<crate::EditingFacts>();
-            facts.get_activation_focus_count() > 0
-        } && !self.shell.menu.open
-            && !self.shell.palette
-            && (stroke.key == '\n' || stroke.key == ' ')
-            && !stroke.ctrl
-            && !stroke.alt
-            && !stroke.shift
-            && !stroke.meta;
+            crate::keyscope::activation_reserved(
+                facts.get_activation_focus_count() > 0,
+                self.shell.menu.open,
+                self.shell.palette,
+                stroke,
+            )
+        };
         match self.resolver.feed(stroke, &chain, &self.keymap) {
             Resolution::Action(id) => {
                 if reserved {
@@ -5979,47 +5996,11 @@ pub(crate) fn install(
             if walk_flag.get() {
                 return false;
             }
-            // The selectors' modal ladder (r4 D39/D40): while a
-            // dropdown flyout is open, its keys decline the single key
-            // path — the capture tunneling visits the focused field's
-            // ancestors BEFORE the field's widget-internal arms, so a
-            // bound stroke (the arrows, emacs' C-n/C-p, Return, the
-            // presets' Escape) would resolve as an action and the
-            // widget would never see it (the settings journey's
-            // recorded negative, the bar journey's too). Both
-            // consumers report their open state into their facts
-            // global; the decline hands the stroke to the focused
-            // field, whose modal arm owns it.
-            let ladder_open = window.global::<crate::SettingsBoardFacts>().get_open()
-                || window.global::<crate::BoardBarFacts>().get_open();
-            if ladder_open {
-                let arrow = text == SharedString::from(slint::platform::Key::UpArrow)
-                    || text == SharedString::from(slint::platform::Key::DownArrow);
-                let emacs_move = modifiers.control && (text == "n" || text == "p");
-                let close_or_select = text == SharedString::from(slint::platform::Key::Escape)
-                    || text == SharedString::from(slint::platform::Key::Return);
-                if arrow || emacs_move || close_or_select {
-                    return false;
-                }
-            }
-            // The quick-list flyout's ladder (round-5 D6) is the same
-            // modal shape: its scope holds focus and owns the arrows,
-            // Return and Escape — without the decline the date
-            // picker's `picker.up/down` steal the arrows and the grid
-            // takes focus back. Its arms carry no C-n/C-p.
-            if window.global::<crate::TimeFieldFacts>().get_open() {
-                let ladder_key = [
-                    slint::platform::Key::UpArrow,
-                    slint::platform::Key::DownArrow,
-                    slint::platform::Key::Escape,
-                    slint::platform::Key::Return,
-                ]
-                .into_iter()
-                .any(|key| text == SharedString::from(key));
-                if ladder_key {
-                    return false;
-                }
-            }
+            // The dropdown ladders' decline retired into the scope
+            // arms (round-5 chunk 7, D-KS4): the closure collapses to
+            // the re-entrancy guard plus `intercept` — the arms
+            // evaluate the same facts globals inside `intercept`,
+            // after the monopoly and before the resolver.
             adapter.borrow_mut().intercept(&window, &text, modifiers)
         });
     }
