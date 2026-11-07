@@ -15910,3 +15910,295 @@ fn the_walk_overlay_mount_is_flow_gated_window_level() {
         },
     );
 }
+
+// -- round-5 chunk 7 (F11, D4/W5a): the keybind context stack --
+
+/// The F11 acceptance session: with the picker open and the FIELD
+/// holding focus, the calendar scope serves its navigation strokes
+/// (emacs/standard chords, vi arrows) while the field keeps every
+/// printable; after the Down hand-over the grid phase owns its verbs;
+/// Escape closes clean. Both picker phases, all three presets.
+#[test]
+#[allow(clippy::too_many_lines)] // the two-phase × three-preset matrix is the contract
+fn the_picker_shares_chords_while_the_field_keeps_printables() {
+    let matrix = [
+        taskboard_ui_slint::keymap::Preset::Standard,
+        taskboard_ui_slint::keymap::Preset::Emacs,
+        taskboard_ui_slint::keymap::Preset::Vi,
+    ];
+    for preset in matrix {
+        let (fixture, mut state) = fixture::journey_state();
+        let due = local_midnight(2030, 1, 30);
+        state
+            .tasks
+            .get_mut(&fixture.task1)
+            .expect("fixture task")
+            .duedate = Some(due);
+        support::driver::run(
+            DriverOptions {
+                headless_renderer: true,
+            },
+            move |_driver| {
+                let mut harness = Harness::mount_with_settings(
+                    SlintDriver::default(),
+                    state,
+                    UiSettings {
+                        keymap: taskboard_ui_slint::keymap::Keymap::from_preset(preset),
+                        keymap_preset: preset,
+                        ..UiSettings::default()
+                    },
+                );
+                let cursor_index = |harness: &Harness| -> Option<usize> {
+                    let grid = harness.handle.window().get_task_model().date_grid;
+                    let mut flat = 0usize;
+                    for r in 0..grid.row_count() {
+                        let row = grid.row_data(r).expect("row");
+                        for c in 0..row.row_count() {
+                            if row.row_data(c).expect("cell").cursor {
+                                return Some(flat);
+                            }
+                            flat += 1;
+                        }
+                    }
+                    None
+                };
+                let grid_armed = |harness: &Harness| keyboard(harness).get_date_picker_grid();
+
+                press_preset(&mut harness, preset, ActionId::NavNextItem);
+                press_preset(&mut harness, preset, ActionId::NavNextItem);
+                press_preset(&mut harness, preset, ActionId::NavNextView);
+                press_preset(&mut harness, preset, ActionId::NavNextView);
+                harness.driver.click_by_label("Edit due date");
+                harness.driver.advance_time(0);
+                let task_model = harness.handle.window().get_task_model();
+                assert!(
+                    task_model.date_picker_open,
+                    "the picker is default-open; the field holds focus"
+                );
+                assert!(!grid_armed(&harness), "field phase: the grid is not armed");
+                let start_cursor = cursor_index(&harness);
+
+                // -- the field phase: type first, the buffer follows --
+                harness.clear_seeded();
+                harness.type_text("2030-03-15");
+                harness.driver.advance_time(0);
+                assert_eq!(
+                    harness.handle.window().get_task_model().due_text.as_str(),
+                    "2030-03-15",
+                    "printables reach the field; the buffer follows the typed text"
+                );
+
+                // -- the calendar scope's strokes move the selection
+                //    mid-typing: emacs' chords, the arrows under
+                //    standard/vi --
+                let chord_move = |harness: &mut Harness, spelling: &str| {
+                    let before = cursor_index(harness);
+                    harness.stroke(parse(spelling).expect(spelling));
+                    harness.driver.advance_time(0);
+                    assert_ne!(
+                        cursor_index(harness),
+                        before,
+                        "{spelling} moved the calendar mid-typing"
+                    );
+                };
+                match preset {
+                    taskboard_ui_slint::keymap::Preset::Emacs => {
+                        for spelling in ["Ctrl+p", "Ctrl+n", "Ctrl+f", "Ctrl+b"] {
+                            chord_move(&mut harness, spelling);
+                        }
+                    }
+                    _ => {
+                        for spelling in ["Up", "Down", "Left", "Right"] {
+                            chord_move(&mut harness, spelling);
+                        }
+                    }
+                }
+                if preset == taskboard_ui_slint::keymap::Preset::Vi {
+                    // The home-row motions are printables: they must
+                    // type, never move the calendar.
+                    harness.type_text("h");
+                    harness.driver.advance_time(0);
+                    assert_eq!(
+                        cursor_index(&harness),
+                        start_cursor,
+                        "h types in the field phase; the calendar cursor is untouched"
+                    );
+                }
+                // The field survived the chords: the editor stays armed.
+                assert!(
+                    harness.handle.window().get_task_model().date_picker_open,
+                    "the chords never settled the editor"
+                );
+
+                // -- the grid phase: Down hands over, the picker owns
+                //    its verbs (the existing boundary grammar) --
+                harness.stroke(parse("Down").expect("Down"));
+                harness.driver.advance_time(0);
+                assert!(grid_armed(&harness), "the grid took focus");
+                let before = cursor_index(&harness);
+                harness.stroke(parse("Right").expect("Right"));
+                harness.driver.advance_time(0);
+                assert_ne!(cursor_index(&harness), before, "the grid phase walks");
+
+                // -- the clean close --
+                harness.stroke(parse("Escape").expect("Escape"));
+                harness.driver.advance_time(0);
+                harness.stroke(parse("Escape").expect("Escape"));
+                harness.driver.advance_time(0);
+                assert!(
+                    !harness.handle.window().get_task_model().date_picker_open,
+                    "the editor closed clean"
+                );
+                assert!(!grid_armed(&harness), "the scope disarmed with the flow");
+            },
+        );
+    }
+}
+
+/// The editor-scope acceptance session (D4/W5a): the description
+/// editor gains the preset command grammar — emacs mark/region
+/// cut/copy through the adapter clipboard slot, the C-c prefix pair,
+/// and paste; the vi preset's printables reach the field and Escape
+/// keeps the existing discard funnel.
+#[test]
+#[allow(clippy::too_many_lines)] // the grammar walk is the contract's length
+fn the_description_editor_gains_the_preset_command_grammar() {
+    let (_fixture, state) = fixture::journey_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount_with_settings(
+                SlintDriver::default(),
+                state,
+                UiSettings {
+                    keymap: taskboard_ui_slint::keymap::Keymap::from_preset(
+                        taskboard_ui_slint::keymap::Preset::Emacs,
+                    ),
+                    keymap_preset: taskboard_ui_slint::keymap::Preset::Emacs,
+                    ..UiSettings::default()
+                },
+            );
+            let open_editor = |harness: &mut Harness| {
+                harness.driver.click_by_label("Edit description");
+                harness.driver.advance_time(0);
+                assert!(
+                    harness
+                        .handle
+                        .window()
+                        .get_task_model()
+                        .description_edit_open,
+                    "the editor opened"
+                );
+            };
+            let commit = |harness: &mut Harness| -> taskboard_domain::TaskChanges {
+                harness.stroke(parse("Shift+Return").expect("Shift+Return"));
+                harness.driver.advance_time(0);
+                let drained = harness.engine.drain();
+                match drained.as_slice() {
+                    [StateCommand::UpdateTask { changes, .. }] => changes.clone(),
+                    other => panic!("the commit reached the boundary, got {other:?}"),
+                }
+            };
+
+            let emacs = taskboard_ui_slint::keymap::Preset::Emacs;
+            press_preset(&mut harness, emacs, ActionId::NavNextItem);
+            press_preset(&mut harness, emacs, ActionId::NavNextItem);
+            press_preset(&mut harness, emacs, ActionId::NavNextView);
+            press_preset(&mut harness, emacs, ActionId::NavNextView);
+
+            // -- mark + region kill: C-Space / C-a C-f / C-e / C-w --
+            open_editor(&mut harness);
+            harness.type_text("alpha beta");
+            harness.driver.advance_time(0);
+            harness.stroke(parse("Ctrl+a").expect("C-a"));
+            harness.stroke(parse("Ctrl+f").expect("C-f"));
+            harness.stroke(parse("Ctrl+f").expect("C-f"));
+            harness.stroke(parse("Ctrl+Space").expect("C-Space"));
+            harness.stroke(parse("Ctrl+e").expect("C-e"));
+            harness.stroke(parse("Ctrl+w").expect("C-w"));
+            harness.driver.advance_time(0);
+            let changes = commit(&mut harness);
+            assert_eq!(
+                changes.description.as_deref(),
+                Some("al"),
+                "the region past the mark was killed, the head survived"
+            );
+
+            // -- paste replays the slot --
+            open_editor(&mut harness);
+            harness.stroke(parse("Ctrl+e").expect("C-e"));
+            harness.stroke(parse("Ctrl+y").expect("C-y"));
+            harness.driver.advance_time(0);
+            let changes = commit(&mut harness);
+            assert_eq!(
+                changes.description.as_deref(),
+                Some("alpha beta"),
+                "the kill ring slot replayed at the cursor"
+            );
+
+            // -- the C-c prefix pair: C-c C-c commits, C-c C-k discards --
+            open_editor(&mut harness);
+            harness.type_text("prefixed");
+            harness.stroke(parse("Ctrl+c").expect("C-c"));
+            harness.stroke(parse("Ctrl+c").expect("C-c"));
+            harness.driver.advance_time(0);
+            let changes = harness.engine.drain();
+            match changes.as_slice() {
+                [StateCommand::UpdateTask { changes, .. }] => assert_eq!(
+                    changes.description.as_deref(),
+                    Some("prefixed"),
+                    "C-c C-c is the commit"
+                ),
+                other => panic!("C-c C-c reached the boundary, got {other:?}"),
+            }
+            open_editor(&mut harness);
+            harness.type_text("doomed");
+            harness.stroke(parse("Ctrl+c").expect("C-c"));
+            harness.stroke(parse("Ctrl+k").expect("C-k"));
+            harness.driver.advance_time(0);
+            harness.assert_commands(&[]);
+            assert!(
+                !harness
+                    .handle
+                    .window()
+                    .get_task_model()
+                    .description_edit_open,
+                "C-c C-k is the discard"
+            );
+
+            // -- copy (M-w) then paste --
+            open_editor(&mut harness);
+            harness.stroke(parse("Ctrl+a").expect("C-a"));
+            harness.stroke(parse("Ctrl+Space").expect("C-Space"));
+            harness.stroke(parse("Ctrl+f").expect("C-f"));
+            harness.stroke(parse("Ctrl+f").expect("C-f"));
+            harness.stroke(parse("Alt+w").expect("M-w"));
+            harness.stroke(parse("Ctrl+e").expect("C-e"));
+            harness.stroke(parse("Ctrl+y").expect("C-y"));
+            harness.driver.advance_time(0);
+            let changes = commit(&mut harness);
+            assert_eq!(
+                changes.description.as_deref(),
+                Some("alal"),
+                "M-w copied the region without cutting; paste replayed it"
+            );
+
+            // -- C-d deletes forward, C-k kills to the line end --
+            open_editor(&mut harness);
+            harness.clear_seeded();
+            harness.type_text("hold");
+            harness.stroke(parse("Ctrl+a").expect("C-a"));
+            harness.stroke(parse("Ctrl+d").expect("C-d"));
+            harness.stroke(parse("Ctrl+k").expect("C-k"));
+            harness.driver.advance_time(0);
+            let changes = commit(&mut harness);
+            assert_eq!(
+                changes.description.as_deref(),
+                Some(""),
+                "C-d took the head, C-k took the rest"
+            );
+        },
+    );
+}
