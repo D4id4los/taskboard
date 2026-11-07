@@ -270,6 +270,21 @@ impl LevelState {
         }
     }
 
+    pub(crate) fn as_walk_mut(&mut self) -> Option<&mut WalkState> {
+        match self {
+            Self::Walk(state) => Some(state),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn as_walk(&self) -> Option<&WalkState> {
+        match self {
+            Self::Walk(state) => Some(state),
+            _ => None,
+        }
+    }
+
     #[must_use]
     pub(crate) fn text_buffer(&self) -> Option<&str> {
         match self {
