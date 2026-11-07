@@ -197,8 +197,9 @@ of your Nextcloud file home and roams your per-user data across your
 devices. Status shows in two places: the status-bar chip (the desktop
 UI, when the substrate is running) and ~taskboard status~ (the
 =files-sync= block: last cycle, peer freshness, and any finding — a
-fork alarm, parked peer files, or diverged devices; recovery
-procedures live in =docs/files-sync-runbook.org=).
+fork alarm, parked peer files, rejected peer journal rows, or
+diverged devices; recovery procedures live in
+=docs/files-sync-runbook.org=).
 
 =[preferences] day_start_time= accepts =HH:MM[:SS]= and sets the
 wall-clock time at which "today" begins (drives the today view's

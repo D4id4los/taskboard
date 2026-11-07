@@ -142,3 +142,33 @@ cycle folds/imports what the newer build understands; the finding
 clears on its own. Never edit or delete the parked file by hand —
 the writing device owns it.
 
+* 4. Diverged devices
+
+** Symptom
+
+- The status-bar chip shows the diverged state ("files-sync:
+  devices diverged"), or ~taskboard status~ prints a =diverged:=
+  line naming peer device ids.
+
+** What the app is doing
+
+Nothing different: sync keeps running, nothing is stopped or
+deleted. The finding (~advance_divergence~ in ~cycle.rs~) fires when
+a peer has already absorbed this device's view — its published
+document contains everything this device published
+(~has_absorbed~) — yet the state hash in its heartbeat still differs
+from ours, on two consecutive cycles where this device wrote
+nothing. Two devices holding the same data disagree about what it
+hashes to. A peer that is merely offline or behind never shows here;
+it shows as an old heartbeat age on its =peer= line.
+
+** Recovery
+
+1. Update every device to the same app version — a different hash
+   scheme or fold rule between versions is the expected cause, and
+   the finding clears on its own once they agree.
+2. If it persists with equal versions, it is a bug: file an issue
+   with the =taskboard status --json= output of both devices. Do not
+   edit or delete any device's files to "resync" — readers never
+   delete, and each subtree belongs to its writer.
+
