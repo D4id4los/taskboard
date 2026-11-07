@@ -84,14 +84,6 @@ pub struct ConnectionProfile {
     pub password: Secret,
 }
 
-/// An identity without a name: the per-row Test addresses the stored
-/// secret of an existing row.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ConnectionTarget {
-    pub server_url: String,
-    pub username: String,
-}
-
 /// The typed settings-operation failures (R5: variants only — the UI
 /// renders structure, never message text).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -120,9 +112,6 @@ pub enum SettingsError {
     AttachFailed,
     /// The lane or the config vanished mid-flight (a stale form).
     Gone,
-    /// No live, unclaimed remote board on this connector matches the
-    /// local board's title — there is nothing to adopt (r2 D33).
-    NoRemoteMatch,
     /// The engine refused the bind/unbind (board/remote already bound,
     /// stale board id) (r2 D33).
     BindRefused,
@@ -323,12 +312,6 @@ pub enum UiRequest {
     WindowGeometryChanged {
         geometry: crate::geometry::WindowGeometry,
     },
-    /// Verifies an existing row's stored secret against its server
-    /// (DEV-3: a row test must not require retyping a password).
-    TestConnection {
-        target: ConnectionTarget,
-        reply: oneshot::Sender<Result<(), SettingsError>>,
-    },
     /// The verify-first Save ceremony (D3): nothing persists before
     /// the server verified the draft; the reply carries the fresh
     /// connections snapshot (r2 D32).
@@ -336,8 +319,11 @@ pub enum UiRequest {
         profile: ConnectionProfile,
         reply: oneshot::Sender<Result<ConnectionsSnapshot, SettingsError>>,
     },
-    /// Removes the named connector: config entry, live actor, stored
-    /// secret. The reply carries the fresh snapshot.
+    /// Removes the named connector's account (round-5 chunk 8): every
+    /// connector sharing its `(server_url, username)` — config entries,
+    /// live actors, the stored secret. Refuses typed (`BindRefused`)
+    /// while any live board is bound through one of them. The reply
+    /// carries the fresh snapshot.
     RemoveConnection {
         name: String,
         reply: oneshot::Sender<Result<ConnectionsSnapshot, SettingsError>>,
@@ -350,12 +336,20 @@ pub enum UiRequest {
         connector: String,
         reply: oneshot::Sender<Result<Vec<RemoteBoardRow>, SettingsError>>,
     },
-    /// Bind the named local board to the named connector, attaching
-    /// the connector if needed (r2 D33). The remote id is derived
-    /// app-side (the title-adopt rule).
+    /// Bind the named local board to the chosen remote board through
+    /// the named connector, attaching the connector if needed (r2 D33,
+    /// explicit since round-5 chunk 8, D-8.4).
     AttachConnector {
         board: BoardId,
         connector: String,
+        remote: RemoteBoardId,
+        reply: oneshot::Sender<Result<ConnectionsSnapshot, SettingsError>>,
+    },
+    /// Create a local board from the remote's title and bind it to that
+    /// remote through the named connector (round-5 chunk 8, D-8.5).
+    CreateLocalBoard {
+        connector: String,
+        remote: RemoteBoardId,
         reply: oneshot::Sender<Result<ConnectionsSnapshot, SettingsError>>,
     },
     /// Unbind the board from its connector; the connector's actor

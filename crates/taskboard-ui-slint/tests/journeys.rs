@@ -3081,12 +3081,11 @@ fn the_view_cycle_never_passes_through_settings() {
     );
 }
 
-/// J5 — the form journey: the field mirrors ride the edited seams, the
-/// Save click routes `SaveConnection` on the drained lane with the
-/// typed payload (field reads, never message text); the request's
-/// `Debug` shows no secret; a second Save with the same name is an
-/// edit (the upsert payload). A save with an invalid draft routes
-/// nothing (the form's enablement gate).
+/// J5 — the sign-in journey: the field mirrors ride the edited seams,
+/// the Sign-in click routes `SaveConnection` on the drained lane with
+/// the typed payload and an empty name (the app derives it, round-5
+/// chunk 8); the request's `Debug` shows no secret. A sign-in with an
+/// invalid draft routes nothing (the form's enablement gate).
 #[test]
 fn the_settings_form_routes_the_save_ceremony() {
     let (_fixture, state) = fixture::golden_state();
@@ -3097,11 +3096,10 @@ fn the_settings_form_routes_the_save_ceremony() {
         move |_driver| {
             let harness = Harness::mount(SlintDriver::default(), state);
 
-            // An invalid draft (empty name): the Save click is
-            // absorbed — nothing on the lane.
+            // An invalid draft (a bad server URL): the Sign-in click
+            // is absorbed — nothing on the lane.
             harness.handle.window().invoke_settings_save_clicked(
-                "".into(),
-                "https://c.example".into(),
+                "not a url".into(),
                 "alice".into(),
                 "pw".into(),
             );
@@ -3110,13 +3108,11 @@ fn the_settings_form_routes_the_save_ceremony() {
             // Fill the fields through the edited seams (the mirror
             // path the real fields drive).
             let window = harness.handle.window();
-            window.invoke_settings_field_edited(0, "home".into());
             window.invoke_settings_field_edited(1, "https://c.example".into());
             window.invoke_settings_field_edited(2, "alice".into());
             window.invoke_settings_field_edited(3, "hunter2-secret".into());
 
             window.invoke_settings_save_clicked(
-                "home".into(),
                 "https://c.example".into(),
                 "alice".into(),
                 "hunter2-secret".into(),
@@ -3129,7 +3125,7 @@ fn the_settings_form_routes_the_save_ceremony() {
                     taskboard_ui_slint::requests::UiRequest::SaveConnection {
                         profile,
                         ..
-                    } if profile.name == "home"
+                    } if profile.name.is_empty()
                         && profile.server_url == "https://c.example"
                         && profile.username == "alice"
                         && profile.password.0 == "hunter2-secret"
@@ -3171,10 +3167,9 @@ fn the_settings_form_routes_the_save_ceremony() {
                 "the reply payload is the secret-free row shape"
             );
 
-            // A second save with the same name is an edit (the same
-            // keyed payload — the upsert semantics, plan D7).
+            // A second sign-in routes the same name-less payload (the
+            // app reuses or derives the name).
             window.invoke_settings_save_clicked(
-                "home".into(),
                 "https://other.example".into(),
                 "alice".into(),
                 "pw2".into(),
@@ -3186,7 +3181,7 @@ fn the_settings_form_routes_the_save_ceremony() {
                 taskboard_ui_slint::requests::UiRequest::SaveConnection {
                     profile,
                     ..
-                } if profile.name == "home"
+                } if profile.name.is_empty()
                     && profile.server_url == "https://other.example"
             ));
         },
@@ -3834,7 +3829,6 @@ fn the_eye_toggles_locally_without_leaking_the_secret() {
             // Type a secret through the mirror path.
             window.invoke_settings_field_edited(3, "hunter2-secret".into());
             let model_snapshot = (
-                model().get_draft_name(),
                 model().get_draft_server(),
                 model().get_draft_username(),
                 model().get_save_enabled(),
@@ -3858,7 +3852,6 @@ fn the_eye_toggles_locally_without_leaking_the_secret() {
             harness.driver.advance_time(0);
             assert_eq!(
                 (
-                    model().get_draft_name(),
                     model().get_draft_server(),
                     model().get_draft_username(),
                     model().get_save_enabled(),
@@ -3884,7 +3877,6 @@ fn the_eye_toggles_locally_without_leaking_the_secret() {
             harness.driver.advance_time(0);
             assert_eq!(
                 (
-                    model().get_draft_name(),
                     model().get_draft_server(),
                     model().get_draft_username(),
                     model().get_save_enabled(),
@@ -3920,8 +3912,8 @@ fn the_validity_flavour_tracks_each_field_per_keystroke() {
             let model = || window.global::<taskboard_ui_slint::SettingsModel>();
 
             // The empty mount: every field neutral, no error line.
-            assert_eq!(model().get_validity_name(), FieldValidity::Neutral);
-            assert_eq!(model().get_error_name(), "");
+            assert_eq!(model().get_validity_server(), FieldValidity::Neutral);
+            assert_eq!(model().get_error_server(), "");
             assert!(
                 harness
                     .driver
@@ -3930,31 +3922,24 @@ fn the_validity_flavour_tracks_each_field_per_keystroke() {
                 "no error line renders on the empty mount"
             );
 
-            // An invalid name: invalid flavour + non-empty error
-            // element, the Save gate closed.
-            window.invoke_settings_field_edited(0, "Work".into());
-            assert_eq!(model().get_validity_name(), FieldValidity::Invalid);
-            assert_ne!(model().get_error_name(), "");
-            assert_eq!(model().get_validity_server(), FieldValidity::Neutral);
-            assert!(!model().get_save_enabled(), "the gate follows the ladder");
-
-            // Fixed: valid flavour, the line gone.
-            window.invoke_settings_field_edited(0, "work".into());
-            assert_eq!(model().get_validity_name(), FieldValidity::Valid);
-            assert_eq!(model().get_error_name(), "");
-
-            // Empty again: back to neutral, never an error line.
-            window.invoke_settings_field_edited(0, "".into());
-            assert_eq!(model().get_validity_name(), FieldValidity::Neutral);
-            assert_eq!(model().get_error_name(), "");
-
-            // The server field's grammar: a bad URL is invalid, a
-            // good one valid.
+            // A bad URL: invalid flavour + non-empty error element, the
+            // Save gate closed.
             window.invoke_settings_field_edited(1, "not a url".into());
             assert_eq!(model().get_validity_server(), FieldValidity::Invalid);
             assert_ne!(model().get_error_server(), "");
+            assert_eq!(model().get_validity_username(), FieldValidity::Neutral);
+            assert!(!model().get_save_enabled(), "the gate follows the ladder");
+
+            // Fixed: valid flavour, the line gone.
             window.invoke_settings_field_edited(1, "https://c.example".into());
             assert_eq!(model().get_validity_server(), FieldValidity::Valid);
+            assert_eq!(model().get_error_server(), "");
+
+            // Empty again: back to neutral, never an error line.
+            window.invoke_settings_field_edited(1, "".into());
+            assert_eq!(model().get_validity_server(), FieldValidity::Neutral);
+            assert_eq!(model().get_error_server(), "");
+            window.invoke_settings_field_edited(1, "https://c.example".into());
 
             // The username: whitespace-only is invalid (the trimmed
             // ladder rule), a name valid.
@@ -3970,7 +3955,6 @@ fn the_validity_flavour_tracks_each_field_per_keystroke() {
             assert_eq!(model().get_validity_password(), FieldValidity::Valid);
 
             // All fields pass: the gate opened.
-            window.invoke_settings_field_edited(0, "work".into());
             assert!(model().get_save_enabled(), "the valid draft enables Save");
         },
     );
@@ -4150,12 +4134,10 @@ fn busy_status_holds_until_the_reply_lands() {
 
             // A valid draft: the Save click routes the ceremony.
             let window = harness.handle.window();
-            window.invoke_settings_field_edited(0, "home".into());
             window.invoke_settings_field_edited(1, "https://c.example".into());
             window.invoke_settings_field_edited(2, "alice".into());
             window.invoke_settings_field_edited(3, "hunter2-secret".into());
             window.invoke_settings_save_clicked(
-                "home".into(),
                 "https://c.example".into(),
                 "alice".into(),
                 "hunter2-secret".into(),
@@ -4522,8 +4504,8 @@ fn every_settings_field_carries_its_info_tip() {
             };
             assert_eq!(
                 distinct_spots(driver, "LabeledField::help-tip"),
-                15,
-                "the four connection fields, the seven general fields, \
+                14,
+                "the three sign-in fields, the seven general fields, \
                  and the four focus minute fields each carry a tip"
             );
             for id in [
@@ -9098,24 +9080,14 @@ fn options(harness: &Harness) -> Vec<taskboard_ui_slint::DropdownRow> {
         .collect()
 }
 
-/// Finds one option row by its board title (data identity, not text
-/// assertion — titles are the fixture's keys).
-fn option_of(harness: &Harness, title: &str) -> taskboard_ui_slint::DropdownRow {
-    options(harness)
-        .into_iter()
-        .find(|row| row.label == title)
-        .unwrap_or_else(|| panic!("the {title} option renders"))
-}
-
 /// Walks the settings surface Tab-by-Tab, pressing Return on each
 /// stop, until the selector's flyout opens — the walk reaches the
 /// field (a real walk stop), and Return on it opens. The facts'
 /// `field-focused` mirror is unusable here (the backend fires no
 /// `changed` hook on a bound out property — the recorded negative),
 /// so the OPEN state itself is the walk's success fact. The bound is
-/// Real-pointer-clicks the selector's field (the element query is the
-/// address at the regular breakpoint; the click lands on the field's
-/// left half — the Detach button rides the row's right edge).
+/// Real-pointer-clicks the first remote row's local-board picker (the
+/// element query is the address).
 fn click_selector_field(driver: &mut SlintDriver) {
     // The backend's element traversal after a view swap is racy (the
     // recorded limitation): retry the query across a few clock turns
@@ -9123,20 +9095,19 @@ fn click_selector_field(driver: &mut SlintDriver) {
     let mut row = None;
     for _ in 0..20 {
         driver.advance_time(0);
-        let found = driver.find_all_by_id("SettingsView::picker-row");
+        let found = driver.find_all_by_id("SettingsView::remote-picker");
         if let Some(first) = found.into_iter().next() {
             row = Some(first);
             break;
         }
     }
-    let row = row.expect("the picker row renders");
+    let row = row.expect("a remote row's picker renders");
     let pos = row.absolute_position();
     let size = row.size();
-    // 60% in: past the label (the row's left slot), inside the field,
-    // short of the Detach button (the row's right edge). The pointer
-    // move seeds the cursor position first (the grab probe's dispatch
-    // shape — press lands where the move said).
-    let x = pos.x + size.width * 0.6;
+    // The field's middle. The pointer move seeds the cursor position
+    // first (the grab probe's dispatch shape — press lands where the
+    // move said).
+    let x = pos.x + size.width * 0.5;
     let y = pos.y + size.height / 2.0;
     driver.hover_at(x, y);
     driver.advance_time(0);
@@ -9178,16 +9149,149 @@ fn raw_key(harness: &Harness, key: slint::platform::Key) {
         .dispatch_event(slint::platform::WindowEvent::KeyPressed { text: key.into() });
 }
 
-/// J1 (rewired r4 D39) — the selector's options project the engine
-/// STATE (indicator + tone fold included); selection drives the
-/// Bind-only seam and dispatches NOTHING; a reply snapshot's boards
-/// half cannot feed the list (the one-writer rule).
+/// The pushed connections items (the account cards' walk-ordered
+/// projection — the journeys' model facts).
+fn items(harness: &Harness) -> Vec<taskboard_ui_slint::ConnectionItem> {
+    let rows = model(harness).get_connection_items();
+    (0..rows.row_count())
+        .filter_map(|i| rows.row_data(i))
+        .collect()
+}
+
+/// The index of the first item of `kind` titled `title` (data identity:
+/// titles are the fixture's keys, never presentation copy).
+fn item_at(harness: &Harness, kind: taskboard_ui_slint::ConnectionItemKind, title: &str) -> i32 {
+    let index = items(harness)
+        .iter()
+        .position(|item| item.kind == kind && item.title == title)
+        .unwrap_or_else(|| panic!("a {kind:?} item titled {title} renders"));
+    i32::try_from(index).expect("index fits")
+}
+
+fn remote_row(id: u64, title: &str) -> taskboard_ui_slint::requests::RemoteBoardRow {
+    taskboard_ui_slint::requests::RemoteBoardRow {
+        remote_id: taskboard_domain::RemoteBoardId(id),
+        title: title.to_owned(),
+    }
+}
+
+/// Clicks the named connector's Refresh and answers the listing with
+/// `rows` (the fake lane's half of `ListRemoteBoards`).
+fn refresh_with(
+    harness: &Harness,
+    connector: &str,
+    rows: Vec<taskboard_ui_slint::requests::RemoteBoardRow>,
+) {
+    let deck = item_at(
+        harness,
+        taskboard_ui_slint::ConnectionItemKind::Deck,
+        connector,
+    );
+    harness
+        .handle
+        .window()
+        .invoke_settings_refresh_clicked(deck);
+    let mut requests = harness.drain_requests();
+    assert_eq!(requests.len(), 1, "one listing routed");
+    let taskboard_ui_slint::requests::UiRequest::ListRemoteBoards {
+        connector: listed,
+        reply,
+    } = requests.remove(0)
+    else {
+        panic!("the refresh routes ListRemoteBoards");
+    };
+    assert_eq!(
+        listed, connector,
+        "the listing addresses the row's connector"
+    );
+    reply.send(Ok(rows)).expect("the reply lane is alive");
+    harness.handle.drain_setting_replies();
+}
+
+fn identity_row(name: &str, server: &str, user: &str) -> ConnectorInfo {
+    ConnectorInfo {
+        name: name.into(),
+        server_url: server.into(),
+        username: user.into(),
+    }
+}
+
+/// J1 (rewired round-5 chunk 8) — the account cards group the
+/// connectors by exact identity in config order: header, the Files
+/// toggle on the default connector's card only, one Deck row per
+/// connector (labelled when the card carries several); the pickers'
+/// options are the unbound live boards; mounting dispatches nothing.
 #[test]
-fn the_selector_options_project_the_state_and_selection_dispatches_nothing() {
+fn the_account_cards_group_connectors_and_the_options_project_the_state() {
+    use taskboard_ui_slint::ConnectionItemKind as K;
     let mut state = AppState::default();
     let home = uuid::Uuid::new_v4();
     let away = uuid::Uuid::new_v4();
     state_board(&mut state, home, "home", None);
+    state_board(&mut state, away, "away", Some("work"));
+    let settings = UiSettings {
+        connectors: vec![
+            identity_row("work", "https://x.example", "alice"),
+            identity_row("bob", "https://y.example", "bob"),
+            identity_row("work-2", "https://x.example", "alice"),
+        ],
+        ..UiSettings::default()
+    };
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount_with_settings(SlintDriver::default(), state, settings);
+            harness.press(ActionId::AppSettings);
+            let shape: Vec<(K, String, bool)> = items(&harness)
+                .into_iter()
+                .map(|item| (item.kind, item.title.to_string(), item.show_title))
+                .collect();
+            let kinds: Vec<K> = shape.iter().map(|(kind, ..)| *kind).collect();
+            assert_eq!(
+                kinds,
+                vec![K::Account, K::Files, K::Deck, K::Deck, K::Account, K::Deck],
+                "header, Files (default card only), a Deck row per connector"
+            );
+            assert_eq!(shape[2].1, "work");
+            assert_eq!(shape[3].1, "work-2");
+            assert!(
+                shape[2].2 && shape[3].2,
+                "a shared card labels its Deck rows"
+            );
+            assert!(!shape[5].2, "a single-connector card does not");
+            assert!(
+                items(&harness).iter().all(|item| !item.listed),
+                "nothing is listed before a Refresh"
+            );
+            let labels: Vec<String> = options(&harness)
+                .into_iter()
+                .map(|row| row.label.to_string())
+                .collect();
+            assert_eq!(labels, vec!["home".to_owned()], "only unbound boards");
+            assert!(
+                harness.drain_requests().is_empty(),
+                "mounting routes nothing"
+            );
+        },
+    );
+}
+
+/// J2 (rewired round-5 chunk 8) — Refresh lists the connector's remote
+/// boards; the rows render their binding from the STATE (through this
+/// connector only); picking an unbound local board routes exactly one
+/// explicit `AttachConnector` carrying the remote id; the Ok reply
+/// clears the gate; a `BindRefused` reply lands `Rejected` with
+/// non-empty status text (structure, never strings).
+#[test]
+fn a_refresh_lists_remotes_and_a_pick_binds_explicitly() {
+    use taskboard_ui_slint::ConnectionItemKind as K;
+    let mut state = AppState::default();
+    let home = uuid::Uuid::new_v4();
+    let away = uuid::Uuid::new_v4();
+    state_board(&mut state, home, "home", None);
+    // `state_board` binds remote id 1.
     state_board(&mut state, away, "away", Some("work"));
     let settings = UiSettings {
         connectors: vec![connector_row("work")],
@@ -9201,124 +9305,38 @@ fn the_selector_options_project_the_state_and_selection_dispatches_nothing() {
             let mut harness = Harness::mount_with_settings(SlintDriver::default(), state, settings);
             harness.press(ActionId::AppSettings);
             let window = harness.handle.window();
-            let model = || window.global::<taskboard_ui_slint::SettingsModel>();
-
-            // The projection: two live boards, the bound one carrying
-            // the link indicator in the idle fold's success tone; the
-            // unbound one link-off/neutral. Nothing is selected.
-            let rows = options(&harness);
-            assert_eq!(rows.len(), 2, "the state's live boards render");
-            let away_row = option_of(&harness, "away");
-            assert_eq!(
-                away_row.indicator,
-                taskboard_ui_slint::DropdownIndicator::Link
+            refresh_with(
+                &harness,
+                "work",
+                vec![remote_row(1, "r-away"), remote_row(2, "r-new")],
             );
-            assert_eq!(away_row.tone, taskboard_ui_slint::DropdownTone::Success);
-            let home_row = option_of(&harness, "home");
-            assert_eq!(
-                home_row.indicator,
-                taskboard_ui_slint::DropdownIndicator::LinkOff
-            );
-            assert_eq!(home_row.tone, taskboard_ui_slint::DropdownTone::Neutral);
-            assert_eq!(
-                model().get_selected_board(),
-                "",
-                "nothing selected at mount"
-            );
-
-            // A click selects: radio semantics over the model facts,
-            // and the lane stays empty — Bind-only (review focus (c)).
-            window.invoke_settings_board_selected(home.to_string().into());
-            assert_eq!(model().get_selected_board(), home.to_string());
-            assert_eq!(model().get_selected_board_label(), "home");
-            assert!(!model().get_selected_board_bound(), "home is unbound");
-            let selected = options(&harness)
-                .into_iter()
-                .find(|row| row.selected)
-                .expect("one selected row");
-            assert_eq!(selected.label, "home");
             assert!(
-                harness.drain_requests().is_empty(),
-                "selecting dispatches nothing"
+                !model(&harness).get_busy(),
+                "the listing reply cleared the gate"
             );
 
-            // A reply snapshot's boards half cannot feed the list:
-            // route the save ceremony and answer with a FOREIGN board
-            // list — the options keep following the state, the
-            // connector rows follow the reply.
-            window.invoke_settings_field_edited(0, "newc".into());
-            window.invoke_settings_field_edited(1, "https://n.example".into());
-            window.invoke_settings_field_edited(2, "alice".into());
-            window.invoke_settings_field_edited(3, "pw".into());
-            window.invoke_settings_save_clicked(
-                "newc".into(),
-                "https://n.example".into(),
-                "alice".into(),
-                "pw".into(),
-            );
-            let mut requests = harness.drain_requests();
-            let taskboard_ui_slint::requests::UiRequest::SaveConnection { reply, .. } =
-                requests.remove(0)
-            else {
-                panic!("the save routed");
-            };
-            reply
-                .send(Ok(ConnectionsSnapshot {
-                    boards: Vec::new(),
-                    connectors: vec![connector_row("work"), connector_row("newc")],
-                }))
-                .expect("the reply lane is alive");
-            harness.handle.drain_setting_replies();
-            assert_eq!(
-                options(&harness).len(),
-                2,
-                "the reply's boards half is ignored — the state feeds the list"
-            );
-            assert_eq!(
-                model().get_rows().row_count(),
-                2,
-                "the reply's connector list landed on the rows"
-            );
-        },
-    );
-}
+            let bound = &items(&harness)
+                [usize::try_from(item_at(&harness, K::Remote, "r-away")).expect("fits")];
+            assert!(bound.bound, "remote 1 renders bound from the state");
+            assert_eq!(bound.detail, "away");
+            let unbound_index = item_at(&harness, K::Remote, "r-new");
+            assert!(!items(&harness)[usize::try_from(unbound_index).expect("fits")].bound);
 
-/// J2 — bind routing (r2 D33): a selected board + a connector row's
-/// Bind routes exactly one `AttachConnector` with the typed ids; the
-/// Ok reply clears the busy gate; a `BindRefused` reply lands
-/// `Rejected` with non-empty status text (structure, never strings).
-#[test]
-fn bind_routes_attach_and_the_typed_reply_lands() {
-    let mut state = AppState::default();
-    let home = uuid::Uuid::new_v4();
-    state_board(&mut state, home, "home", None);
-    let settings = UiSettings {
-        connectors: vec![connector_row("work")],
-        ..UiSettings::default()
-    };
-    support::driver::run(
-        DriverOptions {
-            headless_renderer: true,
-        },
-        move |_driver| {
-            let mut harness = Harness::mount_with_settings(SlintDriver::default(), state, settings);
-            harness.press(ActionId::AppSettings);
-            let window = harness.handle.window();
-            let model = || window.global::<taskboard_ui_slint::SettingsModel>();
-            window.invoke_settings_board_selected(home.to_string().into());
-
-            window.invoke_settings_bind_clicked(0);
+            window.invoke_settings_remote_bind_picked(unbound_index, 0);
             let mut requests = harness.drain_requests();
             assert_eq!(requests.len(), 1, "exactly one attach routed");
             assert!(matches!(
                 &requests[0],
                 taskboard_ui_slint::requests::UiRequest::AttachConnector {
-                    board, connector, ..
-                } if board.as_uuid() == home && connector == "work"
+                    board, connector, remote, ..
+                } if board.as_uuid() == home && connector == "work" && *remote == taskboard_domain::RemoteBoardId(2)
             ));
-            assert!(model().get_busy(), "the gate is busy mid-flight");
+            assert!(model(&harness).get_busy(), "the gate is busy mid-flight");
+            assert!(
+                items(&harness)[usize::try_from(unbound_index).expect("fits")].busy,
+                "the ceremony rides the picked remote row"
+            );
 
-            // The Ok reply clears the gate.
             let taskboard_ui_slint::requests::UiRequest::AttachConnector { reply, .. } =
                 requests.remove(0)
             else {
@@ -9331,14 +9349,16 @@ fn bind_routes_attach_and_the_typed_reply_lands() {
                 }))
                 .expect("the reply lane is alive");
             harness.handle.drain_setting_replies();
-            assert!(!model().get_busy(), "the gate cleared with the reply");
+            assert!(
+                !model(&harness).get_busy(),
+                "the gate cleared with the reply"
+            );
             assert_eq!(
-                model().get_last_outcome(),
+                model(&harness).get_last_outcome(),
                 taskboard_ui_slint::SettingsOutcome::Ok,
             );
 
-            // A BindRefused reply lands Rejected + non-empty text.
-            window.invoke_settings_bind_clicked(0);
+            window.invoke_settings_remote_bind_picked(unbound_index, 0);
             let mut requests = harness.drain_requests();
             let taskboard_ui_slint::requests::UiRequest::AttachConnector { reply, .. } =
                 requests.remove(0)
@@ -9350,29 +9370,36 @@ fn bind_routes_attach_and_the_typed_reply_lands() {
             ));
             harness.handle.drain_setting_replies();
             assert_eq!(
-                model().get_last_outcome(),
+                model(&harness).get_last_outcome(),
                 taskboard_ui_slint::SettingsOutcome::Rejected,
                 "the bind refusal is Rejected"
             );
             assert!(
-                !model().get_status_text().is_empty(),
+                !model(&harness).get_status_text().is_empty(),
                 "the refusal sentence is visible"
+            );
+
+            // A stale item or option index is absorbed silently.
+            window.invoke_settings_remote_bind_picked(unbound_index, 9);
+            window.invoke_settings_remote_bind_picked(99, 0);
+            assert!(
+                harness.drain_requests().is_empty(),
+                "stale picks route nothing"
             );
         },
     );
 }
 
-/// J3 (rewired r4 D39 §3.3) — detach routes from the SELECTION: the
-/// lane carries the typed pair, the busy ceremony rides the selected
-/// option, and the Ok reply clears it. A missing or unbound selection
-/// is absorbed silently.
+/// J3 (rewired round-5 chunk 8) — Disconnect moves onto the bound
+/// remote row: the lane carries the typed `(board, connector)` pair,
+/// the busy marker rides that row, and the Ok reply clears it. An
+/// unbound row's Disconnect seam is absorbed silently.
 #[test]
-fn detach_routes_from_the_selection_and_the_ceremony_rides_the_option() {
+fn disconnect_routes_detach_from_the_bound_remote_row() {
+    use taskboard_ui_slint::ConnectionItemKind as K;
     let mut state = AppState::default();
     let home = uuid::Uuid::new_v4();
-    let plain = uuid::Uuid::new_v4();
     state_board(&mut state, home, "home", Some("work"));
-    state_board(&mut state, plain, "plain", None);
     let settings = UiSettings {
         connectors: vec![connector_row("work")],
         ..UiSettings::default()
@@ -9385,24 +9412,17 @@ fn detach_routes_from_the_selection_and_the_ceremony_rides_the_option() {
             let mut harness = Harness::mount_with_settings(SlintDriver::default(), state, settings);
             harness.press(ActionId::AppSettings);
             let window = harness.handle.window();
-            let model = || window.global::<taskboard_ui_slint::SettingsModel>();
-
-            // No selection: absorbed.
-            window.invoke_settings_detach_selected();
-            assert!(
-                harness.drain_requests().is_empty(),
-                "no selection, no detach"
+            refresh_with(
+                &harness,
+                "work",
+                vec![remote_row(1, "r-home"), remote_row(2, "r-free")],
             );
 
-            // An unbound selection: absorbed.
-            window.invoke_settings_board_selected(plain.to_string().into());
-            window.invoke_settings_detach_selected();
+            window.invoke_settings_disconnect_clicked(item_at(&harness, K::Remote, "r-free"));
             assert!(harness.drain_requests().is_empty(), "unbound, no detach");
 
-            // The bound selection routes, and the busy marker rides
-            // the selected OPTION.
-            window.invoke_settings_board_selected(home.to_string().into());
-            window.invoke_settings_detach_selected();
+            let bound = item_at(&harness, K::Remote, "r-home");
+            window.invoke_settings_disconnect_clicked(bound);
             let mut requests = harness.drain_requests();
             assert_eq!(requests.len(), 1, "exactly one detach routed");
             assert!(matches!(
@@ -9411,42 +9431,33 @@ fn detach_routes_from_the_selection_and_the_ceremony_rides_the_option() {
                     board, connector, ..
                 } if board.as_uuid() == home && connector == "work"
             ));
-            assert!(model().get_busy());
-            assert_eq!(model().get_busy_target(), "home");
+            assert!(model(&harness).get_busy());
             assert!(
-                option_of(&harness, "home").busy,
-                "the ceremony rides the selected option"
+                items(&harness)[usize::try_from(bound).expect("fits")].busy,
+                "the ceremony rides the bound row"
             );
-
-            // The Ok reply clears the ceremony.
             let taskboard_ui_slint::requests::UiRequest::DetachConnector { reply, .. } =
                 requests.remove(0)
             else {
                 panic!("the detach routed");
             };
-            reply
-                .send(Ok(ConnectionsSnapshot::default()))
-                .expect("the reply lane is alive");
+            let _ = reply.send(Ok(ConnectionsSnapshot {
+                boards: Vec::new(),
+                connectors: vec![connector_row("work")],
+            }));
             harness.handle.drain_setting_replies();
-            assert!(!model().get_busy(), "the gate cleared");
-            assert!(
-                !option_of(&harness, "home").busy,
-                "the option's busy flag cleared with the reply"
-            );
-            assert_eq!(
-                model().get_last_outcome(),
-                taskboard_ui_slint::SettingsOutcome::Ok,
-            );
+            assert!(!model(&harness).get_busy(), "the gate cleared");
         },
     );
 }
 
-/// J4 — the busy gate (r2 D34): with an attach pending, Save/Test/a
-/// second Bind route nothing (one op at a time); the initiating
-/// connector row's busy flag is set; the reply clears it
+/// J4 — the busy gate (r2 D34): with an attach pending, Sign in lands a
+/// visible Rejected, and Refresh/Create/Remove/a second pick route
+/// nothing (one op at a time); the reply clears the marker
 /// (reply-driven — no clock).
 #[test]
 fn the_busy_gate_holds_one_op_and_the_reply_clears_the_row_marker() {
+    use taskboard_ui_slint::ConnectionItemKind as K;
     let mut state = AppState::default();
     let home = uuid::Uuid::new_v4();
     state_board(&mut state, home, "home", None);
@@ -9462,41 +9473,38 @@ fn the_busy_gate_holds_one_op_and_the_reply_clears_the_row_marker() {
             let mut harness = Harness::mount_with_settings(SlintDriver::default(), state, settings);
             harness.press(ActionId::AppSettings);
             let window = harness.handle.window();
-            let model = || window.global::<taskboard_ui_slint::SettingsModel>();
-            window.invoke_settings_board_selected(home.to_string().into());
+            refresh_with(&harness, "work", vec![remote_row(5, "r")]);
+            let remote = item_at(&harness, K::Remote, "r");
 
-            // The initiating op: an attach, left unanswered.
-            window.invoke_settings_bind_clicked(0);
+            window.invoke_settings_remote_bind_picked(remote, 0);
             let mut requests = harness.drain_requests();
             assert_eq!(requests.len(), 1);
-            assert!(model().get_busy());
-            assert_eq!(model().get_busy_target(), "work");
+            assert!(model(&harness).get_busy());
+            assert_eq!(model(&harness).get_busy_target(), "work");
             assert!(
-                model().get_rows().row_data(0).expect("row").busy,
-                "the initiating connector row carries the busy flag"
+                items(&harness)[usize::try_from(item_at(&harness, K::Deck, "work")).expect("fits")]
+                    .busy,
+                "the owning Deck row carries the busy flag"
             );
 
-            // While pending: a valid Save routes nothing (visible
-            // Rejected instead), Test and a second Bind route nothing.
             window.invoke_settings_save_clicked(
-                "x".into(),
                 "https://x.example".into(),
                 "alice".into(),
                 "pw".into(),
             );
             assert_eq!(
-                model().get_last_outcome(),
+                model(&harness).get_last_outcome(),
                 taskboard_ui_slint::SettingsOutcome::Rejected
             );
-            window.invoke_settings_test_clicked(0);
-            window.invoke_settings_bind_clicked(0);
+            window.invoke_settings_refresh_clicked(item_at(&harness, K::Deck, "work"));
+            window.invoke_settings_create_clicked(remote);
+            window.invoke_settings_remove_clicked(0);
+            window.invoke_settings_remote_bind_picked(remote, 0);
             assert!(
                 harness.drain_requests().is_empty(),
                 "the pending gate routed nothing"
             );
 
-            // The reply clears the row marker (reply-driven); the
-            // initiating request was retained from the first drain.
             let taskboard_ui_slint::requests::UiRequest::AttachConnector { reply, .. } =
                 requests.remove(0)
             else {
@@ -9507,24 +9515,23 @@ fn the_busy_gate_holds_one_op_and_the_reply_clears_the_row_marker() {
                 connectors: vec![connector_row("work")],
             }));
             harness.handle.drain_setting_replies();
-            assert!(!model().get_busy(), "the gate cleared");
+            assert!(!model(&harness).get_busy(), "the gate cleared");
             assert!(
-                !model().get_rows().row_data(0).expect("row").busy,
-                "the row busy flag cleared with the reply"
+                items(&harness).iter().all(|item| !item.busy),
+                "every busy flag cleared with the reply"
             );
         },
     );
 }
 
-/// r4 D39 §2.3 — the staleness repair (F29): a board created after
-/// install renders on the next pass (by construction — the list is
-/// state-derived), and a selection whose board no longer renders is
-/// pruned silently (Bind never stays armed on a ghost).
+/// r4 D39 §2.3's staleness rule, kept for the pickers: a board created
+/// after install renders in the options on the next pass, and a board
+/// that becomes bound leaves them (state-derived by construction).
 #[test]
-fn a_board_created_after_install_renders_and_a_gone_selection_prunes() {
+fn the_picker_options_follow_the_state() {
     let mut state = AppState::default();
     let home = uuid::Uuid::new_v4();
-    state_board(&mut state, home, "home", Some("work"));
+    state_board(&mut state, home, "home", None);
     let settings = UiSettings {
         connectors: vec![connector_row("work")],
         ..UiSettings::default()
@@ -9536,154 +9543,286 @@ fn a_board_created_after_install_renders_and_a_gone_selection_prunes() {
         move |_driver| {
             let mut harness = Harness::mount_with_settings(SlintDriver::default(), state, settings);
             harness.press(ActionId::AppSettings);
-            let window = harness.handle.window();
-            let model = || window.global::<taskboard_ui_slint::SettingsModel>();
-            window.invoke_settings_board_selected(home.to_string().into());
-            assert_eq!(model().get_selected_board(), home.to_string());
-
-            // A board created after install; `home` tombstoned
-            // elsewhere. One state swap, one refresh.
             let mut next = AppState::default();
             let late = uuid::Uuid::new_v4();
             state_board(&mut next, late, "late", None);
+            state_board(&mut next, home, "home", Some("work"));
             harness.engine.replace_state(next, &harness.handle);
             harness.handle.drain_setting_replies();
-
             let titles: Vec<String> = options(&harness)
                 .into_iter()
                 .map(|row| row.label.to_string())
                 .collect();
-            assert!(
-                titles.contains(&"late".to_string()),
-                "the post-install board renders: {titles:?}"
-            );
-            assert!(
-                !titles.contains(&"home".to_string()),
-                "the tombstoned board is out: {titles:?}"
-            );
-            assert_eq!(
-                model().get_selected_board(),
-                "",
-                "the gone selection pruned silently"
-            );
-            assert!(!model().get_selected_board_bound());
-            assert_eq!(model().get_selected_board_label(), "", "the label cleared");
+            assert_eq!(titles, vec!["late".to_owned()], "{titles:?}");
         },
     );
 }
 
-/// r4 D39 §3.5 — the dropdown's user journey on the settings surface:
-/// the tab walk reaches the field, Return opens, the ladder moves the
-/// highlight from the selection anchor, Return selects (the seam
-/// lands the selection, the label, and Bind's gate), Escape closes
-/// without selecting, an outside click closes through the underlay.
+/// D-8.5 — Create local board routes one `CreateLocalBoard` for the
+/// row's `(connector, remote)`; the session completes when the app's
+/// writes land in the state (the fake engine's swap) — the row renders
+/// bound to the new board.
 #[test]
-fn the_selector_dropdown_opens_walks_and_selects() {
-    let mut state = AppState::default();
-    let home = uuid::Uuid::new_v4();
-    let away = uuid::Uuid::new_v4();
-
-    // Exactly TWO boards: the board bar's segment row trips the
-    // testing backend's element traversal past two segments (the
-    // recorded chip-free-chrome limitation's sibling); two keep the
-    // ladder's move meaningful.
-    state_board(&mut state, home, "home", None);
-    state_board(&mut state, away, "away", None);
-    // NO connector rows on the hand-over: the row list's conditionals
-    // trip the testing backend's element traversal (the recorded
-    // chip-free-chrome limitation), and this journey's facts live on
-    // the selector, not the rows.
-    let settings = UiSettings::default();
+fn create_local_board_routes_and_the_row_renders_bound() {
+    use taskboard_ui_slint::ConnectionItemKind as K;
+    let settings = UiSettings {
+        connectors: vec![connector_row("work")],
+        ..UiSettings::default()
+    };
     support::driver::run(
         DriverOptions {
             headless_renderer: true,
         },
         move |_driver| {
-            let mut harness = Harness::mount_with_settings(SlintDriver::default(), state, settings);
+            let mut harness =
+                Harness::mount_with_settings(SlintDriver::default(), AppState::default(), settings);
             harness.press(ActionId::AppSettings);
-            harness.driver.set_window_size(1000, 900);
-            harness.driver.advance_time(0);
-
-            // Pre-select `home`: the open-time anchor is the selected
-            // row, not 0.
-            harness
-                .handle
-                .window()
-                .invoke_settings_board_selected(home.to_string().into());
-
-            // Open via the field click — the click focuses the field,
-            // so the ladder keys route through the field's arm.
-            click_selector_field(&mut harness.driver);
-            let mut saw_open = false;
-            for _ in 0..6 {
-                harness.driver.advance_time(0);
-                saw_open = saw_open || board_facts(&harness).get_open();
-                assert!(
-                    !saw_open || board_facts(&harness).get_open(),
-                    "the flyout opened and then closed itself"
-                );
-            }
-            assert!(
-                board_facts(&harness).get_open(),
-                "the field click opens the flyout"
-            );
-            let anchor = options(&harness)
-                .iter()
-                .position(|r| r.selected)
-                .expect("the selected row anchors");
-
-            assert_eq!(
-                board_facts(&harness).get_highlight(),
-                i32::try_from(anchor).expect("index fits"),
-                "the anchor is the selection"
-            );
-
-            // The ladder moves; the list seeks (the fact pattern).
-            // The step direction adapts: the boards sit in uuid order,
-            // so the selection may anchor at the last row.
-            let before = board_facts(&harness).get_highlight();
-            let at_last = before == i32::try_from(options(&harness).len() - 1).expect("index fits");
-            if at_last {
-                raw_key(&harness, slint::platform::Key::UpArrow);
-            } else {
-                raw_key(&harness, slint::platform::Key::DownArrow);
-            }
-            harness.driver.advance_time(0);
-            let expected = if at_last { before - 1 } else { before + 1 };
-            assert_eq!(
-                board_facts(&harness).get_highlight(),
-                expected,
-                "the ladder moves off the anchor"
-            );
-
-            // Return selects: the seam lands the selection, the
-            // label, and the flyout closes. (The dismissal matrix —
-            // Escape, the outside click, the Tab walk — lives in the
-            // dropdown probe: the backend's element traversal does not
-            // survive the flyout's unmount, so the journey opens once.)
-            raw_key(&harness, slint::platform::Key::Return);
-            harness.driver.advance_time(0);
-            assert!(!board_facts(&harness).get_open(), "selecting closes");
-            let picked_index = board_facts(&harness).get_highlight();
-            let picked_row = usize::try_from(picked_index).expect("index fits");
-            let picked = options(&harness)[picked_row].label.to_string();
-            let picked_id = {
-                let ids = model(&harness).get_board_ids();
-                ids.row_data(picked_row).expect("id").to_string()
+            let window = harness.handle.window();
+            refresh_with(&harness, "work", vec![remote_row(1, "shared")]);
+            let row = item_at(&harness, K::Remote, "shared");
+            window.invoke_settings_create_clicked(row);
+            let mut requests = harness.drain_requests();
+            assert_eq!(requests.len(), 1);
+            let taskboard_ui_slint::requests::UiRequest::CreateLocalBoard {
+                connector,
+                remote,
+                reply,
+            } = requests.remove(0)
+            else {
+                panic!("the create routes CreateLocalBoard");
             };
             assert_eq!(
-                model(&harness).get_selected_board(),
-                picked_id,
-                "the picked row's id landed on the seam"
+                (connector.as_str(), remote),
+                ("work", taskboard_domain::RemoteBoardId(1))
             );
-            assert_eq!(
-                model(&harness).get_selected_board_label(),
-                picked,
-                "the field re-renders the picked board"
-            );
+
+            // The app half: CreateBoard + BindBoard landed.
+            let mut next = AppState::default();
+            let created = uuid::Uuid::new_v4();
+            state_board(&mut next, created, "shared", Some("work"));
+            harness.engine.replace_state(next, &harness.handle);
+            let _ = reply.send(Ok(ConnectionsSnapshot {
+                boards: Vec::new(),
+                connectors: vec![connector_row("work")],
+            }));
+            harness.handle.drain_setting_replies();
+            let item = &items(&harness)
+                [usize::try_from(item_at(&harness, K::Remote, "shared")).expect("fits")];
+            assert!(item.bound, "the created board is bound to the remote");
+            assert_eq!(item.detail, "shared");
+            window.invoke_settings_create_clicked(row);
             assert!(
                 harness.drain_requests().is_empty(),
-                "selecting still dispatches nothing"
+                "a bound row creates nothing"
+            );
+        },
+    );
+}
+
+/// D-8.7 — the listing's typed failures surface through the status
+/// line with zero state change: no rows render, no engine command is
+/// sent, the gate clears (a dropped reply too — the wedge guard).
+#[test]
+fn a_failed_listing_surfaces_typed_without_state_change() {
+    use taskboard_ui_slint::ConnectionItemKind as K;
+    let settings = UiSettings {
+        connectors: vec![connector_row("work")],
+        ..UiSettings::default()
+    };
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness =
+                Harness::mount_with_settings(SlintDriver::default(), AppState::default(), settings);
+            harness.press(ActionId::AppSettings);
+            let window = harness.handle.window();
+            for (err, outcome) in [
+                (
+                    taskboard_ui_slint::requests::SettingsError::NoSecretStored,
+                    taskboard_ui_slint::SettingsOutcome::Rejected,
+                ),
+                (
+                    taskboard_ui_slint::requests::SettingsError::VerifyUnreachable,
+                    taskboard_ui_slint::SettingsOutcome::Unavailable,
+                ),
+            ] {
+                window.invoke_settings_refresh_clicked(item_at(&harness, K::Deck, "work"));
+                let mut requests = harness.drain_requests();
+                let taskboard_ui_slint::requests::UiRequest::ListRemoteBoards { reply, .. } =
+                    requests.remove(0)
+                else {
+                    panic!("the refresh routed");
+                };
+                let _ = reply.send(Err(err));
+                harness.handle.drain_setting_replies();
+                assert_eq!(model(&harness).get_last_outcome(), outcome);
+                assert!(!model(&harness).get_status_text().is_empty());
+                assert!(!model(&harness).get_busy(), "the gate cleared");
+                assert!(
+                    items(&harness)
+                        .iter()
+                        .all(|item| item.kind != K::Remote && !item.listed),
+                    "no remote rows render"
+                );
+            }
+            window.invoke_settings_refresh_clicked(item_at(&harness, K::Deck, "work"));
+            drop(harness.drain_requests());
+            harness.handle.drain_setting_replies();
+            assert!(!model(&harness).get_busy(), "a dropped reply never wedges");
+            assert!(
+                harness.engine.drain().is_empty(),
+                "no engine command was sent"
+            );
+        },
+    );
+}
+
+/// D-8.6 — the Files toggle renders on the default account's card and
+/// commits on pick (`SetFilesSyncEnabled`); the reply's value lands
+/// on the row with the app-stated restart fact.
+#[test]
+fn the_files_toggle_commits_on_pick_and_echoes_the_reply() {
+    use taskboard_ui_slint::ConnectionItemKind as K;
+    let settings = UiSettings {
+        connectors: vec![connector_row("work")],
+        ..UiSettings::default()
+    };
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness =
+                Harness::mount_with_settings(SlintDriver::default(), AppState::default(), settings);
+            harness.press(ActionId::AppSettings);
+            let files = || {
+                items(&harness)
+                    .into_iter()
+                    .find(|item| item.kind == K::Files)
+                    .expect("the Files row renders")
+            };
+            assert!(!files().files_on);
+            harness.handle.window().invoke_settings_files_picked(0);
+            let mut requests = harness.drain_requests();
+            let taskboard_ui_slint::requests::UiRequest::SetFilesSyncEnabled { enabled, reply } =
+                requests.remove(0)
+            else {
+                panic!("the pick routes SetFilesSyncEnabled");
+            };
+            assert!(enabled);
+            let mut applies = std::collections::BTreeMap::new();
+            applies.insert(
+                "files_sync.enabled".to_owned(),
+                taskboard_ui_slint::requests::ApplySemantics::on_restart("boot spawn"),
+            );
+            let _ = reply.send(Ok(taskboard_ui_slint::requests::SettingsSnapshot {
+                files_sync_enabled: true,
+                applies,
+                ..taskboard_ui_slint::requests::SettingsSnapshot::default()
+            }));
+            harness.handle.drain_setting_replies();
+            assert!(files().files_on, "the reply's value landed");
+            assert!(files().files_restart, "the restart fact renders");
+        },
+    );
+}
+
+/// The D7 session (round-5 chunk 8 acceptance) over the fake lane and
+/// engine: sign in (the reply's derived connector renders as a card
+/// with its Deck row) → Refresh → rows render → bind an unbound local
+/// board explicitly → the binding lands in the state and the row
+/// renders it.
+#[test]
+fn the_account_session_signs_in_lists_and_binds() {
+    use taskboard_ui_slint::ConnectionItemKind as K;
+    let mut state = AppState::default();
+    let home = uuid::Uuid::new_v4();
+    state_board(&mut state, home, "home", None);
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness =
+                Harness::mount_with_settings(SlintDriver::default(), state, UiSettings::default());
+            harness.press(ActionId::AppSettings);
+            let window = harness.handle.window();
+            assert!(items(&harness).is_empty(), "no accounts yet");
+
+            window.invoke_settings_field_edited(1, "https://c.example".into());
+            window.invoke_settings_field_edited(2, "alice".into());
+            window.invoke_settings_field_edited(3, "pw".into());
+            window.invoke_settings_save_clicked(
+                "https://c.example".into(),
+                "alice".into(),
+                "pw".into(),
+            );
+            let mut requests = harness.drain_requests();
+            let taskboard_ui_slint::requests::UiRequest::SaveConnection { profile, reply } =
+                requests.remove(0)
+            else {
+                panic!("sign in routes SaveConnection");
+            };
+            assert!(profile.name.is_empty(), "the app derives the name");
+            let derived = identity_row("c-example-alice", "https://c.example", "alice");
+            let _ = reply.send(Ok(ConnectionsSnapshot {
+                boards: Vec::new(),
+                connectors: vec![derived],
+            }));
+            harness.handle.drain_setting_replies();
+            item_at(&harness, K::Account, "alice @ https://c.example");
+            item_at(&harness, K::Deck, "c-example-alice");
+
+            refresh_with(&harness, "c-example-alice", vec![remote_row(42, "team")]);
+            let row = item_at(&harness, K::Remote, "team");
+            window.invoke_settings_remote_bind_picked(row, 0);
+            let mut requests = harness.drain_requests();
+            let taskboard_ui_slint::requests::UiRequest::AttachConnector {
+                board,
+                connector,
+                remote,
+                reply,
+            } = requests.remove(0)
+            else {
+                panic!("the pick routes AttachConnector");
+            };
+            assert_eq!(board.as_uuid(), home);
+            assert_eq!(
+                (connector.as_str(), remote),
+                ("c-example-alice", taskboard_domain::RemoteBoardId(42))
+            );
+
+            // The app half's BindBoard lands in the state.
+            let mut next = AppState::default();
+            state_board(&mut next, home, "home", Some("c-example-alice"));
+            next.boards
+                .get_mut(&taskboard_domain::BoardId::from_uuid(home))
+                .and_then(|b| b.remote.as_mut())
+                .expect("bound")
+                .board = taskboard_domain::RemoteBoardId(42);
+            harness.engine.replace_state(next, &harness.handle);
+            let _ = reply.send(Ok(ConnectionsSnapshot {
+                boards: vec![taskboard_ui_slint::requests::BoardInfo {
+                    id: home,
+                    name: "home".into(),
+                    bound_connector: Some("c-example-alice".into()),
+                }],
+                connectors: vec![identity_row(
+                    "c-example-alice",
+                    "https://c.example",
+                    "alice",
+                )],
+            }));
+            harness.handle.drain_setting_replies();
+            let item = &items(&harness)
+                [usize::try_from(item_at(&harness, K::Remote, "team")).expect("fits")];
+            assert!(item.bound, "the binding renders from the state");
+            assert_eq!(item.detail, "home");
+            assert!(
+                options(&harness).is_empty(),
+                "the bound board left the options"
             );
         },
     );
@@ -9707,14 +9846,9 @@ fn every_save_click_produces_a_visible_reaction_and_the_lane_stays_clean() {
             let window = harness.handle.window();
             let model = || window.global::<taskboard_ui_slint::SettingsModel>();
 
-            // Invalid draft (empty name): the click fires *through*
-            // the disabled button and the refusal is visible.
-            window.invoke_settings_save_clicked(
-                "".into(),
-                "https://c.example".into(),
-                "alice".into(),
-                "pw".into(),
-            );
+            // Invalid draft (a bad server URL): the click fires
+            // *through* the disabled button and the refusal is visible.
+            window.invoke_settings_save_clicked("not a url".into(), "alice".into(), "pw".into());
             assert!(harness.drain_requests().is_empty(), "no request routed");
             assert_eq!(
                 model().get_last_outcome(),
@@ -9728,19 +9862,16 @@ fn every_save_click_produces_a_visible_reaction_and_the_lane_stays_clean() {
 
             // Valid draft, but a click while pending: visible
             // Rejected, lane untouched.
-            window.invoke_settings_field_edited(0, "home".into());
             window.invoke_settings_field_edited(1, "https://c.example".into());
             window.invoke_settings_field_edited(2, "alice".into());
             window.invoke_settings_field_edited(3, "pw".into());
             window.invoke_settings_save_clicked(
-                "home".into(),
                 "https://c.example".into(),
                 "alice".into(),
                 "pw".into(),
             );
             assert_eq!(harness.drain_requests().len(), 1, "the idle click routed");
             window.invoke_settings_save_clicked(
-                "home".into(),
                 "https://c.example".into(),
                 "alice".into(),
                 "pw".into(),
@@ -14155,7 +14286,9 @@ fn the_empty_board_list_renders_the_disabled_picker_with_its_caption() {
         },
         move |_driver| {
             let mut harness = Harness::mount_with_settings(SlintDriver::default(), state, settings);
+            harness.driver.set_window_size(1000, 1400);
             harness.press(ActionId::AppSettings);
+            refresh_with(&harness, "work", vec![remote_row(1, "r")]);
             harness.driver.advance_time(0);
             let window = harness.handle.window();
             let copy = window.global::<taskboard_ui_slint::SettingsBoardCopy>();
@@ -14165,7 +14298,7 @@ fn the_empty_board_list_renders_the_disabled_picker_with_its_caption() {
             );
 
             // The field click opens nothing (the disabled state).
-            harness.driver.click_by_label(&copy.get_label());
+            click_selector_field(&mut harness.driver);
             harness.driver.advance_time(0);
             let facts = window.global::<taskboard_ui_slint::DropdownFacts>();
             assert!(
@@ -14200,7 +14333,7 @@ fn the_settings_picker_flyout_mounts_below_its_anchor_and_dismisses() {
     let home = uuid::Uuid::new_v4();
     let away = uuid::Uuid::new_v4();
     state_board(&mut state, home, "home", None);
-    state_board(&mut state, away, "away", Some("work"));
+    state_board(&mut state, away, "away", None);
     let settings = UiSettings {
         connectors: vec![connector_row("work")],
         ..UiSettings::default()
@@ -14213,6 +14346,8 @@ fn the_settings_picker_flyout_mounts_below_its_anchor_and_dismisses() {
             let mut harness = Harness::mount_with_settings(SlintDriver::default(), state, settings);
             harness.driver.set_window_size(1000, 900);
             harness.press(ActionId::AppSettings);
+            harness.driver.advance_time(0);
+            refresh_with(&harness, "work", vec![remote_row(2, "r")]);
             harness.driver.advance_time(0);
             let window = harness.handle.window();
 
@@ -14248,13 +14383,13 @@ fn the_settings_picker_flyout_mounts_below_its_anchor_and_dismisses() {
 
             // Outside click: a real coordinate click onto another
             // control's spot — the window-level underlay receives it
-            // and dismisses only the flyout (the Detach button's
-            // enabled gate stays untouched).
-            let detach = harness
+            // and dismisses only the flyout (the Back button stays
+            // untouched).
+            let back = harness
                 .driver
-                .find_by_label("Detach")
-                .expect("the Detach button renders");
-            let (x, y) = support::driver::centre(&detach);
+                .find_by_label("Back")
+                .expect("the Back button renders");
+            let (x, y) = support::driver::centre(&back);
             harness.driver.click_at(x, y);
             harness.driver.advance_time(0);
             assert!(
@@ -14752,7 +14887,7 @@ fn ring_ink(harness: &mut Harness, rect: (f32, f32, f32, f32)) -> u32 {
     count
 }
 
-/// F19 "visibly focused" — a focused segment, the slider, and Save
+/// F19 "visibly focused" — a focused segment, the slider, and Sign in
 /// each carry ring ink, and strictly more than the same rect once the
 /// walk moves on (a floor-vs-floor comparison, never a ceiling).
 #[test]
@@ -14767,7 +14902,7 @@ fn focused_settings_controls_render_the_ring() {
             harness.press(ActionId::AppSettings);
             harness.driver.set_window_size(1000, 6000);
             harness.driver.advance_time(0);
-            for label in ["Emacs", "Scale slider", "Save"] {
+            for label in ["Emacs", "Scale slider", "Sign in"] {
                 tab_to(&mut harness, label);
                 let rect = harness.driver.focused_rect().expect("a stop holds focus");
                 let focused = ring_ink(&mut harness, rect);

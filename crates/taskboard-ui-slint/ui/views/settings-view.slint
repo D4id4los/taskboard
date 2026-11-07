@@ -65,26 +65,54 @@ export struct ConnectionRow {
 
 
 
+// The account card's walk-ordered item kinds (round-5 chunk 8, D-8.1):
+// the card header, its Files toggle, one Deck row per connector, and
+// the remote-board mapping rows under it.
+export enum ConnectionItemKind {
+    account,
+    files,
+    deck,
+    remote,
+}
+
+// One rendered connections item (the flat, positional projection of
+// the account cards — the adapter resolves every callback's item
+// index through its own address table; no id enters the model).
+export struct ConnectionItem {
+    kind: ConnectionItemKind,
+    // account: the identity line; deck: the connector name; remote:
+    // the remote board's title.
+    title: string,
+    // remote: the bound local board's name ("" = unbound).
+    detail: string,
+    // deck: label the connector (the card carries several).
+    show-title: bool,
+    status: SettingsRowStatus,
+    busy: bool,
+    // remote: bound through this connector (Disconnect vs pick/create).
+    bound: bool,
+    // deck: a listing has landed (else the Refresh hint renders).
+    listed: bool,
+    // files: the toggle's value and its app-stated facts.
+    files-on: bool,
+    files-locked: bool,
+    files-restart: bool,
+}
+
 export global SettingsModel {
+    // The configured connectors, secret-free (the per-connector truth
+    // the account cards fold from).
     in-out property <[ConnectionRow]> rows: [];
-    // The board selector's dropdown model (r4 D39): the options (the
-    // adapter's per-pass state projection), their uuid hand-over
-    // strings (`row-activated(i)` resolves through `board-ids[i]`),
-    // and the selection facts — uuid (empty = none, Bind's gate),
-    // index (the widget's open-time anchor), label ("" renders the
-    // caller's placeholder), and bound (Detach's enablement).
+    // The account cards' rendered projection (round-5 chunk 8).
+    in-out property <[ConnectionItem]> connection-items: [];
+    // The remote rows' local-board choices (the unbound live boards —
+    // one list for every remote row's picker; the flyout's rows).
     in-out property <[DropdownRow]> board-options: [];
-    in-out property <[string]> board-ids: [];
-    in-out property <string> selected-board: "";
-    in-out property <int> selected-board-index: 0;
-    in-out property <string> selected-board-label: "";
-    in-out property <bool> selected-board-bound: false;
     // The busy machine (r2 D34): any op in flight disables every
     // settings op; busy-target names the connector/board the spinner
     // markers render on.
     in-out property <bool> busy: false;
     in-out property <string> busy-target: "";
-    in-out property <string> draft-name: "";
     in-out property <string> draft-server: "";
     in-out property <string> draft-username: "";
     // The per-field validity flavour + error copy (round-3 D19):
@@ -92,12 +120,10 @@ export global SettingsModel {
     // source of truth the Save gate reads, so the flavour and the
     // gate cannot diverge. The error strings are presentation copy
     // (settings_status::invalid_text); never asserted by tests.
-    in-out property <FieldValidity> validity-name: FieldValidity.neutral;
     in-out property <FieldValidity> validity-server: FieldValidity.neutral;
     in-out property <FieldValidity> validity-username: FieldValidity.neutral;
     in-out property <FieldValidity> validity-password: FieldValidity.neutral;
     in-out property <FieldValidity> validity-scale: FieldValidity.neutral;
-    in-out property <string> error-name: "";
     in-out property <string> error-server: "";
     in-out property <string> error-username: "";
     in-out property <string> error-password: "";
@@ -115,7 +141,6 @@ export global SettingsModel {
     in-out property <string> status-text: "";
     // The D31 help-text constants (the same module): presentation
     // constants pushed once at mount; content never asserted.
-    in-out property <string> help-name: "";
     in-out property <string> help-server: "";
     in-out property <string> help-username: "";
     in-out property <string> help-app-password: "";
@@ -417,92 +442,60 @@ component LabeledField inherits VerticalLayout {
     }
 }
 
-// The selector's copy constants (r4 D39 §3.2): presentation copy,
-// never asserted — the a11y/description sentence says what selection
-// does NOT do (it does not switch the viewed board).
+// The account cards' copy constants (round-5 chunk 8, replacing the
+// r4 D39 selector copy): presentation copy, never asserted.
 export global SettingsBoardCopy {
-    in-out property <string> label: "Select Board to Connect/Disconnect:";
+    in-out property <string> label: "Local board";
     in-out property <string> description:
-        "Selects the board to bind to a connector; it does not switch the board view.";
+        "Picks the local board to bind to this remote board.";
     in-out property <string> row-description:
-        "Binds this board to the selected connector; it does not switch the board view.";
-    in-out property <string> placeholder: "No board selected";
-    // The empty-rows caption (round-5 F14): shown under the disabled
-    // picker field while no live board exists to select.
-    in-out property <string> empty-hint: "No local boards to connect yet";
+        "Binds this local board to the remote board.";
+    in-out property <string> placeholder: "Pick a local board";
+    in-out property <string> empty-hint: "No unbound local boards";
+    in-out property <string> refresh-hint: "Refresh to list the boards on this server.";
 }
 
-// The picker row (r4 D39 §3.2): the shared Dropdown + the Detach
-// button. Every intent routes through the view's callbacks — the
-// widget reports, the adapter resolves.
-component BoardPicker inherits HorizontalLayout {
-    // The intents forwarded to the view (the adapter resolves them).
-    callback board-selected(string);
-    callback detach-selected();
-    spacing: Theme.space-2;
-    dd := Dropdown {
-        horizontal-stretch: 1;
-        rows: SettingsModel.board-options;
-        selected-index: SettingsModel.selected-board-index;
-        field-text: SettingsModel.selected-board-label == ""
-            ? SettingsBoardCopy.placeholder
-            : SettingsModel.selected-board-label;
-        field-label: SettingsBoardCopy.label;
-        field-description: SettingsBoardCopy.description;
-        field-busy: SettingsModel.busy && SettingsModel.busy-target != "";
-        // The class-facts site discriminator (round-5 D6) and the
-        // empty-rows caption (F14): the flyout's rows render
-        // window-level, keyed on site 0.
-        flyout-site: 0;
-        empty-hint: SettingsBoardCopy.empty-hint;
-        row-activated(i) => {
-            root.board-selected(SettingsModel.board-ids[i]);
-        }
-        row-hovered(i, x, y, w, h) => {
-            TooltipState.hover(
-                SettingsModel.board-options[i].label,
-                SettingsBoardCopy.row-description,
-                [],
-                x, y, w, h);
-        }
-        row-unhovered() => {
-            TooltipState.unhover();
-        }
-        // The journeys' observation seam (the SettingsBoardFacts
-        // mirrors; the timer-popover fact pattern).
-        changed open => {
-            SettingsBoardFacts.open = self.open;
-        }
-        changed field-focused => {
-            SettingsBoardFacts.field-focused = self.field-focused;
-        }
-        changed flyout-focused => {
-            SettingsBoardFacts.flyout-focused = self.flyout-focused;
-        }
-        changed highlight => {
-            SettingsBoardFacts.highlight = self.highlight;
-        }
-        changed x => {
-            SettingsBoardFacts.field-x = self.x;
-        }
-        changed y => {
-            SettingsBoardFacts.field-y = self.y;
-        }
-        changed width => {
+// One remote row's local-board picker (the shared Dropdown, chunk-3
+// overlay grammar): every remote row's picker mounts on flyout site 0
+// and names its item in `SettingsBoardFacts.active-item` when it
+// opens, so the window-level flyout's pick resolves to this row.
+component RemotePicker inherits Dropdown {
+    in property <int> item-index;
+    callback picked(int, int);
+    rows: SettingsModel.board-options;
+    selected-index: 0;
+    field-text: SettingsBoardCopy.placeholder;
+    field-label: SettingsBoardCopy.label;
+    field-description: SettingsBoardCopy.description;
+    flyout-site: 0;
+    empty-hint: SettingsBoardCopy.empty-hint;
+    row-activated(i) => {
+        root.picked(root.item-index, i);
+    }
+    row-hovered(i, x, y, w, h) => {
+        TooltipState.hover(
+            SettingsModel.board-options[i].label,
+            SettingsBoardCopy.row-description,
+            [],
+            x, y, w, h);
+    }
+    row-unhovered() => {
+        TooltipState.unhover();
+    }
+    // The journeys' observation seam (the SettingsBoardFacts mirrors):
+    // the opening picker owns the facts.
+    changed open => {
+        if (self.open) {
+            SettingsBoardFacts.active-item = root.item-index;
+            SettingsBoardFacts.field-x = self.absolute-position.x;
+            SettingsBoardFacts.field-y = self.absolute-position.y;
             SettingsBoardFacts.field-w = self.width;
-        }
-        changed height => {
             SettingsBoardFacts.field-h = self.height;
         }
+        SettingsBoardFacts.open = self.open;
     }
-    SettingsButton {
-        text: "Detach";
-        // The selection must be a bound board, and no ceremony may be
-        // in flight (the VM gate is the authority).
-        enabled: SettingsModel.selected-board-bound && !SettingsModel.busy;
-        clicked => {
-            root.detach-selected();
-        }
+    changed highlight => {
+        SettingsBoardFacts.highlight = self.highlight;
     }
 }
 
@@ -559,11 +552,6 @@ component GeneralField inherits VerticalLayout {
 }
 
 export component SettingsView inherits FocusScope {
-    // The label placement rule (r4 D39 §3.1): compact stacks the
-    // label above the picker; regular/expansive put it beside
-    // (breakpoints are unscaled — the established read, the
-    // action-menu/board-layout pattern).
-    in property <bool> selector-compact: Responsive.current-breakpoint == Breakpoint.compact;
     // D6.6: the back affordance routes the same close path as Escape
     // (the adapter's dedicated `settings-back-clicked` seam).
     callback back-clicked();
@@ -574,15 +562,18 @@ export component SettingsView inherits FocusScope {
     // initialised — the mount pass is the fresh echo/validity pass.
     callback view-mounted();
     callback field-edited(int, string);
-    callback save-clicked(string, string, string, string);
-    callback test-clicked(int);
+    // Sign in (round-5 chunk 8): server, username, app password — the
+    // connector name is derived app-side.
+    callback save-clicked(string, string, string);
+    // The account cards' seams (round-5 chunk 8): every int is a
+    // `connection-items` index (the adapter's address table resolves
+    // it); `remote-bind-picked` adds the local-board option index.
     callback remove-clicked(int);
-    // The board-scoped binding surface (r2 D32/D33, r4 D39): selecting
-    // a board (the dropdown's row), binding the selected board to a
-    // connector row, and detaching the selected board.
-    callback board-selected(string);
-    callback bind-clicked(int);
-    callback detach-selected();
+    callback refresh-clicked(int);
+    callback remote-bind-picked(int, int);
+    callback create-clicked(int);
+    callback disconnect-clicked(int);
+    callback files-picked(int);
     callback preset-picked(int);
     callback scale-committed(string);
     // The scale field's focus-loss seam (r3 D20a writer 7): a
@@ -767,102 +758,9 @@ export component SettingsView inherits FocusScope {
             text: "Connections";
         }
 
-        // The board selector (r4 D39): a shared Dropdown — selection
-        // drives the existing Bind-only seam, Detach moves beside the
-        // field. A *binding* surface — board lifecycle is the board
-        // surface's job; selecting never switches the viewed board.
-        // The label placement reads the responsive rule (§3.1): above
-        // the field when compact, beside it otherwise (breakpoints
-        // are unscaled — scale-proof by construction). The picker
-        // itself stays unconditional (a deep component under a false
-        // conditional breaks the testing backend's element traversal —
-        // the recorded limitation at the info-tip journey).
-        VerticalLayout {
-            spacing: Theme.space-1;
-            if (root.selector-compact): RoleText {
-                role: Typography.body;
-                text: SettingsBoardCopy.label;
-            }
-            picker-row := HorizontalLayout {
-                spacing: Theme.space-2;
-                if (!root.selector-compact): RoleText {
-                    role: Typography.body;
-                    text: SettingsBoardCopy.label;
-                    min-width: Theme.space-8;
-                    vertical-alignment: center;
-                }
-                BoardPicker {
-                    horizontal-stretch: 1;
-                    board-selected(id) => root.board-selected(id);
-                    detach-selected() => root.detach-selected();
-                }
-            }
-        }
-
-        for row[index] in SettingsModel.rows: Rectangle {
-            background: Theme.surface;
-            border-radius: Theme.radius-small;
-            min-height: row-layout.min-height + 2 * Theme.space-2;
-            row-layout := HorizontalLayout {
-                padding: Theme.space-2;
-                spacing: Theme.space-2;
-                VerticalLayout {
-                    // The busy ceremony renders the pulse in the dot
-                    // slot (r2 D34); otherwise the live status dot.
-                    if row.busy: BusyDot {}
-                    if !row.busy: RowDot {
-                        status: row.status;
-                    }
-                }
-                VerticalLayout {
-                    spacing: 0;
-                    RoleText {
-                        role: Typography.body;
-                        text: row.name;
-                    }
-                    RoleText {
-                        role: Typography.body;
-                        text: row.username + " @ " + row.server;
-                        text-color: Theme.text-secondary;
-                    }
-                }
-                SettingsButton {
-                    text: "Test";
-                    enabled: !SettingsModel.busy;
-                    clicked => {
-                        root.test-clicked(index);
-                    }
-                }
-                // Bind-to-this-board (r2 D33): binds the selected
-                // board to this connector. Re-issuing on the same
-                // connector is defined (idempotent); bound elsewhere
-                // refuses typed. No selection → disabled (only Save
-                // carries click-through — the recorded decision).
-                SettingsButton {
-                    text: "Bind";
-                    enabled: !SettingsModel.busy
-                        && SettingsModel.selected-board != "";
-                    clicked => {
-                        root.bind-clicked(index);
-                    }
-                }
-                SettingsButton {
-                    text: "Remove";
-                    enabled: !SettingsModel.busy;
-                    clicked => {
-                        root.remove-clicked(index);
-                    }
-                }
-                help-rows := InfoTip {
-                    about: row.name;
-                    help: SettingsModel.help-rows;
-                }
-            }
-        }
-
-        // -- the add/edit form ------------------------------------------
+        // -- sign in (round-5 chunk 8, D-8.1) ----------------------------
         // The backend picker (r2 D32): presentational truth only — no
-        // lane payload carries a backend (the Save ceremony is
+        // lane payload carries a backend (the sign-in ceremony is
         // Nextcloud-hardcoded by the config's world, F10). Standalone
         // renders as the disabled "coming soon" segment; a pick from a
         // disabled segment is swallowed by the widget.
@@ -872,21 +770,9 @@ export component SettingsView inherits FocusScope {
             selected-index: 0;
             group-label: "Backend";
         }
-        // The four field texts are the fields' own state (write-only
+        // The three field texts are the fields' own state (write-only
         // for the password, D26b); the edited seams mirror into the
-        // adapter's draft.
-        LabeledField {
-            label: "Name";
-            placeholder: "work";
-            help: SettingsModel.help-name;
-            field-index: 0;
-            text <=> SettingsModel.draft-name;
-            validity: SettingsModel.validity-name;
-            error-text: SettingsModel.error-name;
-            edited(i, t) => {
-                root.field-edited(i, t);
-            }
-        }
+        // adapter's draft (indices 1–3 of the field-edited contract).
         LabeledField {
             label: "Server";
             placeholder: "https://cloud.example.com";
@@ -925,22 +811,178 @@ export component SettingsView inherits FocusScope {
                 root.field-edited(i, t);
             }
         }
-        // Save carries click-through (r2 D34, F21): every click
+        // Sign in carries click-through (r2 D34, F21): every click
         // produces a visible reaction — the disabled/invalid paths
         // render the refusal through the status line instead of
         // absorbing silently. The password rides the callback args
         // only — it never lands on any pushed model property (D26b).
         SettingsButton {
-            text: "Save";
+            text: "Sign in";
             enabled: SettingsModel.save-enabled;
             click-through: true;
             clicked => {
                 root.save-clicked(
-                    SettingsModel.draft-name,
                     SettingsModel.draft-server,
                     SettingsModel.draft-username,
                     password-field.text,
                 );
+            }
+        }
+
+        // -- the account cards (round-5 chunk 8, D-8.1/D-8.8) ------------
+        // One flat, positional item list in walk order: the card
+        // header (Remove), its Files toggle, a Deck row per connector
+        // (Refresh), and the remote-board rows (picker + Create, or
+        // Disconnect). Every enabled control is a tab stop; the
+        // identity line, dots, and busy markers are not.
+        for item[index] in SettingsModel.connection-items: Rectangle {
+            background: Theme.surface;
+            border-radius: Theme.radius-small;
+            min-height: item-layout.min-height + 2 * Theme.space-1;
+            item-layout := VerticalLayout {
+                padding-left: item.kind == ConnectionItemKind.account ? Theme.space-2 : Theme.space-6;
+                padding-right: Theme.space-2;
+                padding-top: Theme.space-1;
+                padding-bottom: Theme.space-1;
+                if item.kind == ConnectionItemKind.account: HorizontalLayout {
+                    spacing: Theme.space-2;
+                    VerticalLayout {
+                        alignment: center;
+                        // The busy ceremony renders the pulse in the
+                        // dot slot (r2 D34); otherwise the folded
+                        // status dot.
+                        if item.busy: BusyDot {}
+                        if !item.busy: RowDot {
+                            status: item.status;
+                        }
+                    }
+                    RoleText {
+                        role: Typography.body;
+                        text: item.title;
+                        vertical-alignment: center;
+                        overflow: elide;
+                        horizontal-stretch: 1;
+                    }
+                    SettingsButton {
+                        text: "Remove";
+                        enabled: !SettingsModel.busy;
+                        clicked => {
+                            root.remove-clicked(index);
+                        }
+                    }
+                    help-rows := InfoTip {
+                        about: item.title;
+                        help: SettingsModel.help-rows;
+                    }
+                }
+                if item.kind == ConnectionItemKind.files: HorizontalLayout {
+                    spacing: Theme.space-2;
+                    RoleText {
+                        role: Typography.body;
+                        text: "Files";
+                        min-width: Theme.space-8;
+                        vertical-alignment: center;
+                    }
+                    SegmentedControl {
+                        options: ["On", "Off"];
+                        segment-enabled: [
+                            !item.files-locked && !SettingsModel.busy,
+                            !item.files-locked && !SettingsModel.busy,
+                        ];
+                        selected-index: item.files-on ? 0 : 1;
+                        group-label: "Files sync";
+                        picked(i) => {
+                            root.files-picked(i);
+                        }
+                    }
+                    if item.files-locked: RoleText {
+                        role: Typography.caption;
+                        text: "Overridden by an environment variable; edit the file or the env.";
+                        text-color: Semantic.warning;
+                        vertical-alignment: center;
+                    }
+                    if item.files-restart && !item.files-locked: RoleText {
+                        role: Typography.caption;
+                        text: "Takes effect at the next restart.";
+                        text-color: Theme.text-secondary;
+                        vertical-alignment: center;
+                    }
+                }
+                if item.kind == ConnectionItemKind.deck: VerticalLayout {
+                    spacing: Theme.space-1;
+                    HorizontalLayout {
+                        spacing: Theme.space-2;
+                        RoleText {
+                            role: Typography.body;
+                            text: item.show-title ? "Deck · " + item.title : "Deck";
+                            min-width: Theme.space-8;
+                            vertical-alignment: center;
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            if item.busy: BusyDot {}
+                        }
+                        Rectangle {
+                            horizontal-stretch: 1;
+                        }
+                        SettingsButton {
+                            text: "Refresh";
+                            enabled: !SettingsModel.busy;
+                            clicked => {
+                                root.refresh-clicked(index);
+                            }
+                        }
+                    }
+                    if !item.listed: RoleText {
+                        role: Typography.caption;
+                        text: SettingsBoardCopy.refresh-hint;
+                        text-color: Theme.text-secondary;
+                    }
+                }
+                if item.kind == ConnectionItemKind.remote: HorizontalLayout {
+                    spacing: Theme.space-2;
+                    VerticalLayout {
+                        alignment: center;
+                        if item.busy: BusyDot {}
+                    }
+                    RoleText {
+                        role: Typography.body;
+                        text: item.title;
+                        vertical-alignment: center;
+                        overflow: elide;
+                        min-width: Theme.space-8;
+                    }
+                    if item.bound: RoleText {
+                        role: Typography.body;
+                        text: item.detail;
+                        text-color: Theme.text-secondary;
+                        vertical-alignment: center;
+                        overflow: elide;
+                        horizontal-stretch: 1;
+                    }
+                    if item.bound: SettingsButton {
+                        text: "Disconnect";
+                        enabled: !SettingsModel.busy;
+                        clicked => {
+                            root.disconnect-clicked(index);
+                        }
+                    }
+                    if !item.bound: remote-picker := RemotePicker {
+                        horizontal-stretch: 1;
+                        item-index: index;
+                        field-busy: item.busy;
+                        picked(item-index, option) => {
+                            root.remote-bind-picked(item-index, option);
+                        }
+                    }
+                    if !item.bound: SettingsButton {
+                        text: "Create local board";
+                        enabled: !SettingsModel.busy;
+                        clicked => {
+                            root.create-clicked(index);
+                        }
+                    }
+                }
             }
         }
 

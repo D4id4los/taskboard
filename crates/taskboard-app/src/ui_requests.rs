@@ -33,8 +33,8 @@ use taskboard_state::{EngineHandle, ExecuteError};
 use taskboard_sync_nextcloud::DeckClient;
 use taskboard_ui_slint::geometry::WindowGeometry;
 use taskboard_ui_slint::requests::{
-    ConnectionProfile, ConnectionTarget, ConnectionsSnapshot, ConnectorInfo, Field, InvalidKind,
-    KeymapUpdate, ReminderSink, RemoteBoardRow, SettingsError, SettingsSnapshot, UiRequest,
+    ConnectionProfile, ConnectionsSnapshot, ConnectorInfo, Field, InvalidKind, KeymapUpdate,
+    ReminderSink, RemoteBoardRow, SettingsError, SettingsSnapshot, UiRequest,
 };
 
 use crate::bootstrap::ConnectorControl;
@@ -341,10 +341,6 @@ async fn handle_settings(request: UiRequest, workspace: &ConnectionWorkspace) {
         UiRequest::StackWidthsChanged { .. } | UiRequest::WindowGeometryChanged { .. } => {
             unreachable!("width and geometry snapshots take the debounce path")
         }
-        UiRequest::TestConnection { target, reply } => {
-            let outcome = test_connection(workspace, &target).await;
-            let _ = reply.send(outcome);
-        }
         UiRequest::SaveConnection { profile, reply } => {
             let outcome = save_connection(workspace, &profile).await;
             let _ = reply.send(outcome);
@@ -360,9 +356,18 @@ async fn handle_settings(request: UiRequest, workspace: &ConnectionWorkspace) {
         UiRequest::AttachConnector {
             board,
             connector,
+            remote,
             reply,
         } => {
-            let outcome = attach_connection(workspace, board, &connector).await;
+            let outcome = attach_connection(workspace, board, &connector, remote).await;
+            let _ = reply.send(outcome);
+        }
+        UiRequest::CreateLocalBoard {
+            connector,
+            remote,
+            reply,
+        } => {
+            let outcome = create_local_board(workspace, &connector, remote).await;
             let _ = reply.send(outcome);
         }
         UiRequest::DetachConnector {
@@ -713,21 +718,6 @@ fn editor_invalid_kind(field: Field) -> InvalidKind {
     }
 }
 
-/// The per-row Test (DEV-3): load the stored secret, verify it against
-/// the row's server. Nothing is ever persisted.
-async fn test_connection(
-    workspace: &ConnectionWorkspace,
-    target: &ConnectionTarget,
-) -> Result<(), SettingsError> {
-    let password = workspace
-        .store
-        .load(&target.server_url, &target.username)
-        .map_err(map_credential_error)?;
-    crate::connections::verify_credentials(&target.server_url, &target.username, password.expose())
-        .await
-        .map_err(map_ceremony_error)
-}
-
 /// The Save ceremony (plan D3, in order; nothing persists before
 /// verify): authoritative re-validation → `verify_credentials` →
 /// overlay upsert → secret store/rotate → detach-first → attach with
@@ -894,10 +884,13 @@ async fn live_remote_boards(
         .collect())
 }
 
-/// The Remove choreography (plan D3): typed legacy refusal → overlay
-/// remove → idempotent named detach → best-effort secret delete of the
-/// removed identity. Board bindings to the connector stay (the detach
-/// semantic: local operation continues).
+/// The account Remove choreography (plan D3, account-shaped by round-5
+/// chunk 8): the named connector's identity names the account — every
+/// connector sharing its `(server_url, username)` leaves together. The
+/// guard refuses typed (`BindRefused`) before anything changes while
+/// any live board is bound through one of them (the cascade is a
+/// backlog item, #700). Then: overlay remove per connector → idempotent
+/// named detach → best-effort secret delete of the identity.
 async fn remove_connection(
     workspace: &ConnectionWorkspace,
     name: &str,
@@ -910,18 +903,27 @@ async fn remove_connection(
         .flatten()
         .find(|entry| entry.name == name)
         .map(|entry| (entry.server_url.clone(), entry.username.clone()));
+    let names = match &identity {
+        Some((server, user)) => account_connector_names(&raw, server, user),
+        None => vec![name.to_owned()],
+    };
     tracing::info!(
         connector = %name,
         host = identity.as_ref().map_or("-", |(server, _)| url_host(server)),
         "settings remove started"
     );
-    crate::connections::overlay_remove_connector(&workspace.config_write_path, name)
-        .map_err(|err| map_io_error(&err))?;
-    // A non-kebab name was never minted at any attach, so the named
-    // detach is a no-op for it — skipping the mint failure preserves
-    // the remove choreography's observable outcome exactly.
-    if let Ok(id) = ConnectorId::from_kebab(name) {
-        let _ = workspace.control.detach_connector_named(&id).await;
+    if any_live_board_bound_through(workspace, &names) {
+        return Err(SettingsError::BindRefused);
+    }
+    for connector in &names {
+        crate::connections::overlay_remove_connector(&workspace.config_write_path, connector)
+            .map_err(|err| map_io_error(&err))?;
+        // A non-kebab name was never minted at any attach, so the named
+        // detach is a no-op for it — skipping the mint failure preserves
+        // the remove choreography's observable outcome exactly.
+        if let Ok(id) = ConnectorId::from_kebab(connector) {
+            let _ = workspace.control.detach_connector_named(&id).await;
+        }
     }
     if let Some((server, user)) = identity {
         match workspace.store.delete(&server, &user) {
@@ -935,13 +937,43 @@ async fn remove_connection(
     Ok(current_connections(workspace))
 }
 
-/// The Attach choreography (r2 D33, plan §3.1 in order): resolve the
-/// connector config → load the stored secret → derive the remote id
-/// (idempotent re-bind skips the listing; unbound adopts by exact
-/// title over live remote boards, lowest id wins; bound elsewhere
-/// refuses pre-IO) → ensure attached (the named-lookup guard) → bind
-/// through the engine command path (the REPL bind's route) → settle
-/// the first pull → reply the fresh pair.
+/// Every configured connector sharing the `(server_url, username)`
+/// identity — one account card's connectors.
+fn account_connector_names(raw: &AppConfig, server_url: &str, username: &str) -> Vec<String> {
+    raw.sync
+        .connectors
+        .iter()
+        .flatten()
+        .filter(|e| e.server_url == server_url && e.username == username)
+        .map(|e| e.name.clone())
+        .collect()
+}
+
+/// Whether any live (not deleted, not archived) board is bound through
+/// one of the named connectors — the account-removal guard's predicate.
+fn any_live_board_bound_through(workspace: &ConnectionWorkspace, names: &[String]) -> bool {
+    workspace
+        .engine
+        .shared_state()
+        .load()
+        .boards
+        .values()
+        .any(|b| {
+            !b.deleted
+                && !b.archived
+                && b.remote
+                    .as_ref()
+                    .is_some_and(|binding| names.iter().any(|n| n == binding.connector.as_str()))
+        })
+}
+
+/// The Attach choreography (r2 D33, made explicit by round-5 chunk 8,
+/// D-8.4): resolve the connector config → load the stored secret → the
+/// pre-IO binding guard (bound to another connector, or to another
+/// remote through this one, refuses; the same `(connector, remote)` is
+/// the idempotent re-issue) → ensure attached → bind → settle → reply
+/// the fresh pair. The remote id is the user's explicit pick — nothing
+/// is derived from titles.
 ///
 /// Failure story (recorded): a refused bind after a successful attach
 /// performs *no* detach rollback — the connector is in the config, and
@@ -952,16 +984,10 @@ async fn attach_connection(
     workspace: &ConnectionWorkspace,
     board: BoardId,
     connector_name: &str,
+    remote: RemoteBoardId,
 ) -> Result<ConnectionsSnapshot, SettingsError> {
     let raw = ensure_migrated(workspace)?;
-    let entry = raw
-        .sync
-        .connectors
-        .iter()
-        .flatten()
-        .find(|entry| entry.name == connector_name)
-        .cloned()
-        .ok_or(SettingsError::Gone)?;
+    let entry = connector_entry(&raw, connector_name)?;
     tracing::info!(
         connector = %connector_name,
         host = %url_host(&entry.server_url),
@@ -971,86 +997,114 @@ async fn attach_connection(
         .store
         .load(&entry.server_url, &entry.username)
         .map_err(map_credential_error)?;
-
-    // Derive the remote id from the board row (the state read is
-    // authoritative for liveness and the current binding).
     let state = workspace.engine.shared_state().load();
     let board_row = state
         .boards
         .get(&board)
         .filter(|b| !b.deleted && !b.archived)
         .ok_or(SettingsError::Gone)?;
-    let remote = match board_row.remote.as_ref() {
-        Some(binding) if binding.connector.as_str() == connector_name => {
-            // Idempotent re-issue: the binding already names this
-            // connector — nothing to discover, no network call.
-            binding.board
-        }
+    match board_row.remote.as_ref() {
+        Some(binding)
+            if binding.connector.as_str() == connector_name && binding.board == remote => {}
         Some(_) => return Err(SettingsError::BindRefused),
-        None => {
-            // Fresh listing verify-and-resolve: the listing *is* the
-            // verification (the same call `verify_credentials` makes).
-            let client = DeckClient::new(&entry.server_url, &entry.username, stored.expose())
-                .map_err(|err| {
-                    tracing::warn!(variant = %err, "settings attach: the client was refused");
-                    SettingsError::AttachFailed
-                })?;
-            let remote_boards = client
-                .boards()
-                .await
-                .map_err(crate::commands::map_deck_error)
-                .map_err(map_ceremony_error)?;
-            let title = board_row.title.as_str();
-            remote_boards
-                .iter()
-                .filter(|b| b.deleted_at == 0 && !b.archived)
-                .filter(|b| b.title == title)
-                .min_by_key(|b| b.id)
-                .map(|b| RemoteBoardId(b.id))
-                .ok_or(SettingsError::NoRemoteMatch)?
-        }
-    };
+        None => {}
+    }
     drop(state);
+    bind_through(workspace, &entry, stored.expose(), board, remote).await?;
+    tracing::info!(
+        connector = %connector_name,
+        host = %url_host(&entry.server_url),
+        "settings attach succeeded"
+    );
+    Ok(current_connections(workspace))
+}
 
-    // Ensure attached: the named lookup guards the healthy-attached
-    // case — an unconditional attach would refuse ConnectorNameInUse
-    // and surface the misleading AttachBusy text.
-    let id = ConnectorId::from_kebab(connector_name).map_err(|_| {
+/// The bind tail both binding intents share: ensure the connector is
+/// attached (the named lookup guards the healthy-attached case — an
+/// unconditional attach would refuse `ConnectorNameInUse` and surface
+/// the misleading `AttachBusy` text), bind through the engine command
+/// path (the receipt implies durability — the REPL bind's route), and
+/// settle the first pull.
+async fn bind_through(
+    workspace: &ConnectionWorkspace,
+    entry: &ConnectorCfg,
+    password: &str,
+    board: BoardId,
+    remote: RemoteBoardId,
+) -> Result<(), SettingsError> {
+    let id = ConnectorId::from_kebab(&entry.name).map_err(|_| {
         map_config_error(&ConfigError::InvalidConnectorName {
-            name: connector_name.to_owned(),
+            name: entry.name.clone(),
         })
     })?;
     if workspace.control.connector_commands(&id).is_none() {
-        let client = DeckClient::new(&entry.server_url, &entry.username, stored.expose()).map_err(
-            |err| {
+        let client =
+            DeckClient::new(&entry.server_url, &entry.username, password).map_err(|err| {
                 tracing::warn!(variant = %err, "settings attach: the client was refused");
                 SettingsError::AttachFailed
-            },
-        )?;
+            })?;
         workspace
             .control
             .attach_connector(id.clone(), client)
             .await
             .map_err(map_attach_error)?;
     }
-
-    // Bind through the engine command path — the receipt implies
-    // durability (the same route the REPL bind uses).
     workspace
         .engine
         .execute(StateCommand::BindBoard {
             board,
             remote,
-            connector: id.clone(),
+            connector: id,
         })
         .await
         .map_err(|e| map_execute_error(&e))?;
-
     crate::bootstrap::wait_for_boot_pull(&workspace.engine, SAVE_SETTLE).await;
+    Ok(())
+}
+
+/// Create-local-from-remote (round-5 chunk 8, D-8.5): one intent, two
+/// engine writes — resolve the connector and secret, find the remote in
+/// a fresh listing (`Gone` when it is no longer live), `CreateBoard`
+/// with its title (the receipt names the minted board), then the
+/// explicit bind tail.
+///
+/// Failure story (recorded): a refused bind after the create performs
+/// *no* delete rollback — the local board is a valid standalone
+/// outcome; the binding is the typed, visible failure.
+async fn create_local_board(
+    workspace: &ConnectionWorkspace,
+    connector_name: &str,
+    remote: RemoteBoardId,
+) -> Result<ConnectionsSnapshot, SettingsError> {
+    let raw = ensure_migrated(workspace)?;
+    let entry = connector_entry(&raw, connector_name)?;
+    let stored = workspace
+        .store
+        .load(&entry.server_url, &entry.username)
+        .map_err(map_credential_error)?;
+    let title = live_remote_boards(&entry, stored.expose())
+        .await?
+        .into_iter()
+        .find(|b| b.id == remote.0)
+        .map(|b| b.title)
+        .ok_or(SettingsError::Gone)?;
+    let outcome = workspace
+        .engine
+        .execute(StateCommand::CreateBoard {
+            title,
+            color: taskboard_domain::Color::new(taskboard_domain::entities::DEFAULT_BOARD_COLOR),
+        })
+        .await
+        .map_err(|e| map_execute_error(&e))?;
+    let taskboard_domain::CommandOutcome::CreatedBoard(board) = outcome else {
+        tracing::warn!(?outcome, "settings create: an unexpected engine receipt");
+        return Err(SettingsError::AttachFailed);
+    };
+    bind_through(workspace, &entry, stored.expose(), board, remote).await?;
     tracing::info!(
         connector = %connector_name,
         host = %url_host(&entry.server_url),
-        "settings attach succeeded"
+        "settings create-local succeeded"
     );
     Ok(current_connections(workspace))
 }

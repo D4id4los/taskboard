@@ -183,7 +183,7 @@ pub fn monopoly_declines(
 /// D6 — the widgets' facts globals).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LadderGlobal {
-    /// `SettingsBoardFacts.open` — the settings selector flyout.
+    /// `SettingsBoardFacts.open` — a remote row's local-board picker flyout.
     SettingsBoard,
     /// `BoardBarFacts.open` — the board-bar segment flyout.
     BoardBar,

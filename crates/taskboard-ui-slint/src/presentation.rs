@@ -5025,6 +5025,124 @@ pub fn boards_of(state: &AppState) -> Vec<crate::requests::BoardInfo> {
         .collect()
 }
 
+/// One account card (round-5 chunk 8, D-8.2): the connectors sharing
+/// one exact `(server_url, username)` identity, in config order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccountCard {
+    pub server_url: String,
+    pub username: String,
+    /// The card's connector names, config order (one Deck row each).
+    pub connectors: Vec<String>,
+}
+
+/// The grouping fold (D-8.2): connectors → account cards keyed by
+/// exact string equality of `(server_url, username)` — no URL
+/// normalization (the credential store keys on the exact pair, so a
+/// folded variant would silently merge two keyring entries). Cards
+/// order by first appearance; connectors keep config order.
+#[must_use]
+pub fn account_cards(rows: &[crate::requests::ConnectorInfo]) -> Vec<AccountCard> {
+    let mut cards: Vec<AccountCard> = Vec::new();
+    for row in rows {
+        match cards
+            .iter_mut()
+            .find(|card| card.server_url == row.server_url && card.username == row.username)
+        {
+            Some(card) => card.connectors.push(row.name.clone()),
+            None => cards.push(AccountCard {
+                server_url: row.server_url.clone(),
+                username: row.username.clone(),
+                connectors: vec![row.name.clone()],
+            }),
+        }
+    }
+    cards
+}
+
+/// The card's folded status dot: the worst of its connectors'
+/// [`connector_row_status`] folds (the badge ordering).
+#[must_use]
+pub fn account_status(
+    state: &AppState,
+    card: &AccountCard,
+    down: impl Fn(&str) -> bool,
+) -> ConnectorStatus {
+    card.connectors
+        .iter()
+        .map(|name| {
+            connector_row_status(
+                state,
+                &taskboard_domain::ConnectorId::from(name.clone()),
+                down(name),
+            )
+        })
+        .max_by_key(|status| phase_rank(*status))
+        .unwrap_or(ConnectorStatus::Idle)
+}
+
+#[cfg(test)]
+mod account_card_tests {
+    use super::*;
+    use crate::requests::ConnectorInfo;
+
+    fn row(name: &str, server: &str, user: &str) -> ConnectorInfo {
+        ConnectorInfo {
+            name: name.into(),
+            server_url: server.into(),
+            username: user.into(),
+        }
+    }
+
+    #[test]
+    fn connectors_group_by_exact_identity_in_first_appearance_order() {
+        let cards = account_cards(&[
+            row("b", "https://y.example", "bob"),
+            row("a", "https://x.example", "alice"),
+            row("a2", "https://x.example", "alice"),
+            row("slash", "https://x.example/", "alice"),
+            row("c", "https://x.example", "carol"),
+        ]);
+        let shape: Vec<(&str, &str, Vec<&str>)> = cards
+            .iter()
+            .map(|c| {
+                (
+                    c.server_url.as_str(),
+                    c.username.as_str(),
+                    c.connectors.iter().map(String::as_str).collect(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            shape,
+            vec![
+                ("https://y.example", "bob", vec!["b"]),
+                ("https://x.example", "alice", vec!["a", "a2"]),
+                ("https://x.example/", "alice", vec!["slash"]),
+                ("https://x.example", "carol", vec!["c"]),
+            ]
+        );
+        assert_eq!(account_cards(&[]), Vec::new());
+    }
+
+    #[test]
+    fn the_card_status_is_the_worst_of_its_connectors() {
+        let card = AccountCard {
+            server_url: "https://x.example".into(),
+            username: "alice".into(),
+            connectors: vec!["a".into(), "b".into()],
+        };
+        let state = AppState::default();
+        assert_eq!(
+            account_status(&state, &card, |_| false),
+            ConnectorStatus::Idle
+        );
+        assert_eq!(
+            account_status(&state, &card, |name| name == "b"),
+            ConnectorStatus::Down
+        );
+    }
+}
+
 /// The badge ordering: `Syncing > Failed > Offline > Idle`.
 fn phase_rank(phase: ConnectorStatus) -> u8 {
     match phase {

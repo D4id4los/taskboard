@@ -307,7 +307,7 @@ pub struct PushModels {
     // strings (r4 D39 — the per-row handles the positional diff
     // drives; the row struct itself died with the radio list).
     board_options: MirroredRows<crate::DropdownRow>,
-    board_ids: MirroredRows<SharedString>,
+    connection_items: MirroredRows<crate::ConnectionItem>,
     settings_facts: MirroredRows<crate::SettingsFactRow>,
     hints: HintModels,
     /// The tasks whose decoration models the current pass touched
@@ -1800,15 +1800,19 @@ impl PushModels {
         )
     }
 
-    /// Diffs the options' uuid hand-over strings onto their handle —
-    /// `row-activated(i)` resolves through `board-ids[i]` (the
-    /// widget reports indexes; the id never enters the row model).
-    pub(crate) fn push_board_ids(
+    /// Diffs the account cards' walk-ordered item projection (round-5
+    /// chunk 8) onto its persistent handle — positional, so a refresh
+    /// pass never re-instantiates the focused row's controls.
+    pub(crate) fn push_connection_items(
         &mut self,
         global: &crate::SettingsModel<'_>,
-        desired: &[SharedString],
+        desired: &[crate::ConnectionItem],
     ) -> usize {
-        push_rows(&mut self.board_ids, |rc| global.set_board_ids(rc), desired)
+        push_rows(
+            &mut self.connection_items,
+            |rc| global.set_connection_items(rc),
+            desired,
+        )
     }
 
     /// Diffs the settings editor's read-only fact rows onto their

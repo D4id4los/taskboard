@@ -18,11 +18,14 @@ export global SettingsScrollFacts {
     in-out property <bool> anchor-requested: false;
 }
 
-// The board selector's dropdown facts (r4 D39): the journeys'
-// observation seam onto the mounted widget — open state, highlight,
-// and the field's geometry (the click coordinates' input).
+// The remote rows' local-board picker facts (r4 D39, re-targeted by
+// round-5 chunk 8): the journeys' observation seam onto the open
+// picker — open state, highlight, the field's geometry, and the
+// connections item whose picker opened (the window-level flyout's
+// pick resolves through it).
 export global SettingsBoardFacts {
     in-out property <bool> open: false;
+    in-out property <int> active-item: -1;
     in-out property <bool> field-focused: false;
     in-out property <bool> flyout-focused: false;
     in-out property <int> highlight: 0;

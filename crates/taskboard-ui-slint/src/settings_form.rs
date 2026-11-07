@@ -9,12 +9,11 @@
 //! pinned by shared fixtures in both crates' tests — drift breaks a
 //! test.
 
-/// The draft the form edits (the `ConnectionProfile` without the
-/// reply plumbing; the password mirrors through the same redaction
-/// newtype the lane carries).
+/// The sign-in draft the form edits (the `ConnectionProfile` without
+/// the reply plumbing and without a name — the app derives the
+/// connector name from the identity, round-5 chunk 8 D-8.2).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ConnectionDraft {
-    pub name: String,
     pub server_url: String,
     pub username: String,
     pub password: String,
@@ -24,7 +23,6 @@ pub struct ConnectionDraft {
 /// kept separate so this module stays lane-free).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Field {
-    Name,
     ServerUrl,
     Username,
     Password,
@@ -45,10 +43,8 @@ pub enum InvalidKind {
 
 /// The form-level validation outcome: the first failing field (the
 /// config ladder's order), or ok. There is no collision arm by
-/// design: names are unique in the config, so a row under the draft's
-/// name *is* the edited row (the upsert semantics, plan D7) — the
-/// authoritative `DuplicateConnectorName` can only fire on a config
-/// edited out-of-band, and `PersistRejected` answers it.
+/// design: the app derives a free connector name for a new identity
+/// and reuses the configured one for a re-sign-in (D-8.2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DraftError {
     Invalid { field: Field, kind: InvalidKind },
@@ -72,15 +68,6 @@ pub enum FieldStatus {
 #[must_use]
 pub fn field_invalid(field: Field, draft: &ConnectionDraft) -> Option<InvalidKind> {
     match field {
-        Field::Name => {
-            if draft.name.is_empty() {
-                Some(InvalidKind::Empty)
-            } else if !is_kebab(&draft.name) {
-                Some(InvalidKind::NotKebab)
-            } else {
-                None
-            }
-        }
         Field::ServerUrl => {
             if url_host_ok(&draft.server_url) {
                 None
@@ -127,7 +114,6 @@ pub fn field_status(field: Field, draft: &ConnectionDraft) -> FieldStatus {
 /// buffer the predicate does).
 fn field_text(field: Field, draft: &ConnectionDraft) -> &str {
     match field {
-        Field::Name => &draft.name,
         Field::ServerUrl => &draft.server_url,
         Field::Username => &draft.username,
         Field::Password => &draft.password,
@@ -142,27 +128,19 @@ pub fn draft_valid(draft: &ConnectionDraft) -> bool {
 }
 
 /// The mirror of the config's connector-entry ladder (plan F-D2), in
-/// the same order: kebab name → non-empty username/password → URL
-/// host rule. No collision arm (see the module-level note).
+/// the same order (the derived name has no form field): non-empty
+/// username/password → URL host rule. No collision arm (see
+/// [`DraftError`]).
 /// Recomposed from [`field_invalid`] in the ladder order — the
 /// per-field predicates and this ladder are one source of truth.
 #[must_use]
 pub fn validate(draft: &ConnectionDraft) -> Option<DraftError> {
-    let ladder = [
-        Field::Name,
-        Field::Username,
-        Field::Password,
-        Field::ServerUrl,
-    ];
+    let ladder = [Field::Username, Field::Password, Field::ServerUrl];
     for field in ladder {
         if let Some(kind) = field_invalid(field, draft) {
             return Some(DraftError::Invalid { field, kind });
         }
     }
-    // No collision arm: names are unique in the config, so a row with
-    // the draft's name *is* the edited row (the upsert semantics,
-    // plan D7) — the authoritative DuplicateConnectorName mirror can
-    // only fire on a config edited out-of-band.
     None
 }
 
@@ -415,32 +393,11 @@ mod tests {
     #[test]
     fn the_ladder_reports_the_first_failing_field() {
         let base = ConnectionDraft {
-            name: "work".into(),
             server_url: "https://c.example".into(),
             username: "alice".into(),
             password: "pw".into(),
         };
         assert_eq!(validate(&base), None);
-
-        let mut d = base.clone();
-        d.name = String::new();
-        assert_eq!(
-            validate(&d),
-            Some(DraftError::Invalid {
-                field: Field::Name,
-                kind: InvalidKind::Empty
-            })
-        );
-
-        let mut d = base.clone();
-        d.name = "Work".into();
-        assert_eq!(
-            validate(&d),
-            Some(DraftError::Invalid {
-                field: Field::Name,
-                kind: InvalidKind::NotKebab
-            })
-        );
 
         let mut d = base.clone();
         d.username = "  ".into();
@@ -471,10 +428,6 @@ mod tests {
                 kind: InvalidKind::BadUrl
             })
         );
-
-        // Same name, different server: an edit of that row, not a
-        // collision (the upsert semantics).
-        assert_eq!(validate(&base), None);
     }
 
     /// The per-field predicate is the ladder's one source of truth:
@@ -486,29 +439,25 @@ mod tests {
         let drafts: Vec<ConnectionDraft> = [
             ConnectionDraft::default(),
             ConnectionDraft {
-                name: "Work".into(),
+                username: "alice".into(),
                 ..ConnectionDraft::default()
             },
             ConnectionDraft {
-                name: "work".into(),
                 server_url: "https://c.example".into(),
                 username: "alice".into(),
                 password: "pw".into(),
             },
             ConnectionDraft {
-                name: "work".into(),
                 server_url: "not a url".into(),
                 username: "alice".into(),
                 password: "pw".into(),
             },
             ConnectionDraft {
-                name: "work".into(),
                 server_url: "https://c.example".into(),
                 username: "  ".into(),
                 password: "pw".into(),
             },
             ConnectionDraft {
-                name: "work".into(),
                 server_url: "https://c.example".into(),
                 username: "alice".into(),
                 password: "  ".into(),
@@ -519,16 +468,11 @@ mod tests {
         for draft in &drafts {
             // Recomposition equivalence: the ladder *is* the first
             // failing per-field predicate in ladder order.
-            let recomposed = [
-                Field::Name,
-                Field::Username,
-                Field::Password,
-                Field::ServerUrl,
-            ]
-            .into_iter()
-            .find_map(|field| {
-                field_invalid(field, draft).map(|kind| DraftError::Invalid { field, kind })
-            });
+            let recomposed = [Field::Username, Field::Password, Field::ServerUrl]
+                .into_iter()
+                .find_map(|field| {
+                    field_invalid(field, draft).map(|kind| DraftError::Invalid { field, kind })
+                });
             assert_eq!(recomposed, validate(draft), "the ladder diverged");
         }
     }
@@ -538,29 +482,21 @@ mod tests {
     #[test]
     fn field_status_maps_the_three_flavours() {
         let empty = ConnectionDraft::default();
-        assert_eq!(field_status(Field::Name, &empty), FieldStatus::Neutral);
         assert_eq!(field_status(Field::ServerUrl, &empty), FieldStatus::Neutral);
         assert_eq!(field_status(Field::Username, &empty), FieldStatus::Neutral);
         assert_eq!(field_status(Field::Password, &empty), FieldStatus::Neutral);
 
         let mut d = ConnectionDraft {
-            name: "Work".into(),
             server_url: "nope".into(),
             username: "alice".into(),
             password: "pw".into(),
         };
         assert_eq!(
-            field_status(Field::Name, &d),
-            FieldStatus::Invalid(InvalidKind::NotKebab)
-        );
-        assert_eq!(
             field_status(Field::ServerUrl, &d),
             FieldStatus::Invalid(InvalidKind::BadUrl)
         );
 
-        d.name = "work".into();
         d.server_url = "https://c.example".into();
-        assert_eq!(field_status(Field::Name, &d), FieldStatus::Valid);
         assert_eq!(field_status(Field::ServerUrl, &d), FieldStatus::Valid);
         assert_eq!(field_status(Field::Username, &d), FieldStatus::Valid);
         assert_eq!(field_status(Field::Password, &d), FieldStatus::Valid);
@@ -815,13 +751,12 @@ mod tests {
     #[test]
     fn the_save_enablement_follows_the_ladder() {
         let mut base = ConnectionDraft {
-            name: "work".into(),
             server_url: "https://c.example".into(),
             username: "alice".into(),
             password: "pw".into(),
         };
         assert!(draft_valid(&base));
-        base.name = "Nope".into(); // the uppercase fails the kebab class
+        base.username = " ".into();
         assert!(!draft_valid(&base));
     }
 }

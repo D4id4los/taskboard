@@ -43,7 +43,7 @@ const UNAVAILABLE_GENERIC: &str = "The server or store is unreachable.";
 const FAILED_GENERIC: &str = "The operation failed.";
 
 /// One typed failure's sentence (r2 D28/F21): short, present tense,
-/// user-actionable. Exhaustive, 15 arms — no wildcard.
+/// user-actionable. Exhaustive, 14 arms — no wildcard.
 fn error_text(err: &SettingsError) -> &'static str {
     match err {
         SettingsError::Invalid { field, kind } => invalid_text(*field, *kind),
@@ -66,11 +66,8 @@ fn error_text(err: &SettingsError) -> &'static str {
         }
         SettingsError::AttachFailed => "The connection could not be started; check the server.",
         SettingsError::Gone => "The form went stale; reopen the settings and try again.",
-        SettingsError::NoRemoteMatch => {
-            "No remote board with this title was found; create or rename it on the server first."
-        }
         SettingsError::BindRefused => {
-            "That board is already bound to another connection; detach it there first."
+            "That board or account is still bound elsewhere; disconnect it there first."
         }
         SettingsError::EnvLocked { .. } => {
             "This value is set by an environment variable; change it there."
@@ -271,8 +268,6 @@ pub(crate) fn invalid_text(field: Field, kind: InvalidKind) -> &'static str {
 // The D31 InfoTip help texts: presentation constants, one per
 // annotated field. Their *content* is never asserted anywhere — the
 // unit loop pins non-emptiness (structure, never text).
-pub const HELP_NAME: &str =
-    "A free-form label for this connection, e.g. work. Lowercase letters, digits, and dashes.";
 pub const HELP_SERVER: &str = "Your Nextcloud instance's base URL, e.g. https://cloud.example.com.";
 pub const HELP_USERNAME: &str = "Your Nextcloud account name.";
 pub const HELP_APP_PASSWORD: &str = "Created in Nextcloud → Personal settings → Security → Devices & sessions. Not your account password.";
@@ -375,13 +370,12 @@ mod tests {
             SettingsError::AttachBusy,
             SettingsError::AttachFailed,
             SettingsError::Gone,
-            SettingsError::NoRemoteMatch,
             SettingsError::BindRefused,
             SettingsError::EnvLocked {
                 field: Field::TickSecs,
             },
         ];
-        assert_eq!(all.len(), 15, "the variant list is the enum's totality");
+        assert_eq!(all.len(), 14, "the variant list is the enum's totality");
         for err in all {
             assert_ne!(
                 status_text(SettingsOutcome::Rejected, Some(&err)),
@@ -418,7 +412,6 @@ mod tests {
     #[test]
     fn every_help_constant_is_non_empty() {
         for text in [
-            HELP_NAME,
             HELP_SERVER,
             HELP_USERNAME,
             HELP_APP_PASSWORD,
@@ -465,7 +458,6 @@ mod tests {
             Just(SettingsError::AttachBusy),
             Just(SettingsError::AttachFailed),
             Just(SettingsError::Gone),
-            Just(SettingsError::NoRemoteMatch),
             Just(SettingsError::BindRefused),
             any_field().prop_map(|field| SettingsError::EnvLocked { field }),
         ]
@@ -527,7 +519,6 @@ mod tests {
             SettingsError::AttachBusy => "attach-busy",
             SettingsError::AttachFailed => "attach-failed",
             SettingsError::Gone => "gone",
-            SettingsError::NoRemoteMatch => "no-remote-match",
             SettingsError::BindRefused => "bind-refused",
             SettingsError::EnvLocked { .. } => "env-locked",
         }
