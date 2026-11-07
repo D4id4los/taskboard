@@ -13,6 +13,8 @@
 //! → global. [`scope_stack`] is pure — no slint types; the adapter
 //! passes the pulled facts in [`ScopeInputs`].
 
+use std::collections::BTreeMap;
+
 use crate::actions::ContextId;
 use crate::shell::KeymapShell;
 use crate::view_state::Flow;
@@ -68,11 +70,7 @@ impl ScopeInputs<'_> {
         let Some(stroke) = self.stroke else {
             return false;
         };
-        !stroke.ctrl
-            && !stroke.alt
-            && !stroke.meta
-            && !stroke.shift
-            && matches!(stroke.named_name(), Some("Return" | "Escape"))
+        is_bare(stroke) && matches!(stroke.named_name(), Some("Return" | "Escape"))
     }
 
     /// Whether the field-phase picker head arms under these facts.
@@ -220,7 +218,7 @@ pub fn dropdown_ladder_declines(open: Option<LadderGlobal>, stroke: crate::keyma
 /// clears with the panel).
 #[must_use]
 pub fn timer_setter_dismisses(open: bool, stroke: crate::keymap::Stroke) -> bool {
-    open && !stroke.ctrl && !stroke.alt && !stroke.shift && !stroke.meta && stroke.key == '\u{1b}'
+    open && is_bare(stroke) && stroke.named_name() == Some("Escape")
 }
 
 /// The due editor's Down arm (special case B, r2 D25 / round-3 D10):
@@ -231,12 +229,13 @@ pub fn timer_setter_dismisses(open: bool, stroke: crate::keymap::Stroke) -> bool
 /// is only the declaration of which stroke under which fact fires it.
 #[must_use]
 pub fn due_down_arms(edit_date_flow: bool, stroke: crate::keymap::Stroke) -> bool {
-    edit_date_flow
-        && !stroke.ctrl
-        && !stroke.alt
-        && !stroke.shift
-        && !stroke.meta
-        && stroke.key == '\u{F701}'
+    edit_date_flow && is_bare(stroke) && stroke.named_name() == Some("Down")
+}
+
+/// No modifier at all (the retired arms compared against the bare
+/// parsed stroke).
+const fn is_bare(stroke: crate::keymap::Stroke) -> bool {
+    !stroke.ctrl && !stroke.alt && !stroke.shift && !stroke.meta
 }
 
 /// The activation reservation (special case C, r4 §2 D18): while an
@@ -256,10 +255,7 @@ pub fn activation_reserved(
         && !menu_open
         && !palette
         && (stroke.key == '\n' || stroke.key == ' ')
-        && !stroke.ctrl
-        && !stroke.alt
-        && !stroke.shift
-        && !stroke.meta
+        && is_bare(stroke)
 }
 
 /// One editor-scope command (D-KS3): what the adapter performs on the
@@ -336,8 +332,6 @@ impl EditorCommand {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct EditorTable(BTreeMap<Vec<crate::keymap::Stroke>, EditorCommand>);
 
-use std::collections::BTreeMap;
-
 impl EditorTable {
     /// The exact binding, if any.
     #[must_use]
@@ -349,13 +343,6 @@ impl EditorTable {
     #[must_use]
     pub fn has_prefix(&self, seq: &[crate::keymap::Stroke]) -> bool {
         self.0.keys().any(|binding| binding.starts_with(seq))
-    }
-
-    /// Whether the table is empty (the standard preset: native
-    /// editing only — second-class-free by the monopoly, not chords).
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
     }
 
     fn bind(&mut self, spellings: &[&str], command: EditorCommand) {
@@ -1103,7 +1090,8 @@ mod tests {
         }
         // And the reservation's own gate requires a bare stroke.
         let chord_space = crate::keymap::stroke::parse("Ctrl+Space").expect("parses");
-        assert!(chord_space.ctrl);
+        assert!(activation_reserved(true, false, false, space));
+        assert!(!activation_reserved(true, false, false, chord_space));
     }
     /// T-E1 — the editor tables map the preset grammars verbatim
     /// (D-KS3): the emacs dispatch list, the vi deliberate strip, and
@@ -1160,7 +1148,10 @@ mod tests {
         assert!(!vi.has_prefix(&seq(&["d"])));
         assert_eq!(vi.exact(&seq(&["y"])), None);
 
-        assert!(editor_table(crate::keymap::Preset::Standard).is_empty());
+        assert_eq!(
+            editor_table(crate::keymap::Preset::Standard),
+            EditorTable::default()
+        );
     }
 
     /// T-E2 — the local prefix accumulator: exact, pending, complete,
