@@ -59,6 +59,12 @@ fn parse_export(argv: &[&str]) -> ExportQuery {
         until,
         task,
         board,
+        #[cfg(feature = "pdf-export")]
+        layout,
+        #[cfg(feature = "pdf-export")]
+        out,
+        #[cfg(feature = "pdf-export")]
+        no_open,
     }) = cli.command
     else {
         panic!("the argv selects export");
@@ -70,6 +76,12 @@ fn parse_export(argv: &[&str]) -> ExportQuery {
         until,
         task,
         board,
+        #[cfg(feature = "pdf-export")]
+        layout,
+        #[cfg(feature = "pdf-export")]
+        out,
+        #[cfg(feature = "pdf-export")]
+        no_open,
     }
 }
 
@@ -738,6 +750,12 @@ async fn t11_the_session_lane_routes_track_and_export() {
             ),
             (
                 Command::Export {
+                    #[cfg(feature = "pdf-export")]
+                    layout: None,
+                    #[cfg(feature = "pdf-export")]
+                    out: None,
+                    #[cfg(feature = "pdf-export")]
+                    no_open: false,
                     what: None,
                     format: Some(ExportFormat::Json),
                     since: None,
@@ -749,6 +767,12 @@ async fn t11_the_session_lane_routes_track_and_export() {
             ),
             (
                 Command::Export {
+                    #[cfg(feature = "pdf-export")]
+                    layout: None,
+                    #[cfg(feature = "pdf-export")]
+                    out: None,
+                    #[cfg(feature = "pdf-export")]
+                    no_open: false,
                     what: None,
                     format: None,
                     since: None,

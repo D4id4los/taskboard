@@ -117,6 +117,13 @@ pub struct AppConfig {
     /// default so pin-less configs serialize unchanged.
     #[serde(default, skip_serializing_if = "FilesSyncSection::is_default")]
     pub files_sync: FilesSyncSection,
+    /// The export family's defaults (the pdf leg's destination and
+    /// viewer-open posture). The section exists in every build so a
+    /// config is portable between kiosk and desktop — only the pdf
+    /// verb is feature-gated (a kiosk build with `[export]` set
+    /// ignores it without error).
+    #[serde(default, skip_serializing_if = "ExportSection::is_default")]
+    pub export: ExportSection,
 }
 
 /// The `[focus]` timing bounds: strictly positive (a zero work block
@@ -288,6 +295,45 @@ pub struct FilesSyncSection {
 impl FilesSyncSection {
     /// The absent-table test behind `skip_serializing_if` (the
     /// `[focus]` section's precedent).
+    #[must_use]
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+/// `[export]`: the export family's defaults (the `--what pdf` leg,
+/// issue #624 stage B). `deny_unknown_fields` like every section; the
+/// `Default` is the absent-table placeholder that keeps section-less
+/// configs byte-identical on serialization.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExportSection {
+    /// The default pdf destination directory (`~` expanded). When
+    /// absent: `~/Documents/taskboard`, else the data dir (a kiosk has
+    /// no documents dir).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pdf_dir: Option<std::path::PathBuf>,
+    /// The default print layout (`fold` | `a4` | `a5` | `a6`). When
+    /// absent: `fold`. An unknown key is a typed refusal where the
+    /// verb reads it — never silently ignored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pdf_layout: Option<String>,
+    /// Opens the written pdf in the system viewer after export.
+    /// Default on; `--no-open` overrides per invocation.
+    #[serde(
+        default = "default_open_after_export",
+        skip_serializing_if = "std::ops::Not::not"
+    )]
+    pub open_after_export: bool,
+}
+
+fn default_open_after_export() -> bool {
+    true
+}
+
+impl ExportSection {
+    /// The absent-table test behind `skip_serializing_if` (the
+    /// `[files_sync]` section's precedent).
     #[must_use]
     pub fn is_default(&self) -> bool {
         *self == Self::default()

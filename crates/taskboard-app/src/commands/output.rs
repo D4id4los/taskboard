@@ -15,6 +15,60 @@ use std::collections::HashSet;
 
 use taskboard_domain::{AppState, SyncErrorKind, SyncPhase, SyncStatus, Task, TaskId};
 
+/// The `export --what pdf` receipt (#624 stage B): the written file's
+/// path, the rendered page count, and the viewer-open outcome — typed,
+/// never fatal (the written file is the deliverable). Rides the normal
+/// `--json` envelope (the file-writing leg's contract), unlike the
+/// csv/json payload families' raw stdout.
+#[cfg(feature = "pdf-export")]
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct PdfExportReceipt {
+    /// The absolute path of the written pdf.
+    pub path: std::path::PathBuf,
+    /// The physical pages rendered.
+    pub pages: usize,
+    /// The viewer-open outcome.
+    pub opened: OpenOutcome,
+}
+
+/// The viewer-open outcome of the pdf leg.
+#[cfg(feature = "pdf-export")]
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum OpenOutcome {
+    /// The system viewer was spawned with the file.
+    Opened,
+    /// No open was attempted (`--no-open`, the config posture, or the
+    /// session lane — the daemon never owns the user's display).
+    Skipped,
+    /// The open was attempted and failed, typed; the exit code stays 0.
+    Failed(OpenFailure),
+}
+
+/// The typed viewer-open failure classes.
+#[cfg(feature = "pdf-export")]
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum OpenFailure {
+    /// No platform helper found.
+    NotFound,
+    /// The helper spawn failed.
+    Spawn,
+    /// No display session (Linux headless).
+    NoDisplay,
+}
+
+#[cfg(feature = "pdf-export")]
+impl From<&crate::pdf::deliver::OpenError> for OpenFailure {
+    fn from(err: &crate::pdf::deliver::OpenError) -> Self {
+        match err {
+            crate::pdf::deliver::OpenError::NotFound => Self::NotFound,
+            crate::pdf::deliver::OpenError::Spawn(_) => Self::Spawn,
+            crate::pdf::deliver::OpenError::NoDisplay => Self::NoDisplay,
+        }
+    }
+}
+
 /// One row of `boards list` (remote Deck ids — what `boards select`
 /// consumes).
 #[derive(Debug, Clone, Serialize, PartialEq)]

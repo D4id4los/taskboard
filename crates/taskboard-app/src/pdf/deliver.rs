@@ -130,11 +130,18 @@ impl PdfDestination {
 /// pdf_dir`, else `~/Documents/taskboard` (the desktop default), else
 /// the data dir (a kiosk has no documents dir).
 #[must_use]
-pub fn default_pdf_dir(config_dir: Option<&Path>, data_dir: &Path) -> PathBuf {
+pub fn default_pdf_dir(config_dir: Option<&Path>, data_dir: Option<&Path>) -> PathBuf {
     if let Some(dir) = config_dir {
         return dir.to_path_buf();
     }
-    dirs::document_dir().map_or_else(|| data_dir.join("pdf"), |docs| docs.join("taskboard"))
+    dirs::document_dir().map_or_else(
+        || {
+            data_dir
+                .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
+                .join("pdf")
+        },
+        |docs| docs.join("taskboard"),
+    )
 }
 
 /// The pdf file name: `taskboard-<YYYY-MM-DD>-<layout>.pdf`.
@@ -329,8 +336,15 @@ mod tests {
     fn default_pdf_dir_prefers_the_config() {
         let config_dir = Path::new("/cfg/pdfs");
         assert_eq!(
-            default_pdf_dir(Some(config_dir), Path::new("/data")),
+            default_pdf_dir(Some(config_dir), Some(Path::new("/data"))),
             PathBuf::from("/cfg/pdfs")
         );
+        // Without a config, the desktop default is the documents dir;
+        // the data-dir fallback only exists for platforms without one
+        // (this machine may have either — the oracle is the same
+        // lookup the production path uses).
+        let expected = dirs::document_dir()
+            .map_or_else(|| PathBuf::from("/data/pdf"), |docs| docs.join("taskboard"));
+        assert_eq!(default_pdf_dir(None, Some(Path::new("/data"))), expected);
     }
 }

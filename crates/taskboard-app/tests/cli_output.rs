@@ -345,6 +345,14 @@ fn o3_error_kinds_cover_every_variant() {
             CommandError::UnknownReflectionEntry { .. } => "unknown-reflection-entry",
             CommandError::AmbiguousReflectionEntry { .. } => "ambiguous-reflection-entry",
             CommandError::ExportFiltersNotApplicable => "filters-not-applicable",
+            #[cfg(feature = "pdf-export")]
+            CommandError::ExportOptionsNotApplicable => "options-not-applicable",
+            #[cfg(feature = "pdf-export")]
+            CommandError::ExportPdfPath(_) => "pdf-path",
+            #[cfg(feature = "pdf-export")]
+            CommandError::UnknownPdfLayout => "unknown-pdf-layout",
+            #[cfg(feature = "pdf-export")]
+            CommandError::ExportPdfRender => "pdf-render",
             CommandError::UnknownHabit { .. } => "unknown-habit",
             CommandError::AmbiguousHabit { .. } => "ambiguous-habit",
             CommandError::NoStacks => "no-stacks",
@@ -409,6 +417,14 @@ fn o3_error_kinds_cover_every_variant() {
             candidates: vec!["e1".to_owned(), "e2".to_owned()],
         },
         CommandError::ExportFiltersNotApplicable,
+        #[cfg(feature = "pdf-export")]
+        CommandError::ExportOptionsNotApplicable,
+        // ExportPdfPath needs the private pdf module's types — its
+        // kind string is pinned by the integration journey instead.
+        #[cfg(feature = "pdf-export")]
+        CommandError::UnknownPdfLayout,
+        #[cfg(feature = "pdf-export")]
+        CommandError::ExportPdfRender,
         CommandError::UnknownLabel("lab".to_owned()),
         CommandError::AmbiguousLabel {
             candidates: vec!["l1".to_owned(), "l2".to_owned()],
