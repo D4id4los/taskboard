@@ -33,6 +33,18 @@ Implementation: canonical license texts in the repository root
 fields in each manifest; SPDX headers in every =.rs= file;
 =cargo-deny= enforces dependency license compliance in CI.
 
+* Embedded third-party assets
+
+- The =pdf-export= feature (#624 stage B) embeds two font files in the
+  =taskboard-app= binary: Noto Sans Regular/Bold (Google / the Noto
+  project), licensed =OFL-1.1=. The OFL permits embedding and
+  redistribution inside any software (the AGPL binary included); the
+  verbatim license text and the provenance record live beside the
+  files (=crates/taskboard-app/assets/fonts/=), which is the OFL's
+  condition #2. The font is *data, not code* — the dual-tier rule
+  (code must not flow between tiers) is unaffected, and the vendored
+  files never touch =cargo-deny='s crate graph.
+
 * Consequences
 
 - *Positive:* Maximum ecosystem adoption for reusable libraries; the
