@@ -90,34 +90,27 @@ pub fn scope_stack(inputs: &ScopeInputs) -> Vec<ContextId> {
     if shell.menu.open {
         return vec![ContextId::Menu];
     }
+    // The five masking modals' heads are each kind's declaration
+    // (D-H6/D10 — `FlowTag::scope_head`); the arming facts stay the
+    // `KeymapShell` booleans this chunk. Byte-equal to the retired
+    // hard-coded vectors for every legacy state (the T-S1 checklist).
     if shell.palette {
-        // The palette is the second modal context (D8): insert-mode
-        // head so the field's printables are unbound everywhere, and
-        // the `Palette` mask makes the chain total.
-        return vec![ContextId::Palette, ContextId::ViInsert, ContextId::Global];
+        // The palette is the second modal context (D8).
+        return crate::surfaces::FlowTag::Palette.scope_head().to_vec();
     }
     if shell.focus_overlay {
-        // The concentration overlay is the third modal context
-        // (#496): the same total-mask shape as the palette.
-        return vec![ContextId::FocusMode, ContextId::ViInsert, ContextId::Global];
+        // The concentration overlay is the third modal context (#496).
+        return crate::surfaces::FlowTag::FocusMode.scope_head().to_vec();
     }
     if shell.track_entries {
         // The time-entries overlay is the fourth modal context
         // (r4 chunk 10, D-TS2).
-        return vec![
-            ContextId::TrackEntries,
-            ContextId::ViInsert,
-            ContextId::Global,
-        ];
+        return crate::surfaces::FlowTag::TrackEntries.scope_head().to_vec();
     }
     if shell.review_walk {
         // The review walk is the fifth modal context (DR-7 chunk 3,
         // #638).
-        return vec![
-            ContextId::ReviewWalk,
-            ContextId::ViInsert,
-            ContextId::Global,
-        ];
+        return crate::surfaces::FlowTag::ReviewWalk.scope_head().to_vec();
     }
     let mut chain = Vec::with_capacity(5);
     // D-δ2: the editor element scope rides the head (non-masking,
