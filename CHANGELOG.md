@@ -22,6 +22,24 @@ The workspace carries a single global version (see `docs/architecture.org`);
   sync toggle (`[files_sync] enabled`, applied at the next restart).
   Every control is keyboard-reachable.
 
+- The per-user files-sync document's `settings` and `proofs` sections
+  activate (DR-9 D-BF3, #685): the roaming subset of user preferences
+  (the roam-set pinned as data — `day_start_time`,
+  `reminders_enabled`, `reminder_before`, `due_soon_days`, and the
+  focus family; machine cadence, notification capability, display,
+  and any path/secret key stays device-local by the pin), riding as
+  per-key clocked rows; and the reminder delivery proofs as
+  set-union rows keyed `(rule, occurrence)` — a re-delivered proof is
+  a no-op, an out-of-order report converges — with only `Rule`- and
+  `Break`-ref proofs roaming (the per-device facts stay local).
+  Peers fold both sections with the journal's per-key machinery; the
+  engine ingests them through the user-data lane's existing
+  persist-then-interpret shape (settings persist in the new
+  `roaming_settings` table, migration 0024; proofs ride the existing
+  delivery store). Tolerance per the core recipe: unknown setting
+  keys and verbatim proof rows relay, count, and never error. The
+  two-engine convergence journey covers a newer settings row and a
+  delivered proof settling fleet-wide.
 - The files-sync substrate's status surfacing and hardening (#632,
   DR-8 chunk 4): the typed findings grew peer heartbeat freshness and
   the quiescence-window divergence finding (two consecutive quiet
