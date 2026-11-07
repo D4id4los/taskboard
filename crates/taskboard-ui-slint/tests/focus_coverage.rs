@@ -201,7 +201,7 @@ struct Mounted {
     driver: SlintDriver,
     handle: UiHandle,
     _engine: support::fake_engine::FakeEngine,
-    _requests: tokio::sync::mpsc::Receiver<taskboard_ui_slint::requests::UiRequest>,
+    requests: tokio::sync::mpsc::Receiver<taskboard_ui_slint::requests::UiRequest>,
 }
 
 fn mount(state: AppState, settings: UiSettings, size: (u32, u32)) -> Mounted {
@@ -232,16 +232,63 @@ fn mount(state: AppState, settings: UiSettings, size: (u32, u32)) -> Mounted {
         driver,
         handle,
         _engine: engine,
-        _requests: requests,
+        requests,
     }
 }
 
 /// The settings precedent's size: every section laid out unscrolled.
 const TALL: (u32, u32) = (1000, 6000);
 
-/// Settings with two connectors (the per-row buttons instantiate).
+/// Answers the named connector's Refresh with `rows` (the account
+/// card's remote rows instantiate their picker/Create/Disconnect stops).
+fn list_remotes(mounted: &mut Mounted, connector: &str, rows: &[(u64, &str)]) {
+    let items = mounted
+        .handle
+        .window()
+        .global::<taskboard_ui_slint::SettingsModel>()
+        .get_connection_items();
+    let deck = (0..items.row_count())
+        .find(|&i| {
+            items.row_data(i).is_some_and(|item| {
+                item.kind == taskboard_ui_slint::ConnectionItemKind::Deck && item.title == connector
+            })
+        })
+        .expect("the connector's Deck row renders");
+    mounted
+        .handle
+        .window()
+        .invoke_settings_refresh_clicked(i32::try_from(deck).expect("fits"));
+    let Ok(taskboard_ui_slint::requests::UiRequest::ListRemoteBoards { reply, .. }) =
+        mounted.requests.try_recv()
+    else {
+        panic!("the refresh routed a listing");
+    };
+    let rows = rows
+        .iter()
+        .map(|(id, title)| taskboard_ui_slint::requests::RemoteBoardRow {
+            remote_id: taskboard_domain::RemoteBoardId(*id),
+            title: (*title).to_owned(),
+        })
+        .collect();
+    reply.send(Ok(rows)).expect("the reply lane is alive");
+    mounted.handle.drain_setting_replies();
+    mounted.driver.advance_time(0);
+}
+
+/// Settings with two connectors (the per-card buttons instantiate) and
+/// a listing on the first: one remote row bound through it (Disconnect)
+/// and one unbound (the picker + Create) — every stop kind renders.
 fn settings_fixture() -> Mounted {
-    let (_fixture, state) = fixture::golden_state();
+    let (_fixture, mut state) = fixture::golden_state();
+    let bound = state
+        .boards
+        .values_mut()
+        .find(|board| !board.deleted && !board.archived)
+        .expect("a live board");
+    bound.remote = Some(taskboard_domain::RemoteBoardBinding {
+        board: taskboard_domain::RemoteBoardId(900),
+        connector: taskboard_domain::ConnectorId::from("nextcloud"),
+    });
     let settings = UiSettings {
         connectors: ["nextcloud", "legacy"]
             .into_iter()
@@ -258,6 +305,7 @@ fn settings_fixture() -> Mounted {
     mounted.handle.dispatch_action(ActionId::AppSettings);
     mounted.driver.advance_time(0);
     assert_eq!(mounted.handle.window().get_current_view(), View::Settings);
+    list_remotes(&mut mounted, "nextcloud", &[(900, "bound"), (901, "free")]);
     mounted
 }
 
@@ -532,16 +580,25 @@ fn date_picker_fixture_by(grid: bool) -> Mounted {
     mounted
 }
 
-/// Settings over two boards, the board picker's flyout open (two rows
-/// to walk).
+/// Settings over two boards, a remote row's picker flyout open (two
+/// rows to walk).
 fn dropdown_fixture() -> Mounted {
     let (_fixture, state) = fixture::two_board_state();
-    let mut mounted = mount(state, UiSettings::default(), TALL);
+    let settings = UiSettings {
+        connectors: vec![taskboard_ui_slint::requests::ConnectorInfo {
+            name: "work".into(),
+            server_url: "https://work.example".into(),
+            username: "alice".into(),
+        }],
+        ..UiSettings::default()
+    };
+    let mut mounted = mount(state, settings, TALL);
     press_all(
         &mut mounted,
         &[ActionId::NavFocusBoard, ActionId::AppSettings],
     );
     assert_view(&mounted, View::Settings);
+    list_remotes(&mut mounted, "work", &[(1, "remote")]);
     click_first(&mut mounted, "Dropdown");
     assert!(
         mounted

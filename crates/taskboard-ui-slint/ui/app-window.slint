@@ -40,11 +40,13 @@ import {
     SettingsView,
     SettingsModel,
     ConnectionRow,
+    ConnectionItem,
+    ConnectionItemKind,
     SettingsRowStatus,
     SettingsOutcome,
     SettingsBoardCopy,
 } from "views/settings-view.slint";
-export { SettingsModel, ConnectionRow, SettingsRowStatus, SettingsOutcome }
+export { SettingsModel, ConnectionRow, ConnectionItem, ConnectionItemKind, SettingsRowStatus, SettingsOutcome }
 import { TooltipState, TooltipPanel } from "widgets/tooltip.slint";
 import { TaskCard } from "widgets/task-card.slint";
 import { DragState } from "drag-state.slint";
@@ -190,13 +192,13 @@ export component AppWindow inherits Window {
     // The settings seams (round-1 chunk 3, D6.6/D7/D9).
     callback settings-back-clicked();
     callback settings-field-edited(int, string);
-    callback settings-save-clicked(string, string, string, string);
-    callback settings-test-clicked(int);
+    callback settings-save-clicked(string, string, string);
     callback settings-remove-clicked(int);
-    // The board-scoped binding surface (r2 D32/D33).
-    callback settings-board-selected(string);
-    callback settings-bind-clicked(int);
-    callback settings-detach-selected();
+    callback settings-refresh-clicked(int);
+    callback settings-remote-bind-picked(int, int);
+    callback settings-create-clicked(int);
+    callback settings-disconnect-clicked(int);
+    callback settings-files-picked(int);
     callback settings-preset-picked(int);
     callback settings-view-mounted();
     callback settings-scale-committed(string);
@@ -458,12 +460,13 @@ export component AppWindow inherits Window {
                 back-clicked() => root.settings-back-clicked();
                 view-mounted() => root.settings-view-mounted();
                 field-edited(f, t) => root.settings-field-edited(f, t);
-                save-clicked(n, s, u, p) => root.settings-save-clicked(n, s, u, p);
-                test-clicked(i) => root.settings-test-clicked(i);
+                save-clicked(s, u, p) => root.settings-save-clicked(s, u, p);
                 remove-clicked(i) => root.settings-remove-clicked(i);
-                board-selected(id) => root.settings-board-selected(id);
-                bind-clicked(i) => root.settings-bind-clicked(i);
-                detach-selected() => root.settings-detach-selected();
+                refresh-clicked(i) => root.settings-refresh-clicked(i);
+                remote-bind-picked(i, o) => root.settings-remote-bind-picked(i, o);
+                create-clicked(i) => root.settings-create-clicked(i);
+                disconnect-clicked(i) => root.settings-disconnect-clicked(i);
+                files-picked(i) => root.settings-files-picked(i);
                 preset-picked(i) => root.settings-preset-picked(i);
                 scale-committed(t) => root.settings-scale-committed(t);
                 scale-focus-lost() => root.settings-scale-focus-lost();
@@ -827,7 +830,7 @@ export component AppWindow inherits Window {
                     : DropdownFacts.anchor-y - self.height - Theme.space-1),
                    status.y - self.height - Theme.space-2));
         width: DropdownFacts.anchor-width;
-        row-activated(i) => root.settings-board-selected(SettingsModel.board-ids[i]);
+        row-activated(i) => root.settings-remote-bind-picked(SettingsBoardFacts.active-item, i);
         row-hovered(i, x, y, w, h) => {
             TooltipState.hover(
                 SettingsModel.board-options[i].label,

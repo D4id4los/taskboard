@@ -693,7 +693,7 @@ async fn the_remove_choreography_persists_detaches_and_deletes_the_secret() {
 use taskboard_domain::{Color, CommandOutcome, RemoteBoardId, StateCommand};
 
 /// A boards listing carrying the given `(id, title)` live boards —
-/// the attach path's title-adopt input.
+/// the listing fixture.
 fn boards_json_with(entries: &[(u64, &str)]) -> String {
     let boards: Vec<serde_json::Value> = entries
         .iter()
@@ -754,6 +754,7 @@ fn send_attach(
     tx: &tokio::sync::mpsc::Sender<UiRequest>,
     board: taskboard_domain::BoardId,
     connector: &str,
+    remote: u64,
 ) -> tokio::sync::oneshot::Receiver<
     Result<taskboard_ui_slint::requests::ConnectionsSnapshot, SettingsError>,
 > {
@@ -761,6 +762,7 @@ fn send_attach(
     tx.try_send(UiRequest::AttachConnector {
         board,
         connector: connector.to_owned(),
+        remote: RemoteBoardId(remote),
         reply,
     })
     .expect("capacity holds");
@@ -797,11 +799,12 @@ fn bound_connector_of(
         .map(|binding| (binding.connector.clone(), binding.board))
 }
 
-/// A2 — the attach happy path: title-adopt over a live listing, the
-/// engine binding lands, the actor is attached, the config file is
-/// untouched (attach is a live-binding op, never a config op).
+/// A2 — the attach happy path: the explicitly chosen remote binds
+/// (round-5 chunk 8 — the local title plays no part), the actor is
+/// attached, the config file is untouched (attach is a live-binding
+/// op, never a config op).
 #[tokio::test]
-async fn attach_adopts_the_titled_remote_and_binds_through_the_engine() {
+async fn attach_binds_the_chosen_remote_through_the_engine() {
     // The full standard pull harness (listing + detail + stacks): the
     // post-bind settle must see a servable remote, not a half-mocked
     // one whose 404 detail reads as a remote tombstone.
@@ -818,10 +821,10 @@ async fn attach_adopts_the_titled_remote_and_binds_through_the_engine() {
         app.engine.shared_state(),
         workspace,
     );
-    // The remote fixture's board is titled "board" (common::boards_json).
-    let board = create_board(&app, "board").await;
+    // A local title unrelated to the remote's: the bind is explicit.
+    let board = create_board(&app, "unrelated local title").await;
 
-    let outcome = send_attach(&tx, board, "work")
+    let outcome = send_attach(&tx, board, "work", common::BOARD)
         .await
         .expect("reply lane alive")
         .expect("attach succeeded");
@@ -858,15 +861,19 @@ async fn attach_adopts_the_titled_remote_and_binds_through_the_engine() {
     forwarder.await.expect("forwarder joins cleanly");
 }
 
-/// A3 — no live remote title matches: `NoRemoteMatch`, nothing
-/// attached, no binding (verify-before-attach order proof).
+/// A3 — a board bound through this connector to a *different* remote
+/// refuses pre-IO: `BindRefused`, the binding intact, nothing attached
+/// (the unreachable server proves no IO ran).
 #[tokio::test]
-async fn attach_without_a_matching_remote_title_attaches_nothing() {
-    let server = mount_boards(&[(7, "unrelated")]).await;
+async fn attach_to_another_remote_on_the_same_connector_refuses_before_any_io() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let config = seed_array_config(dir.path(), &server.uri());
-    let store = Arc::new(FakeCredentialStore::with(&server.uri(), "old-user", "pw"));
-    let (app, workspace) = booted_workspace(config.clone(), store.clone()).await;
+    let config = seed_array_config(dir.path(), "http://127.0.0.1:9");
+    let store = Arc::new(FakeCredentialStore::with(
+        "http://127.0.0.1:9",
+        "old-user",
+        "pw",
+    ));
+    let (app, workspace) = booted_workspace(config.clone(), store).await;
     let (tx, rx) = ui_request_channel();
     let forwarder = taskboard_app::ui_requests::spawn_ui_request_forwarder(
         rx,
@@ -874,14 +881,20 @@ async fn attach_without_a_matching_remote_title_attaches_nothing() {
         workspace,
     );
     let board = create_board(&app, "home").await;
+    bind_directly(&app, board, "work", 7).await;
 
-    let outcome = send_attach(&tx, board, "work")
+    let outcome = send_attach(&tx, board, "work", 8)
         .await
         .expect("reply lane alive")
-        .expect_err("no matching title");
+        .expect_err("bound to another remote");
     assert!(
-        matches!(outcome, SettingsError::NoRemoteMatch),
-        "typed adoption miss, got {outcome:?}"
+        matches!(outcome, SettingsError::BindRefused),
+        "typed bind refusal, got {outcome:?}"
+    );
+    assert_eq!(
+        bound_connector_of(&app, board).map(|(_, remote)| remote),
+        Some(RemoteBoardId(7)),
+        "the old binding survived"
     );
     assert!(
         app.connector_control()
@@ -889,7 +902,6 @@ async fn attach_without_a_matching_remote_title_attaches_nothing() {
             .is_none(),
         "nothing was attached"
     );
-    assert!(bound_connector_of(&app, board).is_none(), "no binding");
 
     drop(tx);
     forwarder.await.expect("forwarder joins cleanly");
@@ -929,7 +941,7 @@ async fn attach_to_a_board_bound_elsewhere_refuses_before_any_io() {
     let board = create_board(&app, "home").await;
     bind_directly(&app, board, "a", 1).await;
 
-    let outcome = send_attach(&tx, board, "b")
+    let outcome = send_attach(&tx, board, "b", 1)
         .await
         .expect("reply lane alive")
         .expect_err("bound elsewhere");
@@ -945,11 +957,11 @@ async fn attach_to_a_board_bound_elsewhere_refuses_before_any_io() {
     forwarder.await.expect("forwarder joins cleanly");
 }
 
-/// A5 — re-attaching a board already bound to this connector is the
-/// idempotent path: no listing (no route is mounted — a listing would
-/// surface as unreachable), the binding survives, `Ok`.
+/// A5 — re-attaching a board to the `(connector, remote)` it is
+/// already bound to is the idempotent re-issue: the binding survives,
+/// `Ok`.
 #[tokio::test]
-async fn attach_reissue_on_the_same_connector_skips_the_listing() {
+async fn attach_reissue_on_the_same_remote_is_idempotent() {
     let dir = tempfile::tempdir().expect("tempdir");
     let config = seed_array_config(dir.path(), "http://127.0.0.1:9");
     let store = Arc::new(FakeCredentialStore::with(
@@ -967,7 +979,7 @@ async fn attach_reissue_on_the_same_connector_skips_the_listing() {
     let board = create_board(&app, "home").await;
     bind_directly(&app, board, "work", 7).await;
 
-    let outcome = send_attach(&tx, board, "work")
+    let outcome = send_attach(&tx, board, "work", 7)
         .await
         .expect("reply lane alive")
         .expect("idempotent reissue succeeds");
@@ -985,10 +997,12 @@ async fn attach_reissue_on_the_same_connector_skips_the_listing() {
     forwarder.await.expect("forwarder joins cleanly");
 }
 
-/// A6 — the attach refusals: a missing stored secret is typed; a 401
-/// listing is a typed verify refusal; nothing persists either way.
+/// A6 — the attach refusal before any IO: a missing stored secret is
+/// typed, nothing is attached or bound, the config is untouched. (The
+/// credential verification moved to the listing, round-5 chunk 8 —
+/// its typed refusals are pinned by the listing tests.)
 #[tokio::test]
-async fn attach_refuses_typed_on_missing_secret_and_rejected_listing() {
+async fn attach_refuses_typed_on_a_missing_secret() {
     let server = mount_boards(&[(7, "home")]).await;
     let dir = tempfile::tempdir().expect("tempdir");
     let config = seed_array_config(dir.path(), &server.uri());
@@ -1003,59 +1017,12 @@ async fn attach_refuses_typed_on_missing_secret_and_rejected_listing() {
     );
     let board = create_board(&app, "home").await;
 
-    let outcome = send_attach(&tx, board, "work")
+    let outcome = send_attach(&tx, board, "work", 7)
         .await
         .expect("reply lane alive")
         .expect_err("no secret stored");
     assert!(matches!(outcome, SettingsError::NoSecretStored));
-
-    // With the secret present but the server refusing: typed verify.
-    store
-        .store(
-            &server.uri(),
-            "old-user",
-            taskboard_app::secrets::AppPassword::new("pw"),
-        )
-        .expect("seed");
-    let rejecting = mount_auth_reject(401).await;
-    let path2 = dir.path().join("second.toml");
-    std::fs::write(
-        &path2,
-        format!(
-            "[storage]\ndb_path = '{}/t.db'\n\
-             [[sync.connectors]]\nname = \"work\"\nbackend = \"nextcloud\"\n\
-             server_url = \"{}\"\nusername = \"old-user\"\n",
-            dir.path().display(),
-            rejecting.uri()
-        ),
-    )
-    .expect("seed");
-    store
-        .store(
-            &rejecting.uri(),
-            "old-user",
-            taskboard_app::secrets::AppPassword::new("pw"),
-        )
-        .expect("seed");
-    let (app2, workspace2) = booted_workspace(path2.clone(), store.clone()).await;
-    // The second core gets its own board: the attach path reads the
-    // board row from *its* engine.
-    let board2 = create_board(&app2, "home").await;
-    let (tx2, rx2) = ui_request_channel();
-    let forwarder2 = taskboard_app::ui_requests::spawn_ui_request_forwarder(
-        rx2,
-        app2.engine.shared_state(),
-        workspace2,
-    );
-    let outcome = send_attach(&tx2, board2, "work")
-        .await
-        .expect("reply lane alive")
-        .expect_err("401");
-    assert!(
-        matches!(outcome, SettingsError::VerifyRejected),
-        "typed credential refusal, got {outcome:?}"
-    );
-
+    assert!(bound_connector_of(&app, board).is_none(), "no binding");
     assert_eq!(
         std::fs::read_to_string(&config).expect("read"),
         before,
@@ -1063,9 +1030,7 @@ async fn attach_refuses_typed_on_missing_secret_and_rejected_listing() {
     );
 
     drop(tx);
-    drop(tx2);
     forwarder.await.expect("forwarder joins cleanly");
-    forwarder2.await.expect("forwarder 2 joins cleanly");
 }
 
 /// A7 — the detach choreography: the binding leaves the engine state,
@@ -1198,6 +1163,7 @@ async fn a_dropped_attach_reply_receiver_never_wedges_the_forwarder() {
         tx.try_send(UiRequest::AttachConnector {
             board,
             connector: "work".into(),
+            remote: RemoteBoardId(7),
             reply,
         })
         .expect("capacity holds");
@@ -1237,7 +1203,7 @@ async fn attach_on_a_stale_board_id_is_gone_typed() {
         workspace,
     );
     let ghost = taskboard_domain::BoardId::from_uuid(uuid::Uuid::from_u128(0xDEAD));
-    let outcome = send_attach(&tx, ghost, "work")
+    let outcome = send_attach(&tx, ghost, "work", 7)
         .await
         .expect("reply lane alive")
         .expect_err("stale board id");
@@ -1423,6 +1389,213 @@ async fn a_sign_in_derives_the_connector_name_and_a_re_sign_in_reuses_it() {
     let bob = sign_in("bob").await.expect("alive").expect("signed in");
     assert_eq!(bob.connectors.len(), 3);
     assert_eq!(bob.connectors[2].name, format!("{host}-bob"));
+
+    drop(tx);
+    forwarder.await.expect("forwarder joins cleanly");
+}
+
+fn send_create(
+    tx: &tokio::sync::mpsc::Sender<UiRequest>,
+    connector: &str,
+    remote: u64,
+) -> tokio::sync::oneshot::Receiver<
+    Result<taskboard_ui_slint::requests::ConnectionsSnapshot, SettingsError>,
+> {
+    let (reply, reply_rx) = tokio::sync::oneshot::channel();
+    tx.try_send(UiRequest::CreateLocalBoard {
+        connector: connector.to_owned(),
+        remote: RemoteBoardId(remote),
+        reply,
+    })
+    .expect("capacity holds");
+    reply_rx
+}
+
+/// The live local boards titled `title`.
+fn boards_titled(app: &App, title: &str) -> Vec<taskboard_domain::BoardId> {
+    app.engine
+        .shared_state()
+        .load()
+        .boards
+        .values()
+        .filter(|b| !b.deleted && !b.archived && b.title == title)
+        .map(|b| b.id)
+        .collect()
+}
+
+/// C1 — create-local-from-remote: the receipt's minted board carries
+/// the remote's title and is bound to that remote through the
+/// connector; a remote that is not live is `Gone` with no board made.
+#[tokio::test]
+async fn create_local_board_mints_and_binds_the_remote() {
+    let server = wiremock::MockServer::start().await;
+    common::mount_standard_pull(&server, serde_json::json!([])).await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = seed_array_config(dir.path(), &server.uri());
+    let store = Arc::new(FakeCredentialStore::with(&server.uri(), "old-user", "pw"));
+    let (app, workspace) = booted_workspace(config.clone(), store).await;
+    let (tx, rx) = ui_request_channel();
+    let forwarder = taskboard_app::ui_requests::spawn_ui_request_forwarder(
+        rx,
+        app.engine.shared_state(),
+        workspace,
+    );
+
+    let err = send_create(&tx, "work", 999)
+        .await
+        .expect("alive")
+        .expect_err("no such remote");
+    assert!(matches!(err, SettingsError::Gone), "got {err:?}");
+    assert!(
+        app.engine.shared_state().load().boards.is_empty(),
+        "no board made"
+    );
+
+    let outcome = send_create(&tx, "work", common::BOARD)
+        .await
+        .expect("alive")
+        .expect("created and bound");
+    // The remote fixture's board is titled "board" (common::boards_json).
+    let created = boards_titled(&app, "board");
+    assert_eq!(created.len(), 1, "one local board minted");
+    let (connector, remote) = bound_connector_of(&app, created[0]).expect("bound");
+    assert_eq!(connector.as_str(), "work");
+    assert_eq!(remote, RemoteBoardId(common::BOARD));
+    assert!(
+        outcome
+            .boards
+            .iter()
+            .any(|b| b.id == created[0].as_uuid() && b.bound_connector.as_deref() == Some("work")),
+        "the reply pair names the binding"
+    );
+
+    drop(tx);
+    forwarder.await.expect("forwarder joins cleanly");
+}
+
+/// C2 — a refused bind after the create performs no rollback: the
+/// remote is already in use through this connector, so the bind is
+/// `BindRefused` and the minted local board stays, unbound.
+#[tokio::test]
+async fn a_refused_bind_after_create_leaves_the_local_board() {
+    let server = wiremock::MockServer::start().await;
+    common::mount_standard_pull(&server, serde_json::json!([])).await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = seed_array_config(dir.path(), &server.uri());
+    let store = Arc::new(FakeCredentialStore::with(&server.uri(), "old-user", "pw"));
+    let (app, workspace) = booted_workspace(config.clone(), store).await;
+    let (tx, rx) = ui_request_channel();
+    let forwarder = taskboard_app::ui_requests::spawn_ui_request_forwarder(
+        rx,
+        app.engine.shared_state(),
+        workspace,
+    );
+    let holder = create_board(&app, "holder").await;
+    bind_directly(&app, holder, "work", common::BOARD).await;
+
+    let err = send_create(&tx, "work", common::BOARD)
+        .await
+        .expect("alive")
+        .expect_err("the remote is in use");
+    assert!(matches!(err, SettingsError::BindRefused), "got {err:?}");
+    let created = boards_titled(&app, "board");
+    assert_eq!(created.len(), 1, "the minted board stays");
+    assert!(bound_connector_of(&app, created[0]).is_none(), "unbound");
+
+    drop(tx);
+    forwarder.await.expect("forwarder joins cleanly");
+}
+
+/// R1 — account removal: refused typed while a board is bound through
+/// any of the identity's connectors (nothing changes); once unbound,
+/// every connector sharing the identity leaves together.
+#[tokio::test]
+async fn account_removal_is_guarded_by_bindings_and_removes_the_identity() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("taskboard.toml");
+    std::fs::write(
+        &path,
+        format!(
+            "[storage]\ndb_path = '{}/taskboard.db'\n\
+             [[sync.connectors]]\nname = \"work\"\nbackend = \"nextcloud\"\n\
+             server_url = \"http://127.0.0.1:9\"\nusername = \"alice\"\n\
+             [[sync.connectors]]\nname = \"work-2\"\nbackend = \"nextcloud\"\n\
+             server_url = \"http://127.0.0.1:9\"\nusername = \"alice\"\n\
+             [[sync.connectors]]\nname = \"other\"\nbackend = \"nextcloud\"\n\
+             server_url = \"http://127.0.0.1:9\"\nusername = \"bob\"\n",
+            dir.path().display()
+        ),
+    )
+    .expect("seed config");
+    let store = Arc::new(FakeCredentialStore::with(
+        "http://127.0.0.1:9",
+        "alice",
+        "pw",
+    ));
+    let (app, workspace) = booted_workspace(path.clone(), store.clone()).await;
+    let (tx, rx) = ui_request_channel();
+    let forwarder = taskboard_app::ui_requests::spawn_ui_request_forwarder(
+        rx,
+        app.engine.shared_state(),
+        workspace,
+    );
+    let board = create_board(&app, "home").await;
+    bind_directly(&app, board, "work-2", 7).await;
+    let before = std::fs::read_to_string(&path).expect("read");
+    let remove = |name: &str| {
+        let (reply, reply_rx) = tokio::sync::oneshot::channel();
+        tx.try_send(UiRequest::RemoveConnection {
+            name: name.to_owned(),
+            reply,
+        })
+        .expect("capacity holds");
+        reply_rx
+    };
+
+    let err = remove("work").await.expect("alive").expect_err("bound");
+    assert!(matches!(err, SettingsError::BindRefused), "got {err:?}");
+    assert_eq!(std::fs::read_to_string(&path).expect("read"), before);
+    assert!(
+        store.load("http://127.0.0.1:9", "alice").is_ok(),
+        "secret kept"
+    );
+
+    app.engine
+        .execute(StateCommand::UnbindBoard { board })
+        .await
+        .expect("unbind");
+    let outcome = remove("work").await.expect("alive").expect("removed");
+    let names: Vec<&str> = outcome.connectors.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, vec!["other"], "the whole identity left");
+    assert!(
+        store.load("http://127.0.0.1:9", "alice").is_err(),
+        "secret deleted"
+    );
+
+    drop(tx);
+    forwarder.await.expect("forwarder joins cleanly");
+}
+
+/// L3 — a listing the server refuses is a typed verify refusal (the
+/// listing is the credential check).
+#[tokio::test]
+async fn a_rejected_listing_is_a_typed_verify_refusal() {
+    let server = mount_auth_reject(401).await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = seed_array_config(dir.path(), &server.uri());
+    let store = Arc::new(FakeCredentialStore::with(&server.uri(), "old-user", "pw"));
+    let (app, workspace) = booted_workspace(config.clone(), store).await;
+    let (tx, rx) = ui_request_channel();
+    let forwarder = taskboard_app::ui_requests::spawn_ui_request_forwarder(
+        rx,
+        app.engine.shared_state(),
+        workspace,
+    );
+    let err = send_list(&tx, "work")
+        .await
+        .expect("alive")
+        .expect_err("401");
+    assert!(matches!(err, SettingsError::VerifyRejected), "got {err:?}");
 
     drop(tx);
     forwarder.await.expect("forwarder joins cleanly");

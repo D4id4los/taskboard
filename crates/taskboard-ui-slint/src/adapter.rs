@@ -20,7 +20,7 @@ use slint::{ComponentHandle as _, ModelRc, SharedString};
 use tokio::sync::mpsc;
 
 use taskboard_domain::{
-    AppState, BoardId, ReminderOffset, ReminderRuleId, StackId, StateCommand, TaskId,
+    AppState, BoardId, ReminderOffset, ReminderRuleId, RemoteBoardId, StackId, StateCommand, TaskId,
 };
 
 use tokio::sync::oneshot;
@@ -33,8 +33,8 @@ use crate::menu::{self, MenuEntry};
 use crate::models::IdTables;
 use crate::presentation::ReminderTarget;
 use crate::requests::{
-    self, ConnectionProfile, ConnectionTarget, ConnectorInfo, InvalidKind, KeymapUpdate, Secret,
-    SettingsError, UiRequest,
+    self, ConnectionProfile, ConnectorInfo, InvalidKind, KeymapUpdate, Secret, SettingsError,
+    UiRequest,
 };
 use crate::resolver::{KeymapResolver, Resolution};
 use crate::router::{ActionRouter, DispatchOutcome, EffectClass, Mode, UiEffect, WalkIntent};
@@ -3771,10 +3771,15 @@ impl Adapter {
 /// recv on the UI thread).
 #[derive(Debug)]
 enum PendingReply {
-    /// `TestConnection`'s typed outcome.
-    Test(oneshot::Receiver<Result<(), SettingsError>>),
+    /// `ListRemoteBoards`' rows, keyed by the listed connector (round-5
+    /// chunk 8): the reply refreshes that connector's mapping rows.
+    Remotes(
+        String,
+        oneshot::Receiver<Result<Vec<requests::RemoteBoardRow>, SettingsError>>,
+    ),
     /// The list-carrying replies (`SaveConnection`/`RemoveConnection`/
-    /// `AttachConnector`/`DetachConnector`) — the full pair (r2 D32).
+    /// `AttachConnector`/`CreateLocalBoard`/`DetachConnector`) — the
+    /// full pair (r2 D32).
     List(oneshot::Receiver<Result<requests::ConnectionsSnapshot, SettingsError>>),
     /// `SetKeymapPreset`'s rebuilt keymap.
     Keymap(oneshot::Receiver<Result<KeymapUpdate, SettingsError>>),
@@ -3789,12 +3794,16 @@ enum PendingReply {
 /// time — the buttons disable while pending).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PendingKind {
-    Test,
     Save,
     Remove,
-    /// `AttachConnector` (r2 D33): the connector row's busy marker.
+    /// `ListRemoteBoards` (round-5 chunk 8): the Deck row's marker.
+    ListRemote,
+    /// `AttachConnector` (r2 D33, explicit since round-5 chunk 8): the
+    /// remote row's marker.
     Attach,
-    /// `DetachConnector` (r2 D33): the board row's busy marker.
+    /// `CreateLocalBoard` (round-5 chunk 8): the remote row's marker.
+    CreateBind,
+    /// `DetachConnector` (r2 D33): the remote row's marker.
     Detach,
     Preset,
     Scale,
@@ -3803,6 +3812,26 @@ enum PendingKind {
     /// choice picks alike (the kind is attribution only; no busy
     /// marker matches it).
     General(crate::requests::Field),
+}
+
+/// One rendered connections item's address (round-5 chunk 8): what a
+/// callback's item index resolves to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ItemAddr {
+    /// The card header; Remove addresses the card's first connector
+    /// (the app removes the whole identity).
+    Account {
+        connector: String,
+    },
+    Files,
+    Deck {
+        connector: String,
+    },
+    Remote {
+        connector: String,
+        remote: RemoteBoardId,
+        bound: Option<BoardId>,
+    },
 }
 
 /// The typed last-outcome marker the model renders structurally
@@ -3833,11 +3862,19 @@ struct SettingsVm {
     /// Connector name → down-override (the `ConnectorLost`/
     /// `ConnectorRestored` episodes, D8); absent = no override.
     liveness: BTreeMap<String, bool>,
-    /// The selector's radio state (r2 D32): the selected board's uuid.
-    selected_board: Option<uuid::Uuid>,
-    /// The connector/board name the in-flight op addresses (r2 D34):
-    /// set by the send seams, cleared with `pending`.
+    /// The last listing per connector (round-5 chunk 8): the remote
+    /// boards each Deck row maps; bindings render from the live state.
+    remotes: BTreeMap<String, Vec<requests::RemoteBoardRow>>,
+    /// The rendered connections items' addresses, index-aligned with
+    /// the pushed `connection-items` (the callbacks' resolution table).
+    items: Vec<ItemAddr>,
+    /// The pickers' option ids, index-aligned with `board-options`.
+    local_choices: Vec<uuid::Uuid>,
+    /// The connector name the in-flight op addresses (r2 D34): set by
+    /// the send seams, cleared with `pending`.
     busy_target: String,
+    /// The remote id the in-flight bind/create/detach addresses.
+    busy_remote: Option<RemoteBoardId>,
     pending: Option<PendingKind>,
     replies: Vec<PendingReply>,
     outcome: SettingsOutcome,
@@ -3913,7 +3950,6 @@ impl SettingsVm {
             | SettingsError::VerifyRejected
             | SettingsError::PersistRejected
             | SettingsError::Gone
-            | SettingsError::NoRemoteMatch
             | SettingsError::BindRefused
             | SettingsError::EnvLocked { .. } => SettingsOutcome::Rejected,
             SettingsError::VerifyUnreachable | SettingsError::StoreFailed => {
@@ -4071,7 +4107,6 @@ fn preset_index(preset: crate::keymap::Preset) -> i32 {
 /// validation would answer with.
 fn map_form_field(field: settings_form::Field) -> requests::Field {
     match field {
-        settings_form::Field::Name => requests::Field::Name,
         settings_form::Field::ServerUrl => requests::Field::ServerUrl,
         settings_form::Field::Username => requests::Field::Username,
         settings_form::Field::Password => requests::Field::Password,
@@ -4235,12 +4270,14 @@ impl Adapter {
             // routed through the one choke point below (r2 D28).
             let mut landed: Option<(SettingsOutcome, Option<SettingsError>)> = None;
             let settled = match &mut self.settings.replies[i] {
-                PendingReply::Test(rx) => match rx.try_recv() {
-                    Ok(outcome) => {
-                        landed = Some(match &outcome {
-                            Ok(()) => (SettingsOutcome::Ok, None),
-                            Err(err) => (SettingsVm::outcome_of(err), Some(err.clone())),
-                        });
+                PendingReply::Remotes(connector, rx) => match rx.try_recv() {
+                    Ok(Ok(rows)) => {
+                        self.settings.remotes.insert(connector.clone(), rows);
+                        landed = Some((SettingsOutcome::Ok, None));
+                        true
+                    }
+                    Ok(Err(err)) => {
+                        landed = Some((SettingsVm::outcome_of(&err), Some(err.clone())));
                         true
                     }
                     Err(oneshot::error::TryRecvError::Empty) => false,
@@ -4252,14 +4289,18 @@ impl Adapter {
                 PendingReply::List(rx) => match rx.try_recv() {
                     Ok(Ok(snapshot)) => {
                         // The connector rows re-render from the reply
-                        // (r2 D32). The board selector does NOT read
-                        // the reply payload (r4 D39 §2.3): its options
-                        // are re-derived from the engine state on every
-                        // push pass (`presentation::boards_of`), so the
-                        // list cannot go stale by construction — the
-                        // reply's boards half stays the app's reply
-                        // contract only.
+                        // (r2 D32). The bindings do NOT read the
+                        // reply's boards half (r4 D39 §2.3): the
+                        // remote rows and the pickers' options are
+                        // re-derived from the engine state on every
+                        // push pass, so they cannot go stale by
+                        // construction. A removed connector's listing
+                        // leaves with it.
                         self.settings.rows = snapshot.connectors;
+                        let rows = &self.settings.rows;
+                        self.settings
+                            .remotes
+                            .retain(|name, _| rows.iter().any(|row| &row.name == name));
                         landed = Some((SettingsOutcome::Ok, None));
                         true
                     }
@@ -4342,6 +4383,7 @@ impl Adapter {
                 let _ = self.settings.replies.remove(i);
                 self.settings.pending = None;
                 self.settings.busy_target.clear();
+                self.settings.busy_remote = None;
                 if let Some((outcome, detail)) = landed {
                     self.set_settings_outcome(window, outcome, detail);
                 }
@@ -4484,10 +4526,6 @@ impl Adapter {
                 ),
             };
             match field {
-                settings_form::Field::Name => {
-                    global.set_validity_name(validity);
-                    global.set_error_name(error.into());
-                }
                 settings_form::Field::ServerUrl => {
                     global.set_validity_server(validity);
                     global.set_error_server(error.into());
@@ -4503,7 +4541,6 @@ impl Adapter {
             }
         }
         for field in [
-            settings_form::Field::Name,
             settings_form::Field::ServerUrl,
             settings_form::Field::Username,
             settings_form::Field::Password,
@@ -4535,103 +4572,158 @@ impl Adapter {
         );
     }
 
-    /// Pushes the settings view-model onto the window global (the
-    /// refresh pass's settings half; rows fold liveness + the bound
-    /// boards' phases, D8). The row list rides the persistent
-    /// settings-row handle through the positional diff (r2 D9).
-    /// The selector's dropdown model (r4 D39): options (indicator +
-    /// tone fold — a bound board runs the connector rows' own
-    /// `connector_row_status` fold with the liveness down-override;
-    /// an unbound board is neutral), the selected index (the open-time
-    /// anchor), the selected board's bound flag (Detach's gate) and
-    /// name (the field's rendering), and the uuid hand-over strings.
-    fn board_selector_model(
+    /// The account cards' walk-ordered projection (round-5 chunk 8,
+    /// D-8.1): per card the header, the Files toggle (the default
+    /// connector's identity only — the D-SF10 contract), and per
+    /// connector a Deck row plus its remote rows (the last listing's
+    /// universe; bindings resolve from the live state). Returns the
+    /// rendered items and their address table, index-aligned.
+    #[allow(clippy::too_many_lines)] // one walk-ordered fold, one arm per item kind
+    fn connection_items_model(
         state: &AppState,
         vm: &SettingsVm,
-        boards: &[requests::BoardInfo],
-        detach_busy: bool,
-    ) -> (
-        Vec<crate::DropdownRow>,
-        i32,
-        bool,
-        Option<String>,
-        Vec<SharedString>,
-    ) {
-        let tone_of = |board: &requests::BoardInfo| -> crate::DropdownTone {
-            let Some(connector) = board.bound_connector.as_deref() else {
-                return crate::DropdownTone::Neutral;
-            };
-            let down = vm.liveness.get(connector).copied().unwrap_or(false);
-            match crate::presentation::status_tone(crate::presentation::connector_row_status(
-                state,
-                &ConnectorId::from(connector.to_owned()),
-                down,
-            )) {
-                crate::presentation::StatusTone::Neutral => crate::DropdownTone::Neutral,
-                crate::presentation::StatusTone::Success => crate::DropdownTone::Success,
-                crate::presentation::StatusTone::Accent => crate::DropdownTone::Accent,
-                crate::presentation::StatusTone::Warning => crate::DropdownTone::Warning,
-                crate::presentation::StatusTone::Danger => crate::DropdownTone::Danger,
-            }
+    ) -> (Vec<crate::ConnectionItem>, Vec<ItemAddr>) {
+        use crate::presentation::ConnectorStatus as S;
+        let row_status = |status: S| match status {
+            S::Idle => crate::SettingsRowStatus::Idle,
+            S::Syncing => crate::SettingsRowStatus::Syncing,
+            S::Offline => crate::SettingsRowStatus::Offline,
+            S::Failed => crate::SettingsRowStatus::Failed,
+            S::Down => crate::SettingsRowStatus::Down,
         };
-        let options: Vec<crate::DropdownRow> = boards
-            .iter()
-            .map(|board| {
-                let bound = board.bound_connector.is_some();
-                crate::DropdownRow {
-                    label: board.name.clone().into(),
-                    indicator: if bound {
-                        crate::DropdownIndicator::Link
-                    } else {
-                        crate::DropdownIndicator::LinkOff
-                    },
-                    tone: tone_of(board),
-                    selected: vm.selected_board == Some(board.id),
-                    busy: detach_busy && vm.busy_target == board.name,
+        let pending = vm.pending;
+        let blank = crate::ConnectionItem {
+            kind: crate::ConnectionItemKind::Account,
+            title: SharedString::new(),
+            detail: SharedString::new(),
+            show_title: false,
+            status: crate::SettingsRowStatus::Idle,
+            busy: false,
+            bound: false,
+            listed: false,
+            files_on: false,
+            files_locked: false,
+            files_restart: false,
+        };
+        let default_identity = vm
+            .rows
+            .first()
+            .map(|row| (row.server_url.as_str(), row.username.as_str()));
+        let mut items = Vec::new();
+        let mut addrs = Vec::new();
+        for card in crate::presentation::account_cards(&vm.rows) {
+            let status = crate::presentation::account_status(state, &card, |name| {
+                vm.liveness.get(name).copied().unwrap_or(false)
+            });
+            items.push(crate::ConnectionItem {
+                kind: crate::ConnectionItemKind::Account,
+                title: format!("{} @ {}", card.username, card.server_url).into(),
+                status: row_status(status),
+                busy: pending == Some(PendingKind::Remove)
+                    && card.connectors.contains(&vm.busy_target),
+                ..blank.clone()
+            });
+            addrs.push(ItemAddr::Account {
+                connector: card.connectors[0].clone(),
+            });
+            if default_identity == Some((card.server_url.as_str(), card.username.as_str())) {
+                items.push(crate::ConnectionItem {
+                    kind: crate::ConnectionItemKind::Files,
+                    files_on: vm.snapshot.files_sync_enabled,
+                    files_locked: vm.snapshot.env_overridden.contains("files_sync.enabled"),
+                    files_restart: vm.snapshot.applies.get("files_sync.enabled").is_some_and(
+                        |semantics| semantics.apply == crate::requests::SectionApply::OnRestart,
+                    ),
+                    ..blank.clone()
+                });
+                addrs.push(ItemAddr::Files);
+            }
+            let several = card.connectors.len() > 1;
+            for connector in &card.connectors {
+                let listing = vm.remotes.get(connector);
+                items.push(crate::ConnectionItem {
+                    kind: crate::ConnectionItemKind::Deck,
+                    title: connector.clone().into(),
+                    show_title: several,
+                    busy: matches!(
+                        pending,
+                        Some(
+                            PendingKind::ListRemote
+                                | PendingKind::Attach
+                                | PendingKind::CreateBind
+                                | PendingKind::Detach
+                        )
+                    ) && vm.busy_target == *connector,
+                    listed: listing.is_some(),
+                    ..blank.clone()
+                });
+                addrs.push(ItemAddr::Deck {
+                    connector: connector.clone(),
+                });
+                for remote in listing.into_iter().flatten() {
+                    let bound = state.boards.values().find(|board| {
+                        !board.deleted
+                            && !board.archived
+                            && board.remote.as_ref().is_some_and(|binding| {
+                                binding.connector.as_str() == connector
+                                    && binding.board == remote.remote_id
+                            })
+                    });
+                    items.push(crate::ConnectionItem {
+                        kind: crate::ConnectionItemKind::Remote,
+                        title: remote.title.clone().into(),
+                        detail: bound.map(|b| b.title.clone()).unwrap_or_default().into(),
+                        bound: bound.is_some(),
+                        busy: matches!(
+                            pending,
+                            Some(
+                                PendingKind::Attach | PendingKind::CreateBind | PendingKind::Detach
+                            )
+                        ) && vm.busy_target == *connector
+                            && vm.busy_remote == Some(remote.remote_id),
+                        ..blank.clone()
+                    });
+                    addrs.push(ItemAddr::Remote {
+                        connector: connector.clone(),
+                        remote: remote.remote_id,
+                        bound: bound.map(|b| b.id),
+                    });
                 }
-            })
-            .collect();
-        let selected = boards
-            .iter()
-            .find(|board| vm.selected_board == Some(board.id));
-        let selected_index = boards
-            .iter()
-            .position(|board| vm.selected_board == Some(board.id))
-            .and_then(|i| i32::try_from(i).ok())
-            .unwrap_or(0);
-        let selected_bound = selected.is_some_and(|board| board.bound_connector.is_some());
-        let selected_name = selected.map(|board| board.name.clone());
-        let ids: Vec<SharedString> = boards
-            .iter()
-            .map(|board| board.id.to_string().into())
-            .collect();
-        (options, selected_index, selected_bound, selected_name, ids)
+            }
+        }
+        (items, addrs)
     }
 
+    /// Pushes the settings view-model onto the window global (the
+    /// refresh pass's settings half; rows fold liveness + the bound
+    /// boards' phases, D8). The row lists ride their persistent
+    /// handles through the positional diff (r2 D9).
     pub(crate) fn push_settings(&mut self, window: &AppWindow) {
         use crate::SettingsRowStatus as Row;
         let state = self.state.load();
         // The busy machine (r2 D34): the flag timeline is the model's;
-        // the connector rows mark Save/Test/Remove/Attach ceremonies,
-        // the board rows mark Detach.
-        let connector_busy = matches!(
-            self.settings.pending,
-            Some(PendingKind::Save | PendingKind::Test | PendingKind::Remove | PendingKind::Attach)
-        );
-        let detach_busy = matches!(self.settings.pending, Some(PendingKind::Detach));
-        // The board selector's options (r4 D39 §2.3): re-derived from
-        // the engine state EVERY pass — the mount-refresh by
-        // construction. A selection whose board no longer renders is
-        // dropped silently (the stale/foreign-id precedent), so Bind
-        // never stays armed on a ghost.
-        let boards = crate::presentation::boards_of(&state);
-        if let Some(selected) = self.settings.selected_board
-            && !boards.iter().any(|board| board.id == selected)
-        {
-            self.settings.selected_board = None;
-        }
-        let (options, selected_index, selected_bound, selected_name, ids) =
-            Self::board_selector_model(&state, &self.settings, &boards, detach_busy);
+        // the connector rows mark the Remove ceremony.
+        let connector_busy = matches!(self.settings.pending, Some(PendingKind::Remove));
+        // The pickers' options (r4 D39 §2.3's rule, kept): the unbound
+        // live boards, re-derived from the engine state EVERY pass —
+        // the mount-refresh by construction.
+        let choices: Vec<requests::BoardInfo> = crate::presentation::boards_of(&state)
+            .into_iter()
+            .filter(|board| board.bound_connector.is_none())
+            .collect();
+        let options: Vec<crate::DropdownRow> = choices
+            .iter()
+            .map(|board| crate::DropdownRow {
+                label: board.name.clone().into(),
+                indicator: crate::DropdownIndicator::LinkOff,
+                tone: crate::DropdownTone::Neutral,
+                selected: false,
+                busy: false,
+            })
+            .collect();
+        self.settings.local_choices = choices.iter().map(|board| board.id).collect();
+        let (items, addrs) = Self::connection_items_model(&state, &self.settings);
+        self.settings.items = addrs;
         let rows: Vec<crate::ConnectionRow> = self
             .settings
             .rows
@@ -4659,21 +4751,9 @@ impl Adapter {
         let global = window.global::<crate::SettingsModel>();
         self.models.push_settings_rows(&global, &rows);
         self.models.push_board_options(&global, &options);
-        self.models.push_board_ids(&global, &ids);
-        global.set_selected_board(
-            self.settings
-                .selected_board
-                .map_or(String::new(), |id| id.to_string())
-                .into(),
-        );
-        global.set_selected_board_index(selected_index);
-        global.set_selected_board_bound(selected_bound);
-        // The empty state renders the caller's placeholder (markup
-        // copy); the push carries "" for "none".
-        global.set_selected_board_label(selected_name.unwrap_or_default().into());
+        self.models.push_connection_items(&global, &items);
         global.set_busy(self.settings.pending.is_some());
         global.set_busy_target(self.settings.busy_target.clone().into());
-        global.set_draft_name(self.settings.draft.name.clone().into());
         global.set_draft_server(self.settings.draft.server_url.clone().into());
         global.set_draft_username(self.settings.draft.username.clone().into());
         global.set_save_enabled(self.settings.save_enabled());
@@ -4920,7 +5000,6 @@ impl Adapter {
     /// focused publish masks the chain; this seam only mirrors.
     pub(crate) fn settings_field_edited(&mut self, field: usize, text: &str, window: &AppWindow) {
         let target = match field {
-            0 => &mut self.settings.draft.name,
             1 => &mut self.settings.draft.server_url,
             2 => &mut self.settings.draft.username,
             3 => {
@@ -5005,20 +5084,20 @@ impl Adapter {
         self.push_settings(window);
     }
 
-    /// The Save seam: mirror the final field texts (the commit
+    /// The Sign-in seam (round-5 chunk 8: the Save ceremony with a
+    /// derived name): mirror the final field texts (the commit
     /// callbacks carry them), then send the verify-first ceremony
-    /// request. The password clears off the draft after the send —
+    /// request with an empty name — the app derives it from the
+    /// identity. The password clears off the draft after the send —
     /// write-only (D26b).
     pub(crate) fn settings_save(
         &mut self,
         window: &AppWindow,
-        name: &str,
         server: &str,
         username: &str,
         password: &str,
     ) {
         let draft = ConnectionDraft {
-            name: name.to_owned(),
             server_url: server.to_owned(),
             username: username.to_owned(),
             password: password.to_owned(),
@@ -5045,7 +5124,7 @@ impl Adapter {
         let (reply, reply_rx) = oneshot::channel();
         let request = UiRequest::SaveConnection {
             profile: ConnectionProfile {
-                name: draft.name.clone(),
+                name: String::new(),
                 server_url: draft.server_url.clone(),
                 username: draft.username.clone(),
                 password: Secret(draft.password.clone()),
@@ -5058,7 +5137,7 @@ impl Adapter {
             request,
             PendingKind::Save,
             PendingReply::List(reply_rx),
-            &draft.name,
+            "",
         );
         self.set_settings_outcome(
             window,
@@ -5071,30 +5150,27 @@ impl Adapter {
         );
     }
 
-    /// The per-row Test seam: verify the row's stored secret (DEV-3 —
-    /// no retyping). A stale row index is absorbed silently.
-    pub(crate) fn settings_test_row(&mut self, window: &AppWindow, row: usize) {
-        let Some(entry) = self.settings.rows.get(row).cloned() else {
-            return;
-        };
-        if self.settings.pending.is_some() {
-            return;
-        }
-        let (reply, reply_rx) = oneshot::channel();
-        let request = UiRequest::TestConnection {
-            target: ConnectionTarget {
-                server_url: entry.server_url,
-                username: entry.username,
-            },
-            reply,
-        };
+    /// Sends one connections request whose reply is the fresh pair,
+    /// with the busy ceremony on `(connector, remote)`.
+    fn send_connections_op(
+        &mut self,
+        window: &AppWindow,
+        request: UiRequest,
+        reply_rx: oneshot::Receiver<Result<requests::ConnectionsSnapshot, SettingsError>>,
+        kind: PendingKind,
+        connector: &str,
+        remote: Option<RemoteBoardId>,
+    ) {
         let sent = self.settings.send(
             &self.requests,
             request,
-            PendingKind::Test,
-            PendingReply::Test(reply_rx),
-            &entry.name,
+            kind,
+            PendingReply::List(reply_rx),
+            connector,
         );
+        if sent {
+            self.settings.busy_remote = remote;
+        }
         self.set_settings_outcome(
             window,
             if sent {
@@ -5106,9 +5182,11 @@ impl Adapter {
         );
     }
 
-    /// The per-row Remove seam (a stale index is absorbed silently).
-    pub(crate) fn settings_remove_row(&mut self, window: &AppWindow, row: usize) {
-        let Some(entry) = self.settings.rows.get(row).cloned() else {
+    /// The account card's Remove seam (round-5 chunk 8): removes the
+    /// card's identity — the app refuses typed while a board is bound
+    /// through it. A stale or non-card index is absorbed silently.
+    pub(crate) fn settings_remove_item(&mut self, window: &AppWindow, item: usize) {
+        let Some(ItemAddr::Account { connector }) = self.settings.items.get(item).cloned() else {
             return;
         };
         if self.settings.pending.is_some() {
@@ -5116,15 +5194,40 @@ impl Adapter {
         }
         let (reply, reply_rx) = oneshot::channel();
         let request = UiRequest::RemoveConnection {
-            name: entry.name.clone(),
+            name: connector.clone(),
+            reply,
+        };
+        self.send_connections_op(
+            window,
+            request,
+            reply_rx,
+            PendingKind::Remove,
+            &connector,
+            None,
+        );
+    }
+
+    /// The Deck row's Refresh seam (round-5 chunk 8, D-8.3): lists the
+    /// connector's remote boards (the listing verifies the stored
+    /// credentials). A stale or non-Deck index is absorbed silently.
+    pub(crate) fn settings_refresh_item(&mut self, window: &AppWindow, item: usize) {
+        let Some(ItemAddr::Deck { connector }) = self.settings.items.get(item).cloned() else {
+            return;
+        };
+        if self.settings.pending.is_some() {
+            return;
+        }
+        let (reply, reply_rx) = oneshot::channel();
+        let request = UiRequest::ListRemoteBoards {
+            connector: connector.clone(),
             reply,
         };
         let sent = self.settings.send(
             &self.requests,
             request,
-            PendingKind::Remove,
-            PendingReply::List(reply_rx),
-            &entry.name,
+            PendingKind::ListRemote,
+            PendingReply::Remotes(connector.clone(), reply_rx),
+            &connector,
         );
         self.set_settings_outcome(
             window,
@@ -5137,25 +5240,24 @@ impl Adapter {
         );
     }
 
-    /// The board selector's seam (r2 D32): radio selection — the uuid
-    /// string from the row converts once here; a stale/foreign id is
-    /// absorbed silently.
-    pub(crate) fn settings_board_selected(&mut self, window: &AppWindow, id: &str) {
-        match uuid::Uuid::parse_str(id) {
-            Ok(id) => self.settings.selected_board = Some(id),
-            Err(_) => return,
-        }
-        self.push_settings(window);
-    }
-
-    /// The Bind seam (r2 D33): bind the selected board to this
-    /// connector row. The pending gate routes nothing (the row's
-    /// enabled gate is markup; the VM gate is the authority).
-    pub(crate) fn settings_bind_row(&mut self, window: &AppWindow, row: usize) {
-        let Some(entry) = self.settings.rows.get(row).cloned() else {
+    /// The remote row's picker seam (round-5 chunk 8, D-8.4): picking
+    /// an unbound local board binds it to this remote explicitly. A
+    /// stale item/option index, or a bound row, is absorbed silently.
+    pub(crate) fn settings_remote_bind_picked(
+        &mut self,
+        window: &AppWindow,
+        item: usize,
+        option: usize,
+    ) {
+        let Some(ItemAddr::Remote {
+            connector,
+            remote,
+            bound: None,
+        }) = self.settings.items.get(item).cloned()
+        else {
             return;
         };
-        let Some(board) = self.settings.selected_board else {
+        let Some(board) = self.settings.local_choices.get(option).copied() else {
             return;
         };
         if self.settings.pending.is_some() {
@@ -5164,69 +5266,111 @@ impl Adapter {
         let (reply, reply_rx) = oneshot::channel();
         let request = UiRequest::AttachConnector {
             board: BoardId::from_uuid(board),
-            connector: entry.name.clone(),
+            connector: connector.clone(),
+            remote,
             reply,
         };
-        let sent = self.settings.send(
-            &self.requests,
-            request,
-            PendingKind::Attach,
-            PendingReply::List(reply_rx),
-            &entry.name,
-        );
-        self.set_settings_outcome(
+        self.send_connections_op(
             window,
-            if sent {
-                SettingsOutcome::Busy
-            } else {
-                SettingsOutcome::Failed
-            },
-            None,
+            request,
+            reply_rx,
+            PendingKind::Attach,
+            &connector,
+            Some(remote),
         );
     }
 
-    /// The Detach seam (r2 D33, reshaped r4 D39 §3.3): unbind the
-    /// SELECTED board from its connector. A missing selection or an
-    /// unbound one is absorbed silently (the stale-id precedent — the
-    /// button's enablement is markup; the VM gate is the authority).
-    /// The busy ceremony keeps the board name as its target.
-    pub(crate) fn settings_detach_selected(&mut self, window: &AppWindow) {
-        let Some(selected) = self.settings.selected_board else {
-            return;
-        };
-        let state = self.state.load();
-        let Some(entry) = state
-            .boards
-            .values()
-            .find(|board| board.id.as_uuid() == selected && !board.deleted && !board.archived)
-            .cloned()
+    /// The remote row's Create seam (round-5 chunk 8, D-8.5): a new
+    /// local board from the remote's title, bound to it. A stale index
+    /// or a bound row is absorbed silently.
+    pub(crate) fn settings_create_item(&mut self, window: &AppWindow, item: usize) {
+        let Some(ItemAddr::Remote {
+            connector,
+            remote,
+            bound: None,
+        }) = self.settings.items.get(item).cloned()
         else {
             return;
         };
-        drop(state);
-        let Some(connector) = entry
-            .remote
-            .as_ref()
-            .map(|binding| binding.connector.to_string())
+        if self.settings.pending.is_some() {
+            return;
+        }
+        let (reply, reply_rx) = oneshot::channel();
+        let request = UiRequest::CreateLocalBoard {
+            connector: connector.clone(),
+            remote,
+            reply,
+        };
+        self.send_connections_op(
+            window,
+            request,
+            reply_rx,
+            PendingKind::CreateBind,
+            &connector,
+            Some(remote),
+        );
+    }
+
+    /// The bound remote row's Disconnect seam (r2 D33's detach, moved
+    /// onto the row by round-5 chunk 8): the same `DetachConnector`
+    /// request and multi-board guard. A stale index or an unbound row
+    /// is absorbed silently.
+    pub(crate) fn settings_disconnect_item(&mut self, window: &AppWindow, item: usize) {
+        let Some(ItemAddr::Remote {
+            connector,
+            remote,
+            bound: Some(board),
+        }) = self.settings.items.get(item).cloned()
         else {
             return;
         };
-        let name = entry.title.clone();
         if self.settings.pending.is_some() {
             return;
         }
         let (reply, reply_rx) = oneshot::channel();
         let request = UiRequest::DetachConnector {
-            board: entry.id,
-            connector,
+            board,
+            connector: connector.clone(),
             reply,
         };
+        self.send_connections_op(
+            window,
+            request,
+            reply_rx,
+            PendingKind::Detach,
+            &connector,
+            Some(remote),
+        );
+    }
+
+    /// The default account's Files toggle seam (round-5 chunk 8,
+    /// D-8.6; commit-on-pick): 0 = On, 1 = Off. An env-locked row
+    /// absorbs the pick (the app-side guard is the authority).
+    pub(crate) fn settings_files_picked(&mut self, window: &AppWindow, index: usize) {
+        let Some(enabled) = [true, false].get(index).copied() else {
+            return;
+        };
+        if self.settings.pending.is_some() {
+            self.set_settings_outcome(window, SettingsOutcome::Rejected, None);
+            return;
+        }
+        if self
+            .settings
+            .snapshot
+            .env_overridden
+            .contains("files_sync.enabled")
+        {
+            tracing::debug!("files sync pick on an env-locked row; absorbed");
+            return;
+        }
+        let (reply, reply_rx) = oneshot::channel();
+        let request = UiRequest::SetFilesSyncEnabled { enabled, reply };
         let sent = self.settings.send(
             &self.requests,
             request,
-            PendingKind::Detach,
-            PendingReply::List(reply_rx),
-            &name,
+            PendingKind::General(crate::requests::Field::FilesSyncEnabled),
+            PendingReply::Snapshot(reply_rx),
+            "",
         );
         self.set_settings_outcome(
             window,
@@ -6120,7 +6264,6 @@ pub(crate) fn install(
     {
         use crate::settings_status as status;
         let global = window.global::<crate::SettingsModel>();
-        global.set_help_name(status::HELP_NAME.into());
         global.set_help_server(status::HELP_SERVER.into());
         global.set_help_username(status::HELP_USERNAME.into());
         global.set_help_app_password(status::HELP_APP_PASSWORD.into());
@@ -9017,47 +9160,62 @@ fn install_settings_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     }
     {
         install_seam!(window: window.on_settings_save_clicked, adapter: adapter;
-        bind mut (a, window), args (name, server, username, password), {            a
-                .settings_save(&window, &name, &server, &username, &password);
-
-        });
-    }
-    {
-        install_seam!(window: window.on_settings_test_clicked, adapter: adapter;
-        bind mut (a, window), args (row), {            let Ok(row) = usize::try_from(row) else {
-                return;
-            };
-            a.settings_test_row(&window, row);
+        bind mut (a, window), args (server, username, password), {            a
+                .settings_save(&window, &server, &username, &password);
 
         });
     }
     {
         install_seam!(window: window.on_settings_remove_clicked, adapter: adapter;
-        bind mut (a, window), args (row), {            let Ok(row) = usize::try_from(row) else {
+        bind mut (a, window), args (item), {            let Ok(item) = usize::try_from(item) else {
                 return;
             };
-            a.settings_remove_row(&window, row);
+            a.settings_remove_item(&window, item);
 
         });
     }
     {
-        install_seam!(window: window.on_settings_board_selected, adapter: adapter;
-        bind mut (a, window), args (id), {            a.settings_board_selected(&window, &id);
-
-        });
-    }
-    {
-        install_seam!(window: window.on_settings_bind_clicked, adapter: adapter;
-        bind mut (a, window), args (row), {            let Ok(row) = usize::try_from(row) else {
+        install_seam!(window: window.on_settings_refresh_clicked, adapter: adapter;
+        bind mut (a, window), args (item), {            let Ok(item) = usize::try_from(item) else {
                 return;
             };
-            a.settings_bind_row(&window, row);
+            a.settings_refresh_item(&window, item);
 
         });
     }
     {
-        install_seam!(window: window.on_settings_detach_selected, adapter: adapter;
-        bind mut (a, window), args (), {            a.settings_detach_selected(&window);
+        install_seam!(window: window.on_settings_create_clicked, adapter: adapter;
+        bind mut (a, window), args (item), {            let Ok(item) = usize::try_from(item) else {
+                return;
+            };
+            a.settings_create_item(&window, item);
+
+        });
+    }
+    {
+        install_seam!(window: window.on_settings_disconnect_clicked, adapter: adapter;
+        bind mut (a, window), args (item), {            let Ok(item) = usize::try_from(item) else {
+                return;
+            };
+            a.settings_disconnect_item(&window, item);
+
+        });
+    }
+    {
+        install_seam!(window: window.on_settings_files_picked, adapter: adapter;
+        bind mut (a, window), args (item), {            let Ok(item) = usize::try_from(item) else {
+                return;
+            };
+            a.settings_files_picked(&window, item);
+
+        });
+    }
+    {
+        install_seam!(window: window.on_settings_remote_bind_picked, adapter: adapter;
+        bind mut (a, window), args (item, option), {            let (Ok(item), Ok(option)) = (usize::try_from(item), usize::try_from(option)) else {
+                return;
+            };
+            a.settings_remote_bind_picked(&window, item, option);
 
         });
     }
