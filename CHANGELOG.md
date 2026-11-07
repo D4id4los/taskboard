@@ -10,6 +10,28 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 ### Added
 
+- The files-sync engine seam and the journal import (#631, DR-8
+  chunk 3): the reflection family becomes the files substrate's first
+  roaming passenger. A new `UserDataReport` family rides its own
+  bounded engine lane beside the board reports (`SyncReport` is not
+  widened — pinned); the engine folds imported rows into the
+  reflection home under the sidecar folds' `>=` clock rule (ties go to
+  the fold's totaliser winner, so every device adopts the same row and
+  their published hashes agree), applies tombstones in place, skips
+  tombstones for ids it never held (no ghost rows), and persists only
+  `UpsertReflectionEntry` — no outbox op, no undo entry, no sync row
+  (pinned). The pure core gains the `journal` wire codec (entity ↔
+  keyed row, strict ratings, tolerant flags, typed per-row
+  rejections); the connector derives its published document from the
+  engine's state (tombstones included) and runs the import step
+  **fold-first** — peers' history enters the engine before the device's
+  own document claims the view (a lane-blocked test pins the ordering),
+  with a delta fingerprint so forever-different views never re-send
+  no-op reports and undecodable peer rows are counted on the cycle
+  outcome while still relayed. Bootstrap wires the lane; a two-engine
+  journey over one shared fake account converges journals (edits,
+  deletes, concurrent equal-clock edits) to equal homes, hash-equal
+  documents, and a PUT-free steady state.
 - The Review view's reflection trends and past-entries ledger (#623
   slice B, DR-7 chunk 4): two appended reflection sections over the
   landed 7/30-day windows — Mood/Energy mean cells (integer domain
