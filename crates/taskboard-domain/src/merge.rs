@@ -682,10 +682,6 @@ pub(crate) fn fold_task_app_data(
     intent: crate::pipeline::PendingTaskIntent,
     native_scheduled: bool,
 ) {
-    // The local author leg is the task's own per-field slot: whoever
-    // wrote the local field last (this device, or a peer via an earlier
-    // fold adoption — the entity carries the slot).
-    let _ = &local.authors;
     for (key, write) in &entry.fields {
         // The lane gate: native ownership skips the document's key.
         if native_scheduled && key == "scheduled" {
@@ -3924,7 +3920,6 @@ mod tests {
         TaskFieldWrite {
             value,
             clock: ts(clock_secs),
-
             by: None,
         }
     }
@@ -4214,7 +4209,6 @@ mod tests {
                     ),
                     created: ts(BASE + 100),
                     clock: ts(BASE + 500),
-
                     by: None,
                 },
             ),
@@ -4227,7 +4221,6 @@ mod tests {
                     ),
                     created: ts(BASE + 400),
                     clock: ts(BASE + 400),
-
                     by: None,
                 },
             ),
@@ -4267,7 +4260,6 @@ mod tests {
                 kind: crate::reminders::ReminderKind::At(at_instant),
                 created: ts(BASE + 400),
                 clock: ts(BASE + 400),
-
                 by: None,
             },
         )]);
@@ -4291,7 +4283,6 @@ mod tests {
                 ),
                 created: ts(BASE + 400),
                 clock: ts(BASE + 500),
-
                 by: None,
             },
         )]);
@@ -4324,7 +4315,6 @@ mod tests {
                 ),
                 created: ts(BASE + 400),
                 clock: ts(BASE + 400),
-
                 by: None,
             },
         )]);
@@ -4348,7 +4338,6 @@ mod tests {
                 ),
                 created: ts(BASE + 100),
                 clock: ts(BASE + 500),
-
                 by: None,
             },
         )]);
@@ -4370,7 +4359,6 @@ mod tests {
                 ),
                 created: ts(BASE + 100),
                 clock: ts(BASE + 500),
-
                 by: None,
             },
         )]);
@@ -4393,7 +4381,6 @@ mod tests {
                 ),
                 created: ts(BASE + 100),
                 clock: ts(BASE + 500),
-
                 by: None,
             },
         )]);
@@ -4433,7 +4420,6 @@ mod tests {
                 ),
                 created: ts(BASE + 100),
                 clock: ts(BASE + 500),
-
                 by: None,
             },
         )]);
@@ -4476,7 +4462,6 @@ mod tests {
             "00000000-0000-0000-0000-00000000000a",
             RuleEntry::Tombstone {
                 clock: ts(BASE + 500),
-
                 by: None,
             },
         )]);
@@ -4494,7 +4479,6 @@ mod tests {
             "00000000-0000-0000-0000-00000000000a",
             RuleEntry::Tombstone {
                 clock: ts(BASE + 501),
-
                 by: None,
             },
         )]);
@@ -4512,7 +4496,6 @@ mod tests {
             "00000000-0000-0000-0000-00000000000c",
             RuleEntry::Tombstone {
                 clock: ts(BASE + 999),
-
                 by: None,
             },
         )]);
@@ -4535,7 +4518,6 @@ mod tests {
                 "not-a-uuid",
                 RuleEntry::Tombstone {
                     clock: ts(BASE + 999),
-
                     by: None,
                 },
             ),
@@ -4548,7 +4530,6 @@ mod tests {
                     ),
                     created: ts(BASE + 1),
                     clock: ts(BASE + 2),
-
                     by: None,
                 },
             ),
@@ -4584,7 +4565,6 @@ mod tests {
                     ),
                     created: ts(BASE + 100),
                     clock: ts(BASE + 900),
-
                     by: None,
                 },
             ),
@@ -4597,7 +4577,6 @@ mod tests {
                     ),
                     created: ts(BASE + 1),
                     clock: ts(BASE + 1),
-
                     by: None,
                 },
             ),
@@ -4605,7 +4584,6 @@ mod tests {
                 "00000000-0000-0000-0000-00000000000a-x",
                 RuleEntry::Tombstone {
                     clock: ts(BASE + 900),
-
                     by: None,
                 },
             ),
@@ -4814,7 +4792,6 @@ mod tests {
             &key,
             DismissalEntry::Dismissed {
                 dismissed_at: ts(BASE + 110),
-
                 by: None,
             },
         )]);
@@ -4845,7 +4822,6 @@ mod tests {
                 "default:00000000-0000-0000-0000-000000000009|2026-04-01T08:00:00+00:00",
                 DismissalEntry::Dismissed {
                     dismissed_at: ts(BASE + 1),
-
                     by: None,
                 },
             ),
@@ -4853,7 +4829,6 @@ mod tests {
                 "alarm:00000000-0000-0000-0000-000000000009|2026-04-01T08:00:00+00:00",
                 DismissalEntry::Dismissed {
                     dismissed_at: ts(BASE + 2),
-
                     by: None,
                 },
             ),
@@ -4865,7 +4840,6 @@ mod tests {
                 "garbage",
                 DismissalEntry::Dismissed {
                     dismissed_at: ts(BASE),
-
                     by: None,
                 },
             ),
@@ -4905,7 +4879,6 @@ mod tests {
             created,
             clock,
             insistence: crate::reminders::Insistence::Alarm,
-
             by: None,
         }
     }
@@ -4995,7 +4968,6 @@ mod tests {
             local.id.as_uuid().to_string(),
             crate::appdata::BreakRuleEntry::Tombstone {
                 clock: ts(BASE + 1),
-
                 by: None,
             },
         )]);
@@ -5008,7 +4980,6 @@ mod tests {
                 .to_string(),
             crate::appdata::BreakRuleEntry::Tombstone {
                 clock: ts(BASE + 1),
-
                 by: None,
             },
         )]);
@@ -5043,7 +5014,6 @@ mod tests {
             &key,
             DismissalEntry::Dismissed {
                 dismissed_at: ts(BASE + 110),
-
                 by: None,
             },
         )]);
@@ -5076,7 +5046,6 @@ mod tests {
                 ),
                 DismissalEntry::Dismissed {
                     dismissed_at: ts(BASE + 1),
-
                     by: None,
                 },
             ),
@@ -5084,7 +5053,6 @@ mod tests {
                 "default:00000000-0000-0000-0000-000000000009|2026-04-01T08:00:00+00:00",
                 DismissalEntry::Dismissed {
                     dismissed_at: ts(BASE + 2),
-
                     by: None,
                 },
             ),
@@ -5092,7 +5060,6 @@ mod tests {
                 "alarm:00000000-0000-0000-0000-000000000009|2026-04-01T08:00:00+00:00",
                 DismissalEntry::Dismissed {
                     dismissed_at: ts(BASE + 3),
-
                     by: None,
                 },
             ),
@@ -5100,7 +5067,6 @@ mod tests {
                 "break:garbage|2026-04-01T08:00:00+00:00",
                 DismissalEntry::Dismissed {
                     dismissed_at: ts(BASE + 4),
-
                     by: None,
                 },
             ),
@@ -5125,7 +5091,6 @@ mod tests {
             &key,
             DismissalEntry::Dismissed {
                 dismissed_at: ts(BASE + 110),
-
                 by: None,
             },
         )]);
@@ -6047,7 +6012,6 @@ mod duplicate_reconcile_tests {
             created: crate::merge_testutil::ts(clock - 2_000),
             clock: crate::merge_testutil::ts(clock),
             kind,
-
             by: None,
         }
     }
@@ -6172,7 +6136,6 @@ mod duplicate_reconcile_tests {
                 uuid::Uuid::from_u128(2).to_string(),
                 TimeEntryRecord::Tombstone {
                     clock: crate::merge_testutil::ts(BASE + 600),
-
                     by: None,
                 },
             ),
@@ -6181,7 +6144,6 @@ mod duplicate_reconcile_tests {
                 local_id.as_uuid().to_string(),
                 TimeEntryRecord::Tombstone {
                     clock: crate::merge_testutil::ts(BASE + 100),
-
                     by: None,
                 },
             ),
@@ -6190,7 +6152,6 @@ mod duplicate_reconcile_tests {
                 uuid::Uuid::from_u128(3).to_string(),
                 TimeEntryRecord::Tombstone {
                     clock: crate::merge_testutil::ts(BASE + 900),
-
                     by: None,
                 },
             ),
@@ -6209,7 +6170,6 @@ mod duplicate_reconcile_tests {
                     created: crate::merge_testutil::ts(1),
                     clock: crate::merge_testutil::ts(BASE + 900),
                     kind: crate::tracking::TimeEntryKind::Work,
-
                     by: None,
                 },
             ),
@@ -6253,7 +6213,6 @@ mod duplicate_reconcile_tests {
         TaskFieldWrite {
             value,
             clock: ts(clock_secs),
-
             by: None,
         }
     }
@@ -6760,7 +6719,6 @@ mod habit_fold_tests {
             anchor_time: None,
             clocks: HabitClocks::all(ts(stamp)),
             continued_from: None,
-
             by: None,
         }
     }
@@ -6944,7 +6902,6 @@ mod habit_fold_tests {
             HabitLogRecord::Entry {
                 count: 4,
                 clock: ts(200),
-
                 by: None,
             },
         )]
@@ -6960,7 +6917,6 @@ mod habit_fold_tests {
             HabitLogRecord::Entry {
                 count: 1,
                 clock: ts(210),
-
                 by: None,
             },
         )]
@@ -6975,7 +6931,6 @@ mod habit_fold_tests {
             HabitLogRecord::Entry {
                 count: 0,
                 clock: ts(300),
-
                 by: None,
             },
         )]
@@ -6990,7 +6945,6 @@ mod habit_fold_tests {
             HabitLogRecord::Entry {
                 count: 9,
                 clock: ts(300),
-
                 by: None,
             },
         )]
@@ -7015,7 +6969,6 @@ mod habit_fold_tests {
             HabitLogRecord::Entry {
                 count: 5,
                 clock: ts(400),
-
                 by: None,
             },
         );
@@ -7024,7 +6977,6 @@ mod habit_fold_tests {
             HabitLogRecord::Entry {
                 count: 6,
                 clock: ts(410),
-
                 by: None,
             },
         );
@@ -7160,5 +7112,276 @@ mod author_duel_tests {
         // Push-echo adoption: authorship carried through unchanged.
         let echoed = adopt_task_after_push(&local, &remote, &ctx, true);
         assert_eq!(echoed.authors, local.authors);
+    }
+
+    /// T-DUEL-2 (the convergence law, per sidecar fold family — the
+    /// plan's catalogue): two devices stamp *equal* clocks on distinct
+    /// contents of the same row key; each folds the other's document
+    /// entry. Both must end on the higher author's row — the pre-F1
+    /// clock-only duel leaves each writer holding its own row forever
+    /// (A adopts B's equal-clock row via the doc-wins `>=`, B adopts
+    /// A's; the strict families keep their own — divergence either
+    /// way), so every test below fails without the author leg.
+    mod sidecar_convergence {
+        use super::*;
+
+        fn writers() -> (AuthorId, AuthorId, chrono::DateTime<chrono::Utc>) {
+            (
+                author(0x00A1_5100_0000_0001),
+                author(0x00B2_5200_0000_0002),
+                ts(BASE),
+            )
+        }
+
+        /// Reminder rules: content leg = insistence.
+        #[test]
+        fn reminder_rules_fold_converges_on_the_higher_author() {
+            let (a, b, t) = writers();
+            let task = crate::ids::TaskId::from(uuid::Uuid::from_u128(0x501));
+            let rule_id = crate::ids::ReminderRuleId::from(uuid::Uuid::from_u128(0x601));
+            let rule = |insistence: crate::reminders::Insistence| crate::reminders::ReminderRule {
+                id: rule_id,
+                task,
+                kind: crate::reminders::ReminderKind::DueOffset(
+                    crate::reminders::ReminderOffset::before(
+                        chrono::TimeDelta::try_seconds(-300).unwrap(),
+                    )
+                    .unwrap(),
+                ),
+                insistence,
+                created_at: t,
+                updated_at: t,
+            };
+            let doc_row = |insistence: crate::reminders::Insistence,
+                           by: Option<AuthorId>|
+             -> crate::appdata::RuleEntry {
+                crate::appdata::RuleEntry::Rule {
+                    kind: crate::reminders::ReminderKind::DueOffset(
+                        crate::reminders::ReminderOffset::before(
+                            chrono::TimeDelta::try_seconds(-300).unwrap(),
+                        )
+                        .unwrap(),
+                    ),
+                    created: t,
+                    clock: t,
+                    insistence,
+                    by,
+                }
+            };
+            let fold = |own: crate::reminders::Insistence,
+                        own_author: AuthorId,
+                        foreign: crate::reminders::Insistence,
+                        foreign_author: AuthorId| {
+                let mut rules = std::collections::BTreeMap::from([(rule_id, rule(own))]);
+                let entry = crate::appdata::RulesEntry {
+                    rules: [(
+                        rule_id.as_uuid().to_string(),
+                        doc_row(foreign, Some(foreign_author)),
+                    )]
+                    .into_iter()
+                    .collect(),
+                    unknown: std::collections::BTreeMap::new(),
+                };
+                fold_reminder_rules(&mut rules, task, &entry, false, Some(own_author));
+                rules[&rule_id].insistence
+            };
+            assert_eq!(
+                fold(
+                    crate::reminders::Insistence::Normal,
+                    a,
+                    crate::reminders::Insistence::Alarm,
+                    b
+                ),
+                crate::reminders::Insistence::Alarm,
+                "A folds B's equal-clock row: the higher author's content wins"
+            );
+            assert_eq!(
+                fold(
+                    crate::reminders::Insistence::Alarm,
+                    b,
+                    crate::reminders::Insistence::Normal,
+                    a
+                ),
+                crate::reminders::Insistence::Alarm,
+                "B folds A's equal-clock row: its own higher-author row stands"
+            );
+        }
+
+        /// Break rules: content leg = label.
+        #[test]
+        fn break_rules_fold_converges_on_the_higher_author() {
+            use crate::appdata::BreakRuleEntry;
+            let (a, b, t) = writers();
+            let break_id = crate::ids::BreakRuleId::from(uuid::Uuid::from_u128(0x602));
+            let board = crate::ids::BoardId::from(uuid::Uuid::from_u128(0x603));
+            let rule = |label: &str| crate::reminders::BreakRule {
+                id: break_id,
+                board,
+                label: label.to_owned(),
+                threshold: crate::tracking::WorkThreshold::try_new(
+                    chrono::TimeDelta::try_seconds(1_500).unwrap(),
+                )
+                .unwrap(),
+                insistence: crate::reminders::Insistence::Normal,
+                created_at: t,
+            };
+            let doc_row = |label: &str, by: Option<AuthorId>| BreakRuleEntry::Rule {
+                label: label.to_owned(),
+                threshold: crate::tracking::WorkThreshold::try_new(
+                    chrono::TimeDelta::try_seconds(1_500).unwrap(),
+                )
+                .unwrap(),
+                created: t,
+                clock: t,
+                insistence: crate::reminders::Insistence::Normal,
+                by,
+            };
+            let fold =
+                |own: &str, own_author: AuthorId, foreign: &str, foreign_author: AuthorId| {
+                    let mut rules = std::collections::BTreeMap::from([(break_id, rule(own))]);
+                    let rows = [(
+                        break_id.as_uuid().to_string(),
+                        doc_row(foreign, Some(foreign_author)),
+                    )]
+                    .into_iter()
+                    .collect();
+                    fold_break_rules(&mut rules, &rows, board, Some(own_author));
+                    rules[&break_id].label.clone()
+                };
+            assert_eq!(fold("a-break", a, "b-break", b), "b-break");
+            assert_eq!(fold("b-break", b, "a-break", a), "b-break");
+        }
+
+        /// Time entries: content leg = task title.
+        #[test]
+        fn time_entries_fold_converges_on_the_higher_author() {
+            let (a, b, t) = writers();
+            let entry_id = crate::ids::TimeEntryId::from(uuid::Uuid::from_u128(0x604));
+            let task = crate::ids::TaskId::from(uuid::Uuid::from_u128(0x501));
+            let entry = |title: &str| crate::tracking::TimeEntry {
+                id: entry_id,
+                task,
+                task_title: title.to_owned(),
+                start: t,
+                end: None,
+                created_at: t,
+                updated_at: t,
+                kind: crate::tracking::TimeEntryKind::Work,
+            };
+            let doc_row = |title: &str, by: Option<AuthorId>| -> crate::appdata::TimeEntryRecord {
+                crate::appdata::TimeEntryRecord::Entry {
+                    task: Some("1281".to_owned()),
+                    title: title.to_owned(),
+                    start: t,
+                    end: None,
+                    created: t,
+                    clock: t,
+                    kind: crate::tracking::TimeEntryKind::Work,
+                    by,
+                }
+            };
+            let fold =
+                |own: &str, own_author: AuthorId, foreign: &str, foreign_author: AuthorId| {
+                    let mut tracking = crate::tracking::TrackingState {
+                        entries: [(entry_id, entry(own))].into_iter().collect(),
+                    };
+                    let rows = [(
+                        entry_id.as_uuid().to_string(),
+                        doc_row(foreign, Some(foreign_author)),
+                    )]
+                    .into_iter()
+                    .collect();
+                    let cards = [("1281".to_owned(), task)].into_iter().collect();
+                    fold_time_entries(&mut tracking, &rows, &cards, Some(own_author));
+                    tracking.entries[&entry_id].task_title.clone()
+                };
+            assert_eq!(fold("a-title", a, "b-title", b), "b-title");
+            assert_eq!(fold("b-title", b, "a-title", a), "b-title");
+        }
+
+        /// Habits: content leg = title (the duel runs on the effective clock).
+        #[test]
+        fn habits_fold_converges_on_the_higher_author() {
+            let (a, b, t) = writers();
+            let habit_id = crate::ids::HabitId::from(uuid::Uuid::from_u128(0x605));
+            let board = crate::ids::BoardId::from(uuid::Uuid::from_u128(0x603));
+            let target =
+                crate::habit::HabitTarget::PerDay(crate::habit::NonZeroCount::new(3).unwrap());
+            let habit = |title: &str| crate::habit::Habit {
+                id: habit_id,
+                board,
+                title: title.to_owned(),
+                target,
+                order: 0,
+                anchor_time: None,
+                clocks: crate::habit::HabitClocks::all(t),
+                continued_from: None,
+                deleted: false,
+            };
+            let doc_row = |title: &str, by: Option<AuthorId>| crate::appdata::HabitRecord::Live {
+                title: title.to_owned(),
+                target,
+                order: 0,
+                anchor_time: None,
+                clocks: crate::habit::HabitClocks::all(t),
+                continued_from: None,
+                by,
+            };
+            let fold =
+                |own: &str, own_author: AuthorId, foreign: &str, foreign_author: AuthorId| {
+                    let mut state = crate::habit::HabitState {
+                        habits: [(habit_id, habit(own))].into_iter().collect(),
+                        log: std::collections::BTreeMap::new(),
+                    };
+                    let rows = [(
+                        habit_id.as_uuid().to_string(),
+                        doc_row(foreign, Some(foreign_author)),
+                    )]
+                    .into_iter()
+                    .collect();
+                    fold_habits(&mut state, &rows, board, Some(own_author));
+                    state.habits[&habit_id].title.clone()
+                };
+            assert_eq!(fold("a-habit", a, "b-habit", b), "b-habit");
+            assert_eq!(fold("b-habit", b, "a-habit", a), "b-habit");
+        }
+
+        /// Habit log: content leg = count.
+        #[test]
+        fn habit_log_fold_converges_on_the_higher_author() {
+            let (a, b, t) = writers();
+            let log_key = crate::habit::HabitLogKey::parse_wire_form(
+                "00000000-0000-0000-0000-000000000606|2026-01-01",
+            )
+            .unwrap();
+            let fold = |own: u32, own_author: AuthorId, foreign: u32, foreign_author: AuthorId| {
+                let mut state = crate::habit::HabitState {
+                    habits: std::collections::BTreeMap::new(),
+                    log: [(
+                        log_key,
+                        crate::habit::HabitLogEntry {
+                            count: own,
+                            clock: t,
+                        },
+                    )]
+                    .into_iter()
+                    .collect(),
+                };
+                let rows = [(
+                    log_key.wire_form(),
+                    crate::appdata::HabitLogRecord::Entry {
+                        count: foreign,
+                        clock: t,
+                        by: Some(foreign_author),
+                    },
+                )]
+                .into_iter()
+                .collect();
+                fold_habit_log(&mut state, &rows, Some(own_author));
+                state.log[&log_key].count
+            };
+            assert_eq!(fold(1, a, 2, b), 2);
+            assert_eq!(fold(2, b, 1, a), 2);
+        }
     }
 }

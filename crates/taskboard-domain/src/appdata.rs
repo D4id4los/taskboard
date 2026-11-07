@@ -6042,11 +6042,13 @@ mod author_by_tests {
         assert_eq!(absent.by, None);
     }
 
-    /// T-SIDE-2 (the old-reader relay simulation): a pre-F1 reader
-    /// ignores the unknown `by` key and re-publishes the row
-    /// `by`-less; the fold then compares authorless rows against each
-    /// other — the content and clock legs still converge, no panic, and
-    /// the relayed document never loses the row.
+    /// T-SIDE-2 (the old-reader relay simulation): a pre-F1 reader has
+    /// no `by` field — it decodes the authored row (unknown key
+    /// ignored), re-serializes it `by`-less, and re-publishes. The
+    /// relayed row must decode as a live authorless row (never
+    /// verbatim), the fold then compares it against its authored peer
+    /// by the clock alone, and the re-published form stays byte-stable
+    /// across further relay generations.
     #[test]
     fn old_reader_relay_converges_authorless() {
         let a = author();
@@ -6055,39 +6057,46 @@ mod author_by_tests {
             "clock": ts(1_000).to_rfc3339(),
             "by": a.to_string(),
         });
+        // The pre-F1 reader: decode (unknown key ignored), re-serialize.
+        // Its type has no `by` field, so its re-emit cannot carry one —
+        // the key is stripped here, exactly as the old serializer does.
         let row: HabitLogRecord = serde_json::from_value(authored).unwrap();
-        // Pre-F1 reader: decodes (unknown key ignored), re-serializes.
-        let relayed = serde_json::to_value(&row).unwrap();
-        let reparsed: HabitLogRecord = serde_json::from_value(relayed).unwrap();
-        let reparsed_row = match (&row, &reparsed) {
-            (
-                HabitLogRecord::Entry { count, clock, .. },
-                HabitLogRecord::Entry {
-                    count: c2,
-                    clock: c2k,
-                    by,
-                },
-            ) => {
-                assert_eq!(count, c2);
-                assert_eq!(clock, c2k);
-                // The relay strips the author only through the old
-                // reader's own re-encode; this version re-emits it —
-                // the old peer strips it, ours keeps it, both converge.
-                assert_eq!(*by, Some(a));
-                true
-            }
-            _ => false,
+        let mut old_reader_reemit = serde_json::to_value(&row).unwrap();
+        old_reader_reemit
+            .as_object_mut()
+            .expect("an entry row is an object")
+            .remove("by");
+        assert!(
+            old_reader_reemit.get("by").is_none(),
+            "a pre-F1 reader carries no `by` knowledge"
+        );
+        // The relay's `by`-less publication, decoded back by us (the
+        // mixed fleet's tolerant reader).
+        let relayed: HabitLogRecord = serde_json::from_value(old_reader_reemit.clone()).unwrap();
+        let HabitLogRecord::Entry {
+            count,
+            clock,
+            by: None,
+        } = relayed
+        else {
+            panic!("the by-less relay decodes as a live authorless row");
         };
-        assert!(reparsed_row, "the row survives the roundtrip typed");
+        assert_eq!(count, 3);
+        assert_eq!(clock, ts(1_000));
+        // The relay is generation-stable: our re-emit of the relayed row
+        // is byte-identical to the old reader's (both omit the key).
+        assert_eq!(serde_json::to_value(&relayed).unwrap(), old_reader_reemit);
 
-        // Fold: the authorless leg competes by the clock alone (both
-        // `None`) — the pinned strictly-newer direction decides.
+        // Fold: the relayed (authorless) leg competes against the
+        // authored row — at equal clocks `None < Some` gives the
+        // authored row the win; the `None`-vs-`None` tie keeps the
+        // pinned strictly-newer direction.
         let mut state = crate::habit::HabitState::default();
         let key = crate::habit::HabitLogKey::parse_wire_form(
             "0193a1b2-c3d4-7cc9-8a2e-5f1e2d3c4b5a|2026-01-01",
         )
         .unwrap();
-        let rows = [(
+        let relayed_rows = [(
             key.wire_form(),
             HabitLogRecord::Entry {
                 count: 3,
@@ -6097,7 +6106,23 @@ mod author_by_tests {
         )]
         .into_iter()
         .collect();
-        crate::merge::fold_habit_log(&mut state, &rows, None);
+        crate::merge::fold_habit_log(&mut state, &relayed_rows, None);
         assert_eq!(state.log.get(&key).map(|e| e.count), Some(3));
+        let authored_rows = [(
+            key.wire_form(),
+            HabitLogRecord::Entry {
+                count: 4,
+                clock: ts(1_000),
+                by: Some(a),
+            },
+        )]
+        .into_iter()
+        .collect();
+        crate::merge::fold_habit_log(&mut state, &authored_rows, None);
+        assert_eq!(
+            state.log.get(&key).map(|e| e.count),
+            Some(4),
+            "the authored equal-clock row outranks the relayed authorless one"
+        );
     }
 }

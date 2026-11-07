@@ -2734,7 +2734,6 @@ async fn folded_synced_dismissal_withdraws_the_toast() {
                             dismissal_wire_key(dismissed_rule, occurrence),
                             DismissalEntry::Dismissed {
                                 dismissed_at: ts(T0 - 30),
-
                                 by: None,
                             },
                         )]
@@ -3658,7 +3657,6 @@ async fn break_rules_and_reserved_entry_fold_into_engine_state() {
                         created: ts(T0 - 10),
                         clock: ts(T0 - 10),
                         insistence: taskboard_domain::Insistence::Alarm,
-
                         by: None,
                     },
                 )]
@@ -3677,7 +3675,6 @@ async fn break_rules_and_reserved_entry_fold_into_engine_state() {
                                 break_dismissal_wire_key(rule, occurrence),
                                 DismissalEntry::Dismissed {
                                     dismissed_at: ts(T0 - 30),
-
                                     by: None,
                                 },
                             )]
@@ -3693,7 +3690,6 @@ async fn break_rules_and_reserved_entry_fold_into_engine_state() {
                                 break_dismissal_wire_key(rule, occurrence),
                                 DismissalEntry::Dismissed {
                                     dismissed_at: ts(T0 - 30),
-
                                     by: None,
                                 },
                             )]

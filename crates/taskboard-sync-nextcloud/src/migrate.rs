@@ -221,7 +221,6 @@ mod tests {
         TaskFieldWrite {
             value,
             clock: ts(clock_secs),
-
             by: None,
         }
     }
@@ -242,7 +241,6 @@ mod tests {
             created: ts(100),
             clock: ts(clock_secs),
             insistence: Insistence::Normal,
-
             by: None,
         }
     }
@@ -330,7 +328,6 @@ mod tests {
             "00000000-0000-0000-0000-00000000000a|2026-01-01T08:00:00Z".to_owned(),
             DismissalEntry::Dismissed {
                 dismissed_at: ts(800),
-
                 by: None,
             },
         );
@@ -621,7 +618,6 @@ mod tests {
                     key_a.clone(),
                     DismissalEntry::Dismissed {
                         dismissed_at: ts(800),
-
                         by: None,
                     },
                 )]),
@@ -636,7 +632,6 @@ mod tests {
                         key_a.clone(),
                         DismissalEntry::Dismissed {
                             dismissed_at: ts(800),
-
                             by: None,
                         },
                     ),
@@ -644,7 +639,6 @@ mod tests {
                         key_b.clone(),
                         DismissalEntry::Dismissed {
                             dismissed_at: ts(900),
-
                             by: None,
                         },
                     ),
@@ -667,7 +661,6 @@ mod tests {
                     key_a.clone(),
                     DismissalEntry::Dismissed {
                         dismissed_at: ts(800),
-
                         by: None,
                     },
                 )]),
