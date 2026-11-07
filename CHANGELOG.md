@@ -10,6 +10,27 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 ### Added
 
+- `export --what pdf` — the PDF export & print verb (#624 stage B,
+  the 2026-11-05 krilla stack ruling): the printable today sheet as a
+  deterministic, fixed-geometry PDF. Four curated layouts — single-
+  sided A4 (two columns), A5, A6, and the foldable A4 sheet that folds
+  (horizontally, then vertically) into a four-page A6 booklet whose
+  bottom row is pre-rotated so it reads upright after the fold — all
+  laid out from the domain's own today projection with our own
+  measure/wrap math, over the Noto Sans faces embedded in the binary
+  (OFL-1.1, vendored under `crates/taskboard-app/assets/fonts/`;
+  nothing loads machine-local font paths). The verb lives only in
+  `taskboard-app` behind the opt-in `pdf-export` feature (default
+  off): a kiosk/default build compiles zero PDF code and rejects
+  `--what pdf` as a usage error. The leg writes a file — never a
+  stdout dump — with typed path outcomes (`--out` or the new
+  `[export] pdf_dir`/`pdf_layout`/`open_after_export` section), and
+  opens the system viewer best-effort, typed and non-fatal; the
+  receipt rides the normal `--json` envelope while the csv/json
+  payload families keep their raw stdout contract. Overflow on the
+  fold sheet is an exact `+N more` marker (one sheet by construction);
+  single-sided layouts paginate with repeated headers.
+
 - The files-sync engine seam and the journal import (#631, DR-8
   chunk 3): the reflection family becomes the files substrate's first
   roaming passenger. A new `UserDataReport` family rides its own
