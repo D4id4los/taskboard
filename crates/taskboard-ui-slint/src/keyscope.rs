@@ -84,8 +84,8 @@ impl ScopeInputs<'_> {
 
 /// The ordered context stack under the pulled facts. Byte-equal to
 /// the retired `KeymapShell::chain` for every legacy state (the T-S1
-/// port checklist pins all nine shapes); the two declared deltas are
-/// the field-phase picker head (D-δ1) and the editor head (D-δ2).
+/// port checklist pins every shape); the two declared deltas are the
+/// field-phase picker head (D-δ1) and the editor head (D-δ2).
 #[must_use]
 pub fn scope_stack(inputs: &ScopeInputs) -> Vec<ContextId> {
     let shell = inputs.shell;
@@ -673,7 +673,6 @@ mod tests {
             ..KeymapShell::default()
         };
         let i = inputs(&shell, &no_flow, false, false);
-        assert_eq!(scope_stack(&i), shell.chain());
         assert_eq!(scope_stack(&i), vec![ContextId::Menu]);
 
         // 2–5. the modal surfaces: the flow-armed chains.
@@ -682,7 +681,6 @@ mod tests {
             ..KeymapShell::default()
         };
         let i = inputs(&shell, &no_flow, false, false);
-        assert_eq!(scope_stack(&i), shell.chain());
         assert_eq!(
             scope_stack(&i),
             vec![ContextId::Palette, ContextId::ViInsert, ContextId::Global]
@@ -693,7 +691,6 @@ mod tests {
             ..KeymapShell::default()
         };
         let i = inputs(&shell, &no_flow, false, false);
-        assert_eq!(scope_stack(&i), shell.chain());
         assert_eq!(
             scope_stack(&i),
             vec![ContextId::FocusMode, ContextId::ViInsert, ContextId::Global]
@@ -704,7 +701,6 @@ mod tests {
             ..KeymapShell::default()
         };
         let i = inputs(&shell, &no_flow, false, false);
-        assert_eq!(scope_stack(&i), shell.chain());
         assert_eq!(
             scope_stack(&i),
             vec![
@@ -719,7 +715,6 @@ mod tests {
             ..KeymapShell::default()
         };
         let i = inputs(&shell, &no_flow, false, false);
-        assert_eq!(scope_stack(&i), shell.chain());
         assert_eq!(
             scope_stack(&i),
             vec![
@@ -736,7 +731,6 @@ mod tests {
             ..KeymapShell::default()
         };
         let i = inputs(&shell, &edit_date, true, false);
-        assert_eq!(scope_stack(&i), shell.chain());
         assert_eq!(
             scope_stack(&i),
             vec![
@@ -753,7 +747,6 @@ mod tests {
             ..KeymapShell::default()
         };
         let i = inputs(&shell, &edit_date, false, false);
-        assert_eq!(scope_stack(&i), shell.chain());
         assert_eq!(
             scope_stack(&i),
             vec![ContextId::ViInsert, ContextId::Global]
@@ -767,7 +760,6 @@ mod tests {
             ..KeymapShell::default()
         };
         let i = inputs(&shell, &edit_date, true, false);
-        assert_eq!(scope_stack(&i), shell.chain());
         assert_eq!(
             scope_stack(&i),
             vec![
@@ -778,13 +770,22 @@ mod tests {
             ]
         );
 
+        // 0. normal, no view → [ViNormal, Global] (the mode context
+        //    is always present — D10/D11; the retired shell test's
+        //    first row).
+        let shell = KeymapShell::default();
+        let i = inputs(&shell, &no_flow, false, false);
+        assert_eq!(
+            scope_stack(&i),
+            vec![ContextId::ViNormal, ContextId::Global]
+        );
+
         // 9. normal, view Board → [Board, ViNormal, Global].
         let shell = KeymapShell {
             view: Some(ContextId::Board),
             ..KeymapShell::default()
         };
         let i = inputs(&shell, &no_flow, false, false);
-        assert_eq!(scope_stack(&i), shell.chain());
         assert_eq!(
             scope_stack(&i),
             vec![ContextId::Board, ContextId::ViNormal, ContextId::Global]
@@ -830,13 +831,19 @@ mod tests {
                 !i.field_phase_head_arms(),
                 "{spelling} stays with the field"
             );
-            assert_eq!(scope_stack(&i), shell.chain());
+            assert_eq!(
+                scope_stack(&i),
+                vec![ContextId::ViInsert, ContextId::Global]
+            );
         }
         // Off-doorway callers (refresh-pass hints) never arm it.
         let i = inputs(&shell, &edit_date, true, false);
         assert!(i.picker_field_phase());
         assert!(!i.field_phase_head_arms());
-        assert_eq!(scope_stack(&i), shell.chain());
+        assert_eq!(
+            scope_stack(&i),
+            vec![ContextId::ViInsert, ContextId::Global]
+        );
         // The grid phase keeps the legacy head (no double ride).
         let shell = KeymapShell {
             mode: Mode::Insert,
@@ -845,7 +852,14 @@ mod tests {
         };
         let i = doorway(&shell, &edit_date, true, false, Some(chord));
         assert!(!i.picker_field_phase());
-        assert_eq!(scope_stack(&i), shell.chain());
+        assert_eq!(
+            scope_stack(&i),
+            vec![
+                ContextId::DatePicker,
+                ContextId::ViInsert,
+                ContextId::Global
+            ]
+        );
         // A mounted picker without the EditDate flow arms nothing.
         let shell = KeymapShell {
             mode: Mode::Insert,
@@ -853,7 +867,10 @@ mod tests {
         };
         let i = doorway(&shell, &Flow::None, true, false, Some(chord));
         assert!(!i.picker_field_phase());
-        assert_eq!(scope_stack(&i), shell.chain());
+        assert_eq!(
+            scope_stack(&i),
+            vec![ContextId::ViInsert, ContextId::Global]
+        );
 
         // D-δ2: the editor element scope rides the head — doorway only.
         let shell = KeymapShell {
@@ -866,7 +883,11 @@ mod tests {
             vec![ContextId::Editor, ContextId::ViInsert, ContextId::Global]
         );
         let i = inputs(&shell, &Flow::None, false, true);
-        assert_eq!(scope_stack(&i), shell.chain(), "off-doorway stays legacy");
+        assert_eq!(
+            scope_stack(&i),
+            vec![ContextId::ViInsert, ContextId::Global],
+            "off-doorway stays legacy"
+        );
         // The Editor context is keymap-unbound in every preset and
         // never masks — the resolver's chain walk skips it.
         for preset in [
@@ -881,11 +902,12 @@ mod tests {
     }
 
     // T-S1's property arm: for arbitrary (modal, mode, grid, view,
-    // picker, editor-focus) tuples, `scope_stack` equals the legacy
-    // chain except exactly the two declared deltas.
+    // picker, editor-focus, doorway, stroke) tuples, `scope_stack`
+    // follows the ordering specification — the legacy shapes plus
+    // exactly the two declared deltas.
     proptest! {
         #[test]
-        fn scope_stack_equals_the_legacy_chain_except_the_declared_deltas(
+        fn scope_stack_follows_the_ordering_specification(
             menu in proptest::bool::ANY,
             palette in proptest::bool::ANY,
             focus_overlay in proptest::bool::ANY,
@@ -929,22 +951,46 @@ mod tests {
                 ..inputs(&shell, &flow, picker_open, editor_focus)
             };
             let stack = scope_stack(&i);
-            if !at_doorway
-                || menu || palette || focus_overlay || track_entries || review_walk
-            {
-                // Off-doorway and the modal shapes are untouched by
-                // both deltas.
-                prop_assert_eq!(stack, shell.chain());
+            // The specification (round plan §4.7 ordering), not a
+            // reimplementation: the modal surfaces are total shapes;
+            // otherwise the stack is [Editor?] [DatePicker?] then the
+            // mode tail — insert: [ViInsert, Global]; normal:
+            // [view?, ViNormal, Global] — with the element/surface
+            // heads present exactly under their arming facts.
+            let modal = [
+                (palette, ContextId::Palette),
+                (focus_overlay, ContextId::FocusMode),
+                (track_entries, ContextId::TrackEntries),
+                (review_walk, ContextId::ReviewWalk),
+            ]
+            .into_iter()
+            .find_map(|(armed, head)| armed.then_some(head));
+            if menu {
+                prop_assert_eq!(stack, vec![ContextId::Menu]);
+            } else if let Some(head) = modal {
+                prop_assert_eq!(stack, vec![head, ContextId::ViInsert, ContextId::Global]);
             } else {
-                let mut legacy = shell.chain();
-                if editor_focus {
-                    legacy.insert(0, ContextId::Editor);
+                let mut expected = Vec::new();
+                if at_doorway && editor_focus {
+                    expected.push(ContextId::Editor);
                 }
-                if i.field_phase_head_arms() {
-                    let at = usize::from(editor_focus);
-                    legacy.insert(at, ContextId::DatePicker);
+                let field_phase = at_doorway
+                    && edit_date_flow
+                    && picker_open
+                    && !grid
+                    && !bare_return_escape;
+                if grid || field_phase {
+                    expected.push(ContextId::DatePicker);
                 }
-                prop_assert_eq!(stack, legacy);
+                if insert {
+                    expected.extend([ContextId::ViInsert, ContextId::Global]);
+                } else {
+                    if has_view {
+                        expected.push(ContextId::Board);
+                    }
+                    expected.extend([ContextId::ViNormal, ContextId::Global]);
+                }
+                prop_assert_eq!(stack, expected);
             }
         }
     }
