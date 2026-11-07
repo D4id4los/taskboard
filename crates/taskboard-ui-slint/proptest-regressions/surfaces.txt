@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 6ed87f225b0c34d1689fd5c4fa5118c4d2424ff840501a44b499b1a30034e812 # shrinks to commands = [PushFlow(Create)]
+cc 245fca52adb494a016dcd0b15d6922a72dc5fdfbc5c51199740670e5b042ec51 # shrinks to commands = [Offer]

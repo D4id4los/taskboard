@@ -38,6 +38,7 @@ pub mod scale;
 pub mod settings_form;
 pub mod settings_status;
 pub mod shell;
+pub mod surfaces;
 pub mod tooltip;
 pub mod view_state;
 pub mod widths;
