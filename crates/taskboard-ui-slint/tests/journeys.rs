@@ -12771,6 +12771,7 @@ fn general_snapshot() -> SettingsSnapshot {
         focus_long_break_mins: 15,
         focus_long_break_every: 4,
         focus_notify: true,
+        files_sync_enabled: false,
         env_overridden: BTreeSet::new(),
         facts: vec![
             SettingsFact {

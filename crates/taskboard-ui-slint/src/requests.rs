@@ -162,6 +162,8 @@ pub enum Field {
     FocusLongBreakMins,
     FocusLongBreakEvery,
     FocusNotify,
+    // The account card's Files toggle (round-5 chunk 8, D-8.6).
+    FilesSyncEnabled,
 }
 
 /// How a field failed.
@@ -210,6 +212,9 @@ pub struct SettingsSnapshot {
     pub focus_long_break_mins: u64,
     pub focus_long_break_every: u64,
     pub focus_notify: bool,
+    /// `[files_sync] enabled` (round-5 chunk 8, D-8.6): the default
+    /// account card's Files toggle.
+    pub files_sync_enabled: bool,
     /// The dotted keys whose effective value is env-overridden (the
     /// plan D1/D16 per-key honesty overlay). Filled only at hand-over;
     /// empty on write replies (the UI keeps its hand-over set).
@@ -466,6 +471,13 @@ pub enum UiRequest {
     },
     /// Persists `[focus] notify` (the boundary-notification knob, #600).
     SetFocusNotify {
+        enabled: bool,
+        reply: oneshot::Sender<Result<SettingsSnapshot, SettingsError>>,
+    },
+    /// Persists `[files_sync] enabled` (round-5 chunk 8, D-8.6): the
+    /// default account's Files toggle — restart-scoped (the files-sync
+    /// actor spawns at boot).
+    SetFilesSyncEnabled {
         enabled: bool,
         reply: oneshot::Sender<Result<SettingsSnapshot, SettingsError>>,
     },

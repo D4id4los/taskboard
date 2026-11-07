@@ -336,6 +336,7 @@ pub fn settings_snapshot_from_config(
         focus_long_break_mins: config.focus.long_break_mins,
         focus_long_break_every: config.focus.long_break_every,
         focus_notify: config.focus.notify,
+        files_sync_enabled: config.files_sync.enabled,
         env_overridden: std::collections::BTreeSet::new(),
         facts: settings_facts(config),
         applies: settings_applies(),
@@ -387,6 +388,7 @@ pub fn settings_snapshot_from_domain(
             u64::from(t.long_break_every())
         }),
         focus_notify: settings.focus_notify,
+        files_sync_enabled: config.files_sync.enabled,
         env_overridden: std::collections::BTreeSet::new(),
         facts: settings_facts(config),
         applies: settings_applies(),
@@ -446,6 +448,13 @@ pub fn settings_apply_registry()
             Apply::on_restart(
                 "the boundary posture is resolved into the sink arc at boot \
                  (mount_focus_boundaries); it rides the sink's restart semantics",
+            ),
+        ),
+        (
+            "files_sync.enabled",
+            Apply::on_restart(
+                "the files-sync actor spawns at boot (files_sync_spawn_decision); a live \
+                 spawn needs substrate wiring fenced to the filesync round",
             ),
         ),
     ]
@@ -907,7 +916,7 @@ mod tests {
         assert!(!snapshot.focus_notify);
 
         // The apply map rides the registry (the verdicts test below).
-        assert_eq!(snapshot.applies.len(), 16);
+        assert_eq!(snapshot.applies.len(), 17);
 
         // The env set: no env overrides over the empty fixture file.
         assert!(snapshot.env_overridden.is_empty());
