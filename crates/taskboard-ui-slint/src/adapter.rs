@@ -2459,6 +2459,22 @@ impl Adapter {
         self.width_drag.is_some()
     }
 
+    /// The offer walk's answer (D-H5/D4): the effect is offered to
+    /// the levels innermost-first — a flow level answers (its kept
+    /// arms, else the total `resolve` table), a view level bubbles
+    /// (chunk 1 gives view levels no kept arms; the root's
+    /// `(Flow::None, _)` arms are total). The walk therefore always
+    /// stops at the innermost flow level, or at the root when none is
+    /// live, and a `Handled` effect never reaches an outer level —
+    /// `Surfaces::offer` is the walk, the chain proptest instruments
+    /// it. The interpretation table is keyed on this level's flow.
+    fn responding_flow(&self) -> Flow {
+        self.view_state
+            .surfaces()
+            .offer(|level| level.flow().cloned())
+            .unwrap_or(Flow::None)
+    }
+
     /// The D9 interpretation table: one `match (flow, effect)` whose
     /// arms route to `view_state` methods named by what they do.
     #[allow(clippy::too_many_lines)] // one decision table, kept flat for review
@@ -2466,7 +2482,7 @@ impl Adapter {
     fn interpret(&mut self, window: &AppWindow, effect: UiEffect) {
         let compact = Self::is_compact(window);
         let state = self.state.load();
-        let mut flow = self.view_state.flow().clone();
+        let mut flow = self.responding_flow();
         let focus_walk = matches!(
             effect,
             UiEffect::FocusNext | UiEffect::FocusPrev | UiEffect::FocusFirst | UiEffect::FocusLast
@@ -2495,7 +2511,7 @@ impl Adapter {
             // The settle ended the flow; the table reads the
             // post-settle machine (a stale read would resolve the
             // re-run against a flow that is already gone).
-            flow = self.view_state.flow().clone();
+            flow = self.responding_flow();
         }
 
         let outcomes = match (&flow, effect) {
@@ -3346,9 +3362,11 @@ impl Adapter {
         state: &taskboard_domain::AppState,
     ) {
         if matches!(flow, Flow::None) {
-            // Unreachable by construction: every effect class has a
-            // Flow::None arm above, and the menu/system effects are
-            // applied in `apply_effect` before the table (audit §5).
+            // Unreachable from the offer walk: every effect class has
+            // a `(Flow::None, _)` arm above, and the menu/system
+            // effects are applied in `apply_effect` before the table
+            // (audit §5). The pair-table harness drives this resolver
+            // with the empty flow directly, so the guard stays.
             return;
         }
         match Self::resolve(Self::flow_kind(flow), effect.class()) {

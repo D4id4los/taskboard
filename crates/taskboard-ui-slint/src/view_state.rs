@@ -472,6 +472,13 @@ impl ViewState {
         self.surfaces.top_view()
     }
 
+    /// The chain read seam (the adapter's offer walk reads the levels;
+    /// writes stay inside this module).
+    #[must_use]
+    pub(crate) fn surfaces(&self) -> &crate::surfaces::Surfaces {
+        &self.surfaces
+    }
+
     /// The identity of what the main view mounts (r4 chunk 4, the D14
     /// dismiss seam): `(view, board, subject_stack, subject_task)`.
     /// `focused_task`/`selected_stack` are deliberately *not* members
