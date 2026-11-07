@@ -16,4 +16,9 @@
 //! foldable A4 sheet that folds into a four-page A6 booklet. No
 //! user-editable templates, no silent printing (both fenced by ruling).
 
+// Interim: the display-list types land before their consumers (the
+// slices of plan §9); the allow dies with the verb wiring (step 6).
+#![allow(dead_code)]
+
+pub(crate) mod layout;
 pub(crate) mod render;
