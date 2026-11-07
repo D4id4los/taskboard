@@ -1,0 +1,47 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The editor scope's command seam (round-5 chunk 7, D-KS3): the
+// Rust-side command arithmetic (the editor command tables compute
+// the new text and cursor byte offsets against the description
+// buffer) reaches the focused edit mount through this global — the
+// focus-token precedent: the adapter writes the command fields and
+// bumps the generation; the mounted editor's TextInput watches the
+// nonce and applies the command to itself. Rust never touches
+// `TextInput` internals (the L1 boundary chunk 2 set).
+//
+// Command codes mirror `keyscope::EditorCommand::code()` verbatim —
+// one table, kept in step by the widget's handler comment and the
+// keyscope unit tests:
+//   0 CursorBackward  1 CursorForward  2 LineUp      3 LineDown
+//   4 LineStart       5 LineEnd        6 KillToLineEnd
+//   7 DeleteForward   8 SetMark        9 CutRegion  10 CopyRegion
+//  11 Paste          12 Commit        13 Discard    14 EnterInsert
+// Discard/EnterInsert resolve Rust-side (the mode funnel) and never
+// reach the widget. `command-replaces` + `command-text` replace the buffer
+// (Rust-side surgery; the widget re-fires `edited` so the view-state
+// mirror stays one source); `command-cursor` (a UTF-8 byte offset,
+// −1 = untouched) repositions the cursor against the adapter-managed
+// `anchor-offset` (−1 = the cursor itself, no selection).
+export global EditorScope {
+    // The edit mount's live cursor byte offset (published per move —
+    // the adapter's command arithmetic input).
+    in-out property <int> cursor-offset: 0;
+    // The edit mount's live buffer (published at init with the seed
+    // and per change) — the command arithmetic's text source; the
+    // view-state mirror trails it until the first edit.
+    in-out property <string> buffer-mirror: "";
+    // The mark/selection anchor the adapter manages (−1 = none).
+    in-out property <int> anchor-offset: -1;
+    in-out property <int> command-code: 0;
+    in-out property <string> command-text: "";
+    // Whether `command-text` replaces the buffer (an empty
+    // replacement — C-k on the whole line — must stay expressible).
+    in-out property <bool> command-replaces: false;
+    in-out property <int> command-cursor: -1;
+    in-out property <int> command-generation: 0;
+    // The generation the watcher last applied: the widget's cursor
+    // publish skips the internal byte-offset read while it equals
+    // `command-generation` (the programmatic move owns the mirror —
+    // the internal offset may not be synced for programmatic
+    // selections on every backend).
+    in-out property <int> applied-generation: -1;
+}

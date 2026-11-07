@@ -363,6 +363,27 @@ pub(crate) struct Adapter {
     /// unfiltered at open and narrows per keystroke only.
     time_filter_armed: bool,
     setter_filter_armed: bool,
+    /// The live keymap preset (round-5 chunk 7): seeded at install,
+    /// updated by the keymap reply — the editor command tables'
+    /// selection input (`editor_table`), kept in step with `keymap`.
+    preset: crate::keymap::Preset,
+    /// The editor scope's state (round-5 chunk 7, D-KS3/D4): the
+    /// single-slot clipboard (no kill-ring — the documented
+    /// leniency; journeys assert the slot through commits, never the
+    /// platform), the mark, and the scope-local prefix accumulator.
+    /// The mark and the accumulator self-heal (reset whenever the
+    /// editor scope is not armed at the doorway) — no registration
+    /// can outlive its surface.
+    editor_clipboard: Option<String>,
+    editor_mark: Option<usize>,
+    editor_resolver: crate::keyscope::EditorResolver,
+    /// The adapter-tracked cursor (byte offset) and the mirror value
+    /// last seen: programmatic moves apply one event pass late in the
+    /// widget, so the tracked value is authoritative until the mirror
+    /// reports a NATIVE move (a change against the last seen value —
+    /// typing, mouse clicks, native arrow keys).
+    editor_cursor: usize,
+    editor_cursor_seen: usize,
     track_start_filter_armed: bool,
     track_end_filter_armed: bool,
     /// The custom-offset field's typed draft (r4 D27): the validity
@@ -672,59 +693,14 @@ impl Adapter {
                 return false;
             }
         }
-        // -- the scope arms (round-5 chunk 7, D-KS4): the four
-        //    retired special cases as declarative declines, evaluated
-        //    after the monopoly and before the resolver. Each arming
-        //    fact is the retired condition verbatim; each pin journey
-        //    is the acceptance contract. --
-        // The dropdown ladders (special case D, r4 D39/D40, round-5
-        // D6): while a flyout is open, its keys decline the single
-        // key path — the focused field's modal arm owns them.
-        let ladder_open = if window.global::<crate::SettingsBoardFacts>().get_open() {
-            Some(crate::keyscope::LadderGlobal::SettingsBoard)
-        } else if window.global::<crate::BoardBarFacts>().get_open() {
-            Some(crate::keyscope::LadderGlobal::BoardBar)
-        } else if window.global::<crate::TimeFieldFacts>().get_open() {
-            Some(crate::keyscope::LadderGlobal::TimeField)
-        } else {
-            None
-        };
-        if crate::keyscope::dropdown_ladder_declines(ladder_open, stroke) {
-            Self::set_feedback(window, KeyFeedback::None);
-            return false;
+        // The editor scope's table (D-δ2/D-KS3), then the retired
+        // special cases' scope arms (D-KS4) — each ends the intercept
+        // when it claims the stroke.
+        if let Some(consumed) = self.editor_scope_arm(window, stroke) {
+            return consumed;
         }
-        // The timer setter's dismissal arm (special case A, r4 D33):
-        // the panel is presentation state, not a flow — its Escape is
-        // an explicit decline routed to the existing dismissal funnel.
-        // Nothing commits; the draft clears with the panel.
-        if crate::keyscope::timer_setter_dismisses(window.get_timer_setter_open(), stroke) {
-            self.clear_timer_setter();
-            window.set_timer_setter_open(false);
-            self.refresh_forced(window);
-            return true;
-        }
-        // The due editor's Down arm (special case B, r2 D25, round-3
-        // D10): consumed ahead of the resolver so the insert-mode
-        // chain never has to bind it. With the picker already open
-        // (the default-open), the same stroke is the grid's focus
-        // hand-over — the one-shot flag rides the push, and the
-        // panel's `changed` moves focus. The stroke is the grammar's
-        // own Down row — never a private-use literal.
-        if crate::keyscope::due_down_arms(
-            matches!(self.view_state.flow(), Flow::EditDate { .. }),
-            stroke,
-        ) {
-            if self.due_picker.is_none() {
-                self.open_due_picker(window, true);
-            } else {
-                // The field→grid hand-over is a programmatic steal —
-                // the funnel must not settle on its focus loss (r4 D24).
-                self.due_focus_steal = true;
-                self.focus_handover = FocusHandover::Grid;
-                // The one-shot flag is a derive input the push consumes — forced.
-                self.refresh_forced(window);
-            }
-            return true;
+        if let Some(consumed) = self.special_scope_arms(window, stroke) {
+            return consumed;
         }
         // The chain reflects the view-state machine, not a stale seam
         // write (D6: shell view/focus derive from view_state). The
@@ -772,6 +748,165 @@ impl Adapter {
                 false
             }
         }
+    }
+
+    /// The editor scope's command executor (round-5 chunk 7, D-KS3):
+    /// the pure arithmetic (`keyscope::apply_editor_command`) over the
+    /// widget's mirrored buffer and the tracked cursor; the widget
+    /// applies the outcome through the `EditorScope` seam (Rust never
+    /// touches `TextInput` internals). Cut/copy/paste ride the single
+    /// adapter slot — never the OS clipboard.
+    fn editor_command(
+        &mut self,
+        window: &AppWindow,
+        command: crate::keyscope::EditorCommand,
+    ) -> bool {
+        use crate::keyscope::EditorCommand;
+        // The discard and the vi re-insert ride the existing mode
+        // funnel (the same outcome as Escape today — no new settle).
+        match command {
+            EditorCommand::Discard => {
+                self.apply_effect(window, UiEffect::SetMode(Mode::Normal));
+                return true;
+            }
+            EditorCommand::EnterInsert => {
+                self.apply_effect(window, UiEffect::SetMode(Mode::Insert));
+                return true;
+            }
+            _ => {}
+        }
+        let scope = window.global::<crate::EditorScope>();
+        let buffer = scope.get_buffer_mirror().to_string();
+        let mirror = usize::try_from(scope.get_cursor_offset()).unwrap_or(0);
+        // The mirror lags the widget's programmatic moves by an event
+        // pass: adopt it only when it moved against BOTH the last
+        // seen value and the tracked cursor (a genuine native move —
+        // typing, mouse, native arrows); a lagging write equals one of
+        // the two and yields to the tracked cursor.
+        let cursor = if mirror != self.editor_cursor_seen && mirror != self.editor_cursor {
+            mirror
+        } else {
+            self.editor_cursor
+        };
+        let edit = crate::keyscope::apply_editor_command(
+            &crate::keyscope::EditorState {
+                buffer: &buffer,
+                cursor,
+                mark: self.editor_mark,
+                clipboard: self.editor_clipboard.as_deref(),
+            },
+            command,
+        );
+        self.editor_mark = edit.mark;
+        self.editor_clipboard = edit.clipboard;
+        scope.set_anchor_offset(i32::try_from(edit.mark.unwrap_or(edit.cursor)).unwrap_or(-1));
+        scope.set_command_replaces(edit.text.is_some());
+        scope.set_command_text(edit.text.unwrap_or_default().into());
+        scope.set_command_cursor(i32::try_from(edit.cursor).unwrap_or(-1));
+        scope.set_command_code(command.code());
+        scope.set_command_generation(scope.get_command_generation() + 1);
+        self.editor_cursor = edit.cursor;
+        self.editor_cursor_seen = mirror;
+        true
+    }
+
+    /// The editor scope's table arm (round-5 chunk 7, D-δ2/D-KS3):
+    /// consulted before the resolver — but only when the ordinary
+    /// resolver holds no pending prefix (the keymap's own prefixes,
+    /// emacs' C-x family, own the stroke first, so C-x C-c still
+    /// exits inside the editor). `Some(consumed)` ends the intercept.
+    /// The mark and the accumulator self-heal whenever the scope is
+    /// not armed — no registration outlives its surface.
+    fn editor_scope_arm(
+        &mut self,
+        window: &AppWindow,
+        stroke: crate::keymap::Stroke,
+    ) -> Option<bool> {
+        let editor_armed = matches!(self.view_state.flow(), Flow::EditDescription { .. })
+            && window
+                .global::<crate::EditingFacts>()
+                .get_editor_focus_count()
+                > 0;
+        if !editor_armed || self.resolver.has_pending() {
+            self.editor_resolver.reset();
+            if !editor_armed {
+                self.editor_mark = None;
+            }
+            return None;
+        }
+        let table = crate::keyscope::editor_table(self.preset);
+        match self.editor_resolver.feed(stroke, &table) {
+            crate::keyscope::EditorClaim::Command(command) => {
+                Self::set_feedback(window, KeyFeedback::None);
+                Some(self.editor_command(window, command))
+            }
+            crate::keyscope::EditorClaim::Consumed => {
+                Self::set_feedback(window, KeyFeedback::PrefixPending);
+                Some(true)
+            }
+            crate::keyscope::EditorClaim::Pass => None,
+        }
+    }
+
+    /// The retired special cases' arms (round-5 chunk 7, D-KS4): each
+    /// arming fact is the retired condition verbatim (declared in
+    /// `keyscope`), each fires where its block fired — after the
+    /// monopoly, before the resolver; each pin journey is the
+    /// acceptance contract. `Some(consumed)` ends the intercept.
+    fn special_scope_arms(
+        &mut self,
+        window: &AppWindow,
+        stroke: crate::keymap::Stroke,
+    ) -> Option<bool> {
+        // The dropdown ladders (special case D, r4 D39/D40, round-5
+        // D6): while a flyout is open, its keys decline the single
+        // key path — the focused field's modal arm owns them.
+        let ladder_open = if window.global::<crate::SettingsBoardFacts>().get_open() {
+            Some(crate::keyscope::LadderGlobal::SettingsBoard)
+        } else if window.global::<crate::BoardBarFacts>().get_open() {
+            Some(crate::keyscope::LadderGlobal::BoardBar)
+        } else if window.global::<crate::TimeFieldFacts>().get_open() {
+            Some(crate::keyscope::LadderGlobal::TimeField)
+        } else {
+            None
+        };
+        if crate::keyscope::dropdown_ladder_declines(ladder_open, stroke) {
+            Self::set_feedback(window, KeyFeedback::None);
+            return Some(false);
+        }
+        // The timer setter's dismissal arm (special case A, r4 D33):
+        // the panel is presentation state, not a flow — its Escape is
+        // an explicit decline routed to the existing dismissal funnel.
+        // Nothing commits; the draft clears with the panel.
+        if crate::keyscope::timer_setter_dismisses(window.get_timer_setter_open(), stroke) {
+            self.clear_timer_setter();
+            window.set_timer_setter_open(false);
+            self.refresh_forced(window);
+            return Some(true);
+        }
+        // The due editor's Down arm (special case B, r2 D25, round-3
+        // D10): consumed ahead of the resolver so the insert-mode
+        // chain never has to bind it. With the picker already open
+        // (the default-open), the same stroke is the grid's focus
+        // hand-over — the one-shot flag rides the push, and the
+        // panel's `changed` moves focus.
+        if crate::keyscope::due_down_arms(
+            matches!(self.view_state.flow(), Flow::EditDate { .. }),
+            stroke,
+        ) {
+            if self.due_picker.is_none() {
+                self.open_due_picker(window, true);
+            } else {
+                // The field→grid hand-over is a programmatic steal —
+                // the funnel must not settle on its focus loss (r4 D24).
+                self.due_focus_steal = true;
+                self.focus_handover = FocusHandover::Grid;
+                // The one-shot flag is a derive input the push consumes — forced.
+                self.refresh_forced(window);
+            }
+            return Some(true);
+        }
+        None
     }
 
     fn set_feedback(window: &AppWindow, feedback: KeyFeedback) {
@@ -1045,6 +1180,7 @@ impl Adapter {
         let facts = window.global::<crate::EditingFacts>();
         facts.set_text_focus_count(0);
         facts.set_activation_focus_count(0);
+        facts.set_editor_focus_count(0);
         // The generation bump tells every live publisher the counts
         // were re-baselined, so its next focus event re-syncs its
         // latch instead of paying a stale decrement.
@@ -4289,6 +4425,7 @@ impl Adapter {
     /// the next `push_settings`, never optimistically at click time.
     fn apply_keymap_update(&mut self, window: &AppWindow, update: KeymapUpdate) {
         self.keymap = update.keymap;
+        self.preset = update.preset;
         self.settings.preset = update.preset;
         window
             .global::<crate::UiStatus>()
@@ -5831,6 +5968,12 @@ pub(crate) fn install(
         due_picker: None,
         focus_handover: FocusHandover::None,
         due_focus_steal: false,
+        preset,
+        editor_clipboard: None,
+        editor_mark: None,
+        editor_resolver: crate::keyscope::EditorResolver::new(),
+        editor_cursor: 0,
+        editor_cursor_seen: 0,
         time_filter_armed: false,
         setter_filter_armed: false,
         track_start_filter_armed: false,

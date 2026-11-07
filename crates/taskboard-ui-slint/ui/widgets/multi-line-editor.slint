@@ -27,11 +27,13 @@
 // Focus facts: the EditingFacts latch grammar is REPLICATED from
 // text-field.slint (the init publish + the generation re-baseline),
 // not extracted — a shared component cannot reach into another
-// component's `TextInput`; chunk 7 generalizes focus publication and
-// carries the dedup decision. The probe's P4b arm pins the replica.
+// component's `TextInput`; chunk 7 carried the dedup decision
+// (replicate) and added the `editor-focus-count` publication here
+// with the same latch grammar. The probe's P4b arm pins the replica.
 
 import { Theme, Semantic, RoleText, Typography } from "../theme.slint";
 import { EditingFacts } from "../editing-facts.slint";
+import { EditorScope } from "../editor-scope.slint";
 
 export component MultiLineEditor inherits Rectangle {
     // The mode switch: the host mounts the editor twice (a display
@@ -217,6 +219,7 @@ export component MultiLineEditor inherits Rectangle {
             init => {
                 self.text = root.initial-text;
                 root.buffer = self.text;
+                EditorScope.buffer-mirror = self.text;
                 if (root.autofocus) {
                     self.focus();
                 }
@@ -227,6 +230,16 @@ export component MultiLineEditor inherits Rectangle {
                     EditingFacts.text-focus-count += 1;
                     focus-counted = true;
                 }
+                // The editor scope's count rides the same latch
+                // grammar (round-5 chunk 7, D-δ2): the element scope
+                // the editor command tables key on.
+                if (self.has-focus) {
+                    EditingFacts.editor-focus-count += 1;
+                    editor-counted = true;
+                }
+                // The live cursor byte offset — the adapter's command
+                // arithmetic input (the EditorScope contract).
+                EditorScope.cursor-offset = self.cursor-position-byte-offset;
                 root.input-has-focus = self.has-focus;
             }
             changed has-focus => {
@@ -237,19 +250,63 @@ export component MultiLineEditor inherits Rectangle {
                     // counts — never a stale decrement into them.
                     counted-generation = EditingFacts.generation;
                     focus-counted = self.has-focus;
+                    editor-counted = self.has-focus;
                     if (self.has-focus) {
                         EditingFacts.text-focus-count += 1;
+                        EditingFacts.editor-focus-count += 1;
                     }
                 } else if (self.has-focus != focus-counted) {
                     EditingFacts.text-focus-count += self.has-focus ? 1 : -1;
                     focus-counted = self.has-focus;
+                }
+                if (self.has-focus != editor-counted) {
+                    EditingFacts.editor-focus-count += self.has-focus ? 1 : -1;
+                    editor-counted = self.has-focus;
                 }
                 if (!self.has-focus) {
                     root.focus-lost();
                 }
             }
             property <bool> focus-counted: false;
+            property <bool> editor-counted: false;
             property <int> counted-generation: -1;
+            // The live cursor mirror (the EditorScope contract):
+            // published through the documented cursor callback and
+            // the text mirror — the internal byte-offset property
+            // does not notify on its own.
+            function publish-cursor-offset() {
+                if (EditorScope.applied-generation
+                        != EditorScope.command-generation) {
+                    EditorScope.cursor-offset = self.cursor-position-byte-offset;
+                }
+            }
+            // The command seam (round-5 chunk 7, D-KS3): the adapter
+            // writes the command fields and bumps the generation;
+            // this handler applies it to the input — text surgery
+            // re-fires `edited` (the view-state mirror stays one
+            // source), and the cursor repositions against the
+            // adapter-managed anchor. The codes mirror
+            // `keyscope::EditorCommand::code()` (see editor-scope.slint).
+            property <int> command-mirror <=> EditorScope.command-generation;
+            changed command-mirror => {
+                EditorScope.applied-generation = EditorScope.command-generation;
+                if (EditorScope.command-code == 12) {
+                    root.accepted(self.text);
+                } else {
+                    if (EditorScope.command-replaces) {
+                        self.text = EditorScope.command-text;
+                        root.edited(self.text);
+                        root.buffer = self.text;
+                        EditorScope.buffer-mirror = self.text;
+                    }
+                    if (EditorScope.command-cursor >= 0) {
+                        self.set-selection-offsets(
+                            max(EditorScope.anchor-offset, 0),
+                            EditorScope.command-cursor);
+                        EditorScope.cursor-offset = EditorScope.command-cursor;
+                    }
+                }
+            }
             // The focus seam via the token (grab-focus's delivery):
             // a local two-way mirror, since `changed` observes only
             // the element's own properties.
@@ -263,6 +320,8 @@ export component MultiLineEditor inherits Rectangle {
             // the probe's facts.
             changed text => {
                 root.buffer = self.text;
+                EditorScope.buffer-mirror = self.text;
+                self.publish-cursor-offset();
             }
             // Width-driven re-wraps change preferred-height with no
             // text change — the mirror must follow (the P2 arm).
@@ -289,6 +348,7 @@ export component MultiLineEditor inherits Rectangle {
             // [0, inner − line-height]. No horizontal arm — word-wrap
             // makes the column the width.
             cursor-position-changed(cpos) => {
+                self.publish-cursor-offset();
                 if (cpos.y + root.scroll-y < 0px * Theme.base-scale) {
                     root.scroll-y = clamp(-cpos.y,
                         root.viewport-inner - root.content-extent,
