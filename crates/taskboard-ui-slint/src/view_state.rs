@@ -568,11 +568,42 @@ impl ViewState {
         flow
     }
 
+    /// The test fixture seam: writes the armed date editor's buffer
+    /// (the typed-entry journeys).
+    #[cfg(test)]
+    pub(crate) fn set_buffer_for_date_editor_test(&mut self, text: &str) {
+        self.date_editor_mut()
+            .expect("the date editor armed")
+            .buffer = text.to_owned();
+    }
+
     /// The test fixture seam: arms `flow` as the live flow level
     /// (replace or push — the fixture side of `write_flow`).
     #[cfg(test)]
     pub(crate) fn arm_flow(&mut self, flow: Flow) {
         self.write_flow(flow);
+    }
+
+    /// The innermost `DateEditor` level's state (the due family's
+    /// read seam): `None` without one — every reader renders the
+    /// wiped state the old enforce pass produced.
+    #[must_use]
+    pub(crate) fn date_editor(&self) -> Option<&crate::level_state::DateEditorState> {
+        self.surfaces
+            .above_levels()
+            .iter()
+            .rev()
+            .find_map(|level| level.state().as_date_editor())
+    }
+
+    /// The date editor's write seam (the owning flow's keystroke
+    /// paths and seeding).
+    pub(crate) fn date_editor_mut(&mut self) -> Option<&mut crate::level_state::DateEditorState> {
+        self.surfaces
+            .above_levels_mut()
+            .iter_mut()
+            .rev()
+            .find_map(|level| level.state_mut().as_date_editor_mut())
     }
 
     /// The innermost `Text` level's buffer (D9 rule 1): `""` without
@@ -3183,6 +3214,32 @@ mod tests {
         vs.discard_edit();
         vs.begin_capture();
         assert_eq!(vs.buffer(), "");
+    }
+
+    #[test]
+    fn the_date_editor_reopens_clean_after_every_close() {
+        let (state, _, _, [a, ..]) = fixture();
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        vs.set_focused(Some(a));
+        vs.activate_focused(&state);
+        // Typed entry, then the Escape discard: the re-opened editor
+        // starts clean — the drop was the wipe (the D25 clean close's
+        // keep is unobservable past the close).
+        vs.begin_edit_date(&state, DateField::Due);
+        vs.set_buffer_for_date_editor_test("half-typed");
+        vs.discard_edit();
+        vs.begin_edit_date(&state, DateField::Scheduled);
+        let editor = vs.date_editor().expect("the editor armed");
+        assert_eq!(editor.buffer, "");
+        assert_eq!(editor.echo, "");
+        assert!(editor.picker.is_none());
+        assert_eq!(editor.time_text, "--:--");
+        // The commit end is the same drop.
+        vs.set_buffer_for_date_editor_test("2026-01-02");
+        vs.end_edit_date();
+        vs.begin_edit_date(&state, DateField::Due);
+        assert_eq!(vs.date_editor().expect("the editor armed").buffer, "");
     }
 
     #[test]

@@ -225,6 +225,21 @@ impl LevelState {
         }
     }
 
+    pub(crate) fn as_date_editor_mut(&mut self) -> Option<&mut DateEditorState> {
+        match self {
+            Self::DateEditor(state) => Some(state),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn as_date_editor(&self) -> Option<&DateEditorState> {
+        match self {
+            Self::DateEditor(state) => Some(state),
+            _ => None,
+        }
+    }
+
     #[must_use]
     pub(crate) fn text_buffer(&self) -> Option<&str> {
         match self {
