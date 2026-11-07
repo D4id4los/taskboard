@@ -793,6 +793,7 @@ mod tests {
             &ReminderDefaults::default(),
             fixture.day,
             at,
+            None,
         )
     }
 
@@ -1325,6 +1326,7 @@ mod seam_tests {
                 archived: ts(1),
                 deleted: ts(1),
             },
+            authors: crate::entities::TaskAuthors::default(),
             remote_seen: None,
             remote_baseline: None,
         }

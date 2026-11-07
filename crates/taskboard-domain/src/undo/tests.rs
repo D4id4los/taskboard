@@ -74,6 +74,7 @@ impl Harness {
             &crate::reminders::ReminderDefaults::default(),
             Self::day(),
             now,
+            None,
         )?;
         apply_actions(&mut self.disk, &plan.actions);
         self.outbox = self.disk.outbox.clone();
@@ -93,6 +94,7 @@ impl Harness {
             &crate::reminders::ReminderDefaults::default(),
             Self::day(),
             now,
+            None,
         )?;
         apply_actions(&mut self.disk, &plan.actions);
         self.outbox = self.disk.outbox.clone();
@@ -1764,6 +1766,7 @@ fn engine_routed_commands_are_typed_rejections_in_the_catalogue() {
         &crate::reminders::ReminderDefaults::default(),
         Harness::day(),
         ts(h.now),
+        None,
     )
     .expect_err("typed");
     assert!(matches!(err, CommandError::EngineRouted));
@@ -1775,6 +1778,7 @@ fn engine_routed_commands_are_typed_rejections_in_the_catalogue() {
         &crate::reminders::ReminderDefaults::default(),
         Harness::day(),
         ts(h.now),
+        None,
     )
     .expect_err("typed");
     assert!(matches!(err, CommandError::EngineRouted));
@@ -2184,6 +2188,7 @@ fn restore_task_of_an_unknown_id_is_typed() {
                 archived: ts(1),
                 deleted: ts(1),
             },
+            authors: crate::entities::TaskAuthors::default(),
             remote_seen: None,
             remote_baseline: None,
         }),
@@ -2641,6 +2646,7 @@ fn reflection_heads_are_typed_not_undoable() {
         &crate::reminders::ReminderDefaults::default(),
         Harness::day(),
         ts(h.now),
+        None,
     )
     .expect_err("the head is not undoable");
     assert!(matches!(

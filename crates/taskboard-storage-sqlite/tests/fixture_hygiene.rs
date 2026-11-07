@@ -27,6 +27,7 @@ async fn write_one(db: &FileDb) {
                     archived: taskboard_domain::BoardClocks::epoch(),
                     deleted: taskboard_domain::BoardClocks::epoch(),
                 },
+                authors: taskboard_domain::entities::BoardAuthors::default(),
                 remote_seen: None,
             },
         )])

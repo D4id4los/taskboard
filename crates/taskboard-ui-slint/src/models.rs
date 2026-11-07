@@ -3125,6 +3125,7 @@ mod tests {
                 archived: epoch(),
                 deleted: epoch(),
             },
+            authors: taskboard_domain::entities::TaskAuthors::default(),
             remote_seen: None,
             remote_baseline: None,
         }
@@ -3500,6 +3501,7 @@ mod tests {
                     archived: BoardClocks::epoch(),
                     deleted: BoardClocks::epoch(),
                 },
+                authors: taskboard_domain::entities::BoardAuthors::default(),
                 remote_seen: None,
             }
         }
@@ -3518,6 +3520,7 @@ mod tests {
                     order: BoardClocks::epoch(),
                     deleted: BoardClocks::epoch(),
                 },
+                authors: taskboard_domain::entities::StackAuthors::default(),
                 remote_seen: None,
             }
         }
@@ -3558,6 +3561,7 @@ mod tests {
                     archived: BoardClocks::epoch(),
                     deleted: BoardClocks::epoch(),
                 },
+                authors: taskboard_domain::entities::TaskAuthors::default(),
                 remote_seen: None,
                 remote_baseline: None,
             }
@@ -3968,6 +3972,7 @@ mod tests {
                     archived: BoardClocks::epoch(),
                     deleted: BoardClocks::epoch(),
                 },
+                authors: taskboard_domain::entities::BoardAuthors::default(),
                 remote_seen: None,
             }
         }
@@ -3986,6 +3991,7 @@ mod tests {
                     order: BoardClocks::epoch(),
                     deleted: BoardClocks::epoch(),
                 },
+                authors: taskboard_domain::entities::StackAuthors::default(),
                 remote_seen: None,
             }
         }

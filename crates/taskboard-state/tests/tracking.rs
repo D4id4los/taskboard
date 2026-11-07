@@ -46,6 +46,7 @@ async fn spawn_over(repo: Arc<InMemoryRepository>, clock: Arc<FixedClock>) -> Ha
         notifier,
         taskboard_domain::SettingsSnapshot::default(),
         taskboard_state::DayRollConfig::disabled(),
+        None,
     )
     .await
     .expect("engine boots");

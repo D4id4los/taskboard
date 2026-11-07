@@ -58,6 +58,7 @@ fn cfg() -> SyncActorConfig {
             day_start_time: chrono::NaiveTime::MIN,
             offset: taskboard_state::DayRollConfig::disabled().offset,
         },
+        author: None,
     }
 }
 
@@ -140,6 +141,7 @@ fn bound_board() -> Board {
             archived: taskboard_domain::BoardClocks::epoch(),
             deleted: taskboard_domain::BoardClocks::epoch(),
         },
+        authors: taskboard_domain::entities::BoardAuthors::default(),
         remote_seen: Some(ts(T)),
     }
 }
@@ -157,6 +159,7 @@ fn bound_stack(local: u128, remote: u64) -> taskboard_domain::Stack {
         archived: false,
         deleted: false,
         clocks: stack_clocks(),
+        authors: taskboard_domain::entities::StackAuthors::default(),
         remote_seen: Some(ts(T)),
     }
 }
@@ -182,6 +185,7 @@ fn draft(task_raw: u128, stack_local: u128, title: &str) -> (Task, PendingOp) {
         archived: false,
         deleted: false,
         clocks: task_clocks(),
+        authors: taskboard_domain::entities::TaskAuthors::default(),
         remote_seen: None,
         remote_baseline: None,
     };
@@ -834,6 +838,7 @@ async fn a13_stack_create_precedes_card_create() {
         archived: false,
         deleted: false,
         clocks: stack_clocks(),
+        authors: taskboard_domain::entities::StackAuthors::default(),
         remote_seen: None,
     };
     let (task, task_op) = draft(100, 5, "draft");
@@ -1327,6 +1332,7 @@ async fn a18_remote_moved_card_survives_its_queued_edit() {
         archived: false,
         deleted: false,
         clocks: task_clocks(),
+        authors: taskboard_domain::entities::TaskAuthors::default(),
         remote_seen: Some(ts(T)),
         remote_baseline: None,
     };
@@ -1488,6 +1494,7 @@ async fn a21_archive_mismatch_stamp_uses_the_injected_clock() {
         archived: false,
         deleted: false,
         clocks: task_clocks(),
+        authors: taskboard_domain::entities::TaskAuthors::default(),
         remote_seen: Some(ts(T)),
         remote_baseline: None,
     };
@@ -1639,6 +1646,7 @@ async fn a22_remote_moved_card_delete_lands_without_a_twin() {
         archived: false,
         deleted: false,
         clocks: task_clocks(),
+        authors: taskboard_domain::entities::TaskAuthors::default(),
         remote_seen: Some(ts(T)),
         remote_baseline: None,
     };
@@ -2127,6 +2135,7 @@ async fn a28_archived_twin_dedupes_and_the_flag_is_adopted_with_the_observed_sta
         archived: false,
         deleted: false,
         clocks: task_clocks(),
+        authors: taskboard_domain::entities::TaskAuthors::default(),
         remote_seen: Some(ts(T)),
         remote_baseline: None,
     };
@@ -2196,6 +2205,7 @@ fn second_board(connector: &str) -> Board {
             archived: taskboard_domain::BoardClocks::epoch(),
             deleted: taskboard_domain::BoardClocks::epoch(),
         },
+        authors: taskboard_domain::entities::BoardAuthors::default(),
         remote_seen: Some(ts(T)),
     }
 }
@@ -2214,6 +2224,7 @@ fn second_board_stack() -> taskboard_domain::Stack {
         archived: false,
         deleted: false,
         clocks: stack_clocks(),
+        authors: taskboard_domain::entities::StackAuthors::default(),
         remote_seen: Some(ts(T)),
     }
 }

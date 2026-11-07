@@ -60,6 +60,7 @@ mod tests {
                 archived: taskboard_domain::BoardClocks::epoch(),
                 deleted: taskboard_domain::BoardClocks::epoch(),
             },
+            authors: taskboard_domain::entities::BoardAuthors::default(),
             remote_seen: None,
         };
         repo.apply(vec![

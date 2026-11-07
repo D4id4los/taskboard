@@ -221,6 +221,8 @@ mod tests {
         TaskFieldWrite {
             value,
             clock: ts(clock_secs),
+
+            by: None,
         }
     }
 
@@ -240,6 +242,8 @@ mod tests {
             created: ts(100),
             clock: ts(clock_secs),
             insistence: Insistence::Normal,
+
+            by: None,
         }
     }
 
@@ -316,13 +320,18 @@ mod tests {
         );
         moved_rules.rules.insert(
             "00000000-0000-0000-0000-00000000000b".to_owned(),
-            RuleEntry::Tombstone { clock: ts(700) },
+            RuleEntry::Tombstone {
+                clock: ts(700),
+                by: None,
+            },
         );
         let mut moved_dismissals = DismissalsEntry::default();
         moved_dismissals.dismissals.insert(
             "00000000-0000-0000-0000-00000000000a|2026-01-01T08:00:00Z".to_owned(),
             DismissalEntry::Dismissed {
                 dismissed_at: ts(800),
+
+                by: None,
             },
         );
         let sibling = document_with(AppDataSections {
@@ -349,12 +358,12 @@ mod tests {
         );
         let rules = &fragment.reminder_rules.as_ref().unwrap()["500"];
         assert!(
-            matches!(rules.rules["00000000-0000-0000-0000-00000000000b"], RuleEntry::Tombstone { clock } if clock == ts(700))
+            matches!(rules.rules["00000000-0000-0000-0000-00000000000b"], RuleEntry::Tombstone { clock, .. } if clock == ts(700))
         );
         let dismissals = &fragment.dismissals.as_ref().unwrap()["500"];
         assert!(matches!(
             dismissals.dismissals["00000000-0000-0000-0000-00000000000a|2026-01-01T08:00:00Z"],
-            DismissalEntry::Dismissed { dismissed_at } if dismissed_at == ts(800)
+            DismissalEntry::Dismissed { dismissed_at, .. } if dismissed_at == ts(800)
         ));
     }
 
@@ -612,6 +621,8 @@ mod tests {
                     key_a.clone(),
                     DismissalEntry::Dismissed {
                         dismissed_at: ts(800),
+
+                        by: None,
                     },
                 )]),
                 unknown: BTreeMap::new(),
@@ -625,12 +636,16 @@ mod tests {
                         key_a.clone(),
                         DismissalEntry::Dismissed {
                             dismissed_at: ts(800),
+
+                            by: None,
                         },
                     ),
                     (
                         key_b.clone(),
                         DismissalEntry::Dismissed {
                             dismissed_at: ts(900),
+
+                            by: None,
                         },
                     ),
                 ]),
@@ -652,6 +667,8 @@ mod tests {
                     key_a.clone(),
                     DismissalEntry::Dismissed {
                         dismissed_at: ts(800),
+
+                        by: None,
                     },
                 )]),
                 unknown: BTreeMap::new(),

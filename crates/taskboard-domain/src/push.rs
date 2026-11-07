@@ -338,6 +338,7 @@ pub struct PushGroup {
 ///     archived: false,
 ///     deleted: false,
 ///     clocks,
+///     authors: Default::default(),
 ///     remote_seen: None,
 ///     remote_baseline: None,
 /// };
@@ -896,6 +897,7 @@ mod tests {
             archived: false,
             deleted: false,
             clocks: clocks(100),
+            authors: crate::entities::TaskAuthors::default(),
             remote_seen: None,
             remote_baseline: None,
         }
@@ -911,6 +913,7 @@ mod tests {
             archived: false,
             deleted: false,
             clocks: stack_clocks(100),
+            authors: crate::entities::StackAuthors::default(),
             remote_seen: None,
         }
     }
@@ -924,6 +927,7 @@ mod tests {
             color: crate::entities::Color::new("00ff00"),
             deleted: false,
             clocks: label_clocks(100),
+            authors: crate::entities::LabelAuthors::default(),
             remote_seen: None,
         }
     }
@@ -942,6 +946,7 @@ mod tests {
                 archived: ts(100),
                 deleted: ts(100),
             },
+            authors: crate::entities::BoardAuthors::default(),
             remote_seen: None,
         }
     }
@@ -1364,6 +1369,7 @@ mod tests {
             archived: false,
             deleted: false,
             clocks: clocks(100),
+            authors: crate::entities::TaskAuthors::default(),
             remote_seen: Some(ts(100)),
             remote_baseline: None,
         }
@@ -1383,6 +1389,7 @@ mod tests {
                 order: ts(100),
                 deleted: ts(100),
             },
+            authors: crate::entities::StackAuthors::default(),
             remote_seen: None,
         }
     }

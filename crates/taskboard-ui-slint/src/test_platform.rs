@@ -282,6 +282,7 @@ mod tests {
                 archived: stamp(0),
                 deleted: stamp(0),
             },
+            authors: taskboard_domain::entities::BoardAuthors::default(),
             remote_seen: None,
         };
         let stacks: Vec<Stack> = (0..2)
@@ -300,6 +301,7 @@ mod tests {
                     order: stamp(1),
                     deleted: stamp(1),
                 },
+                authors: taskboard_domain::entities::StackAuthors::default(),
                 remote_seen: None,
             })
             .collect();
@@ -341,6 +343,7 @@ mod tests {
                     archived: stamp(2),
                     deleted: stamp(2),
                 },
+                authors: taskboard_domain::entities::TaskAuthors::default(),
                 remote_seen: None,
                 remote_baseline: None,
             })

@@ -228,12 +228,26 @@ pub struct TaskFieldWrite {
     pub value: ModeledValue,
     /// The per-field write clock (rfc3339 on the wire).
     pub clock: DateTime<Utc>,
+    /// Who wrote the field (F1's `by` leg, D-BF2): the author slot of
+    /// the duel tuple. Default-absent (every pre-F1 row decodes
+    /// `None`); present-but-unparseable demotes the whole row to
+    /// unmodeled — silently de-authoring would change fold rank.
+    pub by: Option<crate::ids::AuthorId>,
 }
 
 impl Serialize for TaskFieldWrite {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let value = encode_modeled(&self.value);
-        serde_json::json!({ "v": value, "clock": self.clock }).serialize(serializer)
+        let mut object = serde_json::Map::new();
+        object.insert("v".into(), value);
+        object.insert(
+            "clock".into(),
+            serde_json::to_value(self.clock).unwrap_or(Value::Null),
+        );
+        if let Some(by) = self.by {
+            object.insert("by".into(), serde_json::to_value(by).unwrap_or(Value::Null));
+        }
+        Value::Object(object).serialize(serializer)
     }
 }
 
@@ -274,7 +288,26 @@ fn decode_field_write(key: &str, raw: &Value) -> Option<TaskFieldWrite> {
     };
     let clock: DateTime<Utc> = serde_json::from_value(map.get("clock")?.clone()).ok()?;
     let value = decode_modeled(key, map.get("v").unwrap_or(&Value::Null))?;
-    Some(TaskFieldWrite { value, clock })
+    let by = decode_by(map).ok()?;
+    Some(TaskFieldWrite { value, clock, by })
+}
+
+/// The `by` decode leg shared by every authored row: absent/`null` →
+/// `None` (the tolerant default; old documents carry no key), a
+/// parseable UUID → `Some`, **present but unparseable → the caller
+/// demotes the whole row** (never a silent de-authoring: the fold's
+/// `None < Some` leg would change rank against the author-carrying
+/// peer).
+pub(crate) fn decode_by(
+    map: &serde_json::Map<String, Value>,
+) -> Result<Option<crate::ids::AuthorId>, ()> {
+    match map.get("by") {
+        None | Some(Value::Null) => Ok(None),
+        Some(raw) => match raw.as_str().and_then(crate::ids::AuthorId::parse) {
+            Some(by) => Ok(Some(by)),
+            None => Err(()),
+        },
+    }
 }
 
 /// Encodes a modeled value in the domain field's own serde shape
@@ -433,11 +466,18 @@ pub enum RuleEntry {
         created: DateTime<Utc>,
         clock: DateTime<Utc>,
         insistence: Insistence,
+        /// The row's author (F1's `by` leg): default-absent, emitted
+        /// only when known.
+        by: Option<crate::ids::AuthorId>,
     },
     /// `{ "deleted": true, "clock": rfc3339 }` — rule *membership* needs
     /// explicit tombstones (absence from a possibly-truncated document
     /// must never delete locally).
-    Tombstone { clock: DateTime<Utc> },
+    Tombstone {
+        clock: DateTime<Utc>,
+        /// The tombstone's author (F1's `by` leg).
+        by: Option<crate::ids::AuthorId>,
+    },
     /// A shape this version does not model: preserved verbatim.
     Verbatim(Value),
 }
@@ -448,7 +488,7 @@ impl RuleEntry {
     #[must_use]
     pub fn clock(&self) -> Option<DateTime<Utc>> {
         match self {
-            Self::Rule { clock, .. } | Self::Tombstone { clock } => Some(*clock),
+            Self::Rule { clock, .. } | Self::Tombstone { clock, .. } => Some(*clock),
             Self::Verbatim(_) => None,
         }
     }
@@ -460,12 +500,14 @@ impl RuleEntry {
             return Self::Verbatim(raw);
         };
         if map.get("deleted") == Some(&Value::Bool(true)) {
-            if let Ok(clock) = serde_json::from_value(map["clock"].clone()) {
-                return Self::Tombstone { clock };
+            if let (Ok(clock), Ok(by)) =
+                (serde_json::from_value(map["clock"].clone()), decode_by(map))
+            {
+                return Self::Tombstone { clock, by };
             }
             return Self::Verbatim(raw);
         }
-        if let (Ok(kind), Ok(created), Ok(clock), Ok(insistence)) = (
+        if let (Ok(kind), Ok(created), Ok(clock), Ok(insistence), Ok(by)) = (
             decode_kind(map.get("at"), map.get("offset")),
             serde_json::from_value(map.get("created").cloned().unwrap_or(Value::Null)),
             serde_json::from_value(map.get("clock").cloned().unwrap_or(Value::Null)),
@@ -473,12 +515,14 @@ impl RuleEntry {
             // old document folds `Normal`. A *present* but unmodelable
             // value is not defaulted — it falls through to `Verbatim`.
             decode_insistence_default_on_missing(map.get("insistence")),
+            decode_by(map),
         ) {
             return Self::Rule {
                 kind,
                 created,
                 clock,
                 insistence,
+                by,
             };
         }
         Self::Verbatim(raw)
@@ -493,33 +537,50 @@ impl Serialize for RuleEntry {
                 created,
                 clock,
                 insistence,
-            } => match *kind {
-                // A `DueOffset` rule emits today's shape verbatim: no
-                // new key, byte-identical documents for due-offset-only
-                // rules, old readers unaffected.
-                crate::reminders::ReminderKind::DueOffset(offset) => {
-                    serde_json::json!({
-                        "offset": offset.as_duration().num_seconds(),
-                        "created": created,
-                        "clock": clock,
-                        "insistence": insistence.text_form(),
-                    })
+                by,
+            } => {
+                // The modeled shape gains the `by` key only when known:
+                // authorless rows stay byte-identical to the pre-F1
+                // documents (old readers ignore unknown keys).
+                let mut object = match *kind {
+                    // A `DueOffset` rule emits today's shape verbatim: no
+                    // new key, byte-identical documents for due-offset-only
+                    // rules, old readers unaffected.
+                    crate::reminders::ReminderKind::DueOffset(offset) => {
+                        serde_json::json!({
+                            "offset": offset.as_duration().num_seconds(),
+                            "created": created,
+                            "clock": clock,
+                            "insistence": insistence.text_form(),
+                        })
+                    }
+                    // An `At` rule emits the `at` key instead of `offset`:
+                    // an old reader's decode fails and the entry demotes to
+                    // `Verbatim` — preserved, never folded.
+                    crate::reminders::ReminderKind::At(at) => {
+                        serde_json::json!({
+                            "at": at.as_datetime().to_rfc3339(),
+                            "created": created,
+                            "clock": clock,
+                            "insistence": insistence.text_form(),
+                        })
+                    }
+                };
+                if let Some(map) = object.as_object_mut()
+                    && let Some(by) = by
+                {
+                    map.insert("by".into(), serde_json::to_value(by).unwrap_or(Value::Null));
                 }
-                // An `At` rule emits the `at` key instead of `offset`:
-                // an old reader's decode fails and the entry demotes to
-                // `Verbatim` — preserved, never folded.
-                crate::reminders::ReminderKind::At(at) => {
-                    serde_json::json!({
-                        "at": at.as_datetime().to_rfc3339(),
-                        "created": created,
-                        "clock": clock,
-                        "insistence": insistence.text_form(),
-                    })
-                }
+                object.serialize(serializer)
             }
-            .serialize(serializer),
-            Self::Tombstone { clock } => {
-                serde_json::json!({ "deleted": true, "clock": clock }).serialize(serializer)
+            Self::Tombstone { clock, by } => {
+                let mut object = serde_json::json!({ "deleted": true, "clock": clock });
+                if let Some(map) = object.as_object_mut()
+                    && let Some(by) = by
+                {
+                    map.insert("by".into(), serde_json::to_value(by).unwrap_or(Value::Null));
+                }
+                object.serialize(serializer)
             }
             Self::Verbatim(value) => value.serialize(serializer),
         }
@@ -648,7 +709,13 @@ impl<'de> Deserialize<'de> for DismissalsEntry {
 #[derive(Debug, Clone, PartialEq)]
 pub enum DismissalEntry {
     /// `{ "dismissed_at": rfc3339 }`.
-    Dismissed { dismissed_at: DateTime<Utc> },
+    Dismissed {
+        dismissed_at: DateTime<Utc>,
+        /// The row's author (F1's `by` leg): the dismissal fold is
+        /// additive, so the leg rides the wire neutrally and is never
+        /// used in a comparison.
+        by: Option<crate::ids::AuthorId>,
+    },
     /// A shape this version does not model: preserved verbatim.
     Verbatim(Value),
 }
@@ -659,7 +726,7 @@ impl DismissalEntry {
     #[must_use]
     pub fn clock(&self) -> Option<DateTime<Utc>> {
         match self {
-            Self::Dismissed { dismissed_at } => Some(*dismissed_at),
+            Self::Dismissed { dismissed_at, .. } => Some(*dismissed_at),
             Self::Verbatim(_) => None,
         }
     }
@@ -670,10 +737,11 @@ impl DismissalEntry {
         let Value::Object(map) = &raw else {
             return Self::Verbatim(raw);
         };
-        if let Ok(dismissed_at) =
-            serde_json::from_value(map.get("dismissed_at").cloned().unwrap_or(Value::Null))
-        {
-            return Self::Dismissed { dismissed_at };
+        if let (Ok(dismissed_at), Ok(by)) = (
+            serde_json::from_value(map.get("dismissed_at").cloned().unwrap_or(Value::Null)),
+            decode_by(map),
+        ) {
+            return Self::Dismissed { dismissed_at, by };
         }
         Self::Verbatim(raw)
     }
@@ -682,8 +750,14 @@ impl DismissalEntry {
 impl Serialize for DismissalEntry {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self {
-            Self::Dismissed { dismissed_at } => {
-                serde_json::json!({ "dismissed_at": dismissed_at }).serialize(serializer)
+            Self::Dismissed { dismissed_at, by } => {
+                let mut object = serde_json::json!({ "dismissed_at": dismissed_at });
+                if let Some(map) = object.as_object_mut()
+                    && let Some(by) = by
+                {
+                    map.insert("by".into(), serde_json::to_value(by).unwrap_or(Value::Null));
+                }
+                object.serialize(serializer)
             }
             Self::Verbatim(value) => value.serialize(serializer),
         }
@@ -713,10 +787,16 @@ pub enum TimeEntryRecord {
         created: DateTime<Utc>,
         clock: DateTime<Utc>,
         kind: crate::tracking::TimeEntryKind,
+        /// The row's author (F1's `by` leg): default-absent.
+        by: Option<crate::ids::AuthorId>,
     },
     /// `{ "deleted": true, "clock": rfc3339 }` — a global delete (D-T12:
     /// deliberate deletes roam; retention aging never does).
-    Tombstone { clock: DateTime<Utc> },
+    Tombstone {
+        clock: DateTime<Utc>,
+        /// The tombstone's author (F1's `by` leg).
+        by: Option<crate::ids::AuthorId>,
+    },
     /// A shape this version does not model: preserved verbatim.
     Verbatim(Value),
 }
@@ -727,7 +807,7 @@ impl TimeEntryRecord {
     #[must_use]
     pub fn clock(&self) -> Option<DateTime<Utc>> {
         match self {
-            Self::Entry { clock, .. } | Self::Tombstone { clock } => Some(*clock),
+            Self::Entry { clock, .. } | Self::Tombstone { clock, .. } => Some(*clock),
             Self::Verbatim(_) => None,
         }
     }
@@ -741,8 +821,10 @@ impl TimeEntryRecord {
             return Self::Verbatim(raw);
         };
         if map.get("deleted") == Some(&Value::Bool(true)) {
-            if let Ok(clock) = serde_json::from_value(map["clock"].clone()) {
-                return Self::Tombstone { clock };
+            if let (Ok(clock), Ok(by)) =
+                (serde_json::from_value(map["clock"].clone()), decode_by(map))
+            {
+                return Self::Tombstone { clock, by };
             }
             return Self::Verbatim(raw);
         }
@@ -755,7 +837,16 @@ impl TimeEntryRecord {
             None | Some(Value::Null) => Some(None),
             Some(value) => serde_json::from_value(value.clone()).ok().map(Some),
         };
-        if let (Some(task), Some(end), Ok(title), Ok(start), Ok(created), Ok(clock), Ok(kind)) = (
+        if let (
+            Some(task),
+            Some(end),
+            Ok(title),
+            Ok(start),
+            Ok(created),
+            Ok(clock),
+            Ok(kind),
+            Ok(by),
+        ) = (
             task,
             end,
             serde_json::from_value(map.get("title").cloned().unwrap_or(Value::Null)),
@@ -767,6 +858,7 @@ impl TimeEntryRecord {
             // is not defaulted — it falls through to `Verbatim`, never
             // a silent downgrade (the `RuleEntry` insistence ruling).
             decode_time_entry_kind_default_on_missing(map.get("kind")),
+            decode_by(map),
         ) {
             return Self::Entry {
                 task,
@@ -776,6 +868,7 @@ impl TimeEntryRecord {
                 created,
                 clock,
                 kind,
+                by,
             };
         }
         Self::Verbatim(raw)
@@ -817,18 +910,32 @@ impl Serialize for TimeEntryRecord {
                 created,
                 clock,
                 kind,
-            } => serde_json::json!({
-                "task": task,
-                "title": title,
-                "start": start,
-                "end": end,
-                "created": created,
-                "clock": clock,
-                "kind": kind.text_form(),
-            })
-            .serialize(serializer),
-            Self::Tombstone { clock } => {
-                serde_json::json!({ "deleted": true, "clock": clock }).serialize(serializer)
+                by,
+            } => {
+                let mut object = serde_json::json!({
+                    "task": task,
+                    "title": title,
+                    "start": start,
+                    "end": end,
+                    "created": created,
+                    "clock": clock,
+                    "kind": kind.text_form(),
+                });
+                if let Some(map) = object.as_object_mut()
+                    && let Some(by) = by
+                {
+                    map.insert("by".into(), serde_json::to_value(by).unwrap_or(Value::Null));
+                }
+                object.serialize(serializer)
+            }
+            Self::Tombstone { clock, by } => {
+                let mut object = serde_json::json!({ "deleted": true, "clock": clock });
+                if let Some(map) = object.as_object_mut()
+                    && let Some(by) = by
+                {
+                    map.insert("by".into(), serde_json::to_value(by).unwrap_or(Value::Null));
+                }
+                object.serialize(serializer)
             }
             Self::Verbatim(value) => value.serialize(serializer),
         }
@@ -854,11 +961,17 @@ pub enum HabitRecord {
         anchor_time: Option<chrono::NaiveTime>,
         clocks: crate::habit::HabitClocks,
         continued_from: Option<crate::ids::SeriesId>,
+        /// The row's author (F1's `by` leg): default-absent.
+        by: Option<crate::ids::AuthorId>,
     },
     /// `{ "deleted": true, "clock": rfc3339 }` — deletion roams forever
     /// (D-H10): tombstone rows are tiny and must reach late-adopting
     /// devices, so definitions carry **no retention**.
-    Tombstone { clock: DateTime<Utc> },
+    Tombstone {
+        clock: DateTime<Utc>,
+        /// The tombstone's author (F1's `by` leg).
+        by: Option<crate::ids::AuthorId>,
+    },
     /// A shape this version does not model: preserved verbatim.
     Verbatim(Value),
 }
@@ -879,7 +992,16 @@ impl HabitRecord {
                     .max(clocks.anchor_time)
                     .max(clocks.deleted),
             ),
-            Self::Tombstone { clock } => Some(*clock),
+            Self::Tombstone { clock, .. } => Some(*clock),
+            Self::Verbatim(_) => None,
+        }
+    }
+
+    /// The row's author leg (F1's `by`): `None` for verbatim content.
+    #[must_use]
+    pub const fn by(&self) -> Option<crate::ids::AuthorId> {
+        match self {
+            Self::Live { by, .. } | Self::Tombstone { by, .. } => *by,
             Self::Verbatim(_) => None,
         }
     }
@@ -892,8 +1014,10 @@ impl HabitRecord {
             return Self::Verbatim(raw);
         };
         if map.get("deleted") == Some(&Value::Bool(true)) {
-            if let Ok(clock) = serde_json::from_value(map["clock"].clone()) {
-                return Self::Tombstone { clock };
+            if let (Ok(clock), Ok(by)) =
+                (serde_json::from_value(map["clock"].clone()), decode_by(map))
+            {
+                return Self::Tombstone { clock, by };
             }
             return Self::Verbatim(raw);
         }
@@ -912,6 +1036,7 @@ impl HabitRecord {
             Some(anchor_time),
             Ok(clocks),
             Some(continued_from),
+            Ok(by),
         ) = (
             serde_json::from_value(map.get("title").cloned().unwrap_or(Value::Null)),
             // The strict target decode is load-bearing: the mint rejects
@@ -921,6 +1046,7 @@ impl HabitRecord {
             anchor_time,
             serde_json::from_value(map.get("clocks").cloned().unwrap_or(Value::Null)),
             continued_from,
+            decode_by(map),
         ) {
             return Self::Live {
                 title,
@@ -929,6 +1055,7 @@ impl HabitRecord {
                 anchor_time,
                 clocks,
                 continued_from,
+                by,
             };
         }
         Self::Verbatim(raw)
@@ -955,17 +1082,31 @@ impl Serialize for HabitRecord {
                 anchor_time,
                 clocks,
                 continued_from,
-            } => serde_json::json!({
-                "title": title,
-                "target": target,
-                "order": order,
-                "anchor_time": anchor_time,
-                "clocks": clocks,
-                "continued_from": continued_from,
-            })
-            .serialize(serializer),
-            Self::Tombstone { clock } => {
-                serde_json::json!({ "deleted": true, "clock": clock }).serialize(serializer)
+                by,
+            } => {
+                let mut object = serde_json::json!({
+                    "title": title,
+                    "target": target,
+                    "order": order,
+                    "anchor_time": anchor_time,
+                    "clocks": clocks,
+                    "continued_from": continued_from,
+                });
+                if let Some(map) = object.as_object_mut()
+                    && let Some(by) = by
+                {
+                    map.insert("by".into(), serde_json::to_value(by).unwrap_or(Value::Null));
+                }
+                object.serialize(serializer)
+            }
+            Self::Tombstone { clock, by } => {
+                let mut object = serde_json::json!({ "deleted": true, "clock": clock });
+                if let Some(map) = object.as_object_mut()
+                    && let Some(by) = by
+                {
+                    map.insert("by".into(), serde_json::to_value(by).unwrap_or(Value::Null));
+                }
+                object.serialize(serializer)
             }
             Self::Verbatim(value) => value.serialize(serializer),
         }
@@ -982,7 +1123,12 @@ impl Serialize for HabitRecord {
 pub enum HabitLogRecord {
     /// `{ "count": u32, "clock": rfc3339 }` — the row's LWW clock; the
     /// `(habit, window)` identity lives in the map key.
-    Entry { count: u32, clock: DateTime<Utc> },
+    Entry {
+        count: u32,
+        clock: DateTime<Utc>,
+        /// The row's author (F1's `by` leg): default-absent.
+        by: Option<crate::ids::AuthorId>,
+    },
     /// A shape this version does not model: preserved verbatim.
     Verbatim(Value),
 }
@@ -1006,15 +1152,16 @@ impl<'de> Deserialize<'de> for HabitLogRecord {
         // `Verbatim`, never a document failure.
         let raw = Value::deserialize(deserializer)?;
         if let Value::Object(map) = &raw
-            && let (Some(Ok(count)), Some(Ok(clock))) = (
+            && let (Some(Ok(count)), Some(Ok(clock)), Ok(by)) = (
                 map.get("count")
                     .map(|v| serde_json::from_value::<u32>(v.clone())),
                 map.get("clock")
                     .map(|v| serde_json::from_value::<DateTime<Utc>>(v.clone())),
+                decode_by(map),
             )
             && !map.contains_key("deleted")
         {
-            return Ok(Self::Entry { count, clock });
+            return Ok(Self::Entry { count, clock, by });
         }
         Ok(Self::Verbatim(raw))
     }
@@ -1023,8 +1170,14 @@ impl<'de> Deserialize<'de> for HabitLogRecord {
 impl Serialize for HabitLogRecord {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self {
-            Self::Entry { count, clock } => {
-                serde_json::json!({ "count": count, "clock": clock }).serialize(serializer)
+            Self::Entry { count, clock, by } => {
+                let mut object = serde_json::json!({ "count": count, "clock": clock });
+                if let Some(map) = object.as_object_mut()
+                    && let Some(by) = by
+                {
+                    map.insert("by".into(), serde_json::to_value(by).unwrap_or(Value::Null));
+                }
+                object.serialize(serializer)
             }
             Self::Verbatim(value) => value.serialize(serializer),
         }
@@ -1052,13 +1205,19 @@ pub enum BreakRuleEntry {
         created: DateTime<Utc>,
         clock: DateTime<Utc>,
         insistence: Insistence,
+        /// The row's author (F1's `by` leg): default-absent.
+        by: Option<crate::ids::AuthorId>,
     },
     /// `{ "deleted": true, "clock": rfc3339 }` — rule *membership*
     /// needs explicit tombstones (absence from a possibly-truncated
     /// document must never delete locally — the `RuleEntry` ruling).
     /// A re-created rule is a *new UUID* (no edit verbs), so a
     /// tombstone's decision is final for its key.
-    Tombstone { clock: DateTime<Utc> },
+    Tombstone {
+        clock: DateTime<Utc>,
+        /// The tombstone's author (F1's `by` leg).
+        by: Option<crate::ids::AuthorId>,
+    },
     /// A shape this version does not model: preserved verbatim,
     /// never folded.
     Verbatim(Value),
@@ -1070,7 +1229,16 @@ impl BreakRuleEntry {
     #[must_use]
     pub fn clock(&self) -> Option<DateTime<Utc>> {
         match self {
-            Self::Rule { clock, .. } | Self::Tombstone { clock } => Some(*clock),
+            Self::Rule { clock, .. } | Self::Tombstone { clock, .. } => Some(*clock),
+            Self::Verbatim(_) => None,
+        }
+    }
+
+    /// The row's author leg (F1's `by`): `None` for verbatim content.
+    #[must_use]
+    pub const fn by(&self) -> Option<crate::ids::AuthorId> {
+        match self {
+            Self::Rule { by, .. } | Self::Tombstone { by, .. } => *by,
             Self::Verbatim(_) => None,
         }
     }
@@ -1088,8 +1256,10 @@ impl BreakRuleEntry {
             return Self::Verbatim(raw);
         };
         if map.get("deleted") == Some(&Value::Bool(true)) {
-            if let Ok(clock) = serde_json::from_value(map["clock"].clone()) {
-                return Self::Tombstone { clock };
+            if let (Ok(clock), Ok(by)) =
+                (serde_json::from_value(map["clock"].clone()), decode_by(map))
+            {
+                return Self::Tombstone { clock, by };
             }
             return Self::Verbatim(raw);
         }
@@ -1100,7 +1270,7 @@ impl BreakRuleEntry {
                 chrono::TimeDelta::try_seconds(secs)
                     .and_then(|dur| crate::tracking::WorkThreshold::try_new(dur).ok())
             });
-        if let (Some(threshold), Ok(label), Ok(created), Ok(clock), Ok(insistence)) = (
+        if let (Some(threshold), Ok(label), Ok(created), Ok(clock), Ok(insistence), Ok(by)) = (
             threshold,
             serde_json::from_value(map.get("label").cloned().unwrap_or(Value::Null)),
             serde_json::from_value(map.get("created").cloned().unwrap_or(Value::Null)),
@@ -1109,6 +1279,7 @@ impl BreakRuleEntry {
             // old document folds `Normal`. A *present* but unmodelable
             // value is not defaulted — it falls through to `Verbatim`.
             decode_insistence_default_on_missing(map.get("insistence")),
+            decode_by(map),
         ) {
             return Self::Rule {
                 label,
@@ -1116,6 +1287,7 @@ impl BreakRuleEntry {
                 created,
                 clock,
                 insistence,
+                by,
             };
         }
         Self::Verbatim(raw)
@@ -1141,16 +1313,30 @@ impl Serialize for BreakRuleEntry {
                 created,
                 clock,
                 insistence,
-            } => serde_json::json!({
-                "label": label,
-                "threshold_seconds": threshold.as_duration().num_seconds(),
-                "created": created,
-                "clock": clock,
-                "insistence": insistence.text_form(),
-            })
-            .serialize(serializer),
-            Self::Tombstone { clock } => {
-                serde_json::json!({ "deleted": true, "clock": clock }).serialize(serializer)
+                by,
+            } => {
+                let mut object = serde_json::json!({
+                    "label": label,
+                    "threshold_seconds": threshold.as_duration().num_seconds(),
+                    "created": created,
+                    "clock": clock,
+                    "insistence": insistence.text_form(),
+                });
+                if let Some(map) = object.as_object_mut()
+                    && let Some(by) = by
+                {
+                    map.insert("by".into(), serde_json::to_value(by).unwrap_or(Value::Null));
+                }
+                object.serialize(serializer)
+            }
+            Self::Tombstone { clock, by } => {
+                let mut object = serde_json::json!({ "deleted": true, "clock": clock });
+                if let Some(map) = object.as_object_mut()
+                    && let Some(by) = by
+                {
+                    map.insert("by".into(), serde_json::to_value(by).unwrap_or(Value::Null));
+                }
+                object.serialize(serializer)
             }
             Self::Verbatim(value) => value.serialize(serializer),
         }
@@ -1589,6 +1775,7 @@ pub fn task_entry_for(task: &crate::entities::Task, native_scheduled: bool) -> T
         TaskFieldWrite {
             value: effort,
             clock: task.clocks.effort,
+            by: task.authors.effort,
         },
     );
     let importance = ModeledValue::Importance(task.importance);
@@ -1597,6 +1784,7 @@ pub fn task_entry_for(task: &crate::entities::Task, native_scheduled: bool) -> T
         TaskFieldWrite {
             value: importance,
             clock: task.clocks.importance,
+            by: task.authors.importance,
         },
     );
     let urgency = ModeledValue::Urgency(task.urgency);
@@ -1605,6 +1793,7 @@ pub fn task_entry_for(task: &crate::entities::Task, native_scheduled: bool) -> T
         TaskFieldWrite {
             value: urgency,
             clock: task.clocks.urgency,
+            by: task.authors.urgency,
         },
     );
     // Recurrence has no native Deck lane (design fact 11): the rule is
@@ -1616,6 +1805,7 @@ pub fn task_entry_for(task: &crate::entities::Task, native_scheduled: bool) -> T
         TaskFieldWrite {
             value: recur,
             clock: task.clocks.recur,
+            by: task.authors.recur,
         },
     );
     // The task kind (issue #492) has no native Deck lane either: the
@@ -1627,6 +1817,7 @@ pub fn task_entry_for(task: &crate::entities::Task, native_scheduled: bool) -> T
         TaskFieldWrite {
             value: kind,
             clock: task.clocks.kind,
+            by: task.authors.kind,
         },
     );
     if !native_scheduled {
@@ -1636,6 +1827,7 @@ pub fn task_entry_for(task: &crate::entities::Task, native_scheduled: bool) -> T
             TaskFieldWrite {
                 value: scheduled,
                 clock: task.clocks.scheduled,
+                by: task.authors.scheduled,
             },
         );
     }
@@ -1653,6 +1845,7 @@ pub fn task_entry_for(task: &crate::entities::Task, native_scheduled: bool) -> T
 pub fn rules_entry_for(
     rules: &BTreeMap<crate::ids::ReminderRuleId, crate::reminders::ReminderRule>,
     task: crate::ids::TaskId,
+    author: Option<crate::ids::AuthorId>,
 ) -> RulesEntry {
     let mapped: BTreeMap<String, RuleEntry> = rules
         .values()
@@ -1665,6 +1858,7 @@ pub fn rules_entry_for(
                     created: rule.created_at,
                     clock: rule.updated_at,
                     insistence: rule.insistence,
+                    by: author,
                 },
             )
         })
@@ -1696,6 +1890,7 @@ pub fn dismissals_entry_for(
     dismissals: &std::collections::BTreeSet<crate::reminders::ReminderDismissal>,
     rules: &BTreeMap<crate::ids::ReminderRuleId, crate::reminders::ReminderRule>,
     task: crate::ids::TaskId,
+    author: Option<crate::ids::AuthorId>,
 ) -> DismissalsEntry {
     let mapped: BTreeMap<String, DismissalEntry> = dismissals
         .iter()
@@ -1706,6 +1901,7 @@ pub fn dismissals_entry_for(
                     dismissal_wire_key(rule_id, d.occurrence),
                     DismissalEntry::Dismissed {
                         dismissed_at: d.dismissed_at,
+                        by: author,
                     },
                 ))
             }
@@ -1747,6 +1943,7 @@ pub fn break_dismissals_entry_for(
     dismissals: &std::collections::BTreeSet<crate::reminders::ReminderDismissal>,
     break_rules: &BTreeMap<crate::ids::BreakRuleId, crate::reminders::BreakRule>,
     board: crate::ids::BoardId,
+    author: Option<crate::ids::AuthorId>,
 ) -> DismissalsEntry {
     let mapped: BTreeMap<String, DismissalEntry> = dismissals
         .iter()
@@ -1759,6 +1956,7 @@ pub fn break_dismissals_entry_for(
                     break_dismissal_wire_key(rule_id, d.occurrence),
                     DismissalEntry::Dismissed {
                         dismissed_at: d.dismissed_at,
+                        by: author,
                     },
                 ))
             }
@@ -1792,6 +1990,7 @@ pub fn derive_rule_tombstones(
     base: &RulesEntry,
     local: &BTreeMap<crate::ids::ReminderRuleId, crate::reminders::ReminderRule>,
     clock: DateTime<Utc>,
+    author: Option<crate::ids::AuthorId>,
 ) -> BTreeMap<String, RuleEntry> {
     base.rules
         .iter()
@@ -1801,7 +2000,8 @@ pub fn derive_rule_tombstones(
             };
             let uuid = uuid::Uuid::parse_str(key).ok()?;
             let id = crate::ids::ReminderRuleId::from(uuid);
-            (!local.contains_key(&id)).then(|| (key.clone(), RuleEntry::Tombstone { clock }))
+            (!local.contains_key(&id))
+                .then(|| (key.clone(), RuleEntry::Tombstone { clock, by: author }))
         })
         .collect()
 }
@@ -1864,6 +2064,7 @@ pub fn time_entries_for(
     tasks: &BTreeMap<crate::ids::TaskId, crate::entities::Task>,
     board: RemoteBoardId,
     now: DateTime<Utc>,
+    author: Option<crate::ids::AuthorId>,
 ) -> BTreeMap<String, TimeEntryRecord> {
     let window_start = time_entry_window_start(now);
     entries
@@ -1887,6 +2088,7 @@ pub fn time_entries_for(
                     created: entry.created_at,
                     clock: entry.updated_at,
                     kind: entry.kind,
+                    by: author,
                 },
             ))
         })
@@ -1910,7 +2112,7 @@ pub fn lane_gc_old_time_entries(document: &AppDataDocument, now: DateTime<Utc>) 
             .into_iter()
             .filter(|(_, row)| match row {
                 TimeEntryRecord::Entry { start, .. } => *start >= window_start,
-                TimeEntryRecord::Tombstone { clock } => *clock >= window_start,
+                TimeEntryRecord::Tombstone { clock, .. } => *clock >= window_start,
                 TimeEntryRecord::Verbatim(_) => true,
             })
             .collect();
@@ -1947,6 +2149,7 @@ pub fn derive_time_entry_tombstones(
     resolvable_cards: &std::collections::BTreeSet<String>,
     now: DateTime<Utc>,
     clock: DateTime<Utc>,
+    author: Option<crate::ids::AuthorId>,
 ) -> BTreeMap<String, TimeEntryRecord> {
     let window_start = time_entry_window_start(now);
     base.iter()
@@ -1967,7 +2170,12 @@ pub fn derive_time_entry_tombstones(
                 return None; // an unresolvable card never deletes
             }
             let id = crate::ids::TimeEntryId::from(uuid);
-            (!local.contains_key(&id)).then(|| (key.clone(), TimeEntryRecord::Tombstone { clock }))
+            (!local.contains_key(&id)).then(|| {
+                (
+                    key.clone(),
+                    TimeEntryRecord::Tombstone { clock, by: author },
+                )
+            })
         })
         .collect()
 }
@@ -2002,6 +2210,7 @@ fn habit_log_cutoff(today: chrono::NaiveDate) -> chrono::NaiveDate {
 pub fn habits_for(
     habits: &BTreeMap<crate::ids::HabitId, crate::habit::Habit>,
     board: crate::ids::BoardId,
+    author: Option<crate::ids::AuthorId>,
 ) -> BTreeMap<String, HabitRecord> {
     habits
         .values()
@@ -2015,10 +2224,12 @@ pub fn habits_for(
                     anchor_time: habit.anchor_time,
                     clocks: habit.clocks,
                     continued_from: habit.continued_from,
+                    by: author,
                 }
             } else {
                 HabitRecord::Tombstone {
                     clock: habit.clocks.deleted,
+                    by: author,
                 }
             };
             (habit.id.as_uuid().to_string(), row)
@@ -2043,6 +2254,7 @@ pub fn habit_log_for(
     log: &BTreeMap<crate::habit::HabitLogKey, crate::habit::HabitLogEntry>,
     board: crate::ids::BoardId,
     today: chrono::NaiveDate,
+    author: Option<crate::ids::AuthorId>,
 ) -> BTreeMap<String, HabitLogRecord> {
     let cutoff = habit_log_cutoff(today);
     log.iter()
@@ -2058,6 +2270,7 @@ pub fn habit_log_for(
                 HabitLogRecord::Entry {
                     count: entry.count,
                     clock: entry.clock,
+                    by: author,
                 },
             )
         })
@@ -2104,6 +2317,7 @@ pub fn lane_gc_old_habit_log(
 pub fn break_rules_for(
     break_rules: &BTreeMap<crate::ids::BreakRuleId, crate::reminders::BreakRule>,
     board: crate::ids::BoardId,
+    author: Option<crate::ids::AuthorId>,
 ) -> BTreeMap<String, BreakRuleEntry> {
     break_rules
         .values()
@@ -2117,6 +2331,7 @@ pub fn break_rules_for(
                     created: rule.created_at,
                     clock: rule.created_at,
                     insistence: rule.insistence,
+                    by: author,
                 },
             )
         })
@@ -2138,6 +2353,7 @@ pub fn derive_break_rule_tombstones(
     base: &BTreeMap<String, BreakRuleEntry>,
     local: &BTreeMap<crate::ids::BreakRuleId, crate::reminders::BreakRule>,
     clock: DateTime<Utc>,
+    author: Option<crate::ids::AuthorId>,
 ) -> BTreeMap<String, BreakRuleEntry> {
     base.iter()
         .filter_map(|(key, entry)| {
@@ -2146,7 +2362,8 @@ pub fn derive_break_rule_tombstones(
             };
             let uuid = uuid::Uuid::parse_str(key).ok()?;
             let id = crate::ids::BreakRuleId::from(uuid);
-            (!local.contains_key(&id)).then(|| (key.clone(), BreakRuleEntry::Tombstone { clock }))
+            (!local.contains_key(&id))
+                .then(|| (key.clone(), BreakRuleEntry::Tombstone { clock, by: author }))
         })
         .collect()
 }
@@ -2167,6 +2384,8 @@ mod tests {
         TaskFieldWrite {
             value,
             clock: ts(clock),
+
+            by: None,
         }
     }
 
@@ -2213,6 +2432,8 @@ mod tests {
             created: ts(100),
             clock: ts(100),
             insistence: Insistence::Alarm,
+
+            by: None,
         }
     }
 
@@ -2244,6 +2465,8 @@ mod tests {
                                 ),
                                 created: ts(100),
                                 clock: ts(120),
+
+                                by: None,
                             },
                         )]
                         .into(),
@@ -2360,6 +2583,8 @@ mod tests {
         let write = TaskFieldWrite {
             value: ModeledValue::Kind(Some(crate::entities::TaskKind::Tracker)),
             clock: "2026-01-01T00:00:00Z".parse().expect("fixed instant"),
+
+            by: None,
         };
         let encoded = serde_json::to_value(&write).unwrap();
         assert_eq!(encoded["v"], serde_json::json!("tracker"));
@@ -2567,6 +2792,8 @@ mod tests {
                 created: "2026-01-01T00:00:00Z".parse().unwrap(),
                 clock: "2026-01-01T00:01:00Z".parse().unwrap(),
                 insistence: crate::reminders::Insistence::Normal,
+
+                by: None,
             },
             "the missing key folds Normal"
         );
@@ -2589,6 +2816,8 @@ mod tests {
                 created: "2026-01-01T00:00:00Z".parse().unwrap(),
                 clock: "2026-01-01T00:01:00Z".parse().unwrap(),
                 insistence: crate::reminders::Insistence::Alarm,
+
+                by: None,
             }
         );
         // Emission writes the key unconditionally on a clocked entry.
@@ -2801,7 +3030,14 @@ mod tests {
     #[test]
     fn union_tombstones_compete_by_the_same_clock() {
         let rules = |clock: i64| RulesEntry {
-            rules: [("r".to_owned(), RuleEntry::Tombstone { clock: ts(clock) })].into(),
+            rules: [(
+                "r".to_owned(),
+                RuleEntry::Tombstone {
+                    clock: ts(clock),
+                    by: None,
+                },
+            )]
+            .into(),
             unknown: BTreeMap::new(),
         };
         let mut base = document(2, AppDataSections::default());
@@ -2825,7 +3061,14 @@ mod tests {
         doc.sections.reminder_rules.as_mut().unwrap().insert(
             "77".to_owned(),
             RulesEntry {
-                rules: [("r".to_owned(), RuleEntry::Tombstone { clock: ts(1) })].into(),
+                rules: [(
+                    "r".to_owned(),
+                    RuleEntry::Tombstone {
+                        clock: ts(1),
+                        by: None,
+                    },
+                )]
+                .into(),
                 unknown: BTreeMap::new(),
             },
         );
@@ -2930,6 +3173,7 @@ mod tests {
                 archived: t(1_000),
                 deleted: t(1_000),
             },
+            authors: crate::entities::TaskAuthors::default(),
             remote_seen: None,
             remote_baseline: None,
         }
@@ -2945,6 +3189,8 @@ mod tests {
             TaskFieldWrite {
                 value: ModeledValue::Effort(Some(Effort::new(900))),
                 clock: task.clocks.effort,
+
+                by: None,
             }
         );
         assert_eq!(
@@ -2964,6 +3210,8 @@ mod tests {
             TaskFieldWrite {
                 value: ModeledValue::Recur(None),
                 clock: task.clocks.recur,
+
+                by: None,
             }
         );
         // A task holding a rule emits the rule verbatim under its clock.
@@ -2985,6 +3233,8 @@ mod tests {
             TaskFieldWrite {
                 value: ModeledValue::Recur(Some(rule)),
                 clock: ts(2_000),
+
+                by: None,
             }
         );
     }
@@ -3012,7 +3262,13 @@ mod tests {
     fn deleted_row_decodes_tombstone_and_bad_clock_demotes() {
         let good: BreakRuleEntry =
             serde_json::from_value(serde_json::json!({ "deleted": true, "clock": ts(9) })).unwrap();
-        assert_eq!(good, BreakRuleEntry::Tombstone { clock: ts(9) });
+        assert_eq!(
+            good,
+            BreakRuleEntry::Tombstone {
+                clock: ts(9),
+                by: None
+            }
+        );
         let bad: BreakRuleEntry =
             serde_json::from_value(serde_json::json!({ "deleted": true, "clock": "x" })).unwrap();
         assert!(matches!(bad, BreakRuleEntry::Verbatim(_)));
@@ -3085,6 +3341,7 @@ mod tests {
         let rows = break_rules_for(
             &rules,
             crate::ids::BoardId::from(uuid::Uuid::from_u128(700)),
+            None,
         );
         assert_eq!(rows.len(), 1, "foreign-board rows never emit");
         let BreakRuleEntry::Rule { clock, .. } = &rows[&mine.id.as_uuid().to_string()] else {
@@ -3112,23 +3369,29 @@ mod tests {
         let deleted = crate::ids::BreakRuleId::from(uuid::Uuid::from_u128(2));
         base.insert(
             deleted.as_uuid().to_string(),
-            BreakRuleEntry::Tombstone { clock: ts(50) },
+            BreakRuleEntry::Tombstone {
+                clock: ts(50),
+                by: None,
+            },
         );
         base.insert(
             "strange".to_owned(),
             BreakRuleEntry::Verbatim(serde_json::json!({ "mystery": true })),
         );
-        let derived = derive_break_rule_tombstones(&base, &rules, ts(200));
+        let derived = derive_break_rule_tombstones(&base, &rules, ts(200), None);
         // The derivation returns only *newly derived* tombstones; the
         // existing base tombstone passes through because the flush
         // inserts the derivation into the base entry, never re-stamping.
         assert_eq!(derived.len(), 0, "nothing is missing locally");
         let mut rules_without = rules.clone();
         rules_without.remove(&local.id);
-        let derived = derive_break_rule_tombstones(&base, &rules_without, ts(200));
+        let derived = derive_break_rule_tombstones(&base, &rules_without, ts(200), None);
         assert_eq!(
             derived.get(local.id.as_uuid().to_string().as_str()),
-            Some(&BreakRuleEntry::Tombstone { clock: ts(200) }),
+            Some(&BreakRuleEntry::Tombstone {
+                clock: ts(200),
+                by: None
+            }),
             "base-present live rows missing locally tombstone at the given stamp"
         );
         assert!(
@@ -3144,7 +3407,7 @@ mod tests {
                 .to_string(),
             break_rule_entry(),
         )]);
-        let derived = derive_break_rule_tombstones(&narrowed, &rules, ts(200));
+        let derived = derive_break_rule_tombstones(&narrowed, &rules, ts(200), None);
         assert_eq!(derived.len(), 1);
         assert!(
             derived.contains_key(
@@ -3273,7 +3536,7 @@ mod tests {
         };
         rules.insert(rule.id, rule.clone());
         rules.insert(foreign.id, foreign.clone());
-        let entry = rules_entry_for(&rules, task.id);
+        let entry = rules_entry_for(&rules, task.id, None);
         assert_eq!(entry.rules.len(), 1, "only the task's own rules");
         assert_eq!(
             entry.rules[&rule.id.as_uuid().to_string()],
@@ -3282,6 +3545,8 @@ mod tests {
                 kind: rule.kind,
                 created: rule.created_at,
                 clock: rule.updated_at,
+
+                by: None,
             }
         );
     }
@@ -3301,7 +3566,7 @@ mod tests {
             updated_at: ts(120),
         };
         let rule_id = rule.id;
-        let entry = rules_entry_for(&BTreeMap::from([(rule_id, rule)]), task.id);
+        let entry = rules_entry_for(&BTreeMap::from([(rule_id, rule)]), task.id, None);
         let value = serde_json::to_value(&entry.rules[&rule_id.as_uuid().to_string()]).unwrap();
         let map = value.as_object().expect("a rule entry is a JSON map");
         assert!(map.contains_key("offset"), "the legacy offset key");
@@ -3329,7 +3594,7 @@ mod tests {
             updated_at: ts(120),
         };
         let rule_id = rule.id;
-        let entry = rules_entry_for(&BTreeMap::from([(rule_id, rule.clone())]), task.id);
+        let entry = rules_entry_for(&BTreeMap::from([(rule_id, rule.clone())]), task.id, None);
         // Serialize → parse → same rule (the wire round-trip).
         let value = serde_json::to_value(&entry).unwrap();
         let back: RulesEntry = serde_json::from_value(value).unwrap();
@@ -3340,6 +3605,8 @@ mod tests {
                 created: rule.created_at,
                 clock: rule.updated_at,
                 insistence: rule.insistence,
+
+                by: None,
             },
             "the At entry round-trips kind-exact"
         );
@@ -3385,12 +3652,17 @@ mod tests {
                         ),
                         created: ts(1),
                         clock: ts(1),
+
+                        by: None,
                     },
                 ),
                 // An existing tombstone passes through untouched.
                 (
                     "00000000-0000-0000-0000-00000000000b",
-                    RuleEntry::Tombstone { clock: ts(3) },
+                    RuleEntry::Tombstone {
+                        clock: ts(3),
+                        by: None,
+                    },
                 ),
                 // Verbatim is never ordered against.
                 (
@@ -3403,11 +3675,11 @@ mod tests {
             .collect(),
             unknown: BTreeMap::new(),
         };
-        let derived = derive_rule_tombstones(&base, &local, clock);
+        let derived = derive_rule_tombstones(&base, &local, clock, None);
         assert_eq!(derived.len(), 1);
         assert_eq!(
             derived["00000000-0000-0000-0000-00000000000a"],
-            RuleEntry::Tombstone { clock }
+            RuleEntry::Tombstone { clock, by: None }
         );
     }
 
@@ -3486,6 +3758,8 @@ mod tests {
                                 ),
                                 created: ts(100),
                                 clock: ts(120),
+
+                                by: None,
                             },
                         )]
                         .into(),
@@ -3513,6 +3787,8 @@ mod tests {
                         ),
                         DismissalEntry::Dismissed {
                             dismissed_at: ts(120),
+
+                            by: None,
                         },
                     )]
                     .into(),
@@ -3632,7 +3908,7 @@ mod tests {
             100,
             114,
         ));
-        let entry = dismissals_entry_for(&dismissals, &rules, task);
+        let entry = dismissals_entry_for(&dismissals, &rules, task, None);
         assert_eq!(entry.dismissals.len(), 1);
         assert!(
             entry
@@ -3642,7 +3918,8 @@ mod tests {
         assert_eq!(
             entry.dismissals[&dismissal_wire_key(own_rule, ts(100))],
             DismissalEntry::Dismissed {
-                dismissed_at: ts(110)
+                dismissed_at: ts(110),
+                by: None,
             }
         );
         assert_eq!(entry.unknown, BTreeMap::new());
@@ -3659,6 +3936,8 @@ mod tests {
                 key.clone(),
                 DismissalEntry::Dismissed {
                     dismissed_at: ts(clock),
+
+                    by: None,
                 },
             )]
             .into(),
@@ -3674,6 +3953,8 @@ mod tests {
             "fresh-key".to_owned(),
             DismissalEntry::Dismissed {
                 dismissed_at: ts(1),
+
+                by: None,
             },
         );
         union_dismissals_entry(&mut base, &overlay);
@@ -3699,6 +3980,8 @@ mod tests {
             "v".to_owned(),
             DismissalEntry::Dismissed {
                 dismissed_at: ts(1),
+
+                by: None,
             },
         );
         union_dismissals_entry(&mut base, &overlay);
@@ -3734,6 +4017,8 @@ mod tests {
             created: ts(90),
             clock: ts(clock),
             kind: crate::tracking::TimeEntryKind::Work,
+
+            by: None,
         }
     }
 
@@ -3746,6 +4031,8 @@ mod tests {
             created: ts(90),
             clock: ts(clock),
             kind: crate::tracking::TimeEntryKind::Work,
+
+            by: None,
         }
     }
 
@@ -3768,6 +4055,8 @@ mod tests {
                 created: ts(90),
                 clock: ts(100),
                 kind: crate::tracking::TimeEntryKind::Work,
+
+                by: None,
             },
             "absent kind folds default-off"
         );
@@ -3826,14 +4115,14 @@ mod tests {
             kind: TimeEntryKind::Work,
         };
         let entries = std::collections::BTreeMap::from([(entry.id, entry.clone())]);
-        let emitted = time_entries_for(&entries, &tasks, RemoteBoardId(2), ts(1_000_000));
+        let emitted = time_entries_for(&entries, &tasks, RemoteBoardId(2), ts(1_000_000), None);
         assert_eq!(
             serde_json::to_value(emitted.values().next().unwrap()).unwrap()["kind"],
             serde_json::json!("work")
         );
         entry.kind = TimeEntryKind::Respite;
         let entries = std::collections::BTreeMap::from([(entry.id, entry)]);
-        let emitted = time_entries_for(&entries, &tasks, RemoteBoardId(2), ts(1_000_000));
+        let emitted = time_entries_for(&entries, &tasks, RemoteBoardId(2), ts(1_000_000), None);
         assert_eq!(
             serde_json::to_value(emitted.values().next().unwrap()).unwrap()["kind"],
             serde_json::json!("respite")
@@ -3878,7 +4167,8 @@ mod tests {
                 end: Some("2026-04-01T09:00:00Z".parse().unwrap()),
                 created: "2026-04-01T07:59:00Z".parse().unwrap(),
                 clock: "2026-04-01T09:00:00Z".parse().unwrap(),
-                kind: crate::tracking::TimeEntryKind::Work
+                kind: crate::tracking::TimeEntryKind::Work,
+                by: None,
             },
             "the full entry decodes typed"
         );
@@ -3931,8 +4221,11 @@ mod tests {
         let open = serde_json::to_value(open_row(None, 100)).unwrap();
         assert_eq!(open["end"], Value::Null);
         assert_eq!(open["task"], Value::Null);
-        let tombstone =
-            serde_json::to_value(TimeEntryRecord::Tombstone { clock: ts(100) }).unwrap();
+        let tombstone = serde_json::to_value(TimeEntryRecord::Tombstone {
+            clock: ts(100),
+            by: None,
+        })
+        .unwrap();
         let mut keys: Vec<_> = tombstone.as_object().unwrap().keys().cloned().collect();
         keys.sort();
         assert_eq!(keys, vec!["clock", "deleted"]);
@@ -3980,7 +4273,10 @@ mod tests {
         overlay.insert("tie".to_owned(), open_row(Some("412"), 100));
         overlay.insert(
             "verbatim".to_owned(),
-            TimeEntryRecord::Tombstone { clock: ts(999) },
+            TimeEntryRecord::Tombstone {
+                clock: ts(999),
+                by: None,
+            },
         );
         overlay.insert("fresh".to_owned(), entry_row(Some("414"), 300));
         union_time_entries(&mut base, &overlay);
@@ -4045,7 +4341,10 @@ mod tests {
         let mut overlay = BTreeMap::new();
         overlay.insert(
             "e".to_owned(),
-            TimeEntryRecord::Tombstone { clock: ts(200) },
+            TimeEntryRecord::Tombstone {
+                clock: ts(200),
+                by: None,
+            },
         );
         union_time_entries(&mut base, &overlay);
         assert!(
@@ -4055,7 +4354,10 @@ mod tests {
         let mut base = BTreeMap::new();
         base.insert(
             "e".to_owned(),
-            TimeEntryRecord::Tombstone { clock: ts(100) },
+            TimeEntryRecord::Tombstone {
+                clock: ts(100),
+                by: None,
+            },
         );
         let mut overlay = BTreeMap::new();
         overlay.insert("e".to_owned(), entry_row(Some("412"), 300));
@@ -4106,6 +4408,8 @@ mod tests {
             created: ts(start - 10),
             clock: ts(start + 10),
             kind: crate::tracking::TimeEntryKind::Work,
+
+            by: None,
         }
     }
 
@@ -4176,7 +4480,7 @@ mod tests {
         ] {
             entries.insert(e.id, e.clone());
         }
-        let emitted = time_entries_for(&entries, &tasks, RemoteBoardId(2), now);
+        let emitted = time_entries_for(&entries, &tasks, RemoteBoardId(2), now, None);
         assert_eq!(emitted.len(), 3, "fresh + boundary + deleted-task-bound");
         assert!(emitted.contains_key(&fresh.id.as_uuid().to_string()));
         assert!(
@@ -4201,7 +4505,8 @@ mod tests {
                 end: fresh.end,
                 created: fresh.created_at,
                 clock: fresh.updated_at,
-                kind: crate::tracking::TimeEntryKind::Work
+                kind: crate::tracking::TimeEntryKind::Work,
+                by: None,
             }
         );
     }
@@ -4234,7 +4539,10 @@ mod tests {
             // An existing tombstone passes through untouched.
             (
                 "00000000-0000-0000-0000-000000000003".to_owned(),
-                TimeEntryRecord::Tombstone { clock: ts(500) },
+                TimeEntryRecord::Tombstone {
+                    clock: ts(500),
+                    by: None,
+                },
             ),
             // Verbatim is never ordered against.
             (
@@ -4254,11 +4562,11 @@ mod tests {
             // Unparseable key: not an entry identity.
             ("not-a-uuid".to_owned(), base_entry("412", 9_000_003)),
         ]);
-        let derived = derive_time_entry_tombstones(&base, &local, &resolvable, now, clock);
+        let derived = derive_time_entry_tombstones(&base, &local, &resolvable, now, clock, None);
         assert_eq!(derived.len(), 1);
         assert_eq!(
             derived["00000000-0000-0000-0000-000000000002"],
-            TimeEntryRecord::Tombstone { clock }
+            TimeEntryRecord::Tombstone { clock, by: None }
         );
     }
 
@@ -4281,12 +4589,16 @@ mod tests {
                             "fresh-tombstone".to_owned(),
                             TimeEntryRecord::Tombstone {
                                 clock: ts(9_000_001),
+
+                                by: None,
                             },
                         ),
                         (
                             "aged-tombstone".to_owned(),
                             TimeEntryRecord::Tombstone {
                                 clock: ts(aged_secs),
+
+                                by: None,
                             },
                         ),
                         (
@@ -4366,7 +4678,7 @@ mod tests {
         entries.insert(aged.id, aged.clone());
         entries.insert(fresh.id, fresh.clone());
         // Builder and GC over the same now agree: no aged row in either.
-        let overlay = time_entries_for(&entries, &tasks, RemoteBoardId(2), now);
+        let overlay = time_entries_for(&entries, &tasks, RemoteBoardId(2), now, None);
         assert_eq!(overlay.len(), 1);
         assert!(overlay.contains_key(&fresh.id.as_uuid().to_string()));
         let base_doc = document(
@@ -4492,7 +4804,7 @@ mod tests {
                 dismissed_at: ts(occ + 1),
             });
         }
-        let entry = break_dismissals_entry_for(&dismissals, &break_rules, board);
+        let entry = break_dismissals_entry_for(&dismissals, &break_rules, board, None);
         assert_eq!(
             entry.dismissals.len(),
             1,
@@ -4659,7 +4971,8 @@ mod tests {
                     kind: crate::reminders::ReminderKind::DueOffset(crate::reminders::ReminderOffset::at_due()),
                     created: ts(1),
                     clock: ts(2),
-                })].into(),
+
+                by: None,})].into(),
                 unknown: BTreeMap::new(),
             };
             let mut local = BTreeMap::new();
@@ -4676,7 +4989,7 @@ mod tests {
                     },
                 );
             }
-            let derived = derive_rule_tombstones(&base, &local, ts(clock));
+            let derived = derive_rule_tombstones(&base, &local, ts(clock), None);
             if present {
                 prop_assert!(derived.is_empty());
             } else {
@@ -4752,7 +5065,7 @@ mod tests {
             let mk = |clock: i64| {
                 BTreeMap::from([(
                     key.clone(),
-                    BreakRuleEntry::Tombstone { clock: ts(clock) },
+                    BreakRuleEntry::Tombstone { clock: ts(clock), by: None },
                 )])
             };
             let mut base = mk(base_clock);
@@ -4783,7 +5096,7 @@ mod tests {
             let mk = |clock: i64| DismissalsEntry {
                 dismissals: [(
                     key.clone(),
-                    DismissalEntry::Dismissed { dismissed_at: ts(clock) },
+                    DismissalEntry::Dismissed { dismissed_at: ts(clock), by: None },
                 )]
                 .into(),
                 unknown: BTreeMap::new(),
@@ -4884,7 +5197,7 @@ mod tests {
                     occurrence + 4,
                 ));
             }
-            let entry = dismissals_entry_for(&dismissals, &rules, task);
+            let entry = dismissals_entry_for(&dismissals, &rules, task, None);
             let wire = serde_json::to_string(&entry).unwrap();
             prop_assert!(
                 !wire.contains(&task.as_uuid().to_string()),
@@ -4904,7 +5217,7 @@ mod tests {
 
             // The reserved leg (the carve-out): typed positive for the
             // Break family, typed negative for the device-local ones.
-            let reserved = break_dismissals_entry_for(&dismissals, &break_rules, board);
+            let reserved = break_dismissals_entry_for(&dismissals, &break_rules, board, None);
             let reserved_wire = serde_json::to_string(&reserved).unwrap();
             prop_assert_eq!(
                 reserved_wire.contains(&format!("break:{}|", break_rule.as_uuid())),
@@ -4990,7 +5303,7 @@ mod tests {
             for (seed, card, start, tombstone) in rows {
                 let key = uuid::Uuid::from_u128(seed).to_string();
                 let row = if tombstone {
-                    TimeEntryRecord::Tombstone { clock: ts(start) }
+                    TimeEntryRecord::Tombstone { clock: ts(start), by: None }
                 } else {
                     base_entry(&card.map(|c| c.to_string()).unwrap_or_default(), start)
                 };
@@ -5007,7 +5320,7 @@ mod tests {
                 for (key, row) in after {
                     let instant = match row {
                         TimeEntryRecord::Entry { start, .. } => Some(*start),
-                        TimeEntryRecord::Tombstone { clock } => Some(*clock),
+                        TimeEntryRecord::Tombstone { clock, .. } => Some(*clock),
                         TimeEntryRecord::Verbatim(_) => None,
                     };
                     prop_assert!(instant.is_none_or(|t| t >= window_start), "survivors are in-window");
@@ -5085,7 +5398,7 @@ mod tests {
                 }
             }
             let derived =
-                derive_time_entry_tombstones(&base, &local, &resolvable, ts(now), ts(clock));
+                derive_time_entry_tombstones(&base, &local, &resolvable, ts(now), ts(clock), None);
             for (key, row) in &derived {
                 prop_assert!(matches!(row, TimeEntryRecord::Tombstone { .. }), "only tombstones derive");
                 let Some(parsed) = uuid::Uuid::parse_str(key).ok() else {
@@ -5133,7 +5446,7 @@ mod tests {
                 let entry = tracked(*entry_seed, *start, true, task);
                 entries_map.insert(entry.id, entry);
             }
-            let emitted = time_entries_for(&entries_map, &tasks, board, ts(now));
+            let emitted = time_entries_for(&entries_map, &tasks, board, ts(now), None);
             for (key, row) in &emitted {
                 prop_assert!(uuid::Uuid::parse_str(key).is_ok(), "keys are UUIDs");
                 let TimeEntryRecord::Entry { task: Some(task), .. } = row else {
@@ -5188,6 +5501,8 @@ mod habit_section_tests {
             anchor_time: None,
             clocks: HabitClocks::all(ts(stamp)),
             continued_from: None,
+
+            by: None,
         }
     }
 
@@ -5227,6 +5542,8 @@ mod habit_section_tests {
                     HabitLogRecord::Entry {
                         count: 2,
                         clock: ts(100),
+
+                        by: None,
                     },
                 )]
                 .into_iter()
@@ -5282,6 +5599,8 @@ mod habit_section_tests {
                     HabitLogRecord::Entry {
                         count: 2,
                         clock: ts(100),
+
+                        by: None,
                     },
                 )]
                 .into_iter()
@@ -5344,6 +5663,8 @@ mod habit_section_tests {
             HabitLogRecord::Entry {
                 count: 3,
                 clock: ts(200),
+
+                by: None,
             },
         )]
         .into_iter()
@@ -5354,6 +5675,8 @@ mod habit_section_tests {
             HabitLogRecord::Entry {
                 count: 5,
                 clock: ts(100),
+
+                by: None,
             },
         );
         let mut merged = base.clone();
@@ -5368,6 +5691,8 @@ mod habit_section_tests {
             HabitLogRecord::Entry {
                 count: 7,
                 clock: ts(300),
+
+                by: None,
             },
         );
         union_habit_log(&mut merged, &overlay_newer);
@@ -5385,15 +5710,27 @@ mod habit_section_tests {
         // A delete after an edit wins.
         let base = [(uuid.clone(), live_row(100))].into_iter().collect();
         let mut overlay = BTreeMap::new();
-        overlay.insert(uuid.clone(), HabitRecord::Tombstone { clock: ts(300) });
+        overlay.insert(
+            uuid.clone(),
+            HabitRecord::Tombstone {
+                clock: ts(300),
+                by: None,
+            },
+        );
         let mut merged = base;
         union_habits(&mut merged, &overlay);
         assert!(matches!(&merged[&uuid], HabitRecord::Tombstone { .. }));
 
         // A later-dated live row resurrects over an older tombstone.
-        let base = [(uuid.clone(), HabitRecord::Tombstone { clock: ts(100) })]
-            .into_iter()
-            .collect();
+        let base = [(
+            uuid.clone(),
+            HabitRecord::Tombstone {
+                clock: ts(100),
+                by: None,
+            },
+        )]
+        .into_iter()
+        .collect();
         let mut overlay = BTreeMap::new();
         overlay.insert(uuid.clone(), live_row(200));
         let mut merged = base;
@@ -5403,7 +5740,13 @@ mod habit_section_tests {
         // An effective-clock tie between tombstone and live: overlay wins.
         let base = [(uuid.clone(), live_row(100))].into_iter().collect();
         let mut overlay = BTreeMap::new();
-        overlay.insert(uuid.clone(), HabitRecord::Tombstone { clock: ts(100) });
+        overlay.insert(
+            uuid.clone(),
+            HabitRecord::Tombstone {
+                clock: ts(100),
+                by: None,
+            },
+        );
         let mut merged = base;
         union_habits(&mut merged, &overlay);
         assert!(matches!(&merged[&uuid], HabitRecord::Tombstone { .. }));
@@ -5446,6 +5789,8 @@ mod habit_section_tests {
                         HabitLogRecord::Entry {
                             count: 1,
                             clock: ts(900),
+
+                            by: None,
                         },
                     )]
                     .into_iter()
@@ -5487,6 +5832,7 @@ mod habit_section_tests {
             .into_iter()
             .collect(),
             board,
+            None,
         );
         assert_eq!(
             emitted.len(),
@@ -5502,11 +5848,16 @@ mod habit_section_tests {
                 anchor_time: mine.anchor_time,
                 clocks: mine.clocks,
                 continued_from: mine.continued_from,
+
+                by: None,
             })
         );
         assert_eq!(
             emitted.get(&gone.id.as_uuid().to_string()),
-            Some(&HabitRecord::Tombstone { clock: ts(200) })
+            Some(&HabitRecord::Tombstone {
+                clock: ts(200),
+                by: None
+            })
         );
     }
 
@@ -5545,7 +5896,7 @@ mod habit_section_tests {
                     HabitLogEntry { count: u32::try_from(i + 1).unwrap(), clock: ts(100) },
                 );
             }
-            let emitted = habit_log_for(&[(habit.id, habit.clone())].into(), &log, board, today);
+            let emitted = habit_log_for(&[(habit.id, habit.clone())].into(), &log, board, today, None);
             let expected: Vec<String> = log
                 .iter()
                 .filter(|(k, _)| in_window(k.window.as_date(), today))
@@ -5565,7 +5916,7 @@ mod habit_section_tests {
             let mut base_log = emitted.clone();
             base_log.insert(
                 aged_key.wire_form(),
-                HabitLogRecord::Entry { count: 9, clock: ts(50) },
+                HabitLogRecord::Entry { count: 9, clock: ts(50), by: None },
             );
             let base = document(
                 7,
@@ -5596,5 +5947,157 @@ mod habit_section_tests {
             // documents — no wire GC can reach local truth. Pinned by the
             // borrow checker, not by a runtime assertion.
         }
+    }
+}
+
+#[cfg(test)]
+mod author_by_tests {
+    use super::*;
+    use crate::ids::AuthorId;
+    use chrono::TimeZone;
+
+    fn author() -> AuthorId {
+        AuthorId::from_uuid(uuid::Uuid::from_u128(0xBEE_F00))
+    }
+
+    fn ts(secs: i64) -> DateTime<Utc> {
+        Utc.timestamp_opt(secs, 0).unwrap()
+    }
+
+    /// T-SIDE-1: a row with `by` serializes the author and decodes it
+    /// back; a `by`-absent row decodes `None` (old documents decode
+    /// unchanged); an unparseable `by` demotes the row to `Verbatim`
+    /// (never a silent de-authoring).
+    #[test]
+    fn by_serde_roundtrips_absent_decodes_none_and_garbage_fails_closed() {
+        let a = author();
+        let rule = RuleEntry::Rule {
+            kind: crate::reminders::ReminderKind::At(
+                crate::reminders::AtInstant::whole_second(ts(1_000)).unwrap(),
+            ),
+            created: ts(900),
+            clock: ts(1_000),
+            insistence: crate::reminders::Insistence::Normal,
+            by: Some(a),
+        };
+        let raw = serde_json::to_value(&rule).unwrap();
+        let object = raw.as_object().unwrap();
+        assert_eq!(
+            object.get("by").and_then(|b| b.as_str()),
+            Some(a.to_string().as_str()),
+            "the author rides the display form"
+        );
+        let back = RuleEntry::deserialize_verbatim(raw);
+        assert_eq!(back, rule);
+
+        // Absent `by`: the pre-F1 shape decodes authorless.
+        let old = RuleEntry::deserialize_verbatim(serde_json::json!({
+            "at": ts(1_000).to_rfc3339(),
+            "created": ts(900).to_rfc3339(),
+            "clock": ts(1_000).to_rfc3339(),
+            "insistence": "normal",
+        }));
+        let RuleEntry::Rule { by: None, .. } = old else {
+            panic!("old shape decodes as a Rule row");
+        };
+
+        // Present but unparseable: the whole row demotes to Verbatim.
+        let garbage = RuleEntry::deserialize_verbatim(serde_json::json!({
+            "at": ts(1_000).to_rfc3339(),
+            "created": ts(900).to_rfc3339(),
+            "clock": ts(1_000).to_rfc3339(),
+            "insistence": "normal",
+            "by": "not-a-uuid",
+        }));
+        assert!(
+            matches!(garbage, RuleEntry::Verbatim(_)),
+            "an unparsable author demotes the row"
+        );
+
+        // Tombstones carry the same grammar.
+        let tomb = RuleEntry::Tombstone {
+            clock: ts(2_000),
+            by: Some(a),
+        };
+        let raw = serde_json::to_value(&tomb).unwrap();
+        assert!(raw.as_object().unwrap().contains_key("by"));
+        let back = RuleEntry::deserialize_verbatim(raw);
+        assert_eq!(back, tomb);
+
+        // The task field write's `by` leg roundtrips through the
+        // keyed decode.
+        let write = TaskFieldWrite {
+            value: ModeledValue::Scheduled(Some(ts(3_000))),
+            clock: ts(2_500),
+            by: Some(a),
+        };
+        let raw = serde_json::to_value(&write).unwrap();
+        let back = decode_field_write("scheduled", &raw).unwrap();
+        assert_eq!(back, write);
+        let absent = decode_field_write(
+            "scheduled",
+            &serde_json::json!({ "v": null, "clock": ts(2_500).to_rfc3339() }),
+        )
+        .unwrap();
+        assert_eq!(absent.by, None);
+    }
+
+    /// T-SIDE-2 (the old-reader relay simulation): a pre-F1 reader
+    /// ignores the unknown `by` key and re-publishes the row
+    /// `by`-less; the fold then compares authorless rows against each
+    /// other — the content and clock legs still converge, no panic, and
+    /// the relayed document never loses the row.
+    #[test]
+    fn old_reader_relay_converges_authorless() {
+        let a = author();
+        let authored = serde_json::json!({
+            "count": 3,
+            "clock": ts(1_000).to_rfc3339(),
+            "by": a.to_string(),
+        });
+        let row: HabitLogRecord = serde_json::from_value(authored).unwrap();
+        // Pre-F1 reader: decodes (unknown key ignored), re-serializes.
+        let relayed = serde_json::to_value(&row).unwrap();
+        let reparsed: HabitLogRecord = serde_json::from_value(relayed).unwrap();
+        let reparsed_row = match (&row, &reparsed) {
+            (
+                HabitLogRecord::Entry { count, clock, .. },
+                HabitLogRecord::Entry {
+                    count: c2,
+                    clock: c2k,
+                    by,
+                },
+            ) => {
+                assert_eq!(count, c2);
+                assert_eq!(clock, c2k);
+                // The relay strips the author only through the old
+                // reader's own re-encode; this version re-emits it —
+                // the old peer strips it, ours keeps it, both converge.
+                assert_eq!(*by, Some(a));
+                true
+            }
+            _ => false,
+        };
+        assert!(reparsed_row, "the row survives the roundtrip typed");
+
+        // Fold: the authorless leg competes by the clock alone (both
+        // `None`) — the pinned strictly-newer direction decides.
+        let mut state = crate::habit::HabitState::default();
+        let key = crate::habit::HabitLogKey::parse_wire_form(
+            "0193a1b2-c3d4-7cc9-8a2e-5f1e2d3c4b5a|2026-01-01",
+        )
+        .unwrap();
+        let rows = [(
+            key.wire_form(),
+            HabitLogRecord::Entry {
+                count: 3,
+                clock: ts(1_000),
+                by: None,
+            },
+        )]
+        .into_iter()
+        .collect();
+        crate::merge::fold_habit_log(&mut state, &rows, None);
+        assert_eq!(state.log.get(&key).map(|e| e.count), Some(3));
     }
 }

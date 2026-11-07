@@ -439,6 +439,7 @@ pub async fn seed_board_binding(db_path: &Path, local_id: u128, remote_id: u64, 
                     archived: taskboard_domain::BoardClocks::epoch(),
                     deleted: taskboard_domain::BoardClocks::epoch(),
                 },
+                authors: taskboard_domain::entities::BoardAuthors::default(),
                 remote_seen: None,
             },
         )])
@@ -904,6 +905,7 @@ pub async fn seed_tagged_board_binding(
                     archived: taskboard_domain::BoardClocks::epoch(),
                     deleted: taskboard_domain::BoardClocks::epoch(),
                 },
+                authors: taskboard_domain::entities::BoardAuthors::default(),
                 remote_seen: None,
             },
         )])

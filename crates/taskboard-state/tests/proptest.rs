@@ -65,6 +65,7 @@ fn arbitrary_action() -> impl Strategy<Value = PersistenceAction> {
                 deleted: taskboard_domain::BoardClocks::epoch(),
                 title: BoardClocks::epoch(),
             },
+            authors: taskboard_domain::entities::BoardAuthors::default(),
             remote_seen: None,
         })
     });
@@ -82,6 +83,7 @@ fn arbitrary_action() -> impl Strategy<Value = PersistenceAction> {
                 order: ts(1),
                 deleted: ts(1),
             },
+            authors: taskboard_domain::entities::StackAuthors::default(),
             remote_seen: None,
         })
     });
@@ -121,6 +123,7 @@ fn arbitrary_action() -> impl Strategy<Value = PersistenceAction> {
                 archived: ts(1),
                 deleted: ts(1),
             },
+            authors: taskboard_domain::entities::TaskAuthors::default(),
             remote_seen: None,
             remote_baseline: None,
         })
@@ -138,6 +141,7 @@ fn arbitrary_action() -> impl Strategy<Value = PersistenceAction> {
                 color: ts(1),
                 deleted: ts(1),
             },
+            authors: taskboard_domain::entities::LabelAuthors::default(),
             remote_seen: None,
         })
     });
@@ -282,6 +286,7 @@ proptest! {
                 day_start_time: chrono::NaiveTime::MIN,
                 offset: chrono::FixedOffset::east_opt(0).unwrap(),
             },
+            None,
         );
         // The engine appends the status action iff phase or last_success
         // changed — the same rule the actor applies.
@@ -429,6 +434,7 @@ fn coherent_seed() -> (PersistedState, StackId, TaskId, taskboard_domain::LabelI
             order: ts(1),
             deleted: ts(1),
         },
+        authors: taskboard_domain::entities::StackAuthors::default(),
         remote_seen: None,
     };
     let label = Label {
@@ -443,6 +449,7 @@ fn coherent_seed() -> (PersistedState, StackId, TaskId, taskboard_domain::LabelI
             color: ts(1),
             deleted: ts(1),
         },
+        authors: taskboard_domain::entities::LabelAuthors::default(),
         remote_seen: None,
     };
     let task = Task {
@@ -480,6 +487,7 @@ fn coherent_seed() -> (PersistedState, StackId, TaskId, taskboard_domain::LabelI
             archived: ts(1),
             deleted: ts(1),
         },
+        authors: taskboard_domain::entities::TaskAuthors::default(),
         remote_seen: None,
         remote_baseline: None,
     };
@@ -499,6 +507,7 @@ fn coherent_seed() -> (PersistedState, StackId, TaskId, taskboard_domain::LabelI
                 deleted: taskboard_domain::BoardClocks::epoch(),
                 title: BoardClocks::epoch(),
             },
+            authors: taskboard_domain::entities::BoardAuthors::default(),
             remote_seen: None,
         },
     );
@@ -548,6 +557,7 @@ fn drive_sequence(steps: &[Step]) -> Result<(), TestCaseError> {
             notifier,
             taskboard_domain::SettingsSnapshot::default(),
             taskboard_state::DayRollConfig::disabled(),
+            None,
         )
         .await
         .expect("engine boots");

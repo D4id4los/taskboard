@@ -122,6 +122,7 @@ fn stack_row(raw: u128, title: &str, order: i64) -> taskboard_domain::Stack {
             order: ts(T0 + 2),
             deleted: ts(T0 + 3),
         },
+        authors: taskboard_domain::entities::StackAuthors::default(),
         remote_seen: None,
     }
 }
@@ -139,6 +140,7 @@ fn label_row(raw: u128, title: &str, color: &str) -> taskboard_domain::Label {
             color: ts(T0 + 2),
             deleted: ts(T0 + 3),
         },
+        authors: taskboard_domain::entities::LabelAuthors::default(),
         remote_seen: None,
     }
 }
@@ -176,6 +178,7 @@ fn board_row(raw: u128, title: &str) -> taskboard_domain::Board {
             archived: ts(T0 + 3),
             deleted: ts(T0 + 4),
         },
+        authors: taskboard_domain::entities::BoardAuthors::default(),
         remote_seen: None,
     }
 }

@@ -1494,6 +1494,7 @@ mod tests {
                 archived: clock,
                 deleted: clock,
             },
+            authors: crate::entities::TaskAuthors::default(),
             remote_seen: None,
             remote_baseline: None,
         }

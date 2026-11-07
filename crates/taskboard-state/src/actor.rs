@@ -286,6 +286,7 @@ pub async fn spawn_state_engine(
     notifier: mpsc::Sender<NotifierMessage>,
     settings: SettingsSnapshot,
     day_roll: DayRollConfig,
+    author: Option<taskboard_domain::ids::AuthorId>,
 ) -> Result<(EngineHandle, JoinHandle<()>), EngineStartupError> {
     let (user_data_tx, user_data) = mpsc::channel::<UserDataReport>(USER_DATA_REPORT_CAPACITY);
     drop(user_data_tx);
@@ -301,6 +302,7 @@ pub async fn spawn_state_engine(
         notifier,
         settings,
         day_roll,
+        author,
     )
     .await
 }
@@ -332,6 +334,7 @@ pub async fn spawn_state_engine_with_user_data(
     notifier: mpsc::Sender<NotifierMessage>,
     settings: SettingsSnapshot,
     day_roll: DayRollConfig,
+    author: Option<taskboard_domain::ids::AuthorId>,
 ) -> Result<(EngineHandle, JoinHandle<()>), EngineStartupError> {
     let persisted = repo.load().await.map_err(EngineStartupError::Load)?;
     // Log the counts straight off the hydrated data — never clone the
@@ -372,6 +375,7 @@ pub async fn spawn_state_engine_with_user_data(
             system_out: system_out.downgrade(),
             notifier,
             day_roll,
+            author,
         },
         shared,
         signals,
@@ -394,6 +398,10 @@ struct EngineParts {
     system_out: broadcast::WeakSender<SystemEvent>,
     notifier: mpsc::Sender<NotifierMessage>,
     day_roll: DayRollConfig,
+    /// This device's author identity (F1): the planner's stamp source
+    /// and the sidecar folds' local author leg. `None` = headless
+    /// (tests, identity-less boot windows) — rows stamp authorless.
+    author: Option<taskboard_domain::ids::AuthorId>,
 }
 
 #[allow(
@@ -420,6 +428,7 @@ async fn run_loop(
         system_out,
         notifier,
         day_roll,
+        author,
     } = parts;
     // Edge-trigger state for `StorageFailed`: the event fires on the
     // ok->fail transition (a dying disk fires once per failure epoch,
@@ -500,6 +509,7 @@ async fn run_loop(
                             sync_outs: &mut sync_outs,
                             system_out: &system_out,
                             notifier: &notifier,
+                            author,
                         },
                         &metrics,
                         day_roll.offset,
@@ -558,6 +568,7 @@ async fn run_loop(
                             ids: ids.as_ref(),
                             clock: clock.as_ref(),
                             notifier: &notifier,
+                            author,
                         },
                         &metrics,
                         &system_out,
@@ -708,6 +719,7 @@ async fn run_loop(
                             ids: ids.as_ref(),
                             clock: clock.as_ref(),
                             system_out: &system_out,
+                            author,
                         },
                         &metrics,
                         day,
@@ -805,6 +817,7 @@ struct Seams<'a> {
     sync_outs: &'a mut Vec<mpsc::Sender<SyncCommand>>,
     system_out: &'a broadcast::WeakSender<SystemEvent>,
     notifier: &'a mpsc::Sender<NotifierMessage>,
+    author: Option<taskboard_domain::ids::AuthorId>,
 }
 
 #[allow(clippy::too_many_arguments)] // the seams + receipt + metrics are the context
@@ -826,6 +839,7 @@ async fn execute_command(
         sync_outs,
         system_out,
         notifier,
+        author,
     } = seams;
     tracing::debug!("command received");
     let now = clock.now();
@@ -881,6 +895,7 @@ async fn execute_command(
         &reminder_defaults,
         day,
         now,
+        author,
     ) {
         Ok(plan) => plan,
         Err(rejection) => {
@@ -982,6 +997,7 @@ async fn ingest_sync_report(
         ids,
         clock,
         notifier,
+        author,
     } = seams;
     tracing::debug!("sync report ingested");
     let now = clock.now();
@@ -1008,6 +1024,7 @@ async fn ingest_sync_report(
                 &app_data,
                 features,
                 day,
+                author,
             );
             // The pipeline's broadcast verdicts (R3's resurrect is the
             // only producer today): upgrade-or-drop like the storage
@@ -1417,6 +1434,7 @@ struct IngestSeams<'a> {
     ids: &'a dyn IdGenerator,
     clock: &'a dyn Clock,
     notifier: &'a mpsc::Sender<NotifierMessage>,
+    author: Option<taskboard_domain::ids::AuthorId>,
 }
 
 /// The day roll's seams.
@@ -1425,6 +1443,7 @@ struct DaySeams<'a> {
     ids: &'a dyn IdGenerator,
     clock: &'a dyn Clock,
     system_out: &'a broadcast::WeakSender<SystemEvent>,
+    author: Option<taskboard_domain::ids::AuthorId>,
 }
 
 /// The reminder tick's seams.
@@ -1521,6 +1540,7 @@ async fn day_tick(
         ids,
         clock,
         system_out,
+        author,
     } = seams;
     let now = clock.now();
     // `day` is re-minted per tick from the live day-start time. The
@@ -1532,7 +1552,7 @@ async fn day_tick(
     if *last_roll == Some(today) {
         return; // the quiet fast path
     }
-    let actions = plan_day_rolls(&core.app(), today, day, ids, now);
+    let actions = plan_day_rolls(&core.app(), today, day, ids, now, author);
     if actions.is_empty() {
         // A quiet day: the watermark advance is the whole effect.
         *last_roll = Some(today);
@@ -1655,6 +1675,7 @@ mod tests {
                 deleted: taskboard_domain::BoardClocks::epoch(),
                 title: taskboard_domain::BoardClocks::epoch(),
             },
+            authors: taskboard_domain::entities::BoardAuthors::default(),
             remote_seen: None,
         };
         let mut state = PersistedState::default();

@@ -60,6 +60,10 @@ pub struct SyncActorConfig {
     /// engine's day roll runs on): the habit-log wire retention's
     /// "today" is a device-local date, never a second timezone concept.
     pub day: taskboard_domain::DayCalendar,
+    /// This device's author identity (F1's `by` stamp): minted state,
+    /// injected at spawn alongside the clock — not configuration.
+    /// `None` stamps authorless rows (an identity-less context).
+    pub author: Option<taskboard_domain::ids::AuthorId>,
 }
 
 /// Spawns the sync actor onto the current runtime.
@@ -756,6 +760,7 @@ async fn cycle(
                     board: *board_id,
                     today: cfg.day.today(read_at),
                     migration: &migration,
+                    author: cfg.author,
                 })
                 .await;
                 match verdict {
@@ -1406,6 +1411,7 @@ mod guard_tests {
                 archived: taskboard_domain::entities::BoardClocks::epoch(),
                 deleted: taskboard_domain::entities::BoardClocks::epoch(),
             },
+            authors: taskboard_domain::entities::BoardAuthors::default(),
             remote_seen: None,
         }
     }

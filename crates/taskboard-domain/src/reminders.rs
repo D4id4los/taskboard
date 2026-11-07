@@ -2011,6 +2011,7 @@ mod tests {
                 archived: ts(100),
                 deleted: ts(100),
             },
+            authors: crate::entities::TaskAuthors::default(),
             remote_seen: None,
             remote_baseline: None,
         }
@@ -4034,6 +4035,7 @@ mod tests {
             &a_reminders.dismissals,
             &a_reminders.break_rules,
             board,
+            None,
         );
         assert_eq!(entry.dismissals.len(), 1);
         assert!(

@@ -22,6 +22,7 @@ fn board_action(n: u128) -> PersistenceAction {
             archived: taskboard_domain::entities::BoardClocks::epoch(),
             deleted: taskboard_domain::entities::BoardClocks::epoch(),
         },
+        authors: taskboard_domain::entities::BoardAuthors::default(),
         remote_seen: None,
     })
 }

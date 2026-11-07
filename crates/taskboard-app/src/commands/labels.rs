@@ -289,6 +289,7 @@ mod tests {
                 color: taskboard_domain::BoardClocks::epoch(),
                 deleted: taskboard_domain::BoardClocks::epoch(),
             },
+            authors: taskboard_domain::entities::LabelAuthors::default(),
             remote_seen: None,
         }
     }

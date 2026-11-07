@@ -58,6 +58,7 @@ pub fn board(title: &str) -> Board {
             deleted: taskboard_domain::BoardClocks::epoch(),
             title: taskboard_domain::BoardClocks::epoch(),
         },
+        authors: taskboard_domain::entities::BoardAuthors::default(),
         remote_seen: None,
     }
 }
@@ -81,6 +82,7 @@ pub fn backlog_stack(
             order: ts(T0),
             deleted: ts(T0),
         },
+        authors: taskboard_domain::entities::StackAuthors::default(),
         remote_seen: None,
     }
 }
@@ -128,6 +130,7 @@ pub fn due_task(
             archived: ts(T0),
             deleted: ts(T0),
         },
+        authors: taskboard_domain::entities::TaskAuthors::default(),
         remote_seen: None,
         remote_baseline: None,
     }

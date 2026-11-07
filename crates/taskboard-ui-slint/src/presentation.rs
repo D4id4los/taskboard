@@ -2490,6 +2490,7 @@ mod tests {
             archived: false,
             deleted: false,
             clocks: task_clocks(),
+            authors: taskboard_domain::entities::TaskAuthors::default(),
             remote_seen: None,
             remote_baseline: None,
         }
@@ -2509,6 +2510,7 @@ mod tests {
                 order: epoch(),
                 deleted: epoch(),
             },
+            authors: taskboard_domain::entities::StackAuthors::default(),
             remote_seen: None,
         }
     }
@@ -2527,6 +2529,7 @@ mod tests {
                 archived: epoch(),
                 deleted: epoch(),
             },
+            authors: taskboard_domain::entities::BoardAuthors::default(),
             remote_seen: None,
         }
     }
@@ -5180,6 +5183,7 @@ mod connector_status_tests {
                     archived: epoch,
                     deleted: epoch,
                 },
+                authors: taskboard_domain::entities::BoardAuthors::default(),
                 remote_seen: None,
             },
         );
@@ -5234,6 +5238,7 @@ mod connector_status_tests {
                             archived: epoch,
                             deleted: epoch,
                         },
+                        authors: taskboard_domain::entities::BoardAuthors::default(),
                         remote_seen: None,
                     },
                 );
@@ -5278,6 +5283,7 @@ mod connector_status_tests {
                     archived: taskboard_domain::BoardClocks::epoch(),
                     deleted: taskboard_domain::BoardClocks::epoch(),
                 },
+                authors: taskboard_domain::entities::BoardAuthors::default(),
                 remote_seen: None,
             },
         );
@@ -5296,6 +5302,7 @@ mod connector_status_tests {
                     archived: taskboard_domain::BoardClocks::epoch(),
                     deleted: taskboard_domain::BoardClocks::epoch(),
                 },
+                authors: taskboard_domain::entities::BoardAuthors::default(),
                 remote_seen: None,
             },
         );
@@ -5316,6 +5323,7 @@ mod connector_status_tests {
                     order: taskboard_domain::BoardClocks::epoch(),
                     deleted: taskboard_domain::BoardClocks::epoch(),
                 },
+                authors: taskboard_domain::entities::StackAuthors::default(),
                 remote_seen: None,
             },
         );
@@ -5334,6 +5342,7 @@ mod connector_status_tests {
                     order: taskboard_domain::BoardClocks::epoch(),
                     deleted: taskboard_domain::BoardClocks::epoch(),
                 },
+                authors: taskboard_domain::entities::StackAuthors::default(),
                 remote_seen: None,
             },
         );
@@ -5373,6 +5382,7 @@ mod connector_status_tests {
                     archived: taskboard_domain::BoardClocks::epoch(),
                     deleted: taskboard_domain::BoardClocks::epoch(),
                 },
+                authors: taskboard_domain::entities::TaskAuthors::default(),
                 remote_seen: None,
                 remote_baseline: None,
             };
@@ -5451,6 +5461,7 @@ mod connector_status_tests {
                     archived: taskboard_domain::BoardClocks::epoch(),
                     deleted: taskboard_domain::BoardClocks::epoch(),
                 },
+                authors: taskboard_domain::entities::BoardAuthors::default(),
                 remote_seen: None,
             },
         );
@@ -5469,6 +5480,7 @@ mod connector_status_tests {
                     order: taskboard_domain::BoardClocks::epoch(),
                     deleted: taskboard_domain::BoardClocks::epoch(),
                 },
+                authors: taskboard_domain::entities::StackAuthors::default(),
                 remote_seen: None,
             },
         );
@@ -5588,6 +5600,7 @@ mod recur_badge_tests {
                 archived: taskboard_domain::BoardClocks::epoch(),
                 deleted: taskboard_domain::BoardClocks::epoch(),
             },
+            authors: taskboard_domain::entities::TaskAuthors::default(),
             remote_seen: None,
             remote_baseline: None,
         }
@@ -6447,6 +6460,7 @@ mod habit_section_tests {
                     archived: now,
                     deleted: now,
                 },
+                authors: taskboard_domain::entities::BoardAuthors::default(),
                 remote_seen: None,
             },
         );
@@ -6465,6 +6479,7 @@ mod habit_section_tests {
                     order: now,
                     deleted: now,
                 },
+                authors: taskboard_domain::entities::StackAuthors::default(),
                 remote_seen: None,
             },
         );
@@ -6502,6 +6517,7 @@ mod habit_section_tests {
                     archived: now,
                     deleted: now,
                 },
+                authors: taskboard_domain::entities::TaskAuthors::default(),
                 remote_seen: None,
                 remote_baseline: None,
             };
@@ -6826,6 +6842,7 @@ mod track_surfaces_tests {
                     archived: ts(0),
                     deleted: ts(0),
                 },
+                authors: taskboard_domain::entities::TaskAuthors::default(),
                 remote_seen: None,
                 remote_baseline: None,
             };
@@ -6882,6 +6899,7 @@ mod track_surfaces_tests {
                 archived: ts(0),
                 deleted: ts(0),
             },
+            authors: taskboard_domain::entities::TaskAuthors::default(),
             remote_seen: None,
             remote_baseline: None,
         };

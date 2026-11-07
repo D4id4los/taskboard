@@ -907,6 +907,7 @@ fn fixture() -> (AppState, Fixture) {
                 archived: now,
                 deleted: now,
             },
+            authors: taskboard_domain::entities::BoardAuthors::default(),
             remote_seen: None,
         },
     );
@@ -923,6 +924,7 @@ fn fixture() -> (AppState, Fixture) {
             order: now,
             deleted: now,
         },
+        authors: taskboard_domain::entities::StackAuthors::default(),
         remote_seen: None,
     };
     state.stacks.insert(s0, stack(s0, 0));
@@ -960,6 +962,7 @@ fn fixture() -> (AppState, Fixture) {
             archived: now,
             deleted: now,
         },
+        authors: taskboard_domain::entities::TaskAuthors::default(),
         remote_seen: None,
         remote_baseline: None,
     };
@@ -2289,6 +2292,7 @@ fn walk_fixture() -> (AppState, Fixture, BoardId, TaskId) {
                 archived: now,
                 deleted: now,
             },
+            authors: taskboard_domain::entities::BoardAuthors::default(),
             remote_seen: None,
         },
     );
@@ -2308,6 +2312,7 @@ fn walk_fixture() -> (AppState, Fixture, BoardId, TaskId) {
                 archived: now,
                 deleted: now,
             },
+            authors: taskboard_domain::entities::BoardAuthors::default(),
             remote_seen: None,
         },
     );
@@ -2329,6 +2334,7 @@ fn walk_fixture() -> (AppState, Fixture, BoardId, TaskId) {
                 order: now,
                 deleted: now,
             },
+            authors: taskboard_domain::entities::StackAuthors::default(),
             remote_seen: None,
         },
     );
@@ -3642,6 +3648,7 @@ fn the_kiosk_tracked_section_filters_to_the_viewed_board() {
                 archived: now,
                 deleted: now,
             },
+            authors: taskboard_domain::entities::BoardAuthors::default(),
             remote_seen: None,
         };
         let board_one = BoardId::from_uuid(uuid::Uuid::now_v7());
@@ -3667,6 +3674,7 @@ fn the_kiosk_tracked_section_filters_to_the_viewed_board() {
                         order: now,
                         deleted: now,
                     },
+                    authors: taskboard_domain::entities::StackAuthors::default(),
                     remote_seen: None,
                 },
             );
@@ -3711,6 +3719,7 @@ fn the_kiosk_tracked_section_filters_to_the_viewed_board() {
                         archived: now,
                         deleted: now,
                     },
+                    authors: taskboard_domain::entities::TaskAuthors::default(),
                     remote_seen: None,
                     remote_baseline: None,
                 },

@@ -441,6 +441,7 @@ mod tests {
                 archived: BoardClocks::epoch(),
                 deleted: BoardClocks::epoch(),
             },
+            authors: taskboard_domain::entities::BoardAuthors::default(),
             remote_seen: None,
         }
     }
@@ -455,6 +456,7 @@ mod tests {
             archived: false,
             deleted: false,
             clocks: fixed_stack_clocks(),
+            authors: taskboard_domain::entities::StackAuthors::default(),
             remote_seen: None,
         }
     }
@@ -480,6 +482,7 @@ mod tests {
             archived: false,
             deleted: false,
             clocks: task_clocks(),
+            authors: taskboard_domain::entities::TaskAuthors::default(),
             remote_seen: None,
             remote_baseline: None,
         }

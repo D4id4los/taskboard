@@ -191,6 +191,7 @@ fn board() -> taskboard_domain::entities::Board {
             archived: BoardClocks::epoch(),
             deleted: BoardClocks::epoch(),
         },
+        authors: taskboard_domain::entities::BoardAuthors::default(),
         remote_seen: None,
     }
 }
@@ -209,6 +210,7 @@ fn stack() -> taskboard_domain::entities::Stack {
             order: BoardClocks::epoch(),
             deleted: BoardClocks::epoch(),
         },
+        authors: taskboard_domain::entities::StackAuthors::default(),
         remote_seen: None,
     }
 }
@@ -251,6 +253,7 @@ fn minimal_task() -> Task {
             archived: BoardClocks::epoch(),
             deleted: BoardClocks::epoch(),
         },
+        authors: taskboard_domain::entities::TaskAuthors::default(),
         remote_seen: None,
         remote_baseline: None,
     }

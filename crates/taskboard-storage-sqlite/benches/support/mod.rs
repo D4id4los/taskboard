@@ -96,6 +96,7 @@ fn fixture_board() -> Board {
             archived: ts(0),
             deleted: ts(0),
         },
+        authors: taskboard_domain::entities::BoardAuthors::default(),
         remote_seen: Some(ts(0)),
     }
 }
@@ -118,6 +119,7 @@ fn fixture_stack(s: usize, board: &Board) -> Stack {
             order: stamp,
             deleted: stamp,
         },
+        authors: taskboard_domain::entities::StackAuthors::default(),
         remote_seen: Some(stamp),
     }
 }
@@ -139,6 +141,7 @@ fn fixture_label(l: usize, board: &Board) -> Label {
             color: stamp,
             deleted: stamp,
         },
+        authors: taskboard_domain::entities::LabelAuthors::default(),
         remote_seen: Some(stamp),
     }
 }
@@ -179,6 +182,7 @@ fn fixture_task(i: usize, stacks: &[Stack], labels: &[Label]) -> Task {
         archived: false,
         deleted: false,
         clocks: task_clocks(i),
+        authors: taskboard_domain::entities::TaskAuthors::default(),
         remote_seen: Some(ts(ix(i) + 500)),
         remote_baseline: None,
     }

@@ -15,6 +15,11 @@ boards:
       color: "0001-01-01T00:00:00Z"
       archived: "0001-01-01T00:00:00Z"
       deleted: "0001-01-01T00:00:00Z"
+    authors:
+      title: ~
+      color: ~
+      archived: ~
+      deleted: ~
     remote_seen: ~
 stacks:
   00000000-0000-0000-0000-0000000001f4:
@@ -29,6 +34,10 @@ stacks:
       title: "2026-06-15T00:00:00Z"
       order: "2026-06-15T00:00:00Z"
       deleted: "2026-06-15T00:00:00Z"
+    authors:
+      title: ~
+      order: ~
+      deleted: ~
     remote_seen: ~
 tasks:
   00000000-0000-0000-0000-000000000258:
@@ -66,6 +75,20 @@ tasks:
       kind: "2026-06-15T00:00:00Z"
       archived: "2026-06-15T00:00:00Z"
       deleted: "2026-06-15T00:00:00Z"
+    authors:
+      title: ~
+      description: ~
+      duedate: ~
+      scheduled: ~
+      done: ~
+      position: ~
+      effort: ~
+      importance: ~
+      urgency: ~
+      recur: ~
+      kind: ~
+      archived: ~
+      deleted: ~
     remote_seen: ~
     remote_baseline: ~
 labels:
@@ -80,6 +103,10 @@ labels:
       title: "2026-06-15T00:00:00Z"
       color: "2026-06-15T00:00:00Z"
       deleted: "2026-06-15T00:00:00Z"
+    authors:
+      title: ~
+      color: ~
+      deleted: ~
     remote_seen: ~
 outbox:
   - op_id: 00000000-0000-0000-0000-000000000001
@@ -189,6 +216,20 @@ journal:
                     kind: "2026-06-15T00:00:00Z"
                     archived: "2026-06-15T00:00:00Z"
                     deleted: "2026-06-15T00:00:00Z"
+                  authors:
+                    title: ~
+                    description: ~
+                    duedate: ~
+                    scheduled: ~
+                    done: ~
+                    position: ~
+                    effort: ~
+                    importance: ~
+                    urgency: ~
+                    recur: ~
+                    kind: ~
+                    archived: ~
+                    deleted: ~
                   remote_seen: ~
                   remote_baseline: ~
           watermark:

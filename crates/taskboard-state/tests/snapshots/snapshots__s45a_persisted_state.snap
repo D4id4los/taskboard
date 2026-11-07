@@ -15,6 +15,11 @@ boards:
       color: "0001-01-01T00:00:00Z"
       archived: "0001-01-01T00:00:00Z"
       deleted: "0001-01-01T00:00:00Z"
+    authors:
+      title: ~
+      color: ~
+      archived: ~
+      deleted: ~
     remote_seen: ~
 stacks: {}
 tasks: {}

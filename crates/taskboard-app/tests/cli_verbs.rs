@@ -528,6 +528,7 @@ async fn seed_sync_status(db: &std::path::Path, status: taskboard_domain::SyncSt
             archived: taskboard_domain::BoardClocks::epoch(),
             deleted: taskboard_domain::BoardClocks::epoch(),
         },
+        authors: taskboard_domain::entities::BoardAuthors::default(),
         remote_seen: None,
     };
     let repo = Arc::new(
@@ -1691,6 +1692,7 @@ mod ceremonies {
                 order: stamp,
                 deleted: stamp,
             },
+            authors: taskboard_domain::entities::StackAuthors::default(),
             remote_seen: None,
         };
         let task = Task {
@@ -1732,6 +1734,7 @@ mod ceremonies {
                 archived: stamp,
                 deleted: stamp,
             },
+            authors: taskboard_domain::entities::TaskAuthors::default(),
             remote_seen: None,
             remote_baseline: None,
         };

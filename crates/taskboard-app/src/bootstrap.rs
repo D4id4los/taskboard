@@ -1269,6 +1269,7 @@ async fn bootstrap_with_modules(
         // `UpdateSettings`.
         config.settings_snapshot(),
         config.day_calendar(),
+        None,
     )
     .await;
 
@@ -2591,6 +2592,7 @@ mod flush_budget_tests {
                 deleted: taskboard_domain::BoardClocks::epoch(),
                 title: taskboard_domain::BoardClocks::epoch(),
             },
+            authors: taskboard_domain::entities::BoardAuthors::default(),
             remote_seen: None,
         };
         let mut state = taskboard_domain::PersistedState::default();
@@ -2663,6 +2665,7 @@ mod flush_budget_tests {
                 notifier,
                 taskboard_domain::SettingsSnapshot::default(),
                 DayRollConfig::disabled(),
+                None,
             )
             .await
             .expect("engine boots");

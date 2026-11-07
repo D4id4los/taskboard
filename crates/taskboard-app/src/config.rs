@@ -1661,6 +1661,11 @@ impl AppConfig {
             // The same calendar the engine's day roll runs on (the one
             // validated vocabulary — no second local-date concept).
             day: self.resolved_day_calendar(),
+            // The author identity is minted state, not config: the app
+            // injects it at spawn (the bootstrap's device-identity
+            // lift), so the config-derived actor config stamps
+            // authorless rows.
+            author: None,
         }
     }
 

@@ -77,6 +77,7 @@ impl Scenario {
             notifier,
             taskboard_domain::SettingsSnapshot::default(),
             DayRollConfig::disabled(),
+            None,
         )
         .await
         .expect("engine boots");
@@ -118,6 +119,7 @@ impl Scenario {
                 enabled: true,
                 offset: chrono::FixedOffset::east_opt(0).expect("zero offset"),
             },
+            None,
         )
         .await
         .expect("engine boots");
@@ -1160,6 +1162,7 @@ fn seed_fired_rule_state() -> taskboard_domain::PersistedState {
             order: ts(T0),
             deleted: ts(T0),
         },
+        authors: taskboard_domain::entities::StackAuthors::default(),
         remote_seen: None,
     };
     let task = Task {
@@ -1197,6 +1200,7 @@ fn seed_fired_rule_state() -> taskboard_domain::PersistedState {
             archived: ts(T0),
             deleted: ts(T0),
         },
+        authors: taskboard_domain::entities::TaskAuthors::default(),
         remote_seen: None,
         remote_baseline: None,
     };
@@ -1492,6 +1496,7 @@ fn seed_series_state(
                 order: ts(SERIES_T0),
                 deleted: ts(SERIES_T0),
             },
+            authors: taskboard_domain::entities::StackAuthors::default(),
             remote_seen: None,
         },
     );
@@ -1510,6 +1515,7 @@ fn seed_series_state(
                 color: ts(SERIES_T0),
                 deleted: ts(SERIES_T0),
             },
+            authors: taskboard_domain::entities::LabelAuthors::default(),
             remote_seen: None,
         },
     );
@@ -1550,6 +1556,7 @@ fn seed_series_state(
             archived: ts(SERIES_T0),
             deleted: ts(SERIES_T0),
         },
+        authors: taskboard_domain::entities::TaskAuthors::default(),
         remote_seen: None,
         remote_baseline: None,
     };
@@ -1677,6 +1684,7 @@ async fn s37c_count_bound_final_completion() {
             archived: ts(SERIES_T0 - 86_400),
             deleted: ts(SERIES_T0 - 86_400),
         },
+        authors: taskboard_domain::entities::TaskAuthors::default(),
         remote_seen: None,
         remote_baseline: None,
     };
@@ -1874,6 +1882,7 @@ fn bound_card_seed(unsynced: bool) -> taskboard_domain::PersistedState {
                 archived: ts(T0),
                 deleted: ts(T0),
             },
+            authors: taskboard_domain::entities::BoardAuthors::default(),
             remote_seen: Some(ts(T0)),
         },
     );
@@ -1892,6 +1901,7 @@ fn bound_card_seed(unsynced: bool) -> taskboard_domain::PersistedState {
                 order: ts(T0),
                 deleted: ts(T0),
             },
+            authors: taskboard_domain::entities::StackAuthors::default(),
             remote_seen: Some(ts(T0)),
         },
     );
@@ -1928,6 +1938,7 @@ fn bound_card_seed(unsynced: bool) -> taskboard_domain::PersistedState {
             archived: ts(T0),
             deleted: ts(T0),
         },
+        authors: taskboard_domain::entities::TaskAuthors::default(),
         remote_seen: Some(ts(T0)),
         remote_baseline: None,
     };

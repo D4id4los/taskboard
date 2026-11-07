@@ -455,6 +455,7 @@ pub fn apply_sync_report(
     app_data: &crate::messages::AppDataEvidence,
     features: crate::capabilities::DeckFeatures,
     day: crate::days::DayCalendar,
+    author: Option<crate::ids::AuthorId>,
 ) -> (
     AppState,
     Vec<PersistenceAction>,
@@ -999,7 +1000,8 @@ pub fn apply_sync_report(
                 && let Some(entry) = entries.get(&card_key)
             {
                 let rules = folded_rules.get_or_insert_with(|| current.reminders.rules.clone());
-                let changes = fold_reminder_rules(rules, task_id, entry, intent.reminder_rules);
+                let changes =
+                    fold_reminder_rules(rules, task_id, entry, intent.reminder_rules, author);
                 for rule in changes.upserts {
                     rule_actions.push(PersistenceAction::UpsertReminderRule(rule));
                 }
@@ -1036,7 +1038,7 @@ pub fn apply_sync_report(
                 .map(|((_, card), id)| (card.get().to_string(), *id))
                 .collect();
             let tracking = folded_tracking.get_or_insert_with(|| current.tracking.clone());
-            let changes = crate::merge::fold_time_entries(tracking, rows, &board_cards);
+            let changes = crate::merge::fold_time_entries(tracking, rows, &board_cards, author);
             for entry in changes.upserts {
                 tracking_actions.push(PersistenceAction::UpsertTimeEntry(entry));
             }
@@ -1051,13 +1053,13 @@ pub fn apply_sync_report(
         if document.sections.habits.is_some() || document.sections.habit_log.is_some() {
             let habits = folded_habits.get_or_insert_with(|| current.habits.clone());
             if let Some(rows) = &document.sections.habits {
-                let changes = crate::merge::fold_habits(habits, rows, board_id);
+                let changes = crate::merge::fold_habits(habits, rows, board_id, author);
                 for habit in changes.upserts {
                     habit_actions.push(PersistenceAction::UpsertHabit(habit));
                 }
             }
             if let Some(rows) = &document.sections.habit_log {
-                let changes = crate::merge::fold_habit_log(habits, rows);
+                let changes = crate::merge::fold_habit_log(habits, rows, author);
                 for (key, entry) in changes.records {
                     habit_actions.push(PersistenceAction::RecordHabitLog(key, entry));
                 }
@@ -1074,7 +1076,7 @@ pub fn apply_sync_report(
         if let Some(rows) = &document.sections.break_rules {
             let break_rules =
                 folded_break_rules.get_or_insert_with(|| current.reminders.break_rules.clone());
-            let changes = crate::merge::fold_break_rules(break_rules, rows, board_id);
+            let changes = crate::merge::fold_break_rules(break_rules, rows, board_id, author);
             for rule in changes.upserts {
                 break_rule_actions.push(PersistenceAction::UpsertBreakRule(rule));
             }
@@ -2256,6 +2258,8 @@ mod tests {
         TaskFieldWrite {
             value,
             clock: ts(clock),
+
+            by: None,
         }
     }
 
@@ -2353,6 +2357,8 @@ mod tests {
             anchor_time: None,
             clocks: crate::habit::HabitClocks::all(ts(clock)),
             continued_from: None,
+
+            by: None,
         }
     }
 
@@ -2365,6 +2371,8 @@ mod tests {
             created: ts(clock - 2_000),
             clock: ts(clock),
             kind: crate::tracking::TimeEntryKind::Work,
+
+            by: None,
         }
     }
 
@@ -2392,6 +2400,7 @@ mod tests {
             evidence,
             features,
             test_day(),
+            None,
         )
     }
 
@@ -2452,6 +2461,8 @@ mod tests {
                     "00000000-0000-0000-0000-00000000000a".to_owned(),
                     RuleEntry::Tombstone {
                         clock: ts(BASE + 300),
+
+                        by: None,
                     },
                 ),
                 // A fresh rule the local side never had: adopted verbatim.
@@ -2467,6 +2478,8 @@ mod tests {
                         ),
                         created: ts(BASE + 100),
                         clock: ts(BASE + 100),
+
+                        by: None,
                     },
                 ),
             ]
@@ -2551,6 +2564,8 @@ mod tests {
                         ),
                         created: ts(BASE + 100),
                         clock: ts(BASE + 100),
+
+                        by: None,
                     },
                 ),
                 (
@@ -2562,6 +2577,8 @@ mod tests {
                         ),
                         created: ts(BASE + 100),
                         clock: ts(BASE + 100),
+
+                        by: None,
                     },
                 ),
             ]
@@ -2573,6 +2590,8 @@ mod tests {
             dismissal_wire_key(dismissed_rule, occurrence),
             DismissalEntry::Dismissed {
                 dismissed_at: ts(BASE + 200),
+
+                by: None,
             },
         )]);
         let evidence =
@@ -2644,6 +2663,8 @@ mod tests {
                     ),
                     created: ts(BASE + 100),
                     clock: ts(BASE + 100),
+
+                    by: None,
                 },
             )]
             .into(),
@@ -2657,6 +2678,8 @@ mod tests {
             ),
             DismissalEntry::Dismissed {
                 dismissed_at: ts(BASE + 200),
+
+                by: None,
             },
         )]);
         let evidence =
@@ -2990,6 +3013,8 @@ mod tests {
                 crate::appdata::HabitLogRecord::Entry {
                     count: 6,
                     clock: ts(BASE + 400),
+
+                    by: None,
                 },
             )],
         );
@@ -3086,6 +3111,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         let merged = app.0.tasks.values().next().unwrap();
@@ -3151,6 +3177,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         let merged = app.0.tasks.values().next().unwrap();
@@ -3211,6 +3238,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         let merged = app.0.tasks.values().next().unwrap();
@@ -3251,6 +3279,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         assert!(
@@ -3288,6 +3317,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         let merged = app.0.tasks.values().next().unwrap();
@@ -3313,6 +3343,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         let merged = app.0.tasks.values().next().unwrap();
@@ -3344,6 +3375,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         let merged = app.0.tasks.values().next().unwrap();
@@ -3370,6 +3402,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         let merged = app.0.tasks.values().next().unwrap();
@@ -3412,6 +3445,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         let merged = app.0.tasks.values().next().unwrap();
@@ -3452,7 +3486,7 @@ mod tests {
                 &crate::messages::AppDataEvidence::Absent,
                 crate::capabilities::DeckFeatures::CONSERVATIVE,
 
-                test_day());
+                test_day(), None);
 
             let merged = app.0.tasks.values().next().unwrap();
             prop_assert!(!merged.deleted);
@@ -3480,6 +3514,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
         let create: PendingOp = actions
             .iter()
@@ -3529,6 +3564,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
         let merged = final_state.tasks.values().next().unwrap();
         assert!(merged.deleted, "the episode is over: synced delete wins");
@@ -3567,6 +3603,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
         let merged_task = app.0.tasks.values().next().unwrap();
         assert!(merged_task.deleted, "stack tombstone cascades to its tasks");
@@ -3593,6 +3630,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         assert_eq!(app.0.boards.len(), 2, "adoption, not a merge");
@@ -3655,6 +3693,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
         assert!(
             app.1
@@ -3690,6 +3729,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         assert_eq!(
@@ -3730,6 +3770,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         let merged = app.0.tasks.values().next().unwrap();
@@ -3765,6 +3806,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
         assert_eq!(
             app.0.sync.aggregate().pending_ops,
@@ -3790,6 +3832,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
         assert_eq!(
             app.0.sync.aggregate().pending_ops,
@@ -3838,6 +3881,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
         assert_eq!(
             app.0.sync.aggregate().pending_ops,
@@ -3886,6 +3930,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         let adopted_label = app
@@ -3930,6 +3975,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
         let second_state = app_into_state(&first);
         let second = apply_sync_report(
@@ -3944,6 +3990,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         assert!(
@@ -3992,6 +4039,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         let state_after = app_into_state(&app);
@@ -4031,6 +4079,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         // R9a echo adoption applies to create/update pushes only; a move
@@ -4079,6 +4128,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         let state_after = app_into_state(&app);
@@ -4136,6 +4186,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         assert!(
@@ -4181,6 +4232,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         assert!(
@@ -4215,6 +4267,7 @@ mod tests {
                 order: ts(BASE),
                 deleted: ts(BASE),
             },
+            authors: crate::entities::StackAuthors::default(),
             remote_seen: Some(ts(BASE)),
         };
         task_b.stack = stack2.id;
@@ -4263,6 +4316,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         assert!(
@@ -4315,6 +4369,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
         assert_eq!(
             app.0.stacks[&stack_id].title, "locally newer",
@@ -4351,6 +4406,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         assert_eq!(
@@ -4421,6 +4477,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         assert!(
@@ -4513,6 +4570,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         for op_id in &op_ids {
@@ -4573,6 +4631,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         assert!(
@@ -4653,6 +4712,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         for op_id in &op_ids {
@@ -5071,7 +5131,10 @@ mod tests {
                     &app, &state.outbox, &snapshot, &pushes, DateTime::<chrono::Utc>::MAX_UTC, &CountingIds::default(), now,
                 &crate::test_support::test_connector(),
                     &crate::messages::AppDataEvidence::Absent,
-    crate::capabilities::DeckFeatures::CONSERVATIVE, test_day());
+    crate::capabilities::DeckFeatures::CONSERVATIVE,
+                    test_day(),
+                    None,
+                );
                 prop_assert_eq!(pushed_state, full_state);
                 prop_assert_eq!(pushed_actions, full_actions);
             }
@@ -5191,6 +5254,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         let merged = app.0.tasks.get(&task_id).expect("same local task");
@@ -5276,6 +5340,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         let task_id = task_by_card(&state, 1).id;
@@ -5328,6 +5393,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         let merged = &app.0.stacks[stack_id];
@@ -5371,6 +5437,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         let merged = &app.0.labels[&label_id];
@@ -5426,6 +5493,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         assert!(app.0.stacks[&stack_id].deleted);
@@ -5476,6 +5544,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         assert!(app.0.stacks[&stack_id].deleted);
@@ -5534,6 +5603,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         assert!(app.0.tasks[&task_id].deleted);
@@ -5585,6 +5655,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         assert!(app.0.tasks[&task_id].deleted);
@@ -5636,6 +5707,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         let merged = &app.0.stacks[&stack_id];
@@ -5663,6 +5735,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         let merged = &app.0.labels[&label_id];
@@ -5704,6 +5777,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         let (final_state, actions, _events) = app;
@@ -5767,6 +5841,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         assert!(app.0.boards.values().all(|b| b.deleted));
@@ -5811,6 +5886,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         let task_id = task_by_card(&state, 1).id;
@@ -5848,6 +5924,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         let state_after = app_into_state(&app);
@@ -5882,6 +5959,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
         assert!(
             first
@@ -5912,6 +5990,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
         let adopted = second
             .tasks
@@ -5951,6 +6030,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         let draft = app
@@ -5988,6 +6068,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         let adopted = app
@@ -6022,6 +6103,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         let adopted = app
@@ -6055,6 +6137,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         assert!(
@@ -6085,6 +6168,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         assert_eq!(app.0.labels[&label_id].title, "label 7 renamed");
@@ -6113,6 +6197,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         // Deliberately not `assert!(app.1.is_empty())`: CI's newer stable
@@ -6146,6 +6231,7 @@ mod tests {
                 archived: crate::entities::BoardClocks::epoch(),
                 deleted: crate::entities::BoardClocks::epoch(),
             },
+            authors: crate::entities::BoardAuthors::default(),
             remote_seen: None,
         };
         state.boards.insert(unbound_board.id, unbound_board);
@@ -6254,6 +6340,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         // No ghost entity was fabricated into state; every ghost op is
@@ -6289,11 +6376,11 @@ mod tests {
             let a = apply_sync_report(&state, &[], &snap, &[], DateTime::<chrono::Utc>::MAX_UTC, &CountingIds::default(), ts(20_000),
                 &crate::test_support::test_connector(),
                 &crate::messages::AppDataEvidence::Absent,
-    crate::capabilities::DeckFeatures::CONSERVATIVE, test_day());
+    crate::capabilities::DeckFeatures::CONSERVATIVE, test_day(), None);
             let b = apply_sync_report(&state, &[], &snap, &[], DateTime::<chrono::Utc>::MAX_UTC, &CountingIds::default(), ts(20_000),
                 &crate::test_support::test_connector(),
                 &crate::messages::AppDataEvidence::Absent,
-    crate::capabilities::DeckFeatures::CONSERVATIVE, test_day());
+    crate::capabilities::DeckFeatures::CONSERVATIVE, test_day(), None);
             prop_assert_eq!(a.0.tasks, b.0.tasks);
         }
         }
@@ -6330,6 +6417,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         let state_after = app_into_state(&app);
@@ -6375,6 +6463,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         let state_after = app_into_state(&app);
@@ -6419,6 +6508,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         let state_after = app_into_state(&app);
@@ -6455,6 +6545,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         let state_after = app_into_state(&app);
@@ -6495,6 +6586,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         let state_after = app_into_state(&app);
@@ -6537,6 +6629,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         let merged = app.0.stacks[&local.id].clone();
@@ -6577,6 +6670,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         let merged = app.0.stacks[&local.id].clone();
@@ -6617,6 +6711,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         let merged = app.0.boards[&local.id].clone();
@@ -6657,6 +6752,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         let merged = &app.0.labels[&label_id];
@@ -6877,6 +6973,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         assert!(
@@ -6928,6 +7025,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         let final_state = app_into_state(&app);
@@ -6995,6 +7093,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         let merged = &app.0.tasks[&task_id];
@@ -7048,6 +7147,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         let final_state = app_into_state(&app);
@@ -7096,6 +7196,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         let final_state = app_into_state(&app);
@@ -7140,6 +7241,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         let merged = &app.0.stacks[&local.id];
@@ -7174,6 +7276,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         let merged = &app.0.labels[&local.id];
@@ -7214,6 +7317,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         let final_state = app_into_state(&app);
@@ -7252,6 +7356,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         assert_eq!(
@@ -7286,6 +7391,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         assert_eq!(
@@ -7318,6 +7424,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         assert_eq!(
@@ -7360,6 +7467,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         assert_eq!(
@@ -7400,6 +7508,7 @@ mod tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         );
 
         assert_eq!(
@@ -7426,6 +7535,8 @@ mod tests {
                 dismissal_wire_key(dismissed_rule, occurrence),
                 DismissalEntry::Dismissed {
                     dismissed_at: ts(BASE + 200),
+
+                    by: None,
                 },
             )]
             .into(),
@@ -7582,6 +7693,7 @@ mod tests {
             &AppDataEvidence::Absent,
             DeckFeatures::CONSERVATIVE,
             test_day(),
+            None,
         )
     }
 
@@ -7896,6 +8008,7 @@ mod duplicate_reconcile_tests {
             &crate::messages::AppDataEvidence::Absent,
             crate::capabilities::DeckFeatures::NATIVE,
             test_day(),
+            None,
         )
     }
 
@@ -8126,6 +8239,7 @@ mod duplicate_reconcile_tests {
                 order: ts(BASE),
                 deleted: ts(BASE),
             },
+            authors: crate::entities::StackAuthors::default(),
             remote_seen: Some(ts(BASE)),
         };
         state.stacks.insert(orphan_stack_row.id, orphan_stack_row);

@@ -279,6 +279,7 @@ mod tests {
                 order: ts(100),
                 deleted: ts(100),
             },
+            authors: taskboard_domain::entities::StackAuthors::default(),
             remote_seen: None,
         };
         let stack_id = stack.id;
@@ -340,6 +341,7 @@ mod tests {
                     archived: taskboard_domain::BoardClocks::epoch(),
                     deleted: taskboard_domain::BoardClocks::epoch(),
                 },
+                authors: taskboard_domain::entities::BoardAuthors::default(),
                 remote_seen: None,
             },
         );

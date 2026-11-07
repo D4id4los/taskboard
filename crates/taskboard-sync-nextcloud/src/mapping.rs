@@ -775,6 +775,7 @@ mod tests {
                 color: ts(0),
                 deleted: ts(0),
             },
+            authors: taskboard_domain::entities::LabelAuthors::default(),
             remote_seen: None,
         };
         let changes = label_changes_from(&label).expect("valid color");

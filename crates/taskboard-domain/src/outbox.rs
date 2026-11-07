@@ -417,6 +417,7 @@ mod tests {
             archived: false,
             deleted,
             clocks: stack_clocks(),
+            authors: crate::entities::StackAuthors::default(),
             remote_seen: None,
         }
     }
@@ -430,6 +431,7 @@ mod tests {
             color: crate::entities::Color::new("00ff00"),
             deleted,
             clocks: label_clocks(),
+            authors: crate::entities::LabelAuthors::default(),
             remote_seen: None,
         }
     }
@@ -455,6 +457,7 @@ mod tests {
             archived: false,
             deleted,
             clocks: task_clocks(),
+            authors: crate::entities::TaskAuthors::default(),
             remote_seen: None,
             remote_baseline: None,
         }

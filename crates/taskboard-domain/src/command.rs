@@ -665,6 +665,7 @@ fn completion_spawn(
     day: DayCalendar,
     ids: &dyn IdGenerator,
     now: DateTime<Utc>,
+    author: Option<crate::ids::AuthorId>,
 ) -> Vec<PersistenceAction> {
     let local_tod = |t: DateTime<Utc>| t.with_timezone(&day.offset).time();
     let mut successor = head.clone();
@@ -689,6 +690,7 @@ fn completion_spawn(
     // The rule copies verbatim — same series, anchor, pattern, bound,
     // `continued_from`.
     successor.clocks = all_task_clocks(now);
+    successor.authors = all_task_authors(author);
 
     let mut actions = vec![PersistenceAction::UpsertTask(successor.clone())];
     actions.push(enqueue(LocalOp::CreateTask(successor.id), ids, now));
@@ -741,6 +743,7 @@ pub fn plan_day_rolls(
     calendar: DayCalendar,
     ids: &dyn IdGenerator,
     now: DateTime<Utc>,
+    author: Option<crate::ids::AuthorId>,
 ) -> Vec<PersistenceAction> {
     let mut upserts = Vec::new();
     let mut ops = Vec::new();
@@ -784,6 +787,7 @@ pub fn plan_day_rolls(
         if let Some(s) = task.scheduled {
             rolled.scheduled = Some(calendar.instant(target, local_tod(s)));
             rolled.clocks.scheduled = now;
+            rolled.authors.scheduled = author;
             let board = app.stacks.get(&task.stack).map(|s| s.board);
             if board.is_some_and(|b| board_features(app, b).card_startdate) {
                 native = true;
@@ -794,6 +798,7 @@ pub fn plan_day_rolls(
         if let Some(d) = task.duedate {
             rolled.duedate = Some(calendar.instant(target, local_tod(d)));
             rolled.clocks.duedate = now;
+            rolled.authors.duedate = author;
             native = true;
         }
         upserts.push(PersistenceAction::UpsertTask(rolled));
@@ -843,6 +848,7 @@ pub fn plan_day_rolls(
 /// Only via the habit→series arm's constant local-noon construction
 /// (a constant that always succeeds) — never an input condition.
 #[allow(clippy::too_many_lines)] // one catalogue; splitting hides the table
+#[allow(clippy::too_many_arguments)] // the injected seams ARE the constructor
 pub fn plan_command(
     app: &AppState,
     outbox: &[PendingOp],
@@ -851,6 +857,7 @@ pub fn plan_command(
     defaults: &ReminderDefaults,
     day: DayCalendar,
     now: DateTime<Utc>,
+    author: Option<crate::ids::AuthorId>,
 ) -> Result<CommandPlan, CommandError> {
     match command {
         StateCommand::CreateTask {
@@ -880,6 +887,7 @@ pub fn plan_command(
                 archived: false,
                 deleted: false,
                 clocks: all_task_clocks(now),
+                authors: all_task_authors(author),
                 remote_seen: None,
                 remote_baseline: None,
             };
@@ -912,6 +920,7 @@ pub fn plan_command(
                                 crate::state::INBOX_BOARD_TITLE,
                                 ids,
                                 now,
+                                author,
                             );
                             minted_stack = Some(stack);
                             stack
@@ -936,6 +945,12 @@ pub fn plan_command(
                                 archived: now,
                                 deleted: now,
                             },
+                            authors: crate::entities::BoardAuthors {
+                                title: author,
+                                color: author,
+                                archived: author,
+                                deleted: author,
+                            },
                             remote_seen: None,
                         }));
                         let stack = mint_capture_stack(
@@ -945,6 +960,7 @@ pub fn plan_command(
                             crate::state::INBOX_BOARD_TITLE,
                             ids,
                             now,
+                            author,
                         );
                         minted_stack = Some(stack);
                         stack
@@ -962,6 +978,7 @@ pub fn plan_command(
                             crate::state::BACKLOG_STACK_TITLE,
                             ids,
                             now,
+                            author,
                         );
                         minted_stack = Some(stack);
                         stack
@@ -995,6 +1012,7 @@ pub fn plan_command(
                 archived: false,
                 deleted: false,
                 clocks: all_task_clocks(now),
+                authors: all_task_authors(author),
                 remote_seen: None,
                 remote_baseline: None,
             }));
@@ -1019,42 +1037,52 @@ pub fn plan_command(
             if let Some(title) = &changes.title {
                 updated.title.clone_from(title);
                 updated.clocks.title = now;
+                updated.authors.title = author;
             }
             if let Some(description) = &changes.description {
                 updated.description.clone_from(description);
                 updated.clocks.description = now;
+                updated.authors.description = author;
             }
             if let Some(duedate) = changes.duedate {
                 updated.duedate = duedate;
                 updated.clocks.duedate = now;
+                updated.authors.duedate = author;
             }
             if let Some(scheduled) = changes.scheduled {
                 updated.scheduled = scheduled;
                 updated.clocks.scheduled = now;
+                updated.authors.scheduled = author;
             }
             if let Some(effort) = changes.effort {
                 updated.effort = effort;
                 updated.clocks.effort = now;
+                updated.authors.effort = author;
             }
             if let Some(importance) = changes.importance {
                 updated.importance = importance;
                 updated.clocks.importance = now;
+                updated.authors.importance = author;
             }
             if let Some(urgency) = changes.urgency {
                 updated.urgency = urgency;
                 updated.clocks.urgency = now;
+                updated.authors.urgency = author;
             }
             if let Some(recur) = &changes.recur {
                 updated.recur.clone_from(recur);
                 updated.clocks.recur = now;
+                updated.authors.recur = author;
             }
             if let Some(kind) = changes.kind {
                 updated.kind = kind.unwrap_or_default();
                 updated.clocks.kind = now;
+                updated.authors.kind = author;
             }
             if let Some(archived) = changes.archived {
                 updated.archived = archived;
                 updated.clocks.archived = now;
+                updated.authors.archived = author;
             }
             // The lane split (D-F3's enqueue contract, chunk 4): native
             // slots ride `UpdateTask` (full-send), the app slots ride
@@ -1102,6 +1130,7 @@ pub fn plan_command(
             let mut updated = task.clone();
             updated.done = done.then_some(now);
             updated.clocks.done = now;
+            updated.authors.done = author;
             // The completion spawn (DR-6/2, D-E1): completing a recurring
             // head either spawns its successor or — the bound-suppressed
             // terminal transition — clears the rule. Both decisions ride
@@ -1116,10 +1145,13 @@ pub fn plan_command(
                     // is the first not covered by `paused_until`.
                     let next_date = next_live_after(&rule, series_reference_date(task, day, now));
                     if bound_admits(app, &rule, next_date) {
-                        Some(completion_spawn(app, task, next_date, day, ids, now))
+                        Some(completion_spawn(
+                            app, task, next_date, day, ids, now, author,
+                        ))
                     } else {
                         updated.recur = None;
                         updated.clocks.recur = now;
+                        updated.authors.recur = author;
                         None
                     }
                 }
@@ -1201,6 +1233,7 @@ pub fn plan_command(
             updated.order = *order;
             // Composite intent: stack + order share one write clock.
             updated.clocks.position = now;
+            updated.authors.position = author;
             Ok(CommandPlan {
                 actions: vec![
                     PersistenceAction::UpsertTask(updated),
@@ -1219,6 +1252,7 @@ pub fn plan_command(
             updated.deleted = true;
             // The binding survives until the push confirms (R9c).
             updated.clocks.deleted = now;
+            updated.authors.deleted = author;
             let mut actions = vec![PersistenceAction::UpsertTask(updated)];
             // D-c: the task's reminder rules cannot outlive it.
             actions.extend(task_rule_deletes(app, *id));
@@ -1268,6 +1302,11 @@ pub fn plan_command(
                     order: now,
                     deleted: now,
                 },
+                authors: crate::entities::StackAuthors {
+                    title: author,
+                    order: author,
+                    deleted: author,
+                },
                 remote_seen: None,
             };
             Ok(CommandPlan {
@@ -1286,6 +1325,7 @@ pub fn plan_command(
             let mut updated = stack.clone();
             updated.title.clone_from(new_title);
             updated.clocks.title = now;
+            updated.authors.title = author;
             Ok(CommandPlan {
                 actions: vec![
                     PersistenceAction::UpsertStack(updated),
@@ -1302,6 +1342,7 @@ pub fn plan_command(
             let mut updated = stack.clone();
             updated.order = *order;
             updated.clocks.order = now;
+            updated.authors.order = author;
             Ok(CommandPlan {
                 actions: vec![
                     PersistenceAction::UpsertStack(updated),
@@ -1319,6 +1360,7 @@ pub fn plan_command(
             let mut updated = stack.clone();
             updated.deleted = true;
             updated.clocks.deleted = now;
+            updated.authors.deleted = author;
             let mut actions = vec![PersistenceAction::UpsertStack(updated)];
 
             // Cascade: every live task of the stack follows the DeleteTask
@@ -1334,6 +1376,7 @@ pub fn plan_command(
                 let mut tombstoned = task.clone();
                 tombstoned.deleted = true;
                 tombstoned.clocks.deleted = now;
+                tombstoned.authors.deleted = author;
                 actions.push(PersistenceAction::UpsertTask(tombstoned));
                 // D-c: the cascade tombstones the task's reminder rules too.
                 actions.extend(task_rule_deletes(app, task.id));
@@ -1372,6 +1415,11 @@ pub fn plan_command(
                     color: now,
                     deleted: now,
                 },
+                authors: crate::entities::LabelAuthors {
+                    title: author,
+                    color: author,
+                    deleted: author,
+                },
                 remote_seen: None,
             };
             Ok(CommandPlan {
@@ -1392,10 +1440,12 @@ pub fn plan_command(
             if let Some(title) = &changes.title {
                 updated.title.clone_from(title);
                 updated.clocks.title = now;
+                updated.authors.title = author;
             }
             if let Some(color) = &changes.color {
                 updated.color = color.clone();
                 updated.clocks.color = now;
+                updated.authors.color = author;
             }
             Ok(CommandPlan {
                 actions: vec![
@@ -1421,6 +1471,7 @@ pub fn plan_command(
             // assignments for an unbound label already fail below; a
             // bound label keeps its queued `DeleteLabel` push.
             updated.clocks.deleted = now;
+            updated.authors.deleted = author;
             let mut actions = vec![PersistenceAction::UpsertLabel(updated)];
             if label.remote.is_some() {
                 actions.push(enqueue(LocalOp::DeleteLabel(*id), ids, now));
@@ -1521,6 +1572,12 @@ pub fn plan_command(
                     archived: now,
                     deleted: now,
                 },
+                authors: crate::entities::BoardAuthors {
+                    title: author,
+                    color: author,
+                    archived: author,
+                    deleted: author,
+                },
                 remote_seen: None,
             };
             // No outbox op: a local board creation is not a remote intent —
@@ -1539,6 +1596,7 @@ pub fn plan_command(
             let mut updated = board.clone();
             updated.title.clone_from(title);
             updated.clocks.title = now;
+            updated.authors.title = author;
             Ok(CommandPlan {
                 actions: vec![
                     PersistenceAction::UpsertBoard(updated),
@@ -1556,6 +1614,7 @@ pub fn plan_command(
             let mut updated = board.clone();
             updated.color = color.clone();
             updated.clocks.color = now;
+            updated.authors.color = author;
             Ok(CommandPlan {
                 actions: vec![
                     PersistenceAction::UpsertBoard(updated),
@@ -1573,6 +1632,7 @@ pub fn plan_command(
             let mut updated = board.clone();
             updated.archived = *archived;
             updated.clocks.archived = now;
+            updated.authors.archived = author;
             Ok(CommandPlan {
                 actions: vec![
                     PersistenceAction::UpsertBoard(updated),
@@ -1595,6 +1655,7 @@ pub fn plan_command(
             let mut tombstoned = board.clone();
             tombstoned.deleted = true;
             tombstoned.clocks.deleted = now;
+            tombstoned.authors.deleted = author;
             actions.push(PersistenceAction::UpsertBoard(tombstoned));
 
             // Cascade (the remote R6 shape, applied at command time so the
@@ -1623,12 +1684,14 @@ pub fn plan_command(
                 let mut tombstoned = app.stacks[stack_id].clone();
                 tombstoned.deleted = true;
                 tombstoned.clocks.deleted = now;
+                tombstoned.authors.deleted = author;
                 actions.push(PersistenceAction::UpsertStack(tombstoned));
             }
             for task_id in &doomed_tasks {
                 let mut tombstoned = app.tasks[task_id].clone();
                 tombstoned.deleted = true;
                 tombstoned.clocks.deleted = now;
+                tombstoned.authors.deleted = author;
                 actions.push(PersistenceAction::UpsertTask(tombstoned));
                 actions.extend(task_rule_deletes(app, *task_id));
             }
@@ -1636,6 +1699,7 @@ pub fn plan_command(
                 let mut tombstoned = app.labels[label_id].clone();
                 tombstoned.deleted = true;
                 tombstoned.clocks.deleted = now;
+                tombstoned.authors.deleted = author;
                 actions.push(PersistenceAction::UpsertLabel(tombstoned));
             }
 
@@ -2855,6 +2919,7 @@ pub fn plan_command(
             if let Some(rule) = updated.recur.as_mut() {
                 rule.paused_until = *until;
                 updated.clocks.recur = now;
+                updated.authors.recur = author;
             }
             // `recur` is an app-slot field: the UpdateTask arm's lane
             // shape, recur-only.
@@ -2884,6 +2949,7 @@ pub fn plan_command(
             let mut updated = task.clone();
             updated.recur = None;
             updated.clocks.recur = now;
+            updated.authors.recur = author;
             let order = append_order_after(
                 app.habits
                     .habits
@@ -2930,6 +2996,7 @@ pub fn plan_command(
                     crate::state::BACKLOG_STACK_TITLE,
                     ids,
                     now,
+                    author,
                 );
                 minted_stack = Some(stack);
                 stack
@@ -2975,6 +3042,7 @@ pub fn plan_command(
                 archived: false,
                 deleted: false,
                 clocks: all_task_clocks(now),
+                authors: all_task_authors(author),
                 remote_seen: None,
                 remote_baseline: None,
             }));
@@ -3070,6 +3138,7 @@ fn mint_capture_stack(
     title: &str,
     ids: &dyn IdGenerator,
     now: DateTime<Utc>,
+    author: Option<crate::ids::AuthorId>,
 ) -> StackId {
     let order = app
         .stacks
@@ -3091,6 +3160,11 @@ fn mint_capture_stack(
             title: now,
             order: now,
             deleted: now,
+        },
+        authors: crate::entities::StackAuthors {
+            title: author,
+            order: author,
+            deleted: author,
         },
         remote_seen: None,
     }));
@@ -3196,6 +3270,24 @@ pub fn bind_wipe_forecast(
             _ => false,
         })
         .count()
+}
+
+fn all_task_authors(author: Option<crate::ids::AuthorId>) -> crate::entities::TaskAuthors {
+    crate::entities::TaskAuthors {
+        title: author,
+        description: author,
+        duedate: author,
+        scheduled: author,
+        done: author,
+        position: author,
+        effort: author,
+        importance: author,
+        urgency: author,
+        recur: author,
+        kind: author,
+        archived: author,
+        deleted: author,
+    }
 }
 
 fn all_task_clocks(now: DateTime<Utc>) -> TaskClocks {
@@ -3313,6 +3405,7 @@ mod tests {
             archived: false,
             deleted: false,
             clocks: clocks(T0 - 3_600),
+            authors: crate::entities::TaskAuthors::default(),
             remote_seen: None,
             remote_baseline: None,
         }
@@ -3335,6 +3428,7 @@ mod tests {
                 order: ts(T0 - 3_600),
                 deleted: ts(T0 - 3_600),
             },
+            authors: crate::entities::StackAuthors::default(),
             remote_seen: None,
         }
     }
@@ -3355,6 +3449,7 @@ mod tests {
                 color: ts(T0 - 3_600),
                 deleted: ts(T0 - 3_600),
             },
+            authors: crate::entities::LabelAuthors::default(),
             remote_seen: None,
         }
     }
@@ -3382,6 +3477,7 @@ mod tests {
                         archived: crate::entities::BoardClocks::epoch(),
                         deleted: crate::entities::BoardClocks::epoch(),
                     },
+                    authors: crate::entities::BoardAuthors::default(),
                     remote_seen: None,
                 },
             )]
@@ -3443,6 +3539,7 @@ mod tests {
                 archived: crate::entities::BoardClocks::epoch(),
                 deleted: crate::entities::BoardClocks::epoch(),
             },
+            authors: crate::entities::BoardAuthors::default(),
             remote_seen: None,
         }
     }
@@ -3516,6 +3613,7 @@ mod tests {
             &crate::reminders::ReminderDefaults::default(),
             test_day(),
             now(),
+            None,
         )
     }
 
@@ -3533,6 +3631,7 @@ mod tests {
             &crate::reminders::ReminderDefaults::default(),
             test_day(),
             at,
+            None,
         )
     }
 
@@ -5193,6 +5292,7 @@ mod tests {
                         archived: crate::entities::BoardClocks::epoch(),
                         deleted: crate::entities::BoardClocks::epoch(),
                     },
+                    authors: crate::entities::BoardAuthors::default(),
                     remote_seen: None,
                 },
             )]
@@ -5231,6 +5331,7 @@ mod tests {
                 order: ts(T0 - 3_600),
                 deleted: ts(T0 - 3_600),
             },
+            authors: crate::entities::StackAuthors::default(),
             remote_seen: None,
         }
     }
@@ -5249,6 +5350,7 @@ mod tests {
                 archived: crate::entities::BoardClocks::epoch(),
                 deleted: crate::entities::BoardClocks::epoch(),
             },
+            authors: crate::entities::BoardAuthors::default(),
             remote_seen: None,
         }
     }
@@ -5537,6 +5639,7 @@ mod tests {
                     archived: now(),
                     deleted: now(),
                 },
+                authors: crate::entities::BoardAuthors::default(),
                 remote_seen: None,
             })],
             "exactly the board upsert; no outbox op"
@@ -5561,6 +5664,7 @@ mod tests {
             &crate::reminders::ReminderDefaults::default(),
             test_day(),
             now(),
+            None,
         )
         .unwrap();
         let CommandOutcome::CreatedBoard(first_id) = first.outcome else {
@@ -5584,6 +5688,7 @@ mod tests {
             &crate::reminders::ReminderDefaults::default(),
             test_day(),
             now(),
+            None,
         )
         .unwrap();
         let CommandOutcome::CreatedBoard(second_id) = second.outcome else {
@@ -5666,6 +5771,7 @@ mod tests {
             &crate::reminders::ReminderDefaults::default(),
             test_day(),
             now(),
+            None,
         )
         .unwrap();
         let PersistenceAction::UpsertBoard(updated) = &plan.actions[0] else {
@@ -6595,6 +6701,7 @@ mod tests {
                         archived: crate::entities::BoardClocks::epoch(),
                         deleted: crate::entities::BoardClocks::epoch(),
                     },
+                    authors: crate::entities::BoardAuthors::default(),
                     remote_seen: None,
                 },
             )]
@@ -7603,6 +7710,7 @@ mod tests {
             &ReminderDefaults::default(),
             test_day(),
             now(),
+            None,
         )
         .expect("accepted");
         let Some(crate::persistence::PersistenceAction::RecordJournal(entry)) = plan.actions.last()
@@ -7640,6 +7748,7 @@ mod tests {
             &ReminderDefaults::default(),
             test_day(),
             now(),
+            None,
         )
         .expect("accepted");
         let Some(crate::persistence::PersistenceAction::RecordJournal(entry)) = plan.actions.last()
@@ -9057,7 +9166,7 @@ mod tests {
                 &CountingIds::default(),
                 &crate::reminders::ReminderDefaults::default(),
                 test_day(),
-                now(),
+                now(), None,
             )
             .expect("the verbs accept every (state, pool) shape here");
             let mut disk = crate::persistence::PersistedState {
@@ -9138,7 +9247,7 @@ mod tests {
                 &CountingIds::default(),
                 &crate::reminders::ReminderDefaults::default(),
                 test_day(),
-                now(),
+                now(), None,
             )
             .unwrap();
             let mut disk = crate::persistence::PersistedState {
@@ -9166,7 +9275,7 @@ mod tests {
                 &CountingIds::default(),
                 &crate::reminders::ReminderDefaults::default(),
                 test_day(),
-                now(),
+                now(), None,
             )
             .unwrap();
             crate::persistence::apply_actions(&mut disk, &start.actions);
@@ -9544,6 +9653,7 @@ mod tests {
             &crate::reminders::ReminderDefaults::default(),
             owl,
             at,
+            None,
         )
         .unwrap();
         let CommandOutcome::HabitLogged { window, .. } = plan.outcome else {
@@ -10340,6 +10450,7 @@ mod tests {
             &ReminderDefaults::default(),
             test_day(),
             now(),
+            None,
         )
         .expect("accepted");
         let CommandOutcome::ReflectionRecorded { entry } = plan.outcome else {
@@ -10407,6 +10518,7 @@ mod tests {
                 &ReminderDefaults::default(),
                 test_day(),
                 now(),
+                None,
             ) {
                 assert_eq!(enqueue_count(&plan), 0, "no EnqueueOp, ever");
                 assert!(
@@ -10445,6 +10557,7 @@ mod tests {
                 &ReminderDefaults::default(),
                 test_day(),
                 now(),
+                None,
             )
             .expect("accepted");
             assert_eq!(plan.outcome, CommandOutcome::NoOp);
@@ -10467,6 +10580,7 @@ mod tests {
             &ReminderDefaults::default(),
             test_day(),
             now(),
+            None,
         )
         .expect("accepted");
         assert!(matches!(
@@ -10522,7 +10636,8 @@ mod tests {
                     &ids,
                     &ReminderDefaults::default(),
                     test_day(),
-                    now()
+                    now(),
+                    None
                 ),
                 Err(CommandError::InvalidReviewWindow),
                 "typed window rejection"
@@ -10543,7 +10658,8 @@ mod tests {
                     &ids,
                     &ReminderDefaults::default(),
                     test_day(),
-                    now()
+                    now(),
+                    None
                 ),
                 Err(CommandError::InvalidRating),
                 "rating 0 and 6+ are typed rejections, never clamps"
@@ -10578,6 +10694,7 @@ mod tests {
             &ReminderDefaults::default(),
             test_day(),
             now(),
+            None,
         )
         .expect("accepted");
         let CommandOutcome::ReflectionUpdated { entry } = plan.outcome else {
@@ -10613,6 +10730,7 @@ mod tests {
             &ReminderDefaults::default(),
             test_day(),
             now(),
+            None,
         )
         .expect("accepted");
         assert_eq!(plan.outcome, CommandOutcome::NoOp);
@@ -10636,6 +10754,7 @@ mod tests {
                 &ReminderDefaults::default(),
                 test_day(),
                 now(),
+                None,
             )
             .expect("accepted")
             .outcome,
@@ -10658,6 +10777,7 @@ mod tests {
                 &ReminderDefaults::default(),
                 test_day(),
                 now(),
+                None,
             ),
             Err(CommandError::UnknownReflection(stranger))
         );
@@ -10680,6 +10800,7 @@ mod tests {
                 &ReminderDefaults::default(),
                 test_day(),
                 now(),
+                None,
             ),
             Err(CommandError::InvalidRating)
         );
@@ -10697,6 +10818,7 @@ mod tests {
             &ReminderDefaults::default(),
             test_day(),
             now(),
+            None,
         )
         .expect("accepted");
         assert_eq!(plan.outcome, CommandOutcome::ReflectionDeleted { id });
@@ -10709,6 +10831,7 @@ mod tests {
             &ReminderDefaults::default(),
             test_day(),
             now(),
+            None,
         )
         .expect("accepted");
         assert_eq!(plan.outcome, CommandOutcome::NoOp);
@@ -10722,6 +10845,7 @@ mod tests {
                 &ReminderDefaults::default(),
                 test_day(),
                 now(),
+                None,
             ),
             Err(CommandError::UnknownReflection(stranger))
         );
@@ -10743,6 +10867,7 @@ mod tests {
             &ReminderDefaults::default(),
             test_day(),
             now(),
+            None,
         )
         .expect("accepted");
         let Some(PersistenceAction::RecordJournal(entry)) = plan.actions.last() else {
@@ -10764,9 +10889,443 @@ mod tests {
             &ReminderDefaults::default(),
             test_day(),
             now(),
+            None,
         )
         .expect("accepted");
         assert_eq!(empty.actions, Vec::new(), "no-ops journal nothing");
+    }
+
+    /// F1's author-stamp tests (T-STAMP-1/2, T-INV-1): the seam author
+    /// rides every planned clock write, paired.
+    mod author_stamp {
+        use super::super::{
+            AppState, CommandError, CommandPlan, PendingOp, PersistenceAction, StateCommand,
+            TaskChanges, all_task_authors, all_task_clocks, plan_command,
+        };
+        use super::{BOARD, LABEL, base, now, task_id, test_day};
+        use crate::entities::{BoardAuthors, LabelAuthors};
+        use crate::ids::AuthorId;
+        use crate::test_support::CountingIds;
+        use proptest::prelude::*;
+        use proptest::strategy::Union;
+        use proptest::test_runner::TestCaseError;
+        use uuid::Uuid;
+
+        fn author_a() -> AuthorId {
+            AuthorId::from_uuid(Uuid::from_u128(0xA171_1000))
+        }
+
+        fn stack_id() -> crate::ids::StackId {
+            crate::ids::StackId::from(Uuid::from_u128(u128::from(super::STACK)))
+        }
+
+        fn label_id() -> crate::ids::LabelId {
+            crate::ids::LabelId::from(Uuid::from_u128(u128::from(LABEL)))
+        }
+
+        fn board_id() -> crate::ids::BoardId {
+            crate::ids::BoardId::from(Uuid::from_u128(u128::from(BOARD)))
+        }
+
+        fn plan_with_author(
+            app: &AppState,
+            outbox: &[PendingOp],
+            command: &StateCommand,
+            author: Option<AuthorId>,
+        ) -> Result<CommandPlan, CommandError> {
+            plan_command(
+                app,
+                outbox,
+                command,
+                &CountingIds::default(),
+                &crate::reminders::ReminderDefaults::default(),
+                test_day(),
+                now(),
+                author,
+            )
+        }
+
+        fn upserted_task(plan: &CommandPlan) -> crate::entities::Task {
+            plan.actions
+                .iter()
+                .find_map(|action| match action {
+                    PersistenceAction::UpsertTask(task) => Some(task.clone()),
+                    _ => None,
+                })
+                .expect("plan upserts a task")
+        }
+
+        /// T-STAMP-1: a planned edit stamps the edited field's author
+        /// slot with the seam author; untouched fields keep theirs.
+        #[test]
+        fn edit_stamps_the_edited_field_with_the_seam_author_only() {
+            let (app, outbox) = base();
+            let a = author_a();
+            let plan = plan_with_author(
+                &app,
+                &outbox,
+                &StateCommand::UpdateTask {
+                    id: task_id(),
+                    changes: TaskChanges {
+                        title: Some("renamed".into()),
+                        ..Default::default()
+                    },
+                },
+                Some(a),
+            )
+            .unwrap();
+            let task = upserted_task(&plan);
+            assert_eq!(task.clocks.title, now());
+            assert_eq!(task.authors.title, Some(a));
+            assert_eq!(
+                task.authors.description, None,
+                "untouched fields keep their author slot"
+            );
+        }
+
+        /// T-STAMP-1 (None leg): an identity-less context stamps `None`
+        /// — headless tests stay authorless, never invented.
+        #[test]
+        fn authorless_seam_stamps_none() {
+            let (app, outbox) = base();
+            let plan = plan_with_author(
+                &app,
+                &outbox,
+                &StateCommand::UpdateTask {
+                    id: task_id(),
+                    changes: TaskChanges {
+                        title: Some("renamed".into()),
+                        ..Default::default()
+                    },
+                },
+                None,
+            )
+            .unwrap();
+            let task = upserted_task(&plan);
+            assert_eq!(task.clocks.title, now());
+            assert_eq!(task.authors.title, None);
+        }
+
+        /// T-STAMP-2: the create verbs mint full authored clock sets.
+        #[test]
+        fn create_verbs_mint_full_authored_sets() {
+            let (app, outbox) = base();
+            let a = author_a();
+
+            let create_task = upserted_task(
+                &plan_with_author(
+                    &app,
+                    &outbox,
+                    &StateCommand::CreateTask {
+                        title: "t".into(),
+                        stack: stack_id(),
+                        order: 99,
+                    },
+                    Some(a),
+                )
+                .unwrap(),
+            );
+            assert_eq!(create_task.authors, all_task_authors(Some(a)));
+            assert_eq!(create_task.clocks, all_task_clocks(now()));
+
+            let capture = upserted_task(
+                &plan_with_author(
+                    &app,
+                    &outbox,
+                    &StateCommand::CaptureTask {
+                        title: "captured".into(),
+                        board: Some(board_id()),
+                    },
+                    Some(a),
+                )
+                .unwrap(),
+            );
+            assert_eq!(capture.authors, all_task_authors(Some(a)));
+
+            let plan = plan_with_author(
+                &app,
+                &outbox,
+                &StateCommand::CreateBoard {
+                    title: "b".into(),
+                    color: crate::entities::Color::new("00ccff"),
+                },
+                Some(a),
+            )
+            .unwrap();
+            let board = plan
+                .actions
+                .iter()
+                .find_map(|action| match action {
+                    PersistenceAction::UpsertBoard(board) => Some(board.clone()),
+                    _ => None,
+                })
+                .unwrap();
+            assert_eq!(
+                board.authors,
+                BoardAuthors {
+                    title: Some(a),
+                    color: Some(a),
+                    archived: Some(a),
+                    deleted: Some(a),
+                }
+            );
+
+            let plan = plan_with_author(
+                &app,
+                &outbox,
+                &StateCommand::CreateLabel {
+                    board: board_id(),
+                    title: "l".into(),
+                    color: crate::entities::Color::new("ff0000"),
+                },
+                Some(a),
+            )
+            .unwrap();
+            let label = plan
+                .actions
+                .iter()
+                .find_map(|action| match action {
+                    PersistenceAction::UpsertLabel(label) => Some(label.clone()),
+                    _ => None,
+                })
+                .unwrap();
+            assert_eq!(
+                label.authors,
+                LabelAuthors {
+                    title: Some(a),
+                    color: Some(a),
+                    deleted: Some(a),
+                }
+            );
+        }
+
+        // The paired-write check, field by field: a clock that moved
+        // must have moved its author slot too (advance-or-clear).
+        macro_rules! paired {
+            ($prev:expr, $clocks:expr, $authors:expr, $(($c:ident, $a:ident)),+ $(,)?) => {{
+                let previous = $prev;
+                $(
+                    if previous.is_none_or(|(c, _)| c.$c != $clocks.$c) {
+                        prop_assert!(
+                            previous.is_none() || previous.unwrap().1.$a != $authors.$a,
+                            "clock moved without its author slot"
+                        );
+                    }
+                    if previous.is_some_and(|(c, _)| c.$c == $clocks.$c) {
+                        prop_assert_eq!(
+                            previous.unwrap().1.$a, $authors.$a,
+                            "author changed without its clock"
+                        );
+                    }
+                )+
+            }};
+        }
+
+        fn assert_task_paired(
+            prev: Option<(&crate::entities::TaskClocks, &crate::entities::TaskAuthors)>,
+            task: &crate::entities::Task,
+        ) -> Result<(), TestCaseError> {
+            paired!(
+                prev,
+                task.clocks,
+                task.authors,
+                (title, title),
+                (description, description),
+                (duedate, duedate),
+                (scheduled, scheduled),
+                (done, done),
+                (position, position),
+                (effort, effort),
+                (importance, importance),
+                (urgency, urgency),
+                (recur, recur),
+                (kind, kind),
+                (archived, archived),
+                (deleted, deleted)
+            );
+            Ok(())
+        }
+
+        fn assert_stack_paired(
+            prev: Option<(
+                &crate::entities::StackClocks,
+                &crate::entities::StackAuthors,
+            )>,
+            stack: &crate::entities::Stack,
+        ) -> Result<(), TestCaseError> {
+            paired!(
+                prev,
+                stack.clocks,
+                stack.authors,
+                (title, title),
+                (order, order),
+                (deleted, deleted)
+            );
+            Ok(())
+        }
+
+        fn assert_label_paired(
+            prev: Option<(
+                &crate::entities::LabelClocks,
+                &crate::entities::LabelAuthors,
+            )>,
+            label: &crate::entities::Label,
+        ) -> Result<(), TestCaseError> {
+            paired!(
+                prev,
+                label.clocks,
+                label.authors,
+                (title, title),
+                (color, color),
+                (deleted, deleted)
+            );
+            Ok(())
+        }
+
+        fn assert_board_paired(
+            prev: Option<(
+                &crate::entities::BoardClocks,
+                &crate::entities::BoardAuthors,
+            )>,
+            board: &crate::entities::Board,
+        ) -> Result<(), TestCaseError> {
+            paired!(
+                prev,
+                board.clocks,
+                board.authors,
+                (title, title),
+                (color, color),
+                (archived, archived),
+                (deleted, deleted)
+            );
+            Ok(())
+        }
+
+        // T-INV-1 (the paired-write invariant, proptest): over
+        // arbitrary command sequences, any field whose clock changed
+        // also had its author slot advance-or-clear in the same plan —
+        // no clock moves alone, and no author moves without its clock.
+        proptest! {
+            #![proptest_config(proptest::test_runner::Config::with_cases(256))]
+
+            #[test]
+            fn no_clock_moves_without_its_author_slot(
+                commands in proptest::collection::vec(arbitrary_edit_command(), 1..12),
+            ) {
+                let (mut app, outbox) = base();
+                let a = author_a();
+                for command in &commands {
+                    let plan = plan_with_author(&app, &outbox, command, Some(a))
+                        .expect("catalogue commands plan clean over the fixture");
+                    let mut next = app.clone();
+                    for action in &plan.actions {
+                        match action {
+                            PersistenceAction::UpsertTask(task) => {
+                                assert_task_paired(app.tasks.get(&task.id).map(|t| (&t.clocks, &t.authors)), task)?;
+                                next.tasks.insert(task.id, task.clone());
+                            }
+                            PersistenceAction::UpsertStack(stack) => {
+                                assert_stack_paired(app.stacks.get(&stack.id).map(|t| (&t.clocks, &t.authors)), stack)?;
+                                next.stacks.insert(stack.id, stack.clone());
+                            }
+                            PersistenceAction::UpsertLabel(label) => {
+                                assert_label_paired(app.labels.get(&label.id).map(|t| (&t.clocks, &t.authors)), label)?;
+                                next.labels.insert(label.id, label.clone());
+                            }
+                            PersistenceAction::UpsertBoard(board) => {
+                                assert_board_paired(app.boards.get(&board.id).map(|t| (&t.clocks, &t.authors)), board)?;
+                                next.boards.insert(board.id, board.clone());
+                            }
+                            _ => {}
+                        }
+                    }
+                    app = next;
+                }
+            }
+        }
+
+        /// The edit catalogue T-INV-1 drives: verbs that mutate the four
+        /// authored families over the `base()` fixture, all planned
+        /// clean.
+        fn arbitrary_edit_command() -> impl Strategy<Value = StateCommand> {
+            let label_changes = || crate::messages::LabelChanges {
+                title: Some("l".into()),
+                color: None,
+            };
+            Union::new_weighted(vec![
+                (
+                    4,
+                    Just(StateCommand::UpdateTask {
+                        id: task_id(),
+                        changes: TaskChanges {
+                            title: Some("t".into()),
+                            ..Default::default()
+                        },
+                    }),
+                ),
+                (
+                    3,
+                    Just(StateCommand::UpdateTask {
+                        id: task_id(),
+                        changes: TaskChanges {
+                            description: Some("d".into()),
+                            ..Default::default()
+                        },
+                    }),
+                ),
+                (
+                    3,
+                    Just(StateCommand::SetTaskDone {
+                        id: task_id(),
+                        done: true,
+                    }),
+                ),
+                (
+                    2,
+                    Just(StateCommand::MoveTask {
+                        id: task_id(),
+                        stack: stack_id(),
+                        order: 5,
+                    }),
+                ),
+                (
+                    2,
+                    Just(StateCommand::RenameStack {
+                        id: stack_id(),
+                        new_title: "s".into(),
+                    }),
+                ),
+                (
+                    2,
+                    Just(StateCommand::SetBoardColor {
+                        board: board_id(),
+                        color: crate::entities::Color::new("abcdef"),
+                    }),
+                ),
+                (
+                    2,
+                    Just(StateCommand::SetBoardArchived {
+                        board: board_id(),
+                        archived: true,
+                    }),
+                ),
+                (
+                    2,
+                    Just(StateCommand::UpdateLabel {
+                        id: label_id(),
+                        changes: label_changes(),
+                    }),
+                ),
+                (
+                    1,
+                    Just(StateCommand::CreateLabel {
+                        board: board_id(),
+                        title: "new".into(),
+                        color: crate::entities::Color::new("ff0000"),
+                    }),
+                ),
+            ])
+        }
     }
 }
 
@@ -10845,7 +11404,7 @@ mod proptests {
                 &CountingIds::default(),
                 &crate::reminders::ReminderDefaults::default(),
                 test_day(),
-                chrono::Utc.timestamp_opt(36_000, 0).unwrap(),
+                chrono::Utc.timestamp_opt(36_000, 0).unwrap(), None,
             );
 
             // Totality: never a panic — always a plan or a typed error.
@@ -10901,7 +11460,7 @@ mod proptests {
                 &CountingIds::default(),
                 &crate::reminders::ReminderDefaults::default(),
                 test_day(),
-                now,
+                now, None,
             );
             let variant = plan_command(
                 &state,
@@ -10910,7 +11469,7 @@ mod proptests {
                 &CountingIds::default(),
                 &crate::reminders::ReminderDefaults::default(),
                 test_day(),
-                now,
+                now, None,
             );
 
             match (&baseline, &variant) {
@@ -11070,6 +11629,7 @@ mod series_tests {
             &crate::reminders::ReminderDefaults::default(),
             utc_midnight(),
             now(),
+            None,
         )
         .unwrap()
     }
@@ -11388,6 +11948,7 @@ mod series_tests {
             &crate::reminders::ReminderDefaults::default(),
             utc_midnight(),
             now(),
+            None,
         )
         .unwrap();
         assert_eq!(plan.actions.len(), 2, "upsert + op, no spawn");
@@ -11437,7 +11998,7 @@ mod series_tests {
     use crate::recur::roll_target;
 
     fn roll(app: &AppState, today: NaiveDate) -> Vec<PersistenceAction> {
-        plan_day_rolls(app, today, utc_midnight(), &burned_ids(), now())
+        plan_day_rolls(app, today, utc_midnight(), &burned_ids(), now(), None)
     }
 
     #[test]
@@ -11687,6 +12248,7 @@ mod series_tests {
             &crate::reminders::ReminderDefaults::default(),
             utc_midnight(),
             now(),
+            None,
         )
     }
 
@@ -11841,6 +12403,7 @@ mod series_tests {
             &crate::reminders::ReminderDefaults::default(),
             utc_midnight(),
             now(),
+            None,
         )
     }
 
@@ -11903,6 +12466,7 @@ mod series_tests {
                 &crate::reminders::ReminderDefaults::default(),
                 utc_midnight(),
                 now(),
+                None,
             ),
             Err(CommandError::NotRecurring(_))
         ));
@@ -11921,6 +12485,7 @@ mod series_tests {
                 &crate::reminders::ReminderDefaults::default(),
                 utc_midnight(),
                 now(),
+                None,
             ),
             Err(CommandError::UnknownTask(_))
         ));
@@ -11944,6 +12509,7 @@ mod series_tests {
             &crate::reminders::ReminderDefaults::default(),
             utc_midnight(),
             now(),
+            None,
         )
         .expect("planned");
         // The head lands on the board's Backlog stack, dated today,
@@ -12014,6 +12580,7 @@ mod series_tests {
             &crate::reminders::ReminderDefaults::default(),
             utc_midnight(),
             now(),
+            None,
         )
         .expect("leg 1");
         let mut state1 = crate::persistence::PersistedState {
@@ -12048,6 +12615,7 @@ mod series_tests {
             &crate::reminders::ReminderDefaults::default(),
             utc_midnight(),
             now(),
+            None,
         )
         .expect("leg 2");
         let mut state2 = state1;
@@ -12082,6 +12650,7 @@ mod series_tests {
             &crate::reminders::ReminderDefaults::default(),
             utc_midnight(),
             now(),
+            None,
         )
         .expect("leg 3");
         let mut state3 = state2;

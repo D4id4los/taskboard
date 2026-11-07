@@ -4967,6 +4967,7 @@ fn the_drag_survives_interleaved_refreshes_and_engine_changes() {
                         archived: taskboard_domain::BoardClocks::epoch(),
                         deleted: taskboard_domain::BoardClocks::epoch(),
                     },
+                    authors: taskboard_domain::entities::TaskAuthors::default(),
                     remote_seen: None,
                     remote_baseline: None,
                 },
@@ -9063,6 +9064,7 @@ fn state_board(state: &mut AppState, id: uuid::Uuid, title: &str, connector: Opt
                 archived: BoardClocks::epoch(),
                 deleted: BoardClocks::epoch(),
             },
+            authors: taskboard_domain::entities::BoardAuthors::default(),
             remote_seen: None,
         },
     );
@@ -10123,6 +10125,7 @@ fn the_drag_surface_survives_interleaved_refreshes() {
                         archived: taskboard_domain::BoardClocks::epoch(),
                         deleted: taskboard_domain::BoardClocks::epoch(),
                     },
+                    authors: taskboard_domain::entities::TaskAuthors::default(),
                     remote_seen: None,
                     remote_baseline: None,
                 },
@@ -14949,6 +14952,7 @@ fn walk_fixture_state() -> (fixture::Fixture, AppState, StackId, Vec<TaskId>) {
                 archived: BoardClocks::epoch(),
                 deleted: BoardClocks::epoch(),
             },
+            authors: taskboard_domain::entities::BoardAuthors::default(),
             remote_seen: None,
         },
     );
@@ -14968,6 +14972,7 @@ fn walk_fixture_state() -> (fixture::Fixture, AppState, StackId, Vec<TaskId>) {
                 order: BoardClocks::epoch(),
                 deleted: BoardClocks::epoch(),
             },
+            authors: taskboard_domain::entities::StackAuthors::default(),
             remote_seen: None,
         },
     );
@@ -15005,6 +15010,7 @@ fn walk_fixture_state() -> (fixture::Fixture, AppState, StackId, Vec<TaskId>) {
                 archived: BoardClocks::epoch(),
                 deleted: BoardClocks::epoch(),
             },
+            authors: taskboard_domain::entities::TaskAuthors::default(),
             remote_seen: None,
             remote_baseline: None,
         };

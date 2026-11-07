@@ -82,6 +82,7 @@ fn fixture_board() -> Board {
             archived: ts(0),
             deleted: ts(0),
         },
+        authors: taskboard_domain::entities::BoardAuthors::default(),
         remote_seen: None,
     }
 }
@@ -102,6 +103,7 @@ fn fixture_stack(s: usize, board: &Board) -> Stack {
             order: stamp,
             deleted: stamp,
         },
+        authors: taskboard_domain::entities::StackAuthors::default(),
         remote_seen: None,
     }
 }
@@ -149,6 +151,7 @@ fn fixture_task(i: usize, stacks: &[Stack]) -> Task {
                 deleted: t,
             }
         },
+        authors: taskboard_domain::entities::TaskAuthors::default(),
         remote_seen: None,
         remote_baseline: None,
     }

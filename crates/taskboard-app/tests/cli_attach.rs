@@ -97,6 +97,7 @@ pub async fn seed_local_board(db_path: &std::path::Path, local_id: u128, run: &s
                     archived: taskboard_domain::BoardClocks::epoch(),
                     deleted: taskboard_domain::BoardClocks::epoch(),
                 },
+                authors: taskboard_domain::entities::BoardAuthors::default(),
                 remote_seen: None,
             }),
             taskboard_domain::PersistenceAction::UpsertStack(taskboard_domain::Stack {
@@ -112,6 +113,7 @@ pub async fn seed_local_board(db_path: &std::path::Path, local_id: u128, run: &s
                     order: now,
                     deleted: now,
                 },
+                authors: taskboard_domain::entities::StackAuthors::default(),
                 remote_seen: None,
             }),
             taskboard_domain::PersistenceAction::EnqueueOp(taskboard_domain::PendingOp {

@@ -292,6 +292,7 @@ fn raw_app_state_strategy() -> impl Strategy<Value = AppState> {
                         deleted: crate::entities::BoardClocks::epoch(),
                         title: crate::entities::BoardClocks::epoch(),
                     },
+                    authors: crate::entities::BoardAuthors::default(),
                     remote_seen: board.remote_seen,
                 },
             );
@@ -316,6 +317,7 @@ fn raw_app_state_strategy() -> impl Strategy<Value = AppState> {
                         archived: row.archived,
                         deleted: row.deleted,
                         clocks: row.clocks,
+                        authors: crate::entities::StackAuthors::default(),
                         remote_seen: row.remote_seen,
                     },
                 );
@@ -337,6 +339,7 @@ fn raw_app_state_strategy() -> impl Strategy<Value = AppState> {
                         color: Color::new(row.color),
                         deleted: row.deleted,
                         clocks: row.clocks,
+                        authors: crate::entities::LabelAuthors::default(),
                         remote_seen: row.remote_seen,
                     },
                 );
@@ -385,6 +388,7 @@ fn raw_app_state_strategy() -> impl Strategy<Value = AppState> {
                         archived: row.archived,
                         deleted: row.deleted,
                         clocks: row.clocks,
+                        authors: crate::entities::TaskAuthors::default(),
                         remote_seen: row.remote_seen,
                         remote_baseline: row.remote_baseline,
                     },

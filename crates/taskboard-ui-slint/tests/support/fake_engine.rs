@@ -112,6 +112,7 @@ impl FakeEngine {
                                 archived: taskboard_domain::BoardClocks::epoch(),
                                 deleted: taskboard_domain::BoardClocks::epoch(),
                             },
+                            authors: taskboard_domain::entities::TaskAuthors::default(),
                             remote_seen: None,
                             remote_baseline: None,
                         },

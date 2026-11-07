@@ -487,6 +487,7 @@ fn fixture_state() -> (
                 archived: epoch,
                 deleted: epoch,
             },
+            authors: taskboard_domain::entities::BoardAuthors::default(),
             remote_seen: None,
         },
     );
@@ -505,6 +506,7 @@ fn fixture_state() -> (
                 order: epoch,
                 deleted: epoch,
             },
+            authors: taskboard_domain::entities::StackAuthors::default(),
             remote_seen: None,
         },
     );

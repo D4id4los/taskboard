@@ -1,0 +1,96 @@
+#+title: ADR 0022: The Boards-over-Files Contract — Partition, Chunk Lifecycle, the Author-Tagged Clock Order, the Widened Vocabulary
+- *Date:* 2026-11-07
+- *Status:* Accepted-lands-with-#684 (chunk 1 of the boards-over-files dispatch; the Parts C–D sections below are landed by later chunks — the ADR is the contract, not the implementation schedule)
+- *Depends on:* ADR 0004 (per-field LWW and its baseline amendment), ADR 0020 (the files-sync substrate)
+- *Carriers:* #684 (this chunk), #678 (the design round), #685–#689 (chunks 2–6), the =nextcloud-files-sync= milestone
+
+* Context
+
+Boards riding files (DR-9) inherit the generic files-sync substrate
+(ADR 0020) whose per-user journal already carries an author slot
+(`AuthorId`, the fold's Q2 wire seam) that no one ever minted. Before
+a board can ride a file, a convergence bug must die first: today
+every roaming duel compares *clocks alone*, so two devices that write
+different content under the same wall-clock stamp diverge
+permanently — each keeps its own row and neither converges no matter
+how many cycles run. The backbone report's §7.3 ruling is binding:
+ties between *devices* are a convergence bug, not a fairness problem
+to re-litigate. Wall-clock clocks are cross-machine data by design
+(ADR 0004); the missing ingredient is a per-device tie-break that is
+total, permutation-invariant, and identical on every reader.
+
+Author tagging therefore precedes boards riding. And because chunk 5
+folds the files-lane reports through the *same* merge machinery the
+Deck lane uses (D-BF9), the duel order is generalized once, in the
+domain, not per lane.
+
+* Decision
+
+The boards-over-files contract, normatively quoted from the accepted
+DR-9 round:
+
+1. *Partition-only routing* (D-BF5): a task rides exactly one lane —
+   the files lane reports to boards over files; Deck stays the native
+   lane for bound boards. No dual-homing, no cross-lane moves in
+   either direction inside this contract.
+2. *The board chunk/snapshot lifecycle* (D-BF6/D-BF7): a board's
+   subtree is materialized as an immutable chunk; snapshots are the
+   lifecycle's GC and late-join story. (Landed by chunk 4.)
+3. *The total order.* The wire fold's existing order is adopted
+   domain-wide: rows rank `(rank, clock, author, content)`; per-field
+   entity duels rank `(clock, author)` with the entity id as the
+   never-reached residual and the pinned leg `None < Some` (D-BF1/
+   D-BF2). Each roaming clock family gains a *parallel* sibling
+   struct (`TaskAuthors`, `StackAuthors`, `LabelAuthors`,
+   `BoardAuthors` — one `Option<AuthorId>` slot per clock, never a
+   packed tuple), so every existing exhaustive match keeps compiling
+   and the shape reads as exactly what it is: who last wrote each
+   field. A clock and its author move together — the paired-write
+   rule, proptest-enforced (no clock moves alone).
+4. *The connector-tagged remote vocabulary direction* (D-BF4): the
+   `Remote*` id family widens to a tagged shape. (Landed by chunk 3's
+   ADR amendment.)
+
+Chunk 1's realizations:
+
+- *Author identity*: `AuthorId` moves to the domain (its canonical
+  home; `taskboard-sync-files` re-exports). The app bootstrap resolves
+  `device.json` once at boot — independent of any sync configuration —
+  and hands `Some(AuthorId)` to the state engine (planner seam) and
+  the Deck sync actor (document `by` stamps). Headless contexts stamp
+  `None`; the `None < Some` leg keeps those rows honest, never
+  privileged.
+- *The text-form grammar*: every serialized clock+author pair speaks
+  one additive grammar, `rfc3339 [ "#" author ]` (encode: bare
+  RFC 3339 is byte-identical to pre-F1). Storage realizes it as
+  nullable `au_*` columns (migration 0023; NULL ↔ absent suffix are
+  the same state); the single parse point
+  (`decode::clock_with_author`) is strict after the split — a
+  malformed suffix fails closed, never silently de-authors.
+- *Deck neutrality*: the Deck lane carries authors neutrally — remote
+  adoption stamps `None` (the honest "authored off-device by an
+  authorless lane"), push echoes carry authorship through unchanged,
+  and the sidecar document rows gain an optional, default-absent `by`
+  key that old devices relay verbatim (unknown-key tolerance is the
+  mixed-fleet pin). Deck API fields the API cannot carry stay
+  uncopied.
+- *Fences kept*: membership duels (`(t, author)` generalization) and
+  `remote_seen` author carriage are chunk 5's territory; the
+  reflection/habit *storage* families stay device-local (ADR 0021) —
+  their sidecar rows still gain the `by` duel leg because the rows
+  roam in documents.
+
+* Consequences
+
+- *The convergence bug dies*: equal clocks with different authors
+  resolve identically on every reader, in every arrival order — the
+  equal-clocks-different-authors law is proptested at the folds, the
+  storage roundtrip, and the two-reader journey.
+- *Deck lanes carry authors neutrally*: authorless rows keep today's
+  ranks bit-for-bit (the duel predicate reduces to the strict-`>` clock
+  comparison for `None` incoming authors — pinned by T-DUEL-0);
+  Deck-stamped data never gains an author.
+- *The migration surface is one-time*: 23 nullable columns, no data
+  rewrite, byte-stable clocks.
+- *Per-device attribution (#494)* inherits the seam without new
+  machinery: the author slot is already on every roaming write.

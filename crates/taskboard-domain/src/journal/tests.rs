@@ -227,6 +227,7 @@ fn fixture_task() -> crate::entities::Task {
             archived: ts(100),
             deleted: ts(100),
         },
+        authors: crate::entities::TaskAuthors::default(),
         remote_seen: None,
         remote_baseline: None,
     }
