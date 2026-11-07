@@ -135,6 +135,42 @@ pub fn files_sync_spawn_decision(config: &AppConfig) -> Option<FilesSyncSpawnSpe
     })
 }
 
+/// Resolves the boot-time device identity (F1, D-BF1): the fixed home
+/// `<data>/taskboard/device.json`, loaded — or created exactly once —
+/// *before* the state engine spawns, independent of any sync
+/// configuration. This is the only minting site in the app: a device
+/// that later configures files sync adopts the same identity (the
+/// gate's actor finds the file and loads it; `load_or_create`'s create
+/// arm can never fire again). `None` when the platform has no data dir
+/// — the engine then stamps authorless rows, the honest `None < Some`
+/// floor.
+async fn resolve_device_identity(
+    clock: &dyn taskboard_domain::Clock,
+) -> Option<taskboard_sync_files::ids::DeviceId> {
+    resolve_device_identity_at(dirs::data_dir()?.join("taskboard"), clock).await
+}
+
+/// The seam the boot path and the tests share: the explicit home wins
+/// over the platform default.
+async fn resolve_device_identity_at(
+    data_dir: std::path::PathBuf,
+    clock: &dyn taskboard_domain::Clock,
+) -> Option<taskboard_sync_files::ids::DeviceId> {
+    let device_json = data_dir.join("device.json");
+    match taskboard_sync_files_nextcloud::device::load_or_create(&device_json, clock).await {
+        Ok(identity) => {
+            tracing::info!(device = %identity.device_id, "device identity resolved");
+            Some(identity.device_id)
+        }
+        Err(err) => {
+            // A corrupt identity file parks the files-sync actor later
+            // (the fork guard); the engine still boots, authorless.
+            tracing::warn!(?err, "device identity unusable; booting authorless");
+            None
+        }
+    }
+}
+
 /// The identity the files-sync gate spawns with (the pure decision's
 /// product).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -170,6 +206,9 @@ async fn files_sync_spawn(
 > {
     // The fixed home is `<data>/taskboard/device.json` (D-SF4); path
     // resolution stays app-side, the file IO is the transport crate's.
+    // The identity itself was minted at boot (`resolve_device_identity`);
+    // the actor's load arm finds the existing file — the create arm can
+    // never fire here, a second mint is the fork condition.
     let data_dir = dirs::data_dir()
         .map(|dir| dir.join("taskboard"))
         .ok_or(std::io::Error::new(
@@ -1251,6 +1290,12 @@ async fn bootstrap_with_modules(
         Arc::new(crate::notifications::HealthTracker::new(health_tx)),
     );
 
+    // The boot-time device identity (F1): resolved before the engine
+    // spawns, configuration-independent (see `resolve_device_identity`).
+    let device_identity = resolve_device_identity(&taskboard_domain::SystemClock).await;
+    let author =
+        device_identity.map(|device| taskboard_domain::ids::AuthorId::from_uuid(device.as_uuid()));
+
     // The engine reaches the database only through the storage actor
     // (single-writer discipline): the handle *is* the port adapter.
     let repo_port: Arc<dyn TaskRepository> = Arc::new(storage.clone());
@@ -1269,7 +1314,7 @@ async fn bootstrap_with_modules(
         // `UpdateSettings`.
         config.settings_snapshot(),
         config.day_calendar(),
-        None,
+        author,
     )
     .await;
 
@@ -1391,7 +1436,7 @@ async fn bootstrap_with_modules(
             // parked sender (N actors, one fan-in inbox).
             reports.clone(),
             system.clone(),
-            config.sync_actor_config(),
+            config.sync_actor_config(author),
         ) {
             Ok(spawned) => {
                 connectors.push(SyncActor {
@@ -1486,7 +1531,7 @@ async fn bootstrap_with_modules(
         engine.clone(),
         reports.clone(),
         system.clone(),
-        config.sync_actor_config(),
+        config.sync_actor_config(author),
         config.app.shutdown_timeout_secs,
         authority.clone(),
     );
@@ -2748,5 +2793,41 @@ mod system_logger_tests {
 
         let seen = observed.into_inner().expect("poisoned");
         assert_eq!(seen, vec![SystemEvent::NetworkRestored]);
+    }
+}
+
+#[cfg(test)]
+mod device_identity_tests {
+    use super::*;
+
+    /// T-JOURNEY-1 (identity half): the first boot mints `device.json`
+    /// exactly once (no files-sync configured — the identity is
+    /// boot-wide, not a sync-config side effect); the second boot
+    /// reuses the same identity; and the handoff maps the device id
+    /// onto the planner's `AuthorId` losslessly.
+    #[tokio::test]
+    async fn identity_mints_once_reuses_on_second_boot_and_maps_to_author() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let clock = taskboard_domain::SystemClock;
+
+        let first = resolve_device_identity_at(dir.path().to_path_buf(), &clock)
+            .await
+            .expect("the platform home exists");
+        let created_at = std::fs::metadata(dir.path().join("device.json"))
+            .expect("device.json exists after the first boot");
+
+        let second = resolve_device_identity_at(dir.path().to_path_buf(), &clock)
+            .await
+            .expect("second boot");
+        assert_eq!(first, second, "the second boot reuses the minted identity");
+        let after = std::fs::metadata(dir.path().join("device.json")).expect("still there");
+        assert_eq!(
+            created_at.len(),
+            after.len(),
+            "the file is loaded, never re-minted"
+        );
+
+        let author = taskboard_domain::ids::AuthorId::from_uuid(first.as_uuid());
+        assert_eq!(author.as_uuid(), second.as_uuid());
     }
 }

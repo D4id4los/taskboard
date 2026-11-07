@@ -122,6 +122,7 @@ pub struct SyncActorConfig {
 ///         day_start_time: chrono::NaiveTime::MIN,
 ///         offset: chrono::FixedOffset::east_opt(0).unwrap(),
 ///     },
+///     author: None,
 /// };
 /// let actor = spawn_sync_actor(
 ///     taskboard_domain::ConnectorId::from("nextcloud"),

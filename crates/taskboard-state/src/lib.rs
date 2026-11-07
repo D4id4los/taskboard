@@ -50,6 +50,7 @@
 //!     notifier,
 //!     taskboard_domain::SettingsSnapshot::default(),
 //!     taskboard_state::DayRollConfig::disabled(),
+//!     None,
 //! )
 //! .await?;
 //!
