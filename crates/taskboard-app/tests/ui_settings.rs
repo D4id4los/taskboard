@@ -1246,3 +1246,184 @@ async fn attach_on_a_stale_board_id_is_gone_typed() {
     drop(tx);
     forwarder.await.expect("forwarder joins cleanly");
 }
+
+// -- round-5 chunk 8: the account-first connection surface --
+
+fn send_list(
+    tx: &tokio::sync::mpsc::Sender<UiRequest>,
+    connector: &str,
+) -> tokio::sync::oneshot::Receiver<
+    Result<Vec<taskboard_ui_slint::requests::RemoteBoardRow>, SettingsError>,
+> {
+    let (reply, reply_rx) = tokio::sync::oneshot::channel();
+    tx.try_send(UiRequest::ListRemoteBoards {
+        connector: connector.to_owned(),
+        reply,
+    })
+    .expect("capacity holds");
+    reply_rx
+}
+
+/// A boards listing with one deleted and one archived entry beside the
+/// live ones (the live filter's input).
+async fn mount_mixed_boards() -> wiremock::MockServer {
+    let mut boards: Vec<serde_json::Value> =
+        serde_json::from_str(&boards_json_with(&[(7, "home"), (8, "away")])).expect("fixture json");
+    boards.push(serde_json::json!({
+        "id": 9, "title": "gone", "color": "00ff00", "lastModified": common::T,
+        "deletedAt": common::T, "archived": false, "labels": []
+    }));
+    boards.push(serde_json::json!({
+        "id": 10, "title": "old", "color": "00ff00", "lastModified": common::T,
+        "deletedAt": 0, "archived": true, "labels": []
+    }));
+    let server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path(BOARDS_PATH))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200)
+                .set_body_string(serde_json::Value::Array(boards).to_string()),
+        )
+        .mount(&server)
+        .await;
+    server
+}
+
+/// L1 — the listing projects the live remotes only and changes
+/// nothing, bindings present or not: no attach, no state change, no
+/// file write.
+#[tokio::test]
+async fn the_listing_projects_live_rows_and_changes_nothing() {
+    let server = mount_mixed_boards().await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = seed_array_config(dir.path(), &server.uri());
+    let before = std::fs::read_to_string(&config).expect("read");
+    let store = Arc::new(FakeCredentialStore::with(&server.uri(), "old-user", "pw"));
+    let (app, workspace) = booted_workspace(config.clone(), store).await;
+    let (tx, rx) = ui_request_channel();
+    let forwarder = taskboard_app::ui_requests::spawn_ui_request_forwarder(
+        rx,
+        app.engine.shared_state(),
+        workspace,
+    );
+    let mine = create_board(&app, "mine").await;
+    let foreign = create_board(&app, "foreign").await;
+    bind_directly(&app, mine, "work", 7).await;
+    bind_directly(&app, foreign, "other", 8).await;
+    let state_before = app.engine.shared_state().load_full();
+
+    let rows = send_list(&tx, "work")
+        .await
+        .expect("reply lane alive")
+        .expect("the listing succeeded");
+    let ids: Vec<u64> = rows.iter().map(|r| r.remote_id.0).collect();
+    assert_eq!(ids, vec![7, 8], "deleted and archived remotes are filtered");
+
+    assert!(
+        app.connector_control()
+            .connector_commands(&taskboard_domain::ConnectorId::from("work"))
+            .is_none(),
+        "the listing attaches nothing"
+    );
+    assert_eq!(*app.engine.shared_state().load_full(), *state_before);
+    assert_eq!(std::fs::read_to_string(&config).expect("read"), before);
+
+    drop(tx);
+    forwarder.await.expect("forwarder joins cleanly");
+}
+
+/// L2 — the listing's typed failures leave the state untouched: no
+/// stored secret, a vanished connector, an unreachable server.
+#[tokio::test]
+async fn the_listing_refuses_typed_without_state_change() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = seed_array_config(dir.path(), "http://127.0.0.1:9");
+    let store = Arc::new(FakeCredentialStore::default());
+    let (app, workspace) = booted_workspace(config.clone(), store.clone()).await;
+    let (tx, rx) = ui_request_channel();
+    let forwarder = taskboard_app::ui_requests::spawn_ui_request_forwarder(
+        rx,
+        app.engine.shared_state(),
+        workspace,
+    );
+    let state_before = app.engine.shared_state().load_full();
+
+    let err = send_list(&tx, "work")
+        .await
+        .expect("alive")
+        .expect_err("no secret");
+    assert!(matches!(err, SettingsError::NoSecretStored), "got {err:?}");
+    let err = send_list(&tx, "nope")
+        .await
+        .expect("alive")
+        .expect_err("gone");
+    assert!(matches!(err, SettingsError::Gone), "got {err:?}");
+    store
+        .store("http://127.0.0.1:9", "old-user", AppPassword::new("pw"))
+        .expect("seed");
+    let err = send_list(&tx, "work")
+        .await
+        .expect("alive")
+        .expect_err("down");
+    assert!(
+        matches!(err, SettingsError::VerifyUnreachable),
+        "got {err:?}"
+    );
+    assert_eq!(*app.engine.shared_state().load_full(), *state_before);
+
+    drop(tx);
+    forwarder.await.expect("forwarder joins cleanly");
+}
+
+/// S1 — a sign-in (empty name) derives the connector name from the
+/// identity; a re-sign-in of the same identity reuses it (no
+/// duplicate); a different user on the same host gets its own name.
+#[tokio::test]
+async fn a_sign_in_derives_the_connector_name_and_a_re_sign_in_reuses_it() {
+    let server = mount_boards_ok().await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = seed_array_config(dir.path(), &server.uri());
+    let store = Arc::new(FakeCredentialStore::default());
+    let (_app, workspace) = booted_workspace(config.clone(), store).await;
+    let (tx, rx) = ui_request_channel();
+    let forwarder = taskboard_app::ui_requests::spawn_ui_request_forwarder(
+        rx,
+        Arc::new(ArcSwap::from_pointee(taskboard_domain::AppState::default())),
+        workspace,
+    );
+    let sign_in = |user: &str| {
+        let (reply, reply_rx) = tokio::sync::oneshot::channel();
+        tx.try_send(UiRequest::SaveConnection {
+            profile: ConnectionProfile {
+                name: String::new(),
+                server_url: server.uri(),
+                username: user.to_owned(),
+                password: Secret("pw".into()),
+            },
+            reply,
+        })
+        .expect("capacity holds");
+        reply_rx
+    };
+    let host = server.uri().replace("http://", "").replace(['.', ':'], "-");
+
+    let first = sign_in("alice").await.expect("alive").expect("signed in");
+    let names: Vec<&str> = first.connectors.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, vec!["work".to_owned(), format!("{host}-alice")]);
+
+    let again = sign_in("alice")
+        .await
+        .expect("alive")
+        .expect("re-signed in");
+    assert_eq!(
+        again.connectors, first.connectors,
+        "an upsert, not a new card"
+    );
+
+    let bob = sign_in("bob").await.expect("alive").expect("signed in");
+    assert_eq!(bob.connectors.len(), 3);
+    assert_eq!(bob.connectors[2].name, format!("{host}-bob"));
+
+    drop(tx);
+    forwarder.await.expect("forwarder joins cleanly");
+}
