@@ -54,6 +54,12 @@ pub mod signals;
 pub mod ui;
 pub mod ui_requests;
 pub mod web;
+// PDF export & print (#624 stage B): compiled only behind the
+// `pdf-export` feature — the default (kiosk) tree carries none of it
+// (no krilla, no font bytes, no `--what pdf` variant). Private: the
+// module serves this crate's export verb only.
+#[cfg(feature = "pdf-export")]
+mod pdf;
 
 /// Application version, taken from the shared workspace version.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

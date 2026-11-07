@@ -116,12 +116,21 @@ yanked = "warn"
 # revisit at the next slint refresh. Recorded during the DR-8 chunk-2
 # landing, where the refreshed advisory DB first surfaced it on an
 # untouched dependency graph.
+#
+# RUSTSEC-2026-0206: `rustybuzz` is unmaintained (no vulnerability
+# known; upstream's own successor is `harfrust`) — the shaping engine
+# behind krilla's `simple-text` feature, arriving only in the
+# feature-gated `pdf-export` resolution (#624 stage B). krilla 0.8.x
+# offers no shaping-free or harfrust-backed alternative, so no safe
+# upgrade exists below the stack; revisit when krilla moves (its
+# 0.9 wave) or the ruling re-opens the stack choice.
 ignore = [
     "RUSTSEC-2026-0192",
     "RUSTSEC-2026-0370",
     "RUSTSEC-2026-0371",
     "RUSTSEC-2026-0372",
     "RUSTSEC-2026-0441",
+    "RUSTSEC-2026-0206",
 ]
 
 [sources]
