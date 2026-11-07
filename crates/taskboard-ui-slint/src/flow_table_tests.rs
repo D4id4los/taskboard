@@ -1470,10 +1470,6 @@ mod buffer_invariants {
 
             // The leaving-settle end path.
             arm_due(&rig, &adapter, &fx);
-            adapter
-                .borrow_mut()
-                .view_state
-                .set_buffer("ignored".to_owned());
             {
                 let mut a = adapter.borrow_mut();
                 a.test_seed_due_buffers();
@@ -1483,12 +1479,14 @@ mod buffer_invariants {
             assert_eq!(adapter.borrow().view_state.flow().clone(), Flow::None);
 
             // A plain refresh with the flow gone (the reconcile-drop
-            // shape): the wipe must not resurrect anything.
+            // shape): the level's buffers died with the discard — the
+            // refresh must not resurrect anything. (Seeding stale
+            // buffers while flowless is unrepresentable: the state
+            // lives in the level now.)
             arm_due(&rig, &adapter, &fx);
             adapter.borrow_mut().view_state.discard_edit();
             {
                 let mut a = adapter.borrow_mut();
-                a.test_seed_due_buffers();
                 a.refresh(rig.handle.window());
             }
             assert!(adapter.borrow().due_buffers_empty(), "refresh wipes");
