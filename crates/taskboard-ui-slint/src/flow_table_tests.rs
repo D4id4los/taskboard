@@ -3060,10 +3060,7 @@ fn the_track_form_add_commit_routes_logtime_with_the_exact_instants() {
         // safe). The commit must route the exact instants.
         {
             let mut a = adapter.borrow_mut();
-            let form = a
-                .track_form_mut_for_test()
-                .as_mut()
-                .expect("the form is seeded");
+            let form = a.track_form_mut_for_test().expect("the form is seeded");
             form.start_text = "22:00".to_owned();
             form.end_text = "23:00".to_owned();
             let ok = a.commit_track_form_for_test(rig.handle.window());
@@ -3147,10 +3144,7 @@ fn the_track_form_edit_commit_routes_the_exact_adjust_mask() {
         // Change the end; the commit routes the exact mask.
         {
             let mut a = adapter.borrow_mut();
-            let form = a
-                .track_form_mut_for_test()
-                .as_mut()
-                .expect("the form is seeded");
+            let form = a.track_form_mut_for_test().expect("the form is seeded");
             form.end_text = "12:30".to_owned();
             let ok = a.commit_track_form_for_test(rig.handle.window());
             assert!(ok);
@@ -3244,7 +3238,7 @@ fn the_running_rows_edit_seeds_an_empty_end_and_the_mask_keeps_it_open() {
             let outcomes = a.view_state.open_track_entry_form(a_id, Some(entry));
             a.apply_outcomes_for_test(rig.handle.window(), &outcomes);
             a.seed_track_form_for_test(Some(entry));
-            let form = a.track_form_mut_for_test().as_mut().expect("seeded");
+            let form = a.track_form_mut_for_test().expect("seeded");
             form.end_text = "23:59".to_owned();
             let ok = a.commit_track_form_for_test(rig.handle.window());
             assert!(ok);
@@ -3278,7 +3272,7 @@ fn an_inverted_span_refuses_the_commit_and_lands_on_the_end_field() {
             let outcomes = a.view_state.open_track_entry_form(a_id, None);
             a.apply_outcomes_for_test(rig.handle.window(), &outcomes);
             a.seed_track_form_for_test(None);
-            let form = a.track_form_mut_for_test().as_mut().expect("seeded");
+            let form = a.track_form_mut_for_test().expect("seeded");
             form.start_text = "10:00".to_owned();
             form.end_text = "09:00".to_owned();
             let ok = a.commit_track_form_for_test(rig.handle.window());
@@ -3456,10 +3450,7 @@ fn the_add_commit_routes_over_the_form_subject_not_the_focus() {
             a.apply_outcomes_for_test(rig.handle.window(), &outcomes);
             a.seed_track_form_for_test(None);
             a.refresh_forced(rig.handle.window());
-            let form = a
-                .track_form_mut_for_test()
-                .as_mut()
-                .expect("the form is seeded");
+            let form = a.track_form_mut_for_test().expect("the form is seeded");
             form.start_text = "20:00".to_owned();
             form.end_text = "21:00".to_owned();
             let ok = a.commit_track_form_for_test(rig.handle.window());
