@@ -13,7 +13,10 @@ The workspace carries a single global version (see `docs/architecture.org`);
 - The files-sync substrate's status surfacing and hardening (#632,
   DR-8 chunk 4): the typed findings grew peer heartbeat freshness and
   the quiescence-window divergence finding (two consecutive quiet
-  cycles, clock-free and deterministic); the `status` CLI carries the
+  cycles, clock-free and deterministic, and only over peers whose
+  published document already contains this device's view — an
+  offline or lagging peer shows as a heartbeat age, never as
+  divergence); the `status` CLI carries the
   additive `files_sync` block (last cycle, peer freshness ages, fork
   alarm, parked peer files, diverged devices); the desktop UI gained
   a status-bar chip beside the sync badge (fork state alarm-styled);

@@ -173,9 +173,9 @@ pub struct LoopState {
     /// The undecodable-row count of that delta: a standing finding
     /// while the delta persists, so deduped cycles still report it.
     last_import_rejected: usize,
-    /// This cycle's merged-view hash — the divergence derivation's
-    /// "our current settled view" input (set every Ok cycle).
-    view_hash: Option<StateHash>,
+    /// This cycle's merged view — the divergence derivation's "our
+    /// current settled view" input (set every Ok cycle).
+    view: Option<UserDocument>,
     /// Consecutive quiet-and-disagreeing cycles (the quiescence
     /// window; D-FH3). Reset by a busy or an agreeing quiet cycle;
     /// held across failures.
@@ -198,11 +198,13 @@ const QUIET_CYCLES_TO_FIRE: u32 = 2;
 /// (parked — its park finding already says why) or from `heartbeats`
 /// (no decoded heartbeat — no evidence, no finding) cannot appear in
 /// the comparison; self is excluded because its heartbeat never enters
-/// `heartbeats` (the fork alarm is that condition's specific finding).
+/// `heartbeats` (the fork alarm is that condition's specific finding);
+/// a peer that has not absorbed our view yet is lagging, not divergent
+/// (its heartbeat age is that finding) — see [`has_absorbed`].
 fn advance_divergence(
     quiet_streak: u32,
     quiet: bool,
-    view: &StateHash,
+    view: &UserDocument,
     docs: &BTreeMap<DeviceId, UserDocument>,
     heartbeats: &BTreeMap<DeviceId, DeviceInfo>,
 ) -> (u32, BTreeSet<DeviceId>) {
@@ -211,14 +213,16 @@ fn advance_divergence(
         // firing here is noise.
         return (0, BTreeSet::new());
     }
+    let view_hash = StateHash::of(view);
     let disagreeing: BTreeSet<DeviceId> = docs
-        .keys()
-        .filter(|device| {
+        .iter()
+        .filter(|(device, doc)| {
             heartbeats
                 .get(*device)
-                .is_some_and(|info| &info.state_hash != view)
+                .is_some_and(|info| info.state_hash != view_hash)
+                && has_absorbed(doc, view)
         })
-        .copied()
+        .map(|(device, _)| *device)
         .collect();
     if disagreeing.is_empty() {
         // Agreement is evidence too.
@@ -230,6 +234,15 @@ fn advance_divergence(
     } else {
         (streak, BTreeSet::new())
     }
+}
+
+/// Whether a peer's published document already contains `view`:
+/// folding the view into it changes nothing. Until then the peer is
+/// behind this device (offline, or not cycled since our publish), and
+/// its heartbeat hash describes an older view — lag, not divergence.
+/// Structural and clock-free: no age threshold decides it.
+fn has_absorbed(peer: &UserDocument, view: &UserDocument) -> bool {
+    StateHash::of(&fold([peer, view])) == StateHash::of(&fold([peer]))
 }
 
 /// How a cycle ended, for the actor's rescheduling.
@@ -287,7 +300,7 @@ pub async fn run_cycle<T: FilesTransport>(
         Ok((published, read_devices, import_rejected)) => {
             st.failure_streak = 0;
             st.retry_after_floor = Duration::ZERO;
-            if let Some(view) = &st.view_hash {
+            if let Some(view) = &st.view {
                 let quiet = !published && !st.pending_heartbeat;
                 let (streak, diverged) =
                     advance_divergence(st.quiet_streak, quiet, view, &st.docs, &st.heartbeats);
@@ -431,7 +444,7 @@ async fn attach<T: FilesTransport>(
     let appdata_path = rooted(&layout::device_appdata_path(ctx.identity.device_id));
     let merged = merged_view(ctx, st);
     let import_rejected = import_step(ctx, st, &merged).await;
-    st.view_hash = Some(StateHash::of(&merged));
+    st.view = Some(merged.clone());
     let appdata_bytes = serde_json::to_vec(&merged)?;
     match transport.put_create(&appdata_path, &appdata_bytes).await {
         Ok(outcome) => {
@@ -538,7 +551,7 @@ async fn steady_cycle<T: FilesTransport>(
     let import_rejected = import_step(ctx, st, &merged).await;
     // 4. the local-hash skip-compare (never a server etag, F5).
     let hash = StateHash::of(&merged);
-    st.view_hash = Some(hash.clone());
+    st.view = Some(merged.clone());
     let skip = st.published_hash.as_ref() == Some(&hash);
     let mut published = false;
     if !skip {
@@ -1117,10 +1130,11 @@ mod divergence_rule {
         BTreeMap<DeviceId, DeviceInfo>,
     ) {
         let peer = device(1);
-        let view = StateHash::of(&doc_with("view"));
-        let docs = BTreeMap::from([(peer, doc_with("peer"))]);
+        // The peer published exactly our view (it absorbed it); only
+        // its heartbeat's claimed hash varies.
+        let docs = BTreeMap::from([(peer, doc_with("view"))]);
         let heartbeats = match step {
-            Step::QuietAgree => BTreeMap::from([(peer, info(view))]),
+            Step::QuietAgree => BTreeMap::from([(peer, info(StateHash::of(&doc_with("view"))))]),
             Step::QuietDisagree | Step::Busy => {
                 BTreeMap::from([(peer, info(StateHash::of(&doc_with("other"))))])
             }
@@ -1131,7 +1145,7 @@ mod divergence_rule {
     /// The rule table, one row per test.
     #[test]
     fn a_first_quiet_disagreeing_cycle_does_not_fire() {
-        let view = StateHash::of(&doc_with("view"));
+        let view = doc_with("view");
         let (docs, heartbeats) = evidence(Step::QuietDisagree);
         let (streak, diverged) = advance_divergence(0, true, &view, &docs, &heartbeats);
         assert_eq!(streak, 1);
@@ -1141,7 +1155,7 @@ mod divergence_rule {
     #[test]
     fn a_second_consecutive_quiet_disagreeing_cycle_fires_with_the_current_set() {
         let peer = device(1);
-        let view = StateHash::of(&doc_with("view"));
+        let view = doc_with("view");
         let (docs, heartbeats) = evidence(Step::QuietDisagree);
         let (streak, diverged) = advance_divergence(1, true, &view, &docs, &heartbeats);
         assert_eq!(streak, QUIET_CYCLES_TO_FIRE);
@@ -1154,7 +1168,7 @@ mod divergence_rule {
         // but recomputed every call (the set argument is only carried
         // through by the caller, never consulted).
         let peer = device(1);
-        let view = StateHash::of(&doc_with("view"));
+        let view = doc_with("view");
         let (docs, heartbeats) = evidence(Step::QuietDisagree);
         let (streak, diverged) = advance_divergence(2, true, &view, &docs, &heartbeats);
         assert_eq!(streak, 3);
@@ -1163,7 +1177,7 @@ mod divergence_rule {
 
     #[test]
     fn a_quiet_agreeing_cycle_resets_the_streak_and_clears_the_finding() {
-        let view = StateHash::of(&doc_with("view"));
+        let view = doc_with("view");
         let (docs, heartbeats) = evidence(Step::QuietAgree);
         let (streak, diverged) = advance_divergence(2, true, &view, &docs, &heartbeats);
         assert_eq!(streak, 0);
@@ -1172,7 +1186,7 @@ mod divergence_rule {
 
     #[test]
     fn a_busy_cycle_resets_the_streak_and_clears_the_finding() {
-        let view = StateHash::of(&doc_with("view"));
+        let view = doc_with("view");
         let (docs, heartbeats) = evidence(Step::Busy);
         let (streak, diverged) = advance_divergence(1, false, &view, &docs, &heartbeats);
         assert_eq!(streak, 0);
@@ -1181,7 +1195,7 @@ mod divergence_rule {
 
     #[test]
     fn a_parked_peer_is_excluded_no_document_no_comparison() {
-        let view = StateHash::of(&doc_with("view"));
+        let view = doc_with("view");
         // The parked posture: a heartbeat exists but the document was
         // withheld (quarantine / newer format) ⇒ the peer is in
         // `heartbeats` only.
@@ -1192,9 +1206,31 @@ mod divergence_rule {
         assert!(diverged.is_empty(), "the park finding already says why");
     }
 
+    /// A peer that has not absorbed our view (its published document
+    /// lacks our newer row) is lagging: its older hash disagrees, yet
+    /// no streak builds and nothing fires.
+    #[test]
+    fn a_peer_behind_our_view_is_lagging_not_diverged() {
+        let mut view = doc_with("view");
+        view.sections.journal.as_mut().expect("rows").insert(
+            "0193c000-0000-7c89-ab01-2345abcdef98".to_owned(),
+            UserRecord::Entry {
+                body: BTreeMap::from([("text".to_owned(), json!("ours, newer"))]),
+                clock: "2026-11-05T09:00:00Z".parse().expect("clock"),
+                author: None,
+            },
+        );
+        let peer = device(1);
+        let docs = BTreeMap::from([(peer, doc_with("view"))]);
+        let heartbeats = BTreeMap::from([(peer, info(StateHash::of(&doc_with("view"))))]);
+        let (streak, diverged) = advance_divergence(1, true, &view, &docs, &heartbeats);
+        assert_eq!(streak, 0, "lag is not evidence of divergence");
+        assert!(diverged.is_empty());
+    }
+
     #[test]
     fn a_heartbeat_less_peer_is_excluded() {
-        let view = StateHash::of(&doc_with("view"));
+        let view = doc_with("view");
         let peer = device(1);
         let docs = BTreeMap::from([(peer, doc_with("peer"))]);
         let heartbeats = BTreeMap::new();
@@ -1213,7 +1249,7 @@ mod divergence_rule {
         fn the_window_never_fires_without_two_consecutive_quiet_disagreeing_cycles(
             steps in prop::collection::vec(step_strategy(), 0..40),
         ) {
-            let view = StateHash::of(&doc_with("view"));
+            let view = doc_with("view");
             let mut streak = 0u32;
             let mut history: Vec<Step> = Vec::new();
             for step in steps {
