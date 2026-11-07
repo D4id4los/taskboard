@@ -99,7 +99,7 @@ pub fn files_sync_chip_caption(state: FilesSyncChipState) -> &'static str {
     match state {
         FilesSyncChipState::Ok => "files-sync running",
         FilesSyncChipState::CycleFailed => "files-sync cycle failing",
-        FilesSyncChipState::Parked => "files-sync: peer files parked",
+        FilesSyncChipState::Parked => "files-sync: peer data held aside",
         FilesSyncChipState::Diverged => "files-sync: devices diverged",
         FilesSyncChipState::Forked => "files-sync forked — writes stopped",
     }
