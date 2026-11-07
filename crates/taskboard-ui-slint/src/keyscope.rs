@@ -257,6 +257,360 @@ pub fn activation_reserved(
         && !stroke.meta
 }
 
+/// One editor-scope command (D-KS3): what the adapter performs on the
+/// focused editor target through the seam. The command model is
+/// motion/surgery-neutral — the adapter computes the new text and
+/// cursor byte offsets, the widget applies them to its `TextInput`
+/// (the L1 boundary chunk 2 set: Rust never touches `TextInput`
+/// internals; the widget's `invoke-editor-command` handler does).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditorCommand {
+    /// C-b: one character back.
+    CursorBackward,
+    /// C-f: one character forward.
+    CursorForward,
+    /// C-p: one logical line up (documented leniency: logical lines,
+    /// not visual — `TextInput` cursor APIs give offsets only).
+    LineUp,
+    /// C-n: one logical line down.
+    LineDown,
+    /// C-a: line start.
+    LineStart,
+    /// C-e: line end.
+    LineEnd,
+    /// C-k: kill to the line end (into the clipboard slot).
+    KillToLineEnd,
+    /// C-d: delete one character forward (or the selection).
+    DeleteForward,
+    /// C-Space: set the mark at the cursor.
+    SetMark,
+    /// C-w: cut the marked region into the clipboard slot.
+    CutRegion,
+    /// M-w: copy the marked region into the clipboard slot.
+    CopyRegion,
+    /// C-y: paste the clipboard slot at the cursor.
+    Paste,
+    /// Shift+Return (≡ the checkmark) and C-c C-c: commit through
+    /// the existing `accepted` funnel.
+    Commit,
+    /// C-c C-k: the flow's discard — the same outcome as Escape
+    /// today (the existing settle, never a new one). Escape itself
+    /// is NOT rebound (the plan's explicit ruling).
+    Discard,
+    /// vi's `i`: back to insert — the shell's mode flip.
+    EnterInsert,
+}
+
+impl EditorCommand {
+    /// The widget-seam command code (see `ui/editor-scope.slint`'s
+    /// table — kept in step by this mapping and the seam's comment).
+    #[must_use]
+    pub const fn code(self) -> i32 {
+        match self {
+            Self::CursorBackward => 0,
+            Self::CursorForward => 1,
+            Self::LineUp => 2,
+            Self::LineDown => 3,
+            Self::LineStart => 4,
+            Self::LineEnd => 5,
+            Self::KillToLineEnd => 6,
+            Self::DeleteForward => 7,
+            Self::SetMark => 8,
+            Self::CutRegion => 9,
+            Self::CopyRegion => 10,
+            Self::Paste => 11,
+            Self::Commit => 12,
+            Self::Discard => 13,
+            Self::EnterInsert => 14,
+        }
+    }
+}
+
+/// The editor command table (D-KS3): spelled strokes → commands per
+/// preset. A `BTreeMap` for deterministic lookup order.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct EditorTable(BTreeMap<Vec<crate::keymap::Stroke>, EditorCommand>);
+
+use std::collections::BTreeMap;
+
+impl EditorTable {
+    /// The exact binding, if any.
+    #[must_use]
+    pub fn exact(&self, seq: &[crate::keymap::Stroke]) -> Option<EditorCommand> {
+        self.0.get(seq).copied()
+    }
+
+    /// Whether any binding starts with `seq` (the prefix test).
+    #[must_use]
+    pub fn has_prefix(&self, seq: &[crate::keymap::Stroke]) -> bool {
+        self.0.keys().any(|binding| binding.starts_with(seq))
+    }
+
+    /// Whether the table is empty (the standard preset: native
+    /// editing only — second-class-free by the monopoly, not chords).
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    fn bind(&mut self, spellings: &[&str], command: EditorCommand) {
+        let seq = crate::keymap::stroke::parse_sequence(spellings.iter().copied())
+            .expect("editor table spellings parse (const data)");
+        self.0.insert(seq, command);
+    }
+}
+
+/// The preset's editor command table (D-KS3). The emacs set is the
+/// dispatch §8 list verbatim; the vi set is the deliberate strip
+/// (h, l, j, k, 0, $, x, i — recorded; no yank/register grammar).
+/// The `AltGr` limitation is recorded at the emacs M-w row (stage-1
+/// plan §8): `AltGr` surfaces as Ctrl+Alt, which the table does not
+/// bind — M-w is unreachable while `AltGr` is held, a layout-level
+/// leniency, never a misfire.
+#[must_use]
+pub fn editor_table(preset: crate::keymap::Preset) -> EditorTable {
+    let mut table = EditorTable::default();
+    match preset {
+        crate::keymap::Preset::Standard => {}
+        crate::keymap::Preset::Emacs => {
+            table.bind(&["Ctrl+b"], EditorCommand::CursorBackward);
+            table.bind(&["Ctrl+f"], EditorCommand::CursorForward);
+            table.bind(&["Ctrl+p"], EditorCommand::LineUp);
+            table.bind(&["Ctrl+n"], EditorCommand::LineDown);
+            table.bind(&["Ctrl+a"], EditorCommand::LineStart);
+            table.bind(&["Ctrl+e"], EditorCommand::LineEnd);
+            table.bind(&["Ctrl+k"], EditorCommand::KillToLineEnd);
+            table.bind(&["Ctrl+d"], EditorCommand::DeleteForward);
+            table.bind(&["Ctrl+Space"], EditorCommand::SetMark);
+            table.bind(&["Ctrl+w"], EditorCommand::CutRegion);
+            table.bind(&["Alt+w"], EditorCommand::CopyRegion);
+            table.bind(&["Ctrl+y"], EditorCommand::Paste);
+            table.bind(&["Ctrl+c", "Ctrl+c"], EditorCommand::Commit);
+            table.bind(&["Ctrl+c", "Ctrl+k"], EditorCommand::Discard);
+        }
+        crate::keymap::Preset::Vi => {
+            table.bind(&["h"], EditorCommand::CursorBackward);
+            table.bind(&["l"], EditorCommand::CursorForward);
+            table.bind(&["j"], EditorCommand::LineDown);
+            table.bind(&["k"], EditorCommand::LineUp);
+            table.bind(&["0"], EditorCommand::LineStart);
+            table.bind(&["$"], EditorCommand::LineEnd);
+            table.bind(&["x"], EditorCommand::DeleteForward);
+            table.bind(&["i"], EditorCommand::EnterInsert);
+        }
+    }
+    table
+}
+
+/// The editor state one command reads (D-KS3): the buffer, the
+/// cursor and mark as UTF-8 byte offsets, and the single-slot
+/// clipboard.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EditorState<'a> {
+    pub buffer: &'a str,
+    pub cursor: usize,
+    pub mark: Option<usize>,
+    pub clipboard: Option<&'a str>,
+}
+
+/// One command's outcome (D-KS3): the replacement text (`None` = the
+/// buffer is untouched), the new cursor, the new mark, and the new
+/// clipboard slot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EditorEdit {
+    pub text: Option<String>,
+    pub cursor: usize,
+    pub mark: Option<usize>,
+    pub clipboard: Option<String>,
+}
+
+/// The editor command arithmetic (D-KS3), pure: the adapter feeds the
+/// widget-mirrored state and writes the outcome back through the
+/// seam. Documented leniencies (backlog-recorded): line motions move
+/// by LOGICAL lines (`TextInput` cursor APIs give offsets only —
+/// visual-line motion is backlog); C-k at a line end kills nothing
+/// (no newline join); C-d deletes one character, never the region.
+/// Motions keep the mark (the emacs region semantics: a motion after
+/// C-Space extends the region); the region-consuming commands clear
+/// it. Commit/Discard/EnterInsert are no-ops here (they ride the
+/// adapter's funnels).
+#[must_use]
+pub fn apply_editor_command(state: &EditorState<'_>, command: EditorCommand) -> EditorEdit {
+    let buffer = state.buffer;
+    let cursor = floor_boundary(buffer, state.cursor);
+    let mut edit = EditorEdit {
+        text: None,
+        cursor,
+        mark: state.mark.map(|mark| floor_boundary(buffer, mark)),
+        clipboard: state.clipboard.map(str::to_owned),
+    };
+    match command {
+        EditorCommand::CursorBackward => edit.cursor = boundary_back(buffer, cursor),
+        EditorCommand::CursorForward => edit.cursor = boundary_forward(buffer, cursor),
+        EditorCommand::LineStart => edit.cursor = line_start(buffer, cursor),
+        EditorCommand::LineEnd => edit.cursor = line_end(buffer, cursor),
+        EditorCommand::LineUp => {
+            let start = line_start(buffer, cursor);
+            if start > 0 {
+                let prev_end = start - 1;
+                let prev_start = line_start(buffer, prev_end);
+                edit.cursor = floor_boundary(buffer, (prev_start + cursor - start).min(prev_end));
+            }
+        }
+        EditorCommand::LineDown => {
+            let end = line_end(buffer, cursor);
+            if end < buffer.len() {
+                let next_start = end + 1;
+                let next_end = line_end(buffer, next_start);
+                let column = cursor - line_start(buffer, cursor);
+                edit.cursor = floor_boundary(buffer, (next_start + column).min(next_end));
+            }
+        }
+        EditorCommand::KillToLineEnd => {
+            let end = line_end(buffer, cursor);
+            if end > cursor {
+                edit.clipboard = Some(buffer[cursor..end].to_owned());
+                edit.text = Some(splice(buffer, cursor, end, ""));
+            }
+            edit.mark = None;
+        }
+        EditorCommand::DeleteForward => {
+            if cursor < buffer.len() {
+                edit.text = Some(splice(buffer, cursor, boundary_forward(buffer, cursor), ""));
+            }
+            edit.mark = None;
+        }
+        EditorCommand::SetMark => edit.mark = Some(cursor),
+        EditorCommand::CutRegion | EditorCommand::CopyRegion => {
+            if let Some(mark) = edit.mark {
+                let (from, to) = (mark.min(cursor), mark.max(cursor));
+                if to > from {
+                    edit.clipboard = Some(buffer[from..to].to_owned());
+                }
+                if command == EditorCommand::CutRegion {
+                    edit.text = Some(splice(buffer, from, to, ""));
+                    edit.cursor = from;
+                }
+                edit.mark = None;
+            }
+        }
+        EditorCommand::Paste => {
+            if let Some(clip) = state.clipboard {
+                edit.text = Some(splice(buffer, cursor, cursor, clip));
+                edit.cursor = cursor + clip.len();
+                edit.mark = None;
+            }
+        }
+        EditorCommand::Commit | EditorCommand::Discard | EditorCommand::EnterInsert => {}
+    }
+    edit
+}
+
+/// The largest scalar boundary ≤ `at` (clamped to the buffer).
+fn floor_boundary(text: &str, at: usize) -> usize {
+    let mut at = at.min(text.len());
+    while at > 0 && !text.is_char_boundary(at) {
+        at -= 1;
+    }
+    at
+}
+
+/// One scalar back (multi-byte characters move whole).
+fn boundary_back(text: &str, at: usize) -> usize {
+    if at == 0 {
+        return 0;
+    }
+    floor_boundary(text, at - 1)
+}
+
+/// One scalar forward (multi-byte characters move whole).
+fn boundary_forward(text: &str, at: usize) -> usize {
+    let mut at = at;
+    if at < text.len() {
+        at += 1;
+        while at < text.len() && !text.is_char_boundary(at) {
+            at += 1;
+        }
+    }
+    at
+}
+
+fn line_start(text: &str, at: usize) -> usize {
+    text[..at].rfind('\n').map_or(0, |pos| pos + 1)
+}
+
+fn line_end(text: &str, at: usize) -> usize {
+    text[at..].find('\n').map_or(text.len(), |pos| at + pos)
+}
+
+fn splice(text: &str, from: usize, to: usize, with: &str) -> String {
+    let mut out = String::with_capacity(text.len() - (to - from) + with.len());
+    out.push_str(&text[..from]);
+    out.push_str(with);
+    out.push_str(&text[to..]);
+    out
+}
+
+/// What the editor table did with one stroke (the resolver's
+/// Resolution shape, scope-local).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditorClaim {
+    /// The table claims the stroke: `intercept` performs the command
+    /// and consumes the event.
+    Command(EditorCommand),
+    /// The stroke entered (or stays in) a pending prefix — consumed,
+    /// no command yet.
+    Consumed,
+    /// A fresh stroke the table doesn't shape at all: the ordinary
+    /// resolver feed must see it.
+    Pass,
+}
+
+/// The editor scope's LOCAL prefix accumulator (D-KS3's recorded
+/// decision: the keymap resolver is not reused for editor commands).
+/// Same prefix discipline as `KeymapResolver`, one scope-local
+/// pending sequence.
+#[derive(Debug, Default)]
+pub struct EditorResolver {
+    pending: Vec<crate::keymap::Stroke>,
+}
+
+impl EditorResolver {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            pending: Vec::new(),
+        }
+    }
+
+    /// Feeds one stroke against the table. A completed prefix's
+    /// stray second stroke aborts the accumulation and is consumed
+    /// (the resolver's `Aborted` shape) — it does NOT fall through.
+    pub fn feed(&mut self, stroke: crate::keymap::Stroke, table: &EditorTable) -> EditorClaim {
+        let had_pending = !self.pending.is_empty();
+        self.pending.push(stroke);
+
+        if let Some(command) = table.exact(&self.pending) {
+            self.pending.clear();
+            return EditorClaim::Command(command);
+        }
+        if table.has_prefix(&self.pending) {
+            return EditorClaim::Consumed;
+        }
+        self.pending.clear();
+        if had_pending {
+            EditorClaim::Consumed
+        } else {
+            EditorClaim::Pass
+        }
+    }
+
+    /// Drops any pending accumulation (focus/flow ends).
+    pub fn reset(&mut self) {
+        self.pending.clear();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -697,5 +1051,248 @@ mod tests {
         // And the reservation's own gate requires a bare stroke.
         let chord_space = crate::keymap::stroke::parse("Ctrl+Space").expect("parses");
         assert!(chord_space.ctrl);
+    }
+    /// T-E1 — the editor tables map the preset grammars verbatim
+    /// (D-KS3): the emacs dispatch list, the vi deliberate strip, and
+    /// the standard preset's empty table (native editing only).
+    #[test]
+    fn the_editor_tables_map_the_preset_grammars() {
+        let parse = |sp: &str| crate::keymap::stroke::parse(sp).expect("parses");
+        let seq = |sp: &[&str]| {
+            sp.iter()
+                .map(|s| parse(s))
+                .collect::<Vec<crate::keymap::Stroke>>()
+        };
+
+        let emacs = editor_table(crate::keymap::Preset::Emacs);
+        let expected = [
+            (&["Ctrl+b"][..], EditorCommand::CursorBackward),
+            (&["Ctrl+f"], EditorCommand::CursorForward),
+            (&["Ctrl+p"], EditorCommand::LineUp),
+            (&["Ctrl+n"], EditorCommand::LineDown),
+            (&["Ctrl+a"], EditorCommand::LineStart),
+            (&["Ctrl+e"], EditorCommand::LineEnd),
+            (&["Ctrl+k"], EditorCommand::KillToLineEnd),
+            (&["Ctrl+d"], EditorCommand::DeleteForward),
+            (&["Ctrl+Space"], EditorCommand::SetMark),
+            (&["Ctrl+w"], EditorCommand::CutRegion),
+            (&["Alt+w"], EditorCommand::CopyRegion),
+            (&["Ctrl+y"], EditorCommand::Paste),
+            (&["Ctrl+c", "Ctrl+c"], EditorCommand::Commit),
+            (&["Ctrl+c", "Ctrl+k"], EditorCommand::Discard),
+        ];
+        for (spelling, command) in expected {
+            assert_eq!(emacs.exact(&seq(spelling)), Some(command));
+        }
+        // Escape is NOT rebound (the plan's ruling): the existing
+        // ModeNormal funnel keeps it.
+        assert_eq!(emacs.exact(&seq(&["Escape"])), None);
+
+        let vi = editor_table(crate::keymap::Preset::Vi);
+        let vi_expected = [
+            (&["h"][..], EditorCommand::CursorBackward),
+            (&["l"], EditorCommand::CursorForward),
+            (&["j"], EditorCommand::LineDown),
+            (&["k"], EditorCommand::LineUp),
+            (&["0"], EditorCommand::LineStart),
+            (&["$"], EditorCommand::LineEnd),
+            (&["x"], EditorCommand::DeleteForward),
+            (&["i"], EditorCommand::EnterInsert),
+        ];
+        for (spelling, command) in vi_expected {
+            assert_eq!(vi.exact(&seq(spelling)), Some(command));
+        }
+        // The recorded strip: nothing more ships (no yank/register
+        // grammar, no d d prefix).
+        assert!(!vi.has_prefix(&seq(&["d"])));
+        assert_eq!(vi.exact(&seq(&["y"])), None);
+
+        assert!(editor_table(crate::keymap::Preset::Standard).is_empty());
+    }
+
+    /// T-E2 — the local prefix accumulator: exact, pending, complete,
+    /// abort-consumed, and pass-through claims.
+    #[test]
+    fn the_editor_accumulator_claims_prefixes() {
+        let parse = |sp: &str| crate::keymap::stroke::parse(sp).expect("parses");
+        let table = editor_table(crate::keymap::Preset::Emacs);
+        let mut acc = EditorResolver::new();
+
+        // A single-stroke entry claims outright.
+        assert_eq!(
+            acc.feed(parse("Ctrl+k"), &table),
+            EditorClaim::Command(EditorCommand::KillToLineEnd)
+        );
+        // The C-c prefix parks.
+        assert_eq!(acc.feed(parse("Ctrl+c"), &table), EditorClaim::Consumed);
+        // Completing: C-c C-c is the commit.
+        assert_eq!(
+            acc.feed(parse("Ctrl+c"), &table),
+            EditorClaim::Command(EditorCommand::Commit)
+        );
+        // The stray twin: C-c then C-k discards.
+        assert_eq!(acc.feed(parse("Ctrl+c"), &table), EditorClaim::Consumed);
+        assert_eq!(
+            acc.feed(parse("Ctrl+k"), &table),
+            EditorClaim::Command(EditorCommand::Discard)
+        );
+        // Abort: C-c then an unrelated chord is consumed, claims
+        // nothing.
+        assert_eq!(acc.feed(parse("Ctrl+c"), &table), EditorClaim::Consumed);
+        assert_eq!(
+            acc.feed(parse("Ctrl+x"), &table),
+            EditorClaim::Consumed,
+            "an aborted editor prefix is consumed, never passed"
+        );
+        // Pass-through: a fresh stroke outside the table's shapes.
+        assert_eq!(acc.feed(parse("Ctrl+x"), &table), EditorClaim::Pass);
+        assert_eq!(acc.feed(parse("Z"), &table), EditorClaim::Pass);
+    }
+    fn edit(
+        buffer: &str,
+        cursor: usize,
+        mark: Option<usize>,
+        clip: Option<&str>,
+        command: EditorCommand,
+    ) -> EditorEdit {
+        apply_editor_command(
+            &EditorState {
+                buffer,
+                cursor,
+                mark,
+                clipboard: clip,
+            },
+            command,
+        )
+    }
+
+    /// T-E3 — the motions: scalar steps (multi-byte whole), logical
+    /// line edges and line up/down with column clamping; motions keep
+    /// the mark (the region extends).
+    #[test]
+    fn the_motions_move_by_scalars_and_logical_lines() {
+        use EditorCommand::*;
+        assert_eq!(
+            edit("añb", 1, None, None, CursorForward).cursor,
+            3,
+            "ñ moves whole"
+        );
+        assert_eq!(edit("añb", 3, None, None, CursorBackward).cursor, 1);
+        assert_eq!(
+            edit("ab", 0, None, None, CursorBackward).cursor,
+            0,
+            "clamped at 0"
+        );
+        assert_eq!(
+            edit("ab", 2, None, None, CursorForward).cursor,
+            2,
+            "clamped at end"
+        );
+        let text = "one\ntwo2\nx";
+        assert_eq!(edit(text, 6, None, None, LineStart).cursor, 4);
+        assert_eq!(edit(text, 5, None, None, LineEnd).cursor, 8);
+        assert_eq!(edit(text, 6, None, None, LineUp).cursor, 2, "column kept");
+        assert_eq!(
+            edit(text, 7, None, None, LineDown).cursor,
+            10,
+            "column clamped to the short line"
+        );
+        assert_eq!(edit(text, 1, None, None, LineUp).cursor, 1, "no line above");
+        assert_eq!(
+            edit(text, 9, Some(2), None, LineStart).mark,
+            Some(2),
+            "motions keep the mark"
+        );
+    }
+
+    /// T-E4 — the surgery: kill to the line end (into the slot, the
+    /// newline kept), forward delete, mark/region cut and copy, paste.
+    #[test]
+    fn the_surgery_edits_through_the_single_slot() {
+        use EditorCommand::*;
+        let kill = edit("ab\ncd", 1, None, None, KillToLineEnd);
+        assert_eq!(kill.text.as_deref(), Some("a\ncd"));
+        assert_eq!(kill.clipboard.as_deref(), Some("b"));
+        assert_eq!(
+            edit("ab\ncd", 2, None, None, KillToLineEnd).text,
+            None,
+            "nothing at the line end"
+        );
+
+        assert_eq!(
+            edit("hold", 0, None, None, DeleteForward).text.as_deref(),
+            Some("old")
+        );
+        assert_eq!(edit("hold", 4, None, None, DeleteForward).text, None);
+
+        let cut = edit("alpha beta", 10, Some(2), None, CutRegion);
+        assert_eq!(cut.text.as_deref(), Some("al"));
+        assert_eq!(cut.cursor, 2);
+        assert_eq!(cut.clipboard.as_deref(), Some("pha beta"));
+        assert_eq!(cut.mark, None);
+
+        let copy = edit("prefixed", 2, Some(0), Some("old"), CopyRegion);
+        assert_eq!(copy.text, None, "copy never edits");
+        assert_eq!(
+            copy.clipboard.as_deref(),
+            Some("pr"),
+            "copy overwrites the slot"
+        );
+        assert_eq!(copy.cursor, 2);
+
+        assert_eq!(
+            edit("ab", 1, None, None, CutRegion).text,
+            None,
+            "no mark, no region"
+        );
+
+        let paste = edit("al", 2, None, Some("pha beta"), Paste);
+        assert_eq!(paste.text.as_deref(), Some("alpha beta"));
+        assert_eq!(paste.cursor, 10);
+        assert_eq!(
+            edit("al", 2, None, None, Paste).text,
+            None,
+            "an empty slot pastes nothing"
+        );
+    }
+
+    proptest! {
+        // T-E5 — every outcome's cursor lands on a scalar boundary
+        // inside the (new) buffer, whatever the input offsets.
+        #[test]
+        fn every_outcome_lands_on_a_boundary(
+            buffer in "[a-zñ\\n€]{0,12}",
+            cursor in 0usize..40,
+            mark in proptest::option::of(0usize..40),
+            command_index in 0usize..12,
+        ) {
+            use EditorCommand::*;
+            let commands = [
+                CursorBackward, CursorForward, LineUp, LineDown, LineStart,
+                LineEnd, KillToLineEnd, DeleteForward, SetMark, CutRegion,
+                CopyRegion, Paste,
+            ];
+            let out = edit(&buffer, cursor, mark, Some("ü"), commands[command_index]);
+            let text = out.text.as_deref().unwrap_or(&buffer);
+            prop_assert!(out.cursor <= text.len());
+            prop_assert!(text.is_char_boundary(out.cursor));
+            if let Some(mark) = out.mark {
+                prop_assert!(mark <= text.len() && text.is_char_boundary(mark));
+            }
+        }
+
+        // T-E6 — cut then paste at the same cursor restores the buffer.
+        #[test]
+        fn cut_then_paste_restores_the_buffer(
+            buffer in "[a-zñ€]{0,12}",
+            cursor in 0usize..40,
+            mark in 0usize..40,
+        ) {
+            let cut = edit(&buffer, cursor, Some(mark), None, EditorCommand::CutRegion);
+            let after = cut.text.clone().unwrap_or_else(|| buffer.clone());
+            let paste = edit(&after, cut.cursor, None, cut.clipboard.as_deref(), EditorCommand::Paste);
+            let restored = paste.text.unwrap_or(after);
+            prop_assert_eq!(restored, buffer);
+        }
     }
 }

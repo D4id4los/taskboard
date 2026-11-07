@@ -15976,7 +15976,6 @@ fn the_picker_shares_chords_while_the_field_keeps_printables() {
                     "the picker is default-open; the field holds focus"
                 );
                 assert!(!grid_armed(&harness), "field phase: the grid is not armed");
-                let start_cursor = cursor_index(&harness);
 
                 // -- the field phase: type first, the buffer follows --
                 harness.clear_seeded();
@@ -15988,9 +15987,11 @@ fn the_picker_shares_chords_while_the_field_keeps_printables() {
                     "printables reach the field; the buffer follows the typed text"
                 );
 
-                // -- the calendar scope's strokes move the selection
-                //    mid-typing: emacs' chords, the arrows under
-                //    standard/vi --
+                // -- the field phase's scope: the calendar's
+                //    navigation strokes move the selection mid-typing
+                //    (emacs' chords, standard's arrows); vi's picker
+                //    verbs are the home-row printables, which the
+                //    monopoly keeps with the field --
                 let chord_move = |harness: &mut Harness, spelling: &str| {
                     let before = cursor_index(harness);
                     harness.stroke(parse(spelling).expect(spelling));
@@ -16007,42 +16008,51 @@ fn the_picker_shares_chords_while_the_field_keeps_printables() {
                             chord_move(&mut harness, spelling);
                         }
                     }
-                    _ => {
-                        for spelling in ["Up", "Down", "Left", "Right"] {
+                    taskboard_ui_slint::keymap::Preset::Standard => {
+                        // Bare Down stays the pinned field→grid
+                        // hand-over arm (special case B); the other
+                        // arrows are the calendar's mid-typing.
+                        for spelling in ["Up", "Left", "Right"] {
                             chord_move(&mut harness, spelling);
                         }
                     }
+                    taskboard_ui_slint::keymap::Preset::Vi => {
+                        // The baseline is the typed date's cell (the
+                        // calendar live-syncs to the typed text).
+                        let typed = cursor_index(&harness);
+                        for spelling in ["h", "j", "k", "l"] {
+                            harness.type_text(spelling);
+                            harness.driver.advance_time(0);
+                            assert_eq!(
+                                cursor_index(&harness),
+                                typed,
+                                "{spelling} types in the field phase; the calendar is untouched"
+                            );
+                        }
+                    }
                 }
-                if preset == taskboard_ui_slint::keymap::Preset::Vi {
-                    // The home-row motions are printables: they must
-                    // type, never move the calendar.
-                    harness.type_text("h");
-                    harness.driver.advance_time(0);
-                    assert_eq!(
-                        cursor_index(&harness),
-                        start_cursor,
-                        "h types in the field phase; the calendar cursor is untouched"
-                    );
-                }
-                // The field survived the chords: the editor stays armed.
+                // The field survived the strokes: the editor stays armed.
                 assert!(
                     harness.handle.window().get_task_model().date_picker_open,
-                    "the chords never settled the editor"
+                    "the field phase never settled the editor"
                 );
 
-                // -- the grid phase: Down hands over, the picker owns
-                //    its verbs (the existing boundary grammar) --
-                harness.stroke(parse("Down").expect("Down"));
+                // -- the grid phase: Down hands over (vi: Escape steps
+                //    back to the grid — "h/j/k/l arm after Esc"), and
+                //    the picker owns its verbs --
+                if preset == taskboard_ui_slint::keymap::Preset::Vi {
+                    harness.stroke(parse("Escape").expect("Escape"));
+                } else {
+                    harness.stroke(parse("Down").expect("Down"));
+                }
                 harness.driver.advance_time(0);
                 assert!(grid_armed(&harness), "the grid took focus");
                 let before = cursor_index(&harness);
-                harness.stroke(parse("Right").expect("Right"));
+                press_preset(&mut harness, preset, ActionId::PickerRight);
                 harness.driver.advance_time(0);
                 assert_ne!(cursor_index(&harness), before, "the grid phase walks");
 
-                // -- the clean close --
-                harness.stroke(parse("Escape").expect("Escape"));
-                harness.driver.advance_time(0);
+                // -- the clean close: the grid phase's Escape --
                 harness.stroke(parse("Escape").expect("Escape"));
                 harness.driver.advance_time(0);
                 assert!(
@@ -16092,14 +16102,20 @@ fn the_description_editor_gains_the_preset_command_grammar() {
                     "the editor opened"
                 );
             };
+            // The commit drains the boundary and settles it into the
+            // fixture (continuity: the next leg's editor seeds from
+            // the committed description).
             let commit = |harness: &mut Harness| -> taskboard_domain::TaskChanges {
                 harness.stroke(parse("Shift+Return").expect("Shift+Return"));
                 harness.driver.advance_time(0);
                 let drained = harness.engine.drain();
-                match drained.as_slice() {
+                let changes = match drained.as_slice() {
                     [StateCommand::UpdateTask { changes, .. }] => changes.clone(),
                     other => panic!("the commit reached the boundary, got {other:?}"),
-                }
+                };
+                harness.engine.settle(&harness.handle);
+                harness.driver.advance_time(0);
+                changes
             };
 
             let emacs = taskboard_ui_slint::keymap::Preset::Emacs;
@@ -16140,6 +16156,10 @@ fn the_description_editor_gains_the_preset_command_grammar() {
 
             // -- the C-c prefix pair: C-c C-c commits, C-c C-k discards --
             open_editor(&mut harness);
+            // Clear the single-line seed through the grammar itself.
+            harness.stroke(parse("Ctrl+a").expect("C-a"));
+            harness.stroke(parse("Ctrl+k").expect("C-k"));
+            harness.driver.advance_time(0);
             harness.type_text("prefixed");
             harness.stroke(parse("Ctrl+c").expect("C-c"));
             harness.stroke(parse("Ctrl+c").expect("C-c"));
@@ -16153,6 +16173,8 @@ fn the_description_editor_gains_the_preset_command_grammar() {
                 ),
                 other => panic!("C-c C-c reached the boundary, got {other:?}"),
             }
+            harness.engine.settle(&harness.handle);
+            harness.driver.advance_time(0);
             open_editor(&mut harness);
             harness.type_text("doomed");
             harness.stroke(parse("Ctrl+c").expect("C-c"));
@@ -16181,13 +16203,15 @@ fn the_description_editor_gains_the_preset_command_grammar() {
             let changes = commit(&mut harness);
             assert_eq!(
                 changes.description.as_deref(),
-                Some("alal"),
+                Some("prefixedpr"),
                 "M-w copied the region without cutting; paste replayed it"
             );
 
             // -- C-d deletes forward, C-k kills to the line end --
             open_editor(&mut harness);
-            harness.clear_seeded();
+            harness.stroke(parse("Ctrl+a").expect("C-a"));
+            harness.stroke(parse("Ctrl+k").expect("C-k"));
+            harness.driver.advance_time(0);
             harness.type_text("hold");
             harness.stroke(parse("Ctrl+a").expect("C-a"));
             harness.stroke(parse("Ctrl+d").expect("C-d"));
@@ -16198,6 +16222,65 @@ fn the_description_editor_gains_the_preset_command_grammar() {
                 changes.description.as_deref(),
                 Some(""),
                 "C-d took the head, C-k took the rest"
+            );
+        },
+    );
+}
+
+/// The vi preset's editor pin (D-KS2/D-KS3): while typing in the
+/// description editor (insert), the home-row ladder letters are
+/// printables the monopoly keeps with the field — they type, never
+/// move; Escape keeps the existing discard funnel (NOT rebound).
+#[test]
+fn the_vi_editor_keeps_its_printables_and_the_escape_funnel() {
+    let (_fixture, state) = fixture::journey_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let vi = taskboard_ui_slint::keymap::Preset::Vi;
+            let mut harness = Harness::mount_with_settings(
+                SlintDriver::default(),
+                state,
+                UiSettings {
+                    keymap: taskboard_ui_slint::keymap::Keymap::from_preset(vi),
+                    keymap_preset: vi,
+                    ..UiSettings::default()
+                },
+            );
+            press_preset(&mut harness, vi, ActionId::NavNextItem);
+            press_preset(&mut harness, vi, ActionId::NavNextItem);
+            press_preset(&mut harness, vi, ActionId::NavNextView);
+            press_preset(&mut harness, vi, ActionId::NavNextView);
+
+            harness.driver.click_by_label("Edit description");
+            harness.driver.advance_time(0);
+            harness.type_text("hjkl0$xi");
+            harness.stroke(parse("Shift+Return").expect("Shift+Return"));
+            harness.driver.advance_time(0);
+            match harness.engine.drain().as_slice() {
+                [StateCommand::UpdateTask { changes, .. }] => assert_eq!(
+                    changes.description.as_deref(),
+                    Some("hjkl0$xi"),
+                    "every ladder letter typed while inserting"
+                ),
+                other => panic!("the commit reached the boundary, got {other:?}"),
+            }
+
+            harness.driver.click_by_label("Edit description");
+            harness.driver.advance_time(0);
+            harness.type_text("half");
+            harness.stroke(parse("Escape").expect("Escape"));
+            harness.driver.advance_time(0);
+            harness.assert_commands(&[]);
+            assert!(
+                !harness
+                    .handle
+                    .window()
+                    .get_task_model()
+                    .description_edit_open,
+                "Escape kept the discard funnel"
             );
         },
     );
