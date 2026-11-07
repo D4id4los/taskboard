@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! The keymap shell state (chunk decision D17): the pure half of the
-//! adapter — context-chain construction (D11), menu cursor state, the
-//! vi mode, and the focused-entity seam. No slint types; the lib
-//! adapter is the only code that syncs this onto window properties.
+//! adapter — menu cursor state, the vi mode, the modal mirrors that
+//! arm the context stack (`keyscope::scope_stack`, round-5 chunk 7 —
+//! `chain` now only delegates to it), and the focused-entity seam. No slint types; the lib adapter is the only
+//! code that syncs this onto window properties.
 
 use crate::actions::{ContextId, MenuGroup};
 use crate::router::{Mode, UiEffect};
@@ -38,24 +39,24 @@ pub struct KeymapShell {
     pub mode: Mode,
     pub menu: MenuState,
     /// The search palette is open (#348, chunk 9): the second modal
-    /// context — `chain` flips to `[Palette, ViInsert, Global]` and the
+    /// context — the scope stack flips to `[Palette, ViInsert, Global]` and the
     /// `Palette` mask makes it total. Mirrored from the view-state flow
     /// by the adapter's `sync_view_context`.
     pub palette: bool,
     /// The concentration overlay is open (#496): the third modal
-    /// context — `chain` flips to `[FocusMode, ViInsert, Global]` and
+    /// context — the scope stack flips to `[FocusMode, ViInsert, Global]` and
     /// the `FocusMode` mask makes it total. Mirrored from the
     /// view-state flow by the adapter's `sync_view_context` (the
     /// `palette` precedent).
     pub focus_overlay: bool,
     /// The time-entries overlay is open (r4 chunk 10, D-TS2): the
-    /// fourth modal context — `chain` flips to
+    /// fourth modal context — the scope stack flips to
     /// `[TrackEntries, ViInsert, Global]` and the `TrackEntries` mask
     /// makes it total. Mirrored from the view-state flow by the
     /// adapter's `sync_view_context` (the `palette` precedent).
     pub track_entries: bool,
     /// The review walk overlay is open (DR-7 chunk 3, #638): the
-    /// fifth modal context — `chain` flips to
+    /// fifth modal context — the scope stack flips to
     /// `[ReviewWalk, ViInsert, Global]` and the `ReviewWalk` mask
     /// makes it total. Mirrored from the view-state flow by the
     /// adapter's `sync_view_context` (the `palette` precedent).
@@ -78,78 +79,21 @@ pub struct KeymapShell {
 }
 
 impl KeymapShell {
-    /// The context chain for resolution under the current state
-    /// (D11): menu open → `[Menu]` (the modal masks everything);
-    /// insert mode → `[ViInsert, Global]` (D5: while a text field
-    /// holds the flow, the view context is masked so printables reach
-    /// the field untouched — the D18 text-input contract); otherwise
-    /// view context, the always-present mode context (an empty member
-    /// changes nothing, D10), then Global.
+    /// The off-doorway context stack (round-5 chunk 7): a thin
+    /// delegate to [`crate::keyscope::scope_stack`] with no deltas
+    /// armed — the boolean reconstruction is retired; the method
+    /// survives only for the pinned-untouched `flow_table_tests`
+    /// first-frame hint projection, which reads the mount chain.
     #[must_use]
     pub fn chain(&self) -> Vec<ContextId> {
-        if self.menu.open {
-            return vec![ContextId::Menu];
-        }
-        if self.palette {
-            // The palette is the second modal context (D8): insert-mode
-            // head so the field's printables are unbound everywhere,
-            // and the `Palette` mask makes the chain total.
-            return vec![ContextId::Palette, ContextId::ViInsert, ContextId::Global];
-        }
-        if self.focus_overlay {
-            // The concentration overlay is the third modal context
-            // (#496): the same total-mask shape as the palette — the
-            // note field rides `ViInsert` when typing engages it.
-            return vec![ContextId::FocusMode, ContextId::ViInsert, ContextId::Global];
-        }
-        if self.track_entries {
-            // The time-entries overlay is the fourth modal context
-            // (r4 chunk 10, D-TS2): the palette/focus shape — the
-            // form's fields ride `ViInsert` masking (printables
-            // unbound, Return reaches the field's commit), the
-            // overlay's own rows (dismiss + the walk) live in the
-            // `TrackEntries` context, Ctrl-chords keep working.
-            return vec![
-                ContextId::TrackEntries,
-                ContextId::ViInsert,
-                ContextId::Global,
-            ];
-        }
-        if self.review_walk {
-            // The review walk is the fifth modal context (DR-7 chunk
-            // 3, #638): the palette/focus shape — the prompt fields
-            // ride `ViInsert` masking, the walk's own verbs (cursor,
-            // row verbs, commit, back) live in the `ReviewWalk`
-            // context, Ctrl-chords keep working.
-            return vec![
-                ContextId::ReviewWalk,
-                ContextId::ViInsert,
-                ContextId::Global,
-            ];
-        }
-        if self.mode == Mode::Insert {
-            // The picker grid's context rides the chain head
-            // (round-3 D25): non-masking — Escape still resolves
-            // `ModeNormal` from `ViInsert`.
-            if self.date_picker_grid {
-                return vec![
-                    ContextId::DatePicker,
-                    ContextId::ViInsert,
-                    ContextId::Global,
-                ];
-            }
-            return vec![ContextId::ViInsert, ContextId::Global];
-        }
-        let mut chain = Vec::with_capacity(4);
-        if self.date_picker_grid {
-            chain.push(ContextId::DatePicker);
-        }
-        if let Some(view) = self.view {
-            chain.push(view);
-        }
-        chain.push(ContextId::ViNormal);
-        chain.push(ContextId::Global);
-        chain
+        crate::keyscope::scope_stack(&crate::keyscope::ScopeInputs {
+            shell: self,
+            picker_open: false,
+            editor_focus: false,
+            flow: &crate::view_state::Flow::None,
+            stroke: None,
+            at_key_doorway: false,
+        })
     }
 
     /// The router context (D16).
@@ -320,39 +264,6 @@ impl KeymapShell {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// T23 — chain construction (D11): menu open is the pure modal
-    /// chain; otherwise view?, mode (always), Global.
-    #[test]
-    fn chain_construction_matches_the_context_model() {
-        let mut shell = KeymapShell::default();
-        assert_eq!(
-            shell.chain(),
-            vec![ContextId::ViNormal, ContextId::Global],
-            "mode context always present, view absent in chunk 2"
-        );
-
-        shell.view = Some(ContextId::Board);
-        assert_eq!(
-            shell.chain(),
-            vec![ContextId::Board, ContextId::ViNormal, ContextId::Global]
-        );
-
-        // D5: insert masks the view context — typing flows to fields.
-        shell.mode = Mode::Insert;
-        assert_eq!(
-            shell.chain(),
-            vec![ContextId::ViInsert, ContextId::Global],
-            "insert mode masks the view context"
-        );
-
-        shell.menu.open = true;
-        assert_eq!(
-            shell.chain(),
-            vec![ContextId::Menu],
-            "menu is the pure modal"
-        );
-    }
 
     /// T23 — menu effects: open resets the cursor, next/previous wrap,
     /// close clears.
