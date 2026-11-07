@@ -63,6 +63,13 @@ pub enum ContextId {
     /// holds; the prompt fields ride `ViInsert` masking, the walk's
     /// own verbs (cursor, row verbs, commit, back) live here.
     ReviewWalk,
+    /// The multi-line editor's element scope (round-5 chunk 7, D-δ2):
+    /// armed exactly while `EditingFacts.editor-focus-count > 0`.
+    /// Non-masking and keymap-unbound in every preset — the scope's
+    /// verbs are the editor command tables (consulted ahead of the
+    /// resolver in `intercept`), never keymap rows; the context rides
+    /// the stack head so the resolver's chain shape stays total.
+    Editor,
 }
 
 impl ContextId {
@@ -86,6 +93,7 @@ impl ContextId {
             Self::DatePicker => "date-picker",
             Self::TrackEntries => "track-entries",
             Self::ReviewWalk => "review-walk",
+            Self::Editor => "editor",
         }
     }
 }

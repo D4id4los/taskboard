@@ -692,9 +692,11 @@ impl Adapter {
             return true;
         }
         // The chain reflects the view-state machine, not a stale seam
-        // write (D6: shell view/focus derive from view_state).
+        // write (D6: shell view/focus derive from view_state). The
+        // key doorway arms the scope deltas (D-δ1 with its
+        // Return/Escape exemption; D-δ2 comes with the editor scope).
         self.sync_view_context();
-        let chain = self.shell.chain();
+        let chain = self.chain_with(window, Some(stroke), true);
         // The D18 activation reservation (r4 §2): while a task-view
         // activation stop holds focus, bare Return/Space belong to the
         // focused cell — the resolver is still fed first (prefix
@@ -812,6 +814,40 @@ impl Adapter {
     fn finish_mutation(&mut self, window: &AppWindow) {
         self.sync_view_context();
         self.sync(window);
+    }
+
+    /// The context chain under the pulled scope facts (round-5 chunk
+    /// 7, D-KS1): the declarative stack construction that replaced
+    /// `KeymapShell::chain`'s boolean reconstruction. Every input is
+    /// re-read at the call — no stored registrations can outlive
+    /// their surface (the D-KS1 pull rule). The deltas arm only at
+    /// the key doorway; hint/refresh passes call the `None`/`false`
+    /// form and get the byte-legacy chain.
+    fn current_chain(&self, window: &AppWindow) -> Vec<ContextId> {
+        self.chain_with(window, None, false)
+    }
+
+    /// [`Self::current_chain`] with the key doorway's pending stroke
+    /// and doorway flag (the D-δ1 exemption and the delta arms).
+    fn chain_with(
+        &self,
+        window: &AppWindow,
+        stroke: Option<crate::keymap::Stroke>,
+        at_key_doorway: bool,
+    ) -> Vec<ContextId> {
+        let flow = self.view_state.flow().clone();
+        let editor_focus = window
+            .global::<crate::EditingFacts>()
+            .get_editor_focus_count()
+            > 0;
+        crate::keyscope::scope_stack(&crate::keyscope::ScopeInputs {
+            shell: &self.shell,
+            picker_open: self.due_picker.is_some(),
+            editor_focus,
+            flow: &flow,
+            stroke,
+            at_key_doorway,
+        })
     }
 
     /// Keeps the shell's view seam aligned with the view-state
@@ -1239,7 +1275,7 @@ impl Adapter {
         // D32: one derivation, no second list to drift).
         self.compute_seconds_surfaces_active(&state, chrono::Utc::now());
         self.enforce_due_buffer_invariant(window);
-        let chain = self.shell.chain();
+        let chain = self.current_chain(window);
         let day = self.day_ctx();
         // The time combobox's pushed half (r4 D26): the filtered
         // quick-list rows over the static slots, and the nearest-slot
@@ -3253,7 +3289,7 @@ impl Adapter {
                 // The projection is computed for the pre-menu chain
                 // (the active context's actions, §5.9); the menu
                 // context itself masks the chain once open (D11).
-                let chain = self.shell.chain();
+                let chain = self.current_chain(window);
                 self.menu_anchor = MenuAnchor::Hamburger;
                 self.menu_chain = chain;
                 {
@@ -9020,7 +9056,8 @@ impl crate::UiHandle {
                 | ContextId::TrackEntries
                 | ContextId::ReviewWalk
                 | ContextId::ViNormal
-                | ContextId::ViInsert,
+                | ContextId::ViInsert
+                | ContextId::Editor,
             ) => return,
         };
         {

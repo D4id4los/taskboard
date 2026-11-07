@@ -26,6 +26,7 @@ pub mod due_edit;
 pub mod fonts;
 pub mod geometry;
 pub mod keymap;
+pub mod keyscope;
 pub mod menu;
 pub mod models;
 pub mod presentation;
