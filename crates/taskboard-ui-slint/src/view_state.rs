@@ -367,7 +367,10 @@ pub struct RowStep<'a> {
 /// The pure view state (D7).
 #[derive(Debug, Clone, Default)]
 pub struct ViewState {
-    view: ViewId,
+    /// The surface chain (W5b D-H1): the root view, the pushed
+    /// over-views, and the flow levels — replacing the flat `view` +
+    /// `flow` + `settings_return`/`planner_return` slots.
+    surfaces: crate::surfaces::Surfaces,
     /// The selected board (design §3.8): `None` only before the seed
     /// rule first runs or with zero boards — `reconcile` seeds and
     /// repairs it (the normalization is refresh-time, one site).
@@ -380,25 +383,21 @@ pub struct ViewState {
     focused_task: Option<TaskId>,
     /// The compact switcher's selected stack.
     selected_stack: Option<StackId>,
-    flow: Flow,
     /// The Rust mirror of the active text buffer (D9 rule 1): the
     /// adapter updates it on every keystroke callback; commit reads
-    /// it — no slint-state dependency.
+    /// it — no slint-state dependency. Chunk 1 keeps it shared; chunk
+    /// 2 moves it into the owning level.
     buffer: String,
     /// The user-set stack column widths (round-1 D16), stored logical
     /// px; an absent entry = auto layout (today's rendering). UI-local
     /// forever — never a domain type (DF-2); `reconcile` leaves it
     /// alone (liveness pruning is the app forwarder's write-time job).
     stack_widths: BTreeMap<BoardId, BTreeMap<StackId, u32>>,
-    /// The view to restore when Settings closes (round-1 D5): only the
-    /// three cycle views are ever stored; `close_settings` takes it —
-    /// "returns to the exact previous view" is this snapshot, not a
-    /// cycle walk.
-    settings_return: Option<ViewId>,
-    /// The view to restore when the plan-next-day surface closes
-    /// (#622, D-1): the `settings_return` twin.
-    planner_return: Option<ViewId>,
 }
+
+/// The `Flow` the flow accessors return when no flow level is live —
+/// a unit-variant constant keeps the `&Flow` signature (R2).
+static FLOW_NONE: Flow = Flow::None;
 
 /// The canonical append position in `stack`: max canonical order + 1.
 #[must_use]
@@ -448,32 +447,29 @@ impl ViewState {
     /// the choice is `install`'s, from `UiSettings.kiosk`; `new()`
     /// keeps the const `Board` default.
     #[must_use]
-    pub const fn new_starting(view: ViewId) -> Self {
+    pub fn new_starting(view: ViewId) -> Self {
         let mut state = Self::new();
-        state.view = view;
+        state.surfaces = crate::surfaces::Surfaces::rooted(view);
         state
     }
 
     #[must_use]
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
-            view: ViewId::Board,
+            surfaces: crate::surfaces::Surfaces::rooted(ViewId::Board),
             board: None,
             subject_stack: None,
             subject_task: None,
             focused_task: None,
             selected_stack: None,
-            flow: Flow::None,
             buffer: String::new(),
             stack_widths: BTreeMap::new(),
-            settings_return: None,
-            planner_return: None,
         }
     }
 
     #[must_use]
-    pub const fn view(&self) -> ViewId {
-        self.view
+    pub fn view(&self) -> ViewId {
+        self.surfaces.top_view()
     }
 
     /// The identity of what the main view mounts (r4 chunk 4, the D14
@@ -485,10 +481,13 @@ impl ViewState {
     /// application changes this tuple swapped an anchor away; the
     /// adapter's `apply_effect` choke point diffs it per pass.
     #[must_use]
-    pub const fn view_identity(
-        &self,
-    ) -> (ViewId, Option<BoardId>, Option<StackId>, Option<TaskId>) {
-        (self.view, self.board, self.subject_stack, self.subject_task)
+    pub fn view_identity(&self) -> (ViewId, Option<BoardId>, Option<StackId>, Option<TaskId>) {
+        (
+            self.view(),
+            self.board,
+            self.subject_stack,
+            self.subject_task,
+        )
     }
 
     /// The selected board (the refresh-time seed/repair keeps it live;
@@ -499,14 +498,49 @@ impl ViewState {
     }
 
     #[must_use]
-    pub const fn flow(&self) -> &Flow {
-        &self.flow
+    pub fn flow(&self) -> &Flow {
+        self.surfaces.top_flow().unwrap_or(&FLOW_NONE)
     }
 
     /// The flow's write seam (the palette cursor reset rides it —
     /// the adapter's keystroke path zeroes the cursor on re-rank).
-    pub(crate) fn flow_mut(&mut self) -> &mut Flow {
-        &mut self.flow
+    /// `None` when no flow level is live.
+    pub(crate) fn flow_mut(&mut self) -> Option<&mut Flow> {
+        self.surfaces.top_flow_mut()
+    }
+
+    /// Writes the flow slot (the flat model's `self.flow = …`, chain
+    /// encoded): `None` ends the innermost flow level — truncate to
+    /// its index, so a flow opened over a pushed over-view never
+    /// closes the over-view; a fresh flow replaces the live one
+    /// wholesale (the XOR rule — every opener's `self.flow = …` was a
+    /// wholesale slot replacement); without a flow level it pushes
+    /// one. The push is infallible here: without a live flow level no
+    /// flow kind is in the chain, so the once-per-chain rule cannot
+    /// refuse (the two over-views are view kinds, not flow kinds).
+    fn write_flow(&mut self, flow: Flow) {
+        if flow == Flow::None {
+            self.surfaces.end_top_flow();
+        } else if let Some(level) = self.surfaces.top_flow_mut() {
+            *level = flow;
+        } else {
+            let _ = self.surfaces.push(crate::surfaces::Surface::Flow(flow));
+        }
+    }
+
+    /// Takes the flow slot: the live flow out (or [`Flow::None`]),
+    /// the level ended. The commit funnels' `mem::take` shape.
+    fn take_flow(&mut self) -> Flow {
+        let flow = self.flow().clone();
+        self.write_flow(Flow::None);
+        flow
+    }
+
+    /// The test fixture seam: arms `flow` as the live flow level
+    /// (replace or push — the fixture side of `write_flow`).
+    #[cfg(test)]
+    pub(crate) fn arm_flow(&mut self, flow: Flow) {
+        self.write_flow(flow);
     }
 
     #[must_use]
@@ -551,7 +585,7 @@ impl ViewState {
     /// Direct view/focus injection (the chunk-2 test seam; real
     /// sessions go through the view cycle and the card clicks).
     pub fn set_view(&mut self, view: ViewId) {
-        self.view = view;
+        self.surfaces.replace_root(view);
     }
 
     /// Direct focus injection (see [`Self::set_view`]).
@@ -561,8 +595,8 @@ impl ViewState {
 
     /// The keymap context of the current view (the chunk-2 seam).
     #[must_use]
-    pub const fn context(&self) -> ContextId {
-        match self.view {
+    pub fn context(&self) -> ContextId {
+        match self.view() {
             ViewId::Today => ContextId::Today,
             ViewId::Board => ContextId::Board,
             ViewId::StackDetail => ContextId::StackDetail,
@@ -607,7 +641,10 @@ impl ViewState {
     /// Inert while Settings is open (round-1 D5: the cycle never
     /// passes through the settings surface).
     pub fn next_view(&mut self, state: &AppState) -> Vec<FlowOutcome> {
-        if matches!(self.view, ViewId::Settings | ViewId::PlanNextDay) {
+        // The cycle is inert while an over-view is pushed (round-1
+        // D5); Settings and the planner are the only pushed view
+        // kinds, so this is byte-equal to the old `self.view` match.
+        if self.surfaces.has_pushed_view() {
             return Vec::new();
         }
         self.step_view(state, 1)
@@ -616,41 +653,67 @@ impl ViewState {
     /// `nav.prev-view`: the cycle backwards; inert while Settings is
     /// open (round-1 D5).
     pub fn prev_view(&mut self, state: &AppState) -> Vec<FlowOutcome> {
-        if matches!(self.view, ViewId::Settings | ViewId::PlanNextDay) {
+        // The `next_view` guard's twin.
+        if self.surfaces.has_pushed_view() {
             return Vec::new();
         }
         self.step_view(state, -1)
     }
 
-    /// Opens the settings surface (round-1 D6): records the current
-    /// view for the exact restore and enters Settings.
+    /// Opens the settings surface (round-1 D6): pushes a Settings
+    /// view level — the exact restore is truncation (D-H1), the
+    /// recorded-return slot is retired. A refusal (Settings already
+    /// in the chain — D7) is a no-op that only repaints.
     pub fn open_settings(&mut self) -> Vec<FlowOutcome> {
-        self.settings_return = Some(self.view);
-        self.view = ViewId::Settings;
-        vec![FlowOutcome::RefreshNow]
+        match self
+            .surfaces
+            .push(crate::surfaces::Surface::View(ViewId::Settings))
+        {
+            Ok(_) | Err(crate::surfaces::AlreadyInChain) => vec![FlowOutcome::RefreshNow],
+        }
     }
 
-    /// Closes the settings surface: restores the recorded return view,
-    /// the board when none was recorded.
+    /// Closes the settings surface: truncates the pushed Settings
+    /// level — the root view is restored exactly. Without a pushed
+    /// level (the old no-recorded-return path) the fallback lands on
+    /// the board, byte-equal to the retired `unwrap_or(ViewId::Board)`.
     pub fn close_settings(&mut self) -> Vec<FlowOutcome> {
-        self.view = self.settings_return.take().unwrap_or(ViewId::Board);
+        self.close_over_view();
         vec![FlowOutcome::RefreshNow]
     }
 
-    /// Opens the plan-next-day surface (#622, D-4): records the
-    /// current view for the exact restore and enters the planner (the
-    /// `open_settings` twin).
+    /// Opens the plan-next-day surface (#622, D-4): the `open_settings`
+    /// twin — a pushed view level, exact restore by truncation, the
+    /// D7 refusal mapped to repaint-only.
     pub fn open_plan_next_day(&mut self) -> Vec<FlowOutcome> {
-        self.planner_return = Some(self.view);
-        self.view = ViewId::PlanNextDay;
+        match self
+            .surfaces
+            .push(crate::surfaces::Surface::View(ViewId::PlanNextDay))
+        {
+            Ok(_) | Err(crate::surfaces::AlreadyInChain) => vec![FlowOutcome::RefreshNow],
+        }
+    }
+
+    /// Closes the plan-next-day surface: the `close_settings` twin.
+    pub fn close_plan_next_day(&mut self) -> Vec<FlowOutcome> {
+        self.close_over_view();
         vec![FlowOutcome::RefreshNow]
     }
 
-    /// Closes the plan-next-day surface: restores the recorded return
-    /// view, the board when none was recorded.
-    pub fn close_plan_next_day(&mut self) -> Vec<FlowOutcome> {
-        self.view = self.planner_return.take().unwrap_or(ViewId::Board);
-        vec![FlowOutcome::RefreshNow]
+    /// Ends the topmost pushed view level (the close-over primitive):
+    /// truncates to its index; without one, the navigation fallback
+    /// swaps the root to the board (the retired
+    /// `unwrap_or(ViewId::Board)`).
+    fn close_over_view(&mut self) {
+        let pushed = self
+            .surfaces
+            .kinds()
+            .iter()
+            .rposition(|kind| matches!(kind, crate::surfaces::SurfaceKind::View(_)));
+        match pushed {
+            Some(0) | None => self.surfaces.replace_root(ViewId::Board),
+            Some(index) => self.surfaces.truncate_to(index),
+        }
     }
 
     fn step_view(&mut self, state: &AppState, direction: i32) -> Vec<FlowOutcome> {
@@ -661,7 +724,10 @@ impl ViewState {
             ViewId::TaskDetail,
             ViewId::Review,
         ];
-        let current = order.iter().position(|v| *v == self.view).unwrap_or(0);
+        let current = order
+            .iter()
+            .position(|v| *v == self.surfaces.top_view())
+            .unwrap_or(0);
         let next = if direction > 0 {
             order[(current + 1) % order.len()]
         } else {
@@ -680,17 +746,17 @@ impl ViewState {
         match view {
             // Subjectless (chunk 10 D2): `ViewId::Board`'s arm inverted.
             ViewId::Today => {
-                self.view = ViewId::Today;
+                self.surfaces.replace_root(ViewId::Today);
                 true
             }
             ViewId::Board => {
-                self.view = ViewId::Board;
+                self.surfaces.replace_root(ViewId::Board);
                 true
             }
             // Subjectless, exactly like Today's arm (#214 D-1): the
             // review surface reads the whole state, no subject.
             ViewId::Review => {
-                self.view = ViewId::Review;
+                self.surfaces.replace_root(ViewId::Review);
                 true
             }
             ViewId::StackDetail => {
@@ -700,7 +766,7 @@ impl ViewState {
                     .or_else(|| self.stack_ids(state).first().copied());
                 match stack {
                     Some(stack) => {
-                        self.view = ViewId::StackDetail;
+                        self.surfaces.replace_root(ViewId::StackDetail);
                         self.subject_stack = Some(stack);
                         true
                     }
@@ -714,7 +780,7 @@ impl ViewState {
                 });
                 match task {
                     Some(task) => {
-                        self.view = ViewId::TaskDetail;
+                        self.surfaces.replace_root(ViewId::TaskDetail);
                         self.subject_task = Some(task);
                         true
                     }
@@ -731,14 +797,14 @@ impl ViewState {
 
     /// `nav.focus-board`: back to the board view (D7).
     pub fn focus_board(&mut self) -> Vec<FlowOutcome> {
-        self.view = ViewId::Board;
+        self.surfaces.replace_root(ViewId::Board);
         vec![FlowOutcome::RefreshNow]
     }
 
     /// `view.today` (chunk 10 D3): the Today view, no engine command —
     /// the `focus_board` sibling.
     pub fn focus_today(&mut self) -> Vec<FlowOutcome> {
-        self.view = ViewId::Today;
+        self.surfaces.replace_root(ViewId::Today);
         vec![FlowOutcome::RefreshNow]
     }
 
@@ -748,8 +814,8 @@ impl ViewState {
     /// A stale id (the entity died between the palette push and the
     /// invoke) is inert: empty outcomes, no repaint — the
     /// `palette_jump` stale rule. Subjects are left alone (the
-    /// refresh-time re-validation pops stale ones), and
-    /// `settings_return` stays as-is (overwritten at the next open).
+    /// refresh-time re-validation pops stale ones), and any pushed
+    /// over-view level stays pushed (replaced at the next open).
     pub fn show_task(&mut self, state: &AppState, task: TaskId) -> Vec<FlowOutcome> {
         let Some(stack) = state.tasks.get(&task).map(|t| t.stack) else {
             return Vec::new();
@@ -760,7 +826,7 @@ impl ViewState {
         self.board = Some(board);
         self.selected_stack = Some(stack);
         self.focused_task = Some(task);
-        self.view = ViewId::Board;
+        self.surfaces.replace_root(ViewId::Board);
         vec![FlowOutcome::RefreshNow]
     }
 
@@ -771,14 +837,13 @@ impl ViewState {
     /// (nothing recorded reads as the board).
     #[must_use]
     pub fn switcher_selection(&self) -> usize {
-        let view = if matches!(self.view, ViewId::Settings | ViewId::PlanNextDay) {
-            self.settings_return
-                .or(self.planner_return)
-                .unwrap_or(ViewId::Board)
-        } else {
-            self.view
-        };
-        usize::from(view == ViewId::Today)
+        // While an over-view is pushed, the flat model named the
+        // recorded return (`settings_return.or(planner_return)`); the
+        // recorded return of either over-view is always the view the
+        // chain keeps at the root (both openers record the then-top
+        // view, and a pushed level sits directly above the root), so
+        // the root's id is the byte-equal re-expression (R3).
+        usize::from(self.surfaces.root() == ViewId::Today)
     }
 
     // -- board selection (design §3.8) -----------------------------------
@@ -882,7 +947,7 @@ impl ViewState {
     ) -> Vec<FlowOutcome> {
         // The Today view has no stack level: the flat section walk is
         // the domain (chunk 10 D7), even in compact.
-        if self.view == ViewId::Today {
+        if self.view() == ViewId::Today {
             let domain = self.today_domain(state, kiosk, day);
             let outcomes = self.step_flat_domain(direction, compact, &domain);
             self.follow_board(state);
@@ -993,7 +1058,7 @@ impl ViewState {
         kiosk: bool,
         day: &DayCtx,
     ) -> Vec<FlowOutcome> {
-        let domain = if self.view == ViewId::Today {
+        let domain = if self.view() == ViewId::Today {
             self.today_domain(state, kiosk, day)
         } else {
             self.focus_domain(state, compact)
@@ -1050,7 +1115,7 @@ impl ViewState {
     /// break the walk). Keeps `task.move`'s ring and detail navigation
     /// board-local. No-op when the board already matches.
     fn follow_board(&mut self, state: &AppState) {
-        if self.view != ViewId::Today {
+        if self.view() != ViewId::Today {
             return;
         }
         let Some(task) = self.focused_task else {
@@ -1148,17 +1213,17 @@ impl ViewState {
         let Some(task) = self.subject_task.and_then(|id| state.tasks.get(&id)) else {
             return Vec::new();
         };
-        self.flow = Flow::EditDate {
+        self.write_flow(Flow::EditDate {
             task: task.id,
             field,
-        };
+        });
         vec![FlowOutcome::SetMode(Mode::Insert), FlowOutcome::RefreshNow]
     }
 
     /// The date-commit funnel's end (r2 D25): the adapter dispatches
     /// the `UpdateTask` itself; ending the flow returns to normal.
     pub fn end_edit_date(&mut self) -> Vec<FlowOutcome> {
-        self.flow = Flow::None;
+        self.write_flow(Flow::None);
         vec![FlowOutcome::SetMode(Mode::Normal), FlowOutcome::RefreshNow]
     }
 
@@ -1170,7 +1235,7 @@ impl ViewState {
         let Some(task) = state.tasks.get(&task) else {
             return Vec::new();
         };
-        self.flow = Flow::EditDescription { task: task.id };
+        self.write_flow(Flow::EditDescription { task: task.id });
         self.buffer.clone_from(&task.description);
         vec![FlowOutcome::SetMode(Mode::Insert), FlowOutcome::RefreshNow]
     }
@@ -1183,11 +1248,11 @@ impl ViewState {
     /// paths use [`Self::settle_flow`], which never reaches here
     /// empty.
     pub fn commit_description(&mut self) -> Vec<FlowOutcome> {
-        let Flow::EditDescription { task } = self.flow else {
+        let Flow::EditDescription { task } = self.flow().clone() else {
             return Vec::new();
         };
         let description = self.buffer.clone();
-        self.flow = Flow::None;
+        self.write_flow(Flow::None);
         self.buffer.clear();
         vec![
             FlowOutcome::Command(StateCommand::UpdateTask {
@@ -1212,7 +1277,7 @@ impl ViewState {
         let Some(task) = state.tasks.get(&task) else {
             return Vec::new();
         };
-        self.flow = Flow::EditTitle { task: task.id };
+        self.write_flow(Flow::EditTitle { task: task.id });
         self.buffer.clone_from(&task.title);
         vec![FlowOutcome::SetMode(Mode::Insert), FlowOutcome::RefreshNow]
     }
@@ -1227,7 +1292,7 @@ impl ViewState {
         let Some(task) = self.focused_task.and_then(|id| state.tasks.get(&id)) else {
             return Vec::new();
         };
-        self.view = ViewId::TaskDetail;
+        self.surfaces.replace_root(ViewId::TaskDetail);
         self.subject_task = Some(task.id);
         vec![FlowOutcome::RefreshNow]
     }
@@ -1238,7 +1303,7 @@ impl ViewState {
     /// the selected/subject stack; `None` on an empty board.
     #[must_use]
     pub fn create_target_stack(&self, state: &AppState) -> Option<StackId> {
-        match self.view {
+        match self.view() {
             // No create row on the today view (chunk 10 D3): capture
             // is the create path there. The settings surface hosts no
             // create flow either (round-1 D5).
@@ -1357,7 +1422,7 @@ impl ViewState {
 
     /// `BeginCreate`: opens the row in insert mode (D5).
     pub fn begin_create(&mut self, stack: StackId) -> Vec<FlowOutcome> {
-        self.flow = Flow::Create { stack };
+        self.write_flow(Flow::Create { stack });
         self.buffer.clear();
         vec![FlowOutcome::SetMode(Mode::Insert), FlowOutcome::RefreshNow]
     }
@@ -1405,7 +1470,7 @@ impl ViewState {
         if self.board.is_none() {
             return Vec::new();
         }
-        self.flow = Flow::CreateStack;
+        self.write_flow(Flow::CreateStack);
         self.buffer.clear();
         vec![FlowOutcome::SetMode(Mode::Insert), FlowOutcome::RefreshNow]
     }
@@ -1417,7 +1482,7 @@ impl ViewState {
     /// mode returns.
     pub fn commit_edit(&mut self, state: &AppState) -> Vec<FlowOutcome> {
         let title = self.buffer.trim().to_owned();
-        let flow = std::mem::take(&mut self.flow);
+        let flow = self.take_flow();
         self.buffer.clear();
         let mut outcomes = vec![FlowOutcome::SetMode(Mode::Normal), FlowOutcome::RefreshNow];
         match flow {
@@ -1493,7 +1558,7 @@ impl ViewState {
 
     /// The only non-committing exit (D9): discard the buffer.
     pub fn discard_edit(&mut self) -> Vec<FlowOutcome> {
-        self.flow = Flow::None;
+        self.write_flow(Flow::None);
         self.buffer.clear();
         vec![FlowOutcome::SetMode(Mode::Normal), FlowOutcome::RefreshNow]
     }
@@ -1507,12 +1572,12 @@ impl ViewState {
     /// was active). Scroll positions reset by construction — the
     /// view switch remounts the incoming view's trees at the top.
     pub fn enter_kiosk_mode(&mut self, state: &AppState, mode: KioskMode) -> Vec<FlowOutcome> {
-        let mut outcomes = if self.flow == Flow::None {
+        let mut outcomes = if *self.flow() == Flow::None {
             Vec::new()
         } else {
             self.discard_edit()
         };
-        self.view = mode.view();
+        self.surfaces.replace_root(mode.view());
         self.focused_task = None;
         self.selected_stack = self.stack_ids(state).first().copied();
         if !outcomes.contains(&FlowOutcome::RefreshNow) {
@@ -1527,7 +1592,7 @@ impl ViewState {
     /// opens `Flow::Capture` with a cleared buffer — exactly
     /// `begin_create`'s opening.
     pub fn begin_capture(&mut self) -> Vec<FlowOutcome> {
-        self.flow = Flow::Capture;
+        self.write_flow(Flow::Capture);
         self.buffer.clear();
         vec![FlowOutcome::SetMode(Mode::Insert), FlowOutcome::RefreshNow]
     }
@@ -1538,7 +1603,7 @@ impl ViewState {
     /// buffer, and KEEPS the flow + Insert mode (commits-and-continues).
     /// An empty buffer closes instead.
     pub fn commit_capture(&mut self) -> Vec<FlowOutcome> {
-        if self.flow != Flow::Capture {
+        if *self.flow() != Flow::Capture {
             return Vec::new();
         }
         let thought = self.buffer.trim().to_owned();
@@ -1558,7 +1623,7 @@ impl ViewState {
     /// Escape out of capture (chunk 10 D8): discard-and-close (the
     /// `discard_edit` shape).
     pub fn close_capture(&mut self) -> Vec<FlowOutcome> {
-        if self.flow != Flow::Capture {
+        if *self.flow() != Flow::Capture {
             return Vec::new();
         }
         self.discard_edit()
@@ -1571,7 +1636,7 @@ impl ViewState {
     /// any in-progress flow WITHOUT committing it (the XOR rule —
     /// `begin_capture`'s opening; the workspace suspends beneath).
     pub fn open_focus_mode(&mut self) -> Vec<FlowOutcome> {
-        self.flow = Flow::FocusMode { selected: 0 };
+        self.write_flow(Flow::FocusMode { selected: 0 });
         vec![FlowOutcome::RefreshNow]
     }
 
@@ -1579,7 +1644,7 @@ impl ViewState {
     /// `visible` row count (the palette-cursor ring semantics; inert
     /// at zero rows).
     pub fn focus_mode_cursor(&mut self, direction: i32, visible: usize) -> Vec<FlowOutcome> {
-        if let Flow::FocusMode { selected } = &mut self.flow {
+        if let Some(Flow::FocusMode { selected }) = self.surfaces.top_flow_mut() {
             if visible > 0 {
                 let len = i64::try_from(visible).unwrap_or(i64::MAX);
                 let next = i64::try_from(*selected).unwrap_or(i64::MAX) + i64::from(direction);
@@ -1596,7 +1661,7 @@ impl ViewState {
     /// session (the open entry) is untouched; the runtime owns the
     /// phases, the overlay is presentation.
     pub fn close_focus_mode(&mut self) -> Vec<FlowOutcome> {
-        self.flow = Flow::None;
+        self.write_flow(Flow::None);
         self.buffer.clear();
         vec![FlowOutcome::SetMode(Mode::Normal), FlowOutcome::RefreshNow]
     }
@@ -1607,7 +1672,7 @@ impl ViewState {
     /// query (the `begin_create` opening shape). The empty query means
     /// no hits — the palette opens over an empty result list.
     pub fn open_palette(&mut self) -> Vec<FlowOutcome> {
-        self.flow = Flow::Palette { selected: 0 };
+        self.write_flow(Flow::Palette { selected: 0 });
         self.buffer.clear();
         vec![FlowOutcome::SetMode(Mode::Insert), FlowOutcome::RefreshNow]
     }
@@ -1618,7 +1683,7 @@ impl ViewState {
     /// query change (a stale mid-list cursor on a fresh ranking is a
     /// lie); only a refresh-shrunk list clamps here.
     pub fn palette_cursor(&mut self, direction: i32, visible: usize) -> Vec<FlowOutcome> {
-        if let Flow::Palette { selected } = &mut self.flow {
+        if let Some(Flow::Palette { selected }) = self.surfaces.top_flow_mut() {
             if visible > 0 {
                 let len = i64::try_from(visible).unwrap_or(i64::MAX);
                 let next = i64::try_from(*selected).unwrap_or(i64::MAX) + i64::from(direction);
@@ -1633,7 +1698,7 @@ impl ViewState {
     /// Every palette exit that means close-without-effect: Esc,
     /// `MenuDismiss`, a stale-target jump. The `discard_edit` shape.
     pub fn close_palette(&mut self) -> Vec<FlowOutcome> {
-        self.flow = Flow::None;
+        self.write_flow(Flow::None);
         self.buffer.clear();
         vec![FlowOutcome::SetMode(Mode::Normal), FlowOutcome::RefreshNow]
     }
@@ -1645,7 +1710,7 @@ impl ViewState {
     /// *adapter's* gate (dispatch-time gating, D-TS8); this arm opens
     /// whenever asked.
     pub fn open_track_entries(&mut self, task: TaskId) -> Vec<FlowOutcome> {
-        self.flow = Flow::TrackEntries { task };
+        self.write_flow(Flow::TrackEntries { task });
         vec![FlowOutcome::RefreshNow]
     }
 
@@ -1657,7 +1722,7 @@ impl ViewState {
         task: TaskId,
         seed: Option<taskboard_domain::TimeEntryId>,
     ) -> Vec<FlowOutcome> {
-        self.flow = Flow::TrackEntryForm { task, seed };
+        self.write_flow(Flow::TrackEntryForm { task, seed });
         vec![FlowOutcome::RefreshNow]
     }
 
@@ -1666,11 +1731,11 @@ impl ViewState {
     /// step so a disengaged field never re-masks (the `close_palette`
     /// shape).
     pub fn step_back_track_entries(&mut self) -> Vec<FlowOutcome> {
-        if let Flow::TrackEntryForm { task, .. } = self.flow.clone() {
-            self.flow = Flow::TrackEntries { task };
+        if let Flow::TrackEntryForm { task, .. } = self.flow().clone() {
+            self.write_flow(Flow::TrackEntries { task });
             vec![FlowOutcome::RefreshNow]
         } else {
-            self.flow = Flow::None;
+            self.write_flow(Flow::None);
             self.buffer.clear();
             vec![FlowOutcome::SetMode(Mode::Normal), FlowOutcome::RefreshNow]
         }
@@ -1680,7 +1745,7 @@ impl ViewState {
     /// outside click, the view leaving, the subject dying. The
     /// `close_palette` shape.
     pub fn close_track_entries(&mut self) -> Vec<FlowOutcome> {
-        self.flow = Flow::None;
+        self.write_flow(Flow::None);
         self.buffer.clear();
         vec![FlowOutcome::SetMode(Mode::Normal), FlowOutcome::RefreshNow]
     }
@@ -1719,12 +1784,12 @@ impl ViewState {
         reference: NaiveDate,
         stage: WalkStage,
     ) -> Vec<FlowOutcome> {
-        self.flow = Flow::ReviewWalk {
+        self.write_flow(Flow::ReviewWalk {
             cadence,
             reference,
             stage,
             cursor: 0,
-        };
+        });
         self.buffer.clear();
         vec![FlowOutcome::SetMode(Mode::Normal), FlowOutcome::RefreshNow]
     }
@@ -1734,7 +1799,7 @@ impl ViewState {
     /// close, the handoff's own close, a foreign settle. No command
     /// rides it (the `close_palette` shape).
     pub fn close_review_walk(&mut self) -> Vec<FlowOutcome> {
-        self.flow = Flow::None;
+        self.write_flow(Flow::None);
         self.buffer.clear();
         vec![FlowOutcome::SetMode(Mode::Normal), FlowOutcome::RefreshNow]
     }
@@ -1753,7 +1818,7 @@ impl ViewState {
     /// the row verbs are what pass the last row). Inert on Prompts
     /// (no rows) and outside the walk.
     pub fn review_walk_cursor(&mut self, direction: i32, rows: WalkRows) -> Vec<FlowOutcome> {
-        let Flow::ReviewWalk { stage, cursor, .. } = &mut self.flow else {
+        let Some(Flow::ReviewWalk { stage, cursor, .. }) = self.surfaces.top_flow_mut() else {
             return Vec::new();
         };
         let len = Self::walk_stage_rows(*stage, rows);
@@ -1771,7 +1836,7 @@ impl ViewState {
     /// cursor moves to the next row; passing the last row advances the
     /// stage (the Keep-on-the-last-row rule). The sub-state clears.
     pub fn review_walk_next_row(&mut self, rows: WalkRows) -> WalkStep {
-        let Flow::ReviewWalk { stage, cursor, .. } = &mut self.flow else {
+        let Some(Flow::ReviewWalk { stage, cursor, .. }) = self.surfaces.top_flow_mut() else {
             return WalkStep::Inert;
         };
         *stage = Self::cleared_substate(*stage);
@@ -1787,7 +1852,7 @@ impl ViewState {
     /// the planner handoff (the adapter's arm, plan D-W3); Prompts has
     /// no advance (its exits are the commit verbs).
     pub fn advance_review_walk(&mut self) -> WalkStep {
-        let Flow::ReviewWalk { stage, cursor, .. } = &mut self.flow else {
+        let Some(Flow::ReviewWalk { stage, cursor, .. }) = self.surfaces.top_flow_mut() else {
             return WalkStep::Inert;
         };
         match stage {
@@ -1810,7 +1875,7 @@ impl ViewState {
     /// way in and is skipped on the way back — the close); the Inbox
     /// closes. Inert outside the walk.
     pub fn back_review_walk(&mut self, rows: WalkRows) -> Vec<FlowOutcome> {
-        let Flow::ReviewWalk { stage, cursor, .. } = &mut self.flow else {
+        let Some(Flow::ReviewWalk { stage, cursor, .. }) = self.surfaces.top_flow_mut() else {
             return Vec::new();
         };
         let cleared = Self::cleared_substate(*stage);
@@ -1849,10 +1914,10 @@ impl ViewState {
     /// first candidate stack; inert without candidates, outside the
     /// Inbox stage, or outside the walk.
     pub fn review_walk_file(&mut self, candidates: &[StackId]) -> Vec<FlowOutcome> {
-        let Flow::ReviewWalk {
+        let Some(Flow::ReviewWalk {
             stage: WalkStage::Inbox { filing },
             ..
-        } = &mut self.flow
+        }) = self.surfaces.top_flow_mut()
         else {
             return Vec::new();
         };
@@ -1871,12 +1936,12 @@ impl ViewState {
         direction: i32,
         candidates: &[StackId],
     ) -> Vec<FlowOutcome> {
-        let Flow::ReviewWalk {
+        let Some(Flow::ReviewWalk {
             stage: WalkStage::Inbox {
                 filing: Some(armed),
             },
             ..
-        } = &mut self.flow
+        }) = self.surfaces.top_flow_mut()
         else {
             return Vec::new();
         };
@@ -1891,10 +1956,10 @@ impl ViewState {
     /// `Pick a date…`: arms the date field on the cursor row; inert
     /// outside the Carry forward stage.
     pub fn review_walk_pick_date(&mut self) -> Vec<FlowOutcome> {
-        let Flow::ReviewWalk {
+        let Some(Flow::ReviewWalk {
             stage: WalkStage::CarryForward { picking_date },
             ..
-        } = &mut self.flow
+        }) = self.surfaces.top_flow_mut()
         else {
             return Vec::new();
         };
@@ -1910,7 +1975,7 @@ impl ViewState {
     /// with the rows it just derived; no command, no repaint request
     /// (the pass is already repainting).
     pub fn clamp_review_walk(&mut self, rows: WalkRows, candidates: &[StackId]) {
-        let Flow::ReviewWalk { stage, cursor, .. } = &mut self.flow else {
+        let Some(Flow::ReviewWalk { stage, cursor, .. }) = self.surfaces.top_flow_mut() else {
             return;
         };
         if let WalkStage::Inbox {
@@ -1937,15 +2002,15 @@ impl ViewState {
     /// row's task (re-opening on an already-placed row edits that box
     /// — the same funnel seeds from the row's instant adapter-side).
     pub fn open_plan_place(&mut self, task: TaskId) -> Vec<FlowOutcome> {
-        self.flow = Flow::PlanPlace { task };
+        self.write_flow(Flow::PlanPlace { task });
         vec![FlowOutcome::RefreshNow]
     }
 
     /// The placement form's discard (the Escape ladder's form → pane
     /// rung): ends the flow, keeps the surface.
     pub fn close_plan_place(&mut self) -> Vec<FlowOutcome> {
-        if matches!(self.flow, Flow::PlanPlace { .. }) {
-            self.flow = Flow::None;
+        if matches!(self.flow(), Flow::PlanPlace { .. }) {
+            self.write_flow(Flow::None);
             vec![FlowOutcome::RefreshNow]
         } else {
             Vec::new()
@@ -1956,8 +2021,8 @@ impl ViewState {
     /// commit/discard tails call this after their own work; the
     /// adapter owns the parse, so the command is built there).
     pub fn end_plan_place(&mut self) {
-        if matches!(self.flow, Flow::PlanPlace { .. }) {
-            self.flow = Flow::None;
+        if matches!(self.flow(), Flow::PlanPlace { .. }) {
+            self.write_flow(Flow::None);
         }
     }
 
@@ -1991,7 +2056,7 @@ impl ViewState {
         };
         let outcomes = self.select_board(state, board);
         self.subject_stack = state.canonical_first_stack(board);
-        self.view = ViewId::StackDetail;
+        self.surfaces.replace_root(ViewId::StackDetail);
         outcomes
     }
 
@@ -2024,7 +2089,7 @@ impl ViewState {
                 self.selected_stack = Some(stack_id);
                 self.subject_stack = Some(stack_id);
                 self.focused_task = Self::first_task_of(state, stack_id);
-                self.view = ViewId::StackDetail;
+                self.surfaces.replace_root(ViewId::StackDetail);
                 out
             }
             SearchTarget::Board(board_id) => {
@@ -2036,7 +2101,7 @@ impl ViewState {
         };
         // The flow always ends (close_palette's ending; select_board
         // already asked for the repaint).
-        self.flow = Flow::None;
+        self.write_flow(Flow::None);
         self.buffer.clear();
         outcomes.push(FlowOutcome::SetMode(Mode::Normal));
         outcomes
@@ -2058,7 +2123,7 @@ impl ViewState {
         else {
             return Vec::new();
         };
-        self.flow = Flow::Move { task, target };
+        self.write_flow(Flow::Move { task, target });
         vec![FlowOutcome::RefreshNow]
     }
 
@@ -2079,7 +2144,7 @@ impl ViewState {
     /// Focus next/prev during a move flow: cycle the target stack
     /// (wrap — in compact this is exactly the switcher highlighting).
     pub fn cycle_move_target(&mut self, state: &AppState, direction: i32) -> Vec<FlowOutcome> {
-        let Flow::Move { target, .. } = self.flow else {
+        let Flow::Move { target, .. } = self.flow().clone() else {
             return Vec::new();
         };
         let stacks = Self::move_ring(state);
@@ -2090,7 +2155,7 @@ impl ViewState {
             .iter()
             .position(|s| *s == target)
             .map_or(0, |i| wrapped_index(i, direction, stacks.len()));
-        if let Flow::Move { target, .. } = &mut self.flow {
+        if let Some(Flow::Move { target, .. }) = self.surfaces.top_flow_mut() {
             *target = stacks[current];
         }
         vec![FlowOutcome::RefreshNow]
@@ -2099,11 +2164,11 @@ impl ViewState {
     /// `Activate` during a move flow: confirm — `MoveTask` append to
     /// the target (D8).
     pub fn confirm_move(&mut self, state: &AppState) -> Vec<FlowOutcome> {
-        let Flow::Move { task, target } = self.flow else {
+        let Flow::Move { task, target } = self.flow().clone() else {
             return Vec::new();
         };
         let command = append_move_command(state, task, target);
-        self.flow = Flow::None;
+        self.write_flow(Flow::None);
         vec![command, FlowOutcome::RefreshNow]
     }
 
@@ -2116,7 +2181,7 @@ impl ViewState {
     /// flow is open, belt and suspenders) or the task is unknown/not
     /// live (the reconcile path re-checks).
     pub fn begin_drag_move(&mut self, state: &AppState, task: TaskId) -> Vec<FlowOutcome> {
-        if self.flow != Flow::None {
+        if *self.flow() != Flow::None {
             return Vec::new();
         }
         let Some(target) = state
@@ -2127,7 +2192,7 @@ impl ViewState {
         else {
             return Vec::new();
         };
-        self.flow = Flow::DragMove { task, target };
+        self.write_flow(Flow::DragMove { task, target });
         vec![FlowOutcome::RefreshNow]
     }
 
@@ -2135,7 +2200,7 @@ impl ViewState {
     /// address, resolved to its stack by the adapter. `RefreshNow` only
     /// on an actual change; inert without the drag flow.
     pub fn drag_target(&mut self, _state: &AppState, stack: StackId) -> Vec<FlowOutcome> {
-        let Flow::DragMove { target, .. } = &mut self.flow else {
+        let Some(Flow::DragMove { target, .. }) = self.surfaces.top_flow_mut() else {
             return Vec::new();
         };
         if *target == stack {
@@ -2150,20 +2215,20 @@ impl ViewState {
     /// the one construction site (equivalence by construction; the
     /// pin test compares the commands).
     pub fn confirm_drag_move(&mut self, state: &AppState) -> Vec<FlowOutcome> {
-        let Flow::DragMove { task, target } = self.flow else {
+        let Flow::DragMove { task, target } = self.flow().clone() else {
             return Vec::new();
         };
         let command = append_move_command(state, task, target);
-        self.flow = Flow::None;
+        self.write_flow(Flow::None);
         vec![command, FlowOutcome::RefreshNow]
     }
 
     /// `RequestMove` during a move flow: cancel, nothing dispatched.
     pub fn cancel_move(&mut self) -> Vec<FlowOutcome> {
-        if self.flow == Flow::None {
+        if *self.flow() == Flow::None {
             return Vec::new();
         }
-        self.flow = Flow::None;
+        self.write_flow(Flow::None);
         vec![FlowOutcome::RefreshNow]
     }
 
@@ -2178,7 +2243,7 @@ impl ViewState {
     /// funnel); move/drag flows cancel; the modals take their own
     /// close paths.
     pub fn settle_flow(&mut self, state: &AppState) -> Vec<FlowOutcome> {
-        match self.flow.clone() {
+        match self.flow().clone() {
             Flow::None => Vec::new(),
             // The placement form's settle is its own close path (the
             // overlay cells' shape): a foreign settle discards it
@@ -2241,7 +2306,7 @@ impl ViewState {
     /// escape — the `begin_create_stack` refusal does not apply);
     /// opens the board field in insert mode.
     pub fn begin_create_board(&mut self) -> Vec<FlowOutcome> {
-        self.flow = Flow::CreateBoard;
+        self.write_flow(Flow::CreateBoard);
         self.buffer.clear();
         vec![FlowOutcome::SetMode(Mode::Insert), FlowOutcome::RefreshNow]
     }
@@ -2256,7 +2321,7 @@ impl ViewState {
         let Some(title) = state.stacks.get(&stack).map(|s| s.title.clone()) else {
             return Vec::new();
         };
-        self.flow = Flow::RenameStack { stack };
+        self.write_flow(Flow::RenameStack { stack });
         self.buffer = title;
         vec![FlowOutcome::SetMode(Mode::Insert), FlowOutcome::RefreshNow]
     }
@@ -2271,7 +2336,7 @@ impl ViewState {
         let Some(title) = state.boards.get(&board).map(|b| b.title.clone()) else {
             return Vec::new();
         };
-        self.flow = Flow::RenameBoard { board };
+        self.write_flow(Flow::RenameBoard { board });
         self.buffer = title;
         vec![FlowOutcome::SetMode(Mode::Insert), FlowOutcome::RefreshNow]
     }
@@ -2312,7 +2377,7 @@ impl ViewState {
         };
         let stacks = self.stack_ids(state);
         let slot = stacks.iter().position(|s| *s == stack).unwrap_or(0);
-        self.flow = Flow::MoveStack { stack, slot };
+        self.write_flow(Flow::MoveStack { stack, slot });
         vec![FlowOutcome::RefreshNow]
     }
 
@@ -2323,12 +2388,12 @@ impl ViewState {
         state: &AppState,
         direction: i32,
     ) -> Vec<FlowOutcome> {
-        let Flow::MoveStack { slot, .. } = self.flow else {
+        let Flow::MoveStack { slot, .. } = self.flow().clone() else {
             return Vec::new();
         };
         let slots = self.stack_ids(state).len() + 1;
         let next = wrapped_index(slot, direction, slots);
-        if let Flow::MoveStack { slot, .. } = &mut self.flow {
+        if let Some(Flow::MoveStack { slot, .. }) = self.surfaces.top_flow_mut() {
             *slot = next;
         }
         vec![FlowOutcome::RefreshNow]
@@ -2344,10 +2409,10 @@ impl ViewState {
     /// idempotent, and tie-free. An in-place confirm dispatches
     /// nothing. The flow always ends.
     pub fn confirm_move_stack(&mut self, state: &AppState) -> Vec<FlowOutcome> {
-        let Flow::MoveStack { stack, slot } = self.flow else {
+        let Flow::MoveStack { stack, slot } = self.flow().clone() else {
             return Vec::new();
         };
-        self.flow = Flow::None;
+        self.write_flow(Flow::None);
         let mut stacks = self.stack_ids(state);
         let Some(from) = stacks.iter().position(|s| *s == stack) else {
             // The moving stack vanished mid-flow: reconcile's job on the
@@ -2406,59 +2471,66 @@ impl ViewState {
             && !stacks.contains(&stack)
         {
             self.subject_stack = None;
-            if self.view == ViewId::StackDetail {
-                self.view = ViewId::Board;
+            // The pop reads the top view — the flat model's single
+            // `self.view` slot (a pushed over-view reads the
+            // over-view, exactly as today). A matching view is always
+            // the root: the only pushed view kinds are Settings and
+            // the planner, never a subject view (D8).
+            if self.view() == ViewId::StackDetail {
+                self.surfaces.replace_root(ViewId::Board);
             }
         }
         if let Some(task) = self.subject_task
             && !is_live(task)
         {
             self.subject_task = None;
-            if self.view == ViewId::TaskDetail {
-                self.view = ViewId::Board;
+            if self.view() == ViewId::TaskDetail {
+                self.surfaces.replace_root(ViewId::Board);
             }
             if matches!(
-                self.flow,
+                *self.flow(),
                 Flow::EditTitle { task: t }
                     | Flow::EditDescription { task: t }
                     | Flow::EditDate {
                         task: t, field: _,
                     } if t == task
             ) {
-                self.flow = Flow::None;
+                self.write_flow(Flow::None);
                 self.buffer.clear();
             }
         }
-        match self.flow {
-            Flow::Create { stack } if !stacks.contains(&stack) => self.flow = Flow::None,
+        match self.flow().clone() {
+            Flow::Create { stack } if !stacks.contains(&stack) => self.write_flow(Flow::None),
             Flow::CreateStack if state.boards.values().all(|b| b.deleted) => {
-                self.flow = Flow::None;
+                self.write_flow(Flow::None);
             }
-            Flow::Move { task, .. } if !is_live(task) => self.flow = Flow::None,
+            Flow::Move { task, .. } if !is_live(task) => self.write_flow(Flow::None),
             // The pointer drag (r2 chunk-8): a vanished dragged task
             // *or* target stack ends the flow — the ghost/dim/highlight
             // unpush on the next model pass (the subject-repair rule).
             Flow::DragMove { task, target } if !is_live(task) || !stacks.contains(&target) => {
-                self.flow = Flow::None;
+                self.write_flow(Flow::None);
             }
             // Round 2 (D18/D21): the lifecycle flows end silently on a
             // vanished target (the `Flow::Move` precedent).
             Flow::RenameStack { stack } if !stacks.contains(&stack) => {
-                self.flow = Flow::None;
+                self.write_flow(Flow::None);
                 self.buffer.clear();
             }
-            Flow::RenameBoard { board } if self.board != Some(board) => self.flow = Flow::None,
-            Flow::MoveStack { stack, .. } if !stacks.contains(&stack) => self.flow = Flow::None,
+            Flow::RenameBoard { board } if self.board != Some(board) => self.write_flow(Flow::None),
+            Flow::MoveStack { stack, .. } if !stacks.contains(&stack) => {
+                self.write_flow(Flow::None);
+            }
             // The entries overlay (r4 chunk 10, D-TS2's strand-proof):
             // it cannot outlive the task-detail view — a dead subject
             // drops the flow...
-            Flow::TrackEntries { task } if !is_live(task) => self.flow = Flow::None,
-            Flow::TrackEntryForm { task, .. } if !is_live(task) => self.flow = Flow::None,
+            Flow::TrackEntries { task } if !is_live(task) => self.write_flow(Flow::None),
+            Flow::TrackEntryForm { task, .. } if !is_live(task) => self.write_flow(Flow::None),
             // The placement form (#622): a dead subject drops it; a
             // view change does NOT (the mount gate keys on the
             // subject — the entries overlay's predicate minus the
             // view strand, D-3's reconciliation risk).
-            Flow::PlanPlace { task } if !is_live(task) => self.flow = Flow::None,
+            Flow::PlanPlace { task } if !is_live(task) => self.write_flow(Flow::None),
             _ => {}
         }
         // ...and so does a view change: the overlay is mounted only
@@ -2466,13 +2538,13 @@ impl ViewState {
         // the same flow), so a flow surviving a view flip would be a
         // stranded modal context. Focus falls back through the
         // existing walk.
-        if self.view != ViewId::TaskDetail
+        if self.view() != ViewId::TaskDetail
             && matches!(
-                self.flow,
+                self.flow(),
                 Flow::TrackEntries { .. } | Flow::TrackEntryForm { .. }
             )
         {
-            self.flow = Flow::None;
+            self.write_flow(Flow::None);
         }
     }
 }
@@ -2819,6 +2891,123 @@ mod tests {
             vs.confirm_drag_move(&state).is_empty(),
             "the ended flow cannot confirm afterwards"
         );
+    }
+
+    // -- the surface chain (W5b chunk 1, plan D7/D8/D12) -------------------
+
+    #[test]
+    fn closing_settings_restores_the_exact_root_view_from_every_cycle_view() {
+        for view in [
+            ViewId::Today,
+            ViewId::Board,
+            ViewId::StackDetail,
+            ViewId::TaskDetail,
+            ViewId::Review,
+        ] {
+            let mut vs = ViewState::new_starting(view);
+            vs.open_settings();
+            assert_eq!(vs.view(), ViewId::Settings, "settings pushes over {view:?}");
+            vs.close_settings();
+            assert_eq!(
+                vs.view(),
+                view,
+                "the exact restore is truncation from {view:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn closing_the_planner_restores_the_exact_root_view_from_every_cycle_view() {
+        for view in [
+            ViewId::Today,
+            ViewId::Board,
+            ViewId::StackDetail,
+            ViewId::TaskDetail,
+            ViewId::Review,
+        ] {
+            let mut vs = ViewState::new_starting(view);
+            vs.open_plan_next_day();
+            assert_eq!(vs.view(), ViewId::PlanNextDay);
+            vs.close_plan_next_day();
+            assert_eq!(vs.view(), view);
+        }
+    }
+
+    #[test]
+    fn a_close_over_closes_only_the_top_of_pushed_view_stack() {
+        let mut vs = ViewState::new_starting(ViewId::TaskDetail);
+        vs.open_settings();
+        vs.open_plan_next_day();
+        assert_eq!(vs.view(), ViewId::PlanNextDay);
+        vs.close_plan_next_day();
+        assert_eq!(vs.view(), ViewId::Settings, "only the top level closed");
+        vs.close_settings();
+        assert_eq!(vs.view(), ViewId::TaskDetail);
+    }
+
+    #[test]
+    fn a_double_open_refuses_and_the_close_lands_on_the_root() {
+        // D7: the second open is the AlreadyInChain refusal mapped to
+        // a no-op — one level, so the close restores the root, never
+        // the flat model's self-return (the pathological corner the
+        // plan pins; the real UI cannot double-open either surface).
+        let mut vs = ViewState::new_starting(ViewId::Today);
+        vs.open_settings();
+        vs.open_settings();
+        vs.close_settings();
+        assert_eq!(vs.view(), ViewId::Today);
+        // The planner twin.
+        let mut vs = ViewState::new_starting(ViewId::Today);
+        vs.open_plan_next_day();
+        vs.open_plan_next_day();
+        vs.close_plan_next_day();
+        assert_eq!(vs.view(), ViewId::Today);
+    }
+
+    #[test]
+    fn a_dead_subject_under_a_pushed_over_view_currently_pins_the_flat_pop_guard() {
+        let (mut state, _, _, [a, ..]) = fixture();
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        vs.set_focused(Some(a));
+        vs.activate_focused(&state);
+        assert_eq!(vs.view(), ViewId::TaskDetail);
+        vs.open_settings();
+        // The subject dies while Settings is pushed: the pop reads the
+        // top view (Settings), so it does not fire — byte-equal to the
+        // flat model's single-slot guard.
+        state.tasks.get_mut(&a).expect("task").deleted = true;
+        vs.reconcile(&state);
+        assert_eq!(vs.view(), ViewId::Settings);
+        vs.close_settings();
+        assert_eq!(vs.view(), ViewId::TaskDetail);
+        // The pop guard is dead from here: the subject is already
+        // `None`, so the restored root never pops — the flat model's
+        // single-slot guard reproduced verbatim. (Debt noted: a
+        // subject-less TaskDetail root survives until a navigation
+        // replaces it; not this chunk's behaviour change to make.)
+        vs.reconcile(&state);
+        assert_eq!(vs.view(), ViewId::TaskDetail);
+    }
+
+    #[test]
+    fn reconcile_drops_a_dead_subject_flow_without_a_settle_rule() {
+        // Q4: the subject's death truncates the flow level silently —
+        // no text commit, no buffer read (the flow's level is gone,
+        // the buffer untouched by the drop).
+        let (mut state, _, _, [a, ..]) = fixture();
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        vs.set_focused(Some(a));
+        vs.activate_focused(&state);
+        vs.begin_edit_title(&state, a);
+        vs.set_buffer("half-typed".to_owned());
+        state.tasks.get_mut(&a).expect("task").deleted = true;
+        vs.reconcile(&state);
+        assert_eq!(*vs.flow(), Flow::None, "the dead subject drops the flow");
+        // The drop clears the mirrored buffer in place — reconcile
+        // returns no outcomes, so nothing was committed.
+        assert_eq!(vs.buffer(), "");
     }
 
     #[test]
@@ -4613,7 +4802,7 @@ mod tests {
             for mode in [KioskMode::Board, KioskMode::Today] {
                 let mut vs = ViewState::new();
                 vs.reconcile(&state);
-                vs.flow = flow.clone();
+                vs.arm_flow(flow.clone());
                 vs.buffer = "in-flight".to_owned();
                 let outcomes = vs.enter_kiosk_mode(&state, mode);
                 assert!(
@@ -4744,8 +4933,8 @@ mod settings_surface_tests {
         let stack = StackId::from_uuid(uuid::Uuid::now_v7());
         let state = editing_state(stack);
 
-        // From StackDetail: open → context + record; close → exact
-        // restore (the `settings_return` twin).
+        // From StackDetail: open → context + push; close → exact
+        // restore (the settings-surface twin).
         let mut vs = ViewState::new();
         vs.reconcile(&state);
         assert!(vs.enter(&state, ViewId::StackDetail));
@@ -4957,7 +5146,7 @@ mod settings_surface_tests {
     // -- the toolbar switcher projection (round-3 D22) ---------------------
 
     #[test]
-    fn switcher_selection_projects_views_and_settings_return() {
+    fn switcher_selection_projects_views_and_the_pushed_over_views() {
         let (state, b1, _, _, _) = two_board_fixture();
         let mut vs = ViewState::new();
         vs.reconcile(&state);
@@ -4977,8 +5166,9 @@ mod settings_surface_tests {
         vs.focus_today();
         assert_eq!(vs.switcher_selection(), 1);
 
-        // Settings shows where settings returns to; nothing recorded
-        // reads as the board (a fresh machine never opened settings).
+        // Settings keeps the pushed-over view's segment lit (the root
+        // is read through the push); nothing pushed reads as the
+        // board (a fresh machine never opened settings).
         vs.open_settings();
         assert_eq!(vs.switcher_selection(), 1, "the return view is today");
         vs.close_settings();

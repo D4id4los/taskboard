@@ -3678,7 +3678,7 @@ impl Adapter {
     /// debounce.
     fn apply_palette_query(&mut self, window: &AppWindow, text: &str) {
         self.view_state.set_buffer(text.to_owned());
-        if let crate::view_state::Flow::Palette { selected } = self.view_state.flow_mut() {
+        if let Some(crate::view_state::Flow::Palette { selected }) = self.view_state.flow_mut() {
             *selected = 0;
         }
         let state = self.state.load();
@@ -8984,10 +8984,10 @@ fn install_review_walk_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>)
     let Some(stack) = candidates.get(index).copied() else {
         return; // a stale index past the candidates: inert
     };
-    if let Flow::ReviewWalk {
+    if let Some(Flow::ReviewWalk {
         stage: crate::view_state::WalkStage::Inbox { filing },
         ..
-    } = a.view_state.flow_mut()
+    }) = a.view_state.flow_mut()
     {
         *filing = Some(stack);
     }
