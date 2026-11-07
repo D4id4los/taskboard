@@ -1281,6 +1281,51 @@ mod tests {
         );
     }
 
+    /// X3b — the rejection count is a standing finding, not a one-cycle
+    /// event: while the undecodable row persists, every later cycle
+    /// (deduped by the fingerprint — nothing re-crosses the seam) still
+    /// carries the count.
+    #[tokio::test(start_paused = true)]
+    async fn x3b_the_rejection_count_persists_across_deduped_cycles() {
+        let fake = FakeFilesTransport::new();
+        seed_peer(&fake, "unused");
+        let (key, mut record) = encode_row(&entry(
+            0x1005,
+            "still unreadable",
+            "2026-11-05T12:00:00Z".parse().unwrap(),
+        ));
+        let taskboard_sync_files::document::UserRecord::Entry { body, .. } = &mut record else {
+            panic!("live shape");
+        };
+        body.insert("attributes".to_owned(), serde_json::json!({ "mood": 6 }));
+        let doc = UserDocument {
+            format: 1,
+            sections: UserSections {
+                journal: Some(BTreeMap::from([(key, record)])),
+                unknown: BTreeMap::new(),
+            },
+            unknown: BTreeMap::new(),
+        };
+        fake.seed_file(&appdata_path(PEER), doc_bytes(&doc));
+        let harness = spawn_actor_with(fake, Arc::new(crate::cycle::EmptyDocument));
+        let status = next_status(&harness).await;
+        assert!(ok(&status));
+        for _ in 0..2 {
+            let status = next_cycle(&harness).await;
+            assert!(
+                matches!(
+                    status.last_cycle,
+                    Some(CycleOutcome::Ok {
+                        import_rejected: 1,
+                        ..
+                    })
+                ),
+                "the count stands while the row does: {status:?}"
+            );
+            assert!(!harness_reports_pending(&harness));
+        }
+    }
+
     /// The UUID-text key the fixture entries encode under.
     fn key_of(id_raw: u128) -> String {
         uuid::Uuid::from_u128(id_raw).to_string()
