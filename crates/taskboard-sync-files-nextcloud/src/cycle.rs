@@ -170,6 +170,9 @@ pub struct LoopState {
     /// the fingerprint every cycle would re-send a no-op report. The
     /// engine is independently no-op-safe (D-ES6).
     last_import_fingerprint: Option<StateHash>,
+    /// The undecodable-row count of that delta: a standing finding
+    /// while the delta persists, so deduped cycles still report it.
+    last_import_rejected: usize,
     /// This cycle's merged-view hash — the divergence derivation's
     /// "our current settled view" input (set every Ok cycle).
     view_hash: Option<StateHash>,
@@ -728,6 +731,7 @@ fn journal_delta(
 async fn import_step(ctx: &SyncContext, st: &mut LoopState, merged: &UserDocument) -> usize {
     let delta = journal_delta(merged, &ctx.local.document());
     if delta.is_empty() {
+        st.last_import_rejected = 0;
         return 0;
     }
     let fingerprint = StateHash::of(&UserDocument {
@@ -739,7 +743,7 @@ async fn import_step(ctx: &SyncContext, st: &mut LoopState, merged: &UserDocumen
         unknown: BTreeMap::default(),
     });
     if st.last_import_fingerprint.as_ref() == Some(&fingerprint) {
-        return 0;
+        return st.last_import_rejected;
     }
     let (rows, rejected) = decode_journal(&delta);
     if rejected > 0 {
@@ -765,6 +769,7 @@ async fn import_step(ctx: &SyncContext, st: &mut LoopState, merged: &UserDocumen
         );
     }
     st.last_import_fingerprint = Some(fingerprint);
+    st.last_import_rejected = rejected;
     rejected
 }
 
