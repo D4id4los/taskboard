@@ -1,0 +1,44 @@
+---
+source: crates/taskboard-app/src/pdf/layout.rs
+expression: sheet_dump(&sheets)
+---
+== page 0 297.63782x419.53 ==
+text 17.01,27.01 10.0pt Bold "id" | 2026-11-07 Sat
+text 17.01,42.01 10.0pt Bold "id" | Overdue
+check 17.01,48.61 s6.4 ticked=false "id"
+text 25.41,55.01 8.0pt Regular "id" | 07.11. 09:00
+text 271.03,55.01 8.0pt Regular "id" | 2h
+text 67.81,55.01 8.0pt Regular "id" | Müßiggang „Prüfung“ – Größe: ein
+text 67.81,68.61 8.0pt Regular "id" | ausgesprochen langer Titel, der in jeder
+text 67.81,82.21 8.0pt Regular "id" | Spalte umbricht
+text 17.01,97.81 10.0pt Bold "id" | Scheduled
+check 17.01,104.41 s6.4 ticked=false "id"
+text 25.41,110.81 8.0pt Regular "id" | 09:30
+text 67.81,110.81 8.0pt Regular "id" | Board review
+check 17.01,118.01 s6.4 ticked=false "id"
+text 25.41,124.41 8.0pt Regular "id" | 11:00
+text 266.23,124.41 8.0pt Regular "id" | 30m
+text 67.81,124.41 8.0pt Regular "id" | Zweitinvoice prüfen
+text 17.01,140.01 10.0pt Bold "id" | Due today
+check 17.01,146.61 s6.4 ticked=false "id"
+text 25.41,153.01 8.0pt Regular "id" | 18:00
+text 67.81,153.01 8.0pt Regular "id" | Steuer abgeben
+text 17.01,168.61 10.0pt Bold "id" | Done
+check 17.01,175.21 s6.4 ticked=true "id"
+text 25.41,181.61 8.0pt Regular "id" | 07:00
+text 67.81,181.61 8.0pt Regular "id" | Morgenroutine
+text 17.01,197.21 10.0pt Bold "id" | Notes
+rule 17.01,215.81->280.63,215.81 w0.5 "id"
+rule 17.01,229.41->280.63,229.41 w0.5 "id"
+rule 17.01,243.01->280.63,243.01 w0.5 "id"
+rule 17.01,256.61->280.63,256.61 w0.5 "id"
+rule 17.01,270.21->280.63,270.21 w0.5 "id"
+rule 17.01,283.81->280.63,283.81 w0.5 "id"
+rule 17.01,297.41->280.63,297.41 w0.5 "id"
+rule 17.01,311.01->280.63,311.01 w0.5 "id"
+rule 17.01,324.61->280.63,324.61 w0.5 "id"
+rule 17.01,338.21->280.63,338.21 w0.5 "id"
+rule 17.01,351.81->280.63,351.81 w0.5 "id"
+rule 17.01,365.41->280.63,365.41 w0.5 "id"
+rule 17.01,379.01->280.63,379.01 w0.5 "id"
+rule 17.01,392.61->280.63,392.61 w0.5 "id"
