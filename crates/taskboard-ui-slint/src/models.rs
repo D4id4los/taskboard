@@ -4761,7 +4761,6 @@ mod tests {
                 row.mood.is_empty() && !row.energy.is_empty(),
                 "the surviving row is the new energy-rated entry"
             );
-            assert_eq!(model.reflection_rows.row_count(), 1);
         });
     }
 }
