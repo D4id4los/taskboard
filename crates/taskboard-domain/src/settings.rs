@@ -307,22 +307,183 @@ impl SettingsSnapshot {
     }
 }
 
+/// The `settings` wire section's roaming subset (DR-9 D-BF3): the
+/// user-preference settings that sync across devices, classified
+/// against the D5 notes — a roamer is **user intent** (identical on a
+/// kiosk and a desktop); machine facts (cadence tuning, notification
+/// capability, display hardware, paths, secrets) stay device-local.
+/// The classification is pinned as data by
+/// `roaming_setting_names_is_exactly_the_classified_list` — adding a
+/// roamer means extending this list (the pin fails first); a machine-
+/// or secret-adjacent key can never enter silently.
+pub const ROAMING_SETTING_NAMES: &[&str] = &[
+    "day_start_time",
+    "reminders_enabled",
+    "reminder_before",
+    "due_soon_days",
+    "focus_enabled",
+    "focus_timing",
+    "focus_chain",
+    "focus_notify",
+];
+
+/// The typed value of one roaming setting (the variants above, each
+/// carrying its validated domain type). The serde lane rides each
+/// value's own serde; a decode that fails a mint fails the row (the
+/// wire codec's fail-closed `BadBody`, never a silent default) —
+/// except `DueSoonDays` and `FocusTiming`, whose *documented* lenient
+/// serde this lane deliberately reuses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RoamingSettingValue {
+    /// `[preferences] day_start_time`.
+    DayStartTime(chrono::NaiveTime),
+    /// `[reminders] enabled`.
+    RemindersEnabled(bool),
+    /// `[reminders] default_before` (the domain sign convention).
+    ReminderBefore(ReminderOffset),
+    /// `[ui] due_soon_days`.
+    DueSoonDays(DueSoonDays),
+    /// `[focus] enabled`.
+    FocusEnabled(bool),
+    /// `[focus]` timings (`None` while disabled/unminted — the
+    /// snapshot's own serde lane).
+    FocusTiming(Option<FocusTiming>),
+    /// `[focus] chain`.
+    FocusChain(bool),
+    /// `[focus] notify`.
+    FocusNotify(bool),
+}
+
+impl RoamingSettingValue {
+    /// The stable wire/storage key of this setting — one arm per
+    /// variant, and the strings are exactly
+    /// [`ROAMING_SETTING_NAMES`] (the data pin holds them together).
+    #[must_use]
+    pub const fn key_name(&self) -> &'static str {
+        match self {
+            Self::DayStartTime(_) => "day_start_time",
+            Self::RemindersEnabled(_) => "reminders_enabled",
+            Self::ReminderBefore(_) => "reminder_before",
+            Self::DueSoonDays(_) => "due_soon_days",
+            Self::FocusEnabled(_) => "focus_enabled",
+            Self::FocusTiming(_) => "focus_timing",
+            Self::FocusChain(_) => "focus_chain",
+            Self::FocusNotify(_) => "focus_notify",
+        }
+    }
+
+    /// Mints a value from its key name and its serde body. The fallible
+    /// constructor at the settings-section trust boundary: an unknown
+    /// name (a future build's roamer) or a shape that fails the value's
+    /// own decode is `None` — the wire codec rejects the row, never
+    /// invents a default.
+    #[must_use]
+    pub fn decode(name: &str, body: &serde_json::Value) -> Option<Self> {
+        match name {
+            "day_start_time" => serde_json::from_value(body.clone())
+                .map(Self::DayStartTime)
+                .ok(),
+            "reminders_enabled" => serde_json::from_value(body.clone())
+                .map(Self::RemindersEnabled)
+                .ok(),
+            "reminder_before" => serde_json::from_value(body.clone())
+                .map(Self::ReminderBefore)
+                .ok(),
+            "due_soon_days" => serde_json::from_value(body.clone())
+                .map(Self::DueSoonDays)
+                .ok(),
+            "focus_enabled" => serde_json::from_value(body.clone())
+                .map(Self::FocusEnabled)
+                .ok(),
+            "focus_timing" => serde_json::from_value(body.clone())
+                .map(Self::FocusTiming)
+                .ok(),
+            "focus_chain" => serde_json::from_value(body.clone())
+                .map(Self::FocusChain)
+                .ok(),
+            "focus_notify" => serde_json::from_value(body.clone())
+                .map(Self::FocusNotify)
+                .ok(),
+            _ => None,
+        }
+    }
+}
+
+/// One roaming row: the typed value and its per-key write clock (the
+/// section recipe — every row is clocked, LWW per key).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoamingSettingRow {
+    /// The setting's value.
+    pub value: RoamingSettingValue,
+    /// The row's write clock (the wire row's `clock`).
+    pub clock: chrono::DateTime<chrono::Utc>,
+}
+
+/// The roaming settings home: rows keyed by
+/// [`RoamingSettingValue::key_name`]. Persisted like any synced home
+/// (one row per key); the *snapshot* (`SettingsSnapshot`) stays the
+/// app lane's wholesale value — consumption wiring is future work.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoamingSettings(pub std::collections::BTreeMap<String, RoamingSettingRow>);
+
+/// What one [`import_settings`] pass did (the [`crate::reflection::
+/// ReflectionImport`] shape): the persistence batch (every action is
+/// `UpsertRoamingSetting`) and the per-row verdict counts.
+#[derive(Debug, Default, PartialEq)]
+pub struct SettingsImport {
+    /// `UpsertRoamingSetting` per applied row, in input order.
+    pub actions: Vec<crate::persistence::PersistenceAction>,
+    /// Rows that changed the home.
+    pub applied: usize,
+    /// Rows the clock guard declined (older than local) or that were
+    /// identical to the local row already (the idempotence skip).
+    pub skipped_stale: usize,
+}
+
+/// Folds imported settings rows into the roaming home — the
+/// [`crate::reflection::import_reflections`] shape verbatim: per key
+/// the clock guard is `>=` (ties go to the imported row — the fold
+/// winner adoption argument, unchanged), and an identical row is the
+/// idempotence skip. Pure over `state` otherwise; reads no clock.
+pub fn import_settings(
+    state: &mut RoamingSettings,
+    rows: &[crate::messages::ImportedSetting],
+) -> SettingsImport {
+    let mut report = SettingsImport::default();
+    for row in rows {
+        let name = row.value.key_name().to_owned();
+        let adopt = match state.0.get(&name) {
+            None => true,
+            Some(local) => row.clock >= local.clock && row.value != local.value,
+        };
+        if adopt {
+            let setting = RoamingSettingRow {
+                value: row.value,
+                clock: row.clock,
+            };
+            state.0.insert(name.clone(), setting);
+            report
+                .actions
+                .push(crate::persistence::PersistenceAction::UpsertRoamingSetting(
+                    name, setting,
+                ));
+            report.applied += 1;
+        } else {
+            report.skipped_stale += 1;
+        }
+    }
+    report
+}
+
 /// The `Option<FocusTiming>` serde lane: the four validated numbers as
-/// a plain struct on the wire; a decode that fails the
-/// [`FocusTiming::try_new`] mint is lenient (→ `None`, the disabled
-/// shape) — module docs.
+/// a plain struct on the wire (the same [`crate::focus::
+/// FocusTimingWire`] grammar the strict lane rides); a decode that
+/// fails the [`FocusTiming::try_new`] mint is lenient (→ `None`, the
+/// disabled shape) — module docs.
 mod focus_timing_serde {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-    use crate::focus::FocusTiming;
-
-    #[derive(Serialize, Deserialize)]
-    struct Wire {
-        work_secs: i64,
-        respite_secs: i64,
-        long_break_secs: i64,
-        long_break_every: u32,
-    }
+    use crate::focus::{FocusTiming, FocusTimingWire};
 
     // serde's `with` passes `&Option<T>`; the ref_option lint's
     // `Option<&T>` shape is not available at this boundary.
@@ -333,19 +494,14 @@ mod focus_timing_serde {
     ) -> Result<S::Ok, S::Error> {
         timing
             .as_ref()
-            .map(|t| Wire {
-                work_secs: t.work().num_seconds(),
-                respite_secs: t.respite().num_seconds(),
-                long_break_secs: t.long_break().num_seconds(),
-                long_break_every: t.long_break_every(),
-            })
+            .map(FocusTimingWire::of)
             .serialize(serializer)
     }
 
     pub(super) fn deserialize<'de, D: Deserializer<'de>>(
         deserializer: D,
     ) -> Result<Option<FocusTiming>, D::Error> {
-        let wire = Option::<Wire>::deserialize(deserializer)?;
+        let wire = Option::<FocusTimingWire>::deserialize(deserializer)?;
         Ok(wire.and_then(|w| {
             FocusTiming::try_new(
                 chrono::TimeDelta::seconds(w.work_secs),
@@ -355,6 +511,210 @@ mod focus_timing_serde {
             )
             .ok()
         }))
+    }
+}
+
+#[cfg(test)]
+mod roaming_tests {
+    use super::*;
+    use crate::messages::ImportedSetting;
+    use crate::persistence::{PersistenceAction, apply_actions};
+
+    fn ts(secs: i64) -> chrono::DateTime<chrono::Utc> {
+        use chrono::TimeZone;
+        chrono::Utc.timestamp_opt(secs, 0).unwrap()
+    }
+
+    fn imported(value: RoamingSettingValue, clock_secs: i64) -> ImportedSetting {
+        ImportedSetting {
+            value,
+            clock: ts(clock_secs),
+        }
+    }
+
+    /// THE PIN (dispatch hard rule): the roam-set is data — the exact
+    /// classified list, name by name. The negative legs name the
+    /// notorious machine/secret families so their absence is asserted,
+    /// never implied by the count.
+    #[test]
+    fn roaming_setting_names_is_exactly_the_classified_list() {
+        assert_eq!(
+            ROAMING_SETTING_NAMES,
+            &[
+                "day_start_time",
+                "reminders_enabled",
+                "reminder_before",
+                "due_soon_days",
+                "focus_enabled",
+                "focus_timing",
+                "focus_chain",
+                "focus_notify",
+            ]
+        );
+        // Machine cadence / capability / hardware / secret families:
+        // none of these may ever enter the roam-set (each roams only
+        // by consciously extending the list — this pin fails first).
+        for banned in [
+            "tick_secs",
+            "poll_interval_secs",
+            "backoff_initial_secs",
+            "backoff_max_secs",
+            "reminder_sink",
+            "scale",
+            "window_geometry",
+            "stack_widths",
+            "data_dir",
+            "db_path",
+            "server_url",
+            "account",
+            "password",
+            "token",
+            "secret",
+            "keyring",
+            "locale",
+        ] {
+            assert!(
+                !ROAMING_SETTING_NAMES.contains(&banned),
+                "{banned} must never roam"
+            );
+        }
+    }
+
+    /// Every variant names a key in the pinned list, and every pinned
+    /// name is some variant's key — the list and the enum cannot drift.
+    #[test]
+    fn key_names_and_the_pinned_list_are_a_bijection() {
+        let samples = [
+            RoamingSettingValue::DayStartTime(chrono::NaiveTime::from_hms_opt(5, 0, 0).unwrap()),
+            RoamingSettingValue::RemindersEnabled(true),
+            RoamingSettingValue::ReminderBefore(ReminderOffset::at_due()),
+            RoamingSettingValue::DueSoonDays(DueSoonDays::new(2).unwrap()),
+            RoamingSettingValue::FocusEnabled(true),
+            RoamingSettingValue::FocusTiming(None),
+            RoamingSettingValue::FocusChain(true),
+            RoamingSettingValue::FocusNotify(true),
+        ];
+        let mut names: Vec<&str> = samples.iter().map(RoamingSettingValue::key_name).collect();
+        names.sort_unstable();
+        let mut pinned = ROAMING_SETTING_NAMES.to_vec();
+        pinned.sort_unstable();
+        assert_eq!(names, pinned);
+    }
+
+    /// A future build's unknown key fails the mint: `None`, never a
+    /// default (the codec rejects the row; the wire relays it).
+    #[test]
+    fn an_unknown_key_fails_the_mint() {
+        assert_eq!(
+            RoamingSettingValue::decode("focus_ambient", &serde_json::json!(true)),
+            None
+        );
+    }
+
+    /// A value that fails its own mint fails the decode (fail-closed).
+    #[test]
+    fn an_unmintable_value_fails_the_decode() {
+        assert_eq!(
+            RoamingSettingValue::decode("day_start_time", &serde_json::json!("not-a-time")),
+            None
+        );
+    }
+
+    #[test]
+    fn a_fresh_row_inserts_and_emits_its_action() {
+        let mut home = RoamingSettings::default();
+        let row = imported(RoamingSettingValue::RemindersEnabled(true), 1_800_000_000);
+        let report = import_settings(&mut home, std::slice::from_ref(&row));
+        assert_eq!(report.applied, 1);
+        assert_eq!(report.skipped_stale, 0);
+        assert_eq!(
+            home.0["reminders_enabled"].value,
+            RoamingSettingValue::RemindersEnabled(true)
+        );
+        assert_eq!(report.actions.len(), 1);
+        let PersistenceAction::UpsertRoamingSetting(name, setting) = &report.actions[0] else {
+            panic!("the import emits the upsert action");
+        };
+        assert_eq!(name, "reminders_enabled");
+        assert_eq!(setting.value, RoamingSettingValue::RemindersEnabled(true));
+        assert_eq!(setting.clock, row.clock);
+    }
+
+    /// The clock guard is `>=` — ties go to the imported row (the
+    /// fold-winner adoption rule); an older row is skipped.
+    #[test]
+    fn newer_and_tied_rows_adopt_older_rows_skip() {
+        let mut home = RoamingSettings::default();
+        let first = imported(RoamingSettingValue::FocusEnabled(false), 1_000);
+        let newer = imported(RoamingSettingValue::FocusEnabled(true), 2_000);
+        let older = imported(RoamingSettingValue::FocusEnabled(false), 500);
+        let tied_other = imported(RoamingSettingValue::FocusNotify(true), 2_000);
+        let report = import_settings(&mut home, &[first, newer, older, tied_other]);
+        assert_eq!(report.applied, 3);
+        assert_eq!(report.skipped_stale, 1);
+        assert_eq!(
+            home.0["focus_enabled"].value,
+            RoamingSettingValue::FocusEnabled(true)
+        );
+        assert_eq!(home.0["focus_enabled"].clock, ts(2_000));
+        assert!(home.0.contains_key("focus_notify"));
+    }
+
+    /// An identical row (same value, same clock) is the idempotence
+    /// skip: a replayed report is a full no-op.
+    #[test]
+    fn an_identical_row_is_the_idempotence_skip() {
+        let mut home = RoamingSettings::default();
+        let row = imported(
+            RoamingSettingValue::DueSoonDays(DueSoonDays::new(3).unwrap()),
+            42,
+        );
+        import_settings(&mut home, std::slice::from_ref(&row));
+        let report = import_settings(&mut home, &[row]);
+        assert_eq!(report.applied, 0);
+        assert_eq!(report.skipped_stale, 1);
+        assert_eq!(report.actions, Vec::new());
+    }
+
+    /// The actions replay to exactly the folded home (the
+    /// actions-mirror-state law, through `apply_actions` itself).
+    #[test]
+    fn the_emitted_batch_replays_to_the_folded_home() {
+        let mut home = RoamingSettings::default();
+        let rows = [
+            imported(RoamingSettingValue::RemindersEnabled(true), 10),
+            imported(RoamingSettingValue::FocusChain(true), 20),
+        ];
+        let folded = import_settings(&mut home, &rows);
+        let mut state = crate::persistence::PersistedState::default();
+        apply_actions(&mut state, &folded.actions);
+        assert_eq!(state.roaming, home);
+    }
+
+    /// The value serde round-trips through the enum's own lane.
+    #[test]
+    fn values_roundtrip_through_serde() {
+        let timing = crate::focus::FocusTiming::try_new(
+            chrono::TimeDelta::minutes(25),
+            chrono::TimeDelta::minutes(5),
+            chrono::TimeDelta::minutes(15),
+            4,
+        )
+        .unwrap();
+        let samples = [
+            RoamingSettingValue::DayStartTime(chrono::NaiveTime::from_hms_opt(5, 30, 0).unwrap()),
+            RoamingSettingValue::ReminderBefore(
+                ReminderOffset::before(chrono::TimeDelta::minutes(-10)).unwrap(),
+            ),
+            RoamingSettingValue::DueSoonDays(DueSoonDays::new(2).unwrap()),
+            RoamingSettingValue::FocusTiming(Some(timing)),
+            RoamingSettingValue::FocusTiming(None),
+        ];
+        for sample in samples {
+            let raw = serde_json::to_value(sample).unwrap();
+            let back: RoamingSettingValue = serde_json::from_value(raw).unwrap();
+            assert_eq!(back, sample);
+        }
     }
 }
 

@@ -943,6 +943,11 @@ pub struct UserDataReport {
     /// The `journal` wire section's decoded rows (the domain vocabulary
     /// is `reflection` — `journal` is the wire name only).
     pub journal: Vec<ImportedReflection>,
+    /// The `settings` wire section's decoded rows (DR-9 D-BF3).
+    pub settings: Vec<ImportedSetting>,
+    /// The `proofs` wire section's decoded delivery proofs (D-BF3's
+    /// set-union rows).
+    pub proofs: Vec<crate::reminders::ReminderDelivery>,
 }
 
 /// One decoded row of the `journal` wire section.
@@ -957,6 +962,20 @@ pub enum ImportedReflection {
         id: crate::ids::ReflectionId,
         clock: chrono::DateTime<chrono::Utc>,
     },
+}
+
+/// One decoded row of the `settings` wire section (DR-9 D-BF3): the
+/// typed value plus its per-key write clock. The map key (the
+/// setting's stable name) equals `value.key_name()` by construction —
+/// the decoder mints through [`crate::settings::RoamingSettingValue::
+/// decode`], so an unknown name or a shape that fails the value's own
+/// decode never crosses this seam.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportedSetting {
+    /// The setting's value (its variant names the wire key).
+    pub value: crate::settings::RoamingSettingValue,
+    /// The row's write clock (the wire row's `clock`).
+    pub clock: chrono::DateTime<chrono::Utc>,
 }
 
 #[cfg(test)]

@@ -93,6 +93,7 @@ habits:
       clock: "1970-01-01T10:04:00Z"
 reflection:
   entries: {}
+roaming: {}
 journal:
   entries:
     - id: 00000000-0000-0000-0000-000000000003

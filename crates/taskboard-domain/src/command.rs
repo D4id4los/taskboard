@@ -3403,6 +3403,7 @@ mod tests {
             last_updated: None,
             habits: crate::habit::HabitState::default(),
             reflection: crate::reflection::ReflectionState::default(),
+            roaming: crate::settings::RoamingSettings::default(),
         };
         let task_id = TaskId::from(uuid::Uuid::from_u128(u128::from(TASK)));
         let label_id = LabelId::from(uuid::Uuid::from_u128(u128::from(LABEL)));
@@ -5206,6 +5207,7 @@ mod tests {
             last_updated: None,
             habits: crate::habit::HabitState::default(),
             reflection: crate::reflection::ReflectionState::default(),
+            roaming: crate::settings::RoamingSettings::default(),
         };
         // Give the board content so bind tests exercise a non-empty board.
         let stack = stack(901, false);
@@ -6607,6 +6609,7 @@ mod tests {
             last_updated: None,
             habits: crate::habit::HabitState::default(),
             reflection: crate::reflection::ReflectionState::default(),
+            roaming: crate::settings::RoamingSettings::default(),
         };
         assert_eq!(
             run(&app, &[], &StateCommand::ResetBoard { board: board_id }),
@@ -10832,6 +10835,7 @@ mod proptests {
                 settings: crate::settings::SettingsSnapshot::default(),
                 habits: crate::habit::HabitState::default(),
                 reflection: crate::reflection::ReflectionState::default(),
+        roaming: crate::settings::RoamingSettings::default(),
             };
             let outbox = persisted.outbox.clone();
             let result = plan_command(
@@ -10950,6 +10954,7 @@ mod proptests {
                 settings: crate::settings::SettingsSnapshot::default(),
                 habits: crate::habit::HabitState::default(),
                 reflection: crate::reflection::ReflectionState::default(),
+        roaming: crate::settings::RoamingSettings::default(),
             };
             let result = live_board_of(&app, board);
             match app.boards.get(&board) {

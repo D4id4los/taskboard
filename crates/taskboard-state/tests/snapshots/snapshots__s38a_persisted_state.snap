@@ -139,6 +139,7 @@ habits:
   log: {}
 reflection:
   entries: {}
+roaming: {}
 journal:
   entries: []
   head: ~

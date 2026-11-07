@@ -769,7 +769,11 @@ async fn import_step(ctx: &SyncContext, st: &mut LoopState, merged: &UserDocumen
     if !rows.is_empty()
         && ctx
             .report_tx
-            .send(UserDataReport { journal: rows })
+            .send(UserDataReport {
+                journal: rows,
+                settings: Vec::new(),
+                proofs: Vec::new(),
+            })
             .await
             .is_err()
     {

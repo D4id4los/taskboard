@@ -112,6 +112,9 @@ pub struct PersistedState {
     pub habits: crate::habit::HabitState,
     /// Reflection entries (DR-7, ADR 0021).
     pub reflection: crate::reflection::ReflectionState,
+    /// The roaming settings home (DR-9 D-BF3): one row per roamer,
+    /// keyed by the setting's stable name.
+    pub roaming: crate::settings::RoamingSettings,
     /// The undo journal (ADR 0019): the tree of journaled commands and
     /// the persisted line head (R-U10 — the head moves on undo/redo
     /// without a new node, so it cannot be derived).
@@ -129,6 +132,7 @@ impl From<PersistedState> for AppState {
             tracking: persisted.tracking,
             habits: persisted.habits,
             reflection: persisted.reflection,
+            roaming: persisted.roaming,
             sync: persisted.sync,
             undo: crate::journal::UndoView::derive(&persisted.journal),
             last_updated: None,
@@ -269,6 +273,13 @@ pub enum PersistenceAction {
     /// pinned by the sweep's unobservability property; interpretation is
     /// a dumb set difference on purpose.
     PruneReminderDeliveries(Vec<ReminderDelivery>),
+    /// Upsert one roaming `settings`-section row (DR-9 D-BF3): the
+    /// import fold's adopted winner applied verbatim (the
+    /// `UpsertReflectionEntry` mirror — the action carries the row;
+    /// the key is the value's stable setting name). An import is not a
+    /// user command: like the reflection import, no undo-journal entry
+    /// exists.
+    UpsertRoamingSetting(String, crate::settings::RoamingSettingRow),
     /// Mute (`true`) or unmute (`false`) all firings of a task. The
     /// overdue banner is unaffected by construction (it never reads the
     /// muted set).
@@ -469,6 +480,13 @@ pub fn apply_actions(state: &mut PersistedState, actions: &[PersistenceAction]) 
                 {
                     state.reminders.deliveries.insert(*delivery);
                 }
+            }
+            PersistenceAction::UpsertRoamingSetting(name, setting) => {
+                // The import winner applied verbatim — no guard here:
+                // the guard ran in the fold, and the action must land
+                // exactly the folded home (the actions-mirror-state
+                // law).
+                state.roaming.0.insert(name.clone(), *setting);
             }
             PersistenceAction::RecordReminderDismissal(dismissal) => {
                 if !state
