@@ -261,6 +261,7 @@ proptest! {
             tracking: persisted.tracking.clone(),
             habits: taskboard_domain::HabitState::default(),
             reflection: taskboard_domain::ReflectionState::default(),
+            roaming: taskboard_domain::RoamingSettings::default(),
             sync: persisted.sync.clone(),
             last_updated: None,
             settings: taskboard_domain::SettingsSnapshot::default(),
@@ -691,6 +692,7 @@ fn drive_sequence(steps: &[Step]) -> Result<(), TestCaseError> {
                 tracking: disk_derived.tracking,
                 habits: taskboard_domain::HabitState::default(),
                 reflection: taskboard_domain::ReflectionState::default(),
+                roaming: disk_derived.roaming,
                 sync: disk_derived.sync,
                 last_updated: mem_after.last_updated,
                 // The spawn seed is the test-policy default on both

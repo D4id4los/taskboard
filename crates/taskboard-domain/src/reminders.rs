@@ -1791,12 +1791,147 @@ fn is_remindable(task: &Task) -> bool {
     task.is_live() && task.is_open() && task.duedate.is_some()
 }
 
+/// What one [`import_deliveries`] pass did (the
+/// [`crate::reflection::ReflectionImport`] shape): the persistence
+/// batch (every action is `RecordReminderDelivery` — the import
+/// persists through the same action the fire path uses, no new action
+/// kind) and the per-row verdict counts.
+#[derive(Debug, Default, PartialEq)]
+pub struct DeliveryImport {
+    /// `RecordReminderDelivery` per applied row, in input order.
+    pub actions: Vec<crate::persistence::PersistenceAction>,
+    /// Rows that changed the home.
+    pub applied: usize,
+    /// Proofs whose `(reminder, occurrence)` key the home already
+    /// settled — a re-delivered proof is a no-op (the set-union
+    /// idempotence).
+    pub skipped_duplicate: usize,
+}
+
+/// Folds imported delivery proofs into the reminder home (DR-9 D-BF3).
+/// **Set-union on the `(reminder, occurrence)` key**: a proof is
+/// adopted iff no local row settles that occurrence yet — first write
+/// wins, exactly the `RecordReminderDelivery` apply guard, so
+/// replaying the emitted actions lands the same home (the
+/// actions-mirror-state law). A re-delivered proof is a no-op and an
+/// out-of-order report converges: membership, not recency — the
+/// `delivered_at` leg is per-device fact detail, never a rank.
+/// Emission scope: only `Rule`- and `Break`-ref proofs ever arrive
+/// (the wire filter mirrors the dismissals split law); the fold
+/// accepts whatever the report carries. Pure otherwise; reads no
+/// clock.
+pub fn import_deliveries(state: &mut ReminderState, proofs: &[ReminderDelivery]) -> DeliveryImport {
+    let mut report = DeliveryImport::default();
+    for proof in proofs {
+        if state.is_delivered(&proof.reminder, &proof.occurrence) {
+            report.skipped_duplicate += 1;
+            continue;
+        }
+        state.deliveries.insert(*proof);
+        report
+            .actions
+            .push(crate::persistence::PersistenceAction::RecordReminderDelivery(*proof));
+        report.applied += 1;
+    }
+    report
+}
+
 /// Shared banner/strip filter + the canonical `(order, id)` sort. Pinned
 /// by property to `AppState::live_tasks`' comparator.
 fn filter_sorted(tasks: &BTreeMap<TaskId, Task>, keep: impl Fn(&Task) -> bool) -> Vec<&Task> {
     let mut picked: Vec<&Task> = tasks.values().filter(|t| keep(t)).collect();
     picked.sort_by_key(|t| (t.order, t.id));
     picked
+}
+
+#[cfg(test)]
+mod import_deliveries_tests {
+    use super::*;
+    use crate::persistence::apply_actions;
+    use chrono::TimeZone;
+
+    fn ts(secs: i64) -> DateTime<Utc> {
+        Utc.timestamp_opt(secs, 0).unwrap()
+    }
+
+    fn proof(occurrence: i64, delivered_at: i64) -> ReminderDelivery {
+        ReminderDelivery {
+            reminder: ReminderRef::Rule(ReminderRuleId::from(uuid::Uuid::from_u128(0x2f_1a))),
+            occurrence: ts(occurrence),
+            delivered_at: ts(delivered_at),
+        }
+    }
+
+    /// A fresh occurrence adopts and emits the existing set-union
+    /// action — the import persists through the fire path's action, no
+    /// new action kind.
+    #[test]
+    fn a_fresh_proof_adopts_and_emits_record_delivery() {
+        let mut home = ReminderState::default();
+        let report = import_deliveries(&mut home, &[proof(1_000, 2_000)]);
+        assert_eq!(report.applied, 1);
+        assert_eq!(report.skipped_duplicate, 0);
+        assert!(home.is_delivered(&proof(1_000, 2_000).reminder, &ts(1_000)));
+        assert_eq!(report.actions.len(), 1);
+        assert_eq!(
+            report.actions[0],
+            crate::persistence::PersistenceAction::RecordReminderDelivery(proof(1_000, 2_000))
+        );
+    }
+
+    /// THE PIN: a re-delivered proof is a no-op — the second report's
+    /// row (and any replay) never re-applies, never re-stamps.
+    #[test]
+    fn a_redelivered_proof_is_a_no_op() {
+        let mut home = ReminderState::default();
+        import_deliveries(&mut home, &[proof(1_000, 2_000)]);
+        let replay = import_deliveries(&mut home, &[proof(1_000, 2_000)]);
+        let from_other_device = import_deliveries(&mut home, &[proof(1_000, 9_999)]);
+        assert_eq!(replay.applied, 0);
+        assert_eq!(replay.skipped_duplicate, 1);
+        assert_eq!(from_other_device.applied, 0);
+        assert_eq!(home.deliveries.len(), 1);
+    }
+
+    /// THE PIN: an out-of-order report converges — whichever report
+    /// arrives first settles the occurrence; the other is the
+    /// duplicate skip. Membership, not recency.
+    #[test]
+    fn an_out_of_order_report_converges() {
+        let early = proof(1_000, 2_000);
+        let late = proof(1_000, 5_000);
+        let mut forward = ReminderState::default();
+        let forward_report = import_deliveries(&mut forward, &[early, late]);
+        let mut backward = ReminderState::default();
+        let backward_report = import_deliveries(&mut backward, &[late, early]);
+        assert_eq!(forward_report.applied, 1);
+        assert_eq!(backward_report.applied, 1);
+        assert!(forward.is_delivered(&early.reminder, &ts(1_000)));
+        assert!(backward.is_delivered(&early.reminder, &ts(1_000)));
+        assert_eq!(forward.deliveries.len(), 1);
+        assert_eq!(backward.deliveries.len(), 1);
+    }
+
+    /// Distinct occurrences are independent rows (the occurrence key,
+    /// not the rule alone).
+    #[test]
+    fn distinct_occurrences_union_independently() {
+        let mut home = ReminderState::default();
+        let report = import_deliveries(&mut home, &[proof(1_000, 2_000), proof(3_000, 4_000)]);
+        assert_eq!(report.applied, 2);
+        assert_eq!(home.deliveries.len(), 2);
+    }
+
+    /// The emitted batch replays to exactly the folded home through
+    /// `apply_actions` (the actions-mirror-state law).
+    #[test]
+    fn the_emitted_batch_replays_to_the_folded_home() {
+        let mut home = ReminderState::default();
+        let report = import_deliveries(&mut home, &[proof(1_000, 2_000), proof(3_000, 4_000)]);
+        let mut state = crate::persistence::PersistedState::default();
+        apply_actions(&mut state, &report.actions);
+        assert_eq!(state.reminders.deliveries, home.deliveries);
+    }
 }
 
 #[cfg(test)]

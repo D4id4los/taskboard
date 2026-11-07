@@ -45,6 +45,12 @@ pub struct AppState {
     /// Reflection entries (DR-7, ADR 0021): tombstones stay in the map,
     /// reads filter through `live_entries`.
     pub reflection: crate::reflection::ReflectionState,
+    /// The roaming settings home (DR-9 D-BF3): the `settings` wire
+    /// section's imported rows, keyed by the setting's stable name.
+    /// Persisted (unlike [`AppState::settings`], which stays the app
+    /// lane's wholesale value): the import fold advances it through
+    /// the persistence batch like every synced home.
+    pub roaming: crate::settings::RoamingSettings,
     /// Current sync status, keyed per board (the surfaces read the
     /// `aggregate()` fold).
     pub sync: SyncStates,

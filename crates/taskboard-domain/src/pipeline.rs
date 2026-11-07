@@ -1472,6 +1472,7 @@ pub fn apply_sync_report(
         // one carries the local truth through untouched.
         habits: folded_habits.unwrap_or_else(|| current.habits.clone()),
         reflection: current.reflection.clone(),
+        roaming: current.roaming.clone(),
         // The undo projection is derived from the persisted journal at
         // publish (core.rs); the pipeline's working copy carries the
         // current one through untouched.
@@ -1689,6 +1690,7 @@ pub fn apply_push_report(
         // untouched.
         habits: current.habits.clone(),
         reflection: current.reflection.clone(),
+        roaming: current.roaming.clone(),
         // The undo projection is derived from the persisted journal at
         // publish (core.rs); the pipeline's working copy carries the
         // current one through untouched.

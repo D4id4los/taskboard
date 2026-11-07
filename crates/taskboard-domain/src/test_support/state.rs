@@ -404,6 +404,7 @@ fn raw_app_state_strategy() -> impl Strategy<Value = AppState> {
                 last_updated: None,
                 habits: crate::habit::HabitState::default(),
                 reflection: crate::reflection::ReflectionState::default(),
+                roaming: crate::settings::RoamingSettings::default(),
             }
         },
     )
@@ -524,6 +525,7 @@ pub fn persisted_state_strategy() -> impl Strategy<Value = PersistedState> {
                     tracking: state.tracking,
                     habits: state.habits,
                     reflection: state.reflection,
+                    roaming: crate::settings::RoamingSettings::default(),
                 }
             },
         )

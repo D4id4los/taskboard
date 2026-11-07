@@ -3856,6 +3856,8 @@ async fn u1_import_lands_without_touching_any_board_machinery() {
                     clock: common::ts(5_001),
                 },
             ],
+            settings: Vec::new(),
+            proofs: Vec::new(),
         })
         .await
         .expect("lane open");
@@ -3908,6 +3910,8 @@ async fn u2_noop_report_writes_and_publishes_nothing() {
     h.user_data_tx
         .send(UserDataReport {
             journal: Vec::new(),
+            settings: Vec::new(),
+            proofs: Vec::new(),
         })
         .await
         .expect("lane open");
@@ -3917,6 +3921,8 @@ async fn u2_noop_report_writes_and_publishes_nothing() {
                 id: taskboard_domain::ReflectionId::from(uuid::Uuid::from_u128(778)),
                 clock: common::ts(5_002),
             }],
+            settings: Vec::new(),
+            proofs: Vec::new(),
         })
         .await
         .expect("lane open");

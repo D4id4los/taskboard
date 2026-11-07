@@ -1132,6 +1132,8 @@ mod tests {
             report_tx
                 .send(UserDataReport {
                     journal: Vec::new(),
+                    settings: Vec::new(),
+                    proofs: Vec::new(),
                 })
                 .await
                 .expect("pre-fill");

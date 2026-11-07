@@ -2443,7 +2443,11 @@ impl Scenario {
     /// the persisted one — the ingest is durable before `snap`).
     async fn deliver(&mut self, journal: Vec<ImportedReflection>) {
         self.user_data_tx
-            .send(UserDataReport { journal })
+            .send(UserDataReport {
+                journal,
+                settings: Vec::new(),
+                proofs: Vec::new(),
+            })
             .await
             .expect("lane open");
         // Determinism by construction: the loop is sequential — the next

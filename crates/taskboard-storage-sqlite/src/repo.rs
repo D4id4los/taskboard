@@ -1084,6 +1084,15 @@ impl SqliteTaskRepository {
         .await
         .map_err(|e| stmt_error(&e))?;
 
+        // DR-9 D-BF3 (#685): the roaming settings home. The
+        // `habit_log` precedent's unchecked queries — a fresh table
+        // need not re-seed the sqlx offline metadata.
+        let roaming_rows: Vec<(String, String, String)> =
+            sqlx::query_as(r"SELECT name, value, clock FROM roaming_settings ORDER BY name")
+                .fetch_all(&mut *tx)
+                .await
+                .map_err(|e| stmt_error(&e))?;
+
         let mut boards = BTreeMap::new();
         for row in board_rows {
             let board = decode_board(row, &self.default_connector)?;
@@ -1292,6 +1301,19 @@ impl SqliteTaskRepository {
                 }
                 reflection
             },
+            roaming: {
+                let mut roaming = taskboard_domain::RoamingSettings::default();
+                for (name, value, clock) in &roaming_rows {
+                    let value: taskboard_domain::RoamingSettingValue =
+                        serde_json::from_str(value).map_err(|_| RepositoryError::Corrupted)?;
+                    let clock = decode::clock(clock)?;
+                    roaming.0.insert(
+                        name.clone(),
+                        taskboard_domain::RoamingSettingRow { value, clock },
+                    );
+                }
+                roaming
+            },
             journal: taskboard_domain::JournalState {
                 entries: journal_entries,
                 head,
@@ -1396,6 +1418,7 @@ async fn execute_batch(
     // the reflection upserts, written by the compile-checked macro
     // against migration 0022's table.
     let mut reflection_upserts = Vec::new();
+    let mut roaming_upserts: Vec<(String, taskboard_domain::RoamingSettingRow)> = Vec::new();
     // ADR 0019 (undo/1): the three journal buckets — appends (each with
     // the D11 eviction mirror), head moves, flag flips. The journal
     // references op ids by value only (no FK constraints; the eviction
@@ -1448,6 +1471,9 @@ async fn execute_batch(
             }
             PersistenceAction::UpsertReflectionEntry(entry) => {
                 reflection_upserts.push(entry);
+            }
+            PersistenceAction::UpsertRoamingSetting(name, setting) => {
+                roaming_upserts.push((name.clone(), *setting));
             }
             PersistenceAction::RecordJournal(entry) => journal_appends.push(entry),
             PersistenceAction::MarkJournalPushed(id) => journal_pushed.push(*id),
@@ -1869,6 +1895,24 @@ async fn execute_batch(
         .await
         .map_err(|e| stmt_error(&e))?;
         tracing::trace!(entry = ?entry.id, "reflection entry upserted");
+    }
+    // DR-9 D-BF3 (#685): the roaming-settings upserts — the import
+    // fold's adopted winner applied verbatim, no clock predicate (the
+    // reflection loop's shape; the guard ran in the fold).
+    for (name, setting) in &roaming_upserts {
+        sqlx::query(
+            r"INSERT INTO roaming_settings (name, value, clock) VALUES (?, ?, ?)
+                 ON CONFLICT(name) DO UPDATE SET
+                     value = excluded.value,
+                     clock = excluded.clock",
+        )
+        .bind(name)
+        .bind(serde_json::to_string(&setting.value).map_err(|_| RepositoryError::Corrupted)?)
+        .bind(setting.clock.to_rfc3339())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| stmt_error(&e))?;
+        tracing::trace!(setting = %name, "roaming setting upserted");
     }
     for (key, entry) in habit_log_rows {
         // The LWW guard lives in the SQL: a strictly-older batch row

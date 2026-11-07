@@ -172,6 +172,7 @@ pub fn build_state(n: usize) -> AppState {
         tracking: taskboard_domain::tracking::TrackingState::default(),
         habits: taskboard_domain::habit::HabitState::default(),
         reflection: taskboard_domain::reflection::ReflectionState::default(),
+        roaming: taskboard_domain::RoamingSettings::default(),
         sync: SyncStates::new(),
         last_updated: None,
         settings: taskboard_domain::SettingsSnapshot::default(),

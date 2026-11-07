@@ -171,8 +171,8 @@ pub use remote::{
     RemoteIndex, RemoteLabel, RemoteStack, RemoteTask, resolve_label,
 };
 pub use settings::{
-    DueSoonDays, InvalidDueSoonDays, InvalidTickSecs, ReminderSinkChoice, SettingsSnapshot,
-    TickSecs,
+    DueSoonDays, InvalidDueSoonDays, InvalidTickSecs, ReminderSinkChoice, RoamingSettingRow,
+    RoamingSettingValue, RoamingSettings, SettingsSnapshot, TickSecs, import_settings,
 };
 pub use state::{
     AppState, SidecarHealth, SyncCounters, SyncErrorKind, SyncPhase, SyncStates, SyncStatus,

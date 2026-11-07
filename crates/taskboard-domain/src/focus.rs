@@ -4,14 +4,16 @@
 //! pure derivation consumed by the app-layer focus-session runtime and
 //! the ui-slint concentration overlay.
 //!
-//! The type carries **no serde impl** — it is never persisted and never
-//! roamed (the `ReminderDefaults` precedent): config stores raw integer
-//! minutes and mints through [`FocusTiming::try_new`] at the config-load
-//! trust boundary, so a zero-length block can never enter a consumer.
+//! The serde lane (DR-9 D-BF3, the roaming `settings` section): the
+//! four numbers as a plain integer-seconds struct — a decode that fails
+//! the [`FocusTiming::try_new`] mint is a typed serde error, never a
+//! silent default (the config-load trust boundary stays the raw-integer
+//! mint; this lane only carries already-minted rows).
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::TimeDelta;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::ids::TimeEntryId;
 use crate::tracking::{TimeEntry, TimeEntryKind};
@@ -531,5 +533,47 @@ mod tests {
         let long = row(TimeEntryKind::Respite, T0 + m(115), None);
         let entries = map(&[c1, b1, c2, b2, c3, b3, c4, long.clone()]);
         assert!(focus_break_is_long(&entries, &long, &timing, None));
+    }
+}
+
+/// The `FocusTiming` serde wire shape (module docs): whole seconds.
+/// Crate-shared because the settings snapshot's `Option<FocusTiming>`
+/// lane (`settings.rs::focus_timing_serde`) rides the same grammar —
+/// one wire shape, two decode postures (strict here, lenient there).
+#[derive(Serialize, Deserialize)]
+pub(crate) struct FocusTimingWire {
+    pub(crate) work_secs: i64,
+    pub(crate) respite_secs: i64,
+    pub(crate) long_break_secs: i64,
+    pub(crate) long_break_every: u32,
+}
+
+impl FocusTimingWire {
+    pub(crate) fn of(timing: &FocusTiming) -> Self {
+        Self {
+            work_secs: timing.work.num_seconds(),
+            respite_secs: timing.respite.num_seconds(),
+            long_break_secs: timing.long_break.num_seconds(),
+            long_break_every: timing.long_break_every,
+        }
+    }
+}
+
+impl Serialize for FocusTiming {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        FocusTimingWire::of(self).serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for FocusTiming {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let wire = FocusTimingWire::deserialize(deserializer)?;
+        Self::try_new(
+            TimeDelta::seconds(wire.work_secs),
+            TimeDelta::seconds(wire.respite_secs),
+            TimeDelta::seconds(wire.long_break_secs),
+            wire.long_break_every,
+        )
+        .map_err(serde::de::Error::custom)
     }
 }
