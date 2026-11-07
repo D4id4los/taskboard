@@ -1653,7 +1653,13 @@ impl AppConfig {
     /// is no longer wired here: the actor reads it per cycle from the
     /// engine's live settings ([`Self::settings_snapshot`]).
     #[must_use]
-    pub fn sync_actor_config(&self) -> SyncActorConfig {
+    /// The sync actor's spawn config; `author` is the boot-resolved
+    /// device identity (F1) — minted state injected at spawn, never
+    /// derived from configuration.
+    pub fn sync_actor_config(
+        &self,
+        author: Option<taskboard_domain::ids::AuthorId>,
+    ) -> SyncActorConfig {
         SyncActorConfig {
             // Stateless: engine and actor read one wall source. A fresh
             // Arc of the zero-sized clock is that same source.
@@ -1661,11 +1667,9 @@ impl AppConfig {
             // The same calendar the engine's day roll runs on (the one
             // validated vocabulary — no second local-date concept).
             day: self.resolved_day_calendar(),
-            // The author identity is minted state, not config: the app
-            // injects it at spawn (the bootstrap's device-identity
-            // lift), so the config-derived actor config stamps
-            // authorless rows.
-            author: None,
+            // The author identity is minted state, not config: the
+            // bootstrap resolves it at boot and injects it here.
+            author,
         }
     }
 

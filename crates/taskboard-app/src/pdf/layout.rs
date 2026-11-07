@@ -1206,6 +1206,7 @@ mod tests {
                 archived: stamp(100),
                 deleted: stamp(100),
             },
+            authors: taskboard_domain::entities::TaskAuthors::default(),
             remote_seen: None,
             remote_baseline: None,
         }

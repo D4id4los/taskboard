@@ -2376,13 +2376,14 @@ mod tests {
         }
     }
 
-    fn fold_report(
+    pub(super) fn fold_report(
         state: &AppState,
         outbox: &[crate::outbox::PendingOp],
         snapshot: &RemoteBoardSnapshot,
         evidence: &AppDataEvidence,
         features: DeckFeatures,
         read_at: i64,
+        author: Option<crate::ids::AuthorId>,
     ) -> (
         AppState,
         Vec<PersistenceAction>,
@@ -2400,7 +2401,7 @@ mod tests {
             evidence,
             features,
             test_day(),
-            None,
+            author,
         )
     }
 
@@ -2428,6 +2429,7 @@ mod tests {
             &evidence,
             DeckFeatures::CONSERVATIVE,
             BASE + 3_600,
+            None,
         );
         let merged = task_by_card(&app, 1);
         assert_eq!(merged.effort, Some(crate::entities::Effort::new(900)));
@@ -2494,6 +2496,7 @@ mod tests {
             &evidence,
             DeckFeatures::CONSERVATIVE,
             BASE + 3_600,
+            None,
         );
         // Memory view: the tombstone removed, the document rule adopted.
         assert!(!app.reminders.rules.contains_key(&existing.id));
@@ -2603,6 +2606,7 @@ mod tests {
             &evidence,
             DeckFeatures::CONSERVATIVE,
             BASE + 3_600,
+            None,
         );
         // Both rules adopted; the dismissal row folded into the state.
         let adopted_dismissed = rule(dismissed_rule);
@@ -2691,6 +2695,7 @@ mod tests {
             &evidence,
             DeckFeatures::CONSERVATIVE,
             BASE,
+            None,
         );
         assert!(
             app.reminders.rules.is_empty(),
@@ -2738,6 +2743,7 @@ mod tests {
             &evidence,
             DeckFeatures::CONSERVATIVE,
             BASE,
+            None,
         );
         let merged = task_by_card(&app, 1);
         assert_eq!(merged.effort, None, "the protected local truth stands");
@@ -2783,6 +2789,7 @@ mod tests {
             &evidence,
             DeckFeatures::CONSERVATIVE,
             BASE,
+            None,
         );
         assert_eq!(
             task_by_card(&app, 1).effort,
@@ -2851,6 +2858,7 @@ mod tests {
             &evidence,
             DeckFeatures::CONSERVATIVE,
             BASE + 3_600,
+            None,
         );
         assert_eq!(
             task_by_card(&app, 1).effort,
@@ -2871,6 +2879,7 @@ mod tests {
             &AppDataEvidence::Absent,
             DeckFeatures::CONSERVATIVE,
             BASE + 3_600,
+            None,
         );
         let row = app.sync.get(*state.boards.keys().next().unwrap()).unwrap();
         assert_eq!(row.sidecar, crate::state::SidecarHealth::Healthy);
@@ -2896,6 +2905,7 @@ mod tests {
             &AppDataEvidence::Unreadable(crate::messages::AppDataUnreadable::AccessDenied),
             DeckFeatures::CONSERVATIVE,
             BASE + 3_600,
+            None,
         );
         assert_eq!(
             task_by_card(&app, 1).effort,
@@ -2996,6 +3006,7 @@ mod tests {
             &AppDataEvidence::Absent,
             DeckFeatures::CONSERVATIVE,
             BASE,
+            None,
         );
         assert_eq!(app.habits, state.habits, "no sections, no fold");
         assert!(actions.iter().all(|a| !matches!(
@@ -3025,6 +3036,7 @@ mod tests {
             &evidence,
             DeckFeatures::CONSERVATIVE,
             BASE,
+            None,
         );
         let roamed = &app.habits.habits[&crate::ids::HabitId::from(remote_id)];
         assert_eq!(roamed.title, "roamed", "the newer definition adopted");
@@ -7561,6 +7573,7 @@ mod tests {
             &evidence,
             DeckFeatures::CONSERVATIVE,
             BASE + 3_600,
+            None,
         );
         // Both the dismissal row and the entry landed (the position pin:
         // the entry fold runs after dismissals in the same pass).
@@ -7596,6 +7609,7 @@ mod tests {
             &evidence,
             DeckFeatures::CONSERVATIVE,
             BASE + 3_600,
+            None,
         );
         assert_eq!(app.tracking.entries.len(), 1, "history outlives the card");
         assert!(
@@ -7625,6 +7639,7 @@ mod tests {
             &evidence,
             DeckFeatures::CONSERVATIVE,
             BASE + 3_600,
+            None,
         );
         assert!(
             app.tracking.entries.is_empty(),
@@ -8262,6 +8277,168 @@ mod duplicate_reconcile_tests {
                 .iter()
                 .all(|op| !matches!(op, LocalOp::DeleteRemoteStack { .. })),
             "no stack delete fires for a contested orphan"
+        );
+    }
+}
+
+#[cfg(test)]
+mod author_journey_tests {
+    use super::*;
+    use crate::appdata::{
+        AppDataDocument, AppDataSections, ModeledValue, TaskEntry, TaskFieldWrite,
+    };
+    use crate::capabilities::DeckFeatures;
+    use crate::ids::AuthorId;
+    use crate::merge_testutil::{
+        BASE, CountingIds, REMOTE_BOARD_NUM, base_state, board, bound_task, remote_task,
+        single_stack_snapshot, ts,
+    };
+    use crate::messages::AppDataEvidence;
+    use std::collections::BTreeMap;
+
+    fn author(hex: u128) -> AuthorId {
+        AuthorId::from_uuid(uuid::Uuid::from_u128(hex))
+    }
+
+    fn authored_row(by: Option<AuthorId>) -> TaskEntry {
+        // The row carries *its author's* local write: `a` wrote effort 2,
+        // `b` wrote effort 3 — distinct contents at the same stamp.
+        let value = if by == Some(author(0x6EA1_0000_0000_0001)) {
+            2
+        } else {
+            3
+        };
+        TaskEntry {
+            fields: BTreeMap::from([(
+                "effort".to_owned(),
+                TaskFieldWrite {
+                    value: ModeledValue::Effort(Some(crate::entities::Effort::new(value))),
+                    clock: ts(BASE + 60),
+                    by,
+                },
+            )]),
+            unmodeled: BTreeMap::new(),
+        }
+    }
+
+    /// The sibling fixture, re-declared local to this module (the
+    /// outer `tests` helpers are private to it): the fold path with the
+    /// device's own author as the last argument.
+    #[allow(clippy::too_many_arguments)]
+    fn fold_report(
+        state: &AppState,
+        outbox: &[crate::outbox::PendingOp],
+        snapshot: &RemoteBoardSnapshot,
+        evidence: &AppDataEvidence,
+        features: DeckFeatures,
+        read_at: i64,
+        author: Option<crate::ids::AuthorId>,
+    ) -> AppState {
+        apply_sync_report(
+            state,
+            outbox,
+            snapshot,
+            &[],
+            ts(read_at),
+            &CountingIds::default(),
+            ts(read_at),
+            &crate::test_support::test_connector(),
+            evidence,
+            features,
+            crate::days::DayCalendar {
+                day_start_time: chrono::NaiveTime::MIN,
+                offset: chrono::FixedOffset::east_opt(0).unwrap(),
+            },
+            author,
+        )
+        .0
+    }
+
+    fn document(entries: &[(u64, TaskEntry)]) -> AppDataEvidence {
+        let mut tasks_map = BTreeMap::new();
+        for (card, entry) in entries {
+            tasks_map.insert(card.to_string(), entry.clone());
+        }
+        AppDataEvidence::Document(Box::new(AppDataDocument {
+            format: crate::appdata::APPDATA_FORMAT,
+            board: board(REMOTE_BOARD_NUM),
+            sections: AppDataSections {
+                tasks: Some(tasks_map),
+                ..AppDataSections::default()
+            },
+            unknown: BTreeMap::new(),
+        }))
+    }
+
+    /// T-PROP-1 (the headline, at the end-to-end reader): two devices
+    /// stamp *equal* clocks on different writes to the same field;
+    /// folding each other's authored documents resolves the duel to the
+    /// same winner on both readers. The local author leg is each
+    /// reader's own device identity (the spawn-parameter author), the
+    /// incoming leg is the document row's `by`. The pre-F1 clock-only
+    /// duel would leave both readers holding their own row forever.
+    #[test]
+    fn equal_clocks_different_authors_converge_on_every_reader() {
+        use crate::entities::TaskAuthors;
+        let a = author(0x6EA1_0000_0000_0001);
+        let b = author(0x6EB2_0000_0000_0002);
+
+        // Each reader's local task carries its own device's author slot
+        // (the planner's stamp; the entity slot is the fold's local leg).
+        let mut local_a = bound_task(1);
+        local_a.effort = Some(crate::entities::Effort::new(2));
+        local_a.authors.effort = Some(a);
+        local_a.clocks.effort = ts(BASE + 60);
+        let mut local_b = bound_task(1);
+        local_b.effort = Some(crate::entities::Effort::new(3));
+        local_b.authors.effort = Some(b);
+        local_b.clocks.effort = ts(BASE + 60);
+
+        // Reader A (author a) folds B's document; reader B (author b)
+        // folds A's document. Both rows claim the same stamp.
+        let doc_a = document(&[(1, authored_row(Some(a)))]);
+        let doc_b = document(&[(1, authored_row(Some(b)))]);
+        let snapshot = single_stack_snapshot(vec![remote_task(1, 1, BASE)], BASE);
+
+        let state_folding_b_doc = fold_report(
+            &base_state(local_a),
+            &[],
+            &snapshot,
+            &doc_b,
+            DeckFeatures::CONSERVATIVE,
+            BASE + 3_600,
+            Some(a),
+        );
+        let state_folding_doc_a = fold_report(
+            &base_state(local_b),
+            &[],
+            &snapshot,
+            &doc_a,
+            DeckFeatures::CONSERVATIVE,
+            BASE + 3_600,
+            Some(b),
+        );
+        let _ = TaskAuthors::default();
+
+        let adopted_a = state_folding_b_doc.tasks.values().next().unwrap();
+        let adopted_b = state_folding_doc_a.tasks.values().next().unwrap();
+        assert_eq!(
+            adopted_a.effort, adopted_b.effort,
+            "one winner on every reader"
+        );
+        assert_eq!(
+            adopted_b.effort,
+            Some(crate::entities::Effort::new(3)),
+            "b's write outranks a's equal-clock row on both readers"
+        );
+        assert_eq!(
+            adopted_a.authors.effort, adopted_b.authors.effort,
+            "the winner's author is the same on both readers"
+        );
+        assert_eq!(
+            adopted_a.authors.effort,
+            Some(b),
+            "the higher author's row wins on both readers"
         );
     }
 }

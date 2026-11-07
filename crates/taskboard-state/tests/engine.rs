@@ -113,6 +113,8 @@ struct Spawner {
     /// The day roll is disabled by default (the same auto-advance
     /// policy); the day-tick tests opt in via this field.
     day_roll: DayRollConfig,
+    /// The engine's author identity (F1): the planner's stamp source.
+    author: Option<taskboard_domain::ids::AuthorId>,
 }
 
 impl Default for Spawner {
@@ -126,6 +128,7 @@ impl Default for Spawner {
             clock: FixedClock::new(T0),
             reminders: taskboard_domain::SettingsSnapshot::default(),
             day_roll: DayRollConfig::disabled(),
+            author: None,
         }
     }
 }
@@ -163,7 +166,7 @@ async fn spawn(spawner: Spawner) -> Harness {
         notifier,
         spawner.reminders,
         spawner.day_roll,
-        None,
+        spawner.author,
     )
     .await
     .expect("engine boots");
@@ -4109,4 +4112,92 @@ async fn u3_closed_user_data_lane_keeps_serving_commands() {
         .await
         .expect("the engine still serves commands");
     assert!(matches!(outcome, CommandOutcome::CreatedStack(_)));
+}
+
+// ---------------------------------------------------------------------
+// F1 author journeys
+// ---------------------------------------------------------------------
+
+/// T-JOURNEY-1 (stamping half): an engine spawned with the boot's
+/// device identity stamps `Some(author)` on every clock a local command
+/// advances — the whole create-set at once, then exactly the edited
+/// field on an update. The authorless engine (the default fixture) is
+/// pinned by the whole existing suite.
+#[tokio::test]
+async fn j1_authored_engine_stamps_some_on_every_local_write() {
+    use taskboard_domain::ids::AuthorId;
+
+    let author = AuthorId::from_uuid(uuid::Uuid::from_u128(0x6A_11));
+    let h = spawn(Spawner {
+        author: Some(author),
+        ..Spawner::default()
+    })
+    .await;
+
+    let board = h.board_id();
+    h.handle
+        .execute(StateCommand::CaptureTask {
+            title: "captured".into(),
+            board: Some(board),
+        })
+        .await
+        .expect("accepted");
+
+    eventually(&h.handle, |state| {
+        state
+            .tasks
+            .values()
+            .next()
+            .is_some_and(|task| task.title == "captured")
+    })
+    .await;
+    let state = h.handle.shared_state().load_full();
+    let task = state.tasks.values().next().expect("the captured task");
+    assert_eq!(
+        task.authors.title,
+        Some(author),
+        "the identity rides the planner's stamp"
+    );
+    assert_eq!(
+        task.authors,
+        taskboard_domain::entities::TaskAuthors {
+            title: Some(author),
+            description: Some(author),
+            duedate: Some(author),
+            scheduled: Some(author),
+            done: Some(author),
+            position: Some(author),
+            effort: Some(author),
+            importance: Some(author),
+            urgency: Some(author),
+            recur: Some(author),
+            kind: Some(author),
+            archived: Some(author),
+            deleted: Some(author),
+        },
+        "creates mint the full authored set"
+    );
+
+    // The edit leg: exactly the edited field's slot moves.
+    let task_id = task.id;
+    h.handle
+        .execute(StateCommand::UpdateTask {
+            id: task_id,
+            changes: taskboard_domain::messages::TaskChanges {
+                title: Some("edited".into()),
+                ..Default::default()
+            },
+        })
+        .await
+        .expect("accepted");
+    eventually(&h.handle, |state| {
+        state
+            .tasks
+            .get(&task_id)
+            .is_some_and(|task| task.title == "edited")
+    })
+    .await;
+    let state = h.handle.shared_state().load_full();
+    let task = state.tasks.get(&task_id).expect("still there");
+    assert_eq!(task.authors.title, Some(author));
 }
