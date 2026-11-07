@@ -1106,7 +1106,6 @@ mod tests {
                     taskboard_domain::entities::Effort::new(100),
                 )),
                 clock: ts(500),
-
                 by: None,
             },
         );
@@ -1124,7 +1123,6 @@ mod tests {
                 // Equal clocks: the tie resolves to the overlay side —
                 // the local truth (the move-back shape).
                 clock: ts(500),
-
                 by: None,
             },
         );
@@ -1158,7 +1156,6 @@ mod tests {
                     taskboard_domain::entities::Effort::new(100),
                 )),
                 clock: ts(600),
-
                 by: None,
             },
         );
@@ -1181,7 +1178,6 @@ mod tests {
             taskboard_domain::TaskFieldWrite {
                 value: taskboard_domain::appdata::ModeledValue::Urgency(None),
                 clock: ts(300),
-
                 by: None,
             },
         );
@@ -1218,7 +1214,6 @@ mod tests {
                     taskboard_domain::entities::Effort::new(900),
                 )),
                 clock: ts(500),
-
                 by: None,
             },
         );
@@ -1230,7 +1225,6 @@ mod tests {
                     taskboard_domain::entities::Effort::new(1),
                 )),
                 clock: ts(500),
-
                 by: None,
             },
         );
@@ -1433,7 +1427,6 @@ mod tests {
                                     taskboard_domain::entities::Effort::new(60),
                                 )),
                                 clock: ts(100),
-
                                 by: None,
                             },
                         )]),

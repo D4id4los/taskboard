@@ -8379,7 +8379,6 @@ mod author_journey_tests {
     /// duel would leave both readers holding their own row forever.
     #[test]
     fn equal_clocks_different_authors_converge_on_every_reader() {
-        use crate::entities::TaskAuthors;
         let a = author(0x6EA1_0000_0000_0001);
         let b = author(0x6EB2_0000_0000_0002);
 
@@ -8418,8 +8417,6 @@ mod author_journey_tests {
             BASE + 3_600,
             Some(b),
         );
-        let _ = TaskAuthors::default();
-
         let adopted_a = state_folding_b_doc.tasks.values().next().unwrap();
         let adopted_b = state_folding_doc_a.tasks.values().next().unwrap();
         assert_eq!(
