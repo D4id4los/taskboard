@@ -172,14 +172,10 @@ pub(crate) struct Adapter {
     /// repaint driver consults it per tick. Kiosk is structurally and
     /// explicitly excluded.
     pub(crate) seconds_surfaces_active: bool,
-    /// The review walk's adapter-owned state (DR-7 chunk 3, #638; the
-    /// plan buffers' pattern): the return hint, the prompt answers
-    /// (one slot per template prompt; survives stage-back and the
-    /// planner leg), and the armed date field's text. Cleared at
-    /// every walk close path (the buffers never outlive the flow).
+    /// The review walk's cross-surface return hint (DR-7 chunk 3,
+    /// #638; chunk 1 D9): the shape-B planner handoff. The walk's
+    /// prompt answers and armed date field live in its level.
     walk_resume: Option<WalkResume>,
-    walk_answers: Vec<String>,
-    walk_date_text: String,
     /// The last [`Self::apply_outcomes`] pass's flow liveness (the
     /// flowless enum variant replaces a bool — clippy's
     /// excessive-bools wall). The D15 focus hand-off (and the r4 D20
@@ -2003,15 +1999,6 @@ impl Adapter {
             .map_or_else(|| calendar.today(now), |due| due.window().day())
     }
 
-    /// Clears the walk's adapter-owned buffers (the answers and the
-    /// date field) — called at every close path (commit, finish, the
-    /// settle, the handoff). The buffers never outlive the flow (the
-    /// due buffers' rule).
-    fn clear_walk_buffers(&mut self) {
-        self.walk_answers.clear();
-        self.walk_date_text.clear();
-    }
-
     /// The shape-B handoff (plan D-W3): the adapter-local return hint
     /// is set, the walk closes (no command — there is nothing to
     /// commit), and the planner opens through the EXISTING
@@ -2027,7 +2014,7 @@ impl Adapter {
         reference: chrono::NaiveDate,
     ) {
         self.walk_resume = Some(WalkResume { cadence, reference });
-        self.clear_walk_buffers();
+        // The close's wipe is the walk level's drop (D-H2).
         let outcomes = self.view_state.close_review_walk();
         // The planner opens BEFORE the close outcomes' refresh runs:
         // the refresh pass reads the post-open view (the abandon rule
@@ -2082,10 +2069,6 @@ impl Adapter {
                     return vec![FlowOutcome::SetMode(Mode::Normal)];
                 }
                 let outcomes = self.view_state.back_review_walk(rows);
-                if !matches!(self.view_state.flow(), Flow::ReviewWalk { .. }) {
-                    // The close rung: the buffers die with the flow.
-                    self.clear_walk_buffers();
-                }
                 // A rung that unmounted a field (the sub-state clear,
                 // the stage-back out of Prompts) or the walk itself
                 // killed slint focus with it and fired no loss event —
@@ -2193,7 +2176,9 @@ impl Adapter {
                 // unparseable date dispatches nothing and keeps the
                 // text (the planner-form rule).
                 let Ok(Some(instant)) = crate::due_edit::parse(
-                    &self.walk_date_text,
+                    self.view_state
+                        .walk()
+                        .map_or("", |walk| walk.date_text.as_str()),
                     self.day_ctx().now,
                     &calendar.offset,
                 ) else {
@@ -2209,7 +2194,11 @@ impl Adapter {
                     },
                 )];
                 let outcomes = self.finish_walk_row(window, cadence, reference, rows, step);
-                self.walk_date_text.clear();
+                // The date field's commit keeps the walk alive — the
+                // in-level clear (the one surviving per-field wipe).
+                if let Some(walk) = self.view_state.walk_mut() {
+                    walk.date_text.clear();
+                }
                 outcomes
             }
             // -- the prompt commit verbs --
@@ -2218,12 +2207,15 @@ impl Adapter {
                     .iter()
                     .find(|template| template.cadence == cadence)
                     .expect("a curated template per cadence");
-                let text = taskboard_domain::compose_reflection_text(template, &self.walk_answers);
+                let answers = self
+                    .view_state
+                    .walk()
+                    .map_or(Vec::new(), |walk| walk.answers.clone());
+                let text = taskboard_domain::compose_reflection_text(template, &answers);
                 if text.is_empty() {
                     // The gentle end (DR-7 D-J9): an all-blank record
                     // dispatches nothing — never relying on a NoOp.
                     let outcomes = self.view_state.close_review_walk();
-                    self.clear_walk_buffers();
                     self.apply_outcomes(window, &outcomes);
                     // The prompt editors died with the flow (no loss
                     // events): reset the facts, re-anchor the focus.
@@ -2244,7 +2236,6 @@ impl Adapter {
                 )];
                 let mut outcomes = step;
                 outcomes.extend(self.view_state.close_review_walk());
-                self.clear_walk_buffers();
                 self.apply_outcomes(window, &outcomes);
                 // The prompt editors died with the flow (no loss
                 // events): reset the facts, re-anchor the focus.
@@ -2254,7 +2245,6 @@ impl Adapter {
             }
             WalkIntent::Finish => {
                 let outcomes = self.view_state.close_review_walk();
-                self.clear_walk_buffers();
                 self.apply_outcomes(window, &outcomes);
                 Self::reset_editing_facts(window);
                 window.invoke_refocus_view();
@@ -2390,7 +2380,6 @@ impl Adapter {
         self.width_drag = None;
         self.scale_drag = None;
         self.walk_resume = None;
-        self.clear_walk_buffers();
     }
 
     /// The date editor's adapter-owned buffers, for the §8 invariant
@@ -2854,7 +2843,6 @@ impl Adapter {
                     // plain state (they are `UpdateTask` writes in the
                     // published snapshot).
                     if let Some(WalkResume { cadence, reference }) = self.walk_resume.take() {
-                        self.clear_walk_buffers();
                         let mut resumed = self.view_state.open_review_walk_at(
                             cadence,
                             reference,
@@ -6169,8 +6157,6 @@ pub(crate) fn install(
         recur_pause_open: false,
         recur_confirm_armed: false,
         walk_resume: None,
-        walk_answers: Vec::new(),
-        walk_date_text: String::new(),
         habit_convert_armed: None,
         walk_reentry: Rc::clone(&walk_flag),
         walk_timer: slint::Timer::default(),
@@ -9063,17 +9049,22 @@ fn install_review_walk_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>)
     bind mut (a, window), args (), {        a.route(&window, ActionId::ReviewCarryLeave);
     });
     install_seam!(window: window.on_walk_date_edited, adapter: adapter; [bare_mut]
-    bind mut (a), args (text), {        a.walk_date_text = text.to_string();
+    bind mut (a), args (text), {        if let Some(walk) = a.view_state.walk_mut() {
+        walk.date_text = text.to_string();
+    }
     });
     install_seam!(window: window.on_walk_date_commit_clicked, adapter: adapter;
     bind mut (a, window), args (), {        a.route(&window, ActionId::ReviewCarryDateCommit);
     });
     install_seam!(window: window.on_walk_answer_edited, adapter: adapter; [bare_mut]
     bind mut (a), args (index, text), {        let index = usize::try_from(index).unwrap_or(usize::MAX);
-    if index >= a.walk_answers.len() {
-        a.walk_answers.resize(index + 1, String::new());
+    let Some(walk) = a.view_state.walk_mut() else {
+        return;
+    };
+    if index >= walk.answers.len() {
+        walk.answers.resize(index + 1, String::new());
     }
-    a.walk_answers[index] = text.to_string();
+    walk.answers[index] = text.to_string();
     });
     install_seam!(window: window.on_walk_record_clicked, adapter: adapter;
     bind mut (a, window), args (), {        a.route(&window, ActionId::ReviewRecord);

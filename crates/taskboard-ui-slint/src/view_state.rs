@@ -584,6 +584,26 @@ impl ViewState {
         self.write_flow(flow);
     }
 
+    /// The innermost `Walk` level's state (the review walk's answers
+    /// and armed date field): `None` without one.
+    #[must_use]
+    pub(crate) fn walk(&self) -> Option<&crate::level_state::WalkState> {
+        self.surfaces
+            .above_levels()
+            .iter()
+            .rev()
+            .find_map(|level| level.state().as_walk())
+    }
+
+    /// The walk's write seam.
+    pub(crate) fn walk_mut(&mut self) -> Option<&mut crate::level_state::WalkState> {
+        self.surfaces
+            .above_levels_mut()
+            .iter_mut()
+            .rev()
+            .find_map(|level| level.state_mut().as_walk_mut())
+    }
+
     /// The innermost `PlanPlace` level's state (the placement form's
     /// two mirrors): `None` without one.
     #[must_use]
@@ -3326,6 +3346,26 @@ mod tests {
         let place = vs.plan_place().expect("the form armed");
         assert_eq!(place.time_text, "");
         assert_eq!(place.effort_text, "");
+    }
+
+    #[test]
+    fn the_walk_reopens_clean_after_its_level_ends() {
+        let (state, _, _, _) = fixture();
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        let reference = chrono::NaiveDate::from_ymd_opt(2026, 1, 1).expect("a valid date");
+        // Prompt answers typed, then the close: a fresh walk mints
+        // clean — the drop was the wipe.
+        vs.open_review_walk_at(ReviewCadence::Day, reference, WalkStage::Prompts);
+        if let Some(walk) = vs.walk_mut() {
+            walk.answers = vec!["typed".to_owned()];
+            walk.date_text = "2026-01-02".to_owned();
+        }
+        vs.close_review_walk();
+        vs.open_review_walk_at(ReviewCadence::Day, reference, WalkStage::Prompts);
+        let walk = vs.walk().expect("the walk armed");
+        assert_eq!(walk.answers, Vec::<String>::new());
+        assert_eq!(walk.date_text, "");
     }
 
     #[test]
