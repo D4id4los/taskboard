@@ -8,7 +8,7 @@
   `keyscope.rs`, `router.rs`, the hosting `.slint` compositions). No
   domain/state/engine change: guests dispatch ordinary
   `StateCommand`s; hosts see their effects through `AppState`.
-- **Status**: **DRAFT — awaiting the user's rulings on Q1–Q5 (§5)**.
+- **Status**: **DRAFT rev 2** — Q1/Q3/Q4 ruled, Q2 superseded by the recursive redesign; awaiting Q5–Q7 (§5).
   Every decision below carries a recommendation; none is binding
   until ruled.
 
@@ -42,171 +42,124 @@ state** (and where it is wiped), **how settle composes**, **which
 resolver cell applies while the guest is live**, and **which key
 scope wins**. W5b names one protocol for all four.
 
-## 3. Decisions (recommendations — rule via §5)
+## 0. Session rulings (2026-11-07, user)
 
-### D-H1 — Representation: a closed `Guest` enum, depth exactly 1
-
-```rust
-pub enum Guest {
-    DatePicker { field: GuestDateField, phase: PickerPhase },
-    StackPicker { candidates_rev: u64, selected: usize },
-    EntryForm { seed: Option<TimeEntryId> },
-    // PlannerSurface { .. }  — only if Q1 = (a)
-}
-// host variants that admit guests gain one field:
-Flow::ReviewWalk { cadence, reference, stage, cursor, guest: Option<Guest> }
-```
-
-- A guest is **not** a `Flow`: it cannot host (depth 1 by type), it
-  cannot be opened outside a host, and `reconcile` reaches it only
-  through its host.
-- **Admission** (which host may carry which guest) is enforced at one
-  minting site, `ViewState::mount_guest(guest) -> Result<_, GuestRefused>`
-  (house A1: fallible constructor at the boundary), and pinned by the
-  **admission table** test (D-H5).
-- Alternatives recorded: (i) recursive `guest: Box<Flow>` — every
-  illegal nesting representable, settle recursion unbounded;
-  (ii) a `Vec<Flow>` stack — reintroduces exactly the "flow outlives
-  its affordance" class the scope-stack audit retired; (iii) per-host
-  guest enums (`WalkGuest`, `EntriesGuest`) — illegal pairs
-  unrepresentable, but the protocol code (settle, resolve, scope)
-  needs a trait over them; revisit only if the admission table grows
-  past ~6 cells (A2 entry criterion).
-
-### D-H2 — Guest state ownership: the guest owns everything, the host sees only the exit
-
-- **Pure state** (phase, cursor, selection) lives in the `Guest`
-  variant's data inside the host flow — refresh-survival is
-  model-push by construction, like every flow today.
-- **Adapter-side text** moves into **one** slot,
-  `Adapter.guest_buffers: Option<GuestBuffers>`, created by the mount
-  and dropped by the exit — the single wipe site replacing
-  `TrackFormState`'s "wipe when not TrackEntryForm", `walk_date_text`,
-  and the due picker's ad-hoc lifetimes. `GuestBuffers` is keyed by
-  the guest's discriminant; a read with the wrong key is a typed miss.
-- **The shared `ViewState.buffer` belongs to the host.** A guest never
-  touches it (no text-flow host may lose its buffer to a guest).
-- **Zero shared state beyond `AppState`** (the #622 contract,
-  generalized): a guest that mutates the domain dispatches its own
-  `FlowOutcome::Command`s; the host learns of them on the next push
-  like any other state change.
-
-### D-H3 — The exit protocol: `Completed(payload) | Cancelled`
-
-```rust
-pub enum GuestExit { Completed(GuestResult), Cancelled }
-pub enum GuestResult { Date(NaiveDate), Stack(StackId), Entry, /* … */ }
-fn on_guest_exit(&mut self, exit: GuestExit, state: &AppState) -> Vec<FlowOutcome>;
-```
-
-- The payload exists only for **host-local continuation** (File-to's
-  picked `StackId` becomes the walk's `MoveTask`; the picked date
-  becomes Carry forward's `UpdateTask`). Domain writes the guest
-  makes itself (the entry form's `CreateTimeEntry`) carry no payload.
-- The host is the only consumer of an exit; a host whose flow already
-  ended discards it (idempotent, the double-settle guard).
-
-### D-H4 — Settle composition: guest-first, two trigger classes
-
-| Trigger | Effect |
+| ID | Ruling |
 |---|---|
-| **Local** — L1 focus loss / L2 pointer seam *inside* the guest; the guest's own Escape rung | settle the **guest only**, by its own kind rule (text commit-non-empty/discard-empty; picker clean-close; form close-without-effect) → deliver the exit to the host → host stays open |
-| **Foreign** — R3 settle-then-run (nav, lifecycle, overlay-open), leaving effects, `Replace` | settle the guest by its kind rule, deliver the exit, **then** settle the host by its kind rule; outcomes concatenated guest-first; one pass |
+| Q1 | **(b)** — shape B stays; W5b's consumers are the existing hand-rolled nestings N1–N3 (N4 stays the handoff) |
+| Q2 | **Superseded**: the user rejected the closed-guest / depth-1 shape — the protocol must be general and naturally recursive, with no host/guest annotations and no depth limit (revision 2 below) |
+| Q3 | A foreign settle of a text level follows the **existing text rule** (commit non-empty, discard empty) |
+| Q4 | A level whose subject dies **just disappears** (with everything above it; no exit delivered) |
 
-- The Escape ladder generalizes: guest's own rungs → guest
-  `Cancelled` (one rung, never also closes the host in the same
-  stroke) → the host's ladder. N1/N3's hand-written rungs retire into
-  this rule; their journey tests are the acceptance pins.
-- `settle_flow` stays the one taxonomy: it gains a guest prelude, not
-  a second function.
+## 3. Decisions — revision 2: the recursive surface chain
 
-### D-H5 — The pair-table extension
+The first draft's closed `Guest` enum, admission table, and depth-1
+limit are **withdrawn**. Their stated reasons do not hold up:
+admission is already structural (only a surface's own handler can
+open a child on it), stale children cannot exist if closing a level
+closes everything above it, and recursion depth is bounded by the
+actual data.
 
-- **Production**: `resolve` keeps its signature. While a guest is
-  live, the adapter resolves against the **guest's** `FlowKind`
-  (pickers → a new `FlowKind::Picker`, the form → `None` like its
-  overlay cells today); a `SettleThenRun`/`CancelOnly`/`Replace`
-  verdict triggers the **composite** settle of D-H4 (foreign class)
-  or the guest-only settle (`CancelOnly` from a guest = a local
-  cancel). The host's kept arms never see an effect a live guest
-  resolved.
-- **Tests**: the pair-table harness grows one dimension —
-  `(host, Option<guest>, EffectClass)` triples, each pinned to the
-  audit matrix — plus the **admission table** (`host × guest →
-  admitted | GuestRefused`). Both are totality-checked over the
-  enums (adding a `Guest` variant fails the build of the test until
-  its row is written).
+### D-H1 — Representation: an owned chain of unchanged flows
 
-### D-H6 — Key scope: the guest rides above the host's mask
+```rust
+pub struct Level { flow: Flow, local: LevelState }   // LevelState: buffers, focus anchor
+pub struct Surfaces { chain: Vec<Level> }            // innermost last; empty = Flow::None today
+```
 
-- `ScopeInputs` gains `guest: Option<&Guest>` (pulled from the flow —
-  still no stored registration; D-KS1's self-healing rule holds).
-- Each modal branch becomes `[guest ctx…, HostMask, ViInsert, Global]`;
-  non-modal hosts push the guest ctx at the element-scope head. The
-  guest contexts are the existing ones where they exist
-  (`DatePicker`), new ones only for new guest kinds.
-- The printable monopoly is untouched: a text field in a guest keeps
-  its printables by the same `text-focus-count` predicate.
+- `Flow` variants are **unchanged**; no variant is marked host or guest.
+  Any level may open a child; only the level's own handlers can (the
+  structural admission rule — there is no other mount path).
+- **Invariant (the only one)**: closing level *i* truncates the chain
+  to *i*. A child never outlives its parent. Enforced by making
+  `truncate` the sole removal API.
+- The top-level XOR rule is the special case "replacing at depth 0".
+
+### D-H2 — State ownership: per-level
+
+- Pure interaction state stays in the `Flow` variant, as today.
+- Adapter-side text (`TrackFormState`, `walk_date_text`,
+  `plan_*_text`, the due buffers) moves into the level's
+  `LevelState`, dropped with the level: one lifetime rule replaces
+  every per-flow wipe rule.
+- **`ViewState.buffer` becomes per-level** — the largest single
+  migration in the round (every text flow's commit path).
+- Zero shared state beyond `AppState` at every level: a level that
+  writes the domain dispatches its own commands.
+
+### D-H3 — Exit
+
+`GuestExit { Completed(LevelResult), Cancelled }` delivered to the
+parent's `on_child_exit`, **default: ignore**. A payload is used only
+for parent-local continuation (File-to's `StackId`, Pick-a-date's
+date). Subject death delivers nothing (Q4).
+
+### D-H4 — Settle composition
+
+- **Local** (focus loss / pointer seam / Escape rung inside a level):
+  settle the **top level only** by its kind rule, deliver its exit,
+  the parent stays.
+- **Foreign** (R3 settle-then-run, leaving effects, `Replace`): fold
+  the chain **innermost-first**, each level by its own kind rule
+  (Q3), exits delivered as the fold goes; one pass, idempotent.
+- The Escape ladder generalizes: a level's own rungs, then one
+  `Cancelled` rung — never two levels in one stroke.
+
+### D-H5 — Effect routing (the pair table stops growing)
+
+- An effect is offered to the innermost level first; each level
+  `Handled` or `Bubble`s it outward, consulting the **existing**
+  `resolve(FlowKind, EffectClass)` table for its own kind. No
+  (host, guest, effect) cells exist.
+- Tests: the per-kind table stays as pinned; composition is a
+  **`proptest`** over random chains asserting the invariants (child
+  never outlives parent; foreign settle empties the chain innermost
+  first; a `Handled` effect never reaches an outer level; settle is
+  idempotent).
+
+### D-H6 — Key scope
+
+`scope_stack` concatenates each level's contexts innermost-first and
+stops at the first masking context. The current modal branches become
+each kind's declared contexts; still pulled per keystroke (D-KS1).
 
 ### D-H7 — Rendering & focus
 
-- The guest renders inside a slot the host's `.slint` composition
-  declares (`if root.guest-kind == GuestKind.date-picker : …`);
-  flyout guests keep the window-anchored overlay pattern (round-5 D6)
-  — the protocol is about state, not placement.
-- Mount → the existing `FocusHandover` one-shot targets the guest;
-  exit → focus returns to the host's mount-time anchor (stored in the
-  host flow's data, not the adapter).
-- The view-mount inventory test (round-5 D8) covers guest slots.
+- Slint cannot recurse (a component cannot instantiate itself), so
+  each kind keeps fixed mount sites, gated on "this kind is in the
+  chain". Window-anchored overlays (round-5 D6) make placement
+  independent of depth.
+- Consequence: a kind can be shown once per chain. **Proposed single
+  rule (Q6)**: opening a kind already present in the chain is refused
+  with a typed `AlreadyInChain` — not a depth limit, not a table.
+- Focus: mount uses the existing `FocusHandover`; exit restores the
+  anchor stored in the parent's `LevelState`.
 
-### D-H8 — Implementation shape (for the later dispatch plan)
+### D-H8 — Implementation shape (for the dispatch plan)
 
-1. Protocol core + N2 (entries-form date picker) as the first,
-   smallest consumer — proves D-H2's single wipe site.
-2. N3 (walk File-to + Pick-a-date) — retires `WalkStage`'s sub-state
-   fields; `WalkStage` becomes pure stages.
-3. N1 (entries list → form) — two flow variants collapse to one host
-   + one guest.
-4. Only if Q1 = (a): the planner surface extraction + embedded stage.
+1. `Surfaces` core + routing + settle fold + proptest; the flat `Flow`
+   becomes a depth-≤1 chain with behaviour byte-identical (all
+   journeys and `flow_table_tests` green untouched).
+2. Per-level `LevelState` + the `ViewState.buffer` migration.
+3. N2 + N3: the entries-form date picker and the walk's File-to /
+   Pick-a-date become child levels; `WalkStage` loses its sub-state
+   fields.
+4. N1: entries list → form becomes parent → child (no longer two
+   sibling variants).
 
 ## 4. Non-goals / fences
 
-- Depth > 1 (a guest hosting a guest) — see Q2.
-- Concurrent guests (two live guests in one host).
-- Changing any engine command, `AppState`, or the #622 planner's
-  reachable-by-command contract.
-- Re-opening the round-5 W5a scope stack beyond D-H6's input.
+- Views in the chain (Q7) — recorded as the natural extension that
+  would make the embedded planner cheap; not this round unless ruled.
+- Multiple live children per level (a tree): only one focus path is
+  ever live; a chain suffices.
+- Any engine/`AppState` change; the #622 contract is kept.
 
-## 5. Questions for the user
+## 5. Open questions
 
-- **Q1 — The consumer (the load-bearing one).** W5b was fenced with
-  "the journal walk's stage-3 planner embedding" as its named
-  consumer, but DR-7 D-J9 *ruled shape B* (handoff) and that shipped
-  (`649f6b32`). Options:
-  - **(a)** Re-open D-J9: embed the planner as a rendered walk stage.
-    Requires extracting the planner's interaction state out of
-    `ViewId::PlanNextDay` into a surface struct mountable both as a
-    view and as a `Guest::PlannerSurface` — the largest chunk here.
-  - **(b) (Recommended)** Keep shape B; W5b's consumers are the four
-    existing hand-rolled nestings (N1–N3 ported, N4 left as the
-    handoff). Pure consolidation, no user-visible change, and it
-    makes (a) a small follow-up if you ever want it.
-  - **(c)** Shelve W5b until a new feature actually needs nesting.
-- **Q2 — Depth.** Depth-1 means the entries list→form→picker chain
-  (N1+N2) is modelled as *host = form, guest = picker*, with the
-  list→form step staying a flow transition (as today) rather than a
-  guest. OK, or do you want depth 2 so N1 also ports? (Recommend
-  depth 1; N1 then drops out of D-H8 step 3.)
-- **Q3 — Foreign settle of a live text guest.** When a navigation
-  effect settles host+guest, should a text guest follow its kind rule
-  (commit non-empty — e.g. a half-typed entry gets saved) or always
-  discard because the user left? Recommend **its kind rule** (the
-  round-3 "no accidental clears, no accidental losses" behaviour
-  users already see on the top-level flows).
-- **Q4 — Exit on host-subject death.** If the host's subject dies
-  mid-guest (`reconcile` drops the host), the guest gets no exit
-  (silently dropped with its host) — recommended — or a `Cancelled`
-  delivered first for symmetry?
-- **Q5 — Next step.** After your rulings: an implementation dispatch
-  plan per D-H8 (3 chunks under (b)), plus a tracking issue for the
-  round. Fine?
+- **Q6 — The one structural rule**: "a surface kind at most once per
+  chain" (forced by non-recursive rendering). Accept? Recommended.
+- **Q7 — Views as the chain root**: now (widens the round; makes the
+  embedded planner ~free) or recorded for later? Recommend later.
+- **Q5 — Next step** (carried): after Q6/Q7, write the implementation
+  dispatch plan per D-H8 and open a tracking issue.
