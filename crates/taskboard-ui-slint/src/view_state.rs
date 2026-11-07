@@ -383,16 +383,17 @@ pub struct ViewState {
     focused_task: Option<TaskId>,
     /// The compact switcher's selected stack.
     selected_stack: Option<StackId>,
-    /// The Rust mirror of the active text buffer (D9 rule 1): the
-    /// adapter updates it on every keystroke callback; commit reads
-    /// it — no slint-state dependency. Chunk 1 keeps it shared; chunk
-    /// 2 moves it into the owning level.
-    buffer: String,
     /// The user-set stack column widths (round-1 D16), stored logical
     /// px; an absent entry = auto layout (today's rendering). UI-local
     /// forever — never a domain type (DF-2); `reconcile` leaves it
     /// alone (liveness pruning is the app forwarder's write-time job).
     stack_widths: BTreeMap<BoardId, BTreeMap<StackId, u32>>,
+    /// The levels retired since the last drain (D3): every removal —
+    /// truncate, XOR replace, root swap — hands its dropped levels
+    /// here innermost-first, and the adapter's per-pass drain consumes
+    /// them (the exit side-effects ride the drain, never a per-flow
+    /// wipe rule).
+    retired: Vec<crate::surfaces::Level>,
 }
 
 /// The `Flow` the flow accessors return when no flow level is live —
@@ -462,8 +463,8 @@ impl ViewState {
             subject_task: None,
             focused_task: None,
             selected_stack: None,
-            buffer: String::new(),
             stack_widths: BTreeMap::new(),
+            retired: Vec::new(),
         }
     }
 
@@ -525,14 +526,38 @@ impl ViewState {
     /// one. The push is infallible here: without a live flow level no
     /// flow kind is in the chain, so the once-per-chain rule cannot
     /// refuse (the two over-views are view kinds, not flow kinds).
+    /// Every dropped level — the ended one, the XOR-replaced one —
+    /// retires with its state (the drop is the wipe, D-H2).
     fn write_flow(&mut self, flow: Flow) {
         if flow == Flow::None {
-            self.surfaces.end_top_flow();
-        } else if let Some(level) = self.surfaces.top_flow_mut() {
-            *level = flow;
+            let dropped = self.surfaces.end_top_flow();
+            self.retired.extend(dropped);
+        } else if let Some(replaced) = self.surfaces.replace_top_flow(flow.clone()) {
+            self.retired.push(replaced);
         } else {
+            // The mount's parent anchor (D-H7): a flat flow's exit
+            // restores the view scope (the flowless hand-off's
+            // vocabulary); the record rides the mint, before the
+            // child mounts.
+            self.surfaces
+                .record_parent_anchor(crate::level_state::FocusAnchor::View);
             let _ = self.surfaces.push(crate::surfaces::Surface::Flow(flow));
         }
+    }
+
+    /// The root swap with its retirement (the flat model's
+    /// `self.view = …`).
+    fn replace_root(&mut self, view: ViewId) {
+        let dropped = self.surfaces.replace_root(view);
+        self.retired.extend(dropped);
+    }
+
+    /// The retire drain (D3): every level dropped since the last
+    /// drain, innermost-first. The adapter consumes the exit
+    /// side-effects (grid disarm, anchor restore) here and drops the
+    /// corpses.
+    pub(crate) fn drain_retired(&mut self) -> Vec<crate::surfaces::Level> {
+        std::mem::take(&mut self.retired)
     }
 
     /// Takes the flow slot: the live flow out (or [`Flow::None`]),
@@ -550,14 +575,33 @@ impl ViewState {
         self.write_flow(flow);
     }
 
+    /// The innermost `Text` level's buffer (D9 rule 1): `""` without
+    /// one — byte-equal to today's cleared shared buffer on every
+    /// read (a text flow always holds the only live buffer).
     #[must_use]
     pub fn buffer(&self) -> &str {
-        &self.buffer
+        self.surfaces
+            .above_levels()
+            .iter()
+            .rev()
+            .find_map(|level| level.state().text_buffer())
+            .unwrap_or("")
     }
 
-    /// The adapter's keystroke-mirror update (D9 rule 1).
+    /// The adapter's keystroke-mirror update (D9 rule 1): writes the
+    /// innermost `Text` level's buffer; a no-op without one (every
+    /// post-close write today is a clear — the level is gone, so the
+    /// clear is the no-op).
     pub fn set_buffer(&mut self, text: String) {
-        self.buffer = text;
+        let levels = self.surfaces.above_levels_mut();
+        if let Some(level) = levels
+            .iter_mut()
+            .rev()
+            .find(|level| matches!(level.state(), crate::level_state::LevelState::Text { .. }))
+            && let Some(buffer) = level.state_mut().text_buffer_mut()
+        {
+            *buffer = text;
+        }
     }
 
     #[must_use]
@@ -592,7 +636,7 @@ impl ViewState {
     /// Direct view/focus injection (the chunk-2 test seam; real
     /// sessions go through the view cycle and the card clicks).
     pub fn set_view(&mut self, view: ViewId) {
-        self.surfaces.replace_root(view);
+        self.replace_root(view);
     }
 
     /// Direct focus injection (see [`Self::set_view`]).
@@ -718,8 +762,11 @@ impl ViewState {
             .iter()
             .rposition(|kind| matches!(kind, crate::surfaces::SurfaceKind::View(_)));
         match pushed {
-            Some(0) | None => self.surfaces.replace_root(ViewId::Board),
-            Some(index) => self.surfaces.truncate_to(index),
+            Some(0) | None => self.replace_root(ViewId::Board),
+            Some(index) => {
+                let dropped = self.surfaces.truncate_to(index);
+                self.retired.extend(dropped);
+            }
         }
     }
 
@@ -753,17 +800,17 @@ impl ViewState {
         match view {
             // Subjectless (chunk 10 D2): `ViewId::Board`'s arm inverted.
             ViewId::Today => {
-                self.surfaces.replace_root(ViewId::Today);
+                self.replace_root(ViewId::Today);
                 true
             }
             ViewId::Board => {
-                self.surfaces.replace_root(ViewId::Board);
+                self.replace_root(ViewId::Board);
                 true
             }
             // Subjectless, exactly like Today's arm (#214 D-1): the
             // review surface reads the whole state, no subject.
             ViewId::Review => {
-                self.surfaces.replace_root(ViewId::Review);
+                self.replace_root(ViewId::Review);
                 true
             }
             ViewId::StackDetail => {
@@ -773,7 +820,7 @@ impl ViewState {
                     .or_else(|| self.stack_ids(state).first().copied());
                 match stack {
                     Some(stack) => {
-                        self.surfaces.replace_root(ViewId::StackDetail);
+                        self.replace_root(ViewId::StackDetail);
                         self.subject_stack = Some(stack);
                         true
                     }
@@ -787,7 +834,7 @@ impl ViewState {
                 });
                 match task {
                     Some(task) => {
-                        self.surfaces.replace_root(ViewId::TaskDetail);
+                        self.replace_root(ViewId::TaskDetail);
                         self.subject_task = Some(task);
                         true
                     }
@@ -804,14 +851,14 @@ impl ViewState {
 
     /// `nav.focus-board`: back to the board view (D7).
     pub fn focus_board(&mut self) -> Vec<FlowOutcome> {
-        self.surfaces.replace_root(ViewId::Board);
+        self.replace_root(ViewId::Board);
         vec![FlowOutcome::RefreshNow]
     }
 
     /// `view.today` (chunk 10 D3): the Today view, no engine command —
     /// the `focus_board` sibling.
     pub fn focus_today(&mut self) -> Vec<FlowOutcome> {
-        self.surfaces.replace_root(ViewId::Today);
+        self.replace_root(ViewId::Today);
         vec![FlowOutcome::RefreshNow]
     }
 
@@ -833,7 +880,7 @@ impl ViewState {
         self.board = Some(board);
         self.selected_stack = Some(stack);
         self.focused_task = Some(task);
-        self.surfaces.replace_root(ViewId::Board);
+        self.replace_root(ViewId::Board);
         vec![FlowOutcome::RefreshNow]
     }
 
@@ -1243,7 +1290,7 @@ impl ViewState {
             return Vec::new();
         };
         self.write_flow(Flow::EditDescription { task: task.id });
-        self.buffer.clone_from(&task.description);
+        self.set_buffer(task.description.clone());
         vec![FlowOutcome::SetMode(Mode::Insert), FlowOutcome::RefreshNow]
     }
 
@@ -1258,9 +1305,8 @@ impl ViewState {
         let Flow::EditDescription { task } = self.flow().clone() else {
             return Vec::new();
         };
-        let description = self.buffer.clone();
+        let description = self.buffer().to_owned();
         self.write_flow(Flow::None);
-        self.buffer.clear();
         vec![
             FlowOutcome::Command(StateCommand::UpdateTask {
                 id: task,
@@ -1285,7 +1331,7 @@ impl ViewState {
             return Vec::new();
         };
         self.write_flow(Flow::EditTitle { task: task.id });
-        self.buffer.clone_from(&task.title);
+        self.set_buffer(task.title.clone());
         vec![FlowOutcome::SetMode(Mode::Insert), FlowOutcome::RefreshNow]
     }
 
@@ -1299,7 +1345,7 @@ impl ViewState {
         let Some(task) = self.focused_task.and_then(|id| state.tasks.get(&id)) else {
             return Vec::new();
         };
-        self.surfaces.replace_root(ViewId::TaskDetail);
+        self.replace_root(ViewId::TaskDetail);
         self.subject_task = Some(task.id);
         vec![FlowOutcome::RefreshNow]
     }
@@ -1430,7 +1476,6 @@ impl ViewState {
     /// `BeginCreate`: opens the row in insert mode (D5).
     pub fn begin_create(&mut self, stack: StackId) -> Vec<FlowOutcome> {
         self.write_flow(Flow::Create { stack });
-        self.buffer.clear();
         vec![FlowOutcome::SetMode(Mode::Insert), FlowOutcome::RefreshNow]
     }
 
@@ -1478,7 +1523,6 @@ impl ViewState {
             return Vec::new();
         }
         self.write_flow(Flow::CreateStack);
-        self.buffer.clear();
         vec![FlowOutcome::SetMode(Mode::Insert), FlowOutcome::RefreshNow]
     }
 
@@ -1488,9 +1532,8 @@ impl ViewState {
     /// only well-formed commands). The flow always ends and normal
     /// mode returns.
     pub fn commit_edit(&mut self, state: &AppState) -> Vec<FlowOutcome> {
-        let title = self.buffer.trim().to_owned();
+        let title = self.buffer().trim().to_owned();
         let flow = self.take_flow();
-        self.buffer.clear();
         let mut outcomes = vec![FlowOutcome::SetMode(Mode::Normal), FlowOutcome::RefreshNow];
         match flow {
             Flow::Create { stack } if !title.is_empty() => {
@@ -1566,7 +1609,6 @@ impl ViewState {
     /// The only non-committing exit (D9): discard the buffer.
     pub fn discard_edit(&mut self) -> Vec<FlowOutcome> {
         self.write_flow(Flow::None);
-        self.buffer.clear();
         vec![FlowOutcome::SetMode(Mode::Normal), FlowOutcome::RefreshNow]
     }
 
@@ -1584,7 +1626,7 @@ impl ViewState {
         } else {
             self.discard_edit()
         };
-        self.surfaces.replace_root(mode.view());
+        self.replace_root(mode.view());
         self.focused_task = None;
         self.selected_stack = self.stack_ids(state).first().copied();
         if !outcomes.contains(&FlowOutcome::RefreshNow) {
@@ -1600,7 +1642,6 @@ impl ViewState {
     /// `begin_create`'s opening.
     pub fn begin_capture(&mut self) -> Vec<FlowOutcome> {
         self.write_flow(Flow::Capture);
-        self.buffer.clear();
         vec![FlowOutcome::SetMode(Mode::Insert), FlowOutcome::RefreshNow]
     }
 
@@ -1613,11 +1654,11 @@ impl ViewState {
         if *self.flow() != Flow::Capture {
             return Vec::new();
         }
-        let thought = self.buffer.trim().to_owned();
+        let thought = self.buffer().trim().to_owned();
         if thought.is_empty() {
             return self.close_capture();
         }
-        self.buffer.clear();
+        self.set_buffer(String::new());
         vec![
             FlowOutcome::Command(StateCommand::CaptureTask {
                 title: thought,
@@ -1669,7 +1710,6 @@ impl ViewState {
     /// phases, the overlay is presentation.
     pub fn close_focus_mode(&mut self) -> Vec<FlowOutcome> {
         self.write_flow(Flow::None);
-        self.buffer.clear();
         vec![FlowOutcome::SetMode(Mode::Normal), FlowOutcome::RefreshNow]
     }
 
@@ -1680,7 +1720,6 @@ impl ViewState {
     /// no hits — the palette opens over an empty result list.
     pub fn open_palette(&mut self) -> Vec<FlowOutcome> {
         self.write_flow(Flow::Palette { selected: 0 });
-        self.buffer.clear();
         vec![FlowOutcome::SetMode(Mode::Insert), FlowOutcome::RefreshNow]
     }
 
@@ -1706,7 +1745,6 @@ impl ViewState {
     /// `MenuDismiss`, a stale-target jump. The `discard_edit` shape.
     pub fn close_palette(&mut self) -> Vec<FlowOutcome> {
         self.write_flow(Flow::None);
-        self.buffer.clear();
         vec![FlowOutcome::SetMode(Mode::Normal), FlowOutcome::RefreshNow]
     }
 
@@ -1743,7 +1781,6 @@ impl ViewState {
             vec![FlowOutcome::RefreshNow]
         } else {
             self.write_flow(Flow::None);
-            self.buffer.clear();
             vec![FlowOutcome::SetMode(Mode::Normal), FlowOutcome::RefreshNow]
         }
     }
@@ -1753,7 +1790,6 @@ impl ViewState {
     /// `close_palette` shape.
     pub fn close_track_entries(&mut self) -> Vec<FlowOutcome> {
         self.write_flow(Flow::None);
-        self.buffer.clear();
         vec![FlowOutcome::SetMode(Mode::Normal), FlowOutcome::RefreshNow]
     }
 
@@ -1797,7 +1833,6 @@ impl ViewState {
             stage,
             cursor: 0,
         });
-        self.buffer.clear();
         vec![FlowOutcome::SetMode(Mode::Normal), FlowOutcome::RefreshNow]
     }
 
@@ -1807,7 +1842,6 @@ impl ViewState {
     /// rides it (the `close_palette` shape).
     pub fn close_review_walk(&mut self) -> Vec<FlowOutcome> {
         self.write_flow(Flow::None);
-        self.buffer.clear();
         vec![FlowOutcome::SetMode(Mode::Normal), FlowOutcome::RefreshNow]
     }
 
@@ -2063,7 +2097,7 @@ impl ViewState {
         };
         let outcomes = self.select_board(state, board);
         self.subject_stack = state.canonical_first_stack(board);
-        self.surfaces.replace_root(ViewId::StackDetail);
+        self.replace_root(ViewId::StackDetail);
         outcomes
     }
 
@@ -2096,7 +2130,7 @@ impl ViewState {
                 self.selected_stack = Some(stack_id);
                 self.subject_stack = Some(stack_id);
                 self.focused_task = Self::first_task_of(state, stack_id);
-                self.surfaces.replace_root(ViewId::StackDetail);
+                self.replace_root(ViewId::StackDetail);
                 out
             }
             SearchTarget::Board(board_id) => {
@@ -2109,7 +2143,6 @@ impl ViewState {
         // The flow always ends (close_palette's ending; select_board
         // already asked for the repaint).
         self.write_flow(Flow::None);
-        self.buffer.clear();
         outcomes.push(FlowOutcome::SetMode(Mode::Normal));
         outcomes
     }
@@ -2266,7 +2299,8 @@ impl ViewState {
                 // Unreachable with the real taxonomy (every kind rule
                 // ends its level); the fold's own end keeps the walk
                 // total — the `Surfaces::settle_fold` contract.
-                self.surfaces.end_top_flow();
+                let dropped = self.surfaces.end_top_flow();
+                self.retired.extend(dropped);
             }
         }
         outcomes
@@ -2294,7 +2328,7 @@ impl ViewState {
             | Flow::EditTitle { .. }
             | Flow::RenameStack { .. }
             | Flow::RenameBoard { .. } => {
-                if self.buffer.trim().is_empty() {
+                if self.buffer().trim().is_empty() {
                     self.discard_edit()
                 } else {
                     self.commit_edit(state)
@@ -2305,7 +2339,7 @@ impl ViewState {
             // commit non-empty, discard empty — a focus steal never
             // clears (round-3 D15).
             Flow::EditDescription { .. } => {
-                if self.buffer.trim().is_empty() {
+                if self.buffer().trim().is_empty() {
                     self.discard_edit()
                 } else {
                     self.commit_description()
@@ -2346,7 +2380,6 @@ impl ViewState {
     /// opens the board field in insert mode.
     pub fn begin_create_board(&mut self) -> Vec<FlowOutcome> {
         self.write_flow(Flow::CreateBoard);
-        self.buffer.clear();
         vec![FlowOutcome::SetMode(Mode::Insert), FlowOutcome::RefreshNow]
     }
 
@@ -2361,7 +2394,7 @@ impl ViewState {
             return Vec::new();
         };
         self.write_flow(Flow::RenameStack { stack });
-        self.buffer = title;
+        self.set_buffer(title);
         vec![FlowOutcome::SetMode(Mode::Insert), FlowOutcome::RefreshNow]
     }
 
@@ -2376,7 +2409,7 @@ impl ViewState {
             return Vec::new();
         };
         self.write_flow(Flow::RenameBoard { board });
-        self.buffer = title;
+        self.set_buffer(title);
         vec![FlowOutcome::SetMode(Mode::Insert), FlowOutcome::RefreshNow]
     }
 
@@ -2516,7 +2549,7 @@ impl ViewState {
             // the root: the only pushed view kinds are Settings and
             // the planner, never a subject view (D8).
             if self.view() == ViewId::StackDetail {
-                self.surfaces.replace_root(ViewId::Board);
+                self.replace_root(ViewId::Board);
             }
         }
         if let Some(task) = self.subject_task
@@ -2524,7 +2557,7 @@ impl ViewState {
         {
             self.subject_task = None;
             if self.view() == ViewId::TaskDetail {
-                self.surfaces.replace_root(ViewId::Board);
+                self.replace_root(ViewId::Board);
             }
             if matches!(
                 *self.flow(),
@@ -2535,7 +2568,6 @@ impl ViewState {
                     } if t == task
             ) {
                 self.write_flow(Flow::None);
-                self.buffer.clear();
             }
         }
         match self.flow().clone() {
@@ -2554,7 +2586,6 @@ impl ViewState {
             // vanished target (the `Flow::Move` precedent).
             Flow::RenameStack { stack } if !stacks.contains(&stack) => {
                 self.write_flow(Flow::None);
-                self.buffer.clear();
             }
             Flow::RenameBoard { board } if self.board != Some(board) => self.write_flow(Flow::None),
             Flow::MoveStack { stack, .. } if !stacks.contains(&stack) => {
@@ -3128,6 +3159,50 @@ mod tests {
         let outcomes = vs.commit_capture();
         assert_eq!(*vs.flow(), Flow::None);
         assert!(outcomes.contains(&FlowOutcome::SetMode(Mode::Normal)));
+    }
+
+    // -- per-level state (W5b D-H2/D3) -------------------------------------
+
+    #[test]
+    fn a_closed_text_level_reopens_clean_through_every_open() {
+        let (state, _, [s0, _], [a, ..]) = fixture();
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        // Create → discard → stack-create: the re-minted level starts
+        // empty — the drop was the wipe.
+        vs.begin_create(s0);
+        vs.set_buffer("half-typed".to_owned());
+        assert_eq!(vs.buffer(), "half-typed");
+        vs.discard_edit();
+        vs.begin_create_stack(&state);
+        assert_eq!(vs.buffer(), "", "the re-opened level starts clean");
+        vs.discard_edit();
+        // The title editor's seeded reopen is still per level.
+        vs.begin_edit_title(&state, a);
+        assert_eq!(vs.buffer(), "task-0", "the seed rides the fresh level");
+        vs.discard_edit();
+        vs.begin_capture();
+        assert_eq!(vs.buffer(), "");
+    }
+
+    #[test]
+    fn the_retire_queue_drains_empty_at_rest() {
+        let (state, _, _, _) = fixture();
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        vs.begin_capture();
+        vs.set_buffer("thought".to_owned());
+        vs.discard_edit();
+        vs.begin_capture();
+        vs.discard_edit();
+        let drained = vs.drain_retired();
+        assert_eq!(drained.len(), 2, "one corpse per dropped level");
+        assert!(vs.drain_retired().is_empty(), "the queue is empty at rest");
+        assert_eq!(*vs.flow(), Flow::None);
+        // The root swap retires its pushed views the same way.
+        vs.open_settings();
+        vs.set_view(ViewId::Board);
+        assert_eq!(vs.drain_retired().len(), 1);
     }
 
     #[test]
@@ -4849,7 +4924,7 @@ mod tests {
                 let mut vs = ViewState::new();
                 vs.reconcile(&state);
                 vs.arm_flow(flow.clone());
-                vs.buffer = "in-flight".to_owned();
+                vs.set_buffer("in-flight".to_owned());
                 let outcomes = vs.enter_kiosk_mode(&state, mode);
                 assert!(
                     !outcomes

@@ -27,6 +27,7 @@ pub mod fonts;
 pub mod geometry;
 pub mod keymap;
 pub mod keyscope;
+pub(crate) mod level_state;
 pub mod menu;
 pub mod models;
 pub mod presentation;

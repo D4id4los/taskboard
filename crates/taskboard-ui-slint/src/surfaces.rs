@@ -12,6 +12,7 @@
 //! kind rule (D-H7/Q6) with the typed [`AlreadyInChain`] refusal.
 
 use crate::actions::ContextId;
+use crate::level_state::{FocusAnchor, LevelState};
 use crate::view_state::{Flow, ViewId};
 
 /// A level's surface: the root view or a flow.
@@ -94,15 +95,36 @@ pub enum SurfaceKind {
 #[error("surface kind already in chain")]
 pub struct AlreadyInChain;
 
-/// One level of the chain. The surface is private: the only mutators
-/// are [`Surfaces`]' methods (chunk 2 widens this with per-level
-/// state — the private field keeps that a crate-local change).
+/// One level of the chain: the surface plus its minted interaction
+/// state (D-H2). Both fields private — the only mutators are
+/// [`Surfaces`]' methods, and the state is minted once at entry, so a
+/// family can never be paired with the wrong surface kind.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Level {
     surface: Surface,
+    state: LevelState,
+}
+
+/// The surface's kind identity (the mint's and the once-per-chain
+/// rule's shared vocabulary).
+fn kind_of(surface: &Surface) -> SurfaceKind {
+    match surface {
+        Surface::View(view) => SurfaceKind::View(*view),
+        Surface::Flow(flow) => SurfaceKind::Flow(flow.tag()),
+    }
 }
 
 impl Level {
+    /// The only constructor: mints the level's state family-default
+    /// for the surface's kind ([`LevelState::mint`]).
+    #[must_use]
+    pub fn new(surface: Surface) -> Self {
+        Self {
+            state: LevelState::mint(kind_of(&surface)),
+            surface,
+        }
+    }
+
     #[must_use]
     pub const fn view(&self) -> Option<ViewId> {
         match &self.surface {
@@ -121,10 +143,19 @@ impl Level {
 
     #[must_use]
     pub fn kind(&self) -> SurfaceKind {
-        match &self.surface {
-            Surface::View(view) => SurfaceKind::View(*view),
-            Surface::Flow(flow) => SurfaceKind::Flow(flow.tag()),
-        }
+        kind_of(&self.surface)
+    }
+
+    /// The level's interaction state (read).
+    #[must_use]
+    pub(crate) fn state(&self) -> &LevelState {
+        &self.state
+    }
+
+    /// The level's interaction state (write seam — the owning flow's
+    /// keystroke paths).
+    pub(crate) fn state_mut(&mut self) -> &mut LevelState {
+        &mut self.state
     }
 }
 
@@ -134,6 +165,10 @@ impl Level {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Surfaces {
     root: ViewId,
+    /// The root view's own mount anchor (D-H7): the parent slot for a
+    /// child pushed directly over the root — the anchor the child's
+    /// exit restores into.
+    root_anchor: FocusAnchor,
     /// The levels above the root, innermost last. `above[i]` is
     /// chain level `i + 1`.
     above: Vec<Level>,
@@ -145,6 +180,7 @@ impl Surfaces {
     pub fn rooted(view: ViewId) -> Self {
         Self {
             root: view,
+            root_anchor: FocusAnchor::None,
             above: Vec::new(),
         }
     }
@@ -153,6 +189,28 @@ impl Surfaces {
     #[must_use]
     pub const fn root(&self) -> ViewId {
         self.root
+    }
+
+    /// The levels above the root, shallowest first (the family
+    /// accessors scan it innermost-last).
+    #[must_use]
+    pub(crate) fn above_levels(&self) -> &[Level] {
+        &self.above
+    }
+
+    /// The levels above the root, shallowest first (write seam).
+    pub(crate) fn above_levels_mut(&mut self) -> &mut [Level] {
+        &mut self.above
+    }
+
+    /// Records the parent's anchor for a child about to mount (D-H7):
+    /// the deepest surviving level is the parent.
+    pub(crate) fn record_parent_anchor(&mut self, anchor: FocusAnchor) {
+        if let Some(level) = self.above.last_mut() {
+            level.state_mut().set_anchor(anchor);
+        } else {
+            self.root_anchor = anchor;
+        }
     }
 
     /// The chain depth: the root plus every level above it.
@@ -180,14 +238,11 @@ impl Surfaces {
     /// [`AlreadyInChain`] when the surface's kind is already in the
     /// chain.
     pub fn push(&mut self, surface: Surface) -> Result<usize, AlreadyInChain> {
-        let kind = match &surface {
-            Surface::View(view) => SurfaceKind::View(*view),
-            Surface::Flow(flow) => SurfaceKind::Flow(flow.tag()),
-        };
+        let kind = kind_of(&surface);
         if self.kinds().contains(&kind) {
             return Err(AlreadyInChain);
         }
-        self.above.push(Level { surface });
+        self.above.push(Level::new(surface));
         Ok(self.above.len())
     }
 
@@ -195,8 +250,12 @@ impl Surfaces {
     /// level *i* is `truncate_to(i)`: everything above *i* — the
     /// level's descendants — goes with it, so a child can never
     /// outlive its parent. The root (depth 1) always survives.
-    pub fn truncate_to(&mut self, depth: usize) {
-        self.above.truncate(depth.saturating_sub(1));
+    /// Returns the dropped levels innermost-first — the retire drain's
+    /// corpses (D-H2: the drop is the wipe, and the drain consumes
+    /// each level's exit side-effects exactly once).
+    pub fn truncate_to(&mut self, depth: usize) -> Vec<Level> {
+        let keep = depth.saturating_sub(1).min(self.above.len());
+        self.above.drain(keep..).rev().collect()
     }
 
     /// Swaps the root view (navigation's Replace primitive, D3): a
@@ -204,10 +263,22 @@ impl Surfaces {
     /// view level above the root goes with the swap, while flow
     /// levels above them survive — a flow opened over an over-view
     /// outlives the view being replaced underneath it, exactly as the
-    /// flat model's independent `view`/`flow` slots did.
-    pub fn replace_root(&mut self, view: ViewId) {
-        self.above.retain(|level| level.flow().is_some());
+    /// flat model's independent `view`/`flow` slots did. Returns the
+    /// dropped view levels innermost-first.
+    pub fn replace_root(&mut self, view: ViewId) -> Vec<Level> {
+        let mut kept = Vec::new();
+        let mut dropped = Vec::new();
+        for level in self.above.drain(..).rev() {
+            if level.flow().is_some() {
+                kept.push(level);
+            } else {
+                dropped.push(level);
+            }
+        }
+        kept.reverse();
+        self.above = kept;
         self.root = view;
+        dropped
     }
 
     /// The topmost view level's `ViewId` — the flat model's `view`
@@ -258,12 +329,31 @@ impl Surfaces {
 
     /// Ends the innermost flow level: truncates to its index, so
     /// everything above it goes with it (there is nothing above the
-    /// innermost level but more of its own subtree). No-op without a
-    /// flow level.
-    pub fn end_top_flow(&mut self) {
-        if let Some(index) = self.top_flow_index() {
-            self.truncate_to(index);
+    /// innermost level but more of its own subtree). Returns the
+    /// dropped levels innermost-first (see [`Self::truncate_to`]);
+    /// no-op without a flow level.
+    pub fn end_top_flow(&mut self) -> Vec<Level> {
+        match self.top_flow_index() {
+            Some(index) => self.truncate_to(index),
+            None => Vec::new(),
         }
+    }
+
+    /// Replaces the innermost flow level wholesale (the XOR rule's
+    /// chain shape): the fresh flow mints its own state, the old
+    /// level comes back dropped (its state dies with it). `None`
+    /// without a flow level. The once-per-chain rule does not apply —
+    /// the replacement occupies the live level's own slot, and with
+    /// the XOR rule exactly one flow level is ever live.
+    pub fn replace_top_flow(&mut self, flow: Flow) -> Option<Level> {
+        let index = self
+            .above
+            .iter_mut()
+            .rev()
+            .position(|level| level.flow().is_some())?;
+        let fresh = Level::new(Surface::Flow(flow));
+        let live = self.above.len() - 1 - index;
+        Some(std::mem::replace(&mut self.above[live], fresh))
     }
 
     /// The offer walk (D-H5/D4): the effect is offered to the levels
@@ -279,9 +369,7 @@ impl Surfaces {
                 return Some(answer);
             }
         }
-        let root = Level {
-            surface: Surface::View(self.root),
-        };
+        let root = Level::new(Surface::View(self.root));
         handle(&root)
     }
 
@@ -291,17 +379,22 @@ impl Surfaces {
     /// its index) so the walk always advances; a rule that already
     /// ended its level makes this a no-op. View levels are never
     /// settled; a chain with no flow levels folds to empty without
-    /// calling `close`.
-    pub fn settle_fold<O>(&mut self, mut close: impl FnMut(&Flow) -> Vec<O>) -> Vec<O> {
+    /// calling `close`. Returns `(outcomes, dropped)` — the dropped
+    /// levels innermost-first, the retire drain's corpses.
+    pub fn settle_fold<O>(
+        &mut self,
+        mut close: impl FnMut(&Flow) -> Vec<O>,
+    ) -> (Vec<O>, Vec<Level>) {
         let mut outcomes = Vec::new();
+        let mut dropped = Vec::new();
         while let Some(index) = self.top_flow_index() {
             let Some(flow) = self.above[index - 1].flow().cloned() else {
                 break;
             };
             outcomes.extend(close(&flow));
-            self.truncate_to(index);
+            dropped.extend(self.truncate_to(index));
         }
-        outcomes
+        (outcomes, dropped)
     }
 }
 
@@ -450,6 +543,9 @@ mod tests {
         ForeignSettle,
         /// The offer walk with a visit recorder.
         Offer,
+        /// Writes one family fact into the top level's state (D6.1's
+        /// write arm): the state is observable until the level drops.
+        WriteTopState,
     }
 
     fn command_strategy() -> impl Strategy<Value = Command> {
@@ -461,23 +557,25 @@ mod tests {
             1 => Just(Command::EndTopFlow),
             2 => Just(Command::ForeignSettle),
             2 => Just(Command::Offer),
+            2 => Just(Command::WriteTopState),
         ]
     }
 
     /// The shadow model: the kind sequence the chain must equal after
-    /// every command. It mirrors the same rules independently, so a
-    /// divergence means the chain did something no sequence of the
-    /// primitives can explain.
+    /// every command, each level's written flag — the D6.1 oracle (a
+    /// level's state is unobservable once its level is gone). It
+    /// mirrors the same rules independently, so a divergence means the
+    /// chain did something no sequence of the primitives can explain.
     #[derive(Default)]
     struct Shadow {
         root: ViewId,
-        above: Vec<SurfaceKind>,
+        above: Vec<(SurfaceKind, bool)>,
     }
 
     impl Shadow {
         fn kinds(&self) -> Vec<SurfaceKind> {
             let mut kinds = vec![SurfaceKind::View(self.root)];
-            kinds.extend(self.above.iter().copied());
+            kinds.extend(self.above.iter().map(|(kind, _)| *kind));
             kinds
         }
 
@@ -491,27 +589,28 @@ mod tests {
                 Command::PushFlow(tag) => {
                     let kind = SurfaceKind::Flow(tag);
                     if !self.kinds().contains(&kind) {
-                        self.above.push(kind);
+                        self.above.push((kind, false));
                     }
                 }
                 Command::PushView(view) => {
                     let kind = SurfaceKind::View(view);
                     if !self.kinds().contains(&kind) {
-                        self.above.push(kind);
+                        self.above.push((kind, false));
                     }
                 }
                 Command::TruncateTo(depth) => {
                     self.above.truncate(depth.saturating_sub(1));
                 }
                 Command::ReplaceRoot(view) => {
-                    self.above.retain(|k| matches!(k, SurfaceKind::Flow(_)));
+                    self.above
+                        .retain(|(k, _)| matches!(k, SurfaceKind::Flow(_)));
                     self.root = view;
                 }
                 Command::EndTopFlow => {
                     if let Some(i) = self
                         .above
                         .iter()
-                        .rposition(|k| matches!(k, SurfaceKind::Flow(_)))
+                        .rposition(|(k, _)| matches!(k, SurfaceKind::Flow(_)))
                     {
                         self.above.truncate(i);
                     }
@@ -522,9 +621,9 @@ mod tests {
                     while let Some(i) = self
                         .above
                         .iter()
-                        .rposition(|k| matches!(k, SurfaceKind::Flow(_)))
+                        .rposition(|(k, _)| matches!(k, SurfaceKind::Flow(_)))
                     {
-                        if let SurfaceKind::Flow(tag) = self.above[i] {
+                        if let SurfaceKind::Flow(tag) = self.above[i].0 {
                             settled.push(tag);
                         }
                         self.above.truncate(i);
@@ -537,10 +636,15 @@ mod tests {
                     for index in (0..=self.above.len()).rev() {
                         visits.push(index);
                         let responds =
-                            index == 0 || matches!(self.above[index - 1], SurfaceKind::Flow(_));
+                            index == 0 || matches!(self.above[index - 1].0, SurfaceKind::Flow(_));
                         if responds {
                             break;
                         }
+                    }
+                }
+                Command::WriteTopState => {
+                    if let Some((_, written)) = self.above.last_mut() {
+                        *written = true;
                     }
                 }
             }
@@ -550,13 +654,19 @@ mod tests {
     /// Asserts the chain's kind sequence equals the shadow's — and
     /// therefore every structural invariant the type enforces holds
     /// after an arbitrary command sequence: the root is always a
-    /// view, every level the shadow still holds is present, and no
-    /// level the shadow dropped survived (a child never outlives its
-    /// parent).
+    /// view, every level the shadow still holds is present, no level
+    /// the shadow dropped survived (a child never outlives its
+    /// parent), and each level's state is exactly its family default
+    /// unless the shadow recorded a write into it (D6.1: written
+    /// state never resurfaces as default, default never turns
+    /// written).
     fn assert_matches(chain: &Surfaces, shadow: &Shadow) -> Result<(), TestCaseError> {
         prop_assert_eq!(chain.kinds(), shadow.kinds());
         prop_assert!(chain.depth() >= 1);
         prop_assert_eq!(chain.root(), shadow.root);
+        for (level, (kind, written)) in chain.above_levels().iter().zip(&shadow.above) {
+            prop_assert_eq!(level.state().is_default_for(*kind), !written);
+        }
         Ok(())
     }
 
@@ -593,17 +703,23 @@ mod tests {
                             prop_assert!(matches!(result, Err(AlreadyInChain)));
                         }
                     }
-                    Command::TruncateTo(depth) => chain.truncate_to(*depth),
-                    Command::ReplaceRoot(view) => chain.replace_root(*view),
-                    Command::EndTopFlow => chain.end_top_flow(),
+                    Command::TruncateTo(depth) => {
+                        let _dropped = chain.truncate_to(*depth);
+                    }
+                    Command::ReplaceRoot(view) => {
+                        let _dropped = chain.replace_root(*view);
+                    }
+                    Command::EndTopFlow => {
+                        let _dropped = chain.end_top_flow();
+                    }
                     Command::ForeignSettle => {
-                        let folded = chain.settle_fold(|flow| vec![flow.tag()]);
+                        let (folded, _dropped) = chain.settle_fold(|flow| vec![flow.tag()]);
                         // The fold's outcomes concatenate innermost-first:
                         // the recorded order is the reversed flow order.
                         let mut expected = shadow
                             .above
                             .iter()
-                            .filter_map(|k| match k {
+                            .filter_map(|(k, _)| match k {
                                 SurfaceKind::Flow(tag) => Some(*tag),
                                 SurfaceKind::View(_) => None,
                             })
@@ -612,6 +728,9 @@ mod tests {
                         prop_assert_eq!(&folded, &expected);
                         settled.extend(folded);
                     }
+                    // The write rides the post-apply step (it must
+                    // land on the shadow's books too).
+                    Command::WriteTopState => {}
                     Command::Offer => {
                         // The real walk with the visit recorder.
                         real_visits.clear();
@@ -650,11 +769,16 @@ mod tests {
                     let flow_at = |index: usize| {
                         index > 0
                             && matches!(
-                                shadow.above[index - 1],
+                                shadow.above[index - 1].0,
                                 SurfaceKind::Flow(_)
                             )
                     };
                     prop_assert!(responder == 0 || flow_at(responder));
+                }
+                if matches!(command, Command::WriteTopState)
+                    && let Some(level) = chain.above_levels_mut().last_mut()
+                {
+                    level.state_mut().write_test_fact();
                 }
                 assert_matches(&chain, &shadow)?;
             }
@@ -673,16 +797,22 @@ mod tests {
                     Command::PushView(view) => {
                         let _ = chain.push(Surface::View(*view));
                     }
-                    Command::TruncateTo(depth) => chain.truncate_to(*depth),
-                    Command::ReplaceRoot(view) => chain.replace_root(*view),
-                    Command::EndTopFlow => chain.end_top_flow(),
-                    Command::ForeignSettle | Command::Offer => {}
+                    Command::TruncateTo(depth) => {
+                        let _dropped = chain.truncate_to(*depth);
+                    }
+                    Command::ReplaceRoot(view) => {
+                        let _dropped = chain.replace_root(*view);
+                    }
+                    Command::EndTopFlow => {
+                        let _dropped = chain.end_top_flow();
+                    }
+                    Command::ForeignSettle | Command::Offer | Command::WriteTopState => {}
                 }
             }
             let _ = chain.settle_fold(|flow| vec![flow.tag()]);
             let after_first = chain.clone();
             // The second fold settles nothing and changes nothing.
-            let second = chain.settle_fold(|_flow| vec![FlowTag::None]);
+            let (second, _dropped) = chain.settle_fold(|_flow| vec![FlowTag::None]);
             prop_assert!(second.is_empty());
             prop_assert_eq!(&chain, &after_first);
         }
@@ -777,7 +907,7 @@ mod tests {
         chain
             .push(Surface::Flow(Flow::Palette { selected: 0 }))
             .expect("push");
-        let settled = chain.settle_fold(|flow| vec![flow.tag()]);
+        let settled = chain.settle_fold(|flow| vec![flow.tag()]).0;
         assert_eq!(settled, vec![FlowTag::Palette, FlowTag::Capture]);
         assert_eq!(chain.depth(), 1);
         assert_eq!(chain.root(), ViewId::Today);
