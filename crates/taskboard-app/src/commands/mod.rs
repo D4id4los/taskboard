@@ -265,8 +265,28 @@ pub enum CommandError {
     /// `--board`): the ruling names `--since`/`--until` the journal
     /// leg's only filters, and silently ignoring a passed filter is
     /// the worst outcome for a data command.
-    #[error("--task/--board do not apply to --what journal (use --since/--until)")]
+    #[error("--task/--board/--since/--until/--format do not apply to this export family")]
     ExportFiltersNotApplicable,
+    /// The pdf-only options (`--layout`/`--out`/`--no-open`) were
+    /// passed to a data family (`tracking`/`journal`).
+    #[cfg(feature = "pdf-export")]
+    #[error("--layout/--out/--no-open apply only to --what pdf")]
+    ExportOptionsNotApplicable,
+    /// The pdf destination was refused (not absolute after resolution,
+    /// parent missing, an existing directory, or the write failed) —
+    /// typed path outcomes, never a silent stdout dump.
+    #[cfg(feature = "pdf-export")]
+    #[error("pdf destination refused")]
+    ExportPdfPath(#[from] crate::pdf::deliver::PdfPathError),
+    /// `[export] pdf_layout` names an unknown layout.
+    #[cfg(feature = "pdf-export")]
+    #[error("[export] pdf_layout is not one of fold|a4|a5|a6")]
+    UnknownPdfLayout,
+    /// The krilla renderer refused the display list — a layout bug,
+    /// never a runtime contingency.
+    #[cfg(feature = "pdf-export")]
+    #[error("pdf rendering failed")]
+    ExportPdfRender,
     /// No habit matches the selector (exact uuid | ≥8-char prefix |
     /// exact live title).
     #[error("no habit matches {selector:?}")]
@@ -511,6 +531,14 @@ impl CommandError {
             Self::UnknownReflectionEntry { .. } => "unknown-reflection-entry",
             Self::AmbiguousReflectionEntry { .. } => "ambiguous-reflection-entry",
             Self::ExportFiltersNotApplicable => "filters-not-applicable",
+            #[cfg(feature = "pdf-export")]
+            Self::ExportOptionsNotApplicable => "options-not-applicable",
+            #[cfg(feature = "pdf-export")]
+            Self::ExportPdfPath(_) => "pdf-path",
+            #[cfg(feature = "pdf-export")]
+            Self::UnknownPdfLayout => "unknown-pdf-layout",
+            #[cfg(feature = "pdf-export")]
+            Self::ExportPdfRender => "pdf-render",
             Self::UnknownHabit { .. } => "unknown-habit",
             Self::AmbiguousHabit { .. } => "ambiguous-habit",
             Self::NoStacks => "no-stacks",
@@ -1299,6 +1327,12 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
             until,
             task,
             board,
+            #[cfg(feature = "pdf-export")]
+            layout,
+            #[cfg(feature = "pdf-export")]
+            out,
+            #[cfg(feature = "pdf-export")]
+            no_open,
         } => {
             track::export_command(
                 &mut ctx.io,
@@ -1310,6 +1344,12 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
                     until,
                     task,
                     board,
+                    #[cfg(feature = "pdf-export")]
+                    layout,
+                    #[cfg(feature = "pdf-export")]
+                    out,
+                    #[cfg(feature = "pdf-export")]
+                    no_open,
                 },
             )
             .await
@@ -1738,18 +1778,33 @@ pub async fn dispatch_line(
             until,
             task,
             board,
-        } => track::export_line(
-            app,
-            io,
-            &track::ExportQuery {
+            #[cfg(feature = "pdf-export")]
+            layout,
+            #[cfg(feature = "pdf-export")]
+            out,
+            #[cfg(feature = "pdf-export")]
+            no_open,
+        } => {
+            let query = track::ExportQuery {
                 what: what.unwrap_or_default(),
                 format,
                 since,
                 until,
                 task,
                 board,
-            },
-        ),
+                #[cfg(feature = "pdf-export")]
+                layout,
+                #[cfg(feature = "pdf-export")]
+                out,
+                #[cfg(feature = "pdf-export")]
+                no_open,
+            };
+            #[cfg(feature = "pdf-export")]
+            if query.what == crate::cli::ExportWhat::Pdf {
+                return track::export_pdf_line(app, io, &query);
+            }
+            track::export_line(app, io, &query)
+        }
         Command::Capture { title, board } => emit_result(
             io,
             capture::capture_on(app, title, board.as_deref()).await,
@@ -2507,6 +2562,12 @@ mod ipc_routing_tests {
                 until: None,
                 task: None,
                 board: None,
+                #[cfg(feature = "pdf-export")]
+                layout: None,
+                #[cfg(feature = "pdf-export")]
+                out: None,
+                #[cfg(feature = "pdf-export")]
+                no_open: false,
             },
             Command::Sync {
                 no_wait: false,

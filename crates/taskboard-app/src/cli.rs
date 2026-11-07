@@ -176,6 +176,20 @@ pub enum Command {
         /// (exact uuid | exact title among the live boards).
         #[arg(long)]
         board: Option<String>,
+        /// The print layout (pdf leg only; `fold` by default).
+        #[cfg(feature = "pdf-export")]
+        #[arg(long, value_enum)]
+        layout: Option<PdfLayout>,
+        /// The pdf destination file (pdf leg only; the config default
+        /// when omitted — `[export] pdf_dir` + the dated file name).
+        #[cfg(feature = "pdf-export")]
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// Skip opening the written pdf in the system viewer (pdf leg
+        /// only; overrides `[export] open_after_export`).
+        #[cfg(feature = "pdf-export")]
+        #[arg(long)]
+        no_open: bool,
     },
     /// Delete the stored Nextcloud credentials (and, under the auto
     /// backend, the config's server/user keys). Idempotent; the board
@@ -958,6 +972,13 @@ pub enum ExportWhat {
     /// tombstones are bookkeeping and stay out).
     #[value(name = "journal")]
     Reflection,
+    /// The printable today sheet (`export --what pdf`, #624 stage B):
+    /// the export family's explicit file-writing leg. Compiled only
+    /// with the `pdf-export` feature — a default build rejects
+    /// `--what pdf` as a clap usage error (exit 2), so there is no
+    /// runtime "feature disabled" path.
+    #[cfg(feature = "pdf-export")]
+    Pdf,
 }
 
 /// The export payload format. `Csv` is the default; a malformed value
@@ -971,6 +992,22 @@ pub enum ExportFormat {
     /// A single-line JSON array of entry objects (`jq` is the
     /// consumer).
     Json,
+}
+
+/// The print layout of `export --what pdf` (feature-gated; the clap
+/// usage error for a default build rides `--what pdf`'s absence).
+#[cfg(feature = "pdf-export")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum PdfLayout {
+    /// The foldable A4 sheet → four-page A6 booklet (the default).
+    #[default]
+    Fold,
+    /// Single-sided A4, two columns.
+    A4,
+    /// Single-sided A5.
+    A5,
+    /// Single-sided A6.
+    A6,
 }
 
 /// Span-stamp grammar (the `parse_due` shape minus `none`): RFC-3339

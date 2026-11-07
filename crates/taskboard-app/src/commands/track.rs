@@ -437,9 +437,21 @@ pub fn list_on(
 /// Only via `expect` on the day successor — unreachable for any
 /// representable filter date (the `day_start` comment).
 pub fn export_on(app: &crate::App, query: &ExportQuery) -> Result<ExportPayload, CommandError> {
+    #[cfg(feature = "pdf-export")]
+    if query.layout.is_some() || query.out.is_some() || query.no_open {
+        return Err(CommandError::ExportOptionsNotApplicable);
+    }
     match query.what {
         ExportWhat::Reflection => export_reflection_on(app, query),
         ExportWhat::Tracking => export_tracking_on(app, query),
+        #[cfg(feature = "pdf-export")]
+        ExportWhat::Pdf => {
+            // Unreachable through the lanes: both intercept `--what
+            // pdf` before this state-only seam (the leg needs the
+            // config's destination default, which does not travel
+            // here) — see `export_pdf_on`.
+            Err(CommandError::ExportFiltersNotApplicable)
+        }
     }
 }
 
@@ -736,6 +748,18 @@ pub struct ExportQuery {
     pub task: Option<String>,
     /// The optional live-board selector.
     pub board: Option<String>,
+    /// The print layout override (pdf leg; `None` = the config
+    /// default, else `fold`).
+    #[cfg(feature = "pdf-export")]
+    pub layout: Option<crate::cli::PdfLayout>,
+    /// The explicit pdf destination (pdf leg; `None` = the config
+    /// default directory + the dated file name).
+    #[cfg(feature = "pdf-export")]
+    pub out: Option<PathBuf>,
+    /// Skip the viewer open, overriding `[export] open_after_export`
+    /// (pdf leg; `false` = the config posture).
+    #[cfg(feature = "pdf-export")]
+    pub no_open: bool,
 }
 
 /// The export payload: rows as data, rendered to bytes at the emit
@@ -1321,6 +1345,10 @@ pub async fn export_command(
     config_path: Option<PathBuf>,
     query: ExportQuery,
 ) -> u8 {
+    #[cfg(feature = "pdf-export")]
+    if query.what == ExportWhat::Pdf {
+        return export_pdf_command(io, config_path, query).await;
+    }
     match super::core_ctx(config_path) {
         Ok((config, store)) => match export(config, store, query).await {
             Ok(payload) => {
@@ -1333,9 +1361,77 @@ pub async fn export_command(
     }
 }
 
+/// The one-shot `export --what pdf` dispatch (feature-gated): boots
+/// the core, writes the file, opens the viewer best-effort. The
+/// receipt rides the normal envelope (`--json` on stdout; plain text
+/// prints the path); an open failure keeps exit 0 with a stderr
+/// warning.
+#[cfg(feature = "pdf-export")]
+async fn export_pdf_command(
+    io: &mut crate::commands::CommandIo<'_>,
+    config_path: Option<PathBuf>,
+    query: ExportQuery,
+) -> u8 {
+    match super::core_ctx(config_path) {
+        Ok((config, store)) => {
+            let leg = super::tasks::with_core(config.clone(), store, async |app| {
+                export_pdf_on(app, &config, &query, PdfLane::OneShot)
+            })
+            .await;
+            match leg {
+                Ok(receipt) => {
+                    pdf_receipt(io, &receipt);
+                    0
+                }
+                Err(err) => crate::commands::report_to(io, &err),
+            }
+        }
+        Err(err) => crate::commands::report_to(io, &err),
+    }
+}
+
+/// The session-lane `export --what pdf` (feature-gated): the daemon
+/// writes the file — absolute `--out` only, the wire carries no cwd —
+/// and never opens the user's viewer (`opened` stays `Skipped`, the
+/// honest receipt; the one-shot lane is the auto-open path).
+#[cfg(feature = "pdf-export")]
+pub(crate) fn export_pdf_line(
+    app: &crate::App,
+    io: &mut crate::commands::CommandIo<'_>,
+    query: &ExportQuery,
+) -> u8 {
+    match export_pdf_on(app, &app.config, query, PdfLane::Session) {
+        Ok(receipt) => {
+            pdf_receipt(io, &receipt);
+            0
+        }
+        Err(err) => crate::commands::report_to(io, &err),
+    }
+}
+
+/// Prints the pdf receipt: plain text prints the path; `--json` the
+/// envelope. A typed, non-fatal open failure warns on stderr first
+/// (the UX text is never asserted — the receipt is the contract).
+#[cfg(feature = "pdf-export")]
+fn pdf_receipt(
+    io: &mut crate::commands::CommandIo<'_>,
+    receipt: &crate::commands::output::PdfExportReceipt,
+) {
+    if let crate::commands::output::OpenOutcome::Failed(_) = receipt.opened {
+        let _ = writeln!(
+            io.err,
+            "warning: the pdf viewer could not be opened (typed in the receipt)"
+        );
+    }
+    crate::commands::emit_to(io, receipt, &receipt.path.display().to_string());
+}
+
 /// The session-lane `export` (the mirror of [`export_command`]): raw
 /// bytes on `out` regardless of `--json`; the daemon's captured-buffer
-/// relay carries them byte-verbatim (ADR 0012 — no relay change).
+/// relay carries them byte-verbatim (ADR 0012 — no relay change). The
+/// pdf leg intercepts here too: the daemon writes the file (absolute
+/// `--out` only — the wire carries no cwd) and never opens the user's
+/// viewer (`opened` stays `Skipped`).
 pub fn export_line(
     app: &crate::App,
     io: &mut crate::commands::CommandIo<'_>,
@@ -1348,6 +1444,132 @@ pub fn export_line(
         }
         Err(err) => crate::commands::report_to(io, &err),
     }
+}
+
+/// The pdf-leg lane: who resolves a relative destination and who may
+/// open the viewer. The session lane's IPC wire carries no cwd, so an
+/// explicit `--out` there must be absolute (typed, plan §7.1), and
+/// the daemon never opens the user's viewer (`opened` stays `Skipped`
+/// — the receipt is honest about it, the one-shot lane is the
+/// auto-open path).
+#[cfg(feature = "pdf-export")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PdfLane {
+    /// The one-shot process: cwd resolution and the viewer open.
+    OneShot,
+    /// The daemon session: absolute destinations only, never opens.
+    Session,
+}
+
+/// The `export --what pdf` steps on a booted core (both lanes' shared
+/// body): project the today sheet, render the fixed layout, write the
+/// file (typed path outcomes — stdout stays the data families'
+/// payload lane), and open the viewer best-effort (typed and
+/// non-fatal; the written file is the deliverable).
+///
+/// # Errors
+///
+/// [`CommandError`] — typed, see the variant docs.
+#[cfg(feature = "pdf-export")]
+pub(crate) fn export_pdf_on(
+    app: &crate::App,
+    config: &crate::config::AppConfig,
+    query: &ExportQuery,
+    lane: PdfLane,
+) -> Result<crate::commands::output::PdfExportReceipt, CommandError> {
+    use crate::pdf::deliver::{PdfDestination, SheetName, expand_tilde, open_in_viewer};
+    use crate::pdf::layout::PrintLayout;
+
+    if query.format.is_some()
+        || query.since.is_some()
+        || query.until.is_some()
+        || query.task.is_some()
+        || query.board.is_some()
+    {
+        return Err(CommandError::ExportFiltersNotApplicable);
+    }
+    // The flag wins; else the config key (an unknown key is a typed
+    // refusal, never silently ignored); else the fold sheet.
+    let sheet = match query.layout {
+        Some(crate::cli::PdfLayout::Fold) => SheetName::Fold,
+        Some(crate::cli::PdfLayout::A4) => SheetName::A4,
+        Some(crate::cli::PdfLayout::A5) => SheetName::A5,
+        Some(crate::cli::PdfLayout::A6) => SheetName::A6,
+        None => match config.export.pdf_layout.as_deref() {
+            None => SheetName::Fold,
+            Some(text) => SheetName::parse(text).ok_or(CommandError::UnknownPdfLayout)?,
+        },
+    };
+    let layout = match sheet {
+        SheetName::Fold => PrintLayout::FoldA6x4,
+        SheetName::A4 => PrintLayout::A4,
+        SheetName::A5 => PrintLayout::A5,
+        SheetName::A6 => PrintLayout::A6,
+    };
+
+    let now = Utc::now();
+    let calendar = config.resolved_day_calendar();
+    let state = app.engine.shared_state().load_full();
+    let day = crate::pdf::layout::print_day(&state, now, calendar);
+    drop(state);
+    let fonts = crate::pdf::render::FontAssets::embedded();
+    let sheets = crate::pdf::layout::layout_day(
+        &day,
+        layout,
+        &crate::pdf::measure::FontMetrics::embedded_regular(),
+    );
+    let bytes =
+        crate::pdf::render::render(&sheets, &fonts).map_err(|_| CommandError::ExportPdfRender)?;
+
+    let destination = if let Some(out) = query.out.clone() {
+        let expanded = expand_tilde(&out);
+        let resolved = if expanded.is_absolute() {
+            expanded
+        } else if lane == PdfLane::OneShot {
+            let cwd = std::env::current_dir().map_err(|err| {
+                CommandError::ExportPdfPath(crate::pdf::deliver::PdfPathError::Write(err.kind()))
+            })?;
+            cwd.join(expanded)
+        } else {
+            return Err(CommandError::ExportPdfPath(
+                crate::pdf::deliver::PdfPathError::NotAbsolute,
+            ));
+        };
+        PdfDestination::mint(resolved, true)?
+    } else {
+        let dir = crate::pdf::deliver::default_pdf_dir(
+            config
+                .export
+                .pdf_dir
+                .as_deref()
+                .map(expand_tilde)
+                .as_deref(),
+            // No documents dir on the platform: the platform data
+            // dir is the device-local fallback (a kiosk's).
+            dirs::data_dir().as_deref(),
+        );
+        PdfDestination::mint(
+            dir.join(crate::pdf::deliver::pdf_file_name(day.date, sheet)),
+            false,
+        )?
+    };
+    destination.write(&bytes)?;
+
+    let open_allowed =
+        lane == PdfLane::OneShot && !query.no_open && config.export.open_after_export;
+    let opened = if open_allowed {
+        match open_in_viewer(destination.path()) {
+            Ok(()) => crate::commands::output::OpenOutcome::Opened,
+            Err(err) => crate::commands::output::OpenOutcome::Failed((&err).into()),
+        }
+    } else {
+        crate::commands::output::OpenOutcome::Skipped
+    };
+    Ok(crate::commands::output::PdfExportReceipt {
+        path: destination.path().to_path_buf(),
+        pages: sheets.len(),
+        opened,
+    })
 }
 
 #[cfg(test)]

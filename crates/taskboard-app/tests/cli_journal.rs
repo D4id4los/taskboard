@@ -766,6 +766,7 @@ async fn j16_bare_export_is_byte_compatible_with_explicit_tracking() {
 /// goldens are data, not labels: the only words are the ruled column
 /// list and the entry payloads the test wrote itself.
 #[tokio::test]
+#[allow(clippy::too_many_lines)] // the golden's rows are spelled out
 async fn j17_journal_csv_golden() {
     let dir = tempdir();
     let config = standalone_config(dir.path(), "j17.db");
@@ -805,6 +806,12 @@ async fn j17_journal_csv_golden() {
         .expect("deletes");
 
     let query = taskboard_app::commands::track::ExportQuery {
+        #[cfg(feature = "pdf-export")]
+        layout: None,
+        #[cfg(feature = "pdf-export")]
+        out: None,
+        #[cfg(feature = "pdf-export")]
+        no_open: false,
         what: taskboard_app::cli::ExportWhat::Reflection,
         format: Some(taskboard_app::cli::ExportFormat::Csv),
         since: None,
@@ -846,6 +853,12 @@ async fn j17_journal_csv_golden() {
     // full row's own UTC day keeps it; the next day drops it.
     let day = full.window_start.date_naive().to_string();
     let query = taskboard_app::commands::track::ExportQuery {
+        #[cfg(feature = "pdf-export")]
+        layout: None,
+        #[cfg(feature = "pdf-export")]
+        out: None,
+        #[cfg(feature = "pdf-export")]
+        no_open: false,
         since: Some(full.window_start.date_naive()),
         until: Some(full.window_start.date_naive()),
         ..query.clone()
@@ -860,6 +873,12 @@ async fn j17_journal_csv_golden() {
     assert_eq!(rows.len(), 1, "the boundary day lands inside");
     let _ = day;
     let query = taskboard_app::commands::track::ExportQuery {
+        #[cfg(feature = "pdf-export")]
+        layout: None,
+        #[cfg(feature = "pdf-export")]
+        out: None,
+        #[cfg(feature = "pdf-export")]
+        no_open: false,
         since: Some(full.window_start.date_naive().succ_opt().unwrap()),
         until: None,
         ..query.clone()
@@ -905,6 +924,12 @@ async fn j18_journal_json_golden() {
     .entry;
 
     let query = taskboard_app::commands::track::ExportQuery {
+        #[cfg(feature = "pdf-export")]
+        layout: None,
+        #[cfg(feature = "pdf-export")]
+        out: None,
+        #[cfg(feature = "pdf-export")]
+        no_open: false,
         what: taskboard_app::cli::ExportWhat::Reflection,
         format: Some(taskboard_app::cli::ExportFormat::Json),
         since: None,
@@ -969,6 +994,12 @@ async fn j19_filters_not_applicable_is_typed() {
     let dir = tempdir();
     let config = standalone_config(dir.path(), "j19.db");
     let task = taskboard_app::commands::track::ExportQuery {
+        #[cfg(feature = "pdf-export")]
+        layout: None,
+        #[cfg(feature = "pdf-export")]
+        out: None,
+        #[cfg(feature = "pdf-export")]
+        no_open: false,
         what: taskboard_app::cli::ExportWhat::Reflection,
         format: None,
         since: None,
