@@ -53,14 +53,22 @@ in a single create-once file — duplicating it duplicates the writer.
    The ceremony (~device.rs::load_or_create~) mints a fresh
    =device_id=, the attach ladder creates a new
    =taskboard/devices/<new-id>/= subtree create-once, and the alarm
-   is gone for that device — fresh paths, no contest.
+   is gone for that device — fresh paths, no contest. Nothing is
+   lost by the new identity: the published document derives from the
+   engine's state (~PublishedJournal~ in ~cycle.rs~), so the first
+   publish under the new id carries the device's whole journal,
+   tombstones included.
 4. The orphaned old subtree
    (=taskboard/devices/<old-id>/=): remove it *by hand in the
    Nextcloud Files UI, if desired*. This is a user action, never the
    app's — the transport's verb set is closed (no DELETE, no MOVE in
    ~FilesTransport~), and a mistake is trashbin-recoverable (see
-   section 2). When the subtree vanishes, its rows simply leave the
-   merged view (~steady_cycle~'s vanish arm — the tree is the truth).
+   section 2). When the subtree vanishes, its document leaves the
+   merged view (~steady_cycle~'s vanish arm), but journal rows that
+   any device already imported stay in that device's reflection home
+   and keep being published from it — removing a subtree never
+   deletes journal entries. Deleting an entry is an in-app action
+   (it publishes a tombstone), never a file operation.
 5. Verify on each instance: ~taskboard status~ shows no =fork:=
    line, and heartbeats advance.
 
@@ -77,11 +85,15 @@ in a single create-once file — duplicating it duplicates the writer.
 
 ** Symptom
 
-A device's rows vanish from all surfaces after someone deleted
-=taskboard/= (or a subtree of it) in the Nextcloud Files UI. Own
-files recreate on their own via the create-once ceremony (the
-~OwnFileVanished~ finding, ~disambiguate_own_412~'s 404 arm); the
-affected peers' rows leave the merged view.
+Someone deleted =taskboard/= (or a subtree of it) in the Nextcloud
+Files UI. Own files recreate on their own via the create-once
+ceremony (the ~OwnFileVanished~ finding, ~disambiguate_own_412~'s
+404 arm), and each running device republishes its whole journal
+from its engine state — so journal entries that reached another
+device's home survive without a restore. What a deletion *can* lose
+is a device's rows that no other device imported yet (e.g. a device
+that is offline or retired and whose subtree was deleted): those
+only come back from the trashbin.
 
 ** Recovery
 
@@ -104,3 +116,29 @@ The app cannot cause this class of loss: readers never delete (the
 ~FilesTransport~ verb set is closed by construction). Deletes happen
 only in the Files UI, by a user — and the trashbin is the safety
 net.
+
+* 3. Peer data held aside (parked files, rejected rows)
+
+** Symptom
+
+- The status-bar chip shows the held-aside state ("files-sync: peer
+  data held aside"), or ~taskboard status~ prints a =parked:= line
+  (a whole peer file) or a =rejected:= line (a count of peer journal
+  rows).
+
+** What the app is doing
+
+A parked file (~ParkKind~: quarantined or a newer document format)
+is stored verbatim on the server and not folded; a rejected row
+(~CycleOutcome::Ok~'s ~import_rejected~, counted by ~import_step~ in
+~cycle.rs~) is a peer journal row this build cannot decode — it is
+not imported into this device's journal, but it is still relayed in
+the published document, so no device loses it.
+
+** Recovery
+
+Update this app to the version the other devices run. The next
+cycle folds/imports what the newer build understands; the finding
+clears on its own. Never edit or delete the parked file by hand —
+the writing device owns it.
+
