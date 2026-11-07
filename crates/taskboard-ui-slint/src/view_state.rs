@@ -2232,18 +2232,50 @@ impl ViewState {
         vec![FlowOutcome::RefreshNow]
     }
 
+    /// The LOCAL settle (D-H4): the top flow level only, by its kind
+    /// rule. Idempotent without a flow level (the double-settle
+    /// guard).
+    pub fn settle_flow(&mut self, state: &AppState) -> Vec<FlowOutcome> {
+        let Some(flow) = self.surfaces.top_flow().cloned() else {
+            return Vec::new();
+        };
+        self.settle_by_rule(&flow, state)
+    }
+
+    /// The FOREIGN settle (D-H4): the innermost-first fold over the
+    /// flow levels, each by its own kind rule — the trigger side of
+    /// the leaving effects, the modal settle, and the resolver's
+    /// CancelOnly/SettleThenRun/Replace cells. Idempotent: no flow
+    /// levels fold to empty, and every rule ends its level, so a
+    /// second fold settles nothing.
+    pub fn settle_foreign(&mut self, state: &AppState) -> Vec<FlowOutcome> {
+        let mut outcomes = Vec::new();
+        while let Some(index) = self.surfaces.top_flow_index() {
+            let Some(flow) = self.surfaces.top_flow().cloned() else {
+                break;
+            };
+            outcomes.extend(self.settle_by_rule(&flow, state));
+            if self.surfaces.top_flow_index() == Some(index) {
+                // Unreachable with the real taxonomy (every kind rule
+                // ends its level); the fold's own end keeps the walk
+                // total — the `Surfaces::settle_fold` contract.
+                self.surfaces.end_top_flow();
+            }
+        }
+        outcomes
+    }
+
     /// The per-kind settle rule (round-3 W-SM-b, plan §2): the one
     /// pure taxonomy every settle trigger shares — L1 focus loss, L2
     /// pointer seams, and the leaving effects — so the triggers
-    /// cannot diverge. Idempotent on `Flow::None` (the
-    /// double-settle guard). TEXT flows commit a trimmed non-empty
+    /// cannot diverge. TEXT flows commit a trimmed non-empty
     /// buffer and discard an empty one (F7 dies); the due editor
     /// clean-closes (never commits on an unrelated settle — the r2
     /// D25 rule; the only commit path stays the `commit_due`
     /// funnel); move/drag flows cancel; the modals take their own
     /// close paths.
-    pub fn settle_flow(&mut self, state: &AppState) -> Vec<FlowOutcome> {
-        match self.flow().clone() {
+    fn settle_by_rule(&mut self, flow: &Flow, state: &AppState) -> Vec<FlowOutcome> {
+        match flow.clone() {
             Flow::None => Vec::new(),
             // The placement form's settle is its own close path (the
             // overlay cells' shape): a foreign settle discards it

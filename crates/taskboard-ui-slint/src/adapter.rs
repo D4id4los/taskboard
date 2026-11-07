@@ -1961,15 +1961,20 @@ impl Adapter {
     }
 
     /// The per-kind settle, adapter side (round-3 W-SM-b, plan §2):
-    /// the pure [`ViewState::settle_flow`] rule applied, plus the
-    /// adapter-owned attachments — the due picker dies with the due
-    /// flow, the gesture buffers (`width_drag`/`scale_drag`, §8) die
-    /// with the surfaces they address, and a settled drag tears the
-    /// native runtime gesture down (`PointerExited` is the one
-    /// public cancel, [`Self::teardown_runtime_drag`]). One taxonomy
-    /// for all three trigger families — L1 focus loss, L2 pointer
-    /// seams, the leaving effects — so they cannot diverge.
-    /// Idempotent on `Flow::None`.
+    /// the pure settle fold applied, plus the adapter-owned
+    /// attachments — the due picker dies with the due flow, the
+    /// gesture buffers (`width_drag`/`scale_drag`, §8) die with the
+    /// surfaces they address, and a settled drag tears the native
+    /// runtime gesture down (`PointerExited` is the one public
+    /// cancel, [`Self::teardown_runtime_drag`]). Every settle trigger
+    /// funnels here — the L1 focus-loss and L2 pointer seams (LOCAL in
+    /// the D-H4 classification), the leaving effects, the `OpenMenu`
+    /// modal settle, and the resolver's CancelOnly/SettleThenRun/
+    /// Replace cells (FOREIGN) — so the pure side applies the
+    /// innermost-first fold ([`ViewState::settle_foreign`]); at the
+    /// reachable depths (at most one flow level live) that fold
+    /// degenerates to the local top-level settle, byte-identically.
+    /// Idempotent on an empty chain.
     fn settle_flow(&mut self, window: &AppWindow, state: &taskboard_domain::AppState) {
         // §8: the settle step owns the gesture buffers — they are
         // flow-independent by construction, and a leaving effect
@@ -1984,7 +1989,7 @@ impl Adapter {
         }
         let was_drag = matches!(flow, Flow::DragMove { .. });
         let was_date = matches!(flow, Flow::EditDate { .. });
-        let outcomes = self.view_state.settle_flow(state);
+        let outcomes = self.view_state.settle_foreign(state);
         if was_date {
             self.due_picker = None;
         }
