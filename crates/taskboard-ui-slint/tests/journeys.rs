@@ -16472,3 +16472,90 @@ fn the_vi_editor_keeps_its_printables_and_the_escape_funnel() {
         },
     );
 }
+
+// ---- round 5 chunk 8: the account card's keyboard-only session ----------
+
+/// D-8.8 — the account session is keyboard-only operable: the walk
+/// reaches the card's stops in reading order (Remove, the Files
+/// toggle, Refresh), Return on Refresh lists, the walk reaches the
+/// remote row's picker, Return opens it and Return picks — the bind
+/// routes as an explicit `AttachConnector`.
+#[test]
+fn the_account_session_is_keyboard_operable() {
+    use taskboard_ui_slint::requests::UiRequest;
+    let mut state = AppState::default();
+    let home = uuid::Uuid::new_v4();
+    state_board(&mut state, home, "home", None);
+    let settings = UiSettings {
+        connectors: vec![connector_row("work")],
+        ..UiSettings::default()
+    };
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount_with_settings(SlintDriver::default(), state, settings);
+            harness.press(ActionId::AppSettings);
+            harness.driver.set_window_size(1000, 6000);
+            harness.driver.advance_time(0);
+
+            // The card-scoped reading order.
+            let mut seen = Vec::new();
+            for _ in 0..200 {
+                harness.stroke(parse("Tab").expect("tab"));
+                harness.driver.advance_time(0);
+                let label = harness.driver.focused_label().unwrap_or_default();
+                if label == "Refresh" {
+                    break;
+                }
+                seen.push(label);
+            }
+            let remove = seen
+                .iter()
+                .position(|l| l == "Remove")
+                .expect("Remove is a stop");
+            let files = seen
+                .iter()
+                .position(|l| l == "On")
+                .expect("the Files toggle is a stop");
+            assert!(
+                remove < files,
+                "the card header precedes its Files toggle: {seen:?}"
+            );
+
+            // Return on Refresh lists.
+            harness.stroke(parse("Return").expect("Return"));
+            let mut requests = harness.drain_requests();
+            assert_eq!(requests.len(), 1, "Return on Refresh routed one listing");
+            let UiRequest::ListRemoteBoards { reply, .. } = requests.remove(0) else {
+                panic!("the listing routed");
+            };
+            let _ = reply.send(Ok(vec![remote_row(7, "team")]));
+            harness.handle.drain_setting_replies();
+            harness.driver.advance_time(0);
+
+            // The picker: Return opens, Return picks.
+            let picker_label = harness
+                .handle
+                .window()
+                .global::<taskboard_ui_slint::SettingsBoardCopy>()
+                .get_label()
+                .to_string();
+            tab_to(&mut harness, &picker_label);
+            raw_key(&harness, slint::platform::Key::Return);
+            harness.driver.advance_time(0);
+            assert!(board_facts(&harness).get_open(), "Return opens the picker");
+            raw_key(&harness, slint::platform::Key::Return);
+            harness.driver.advance_time(0);
+            assert!(!board_facts(&harness).get_open(), "Return picks and closes");
+            let requests = harness.drain_requests();
+            assert_eq!(requests.len(), 1, "the pick routed one bind");
+            assert!(matches!(
+                &requests[0],
+                UiRequest::AttachConnector { board, connector, remote, .. }
+                    if board.as_uuid() == home && connector == "work" && *remote == taskboard_domain::RemoteBoardId(7)
+            ));
+        },
+    );
+}

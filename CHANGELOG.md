@@ -10,6 +10,18 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 ### Added
 
+- Account-first connections in the settings view (GUI review round 5,
+  chunk 8): signing in takes server, username, and app password (the
+  connector name is derived from the identity; signing in again with
+  the same identity updates it instead of adding a duplicate);
+  connectors are grouped into one card per account, each listing the
+  boards on its server after a Refresh. An unbound remote board binds
+  to a local board picked explicitly from the row's dropdown, or
+  becomes a new local board bound to it ("Create local board"); bound
+  rows carry Disconnect. The default account's card carries the Files
+  sync toggle (`[files_sync] enabled`, applied at the next restart).
+  Every control is keyboard-reachable.
+
 - The files-sync substrate's status surfacing and hardening (#632,
   DR-8 chunk 4): the typed findings grew peer heartbeat freshness and
   the quiescence-window divergence finding (two consecutive quiet
@@ -348,6 +360,15 @@ The workspace carries a single global version (see `docs/architecture.org`);
   strip (in dropdown mode the action menu reaches it).
 
 ### Changed
+
+- Binding a board to a connection is explicit (GUI review round 5,
+  chunk 8): the bind names the chosen remote board, and the old
+  adoption of a remote board by exact title match is gone. The
+  board-first selector with its Bind/Detach buttons and the
+  per-connection Test button are replaced by the account cards (the
+  remote-board listing verifies the stored credentials). Removing an
+  account removes every connection sharing its server and username,
+  and is refused while any board is still bound through it.
 
 - The interface scale applies on release/commit instead of live
   (round-4 GUI review F28): dragging the settings scale slider no
