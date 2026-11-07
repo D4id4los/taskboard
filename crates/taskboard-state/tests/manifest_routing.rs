@@ -63,6 +63,7 @@ fn app_with(features: DeckFeatures) -> AppState {
                 deleted: e,
             }
         },
+        authors: taskboard_domain::entities::BoardAuthors::default(),
         remote_seen: None,
     };
     board.id = board_id();
@@ -80,6 +81,7 @@ fn app_with(features: DeckFeatures) -> AppState {
             order: ts(0),
             deleted: ts(0),
         },
+        authors: taskboard_domain::entities::StackAuthors::default(),
         remote_seen: None,
     };
     app.stacks.insert(stack.id, stack);
@@ -118,6 +120,7 @@ fn app_with(features: DeckFeatures) -> AppState {
             archived: ts(0),
             deleted: ts(0),
         },
+        authors: taskboard_domain::entities::TaskAuthors::default(),
         remote_seen: None,
         remote_baseline: None,
     };
@@ -193,6 +196,7 @@ fn routed_op(app: &AppState, field: &str) -> LocalOp {
         &taskboard_domain::ReminderDefaults::default(),
         test_day(),
         ts(100),
+        None,
     )
     .unwrap();
     assert_eq!(plan.outcome, CommandOutcome::Applied);
@@ -270,6 +274,7 @@ fn every_manifest_row_routes_through_its_declared_lane() {
         &taskboard_domain::ReminderDefaults::default(),
         test_day(),
         ts(100),
+        None,
     )
     .unwrap();
     assert!(plan.actions.iter().any(|action| matches!(
@@ -294,6 +299,7 @@ fn every_manifest_row_routes_through_its_declared_lane() {
         &taskboard_domain::ReminderDefaults::default(),
         test_day(),
         ts(100),
+        None,
     )
     .unwrap();
     let enqueued: Vec<LocalOp> = plan
@@ -476,6 +482,7 @@ async fn the_engine_execute_path_routes_like_the_planner() {
         notifier,
         taskboard_domain::SettingsSnapshot::default(),
         taskboard_state::DayRollConfig::disabled(),
+        None,
     )
     .await
     .expect("engine boots");

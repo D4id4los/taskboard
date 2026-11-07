@@ -167,6 +167,7 @@ async fn spawn_side(
         notifier,
         taskboard_domain::SettingsSnapshot::default(),
         DayRollConfig::disabled(),
+        None,
     )
     .await
     .expect("engine boots");

@@ -929,6 +929,7 @@ mod sync_states_tests {
             archived: false,
             deleted: false,
             clocks,
+            authors: crate::entities::BoardAuthors::default(),
             remote_seen: None,
         };
         let stack = |raw: u128, b: u128| Stack {
@@ -944,6 +945,7 @@ mod sync_states_tests {
                 order: ts(100),
                 deleted: ts(100),
             },
+            authors: crate::entities::StackAuthors::default(),
             remote_seen: None,
         };
         let task = |raw: u128, s: u128| Task {
@@ -981,6 +983,7 @@ mod sync_states_tests {
                 archived: ts(100),
                 deleted: ts(100),
             },
+            authors: crate::entities::TaskAuthors::default(),
             remote_seen: None,
             remote_baseline: None,
         };
@@ -996,6 +999,7 @@ mod sync_states_tests {
                 color: ts(100),
                 deleted: ts(100),
             },
+            authors: crate::entities::LabelAuthors::default(),
             remote_seen: None,
         };
         let mut boards = BTreeMap::new();
@@ -1104,6 +1108,7 @@ mod sync_states_tests {
                 archived: ts(100),
                 deleted: ts(100),
             },
+            authors: crate::entities::BoardAuthors::default(),
             remote_seen: None,
         };
         let unbound = crate::entities::Board {
@@ -1143,6 +1148,7 @@ mod sync_states_tests {
                     archived: ts(100),
                     deleted: ts(100),
                 },
+                authors: crate::entities::BoardAuthors::default(),
                 remote_seen: None,
             };
             if id == 6 {
@@ -1267,6 +1273,7 @@ mod tests {
                 archived: ts(100),
                 deleted: ts(100),
             },
+            authors: crate::entities::BoardAuthors::default(),
             remote_seen: None,
         }
     }
@@ -1285,6 +1292,7 @@ mod tests {
                 order: ts(100),
                 deleted: ts(100),
             },
+            authors: crate::entities::StackAuthors::default(),
             remote_seen: None,
         }
     }

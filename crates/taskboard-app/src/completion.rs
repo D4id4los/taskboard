@@ -902,6 +902,7 @@ mod tests {
                     archived: taskboard_domain::BoardClocks::epoch(),
                     deleted: taskboard_domain::BoardClocks::epoch(),
                 },
+                authors: taskboard_domain::entities::BoardAuthors::default(),
                 remote_seen: None,
             },
         );
@@ -931,6 +932,7 @@ mod tests {
                     order: epoch(),
                     deleted: epoch(),
                 },
+                authors: taskboard_domain::entities::StackAuthors::default(),
                 remote_seen: None,
             },
         );
@@ -985,6 +987,7 @@ mod tests {
                     archived: epoch(),
                     deleted: epoch(),
                 },
+                authors: taskboard_domain::entities::TaskAuthors::default(),
                 remote_seen: None,
                 remote_baseline: None,
             },
@@ -1008,6 +1011,7 @@ mod tests {
                     color: epoch(),
                     deleted: epoch(),
                 },
+                authors: taskboard_domain::entities::LabelAuthors::default(),
                 remote_seen: None,
             },
         );
@@ -1751,6 +1755,7 @@ mod tests {
                     archived: false,
                     deleted,
                     clocks,
+                    authors: taskboard_domain::entities::BoardAuthors::default(),
                     remote_seen: None,
                 },
             )
@@ -1793,6 +1798,7 @@ mod tests {
                         archived: epoch(),
                         deleted: epoch(),
                     },
+                    authors: taskboard_domain::entities::BoardAuthors::default(),
                     remote_seen: None,
                 },
             )

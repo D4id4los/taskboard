@@ -60,6 +60,7 @@ async fn i1_engine_roundtrips_durably_through_the_sqlite_actor() {
             notifier,
             taskboard_domain::SettingsSnapshot::default(),
             taskboard_state::DayRollConfig::disabled(),
+            None,
         )
         .await
         .expect("engine boots");
@@ -155,6 +156,7 @@ fn due_rule_seed() -> Vec<taskboard_domain::PersistenceAction> {
             order: common::ts(T0),
             deleted: common::ts(T0),
         },
+        authors: taskboard_domain::entities::StackAuthors::default(),
         remote_seen: None,
     };
     let task = Task {
@@ -192,6 +194,7 @@ fn due_rule_seed() -> Vec<taskboard_domain::PersistenceAction> {
             archived: common::ts(T0),
             deleted: common::ts(T0),
         },
+        authors: taskboard_domain::entities::TaskAuthors::default(),
         remote_seen: None,
         remote_baseline: None,
     };
@@ -262,6 +265,7 @@ async fn reloaded_rule_never_refires_a_delivered_occurrence() {
                 ..taskboard_domain::SettingsSnapshot::default()
             },
             taskboard_state::DayRollConfig::disabled(),
+            None,
         )
         .await
         .expect("engine boots");
@@ -367,6 +371,7 @@ async fn i2_undo_line_survives_a_restart_over_sqlite() {
             notifier,
             taskboard_domain::SettingsSnapshot::default(),
             taskboard_state::DayRollConfig::disabled(),
+            None,
         )
         .await
         .expect("engine boots");

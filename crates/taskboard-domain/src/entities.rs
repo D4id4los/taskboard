@@ -543,6 +543,120 @@ impl BoardClocks {
     }
 }
 
+/// The author of each field write, slot-for-slot against
+/// [`TaskClocks`] (D-BF1's parallel sibling — never packed into the
+/// clocks). `None` = authored off-device by an authorless lane (Deck
+/// adoption), pre-F1 data, or an identity-less context; the fold's
+/// `None < Some` author leg keeps those rows honest. `#[serde(default)]`
+/// on every field: old state snapshots and journal pre-images decode
+/// authorless.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct TaskAuthors {
+    /// Author of `title`.
+    #[serde(default)]
+    pub title: Option<crate::ids::AuthorId>,
+    /// Author of `description`.
+    #[serde(default)]
+    pub description: Option<crate::ids::AuthorId>,
+    /// Author of `duedate`.
+    #[serde(default)]
+    pub duedate: Option<crate::ids::AuthorId>,
+    /// Author of `scheduled`.
+    #[serde(default)]
+    pub scheduled: Option<crate::ids::AuthorId>,
+    /// Author of `done`.
+    #[serde(default)]
+    pub done: Option<crate::ids::AuthorId>,
+    /// Author of the composite position (`stack` + `order`).
+    #[serde(default)]
+    pub position: Option<crate::ids::AuthorId>,
+    /// Author of `effort`.
+    #[serde(default)]
+    pub effort: Option<crate::ids::AuthorId>,
+    /// Author of `importance`.
+    #[serde(default)]
+    pub importance: Option<crate::ids::AuthorId>,
+    /// Author of `urgency`.
+    #[serde(default)]
+    pub urgency: Option<crate::ids::AuthorId>,
+    /// Author of `recur`.
+    #[serde(default)]
+    pub recur: Option<crate::ids::AuthorId>,
+    /// Author of `kind`. Default-off decode, mirroring `TaskClocks::kind`:
+    /// a pre-kind payload's absent author pairs with its default clock.
+    #[serde(default)]
+    pub kind: Option<crate::ids::AuthorId>,
+    /// Author of `archived`.
+    #[serde(default)]
+    pub archived: Option<crate::ids::AuthorId>,
+    /// Author of the tombstone (`deleted`).
+    #[serde(default)]
+    pub deleted: Option<crate::ids::AuthorId>,
+}
+
+/// The author of each field write, slot-for-slot against
+/// [`StackClocks`] (D-BF1's parallel sibling).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct StackAuthors {
+    /// Author of `title`.
+    #[serde(default)]
+    pub title: Option<crate::ids::AuthorId>,
+    /// Author of `order`.
+    #[serde(default)]
+    pub order: Option<crate::ids::AuthorId>,
+    /// Author of the tombstone (`deleted`).
+    #[serde(default)]
+    pub deleted: Option<crate::ids::AuthorId>,
+}
+
+/// The author of each field write, slot-for-slot against
+/// [`LabelClocks`] (D-BF1's parallel sibling).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct LabelAuthors {
+    /// Author of `title`.
+    #[serde(default)]
+    pub title: Option<crate::ids::AuthorId>,
+    /// Author of `color`.
+    #[serde(default)]
+    pub color: Option<crate::ids::AuthorId>,
+    /// Author of the tombstone (`deleted`).
+    #[serde(default)]
+    pub deleted: Option<crate::ids::AuthorId>,
+}
+
+/// The author of each field write, slot-for-slot against
+/// [`BoardClocks`] (D-BF1's parallel sibling).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct BoardAuthors {
+    /// Author of `title`.
+    #[serde(default)]
+    pub title: Option<crate::ids::AuthorId>,
+    /// Author of `color`.
+    #[serde(default)]
+    pub color: Option<crate::ids::AuthorId>,
+    /// Author of `archived`.
+    #[serde(default)]
+    pub archived: Option<crate::ids::AuthorId>,
+    /// Author of the tombstone (`deleted`).
+    #[serde(default)]
+    pub deleted: Option<crate::ids::AuthorId>,
+}
+
+/// The paired-write rule (F1, D-BF1): a clock and its author move
+/// together — no production path advances a clock without advancing
+/// (or deliberately clearing) its author slot. Plain assignment, no
+/// validation; the helper exists so the pair cannot drift (T-INV-1
+/// enforces the same invariant over planned sequences).
+pub fn stamp(
+    clock: &mut DateTime<Utc>,
+    author_slot: &mut Option<crate::ids::AuthorId>,
+    now: DateTime<Utc>,
+    author: Option<crate::ids::AuthorId>,
+) {
+    *clock = now;
+    *author_slot = author;
+}
+
 /// Per-membership OR-set state of one `(task, label)` assignment (ADR
 /// 0004's labels amendment, #129). `Removed` is the membership's
 /// tombstone: it persists — forgetting a removal lets a stale remote
@@ -595,6 +709,9 @@ pub struct Board {
     pub deleted: bool,
     /// Per-field write clocks.
     pub clocks: BoardClocks,
+    /// Per-field authors (D-BF1), slot-for-slot against `clocks`.
+    #[serde(default)]
+    pub authors: BoardAuthors,
     /// Remote `lastModified` at last adoption; `None` = never synced.
     pub remote_seen: Option<DateTime<Utc>>,
 }
@@ -618,6 +735,9 @@ pub struct Stack {
     pub deleted: bool,
     /// Per-field write clocks.
     pub clocks: StackClocks,
+    /// Per-field authors (D-BF1), slot-for-slot against `clocks`.
+    #[serde(default)]
+    pub authors: StackAuthors,
     /// Remote `lastModified` at last adoption; `None` = never synced.
     pub remote_seen: Option<DateTime<Utc>>,
 }
@@ -668,6 +788,9 @@ pub struct Task {
     pub deleted: bool,
     /// Per-field write clocks.
     pub clocks: TaskClocks,
+    /// Per-field authors (D-BF1), slot-for-slot against `clocks`.
+    #[serde(default)]
+    pub authors: TaskAuthors,
     /// Remote `lastModified` at last adoption; `None` = never synced.
     /// Fast-path guard for the pull rules (unchanged remote ⇒ keep local).
     pub remote_seen: Option<DateTime<Utc>>,
@@ -721,6 +844,9 @@ pub struct Label {
     pub deleted: bool,
     /// Per-field write clocks.
     pub clocks: LabelClocks,
+    /// Per-field authors (D-BF1), slot-for-slot against `clocks`.
+    #[serde(default)]
+    pub authors: LabelAuthors,
     /// Remote `lastModified` at last adoption; `None` = never synced.
     pub remote_seen: Option<DateTime<Utc>>,
 }

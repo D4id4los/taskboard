@@ -61,6 +61,7 @@ fn cfg(clock: Arc<dyn Clock>) -> SyncActorConfig {
             day_start_time: chrono::NaiveTime::MIN,
             offset: taskboard_state::DayRollConfig::disabled().offset,
         },
+        author: None,
     }
 }
 
@@ -114,6 +115,7 @@ async fn boot_with_ids(
         notifier,
         settings(),
         taskboard_state::DayRollConfig::disabled(),
+        None,
     )
     .await
     .expect("engine boots");
@@ -208,6 +210,7 @@ fn seeded_state() -> taskboard_domain::PersistedState {
             archived: taskboard_domain::BoardClocks::epoch(),
             deleted: taskboard_domain::BoardClocks::epoch(),
         },
+        authors: taskboard_domain::entities::BoardAuthors::default(),
         remote_seen: Some(ts(T)),
     };
     let stack = taskboard_domain::Stack {
@@ -226,6 +229,7 @@ fn seeded_state() -> taskboard_domain::PersistedState {
             order: ts(T),
             deleted: ts(T),
         },
+        authors: taskboard_domain::entities::StackAuthors::default(),
         remote_seen: Some(ts(T)),
     };
     state.boards.insert(board.id, board);
@@ -693,6 +697,7 @@ async fn i2_remote_newer_edit_adopts() {
             archived: ts(T),
             deleted: ts(T),
         },
+        authors: taskboard_domain::entities::TaskAuthors::default(),
         remote_seen: Some(ts(T + 10)),
         remote_baseline: None,
     };
@@ -763,6 +768,7 @@ async fn i3_concurrent_edits_resolve_per_field() {
             archived: ts(T),
             deleted: ts(T),
         },
+        authors: taskboard_domain::entities::TaskAuthors::default(),
         remote_seen: Some(ts(T + 10)),
         remote_baseline: None,
     };
@@ -828,6 +834,7 @@ async fn i4_move_label_and_delete_push_to_the_server() {
             order: ts(T),
             deleted: ts(T),
         },
+        authors: taskboard_domain::entities::StackAuthors::default(),
         remote_seen: Some(ts(T)),
     };
     let label = taskboard_domain::Label {
@@ -845,6 +852,7 @@ async fn i4_move_label_and_delete_push_to_the_server() {
             color: ts(T),
             deleted: ts(T),
         },
+        authors: taskboard_domain::entities::LabelAuthors::default(),
         remote_seen: Some(ts(T)),
     };
     let task_id = taskboard_domain::TaskId::from(uuid(100));
@@ -890,6 +898,7 @@ async fn i4_move_label_and_delete_push_to_the_server() {
             archived: ts(T),
             deleted: ts(T),
         },
+        authors: taskboard_domain::entities::TaskAuthors::default(),
         remote_seen: Some(ts(T)),
         remote_baseline: None,
     };
@@ -1194,6 +1203,7 @@ async fn i7_a_strangers_twin_card_adopts_without_a_create_in_scope() {
             archived: ts(T),
             deleted: ts(T),
         },
+        authors: taskboard_domain::entities::TaskAuthors::default(),
         remote_seen: None,
         remote_baseline: None,
     };
@@ -1265,6 +1275,8 @@ async fn i8_adopting_an_occurrence_card_learns_its_series() {
                             TaskFieldWrite {
                                 value: ModeledValue::Recur(Some(rule.clone())),
                                 clock: ts(T + 500),
+
+                                by: None,
                             },
                         )]
                         .into(),
@@ -1377,6 +1389,7 @@ async fn i8_adopting_an_occurrence_card_learns_its_series() {
                 archived: ts(T),
                 deleted: ts(T),
             },
+            authors: taskboard_domain::entities::TaskAuthors::default(),
             remote_seen: Some(ts(T)),
             remote_baseline: None,
         },

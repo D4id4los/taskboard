@@ -114,6 +114,50 @@ pub(crate) fn remote_wins(remote_ts: DateTime<Utc>, field_clock: DateTime<Utc>) 
     remote_ts > field_clock
 }
 
+/// The generalized per-field duel (D-BF2): the incoming fact wins iff
+/// its `(clock, author)` tuple outranks the local field's. `AuthorId`'s
+/// total `Ord` with the pinned `None < Some` leg makes equal-clock
+/// different-author duels converge on every reader (the F1 law); a
+/// full-tuple tie keeps local (the strict-`>` fairness pin, unchanged).
+/// For the Deck lane the incoming author is always `None`, so the
+/// predicate reduces bit-for-bit to [`remote_wins`] — the extension is
+/// the files lane's inheritance (chunk 5), pinned by T-DUEL-0.
+pub(crate) fn authored_remote_wins(
+    remote_ts: DateTime<Utc>,
+    remote_author: Option<crate::ids::AuthorId>,
+    field_clock: DateTime<Utc>,
+    field_author: Option<crate::ids::AuthorId>,
+) -> bool {
+    (remote_ts, remote_author) > (field_clock, field_author)
+}
+
+/// The sidecar fold's duel: the document row wins iff its `(clock, by)`
+/// tuple outranks-or-ties the local row's (the fold's input is a read
+/// result — ties to the document, the pinned direction preserved when
+/// the whole tuple ties). `local_author` is the folding device's own
+/// identity: the local row's honest author for the locally-written data
+/// (and `None` for an identity-less context — the `None < Some` leg
+/// keeps such rows honest, never privileged).
+pub(crate) fn authored_doc_wins(
+    doc_clock: DateTime<Utc>,
+    doc_by: Option<crate::ids::AuthorId>,
+    local_clock: DateTime<Utc>,
+    local_author: Option<crate::ids::AuthorId>,
+) -> bool {
+    (doc_clock, doc_by) >= (local_clock, local_author)
+}
+
+/// The tombstone-side duel: strict on the whole tuple (a tie never
+/// deletes — the pinned direction).
+pub(crate) fn authored_tombstone_wins(
+    tomb_clock: DateTime<Utc>,
+    tomb_by: Option<crate::ids::AuthorId>,
+    local_clock: DateTime<Utc>,
+    local_author: Option<crate::ids::AuthorId>,
+) -> bool {
+    (tomb_clock, tomb_by) > (local_clock, local_author)
+}
+
 /// One bool per baseline-covered field: the incoming remote snapshot
 /// differs from the last observation. `scheduled`'s consumer still applies
 /// its own `native_scheduled` lane gate (D-V2); the diff is lane-blind.
@@ -250,6 +294,8 @@ pub fn adopt_remote_task(remote: &RemoteTask, id: TaskId, ctx: &RemoteIndex) -> 
         archived: remote.archived,
         deleted: false,
         clocks: clocks_from(remote.last_modified),
+        // Deck adoption stamps author `None` (the authorless lane).
+        authors: crate::entities::TaskAuthors::default(),
         remote_seen: Some(remote.last_modified),
         remote_baseline: Some(RemoteTaskBaseline::of(remote)),
     })
@@ -455,40 +501,59 @@ pub fn merge_task(
         },
     };
 
-    let title_remote_wins = remote_wins(ts_r, local.clocks.title) && changed.title;
+    // Every adoption stamps the winning field's author `None` (the
+    // paired-write rule's Deck-lane leg): the lane has no author
+    // identity, and `None` keeps `None < Some` meaningful.
+    let title_remote_wins =
+        authored_remote_wins(ts_r, None, local.clocks.title, local.authors.title) && changed.title;
     if title_remote_wins {
         merged.title.clone_from(&remote.title);
         merged.clocks.title = ts_r;
+        merged.authors.title = None;
     }
-    let description_remote_wins =
-        remote_wins(ts_r, local.clocks.description) && changed.description;
+    let description_remote_wins = authored_remote_wins(
+        ts_r,
+        None,
+        local.clocks.description,
+        local.authors.description,
+    ) && changed.description;
     if description_remote_wins {
         merged.description.clone_from(&remote.description);
         merged.clocks.description = ts_r;
+        merged.authors.description = None;
     }
-    let duedate_remote_wins = remote_wins(ts_r, local.clocks.duedate) && changed.duedate;
+    let duedate_remote_wins =
+        authored_remote_wins(ts_r, None, local.clocks.duedate, local.authors.duedate)
+            && changed.duedate;
     if duedate_remote_wins {
         merged.duedate = remote.duedate;
         merged.clocks.duedate = ts_r;
+        merged.authors.duedate = None;
     }
     // D-V2's sharp edge: while the connector lacks native `startdate`
     // writes, *nothing native* touches `scheduled` — the always-absent
     // remote value must never clobber local state via "remote wins,
     // value null". The field belongs exclusively to the sidecar fold.
     // The diff is lane-blind; the lane gate stays conjunctive here.
-    let scheduled_remote_wins =
-        native_scheduled && remote_wins(ts_r, local.clocks.scheduled) && changed.scheduled;
+    let scheduled_remote_wins = native_scheduled
+        && authored_remote_wins(ts_r, None, local.clocks.scheduled, local.authors.scheduled)
+        && changed.scheduled;
     if scheduled_remote_wins {
         merged.scheduled = remote.scheduled;
         merged.clocks.scheduled = ts_r;
+        merged.authors.scheduled = None;
     }
-    let done_remote_wins = remote_wins(ts_r, local.clocks.done) && changed.done;
+    let done_remote_wins =
+        authored_remote_wins(ts_r, None, local.clocks.done, local.authors.done) && changed.done;
     if done_remote_wins {
         merged.done = remote.done;
         merged.clocks.done = ts_r;
+        merged.authors.done = None;
     }
     // R8: position is one composite field; the diff treats it as a unit.
-    let position_remote_wins = remote_wins(ts_r, local.clocks.position) && changed.position;
+    let position_remote_wins =
+        authored_remote_wins(ts_r, None, local.clocks.position, local.authors.position)
+            && changed.position;
     let position_stack = if position_remote_wins {
         resolve_local_stack(ctx, remote.id.board, remote.stack)
     } else {
@@ -498,6 +563,7 @@ pub fn merge_task(
         merged.stack = stack;
         merged.order = remote.order;
         merged.clocks.position = ts_r;
+        merged.authors.position = None;
     }
     // R7: the label memberships are per-membership OR-set state (ADR
     // 0004's labels amendment, #129). An unchanged remote set (against
@@ -522,17 +588,22 @@ pub fn merge_task(
     } else {
         (0, 0)
     };
-    let archived_remote_wins = remote_wins(ts_r, local.clocks.archived) && changed.archived;
+    let archived_remote_wins =
+        authored_remote_wins(ts_r, None, local.clocks.archived, local.authors.archived)
+            && changed.archived;
     if archived_remote_wins {
         merged.archived = remote.archived;
         merged.clocks.archived = ts_r;
+        merged.authors.archived = None;
     }
 
     // R5, `deleted`: resurrect iff the remote write is strictly newer.
-    let resurrected = local.deleted && remote_wins(ts_r, local.clocks.deleted);
+    let resurrected = local.deleted
+        && authored_remote_wins(ts_r, None, local.clocks.deleted, local.authors.deleted);
     if resurrected {
         merged.deleted = false;
         merged.clocks.deleted = ts_r;
+        merged.authors.deleted = None;
     }
 
     tracing::debug!(
@@ -611,66 +682,86 @@ pub(crate) fn fold_task_app_data(
     intent: crate::pipeline::PendingTaskIntent,
     native_scheduled: bool,
 ) {
+    // The local author leg is the task's own per-field slot: whoever
+    // wrote the local field last (this device, or a peer via an earlier
+    // fold adoption — the entity carries the slot).
+    let _ = &local.authors;
     for (key, write) in &entry.fields {
         // The lane gate: native ownership skips the document's key.
         if native_scheduled && key == "scheduled" {
             continue;
         }
-        let (guard, doc_wins, d, l) = match key.as_str() {
+        let (guard, doc_wins, d, by, l, la) = match key.as_str() {
             "effort" => (
                 intent.effort,
                 matches!(write.value, crate::appdata::ModeledValue::Effort(_)),
                 write.clock,
+                write.by,
                 local.clocks.effort,
+                local.authors.effort,
             ),
             "importance" => (
                 intent.importance,
                 matches!(write.value, crate::appdata::ModeledValue::Importance(_)),
                 write.clock,
+                write.by,
                 local.clocks.importance,
+                local.authors.importance,
             ),
             "urgency" => (
                 intent.urgency,
                 matches!(write.value, crate::appdata::ModeledValue::Urgency(_)),
                 write.clock,
+                write.by,
                 local.clocks.urgency,
+                local.authors.urgency,
             ),
             "recur" => (
                 intent.recur,
                 matches!(write.value, crate::appdata::ModeledValue::Recur(_)),
                 write.clock,
+                write.by,
                 local.clocks.recur,
+                local.authors.recur,
             ),
             "kind" => (
                 intent.kind,
                 matches!(write.value, crate::appdata::ModeledValue::Kind(_)),
                 write.clock,
+                write.by,
                 local.clocks.kind,
+                local.authors.kind,
             ),
             "scheduled" => (
                 intent.scheduled,
                 matches!(write.value, crate::appdata::ModeledValue::Scheduled(_)),
                 write.clock,
+                write.by,
                 local.clocks.scheduled,
+                local.authors.scheduled,
             ),
             // Unmodeled content never folds (the codec quarantined it).
             _ => continue,
         };
         if guard {
-            // The guard copies the value AND the embedded clock: the
-            // next fold's comparison must see the local write's
-            // recency (a failed flush must not let a remote write
-            // adopt one cycle late).
+            // The guard copies the value AND the embedded clock (and
+            // the author slot rides its field): the next fold's
+            // comparison must see the local write's recency (a failed
+            // flush must not let a remote write adopt one cycle late).
             copy_local_field(merged, local, key, l);
             continue;
         }
         if !doc_wins {
             continue;
         }
-        if d < l {
+        // The tuple duel (D-BF2): the document's `(clock, by)` must
+        // outrank-or-tie the local field's `(clock, author)` — a lower
+        // tuple never lands; an equal tuple lands (ties to the
+        // document, the read-result direction, unchanged).
+        if (d, by) < (l, la) {
             continue; // local stands; `merged` already holds it.
         }
-        adopt_document_field(merged, &write.value, std::cmp::max(l, d));
+        adopt_document_field(merged, &write.value, std::cmp::max(l, d), by);
     }
 }
 
@@ -680,26 +771,32 @@ fn copy_local_field(merged: &mut Task, local: &Task, key: &str, l: chrono::DateT
         "effort" => {
             merged.effort = local.effort;
             merged.clocks.effort = l;
+            merged.authors.effort = local.authors.effort;
         }
         "importance" => {
             merged.importance = local.importance;
             merged.clocks.importance = l;
+            merged.authors.importance = local.authors.importance;
         }
         "urgency" => {
             merged.urgency = local.urgency;
             merged.clocks.urgency = l;
+            merged.authors.urgency = local.authors.urgency;
         }
         "scheduled" => {
             merged.scheduled = local.scheduled;
             merged.clocks.scheduled = l;
+            merged.authors.scheduled = local.authors.scheduled;
         }
         "recur" => {
             merged.recur.clone_from(&local.recur);
             merged.clocks.recur = l;
+            merged.authors.recur = local.authors.recur;
         }
         "kind" => {
             merged.kind = local.kind;
             merged.clocks.kind = l;
+            merged.authors.kind = local.authors.kind;
         }
         _ => unreachable!("only modeled keys reach here"),
     }
@@ -710,31 +807,38 @@ fn adopt_document_field(
     merged: &mut Task,
     value: &crate::appdata::ModeledValue,
     clock: chrono::DateTime<Utc>,
+    by: Option<crate::ids::AuthorId>,
 ) {
     match value {
         crate::appdata::ModeledValue::Effort(value) => {
             merged.effort = *value;
             merged.clocks.effort = clock;
+            merged.authors.effort = by;
         }
         crate::appdata::ModeledValue::Importance(value) => {
             merged.importance = *value;
             merged.clocks.importance = clock;
+            merged.authors.importance = by;
         }
         crate::appdata::ModeledValue::Urgency(value) => {
             merged.urgency = *value;
             merged.clocks.urgency = clock;
+            merged.authors.urgency = by;
         }
         crate::appdata::ModeledValue::Recur(value) => {
             merged.recur.clone_from(value);
             merged.clocks.recur = clock;
+            merged.authors.recur = by;
         }
         crate::appdata::ModeledValue::Kind(value) => {
             merged.kind = value.unwrap_or_default();
             merged.clocks.kind = clock;
+            merged.authors.kind = by;
         }
         crate::appdata::ModeledValue::Scheduled(value) => {
             merged.scheduled = *value;
             merged.clocks.scheduled = clock;
+            merged.authors.scheduled = by;
         }
     }
 }
@@ -776,6 +880,7 @@ pub fn fold_reminder_rules(
     task: TaskId,
     entry: &crate::appdata::RulesEntry,
     protected: bool,
+    local_author: Option<crate::ids::AuthorId>,
 ) -> RuleFoldChanges {
     let mut changes = RuleFoldChanges::default();
     if protected {
@@ -788,13 +893,21 @@ pub fn fold_reminder_rules(
                 created,
                 clock,
                 insistence,
+                by,
             } => {
                 let Ok(uuid) = uuid::Uuid::parse_str(key) else {
                     continue; // an unparseable key is not a rule identity
                 };
                 let id = crate::ids::ReminderRuleId::from(uuid);
+                // The tuple duel (D-BF2): the row's `(clock, by)`
+                // outranks-or-ties the local row's `(clock, own-author)`.
+                // The sidecar entities carry no author slots (F1's
+                // fence), so the local leg is the folding device's own
+                // identity, passed in.
                 match rules.get_mut(&id) {
-                    Some(local) if *clock >= local.updated_at => {
+                    Some(local)
+                        if authored_doc_wins(*clock, *by, local.updated_at, local_author) =>
+                    {
                         local.kind = *kind;
                         local.created_at = *created;
                         local.insistence = *insistence;
@@ -821,15 +934,14 @@ pub fn fold_reminder_rules(
                     }
                 }
             }
-            crate::appdata::RuleEntry::Tombstone { clock } => {
+            crate::appdata::RuleEntry::Tombstone { clock, by } => {
                 let Ok(uuid) = uuid::Uuid::parse_str(key) else {
                     continue;
                 };
                 let id = crate::ids::ReminderRuleId::from(uuid);
-                if rules
-                    .get(&id)
-                    .is_some_and(|local| *clock > local.updated_at)
-                {
+                if rules.get(&id).is_some_and(|local| {
+                    authored_tombstone_wins(*clock, *by, local.updated_at, local_author)
+                }) {
                     rules.remove(&id);
                     changes.deletes.push(id);
                 }
@@ -867,7 +979,7 @@ pub fn fold_reminder_dismissals(
 ) -> Vec<crate::reminders::ReminderDismissal> {
     let mut folded = Vec::new();
     for (key, row) in &entry.dismissals {
-        let crate::appdata::DismissalEntry::Dismissed { dismissed_at } = row else {
+        let crate::appdata::DismissalEntry::Dismissed { dismissed_at, .. } = row else {
             continue; // verbatim content never folds
         };
         let Some((rule_id, occurrence)) = crate::appdata::parse_dismissal_wire_key(key) else {
@@ -929,6 +1041,7 @@ pub fn fold_break_rules(
     >,
     rows: &std::collections::BTreeMap<String, crate::appdata::BreakRuleEntry>,
     board: crate::ids::BoardId,
+    local_author: Option<crate::ids::AuthorId>,
 ) -> BreakRuleFoldChanges {
     let mut changes = BreakRuleFoldChanges::default();
     for (key, row) in rows {
@@ -939,13 +1052,17 @@ pub fn fold_break_rules(
                 created,
                 clock,
                 insistence,
+                by,
             } => {
                 let Ok(uuid) = uuid::Uuid::parse_str(key) else {
                     continue; // an unparseable key is not a rule identity
                 };
                 let id = crate::ids::BreakRuleId::from(uuid);
                 match break_rules.get_mut(&id) {
-                    Some(local) if *clock >= local.created_at => {
+                    // Tuple duel (D-BF2), same shape as the rules fold.
+                    Some(local)
+                        if authored_doc_wins(*clock, *by, local.created_at, local_author) =>
+                    {
                         local.label.clone_from(label);
                         local.threshold = *threshold;
                         local.insistence = *insistence;
@@ -967,15 +1084,14 @@ pub fn fold_break_rules(
                     }
                 }
             }
-            crate::appdata::BreakRuleEntry::Tombstone { clock } => {
+            crate::appdata::BreakRuleEntry::Tombstone { clock, by } => {
                 let Ok(uuid) = uuid::Uuid::parse_str(key) else {
                     continue;
                 };
                 let id = crate::ids::BreakRuleId::from(uuid);
-                if break_rules
-                    .get(&id)
-                    .is_some_and(|local| *clock > local.created_at)
-                {
+                if break_rules.get(&id).is_some_and(|local| {
+                    authored_tombstone_wins(*clock, *by, local.created_at, local_author)
+                }) {
                     break_rules.remove(&id);
                     changes.deletes.push(id);
                 }
@@ -1010,7 +1126,7 @@ pub fn fold_break_dismissals(
 ) -> Vec<crate::reminders::ReminderDismissal> {
     let mut folded = Vec::new();
     for (key, row) in &entry.dismissals {
-        let crate::appdata::DismissalEntry::Dismissed { dismissed_at } = row else {
+        let crate::appdata::DismissalEntry::Dismissed { dismissed_at, .. } = row else {
             continue; // verbatim content never folds
         };
         let Some((rule_id, occurrence)) = crate::appdata::parse_break_dismissal_wire_key(key)
@@ -1069,6 +1185,7 @@ pub fn fold_time_entries(
     tracking: &mut crate::tracking::TrackingState,
     rows: &std::collections::BTreeMap<String, crate::appdata::TimeEntryRecord>,
     cards: &std::collections::BTreeMap<String, TaskId>,
+    local_author: Option<crate::ids::AuthorId>,
 ) -> TrackingFoldChanges {
     let mut changes = TrackingFoldChanges::default();
     for (key, row) in rows {
@@ -1081,6 +1198,7 @@ pub fn fold_time_entries(
                 created,
                 clock,
                 kind,
+                by,
             } => {
                 let Ok(uuid) = uuid::Uuid::parse_str(key) else {
                     continue; // an unparseable key is not an entry identity
@@ -1092,7 +1210,10 @@ pub fn fold_time_entries(
                     .entries
                     .get_mut(&crate::ids::TimeEntryId::from(uuid))
                 {
-                    Some(local) if *clock >= local.updated_at => {
+                    // Tuple duel (D-BF2), same shape as the rules fold.
+                    Some(local)
+                        if authored_doc_wins(*clock, *by, local.updated_at, local_author) =>
+                    {
                         local.task = task_id;
                         local.task_title.clone_from(title);
                         local.start = *start;
@@ -1118,16 +1239,14 @@ pub fn fold_time_entries(
                     }
                 }
             }
-            crate::appdata::TimeEntryRecord::Tombstone { clock } => {
+            crate::appdata::TimeEntryRecord::Tombstone { clock, by } => {
                 let Ok(uuid) = uuid::Uuid::parse_str(key) else {
                     continue;
                 };
                 let id = crate::ids::TimeEntryId::from(uuid);
-                if tracking
-                    .entries
-                    .get(&id)
-                    .is_some_and(|local| *clock > local.updated_at)
-                {
+                if tracking.entries.get(&id).is_some_and(|local| {
+                    authored_tombstone_wins(*clock, *by, local.updated_at, local_author)
+                }) {
                     tracking.entries.remove(&id);
                     changes.deletes.push(id);
                 }
@@ -1170,6 +1289,7 @@ pub fn fold_habits(
     habits: &mut crate::habit::HabitState,
     rows: &std::collections::BTreeMap<String, crate::appdata::HabitRecord>,
     board: crate::ids::BoardId,
+    local_author: Option<crate::ids::AuthorId>,
 ) -> HabitFoldChanges {
     let mut changes = HabitFoldChanges::default();
     for (key, row) in rows {
@@ -1185,6 +1305,7 @@ pub fn fold_habits(
                 anchor_time,
                 clocks,
                 continued_from,
+                by,
             } => {
                 let crate::appdata::HabitRecord::Live {
                     clocks: row_clocks, ..
@@ -1194,7 +1315,10 @@ pub fn fold_habits(
                 };
                 let row_clock = effective_clock_of(row_clocks);
                 match habits.habits.get_mut(&id) {
-                    Some(local) if row_clock > effective_clock(local) => {
+                    // Tuple duel on the effective clock (D-BF2); the
+                    // strict direction is preserved at a full-tuple tie
+                    // (equal clocks, equal authors → local stands).
+                    Some(local) if (row_clock, *by) > (effective_clock(local), local_author) => {
                         local.title.clone_from(title);
                         local.target = *target;
                         local.order = *order;
@@ -1226,10 +1350,10 @@ pub fn fold_habits(
                     }
                 }
             }
-            crate::appdata::HabitRecord::Tombstone { clock } => {
+            crate::appdata::HabitRecord::Tombstone { clock, by } => {
                 if let Some(local) = habits.habits.get_mut(&id)
                     && local.is_live()
-                    && *clock > local.clocks.deleted
+                    && (*clock, *by) > (local.clocks.deleted, local_author)
                 {
                     local.deleted = true;
                     local.clocks.deleted = *clock;
@@ -1281,18 +1405,20 @@ pub struct HabitLogFoldChanges {
 pub fn fold_habit_log(
     habits: &mut crate::habit::HabitState,
     rows: &std::collections::BTreeMap<String, crate::appdata::HabitLogRecord>,
+    local_author: Option<crate::ids::AuthorId>,
 ) -> HabitLogFoldChanges {
     let mut changes = HabitLogFoldChanges::default();
     for (key, row) in rows {
-        let crate::appdata::HabitLogRecord::Entry { count, clock } = row else {
+        let crate::appdata::HabitLogRecord::Entry { count, clock, by } = row else {
             continue; // verbatim content never folds
         };
         let Some(parsed) = crate::habit::HabitLogKey::parse_wire_form(key) else {
             continue;
         };
+        // Tuple duel (D-BF2); the strict direction stands at a full tie.
         let adopt = match habits.log.get(&parsed) {
             None => true,
-            Some(local) => *clock > local.clock,
+            Some(local) => (*clock, *by) > (local.clock, local_author),
         };
         if adopt {
             let entry = crate::habit::HabitLogEntry {
@@ -1756,6 +1882,10 @@ pub fn adopt_task_after_push(
             archived: max_ts(local.clocks.archived, lm),
             deleted: max_ts(local.clocks.deleted, lm),
         },
+        // Push-echo adoption: the echo is our own write coming back —
+        // authorship is carried through unchanged (the paired-write
+        // rule's echo leg).
+        authors: local.authors,
         remote_seen: Some(lm),
         // The server-normalized echo values are the next pull's diff
         // reference (the baseline-drift guard, design §5).
@@ -1794,15 +1924,19 @@ pub fn merge_stack(local: &Stack, remote: &RemoteStack) -> Stack {
     );
     let mut merged = local.clone();
 
-    let title_remote_wins = remote_wins(ts_r, local.clocks.title);
+    let title_remote_wins =
+        authored_remote_wins(ts_r, None, local.clocks.title, local.authors.title);
     if title_remote_wins {
         merged.title.clone_from(&remote.title);
         merged.clocks.title = ts_r;
+        merged.authors.title = None;
     }
-    let order_remote_wins = remote_wins(ts_r, local.clocks.order);
+    let order_remote_wins =
+        authored_remote_wins(ts_r, None, local.clocks.order, local.authors.order);
     if order_remote_wins {
         merged.order = remote.order;
         merged.clocks.order = ts_r;
+        merged.authors.order = None;
     }
     // No local archived commands yet: adopt remote content on change.
     merged.archived = remote.archived;
@@ -1817,6 +1951,7 @@ pub fn merge_stack(local: &Stack, remote: &RemoteStack) -> Stack {
     let (remote_delete_wins, resurrected) = apply_remote_soft_delete(
         &mut merged.deleted,
         &mut merged.clocks.deleted,
+        &mut merged.authors.deleted,
         local_latest,
         local.deleted,
         local.clocks.deleted,
@@ -1862,9 +1997,11 @@ fn soft_delete_verdict(
 /// Applies the [`soft_delete_verdict`] outcome to the merged entity's
 /// `deleted` flag and clock, and expands it into the two verdict facts
 /// the R6 debug events report: `(remote_delete_wins, resurrected)`.
+#[allow(clippy::too_many_arguments)] // one field's full duel inputs, in entity order
 fn apply_remote_soft_delete(
     merged_deleted: &mut bool,
     merged_deleted_clock: &mut DateTime<Utc>,
+    merged_deleted_author: &mut Option<crate::ids::AuthorId>,
     local_latest: DateTime<Utc>,
     local_deleted: bool,
     local_deleted_clock: DateTime<Utc>,
@@ -1881,6 +2018,10 @@ fn apply_remote_soft_delete(
         Some((deleted, clock)) => {
             *merged_deleted = deleted;
             *merged_deleted_clock = clock;
+            // The verdict's stamp is the remote observation (the
+            // authorless lane): the tombstone/resurrection clock never
+            // moves without its author slot clearing.
+            *merged_deleted_author = None;
             (deleted, !deleted)
         }
         None => (false, false),
@@ -1917,6 +2058,7 @@ pub fn adopt_remote_stack(remote: &RemoteStack, id: StackId, board: crate::ids::
             order: remote.last_modified,
             deleted: remote.deleted_at.unwrap_or(remote.last_modified),
         },
+        authors: crate::entities::StackAuthors::default(),
         remote_seen: Some(remote.last_modified),
     }
 }
@@ -1946,6 +2088,8 @@ pub fn adopt_stack_after_push(local: &Stack, echo: &RemoteStack) -> Stack {
             order: max_ts(local.clocks.order, lm),
             deleted: max_ts(local.clocks.deleted, lm),
         },
+        // Push-echo adoption: authorship carried through unchanged.
+        authors: local.authors,
         remote_seen: Some(lm),
     }
 }
@@ -1964,15 +2108,19 @@ pub fn merge_label(local: &Label, remote: &RemoteLabel) -> Label {
     );
     let mut merged = local.clone();
 
-    let title_remote_wins = remote_wins(ts_r, local.clocks.title);
+    let title_remote_wins =
+        authored_remote_wins(ts_r, None, local.clocks.title, local.authors.title);
     if title_remote_wins {
         merged.title.clone_from(&remote.title);
         merged.clocks.title = ts_r;
+        merged.authors.title = None;
     }
-    let color_remote_wins = remote_wins(ts_r, local.clocks.color);
+    let color_remote_wins =
+        authored_remote_wins(ts_r, None, local.clocks.color, local.authors.color);
     if color_remote_wins {
         merged.color = crate::entities::Color::new(remote.color.clone());
         merged.clocks.color = ts_r;
+        merged.authors.color = None;
     }
 
     // Same defense as stacks: the latest local activity beats an older
@@ -1984,6 +2132,7 @@ pub fn merge_label(local: &Label, remote: &RemoteLabel) -> Label {
     let (remote_delete_wins, resurrected) = apply_remote_soft_delete(
         &mut merged.deleted,
         &mut merged.clocks.deleted,
+        &mut merged.authors.deleted,
         local_latest,
         local.deleted,
         local.clocks.deleted,
@@ -2031,6 +2180,7 @@ pub fn adopt_remote_label(remote: &RemoteLabel, id: LabelId, board: crate::ids::
             color: remote.last_modified,
             deleted: remote.deleted_at.unwrap_or(remote.last_modified),
         },
+        authors: crate::entities::LabelAuthors::default(),
         remote_seen: Some(remote.last_modified),
     }
 }
@@ -2059,6 +2209,8 @@ pub fn adopt_label_after_push(local: &Label, echo: &RemoteLabel) -> Label {
             color: max_ts(local.clocks.color, lm),
             deleted: max_ts(local.clocks.deleted, lm),
         },
+        // Push-echo adoption: authorship carried through unchanged.
+        authors: local.authors,
         remote_seen: Some(lm),
     }
 }
@@ -2106,6 +2258,7 @@ pub fn adopt_board_if_newer(local: &Board, remote: &RemoteBoard) -> Board {
             archived: remote.last_modified,
             deleted: remote.last_modified,
         },
+        authors: crate::entities::BoardAuthors::default(),
         remote_seen: Some(remote.last_modified),
     }
 }
@@ -2131,29 +2284,39 @@ pub fn merge_board(local: &Board, remote: &RemoteBoard) -> Board {
     // field keeps its local value unless the remote stamp is strictly
     // newer. Epoch clocks (never locally written) always lose — pre-clock
     // rows keep the remote-wins behavior bit-for-bit.
-    let title_wins = remote_wins(ts_r, local.clocks.title);
+    let title_wins = authored_remote_wins(ts_r, None, local.clocks.title, local.authors.title);
     if !title_wins {
         merged.title.clone_from(&local.title);
         merged.clocks.title = local.clocks.title;
+        merged.authors.title = local.authors.title;
     }
-    let color_wins = remote_wins(ts_r, local.clocks.color);
+    let color_wins = authored_remote_wins(ts_r, None, local.clocks.color, local.authors.color);
     if !color_wins {
         merged.color = local.color.clone();
         merged.clocks.color = local.clocks.color;
+        merged.authors.color = local.authors.color;
     }
-    let archived_wins = remote_wins(ts_r, local.clocks.archived);
+    let archived_wins =
+        authored_remote_wins(ts_r, None, local.clocks.archived, local.authors.archived);
     if !archived_wins {
         merged.archived = local.archived;
         merged.clocks.archived = local.clocks.archived;
+        merged.authors.archived = local.authors.archived;
     }
 
     // The tombstone defense: a locally-deleted board is never resurrected
     // by pulled live content (no restore verb exists); a strictly newer
-    // remote delete stamp only advances the tombstone's clock.
+    // remote delete stamp only advances the tombstone's clock (clearing
+    // its author slot — the stamp is the authorless observation).
     if local.deleted {
         let remote_deleted_at = remote.deleted_at.unwrap_or(ts_r);
         merged.deleted = true;
         merged.clocks.deleted = max_ts(local.clocks.deleted, remote_deleted_at);
+        if remote_deleted_at > local.clocks.deleted {
+            merged.authors.deleted = None;
+        } else {
+            merged.authors.deleted = local.authors.deleted;
+        }
     }
 
     tracing::debug!(
@@ -2197,6 +2360,8 @@ pub fn adopt_board_after_push(local: &Board, echo: &RemoteBoard) -> Board {
             archived: max_ts(local.clocks.archived, lm),
             deleted: max_ts(local.clocks.deleted, lm),
         },
+        // Push-echo adoption: authorship carried through unchanged.
+        authors: local.authors,
         remote_seen: Some(lm),
     }
 }
@@ -2229,6 +2394,8 @@ pub fn adopt_board_after_delete_push(local: &Board, echo: &RemoteBoard) -> Board
             archived: max_ts(local.clocks.archived, lm),
             deleted: max_ts(local.clocks.deleted, lm),
         },
+        // Push-echo adoption: authorship carried through unchanged.
+        authors: local.authors,
         remote_seen: Some(lm),
     }
 }
@@ -2265,6 +2432,7 @@ pub fn adopt_remote_board(
             archived: remote.last_modified,
             deleted: remote.last_modified,
         },
+        authors: crate::entities::BoardAuthors::default(),
         remote_seen: Some(remote.last_modified),
     }
 }
@@ -2292,6 +2460,10 @@ pub fn tombstone_stack(local: &Stack, observed_at: DateTime<Utc>) -> Stack {
     let mut s = local.clone();
     s.deleted = true;
     s.clocks.deleted = max_ts(local.clocks.deleted, observed_at);
+    // The stamp is the authorless observation: the slot clears with it.
+    if observed_at > local.clocks.deleted {
+        s.authors.deleted = None;
+    }
     s.remote = None;
     s.remote_seen = None;
     tracing::debug!(
@@ -2313,6 +2485,10 @@ pub fn tombstone_label(local: &Label, observed_at: DateTime<Utc>) -> Label {
     let mut l = local.clone();
     l.deleted = true;
     l.clocks.deleted = max_ts(local.clocks.deleted, observed_at);
+    // The stamp is the authorless observation: the slot clears with it.
+    if observed_at > local.clocks.deleted {
+        l.authors.deleted = None;
+    }
     l.remote = None;
     l.remote_seen = None;
     tracing::debug!(
@@ -3748,6 +3924,8 @@ mod tests {
         TaskFieldWrite {
             value,
             clock: ts(clock_secs),
+
+            by: None,
         }
     }
 
@@ -4036,6 +4214,8 @@ mod tests {
                     ),
                     created: ts(BASE + 100),
                     clock: ts(BASE + 500),
+
+                    by: None,
                 },
             ),
             (
@@ -4047,11 +4227,13 @@ mod tests {
                     ),
                     created: ts(BASE + 400),
                     clock: ts(BASE + 400),
+
+                    by: None,
                 },
             ),
         ]);
         let task = TaskId::from(uuid::Uuid::from_u128(1));
-        let changes = fold_reminder_rules(&mut rules, task, &entry, false);
+        let changes = fold_reminder_rules(&mut rules, task, &entry, false, None);
         assert_eq!(changes.upserts.len(), 2);
         assert_eq!(changes.deletes, Vec::new());
         // Update: the offset and the clock landed.
@@ -4085,10 +4267,12 @@ mod tests {
                 kind: crate::reminders::ReminderKind::At(at_instant),
                 created: ts(BASE + 400),
                 clock: ts(BASE + 400),
+
+                by: None,
             },
         )]);
         let task = TaskId::from(uuid::Uuid::from_u128(1));
-        let changes = fold_reminder_rules(&mut rules, task, &entry, false);
+        let changes = fold_reminder_rules(&mut rules, task, &entry, false, None);
         assert_eq!(changes.upserts.len(), 1);
         assert_eq!(
             rules[&adopted_id].kind,
@@ -4107,9 +4291,11 @@ mod tests {
                 ),
                 created: ts(BASE + 400),
                 clock: ts(BASE + 500),
+
+                by: None,
             },
         )]);
-        let changes = fold_reminder_rules(&mut rules, new_task, &repoint, false);
+        let changes = fold_reminder_rules(&mut rules, new_task, &repoint, false, None);
         assert_eq!(changes.upserts.len(), 1, "the newer clock updates");
         assert_eq!(
             rules[&adopted_id].task, new_task,
@@ -4138,10 +4324,12 @@ mod tests {
                 ),
                 created: ts(BASE + 400),
                 clock: ts(BASE + 400),
+
+                by: None,
             },
         )]);
         let task = TaskId::from(uuid::Uuid::from_u128(1));
-        let changes = fold_reminder_rules(&mut rules, task, &entry, false);
+        let changes = fold_reminder_rules(&mut rules, task, &entry, false, None);
         assert_eq!(changes.upserts.len(), 1);
         assert_eq!(rules[&adopted_id].insistence, Insistence::Alarm);
         // Clock-gated update: a newer document entry overwrites the
@@ -4160,9 +4348,11 @@ mod tests {
                 ),
                 created: ts(BASE + 100),
                 clock: ts(BASE + 500),
+
+                by: None,
             },
         )]);
-        let changes = fold_reminder_rules(&mut rules, task, &newer, false);
+        let changes = fold_reminder_rules(&mut rules, task, &newer, false, None);
         assert_eq!(changes.upserts.len(), 1);
         assert_eq!(rules[&local_id].insistence, Insistence::Alarm);
         // Clock-older: the local level stands.
@@ -4180,9 +4370,11 @@ mod tests {
                 ),
                 created: ts(BASE + 100),
                 clock: ts(BASE + 500),
+
+                by: None,
             },
         )]);
-        let changes = fold_reminder_rules(&mut rules, task, &older, false);
+        let changes = fold_reminder_rules(&mut rules, task, &older, false, None);
         assert_eq!(changes.upserts, Vec::new());
         assert_eq!(rules[&local_id].insistence, Insistence::Alarm);
     }
@@ -4201,6 +4393,8 @@ mod tests {
                 ),
                 created: ts(BASE + 100),
                 clock: ts(BASE + 500),
+
+                by: None,
             },
         )]);
         let changes = fold_reminder_rules(
@@ -4208,6 +4402,7 @@ mod tests {
             TaskId::from(uuid::Uuid::from_u128(1)),
             &entry,
             false,
+            None,
         );
         assert_eq!(changes.upserts, Vec::new());
         assert_eq!(rules[&existing.id].updated_at, ts(BASE + 600));
@@ -4238,9 +4433,11 @@ mod tests {
                 ),
                 created: ts(BASE + 100),
                 clock: ts(BASE + 500),
+
+                by: None,
             },
         )]);
-        let changes = fold_reminder_rules(&mut rules, new_task, &entry, false);
+        let changes = fold_reminder_rules(&mut rules, new_task, &entry, false, None);
         assert_eq!(changes.upserts.len(), 1);
         let repointed = &rules[&local.id];
         assert_eq!(
@@ -4264,7 +4461,7 @@ mod tests {
         stands.task = old_task;
         let mut rules = std::collections::BTreeMap::new();
         rules.insert(stands.id, stands.clone());
-        let changes = fold_reminder_rules(&mut rules, new_task, &entry, false);
+        let changes = fold_reminder_rules(&mut rules, new_task, &entry, false, None);
         assert_eq!(changes.upserts, Vec::new());
         assert_eq!(rules[&stands.id].task, old_task);
     }
@@ -4279,6 +4476,8 @@ mod tests {
             "00000000-0000-0000-0000-00000000000a",
             RuleEntry::Tombstone {
                 clock: ts(BASE + 500),
+
+                by: None,
             },
         )]);
         let changes = fold_reminder_rules(
@@ -4286,6 +4485,7 @@ mod tests {
             TaskId::from(uuid::Uuid::from_u128(1)),
             &entry,
             false,
+            None,
         );
         assert_eq!(changes.deletes, Vec::new());
         assert!(rules.contains_key(&existing.id));
@@ -4294,6 +4494,8 @@ mod tests {
             "00000000-0000-0000-0000-00000000000a",
             RuleEntry::Tombstone {
                 clock: ts(BASE + 501),
+
+                by: None,
             },
         )]);
         let changes = fold_reminder_rules(
@@ -4301,6 +4503,7 @@ mod tests {
             TaskId::from(uuid::Uuid::from_u128(1)),
             &newer,
             false,
+            None,
         );
         assert_eq!(changes.deletes, vec![existing.id]);
         assert!(!rules.contains_key(&existing.id));
@@ -4309,6 +4512,8 @@ mod tests {
             "00000000-0000-0000-0000-00000000000c",
             RuleEntry::Tombstone {
                 clock: ts(BASE + 999),
+
+                by: None,
             },
         )]);
         let changes = fold_reminder_rules(
@@ -4316,6 +4521,7 @@ mod tests {
             TaskId::from(uuid::Uuid::from_u128(1)),
             &stranger,
             false,
+            None,
         );
         assert_eq!(changes.deletes, Vec::new());
         assert_eq!(rules.len(), 0);
@@ -4329,6 +4535,8 @@ mod tests {
                 "not-a-uuid",
                 RuleEntry::Tombstone {
                     clock: ts(BASE + 999),
+
+                    by: None,
                 },
             ),
             (
@@ -4340,6 +4548,8 @@ mod tests {
                     ),
                     created: ts(BASE + 1),
                     clock: ts(BASE + 2),
+
+                    by: None,
                 },
             ),
             (
@@ -4352,6 +4562,7 @@ mod tests {
             TaskId::from(uuid::Uuid::from_u128(1)),
             &entry,
             false,
+            None,
         );
         assert_eq!(changes, crate::merge::RuleFoldChanges::default());
     }
@@ -4373,6 +4584,8 @@ mod tests {
                     ),
                     created: ts(BASE + 100),
                     clock: ts(BASE + 900),
+
+                    by: None,
                 },
             ),
             (
@@ -4384,12 +4597,16 @@ mod tests {
                     ),
                     created: ts(BASE + 1),
                     clock: ts(BASE + 1),
+
+                    by: None,
                 },
             ),
             (
                 "00000000-0000-0000-0000-00000000000a-x",
                 RuleEntry::Tombstone {
                     clock: ts(BASE + 900),
+
+                    by: None,
                 },
             ),
         ]);
@@ -4399,6 +4616,7 @@ mod tests {
             TaskId::from(uuid::Uuid::from_u128(1)),
             &entry,
             true,
+            None,
         );
         assert_eq!(changes, crate::merge::RuleFoldChanges::default());
         assert_eq!(skipped, rules, "skip == nothing happened");
@@ -4596,6 +4814,8 @@ mod tests {
             &key,
             DismissalEntry::Dismissed {
                 dismissed_at: ts(BASE + 110),
+
+                by: None,
             },
         )]);
         let folded = fold_reminder_dismissals(&mut dismissals, &entry);
@@ -4625,12 +4845,16 @@ mod tests {
                 "default:00000000-0000-0000-0000-000000000009|2026-04-01T08:00:00+00:00",
                 DismissalEntry::Dismissed {
                     dismissed_at: ts(BASE + 1),
+
+                    by: None,
                 },
             ),
             (
                 "alarm:00000000-0000-0000-0000-000000000009|2026-04-01T08:00:00+00:00",
                 DismissalEntry::Dismissed {
                     dismissed_at: ts(BASE + 2),
+
+                    by: None,
                 },
             ),
             (
@@ -4641,6 +4865,8 @@ mod tests {
                 "garbage",
                 DismissalEntry::Dismissed {
                     dismissed_at: ts(BASE),
+
+                    by: None,
                 },
             ),
         ]);
@@ -4679,6 +4905,8 @@ mod tests {
             created,
             clock,
             insistence: crate::reminders::Insistence::Alarm,
+
+            by: None,
         }
     }
 
@@ -4710,7 +4938,7 @@ mod tests {
                 break_rule_entry("old", ts(BASE + 1), ts(BASE - 1)),
             ),
         ]);
-        let changes = fold_break_rules(&mut break_rules, &rows, board);
+        let changes = fold_break_rules(&mut break_rules, &rows, board, None);
         assert_eq!(changes.upserts.len(), 2, "the older row folds nothing");
         assert_eq!(changes.deletes, Vec::new());
         let updated = &break_rules[&local.id];
@@ -4738,7 +4966,7 @@ mod tests {
             crate::ids::BreakRuleId::from(uuid::Uuid::from_u128(4)),
             break_rule_row(4, 700),
         )]);
-        let changes = fold_break_rules(&mut locals, &tie_row, board);
+        let changes = fold_break_rules(&mut locals, &tie_row, board, None);
         assert_eq!(changes.upserts.len(), 1);
         assert_eq!(
             locals[&crate::ids::BreakRuleId::from(uuid::Uuid::from_u128(4))].label,
@@ -4754,9 +4982,12 @@ mod tests {
         // Equal-clock tombstone does not remove (strictly newer only).
         let rows = BTreeMap::from([(
             local.id.as_uuid().to_string(),
-            crate::appdata::BreakRuleEntry::Tombstone { clock: ts(BASE) },
+            crate::appdata::BreakRuleEntry::Tombstone {
+                clock: ts(BASE),
+                by: None,
+            },
         )]);
-        let changes = fold_break_rules(&mut break_rules, &rows, board);
+        let changes = fold_break_rules(&mut break_rules, &rows, board, None);
         assert_eq!(changes.deletes, Vec::new());
         assert!(break_rules.contains_key(&local.id));
         // Strictly newer removes.
@@ -4764,9 +4995,11 @@ mod tests {
             local.id.as_uuid().to_string(),
             crate::appdata::BreakRuleEntry::Tombstone {
                 clock: ts(BASE + 1),
+
+                by: None,
             },
         )]);
-        let changes = fold_break_rules(&mut break_rules, &rows, board);
+        let changes = fold_break_rules(&mut break_rules, &rows, board, None);
         assert_eq!(changes.deletes, vec![local.id]);
         // A tombstone for an unknown id leaves no trace.
         let rows = BTreeMap::from([(
@@ -4775,9 +5008,11 @@ mod tests {
                 .to_string(),
             crate::appdata::BreakRuleEntry::Tombstone {
                 clock: ts(BASE + 1),
+
+                by: None,
             },
         )]);
-        let changes = fold_break_rules(&mut break_rules, &rows, board);
+        let changes = fold_break_rules(&mut break_rules, &rows, board, None);
         assert_eq!(changes.deletes, Vec::new());
     }
 
@@ -4795,7 +5030,7 @@ mod tests {
                 break_rule_entry("ghost", ts(BASE), ts(BASE)),
             ),
         ]);
-        let changes = fold_break_rules(&mut break_rules, &rows, board);
+        let changes = fold_break_rules(&mut break_rules, &rows, board, None);
         assert_eq!(changes.upserts, Vec::new());
         assert!(break_rules.is_empty());
     }
@@ -4808,6 +5043,8 @@ mod tests {
             &key,
             DismissalEntry::Dismissed {
                 dismissed_at: ts(BASE + 110),
+
+                by: None,
             },
         )]);
         let mut dismissals = BTreeSet::new();
@@ -4839,24 +5076,32 @@ mod tests {
                 ),
                 DismissalEntry::Dismissed {
                     dismissed_at: ts(BASE + 1),
+
+                    by: None,
                 },
             ),
             (
                 "default:00000000-0000-0000-0000-000000000009|2026-04-01T08:00:00+00:00",
                 DismissalEntry::Dismissed {
                     dismissed_at: ts(BASE + 2),
+
+                    by: None,
                 },
             ),
             (
                 "alarm:00000000-0000-0000-0000-000000000009|2026-04-01T08:00:00+00:00",
                 DismissalEntry::Dismissed {
                     dismissed_at: ts(BASE + 3),
+
+                    by: None,
                 },
             ),
             (
                 "break:garbage|2026-04-01T08:00:00+00:00",
                 DismissalEntry::Dismissed {
                     dismissed_at: ts(BASE + 4),
+
+                    by: None,
                 },
             ),
             (
@@ -4880,6 +5125,8 @@ mod tests {
             &key,
             DismissalEntry::Dismissed {
                 dismissed_at: ts(BASE + 110),
+
+                by: None,
             },
         )]);
         let mut dismissals = BTreeSet::new();
@@ -5467,6 +5714,7 @@ mod duplicate_reconcile_tests {
                 archived: ts(BASE),
                 deleted: ts(BASE),
             },
+            authors: crate::entities::TaskAuthors::default(),
             remote_seen: bound_card.map(|_| ts(BASE)),
             remote_baseline: None,
         }
@@ -5799,6 +6047,8 @@ mod duplicate_reconcile_tests {
             created: crate::merge_testutil::ts(clock - 2_000),
             clock: crate::merge_testutil::ts(clock),
             kind,
+
+            by: None,
         }
     }
 
@@ -5818,7 +6068,7 @@ mod duplicate_reconcile_tests {
                 crate::tracking::TimeEntryKind::Respite,
             ),
         )]);
-        let changes = fold_time_entries(&mut tracking, &rows, &cards);
+        let changes = fold_time_entries(&mut tracking, &rows, &cards, None);
         assert_eq!(changes.upserts.len(), 1);
         assert_eq!(
             changes.upserts[0].kind,
@@ -5836,7 +6086,7 @@ mod duplicate_reconcile_tests {
         );
         let rows =
             std::collections::BTreeMap::from([(uuid::Uuid::from_u128(21).to_string(), newer)]);
-        let changes = fold_time_entries(&mut tracking, &rows, &cards);
+        let changes = fold_time_entries(&mut tracking, &rows, &cards, None);
         assert_eq!(changes.upserts.len(), 1);
         assert_eq!(
             changes.upserts[0].kind,
@@ -5863,7 +6113,7 @@ mod duplicate_reconcile_tests {
                 crate::tracking::TimeEntryKind::Respite,
             ),
         )]);
-        let _ = fold_time_entries(&mut tracking, &rows, &cards);
+        let _ = fold_time_entries(&mut tracking, &rows, &cards, None);
         let local_id = crate::ids::TimeEntryId::from(uuid::Uuid::from_u128(31));
         tracking.entries.get_mut(&local_id).unwrap().updated_at =
             crate::merge_testutil::ts(crate::merge_testutil::BASE + 900);
@@ -5876,7 +6126,7 @@ mod duplicate_reconcile_tests {
         );
         let rows =
             std::collections::BTreeMap::from([(uuid::Uuid::from_u128(31).to_string(), older)]);
-        let changes = fold_time_entries(&mut tracking, &rows, &cards);
+        let changes = fold_time_entries(&mut tracking, &rows, &cards, None);
         assert!(changes.upserts.is_empty(), "local stands");
         assert_eq!(
             tracking.entries[&local_id].kind,
@@ -5922,6 +6172,8 @@ mod duplicate_reconcile_tests {
                 uuid::Uuid::from_u128(2).to_string(),
                 TimeEntryRecord::Tombstone {
                     clock: crate::merge_testutil::ts(BASE + 600),
+
+                    by: None,
                 },
             ),
             // An older tombstone leaves the re-created row standing.
@@ -5929,6 +6181,8 @@ mod duplicate_reconcile_tests {
                 local_id.as_uuid().to_string(),
                 TimeEntryRecord::Tombstone {
                     clock: crate::merge_testutil::ts(BASE + 100),
+
+                    by: None,
                 },
             ),
             // A tombstone for a locally-unknown id leaves no trace.
@@ -5936,6 +6190,8 @@ mod duplicate_reconcile_tests {
                 uuid::Uuid::from_u128(3).to_string(),
                 TimeEntryRecord::Tombstone {
                     clock: crate::merge_testutil::ts(BASE + 900),
+
+                    by: None,
                 },
             ),
             // Verbatim, null-task, and unresolvable-card rows skip.
@@ -5953,6 +6209,8 @@ mod duplicate_reconcile_tests {
                     created: crate::merge_testutil::ts(1),
                     clock: crate::merge_testutil::ts(BASE + 900),
                     kind: crate::tracking::TimeEntryKind::Work,
+
+                    by: None,
                 },
             ),
             (
@@ -5960,10 +6218,10 @@ mod duplicate_reconcile_tests {
                 entry_row("999", BASE + 900),
             ),
         ]);
-        let adopted = fold_time_entries(&mut tracking, &adopt_rows, &cards);
+        let adopted = fold_time_entries(&mut tracking, &adopt_rows, &cards, None);
         assert_eq!(tracking.entries.len(), 2, "the unknown UUID adopted");
         assert_eq!(adopted.upserts.len(), 2);
-        let changes = fold_time_entries(&mut tracking, &rows, &cards);
+        let changes = fold_time_entries(&mut tracking, &rows, &cards, None);
         assert_eq!(tracking.entries.len(), 1);
         let local = &tracking.entries[&local_id];
         assert_eq!(
@@ -5995,6 +6253,8 @@ mod duplicate_reconcile_tests {
         TaskFieldWrite {
             value,
             clock: ts(clock_secs),
+
+            by: None,
         }
     }
 
@@ -6500,6 +6760,8 @@ mod habit_fold_tests {
             anchor_time: None,
             clocks: HabitClocks::all(ts(stamp)),
             continued_from: None,
+
+            by: None,
         }
     }
 
@@ -6529,7 +6791,7 @@ mod habit_fold_tests {
         )]
         .into_iter()
         .collect();
-        let changes = fold_habits(&mut state, &rows, board);
+        let changes = fold_habits(&mut state, &rows, board, None);
         assert!(changes.upserts.is_empty(), "local stands");
         assert_eq!(state.habits[&local.id].title, local.title);
         // Strictly newer: the row wins wholesale (order included).
@@ -6539,7 +6801,7 @@ mod habit_fold_tests {
         )]
         .into_iter()
         .collect();
-        let changes = fold_habits(&mut state, &rows, board);
+        let changes = fold_habits(&mut state, &rows, board, None);
         assert_eq!(changes.upserts.len(), 1);
         let adopted = &state.habits[&local.id];
         assert_eq!(adopted.title, "renamed remotely");
@@ -6558,7 +6820,7 @@ mod habit_fold_tests {
         .into_iter()
         .collect();
         let board = BoardId::from(uuid::Uuid::from_u128(800));
-        let changes = fold_habits(&mut state, &rows, board);
+        let changes = fold_habits(&mut state, &rows, board, None);
         assert_eq!(changes.upserts.len(), 1);
         assert_eq!(
             state.habits[&remote_habit.id].board, board,
@@ -6578,11 +6840,14 @@ mod habit_fold_tests {
         };
         let rows = [(
             uuid_text.clone(),
-            crate::appdata::HabitRecord::Tombstone { clock: ts(300) },
+            crate::appdata::HabitRecord::Tombstone {
+                clock: ts(300),
+                by: None,
+            },
         )]
         .into_iter()
         .collect();
-        let changes = fold_habits(&mut state, &rows, board);
+        let changes = fold_habits(&mut state, &rows, board, None);
         assert_eq!(changes.upserts.len(), 1);
         assert!(state.habits[&local.id].deleted);
         assert_eq!(state.habits[&local.id].clocks.deleted, ts(300));
@@ -6595,11 +6860,14 @@ mod habit_fold_tests {
         };
         let rows = [(
             uuid_text.clone(),
-            crate::appdata::HabitRecord::Tombstone { clock: ts(300) },
+            crate::appdata::HabitRecord::Tombstone {
+                clock: ts(300),
+                by: None,
+            },
         )]
         .into_iter()
         .collect();
-        let changes = fold_habits(&mut state, &rows, board);
+        let changes = fold_habits(&mut state, &rows, board, None);
         assert!(changes.upserts.is_empty(), "local stands");
         assert!(!state.habits[&local.id].deleted);
         // An already-deleted local never re-stamps.
@@ -6609,16 +6877,19 @@ mod habit_fold_tests {
         };
         let rows = [(
             uuid_text.clone(),
-            crate::appdata::HabitRecord::Tombstone { clock: ts(900) },
+            crate::appdata::HabitRecord::Tombstone {
+                clock: ts(900),
+                by: None,
+            },
         )]
         .into_iter()
         .collect();
-        let changes = fold_habits(&mut state, &rows, board);
+        let changes = fold_habits(&mut state, &rows, board, None);
         assert!(changes.upserts.is_empty(), "local stands");
         assert_eq!(state.habits[&local.id].clocks.deleted, ts(100));
         // An unknown habit's tombstone materializes no shell.
         let mut state = HabitState::default();
-        let changes = fold_habits(&mut state, &rows, board);
+        let changes = fold_habits(&mut state, &rows, board, None);
         assert!(changes.upserts.is_empty(), "local stands");
         assert!(state.habits.is_empty());
     }
@@ -6639,7 +6910,7 @@ mod habit_fold_tests {
         let rows = [(id.as_uuid().to_string(), live_row(300, "back"))]
             .into_iter()
             .collect();
-        let changes = fold_habits(&mut state, &rows, board);
+        let changes = fold_habits(&mut state, &rows, board, None);
         assert_eq!(changes.upserts.len(), 1);
         let adopted = &state.habits[&id];
         assert!(!adopted.deleted, "wholesale adoption resurrects");
@@ -6659,7 +6930,7 @@ mod habit_fold_tests {
         let rows = [(id.as_uuid().to_string(), live_row(300, "older"))]
             .into_iter()
             .collect();
-        let changes = fold_habits(&mut state, &rows, board);
+        let changes = fold_habits(&mut state, &rows, board, None);
         assert!(changes.upserts.is_empty(), "local stands");
         assert!(state.habits[&id].deleted);
     }
@@ -6673,11 +6944,13 @@ mod habit_fold_tests {
             HabitLogRecord::Entry {
                 count: 4,
                 clock: ts(200),
+
+                by: None,
             },
         )]
         .into_iter()
         .collect();
-        let changes = fold_habit_log(&mut state, &rows);
+        let changes = fold_habit_log(&mut state, &rows, None);
         assert_eq!(changes.records.len(), 1);
         assert_eq!(state.log[&k].count, 4);
         // Orphan facts import — the log outlives the tracker (D-H6).
@@ -6687,11 +6960,13 @@ mod habit_fold_tests {
             HabitLogRecord::Entry {
                 count: 1,
                 clock: ts(210),
+
+                by: None,
             },
         )]
         .into_iter()
         .collect();
-        let changes = fold_habit_log(&mut state, &rows);
+        let changes = fold_habit_log(&mut state, &rows, None);
         assert_eq!(changes.records.len(), 1);
         assert_eq!(state.log[&orphan].count, 1);
         // A lower count with a newer clock is an audited correction: it roams.
@@ -6700,11 +6975,13 @@ mod habit_fold_tests {
             HabitLogRecord::Entry {
                 count: 0,
                 clock: ts(300),
+
+                by: None,
             },
         )]
         .into_iter()
         .collect();
-        let changes = fold_habit_log(&mut state, &rows);
+        let changes = fold_habit_log(&mut state, &rows, None);
         assert_eq!(changes.records.len(), 1);
         assert_eq!(state.log[&k].count, 0);
         // Equal/older: local stands.
@@ -6713,11 +6990,13 @@ mod habit_fold_tests {
             HabitLogRecord::Entry {
                 count: 9,
                 clock: ts(300),
+
+                by: None,
             },
         )]
         .into_iter()
         .collect();
-        let changes = fold_habit_log(&mut state, &rows);
+        let changes = fold_habit_log(&mut state, &rows, None);
         assert!(changes.records.is_empty(), "local stands");
         assert_eq!(state.log[&k].count, 0);
     }
@@ -6736,6 +7015,8 @@ mod habit_fold_tests {
             HabitLogRecord::Entry {
                 count: 5,
                 clock: ts(400),
+
+                by: None,
             },
         );
         let log_b = (
@@ -6743,6 +7024,8 @@ mod habit_fold_tests {
             HabitLogRecord::Entry {
                 count: 6,
                 clock: ts(410),
+
+                by: None,
             },
         );
         let fold = |rows: Vec<&(String, HabitRecord)>, logs: Vec<&(String, HabitLogRecord)>| {
@@ -6767,12 +7050,115 @@ mod habit_fold_tests {
                 .into_iter()
                 .collect(),
             };
-            fold_habits(&mut state, &rows.into_iter().cloned().collect(), board);
-            fold_habit_log(&mut state, &logs.into_iter().cloned().collect());
+            fold_habits(
+                &mut state,
+                &rows.into_iter().cloned().collect(),
+                board,
+                None,
+            );
+            fold_habit_log(&mut state, &logs.into_iter().cloned().collect(), None);
             state
         };
         let one = fold(vec![&row_a, &row_b], vec![&log_a, &log_b]);
         let two = fold(vec![&row_b, &row_a], vec![&log_b, &log_a]);
         assert_eq!(one, two, "the fold totals are order-independent (LWW)");
+    }
+}
+
+#[cfg(test)]
+mod author_duel_tests {
+    use super::*;
+    use crate::ids::AuthorId;
+    use crate::merge_testutil::{BASE, bound_task, remote_task, stack_ref, ts, with_baseline};
+    use crate::remote::RemoteIndex;
+
+    fn author(hex: u128) -> AuthorId {
+        AuthorId::from_uuid(uuid::Uuid::from_u128(hex))
+    }
+
+    /// T-DUEL-0 (the Deck-lane pin): authorless incoming rows behave
+    /// bit-identically to pre-F1 — the tuple predicate reduces to the
+    /// clock pair, whatever the local slot holds.
+    #[test]
+    fn authored_remote_wins_reduces_to_remote_wins_for_authorless_rows() {
+        let local_author = Some(author(0x0A11));
+        for local_slot in [None, local_author] {
+            for delta in [-2, -1, 0, 1, 2] {
+                let remote_ts = ts(BASE + 600 + delta);
+                let local_clock = ts(BASE + 600);
+                let expected = remote_wins(remote_ts, local_clock);
+                let actual = authored_remote_wins(remote_ts, None, local_clock, local_slot);
+                assert_eq!(actual, expected, "delta {delta}");
+            }
+        }
+    }
+
+    /// T-DUEL-1: equal clocks, incoming `Some(a)` vs local `None` —
+    /// incoming wins; reverse — local stands. Totality on every reader
+    /// is the F1 convergence fix.
+    #[test]
+    fn equal_clock_some_author_beats_none_and_orders_totally_between_authors() {
+        let a = author(0x0A01);
+        let b = author(0x0B02);
+        let t = ts(BASE);
+        assert!(authored_remote_wins(t, Some(a), t, None));
+        assert!(!authored_remote_wins(t, None, t, Some(a)));
+        assert!(authored_remote_wins(t, Some(b), t, Some(a)));
+        assert!(!authored_remote_wins(t, Some(a), t, Some(b)));
+        assert!(
+            !authored_remote_wins(t, Some(a), t, Some(a)),
+            "full tie keeps local"
+        );
+    }
+
+    /// T-DUEL-3: `None`-vs-`None` at equal clocks keeps each pinned
+    /// direction — doc-wins families tie to the document,
+    /// strictly-newer families tie to local.
+    #[test]
+    fn none_vs_none_ties_keep_the_pinned_directions() {
+        let t = ts(BASE);
+        assert!(authored_doc_wins(t, None, t, None));
+        assert!(!authored_tombstone_wins(t, None, t, None));
+    }
+
+    /// T-DUEL-2 (the convergence law, §3): two devices, equal clocks,
+    /// distinct authors, both arrival orders → one winner everywhere.
+    /// On A: incoming (t, b) vs local (t, a) — incoming. On B: incoming
+    /// (t, a) vs local (t, b) — local stands. Both hold B's row.
+    #[test]
+    fn equal_clock_distinct_authors_converge_from_both_arrival_orders() {
+        let a = author(0x00A1_1000_0001);
+        let b = author(0x00B2_2000_0002);
+        let t = ts(BASE);
+        assert!(authored_doc_wins(t, Some(b), t, Some(a)));
+        assert!(!authored_doc_wins(t, Some(a), t, Some(b)));
+        assert!(authored_tombstone_wins(t, Some(b), t, Some(a)));
+        assert!(!authored_tombstone_wins(t, Some(a), t, Some(b)));
+    }
+
+    /// T-ADOPT-1: Deck adoption stamps the winning field's author
+    /// `None`; push-echo adoption carries the authors through.
+    #[test]
+    fn remote_adoption_stamps_none_and_echo_adoption_carries_authors() {
+        let a = author(0x00AD_D000_0001);
+        // A baseline matching the old snapshot: only the title differs
+        // in the new remote, so only the title's field duel fires.
+        let old_remote = remote_task(1, 1, BASE - 60);
+        let mut local = with_baseline(bound_task(1), &old_remote);
+        local.authors.title = Some(a);
+        local.clocks.title = ts(BASE - 30);
+
+        // Deck pull, remote strictly newer: clock advances, slot clears.
+        let mut ctx = RemoteIndex::default();
+        ctx.stack_by_ref.insert(stack_ref(1), local.stack);
+        let mut remote = remote_task(1, 1, BASE + 60);
+        remote.title = "remote title".into();
+        let merged = merge_task(&local, &remote, &ctx, true);
+        assert_eq!(merged.clocks.title, ts(BASE + 60));
+        assert_eq!(merged.authors.title, None, "Deck adoption clears the slot");
+
+        // Push-echo adoption: authorship carried through unchanged.
+        let echoed = adopt_task_after_push(&local, &remote, &ctx, true);
+        assert_eq!(echoed.authors, local.authors);
     }
 }

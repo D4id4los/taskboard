@@ -2639,6 +2639,7 @@ mod tests {
             archived: false,
             deleted: false,
             clocks: clocks(),
+            authors: taskboard_domain::entities::TaskAuthors::default(),
             remote_seen: None,
             remote_baseline: None,
         }
@@ -2658,6 +2659,7 @@ mod tests {
                 order: epoch(),
                 deleted: epoch(),
             },
+            authors: taskboard_domain::entities::StackAuthors::default(),
             remote_seen: None,
         }
     }
@@ -2700,6 +2702,7 @@ mod tests {
                     archived: epoch(),
                     deleted: epoch(),
                 },
+                authors: taskboard_domain::entities::BoardAuthors::default(),
                 remote_seen: None,
             },
         );
@@ -2733,6 +2736,7 @@ mod tests {
                     archived: epoch(),
                     deleted: epoch(),
                 },
+                authors: taskboard_domain::entities::BoardAuthors::default(),
                 remote_seen: None,
             },
         );
@@ -3727,6 +3731,7 @@ mod tests {
                         archived: epoch(),
                         deleted: epoch(),
                     },
+                    authors: taskboard_domain::entities::BoardAuthors::default(),
                     remote_seen: None,
                 },
             );
@@ -4214,6 +4219,7 @@ mod tests {
                     archived: epoch(),
                     deleted: epoch(),
                 },
+                authors: taskboard_domain::entities::BoardAuthors::default(),
                 remote_seen: None,
             },
         );
@@ -4630,6 +4636,7 @@ mod tests {
                         archived: epoch(),
                         deleted: epoch(),
                     },
+                    authors: taskboard_domain::entities::BoardAuthors::default(),
                     remote_seen: None,
                 },
             );
@@ -4885,6 +4892,7 @@ mod settings_surface_tests {
                     archived: epoch,
                     deleted: epoch,
                 },
+                authors: taskboard_domain::entities::BoardAuthors::default(),
                 remote_seen: None,
             },
         );
@@ -4909,6 +4917,7 @@ mod settings_surface_tests {
                     order: epoch,
                     deleted: epoch,
                 },
+                authors: taskboard_domain::entities::StackAuthors::default(),
                 remote_seen: None,
             },
         );

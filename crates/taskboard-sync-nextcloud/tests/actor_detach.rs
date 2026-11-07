@@ -55,6 +55,7 @@ async fn d1_detach_stops_the_actor_after_the_queued_cycle() {
             day_start_time: chrono::NaiveTime::MIN,
             offset: taskboard_state::DayRollConfig::disabled().offset,
         },
+        author: None,
     };
     let join = spawn_sync_actor(
         taskboard_domain::ConnectorId::from("nextcloud"),

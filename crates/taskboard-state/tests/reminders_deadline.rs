@@ -120,6 +120,7 @@ async fn spawn(
         notifier,
         settings,
         day_roll,
+        None,
     )
     .await
     .expect("engine boots");

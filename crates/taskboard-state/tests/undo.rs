@@ -96,6 +96,7 @@ impl Rig {
             notifier,
             taskboard_domain::SettingsSnapshot::default(),
             DayRollConfig::disabled(),
+            None,
         )
         .await
         .expect("engine boots");
@@ -235,6 +236,7 @@ async fn a_storage_failure_leaves_the_journal_and_head_untouched() {
         notifier,
         taskboard_domain::SettingsSnapshot::default(),
         DayRollConfig::disabled(),
+        None,
     )
     .await
     .expect("engine boots");

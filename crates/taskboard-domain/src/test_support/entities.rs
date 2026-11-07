@@ -178,6 +178,7 @@ pub fn task_strategy() -> impl Strategy<Value = Task> {
                 archived,
                 deleted,
                 clocks,
+                authors: crate::entities::TaskAuthors::default(),
                 remote_seen,
                 remote_baseline,
             },

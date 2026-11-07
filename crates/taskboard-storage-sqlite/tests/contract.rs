@@ -56,6 +56,7 @@ async fn per_board_status_roundtrip_and_fake_parity() {
             archived: taskboard_domain::BoardClocks::epoch(),
             deleted: taskboard_domain::BoardClocks::epoch(),
         },
+        authors: taskboard_domain::entities::BoardAuthors::default(),
         remote_seen: None,
     };
     let first = board(0xd1, Some(101));

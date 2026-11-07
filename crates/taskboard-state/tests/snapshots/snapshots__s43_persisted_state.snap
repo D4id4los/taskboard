@@ -17,6 +17,11 @@ boards:
       color: "1970-01-01T10:03:00Z"
       archived: "1970-01-01T10:03:00Z"
       deleted: "1970-01-01T10:03:00Z"
+    authors:
+      title: ~
+      color: ~
+      archived: ~
+      deleted: ~
     remote_seen: "1970-01-01T10:03:00Z"
 stacks:
   00000000-0000-0000-0000-000000000384:
@@ -33,6 +38,10 @@ stacks:
       title: "1970-01-01T10:03:00Z"
       order: "1970-01-01T10:03:00Z"
       deleted: "1970-01-01T10:00:00Z"
+    authors:
+      title: ~
+      order: ~
+      deleted: ~
     remote_seen: "1970-01-01T10:03:00Z"
 tasks:
   00000000-0000-0000-0000-0000000003e8:
@@ -67,6 +76,20 @@ tasks:
       kind: "1970-01-01T10:02:00Z"
       archived: "1970-01-01T10:02:00Z"
       deleted: "1970-01-01T10:03:00Z"
+    authors:
+      title: ~
+      description: ~
+      duedate: ~
+      scheduled: ~
+      done: ~
+      position: ~
+      effort: ~
+      importance: ~
+      urgency: ~
+      recur: ~
+      kind: ~
+      archived: ~
+      deleted: ~
     remote_seen: ~
     remote_baseline: ~
 labels: {}

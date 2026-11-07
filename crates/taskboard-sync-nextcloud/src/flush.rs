@@ -115,6 +115,10 @@ pub(crate) struct FlushCtx<'a> {
     /// on every board whose evidence is unreadable or that has no
     /// migrating sibling. Unions *under* the local overlay (D7).
     pub migration: &'a AppDataSections,
+    /// This device's author identity (F1's `by` stamp source): every
+    /// overlay row's author leg. `None` = an identity-less context —
+    /// the rows stamp authorless (the honest `None < Some` floor).
+    pub author: Option<taskboard_domain::ids::AuthorId>,
 }
 
 /// D12's lazy gate: any live task of `board` carrying app-data (the
@@ -166,7 +170,7 @@ pub(crate) fn board_has_local_app_data(
     // — a long-empty board's aged log does not hold the anchor up on
     // its own; definitions count while any live one exists.
     || habits.habits.values().any(|habit| habit.is_live() && habit.board == board)
-    || habit_log_for(&habits.habits, &habits.log, board, today)
+    || habit_log_for(&habits.habits, &habits.log, board, today, None)
         .keys()
         .next()
         .is_some()
@@ -333,7 +337,7 @@ pub(crate) async fn run_flush(ctx: FlushCtx<'_>) -> FlushVerdict {
             card_key.clone(),
             task_entry_for(task, ctx.features.card_startdate),
         );
-        let mut rules_entry = rules_entry_for(ctx.rules, *task_id);
+        let mut rules_entry = rules_entry_for(ctx.rules, *task_id, ctx.author);
         // The removal tombstones derive from the base (D8): only
         // base-present live rules missing locally tombstone, stamped
         // with the removing op's instant (or `read_at` in a rebuild).
@@ -343,14 +347,17 @@ pub(crate) async fn run_flush(ctx: FlushCtx<'_>) -> FlushVerdict {
             .as_ref()
             .and_then(|entries| entries.get(&card_key))
         {
-            for (key, tombstone) in derive_rule_tombstones(base_entry, ctx.rules, *stamp) {
+            for (key, tombstone) in
+                derive_rule_tombstones(base_entry, ctx.rules, *stamp, ctx.author)
+            {
                 rules_entry.rules.insert(key, tombstone);
             }
         }
         overlay_rules.insert(card_key.clone(), rules_entry);
         // The dismissal rows join the same overlay card (design D-1/D-9):
         // the builder's filter emits the task's Rule-ref rows only.
-        let dismissals_entry = dismissals_entry_for(ctx.dismissals, ctx.rules, *task_id);
+        let dismissals_entry =
+            dismissals_entry_for(ctx.dismissals, ctx.rules, *task_id, ctx.author);
         if !dismissals_entry.dismissals.is_empty() {
             overlay_dismissals.insert(card_key, dismissals_entry);
         }
@@ -361,7 +368,8 @@ pub(crate) async fn run_flush(ctx: FlushCtx<'_>) -> FlushVerdict {
     // rows missing locally (D-T12's truncated-view guard), stamped with
     // the same scoped stamp the rules derivation uses — the group
     // primary's `queued_at`, or `read_at` in a rebuild.
-    let mut overlay_time = time_entries_for(ctx.entries, ctx.tasks, ctx.target, ctx.read_at);
+    let mut overlay_time =
+        time_entries_for(ctx.entries, ctx.tasks, ctx.target, ctx.read_at, ctx.author);
     let entry_stamp = ctx.group.and_then(|group| {
         ctx.outbox
             .iter()
@@ -385,6 +393,7 @@ pub(crate) async fn run_flush(ctx: FlushCtx<'_>) -> FlushVerdict {
         &resolvable_cards,
         ctx.read_at,
         entry_stamp.unwrap_or(ctx.read_at),
+        ctx.author,
     ) {
         overlay_time.insert(key, tombstone);
     }
@@ -394,15 +403,21 @@ pub(crate) async fn run_flush(ctx: FlushCtx<'_>) -> FlushVerdict {
     // fail-closed in-window rows. No tombstone *derivation* exists for
     // either section (D-H7): a deleted habit leaves a tombstoned row
     // the overlay emits directly, and log rows are never deleted.
-    let overlay_habits = habits_for(&ctx.habits.habits, ctx.board);
-    let overlay_log = habit_log_for(&ctx.habits.habits, &ctx.habits.log, ctx.board, ctx.today);
+    let overlay_habits = habits_for(&ctx.habits.habits, ctx.board, ctx.author);
+    let overlay_log = habit_log_for(
+        &ctx.habits.habits,
+        &ctx.habits.log,
+        ctx.board,
+        ctx.today,
+        ctx.author,
+    );
     // The break-rules section is board-level too (#588 D-7): live rows
     // of this board, plus the base-driven removal tombstones (the
     // `derive_rule_tombstones` shape with its truncated-view guard),
     // stamped with the same scoped stamp the time-entries derivation
     // uses. A deleted rule leaves no local row to emit from — hard
     // delete + base derivation, not the habit soft-delete model.
-    let mut overlay_break_rules = break_rules_for(ctx.break_rules, ctx.board);
+    let mut overlay_break_rules = break_rules_for(ctx.break_rules, ctx.board, ctx.author);
     for (key, tombstone) in derive_break_rule_tombstones(
         base.sections
             .break_rules
@@ -410,6 +425,7 @@ pub(crate) async fn run_flush(ctx: FlushCtx<'_>) -> FlushVerdict {
             .unwrap_or(&BTreeMap::new()),
         ctx.break_rules,
         entry_stamp.unwrap_or(ctx.read_at),
+        ctx.author,
     ) {
         overlay_break_rules.insert(key, tombstone);
     }
@@ -418,7 +434,7 @@ pub(crate) async fn run_flush(ctx: FlushCtx<'_>) -> FlushVerdict {
     // under the reserved key only when non-empty (the
     // `overlay_dismissals` gate's shape).
     let mut overlay_break_dismissals =
-        break_dismissals_entry_for(ctx.dismissals, ctx.break_rules, ctx.board);
+        break_dismissals_entry_for(ctx.dismissals, ctx.break_rules, ctx.board, ctx.author);
     if !overlay_break_dismissals.dismissals.is_empty() {
         overlay_dismissals.insert(
             BREAK_DISMISSALS_ENTRY_KEY.to_owned(),
@@ -892,6 +908,7 @@ mod tests {
                 archived: ts(1),
                 deleted: ts(1),
             },
+            authors: taskboard_domain::entities::TaskAuthors::default(),
             remote_seen: None,
             remote_baseline: None,
         };
@@ -911,6 +928,7 @@ mod tests {
                 order: ts(1),
                 deleted: ts(1),
             },
+            authors: taskboard_domain::entities::StackAuthors::default(),
             remote_seen: None,
         };
         (
@@ -1088,6 +1106,8 @@ mod tests {
                     taskboard_domain::entities::Effort::new(100),
                 )),
                 clock: ts(500),
+
+                by: None,
             },
         );
         let migration = AppDataSections {
@@ -1104,6 +1124,8 @@ mod tests {
                 // Equal clocks: the tie resolves to the overlay side —
                 // the local truth (the move-back shape).
                 clock: ts(500),
+
+                by: None,
             },
         );
         let local_overlay = AppDataDocument {
@@ -1136,6 +1158,8 @@ mod tests {
                     taskboard_domain::entities::Effort::new(100),
                 )),
                 clock: ts(600),
+
+                by: None,
             },
         );
         let newer = AppDataSections {
@@ -1157,6 +1181,8 @@ mod tests {
             taskboard_domain::TaskFieldWrite {
                 value: taskboard_domain::appdata::ModeledValue::Urgency(None),
                 clock: ts(300),
+
+                by: None,
             },
         );
         let wider = AppDataSections {
@@ -1192,6 +1218,8 @@ mod tests {
                     taskboard_domain::entities::Effort::new(900),
                 )),
                 clock: ts(500),
+
+                by: None,
             },
         );
         let mut staying = taskboard_domain::TaskEntry::default();
@@ -1202,12 +1230,17 @@ mod tests {
                     taskboard_domain::entities::Effort::new(1),
                 )),
                 clock: ts(500),
+
+                by: None,
             },
         );
         let mut moved_rules = taskboard_domain::RulesEntry::default();
         moved_rules.rules.insert(
             "00000000-0000-0000-0000-00000000000a".to_owned(),
-            taskboard_domain::RuleEntry::Tombstone { clock: ts(600) },
+            taskboard_domain::RuleEntry::Tombstone {
+                clock: ts(600),
+                by: None,
+            },
         );
         let document = AppDataDocument {
             format: taskboard_domain::APPDATA_FORMAT,
@@ -1400,6 +1433,8 @@ mod tests {
                                     taskboard_domain::entities::Effort::new(60),
                                 )),
                                 clock: ts(100),
+
+                                by: None,
                             },
                         )]),
                         unmodeled: BTreeMap::new(),

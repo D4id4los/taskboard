@@ -847,6 +847,7 @@ mod tests {
                 archived: false,
                 deleted: false,
                 clocks,
+                authors: taskboard_domain::entities::BoardAuthors::default(),
                 remote_seen: None,
             },
         )

@@ -132,6 +132,7 @@ pub(crate) fn bound_task(card: u64) -> Task {
         archived: false,
         deleted: false,
         clocks: clocks_at(BASE),
+        authors: crate::entities::TaskAuthors::default(),
         remote_seen: Some(ts(BASE)),
         remote_baseline: None,
     }
@@ -151,6 +152,7 @@ pub(crate) fn local_stack() -> Stack {
             order: ts(BASE),
             deleted: ts(BASE),
         },
+        authors: crate::entities::StackAuthors::default(),
         remote_seen: Some(ts(BASE)),
     }
 }
@@ -171,6 +173,7 @@ pub(crate) fn base_board() -> Board {
             archived: ts(BASE),
             deleted: ts(BASE),
         },
+        authors: crate::entities::BoardAuthors::default(),
         remote_seen: Some(ts(BASE)),
     }
 }
@@ -193,6 +196,7 @@ pub(crate) fn base_state(task: Task) -> AppState {
                 archived: ts(BASE),
                 deleted: ts(BASE),
             },
+            authors: crate::entities::BoardAuthors::default(),
             remote_seen: Some(ts(BASE)),
         },
     );
@@ -260,6 +264,7 @@ pub(crate) fn bound_label(num: u64) -> Label {
             color: ts(BASE),
             deleted: ts(BASE),
         },
+        authors: crate::entities::LabelAuthors::default(),
         remote_seen: Some(ts(BASE)),
     }
 }

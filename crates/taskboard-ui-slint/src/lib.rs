@@ -1511,6 +1511,7 @@ mod mount_tests {
                         archived: taskboard_domain::BoardClocks::epoch(),
                         deleted: taskboard_domain::BoardClocks::epoch(),
                     },
+                    authors: taskboard_domain::entities::BoardAuthors::default(),
                     remote_seen: None,
                 },
             );
@@ -1529,6 +1530,7 @@ mod mount_tests {
                         order: taskboard_domain::BoardClocks::epoch(),
                         deleted: taskboard_domain::BoardClocks::epoch(),
                     },
+                    authors: taskboard_domain::entities::StackAuthors::default(),
                     remote_seen: None,
                 },
             );
@@ -2225,6 +2227,7 @@ mod keymap_adapter_tests {
                         archived: taskboard_domain::BoardClocks::epoch(),
                         deleted: taskboard_domain::BoardClocks::epoch(),
                     },
+                    authors: taskboard_domain::entities::BoardAuthors::default(),
                     remote_seen: None,
                 },
             );
@@ -2243,6 +2246,7 @@ mod keymap_adapter_tests {
                         order: taskboard_domain::BoardClocks::epoch(),
                         deleted: taskboard_domain::BoardClocks::epoch(),
                     },
+                    authors: taskboard_domain::entities::StackAuthors::default(),
                     remote_seen: None,
                 },
             );
@@ -2321,6 +2325,7 @@ mod view_component_tests {
             archived: false,
             deleted: false,
             clocks: task_clocks(),
+            authors: taskboard_domain::entities::TaskAuthors::default(),
             remote_seen: None,
             remote_baseline: None,
         }
@@ -2344,6 +2349,7 @@ mod view_component_tests {
                 order: epoch(),
                 deleted: epoch(),
             },
+            authors: taskboard_domain::entities::StackAuthors::default(),
             remote_seen: None,
         }
     }
@@ -2362,6 +2368,7 @@ mod view_component_tests {
                 archived: epoch(),
                 deleted: epoch(),
             },
+            authors: taskboard_domain::entities::BoardAuthors::default(),
             remote_seen: None,
         }
     }

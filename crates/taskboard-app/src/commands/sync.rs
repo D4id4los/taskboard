@@ -396,6 +396,7 @@ mod scope_tests {
                     archived: BoardClocks::epoch(),
                     deleted: BoardClocks::epoch(),
                 },
+                authors: taskboard_domain::entities::BoardAuthors::default(),
                 remote_seen: None,
             },
         )

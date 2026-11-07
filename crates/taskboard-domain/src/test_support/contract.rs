@@ -48,6 +48,7 @@ pub async fn assert_task_repository_contract_async<R: TaskRepository>(repo: &R) 
             deleted: crate::entities::BoardClocks::epoch(),
             title: crate::entities::BoardClocks::epoch(),
         },
+        authors: crate::entities::BoardAuthors::default(),
         remote_seen: None,
     };
     let stack = crate::entities::Stack {
@@ -59,6 +60,7 @@ pub async fn assert_task_repository_contract_async<R: TaskRepository>(repo: &R) 
         archived: false,
         deleted: false,
         clocks: stack_clocks_at(0),
+        authors: crate::entities::StackAuthors::default(),
         remote_seen: None,
     };
     let label = crate::entities::Label {
@@ -69,6 +71,7 @@ pub async fn assert_task_repository_contract_async<R: TaskRepository>(repo: &R) 
         color: crate::entities::Color::new("00ff00"),
         deleted: false,
         clocks: label_clocks_at(0),
+        authors: crate::entities::LabelAuthors::default(),
         remote_seen: None,
     };
     let task = Task {
@@ -91,6 +94,7 @@ pub async fn assert_task_repository_contract_async<R: TaskRepository>(repo: &R) 
         archived: false,
         deleted: false,
         clocks: clock_at(0),
+        authors: crate::entities::TaskAuthors::default(),
         remote_seen: None,
         remote_baseline: None,
     };

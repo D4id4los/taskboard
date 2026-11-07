@@ -7,7 +7,8 @@
 //! newtypes keep board/stack/card/label numbers from being swapped, and the
 //! composite ref structs carry the board context where it is required.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use std::fmt;
 use uuid::Uuid;
 
 macro_rules! local_id {
@@ -229,6 +230,67 @@ impl std::fmt::Display for ConnectorId {
     }
 }
 
+/// One device's author identity: who last wrote a field. Same UUID as
+/// the substrate's `device.json` `device_id` — the app bootstrap
+/// resolves the identity once at boot and hands `Some(AuthorId)` to
+/// the planner; headless contexts (tests, identity-less boot windows)
+/// stamp `None`, and the fold's `None < Some` author leg keeps those
+/// rows honest rather than corrupt.
+///
+/// # Minting vs. leniency
+///
+/// The minting sites are the app bootstrap's device-identity handoff
+/// (via [`AuthorId::from_uuid`] off the resolved `DeviceId`) and test
+/// fixtures — nothing else constructs one. Wire/storage decode goes
+/// through [`AuthorId::parse`], which is strict: an unparsable author
+/// value fails closed at the boundary (a silently de-authored row
+/// would change its fold rank against the author-carrying peer).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct AuthorId(Uuid);
+
+impl AuthorId {
+    /// Strict UUID parsing — the decode path for wire, storage, and
+    /// document forms. `None` on any non-UUID input.
+    #[must_use]
+    pub fn parse(raw: &str) -> Option<Self> {
+        Uuid::parse_str(raw).ok().map(Self)
+    }
+
+    /// The underlying UUID.
+    #[must_use]
+    pub const fn as_uuid(self) -> Uuid {
+        self.0
+    }
+
+    /// The trusted-internal constructor from an already-validated
+    /// UUID (the bootstrap's resolved `DeviceId`, test fixtures).
+    /// Never a text-input path — text goes through [`AuthorId::parse`].
+    #[must_use]
+    pub const fn from_uuid(id: Uuid) -> Self {
+        Self(id)
+    }
+}
+
+impl fmt::Display for AuthorId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // `Uuid`'s `Display` is already the lowercase hyphenated form.
+        self.0.fmt(f)
+    }
+}
+
+impl Serialize for AuthorId {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
+}
+
+impl<'de> Deserialize<'de> for AuthorId {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(deserializer)?;
+        Self::parse(&raw).ok_or_else(|| serde::de::Error::custom("an author id must be a UUID"))
+    }
+}
+
 /// A board's remote binding: the remote board *and* the connector that
 /// owns it. The connector tag is config-minted (DF-3): one name from
 /// config through the registry, the module, and the storage row.
@@ -401,5 +463,39 @@ mod tests {
         // as-is; policy, not endorsement.
         let lenient = ConnectorId::from("NOT_KEBAB");
         assert_eq!(lenient.as_str(), "NOT_KEBAB");
+    }
+
+    #[test]
+    fn author_id_parses_strictly_and_displays_lowercase_hyphenated() {
+        let text = "0193a1b2-c3d4-7cc9-8a2e-5f1e2d3c4b5a";
+        let author = AuthorId::parse(text).expect("parses");
+        assert_eq!(author.to_string(), text);
+        assert_eq!(author.as_uuid(), uuid::Uuid::parse_str(text).expect("uuid"));
+        assert!(AuthorId::parse("nope").is_none());
+        assert!(AuthorId::parse("").is_none());
+    }
+
+    #[test]
+    fn author_id_serde_roundtrips_over_the_display_form_and_rejects_non_uuids() {
+        let text = "0193a1b2-c3d4-7cc9-8a2e-5f1e2d3c4b5a";
+        let author = AuthorId::parse(text).expect("parses");
+        let raw = serde_json::to_value(author).expect("serializes");
+        assert_eq!(raw, serde_json::json!(text));
+        assert_eq!(
+            serde_json::from_value::<AuthorId>(raw).expect("decodes"),
+            author
+        );
+        assert!(serde_json::from_value::<AuthorId>(serde_json::json!("nope")).is_err());
+        assert!(serde_json::from_value::<AuthorId>(serde_json::json!(42)).is_err());
+    }
+
+    #[test]
+    fn author_id_orders_totally_so_the_duel_leg_is_total() {
+        let a = AuthorId::parse("0193a1b2-c3d4-7cc9-8a2e-5f1e2d3c4b5a").expect("parses");
+        let b = AuthorId::parse("0193a1b2-c3d4-7cc9-8a2e-5f1e2d3c4b5b").expect("parses");
+        assert_ne!(a.cmp(&b), std::cmp::Ordering::Equal);
+        // The fold's pinned forward choice, restated: `None < Some`.
+        assert!(Option::<AuthorId>::None < Some(a));
+        assert!(Some(b) > Some(a));
     }
 }

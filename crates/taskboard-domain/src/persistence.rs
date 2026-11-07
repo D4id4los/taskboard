@@ -801,6 +801,7 @@ mod tests {
                 archived: ts(100),
                 deleted: ts(100),
             },
+            authors: crate::entities::TaskAuthors::default(),
             remote_seen: None,
             remote_baseline: None,
         }
@@ -951,6 +952,7 @@ mod tests {
                     archived: crate::entities::BoardClocks::epoch(),
                     deleted: crate::entities::BoardClocks::epoch(),
                 },
+                authors: crate::entities::BoardAuthors::default(),
                 remote_seen: None,
             },
         );
@@ -1009,6 +1011,7 @@ mod tests {
                 order: ts(100),
                 deleted: ts(100),
             },
+            authors: crate::entities::StackAuthors::default(),
             remote_seen: None,
         };
         state.stacks.insert(stack.id, stack);
@@ -1056,6 +1059,7 @@ mod tests {
             archived: false,
             deleted: false,
             clocks,
+            authors: crate::entities::BoardAuthors::default(),
             remote_seen: None,
         };
         let stack_row = |id, b| Stack {
@@ -1071,6 +1075,7 @@ mod tests {
                 order: ts(100),
                 deleted: ts(100),
             },
+            authors: crate::entities::StackAuthors::default(),
             remote_seen: None,
         };
         let task_row = |id, s| crate::entities::Task {
@@ -1108,6 +1113,7 @@ mod tests {
                 archived: ts(100),
                 deleted: ts(100),
             },
+            authors: crate::entities::TaskAuthors::default(),
             remote_seen: None,
             remote_baseline: None,
         };
@@ -1123,6 +1129,7 @@ mod tests {
                 color: ts(100),
                 deleted: ts(100),
             },
+            authors: crate::entities::LabelAuthors::default(),
             remote_seen: None,
         };
         let rule = crate::reminders::ReminderRule {
@@ -1136,96 +1143,91 @@ mod tests {
             updated_at: ts(100),
         };
         let mut state = PersistedState::default();
-        apply_actions(
-            &mut state,
-            &[
-                // The doomed board (bound), a second (untouched) board.
-                PersistenceAction::UpsertBoard(board_row(
-                    board,
-                    crate::test_support::test_binding(crate::ids::RemoteBoardId(7)),
-                )),
-                PersistenceAction::UpsertBoard(board_row(
-                    other,
-                    crate::test_support::test_binding(crate::ids::RemoteBoardId(8)),
-                )),
-                PersistenceAction::UpsertStack(stack_row(stack, board)),
-                PersistenceAction::UpsertStack(stack_row(other_stack, other)),
-                PersistenceAction::UpsertTask(task_row(task, stack)),
-                PersistenceAction::UpsertTask(task_row(other_task, other_stack)),
-                PersistenceAction::UpsertLabel(label_row(label, board)),
-                PersistenceAction::UpsertReminderRule(rule.clone()),
-                PersistenceAction::RecordReminderDelivery(crate::reminders::ReminderDelivery {
-                    reminder: crate::reminders::ReminderRef::Rule(rule.id),
-                    occurrence: ts(1_000),
-                    delivered_at: ts(1_001),
-                }),
-                PersistenceAction::RecordReminderDelivery(crate::reminders::ReminderDelivery {
-                    reminder: crate::reminders::ReminderRef::Default(task),
-                    occurrence: ts(2_000),
-                    delivered_at: ts(2_001),
-                }),
-                PersistenceAction::RecordReminderDismissal(crate::reminders::ReminderDismissal {
-                    reminder: crate::reminders::ReminderRef::Rule(rule.id),
-                    occurrence: ts(1_000),
-                    dismissed_at: ts(1_002),
-                }),
-                PersistenceAction::RecordReminderDismissal(crate::reminders::ReminderDismissal {
-                    reminder: crate::reminders::ReminderRef::Default(task),
-                    occurrence: ts(2_000),
-                    dismissed_at: ts(2_002),
-                }),
-                PersistenceAction::SetTaskRemindersMuted(task, true),
-                // Ops: the board's own, its children's, and the other
-                // board's (untouched).
-                PersistenceAction::EnqueueOp(crate::outbox::PendingOp {
-                    op_id: OpId(uuid::Uuid::from_u128(61)),
-                    op: crate::outbox::LocalOp::UpdateBoard(board),
-                    queued_at: ts(200),
-                }),
-                PersistenceAction::EnqueueOp(crate::outbox::PendingOp {
-                    op_id: OpId(uuid::Uuid::from_u128(62)),
-                    op: crate::outbox::LocalOp::UpdateTask(task),
-                    queued_at: ts(200),
-                }),
-                PersistenceAction::EnqueueOp(crate::outbox::PendingOp {
-                    op_id: OpId(uuid::Uuid::from_u128(63)),
-                    op: crate::outbox::LocalOp::DeleteStack(stack),
-                    queued_at: ts(200),
-                }),
-                PersistenceAction::EnqueueOp(crate::outbox::PendingOp {
-                    op_id: OpId(uuid::Uuid::from_u128(64)),
-                    op: crate::outbox::LocalOp::DeleteLabel(label),
-                    queued_at: ts(200),
-                }),
-                PersistenceAction::EnqueueOp(crate::outbox::PendingOp {
-                    op_id: OpId(uuid::Uuid::from_u128(65)),
-                    op: crate::outbox::LocalOp::UpdateTask(other_task),
-                    queued_at: ts(200),
-                }),
-                PersistenceAction::UpsertValidators(
-                    ValidatorKey::Boards,
-                    SyncValidators::default(),
-                ),
-                PersistenceAction::UpsertValidators(
-                    ValidatorKey::Stacks(crate::ids::RemoteBoardId(7)),
-                    SyncValidators::default(),
-                ),
-                PersistenceAction::UpsertValidators(
-                    ValidatorKey::Stacks(crate::ids::RemoteBoardId(8)),
-                    SyncValidators::default(),
-                ),
-                PersistenceAction::UpsertSyncStatus(
-                    board,
-                    SyncStatus {
-                        phase: crate::state::SyncPhase::Idle,
-                        last_success: Some(ts(300)),
-                        pending_ops: 0,
-                        counters: crate::state::SyncCounters::default(),
-                        ..SyncStatus::default()
-                    },
-                ),
-            ],
-        );
+        let actions = vec![
+            // The doomed board (bound), a second (untouched) board.
+            PersistenceAction::UpsertBoard(board_row(
+                board,
+                crate::test_support::test_binding(crate::ids::RemoteBoardId(7)),
+            )),
+            PersistenceAction::UpsertBoard(board_row(
+                other,
+                crate::test_support::test_binding(crate::ids::RemoteBoardId(8)),
+            )),
+            PersistenceAction::UpsertStack(stack_row(stack, board)),
+            PersistenceAction::UpsertStack(stack_row(other_stack, other)),
+            PersistenceAction::UpsertTask(task_row(task, stack)),
+            PersistenceAction::UpsertTask(task_row(other_task, other_stack)),
+            PersistenceAction::UpsertLabel(label_row(label, board)),
+            PersistenceAction::UpsertReminderRule(rule.clone()),
+            PersistenceAction::RecordReminderDelivery(crate::reminders::ReminderDelivery {
+                reminder: crate::reminders::ReminderRef::Rule(rule.id),
+                occurrence: ts(1_000),
+                delivered_at: ts(1_001),
+            }),
+            PersistenceAction::RecordReminderDelivery(crate::reminders::ReminderDelivery {
+                reminder: crate::reminders::ReminderRef::Default(task),
+                occurrence: ts(2_000),
+                delivered_at: ts(2_001),
+            }),
+            PersistenceAction::RecordReminderDismissal(crate::reminders::ReminderDismissal {
+                reminder: crate::reminders::ReminderRef::Rule(rule.id),
+                occurrence: ts(1_000),
+                dismissed_at: ts(1_002),
+            }),
+            PersistenceAction::RecordReminderDismissal(crate::reminders::ReminderDismissal {
+                reminder: crate::reminders::ReminderRef::Default(task),
+                occurrence: ts(2_000),
+                dismissed_at: ts(2_002),
+            }),
+            PersistenceAction::SetTaskRemindersMuted(task, true),
+            // Ops: the board's own, its children's, and the other
+            // board's (untouched).
+            PersistenceAction::EnqueueOp(crate::outbox::PendingOp {
+                op_id: OpId(uuid::Uuid::from_u128(61)),
+                op: crate::outbox::LocalOp::UpdateBoard(board),
+                queued_at: ts(200),
+            }),
+            PersistenceAction::EnqueueOp(crate::outbox::PendingOp {
+                op_id: OpId(uuid::Uuid::from_u128(62)),
+                op: crate::outbox::LocalOp::UpdateTask(task),
+                queued_at: ts(200),
+            }),
+            PersistenceAction::EnqueueOp(crate::outbox::PendingOp {
+                op_id: OpId(uuid::Uuid::from_u128(63)),
+                op: crate::outbox::LocalOp::DeleteStack(stack),
+                queued_at: ts(200),
+            }),
+            PersistenceAction::EnqueueOp(crate::outbox::PendingOp {
+                op_id: OpId(uuid::Uuid::from_u128(64)),
+                op: crate::outbox::LocalOp::DeleteLabel(label),
+                queued_at: ts(200),
+            }),
+            PersistenceAction::EnqueueOp(crate::outbox::PendingOp {
+                op_id: OpId(uuid::Uuid::from_u128(65)),
+                op: crate::outbox::LocalOp::UpdateTask(other_task),
+                queued_at: ts(200),
+            }),
+            PersistenceAction::UpsertValidators(ValidatorKey::Boards, SyncValidators::default()),
+            PersistenceAction::UpsertValidators(
+                ValidatorKey::Stacks(crate::ids::RemoteBoardId(7)),
+                SyncValidators::default(),
+            ),
+            PersistenceAction::UpsertValidators(
+                ValidatorKey::Stacks(crate::ids::RemoteBoardId(8)),
+                SyncValidators::default(),
+            ),
+            PersistenceAction::UpsertSyncStatus(
+                board,
+                SyncStatus {
+                    phase: crate::state::SyncPhase::Idle,
+                    last_success: Some(ts(300)),
+                    pending_ops: 0,
+                    counters: crate::state::SyncCounters::default(),
+                    ..SyncStatus::default()
+                },
+            ),
+        ];
+        apply_actions(&mut state, &actions);
 
         apply_actions(&mut state, &[PersistenceAction::ClearBoardContent(board)]);
 

@@ -67,6 +67,7 @@ fn task(id: TaskId, stack: StackId, order: i64) -> Task {
         archived: false,
         deleted: false,
         clocks: task_clocks(),
+        authors: taskboard_domain::entities::TaskAuthors::default(),
         remote_seen: None,
         remote_baseline: None,
     }
@@ -82,6 +83,7 @@ fn stack(id: StackId, board: BoardId, title: &str, order: i64) -> Stack {
         archived: false,
         deleted: false,
         clocks: stack_clocks(),
+        authors: taskboard_domain::entities::StackAuthors::default(),
         remote_seen: None,
     }
 }
@@ -100,6 +102,7 @@ fn board(id: BoardId) -> Board {
             archived: taskboard_domain::BoardClocks::epoch(),
             deleted: taskboard_domain::BoardClocks::epoch(),
         },
+        authors: taskboard_domain::entities::BoardAuthors::default(),
         remote_seen: None,
     }
 }

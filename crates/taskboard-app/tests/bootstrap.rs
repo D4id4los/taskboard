@@ -95,6 +95,7 @@ fn bound_board() -> Board {
             archived: taskboard_domain::BoardClocks::epoch(),
             deleted: taskboard_domain::BoardClocks::epoch(),
         },
+        authors: taskboard_domain::entities::BoardAuthors::default(),
         remote_seen: None,
     }
 }
@@ -116,6 +117,7 @@ fn bound_stack() -> Stack {
             order: chrono_t(T),
             deleted: chrono_t(T),
         },
+        authors: taskboard_domain::entities::StackAuthors::default(),
         remote_seen: None,
     }
 }

@@ -10,6 +10,22 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 ### Added
 
+- Author-tagged clocks (boards-over-files contract chunk 1, F1, ADR
+  0022): every roaming clock family gains a parallel author struct
+  (`TaskAuthors`/`StackAuthors`/`LabelAuthors`/`BoardAuthors`), the
+  per-field duel order becomes the total `(clock, author)` tuple with
+  the pinned `None < Some` leg, and equal-clock writes from two
+  devices now converge deterministically on every reader instead of
+  diverging forever. The app resolves the device identity once at boot
+  (independent of sync configuration) and stamps local edits with it;
+  headless contexts stay authorless. Sidecar document rows carry an
+  optional, default-absent `by` key that old devices relay verbatim;
+  Deck lanes carry authors neutrally (remote adoption stamps `None`,
+  push echoes carry authorship through). Storage adds nullable `au_*`
+  author columns via migration 0023 (no data rewrite; old rows decode
+  authorless). The device identity is attributed per *device*, never
+  per human user.
+
 - Account-first connections in the settings view (GUI review round 5,
   chunk 8): signing in takes server, username, and app password (the
   connector name is derived from the identity; signing in again with

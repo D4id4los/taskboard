@@ -38,6 +38,7 @@ fn cfg() -> SyncActorConfig {
             day_start_time: chrono::NaiveTime::MIN,
             offset: chrono::FixedOffset::east_opt(0).unwrap(),
         },
+        author: None,
     }
 }
 
@@ -71,6 +72,7 @@ pub(crate) async fn boot_pair(client: DeckClient) -> SyncPair {
         notifier,
         settings(),
         taskboard_state::DayRollConfig::disabled(),
+        None,
     )
     .await
     .expect("engine boots");

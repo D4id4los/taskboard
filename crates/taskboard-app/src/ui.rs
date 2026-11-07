@@ -1411,6 +1411,7 @@ mod keymap_resolution_tests {
                 archived: epoch,
                 deleted: epoch,
             },
+            authors: taskboard_domain::entities::BoardAuthors::default(),
             remote_seen: None,
         };
         let mut state = taskboard_domain::AppState::default();

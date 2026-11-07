@@ -208,6 +208,7 @@ mod tests {
                 archived: epoch(),
                 deleted: epoch(),
             },
+            authors: crate::entities::BoardAuthors::default(),
             remote_seen: None,
         }
     }
@@ -236,6 +237,7 @@ mod tests {
                 order: epoch(),
                 deleted: epoch(),
             },
+            authors: crate::entities::StackAuthors::default(),
             remote_seen: None,
         }
     }
@@ -280,6 +282,7 @@ mod tests {
                 archived: epoch(),
                 deleted: epoch(),
             },
+            authors: crate::entities::TaskAuthors::default(),
             remote_seen: None,
             remote_baseline: None,
         }

@@ -84,6 +84,7 @@ fn board(id: u128) -> Board {
             archived: ts(100),
             deleted: ts(100),
         },
+        authors: taskboard_domain::entities::BoardAuthors::default(),
         remote_seen: Some(ts(100)),
     }
 }
@@ -101,6 +102,7 @@ fn stack(id: u128, board: &Board) -> Stack {
         archived: false,
         deleted: false,
         clocks: stack_clocks(1),
+        authors: taskboard_domain::entities::StackAuthors::default(),
         remote_seen: None,
     }
 }
@@ -117,6 +119,7 @@ fn label(id: u128, board: &Board) -> Label {
         color: Color::new("00ff00"),
         deleted: false,
         clocks: label_clocks(2),
+        authors: taskboard_domain::entities::LabelAuthors::default(),
         remote_seen: Some(ts(101)),
     }
 }
@@ -150,6 +153,7 @@ fn task(
         archived: false,
         deleted: false,
         clocks: task_clocks(5),
+        authors: taskboard_domain::entities::TaskAuthors::default(),
         remote_seen: Some(ts(102)),
         remote_baseline: None,
     }

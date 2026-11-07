@@ -163,6 +163,7 @@ async fn spawn(spawner: Spawner) -> Harness {
         notifier,
         spawner.reminders,
         spawner.day_roll,
+        None,
     )
     .await
     .expect("engine boots");
@@ -875,6 +876,7 @@ async fn a12_boot_failure_surfaces_load_error() {
         notifier,
         taskboard_domain::SettingsSnapshot::default(),
         DayRollConfig::disabled(),
+        None,
     )
     .await;
     assert!(matches!(
@@ -903,6 +905,7 @@ fn seeded_stack_state() -> (PersistedState, StackId) {
             order: ts(T0),
             deleted: ts(T0),
         },
+        authors: taskboard_domain::entities::StackAuthors::default(),
         remote_seen: None,
     };
     let stack_id = stack.id;
@@ -2649,6 +2652,7 @@ async fn folded_synced_dismissal_withdraws_the_toast() {
                 order: ts(T0),
                 deleted: taskboard_domain::BoardClocks::epoch(),
             },
+            authors: taskboard_domain::entities::StackAuthors::default(),
             remote_seen: None,
         },
     );
@@ -2693,6 +2697,7 @@ async fn folded_synced_dismissal_withdraws_the_toast() {
                 archived: ts(T0),
                 deleted: ts(T0),
             },
+            authors: taskboard_domain::entities::TaskAuthors::default(),
             remote_seen: None,
             remote_baseline: None,
         },
@@ -2726,6 +2731,8 @@ async fn folded_synced_dismissal_withdraws_the_toast() {
                             dismissal_wire_key(dismissed_rule, occurrence),
                             DismissalEntry::Dismissed {
                                 dismissed_at: ts(T0 - 30),
+
+                                by: None,
                             },
                         )]
                         .into(),
@@ -2932,6 +2939,7 @@ fn seed_series_state(scheduled: Option<i64>, duedate: Option<i64>) -> PersistedS
                 order: day(DAY0),
                 deleted: day(DAY0),
             },
+            authors: taskboard_domain::entities::StackAuthors::default(),
             remote_seen: None,
         },
     );
@@ -2971,6 +2979,7 @@ fn seed_series_state(scheduled: Option<i64>, duedate: Option<i64>) -> PersistedS
                 archived: day(DAY0),
                 deleted: day(DAY0),
             },
+            authors: taskboard_domain::entities::TaskAuthors::default(),
             remote_seen: None,
             remote_baseline: None,
         },
@@ -3145,6 +3154,7 @@ async fn storage_failure_defers_the_roll_until_it_heals() {
         notifier,
         taskboard_domain::SettingsSnapshot::default(),
         day_roll_enabled(),
+        None,
     )
     .await
     .expect("engine boots");
@@ -3216,6 +3226,7 @@ async fn the_roll_re_arms_reminders_by_construction() {
             ..SettingsSnapshot::default()
         },
         day_roll_enabled(),
+        None,
     )
     .await
     .expect("engine boots");
@@ -3416,6 +3427,7 @@ fn pre_kind_seed_state() -> taskboard_domain::PersistedState {
                 archived: ts,
                 deleted: ts,
             },
+            authors: taskboard_domain::entities::BoardAuthors::default(),
             remote_seen: None,
         },
     );
@@ -3434,6 +3446,7 @@ fn pre_kind_seed_state() -> taskboard_domain::PersistedState {
                 order: ts,
                 deleted: ts,
             },
+            authors: taskboard_domain::entities::StackAuthors::default(),
             remote_seen: None,
         },
     );
@@ -3472,6 +3485,7 @@ fn pre_kind_seed_state() -> taskboard_domain::PersistedState {
                 archived: ts,
                 deleted: ts,
             },
+            authors: taskboard_domain::entities::TaskAuthors::default(),
             remote_seen: None,
             remote_baseline: None,
         },
@@ -3566,6 +3580,7 @@ async fn break_rules_and_reserved_entry_fold_into_engine_state() {
                 order: ts(T0),
                 deleted: taskboard_domain::BoardClocks::epoch(),
             },
+            authors: taskboard_domain::entities::StackAuthors::default(),
             remote_seen: None,
         },
     );
@@ -3608,6 +3623,7 @@ async fn break_rules_and_reserved_entry_fold_into_engine_state() {
                 archived: ts(T0),
                 deleted: ts(T0),
             },
+            authors: taskboard_domain::entities::TaskAuthors::default(),
             remote_seen: None,
             remote_baseline: None,
         },
@@ -3639,6 +3655,8 @@ async fn break_rules_and_reserved_entry_fold_into_engine_state() {
                         created: ts(T0 - 10),
                         clock: ts(T0 - 10),
                         insistence: taskboard_domain::Insistence::Alarm,
+
+                        by: None,
                     },
                 )]
                 .into_iter()
@@ -3656,6 +3674,8 @@ async fn break_rules_and_reserved_entry_fold_into_engine_state() {
                                 break_dismissal_wire_key(rule, occurrence),
                                 DismissalEntry::Dismissed {
                                     dismissed_at: ts(T0 - 30),
+
+                                    by: None,
                                 },
                             )]
                             .into(),
@@ -3670,6 +3690,8 @@ async fn break_rules_and_reserved_entry_fold_into_engine_state() {
                                 break_dismissal_wire_key(rule, occurrence),
                                 DismissalEntry::Dismissed {
                                     dismissed_at: ts(T0 - 30),
+
+                                    by: None,
                                 },
                             )]
                             .into(),

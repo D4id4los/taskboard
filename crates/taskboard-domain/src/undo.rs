@@ -62,12 +62,13 @@ pub fn plan_journaled_command(
     defaults: &ReminderDefaults,
     day: DayCalendar,
     now: DateTime<Utc>,
+    author: Option<crate::ids::AuthorId>,
 ) -> Result<CommandPlan, CommandError> {
     match command {
-        StateCommand::Undo => plan_undo(app, outbox, journal, ids, defaults, day, now),
-        StateCommand::Redo => plan_redo(app, outbox, journal, ids, defaults, day, now),
+        StateCommand::Undo => plan_undo(app, outbox, journal, ids, defaults, day, now, author),
+        StateCommand::Redo => plan_redo(app, outbox, journal, ids, defaults, day, now, author),
         command => {
-            let plan = plan_command(app, outbox, command, ids, defaults, day, now)?;
+            let plan = plan_command(app, outbox, command, ids, defaults, day, now, author)?;
             if plan.actions.is_empty() {
                 // Accepted no-op: nothing changed, nothing journaled.
                 return Ok(plan);
@@ -534,6 +535,7 @@ pub fn journal_push_marks(
 /// `NothingToUndo` (empty or pruned line), `TargetNotUndoable` (R-U6),
 /// `TargetNoLongerInvertible` (the R-U7 watermark), or anything the
 /// inverse's own planning rejects.
+#[allow(clippy::too_many_arguments)] // plan_command's own shape, threaded
 pub fn plan_undo(
     app: &AppState,
     outbox: &[PendingOp],
@@ -542,6 +544,7 @@ pub fn plan_undo(
     defaults: &ReminderDefaults,
     day: DayCalendar,
     now: DateTime<Utc>,
+    author: Option<crate::ids::AuthorId>,
 ) -> Result<CommandPlan, CommandError> {
     // 1-2. NothingToUndo → TargetNotUndoable: deterministic, cheapest
     // first (§6's check order).
@@ -568,7 +571,7 @@ pub fn plan_undo(
     // 5. The inverse plans through the ordinary catalogue: typed
     // rejections, no-op semantics, bound/unbound splits, cascades, op
     // enqueue, nudge — all inherited.
-    let plan = plan_command(app, outbox, &inverse, ids, defaults, day, now)?;
+    let plan = plan_command(app, outbox, &inverse, ids, defaults, day, now, author)?;
     // 6. The pushed-edit rule (D-U2), two behaviours per entry.
     let mut actions = plan.actions;
     if !entry.pushed {
@@ -611,6 +614,7 @@ pub fn plan_undo(
 /// `NothingToRedo` (no head or no child), `TargetNotUndoable` (a
 /// `NotUndoable` child is unreachable as a redo target — defensive), or
 /// the forward command's own rejection.
+#[allow(clippy::too_many_arguments)] // plan_command's own shape, threaded
 pub fn plan_redo(
     app: &AppState,
     outbox: &[PendingOp],
@@ -619,6 +623,7 @@ pub fn plan_redo(
     defaults: &ReminderDefaults,
     day: DayCalendar,
     now: DateTime<Utc>,
+    author: Option<crate::ids::AuthorId>,
 ) -> Result<CommandPlan, CommandError> {
     let head_id = journal.head.ok_or(CommandError::NothingToRedo)?;
     let target = journal
@@ -629,7 +634,16 @@ pub fn plan_redo(
     if let UndoFacts::NotUndoable(reason) = target.facts {
         return Err(CommandError::TargetNotUndoable(reason));
     }
-    let plan = plan_command(app, outbox, &target.command, ids, defaults, day, now)?;
+    let plan = plan_command(
+        app,
+        outbox,
+        &target.command,
+        ids,
+        defaults,
+        day,
+        now,
+        author,
+    )?;
     let mut actions = plan.actions;
     // A redo that enqueues is a push-boundary crossing (D-U2: redo is a
     // new edit, *always* — its fresh ops ride the outbox to the server).

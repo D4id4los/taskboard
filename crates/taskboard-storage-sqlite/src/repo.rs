@@ -423,6 +423,7 @@ fn decode_board(row: BoardRow, default_connector: &ConnectorId) -> Result<Board,
             archived: row.ck_archived,
             deleted: row.ck_deleted,
         },
+        authors: taskboard_domain::entities::BoardAuthors::default(),
         remote_seen: row.remote_seen,
     })
 }
@@ -444,6 +445,7 @@ fn decode_stack(row: StackRow) -> Result<Stack, RepositoryError> {
             order: decode::clock(&row.ck_sort_order)?,
             deleted: decode::clock(&row.ck_deleted)?,
         },
+        authors: taskboard_domain::entities::StackAuthors::default(),
         remote_seen: row.remote_seen,
     })
 }
@@ -505,6 +507,7 @@ fn decode_task(
             archived: decode::clock(&row.ck_archived)?,
             deleted: decode::clock(&row.ck_deleted)?,
         },
+        authors: taskboard_domain::entities::TaskAuthors::default(),
         remote_seen: row.remote_seen,
         remote_baseline: row
             .remote_baseline
@@ -530,6 +533,7 @@ fn decode_label(row: LabelRow) -> Result<Label, RepositoryError> {
             color: decode::clock(&row.ck_color)?,
             deleted: decode::clock(&row.ck_deleted)?,
         },
+        authors: taskboard_domain::entities::LabelAuthors::default(),
         remote_seen: row.remote_seen,
     })
 }

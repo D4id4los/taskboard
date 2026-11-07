@@ -868,6 +868,7 @@ mod tests {
             notifier,
             taskboard_domain::SettingsSnapshot::default(),
             taskboard_state::DayRollConfig::disabled(),
+            None,
         )
         .await
         .expect("engine boots");
@@ -1335,6 +1336,7 @@ mod tests {
                 archived: epoch,
                 deleted: epoch,
             },
+            authors: taskboard_domain::entities::TaskAuthors::default(),
             remote_seen: None,
             remote_baseline: None,
         };
@@ -1366,6 +1368,7 @@ mod tests {
             notifier,
             taskboard_domain::SettingsSnapshot::default(),
             taskboard_state::DayRollConfig::disabled(),
+            None,
         )
         .await
         .expect("engine boots");
@@ -1745,6 +1748,7 @@ mod tests {
                 archived: epoch,
                 deleted: epoch,
             },
+            authors: taskboard_domain::entities::TaskAuthors::default(),
             remote_seen: None,
             remote_baseline: None,
         };
@@ -1788,6 +1792,7 @@ mod tests {
             notifier,
             taskboard_domain::SettingsSnapshot::default(),
             taskboard_state::DayRollConfig::disabled(),
+            None,
         )
         .await
         .expect("engine boots");
@@ -1970,6 +1975,7 @@ mod tests {
                 archived: epoch,
                 deleted: epoch,
             },
+            authors: taskboard_domain::entities::TaskAuthors::default(),
             remote_seen: None,
             remote_baseline: None,
         };
@@ -2001,6 +2007,7 @@ mod tests {
             notifier,
             taskboard_domain::SettingsSnapshot::default(),
             taskboard_state::DayRollConfig::disabled(),
+            None,
         )
         .await
         .expect("engine boots");
@@ -2129,6 +2136,7 @@ mod tests {
                 notifier,
                 taskboard_domain::SettingsSnapshot::default(),
                 taskboard_state::DayRollConfig::disabled(),
+                None,
             )
             .await
             .expect("engine boots");

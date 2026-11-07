@@ -2376,6 +2376,7 @@ mod next_occurrence_tests {
                 archived: ts(0),
                 deleted: ts(0),
             },
+            authors: crate::entities::TaskAuthors::default(),
             remote_seen: None,
             remote_baseline: None,
         }
@@ -2754,6 +2755,7 @@ mod pause_tests {
                 archived: ts(1),
                 deleted: ts(1),
             },
+            authors: crate::entities::TaskAuthors::default(),
             remote_seen: None,
             remote_baseline: None,
         }

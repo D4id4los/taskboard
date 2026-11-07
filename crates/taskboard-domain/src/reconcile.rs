@@ -304,6 +304,7 @@ pub fn merge_stack_pair(local: &Stack, bound: &Stack) -> Stack {
             order: lc.order.max(bc.order),
             deleted: lc.deleted.max(bc.deleted),
         },
+        authors: crate::entities::StackAuthors::default(),
         remote_seen: bound.remote_seen,
     }
 }
@@ -337,6 +338,7 @@ pub fn merge_label_pair(local: &Label, bound: &Label) -> Label {
             color: lc.color.max(bc.color),
             deleted: lc.deleted.max(bc.deleted),
         },
+        authors: crate::entities::LabelAuthors::default(),
         remote_seen: bound.remote_seen,
     }
 }
@@ -356,6 +358,7 @@ pub fn neutralized_label(local: &Label, bound: &Label) -> Label {
 /// newer clock (tie ⇒ the bound row's value); clocks are the field-wise
 /// max; the composite position is one field (one clock).
 #[must_use]
+#[allow(clippy::too_many_lines)] // one paired field block per field; the length is the schema's
 pub fn merge_task_pair(local: &Task, bound: &Task) -> Task {
     let lc = &local.clocks;
     let bc = &bound.clocks;
@@ -437,6 +440,78 @@ pub fn merge_task_pair(local: &Task, bound: &Task) -> Task {
             local.archived
         },
         deleted: local.deleted || bound.deleted,
+        // The author slot follows its field's winner (the paired-write
+        // rule): the same clocks pick the author that picked the value.
+        authors: crate::entities::TaskAuthors {
+            title: pick(
+                &local.authors.title,
+                &bound.authors.title,
+                lc.title,
+                bc.title,
+            ),
+            description: pick(
+                &local.authors.description,
+                &bound.authors.description,
+                lc.description,
+                bc.description,
+            ),
+            duedate: pick(
+                &local.authors.duedate,
+                &bound.authors.duedate,
+                lc.duedate,
+                bc.duedate,
+            ),
+            scheduled: pick(
+                &local.authors.scheduled,
+                &bound.authors.scheduled,
+                lc.scheduled,
+                bc.scheduled,
+            ),
+            done: pick(&local.authors.done, &bound.authors.done, lc.done, bc.done),
+            position: pick(
+                &local.authors.position,
+                &bound.authors.position,
+                lc.position,
+                bc.position,
+            ),
+            effort: pick(
+                &local.authors.effort,
+                &bound.authors.effort,
+                lc.effort,
+                bc.effort,
+            ),
+            importance: pick(
+                &local.authors.importance,
+                &bound.authors.importance,
+                lc.importance,
+                bc.importance,
+            ),
+            urgency: pick(
+                &local.authors.urgency,
+                &bound.authors.urgency,
+                lc.urgency,
+                bc.urgency,
+            ),
+            recur: pick(
+                &local.authors.recur,
+                &bound.authors.recur,
+                lc.recur,
+                bc.recur,
+            ),
+            kind: pick(&local.authors.kind, &bound.authors.kind, lc.kind, bc.kind),
+            archived: pick(
+                &local.authors.archived,
+                &bound.authors.archived,
+                lc.archived,
+                bc.archived,
+            ),
+            deleted: pick(
+                &local.authors.deleted,
+                &bound.authors.deleted,
+                lc.deleted,
+                bc.deleted,
+            ),
+        },
         clocks: TaskClocks {
             title: lc.title.max(bc.title),
             description: lc.description.max(bc.description),
@@ -516,6 +591,7 @@ mod tests {
                 archived: crate::entities::BoardClocks::epoch(),
                 deleted: crate::entities::BoardClocks::epoch(),
             },
+            authors: crate::entities::BoardAuthors::default(),
             remote_seen: None,
         };
         row.remote = crate::test_support::test_binding(crate::ids::RemoteBoardId(42));
@@ -540,6 +616,7 @@ mod tests {
                 order: ts(100),
                 deleted: ts(100),
             },
+            authors: crate::entities::StackAuthors::default(),
             remote_seen: None,
         }
     }
@@ -560,6 +637,7 @@ mod tests {
                 color: ts(100),
                 deleted: ts(100),
             },
+            authors: crate::entities::LabelAuthors::default(),
             remote_seen: None,
         }
     }
@@ -606,6 +684,7 @@ mod tests {
                 archived: ts(100),
                 deleted: ts(100),
             },
+            authors: crate::entities::TaskAuthors::default(),
             remote_seen: None,
             remote_baseline: None,
         }
@@ -1019,6 +1098,7 @@ mod proptests {
                 order: ts(100),
                 deleted: ts(100),
             },
+            authors: crate::entities::StackAuthors::default(),
             remote_seen: None,
         }
     }
@@ -1040,6 +1120,7 @@ mod proptests {
                 color: ts(100),
                 deleted: ts(100),
             },
+            authors: crate::entities::LabelAuthors::default(),
             remote_seen: None,
         }
     }
@@ -1087,6 +1168,7 @@ mod proptests {
                 archived: ts(100),
                 deleted: ts(100),
             },
+            authors: crate::entities::TaskAuthors::default(),
             remote_seen: None,
             remote_baseline: None,
         })
@@ -1119,6 +1201,7 @@ mod proptests {
                     archived: crate::entities::BoardClocks::epoch(),
                     deleted: crate::entities::BoardClocks::epoch(),
                 },
+                authors: crate::entities::BoardAuthors::default(),
                 remote_seen: None,
             },
         );
@@ -1344,6 +1427,7 @@ mod proptest_strategies {
                         archived: false,
                         deleted: false,
                         clocks,
+                        authors: crate::entities::StackAuthors::default(),
                         remote_seen: None,
                     };
                     (
@@ -1381,6 +1465,7 @@ mod proptest_strategies {
                     color: crate::entities::Color::new("ff0000"),
                     deleted: false,
                     clocks,
+                    authors: crate::entities::LabelAuthors::default(),
                     remote_seen: None,
                 };
                 (
@@ -1443,6 +1528,7 @@ mod proptest_strategies {
                     archived: false,
                     deleted: false,
                     clocks,
+                    authors: crate::entities::TaskAuthors::default(),
                     remote_seen: None,
                     remote_baseline: None,
                 };

@@ -1721,6 +1721,7 @@ async fn seed_bound_board(db: &std::path::Path) {
                 archived: taskboard_domain::BoardClocks::epoch(),
                 deleted: taskboard_domain::BoardClocks::epoch(),
             },
+            authors: taskboard_domain::entities::BoardAuthors::default(),
             remote_seen: None,
         },
     )])
