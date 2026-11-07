@@ -13,7 +13,7 @@
 //! undone by a failed reply. `UiRequest` therefore no longer derives
 //! `Clone`/`PartialEq`/`Eq` (a oneshot sender is neither).
 
-use taskboard_domain::{BoardId, StackId};
+use taskboard_domain::{BoardId, RemoteBoardId, StackId};
 use tokio::sync::oneshot;
 
 use crate::keymap::{Keymap, Preset};
@@ -61,8 +61,21 @@ pub struct ConnectionsSnapshot {
     pub connectors: Vec<ConnectorInfo>,
 }
 
+/// One live remote board one connector can see (round-5 chunk 8,
+/// D-8.3): the account card's mapping row — secret-free, keyed by the
+/// Deck id (the binding-scoped identity is `(connector, remote_id)`;
+/// the same id through another connector is a different remote). The
+/// row's binding is not carried: the UI re-derives it from the engine
+/// state on every push pass (r4 D39 §2.3), so it cannot go stale.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteBoardRow {
+    pub remote_id: RemoteBoardId,
+    pub title: String,
+}
+
 /// The full draft the settings form commits (the `ConnectionTarget`
-/// shape plus the kebab name — an upsert keyed on `name`).
+/// shape plus the kebab name — an upsert keyed on `name`; an empty
+/// name asks the app to derive one from the identity, D-8.2).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConnectionProfile {
     pub name: String,
@@ -323,6 +336,14 @@ pub enum UiRequest {
     RemoveConnection {
         name: String,
         reply: oneshot::Sender<Result<ConnectionsSnapshot, SettingsError>>,
+    },
+    /// Lists the live remote boards the named connector's account can
+    /// see (round-5 chunk 8, D-8.3): a pure query + network read — no
+    /// state change, no persistence, no attach. The listing is the
+    /// credential verification.
+    ListRemoteBoards {
+        connector: String,
+        reply: oneshot::Sender<Result<Vec<RemoteBoardRow>, SettingsError>>,
     },
     /// Bind the named local board to the named connector, attaching
     /// the connector if needed (r2 D33). The remote id is derived

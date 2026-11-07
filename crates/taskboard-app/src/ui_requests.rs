@@ -34,7 +34,7 @@ use taskboard_sync_nextcloud::DeckClient;
 use taskboard_ui_slint::geometry::WindowGeometry;
 use taskboard_ui_slint::requests::{
     ConnectionProfile, ConnectionTarget, ConnectionsSnapshot, ConnectorInfo, Field, InvalidKind,
-    KeymapUpdate, ReminderSink, SettingsError, SettingsSnapshot, UiRequest,
+    KeymapUpdate, ReminderSink, RemoteBoardRow, SettingsError, SettingsSnapshot, UiRequest,
 };
 
 use crate::bootstrap::ConnectorControl;
@@ -351,6 +351,10 @@ async fn handle_settings(request: UiRequest, workspace: &ConnectionWorkspace) {
         }
         UiRequest::RemoveConnection { name, reply } => {
             let outcome = remove_connection(workspace, &name).await;
+            let _ = reply.send(outcome);
+        }
+        UiRequest::ListRemoteBoards { connector, reply } => {
+            let outcome = list_remote_boards(workspace, &connector).await;
             let _ = reply.send(outcome);
         }
         UiRequest::AttachConnector {
@@ -723,12 +727,22 @@ async fn save_connection(
     workspace: &ConnectionWorkspace,
     profile: &ConnectionProfile,
 ) -> Result<ConnectionsSnapshot, SettingsError> {
+    let raw = ensure_migrated(workspace)?;
+    let named;
+    let profile = if profile.name.is_empty() {
+        named = ConnectionProfile {
+            name: sign_in_name(&raw, profile)?,
+            ..profile.clone()
+        };
+        &named
+    } else {
+        profile
+    };
     tracing::info!(
         connector = %profile.name,
         host = %url_host(&profile.server_url),
         "settings save started"
     );
-    let raw = ensure_migrated(workspace)?;
     if profile.password.0.trim().is_empty() {
         return Err(SettingsError::Invalid {
             field: Field::Password,
@@ -788,6 +802,85 @@ async fn save_connection(
         "settings save succeeded"
     );
     Ok(current_connections(workspace))
+}
+
+/// The sign-in's connector name (round-5 chunk 8, D-8.2): a re-sign-in
+/// of an identity already configured reuses that connector's name (the
+/// upsert rotates its secret — never a duplicate card); a new identity
+/// mints `kebab(host)-kebab(username)` with the collision suffixes.
+fn sign_in_name(raw: &AppConfig, profile: &ConnectionProfile) -> Result<String, SettingsError> {
+    let entries = raw.sync.connectors.as_deref().unwrap_or_default();
+    if let Some(existing) = entries
+        .iter()
+        .find(|e| e.server_url == profile.server_url && e.username == profile.username)
+    {
+        return Ok(existing.name.clone());
+    }
+    let taken: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+    crate::connectors::derive_connector_name(&profile.server_url, &profile.username, &taken)
+        .map(|id| id.to_string())
+        .map_err(|err| SettingsError::Invalid {
+            field: Field::Name,
+            kind: match err {
+                crate::connectors::DeriveNameError::NotKebab => InvalidKind::NotKebab,
+                crate::connectors::DeriveNameError::Exhausted => InvalidKind::Duplicate,
+            },
+        })
+}
+
+/// The account's remote-board listing (round-5 chunk 8, D-8.3): config
+/// lookup → stored secret → `DeckClient::boards()` → the live rows. A
+/// pure query: nothing is attached, bound, or persisted.
+async fn list_remote_boards(
+    workspace: &ConnectionWorkspace,
+    connector_name: &str,
+) -> Result<Vec<RemoteBoardRow>, SettingsError> {
+    let raw = read_raw_config(workspace)?;
+    let entry = connector_entry(&raw, connector_name)?;
+    let stored = workspace
+        .store
+        .load(&entry.server_url, &entry.username)
+        .map_err(map_credential_error)?;
+    let remotes = live_remote_boards(&entry, stored.expose()).await?;
+    Ok(remotes
+        .into_iter()
+        .map(|remote| RemoteBoardRow {
+            remote_id: RemoteBoardId(remote.id),
+            title: remote.title,
+        })
+        .collect())
+}
+
+/// The named connector's config entry (`Gone` when it vanished).
+fn connector_entry(raw: &AppConfig, name: &str) -> Result<ConnectorCfg, SettingsError> {
+    raw.sync
+        .connectors
+        .iter()
+        .flatten()
+        .find(|entry| entry.name == name)
+        .cloned()
+        .ok_or(SettingsError::Gone)
+}
+
+/// The live (not deleted, not archived) remote boards the identity can
+/// see — the listing is the credential verification.
+async fn live_remote_boards(
+    entry: &ConnectorCfg,
+    password: &str,
+) -> Result<Vec<taskboard_sync_nextcloud::Board>, SettingsError> {
+    let client = DeckClient::new(&entry.server_url, &entry.username, password).map_err(|err| {
+        tracing::warn!(variant = %err, "settings: the listing client was refused");
+        SettingsError::AttachFailed
+    })?;
+    let boards = client
+        .boards()
+        .await
+        .map_err(crate::commands::map_deck_error)
+        .map_err(map_ceremony_error)?;
+    Ok(boards
+        .into_iter()
+        .filter(|b| b.deleted_at == 0 && !b.archived)
+        .collect())
 }
 
 /// The Remove choreography (plan D3): typed legacy refusal → overlay

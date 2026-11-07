@@ -199,6 +199,86 @@ pub(crate) fn configured_connectors(config: &AppConfig) -> Result<Vec<ConnectorS
     }
 }
 
+/// Why [`derive_connector_name`] refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DeriveNameError {
+    /// The identity carries no kebab material (no ASCII alphanumerics).
+    NotKebab,
+    /// The base name and its `-2`…`-9` suffixes are all taken.
+    Exhausted,
+}
+
+/// The auto-derived connector name for a new sign-in (round-5 chunk 8,
+/// D-8.2): `kebab(host) + "-" + kebab(username)`, the first free of
+/// the base and its `-2`…`-9` suffixes against `taken`. Kebab validity
+/// is by construction (lowercased ASCII alphanumerics joined by single
+/// dashes) and re-proven through [`ConnectorId::from_kebab`].
+pub(crate) fn derive_connector_name(
+    server_url: &str,
+    username: &str,
+    taken: &[&str],
+) -> Result<ConnectorId, DeriveNameError> {
+    fn kebab(text: &str) -> String {
+        text.split(|c: char| !c.is_ascii_alphanumeric())
+            .filter(|part| !part.is_empty())
+            .map(str::to_ascii_lowercase)
+            .collect::<Vec<_>>()
+            .join("-")
+    }
+    let base = [
+        kebab(crate::migration::url_host(server_url)),
+        kebab(username),
+    ]
+    .into_iter()
+    .filter(|part| !part.is_empty())
+    .collect::<Vec<_>>()
+    .join("-");
+    if base.is_empty() {
+        return Err(DeriveNameError::NotKebab);
+    }
+    let candidates = std::iter::once(base.clone()).chain((2..=9).map(|n| format!("{base}-{n}")));
+    for candidate in candidates {
+        if !taken.contains(&candidate.as_str()) {
+            return ConnectorId::from_kebab(&candidate).map_err(|_| DeriveNameError::NotKebab);
+        }
+    }
+    Err(DeriveNameError::Exhausted)
+}
+
+#[cfg(test)]
+mod derive_tests {
+    use super::*;
+
+    #[test]
+    fn the_derived_name_kebabs_host_and_username() {
+        let id = derive_connector_name("https://cloud.example.com/nc", "Alice.B", &[]).unwrap();
+        assert_eq!(id.as_str(), "cloud-example-com-alice-b");
+        let id = derive_connector_name("http://h.example:8080", "bob", &[]).unwrap();
+        assert_eq!(id.as_str(), "h-example-8080-bob");
+    }
+
+    #[test]
+    fn a_taken_name_takes_the_next_free_suffix_and_exhaustion_is_typed() {
+        let id = derive_connector_name("https://x.example", "al", &["x-example-al"]).unwrap();
+        assert_eq!(id.as_str(), "x-example-al-2");
+        let mut taken = vec!["x-example-al".to_owned()];
+        taken.extend((2..=9).map(|n| format!("x-example-al-{n}")));
+        let taken: Vec<&str> = taken.iter().map(String::as_str).collect();
+        assert_eq!(
+            derive_connector_name("https://x.example", "al", &taken),
+            Err(DeriveNameError::Exhausted)
+        );
+    }
+
+    #[test]
+    fn an_identity_without_kebab_material_refuses_typed() {
+        assert_eq!(
+            derive_connector_name("", "ü", &[]),
+            Err(DeriveNameError::NotKebab)
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
