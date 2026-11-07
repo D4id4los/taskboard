@@ -1194,7 +1194,7 @@ fn every_flow_effect_pair_resolves_to_its_matrix_row() {
                         // commit-and-continue thought.
                         a.view_state.set_buffer("typed".to_owned());
                     }
-                    *a.view_state.flow_mut() = flow.clone();
+                    a.view_state.arm_flow(flow.clone());
                 }
                 {
                     let mut a = adapter.borrow_mut();
@@ -1368,10 +1368,10 @@ fn a_stale_column_drop_settles_the_drag_without_dispatching() {
             a.test_reset();
             a.view_state.reconcile(&rig.handle.test_state().load_full());
             let [a_id, _b, _c] = fx.tasks;
-            *a.view_state.flow_mut() = Flow::DragMove {
+            a.view_state.arm_flow(Flow::DragMove {
                 task: a_id,
                 target: fx.stacks[1],
-            };
+            });
         }
         // The drop lands past the id tables (the stale-refresh race):
         // the old early-out left the flow armed here.
@@ -1395,10 +1395,10 @@ fn a_swallowed_completed_confirm_still_settles_the_drag() {
             a.test_reset();
             a.view_state.reconcile(&rig.handle.test_state().load_full());
             let [a_id, _b, _c] = fx.tasks;
-            *a.view_state.flow_mut() = Flow::DragMove {
+            a.view_state.arm_flow(Flow::DragMove {
                 task: a_id,
                 target: fx.stacks[1],
-            };
+            });
         }
         // `completed == true` with the flow still armed: the drop
         // seam's confirm was swallowed — the finished seam cancels.
@@ -1422,10 +1422,10 @@ fn a_live_on_tables_drop_still_confirms_with_one_move() {
             a.test_reset();
             a.view_state.reconcile(&rig.handle.test_state().load_full());
             let [a_id, _b, _c] = fx.tasks;
-            *a.view_state.flow_mut() = Flow::DragMove {
+            a.view_state.arm_flow(Flow::DragMove {
                 task: a_id,
                 target: fx.stacks[1],
-            };
+            });
         }
         rig.handle.window().invoke_board_card_dropped(1);
         let flow = adapter.borrow().view_state.flow().clone();
@@ -1451,10 +1451,10 @@ mod buffer_invariants {
         a.test_reset();
         a.view_state.reconcile(&rig.handle.test_state().load_full());
         let [a_id, _b, _c] = fx.tasks;
-        *a.view_state.flow_mut() = Flow::EditDate {
+        a.view_state.arm_flow(Flow::EditDate {
             task: a_id,
             field: crate::view_state::DateField::Due,
-        };
+        });
     }
 
     #[test]
@@ -2452,7 +2452,7 @@ fn seed_effect_precondition(
     let live = rig.handle.test_state();
     match effect {
         UiEffect::ShowTask | UiEffect::InvokeSelected => {
-            *a.view_state.flow_mut() = Flow::Palette { selected: 0 };
+            a.view_state.arm_flow(Flow::Palette { selected: 0 });
             a.test_seed_palette(vec![taskboard_domain::SearchTarget::Task(second_task)]);
             a.shell.palette = true;
         }
