@@ -1176,18 +1176,34 @@ async fn ingest_user_data_report(
     metrics: &EngineMetrics,
     report: UserDataReport,
 ) {
-    tracing::debug!(rows = report.journal.len(), "user-data report ingested");
+    tracing::debug!(
+        journal = report.journal.len(),
+        settings = report.settings.len(),
+        proofs = report.proofs.len(),
+        "user-data report ingested"
+    );
+    // D-BF3: the journal arm's shape verbatim, grown by the settings
+    // and proofs sections — fold all three homes on clones first; a
+    // report whose rows all fold to nothing is a full no-op (no batch,
+    // no write, no publish, no stamp).
     let mut candidate = core.app().reflection.clone();
     let outcome = import_reflections(&mut candidate, &report.journal);
-    if outcome.applied == 0 {
+    let mut roaming = core.app().roaming.clone();
+    let settings_import = taskboard_domain::import_settings(&mut roaming, &report.settings);
+    let mut reminders = core.app().reminders.clone();
+    let proofs_import = taskboard_domain::import_deliveries(&mut reminders, &report.proofs);
+    let applied = outcome.applied + settings_import.applied + proofs_import.applied;
+    if applied == 0 {
         return;
     }
-    // The emitted batch replays to exactly the folded home (the
+    // The emitted batch replays to exactly the folded homes (the
     // domain's actions-mirror-state law), so persisting then
-    // interpreting the batch lands the same home — memory ≡ disk by
+    // interpreting the batch lands the same state — memory ≡ disk by
     // the engine's single-advance rule (ADR 0006), never a second
     // write path.
-    let actions = outcome.actions;
+    let mut actions = outcome.actions;
+    actions.extend(settings_import.actions);
+    actions.extend(proofs_import.actions);
     if let Err(err) = repo.apply(actions.clone()).await {
         // Discard the report: state unchanged; the next cycle's delta
         // re-delivers the same rows.

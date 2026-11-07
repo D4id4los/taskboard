@@ -57,6 +57,10 @@ impl RecordingRepository {
         self.log.lock().expect("poisoned").clone()
     }
 
+    fn clear_batches(&self) {
+        self.log.lock().expect("poisoned").clear();
+    }
+
     /// The persisted outbox (the board lane's queue).
     fn inner_outbox(&self) -> Vec<taskboard_domain::PendingOp> {
         self.inner.snapshot().outbox
@@ -3953,6 +3957,112 @@ async fn u2_noop_report_writes_and_publishes_nothing() {
     assert_eq!(app.reflection, reflection_before, "the home is untouched");
     for batch in repo.batches() {
         assert!(!batch.is_empty(), "a no-op never applies an empty batch");
+    }
+}
+
+/// The D-BF3 journeys: a report carrying one setting and one proof
+/// folds both homes, persists the mixed batch
+/// (`UpsertRoamingSetting` + `RecordReminderDelivery`), publishes
+/// once, and a replayed identical report is the full no-op (no batch
+/// lands, nothing publishes).
+#[tokio::test]
+async fn u4_settings_and_proofs_ingest_and_replay_idempotently() {
+    let repo = Arc::new(RecordingRepository::seeded());
+    let h = spawn(Spawner {
+        repo: repo.clone(),
+        ..Spawner::default()
+    })
+    .await;
+
+    let setting = taskboard_domain::ImportedSetting {
+        value: taskboard_domain::RoamingSettingValue::DayStartTime(
+            chrono::NaiveTime::from_hms_opt(5, 30, 0).expect("time"),
+        ),
+        clock: common::ts(5_000),
+    };
+    let proof = taskboard_domain::ReminderDelivery {
+        reminder: taskboard_domain::ReminderRef::Rule(taskboard_domain::ReminderRuleId::from(
+            uuid::Uuid::from_u128(0x2f_1a),
+        )),
+        occurrence: common::ts(1_000),
+        delivered_at: common::ts(2_000),
+    };
+    h.user_data_tx
+        .send(UserDataReport {
+            journal: Vec::new(),
+            settings: vec![setting.clone()],
+            proofs: vec![proof],
+        })
+        .await
+        .expect("lane open");
+    eventually(&h.handle, |app| {
+        app.roaming.0.contains_key("day_start_time")
+    })
+    .await;
+    eventually(&h.handle, |app| !app.reminders.deliveries.is_empty()).await;
+
+    let app = h.handle.shared_state().load_full();
+    assert_eq!(
+        app.roaming.0["day_start_time"].value,
+        taskboard_domain::RoamingSettingValue::DayStartTime(
+            chrono::NaiveTime::from_hms_opt(5, 30, 0).expect("time")
+        )
+    );
+    // The batch grammar: exactly the two import actions, in order.
+    let last = repo.batches().last().expect("a batch landed").clone();
+    assert_eq!(last.len(), 2);
+    assert!(matches!(
+        &last[0],
+        PersistenceAction::UpsertRoamingSetting(name, _)
+            if name == "day_start_time"
+    ));
+    assert!(matches!(
+        &last[1],
+        PersistenceAction::RecordReminderDelivery(_)
+    ));
+    // The board machinery's silence (u1's law extends).
+    assert!(repo.inner_outbox().is_empty(), "no outbox op");
+
+    // The replay: an identical report is the full no-op.
+    // Settle the first report so the cleared log starts quiet.
+    let _settled = quiesced_pointer(&h.handle).await;
+    repo.clear_batches();
+    h.user_data_tx
+        .send(UserDataReport {
+            journal: Vec::new(),
+            settings: vec![setting],
+            proofs: vec![proof],
+        })
+        .await
+        .expect("lane open");
+    let marker = h
+        .handle
+        .execute(StateCommand::CreateStack {
+            board: h.board_id(),
+            title: "marker".into(),
+            order: 1,
+        })
+        .await
+        .expect("accepted");
+    assert!(matches!(marker, CommandOutcome::CreatedStack(_)));
+    let after_marker = quiesced_pointer(&h.handle).await;
+    assert!(
+        Arc::ptr_eq(&h.handle.shared_state().load_full(), &after_marker),
+        "the replay published nothing"
+    );
+    // The replay contributed nothing: every batch after it carries only
+    // the marker's stack op, never an import action.
+    for batch in repo.batches() {
+        assert!(
+            batch.iter().all(|a| {
+                !matches!(
+                    a,
+                    PersistenceAction::UpsertRoamingSetting(_, _)
+                        | PersistenceAction::RecordReminderDelivery(_)
+                )
+            }),
+            "batch: {batch:?}"
+        );
     }
 }
 

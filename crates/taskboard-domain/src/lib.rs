@@ -129,7 +129,8 @@ pub use merge::{
 };
 pub use messages::{
     AppDataEvidence, AppDataUnreadable, EngineSignal, HabitChanges, ImportedReflection,
-    LabelChanges, StateCommand, SyncCommand, SyncReport, SystemEvent, TaskChanges, UserDataReport,
+    ImportedSetting, LabelChanges, StateCommand, SyncCommand, SyncReport, SystemEvent, TaskChanges,
+    UserDataReport,
 };
 pub use outbox::{LocalOp, OpId, PendingOp};
 pub use persistence::{
@@ -163,16 +164,17 @@ pub use reminders::{
     ReminderDelivery, ReminderDismissal, ReminderFiring, ReminderKind, ReminderOffset, ReminderRef,
     ReminderRule, ReminderSnooze, ReminderSnoozeKey, ReminderState, active_notifications,
     alarm_occurrence, at_rule_occurrence, dismissal_settles_at_rule, due_firings, due_soon,
-    effective_occurrence, next_due_instant, notifications_for, occurrence_of, overdue_tasks,
-    prune_settled_alarms, prune_settled_at_rules,
+    effective_occurrence, import_deliveries, next_due_instant, notifications_for, occurrence_of,
+    overdue_tasks, prune_settled_alarms, prune_settled_at_rules,
 };
 pub use remote::{
     BoardPullValidators, PushOutcome, PushResult, RemoteBoard, RemoteBoardSnapshot, RemoteEcho,
     RemoteIndex, RemoteLabel, RemoteStack, RemoteTask, resolve_label,
 };
 pub use settings::{
-    DueSoonDays, InvalidDueSoonDays, InvalidTickSecs, ReminderSinkChoice, RoamingSettingRow,
-    RoamingSettingValue, RoamingSettings, SettingsSnapshot, TickSecs, import_settings,
+    DueSoonDays, InvalidDueSoonDays, InvalidTickSecs, ROAMING_SETTING_NAMES, ReminderSinkChoice,
+    RoamingSettingRow, RoamingSettingValue, RoamingSettings, SettingsSnapshot, TickSecs,
+    import_settings,
 };
 pub use state::{
     AppState, SidecarHealth, SyncCounters, SyncErrorKind, SyncPhase, SyncStates, SyncStatus,

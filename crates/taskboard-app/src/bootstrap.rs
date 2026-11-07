@@ -75,7 +75,7 @@ use crate::lockfile::{InstanceLock, LockError};
 use crate::notifications::{NOTIFIER_CAPACITY, NotificationSink};
 use taskboard_sync_files_nextcloud::actor::spawn_files_sync_actor;
 use taskboard_sync_files_nextcloud::client::WebDavFilesTransport;
-use taskboard_sync_files_nextcloud::cycle::PublishedJournal;
+use taskboard_sync_files_nextcloud::cycle::PublishedState;
 use taskboard_sync_files_nextcloud::status::FilesSyncStatus;
 
 use crate::secrets::{CredentialError, CredentialStore};
@@ -192,7 +192,7 @@ async fn files_sync_spawn(
         // The journal push side (DR-8 D-ES8): the published state
         // materialised per cycle; and the engine's user-data lane for
         // the import step (D-ES5).
-        Arc::new(PublishedJournal::new(shared)),
+        Arc::new(PublishedState::new(shared)),
         report_tx,
         // The broadcast is the engine's system feed; the actor consumes
         // only `Shutdown` and publishes nothing on it.

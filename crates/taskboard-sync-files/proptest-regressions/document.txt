@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc cdf9153f8b0caa6a65c0b5357699c2abb5cc3fa073d15651abccc0e9e07a91a5 # shrinks to doc = UserDocument { format: 1, sections: UserSections { journal: Some({"00000000-0000-0000-0000-000000000000": Entry { body: {}, clock: 1970-01-01T00:00:00Z, author: Some(AuthorId(00000000-0000-0000-0000-000000000000)) }}), unknown: {} }, unknown: {} }
+cc ef3268ddf3b2ed9ce8526115322c02c1aa17ed2a40a739ac81d0adb616bade9d # shrinks to doc = UserDocument { format: 1, sections: UserSections { journal: None, settings: None, proofs: Some({"|a_": Entry { body: {}, clock: 1970-01-01T00:00:00Z, author: Some(AuthorId(00000000-0000-0000-0000-000000000000)) }}), unknown: {} }, unknown: {} }

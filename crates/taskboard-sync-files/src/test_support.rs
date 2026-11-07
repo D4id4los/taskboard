@@ -49,10 +49,10 @@ pub fn body_key() -> impl Strategy<Value = String> {
     })
 }
 
-/// A legal unknown-section key: never the modeled `journal`.
+/// A legal unknown-section key: never a modeled section name.
 pub fn unknown_section_key() -> impl Strategy<Value = String> {
     "[a-z][a-z0-9_]{0,10}".prop_map(|key| {
-        if key == "journal" {
+        if matches!(key.as_str(), "journal" | "settings" | "proofs") {
             format!("{key}_")
         } else {
             key
@@ -137,14 +137,26 @@ pub fn journal_rows() -> impl Strategy<Value = BTreeMap<String, UserRecord>> {
     proptest::collection::btree_map(row_key(), user_record(), 0..6)
 }
 
-/// A section registry with a `journal` presence arm and unknown
-/// sections.
+/// A keyed row map for one of the typed sections.
+pub fn typed_section_rows() -> impl Strategy<Value = BTreeMap<String, UserRecord>> {
+    proptest::collection::btree_map("[a-z0-9_:|.]{3,60}", user_record(), 0..4)
+}
+
+/// A section registry with a presence arm per typed section and
+/// unknown sections.
 pub fn user_sections() -> impl Strategy<Value = UserSections> {
     (
         proptest::option::of(journal_rows()),
+        proptest::option::of(typed_section_rows()),
+        proptest::option::of(typed_section_rows()),
         proptest::collection::btree_map(unknown_section_key(), json_value(), 0..3),
     )
-        .prop_map(|(journal, unknown)| UserSections { journal, unknown })
+        .prop_map(|(journal, settings, proofs, unknown)| UserSections {
+            journal,
+            settings,
+            proofs,
+            unknown,
+        })
 }
 
 /// A whole document in the current format (v1 never emits another).
@@ -179,7 +191,14 @@ pub fn user_document() -> impl Strategy<Value = UserDocument> {
 /// emission pins assert against exactly what this version writes).
 pub fn user_document_v1_authorless() -> impl Strategy<Value = UserDocument> {
     user_document_v1().prop_map(|mut doc| {
-        if let Some(rows) = &mut doc.sections.journal {
+        for rows in [
+            doc.sections.journal.as_mut(),
+            doc.sections.settings.as_mut(),
+            doc.sections.proofs.as_mut(),
+        ]
+        .into_iter()
+        .flatten()
+        {
             for row in rows.values_mut() {
                 if let UserRecord::Entry { author, .. } | UserRecord::Tombstone { author, .. } = row
                 {

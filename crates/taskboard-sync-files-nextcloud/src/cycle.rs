@@ -41,6 +41,8 @@ use taskboard_sync_files::layout::{
     self, APPDATA_FILE_NAME, DEVICES_DIR_NAME, IDENTITY_FILE_NAME, ROOT_FOLDER_NAME,
     TREE_FORMAT_VERSION,
 };
+use taskboard_sync_files::proofs::{decode_proofs, proofs_section};
+use taskboard_sync_files::settings::{decode_settings, settings_section};
 use tokio::sync::{mpsc, watch};
 
 use crate::error::TransportError;
@@ -64,11 +66,11 @@ pub trait LocalDocument: Send + Sync {
 /// tombstones included (silent absence would let a peer resurrect a
 /// deleted entry). An empty home omits the section; `EmptyDocument`
 /// stays as the test/legacy impl.
-pub struct PublishedJournal {
+pub struct PublishedState {
     state: Arc<arc_swap::ArcSwap<AppState>>,
 }
 
-impl PublishedJournal {
+impl PublishedState {
     /// Over the engine's published-state swap (the read side only).
     #[must_use]
     pub fn new(state: Arc<arc_swap::ArcSwap<AppState>>) -> Self {
@@ -76,20 +78,28 @@ impl PublishedJournal {
     }
 }
 
-impl std::fmt::Debug for PublishedJournal {
+impl std::fmt::Debug for PublishedState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PublishedJournal").finish_non_exhaustive()
+        f.debug_struct("PublishedState").finish_non_exhaustive()
     }
 }
 
-impl LocalDocument for PublishedJournal {
+impl LocalDocument for PublishedState {
     fn document(&self) -> UserDocument {
         let snapshot = self.state.load_full();
-        let rows = journal_section(&snapshot.reflection);
+        let journal = journal_section(&snapshot.reflection);
+        // D-BF3: the roaming settings home and the delivered set's
+        // Rule/Break slice ride beside the journal — one coherent
+        // load, the same derive-from-state law (an empty home omits
+        // the section).
+        let settings = settings_section(&snapshot.roaming);
+        let proofs = proofs_section(&snapshot.reminders);
         UserDocument {
             format: DOCUMENT_FORMAT,
             sections: UserSections {
-                journal: (!rows.is_empty()).then_some(rows),
+                journal: (!journal.is_empty()).then_some(journal),
+                settings,
+                proofs,
                 unknown: BTreeMap::default(),
             },
             unknown: BTreeMap::default(),
@@ -712,22 +722,20 @@ fn record_put(st: &mut LoopState, path: &str, outcome: &PutOutcome) {
     }
 }
 
-/// The merged journal rows that differ from the local-derived rows
-/// (absent locally, or a different record) — the import step's input
-/// (D-ES5).
-fn journal_delta(
-    merged: &UserDocument,
-    local: &UserDocument,
+/// The merged rows of one typed section that differ from the
+/// local-derived rows (absent locally, or a different record) — the
+/// import step's input (D-ES5). The journal's rule verbatim, applied
+/// per section (D-BF3): settings and proofs ride the same delta.
+fn section_delta(
+    merged: Option<&std::collections::BTreeMap<String, UserRecord>>,
+    local: Option<&std::collections::BTreeMap<String, UserRecord>>,
 ) -> std::collections::BTreeMap<String, UserRecord> {
-    let local_rows = local.sections.journal.as_ref();
+    let local_rows = local;
     merged
-        .sections
-        .journal
-        .as_ref()
         .map(|rows| {
             rows.iter()
                 .filter(|(key, record)| {
-                    local_rows.and_then(|local| local.get(*key)) != Some(record)
+                    local_rows.and_then(|local| local.get(*key)) != Some(*record)
                 })
                 .map(|(key, record)| (key.clone(), record.clone()))
                 .collect()
@@ -742,15 +750,29 @@ fn journal_delta(
 /// views (absent-target tombstones, rejected rows) so no cycle re-sends
 /// a no-op report. Returns the rejected count for the cycle outcome.
 async fn import_step(ctx: &SyncContext, st: &mut LoopState, merged: &UserDocument) -> usize {
-    let delta = journal_delta(merged, &ctx.local.document());
-    if delta.is_empty() {
+    let local = ctx.local.document();
+    let journal = section_delta(
+        merged.sections.journal.as_ref(),
+        local.sections.journal.as_ref(),
+    );
+    let settings = section_delta(
+        merged.sections.settings.as_ref(),
+        local.sections.settings.as_ref(),
+    );
+    let proofs = section_delta(
+        merged.sections.proofs.as_ref(),
+        local.sections.proofs.as_ref(),
+    );
+    if journal.is_empty() && settings.is_empty() && proofs.is_empty() {
         st.last_import_rejected = 0;
         return 0;
     }
     let fingerprint = StateHash::of(&UserDocument {
         format: DOCUMENT_FORMAT,
         sections: UserSections {
-            journal: Some(delta.clone()),
+            journal: (!journal.is_empty()).then_some(journal.clone()),
+            settings: (!settings.is_empty()).then_some(settings.clone()),
+            proofs: (!proofs.is_empty()).then_some(proofs.clone()),
             unknown: BTreeMap::default(),
         },
         unknown: BTreeMap::default(),
@@ -758,7 +780,10 @@ async fn import_step(ctx: &SyncContext, st: &mut LoopState, merged: &UserDocumen
     if st.last_import_fingerprint.as_ref() == Some(&fingerprint) {
         return st.last_import_rejected;
     }
-    let (rows, rejected) = decode_journal(&delta);
+    let (rows, journal_rejected) = decode_journal(&journal);
+    let (settings_rows, settings_rejected) = decode_settings(&settings);
+    let (proofs_rows, proofs_rejected) = decode_proofs(&proofs);
+    let rejected = journal_rejected + settings_rejected + proofs_rejected;
     if rejected > 0 {
         tracing::warn!(
             event = "files_sync.import_rejected",
@@ -766,13 +791,13 @@ async fn import_step(ctx: &SyncContext, st: &mut LoopState, merged: &UserDocumen
             "files-sync finding"
         );
     }
-    if !rows.is_empty()
+    if !(rows.is_empty() && settings_rows.is_empty() && proofs_rows.is_empty())
         && ctx
             .report_tx
             .send(UserDataReport {
                 journal: rows,
-                settings: Vec::new(),
-                proofs: Vec::new(),
+                settings: settings_rows,
+                proofs: proofs_rows,
             })
             .await
             .is_err()
@@ -1093,6 +1118,8 @@ mod divergence_rule {
             format: DOCUMENT_FORMAT,
             sections: taskboard_sync_files::document::UserSections {
                 journal: Some(journal),
+                settings: None,
+                proofs: None,
                 unknown: BTreeMap::new(),
             },
             unknown: BTreeMap::new(),
