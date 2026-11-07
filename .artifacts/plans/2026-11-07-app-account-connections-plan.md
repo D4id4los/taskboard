@@ -452,3 +452,31 @@ settings model is not snapshotted).
 `app-window.slint` ±15; journeys +~380/−180; unit tests +~200.
 **Net ≈ +900 lines** — M+ (the dispatch's M, honest at the top of
 the band; the retirement deletions keep it from L).
+
+## 14. Stage-2 deviations (recorded 2026-11-07)
+
+- **No `RemoteBoards` port (§3 test seam).** The app-lane suite
+  (`tests/ui_settings.rs`) already drives the real `DeckClient`
+  against wiremock — a hermetic fake Deck server — and the attach/bind
+  tail needs a real client for the connector actor anyway. A second
+  seam would duplicate that fake, so `ConnectionWorkspace` is
+  unchanged; the listing tests run over wiremock + `FakeCredentialStore`.
+- **Re-sign-in reuses the connector (§2).** A sign-in whose exact
+  `(server_url, username)` is already configured reuses that
+  connector's name (the upsert rotates its secret) instead of minting
+  a `-2` sibling; the suffix ladder applies to new identities only.
+- **Account removal is identity-wide (§1).** `RemoveConnection` removes
+  every connector sharing the named connector's identity (the card is
+  the account) and refuses `BindRefused` pre-IO while any live board
+  is bound through one of them.
+- **Commit slicing (§11).** The explicit-bind lane change and the UI
+  section land in one commit: the `AttachConnector` shape change and
+  the retired selector/Test seams cannot build apart. Tier-3 journeys
+  for the session, create, failures, and Files toggle ride that
+  commit; the keyboard-only session and the CHANGELOG ride the last.
+- **`SettingsModel.rows` kept** as the per-connector data model (the
+  status-episode journeys read it); the cards render from the new
+  `connection-items` projection.
+- **Files toggle copy**: `SettingsBoardCopy` keeps its global name
+  (re-purposed for the account-card copy) to avoid churning the
+  tooltip/flyout wiring.
