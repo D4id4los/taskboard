@@ -169,6 +169,94 @@ pub fn monopoly_declines(
         && stroke.is_monopolizable()
 }
 
+// The retired special cases (D-KS4), as declarative arms evaluated
+// at the key doorway. Each arming fact is exactly the condition the
+// imperative special case tested; each fires exactly where its
+// original block fired (before the resolver, after the monopoly).
+// The pin journeys are the acceptance contract — none of their
+// assertions may move.
+
+/// Which dropdown ladder global reports open (r4 D39/D40, round-5
+/// D6 — the widgets' facts globals).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LadderGlobal {
+    /// `SettingsBoardFacts.open` — the settings selector flyout.
+    SettingsBoard,
+    /// `BoardBarFacts.open` — the board-bar segment flyout.
+    BoardBar,
+    /// `TimeFieldFacts.open` — the quick-list flyout.
+    TimeField,
+}
+
+/// The dropdown ladders' decline arm (special case D): while a
+/// flyout is open, its keys decline the single key path — the
+/// focused widget's modal arm owns them. Reproduces the retired
+/// closure's stroke sets verbatim: the two selector ladders decline
+/// the arrows (any modifiers), emacs' C-n/C-p, and Escape/Return;
+/// the quick-list ladder declines the arrows, Escape and Return
+/// (no chords).
+#[must_use]
+pub fn dropdown_ladder_declines(open: Option<LadderGlobal>, stroke: crate::keymap::Stroke) -> bool {
+    let arrow = matches!(stroke.named_name(), Some("Up" | "Down"));
+    let escape_or_return = matches!(stroke.named_name(), Some("Escape" | "Return"));
+    match open {
+        Some(LadderGlobal::SettingsBoard | LadderGlobal::BoardBar) => {
+            arrow || escape_or_return || (stroke.ctrl && (stroke.key == 'n' || stroke.key == 'p'))
+        }
+        Some(LadderGlobal::TimeField) => arrow || escape_or_return,
+        None => false,
+    }
+}
+
+/// The timer setter's dismissal arm (special case A, r4 D33): bare
+/// Escape ahead of the resolver — the panel is presentation state,
+/// not a flow, so the dismissal is an explicit decline routed to the
+/// existing `clear_timer_setter` funnel (nothing commits; the draft
+/// clears with the panel).
+#[must_use]
+pub fn timer_setter_dismisses(open: bool, stroke: crate::keymap::Stroke) -> bool {
+    open && !stroke.ctrl && !stroke.alt && !stroke.shift && !stroke.meta && stroke.key == '\u{1b}'
+}
+
+/// The due editor's Down arm (special case B, r2 D25 / round-3 D10):
+/// while the `EditDate` flow holds, bare Down opens the picker
+/// grid-focused — or, with the picker already open, performs the
+/// field→grid focus hand-over. The stateful mechanics stay in the
+/// adapter (`open_due_picker` / `FocusHandover::Grid`); the arm here
+/// is only the declaration of which stroke under which fact fires it.
+#[must_use]
+pub fn due_down_arms(edit_date_flow: bool, stroke: crate::keymap::Stroke) -> bool {
+    edit_date_flow
+        && !stroke.ctrl
+        && !stroke.alt
+        && !stroke.shift
+        && !stroke.meta
+        && stroke.key == '\u{F701}'
+}
+
+/// The activation reservation (special case C, r4 §2 D18): while an
+/// activation stop holds focus, bare Return/Space belong to the
+/// focused cell — the resolver is still fed first (prefix semantics
+/// preserved), but an `Action` or `Unhandled` answer yields to the
+/// cell. Disjoint from the monopoly by the facts (an activation stop
+/// is not a text field — T-M4).
+#[must_use]
+pub fn activation_reserved(
+    activation_focus: bool,
+    menu_open: bool,
+    palette: bool,
+    stroke: crate::keymap::Stroke,
+) -> bool {
+    activation_focus
+        && !menu_open
+        && !palette
+        && (stroke.key == '\n' || stroke.key == ' ')
+        && !stroke.ctrl
+        && !stroke.alt
+        && !stroke.shift
+        && !stroke.meta
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
