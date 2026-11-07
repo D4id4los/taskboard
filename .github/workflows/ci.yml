@@ -65,6 +65,13 @@ jobs:
         # resolution.)
         run: '! cargo tree -e features -p taskboard-app | grep -q ''feature "mcp"'''
 
+      - name: PDF export tree out of the default resolution
+        # The #624 stage-B gate: krilla and its whole tree live behind
+        # the app crate's opt-in `pdf-export` feature — the default
+        # (kiosk) resolution must carry none of it. Structural cargo
+        # output, not program messages (the MCP step's precedent).
+        run: '! cargo tree -p taskboard-app -e normal | grep -q krilla'
+
       - name: sqlx-cli 0.9 (sqlite)
         # The CLI major/minor must match the sqlx crate (0.9) — the offline
         # data format changed across versions (ADR 0005).

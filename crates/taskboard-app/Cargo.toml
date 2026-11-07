@@ -22,6 +22,10 @@ default = []
 # activation at runtime requires TASKBOARD_CONSOLE=1 (an --all-features build
 # must not bind the console port in every spawned binary).
 tokio-console = ["dep:console-subscriber", "tokio/tracing"]
+# `export --what pdf` (#624 stage B): the krilla renderer, the embedded
+# Noto Sans font, and the verb's file-writing leg. Default off — the
+# kiosk/default tree carries none of it (CI asserts the default tree).
+pdf-export = ["dep:krilla", "dep:skrifa"]
 
 [dependencies]
 taskboard-domain.workspace = true
@@ -68,6 +72,10 @@ color-eyre.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 console-subscriber = { workspace = true, optional = true }
+# PDF export & print (#624 stage B): optional — the `pdf-export`
+# feature above gates the renderer, the measurement crate, and the verb.
+krilla = { workspace = true, optional = true }
+skrifa = { workspace = true, optional = true }
 
 # OS keyring: keyring 3 gates every platform store behind features. The
 # feature sets union across declarations; platforms outside the release
@@ -124,6 +132,9 @@ signal-hook.workspace = true
 # test-util adds tokio::time start_paused/advance for the hermetic E2E
 # (dev-only, the state/sync crates' precedent)
 tokio = { workspace = true, features = ["process", "test-util"] }
+# The pdf renderer's structural tests inflate krilla's compressed
+# content streams (already in the feature-on tree via krilla).
+flate2.workspace = true
 
 [lints]
 workspace = true

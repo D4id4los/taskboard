@@ -127,6 +127,19 @@ chacha20poly1305 = { version = "0.11", default-features = false, features = ["al
 # (taskboard-app file credential store); reuses the version already in
 # the release graph (uuid/tempfile/rand).
 getrandom = "0.4"
+# PDF export & print (#624 stage B, the 2026-11-05 stack ruling): the
+# typst-org PDF writer, optional in taskboard-app only behind the
+# `pdf-export` feature (default off — kiosk/default builds compile zero
+# PDF code). `raster-images` stays off: the layouts are vector + text.
+# 0.x crate: minors are tracked deliberately at wave boundaries.
+krilla = { version = "0.8", default-features = false, features = ["simple-text"] }
+# Glyph advance widths for the print layout's measure helper (krilla
+# exposes none): the exact version krilla 0.8 already resolves, so the
+# pin adds no crate to the graph. Moves with the krilla pin.
+skrifa = "=0.42.0"
+# Dev-only (taskboard-app pdf tests): inflates krilla's compressed
+# content streams for structural assertions — already in krilla's tree.
+flate2 = "1"
 
 # Desktop toast notifications (taskboard-app): the D-R10 stack ruling
 # (reminders-surfaces design §3.10, GRANTED 2026-10-19) — one façade
