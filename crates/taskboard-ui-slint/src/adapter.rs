@@ -654,6 +654,24 @@ impl Adapter {
                 self.sync(window);
             }
         }
+        // The printable monopoly (round-5 chunk 7, D-KS2): while a
+        // text field holds slint focus, it claims every bare
+        // printable — and Space, printable text — outright, ahead of
+        // every scope arm and the resolver. Chord-class strokes pass
+        // to the scope stack: the field-phase picker scope serves its
+        // navigation strokes mid-typing (F11) while the field keeps
+        // every printable.
+        {
+            let facts = window.global::<crate::EditingFacts>();
+            if crate::keyscope::monopoly_declines(
+                self.shell.mode,
+                usize::try_from(facts.get_text_focus_count()).unwrap_or(usize::MAX),
+                stroke,
+            ) {
+                Self::set_feedback(window, KeyFeedback::None);
+                return false;
+            }
+        }
         // The timers setter's Escape (r4 D33): the panel is
         // presentation state, not a flow — its dismissal is explicit
         // here, ahead of the resolver (the capture overlay's

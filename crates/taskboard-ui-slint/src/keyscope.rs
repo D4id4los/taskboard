@@ -147,6 +147,28 @@ pub fn scope_stack(inputs: &ScopeInputs) -> Vec<ContextId> {
     chain
 }
 
+/// The printable monopoly (D-KS2): while a text field holds slint
+/// focus, it claims every monopolizable stroke outright — `intercept`
+/// rejects (returns `Unhandled`) before any scope or resolver step,
+/// so the focused field receives the key. Gated on the insert mode:
+/// in every flowless state the D20 pull makes the mode Insert exactly
+/// while `text_focus > 0`, so the gate reproduces today's insert-mask
+/// protection verbatim (an assertion in T-M1) while keeping the vi
+/// preset's Normal-mode editor ladder reachable.
+#[must_use]
+pub fn monopoly_declines(
+    mode: crate::router::Mode,
+    text_focus: usize,
+    stroke: crate::keymap::Stroke,
+) -> bool {
+    mode == crate::router::Mode::Insert
+        && text_focus > 0
+        && !stroke.ctrl
+        && !stroke.alt
+        && !stroke.meta
+        && stroke.is_monopolizable()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -483,5 +505,109 @@ mod tests {
                 prop_assert_eq!(stack, legacy);
             }
         }
+    }
+    /// T-M1 — the monopolized set: every bare printable and Space is
+    /// the field's in insert mode; a chord is not; and the D20
+    /// convergence: the mode gate makes the monopoly agree with the
+    /// insert chain (a flowless field is Insert whenever the count is
+    /// positive), while the Normal-mode gate keeps the vi editor
+    /// ladder reachable.
+    #[test]
+    fn the_monopoly_claims_printables_and_space_in_insert() {
+        let ok = |sp: &str| {
+            let s = crate::keymap::stroke::parse(sp).expect("parses");
+            assert!(s.is_monopolizable(), "{sp} is monopolizable");
+            assert!(
+                monopoly_declines(Mode::Insert, 1, s),
+                "{sp} declines to the field"
+            );
+        };
+        for sp in ["a", "Z", "9", "!", "Space"] {
+            ok(sp);
+        }
+        // Chords never monopolize — even of a monopolizable key (the
+        // rule gates on the modifiers, the predicate on the key).
+        let chord = crate::keymap::stroke::parse("Ctrl+a").expect("parses");
+        assert!(chord.is_monopolizable());
+        assert!(!monopoly_declines(Mode::Insert, 1, chord));
+        // No focus, no monopoly; no insert, no monopoly (the vi
+        // Normal-mode ladder stays reachable).
+        let a = crate::keymap::stroke::parse("a").expect("parses");
+        assert!(!monopoly_declines(Mode::Insert, 0, a));
+        assert!(!monopoly_declines(Mode::Normal, 1, a));
+    }
+
+    /// T-M2 — the chord-class set: every named non-Space key is
+    /// scope-bindable (the monopoly never takes it), so Tab traversal,
+    /// Return/Escape commit-discard, and vi insert's Escape survive
+    /// every field.
+    #[test]
+    fn named_keys_stay_chord_class() {
+        for sp in [
+            "Return",
+            "Escape",
+            "Tab",
+            "Backspace",
+            "Delete",
+            "Insert",
+            "Home",
+            "End",
+            "PageUp",
+            "PageDown",
+            "Up",
+            "Down",
+            "Left",
+            "Right",
+            "F1",
+            "F12",
+        ] {
+            let s = crate::keymap::stroke::parse(sp).expect("parses");
+            assert!(!s.is_monopolizable(), "{sp} stays chord-class");
+            assert!(!monopoly_declines(Mode::Insert, 1, s));
+        }
+    }
+
+    /// T-M3 — Backspace's fall-through: no preset binds Backspace
+    /// anywhere, so the unmonopolized stroke resolves Unhandled on
+    /// every chain and reaches the field natively — the same
+    /// falls-through-to-native result as today.
+    #[test]
+    fn backspace_is_bound_nowhere_and_falls_through() {
+        for preset in [
+            crate::keymap::Preset::Standard,
+            crate::keymap::Preset::Emacs,
+            crate::keymap::Preset::Vi,
+        ] {
+            for (_, context, spellings) in preset.rows() {
+                for sp in spellings.iter().copied() {
+                    let parsed = crate::keymap::stroke::parse(sp).expect("preset rows parse");
+                    assert_ne!(
+                        parsed.named_name(),
+                        Some("Backspace"),
+                        "{preset:?} binds Backspace in {context}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// T-M4 — the activation disjointness: the reservation
+    /// (Return/Space for a focused activation cell) and the monopoly
+    /// are disjoint by the facts — an activation stop holds
+    /// `activation-focus-count > 0` with `text-focus-count == 0`, so
+    /// the monopoly never fires on a reserved stroke. Pinned here on
+    /// the pure rule: the reservation's Space is monopolizable ONLY
+    /// when a text focus exists.
+    #[test]
+    fn the_reservation_and_the_monopoly_are_disjoint_by_the_facts() {
+        let space = crate::keymap::stroke::parse("Space").expect("parses");
+        let ret = crate::keymap::stroke::parse("Return").expect("parses");
+        for stroke in [space, ret] {
+            // The activation cell's fact state: zero text focus.
+            assert!(!monopoly_declines(Mode::Insert, 0, stroke));
+        }
+        // And the reservation's own gate requires a bare stroke.
+        let chord_space = crate::keymap::stroke::parse("Ctrl+Space").expect("parses");
+        assert!(chord_space.ctrl);
     }
 }

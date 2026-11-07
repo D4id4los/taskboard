@@ -178,6 +178,21 @@ impl Stroke {
         }
     }
 
+    /// The printable-monopoly predicate (round-5 chunk 7, D-KS2):
+    /// whether a text field may claim this stroke outright while it
+    /// holds focus. True for every bare printable and — the one
+    /// reclassification — Space (printable text: a typing user's
+    /// space must reach the field even where a scope binds it).
+    /// Named keys are chord-class: scopes may bind them. Control
+    /// chars cannot occur (`from_event`/`parse` reject them).
+    #[must_use]
+    pub fn is_monopolizable(self) -> bool {
+        match self.named_name() {
+            None => true,
+            Some(name) => name == "Space",
+        }
+    }
+
     #[must_use]
     pub const fn named_name(self) -> Option<&'static str> {
         let mut i = 0;
