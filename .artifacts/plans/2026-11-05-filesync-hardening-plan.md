@@ -148,6 +148,17 @@ Settled sub-decisions:
 
 ### D-FH3 — The quiescence-window derivation (deterministic, cycle-counted)
 
+> **Stage-3 amendment (2026-11-07, recovery review):** the
+> clock-freedom argument below does not by itself keep a slow peer out
+> of the finding — an offline peer's heartbeat hash describes its
+> older view, so after any local edit it disagreed and fired. The
+> shipped rule adds one structural precondition: a peer is compared
+> only once it has absorbed this device's view (`has_absorbed`:
+> folding the view into its published document changes nothing).
+> Still clock-free and deterministic; pinned by the pure-rule test
+> `a_peer_behind_our_view_is_lagging_not_diverged` and actor matrix
+> 23.
+
 **Decision**: the divergence finding is a pure, clock-free rule over
 evidence the loop already holds. No wall clock, no `Instant`, no
 `Duration` in the derivation — deterministic under paused time by

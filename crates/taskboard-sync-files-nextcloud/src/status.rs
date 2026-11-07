@@ -66,9 +66,10 @@ pub struct FilesSyncStatus {
     /// Latest decoded heartbeat per peer (freshness is an age display,
     /// never an alarm — no thresholds live here).
     pub peers: BTreeMap<DeviceId, PeerFreshness>,
-    /// Peers whose heartbeat state hash disagrees with this device's
-    /// current view past the quiescence window (two consecutive quiet
-    /// cycles — the pure derivation in `cycle.rs`). Empty means
-    /// converged — or not yet judgeable.
+    /// Peers that already absorbed this device's current view yet
+    /// whose heartbeat state hash disagrees with it past the
+    /// quiescence window (two consecutive quiet cycles — the pure
+    /// derivation in `cycle.rs`). A lagging peer never appears here.
+    /// Empty means converged — or not yet judgeable.
     pub diverged_from: BTreeSet<DeviceId>,
 }

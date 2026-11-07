@@ -1466,6 +1466,58 @@ mod tests {
         );
     }
 
+    /// 23 — a merely-slow peer is never divergent: the peer converged
+    /// on our view, then went offline; a local edit moves our view past
+    /// its frozen heartbeat. The peer has not absorbed our publish, so
+    /// the disagreement is lag (its heartbeat age says so), not
+    /// divergence — however many quiet cycles pass.
+    #[tokio::test(start_paused = true)]
+    async fn matrix_23_an_offline_peer_never_reads_as_diverged() {
+        let fake = FakeFilesTransport::new();
+        let dirs = dirs_of(&[SELF, PEER]);
+        let refs: Vec<&str> = dirs.iter().map(String::as_str).collect();
+        fake.seed_dirs(&refs);
+        let peer_row = entry(
+            0x2001,
+            "the peer's",
+            "2026-11-05T10:00:00Z".parse().unwrap(),
+        );
+        fake.seed_file(&appdata_path(PEER), doc_bytes(&journal_doc(&[peer_row])));
+        let swap = engine_swap(ReflectionState::default());
+        let local = StdArc::new(crate::cycle::PublishedJournal::new(swap.clone()));
+        let harness = spawn_actor_with(fake, local);
+        apply_report(&swap, &next_report(&harness).await);
+        assert!(ok(&next_status(&harness).await));
+        // The peer converges on our view and says so.
+        let converged = published_view_hash(&harness.fake);
+        harness
+            .fake
+            .seed_file(&info_path(PEER), heartbeat_bytes(&converged));
+        let status = next_cycle(&harness).await;
+        assert!(ok(&status));
+        assert!(status.diverged_from.is_empty(), "{status:?}");
+        // The peer goes offline; this device edits locally.
+        let mut home = swap.load().reflection.clone();
+        let own = entry(
+            0x2002,
+            "ours, later",
+            "2026-11-05T11:00:00Z".parse().unwrap(),
+        );
+        home.entries.insert(own.id, own);
+        swap.store(StdArc::new(AppState {
+            reflection: home,
+            ..AppState::default()
+        }));
+        for _ in 0..4 {
+            let status = next_cycle(&harness).await;
+            assert!(ok(&status));
+            assert!(
+                status.diverged_from.is_empty(),
+                "a lagging peer is an age, not a divergence: {status:?}"
+            );
+        }
+    }
+
     /// 19 — agreement clears: a restored matching heartbeat empties
     /// the finding on the next quiet cycle.
     #[tokio::test(start_paused = true)]
