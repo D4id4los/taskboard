@@ -555,7 +555,20 @@ dependency hierarchies.
    the today mode as the banner-only upcoming surface; the kiosk
    goldens (=tests/goldens/kiosk-*.png=) pin both modes' rendering.
    No slint-side semantics — presentation only; rotation never
-   dispatches.
+   dispatches. The W5b round (2026-11-07) replaced the flat =view= +
+   =flow= + recorded-return slots with one owned =Surfaces= chain
+   (=surfaces.rs=): the root level is the current view, Settings and
+   the plan-next-day surface push over-view levels above it (the
+   exact restore is truncation — the =settings_return= /
+   =planner_return= slots retired), and the flows live above those as
+   flow levels. Removal is truncate-only (a child never outlives its
+   parent), a surface kind lives at most once per chain (the typed
+   =AlreadyInChain= refusal), effects are offered innermost-first
+   over the unchanged =resolve= pair table, a foreign settle folds
+   the flow levels innermost-first by the one per-kind rule, and the
+   masking modals' key-scope heads are the kinds' declared contexts
+   (=FlowTag::scope_head=) — byte-identical to the flat XOR model at
+   the reachable depths.
    the L1 widget / L2 composition / L3 view component layering
    under =ui/=, and =presentation= (pure display helpers reusing the
    domain's overdue/due-soon semantics) + =responsive= (unscaled
