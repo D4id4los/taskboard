@@ -687,6 +687,7 @@ impl Adapter {
             if crate::keyscope::monopoly_declines(
                 self.shell.mode,
                 usize::try_from(facts.get_text_focus_count()).unwrap_or(usize::MAX),
+                self.resolver.has_pending(),
                 stroke,
             ) {
                 Self::set_feedback(window, KeyFeedback::None);

@@ -16227,6 +16227,56 @@ fn the_description_editor_gains_the_preset_command_grammar() {
     );
 }
 
+/// The monopoly yields to a pending keymap prefix (D-KS2 × the C-x
+/// family): while typing, the printable that follows `C-x` belongs to
+/// the resolver — an unbound one aborts the prefix and is consumed,
+/// never typed, and the field's next printable types normally.
+#[test]
+fn a_pending_prefix_owns_the_printable_that_follows_it() {
+    let (_fixture, state) = fixture::journey_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let emacs = taskboard_ui_slint::keymap::Preset::Emacs;
+            let mut harness = Harness::mount_with_settings(
+                SlintDriver::default(),
+                state,
+                UiSettings {
+                    keymap: taskboard_ui_slint::keymap::Keymap::from_preset(emacs),
+                    keymap_preset: emacs,
+                    ..UiSettings::default()
+                },
+            );
+            press_preset(&mut harness, emacs, ActionId::NavNextItem);
+            press_preset(&mut harness, emacs, ActionId::NavNextItem);
+            press_preset(&mut harness, emacs, ActionId::NavNextView);
+            press_preset(&mut harness, emacs, ActionId::NavNextView);
+
+            harness.driver.click_by_label("Edit description");
+            harness.driver.advance_time(0);
+            harness.stroke(parse("Ctrl+a").expect("C-a"));
+            harness.stroke(parse("Ctrl+k").expect("C-k"));
+            harness.driver.advance_time(0);
+            harness.type_text("ab");
+            harness.stroke(parse("Ctrl+x").expect("C-x"));
+            harness.type_text("z");
+            harness.type_text("c");
+            harness.stroke(parse("Shift+Return").expect("Shift+Return"));
+            harness.driver.advance_time(0);
+            match harness.engine.drain().as_slice() {
+                [StateCommand::UpdateTask { changes, .. }] => assert_eq!(
+                    changes.description.as_deref(),
+                    Some("abc"),
+                    "the aborting printable was consumed by the prefix"
+                ),
+                other => panic!("the commit reached the boundary, got {other:?}"),
+            }
+        },
+    );
+}
+
 /// The vi preset's editor pin (D-KS2/D-KS3): while typing in the
 /// description editor (insert), the home-row ladder letters are
 /// printables the monopoly keeps with the field — they type, never
