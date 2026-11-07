@@ -21,6 +21,12 @@ The workspace carries a single global version (see `docs/architecture.org`);
   trashbin-recovery procedures; and live Tier-3 pins
   (`it_nextcloud_live_files_*`) re-prove the WebDAV
   characterization facts against the hosted tier.
+- The files-sync import rejections surface (#632, DR-8 chunk 4,
+  covering the #631 journal import): the cycle outcome's count of
+  peer journal rows this build could not import is carried in the
+  `status` JSON view (`import_rejected`), printed as its own `status`
+  finding line, and lights the status-bar chip's held-aside rung —
+  the rows are still relayed, the remedy is updating the app.
 - `export --what pdf` — the PDF export & print verb (#624 stage B,
   the 2026-11-05 krilla stack ruling): the printable today sheet as a
   deterministic, fixed-geometry PDF. Four curated layouts — single-

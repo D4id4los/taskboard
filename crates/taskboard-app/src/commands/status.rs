@@ -386,7 +386,7 @@ fn push_files_sync_lines(out: &mut String, files: &crate::commands::output::File
         Some(crate::commands::output::CycleOutcomeView::Ok {
             published,
             read_devices,
-            ..
+            import_rejected: _,
         }) => format!(
             "files-sync: last cycle ok ({}{}, {read_devices} peers)",
             if *published {
@@ -429,6 +429,16 @@ fn push_files_sync_lines(out: &mut String, files: &crate::commands::output::File
     }
     if !files.diverged_from.is_empty() {
         let _ = write!(out, "\n  diverged: {}", files.diverged_from.join(", "));
+    }
+    if let Some(crate::commands::output::CycleOutcomeView::Ok {
+        import_rejected: rejected @ 1..,
+        ..
+    }) = files.last_cycle
+    {
+        let _ = write!(
+            out,
+            "\n  rejected: {rejected} peer journal row(s) unreadable by this build (still relayed); update this app"
+        );
     }
 }
 
@@ -1230,6 +1240,27 @@ mod tests {
         let json = serde_json::to_value(StatusView::server(&app2)).expect("json");
         assert!(json.get("files_sync").is_none(), "absent, not null");
         let _ = app2.shutdown().await;
+    }
+
+    /// A nonzero import-rejection count renders as its own finding
+    /// line; a zero count adds none (structural: the block's line
+    /// count, never its wording).
+    #[test]
+    fn rejected_import_rows_render_one_finding_line() {
+        let lines = |rejected| {
+            let status = FilesSyncStatus {
+                last_cycle: Some(CycleOutcome::Ok {
+                    published: false,
+                    read_devices: 1,
+                    import_rejected: rejected,
+                }),
+                ..FilesSyncStatus::default()
+            };
+            let mut view = bare(true);
+            view.files_sync = Some(FilesSyncStatusView::new(&status));
+            render_text(&view).lines().count()
+        };
+        assert_eq!(lines(2), lines(0) + 1);
     }
 
     /// The data-survival render: device uuids, fork paths, parked

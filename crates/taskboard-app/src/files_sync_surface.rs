@@ -16,6 +16,8 @@ use taskboard_ui_slint::presentation::{FilesSyncChip, FilesSyncChipState};
 /// The chip's precedence ladder (D-FH5): Forked loudest, then
 /// Diverged, Parked, `CycleFailed`, `Ok` — the fork halts data flow
 /// (loudest), a park is informational, a failed cycle is transient.
+/// Peer journal rows the last cycle could not import ride the Parked
+/// rung: held aside and relayed like a parked file, same remedy.
 /// Empty/default status maps to `Ok`.
 #[must_use]
 pub fn files_sync_chip(status: &FilesSyncStatus) -> FilesSyncChip {
@@ -23,7 +25,7 @@ pub fn files_sync_chip(status: &FilesSyncStatus) -> FilesSyncChip {
         FilesSyncChipState::Forked
     } else if !status.diverged_from.is_empty() {
         FilesSyncChipState::Diverged
-    } else if !status.parked.is_empty() {
+    } else if !status.parked.is_empty() || rejected_rows(status) > 0 {
         FilesSyncChipState::Parked
     } else if matches!(status.last_cycle, Some(CycleOutcome::Failed)) {
         FilesSyncChipState::CycleFailed
@@ -31,6 +33,15 @@ pub fn files_sync_chip(status: &FilesSyncStatus) -> FilesSyncChip {
         FilesSyncChipState::Ok
     };
     FilesSyncChip { state }
+}
+
+fn rejected_rows(status: &FilesSyncStatus) -> usize {
+    match status.last_cycle {
+        Some(CycleOutcome::Ok {
+            import_rejected, ..
+        }) => import_rejected,
+        _ => 0,
+    }
 }
 
 /// Seeds a UI-typed watch from the transport status watch and spawns
@@ -134,6 +145,33 @@ mod tests {
         assert_eq!(files_sync_chip(&everything).state, S::Forked);
         // Empty and default are `Ok`.
         assert_eq!(files_sync_chip(&FilesSyncStatus::default()).state, S::Ok);
+    }
+
+    /// Peer journal rows this build could not import are held aside
+    /// like a parked file (relayed, not folded): the Parked rung lights
+    /// on a nonzero count, and a louder rung still wins.
+    #[test]
+    fn rejected_import_rows_light_the_parked_rung() {
+        use FilesSyncChipState as S;
+        let rejected = |count| {
+            Some(CycleOutcome::Ok {
+                published: false,
+                read_devices: 1,
+                import_rejected: count,
+            })
+        };
+        assert_eq!(
+            files_sync_chip(&status(false, false, false, rejected(2))).state,
+            S::Parked
+        );
+        assert_eq!(
+            files_sync_chip(&status(false, false, false, rejected(0))).state,
+            S::Ok
+        );
+        assert_eq!(
+            files_sync_chip(&status(true, false, false, rejected(2))).state,
+            S::Forked
+        );
     }
 
     /// The pump journey: three transport statuses map through in
