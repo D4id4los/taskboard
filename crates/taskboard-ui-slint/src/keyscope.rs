@@ -154,15 +154,20 @@ pub fn scope_stack(inputs: &ScopeInputs) -> Vec<ContextId> {
 /// in every flowless state the D20 pull makes the mode Insert exactly
 /// while `text_focus > 0`, so the gate reproduces today's insert-mask
 /// protection verbatim (an assertion in T-M1) while keeping the vi
-/// preset's Normal-mode editor ladder reachable.
+/// preset's Normal-mode editor ladder reachable. A pending keymap
+/// prefix owns the next stroke (`C-x u` while typing is the undo, an
+/// unbound follower aborts and is consumed) — the field never sees a
+/// prefix's follower, exactly as under the retired insert mask.
 #[must_use]
 pub fn monopoly_declines(
     mode: crate::router::Mode,
     text_focus: usize,
+    prefix_pending: bool,
     stroke: crate::keymap::Stroke,
 ) -> bool {
     mode == crate::router::Mode::Insert
         && text_focus > 0
+        && !prefix_pending
         && !stroke.ctrl
         && !stroke.alt
         && !stroke.meta
@@ -1006,7 +1011,7 @@ mod tests {
             let s = crate::keymap::stroke::parse(sp).expect("parses");
             assert!(s.is_monopolizable(), "{sp} is monopolizable");
             assert!(
-                monopoly_declines(Mode::Insert, 1, s),
+                monopoly_declines(Mode::Insert, 1, false, s),
                 "{sp} declines to the field"
             );
         };
@@ -1017,12 +1022,14 @@ mod tests {
         // rule gates on the modifiers, the predicate on the key).
         let chord = crate::keymap::stroke::parse("Ctrl+a").expect("parses");
         assert!(chord.is_monopolizable());
-        assert!(!monopoly_declines(Mode::Insert, 1, chord));
+        assert!(!monopoly_declines(Mode::Insert, 1, false, chord));
         // No focus, no monopoly; no insert, no monopoly (the vi
         // Normal-mode ladder stays reachable).
         let a = crate::keymap::stroke::parse("a").expect("parses");
-        assert!(!monopoly_declines(Mode::Insert, 0, a));
-        assert!(!monopoly_declines(Mode::Normal, 1, a));
+        assert!(!monopoly_declines(Mode::Insert, 0, false, a));
+        assert!(!monopoly_declines(Mode::Normal, 1, false, a));
+        // A pending keymap prefix owns the follower.
+        assert!(!monopoly_declines(Mode::Insert, 1, true, a));
     }
 
     /// T-M2 — the chord-class set: every named non-Space key is
@@ -1051,7 +1058,7 @@ mod tests {
         ] {
             let s = crate::keymap::stroke::parse(sp).expect("parses");
             assert!(!s.is_monopolizable(), "{sp} stays chord-class");
-            assert!(!monopoly_declines(Mode::Insert, 1, s));
+            assert!(!monopoly_declines(Mode::Insert, 1, false, s));
         }
     }
 
@@ -1092,7 +1099,7 @@ mod tests {
         let ret = crate::keymap::stroke::parse("Return").expect("parses");
         for stroke in [space, ret] {
             // The activation cell's fact state: zero text focus.
-            assert!(!monopoly_declines(Mode::Insert, 0, stroke));
+            assert!(!monopoly_declines(Mode::Insert, 0, false, stroke));
         }
         // And the reservation's own gate requires a bare stroke.
         let chord_space = crate::keymap::stroke::parse("Ctrl+Space").expect("parses");
