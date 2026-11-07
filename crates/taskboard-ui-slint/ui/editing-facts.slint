@@ -22,6 +22,11 @@ export global EditingFacts {
     // same count discipline; > 0 reserves bare Return/Space for the
     // focused cell's own key handler ahead of the preset bindings.
     in-out property <int> activation-focus-count: 0;
+    // The multi-line editor's element scope (round-5 chunk 7, D-δ2):
+    // the same count discipline over the edit mounts' TextInputs.
+    // > 0 arms the `Editor` context at the stack head; the editor
+    // command tables key on it.
+    in-out property <int> editor-focus-count: 0;
     // The adapter's reset seams (unmounts that fire no loss event)
     // zero the counts and bump this generation; a publishing widget
     // that sees a newer generation re-baselines its latch instead of
