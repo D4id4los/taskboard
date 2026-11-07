@@ -2496,3 +2496,190 @@ async fn tracker_receipts_rehydrate_and_still_guard_the_toast() {
     );
     db.close().await;
 }
+
+// ---- F1 author-tagged clocks (D-BF2, ADR 0022) ------------------------
+
+mod author_columns {
+    use super::*;
+    use taskboard_domain::entities::{BoardAuthors, LabelAuthors, StackAuthors, TaskAuthors};
+    use taskboard_domain::ids::AuthorId;
+
+    fn author(byte: u8) -> AuthorId {
+        let mut bytes = [0u8; 16];
+        bytes[15] = byte;
+        AuthorId::from_uuid(uuid::Uuid::from_bytes(bytes))
+    }
+
+    fn authored_task(id: u128, stack: &Stack, a: AuthorId) -> Task {
+        let mut task = task(id, stack, BTreeMap::new());
+        task.authors = TaskAuthors {
+            title: Some(a),
+            description: Some(a),
+            duedate: None,
+            scheduled: Some(a),
+            done: None,
+            position: Some(a),
+            effort: None,
+            importance: Some(a),
+            urgency: None,
+            recur: Some(a),
+            kind: Some(a),
+            archived: None,
+            deleted: Some(a),
+        };
+        task
+    }
+
+    /// T-STORE-1 (roundtrip): an authored entity survives the disk
+    /// intact — store → load → authors identical; an authorless entity
+    /// roundtrips as all-`None`. The law breaks across restarts if an
+    /// author is lost, so every authored family gets the walk.
+    #[tokio::test]
+    async fn authored_entities_roundtrip_and_authorless_stay_all_none() {
+        let repo = open_memory(taskboard_domain::ConnectorId::from("nextcloud"))
+            .await
+            .expect("open");
+        let b = board(21);
+        let s = stack(3, &b);
+        let l = label(4, &b);
+        let a = author(0x51);
+
+        let mut authored_board = b.clone();
+        authored_board.authors = BoardAuthors {
+            title: Some(a),
+            color: None,
+            archived: Some(a),
+            deleted: None,
+        };
+        let mut authored_stack = s.clone();
+        authored_stack.authors = StackAuthors {
+            title: Some(a),
+            order: None,
+            deleted: Some(a),
+        };
+        let mut authored_label = l.clone();
+        authored_label.authors = LabelAuthors {
+            title: None,
+            color: Some(a),
+            deleted: None,
+        };
+        let authored = authored_task(9, &s, a);
+        let plain_task = task(10, &s, BTreeMap::new());
+
+        repo.apply(vec![
+            PersistenceAction::UpsertBoard(authored_board.clone()),
+            PersistenceAction::UpsertStack(authored_stack.clone()),
+            PersistenceAction::UpsertLabel(authored_label.clone()),
+            PersistenceAction::UpsertTask(authored.clone()),
+            PersistenceAction::UpsertTask(plain_task.clone()),
+        ])
+        .await
+        .expect("apply");
+
+        let loaded = repo.load().await.expect("load");
+        assert_eq!(loaded.boards.get(&b.id), Some(&authored_board));
+        assert_eq!(loaded.stacks.get(&s.id), Some(&authored_stack));
+        assert_eq!(loaded.labels.get(&l.id), Some(&authored_label));
+        assert_eq!(loaded.tasks.get(&authored.id), Some(&authored));
+        assert_eq!(
+            loaded.tasks.get(&plain_task.id).map(|t| t.authors),
+            Some(TaskAuthors::default()),
+            "authorless rows roundtrip all-None"
+        );
+    }
+
+    /// T-STORE-2 (migration): a pre-0023 database — built by dropping
+    /// the `au_*` columns and rewinding the migration ledger below 0023
+    /// — migrates on reopen and loads with every author `None` and the
+    /// clocks byte-stable. NULL = the backfilled "no author" state.
+    #[tokio::test]
+    async fn pre_0023_database_migrates_and_loads_authorless() {
+        const DROPS: &[&str] = &[
+            "ALTER TABLE boards DROP COLUMN au_title",
+            "ALTER TABLE boards DROP COLUMN au_color",
+            "ALTER TABLE boards DROP COLUMN au_archived",
+            "ALTER TABLE boards DROP COLUMN au_deleted",
+            "ALTER TABLE stacks DROP COLUMN au_title",
+            "ALTER TABLE stacks DROP COLUMN au_sort_order",
+            "ALTER TABLE stacks DROP COLUMN au_deleted",
+            "ALTER TABLE labels DROP COLUMN au_title",
+            "ALTER TABLE labels DROP COLUMN au_color",
+            "ALTER TABLE labels DROP COLUMN au_deleted",
+            "ALTER TABLE tasks DROP COLUMN au_title",
+            "ALTER TABLE tasks DROP COLUMN au_description",
+            "ALTER TABLE tasks DROP COLUMN au_duedate",
+            "ALTER TABLE tasks DROP COLUMN au_scheduled",
+            "ALTER TABLE tasks DROP COLUMN au_done",
+            "ALTER TABLE tasks DROP COLUMN au_position",
+            "ALTER TABLE tasks DROP COLUMN au_effort",
+            "ALTER TABLE tasks DROP COLUMN au_importance",
+            "ALTER TABLE tasks DROP COLUMN au_urgency",
+            "ALTER TABLE tasks DROP COLUMN au_recur",
+            "ALTER TABLE tasks DROP COLUMN au_kind",
+            "ALTER TABLE tasks DROP COLUMN au_archived",
+            "ALTER TABLE tasks DROP COLUMN au_deleted",
+        ];
+
+        let mut db = common::FileDb::new().await;
+        let repo = db.repo();
+        let b = board(31);
+        let s = stack(5, &b);
+        let t = task(11, &s, BTreeMap::new());
+        repo.apply(vec![
+            PersistenceAction::UpsertBoard(b.clone()),
+            PersistenceAction::UpsertStack(s.clone()),
+            PersistenceAction::UpsertTask(t.clone()),
+        ])
+        .await
+        .expect("apply");
+        let before = repo.load().await.expect("load");
+        db.close().await;
+
+        // Rewind to the pre-0023 world: drop the author columns and
+        // forget every migration above 0022. The stored clocks survive
+        // verbatim; the authors cease to exist, exactly as in a
+        // pre-F1 database.
+        let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", db.path().display()))
+            .await
+            .expect("raw connect");
+        // Rewind 0024's objects too (the ledger forgets it below).
+        sqlx::query("DROP TABLE IF EXISTS roaming_settings")
+            .execute(&pool)
+            .await
+            .expect("drop 0024 table");
+
+        // Constant statements only (the dynamic-SQL audit lint): the
+        // columns are the migration's own, spelled out verbatim.
+        for statement in DROPS {
+            // Audited: every entry above is a constant, migration-owned
+            // `ALTER TABLE … DROP COLUMN` — no user data in reach.
+            sqlx::query(sqlx::AssertSqlSafe(*statement))
+                .execute(&pool)
+                .await
+                .expect("drop column");
+        }
+        sqlx::query("DELETE FROM _sqlx_migrations WHERE version > 22")
+            .execute(&pool)
+            .await
+            .expect("rewind ledger");
+
+        pool.close().await;
+
+        db.reopen().await;
+        let after = db.repo().load().await.expect("load");
+        assert_eq!(
+            after.tasks.get(&t.id).map(|t| t.authors),
+            Some(TaskAuthors::default()),
+            "the backfill decodes every author absent"
+        );
+        assert_eq!(
+            after.boards.get(&b.id).map(|b| b.clocks),
+            before.boards.get(&b.id).map(|b| b.clocks),
+            "clocks are byte-stable across the migration"
+        );
+        assert_eq!(
+            after.tasks.get(&t.id).map(|t| t.clocks),
+            before.tasks.get(&t.id).map(|t| t.clocks)
+        );
+    }
+}
