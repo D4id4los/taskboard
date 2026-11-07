@@ -263,6 +263,8 @@ mod hash_pins {
             format: DOCUMENT_FORMAT,
             sections: UserSections {
                 journal: Some(BTreeMap::from([(key.to_owned(), row)])),
+                settings: None,
+                proofs: None,
                 unknown: BTreeMap::new(),
             },
             unknown: BTreeMap::new(),

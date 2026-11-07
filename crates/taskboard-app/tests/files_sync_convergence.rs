@@ -33,7 +33,7 @@ use taskboard_state::{DayRollConfig, EngineHandle, spawn_state_engine_with_user_
 use taskboard_sync_files::document::UserDocument;
 use taskboard_sync_files::hash::StateHash;
 use taskboard_sync_files_nextcloud::actor::{FilesSyncConfig, spawn_files_sync_actor};
-use taskboard_sync_files_nextcloud::cycle::PublishedJournal;
+use taskboard_sync_files_nextcloud::cycle::PublishedState;
 use taskboard_sync_files_nextcloud::error::TransportError;
 use taskboard_sync_files_nextcloud::etag::Etag;
 use taskboard_sync_files_nextcloud::test_support::FakeFilesTransport;
@@ -236,6 +236,42 @@ impl Side {
         self.engine.shared_state().load().reflection.clone()
     }
 
+    /// Imports one roaming setting through this side's user-data lane
+    /// (the actor's delivery seam — the report the files fold emits).
+    async fn adopt_setting(&self, value: taskboard_domain::RoamingSettingValue, at: i64) {
+        self.user_data_tx
+            .send(UserDataReport {
+                journal: Vec::new(),
+                settings: vec![taskboard_domain::ImportedSetting {
+                    value,
+                    clock: self.clock.now() + chrono::TimeDelta::seconds(at),
+                }],
+                proofs: Vec::new(),
+            })
+            .await
+            .expect("user-data lane open");
+    }
+
+    /// Delivers one reminder proof through this side's user-data lane.
+    async fn deliver_proof(&self, proof: taskboard_domain::ReminderDelivery) {
+        self.user_data_tx
+            .send(UserDataReport {
+                journal: Vec::new(),
+                settings: Vec::new(),
+                proofs: vec![proof],
+            })
+            .await
+            .expect("user-data lane open");
+    }
+
+    fn roaming(&self) -> taskboard_domain::RoamingSettings {
+        self.engine.shared_state().load().roaming.clone()
+    }
+
+    fn reminders(&self) -> taskboard_domain::ReminderState {
+        self.engine.shared_state().load().reminders.clone()
+    }
+
     /// Spawns this side's files actor over the shared account; the
     /// returned pair keeps the actor's join and status watch alive.
     fn spawn_actor(
@@ -250,7 +286,7 @@ impl Side {
                 fake: self.fake.clone(),
             },
             device_json,
-            Arc::new(PublishedJournal::new(self.engine.shared_state())),
+            Arc::new(PublishedState::new(self.engine.shared_state())),
             self.user_data_tx.clone(),
             self.system.clone(),
             FilesSyncConfig {
@@ -266,13 +302,13 @@ impl Side {
 
 /// Polls `pred` under a wall-clock deadline while the paused runtime
 /// auto-advances the actors' poll timers (no fixed sleeps).
-async fn until(pred: impl Fn() -> bool) {
+async fn until(label: &str, pred: impl Fn() -> bool) {
     let deadline = std::time::Instant::now() + Duration::from_secs(60);
     while !pred() {
         tokio::time::sleep(Duration::from_millis(5)).await;
         assert!(
             std::time::Instant::now() < deadline,
-            "convergence never landed"
+            "convergence never landed: {label}"
         );
     }
 }
@@ -338,7 +374,7 @@ async fn two_engines_converge_their_journals_and_stay_quiet() {
     let y = b.record("y by b").await;
     assert_ne!(x.id, y.id, "independent counters stay distinct");
     let (x_id, y_id) = (x.id, y.id);
-    until(|| {
+    until("step1 entries", || {
         let (ha, hb) = (a.home(), b.home());
         ha.entries.contains_key(&x_id)
             && ha.entries.contains_key(&y_id)
@@ -350,7 +386,7 @@ async fn two_engines_converge_their_journals_and_stay_quiet() {
     // Step 2 — B edits X at T3 (after receiving it): A converges to
     // B's text.
     b.edit(x_id, "x edited by b").await;
-    until(|| {
+    until("step2 edit", || {
         a.home().entries[&x_id].text == "x edited by b"
             && b.home().entries[&x_id].text == "x edited by b"
     })
@@ -359,7 +395,7 @@ async fn two_engines_converge_their_journals_and_stay_quiet() {
     // Step 3 — A deletes Y at T4: B's Y is tombstoned in place (the
     // body stays; the wire grammar carries none).
     a.delete(y_id).await;
-    until(|| {
+    until("step3 tombstone", || {
         let yb = &b.home().entries[&y_id];
         yb.deleted && yb.text == "y by b"
     })
@@ -372,13 +408,21 @@ async fn two_engines_converge_their_journals_and_stay_quiet() {
     b.clock.set(T5);
     b.edit(x_id, "b's concurrent pick").await;
     a.edit(x_id, "a's concurrent pick").await;
-    until(|| a.home().entries[&x_id] == b.home().entries[&x_id]).await;
+    until("step4 concurrent tie", || {
+        a.home().entries[&x_id] == b.home().entries[&x_id]
+    })
+    .await;
 
-    // Terminal assertions — equal homes, hash-equal published files.
-    until(|| {
+    // Step 4b — D-BF3: the settings and proofs sections converge like
+    // the journal does (the extracted scenario below).
+    settings_and_proofs_converge(&a, &b).await;
+
+    // Terminal assertions — equal homes (journals, settings, proofs),
+    // hash-equal published files.
+    until("terminal homes", || {
         let ha = a.home();
         let hb = b.home();
-        ha == hb && ha.entries.len() == 2
+        ha == hb && ha.entries.len() == 2 && a.roaming() == b.roaming()
     })
     .await;
     let doc_a: UserDocument =
@@ -405,4 +449,58 @@ async fn two_engines_converge_their_journals_and_stay_quiet() {
 
     let _ = a.system.send(SystemEvent::Shutdown);
     let _ = b.system.send(SystemEvent::Shutdown);
+}
+
+/// The D-BF3 convergence scenario (the journey's step 4b): A adopts a
+/// setting at 05:30, B (independently, newer clock) at 06:00 — the
+/// fleet settles on B's row on both sides — and B's delivered proof
+/// (a Rule-ref fact) reaches A: delivered-ness is membership, so A's
+/// at-most-once guard learns the fleet settled that occurrence.
+async fn settings_and_proofs_converge(a: &Side, b: &Side) {
+    // Step 4b — D-BF3: the settings and proofs sections converge like
+    // the journal does. A adopts the day start at 05:30, B (independ-
+    // ently, with a newer clock) at 06:00: the fleet settles on B's
+    // newer row on both sides. B's delivered proof (a Rule-ref fact)
+    // reaches A: is-delivered is membership, so A's at-most-once guard
+    // now knows the fleet settled that occurrence.
+    a.adopt_setting(
+        taskboard_domain::RoamingSettingValue::DayStartTime(
+            chrono::NaiveTime::from_hms_opt(5, 30, 0).unwrap(),
+        ),
+        60,
+    )
+    .await;
+    b.adopt_setting(
+        taskboard_domain::RoamingSettingValue::DayStartTime(
+            chrono::NaiveTime::from_hms_opt(6, 0, 0).unwrap(),
+        ),
+        120,
+    )
+    .await;
+    let rule = taskboard_domain::ReminderRuleId::from(uuid::Uuid::from_u128(0x2f_1a));
+    b.deliver_proof(taskboard_domain::ReminderDelivery {
+        reminder: taskboard_domain::ReminderRef::Rule(rule),
+        occurrence: chrono::DateTime::from_timestamp(1_900_000_000, 0).unwrap(),
+        delivered_at: b.clock.now(),
+    })
+    .await;
+    let occurrence = chrono::DateTime::from_timestamp(1_900_000_000, 0).unwrap();
+    let settled = taskboard_domain::RoamingSettingValue::DayStartTime(
+        chrono::NaiveTime::from_hms_opt(6, 0, 0).unwrap(),
+    );
+    until("step4b settings+proofs", || {
+        let (ra, rb) = (a.roaming(), b.roaming());
+        let (ia, ib) = (a.reminders(), b.reminders());
+        let six = |home: &taskboard_domain::RoamingSettings| {
+            home.0
+                .get("day_start_time")
+                .is_some_and(|row| row.value == settled)
+        };
+        let rule_ref = taskboard_domain::ReminderRef::Rule(rule);
+        six(&ra)
+            && six(&rb)
+            && ia.is_delivered(&rule_ref, &occurrence)
+            && ib.is_delivered(&rule_ref, &occurrence)
+    })
+    .await;
 }

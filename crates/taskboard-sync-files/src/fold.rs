@@ -47,6 +47,8 @@ use crate::ids::AuthorId;
 /// view. Pure, total, input-order-free.
 pub fn fold<'a>(documents: impl IntoIterator<Item = &'a UserDocument>) -> UserDocument {
     let mut journal: Option<BTreeMap<String, UserRecord>> = None;
+    let mut settings: Option<BTreeMap<String, UserRecord>> = None;
+    let mut proofs: Option<BTreeMap<String, UserRecord>> = None;
     let mut unknown_sections: BTreeMap<String, Value> = BTreeMap::new();
     let mut unknown_envelope: BTreeMap<String, Value> = BTreeMap::new();
     let mut format: Option<u32> = None;
@@ -58,6 +60,23 @@ pub fn fold<'a>(documents: impl IntoIterator<Item = &'a UserDocument>) -> UserDo
                 merge_clocked(map, key, record);
             }
         }
+        // The D-BF3 sections ride the journal's exact keyed merge: per
+        // key the max over `(rank, clock, author, content)` — settings
+        // get their per-key LWW, proofs their order-free union (a
+        // re-published proof is byte-identical; two devices'
+        // `delivered_at` stamps resolve deterministically by the clock
+        // leg).
+        for (section, rows) in [
+            (&mut settings, &document.sections.settings),
+            (&mut proofs, &document.sections.proofs),
+        ] {
+            if let Some(rows) = rows {
+                let map = section.get_or_insert_with(BTreeMap::new);
+                for (key, record) in rows {
+                    merge_clocked(map, key, record);
+                }
+            }
+        }
         merge_values(&mut unknown_sections, &document.sections.unknown);
         merge_values(&mut unknown_envelope, &document.unknown);
     }
@@ -65,6 +84,8 @@ pub fn fold<'a>(documents: impl IntoIterator<Item = &'a UserDocument>) -> UserDo
         format: format.unwrap_or(DOCUMENT_FORMAT),
         sections: crate::document::UserSections {
             journal,
+            settings,
+            proofs,
             unknown: unknown_sections,
         },
         unknown: unknown_envelope,
@@ -170,6 +191,8 @@ mod tests {
             format: DOCUMENT_FORMAT,
             sections: UserSections {
                 journal: Some(BTreeMap::from([(key.to_owned(), record)])),
+                settings: None,
+                proofs: None,
                 unknown: BTreeMap::new(),
             },
             unknown: BTreeMap::new(),
@@ -307,6 +330,8 @@ mod tests {
                 format,
                 sections: UserSections {
                     journal: None,
+                    settings: None,
+                    proofs: None,
                     unknown: BTreeMap::from([(key.clone(), value)]),
                 },
                 unknown: BTreeMap::from([("future".to_owned(), json!(format))]),
@@ -330,6 +355,17 @@ mod tests {
                     let out = merged.sections.journal.as_ref().expect("journal present");
                     for key in rows.keys() {
                         prop_assert!(out.contains_key(key));
+                    }
+                }
+                for (input, out) in [
+                    (&doc.sections.settings, &merged.sections.settings),
+                    (&doc.sections.proofs, &merged.sections.proofs),
+                ] {
+                    if let Some(rows) = input {
+                        let out = out.as_ref().expect("section present");
+                        for key in rows.keys() {
+                            prop_assert!(out.contains_key(key));
+                        }
                     }
                 }
                 for key in doc.sections.unknown.keys() {

@@ -53,6 +53,8 @@ pub mod identity;
 pub mod ids;
 pub mod journal;
 pub mod layout;
+pub mod proofs;
+pub mod settings;
 
 /// Compiled for our own tests (dev-dep `proptest`) and for downstream
 /// crates that enable the `test-support` feature (the engine tests of

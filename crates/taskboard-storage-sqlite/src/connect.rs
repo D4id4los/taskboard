@@ -204,6 +204,50 @@ mod tests {
         second.close().await;
     }
 
+    /// The roaming settings home (DR-9 D-BF3) persists and hydrates:
+    /// an upsert round-trips through a reopen faithfully (value, name,
+    /// clock), and a replayed identical upsert is a no-op (the fold's
+    /// idempotence shows up here as a same-row rewrite).
+    #[tokio::test]
+    async fn roaming_settings_roundtrip_through_a_reopen() {
+        let file = tempfile::Builder::new().suffix(".db").tempfile().unwrap();
+        let repo = open(file.path(), test_connector()).await.expect("open");
+        let clock = chrono::TimeZone::timestamp_opt(&chrono::Utc, 1_800_000_000, 0).unwrap();
+        let value = taskboard_domain::RoamingSettingValue::DayStartTime(
+            chrono::NaiveTime::from_hms_opt(5, 30, 0).unwrap(),
+        );
+        let row = taskboard_domain::RoamingSettingRow { value, clock };
+        repo.apply(vec![
+            taskboard_domain::PersistenceAction::UpsertRoamingSetting(
+                "day_start_time".to_owned(),
+                row,
+            ),
+        ])
+        .await
+        .expect("apply");
+        repo.close().await;
+
+        let reopened = open(file.path(), test_connector()).await.expect("reopen");
+        let state = reopened.load().await.expect("load");
+        assert_eq!(state.roaming.0["day_start_time"], row);
+
+        // The replay: same key, same row — the table keeps exactly one
+        // row (the primary key), the load is unchanged.
+        reopened
+            .apply(vec![
+                taskboard_domain::PersistenceAction::UpsertRoamingSetting(
+                    "day_start_time".to_owned(),
+                    row,
+                ),
+            ])
+            .await
+            .expect("replayed apply");
+        let state = reopened.load().await.expect("reload");
+        assert_eq!(state.roaming.0.len(), 1);
+        assert_eq!(state.roaming.0["day_start_time"], row);
+        reopened.close().await;
+    }
+
     /// A pre-0022 database (no `reflection_entries` table) upgrades
     /// cleanly: the migration re-applies as one plain `CREATE TABLE`,
     /// `load()` folds the empty table into the default `ReflectionState`

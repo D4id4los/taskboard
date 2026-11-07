@@ -16,9 +16,13 @@
 //! current view, so unknown envelope keys, unknown/reserved sections,
 //! unknown body keys, and `Verbatim` rows are all *carried* — never
 //! errorized, never silently dropped. Only the never-republished
-//! identity/heartbeat payloads ignore extras. Reserved section names
-//! (`settings`, `proofs`) ride `sections.unknown` like any unknown
-//! section and are never emitted by this version.
+//! identity/heartbeat payloads ignore extras. The DR-9 B-full slice
+//! activates the first reserved names: `journal` (v1), then
+//! `settings` and `proofs` (D-BF3) — each a typed keyed row map with
+//! the journal's exact decode posture (strict section frame, lenient
+//! rows; a non-map body relays verbatim). `RESERVED_SECTION_NAMES`
+//! remains the forward slot: names held for later slices, riding
+//! `sections.unknown` until their slice ships.
 //!
 //! Wire row grammar (mirrors `RuleEntry`):
 //! - `Entry`: an object with a decodable RFC 3339 `clock`; **every
@@ -58,9 +62,18 @@ pub const DOCUMENT_FORMAT: u32 = 1;
 /// journal).
 pub const JOURNAL_SECTION: &str = "journal";
 
-/// Section names this version never emits (Q3's second slice); when
-/// seen on the wire they relay verbatim via `sections.unknown`.
-pub const RESERVED_SECTION_NAMES: &[&str] = &["settings", "proofs"];
+/// The roaming user-preference section's wire name (DR-9 D-BF3); the
+/// codec lives in [`crate::settings`].
+pub const SETTINGS_SECTION: &str = "settings";
+
+/// The reminder delivery-proof section's wire name (D-BF3's set-union
+/// rows); the codec lives in [`crate::proofs`].
+pub const PROOFS_SECTION: &str = "proofs";
+
+/// Section names held for later slices (B-full's forward slot — both
+/// of Q3's original names activated in this version); when seen on the
+/// wire they relay verbatim via `sections.unknown`.
+pub const RESERVED_SECTION_NAMES: &[&str] = &[];
 
 /// The row object's modeled keys — an `Entry` body cannot carry them.
 pub const MODELED_ROW_KEYS: &[&str] = &["clock", "author"];
@@ -82,11 +95,17 @@ pub struct UserDocument {
     pub unknown: BTreeMap<String, Value>,
 }
 
-/// The section registry: `journal` typed, everything else verbatim.
+/// The section registry: `journal`, `settings`, and `proofs` typed;
+/// everything else verbatim.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct UserSections {
     /// The v1 passenger, keyed by entry UUID string.
     pub journal: Option<BTreeMap<String, UserRecord>>,
+    /// The roaming user preferences (D-BF3), keyed by setting name.
+    pub settings: Option<BTreeMap<String, UserRecord>>,
+    /// The reminder delivery proofs (D-BF3), keyed by
+    /// `"<ref>|<rfc3339 occurrence>"`.
+    pub proofs: Option<BTreeMap<String, UserRecord>>,
     /// Unknown and reserved sections: carried verbatim.
     pub unknown: BTreeMap<String, Value>,
 }
@@ -97,6 +116,15 @@ impl Serialize for UserSections {
         if let Some(rows) = &self.journal {
             let section = serde_json::to_value(rows).map_err(serde::ser::Error::custom)?;
             map.insert(JOURNAL_SECTION.to_owned(), section);
+        }
+        for (name, rows) in [
+            (SETTINGS_SECTION, &self.settings),
+            (PROOFS_SECTION, &self.proofs),
+        ] {
+            if let Some(rows) = rows {
+                let section = serde_json::to_value(rows).map_err(serde::ser::Error::custom)?;
+                map.insert(name.to_owned(), section);
+            }
         }
         for (key, value) in &self.unknown {
             map.insert(key.clone(), value.clone());
@@ -110,17 +138,23 @@ impl<'de> Deserialize<'de> for UserSections {
         let raw = BTreeMap::<String, Value>::deserialize(deserializer)?;
         let mut sections = Self::default();
         for (key, value) in raw {
-            if key == JOURNAL_SECTION {
+            if key == JOURNAL_SECTION || key == SETTINGS_SECTION || key == PROOFS_SECTION {
                 // Leniency (the `DismissalsEntry` non-object
-                // precedent): a journal body that is not a map of rows
-                // relays verbatim, never fails the document.
+                // precedent): a typed section whose body is not a map
+                // of rows relays verbatim, never fails the document.
                 match value {
                     Value::Object(rows) => {
-                        sections.journal = Some(
-                            rows.into_iter()
-                                .map(|(key, row)| (key, UserRecord::decode(row)))
-                                .collect(),
-                        );
+                        let decoded: BTreeMap<String, UserRecord> = rows
+                            .into_iter()
+                            .map(|(key, row)| (key, UserRecord::decode(row)))
+                            .collect();
+                        if key == JOURNAL_SECTION {
+                            sections.journal = Some(decoded);
+                        } else if key == SETTINGS_SECTION {
+                            sections.settings = Some(decoded);
+                        } else {
+                            sections.proofs = Some(decoded);
+                        }
                     }
                     other => {
                         sections.unknown.insert(key, other);
@@ -266,6 +300,7 @@ mod tests {
     const TOMBSTONE_KEY: &str = "0193b4c6-f0e1-7d2c-ab4a-59687a89bcde";
     const OPAQUE_KEY: &str = "0193b4c7-1223-7e45-8679-0b1c2d3e4f50";
     const AUTHORED_KEY: &str = "0193b4c8-a7b8-7c9d-ab0e-f1e2d3c4b5a6";
+    const PROOF_KEY: &str = "rule:0193a1b2-c3d4-7cc9-8a2e-5f1e2d3c4b5a|2026-11-05T10:30:00Z";
     const AUTHOR: &str = "0193a1b2-c3d4-7cc9-8a2e-5f1e2d3c4b5a";
 
     fn wire_example() -> serde_json::Value {
@@ -292,7 +327,9 @@ mod tests {
                         "author": AUTHOR
                     }
                 },
-                "proofs": { "not": "understood here", "relayed": true }
+                "proofs": {
+                    PROOF_KEY: { "delivered": true, "relayed": "as a verbatim row" }
+                }
             }
         })
     }
@@ -325,10 +362,15 @@ mod tests {
             author.as_ref().map(AuthorId::to_string),
             Some(AUTHOR.to_owned())
         );
-        // The reserved section relays verbatim.
-        assert!(doc.sections.unknown.contains_key("proofs"));
-        assert!(is_reserved_section_name("proofs"));
-        assert!(is_reserved_section_name("settings"));
+        // The `proofs` section now decodes row-wise (D-BF3); its one
+        // row is a verbatim (an unmodelable shape), never an error.
+        let proofs = doc.sections.proofs.as_ref().expect("proofs present");
+        assert!(matches!(proofs[PROOF_KEY], UserRecord::Verbatim(_)));
+        // The forward-reserved slot is empty this version: any other
+        // name — including a later slice's — still relays unknown.
+        assert!(!is_reserved_section_name("later_slice"));
+        assert!(!is_reserved_section_name("proofs"));
+        assert!(!is_reserved_section_name("settings"));
         assert!(!is_reserved_section_name("journal"));
     }
 
@@ -443,6 +485,8 @@ mod tests {
                         author: Some(author),
                     },
                 )])),
+                settings: None,
+                proofs: None,
                 unknown: BTreeMap::new(),
             },
             unknown: BTreeMap::new(),
@@ -461,13 +505,16 @@ mod tests {
                 "journal": {
                     ENTRY_KEY: { "clock": "2026-11-05T09:15:32Z", "extra": {"deep": true} }
                 },
-                "proofs": { "relayed": true }
+                "future_section": { "relayed": true }
             }
         });
         let doc: UserDocument = serde_json::from_value(raw).expect("decodes");
         let encoded = serde_json::to_value(&doc).expect("encodes");
         assert_eq!(encoded["future-envelope-key"], json!([1, {"x": 2}]));
-        assert_eq!(encoded["sections"]["proofs"], json!({ "relayed": true }));
+        assert_eq!(
+            encoded["sections"]["future_section"],
+            json!({ "relayed": true })
+        );
         let row = &encoded["sections"]["journal"][ENTRY_KEY];
         assert_eq!(row["extra"], json!({"deep": true}));
     }

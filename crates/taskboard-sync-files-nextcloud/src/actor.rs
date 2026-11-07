@@ -297,6 +297,8 @@ mod tests {
             format: 1,
             sections: UserSections {
                 journal: Some(journal),
+                settings: None,
+                proofs: None,
                 unknown: BTreeMap::new(),
             },
             unknown: BTreeMap::new(),
@@ -373,7 +375,7 @@ mod tests {
     }
 
     /// Spawns the actor over an explicit local-document seam (the
-    /// journal tests stand in the engine with a `PublishedJournal`).
+    /// journal tests stand in the engine with a `PublishedState`).
     fn spawn_actor_with(
         fake: FakeFilesTransport,
         local: Arc<dyn crate::cycle::LocalDocument>,
@@ -1040,7 +1042,7 @@ mod tests {
     // X-series — the import step (DR-8 chunk 3, D-ES5/D-ES8): the
     // state-derived local document, the fold-first attach, the
     // fingerprint dedupe, the rejection counting. The engine is a
-    // stand-in: an `Arc<ArcSwap<AppState>>` behind `PublishedJournal`
+    // stand-in: an `Arc<ArcSwap<AppState>>` behind `PublishedState`
     // plus the lane's receiving half.
     // -----------------------------------------------------------------
 
@@ -1080,6 +1082,8 @@ mod tests {
             format: 1,
             sections: UserSections {
                 journal: Some(rows),
+                settings: None,
+                proofs: None,
                 unknown: BTreeMap::new(),
             },
             unknown: BTreeMap::new(),
@@ -1139,7 +1143,7 @@ mod tests {
                 .expect("pre-fill");
         }
         let swap = engine_swap(ReflectionState::default());
-        let local = StdArc::new(crate::cycle::PublishedJournal::new(swap.clone()));
+        let local = StdArc::new(crate::cycle::PublishedState::new(swap.clone()));
         let harness = spawn_actor_with_reports(fake, local, (report_tx, report_rx));
 
         // Let the attach run up to the blocked send: no publish yet.
@@ -1206,7 +1210,7 @@ mod tests {
         dead.deleted = true;
         fake.seed_file(&appdata_path(PEER), doc_bytes(&journal_doc(&[dead])));
         let swap = engine_swap(ReflectionState::default());
-        let local = StdArc::new(crate::cycle::PublishedJournal::new(swap.clone()));
+        let local = StdArc::new(crate::cycle::PublishedState::new(swap.clone()));
         let harness = spawn_actor_with(fake, local);
         let report = next_report(&harness).await;
         assert!(
@@ -1250,6 +1254,8 @@ mod tests {
             format: 1,
             sections: UserSections {
                 journal: Some(rows),
+                settings: None,
+                proofs: None,
                 unknown: BTreeMap::new(),
             },
             unknown: BTreeMap::new(),
@@ -1304,6 +1310,8 @@ mod tests {
             format: 1,
             sections: UserSections {
                 journal: Some(BTreeMap::from([(key, record)])),
+                settings: None,
+                proofs: None,
                 unknown: BTreeMap::new(),
             },
             unknown: BTreeMap::new(),
@@ -1349,7 +1357,7 @@ mod tests {
         dead.deleted = true;
         home.entries.insert(live.id, live.clone());
         home.entries.insert(dead.id, dead.clone());
-        let document = crate::cycle::PublishedJournal::new(engine_swap(home)).document();
+        let document = crate::cycle::PublishedState::new(engine_swap(home)).document();
         assert_eq!(
             document.format,
             taskboard_sync_files::document::DOCUMENT_FORMAT
@@ -1486,7 +1494,7 @@ mod tests {
         );
         fake.seed_file(&appdata_path(PEER), doc_bytes(&journal_doc(&[peer_row])));
         let swap = engine_swap(ReflectionState::default());
-        let local = StdArc::new(crate::cycle::PublishedJournal::new(swap.clone()));
+        let local = StdArc::new(crate::cycle::PublishedState::new(swap.clone()));
         let harness = spawn_actor_with(fake, local);
         apply_report(&swap, &next_report(&harness).await);
         assert!(ok(&next_status(&harness).await));

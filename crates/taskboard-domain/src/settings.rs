@@ -379,33 +379,14 @@ impl RoamingSettingValue {
     /// invents a default.
     #[must_use]
     pub fn decode(name: &str, body: &serde_json::Value) -> Option<Self> {
-        match name {
-            "day_start_time" => serde_json::from_value(body.clone())
-                .map(Self::DayStartTime)
-                .ok(),
-            "reminders_enabled" => serde_json::from_value(body.clone())
-                .map(Self::RemindersEnabled)
-                .ok(),
-            "reminder_before" => serde_json::from_value(body.clone())
-                .map(Self::ReminderBefore)
-                .ok(),
-            "due_soon_days" => serde_json::from_value(body.clone())
-                .map(Self::DueSoonDays)
-                .ok(),
-            "focus_enabled" => serde_json::from_value(body.clone())
-                .map(Self::FocusEnabled)
-                .ok(),
-            "focus_timing" => serde_json::from_value(body.clone())
-                .map(Self::FocusTiming)
-                .ok(),
-            "focus_chain" => serde_json::from_value(body.clone())
-                .map(Self::FocusChain)
-                .ok(),
-            "focus_notify" => serde_json::from_value(body.clone())
-                .map(Self::FocusNotify)
-                .ok(),
-            _ => None,
+        if !ROAMING_SETTING_NAMES.contains(&name) {
+            return None;
         }
+        // The enum is externally tagged: the variant (and so the key
+        // name it mints) rides the body — the name argument only gates
+        // the roam-set membership, never a second mapping to keep in
+        // sync.
+        serde_json::from_value::<Self>(body.clone()).ok()
     }
 }
 
@@ -512,6 +493,21 @@ mod focus_timing_serde {
             .ok()
         }))
     }
+}
+
+#[test]
+fn probe_decode() {
+    let v = RoamingSettingValue::DayStartTime(chrono::NaiveTime::from_hms_opt(5, 30, 0).unwrap());
+    let raw = serde_json::to_value(v).unwrap();
+    eprintln!("raw = {raw}");
+    eprintln!(
+        "decode = {:?}",
+        crate::settings::RoamingSettingValue::decode("day_start_time", &raw)
+    );
+    let direct: Result<RoamingSettingValue, _> = serde_json::from_value(raw.clone());
+    eprintln!("direct = {direct:?}");
+    let time: Result<chrono::NaiveTime, _> = serde_json::from_value(raw["DayStartTime"].clone());
+    eprintln!("time = {time:?}");
 }
 
 #[cfg(test)]
