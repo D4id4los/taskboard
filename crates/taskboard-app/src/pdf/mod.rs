@@ -21,4 +21,5 @@
 #![allow(dead_code)]
 
 pub(crate) mod layout;
+pub(crate) mod measure;
 pub(crate) mod render;
