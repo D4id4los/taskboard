@@ -20,6 +20,7 @@
 // slices of plan §9); the allow dies with the verb wiring (step 6).
 #![allow(dead_code)]
 
+pub(crate) mod deliver;
 pub(crate) mod layout;
 pub(crate) mod measure;
 pub(crate) mod render;
