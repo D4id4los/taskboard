@@ -77,6 +77,12 @@ the worktree as its final handoff task.
 
 **Shared execution model** (binding for every chunk):
 
+0. **Every stage, every agent**: out-of-scope findings become
+   `backlog:` GitHub issues (or comments on existing ones) the moment
+   they are discovered, without asking (AGENTS §7 standing
+   authorization). "No push / no PR" governs git refs only — never
+   issues.
+
 1. **Stage 1 — planning agent**: creates the worktree
    `../taskboard-WT-<branch>` on a new branch off the current
    `main`, writes the TDD-first plan at
@@ -175,6 +181,7 @@ You are the stage-1 PLANNING agent for chunk <N> of <dispatch-plan short name> (
 3. Run scripts/worktree-doctor.sh from the project root /home/viktoria/src/taskboard first (nonzero exit = free disk below the floor: STOP and report instead of planning), then create the worktree with git worktree add -b <branch> ../taskboard-WT-<branch> off main (never without -b and never on main — AGENTS §8 active-worktree safety).
 4. Write a detailed TDD-first plan at .artifacts/plans/<today>-<topic>-plan.md: <enumerate the concrete decisions this plan must settle — shapes, semantics, seams, test catalogue>. Resolve every open question with a recorded decision; deviations from the origin need a recorded reason.
 5. Commit it as: docs(plan): <subject>. Do not implement; do not push.
+6. Backlog issues: open/comment on `backlog:` GitHub issues autonomously for any out-of-scope finding (AGENTS §7 standing authorization) — "no push" never means "no issues"; list the issue numbers in your report.
 
 Report: plan path, decisions, risks, estimated diff size.
 ```
@@ -189,6 +196,7 @@ You are the stage-2 IMPLEMENTATION agent for chunk <N> of <dispatch-plan short n
 3. Run the full gate suite from AGENTS.md §10 and make it green <research chunks: whatever gates apply — the pre-commit hooks run regardless>.
 4. <Bookkeeping this chunk owns — backlog ✅ DONE / annotations, ADRs, architecture.org/README amendments — or: do NOT touch the backlog origin entries, chunk <M> lands them.>
 5. No push, no PR — shipping is stage 3's last task. Never push to or merge main.
+6. Backlog issues: open/comment on `backlog:` GitHub issues autonomously for any out-of-scope finding (AGENTS §7 standing authorization) — "no push" never means "no issues"; list the issue numbers in your report.
 
 Report: per-gate results, any deviation from the plan and why.
 ```
@@ -204,7 +212,8 @@ You are the stage-3 REVIEW agent for chunk <N> of <dispatch-plan short name> (br
 4. Re-run the full gate suite yourself (AGENTS §10); any failure is a finding.
 5. Fix every issue directly on the branch (amend/reword — no duplicate-subject fixups).
 6. Ship: push the branch, open the PR to main with gh, then gh pr checks --watch; any failing check is a finding — diagnose, fix, push --force-with-lease, repeat until all checks are green. <main is protected: never merge; the user merges on GitHub.>
-7. Teardown: from the project root, git -C /home/viktoria/src/taskboard worktree remove --force ../taskboard-WT-<branch> (everything is pushed; a resuming round starts a fresh <branch>-v2 branch per AGENTS §8 — never recreates on the landed branch). Confirm with git worktree list that the removed path was the intended one.
+7. Backlog issues: open/comment on `backlog:` GitHub issues autonomously for any out-of-scope finding (AGENTS §7 standing authorization) — "no push" never means "no issues"; list the issue numbers in your report.
+8. Teardown: from the project root, git -C /home/viktoria/src/taskboard worktree remove --force ../taskboard-WT-<branch> (everything is pushed; a resuming round starts a fresh <branch>-v2 branch per AGENTS §8 — never recreates on the landed branch). Confirm with git worktree list that the removed path was the intended one.
 
 Report: verdict, findings (functional + mandate), what you fixed, PR URL, green-checks confirmation, worktree-removed confirmation. Never merge; never touch main.
 ```

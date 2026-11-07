@@ -181,6 +181,15 @@ implementation specs into the root directory or source folders.
   to issues #109–#290 on 2026-10-17; the entry ↔ issue mapping lives in
   `.artifacts/reports/2026-10-17-backlog-to-github-issues-migration-report.md`).
   Conventions:
+  - **Standing authorization — every agent, every stage:** any agent
+    (planning, implementation, review, research, audit, or other) MUST
+    open a `backlog:` issue the moment it discovers out-of-scope work,
+    and MUST comment on the existing issue when it learns new
+    information relevant to one. This needs no confirmation and is
+    never blocked by "no push / no PR" instructions — those govern git
+    branches and pull requests only. Search first
+    (`gh issue list --search`) to comment instead of duplicating.
+    Report the issue numbers in the final report.
   - One issue per idea, title prefixed `backlog:`; the body is a
     summary plus a permalink to the originating plan/report under
     `.artifacts/` — deep context stays in the artefact file, never
@@ -208,6 +217,9 @@ implementation specs into the root directory or source folders.
   merge on GitHub. A failing required check is never bypassed or
   force-past — it is diagnosed and fixed on the branch.
 - **Never push to a remote** without an explicit instruction from the user.
+- The push/merge restrictions in this section apply to git refs and
+  PRs only. Creating or commenting on GitHub issues is always
+  permitted and expected (see §7's standing authorization).
 - **Never merge a feature branch into `main`** (double-rebase style) without
   an explicit order from the user; the user reviews changes before they
   enter `main`.
