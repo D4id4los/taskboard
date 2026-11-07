@@ -584,6 +584,26 @@ impl ViewState {
         self.write_flow(flow);
     }
 
+    /// The innermost `PlanPlace` level's state (the placement form's
+    /// two mirrors): `None` without one.
+    #[must_use]
+    pub(crate) fn plan_place(&self) -> Option<&crate::level_state::PlanPlaceState> {
+        self.surfaces
+            .above_levels()
+            .iter()
+            .rev()
+            .find_map(|level| level.state().as_plan_place())
+    }
+
+    /// The placement form's write seam.
+    pub(crate) fn plan_place_mut(&mut self) -> Option<&mut crate::level_state::PlanPlaceState> {
+        self.surfaces
+            .above_levels_mut()
+            .iter_mut()
+            .rev()
+            .find_map(|level| level.state_mut().as_plan_place_mut())
+    }
+
     /// The innermost `TrackForm` level's state (the entries form's
     /// read seam): `None` without one.
     #[must_use]
@@ -3285,6 +3305,27 @@ mod tests {
         // Closing the whole overlay retires the form level with it.
         vs.close_track_entries();
         assert!(vs.track_form().is_none());
+    }
+
+    #[test]
+    fn the_plan_form_reopens_clean_after_its_level_ends() {
+        let (state, _, _, [a, ..]) = fixture();
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        vs.set_focused(Some(a));
+        vs.activate_focused(&state);
+        // Typed placement, then the close: a fresh form mints clean —
+        // the drop was the wipe.
+        vs.open_plan_place(a);
+        if let Some(place) = vs.plan_place_mut() {
+            place.time_text = "09:30".to_owned();
+            place.effort_text = "2h".to_owned();
+        }
+        vs.close_plan_place();
+        vs.open_plan_place(a);
+        let place = vs.plan_place().expect("the form armed");
+        assert_eq!(place.time_text, "");
+        assert_eq!(place.effort_text, "");
     }
 
     #[test]

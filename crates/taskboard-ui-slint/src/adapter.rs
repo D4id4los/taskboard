@@ -172,14 +172,6 @@ pub(crate) struct Adapter {
     /// repaint driver consults it per tick. Kiosk is structurally and
     /// explicitly excluded.
     pub(crate) seconds_surfaces_active: bool,
-    /// The plan-next-day placement form's two text mirrors (#622,
-    /// D-3): the due buffers' lifecycle — updated by the view's
-    /// keystroke seams, read only at the commit funnel, cleared
-    /// whenever the flow ends (commit, discard, unplace) or the
-    /// subject dies (D9 rule 4: a refresh never clears them while
-    /// the flow holds them).
-    plan_time_text: String,
-    plan_effort_text: String,
     /// The review walk's adapter-owned state (DR-7 chunk 3, #638; the
     /// plan buffers' pattern): the return hint, the prompt answers
     /// (one slot per template prompt; survives stage-back and the
@@ -1198,13 +1190,16 @@ impl Adapter {
     /// only when entered — untouched otherwise), one undo step. A
     /// parse refusal dispatches nothing and keeps the typed text.
     fn commit_plan_place(&mut self, task: TaskId) -> Vec<FlowOutcome> {
-        let Some(time) = crate::due_edit::parse_time_lenient(&self.plan_time_text) else {
+        let Some(place) = self.view_state.plan_place() else {
             return Vec::new();
         };
-        let effort = if self.plan_effort_text.trim().is_empty() {
+        let Some(time) = crate::due_edit::parse_time_lenient(&place.time_text) else {
+            return Vec::new();
+        };
+        let effort = if place.effort_text.trim().is_empty() {
             None
         } else {
-            match taskboard_domain::Effort::parse_text_form(&self.plan_effort_text) {
+            match taskboard_domain::Effort::parse_text_form(&place.effort_text) {
                 Some(effort) => Some(effort),
                 None => return Vec::new(),
             }
@@ -1215,9 +1210,9 @@ impl Adapter {
             taskboard_domain::days::next_day_window(day.now, self.day_start.0, self.day_start.1);
         let date = cal.calendar_date(next_start);
         let instant = cal.instant(date, time);
+        // The commit's consume is the flow's end — the level drops
+        // with its buffers (D-H2).
         self.view_state.end_plan_place();
-        self.plan_time_text.clear();
-        self.plan_effort_text.clear();
         vec![
             FlowOutcome::Command(taskboard_domain::StateCommand::UpdateTask {
                 id: task,
@@ -2814,8 +2809,7 @@ impl Adapter {
             // discipline: Escape out of the flow first) — the
             // placement form's own rung excepted: form → pane.
             (Flow::PlanPlace { .. }, UiEffect::OpenPlanNextDay) => {
-                self.plan_time_text.clear();
-                self.plan_effort_text.clear();
+                // The discard's wipe is the level's drop (D-H2).
                 self.view_state.close_plan_place()
             }
             // The commit funnel: parse → mask → ONE command (the
@@ -2878,13 +2872,12 @@ impl Adapter {
             // The row verbs (dispatch-time gating: the rows only
             // render on the surface; a stale target is inert).
             (Flow::None, UiEffect::PlanBeginPlace(task)) => {
-                self.plan_time_text.clear();
-                self.plan_effort_text.clear();
+                let outcomes = self.view_state.open_plan_place(task);
                 // Re-opening a placed box edits that box (D-3): the
                 // form seeds from the row's instant — tomorrow's box
                 // only (a stale scheduled stamp from any earlier day
                 // seeds nothing; the commit would re-place to
-                // tomorrow).
+                // tomorrow). The seed rides the freshly minted level.
                 if let Some(scheduled) = state.tasks.get(&task).and_then(|t| t.scheduled) {
                     let (next_start, _) = taskboard_domain::days::next_day_window(
                         self.day_ctx().now,
@@ -2892,17 +2885,19 @@ impl Adapter {
                         self.day_start.1,
                     );
                     if scheduled >= next_start {
-                        self.plan_time_text = crate::presentation::plan_box_time_phrase(
+                        let phrase = crate::presentation::plan_box_time_phrase(
                             Some(scheduled),
                             self.calendar(),
                         );
+                        if let Some(place) = self.view_state.plan_place_mut() {
+                            place.time_text = phrase;
+                        }
                     }
                 }
-                self.view_state.open_plan_place(task)
+                outcomes
             }
             (Flow::None, UiEffect::PlanRemoveBox(task)) => {
-                self.plan_time_text.clear();
-                self.plan_effort_text.clear();
+                // The unplace's wipe is the level's drop (D-H2).
                 self.view_state.remove_plan_box(task)
             }
             (Flow::None, effect @ (UiEffect::PlanBoxEarlier(_) | UiEffect::PlanBoxLater(_))) => {
@@ -6173,8 +6168,6 @@ pub(crate) fn install(
         convert_target: None,
         recur_pause_open: false,
         recur_confirm_armed: false,
-        plan_time_text: String::new(),
-        plan_effort_text: String::new(),
         walk_resume: None,
         walk_answers: Vec::new(),
         walk_date_text: String::new(),
@@ -6992,7 +6985,11 @@ fn install_today_row_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     a.route(&window, ActionId::PlanBeginPlace);
     // A placed row's re-open seeds the form from the box's instant
     // (D-3): echo the seeded buffer so the mounting field shows it.
-    window.set_plan_time_text(SharedString::from(a.plan_time_text.clone()));
+    window.set_plan_time_text(SharedString::from(
+        a.view_state
+            .plan_place()
+            .map_or(String::new(), |place| place.time_text.clone()),
+    ));
 
     });
 
@@ -7009,8 +7006,6 @@ fn install_today_row_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     else {
         return; // a stale index degrades to a no-op
     };
-    a.plan_time_text.clear();
-    a.plan_effort_text.clear();
     a.plan_target = Some(task);
     a.route(&window, ActionId::PlanBeginPlace);
     window.set_plan_time_text(SharedString::new());
@@ -7060,15 +7055,19 @@ fn install_today_row_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     });
 
     install_seam!(window: window.on_plan_time_edited, adapter: adapter;
-    bind mut (a, _window), args (text), {        // The D9 mirror rule: the adapter-held buffers update per
+    bind mut (a, _window), args (text), {        // The D9 mirror rule: the level-held buffers update per
     // keystroke; a refresh never clobbers them while the flow
     // holds them.
-    a.plan_time_text = text.to_string();
+    if let Some(place) = a.view_state.plan_place_mut() {
+        place.time_text = text.to_string();
+    }
 
     });
 
     install_seam!(window: window.on_plan_effort_edited, adapter: adapter;
-    bind mut (a, _window), args (text), {        a.plan_effort_text = text.to_string();
+    bind mut (a, _window), args (text), {        if let Some(place) = a.view_state.plan_place_mut() {
+        place.effort_text = text.to_string();
+    }
 
     });
 
@@ -7077,10 +7076,16 @@ fn install_today_row_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     if matches!(a.view_state.flow(), crate::view_state::Flow::PlanPlace { .. }) {
         // The parse refusal kept the form: echo the typed text back
         // (the due editor's validity flavour, minus the tint).
-        window
-            .set_plan_time_text(SharedString::from(a.plan_time_text.clone()));
-        window
-            .set_plan_effort_text(SharedString::from(a.plan_effort_text.clone()));
+        window.set_plan_time_text(SharedString::from(
+            a.view_state
+                .plan_place()
+                .map_or(String::new(), |place| place.time_text.clone()),
+        ));
+        window.set_plan_effort_text(SharedString::from(
+            a.view_state
+                .plan_place()
+                .map_or(String::new(), |place| place.effort_text.clone()),
+        ));
     } else {
         window.set_plan_time_text(SharedString::new());
         window.set_plan_effort_text(SharedString::new());
@@ -7089,8 +7094,7 @@ fn install_today_row_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     });
 
     install_seam!(window: window.on_plan_place_cancel, adapter: adapter;
-    bind mut (a, _window), args (), {        a.plan_time_text.clear();
-    a.plan_effort_text.clear();
+    bind mut (a, _window), args (), {        // The cancel's wipe is the level's drop (D-H2).
     a.view_state.close_plan_place();
 
     });
