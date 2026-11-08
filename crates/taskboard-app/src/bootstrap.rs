@@ -190,13 +190,16 @@ pub struct FilesSyncSpawnSpec {
 ///
 /// [`FilesSyncGateError`]: credential resolution, client URL
 /// rejection, or the data dir.
+#[allow(clippy::too_many_arguments)] // the gate's injected seams, the Deck module's shape
 async fn files_sync_spawn(
     spec: &FilesSyncSpawnSpec,
     credentials: Arc<dyn CredentialStore>,
     config: &AppConfig,
     system: broadcast::Sender<SystemEvent>,
+    engine_reader: Arc<dyn taskboard_domain::SyncStateReader>,
     shared: Arc<arc_swap::ArcSwap<taskboard_domain::AppState>>,
     report_tx: tokio::sync::mpsc::Sender<taskboard_domain::UserDataReport>,
+    board_reports: tokio::sync::mpsc::Sender<taskboard_domain::SyncReport>,
 ) -> Result<
     (
         JoinHandle<()>,
@@ -232,11 +235,20 @@ async fn files_sync_spawn(
         // materialised per cycle; and the engine's user-data lane for
         // the import step (D-ES5).
         Arc::new(PublishedState::new(shared)),
+        // The board lanes' state seam (chunk 5): the engine handle's
+        // ADR-0005 read; and the fan-in SyncReport inbox, the files
+        // actor being one more reporting actor beside the registry's.
+        engine_reader,
         report_tx,
+        board_reports,
         // The broadcast is the engine's system feed; the actor consumes
         // only `Shutdown` and publishes nothing on it.
         system,
-        config.files_sync_config(),
+        {
+            let mut cfg = config.files_sync_config();
+            cfg.connector = spec.identity.clone();
+            cfg
+        },
     );
     tracing::info!(identity = %spec.identity, "files-sync actor spawned");
     Ok((join, status_rx))
@@ -1526,8 +1538,13 @@ async fn bootstrap_with_modules(
                 credentials.clone(),
                 &config,
                 system.clone(),
+                Arc::new(engine.clone()) as Arc<dyn taskboard_domain::SyncStateReader>,
                 engine.shared_state(),
                 user_data_tx,
+                // The files actor is one more reporting actor beside
+                // the registry's (chunk 5's board lane rides the same
+                // fan-in inbox).
+                reports.clone(),
             )
             .await;
             match gate {

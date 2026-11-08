@@ -1869,12 +1869,17 @@ pub fn apply_files_board_snapshot(
     };
 
     // ---- 3. Stacks → labels → tasks: identity-keyed pair merges -----
+    // An adopted row may arrive keyed to the reporter's provisional
+    // board id (the discovery fold decodes against the subtree uuid
+    // before any local binding exists); the adopted board's id is the
+    // truth, so the children re-key to it.
     let files_stack_ref = |stack: StackId| RemoteStackRef {
         board: snapshot.board,
         stack: RemoteStackId::files(stack.as_uuid()),
     };
     for row in &snapshot.stacks {
         let mut bound = row.clone();
+        bound.board = board_id;
         bound.remote = Some(files_stack_ref(row.id));
         if let Some(local) = stacks.get(&row.id).cloned() {
             stacks.insert(row.id, crate::reconcile::merge_stack_pair(&local, &bound));
@@ -1884,6 +1889,7 @@ pub fn apply_files_board_snapshot(
     }
     for row in &snapshot.labels {
         let mut bound = row.clone();
+        bound.board = board_id;
         bound.remote = Some(crate::ids::RemoteLabelRef {
             board: snapshot.board,
             label: crate::ids::RemoteLabelId::files(row.id.as_uuid()),

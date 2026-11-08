@@ -2066,6 +2066,54 @@ pub fn time_entries_for(
     now: DateTime<Utc>,
     author: Option<crate::ids::AuthorId>,
 ) -> BTreeMap<String, TimeEntryRecord> {
+    time_entries_for_lane(entries, tasks, now, author, |task| {
+        let binding = task.remote.as_ref()?;
+        if binding.board != board {
+            return None; // unbound or another board's document
+        }
+        // The card key is the Deck wire number (the sidecar is a
+        // Deck-endpoint artifact); a Files payload has no Deck
+        // number and no sidecar home — the entry is skipped.
+        binding.card.as_deck().map(|n| n.to_string())
+    })
+}
+
+/// The files lane's time-entries builder (D-BF9): the sidecar's
+/// retention window and row codec verbatim, but the card key is the
+/// task's *domain UUID* (files rows carry no Deck card number) and
+/// membership reads the files binding, not a Deck one. Pair of
+/// [`time_entries_for`] — the two share [`time_entries_for_lane`],
+/// diverging only in the lane's card-key shape.
+#[must_use]
+pub fn files_time_entries_for(
+    entries: &BTreeMap<crate::ids::TimeEntryId, crate::tracking::TimeEntry>,
+    tasks: &BTreeMap<crate::ids::TaskId, crate::entities::Task>,
+    stacks: &BTreeMap<crate::ids::StackId, crate::entities::Stack>,
+    board: crate::ids::BoardId,
+    now: DateTime<Utc>,
+    author: Option<crate::ids::AuthorId>,
+) -> BTreeMap<String, TimeEntryRecord> {
+    time_entries_for_lane(entries, tasks, now, author, |task| {
+        let stack = stacks.get(&task.stack)?;
+        if stack.board != board {
+            return None; // another board's document
+        }
+        task.remote.as_ref()?.board.as_files()?; // unbound: no files home
+        Some(task.id.as_uuid().to_string())
+    })
+}
+
+/// The lane-shared time-entries builder body: retention window and row
+/// codec once, with each sync lane supplying its own card key +
+/// membership predicate (Deck keys by wire card number, files by the
+/// domain UUID).
+fn time_entries_for_lane(
+    entries: &BTreeMap<crate::ids::TimeEntryId, crate::tracking::TimeEntry>,
+    tasks: &BTreeMap<crate::ids::TaskId, crate::entities::Task>,
+    now: DateTime<Utc>,
+    author: Option<crate::ids::AuthorId>,
+    card_key_of: impl Fn(&crate::entities::Task) -> Option<String>,
+) -> BTreeMap<String, TimeEntryRecord> {
     let window_start = time_entry_window_start(now);
     entries
         .iter()
@@ -2074,14 +2122,7 @@ pub fn time_entries_for(
                 return None; // aged: never re-emitted (D-T13)
             }
             let task = tasks.get(&entry.task)?;
-            let binding = task.remote.as_ref()?;
-            if binding.board != board {
-                return None; // unbound or another board's document
-            }
-            // The card key is the Deck wire number (the sidecar is a
-            // Deck-endpoint artifact); a Files payload has no Deck
-            // number and no sidecar home — the entry is skipped.
-            let card_key = binding.card.as_deck()?.to_string();
+            let card_key = card_key_of(task)?;
             Some((
                 id.as_uuid().to_string(),
                 TimeEntryRecord::Entry {

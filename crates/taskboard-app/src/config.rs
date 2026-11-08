@@ -1813,6 +1813,11 @@ impl AppConfig {
     #[must_use]
     pub fn files_sync_config(&self) -> taskboard_sync_files_nextcloud::actor::FilesSyncConfig {
         taskboard_sync_files_nextcloud::actor::FilesSyncConfig {
+            // The ownership tag: the bootstrap's spawn spec carries the
+            // config-minted connector id; the default here keeps the
+            // pure config builder self-contained (the gate overwrites
+            // it from the spec).
+            connector: taskboard_domain::ids::ConnectorId::from("files-sync"),
             poll_interval: Duration::from_secs(
                 self.files_sync
                     .poll_secs
