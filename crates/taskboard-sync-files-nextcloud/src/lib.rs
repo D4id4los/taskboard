@@ -40,6 +40,7 @@
 #![forbid(unsafe_code)]
 
 pub mod actor;
+pub mod board_cycle;
 pub mod client;
 pub mod cycle;
 pub mod device;

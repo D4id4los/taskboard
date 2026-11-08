@@ -108,6 +108,10 @@ impl FilesTransport for SharedFake {
         self.fake.propfind_devices().await
     }
 
+    async fn propfind_tree(&self, path: &str) -> Result<PropfindListing, TransportError> {
+        self.fake.propfind_tree(path).await
+    }
+
     async fn get(&self, path: &str) -> Result<FileContent, TransportError> {
         self.fake.get(path).await
     }
@@ -129,8 +133,12 @@ impl FilesTransport for SharedFake {
 /// One full engine: in-memory repo, frozen clock, live user-data lane.
 struct Side {
     engine: EngineHandle,
+    /// The side's F1 author stamp (chunk 1): distinct per device, so
+    /// the winner's author slot names the writer on every reader.
+    author: taskboard_domain::ids::AuthorId,
     clock: Arc<FrozenClock>,
     user_data_tx: tokio::sync::mpsc::Sender<UserDataReport>,
+    board_report_tx: tokio::sync::mpsc::Sender<SyncReport>,
     system: tokio::sync::broadcast::Sender<SystemEvent>,
     fake: Arc<FakeFilesTransport>,
     /// Keeps the engine's join handle alive for the journey's lifetime.
@@ -150,8 +158,11 @@ async fn spawn_side(
         ids.new_reflection_id();
     }
     let clock = FrozenClock::new(start_secs);
+    let author = taskboard_domain::ids::AuthorId::from_uuid(uuid::Uuid::from_u128(
+        u128::try_from(start_secs).expect("side seed"),
+    ));
     let (sync_out, _sync_in) = tokio::sync::mpsc::channel::<SyncCommand>(8);
-    let (_report_tx, report_rx) = tokio::sync::mpsc::channel::<SyncReport>(8);
+    let (report_tx, report_rx) = tokio::sync::mpsc::channel::<SyncReport>(8);
     let (user_data_tx, user_data) = tokio::sync::mpsc::channel::<UserDataReport>(4);
     let (system, system_rx) = tokio::sync::broadcast::channel::<SystemEvent>(8);
     let (notifier, _notifications) = tokio::sync::mpsc::channel::<NotifierMessage>(64);
@@ -167,7 +178,7 @@ async fn spawn_side(
         notifier,
         taskboard_domain::SettingsSnapshot::default(),
         DayRollConfig::disabled(),
-        None,
+        Some(author),
     )
     .await
     .expect("engine boots");
@@ -175,8 +186,10 @@ async fn spawn_side(
     (
         Side {
             engine,
+            author,
             clock,
             user_data_tx,
+            board_report_tx: report_tx,
             system,
             fake,
             _join: join,
@@ -288,9 +301,12 @@ impl Side {
             },
             device_json,
             Arc::new(PublishedState::new(self.engine.shared_state())),
+            Arc::new(self.engine.clone()),
             self.user_data_tx.clone(),
+            self.board_report_tx.clone(),
             self.system.clone(),
             FilesSyncConfig {
+                connector: taskboard_domain::ids::ConnectorId::from("files-sync"),
                 poll_interval: POLL,
                 backoff_initial: Duration::from_millis(50),
                 backoff_max: Duration::from_millis(200),
@@ -502,6 +518,199 @@ async fn settings_and_proofs_converge(a: &Side, b: &Side) {
             && six(&rb)
             && ia.is_delivered(&rule_ref, &occurrence)
             && ib.is_delivered(&rule_ref, &occurrence)
+    })
+    .await;
+}
+
+/// The board-over-files journey (dispatch chunk 5): A creates and
+/// binds a files board, drains its dirty entities into a chunk; B
+/// discovers the foreign subtree, folds first (publishing nothing
+/// until then), adopts via the engine's binding mint, edits the task;
+/// both engines converge to one board state — through the ordinary
+/// per-field LWW pipeline, with no Deck actor anywhere (the
+/// no-sidecar posture is the journey's shape: no anchor card can
+/// exist because no Deck lane exists to mint one).
+#[tokio::test(start_paused = true)]
+#[allow(clippy::too_many_lines)] // one journey: create, bind, drain, discover, adopt, rename, converge
+async fn two_engines_converge_a_files_board() {
+    use taskboard_domain::{CommandOutcome, StateCommand};
+
+    let fake = Arc::new(FakeFilesTransport::new());
+    fake.seed_dirs(&["taskboard"]);
+    let (a, dir_a) = spawn_side(1_000, 10, fake.clone()).await;
+    let (b, dir_b) = spawn_side(1_000, 20, fake.clone()).await;
+
+    // A: board + stack + card, bound to its files connector.
+    let board_uuid = uuid::Uuid::from_u128(0xB0A1D);
+    let CommandOutcome::CreatedBoard(board) = a
+        .engine
+        .execute(StateCommand::CreateBoard {
+            title: "shared board".into(),
+            color: taskboard_domain::Color::new("2a9d8f"),
+        })
+        .await
+        .expect("accepted")
+    else {
+        panic!("wrong receipt");
+    };
+    let CommandOutcome::CreatedStack(stack) = a
+        .engine
+        .execute(StateCommand::CreateStack {
+            board,
+            title: "column".into(),
+            order: 1,
+        })
+        .await
+        .expect("accepted")
+    else {
+        panic!("wrong receipt");
+    };
+    let CommandOutcome::CreatedTask(task) = a
+        .engine
+        .execute(StateCommand::CreateTask {
+            title: "seed card".into(),
+            stack,
+            order: 1,
+        })
+        .await
+        .expect("accepted")
+    else {
+        panic!("wrong receipt");
+    };
+    a.engine
+        .execute(StateCommand::BindBoard {
+            board,
+            remote: taskboard_domain::RemoteBoardId::files(board_uuid),
+            connector: taskboard_domain::ids::ConnectorId::from("files-sync"),
+        })
+        .await
+        .expect("accepted");
+
+    // B starts binding-less: the discovery door is the journey's
+    // point (no opt-in command on B's side).
+    let _actors_a = a.spawn_actor(dir_a.path().join("device.json"));
+    let a_device = device_id(dir_a.path()).await;
+    // The chunk's file name is its range's last seq (chunk 4's
+    // grammar); wait for any ops file in A's subtree.
+    let a_ops_prefix = format!("taskboard/boards/{board_uuid}/devices/{a_device}/ops/");
+    {
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
+        while !fake
+            .requests()
+            .iter()
+            .any(|r| r.method == "PUT" && r.path.starts_with(&a_ops_prefix))
+        {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            assert!(
+                std::time::Instant::now() < deadline,
+                "a's chunk never published; requests: {:?}",
+                fake.requests()
+                    .iter()
+                    .map(|r| format!("{} {}", r.method, r.path))
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+    until("a's outbox drains", || {
+        a.engine
+            .shared_state()
+            .load()
+            .sync
+            .get(board)
+            .is_none_or(|row| row.pending_ops == 0)
+    })
+    .await;
+
+    // B: the discovery fold-first adoption — B's actor finds the
+    // foreign subtree, folds it, and the engine mints the binding.
+    let _actors_b = b.spawn_actor(dir_b.path().join("device.json"));
+    let task_title = |side: &Side, task: taskboard_domain::TaskId| {
+        side.engine
+            .shared_state()
+            .load()
+            .tasks
+            .get(&task)
+            .map(|t| t.title.clone())
+    };
+    until("b adopts the board", || {
+        let state = b.engine.shared_state().load();
+        state.boards.get(&board).is_some_and(|row| {
+            row.remote.as_ref().is_some_and(|binding| {
+                binding.connector.as_str() == "files-sync"
+                    && binding.board.as_files() == Some(board_uuid)
+            })
+        }) && task_title(&b, task).as_deref() == Some("seed card")
+    })
+    .await;
+
+    // B edits the card; A converges (per-field LWW, the same
+    // pipeline a Deck snapshot takes).
+    // Re-fetch B's local id for A's task (identity on files is the
+    // domain UUID, so B's row IS A's row).
+    let shared_task = {
+        let state = b.engine.shared_state().load();
+        state
+            .tasks
+            .values()
+            .find(|t| t.title == "seed card")
+            .map(|t| t.id)
+            .expect("B adopted the task")
+    };
+    // A strictly later stamp: the rename wins its duel deterministically.
+    b.clock.advance_secs(60);
+    b.engine
+        .execute(StateCommand::UpdateTask {
+            id: shared_task,
+            changes: taskboard_domain::TaskChanges {
+                title: Some("renamed by b".into()),
+                ..taskboard_domain::TaskChanges::default()
+            },
+        })
+        .await
+        .expect("accepted");
+
+    // Terminal pins — one board state on both engines:
+    // 1. B's rename converged: both sides hold the same winning title.
+    // 2. The winner's author leg (chunk 1): the title's author slot is
+    //    B's author on BOTH readers — the stamp rode the chunk and the
+    //    snapshot end to end (B's strictly later clock picks the row;
+    //    the author proves which device's write survived).
+    until("a holds b's rename with b's author", || {
+        a.engine
+            .shared_state()
+            .load()
+            .tasks
+            .get(&shared_task)
+            .is_some_and(|t| t.title == "renamed by b" && t.authors.title == Some(b.author))
+    })
+    .await;
+    until("b holds its own rename with its author", || {
+        b.engine
+            .shared_state()
+            .load()
+            .tasks
+            .get(&shared_task)
+            .is_some_and(|t| t.title == "renamed by b" && t.authors.title == Some(b.author))
+    })
+    .await;
+    // 3. No Deck-tagged remote ref exists anywhere (the no-sidecar
+    //    posture — no anchor card, no Deck echo, no attachment lane).
+    // 4. The outboxes drain: the fleet went quiet.
+    until("outboxes drain and the fleet went quiet", || {
+        let (sa, sb) = (
+            a.engine.shared_state().load(),
+            b.engine.shared_state().load(),
+        );
+        let no_deck = sa.tasks.values().chain(sb.tasks.values()).all(|t| {
+            t.remote
+                .as_ref()
+                .is_none_or(|r| r.board.as_files().is_some())
+        });
+        let quiet = [sa.sync.iter(), sb.sync.iter()]
+            .into_iter()
+            .flatten()
+            .all(|(_, row)| row.pending_ops == 0);
+        no_deck && quiet
     })
     .await;
 }

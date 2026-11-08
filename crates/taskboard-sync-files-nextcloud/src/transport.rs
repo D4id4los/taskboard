@@ -33,6 +33,14 @@ pub trait FilesTransport: Send + Sync + 'static {
         &self,
     ) -> impl Future<Output = Result<PropfindListing, TransportError>> + Send;
 
+    /// The Depth-1 listing of a rooted subtree (`taskboard/...`, the
+    /// board lanes' change detection — F6): members carry served
+    /// etags; both child collections and files list.
+    fn propfind_tree(
+        &self,
+        path: &str,
+    ) -> impl Future<Output = Result<PropfindListing, TransportError>> + Send;
+
     /// Reads one file's bytes plus its served etag (`None` when the
     /// server sends none).
     fn get(&self, path: &str) -> impl Future<Output = Result<FileContent, TransportError>> + Send;
@@ -131,6 +139,13 @@ mod tests {
         #[allow(clippy::unused_async_trait_impl)] // the stub mirrors the trait's shape
         async fn mkcol(&self, _path: &str) -> Result<MkcolOutcome, TransportError> {
             Ok(MkcolOutcome::Created)
+        }
+
+        #[allow(clippy::unused_async_trait_impl)] // the stub mirrors the trait's shape
+        async fn propfind_tree(&self, _path: &str) -> Result<PropfindListing, TransportError> {
+            Ok(PropfindListing {
+                members: Vec::new(),
+            })
         }
 
         #[allow(clippy::unused_async_trait_impl)] // the stub mirrors the trait's shape

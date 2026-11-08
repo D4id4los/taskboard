@@ -298,24 +298,14 @@ impl WebDavFilesTransport {
     }
 }
 
-impl FilesTransport for WebDavFilesTransport {
-    async fn mkcol(&self, path: &str) -> Result<MkcolOutcome, TransportError> {
-        let url = self.url_for(path)?;
-        self.send_with_retries(mkcol_method(), url, Vec::new, None, |raw| {
-            map_status(&raw)?;
-            match raw.status {
-                StatusCode::CREATED => Ok(MkcolOutcome::Created),
-                StatusCode::METHOD_NOT_ALLOWED => Ok(MkcolOutcome::AlreadyExists),
-                other => Err(TransportError::Server(other.as_u16())),
-            }
-        })
-        .await
-    }
-
-    async fn propfind_devices(&self) -> Result<PropfindListing, TransportError> {
+impl WebDavFilesTransport {
+    /// One Depth-1 PROPFIND over a rooted trailing-slash path: the
+    /// listing verb every tree walk shares (the devices listing is the
+    /// per-user cycle's special case).
+    async fn propfind_depth1(&self, path: &str) -> Result<PropfindListing, TransportError> {
         let url = self
             .base_url
-            .join(&format!("{ROOT_FOLDER_NAME}/devices/"))
+            .join(path)
             .map_err(|_| TransportError::InvalidBaseUrl)?;
         self.send_with_retries(
             propfind_method(),
@@ -336,6 +326,30 @@ impl FilesTransport for WebDavFilesTransport {
             },
         )
         .await
+    }
+}
+
+impl FilesTransport for WebDavFilesTransport {
+    async fn mkcol(&self, path: &str) -> Result<MkcolOutcome, TransportError> {
+        let url = self.url_for(path)?;
+        self.send_with_retries(mkcol_method(), url, Vec::new, None, |raw| {
+            map_status(&raw)?;
+            match raw.status {
+                StatusCode::CREATED => Ok(MkcolOutcome::Created),
+                StatusCode::METHOD_NOT_ALLOWED => Ok(MkcolOutcome::AlreadyExists),
+                other => Err(TransportError::Server(other.as_u16())),
+            }
+        })
+        .await
+    }
+
+    async fn propfind_tree(&self, path: &str) -> Result<PropfindListing, TransportError> {
+        self.propfind_depth1(&format!("{path}/")).await
+    }
+
+    async fn propfind_devices(&self) -> Result<PropfindListing, TransportError> {
+        self.propfind_depth1(&format!("{ROOT_FOLDER_NAME}/devices/"))
+            .await
     }
 
     async fn get(&self, path: &str) -> Result<FileContent, TransportError> {

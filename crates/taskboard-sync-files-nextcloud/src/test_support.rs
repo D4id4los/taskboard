@@ -247,6 +247,32 @@ fn bump_ancestors(dirs: &mut BTreeMap<String, u64>, path: &str) {
     }
 }
 
+/// The tree listing's members: child collections *and* files (the
+/// board lanes' member-level change detection).
+fn listing_tree_members(state: &FakeState, prefix: &str) -> Vec<PropfindMember> {
+    let prefix = format!("{prefix}/");
+    state
+        .dirs
+        .iter()
+        .filter_map(|(path, rev)| {
+            path.strip_prefix(&prefix)
+                .filter(|rest| !rest.is_empty() && rest.split('/').count() == 1)
+                .map(|rest| PropfindMember {
+                    href: format!("{prefix}{rest}/"),
+                    etag: Some(etag_of(*rev)),
+                })
+        })
+        .chain(state.files.iter().filter_map(|(path, file)| {
+            path.strip_prefix(&prefix)
+                .filter(|rest| !rest.is_empty() && rest.split('/').count() == 1)
+                .map(|rest| PropfindMember {
+                    href: format!("{prefix}{rest}"),
+                    etag: Some(etag_of(file.1)),
+                })
+        }))
+        .collect()
+}
+
 fn listing_members(state: &FakeState, prefix: &str) -> Vec<PropfindMember> {
     // Direct child collections of `prefix`, in the model's order.
     let prefix = format!("{prefix}/");
@@ -319,6 +345,32 @@ impl FilesTransport for FakeFilesTransport {
         }
         Ok(PropfindListing {
             members: listing_members(&state, "taskboard/devices"),
+        })
+    }
+
+    #[allow(clippy::unused_async_trait_impl)] // the model is synchronous
+    async fn propfind_tree(&self, path: &str) -> Result<PropfindListing, TransportError> {
+        let mut state = self.state.lock().expect("fake lock");
+        Self::record(
+            &mut state,
+            RecordedRequest {
+                method: "PROPFIND".into(),
+                path: path.trim_end_matches('/').to_owned() + "/",
+                if_match: None,
+                if_none_match_star: false,
+                body: Vec::new(),
+            },
+        );
+        match Self::take_effect(&mut state) {
+            None | Some(Effect::Pass) => {}
+            Some(Effect::Status(status)) => return Err(status_error(status)),
+            Some(Effect::Body(body)) => {
+                return crate::extract::extract_207(&body).map_err(TransportError::from);
+            }
+            Some(Effect::Listing(members)) => return Ok(PropfindListing { members }),
+        }
+        Ok(PropfindListing {
+            members: listing_tree_members(&state, path.trim_end_matches('/')),
         })
     }
 

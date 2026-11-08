@@ -29,6 +29,9 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use taskboard_domain::Clock;
+use taskboard_domain::ids::ConnectorId;
+use taskboard_domain::messages::SyncReport;
+use taskboard_domain::persistence::SyncStateReader;
 use taskboard_domain::{AppState, UserDataReport};
 use taskboard_sync_files::document::{DOCUMENT_FORMAT, UserDocument, UserRecord, UserSections};
 use taskboard_sync_files::fold::fold;
@@ -139,6 +142,17 @@ pub struct SyncContext {
     /// seam. A closed lane logs once per delta and the actor keeps
     /// syncing — publishing still relays everything.
     pub report_tx: mpsc::Sender<UserDataReport>,
+    /// This connector's config-minted tag (DF-3): the board lanes'
+    /// ownership key — a lane serves the boards the chunk-3 map binds
+    /// to this connector.
+    pub connector: ConnectorId,
+    /// The engine reader (ADR 0005: sync reads via the engine): the
+    /// board lanes' view of the published state and the outbox.
+    pub state_reader: Arc<dyn SyncStateReader>,
+    /// The board lanes' report seam: `Completed` reports carrying
+    /// `Files` snapshots and echo-less push outcomes (chunk 5's
+    /// ingestion lane).
+    pub board_reports: mpsc::Sender<SyncReport>,
 }
 
 /// The actor's mutable state, process-local (decision D-FT4). A
@@ -192,6 +206,9 @@ pub struct LoopState {
     quiet_streak: u32,
     /// The current divergence finding (fires at `quiet_streak >= 2`).
     diverged_from: BTreeSet<DeviceId>,
+    /// The board lanes' cycle-bookkeeping (chunk 5): one lane per
+    /// files-owned board, created on first sighting.
+    pub board_lanes: crate::board_cycle::Lanes,
 }
 
 /// The quiescence window's length: the finding fires on the second
@@ -272,7 +289,7 @@ pub enum CycleVerdict {
 }
 
 /// Root-inclusive substrate path of a below-root layout path.
-fn rooted(rel: &str) -> String {
+pub(crate) fn rooted(rel: &str) -> String {
     format!("{ROOT_FOLDER_NAME}/{rel}")
 }
 
@@ -306,6 +323,10 @@ pub async fn run_cycle<T: FilesTransport>(
     } else {
         attach(transport, ctx, st).await
     };
+    // The board lanes ride the same tick (D2: one actor, two lanes) —
+    // best-effort: a lane's failure is logged per board and retried
+    // next tick; it never disturbs the per-user verdict.
+    let _lanes_ran = crate::board_cycle::run_board_lanes(transport, ctx, &mut st.board_lanes).await;
     match verdict {
         Ok((published, read_devices, import_rejected)) => {
             st.failure_streak = 0;
@@ -387,7 +408,7 @@ fn publish_status(
 
 /// The MKCOL ladder arm: created (201) or the exists-ok posture
 /// (405); any other status is a typed error.
-async fn mkcol_exists_ok<T: FilesTransport>(
+pub(crate) async fn mkcol_exists_ok<T: FilesTransport>(
     transport: &T,
     path: &str,
 ) -> Result<(), TransportError> {

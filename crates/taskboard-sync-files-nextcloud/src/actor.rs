@@ -19,6 +19,7 @@ use crate::cycle::{LocalDocument, LoopState, SyncContext};
 use crate::device::{self, DeviceIdentityError};
 use crate::poll::poll_backoff;
 use crate::transport::FilesTransport;
+use taskboard_domain::messages::SyncReport;
 use taskboard_domain::{SystemEvent, UserDataReport};
 use tokio::sync::{broadcast, mpsc, watch};
 use tokio::task::JoinHandle;
@@ -27,6 +28,9 @@ use tokio::task::JoinHandle;
 /// tables; tests inject tiny/paused values.
 #[derive(Clone)]
 pub struct FilesSyncConfig {
+    /// This connector's config-minted tag (DF-3): the board lanes'
+    /// ownership key (chunk 5).
+    pub connector: taskboard_domain::ids::ConnectorId,
     /// Idle wait between cycles after a success.
     pub poll_interval: Duration,
     /// First failure backoff (`initial * 2^(streak-1)`).
@@ -47,6 +51,7 @@ impl std::fmt::Debug for FilesSyncConfig {
             .field("backoff_initial", &self.backoff_initial)
             .field("backoff_max", &self.backoff_max)
             .field("clock", &self.clock)
+            .field("connector", &self.connector)
             .field("app_version", &self.app_version)
             .finish()
     }
@@ -66,11 +71,14 @@ impl std::fmt::Debug for FilesSyncConfig {
 /// Never: a `device.json` failure is the parked finding below, not a
 /// panic.
 #[must_use]
+#[allow(clippy::too_many_arguments)] // the injected-seams shape: transport, identity, local doc, state reader, two report lanes, system, config
 pub fn spawn_files_sync_actor<T: FilesTransport>(
     transport: T,
     device_json_path: PathBuf,
     local: Arc<dyn LocalDocument>,
+    state_reader: Arc<dyn taskboard_domain::persistence::SyncStateReader>,
     report_tx: mpsc::Sender<UserDataReport>,
+    board_reports: mpsc::Sender<SyncReport>,
     system: broadcast::Sender<SystemEvent>,
     cfg: FilesSyncConfig,
 ) -> (
@@ -82,7 +90,9 @@ pub fn spawn_files_sync_actor<T: FilesTransport>(
         transport,
         device_json_path,
         local,
+        state_reader,
         report_tx,
+        board_reports,
         system,
         cfg,
         status,
@@ -90,11 +100,14 @@ pub fn spawn_files_sync_actor<T: FilesTransport>(
     (join, status_rx)
 }
 
+#[allow(clippy::too_many_arguments)] // the spawn's seams, verbatim
 async fn run<T: FilesTransport>(
     transport: T,
     device_json_path: PathBuf,
     local: Arc<dyn LocalDocument>,
+    state_reader: Arc<dyn taskboard_domain::persistence::SyncStateReader>,
     report_tx: mpsc::Sender<UserDataReport>,
+    board_reports: mpsc::Sender<SyncReport>,
     system: broadcast::Sender<SystemEvent>,
     cfg: FilesSyncConfig,
     status: watch::Sender<crate::status::FilesSyncStatus>,
@@ -130,6 +143,9 @@ async fn run<T: FilesTransport>(
         clock: cfg.clock.clone(),
         local,
         report_tx,
+        connector: cfg.connector.clone(),
+        state_reader,
+        board_reports,
     });
     let mut st = LoopState::default();
     let mut sys_rx = system.subscribe();
@@ -269,6 +285,7 @@ mod tests {
 
     fn cfg() -> FilesSyncConfig {
         FilesSyncConfig {
+            connector: taskboard_domain::ids::ConnectorId::from("files-sync"),
             poll_interval: POLL,
             backoff_initial: Duration::from_millis(100),
             backoff_max: Duration::from_millis(400),
@@ -348,6 +365,14 @@ mod tests {
         status: std::cell::RefCell<watch::Receiver<FilesSyncStatus>>,
         /// The user-data lane's receiving half (the engine stand-in).
         reports: std::cell::RefCell<mpsc::Receiver<UserDataReport>>,
+        /// The board lanes' receiving half (the engine stand-in).
+        #[allow(dead_code)]
+        // the board lane's receiving half (unused by the per-user matrix)
+        board_reports: std::cell::RefCell<mpsc::Receiver<SyncReport>>,
+        /// The board lanes' state seam: an empty persisted state (no
+        /// files-owned boards — the per-user matrix runs lane-free).
+        #[allow(dead_code)]
+        state: Arc<dyn taskboard_domain::persistence::SyncStateReader>,
         /// The subscription made *before* the spawn: the authority pin
         /// reads it (broadcast receivers are not `Clone`).
         system_rx: (
@@ -391,6 +416,9 @@ mod tests {
         lane: (mpsc::Sender<UserDataReport>, mpsc::Receiver<UserDataReport>),
     ) -> Harness {
         let (report_tx, report_rx) = lane;
+        let (board_tx, board_rx) = mpsc::channel::<SyncReport>(4);
+        let state: Arc<dyn taskboard_domain::persistence::SyncStateReader> =
+            Arc::new(EmptyPersistedState);
         let dir = tempfile::tempdir().expect("temp dir");
         let device_path = dir.path().join("device.json");
         write_device_identity(&device_path);
@@ -400,7 +428,9 @@ mod tests {
             FakeHandle { fake: fake.clone() },
             device_path,
             local,
+            state.clone(),
             report_tx,
+            board_tx,
             system.clone(),
             cfg(),
         );
@@ -408,6 +438,8 @@ mod tests {
             fake,
             status: std::cell::RefCell::new(status),
             reports: std::cell::RefCell::new(report_rx),
+            board_reports: std::cell::RefCell::new(board_rx),
+            state,
             system_rx: (system, system_rx),
             _dir: dir,
         }
@@ -431,6 +463,12 @@ mod tests {
             &self,
         ) -> Result<crate::transport::PropfindListing, crate::error::TransportError> {
             self.fake.propfind_devices().await
+        }
+        async fn propfind_tree(
+            &self,
+            path: &str,
+        ) -> Result<crate::transport::PropfindListing, crate::error::TransportError> {
+            self.fake.propfind_tree(path).await
         }
         async fn get(
             &self,
@@ -528,7 +566,10 @@ mod tests {
         let harness = spawn_actor(FakeFilesTransport::new());
         let status = next_status(&harness).await;
         assert!(ok(&status), "attach must complete: {status:?}");
-        let expected: [(&str, String, bool); 7] = [
+        // Chunk 5: the board lanes ride the same tick — the per-user
+        // attach sequence, then the discovery scan's one cheap listing
+        // (no boards dir content: an empty account discovers nothing).
+        let expected: [(&str, String, bool); 8] = [
             ("MKCOL", "taskboard".into(), false),
             ("MKCOL", "taskboard/devices".into(), false),
             ("MKCOL", format!("taskboard/devices/{SELF}"), false),
@@ -536,6 +577,7 @@ mod tests {
             ("PROPFIND", "taskboard/devices/".into(), false),
             ("PUT", appdata_path(SELF), true),
             ("PUT", info_path(SELF), true),
+            ("PROPFIND", "taskboard/boards/".into(), false),
         ];
         let requests = log(&harness.fake);
         assert_eq!(requests.len(), expected.len(), "log: {requests:?}");
@@ -591,8 +633,8 @@ mod tests {
         );
         assert_eq!(
             harness.fake.count("PROPFIND", None),
-            propfinds_before + 1,
-            "exactly one cheap listing per cycle"
+            propfinds_before + 2,
+            "one cheap listing per lane: the per-user devices listing plus the discovery scan"
         );
     }
 
@@ -1011,11 +1053,14 @@ mod tests {
         let (system, _system_rx) = broadcast::channel(16);
         let fake = Arc::new(fake);
         let (report_tx, _report_rx) = mpsc::channel(4);
+        let (board_tx, _board_rx) = mpsc::channel::<SyncReport>(4);
         let (_join, mut watch_rx) = spawn_files_sync_actor(
             FakeHandle { fake: fake.clone() },
             device_path.clone(),
             Arc::new(crate::cycle::EmptyDocument),
+            Arc::new(EmptyPersistedState),
             report_tx,
+            board_tx,
             system,
             cfg(),
         );
@@ -1633,5 +1678,24 @@ mod tests {
             std::collections::BTreeSet::from([peer_id()]),
             "the failure held the streak, it did not reset it: {status:?}"
         );
+    }
+
+    /// The board lanes' empty state seam: no boards, no outbox — every
+    /// existing per-user matrix test runs lane-free.
+    #[derive(Debug)]
+    struct EmptyPersistedState;
+
+    impl taskboard_domain::persistence::SyncStateReader for EmptyPersistedState {
+        fn read_state(
+            &self,
+        ) -> taskboard_domain::BoxFuture<
+            '_,
+            Result<taskboard_domain::PersistedState, taskboard_domain::RepositoryError>,
+        > {
+            Box::pin(async { Ok(taskboard_domain::PersistedState::default()) })
+        }
+        fn read_settings(&self) -> taskboard_domain::SettingsSnapshot {
+            taskboard_domain::SettingsSnapshot::default()
+        }
     }
 }

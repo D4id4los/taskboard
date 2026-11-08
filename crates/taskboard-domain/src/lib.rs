@@ -134,6 +134,7 @@ pub use messages::{
     UserDataReport,
 };
 pub use outbox::{LocalOp, OpId, PendingOp};
+pub use ownership::BoardOwnershipMap;
 pub use persistence::{
     BoxFuture, PersistedState, PersistenceAction, RepositoryError, SyncStateReader, SyncValidators,
     TaskRepository, ValidatorKey, apply_actions,
