@@ -47,6 +47,14 @@ pub struct BoardChunk {
     /// The materialized entity writes; leniently decoded (relays
     /// included, never a chunk-killing error).
     pub entities: Vec<EntityEntry>,
+    /// The publisher's full board-level section view at write time
+    /// (time entries, reminder rules, dismissals, habits, habit log,
+    /// break rules — the sidecar document shape, domain-UUID keys),
+    /// serialized. Absent on a section-less chunk. Each chunk carries
+    /// the *whole* view, so the reader unions across chunks + the
+    /// snapshot floor per row clock (D-BF9: the fold never deltas).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sections: Option<Value>,
     /// Unknown envelope keys: carried verbatim (the relay rule).
     #[serde(flatten, default, skip_serializing_if = "BTreeMap::is_empty")]
     pub unknown: BTreeMap<String, Value>,
@@ -72,6 +80,7 @@ impl<'de> Deserialize<'de> for BoardChunk {
             last_seq: u64,
             written_at: DateTime<Utc>,
             entities: Vec<EntityEntry>,
+            sections: Option<Value>,
             #[serde(flatten, default)]
             unknown: BTreeMap<String, Value>,
         }
@@ -88,6 +97,7 @@ impl<'de> Deserialize<'de> for BoardChunk {
             last_seq: raw.last_seq,
             written_at: raw.written_at,
             entities: raw.entities,
+            sections: raw.sections,
             unknown: raw.unknown,
         })
     }
@@ -157,12 +167,46 @@ mod tests {
                 authored_entity(),
                 EntityEntry::Verbatim(json!({ "opaque": "future-peer-shape" })),
             ],
+            sections: None,
             unknown: BTreeMap::new(),
         };
         let back: BoardChunk =
             serde_json::from_value(serde_json::to_value(&chunk).expect("encodes"))
                 .expect("decodes");
         assert_eq!(back, chunk);
+    }
+
+    /// The section carriage (D-BF9): a chunk-5 chunk carries its
+    /// publisher's whole section view; a chunk-4-era chunk (no
+    /// sections key) decodes as section-less — the mixed-fleet
+    /// tolerance law.
+    #[test]
+    fn sections_ride_the_chunk_and_a_chunk4_era_chunk_decodes_section_less() {
+        let chunk = BoardChunk {
+            format_version: 1,
+            device_id: device(),
+            first_seq: 1,
+            last_seq: 1,
+            written_at: "2026-11-08T09:15:32Z".parse().expect("rfc3339"),
+            entities: Vec::new(),
+            sections: Some(json!({
+                "format": 1,
+                "board": "0193a1b2-c3d4-7cc9-8a2e-5f1e2d3c4b5a",
+                "time-entries": { "e1": { "entry": { "title": "deep work" } } }
+            })),
+            unknown: BTreeMap::new(),
+        };
+        let back: BoardChunk =
+            serde_json::from_value(serde_json::to_value(&chunk).expect("encodes"))
+                .expect("decodes");
+        assert_eq!(back.sections, chunk.sections);
+
+        let legacy: BoardChunk = serde_json::from_value(raw_chunk()).expect("decodes");
+        assert!(legacy.sections.is_none(), "absent sections decode as None");
+        assert!(
+            !legacy.unknown.contains_key("sections"),
+            "the sections key is a modeled slot, never an unknown relay"
+        );
     }
 
     #[test]

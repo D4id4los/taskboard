@@ -346,6 +346,7 @@ mod tests {
                         .collect();
                     let snapshot_state = fold_entries(own.iter());
                     let snapshot = BoardSnapshot {
+                sections: None,
                         unknown: std::collections::BTreeMap::new(),
                         format_version: BOARD_CHUNK_FORMAT,
                         device_id: crate::ids::DeviceId::mint(),
@@ -545,6 +546,7 @@ mod tests {
             let peer_delete = write(0xA1, "deleted", json!(true), 3_000);
             let snapshot_state = fold_board([peer_edit.clone(), peer_delete.clone()].iter());
             let snapshot = BoardSnapshot {
+                sections: None,
                 unknown: std::collections::BTreeMap::new(),
                 format_version: BOARD_CHUNK_FORMAT,
                 device_id: crate::ids::DeviceId::mint(),
