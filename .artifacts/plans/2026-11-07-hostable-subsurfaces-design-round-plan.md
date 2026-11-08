@@ -11,6 +11,8 @@
 - **Status**: **ACCEPTED** (2026-11-07, user) — Q1–Q7 ruled (§0);
   implementation is dispatched by
   `.artifacts/plans/2026-11-07-hostable-subsurfaces-implementation-dispatch-plan.md`.
+  **Implemented** (2026-11-08, chunks 1–3: `refactor/ui-slint-surface-chain`,
+  `refactor/ui-slint-level-state`, `refactor/ui-slint-nested-surface-ports`).
 
 ## 1. Context & verified anchors (`main` @ `0448cceb`)
 
