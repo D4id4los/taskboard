@@ -960,6 +960,7 @@ impl Adapter {
         at_key_doorway: bool,
     ) -> Vec<ContextId> {
         let flow = self.view_state.flow().clone();
+        let chain = self.view_state.chain_tags();
         let editor_focus = window
             .global::<crate::EditingFacts>()
             .get_editor_focus_count()
@@ -972,6 +973,7 @@ impl Adapter {
                 .is_some_and(|editor| editor.picker.is_some()),
             editor_focus,
             flow: &flow,
+            chain: &chain,
             stroke,
             at_key_doorway,
         })
