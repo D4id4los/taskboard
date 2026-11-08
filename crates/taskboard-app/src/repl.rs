@@ -772,7 +772,10 @@ pub(crate) fn prefill_boards(
             BoardsCmd::Select { local_board, .. } => {
                 local_board.get_or_insert(current);
             }
-            BoardsCmd::Create { .. } | BoardsCmd::List { .. } | BoardsCmd::Use { .. } => {}
+            BoardsCmd::Create { .. }
+            | BoardsCmd::List { .. }
+            | BoardsCmd::Use { .. }
+            | BoardsCmd::Move { .. } => {}
         },
         Command::Stacks {
             cmd: StacksCmd::Add { board, .. },

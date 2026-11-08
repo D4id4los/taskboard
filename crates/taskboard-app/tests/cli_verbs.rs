@@ -1755,3 +1755,34 @@ mod ceremonies {
         join.await.expect("seed actor exits");
     }
 }
+
+/// The reverse direction is a typed refusal, and an unknown board is
+/// the ordinary unknown-board class.
+#[tokio::test]
+async fn boards_move_fences_the_reverse_and_refuses_unknown_boards() {
+    use taskboard_app::board_move_ceremony::{MoveDirection, run_on};
+
+    let server = wiremock::MockServer::start().await;
+    mount_get(&server, "/ocs/v2.php/cloud/capabilities", String::new()).await;
+    let dir = tempdir();
+    let config = config_for(&server.uri(), dir.path(), "move.db");
+    let store = store_for(&server.uri());
+    let sink = taskboard_app::bootstrap::resolve_notifier_sink(&config);
+    let app = taskboard_app::bootstrap::bootstrap(config, Arc::clone(&store), sink)
+        .await
+        .expect("boots");
+    let unknown = taskboard_domain::BoardId::from_uuid(uuid::Uuid::from_u128(0xdead));
+    let budget = Duration::from_secs(1);
+
+    let fenced = run_on(&app, &store, unknown, MoveDirection::ToDeck, budget)
+        .await
+        .expect_err("fenced");
+    assert_eq!(fenced.error_kind(), "move-reverse-fenced");
+
+    let missing = run_on(&app, &store, unknown, MoveDirection::ToFiles, budget)
+        .await
+        .expect_err("unknown");
+    assert_eq!(missing.error_kind(), "unknown-board");
+
+    let _ = app.shutdown().await;
+}

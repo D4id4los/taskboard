@@ -418,6 +418,8 @@ runtime contract; the deployment pieces are:
   variables are imported via =/etc/default/taskboard-kiosk=, the
   unit anchors at =graphical.target=); install steps live in the
   file's header comment.
+- =docs/boards-move-runbook.org= — moving a board from Deck to the
+  files tier, the undo window, and mixed-fleet operation.
 - =docs/kiosk_bringup_runbook.org= — the bring-up runbook: the
   minimal image checklist, the software-renderer selection seam,
   the on-device harness invocation, the four budget verdicts, and

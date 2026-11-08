@@ -1,0 +1,92 @@
+#+title: taskboard Board-Move Runbook
+#+options: toc:t
+
+Moving a board from Deck to the files tier (=boards move=, D-BF11)
+and running Deck boards and files boards side by side. Every step
+names the code symbol it exercises.
+
+*Current limit.* Only the moving device is implemented. Other devices
+holding the same Deck board do not adopt the move: the
+=Finding::BoardMovedToFiles= detection and fold-first adoption are not
+built (issue #689). Until they are, move a board only when this is the
+single device syncing it. On any other device with files sync enabled,
+the discovery door in =board_cycle::discover_subtrees= will fold the
+published subtree as a second, separate board.
+
+* 1. Moving a board
+
+Stop editing the board on this device, then run
+=boards move <board-uuid> --to-files=. Requires =[files_sync] enabled=
+(otherwise =MoveError::FilesSyncDisabled=).
+
+| Step | Effect | Symbol |
+|---+---+---|
+| 1 | Final Deck cycle, then the outbox must be quiet | =MoveWorld::pull_deck=, =MoveError::OutboxNotQuiescent= |
+| 2 | Publish the snapshot floor at =boards/<board-uuid>/= | =publish_move_floor= |
+| 3 | Retire the Deck binding (=UnbindBoard=) | =MoveStep::DeckRetired= |
+| 4 | Commit the files binding (=BindBoard=) | =MoveStep::FilesAssigned= |
+
+The position is derived by =derive_move_stage= from the binding row
+and =probe_move_subtree=; nothing is checkpointed. After any
+interruption, rerun the same command. A rerun after the commit does
+nothing.
+
+* 2. The undo window
+
+Open only at =MoveStage::DeckRetired= (retired, not yet committed),
+which in practice means a run that was interrupted between steps 3 and
+4. =boards move <board-uuid> --undo= restores the Deck binding and runs
+a Deck cycle. The coordinates are rebuilt from the board's kept stack
+references and the single configured connector; with no stack
+references or several connectors the refusal is
+=MoveError::UndoCoordinatesLost=.
+
+The commit closes the window: =MoveError::UndoClosed=.
+
+After an undo, the published subtree is orphaned. Delete
+=boards/<board-uuid>/= by hand in the Nextcloud web UI before
+retrying from another device; the app never deletes on the server.
+
+* 3. Mixed-fleet operation
+
+Each board has exactly one owner, its binding row
+(=BoardOwnershipMap=). Deck boards sync through their Deck connector
+and files boards through =files-sync=, under one account. During a
+move the row goes Deck, then unbound, then files, so two owners are
+not representable.
+
+* 4. Retiring the Deck board on the server
+
+The ceremony never deletes the Deck board. Delete it yourself only
+after every device has left it. A device still bound to a deleted Deck
+board treats the absence as a real deletion and tombstones the board.
+Recovery for files-side losses is in =files-sync-runbook.org= §2.
+
+* 5. The reverse direction is fenced
+
+=boards move --to-deck= always refuses with =MoveError::ReverseFenced=
+(ruling Q4). Changing that takes a new design round.
+
+* 6. Symptoms
+
+** =OutboxNotQuiescent=
+*** Cause
+Edits are still queued for this board.
+*** Recovery (matches the code's semantics)
+Stop editing, run =sync=, rerun the move.
+*** What NOT to do
+Do not =boards unbind= to clear the queue; that strands the ops.
+
+** =FilesSubtreeForeign=
+*** Cause
+The target subtree has an identity but no directory for this device.
+*** Recovery (matches the code's semantics)
+Find which device wrote it before doing anything. The ceremony will
+not write into it.
+
+** =StrandedOps=
+*** Cause
+An edit landed between the guard and the retirement. The Deck binding
+is already retired at this point.
+*** Recovery (matches the code's semantics)
+Run =--undo= to restore the Deck binding, =sync=, and rerun the move.

@@ -30,6 +30,7 @@
 #![forbid(unsafe_code)]
 
 pub mod authority;
+pub mod board_move_ceremony;
 pub mod bootstrap;
 pub mod cli;
 pub mod commands;

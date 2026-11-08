@@ -262,6 +262,27 @@ pub enum DaemonCmd {
 /// `boards` subcommands.
 #[derive(Debug, Subcommand)]
 pub enum BoardsCmd {
+    /// Move a Deck board onto the files tier (resumable: rerun after any
+    /// interruption). `--to-deck` is a typed refusal; `--undo` restores
+    /// the Deck binding until the files binding commits.
+    #[command(group(clap::ArgGroup::new("move_direction").required(true)))]
+    Move {
+        /// The local board (uuid).
+        #[arg(value_parser = parse_board_id)]
+        board: taskboard_domain::BoardId,
+        /// Run the ceremony towards the files tier.
+        #[arg(long, group = "move_direction")]
+        to_files: bool,
+        /// Refused: the files-to-Deck direction is fenced.
+        #[arg(long, group = "move_direction")]
+        to_deck: bool,
+        /// Undo a move that has not committed.
+        #[arg(long, group = "move_direction")]
+        undo: bool,
+        /// Wait budget for the final Deck pull, in seconds.
+        #[arg(long, default_value_t = 60)]
+        timeout_secs: u64,
+    },
     /// List the server's boards (remote ids feed `boards select`).
     List {
         /// The connector whose server is listed; the default (first)
@@ -476,6 +497,22 @@ fn parse_board_id(raw: &str) -> Result<taskboard_domain::BoardId, String> {
     uuid::Uuid::parse_str(raw)
         .map(taskboard_domain::BoardId::from_uuid)
         .map_err(|_| "expected a board uuid".to_owned())
+}
+
+#[test]
+fn boards_move_demands_exactly_one_direction() {
+    use clap::Parser as _;
+    const BOARD: &str = "0193b400-0000-7c89-ab01-2345abcdef01";
+    let parse = |flags: &[&str]| {
+        let mut argv = vec!["taskboard", "boards", "move", BOARD];
+        argv.extend_from_slice(flags);
+        Cli::try_parse_from(argv)
+    };
+    assert!(parse(&["--to-files"]).is_ok());
+    assert!(parse(&["--to-deck"]).is_ok());
+    assert!(parse(&["--undo"]).is_ok());
+    assert!(parse(&[]).is_err());
+    assert!(parse(&["--to-files", "--undo"]).is_err());
 }
 
 #[test]

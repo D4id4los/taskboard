@@ -293,6 +293,15 @@ async fn read_scope(
     })
 }
 
+/// The board's queued outbox ops (the move ceremony's quiescence
+/// guard).
+pub(crate) async fn pending_ops_of(
+    app: &crate::App,
+    board: taskboard_domain::BoardId,
+) -> Result<usize, CommandError> {
+    Ok(read_scope(app, board).await?.pending_ops)
+}
+
 /// The shared ceremony body of `boards delete` / `boards reset`: refuse
 /// without `--confirm` (typed, stating what would go), else dispatch and
 /// report the landed counts.

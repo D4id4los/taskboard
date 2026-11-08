@@ -10,6 +10,16 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 ### Added
 
+- The Deck-to-files move ceremony, moving-device side (boards-over-files
+  chunk 6, D-BF11, #689): `boards move <board> --to-files` runs four
+  typed steps (final Deck pull and quiet outbox, publish the snapshot
+  floor, retire the Deck binding, commit the files binding) whose
+  position is derived from the binding row and the files tier, so any
+  interruption resumes by rerunning. `--undo` restores the Deck binding
+  until the commit; `--to-deck` is a typed refusal (ruling Q4). Other
+  devices do not adopt a moved board yet; see
+  `docs/boards-move-runbook.org`.
+
 - Boards over files (boards-over-files chunk 5, D-BF8–D-BF10, #688):
   boards ride the files substrate end to end. The files-sync actor
   gains the board lanes beside the per-user cycle — the chunk-3

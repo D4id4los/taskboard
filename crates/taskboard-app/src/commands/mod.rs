@@ -134,6 +134,9 @@ pub enum CommandError {
     /// The credential store failed.
     #[error("credential store failed")]
     Credential(#[from] CredentialError),
+    /// The Deck-to-files move ceremony refused or failed a step.
+    #[error("board move failed")]
+    BoardMove(#[from] crate::board_move_ceremony::MoveError),
     /// The engine rejected a command.
     #[error("engine rejected the command")]
     Engine(Box<taskboard_state::ExecuteError>),
@@ -558,6 +561,7 @@ impl CommandError {
             Self::ConnectionExists => "connection-exists",
             Self::ConfirmationRequired { .. } => "confirmation-required",
             Self::UnbindConfirmationRequired { .. } => "unbind-confirmation-required",
+            Self::BoardMove(err) => err.kind(),
             Self::ReconcileConfirmationRequired { .. } => "reconcile-confirmation-required",
             Self::IpcTransport => "ipc-transport",
             Self::IpcTimeout => "ipc-timeout",
@@ -1044,6 +1048,44 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
             move |config, store| async move { boards::reset(config, store, board, confirm).await },
         )
         .await,
+        Command::Boards {
+            cmd:
+                BoardsCmd::Move {
+                    board,
+                    to_files,
+                    to_deck,
+                    undo: _,
+                    timeout_secs,
+                },
+        } => {
+            let direction = move_direction(to_files, to_deck);
+            if direction == crate::board_move_ceremony::MoveDirection::ToDeck {
+                return report_to(
+                    &mut ctx.io,
+                    &CommandError::from(crate::board_move_ceremony::MoveError::ReverseFenced),
+                );
+            }
+            run_core(
+                &mut ctx.io,
+                ctx.config_path.clone(),
+                crate::board_move_ceremony::render_text,
+                move |config, store| async move {
+                    let sink = crate::bootstrap::resolve_notifier_sink(&config);
+                    let app = crate::bootstrap::bootstrap(config, Arc::clone(&store), sink).await?;
+                    let result = crate::board_move_ceremony::run_on(
+                        &app,
+                        &store,
+                        board,
+                        direction,
+                        Duration::from_secs(timeout_secs),
+                    )
+                    .await;
+                    let _ = app.shutdown().await;
+                    result
+                },
+            )
+            .await
+        }
         Command::Boards {
             cmd: BoardsCmd::Unbind { board, confirm },
         } => run_core(
@@ -1840,6 +1882,16 @@ pub async fn dispatch_line(
     }
 }
 
+/// The `boards move` flags, which clap makes mutually exclusive.
+fn move_direction(to_files: bool, to_deck: bool) -> crate::board_move_ceremony::MoveDirection {
+    use crate::board_move_ceremony::MoveDirection as D;
+    match (to_files, to_deck) {
+        (true, _) => D::ToFiles,
+        (_, true) => D::ToDeck,
+        _ => D::Undo,
+    }
+}
+
 /// The boards family over a booted session (ADR 0011): `list` reads the
 /// session config/store; `select`/`publish` run their connector
 /// preludes against the session before touching the core; `create`/
@@ -1959,6 +2011,24 @@ async fn boards_line(
             io,
             boards::reset_on(app, board, confirm).await,
             boards::render_text_destruct,
+        ),
+        BoardsCmd::Move {
+            board,
+            to_files,
+            to_deck,
+            undo: _,
+            timeout_secs,
+        } => emit_result(
+            io,
+            crate::board_move_ceremony::run_on(
+                app,
+                session.session_store(),
+                board,
+                move_direction(to_files, to_deck),
+                Duration::from_secs(timeout_secs),
+            )
+            .await,
+            crate::board_move_ceremony::render_text,
         ),
         BoardsCmd::Unbind { board, confirm } => emit_result(
             io,
