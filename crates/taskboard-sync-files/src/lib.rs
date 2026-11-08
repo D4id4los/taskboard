@@ -47,6 +47,7 @@
 
 pub mod board_chunk;
 pub mod board_fold;
+pub mod board_gc;
 pub mod board_identity;
 pub mod board_info;
 pub mod board_payload;
