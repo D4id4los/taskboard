@@ -177,3 +177,22 @@ mod tests {
         assert_eq!(deleted.value, json!(true));
     }
 }
+#[cfg(test)]
+mod fuzz {
+    use super::*;
+    use crate::test_support::json_value;
+    use proptest::prelude::*;
+    use taskboard_domain::test_support::proptest_config;
+
+    proptest! {
+        #![proptest_config(proptest_config(256))]
+
+        /// P8 — arbitrary JSON through the snapshot decode: typed
+        /// outcome, never a panic.
+        #[test]
+        fn arbitrary_snapshot_values_never_panic(raw in json_value()) {
+            let outcome = serde_json::from_value::<BoardSnapshot>(raw);
+            let _ = outcome.is_ok();
+        }
+    }
+}

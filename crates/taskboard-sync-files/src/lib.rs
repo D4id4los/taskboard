@@ -41,7 +41,13 @@
 //! identity payloads ([`identity`]), the heartbeat payload
 //! ([`heartbeat`]), the per-user document codec ([`document`]), the
 //! merge fold ([`fold`]), the state hash ([`hash`]), the `journal`
-//! section's entity codec ([`journal`]).
+//! section's entity codec ([`journal`]), and the per-board lifecycle
+//! (D-BF6/D-BF7): the board identity ([`board_identity`]), the
+//! board-lane heartbeat with the GC watermark ([`board_info`]), the
+//! materialized-entity payload schema ([`board_payload`]), the
+//! immutable chunks ([`board_chunk`]) and snapshots
+//! ([`board_snapshot`]), the board fold ([`board_fold`]), and the
+//! lifecycle decisions ([`board_gc`]).
 
 #![forbid(unsafe_code)]
 
