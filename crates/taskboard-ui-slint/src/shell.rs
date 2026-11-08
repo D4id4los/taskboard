@@ -92,6 +92,7 @@ impl KeymapShell {
             picker_open: false,
             editor_focus: false,
             flow: &crate::view_state::Flow::None,
+            chain: &[],
             stroke: None,
             at_key_doorway: false,
         })

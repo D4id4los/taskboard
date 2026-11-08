@@ -37,6 +37,11 @@ pub struct ScopeInputs<'a> {
     /// The view-state flow, pulled per intercept (the `EditDate`
     /// arming's other half).
     pub flow: &'a Flow,
+    /// The chain's flow tags, innermost first (D-H6/D9): the
+    /// concatenation walk's input. Callers that don't describe a
+    /// chain (the legacy synthetic states) pass empty — the legacy
+    /// boolean arms stay as the fallback.
+    pub chain: &'a [crate::surfaces::FlowTag],
     /// The pending stroke at the key doorway (`None` everywhere else —
     /// refresh-pass hint chains never arm the deltas).
     pub stroke: Option<crate::keymap::Stroke>,
@@ -90,10 +95,24 @@ pub fn scope_stack(inputs: &ScopeInputs) -> Vec<ContextId> {
     if shell.menu.open {
         return vec![ContextId::Menu];
     }
+    // The chain concatenation (D-H6/D9): the levels' declared
+    // contexts innermost-first, stopping at the first masking head.
+    // The nested children declare empty heads (`FlowTag::scope_head`'s
+    // `_` arm), so for every reachable state the walk finds the mask
+    // at the same position the flat single-level read did —
+    // byte-equal. The boolean arms below stay as the fallback for the
+    // legacy synthetic states the chain facts don't describe (the
+    // T-S1 checklist).
+    for tag in inputs.chain {
+        let head = tag.scope_head();
+        if !head.is_empty() {
+            return head.to_vec();
+        }
+    }
     // The five masking modals' heads are each kind's declaration
     // (D-H6/D10 — `FlowTag::scope_head`); the arming facts stay the
-    // `KeymapShell` booleans this chunk. Byte-equal to the retired
-    // hard-coded vectors for every legacy state (the T-S1 checklist).
+    // `KeymapShell` booleans. Byte-equal to the retired hard-coded
+    // vectors for every legacy state (the T-S1 checklist).
     if shell.palette {
         // The palette is the second modal context (D8).
         return crate::surfaces::FlowTag::Palette.scope_head().to_vec();
@@ -616,6 +635,7 @@ mod tests {
             picker_open,
             editor_focus,
             flow,
+            chain: &[],
             stroke: None,
             at_key_doorway: false,
         }
@@ -633,6 +653,55 @@ mod tests {
             stroke,
             ..inputs(shell, flow, picker_open, editor_focus)
         }
+    }
+
+    /// D9 — the concatenation: the synthetic depth-3 chain
+    /// `[root, TrackEntries, TrackEntryForm, EntryDatePicker]` reads
+    /// the same head as the flat single-level mask — the silent
+    /// children append nothing and the walk stops at the first
+    /// masking head.
+    #[test]
+    fn the_scope_stack_concatenates_the_chain_stopping_at_the_first_mask() {
+        use crate::surfaces::{FlowTag, Surface, Surfaces};
+        let task = TaskId::from_uuid(uuid::Uuid::now_v7());
+        let mut chain = Surfaces::rooted(crate::view_state::ViewId::TaskDetail);
+        chain
+            .push(Surface::Flow(Flow::TrackEntries { task }))
+            .expect("push");
+        chain
+            .push(Surface::Flow(Flow::TrackEntryForm { task, seed: None }))
+            .expect("push");
+        chain
+            .push(Surface::Flow(Flow::EntryDatePicker))
+            .expect("push");
+        let tags: Vec<FlowTag> = chain
+            .above_levels()
+            .iter()
+            .rev()
+            .filter_map(|level| level.flow().map(crate::view_state::Flow::tag))
+            .collect();
+        let shell = KeymapShell {
+            track_entries: true,
+            ..KeymapShell::default()
+        };
+        let no_flow = Flow::None;
+        let i = ScopeInputs {
+            shell: &shell,
+            picker_open: false,
+            editor_focus: false,
+            flow: &no_flow,
+            chain: &tags,
+            stroke: None,
+            at_key_doorway: false,
+        };
+        assert_eq!(
+            scope_stack(&i),
+            vec![
+                ContextId::TrackEntries,
+                ContextId::ViInsert,
+                ContextId::Global
+            ]
+        );
     }
 
     /// T-S1 — the port checklist (plan §4): every legacy chain shape

@@ -714,6 +714,18 @@ impl ViewState {
         self.end_top_flow_with(state, crate::surfaces::GuestExit::Cancelled)
     }
 
+    /// The chain's flow tags, innermost first (the scope stack's
+    /// concatenation input, D9).
+    #[must_use]
+    pub(crate) fn chain_tags(&self) -> Vec<crate::surfaces::FlowTag> {
+        self.surfaces
+            .above_levels()
+            .iter()
+            .rev()
+            .filter_map(|level| level.flow().map(Flow::tag))
+            .collect()
+    }
+
     /// Whether a flow level matching `pred` sits anywhere in the
     /// chain (the shell's modal-mask booleans' truth): the top-flow
     /// read alone lies when a child level holds the chain's top.
