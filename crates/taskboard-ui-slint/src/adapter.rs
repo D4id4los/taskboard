@@ -1721,7 +1721,8 @@ impl Adapter {
         };
         let start_slots = slots_for(&form.start_text, form.start_filter_armed);
         let end_slots = slots_for(&form.end_text, form.end_filter_armed);
-        let grid = form.picker.as_ref().map_or_else(
+        let picker = self.view_state.picker().map(|level| &level.picker);
+        let grid = picker.map_or_else(
             || ModelRc::new(slint::VecModel::from(Vec::new())),
             |picker| {
                 use chrono::Datelike as _;
@@ -1766,7 +1767,9 @@ impl Adapter {
         window.set_track_form_date_text(SharedString::from(form.date_text.clone()));
         window.set_track_form_date_validity(validity(parse.date_valid));
         window.set_track_form_date_hint(SharedString::from(crate::presentation::TRACK_DATE_HINT));
-        window.set_track_form_grid_open(form.picker.is_some());
+        // The grid's mirror follows the picker child's presence (N2):
+        // the child's death closes the grid on the next pass.
+        window.set_track_form_grid_open(picker.is_some());
         window.set_track_form_grid(grid);
         window.set_track_form_start_text(SharedString::from(form.start_text.clone()));
         window.set_track_form_start_validity(validity(parse.start_valid));
@@ -1828,7 +1831,6 @@ impl Adapter {
         };
         *form = TrackFormState {
             seed,
-            picker: None,
             date_text: start_local.map_or(today.format("%Y-%m-%d").to_string(), |l| {
                 l.format("%Y-%m-%d").to_string()
             }),
@@ -1933,6 +1935,14 @@ impl Adapter {
         {
             self.shell.date_picker_grid = false;
             window.global::<KeyboardState>().set_date_picker_grid(false);
+        }
+        // The form's picker child dies with its level (N2): the grid
+        // mirror cannot wait for a refresh that might not come.
+        if retired
+            .iter()
+            .any(|level| matches!(level.state(), crate::level_state::LevelState::Picker(_)))
+        {
+            window.set_track_form_grid_open(false);
         }
     }
 
@@ -8683,25 +8693,39 @@ fn install_tracking_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
 
     });
     install_seam!(window: window.on_track_form_grid_toggled, adapter: adapter;
-    bind mut (a, window), args (), {        let Some(form) = a.view_state.track_form_mut() else {
+    bind mut (a, window), args (), {        if a.view_state.picker().is_some() {
+        // The close half: the child ends `Cancelled` — the exit rides
+        // the one seam and the form ignores it; the refresh is what
+        // unmounts the grid.
+        let state = a.state.load();
+        let outcomes = a.view_state.close_entry_date_picker(&state);
+        a.apply_outcomes(&window, &outcomes);
+        a.finish_mutation(&window);
         return;
-    };
-    if form.picker.is_some() {
-        form.picker = None;
-    } else {
-        let anchor = chrono::NaiveDate::parse_from_str(&form.date_text, "%Y-%m-%d").ok();
-        let anchor = anchor.and_then(|d| {
-            use chrono::TimeZone as _;
-            chrono::Local
-                .from_local_datetime(&d.and_hms_opt(12, 0, 0).expect("noon"))
-                .single()
-                .map(|local| local.with_timezone(&chrono::Utc))
-        });
-        form.picker = Some(crate::due_edit::DuePickerState::open(
+    }
+    let outcomes = a.view_state.open_entry_date_picker();
+    a.apply_outcomes(&window, &outcomes);
+    // Seed the fresh child's picker state (the level mints clean):
+    // `date_text`'s anchor — the flattened toggle's noon arithmetic
+    // verbatim.
+    let date_text = a
+        .view_state
+        .track_form()
+        .map_or(String::new(), |form| form.date_text.clone());
+    let anchor = chrono::NaiveDate::parse_from_str(&date_text, "%Y-%m-%d").ok();
+    let anchor = anchor.and_then(|d| {
+        use chrono::TimeZone as _;
+        chrono::Local
+            .from_local_datetime(&d.and_hms_opt(12, 0, 0).expect("noon"))
+            .single()
+            .map(|local| local.with_timezone(&chrono::Utc))
+    });
+    if let Some(child) = a.view_state.picker_mut() {
+        child.picker = crate::due_edit::DuePickerState::open(
             chrono::Local::now().date_naive(),
             anchor,
             &chrono::Local,
-        ));
+        );
     }
     a.refresh_forced(&window);
 
@@ -8711,12 +8735,22 @@ fn install_tracking_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         let Some(key) = crate::due_edit::DatePickerKey::from_code(code) else {
         return;
     };
-    let Some(form) = a.view_state.track_form_mut() else {
+    // The grid's Enter ends the child `Cancelled` (D4): a grid that
+    // stayed open under a field-focused Enter would be a half-mounted
+    // level — the exact shape the protocol forbids. Nothing rendered
+    // changes but the grid closing: its mirror follows the child.
+    // The commit is the click's or the typed field's.
+    if key == K::Commit {
+        let state = a.state.load();
+        let outcomes = a.view_state.close_entry_date_picker(&state);
+        a.apply_outcomes(&window, &outcomes);
+        a.finish_mutation(&window);
         return;
-    };
-    let Some(picker) = form.picker.as_mut() else {
+    }
+    let Some(child) = a.view_state.picker_mut() else {
         return; // a stale stroke against a closed grid
     };
+    let picker = &mut child.picker;
     match key {
         K::Left => picker.move_days(-1),
         K::Right => picker.move_days(1),
@@ -8726,21 +8760,21 @@ fn install_tracking_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         K::NextMonth => picker.move_months(1),
         K::MonthStart => picker.month_edge(true),
         K::MonthEnd => picker.month_edge(false),
-        // The grid's Enter hands focus to the date field (the
-        // due grid's phase hand-over); the commit is the click's
-        // or the typed field's.
+        // The grid's Enter was the Cancelled rung above; the time
+        // half is unused in the form's date-only picker.
         K::Commit | K::TimeBack | K::TimeForward => {}
     }
     a.refresh_forced(&window);
 
     });
     install_seam!(window: window.on_track_form_day_clicked, adapter: adapter;
-    bind mut (a, window), args (cell), {        let Some(date) = a
+    bind mut (a, window), args (cell), {        use chrono::TimeZone as _;
+        let Some(date) = a
         .view_state
-        .track_form()
-        .and_then(|f| f.picker.as_ref())
-        .and_then(|picker| {
-            picker
+        .picker()
+        .and_then(|child| {
+            child
+                .picker
                 .grid()
                 .get(usize::try_from(cell).unwrap_or(usize::MAX))
                 .and_then(|c| c.date)
@@ -8748,12 +8782,29 @@ fn install_tracking_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     else {
         return; // a blank or a stale index
     };
-    let form = a.view_state.track_form_mut().expect("checked above");
-    if let Some(picker) = form.picker.as_mut() {
-        picker.set_cursor(date);
-    }
-    form.date_text = date.format("%Y-%m-%d").to_string();
-    a.refresh_forced(&window);
+    // The click completes the child with the picked day (N2): the
+    // noon-anchored instant — the parent's consumption formats its
+    // local date back (the `LevelResult::Date` round trip), so the
+    // cursor poke and the direct write retire with the flattened
+    // model.
+    let noon = date.and_hms_opt(12, 0, 0).expect("noon");
+    let resolved = chrono::Local
+        .from_local_datetime(&noon)
+        .single()
+        .or_else(|| chrono::Local.from_local_datetime(&noon).latest());
+    let instant = resolved.map_or_else(
+        || chrono::Utc.from_utc_datetime(&noon),
+        |local| local.with_timezone(&chrono::Utc),
+    );
+    let state = a.state.load();
+    let outcomes = a.view_state.end_top_flow_with(
+        &state,
+        crate::surfaces::GuestExit::Completed(Some(
+            crate::surfaces::LevelResult::Date(instant),
+        )),
+    );
+    a.apply_outcomes(&window, &outcomes);
+    a.finish_mutation(&window);
 
     });
     install_seam!(window: window.on_track_form_start_edited, adapter: adapter;
