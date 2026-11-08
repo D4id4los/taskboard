@@ -222,6 +222,81 @@ async fn discover_subtrees<T: FilesTransport>(
     folded
 }
 
+/// What the files tier holds at a move target's subtree, as this device
+/// reads it (the move ceremony's resume evidence, D-BF11).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MoveSubtreeProbe {
+    /// No identity: nothing was published.
+    Absent,
+    /// The identity and this device's directory exist, the floor does
+    /// not: a publish died midway and resumes.
+    Partial,
+    /// This device's snapshot floor exists.
+    Published,
+    /// An identity this device never attached to.
+    Foreign,
+}
+
+/// Reads the move target's subtree; see [`MoveSubtreeProbe`].
+///
+/// # Errors
+///
+/// Any transport failure other than the absences the probe classifies.
+pub async fn probe_move_subtree<T: FilesTransport>(
+    transport: &T,
+    device: DeviceId,
+    remote: uuid::Uuid,
+) -> Result<MoveSubtreeProbe, TransportError> {
+    let board = BoardId::from_uuid(remote);
+    let identity = crate::cycle::rooted(&board_identity_path(board));
+    match transport.get(&identity).await {
+        Ok(_) => {}
+        Err(TransportError::NotFound) => return Ok(MoveSubtreeProbe::Absent),
+        Err(err) => return Err(err),
+    }
+    let floor = crate::cycle::rooted(&board_snapshot_path(board, device, 0));
+    match transport.get(&floor).await {
+        Ok(_) => return Ok(MoveSubtreeProbe::Published),
+        Err(TransportError::NotFound) => {}
+        Err(err) => return Err(err),
+    }
+    let devices = crate::cycle::rooted(&format!("{BOARDS_DIR_NAME}/{remote}/{DEVICES_DIR_NAME}"));
+    let own = device_dir_name(device);
+    let listing = match transport.propfind_tree(&devices).await {
+        Ok(listing) => listing,
+        Err(TransportError::NotFound) => return Ok(MoveSubtreeProbe::Foreign),
+        Err(err) => return Err(err),
+    };
+    let attached = listing
+        .members
+        .iter()
+        .any(|member| member.href.trim_end_matches('/').ends_with(&own));
+    Ok(if attached {
+        MoveSubtreeProbe::Partial
+    } else {
+        MoveSubtreeProbe::Foreign
+    })
+}
+
+/// Publishes a board's converged state as its late-join floor without a
+/// binding existing yet (the move ceremony's step 2: publish precedes
+/// retirement).
+///
+/// # Errors
+///
+/// The attach or snapshot PUT's transport failure.
+pub async fn publish_move_floor<T: FilesTransport>(
+    transport: &T,
+    ctx: &SyncContext,
+    board: BoardId,
+    remote: uuid::Uuid,
+    persisted: &PersistedState,
+) -> Result<(), TransportError> {
+    let mut lane = Lane::default();
+    attach_board(transport, ctx, &mut lane, remote).await?;
+    snapshot_duty(transport, ctx, &mut lane, board, remote, persisted).await
+}
+
 async fn run_lane<T: FilesTransport>(
     transport: &T,
     ctx: &SyncContext,
@@ -1388,5 +1463,67 @@ mod tests {
             .filter(|entry| matches!(entry, EntityEntry::Modeled(_)))
             .count();
         assert!(modeled >= 2, "the board's own rows fold in: {modeled}");
+    }
+
+    fn snapshot_at_seq_zero() -> String {
+        crate::cycle::rooted(&board_snapshot_path(board(), device(), 0))
+    }
+
+    #[tokio::test]
+    async fn the_move_floor_publishes_without_a_binding_and_is_probed() {
+        let fake = FakeFilesTransport::new();
+        fake.seed_dirs(&["taskboard"]);
+        let mut persisted = state_with(vec![]);
+        for row in persisted.boards.values_mut() {
+            row.remote = None;
+        }
+        let state = Arc::new(FixedState(persisted.clone()));
+        let context = ctx(state, mpsc::channel(8).0);
+        let remote = board().as_uuid();
+        assert_eq!(
+            probe_move_subtree(&fake, device(), remote)
+                .await
+                .expect("probe"),
+            MoveSubtreeProbe::Absent
+        );
+
+        publish_move_floor(&fake, &context, board(), remote, &persisted)
+            .await
+            .expect("publish");
+
+        assert!(fake.file(&snapshot_at_seq_zero()).is_some());
+        assert_eq!(
+            probe_move_subtree(&fake, device(), remote)
+                .await
+                .expect("probe"),
+            MoveSubtreeProbe::Published
+        );
+    }
+
+    #[tokio::test]
+    async fn a_torn_publish_probes_partial_and_a_stranger_foreign() {
+        let fake = FakeFilesTransport::new();
+        fake.seed_dirs(&["taskboard"]);
+        let persisted = state_with(vec![]);
+        let context = ctx(Arc::new(FixedState(persisted.clone())), mpsc::channel(8).0);
+        let remote = board().as_uuid();
+        publish_move_floor(&fake, &context, board(), remote, &persisted)
+            .await
+            .expect("publish");
+        fake.remove_file(&snapshot_at_seq_zero());
+        assert_eq!(
+            probe_move_subtree(&fake, device(), remote)
+                .await
+                .expect("probe"),
+            MoveSubtreeProbe::Partial
+        );
+
+        let stranger = DeviceId::mint();
+        assert_eq!(
+            probe_move_subtree(&fake, stranger, remote)
+                .await
+                .expect("probe"),
+            MoveSubtreeProbe::Foreign
+        );
     }
 }
