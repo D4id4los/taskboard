@@ -197,6 +197,153 @@ fn canonical_key(value: &Value) -> String {
     String::from_utf8(content_key(value)).expect("canonical JSON is UTF-8")
 }
 
+/// A sections fold's outcome: the union-reduced document (the sidecar
+/// shape, envelope from the newest decode) and the count of documents
+/// that failed to decode (counted, never fatal — the entity relays'
+/// tolerance posture applied to the section lane).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct SectionsFold {
+    pub merged: Option<taskboard_domain::appdata::AppDataDocument>,
+    pub rejected: usize,
+}
+
+/// Unions any set of peers' board-section documents (chunks' and the
+/// snapshot floor's `sections` payloads) into one converged view.
+/// Each document is the *whole* publisher view, so the merge is
+/// per-row clock LWW — [`taskboard_domain::appdata::union`], the
+/// sidecar's own machinery, reused verbatim (a second per-row merger
+/// here would be the D-BF9 fork finding). Order-free in the ordinary
+/// case: rows duel by their embedded clocks; equal-clock ties keep the
+/// base (the earlier argument), the same deterministic posture the
+/// per-user fold's document lane accepts.
+pub fn fold_sections<'a>(docs: impl IntoIterator<Item = &'a Value>) -> SectionsFold {
+    let mut merged: Option<taskboard_domain::appdata::AppDataDocument> = None;
+    let mut rejected = 0usize;
+    for doc in docs {
+        match serde_json::from_value::<taskboard_domain::appdata::AppDataDocument>(doc.clone()) {
+            Ok(decoded) => {
+                merged = Some(match merged {
+                    Some(base) => taskboard_domain::appdata::union(&base, &decoded),
+                    None => decoded,
+                });
+            }
+            Err(_) => rejected += 1,
+        }
+    }
+    SectionsFold { merged, rejected }
+}
+
+#[cfg(test)]
+mod sections_tests {
+    use super::fold_sections;
+    use serde_json::{Value, json};
+    use taskboard_domain::appdata::{AppDataDocument, AppDataSections, TimeEntryRecord};
+    use taskboard_domain::tracking::TimeEntryKind;
+
+    fn doc(title: &str, clock: &str) -> Value {
+        let document = AppDataDocument {
+            format: 1,
+            board: taskboard_domain::ids::RemoteBoardId::files(uuid::Uuid::from_u128(0x0193)),
+            sections: AppDataSections {
+                time_entries: Some(
+                    [(
+                        "e1".to_owned(),
+                        TimeEntryRecord::Entry {
+                            task: None,
+                            title: title.to_owned(),
+                            start: "2026-11-08T09:00:00Z".parse().expect("rfc3339"),
+                            end: None,
+                            created: "2026-11-08T09:00:00Z".parse().expect("rfc3339"),
+                            clock: clock.parse().expect("rfc3339"),
+                            kind: TimeEntryKind::Work,
+                            by: None,
+                        },
+                    )]
+                    .into_iter()
+                    .collect(),
+                ),
+                ..AppDataSections::default()
+            },
+            unknown: std::collections::BTreeMap::default(),
+        };
+        serde_json::to_value(&document).expect("encodes")
+    }
+
+    /// Per-row clock LWW through the sidecar's own union: either read
+    /// order converges to the newer row; a garbage document is counted,
+    /// never fatal; no documents fold to no document.
+    #[test]
+    fn fold_sections_unions_by_row_clock_counts_garbage_and_folds_empty_to_none() {
+        let early = doc("early", "2026-11-08T09:00:00Z");
+        let late = doc("late", "2026-11-08T10:00:00Z");
+        for order in 0..2 {
+            let docs: [Value; 2] = if order == 0 {
+                [late.clone(), early.clone()]
+            } else {
+                [early.clone(), late.clone()]
+            };
+            let fold = fold_sections(docs.iter());
+            assert_eq!(fold.rejected, 0);
+            let merged = fold.merged.as_ref().expect("a decodable document folds");
+            let entries = merged
+                .sections
+                .time_entries
+                .as_ref()
+                .expect("time entries union");
+            let TimeEntryRecord::Entry { title, .. } = &entries["e1"] else {
+                panic!("modeled entry survives the union");
+            };
+            assert_eq!(title, "late", "the newer row clock wins in order {order}");
+        }
+        let garbage = json!({ "sections": "not-a-document" });
+        let fold = fold_sections([&garbage, &early]);
+        assert_eq!(fold.rejected, 1);
+        assert!(fold.merged.is_some(), "garbage never kills the good rows");
+        assert!(fold_sections([]).merged.is_none());
+    }
+
+    /// The mixed-kind law, board side (chunk 5 plan §9.8): per-user
+    /// section kinds (`journal`, `settings`, `proofs`) never fold into
+    /// a board document's modeled sections — a confused publisher's
+    /// keys ride `unknown` verbatim and every modeled field stays
+    /// empty, so the files ingestion (which reads modeled fields only)
+    /// cannot leak them into board state. The per-user root direction
+    /// is typed: a board document is an `AppDataDocument`, never the
+    /// root's `UserDocument`, so board sections cannot enter it at all.
+    #[test]
+    fn per_user_section_keys_never_fold_into_a_board_document() {
+        let confused = json!({
+            "format": 1,
+            "board": "00000000-0000-0000-0000-000000000193",
+            "journal": [{ "x": 1 }],
+            "settings": { "day_start_time": "09:00:00" },
+            "proofs": { "r1": ["2026-11-08T09:00:00Z"] },
+            "sections": {
+                "time-entries": { "e1": { "entry": { "title": "board row" } } }
+            }
+        });
+        let fold = fold_sections([&confused]);
+        assert_eq!(fold.rejected, 0);
+        let merged = fold.merged.as_ref().expect("decodes");
+        for key in ["journal", "settings", "proofs"] {
+            assert!(
+                merged.unknown.contains_key(key),
+                "{key} relays verbatim, never a modeled section"
+            );
+        }
+        assert!(merged.sections.tasks.is_none());
+        assert!(merged.sections.reminder_rules.is_none());
+        assert!(merged.sections.dismissals.is_none());
+        assert!(
+            merged.sections.time_entries.is_some(),
+            "the board row folds"
+        );
+        assert!(merged.sections.habits.is_none());
+        assert!(merged.sections.habit_log.is_none());
+        assert!(merged.sections.break_rules.is_none());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

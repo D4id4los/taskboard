@@ -42,6 +42,13 @@ pub struct BoardSnapshot {
     pub seq: u64,
     pub written_at: DateTime<Utc>,
     pub state: SnapshotState,
+    /// The owner's full board-level section view at write time (the
+    /// sidecar document shape, domain-UUID keys), serialized — the
+    /// snapshot floor's section payload, so GC of subsumed chunks
+    /// never orphans the sections (D-BF9). Absent on a section-less
+    /// snapshot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sections: Option<Value>,
     /// Unknown envelope keys: carried verbatim (the relay rule).
     #[serde(flatten, default, skip_serializing_if = "BTreeMap::is_empty")]
     pub unknown: BTreeMap<String, Value>,
@@ -124,6 +131,7 @@ mod tests {
                 ],
                 unknown: BTreeMap::new(),
             },
+            sections: None,
             unknown: BTreeMap::from([("future_envelope".to_owned(), json!({ "x": 1 }))]),
         };
         let back: BoardSnapshot =
@@ -163,6 +171,7 @@ mod tests {
                 entities: vec![modeled_entity()],
                 unknown: BTreeMap::new(),
             },
+            sections: None,
             unknown: BTreeMap::new(),
         };
         let back: BoardSnapshot =
