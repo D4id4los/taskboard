@@ -10,6 +10,23 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 ### Added
 
+- Board chunk & snapshot lifecycle substrate (boards-over-files chunk
+  4, D-BF6–D-BF7, #687): the files-sync core grows the per-board
+  lifecycle — `boards/<board-uuid>/` subtree arms in the classifier
+  (identity, per-device info with the GC watermark `last_seq`,
+  immutable `ops/NNNNNN.json` chunks, `snapshot-NNNNNN.json`), the
+  materialized-entity payload schema (fields + clocks + authors per
+  entity; fail-closed field demotion; unknown shapes relay, never
+  error), the input-order-free board fold (per-field max over
+  `(rank, clock, author, content)`; sequence numbers are GC watermarks
+  only, never fold order), the boot/every-16-chunks snapshot cadence,
+  the owner-scoped + watermark-bounded GC predicate (tombstones are
+  never GC'd — they ride snapshots), and the late-join floor. The
+  snapshot-floor equivalence, GC-safety, fold laws, codec fuzz, and
+  the resurrection scenario battery are proptested. Pure substrate
+  only — the transport wiring lands in chunk 5; the per-user root's
+  current-state shape is untouched.
+
 - Connector-tagged remote identities & partition routing
   (boards-over-files chunk 3, D-BF4–D-BF5): the `Remote*` id family
   widens to a tagged enum (`Deck(u64)` | `Files(uuid)` — the files

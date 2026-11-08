@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 6dcb6f3555818b4d19234229138237da404cfb41c599d6693857fa8b57ca4b44 # shrinks to session = Session { devices: [[(1, [Modeled(MaterializedEntity { kind: Task, id: 00000000-0000-0000-0000-0000000000a1, fields: {"title": Value(FieldValue { value: String("d1001"), clock: 1970-01-01T00:16:41Z, by: None })}, memberships: None, unknown: {} }), Modeled(MaterializedEntity { kind: Task, id: 00000000-0000-0000-0000-0000000000b2, fields: {"title": Value(FieldValue { value: String("d1002"), clock: 1970-01-01T00:16:42Z, by: None })}, memberships: None, unknown: {} })])]], snapshots: [Some(1)] }

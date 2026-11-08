@@ -222,3 +222,25 @@ mod tests {
         assert!(matches!(chunk.entities[1], EntityEntry::Modeled(_)));
     }
 }
+
+#[cfg(test)]
+mod fuzz {
+    use super::*;
+    use crate::test_support::json_value;
+    use proptest::prelude::*;
+    use taskboard_domain::test_support::proptest_config;
+
+    proptest! {
+        #![proptest_config(proptest_config(256))]
+
+        /// P8 — the fuzz target the dispatch names (the chunk parser
+        /// is the trigger): arbitrary JSON through the chunk decode
+        /// always yields a typed outcome — a chunk or a typed
+        /// envelope failure — never a panic.
+        #[test]
+        fn arbitrary_chunk_values_never_panic(raw in json_value()) {
+            let outcome = serde_json::from_value::<BoardChunk>(raw);
+            let _ = outcome.is_ok();
+        }
+    }
+}
