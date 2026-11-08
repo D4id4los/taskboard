@@ -10,6 +10,26 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 ### Added
 
+- Boards over files (boards-over-files chunk 5, D-BF8–D-BF10, #688):
+  boards ride the files substrate end to end. The files-sync actor
+  gains the board lanes beside the per-user cycle — the chunk-3
+  ownership map names each lane's board, attach runs the subtree's
+  MKCOL ladder + create-once identity (a 412 adopts fold-first), the
+  pull lists the subtree level by level and folds changed members
+  through the chunk-4 machinery, and the drain materializes dirty
+  entities into an immutable chunk, reporting echo-less `Applied` only
+  after the create-once PUT (a crash-window 412 reconciles to the
+  own-device chunk). The state engine ingests the folded board through
+  the ordinary per-field LWW pipeline — no second merger; board-level
+  sections ride the chunk and snapshot payloads and fold through the
+  sidecar's union machinery; app-only fields are entity slots (one
+  lane). Files boards have no sidecar, no anchor card, no
+  `UpdateAppData` attachment lane — the planner routes their app-data
+  ops as ordinary entity touches (pinned). Discovery adopts foreign
+  subtrees fold-first (publish-after-import); the plan-shape routing,
+  the drain honesty, the fold/decode tolerance, the echo-less settle,
+  and the two-engine convergence journey are pinned.
+
 - Board chunk & snapshot lifecycle substrate (boards-over-files chunk
   4, D-BF6–D-BF7, #687): the files-sync core grows the per-board
   lifecycle — `boards/<board-uuid>/` subtree arms in the classifier

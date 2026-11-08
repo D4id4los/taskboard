@@ -236,3 +236,78 @@ async fn it_nextcloud_docker_files_mkcol_posture() {
     .await
     .expect("test must finish within the live deadline");
 }
+
+/// The board subtree's transport facts (dispatch chunk 5, the plan's
+/// §4 legs re-pinned against the real WebDAV): the board MKCOL ladder
+/// takes nested creation, a chunk publishes create-once (F3), the
+/// board tree listing shows the chunk file with an etag (F6), and the
+/// snapshot's guarded rewrite answers 412 on a stale etag (F4).
+#[tokio::test]
+#[ignore = "requires the dockerized Nextcloud tier (scripts/nextcloud_it_setup.sh up)"]
+async fn it_nextcloud_docker_board_subtree_semantics() {
+    let Some(cfg) = live_docker_config() else {
+        return;
+    };
+    with_deadline(async move {
+        let id = run_id();
+        let transport = files_transport(&cfg);
+        let board = format!("taskboard/boards/{id}-board");
+        for dir in [
+            "taskboard",
+            "taskboard/boards",
+            &board,
+            &format!("{board}/devices"),
+            &format!("{board}/devices/{id}"),
+            &format!("{board}/devices/{id}/ops"),
+        ] {
+            let _ = transport.mkcol(dir).await.expect("board mkcol ladder");
+        }
+        let chunk = format!("{board}/devices/{id}/ops/000001.json");
+        retrying_server_errors(|| async {
+            transport
+                .put_create(&chunk, b"{\"first_seq\":1,\"last_seq\":1}")
+                .await
+        })
+        .await
+        .expect("chunk create-once");
+        // F3 at the board subtree: a re-create is the typed 412.
+        let again = transport.put_create(&chunk, b"duplicate").await;
+        assert!(
+            matches!(again, Err(TransportError::PreconditionFailed)),
+            "board chunk re-create must be the typed 412: {again:?}"
+        );
+        // F6: the tree listing names the chunk file with an etag.
+        let listing = transport
+            .propfind_tree(&format!("{board}/devices/{id}/ops"))
+            .await
+            .expect("board tree listing");
+        assert!(
+            listing
+                .members
+                .iter()
+                .any(|member| member.href.ends_with("000001.json")),
+            "the chunk file is listed"
+        );
+        // F4: the snapshot's guarded rewrite answers 412 on a stale etag.
+        let snapshot = format!("{board}/devices/{id}/snapshot-000001.json");
+        let created = retrying_server_errors(|| async {
+            transport.put_create(&snapshot, b"{\"seq\":1}").await
+        })
+        .await
+        .expect("snapshot create-once");
+        let PutOutcome::Created { etag: Some(etag) } = created else {
+            panic!("the create carries the served etag: {created:?}");
+        };
+        let stale = Etag::new("\"stale\"".to_owned());
+        let guarded = transport
+            .put_if_match(&snapshot, b"{\"seq\":2}", &stale)
+            .await;
+        assert!(matches!(guarded, Err(TransportError::PreconditionFailed)));
+        let fresh = transport
+            .put_if_match(&snapshot, b"{\"seq\":2}", &etag)
+            .await;
+        assert!(fresh.is_ok(), "the fresh etag rewrites: {fresh:?}");
+    })
+    .await
+    .expect("test must finish within the live deadline");
+}
