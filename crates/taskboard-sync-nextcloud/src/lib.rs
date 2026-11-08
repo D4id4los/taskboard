@@ -21,6 +21,7 @@ mod flush;
 pub mod mapping;
 mod migrate;
 pub mod model;
+pub mod move_marker;
 pub mod ocs;
 pub mod poll;
 pub mod push_exec;

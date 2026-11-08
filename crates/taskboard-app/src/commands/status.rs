@@ -386,6 +386,13 @@ pub fn render_text(view: &StatusView) -> String {
 /// text, never asserted — the JSON view carries the instants); the
 /// data-survival facts (device uuids, paths, counts) must survive.
 fn push_files_sync_lines(out: &mut String, files: &crate::commands::output::FilesSyncStatusView) {
+    for moved in &files.moved_boards {
+        let _ = write!(
+            out,
+            "\nfiles-sync: board {} moved from Deck: {}",
+            moved.board, moved.state
+        );
+    }
     let peers = files.peers.len();
     let lead = match &files.last_cycle {
         Some(crate::commands::output::CycleOutcomeView::Ok {
@@ -475,7 +482,17 @@ fn board_line(board: &BoardStatusView, indent: &str) -> String {
     );
     // The loud sidecar fence (D-S2's ruled wording, presentation text
     // over the typed fact — the JSON view carries the structured reason).
-    if let Some(warning) = &board.sync.sidecar {
+    if board
+        .sync
+        .sidecar
+        .as_ref()
+        .is_some_and(|w| w.reason == "moved_to_files")
+    {
+        let _ = write!(
+            line,
+            "\n{indent}  moved to the files tier by another device; this copy no longer syncs anywhere useful. Enable files sync to adopt it"
+        );
+    } else if let Some(warning) = &board.sync.sidecar {
         let detail = warning
             .format
             .map_or_else(String::new, |format| format!(" (format {format})"));
@@ -1127,6 +1144,7 @@ mod tests {
                 },
             )]),
             diverged_from: [device(2)].into_iter().collect(),
+            moved_boards: std::collections::BTreeMap::new(),
         }
     }
 

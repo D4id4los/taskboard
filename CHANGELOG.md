@@ -10,15 +10,17 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 ### Added
 
-- The Deck-to-files move ceremony, moving-device side (boards-over-files
-  chunk 6, D-BF11, #689): `boards move <board> --to-files` runs four
-  typed steps (final Deck pull and quiet outbox, publish the snapshot
-  floor, retire the Deck binding, commit the files binding) whose
-  position is derived from the binding row and the files tier, so any
-  interruption resumes by rerunning. `--undo` restores the Deck binding
-  until the commit; `--to-deck` is a typed refusal (ruling Q4). Other
-  devices do not adopt a moved board yet; see
-  `docs/boards-move-runbook.org`.
+- The Deck-to-files move ceremony (boards-over-files chunk 6,
+  D-BF11–D-BF12, #689): `boards move <board> --to-files` publishes the
+  board's floor, retires the Deck binding, writes a create-once commit
+  record carrying the Deck-to-UUID mapping, marks the Deck sidecar, and
+  binds files; any interruption resumes by rerunning. `--undo` restores
+  Deck until the commit record exists; `--to-deck` is a typed refusal
+  (Q4). Other devices adopt fold-first: a device holding the Deck board
+  raises a typed finding, re-keys its rows onto the mover's ids in one
+  transaction, and publishes its offline work after importing. A device
+  without files sync gets a loud `moved_to_files` status from the
+  sidecar. See `docs/boards-move-runbook.org`.
 
 - Boards over files (boards-over-files chunk 5, D-BF8–D-BF10, #688):
   boards ride the files substrate end to end. The files-sync actor
@@ -458,6 +460,14 @@ The workspace carries a single global version (see `docs/architecture.org`);
   feedback, picking routes the same switch as a tab click, and the
   keyboard ladder operates it. The per-board context menu stays on the
   strip (in dropdown mode the action menu reaches it).
+
+### Fixed
+
+- A Deck report's absence pass tombstoned every other board's cards and
+  stacks on the same connector; it now answers for its own board only.
+- A files board's folded rows could not be written to SQLite (they
+  carried remote child ids the store refuses by design), and any
+  files-bound board failed the next boot's orphan-connector check.
 
 ### Changed
 

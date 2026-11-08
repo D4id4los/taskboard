@@ -37,6 +37,7 @@
 #![forbid(unsafe_code)]
 
 pub mod appdata;
+pub mod board_move;
 pub mod calibration;
 pub mod capabilities;
 pub mod clock;

@@ -1496,6 +1496,166 @@ impl SqliteTaskRepository {
     }
 }
 
+/// Every column holding exactly one local entity id.
+const ADOPTION_ID_COLUMNS: &[(&str, &str)] = &[
+    ("boards", "id"),
+    ("stacks", "id"),
+    ("stacks", "board"),
+    ("tasks", "id"),
+    ("tasks", "stack"),
+    ("labels", "id"),
+    ("labels", "board"),
+    ("task_labels", "task"),
+    ("task_labels", "label"),
+    ("outbox", "task_id"),
+    ("outbox", "stack_id"),
+    ("outbox", "label_id"),
+    ("outbox", "board_id"),
+    ("reminder_rules", "task_id"),
+    ("reminder_muted", "task_id"),
+    ("time_entries", "task_id"),
+    ("habits", "board_id"),
+    ("break_rules", "board_id"),
+    ("command_journal", "board"),
+];
+
+/// Columns holding a `default:<task uuid>` reminder reference.
+const ADOPTION_REMINDER_COLUMNS: &[&str] = &[
+    "reminder_deliveries",
+    "reminder_snoozes",
+    "reminder_dismissals",
+];
+
+/// Columns holding JSON with ids embedded, as `(table, key, column)`.
+const ADOPTION_JSON_COLUMNS: &[(&str, &str, &str)] = &[
+    ("outbox", "op_seq", "payload"),
+    ("command_journal", "id", "payload"),
+];
+
+/// The storage half of `AdoptMovedBoard`. The table and column names
+/// are the constants above, never input.
+async fn execute_board_adoption(
+    tx: &mut sqlx::SqliteConnection,
+    rekey: &taskboard_domain::board_move::BoardRekey,
+) -> Result<(), RepositoryError> {
+    let err = |e: sqlx::Error| stmt_error(&e);
+    sqlx::query("PRAGMA defer_foreign_keys = ON")
+        .execute(&mut *tx)
+        .await
+        .map_err(err)?;
+    sqlx::query("DELETE FROM sync_status WHERE board = ?")
+        .bind(rekey.old_board.as_uuid().to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(err)?;
+    sqlx::query(
+        "CREATE TEMP TABLE IF NOT EXISTS adoption_map (old TEXT PRIMARY KEY, new TEXT NOT NULL)",
+    )
+    .execute(&mut *tx)
+    .await
+    .map_err(err)?;
+    sqlx::query("DELETE FROM adoption_map")
+        .execute(&mut *tx)
+        .await
+        .map_err(err)?;
+    let pairs = rekey.pairs();
+    for (old, new) in &pairs {
+        sqlx::query("INSERT INTO adoption_map (old, new) VALUES (?, ?)")
+            .bind(old.to_string())
+            .bind(new.to_string())
+            .execute(&mut *tx)
+            .await
+            .map_err(err)?;
+    }
+    for (table, column) in ADOPTION_ID_COLUMNS {
+        let sql = format!(
+            "UPDATE {table} SET {column} = (SELECT new FROM adoption_map WHERE old = {column}) \
+             WHERE {column} IN (SELECT old FROM adoption_map)"
+        );
+        sqlx::query(sqlx::AssertSqlSafe(sql))
+            .execute(&mut *tx)
+            .await
+            .map_err(err)?;
+    }
+    for table in ADOPTION_REMINDER_COLUMNS {
+        let sql = format!(
+            "UPDATE {table} SET reminder = 'default:' || \
+             (SELECT new FROM adoption_map WHERE 'default:' || old = reminder) \
+             WHERE reminder IN (SELECT 'default:' || old FROM adoption_map)"
+        );
+        sqlx::query(sqlx::AssertSqlSafe(sql))
+            .execute(&mut *tx)
+            .await
+            .map_err(err)?;
+    }
+    let lookup: std::collections::HashMap<uuid::Uuid, uuid::Uuid> = pairs.into_iter().collect();
+    for (table, key, column) in ADOPTION_JSON_COLUMNS {
+        let rows: Vec<(String, String)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT CAST({key} AS TEXT), {column} FROM {table} WHERE {column} IS NOT NULL"
+        )))
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(err)?;
+        let update = format!("UPDATE {table} SET {column} = ? WHERE CAST({key} AS TEXT) = ?");
+        for (id, text) in rows {
+            let rewritten = taskboard_domain::board_move::rewrite_uuid_text(&text, &lookup);
+            if rewritten != text {
+                sqlx::query(sqlx::AssertSqlSafe(update.clone()))
+                    .bind(rewritten)
+                    .bind(id)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(err)?;
+            }
+        }
+    }
+    clear_deck_bindings(tx, rekey).await
+}
+
+async fn clear_deck_bindings(
+    tx: &mut sqlx::SqliteConnection,
+    rekey: &taskboard_domain::board_move::BoardRekey,
+) -> Result<(), RepositoryError> {
+    let err = |e: sqlx::Error| stmt_error(&e);
+    let new_board = rekey.new_board.as_uuid().to_string();
+    sqlx::query(
+        "UPDATE boards SET remote_board_id = NULL, remote_files_id = ?, connector = ?, \
+         remote_seen = NULL WHERE id = ?",
+    )
+    .bind(rekey.new_board.as_uuid().to_string())
+    .bind(rekey.binding.connector.as_str())
+    .bind(&new_board)
+    .execute(&mut *tx)
+    .await
+    .map_err(err)?;
+    sqlx::query(
+        "UPDATE tasks SET remote_board_id = NULL, remote_stack_id = NULL, remote_card_id = NULL, \
+         remote_seen = NULL, remote_baseline = NULL \
+         WHERE stack IN (SELECT id FROM stacks WHERE board = ?)",
+    )
+    .bind(&new_board)
+    .execute(&mut *tx)
+    .await
+    .map_err(err)?;
+    sqlx::query(
+        "UPDATE stacks SET remote_board_id = NULL, remote_stack_id = NULL, remote_seen = NULL \
+         WHERE board = ?",
+    )
+    .bind(&new_board)
+    .execute(&mut *tx)
+    .await
+    .map_err(err)?;
+    sqlx::query(
+        "UPDATE labels SET remote_board_id = NULL, remote_label_id = NULL, remote_seen = NULL \
+         WHERE board = ?",
+    )
+    .bind(&new_board)
+    .execute(&mut *tx)
+    .await
+    .map_err(err)?;
+    Ok(())
+}
+
 #[allow(clippy::too_many_lines)] // one transaction body; the order IS the design
 async fn execute_batch(
     tx: &mut sqlx::SqliteConnection,
@@ -1506,6 +1666,11 @@ async fn execute_batch(
     // crate's build (E0004) until storage persists it — a silent
     // fall-through here means an action class accepted with `Ok(())` and
     // never written.
+    for action in actions {
+        if let PersistenceAction::AdoptMovedBoard(rekey) = action {
+            execute_board_adoption(tx, rekey).await?;
+        }
+    }
     let mut boards = Vec::new();
     let mut stacks = Vec::new();
     let mut labels = Vec::new();
@@ -1568,6 +1733,8 @@ async fn execute_batch(
             PersistenceAction::DeleteSyncStatus(board) => {
                 sync_status_deletes.push(*board);
             }
+            // Ran first, above: the batch's upserts address the new ids.
+            PersistenceAction::AdoptMovedBoard(_) => {}
             PersistenceAction::UpsertReminderRule(rule) => rule_upserts.push(rule),
             PersistenceAction::DeleteReminderRule(rule_id) => rule_deletes.push(rule_id),
             PersistenceAction::UpsertAdhocAlarm(alarm) => alarm_upserts.push(alarm),

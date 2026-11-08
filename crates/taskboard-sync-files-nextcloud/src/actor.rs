@@ -42,11 +42,14 @@ pub struct FilesSyncConfig {
     pub clock: Arc<dyn taskboard_domain::Clock>,
     /// The heartbeat's `app_version`.
     pub app_version: String,
+    /// Each Deck connector's server origin (the move adoption's match).
+    pub deck_origins: std::collections::BTreeMap<taskboard_domain::ids::ConnectorId, String>,
 }
 
 impl std::fmt::Debug for FilesSyncConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FilesSyncConfig")
+            .field("deck_origins", &self.deck_origins)
             .field("poll_interval", &self.poll_interval)
             .field("backoff_initial", &self.backoff_initial)
             .field("backoff_max", &self.backoff_max)
@@ -146,6 +149,7 @@ async fn run<T: FilesTransport>(
         connector: cfg.connector.clone(),
         state_reader,
         board_reports,
+        deck_origins: cfg.deck_origins.clone(),
     });
     let mut st = LoopState::default();
     let mut sys_rx = system.subscribe();
@@ -291,6 +295,7 @@ mod tests {
             backoff_max: Duration::from_millis(400),
             clock: Arc::new(SteppingClock::new(heartbeat_base(), 30)),
             app_version: "test".into(),
+            deck_origins: std::collections::BTreeMap::new(),
         }
     }
 

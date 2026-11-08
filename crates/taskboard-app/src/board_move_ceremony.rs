@@ -15,14 +15,18 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde::Serialize;
+use taskboard_domain::board_move::MovedToFilesMarker;
 use taskboard_domain::messages::SyncReport;
 use taskboard_domain::{BoardId, CommandOutcome, ConnectorId, RemoteBoardId, StateCommand};
+use taskboard_sync_files::board_move::{MOVE_RECORD_FORMAT, MoveRecord, MovedFrom, deck_origin};
 use taskboard_sync_files_nextcloud::board_cycle::{
-    MoveSubtreeProbe, probe_move_subtree, publish_move_floor,
+    MoveSubtreeProbe, move_record_exists, probe_move_subtree, publish_move_floor,
+    publish_move_record, read_moved_from,
 };
 use taskboard_sync_files_nextcloud::client::WebDavFilesTransport;
 use taskboard_sync_files_nextcloud::cycle::{PublishedState, SyncContext};
 use taskboard_sync_files_nextcloud::error::TransportError;
+use taskboard_sync_nextcloud::move_marker::{MoveMarkerError, write_move_marker};
 
 use crate::commands::CommandError;
 use crate::commands::sync::SyncOutcome;
@@ -38,6 +42,9 @@ pub enum MoveStage {
     Published,
     /// Unbound with the floor published: the undo window.
     DeckRetired,
+    /// The commit record exists; undo is closed and only the binding
+    /// remains to be written.
+    CommitPublished,
     /// Files-bound: the commit point has passed.
     Committed,
 }
@@ -64,6 +71,10 @@ pub enum MoveError {
     /// Step 1's Deck cycle failed or ran out of its wait budget.
     #[error("the final Deck pull did not complete")]
     DeckPullIncomplete,
+    /// A read of the engine's published state (the quiescence guard or
+    /// the floor's source) failed.
+    #[error("the published state could not be read")]
+    StateReadFailed(#[source] Box<CommandError>),
     /// Step 2's transport failure, or a probe around it.
     #[error("publishing the board subtree failed")]
     PublishFailed(#[source] TransportError),
@@ -82,6 +93,12 @@ pub enum MoveError {
     /// Step 4's engine refusal.
     #[error("assigning the files binding was refused")]
     AssignRefused(#[source] Box<CommandError>),
+    /// The record could not be built or written.
+    #[error("publishing the commit record failed")]
+    CommitFailed(#[source] TransportError),
+    /// The Deck sidecar marker could not be written; rerun to retry.
+    #[error("marking the Deck board as moved failed")]
+    DeckMarkerFailed(#[source] MoveMarkerError),
     /// `--undo` after the commit point.
     #[error("the undo window closed at the commit")]
     UndoClosed,
@@ -107,12 +124,15 @@ impl MoveError {
             Self::OutboxNotQuiescent { .. } => "move-outbox-not-quiescent",
             Self::DeckPullFailed(_) => "move-deck-pull-failed",
             Self::DeckPullIncomplete => "move-deck-pull-incomplete",
+            Self::StateReadFailed(_) => "move-state-read-failed",
             Self::PublishFailed(_) => "move-publish-failed",
             Self::PublishUnconfirmed => "move-publish-unconfirmed",
             Self::FilesSubtreeForeign => "move-files-subtree-foreign",
             Self::UnbindRefused(_) => "move-unbind-refused",
             Self::StrandedOps { .. } => "move-stranded-ops",
             Self::AssignRefused(_) => "move-assign-refused",
+            Self::CommitFailed(_) => "move-commit-failed",
+            Self::DeckMarkerFailed(_) => "move-deck-marker-failed",
             Self::UndoClosed => "move-undo-closed",
             Self::NothingToUndo => "move-nothing-to-undo",
             Self::UndoCoordinatesLost => "move-undo-coordinates-lost",
@@ -133,11 +153,13 @@ pub(crate) enum BindingKind {
 pub(crate) fn derive_move_stage(
     binding: BindingKind,
     probe: MoveSubtreeProbe,
+    committed: bool,
 ) -> Result<MoveStage, MoveError> {
     use MoveSubtreeProbe as P;
     match (binding, probe) {
         (BindingKind::Files, _) => Ok(MoveStage::Committed),
         (_, P::Foreign) => Err(MoveError::FilesSubtreeForeign),
+        (BindingKind::Unbound, _) if committed => Ok(MoveStage::CommitPublished),
         (BindingKind::Deck, P::Absent | P::Partial) => Ok(MoveStage::NotStarted),
         (BindingKind::Deck, P::Published) => Ok(MoveStage::Published),
         (BindingKind::Unbound, P::Published) => Ok(MoveStage::DeckRetired),
@@ -152,6 +174,7 @@ pub enum MoveStep {
     DeckPulled,
     SubtreePublished,
     DeckRetired,
+    CommitPublished,
     FilesAssigned,
     DeckRestored,
 }
@@ -168,22 +191,25 @@ pub struct MoveReceipt {
 pub(crate) trait MoveWorld {
     fn binding(&self) -> BindingKind;
     async fn probe(&self) -> Result<MoveSubtreeProbe, MoveError>;
+    async fn committed(&self) -> Result<bool, MoveError>;
     async fn pull_deck(&mut self) -> Result<(), MoveError>;
     async fn pending_ops(&self) -> Result<usize, MoveError>;
     async fn publish(&mut self) -> Result<(), MoveError>;
     async fn retire(&mut self) -> Result<usize, MoveError>;
+    async fn publish_record(&mut self) -> Result<(), MoveError>;
+    async fn mark_deck(&mut self) -> Result<(), MoveError>;
     async fn assign_files(&mut self) -> Result<(), MoveError>;
     /// Whether the retired Deck coordinates can still be named.
-    fn can_restore(&self) -> bool;
+    async fn can_restore(&self) -> Result<bool, MoveError>;
     async fn restore_deck(&mut self) -> Result<(), MoveError>;
 }
 
 async fn current_stage(world: &impl MoveWorld) -> Result<MoveStage, MoveError> {
     let binding = world.binding();
     if binding == BindingKind::Files {
-        return derive_move_stage(binding, MoveSubtreeProbe::Absent);
+        return derive_move_stage(binding, MoveSubtreeProbe::Absent, true);
     }
-    derive_move_stage(binding, world.probe().await?)
+    derive_move_stage(binding, world.probe().await?, world.committed().await?)
 }
 
 /// Runs the ceremony from the derived position to `stop_after` (the
@@ -194,15 +220,16 @@ pub(crate) async fn advance(
 ) -> Result<(MoveStage, Vec<MoveStep>), MoveError> {
     let mut stage = current_stage(world).await?;
     let mut steps = Vec::new();
-    if matches!(stage, MoveStage::NotStarted | MoveStage::Published) {
+    if stage <= MoveStage::Published {
         world.pull_deck().await?;
         let pending = world.pending_ops().await?;
         if pending > 0 {
             return Err(MoveError::OutboxNotQuiescent { pending });
         }
         steps.push(MoveStep::DeckPulled);
-    }
-    if stage == MoveStage::NotStarted {
+        // Republished on every uncommitted run: edits after a crash or
+        // an undo must reach the floor, and nobody reads it before the
+        // commit record exists.
         world.publish().await?;
         if world.probe().await? != MoveSubtreeProbe::Published {
             return Err(MoveError::PublishUnconfirmed);
@@ -218,7 +245,13 @@ pub(crate) async fn advance(
         stage = MoveStage::DeckRetired;
         steps.push(MoveStep::DeckRetired);
     }
-    if stage == MoveStage::DeckRetired && stop_after >= MoveStage::Committed {
+    if stage == MoveStage::DeckRetired && stop_after >= MoveStage::CommitPublished {
+        world.publish_record().await?;
+        stage = MoveStage::CommitPublished;
+        steps.push(MoveStep::CommitPublished);
+    }
+    if stage == MoveStage::CommitPublished && stop_after >= MoveStage::Committed {
+        world.mark_deck().await?;
         world.assign_files().await?;
         stage = MoveStage::Committed;
         steps.push(MoveStep::FilesAssigned);
@@ -234,9 +267,11 @@ pub(crate) async fn undo(world: &mut impl MoveWorld) -> Result<Vec<MoveStep>, Mo
         Err(err) => return Err(err),
     };
     match stage {
-        MoveStage::Committed => Err(MoveError::UndoClosed),
+        MoveStage::CommitPublished | MoveStage::Committed => Err(MoveError::UndoClosed),
         MoveStage::NotStarted | MoveStage::Published => Err(MoveError::NothingToUndo),
-        MoveStage::DeckRetired if !world.can_restore() => Err(MoveError::UndoCoordinatesLost),
+        MoveStage::DeckRetired if !world.can_restore().await? => {
+            Err(MoveError::UndoCoordinatesLost)
+        }
         MoveStage::DeckRetired => {
             world.restore_deck().await?;
             world.pull_deck().await?;
@@ -253,6 +288,7 @@ struct AppWorld<'a> {
     transport: WebDavFilesTransport,
     context: SyncContext,
     timeout: Duration,
+    store: Arc<dyn CredentialStore>,
 }
 
 impl AppWorld<'_> {
@@ -260,22 +296,80 @@ impl AppWorld<'_> {
         self.board.as_uuid()
     }
 
-    /// The retired binding, reconstructed: the row is gone but the kept
-    /// descendant refs name the Deck board, and a lone Deck connector
-    /// names the connector.
-    fn retired_binding(&self) -> Option<(RemoteBoardId, ConnectorId)> {
+    async fn moved_from(&self) -> Result<Option<MovedFrom>, MoveError> {
+        read_moved_from(&self.transport, self.remote())
+            .await
+            .map_err(MoveError::PublishFailed)
+    }
+
+    /// The configured Deck connector for the retired board's server.
+    async fn retired_binding(
+        &self,
+    ) -> Result<Option<(MovedFrom, crate::connectors::ConnectorSpec)>, MoveError> {
+        let Some(moved_from) = self.moved_from().await? else {
+            return Ok(None);
+        };
+        let spec = crate::connectors::configured_connectors(&self.app.config)
+            .unwrap_or_default()
+            .into_iter()
+            .find(|spec| deck_origin(&spec.server_url) == moved_from.deck_server);
+        Ok(spec.map(|spec| (moved_from, spec)))
+    }
+
+    fn live_moved_from(&self) -> Result<MovedFrom, MoveError> {
         let state = self.app.engine.shared_state().load_full();
-        let remote = state
+        let binding = state
+            .boards
+            .get(&self.board)
+            .and_then(|board| board.remote.as_ref())
+            .ok_or(MoveError::NotDeckBound)?;
+        let deck_board = binding.board.as_deck().ok_or(MoveError::NotDeckBound)?;
+        let spec = crate::connectors::configured_connectors(&self.app.config)
+            .unwrap_or_default()
+            .into_iter()
+            .find(|spec| spec.name == binding.connector)
+            .ok_or(MoveError::NotDeckBound)?;
+        Ok(MovedFrom {
+            deck_server: deck_origin(&spec.server_url),
+            deck_board,
+        })
+    }
+
+    /// The mapping comes from the kept Deck refs, which the files
+    /// binding wipes: this must run before `assign_files`.
+    fn record(&self, moved_from: MovedFrom) -> MoveRecord {
+        let state = self.app.engine.shared_state().load_full();
+        let stacks: std::collections::BTreeMap<u64, uuid::Uuid> = state
             .stacks
             .values()
             .filter(|stack| stack.board == self.board)
-            .find_map(|stack| stack.remote.map(|r| r.board))?;
-        remote.as_deck()?;
-        let specs = crate::connectors::configured_connectors(&self.app.config).ok()?;
-        let [only] = specs.as_slice() else {
-            return None;
-        };
-        Some((remote, only.name.clone()))
+            .filter_map(|stack| Some((stack.remote?.stack.as_deck()?, stack.id.as_uuid())))
+            .collect();
+        let local_stacks: std::collections::BTreeSet<_> = state
+            .stacks
+            .values()
+            .filter(|stack| stack.board == self.board)
+            .map(|stack| stack.id)
+            .collect();
+        MoveRecord {
+            format_version: MOVE_RECORD_FORMAT,
+            moved_from,
+            moved_by: self.context.identity.device_id,
+            committed_at: self.context.clock.now(),
+            stacks,
+            cards: state
+                .tasks
+                .values()
+                .filter(|task| local_stacks.contains(&task.stack))
+                .filter_map(|task| Some((task.remote?.card.as_deck()?, task.id.as_uuid())))
+                .collect(),
+            labels: state
+                .labels
+                .values()
+                .filter(|label| label.board == self.board)
+                .filter_map(|label| Some((label.remote?.label.as_deck()?, label.id.as_uuid())))
+                .collect(),
+        }
     }
 }
 
@@ -303,6 +397,12 @@ impl MoveWorld for AppWorld<'_> {
         .map_err(MoveError::PublishFailed)
     }
 
+    async fn committed(&self) -> Result<bool, MoveError> {
+        move_record_exists(&self.transport, self.remote())
+            .await
+            .map_err(MoveError::PublishFailed)
+    }
+
     async fn pull_deck(&mut self) -> Result<(), MoveError> {
         let state = self.app.engine.shared_state().load_full();
         let connector = state
@@ -317,32 +417,38 @@ impl MoveWorld for AppWorld<'_> {
                 .map_err(|err| MoveError::DeckPullFailed(Box::new(err)))?;
         match outcome {
             SyncOutcome::Succeeded(_) => Ok(()),
-            SyncOutcome::Failed(..) | SyncOutcome::TimedOut(_) | SyncOutcome::NoWait(_) => Err(
-                MoveError::DeckPullFailed(Box::new(CommandError::SyncDisabled)),
-            ),
+            // `Failed` and `TimedOut` carry only status views; the
+            // typed fact is "the pull never completed".
+            SyncOutcome::Failed(..) | SyncOutcome::TimedOut(_) | SyncOutcome::NoWait(_) => {
+                Err(MoveError::DeckPullIncomplete)
+            }
         }
     }
 
     async fn pending_ops(&self) -> Result<usize, MoveError> {
         crate::commands::boards::pending_ops_of(self.app, self.board)
             .await
-            .map_err(|err| MoveError::DeckPullFailed(Box::new(err)))
+            .map_err(|err| MoveError::StateReadFailed(Box::new(err)))
     }
 
     async fn publish(&mut self) -> Result<(), MoveError> {
         let persisted = taskboard_domain::SyncStateReader::read_state(&self.app.engine)
             .await
             .map_err(|_| {
-                MoveError::DeckPullFailed(Box::new(CommandError::Engine(Box::new(
+                // The house read_state posture (commands/boards.rs): the
+                // only failure is a gone engine.
+                MoveError::StateReadFailed(Box::new(CommandError::Engine(Box::new(
                     taskboard_state::ExecuteError::EngineGone,
                 ))))
             })?;
+        let moved_from = self.live_moved_from()?;
         publish_move_floor(
             &self.transport,
             &self.context,
             self.board,
             self.remote(),
             &persisted,
+            &moved_from,
         )
         .await
         .map_err(MoveError::PublishFailed)
@@ -361,6 +467,30 @@ impl MoveWorld for AppWorld<'_> {
         })
     }
 
+    async fn publish_record(&mut self) -> Result<(), MoveError> {
+        let moved_from = self.moved_from().await?.ok_or(MoveError::NotDeckBound)?;
+        let record = self.record(moved_from);
+        publish_move_record(&self.transport, self.remote(), &record)
+            .await
+            .map_err(MoveError::CommitFailed)
+    }
+
+    async fn mark_deck(&mut self) -> Result<(), MoveError> {
+        let (moved_from, spec) = self
+            .retired_binding()
+            .await?
+            .ok_or(MoveError::UndoCoordinatesLost)?;
+        let client = crate::commands::boards::client_for_spec(&spec, &self.store)
+            .map_err(|err| MoveError::UnbindRefused(Box::new(err)))?;
+        let marker = MovedToFilesMarker {
+            files_board: self.remote(),
+            committed_at: self.context.clock.now(),
+        };
+        write_move_marker(&client, moved_from.deck_board, marker)
+            .await
+            .map_err(MoveError::DeckMarkerFailed)
+    }
+
     async fn assign_files(&mut self) -> Result<(), MoveError> {
         self.app
             .engine
@@ -374,14 +504,17 @@ impl MoveWorld for AppWorld<'_> {
             .map_err(|err| MoveError::AssignRefused(Box::new(CommandError::from(err))))
     }
 
-    fn can_restore(&self) -> bool {
-        self.retired_binding().is_some()
+    async fn can_restore(&self) -> Result<bool, MoveError> {
+        Ok(self.retired_binding().await?.is_some())
     }
 
     async fn restore_deck(&mut self) -> Result<(), MoveError> {
-        let (remote, connector) = self
+        let (moved_from, spec) = self
             .retired_binding()
+            .await?
             .ok_or(MoveError::UndoCoordinatesLost)?;
+        let remote = RemoteBoardId::deck(moved_from.deck_board);
+        let connector = spec.name;
         self.app
             .engine
             .execute(StateCommand::BindBoard {
@@ -481,6 +614,7 @@ async fn app_world<'a>(
         connector: spec.identity.clone(),
         state_reader: Arc::new(app.engine.clone()),
         board_reports: tokio::sync::mpsc::channel::<SyncReport>(1).0,
+        deck_origins: std::collections::BTreeMap::new(),
     };
     Ok(AppWorld {
         app,
@@ -489,6 +623,7 @@ async fn app_world<'a>(
         transport,
         context,
         timeout,
+        store: Arc::clone(store),
     })
 }
 
@@ -512,6 +647,9 @@ pub fn render_text(receipt: &MoveReceipt) -> String {
                     "move: step 3/{total} done: Deck binding retired (undoable until the next step)"
                 )
             }
+            MoveStep::CommitPublished => format!(
+                "move: step 4/{total}: commit record written, the move can no longer be undone"
+            ),
             MoveStep::FilesAssigned => {
                 format!("move: step 4/{total} done: files binding committed")
             }
@@ -520,7 +658,7 @@ pub fn render_text(receipt: &MoveReceipt) -> String {
         .collect();
     lines.push(match receipt.stage {
         MoveStage::Committed => format!("board {} now syncs over files", receipt.board),
-        MoveStage::DeckRetired => {
+        MoveStage::DeckRetired | MoveStage::CommitPublished => {
             format!(
                 "board {} is retired from Deck and not yet committed",
                 receipt.board
@@ -545,6 +683,9 @@ mod tests {
         unbound: bool,
         files: bool,
         probe: Option<MoveSubtreeProbe>,
+        record: bool,
+        die_marking_deck: bool,
+        die_in_record: bool,
         pending: usize,
         stranded: usize,
         restorable: bool,
@@ -579,6 +720,28 @@ mod tests {
         }
         async fn probe(&self) -> Result<MoveSubtreeProbe, MoveError> {
             Ok(self.probe.unwrap_or(MoveSubtreeProbe::Absent))
+        }
+        async fn committed(&self) -> Result<bool, MoveError> {
+            Ok(self.record)
+        }
+        async fn publish_record(&mut self) -> Result<(), MoveError> {
+            self.log.push("record");
+            if self.die_in_record {
+                self.die_in_record = false;
+                return Err(MoveError::PublishUnconfirmed);
+            }
+            assert!(self.unbound, "the record precedes retirement");
+            assert!(!self.files, "the record must precede the wiping bind");
+            self.record = true;
+            Ok(())
+        }
+        async fn mark_deck(&mut self) -> Result<(), MoveError> {
+            self.log.push("mark");
+            if self.die_marking_deck {
+                self.die_marking_deck = false;
+                return Err(MoveError::PublishUnconfirmed);
+            }
+            Ok(())
         }
         async fn pull_deck(&mut self) -> Result<(), MoveError> {
             self.log.push("pull");
@@ -616,8 +779,8 @@ mod tests {
             self.files = true;
             Ok(())
         }
-        fn can_restore(&self) -> bool {
-            self.restorable
+        async fn can_restore(&self) -> Result<bool, MoveError> {
+            Ok(self.restorable)
         }
         async fn restore_deck(&mut self) -> Result<(), MoveError> {
             self.log.push("restore");
@@ -634,31 +797,31 @@ mod tests {
         use BindingKind::{Deck, Files, Unbound};
         use MoveSubtreeProbe as P;
         assert_eq!(
-            derive_move_stage(Deck, P::Absent).ok(),
+            derive_move_stage(Deck, P::Absent, false).ok(),
             Some(MoveStage::NotStarted)
         );
         assert_eq!(
-            derive_move_stage(Deck, P::Partial).ok(),
+            derive_move_stage(Deck, P::Partial, false).ok(),
             Some(MoveStage::NotStarted)
         );
         assert_eq!(
-            derive_move_stage(Deck, P::Published).ok(),
+            derive_move_stage(Deck, P::Published, false).ok(),
             Some(MoveStage::Published)
         );
         assert_eq!(
-            derive_move_stage(Unbound, P::Published).ok(),
+            derive_move_stage(Unbound, P::Published, false).ok(),
             Some(MoveStage::DeckRetired)
         );
         assert_eq!(
-            derive_move_stage(Files, P::Absent).ok(),
+            derive_move_stage(Files, P::Absent, false).ok(),
             Some(MoveStage::Committed)
         );
         assert!(matches!(
-            derive_move_stage(Unbound, P::Absent),
+            derive_move_stage(Unbound, P::Absent, false),
             Err(MoveError::NotDeckBound)
         ));
         assert!(matches!(
-            derive_move_stage(Deck, P::Foreign),
+            derive_move_stage(Deck, P::Foreign, false),
             Err(MoveError::FilesSubtreeForeign)
         ));
     }
@@ -670,7 +833,10 @@ mod tests {
             .await
             .expect("moves");
         assert_eq!(stage, MoveStage::Committed);
-        assert_eq!(world.log, ["pull", "publish", "retire", "assign"]);
+        assert_eq!(
+            world.log,
+            ["pull", "publish", "retire", "record", "mark", "assign"]
+        );
         assert_eq!(world.end_state(), COMMITTED);
     }
 
@@ -729,7 +895,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_death_after_publish_resumes_without_republishing() {
+    async fn a_death_between_retire_and_the_record_resumes_at_the_record() {
+        let mut world = Fake {
+            die_in_record: true,
+            ..Fake::deck()
+        };
+        assert!(advance(&mut world, MoveStage::Committed).await.is_err());
+        assert_eq!(world.binding(), BindingKind::Unbound);
+        assert!(!world.record);
+        world.log.clear();
+        advance(&mut world, MoveStage::Committed)
+            .await
+            .expect("resumes");
+        // The pull and publish stay done: only the commit remains.
+        assert_eq!(world.log, ["record", "mark", "assign"]);
+        assert_eq!(world.end_state(), COMMITTED);
+    }
+
+    #[tokio::test]
+    async fn a_death_after_publish_republishes_and_finishes() {
         let mut world = Fake::deck();
         advance(&mut world, MoveStage::Published)
             .await
@@ -739,7 +923,10 @@ mod tests {
         advance(&mut world, MoveStage::Committed)
             .await
             .expect("resumes");
-        assert_eq!(world.log, ["pull", "retire", "assign"]);
+        assert_eq!(
+            world.log,
+            ["pull", "publish", "retire", "record", "mark", "assign"]
+        );
         assert_eq!(world.end_state(), COMMITTED);
     }
 
@@ -755,7 +942,7 @@ mod tests {
         advance(&mut world, MoveStage::Committed)
             .await
             .expect("resumes");
-        assert_eq!(world.log, ["assign"]);
+        assert_eq!(world.log, ["mark", "assign"]);
         assert_eq!(world.end_state(), COMMITTED);
     }
 
@@ -784,6 +971,55 @@ mod tests {
         undo(&mut world).await.expect("undoes");
         assert_eq!(world.log, ["restore", "pull"]);
         assert_eq!(world.binding(), BindingKind::Deck);
+    }
+
+    #[tokio::test]
+    async fn undo_is_closed_from_the_commit_record_onward() {
+        let mut world = Fake::deck();
+        advance(&mut world, MoveStage::CommitPublished)
+            .await
+            .expect("stops");
+        assert!(world.record);
+        assert!(matches!(undo(&mut world).await, Err(MoveError::UndoClosed)));
+        assert_eq!(world.binding(), BindingKind::Unbound);
+        world.log.clear();
+        advance(&mut world, MoveStage::Committed)
+            .await
+            .expect("resumes");
+        assert_eq!(world.log, ["mark", "assign"]);
+        assert_eq!(world.end_state(), COMMITTED);
+    }
+
+    #[tokio::test]
+    async fn a_failed_deck_marker_blocks_the_bind_and_resumes() {
+        let mut world = Fake {
+            die_marking_deck: true,
+            ..Fake::deck()
+        };
+        assert!(advance(&mut world, MoveStage::Committed).await.is_err());
+        assert_eq!(world.binding(), BindingKind::Unbound);
+        assert!(world.record);
+        advance(&mut world, MoveStage::Committed)
+            .await
+            .expect("resumes");
+        assert_eq!(world.end_state(), COMMITTED);
+    }
+
+    #[tokio::test]
+    async fn a_rerun_after_undo_republishes_the_floor() {
+        let mut world = Fake::deck();
+        advance(&mut world, MoveStage::DeckRetired)
+            .await
+            .expect("stops");
+        undo(&mut world).await.expect("undoes");
+        world.log.clear();
+        advance(&mut world, MoveStage::Committed)
+            .await
+            .expect("reruns");
+        assert_eq!(
+            world.log,
+            ["pull", "publish", "retire", "record", "mark", "assign"]
+        );
     }
 
     #[tokio::test]

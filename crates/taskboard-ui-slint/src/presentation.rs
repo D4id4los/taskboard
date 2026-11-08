@@ -385,6 +385,9 @@ pub fn sync_badge_for_board(
 pub fn sidecar_caption(health: SidecarHealth) -> String {
     match health {
         SidecarHealth::Healthy => String::new(),
+        SidecarHealth::MovedToFiles { .. } => {
+            "board moved to files by another device — enable files sync here".to_owned()
+        }
         SidecarHealth::Unreadable(taskboard_domain::AppDataUnreadable::FormatTooNew { format }) => {
             format!("board data unreadable (format {format} is too new) — update this app")
         }

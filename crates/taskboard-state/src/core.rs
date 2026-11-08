@@ -7,13 +7,13 @@
 //! any other way — memory ≡ disk by construction, and a failed `apply`
 //! needs no rollback because `interpret` never runs (ADR 0006).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, Utc};
 
 use taskboard_domain::{
-    AppState, BoardId, PendingOp, PersistedState, PersistenceAction, SettingsSnapshot,
-    SyncCounters, SyncValidators, ValidatorKey, apply_actions,
+    AppState, BoardId, PendingOp, PersistedState, PersistenceAction, RemoteBoardBinding,
+    SettingsSnapshot, SyncCounters, SyncValidators, ValidatorKey, apply_actions,
 };
 
 /// The engine's private working state: the persisted shape plus the one
@@ -33,6 +33,10 @@ pub struct EngineCore {
     /// validated config, replaced wholesale by `set_settings`, never
     /// entering `interpret`'s batches or `PersistedState`.
     settings: SettingsSnapshot,
+    /// Deck bindings dropped in this process. A Deck cycle already in
+    /// flight when its board leaves would otherwise mint a duplicate;
+    /// such a cycle cannot outlive the process, so neither does this.
+    retired_deck: BTreeSet<RemoteBoardBinding>,
 }
 
 impl EngineCore {
@@ -54,6 +58,7 @@ impl EngineCore {
             state,
             last_updated: None,
             sync_counters: BTreeMap::new(),
+            retired_deck: BTreeSet::new(),
             // The test-policy default (reminders off); the spawn
             // overwrites it with the app's minted snapshot before the
             // first publish.
@@ -80,9 +85,42 @@ impl EngineCore {
     /// changed. Called **only** after `repo.apply` returned `Ok`.
     pub fn interpret(&mut self, actions: &[PersistenceAction], now: DateTime<Utc>) -> bool {
         let previous = self.app();
+        self.track_retired_bindings(actions);
         apply_actions(&mut self.state, actions);
         self.last_updated = Some(now);
         self.app() != previous
+    }
+
+    /// Whether this binding left a board earlier in this process.
+    #[must_use]
+    pub fn is_retired_deck(&self, binding: &RemoteBoardBinding) -> bool {
+        self.retired_deck.contains(binding)
+    }
+
+    fn track_retired_bindings(&mut self, actions: &[PersistenceAction]) {
+        for action in actions {
+            let (board, written) = match action {
+                PersistenceAction::UpsertBoard(row) => (row.id, row.remote.as_ref()),
+                PersistenceAction::AdoptMovedBoard(rekey) => {
+                    (rekey.old_board, Some(&rekey.binding))
+                }
+                _ => continue,
+            };
+            let previous = self
+                .state
+                .boards
+                .get(&board)
+                .and_then(|row| row.remote.clone());
+            if let Some(previous) = previous
+                && previous.board.as_deck().is_some()
+                && written.is_none_or(|binding| binding.board.as_files().is_some())
+            {
+                self.retired_deck.insert(previous);
+            }
+            if let Some(written) = written {
+                self.retired_deck.remove(written);
+            }
+        }
     }
 
     /// The UI projection: entity maps, derived `pending_ops`, and the

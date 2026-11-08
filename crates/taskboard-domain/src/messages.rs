@@ -859,6 +859,16 @@ pub enum AppDataUnreadable {
 /// re-POSTing completed creates next cycle — Deck has no idempotency keys.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SyncReport {
+    /// A board this device holds on Deck was moved to the files tier by
+    /// another device: the engine re-keys and rebinds it (D-BF11).
+    BoardMoved {
+        /// The files connector that found the commit record.
+        connector: ConnectorId,
+        /// This device's board.
+        board: crate::ids::BoardId,
+        /// The mover's mapping.
+        adoption: Box<crate::board_move::BoardAdoption>,
+    },
     /// A cycle finished pushing and pulling; the engine executes the merge
     /// policy against this data.
     Completed {
@@ -994,7 +1004,7 @@ mod tests {
         fn classify(report: &SyncReport) -> bool {
             match report {
                 SyncReport::Completed { .. } => true,
-                SyncReport::Failed { .. } => false,
+                SyncReport::Failed { .. } | SyncReport::BoardMoved { .. } => false,
             }
         }
         let failed = SyncReport::Failed {

@@ -756,6 +756,18 @@ dependency hierarchies.
    trashbin is the user's recovery path (see
    =docs/files-sync-runbook.org=).
 
+   *Mixed fleets are the normal posture* (D-BF5): each board has
+   exactly one owner — its =Board.remote= row, read through the
+   =BoardOwnershipMap= — so Deck boards and files boards coexist under
+   one account and a board changes tiers only through the guided move
+   ceremony (=boards move --to-files=, D-BF11: final Deck pull,
+   publish the subtree floor, retire the Deck binding, then the
+   create-once commit record whose write closes the undo window and
+   licenses other devices' fold-first adoption; =--to-deck= is a
+   typed refusal, ruling Q4). The ceremony's steps, the undo window,
+   the adoption behavior, and the server-side Deck-board retirement
+   are documented in =docs/boards-move-runbook.org=.
+
 * Tech Stack & External Crates Specification
 
 | Category | Selected Tool / Crate | Purpose & Selection Rationale |

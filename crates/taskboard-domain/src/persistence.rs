@@ -356,6 +356,9 @@ pub enum PersistenceAction {
     /// they move the head in their own batch, so the line survives
     /// restarts). `None` is legal (the emptied line).
     MoveJournalHead(Option<crate::ids::JournalId>),
+    /// Re-keys a board onto a mover's ids and swaps its binding from
+    /// Deck to files in one write (D-BF11).
+    AdoptMovedBoard(Box<crate::board_move::BoardRekey>),
 }
 
 /// Applies a batch of [`PersistenceAction`]s to a [`PersistedState`] —
@@ -430,6 +433,9 @@ pub fn apply_actions(state: &mut PersistedState, actions: &[PersistenceAction]) 
             }
             PersistenceAction::DeleteSyncStatus(board) => {
                 state.sync.remove(*board);
+            }
+            PersistenceAction::AdoptMovedBoard(rekey) => {
+                crate::board_move::apply_adoption(state, rekey);
             }
             PersistenceAction::UpsertReminderRule(rule) => {
                 state.reminders.rules.insert(rule.id, rule.clone());
