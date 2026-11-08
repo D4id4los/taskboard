@@ -2080,8 +2080,8 @@ pub fn time_entries_for(
 
 /// The files lane's time-entries builder (D-BF9): the sidecar's
 /// retention window and row codec verbatim, but the card key is the
-/// task's *domain UUID* (files rows carry no Deck card number) and
-/// membership reads the files binding, not a Deck one. Pair of
+/// task's *domain UUID* (files rows carry no remote child ids) and
+/// membership is the board's own stacks. Pair of
 /// [`time_entries_for`] — the two share [`time_entries_for_lane`],
 /// diverging only in the lane's card-key shape.
 #[must_use]
@@ -2098,7 +2098,6 @@ pub fn files_time_entries_for(
         if stack.board != board {
             return None; // another board's document
         }
-        task.remote.as_ref()?.board.as_files()?; // unbound: no files home
         Some(task.id.as_uuid().to_string())
     })
 }

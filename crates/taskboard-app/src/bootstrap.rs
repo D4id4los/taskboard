@@ -1289,8 +1289,11 @@ async fn bootstrap_with_modules(
     // the legacy scalar tag decodes as-is there (D-3).
     if !modules.is_empty() {
         let persisted = repo.load().await.map_err(BootstrapError::StorageRead)?;
-        let configured: std::collections::BTreeSet<taskboard_domain::ConnectorId> =
-            modules.iter().map(|module| module.id().clone()).collect();
+        let configured: std::collections::BTreeSet<taskboard_domain::ConnectorId> = modules
+            .iter()
+            .map(|module| module.id().clone())
+            .chain(files_sync_spawn_decision(&config).map(|spec| spec.identity))
+            .collect();
         let ownership =
             taskboard_domain::ownership::BoardOwnershipMap::from_boards(&persisted.boards);
         for (board, connector) in ownership.bindings() {

@@ -1172,8 +1172,10 @@ pub fn apply_sync_report(
         .folded_rules
         .as_ref()
         .unwrap_or(&current.reminders.rules);
+    // A report is complete for its own board only.
     let bound_task_refs: Vec<(TaskId, (RemoteBoardId, RemoteCardId))> = tasks
         .iter()
+        .filter(|(_, t)| stacks.get(&t.stack).is_some_and(|s| s.board == board_id))
         .filter_map(|(id, t)| {
             let r = t.remote?;
             Some((*id, (r.board, r.card)))
@@ -1253,6 +1255,7 @@ pub fn apply_sync_report(
     }
     let bound_stack_refs: Vec<(StackId, RemoteStackRef)> = stacks
         .iter()
+        .filter(|(_, s)| s.board == board_id)
         .filter_map(|(id, s)| Some((*id, s.remote?)))
         .collect();
     for (id, remote_ref) in bound_stack_refs {
@@ -1267,6 +1270,7 @@ pub fn apply_sync_report(
         snapshot.labels.iter().map(|l| l.id).collect();
     let bound_label_refs: Vec<(LabelId, crate::ids::RemoteLabelRef)> = labels
         .iter()
+        .filter(|(_, l)| l.board == board_id)
         .filter_map(|(id, l)| Some((*id, l.remote?)))
         .collect();
     for (id, remote_ref) in bound_label_refs {
@@ -1873,14 +1877,10 @@ pub fn apply_files_board_snapshot(
     // board id (the discovery fold decodes against the subtree uuid
     // before any local binding exists); the adopted board's id is the
     // truth, so the children re-key to it.
-    let files_stack_ref = |stack: StackId| RemoteStackRef {
-        board: snapshot.board,
-        stack: RemoteStackId::files(stack.as_uuid()),
-    };
     for row in &snapshot.stacks {
         let mut bound = row.clone();
         bound.board = board_id;
-        bound.remote = Some(files_stack_ref(row.id));
+        bound.remote = None;
         if let Some(local) = stacks.get(&row.id).cloned() {
             stacks.insert(row.id, crate::reconcile::merge_stack_pair(&local, &bound));
         } else {
@@ -1890,10 +1890,7 @@ pub fn apply_files_board_snapshot(
     for row in &snapshot.labels {
         let mut bound = row.clone();
         bound.board = board_id;
-        bound.remote = Some(crate::ids::RemoteLabelRef {
-            board: snapshot.board,
-            label: crate::ids::RemoteLabelId::files(row.id.as_uuid()),
-        });
+        bound.remote = None;
         if let Some(local) = labels.get(&row.id).cloned() {
             labels.insert(row.id, crate::reconcile::merge_label_pair(&local, &bound));
         } else {
@@ -1902,11 +1899,7 @@ pub fn apply_files_board_snapshot(
     }
     for row in &snapshot.tasks {
         let mut bound = row.clone();
-        bound.remote = Some(RemoteCardRef {
-            board: snapshot.board,
-            stack: RemoteStackId::files(row.stack.as_uuid()),
-            card: RemoteCardId::files(row.id.as_uuid()),
-        });
+        bound.remote = None;
         if let Some(local) = tasks.get(&row.id).cloned() {
             tasks.insert(row.id, crate::reconcile::merge_task_pair(&local, &bound));
         } else {
