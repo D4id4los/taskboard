@@ -176,10 +176,11 @@ pub enum DateField {
 /// The review walk's stage machine (DR-7 D-J9; plan D-W2): three
 /// rendered stages — the plan-tomorrow leg between Carry forward and
 /// Prompts is a **handoff transition** into the plan-next-day surface
-/// (shape B), never a stage here. Each stage's sub-state is the armed
-/// row affordance (the File-to picker, the Pick-a-date field); the
-/// Escape ladder clears the sub-state first, then steps a stage back,
-/// then closes (the `TrackEntryDismiss` shape).
+/// (shape B), never a stage here. The stages carry no sub-state: the
+/// armed row affordances (the File-to picker, the Pick-a-date field)
+/// are the walk's child levels (chunk 3's ports); the Escape ladder's
+/// sub-state rung is the generic Cancelled rung, then a stage back,
+/// then close.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WalkStage {
     /// Inbox triage (P1): the armed File-to picker is the
@@ -196,9 +197,9 @@ pub enum WalkStage {
 }
 
 /// The walk's per-stage row counts as the pass pushed them (the view
-/// state holds only the cursor and the sub-state; every row set is
-/// re-derived from `AppState` on every push, so the counts arrive as
-/// data — the palette's `visible` argument generalized).
+/// state holds only the cursor; every row set is re-derived from
+/// `AppState` on every push, so the counts arrive as data — the
+/// palette's `visible` argument generalized).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct WalkRows {
     pub inbox: usize,
@@ -2211,8 +2212,9 @@ impl ViewState {
         }
     }
 
-    /// The Escape ladder (plan D-W2): sub-state → stage-back → close.
-    /// Prompts steps back to Carry forward (never back into the
+    /// The Escape ladder (plan D-W2): the Cancelled rung (a live
+    /// child) → stage-back → close. Prompts steps back to Carry
+    /// forward (never back into the
     /// planner — P12: no forced detour); Carry forward steps back to
     /// the Inbox when it has rows (an empty inbox was skipped on the
     /// way in and is skipped on the way back — the close); the Inbox
@@ -2403,9 +2405,9 @@ impl ViewState {
 
     /// The walk parent's `Stack` consumption (N3a): today's
     /// `FileCommit` body — the `MoveTask` append for the cursor row
-    /// into `stack`, then the row advance (the flattened sub-state's
-    /// clear rides the advance today, the child's death after the
-    /// port). R2's order is preserved by construction: payload
+    /// into `stack`, then the row advance (the child's death is the
+    /// flattened sub-state clear). R2's order is preserved by
+    /// construction: payload
     /// consumed → command built → next row. The handoff ask crosses as
     /// [`FlowOutcome::PlannerHandoff`] — from the Inbox stage the
     /// advance cannot hand off (the handoff fires only out of Carry
