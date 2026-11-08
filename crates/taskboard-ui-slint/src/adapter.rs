@@ -984,23 +984,26 @@ impl Adapter {
         self.shell.view = Some(self.view_state.context());
         self.shell.focused_task = self.view_state.focused_task();
         self.shell.focused_stack = self.view_state.focused_stack(&state);
-        self.shell.palette = matches!(
-            self.view_state.flow(),
-            crate::view_state::Flow::Palette { .. }
-        );
-        self.shell.focus_overlay = matches!(
-            self.view_state.flow(),
-            crate::view_state::Flow::FocusMode { .. }
-        );
-        self.shell.track_entries = matches!(
-            self.view_state.flow(),
-            crate::view_state::Flow::TrackEntries { .. }
-                | crate::view_state::Flow::TrackEntryForm { .. }
-        );
-        self.shell.review_walk = matches!(
-            self.view_state.flow(),
-            crate::view_state::Flow::ReviewWalk { .. }
-        );
+        // The modal masks' truth is chain-wide (chunk 3): a child
+        // level holding the chain's top must not unmask its parent —
+        // the walk's context stays armed while its File-to or
+        // Pick-a-date child is on top.
+        self.shell.palette = self
+            .view_state
+            .chain_has_flow(|flow| matches!(flow, crate::view_state::Flow::Palette { .. }));
+        self.shell.focus_overlay = self
+            .view_state
+            .chain_has_flow(|flow| matches!(flow, crate::view_state::Flow::FocusMode { .. }));
+        self.shell.track_entries = self.view_state.chain_has_flow(|flow| {
+            matches!(
+                flow,
+                crate::view_state::Flow::TrackEntries { .. }
+                    | crate::view_state::Flow::TrackEntryForm { .. }
+            )
+        });
+        self.shell.review_walk = self
+            .view_state
+            .chain_has_flow(|flow| matches!(flow, crate::view_state::Flow::ReviewWalk { .. }));
         // Round 2 (D19): the reopen gate's done stamp, from the same
         // focused task — the router stays pure.
         self.shell.focused_task_done = self
@@ -2091,8 +2094,15 @@ impl Adapter {
                     Self::reset_editing_facts(window);
                     return vec![FlowOutcome::SetMode(Mode::Normal)];
                 }
-                let outcomes = self.view_state.back_review_walk(rows);
-                // A rung that unmounted a field (the sub-state clear,
+                // The ladder's sub-state rung is the generic Cancelled
+                // rung (D-H4): an armed child — the File-to picker,
+                // the Pick-a-date field — ends alone, the stage stays;
+                // without a child the stage ladder applies.
+                let outcomes = match self.view_state.cancel_top_child(state) {
+                    Some(outcomes) => outcomes,
+                    None => self.view_state.back_review_walk(rows),
+                };
+                // A rung that unmounted a field (the child's death,
                 // the stage-back out of Prompts) or the walk itself
                 // killed slint focus with it and fired no loss event —
                 // the facts reset is the adapter's documented seam for
@@ -2168,28 +2178,41 @@ impl Adapter {
             }
             WalkIntent::CarryPickDate => self.view_state.review_walk_pick_date(),
             WalkIntent::CarryDateCommit => {
-                let Some(Flow::ReviewWalk {
-                    stage: WalkStage::CarryForward { picking_date: true },
-                    ..
-                }) = self.view_state.walk_flow()
+                // The parse-keep-text rule lives in the child (N3b):
+                // an unparseable date dispatches nothing and the child
+                // stays live with the text (the due editor's parser
+                // verbatim, plan D-W4).
+                let Some(text) = self
+                    .view_state
+                    .walk_date()
+                    .map(|child| child.date_text.clone())
+                else {
+                    return Vec::new();
+                };
+                let Ok(Some(instant)) =
+                    crate::due_edit::parse(&text, self.day_ctx().now, &calendar.offset)
                 else {
                     return Vec::new();
                 };
                 let Some(task) = self.walk_cursor_task(state, cadence, reference, rows) else {
                     return Vec::new();
                 };
-                // The due editor's parser verbatim (plan D-W4); an
-                // unparseable date dispatches nothing and keeps the
-                // text (the planner-form rule).
-                let Ok(Some(instant)) = crate::due_edit::parse(
-                    self.view_state
-                        .walk()
-                        .map_or("", |walk| walk.date_text.as_str()),
-                    self.day_ctx().now,
-                    &calendar.offset,
-                ) else {
-                    return Vec::new();
-                };
+                // The commit completes the child with the parsed
+                // instant — the honest payload (D3's "minted
+                // adapter-side"). The walk parent's consumption is
+                // the default ignore here: the cursor task's
+                // derivation needs the adapter's day context, so the
+                // UpdateTask is built above and the row advance (with
+                // the handoff ask) rides `finish_walk_row` below —
+                // R2's order preserved; the child's death IS the
+                // flattened in-level clear.
+                let state_guard = self.state.load();
+                let _ = self.view_state.end_top_flow_with(
+                    &state_guard,
+                    crate::surfaces::GuestExit::Completed(Some(
+                        crate::surfaces::LevelResult::Date(instant),
+                    )),
+                );
                 let step = vec![FlowOutcome::Command(
                     taskboard_domain::StateCommand::UpdateTask {
                         id: task,
@@ -2199,13 +2222,7 @@ impl Adapter {
                         },
                     },
                 )];
-                let outcomes = self.finish_walk_row(window, cadence, reference, rows, step);
-                // The date field's commit keeps the walk alive — the
-                // in-level clear (the one surviving per-field wipe).
-                if let Some(walk) = self.view_state.walk_mut() {
-                    walk.date_text.clear();
-                }
-                outcomes
+                self.finish_walk_row(window, cadence, reference, rows, step)
             }
             // -- the prompt commit verbs --
             WalkIntent::Record => {
@@ -2278,6 +2295,19 @@ impl Adapter {
             .filter(|_| rows.carry > 0)
     }
 
+    /// The armed walk child dies with the row step (N3b): the
+    /// flattened model's next-row clear — the child's Cancelled end
+    /// through the one exit seam.
+    fn end_armed_walk_child(&mut self, window: &AppWindow) {
+        if self.view_state.walk_date_child() || self.view_state.walk_file_armed().is_some() {
+            let state = self.state.load();
+            let _ = self
+                .view_state
+                .end_top_flow_with(&state, crate::surfaces::GuestExit::Cancelled);
+            self.refresh_forced(window);
+        }
+    }
+
     /// A commandless row step (`Keep in inbox`, `Leave as is`); a
     /// stage-passing step into the handoff runs the transition.
     fn step_walk_row(
@@ -2287,6 +2317,7 @@ impl Adapter {
         reference: chrono::NaiveDate,
         rows: crate::view_state::WalkRows,
     ) -> Vec<FlowOutcome> {
+        self.end_armed_walk_child(window);
         match self.view_state.review_walk_next_row(rows) {
             WalkStep::Handoff => {
                 self.hand_off_to_planner(window, cadence, reference);
@@ -2308,6 +2339,7 @@ impl Adapter {
         rows: crate::view_state::WalkRows,
         step: Vec<FlowOutcome>,
     ) -> Vec<FlowOutcome> {
+        self.end_armed_walk_child(window);
         let mut outcomes = step;
         match self.view_state.review_walk_next_row(rows) {
             WalkStep::Handoff => {
@@ -9112,8 +9144,8 @@ fn install_review_walk_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>)
     bind mut (a, window), args (), {        a.route(&window, ActionId::ReviewCarryLeave);
     });
     install_seam!(window: window.on_walk_date_edited, adapter: adapter; [bare_mut]
-    bind mut (a), args (text), {        if let Some(walk) = a.view_state.walk_mut() {
-        walk.date_text = text.to_string();
+    bind mut (a), args (text), {        if let Some(child) = a.view_state.walk_date_mut() {
+        child.date_text = text.to_string();
     }
     });
     install_seam!(window: window.on_walk_date_commit_clicked, adapter: adapter;

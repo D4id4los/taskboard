@@ -2065,7 +2065,7 @@ pub fn walk_stage_header(
 ) -> String {
     match stage {
         crate::view_state::WalkStage::Inbox => "Inbox".to_owned(),
-        crate::view_state::WalkStage::CarryForward { .. } => "Carry forward".to_owned(),
+        crate::view_state::WalkStage::CarryForward => "Carry forward".to_owned(),
         crate::view_state::WalkStage::Prompts => template.name.to_owned(),
     }
 }
@@ -2076,7 +2076,7 @@ pub fn walk_stage_header(
 pub const fn walk_stage_empty_line(stage: crate::view_state::WalkStage) -> &'static str {
     match stage {
         crate::view_state::WalkStage::Inbox => "The inbox is empty.",
-        crate::view_state::WalkStage::CarryForward { .. } => "Nothing to carry forward.",
+        crate::view_state::WalkStage::CarryForward => "Nothing to carry forward.",
         crate::view_state::WalkStage::Prompts => "",
     }
 }
@@ -4672,12 +4672,7 @@ mod tests {
             "Inbox"
         );
         assert_eq!(
-            walk_stage_header(
-                crate::view_state::WalkStage::CarryForward {
-                    picking_date: false
-                },
-                day
-            ),
+            walk_stage_header(crate::view_state::WalkStage::CarryForward, day),
             "Carry forward"
         );
         assert_eq!(
@@ -4689,9 +4684,7 @@ mod tests {
             "The inbox is empty."
         );
         assert_eq!(
-            walk_stage_empty_line(crate::view_state::WalkStage::CarryForward {
-                picking_date: false
-            }),
+            walk_stage_empty_line(crate::view_state::WalkStage::CarryForward),
             "Nothing to carry forward."
         );
         assert_eq!(
@@ -4719,10 +4712,7 @@ mod tests {
         let day_template = &taskboard_domain::DEFAULT_TEMPLATES[0];
         let stages = [
             crate::view_state::WalkStage::Inbox,
-            crate::view_state::WalkStage::CarryForward {
-                picking_date: false,
-            },
-            crate::view_state::WalkStage::CarryForward { picking_date: true },
+            crate::view_state::WalkStage::CarryForward,
             crate::view_state::WalkStage::Prompts,
         ];
         for cadence in [

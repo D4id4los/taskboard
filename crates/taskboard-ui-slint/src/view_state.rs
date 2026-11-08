@@ -186,9 +186,10 @@ pub enum WalkStage {
     /// `WalkFilePick` child level (chunk 3's N3a port); the stage
     /// carries no sub-state.
     Inbox,
-    /// Carry forward (P9): `true` = the Pick-a-date field is armed on
-    /// the cursor row.
-    CarryForward { picking_date: bool },
+    /// Carry forward (P9): the armed Pick-a-date field is the
+    /// `WalkDatePick` child level (chunk 3's N3b port); the stage
+    /// carries no sub-state.
+    CarryForward,
     /// The prompted entry (P7/P13) — the cadence template's fields
     /// over one `RecordReflection`.
     Prompts,
@@ -624,8 +625,8 @@ impl ViewState {
         Ok(self.surfaces.depth() - 1)
     }
 
-    /// The innermost `Walk` level's state (the review walk's answers
-    /// and armed date field): `None` without one.
+    /// The innermost `Walk` level's state (the review walk's answers):
+    /// `None` without one.
     #[must_use]
     pub(crate) fn walk(&self) -> Option<&crate::level_state::WalkState> {
         self.surfaces
@@ -712,6 +713,18 @@ impl ViewState {
         self.end_top_flow_with(state, crate::surfaces::GuestExit::Cancelled)
     }
 
+    /// Whether a flow level matching `pred` sits anywhere in the
+    /// chain (the shell's modal-mask booleans' truth): the top-flow
+    /// read alone lies when a child level holds the chain's top.
+    #[must_use]
+    pub(crate) fn chain_has_flow(&self, pred: impl Fn(&Flow) -> bool) -> bool {
+        self.surfaces
+            .above_levels()
+            .iter()
+            .rev()
+            .any(|level| level.flow().is_some_and(&pred))
+    }
+
     /// The walk level's flow (read through any children above it):
     /// the stage machine's facts ride the walk level even when one of
     /// its children holds the chain's top — the flat `flow()` read is
@@ -755,8 +768,39 @@ impl ViewState {
             })
     }
 
+    /// The walk's Pick-a-date child's read seam (N3b): `None` without
+    /// one.
+    #[must_use]
+    pub(crate) fn walk_date(&self) -> Option<&crate::level_state::WalkDateState> {
+        self.surfaces
+            .above_levels()
+            .iter()
+            .rev()
+            .find_map(|level| level.state().as_walk_date())
+    }
+
+    /// The walk's Pick-a-date child's write seam (the field's typed
+    /// text).
+    pub(crate) fn walk_date_mut(&mut self) -> Option<&mut crate::level_state::WalkDateState> {
+        self.surfaces
+            .above_levels_mut()
+            .iter_mut()
+            .rev()
+            .find_map(|level| level.state_mut().as_walk_date_mut())
+    }
+
     /// Whether the walk's Pick-a-date child is live (the `picking`
     /// mirror's truth, N3b).
+    #[must_use]
+    pub(crate) fn walk_date_child(&self) -> bool {
+        self.surfaces
+            .above_levels()
+            .iter()
+            .any(|level| matches!(level.flow(), Some(Flow::WalkDatePick)))
+    }
+
+    /// The innermost `PlanPlace` level's state (the placement form's
+    /// two mirrors): `None` without one.
     #[must_use]
     pub(crate) fn plan_place(&self) -> Option<&crate::level_state::PlanPlaceState> {
         self.surfaces
@@ -2053,9 +2097,7 @@ impl ViewState {
         let stage = if rows.inbox > 0 {
             WalkStage::Inbox
         } else {
-            WalkStage::CarryForward {
-                picking_date: false,
-            }
+            WalkStage::CarryForward
         };
         self.open_review_walk_at(cadence, reference, stage)
     }
@@ -2090,7 +2132,7 @@ impl ViewState {
     const fn walk_stage_rows(stage: WalkStage, rows: WalkRows) -> usize {
         match stage {
             WalkStage::Inbox => rows.inbox,
-            WalkStage::CarryForward { .. } => rows.carry,
+            WalkStage::CarryForward => rows.carry,
             WalkStage::Prompts => 0,
         }
     }
@@ -2123,11 +2165,9 @@ impl ViewState {
         let Some(Flow::ReviewWalk { stage, cursor, .. }) = self.walk_flow_mut() else {
             return WalkStep::Inert;
         };
-        if let WalkStage::CarryForward { picking_date } = stage {
-            // The flattened date rung's step-clear (retires with N3b:
-            // the date child's death is the clear).
-            *picking_date = false;
-        }
+        // The armed child dies with the row step — the adapter's row
+        // verbs end it `Cancelled` before stepping (the flattened
+        // next-row clear; the child's death is the clear).
         let len = Self::walk_stage_rows(*stage, rows);
         if *cursor + 1 < len {
             *cursor += 1;
@@ -2145,13 +2185,11 @@ impl ViewState {
         };
         match stage {
             WalkStage::Inbox => {
-                *stage = WalkStage::CarryForward {
-                    picking_date: false,
-                };
+                *stage = WalkStage::CarryForward;
                 *cursor = 0;
                 WalkStep::Advanced
             }
-            WalkStage::CarryForward { .. } => WalkStep::Handoff,
+            WalkStage::CarryForward => WalkStep::Handoff,
             WalkStage::Prompts => WalkStep::Inert,
         }
     }
@@ -2163,33 +2201,24 @@ impl ViewState {
     /// way in and is skipped on the way back — the close); the Inbox
     /// closes. Inert outside the walk.
     pub fn back_review_walk(&mut self, rows: WalkRows) -> Vec<FlowOutcome> {
-        // The File-to child's sub-state rung is the generic Cancelled
-        // rung (D-H4): the adapter's `cancel_top_child` ends the child
-        // before this ladder runs. The armed date field's rung stays
-        // flattened until its own port (N3b) retires it.
+        // The children's sub-state rung is the generic Cancelled rung
+        // (D-H4): the adapter's `cancel_top_child` ends the child
+        // before this ladder runs; only the stage rungs remain.
         let Some(Flow::ReviewWalk { stage, cursor, .. }) = self.walk_flow_mut() else {
             return Vec::new();
         };
         match stage {
             WalkStage::Prompts => {
-                *stage = WalkStage::CarryForward {
-                    picking_date: false,
-                };
+                *stage = WalkStage::CarryForward;
                 *cursor = 0;
                 vec![FlowOutcome::RefreshNow]
             }
-            WalkStage::CarryForward { picking_date: true } => {
-                *stage = WalkStage::CarryForward {
-                    picking_date: false,
-                };
-                vec![FlowOutcome::RefreshNow]
-            }
-            WalkStage::CarryForward { .. } if rows.inbox > 0 => {
+            WalkStage::CarryForward if rows.inbox > 0 => {
                 *stage = WalkStage::Inbox;
                 *cursor = 0;
                 vec![FlowOutcome::RefreshNow]
             }
-            WalkStage::CarryForward { .. } | WalkStage::Inbox => self.close_review_walk(),
+            WalkStage::CarryForward | WalkStage::Inbox => self.close_review_walk(),
         }
     }
 
@@ -2245,17 +2274,23 @@ impl ViewState {
         vec![FlowOutcome::RefreshNow]
     }
 
-    /// `Pick a date…`: arms the date field on the cursor row; inert
-    /// outside the Carry forward stage.
+    /// `Pick a date…` (N3b): mounts the walk's date child over the
+    /// live walk; inert outside the Carry forward stage. The typed
+    /// text lives in the child's `WalkDate` family; a foreign settle
+    /// ends it `Cancelled`, discarding half-typed text exactly as the
+    /// flattened walk always did (the Q3 ruling, D5). The
+    /// duplicate-kind refusal is the defensive no-op (D7).
     pub fn review_walk_pick_date(&mut self) -> Vec<FlowOutcome> {
-        let Some(Flow::ReviewWalk {
-            stage: WalkStage::CarryForward { picking_date },
-            ..
-        }) = self.surfaces.top_flow_mut()
-        else {
+        if !matches!(
+            self.walk_flow().as_ref(),
+            Some(Flow::ReviewWalk {
+                stage: WalkStage::CarryForward,
+                ..
+            })
+        ) {
             return Vec::new();
-        };
-        *picking_date = true;
+        }
+        let _ = self.mount_child(Flow::WalkDatePick);
         vec![FlowOutcome::RefreshNow]
     }
 
@@ -2281,9 +2316,7 @@ impl ViewState {
             return;
         };
         if matches!(stage, WalkStage::Inbox) && rows.inbox == 0 {
-            *stage = WalkStage::CarryForward {
-                picking_date: false,
-            };
+            *stage = WalkStage::CarryForward;
             *cursor = 0;
             return;
         }
@@ -3669,17 +3702,17 @@ mod tests {
         vs.reconcile(&state);
         let reference = chrono::NaiveDate::from_ymd_opt(2026, 1, 1).expect("a valid date");
         // Prompt answers typed, then the close: a fresh walk mints
-        // clean — the drop was the wipe.
+        // clean — the drop was the wipe. (The typed date text is the
+        // WalkDatePick child's since N3b — its own level, its own
+        // wipe.)
         vs.open_review_walk_at(ReviewCadence::Day, reference, WalkStage::Prompts);
         if let Some(walk) = vs.walk_mut() {
             walk.answers = vec!["typed".to_owned()];
-            walk.date_text = "2026-01-02".to_owned();
         }
         vs.close_review_walk();
         vs.open_review_walk_at(ReviewCadence::Day, reference, WalkStage::Prompts);
         let walk = vs.walk().expect("the walk armed");
         assert_eq!(walk.answers, Vec::<String>::new());
-        assert_eq!(walk.date_text, "");
     }
 
     #[test]
@@ -5838,14 +5871,7 @@ mod settings_surface_tests {
         vs.open_review_walk(DAY, reference(), rows(0, 3));
         assert!(matches!(
             walk_flow(&vs),
-            (
-                DAY,
-                _,
-                WalkStage::CarryForward {
-                    picking_date: false
-                },
-                0
-            )
+            (DAY, _, WalkStage::CarryForward, 0)
         ));
 
         // XOR both ways: capture replaces the walk; the walk replaces
@@ -5884,26 +5910,19 @@ mod settings_surface_tests {
         assert_eq!(vs.review_walk_next_row(rows(3, 2)), WalkStep::Advanced);
         assert!(matches!(
             walk_flow(&vs),
-            (DAY, _, WalkStage::CarryForward { .. }, 0)
+            (DAY, _, WalkStage::CarryForward, 0)
         ));
 
-        // Mid-stage it just moves the cursor and clears the sub-state.
+        // The armed Pick-a-date child is independent of the row step:
+        // it mounts over the carry stage, and the adapter's row verbs
+        // end it Cancelled before stepping (the flattened next-row
+        // clear; the child's death is the clear).
         vs.review_walk_pick_date();
-        assert!(matches!(
-            walk_flow(&vs),
-            (DAY, _, WalkStage::CarryForward { picking_date: true }, 0)
-        ));
+        assert!(matches!(vs.flow(), Flow::WalkDatePick));
         assert_eq!(vs.review_walk_next_row(rows(3, 2)), WalkStep::Advanced);
         assert!(matches!(
             walk_flow(&vs),
-            (
-                DAY,
-                _,
-                WalkStage::CarryForward {
-                    picking_date: false
-                },
-                1
-            )
+            (DAY, _, WalkStage::CarryForward, 1)
         ));
 
         // Advancing out of Carry forward is the handoff request.
@@ -5932,21 +5951,15 @@ mod settings_surface_tests {
         );
         assert!(matches!(walk_flow(&vs), (DAY, _, WalkStage::Inbox, _)));
 
-        // Stage back: Carry forward → Inbox when the inbox has rows.
+        // The armed Pick-a-date child is the same generic rung.
         vs.advance_review_walk();
         vs.review_walk_pick_date();
-        vs.back_review_walk(rows(1, 0));
-        assert!(matches!(
-            walk_flow(&vs),
-            (
-                DAY,
-                _,
-                WalkStage::CarryForward {
-                    picking_date: false
-                },
-                _
-            )
-        ));
+        assert!(matches!(vs.flow(), Flow::WalkDatePick));
+        assert_eq!(
+            vs.cancel_top_child(&state),
+            Some(vec![FlowOutcome::RefreshNow])
+        );
+        // Stage back: Carry forward → Inbox when the inbox has rows.
         vs.back_review_walk(rows(1, 0));
         assert!(matches!(walk_flow(&vs), (DAY, _, WalkStage::Inbox, 0)));
 
@@ -5971,8 +5984,31 @@ mod settings_surface_tests {
         vs.back_review_walk(rows(1, 1));
         assert!(matches!(
             walk_flow(&vs),
-            (DAY, _, WalkStage::CarryForward { .. }, 0)
+            (DAY, _, WalkStage::CarryForward, 0)
         ));
+    }
+
+    #[test]
+    fn a_foreign_settle_of_a_half_typed_walk_date_discards_the_text() {
+        let (state, _, _, _, _) = two_board_fixture();
+        let mut vs = ViewState::new();
+        walk_armed(&mut vs);
+        vs.open_review_walk(DAY, reference(), rows(0, 1));
+        vs.review_walk_pick_date();
+        assert!(matches!(vs.flow(), Flow::WalkDatePick));
+        if let Some(child) = vs.walk_date_mut() {
+            child.date_text = "2030-01-02".to_owned();
+        }
+
+        let outcomes = vs.settle_foreign(&state);
+        assert!(
+            !outcomes
+                .iter()
+                .any(|o| matches!(o, FlowOutcome::Command(_))),
+            "the discarded text dispatches nothing"
+        );
+        assert!(vs.walk_date().is_none(), "the child's death is the clear");
+        assert!(matches!(vs.flow(), Flow::None), "the walk settled after it");
     }
 
     #[test]
@@ -6021,7 +6057,7 @@ mod settings_surface_tests {
         vs.clamp_review_walk(&state, rows(0, 2), &candidates);
         assert!(matches!(
             walk_flow(&vs),
-            (DAY, _, WalkStage::CarryForward { .. }, 0)
+            (DAY, _, WalkStage::CarryForward, 0)
         ));
         // Carry forward's cursor clamps against its own rows.
         vs.review_walk_cursor(5, rows(0, 2));
