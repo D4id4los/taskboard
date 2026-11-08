@@ -2791,9 +2791,7 @@ fn push_review_walk(
     let walk_window = taskboard_domain::review_window(cadence, reference, calendar);
     let strip: Vec<crate::WalkStageStripRow> = [
         crate::view_state::WalkStage::Inbox,
-        crate::view_state::WalkStage::CarryForward {
-            picking_date: false,
-        },
+        crate::view_state::WalkStage::CarryForward,
         crate::view_state::WalkStage::Prompts,
     ]
     .into_iter()
@@ -2843,7 +2841,10 @@ fn push_review_walk(
                 .unwrap_or(0);
             (rows, 0, candidates, candidate_index, armed.is_some(), false)
         }
-        crate::view_state::WalkStage::CarryForward { picking_date } => {
+        crate::view_state::WalkStage::CarryForward => {
+            // The armed Pick-a-date field is the walk's child level
+            // (N3b): the `picking` mirror reads its presence.
+            let picking = vs.walk_date_child();
             let rows: Vec<crate::WalkRowModel> =
                 presentation::walk_carry_rows(&state.tasks, cadence, walk_window, day.now)
                     .into_iter()
@@ -2858,7 +2859,7 @@ fn push_review_walk(
                         emphasis: index == cursor,
                     })
                     .collect();
-            (rows, 1, Vec::new(), 0, false, picking_date)
+            (rows, 1, Vec::new(), 0, false, picking)
         }
         crate::view_state::WalkStage::Prompts => {
             let template = taskboard_domain::DEFAULT_TEMPLATES

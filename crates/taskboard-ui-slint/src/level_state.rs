@@ -87,12 +87,11 @@ pub(crate) struct PlanPlaceState {
 
 /// The review walk's adapter-owned buffers (DR-7 chunk 3): the prompt
 /// answers (one slot per template prompt; survives stage-back and the
-/// planner leg) and the armed date field's text. The date text retires
-/// with the N3b port (chunk 3): the `WalkDatePick` child owns it.
+/// planner leg). The armed date field's text is the `WalkDatePick`
+/// child's (chunk 3's N3b port) — the child's death is the clear.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct WalkState {
     pub(crate) answers: Vec<String>,
-    pub(crate) date_text: String,
     pub(crate) anchor: FocusAnchor,
 }
 
@@ -187,7 +186,6 @@ impl LevelState {
                 }),
                 crate::surfaces::FlowTag::ReviewWalk => Self::Walk(WalkState {
                     answers: Vec::new(),
-                    date_text: String::new(),
                     anchor: FocusAnchor::None,
                 }),
                 // The epoch placeholder: the opening seam re-seeds
@@ -336,6 +334,21 @@ impl LevelState {
         }
     }
 
+    pub(crate) fn as_walk_date_mut(&mut self) -> Option<&mut WalkDateState> {
+        match self {
+            Self::WalkDate(state) => Some(state),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn as_walk_date(&self) -> Option<&WalkDateState> {
+        match self {
+            Self::WalkDate(state) => Some(state),
+            _ => None,
+        }
+    }
+
     pub(crate) fn as_picker_mut(&mut self) -> Option<&mut PickerState> {
         match self {
             Self::Picker(state) => Some(state),
@@ -384,7 +397,7 @@ impl LevelState {
             }
             Self::TrackForm(state) => state.date_text = "written".to_owned(),
             Self::PlanPlace(state) => state.time_text = "written".to_owned(),
-            Self::Walk(state) => state.date_text = "written".to_owned(),
+            Self::Walk(state) => state.answers = vec!["written".to_owned()],
             Self::Picker(state) => {
                 state.picker = crate::due_edit::DuePickerState::from_parts(
                     chrono::NaiveDate::from_ymd_opt(2026, 1, 1).expect("a valid date"),
