@@ -61,12 +61,12 @@ pub(crate) struct DateEditorState {
 }
 
 /// The entries form's adapter-owned state (r4 D-TS4): the seed, the
-/// grid (the picker's presence), the three typed texts, and the two
-/// quick-list filter latches — wiped with the level.
+/// three typed texts, and the two quick-list filter latches — wiped
+/// with the level. The date grid is the form's `EntryDatePicker`
+/// child level (chunk 3's N2 port); the child's death is the toggle.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TrackFormState {
     pub(crate) seed: Option<taskboard_domain::TimeEntryId>,
-    pub(crate) picker: Option<DuePickerState>,
     pub(crate) date_text: String,
     pub(crate) start_text: String,
     pub(crate) end_text: String,
@@ -173,7 +173,6 @@ impl LevelState {
                 }),
                 crate::surfaces::FlowTag::TrackEntryForm => Self::TrackForm(TrackFormState {
                     seed: None,
-                    picker: None,
                     date_text: String::new(),
                     start_text: String::new(),
                     end_text: String::new(),
@@ -333,6 +332,21 @@ impl LevelState {
     pub(crate) fn as_walk(&self) -> Option<&WalkState> {
         match self {
             Self::Walk(state) => Some(state),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn as_picker_mut(&mut self) -> Option<&mut PickerState> {
+        match self {
+            Self::Picker(state) => Some(state),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn as_picker(&self) -> Option<&PickerState> {
+        match self {
+            Self::Picker(state) => Some(state),
             _ => None,
         }
     }

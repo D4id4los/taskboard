@@ -619,9 +619,8 @@ impl ViewState {
         &mut self,
         flow: Flow,
     ) -> Result<usize, crate::surfaces::AlreadyInChain> {
-        self.surfaces
-            .record_parent_anchor(crate::level_state::FocusAnchor::View);
-        self.surfaces.push(crate::surfaces::Surface::Flow(flow))
+        self.mount_child(flow)?;
+        Ok(self.surfaces.depth() - 1)
     }
 
     /// The innermost `Walk` level's state (the review walk's answers
@@ -642,6 +641,74 @@ impl ViewState {
             .iter_mut()
             .rev()
             .find_map(|level| level.state_mut().as_walk_mut())
+    }
+
+    /// The innermost `Picker` level's state (the standalone calendar
+    /// child's read seam, N2): `None` without one. Deliberately blind
+    /// to the date editor's embedded picker — that one lives in the
+    /// `DateEditor` family.
+    #[must_use]
+    pub(crate) fn picker(&self) -> Option<&crate::level_state::PickerState> {
+        self.surfaces
+            .above_levels()
+            .iter()
+            .rev()
+            .find_map(|level| level.state().as_picker())
+    }
+
+    /// The picker child's write seam (the grid keystrokes' cursor).
+    pub(crate) fn picker_mut(&mut self) -> Option<&mut crate::level_state::PickerState> {
+        self.surfaces
+            .above_levels_mut()
+            .iter_mut()
+            .rev()
+            .find_map(|level| level.state_mut().as_picker_mut())
+    }
+
+    /// The one child-mount seam (chunk 3's ports): pushes `flow` above
+    /// the top flow level. The structural admission rule lives at the
+    /// callers — only a surface's own handler reaches here, so no
+    /// other path can open a child. The parent's anchor rides the
+    /// mint (the flat flows' View restore; the drain reads it on the
+    /// child's retirement).
+    pub(crate) fn mount_child(
+        &mut self,
+        flow: Flow,
+    ) -> Result<(), crate::surfaces::AlreadyInChain> {
+        self.surfaces
+            .record_parent_anchor(crate::level_state::FocusAnchor::View);
+        self.surfaces
+            .push(crate::surfaces::Surface::Flow(flow))
+            .map(|_| ())
+    }
+
+    /// The entries form's date-grid toggle's open half (N2): mounts
+    /// the picker child over the live form — the `EntryDatePicker`
+    /// level mints clean; the adapter seeds it through
+    /// [`Self::picker_mut`] right after. The `AlreadyInChain` refusal
+    /// is the defensive no-op (D7: unreachable through the toggle
+    /// seam — the kind is at most once per chain and nothing else
+    /// opens it).
+    pub fn open_entry_date_picker(&mut self) -> Vec<FlowOutcome> {
+        if self.track_form().is_none() {
+            return Vec::new();
+        }
+        // The defensive posture (chunk-1 D7): a typed refusal maps to
+        // the no-op refresh. Unreachable through the toggle seam —
+        // the duplicate-open unit test is the pin.
+        let _ = self.mount_child(Flow::EntryDatePicker);
+        vec![FlowOutcome::RefreshNow]
+    }
+
+    /// The picker child's Cancelled end (the toggle's close half and
+    /// the grid's Enter rung, N2): the exit rides the one seam; the
+    /// parent (the form) ignores a `Cancelled` exit, so the visible
+    /// shape is the refresh that unmounts the grid.
+    pub fn close_entry_date_picker(&mut self, state: &AppState) -> Vec<FlowOutcome> {
+        if self.picker().is_none() {
+            return Vec::new();
+        }
+        self.end_top_flow_with(state, crate::surfaces::GuestExit::Cancelled)
     }
 
     /// The innermost `PlanPlace` level's state (the placement form's
@@ -3493,11 +3560,28 @@ mod tests {
         vs.open_track_entry_form(a, Some(entry));
         let form = vs.track_form().expect("the form armed");
         assert_eq!(form.date_text, "");
-        assert!(form.picker.is_none());
+        assert!(vs.picker().is_none());
         assert!(!form.start_filter_armed);
         // Closing the whole overlay retires the form level with it.
         vs.close_track_entries();
         assert!(vs.track_form().is_none());
+    }
+
+    #[test]
+    fn the_form_grid_toggle_mounts_the_picker_child_once() {
+        let (state, _, _, _, [task, ..]) = two_board_fixture();
+        let mut vs = ViewState::new();
+        vs.arm_flow(Flow::TrackEntryForm { task, seed: None });
+        let outcomes = vs.open_entry_date_picker();
+        assert!(matches!(outcomes.as_slice(), [FlowOutcome::RefreshNow]));
+        assert!(vs.picker().is_some(), "the child mounts over the form");
+        // The duplicate-kind open is the defensive no-op (D7): no
+        // second child appears, so ONE Cancelled rung lands the walk
+        // back on the form.
+        let _ = vs.open_entry_date_picker();
+        let outcomes = vs.end_top_flow_with(&state, crate::surfaces::GuestExit::Cancelled);
+        assert!(outcomes.is_empty(), "the form ignores a Cancelled exit");
+        assert!(matches!(vs.flow(), Flow::TrackEntryForm { .. }));
     }
 
     #[test]
