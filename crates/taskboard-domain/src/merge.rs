@@ -2715,7 +2715,7 @@ mod tests {
     #[test]
     fn adopt_remote_task_establishes_the_baseline() {
         let mut remote = remote_task(1, 1, BASE + 60);
-        remote.labels = BTreeSet::from([RemoteLabelId(7)]);
+        remote.labels = BTreeSet::from([RemoteLabelId::deck(7)]);
         let id = TaskId::from(uuid::Uuid::from_u128(9));
         let mut ctx = RemoteIndex::default();
         ctx.stack_by_ref
@@ -2997,7 +2997,7 @@ mod tests {
     #[test]
     fn an_unchanged_remote_label_set_emits_no_membership_events() {
         let mut previous = remote_task(1, 1, BASE + 180);
-        previous.labels = BTreeSet::from([RemoteLabelId(7)]);
+        previous.labels = BTreeSet::from([RemoteLabelId::deck(7)]);
         let mut local = bound_task(1);
         local.label_memberships.insert(
             LabelId::from(uuid::Uuid::from_u128(600)),
@@ -3016,7 +3016,7 @@ mod tests {
     #[test]
     fn a_changed_remote_set_tombstones_displaced_local_members_without_a_baseline() {
         let mut previous = remote_task(1, 1, BASE + 180);
-        previous.labels = BTreeSet::from([RemoteLabelId(7)]);
+        previous.labels = BTreeSet::from([RemoteLabelId::deck(7)]);
         let mut local = bound_task(1);
         local.label_memberships.insert(
             LabelId::from(uuid::Uuid::from_u128(600)),
@@ -3034,7 +3034,7 @@ mod tests {
         // member is tombstoned — never dropped — and the existing
         // tombstone keeps its older stamp.
         let mut changed = remote_task(1, 1, BASE + 360);
-        changed.labels = BTreeSet::from([RemoteLabelId(8)]);
+        changed.labels = BTreeSet::from([RemoteLabelId::deck(8)]);
         let merged = merge_task(&local, &changed, &ctx, true);
         assert!(
             merged.live_labels().is_empty(),
@@ -3059,14 +3059,14 @@ mod tests {
         ctx.label_by_ref.insert(
             crate::ids::RemoteLabelRef {
                 board: board(REMOTE_BOARD_NUM),
-                label: RemoteLabelId(7),
+                label: RemoteLabelId::deck(7),
             },
             x,
         );
         ctx.label_by_ref.insert(
             crate::ids::RemoteLabelRef {
                 board: board(REMOTE_BOARD_NUM),
-                label: RemoteLabelId(8),
+                label: RemoteLabelId::deck(8),
             },
             y,
         );
@@ -3080,7 +3080,7 @@ mod tests {
     #[test]
     fn concurrent_two_device_label_adds_both_survive() {
         let mut previous = remote_task(1, 1, BASE + 180);
-        previous.labels = BTreeSet::from([RemoteLabelId(7)]);
+        previous.labels = BTreeSet::from([RemoteLabelId::deck(7)]);
         let mut local = bound_task(1);
         local.label_memberships.insert(
             label_id_n(600),
@@ -3091,7 +3091,7 @@ mod tests {
         let ctx = label_ctx(label_id_n(600), label_id_n(601));
         // The remote (another device) attached label 8 alongside 7.
         let mut remote = remote_task(1, 1, BASE + 360);
-        remote.labels = BTreeSet::from([RemoteLabelId(7), RemoteLabelId(8)]);
+        remote.labels = BTreeSet::from([RemoteLabelId::deck(7), RemoteLabelId::deck(8)]);
 
         let merged = merge_task(&local, &remote, &ctx, true);
 
@@ -3115,7 +3115,7 @@ mod tests {
     #[test]
     fn a_remote_label_removal_wins_only_when_strictly_newer() {
         let mut previous = remote_task(1, 1, BASE + 180);
-        previous.labels = BTreeSet::from([RemoteLabelId(7)]);
+        previous.labels = BTreeSet::from([RemoteLabelId::deck(7)]);
         let ctx = label_ctx(label_id_n(600), label_id_n(601));
         let mut remote = remote_task(1, 1, BASE + 360);
         remote.labels = BTreeSet::new();
@@ -3195,11 +3195,11 @@ mod tests {
         ctx.label_by_ref.insert(
             crate::ids::RemoteLabelRef {
                 board: board(REMOTE_BOARD_NUM),
-                label: RemoteLabelId(7),
+                label: RemoteLabelId::deck(7),
             },
             label_id_n(602),
         );
-        echo.labels = BTreeSet::from([RemoteLabelId(7)]);
+        echo.labels = BTreeSet::from([RemoteLabelId::deck(7)]);
         let adopted = adopt_task_after_push(&local, &echo, &ctx, true);
         assert_eq!(
             adopted.label_memberships[&label_id_n(602)],
@@ -3218,7 +3218,7 @@ mod tests {
         ctx.label_by_ref.insert(
             crate::ids::RemoteLabelRef {
                 board: board(REMOTE_BOARD_NUM),
-                label: RemoteLabelId(7),
+                label: RemoteLabelId::deck(7),
             },
             label_id_n(600),
         );
@@ -3229,7 +3229,7 @@ mod tests {
         );
 
         let mut echo = remote_task(1, 1, BASE + 60);
-        echo.labels = BTreeSet::from([RemoteLabelId(7)]);
+        echo.labels = BTreeSet::from([RemoteLabelId::deck(7)]);
         let adopted = adopt_task_after_push(&local, &echo, &ctx, true);
         assert_eq!(
             adopted.label_memberships[&label_id_n(600)],
@@ -3283,11 +3283,11 @@ mod tests {
         ctx.label_by_ref.insert(
             crate::ids::RemoteLabelRef {
                 board: board(REMOTE_BOARD_NUM),
-                label: RemoteLabelId(5),
+                label: RemoteLabelId::deck(5),
             },
             label_id_n(700),
         );
-        remote.labels = BTreeSet::from([RemoteLabelId(5)]);
+        remote.labels = BTreeSet::from([RemoteLabelId::deck(5)]);
 
         let adopted = adopt_remote_task(&remote, TaskId::from(uuid::Uuid::from_u128(77)), &ctx)
             .expect("stack resolves");
@@ -3319,7 +3319,7 @@ mod tests {
 
         let ctx = label_ctx(label_id_n(600), label_id_n(601));
         let mut remote = remote_task(1, 1, BASE + 360);
-        remote.labels = BTreeSet::from([RemoteLabelId(7), RemoteLabelId(8)]);
+        remote.labels = BTreeSet::from([RemoteLabelId::deck(7), RemoteLabelId::deck(8)]);
 
         let merged = merge_task(&local, &remote, &ctx, true);
 
@@ -3347,7 +3347,7 @@ mod tests {
         let local = with_baseline(bound_task(1), &previous);
 
         let mut remote = remote_task(1, 1, BASE + 360);
-        remote.labels = BTreeSet::from([RemoteLabelId(42)]); // unmapped
+        remote.labels = BTreeSet::from([RemoteLabelId::deck(42)]); // unmapped
 
         let merged = merge_task(&local, &remote, &RemoteIndex::default(), true);
         assert!(
@@ -3517,13 +3517,13 @@ mod tests {
         label_map.label_by_ref.insert(
             crate::ids::RemoteLabelRef {
                 board: board(REMOTE_BOARD_NUM),
-                label: crate::ids::RemoteLabelId(5),
+                label: crate::ids::RemoteLabelId::deck(5),
             },
             label_id,
         );
 
         let mut remote = remote_task(1, 9, BASE + 60);
-        remote.labels.insert(crate::ids::RemoteLabelId(5));
+        remote.labels.insert(crate::ids::RemoteLabelId::deck(5));
 
         let state = base_state(bound_task(1));
         // The index for the merge comes from the state; the label binding
@@ -5327,7 +5327,7 @@ mod tests {
                     baseline.order
                 },
                 if touched.labels {
-                    BTreeSet::from([crate::ids::RemoteLabelId(label_num)])
+                    BTreeSet::from([crate::ids::RemoteLabelId::deck(label_num)])
                 } else {
                     baseline.labels.clone()
                 },
@@ -5337,7 +5337,7 @@ mod tests {
                     baseline.archived
                 },
                 if touched.position {
-                    crate::ids::RemoteStackId(stack_num)
+                    crate::ids::RemoteStackId::deck(stack_num)
                 } else {
                     baseline.stack
                 },
@@ -5715,7 +5715,7 @@ mod duplicate_reconcile_tests {
         now: i64,
     ) -> Option<DuplicateCollapse> {
         let mut tasks = BTreeMap::new();
-        let local = dup_task("local draft", bound_card.map(|b| b.id.card.0));
+        let local = dup_task("local draft", bound_card.and_then(|b| b.id.card.as_deck()));
         tasks.insert(local.id, local);
         detect_crash_window_duplicates(
             candidate,

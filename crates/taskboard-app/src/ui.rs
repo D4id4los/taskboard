@@ -1422,7 +1422,7 @@ mod keymap_resolution_tests {
                 "bound",
                 Some(RemoteBoardBinding {
                     connector: taskboard_domain::ConnectorId::from("work"),
-                    board: RemoteBoardId(7),
+                    board: RemoteBoardId::deck(7),
                 }),
             ),
         );

@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! The per-`MaterializedOp` push decision table and its task arms
 //! (stratum 2).
+//
+// The Deck-tag `expect`s below state one invariant: the executor is
+// Deck-lane, its overlay is built from the Deck connector's own mints
+// (`Deck`-tagged by construction), so a `Files` payload is a routing
+// bug surfaced loudly — never a mis-addressed endpoint.
+#![allow(clippy::missing_panics_doc)]
 
 use taskboard_domain::{
     CardShape, DeckFeatures, EntityTables, LocalOp, MaterializedOp, PendingOp, PushGroup,
@@ -89,13 +95,20 @@ impl<'a> PushExecutor<'a> {
                 };
                 match self
                     .client
-                    .create_stack(self.overlay.board.get(), &row.title, row.order)
+                    .create_stack(
+                        self.overlay
+                            .board
+                            .as_deck()
+                            .expect("deck-tagged: the executor's overlay mints are Deck payloads"),
+                        &row.title,
+                        row.order,
+                    )
                     .await
                 {
                     Ok(created) => {
                         self.overlay
                             .stack_by_local
-                            .insert(stack, RemoteStackId(created.id));
+                            .insert(stack, RemoteStackId::deck(created.id));
                         GroupOutcome::Outcomes(primary_outcome(
                             group,
                             PushResult::Applied {
@@ -124,7 +137,16 @@ impl<'a> PushExecutor<'a> {
                 if !tables.boards.contains_key(&board) {
                     return GroupOutcome::Outcomes(all_applied(group));
                 }
-                match self.client.delete_board(self.overlay.board.get()).await {
+                match self
+                    .client
+                    .delete_board(
+                        self.overlay
+                            .board
+                            .as_deck()
+                            .expect("deck-tagged: the executor's overlay mints are Deck payloads"),
+                    )
+                    .await
+                {
                     Ok(deleted) => GroupOutcome::Outcomes(primary_outcome(
                         group,
                         PushResult::Applied {
@@ -151,7 +173,13 @@ impl<'a> PushExecutor<'a> {
                 let changes = mapping::board_changes_from(row);
                 match self
                     .client
-                    .update_board(self.overlay.board.get(), &changes)
+                    .update_board(
+                        self.overlay
+                            .board
+                            .as_deck()
+                            .expect("deck-tagged: the executor's overlay mints are Deck payloads"),
+                        &changes,
+                    )
                     .await
                 {
                     Ok(updated) => GroupOutcome::Outcomes(primary_outcome(
@@ -185,8 +213,13 @@ impl<'a> PushExecutor<'a> {
                 match self
                     .client
                     .update_stack(
-                        self.overlay.board.get(),
-                        stack_num.get(),
+                        self.overlay
+                            .board
+                            .as_deck()
+                            .expect("deck-tagged: the executor's overlay mints are Deck payloads"),
+                        stack_num
+                            .as_deck()
+                            .expect("deck-tagged: the executor's overlay mints are Deck payloads"),
                         &mapping::stack_changes_from(row),
                     )
                     .await
@@ -212,7 +245,14 @@ impl<'a> PushExecutor<'a> {
                     None => GroupOutcome::Outcomes(all_applied(group)),
                     Some(stack_num) => match self
                         .client
-                        .delete_stack(self.overlay.board.get(), stack_num.get())
+                        .delete_stack(
+                            self.overlay.board.as_deck().expect(
+                                "deck-tagged: the executor's overlay mints are Deck payloads",
+                            ),
+                            stack_num.as_deck().expect(
+                                "deck-tagged: the executor's overlay mints are Deck payloads",
+                            ),
+                        )
                         .await
                     {
                         Ok(deleted) => GroupOutcome::Outcomes(primary_outcome(
@@ -246,13 +286,20 @@ impl<'a> PushExecutor<'a> {
                 };
                 match self
                     .client
-                    .create_label(self.overlay.board.get(), &row.title, &color)
+                    .create_label(
+                        self.overlay
+                            .board
+                            .as_deck()
+                            .expect("deck-tagged: the executor's overlay mints are Deck payloads"),
+                        &row.title,
+                        &color,
+                    )
                     .await
                 {
                     Ok(created) => {
                         self.overlay
                             .label_by_local
-                            .insert(label, RemoteLabelId(created.id));
+                            .insert(label, RemoteLabelId::deck(created.id));
                         GroupOutcome::Outcomes(primary_outcome(
                             group,
                             PushResult::Applied {
@@ -287,7 +334,16 @@ impl<'a> PushExecutor<'a> {
                 };
                 match self
                     .client
-                    .update_label(self.overlay.board.get(), label_num.get(), &changes)
+                    .update_label(
+                        self.overlay
+                            .board
+                            .as_deck()
+                            .expect("deck-tagged: the executor's overlay mints are Deck payloads"),
+                        label_num
+                            .as_deck()
+                            .expect("deck-tagged: the executor's overlay mints are Deck payloads"),
+                        &changes,
+                    )
                     .await
                 {
                     Ok(updated) => GroupOutcome::Outcomes(primary_outcome(
@@ -312,7 +368,17 @@ impl<'a> PushExecutor<'a> {
                 // classifies RemoteMissing — the goal achieved either way.
                 match self
                     .client
-                    .delete_card(card.board.get(), card.stack.get(), card.card.get())
+                    .delete_card(
+                        card.board
+                            .as_deck()
+                            .expect("deck-tagged: the executor's overlay mints are Deck payloads"),
+                        card.stack
+                            .as_deck()
+                            .expect("deck-tagged: the executor's overlay mints are Deck payloads"),
+                        card.card
+                            .as_deck()
+                            .expect("deck-tagged: the executor's overlay mints are Deck payloads"),
+                    )
                     .await
                 {
                     Ok(_) => GroupOutcome::Outcomes(vec![PushOutcome {
@@ -332,7 +398,16 @@ impl<'a> PushExecutor<'a> {
             MaterializedOp::DeleteRemoteStack { stack } => {
                 match self
                     .client
-                    .delete_stack(stack.board.get(), stack.stack.get())
+                    .delete_stack(
+                        stack
+                            .board
+                            .as_deck()
+                            .expect("deck-tagged: the executor's overlay mints are Deck payloads"),
+                        stack
+                            .stack
+                            .as_deck()
+                            .expect("deck-tagged: the executor's overlay mints are Deck payloads"),
+                    )
                     .await
                 {
                     Ok(_) => GroupOutcome::Outcomes(vec![PushOutcome {
@@ -354,7 +429,14 @@ impl<'a> PushExecutor<'a> {
                     None => GroupOutcome::Outcomes(all_applied(group)),
                     Some(label_num) => match self
                         .client
-                        .delete_label(self.overlay.board.get(), label_num.get())
+                        .delete_label(
+                            self.overlay.board.as_deck().expect(
+                                "deck-tagged: the executor's overlay mints are Deck payloads",
+                            ),
+                            label_num.as_deck().expect(
+                                "deck-tagged: the executor's overlay mints are Deck payloads",
+                            ),
+                        )
                         .await
                     {
                         Ok(deleted) => GroupOutcome::Outcomes(primary_outcome(
@@ -396,8 +478,13 @@ impl<'a> PushExecutor<'a> {
         let created = match self
             .client
             .create_card(
-                self.overlay.board.get(),
-                stack_num.get(),
+                self.overlay
+                    .board
+                    .as_deck()
+                    .expect("deck-tagged: the executor's overlay mints are Deck payloads"),
+                stack_num
+                    .as_deck()
+                    .expect("deck-tagged: the executor's overlay mints are Deck payloads"),
                 &mapping::new_card_from(new_card, self.features),
             )
             .await
@@ -417,8 +504,8 @@ impl<'a> PushExecutor<'a> {
         self.overlay.task_by_local.insert(
             task,
             (
-                RemoteStackId(created.stack_id),
-                taskboard_domain::RemoteCardId(created.id),
+                RemoteStackId::deck(created.stack_id),
+                taskboard_domain::RemoteCardId::deck(created.id),
             ),
         );
 
@@ -448,10 +535,10 @@ impl<'a> PushExecutor<'a> {
                             match self
                                 .client
                                 .assign_label(
-                                    self.overlay.board.get(),
+                                    self.overlay.board.as_deck().expect("deck-tagged: the executor's overlay mints are Deck payloads"),
                                     created.stack_id,
                                     created.id,
-                                    label_num.get(),
+                                    label_num.as_deck().expect("deck-tagged: the executor's overlay mints are Deck payloads"),
                                 )
                                 .await
                             {
@@ -495,7 +582,14 @@ impl<'a> PushExecutor<'a> {
         if new_card.archived
             && let Err(err) = self
                 .client
-                .archive_card(self.overlay.board.get(), created.stack_id, created.id)
+                .archive_card(
+                    self.overlay
+                        .board
+                        .as_deck()
+                        .expect("deck-tagged: the executor's overlay mints are Deck payloads"),
+                    created.stack_id,
+                    created.id,
+                )
                 .await
         {
             tracing::warn!(error = %err, "post-create archive failed; the flag repairs on a later cycle");
@@ -511,7 +605,13 @@ impl<'a> PushExecutor<'a> {
             body.done = Some(done);
             if let Err(err) = self
                 .client
-                .update_card(self.overlay.board.get(), &body)
+                .update_card(
+                    self.overlay
+                        .board
+                        .as_deck()
+                        .expect("deck-tagged: the executor's overlay mints are Deck payloads"),
+                    &body,
+                )
                 .await
             {
                 tracing::warn!(error = %err, "post-create done stamp failed; it repairs on a later cycle");
@@ -553,9 +653,18 @@ impl<'a> PushExecutor<'a> {
         match self
             .client
             .card(
-                card_ref.board.get(),
-                card_ref.stack.get(),
-                card_ref.card.get(),
+                card_ref
+                    .board
+                    .as_deck()
+                    .expect("deck-tagged: the executor's overlay mints are Deck payloads"),
+                card_ref
+                    .stack
+                    .as_deck()
+                    .expect("deck-tagged: the executor's overlay mints are Deck payloads"),
+                card_ref
+                    .card
+                    .as_deck()
+                    .expect("deck-tagged: the executor's overlay mints are Deck payloads"),
             )
             .await
         {
@@ -575,9 +684,17 @@ impl<'a> PushExecutor<'a> {
                 match self
                     .client
                     .card(
-                        fresh_ref.board.get(),
-                        fresh_stack.get(),
-                        card_ref.card.get(),
+                        fresh_ref
+                            .board
+                            .as_deck()
+                            .expect("deck-tagged: the executor's overlay mints are Deck payloads"),
+                        fresh_stack
+                            .as_deck()
+                            .expect("deck-tagged: the executor's overlay mints are Deck payloads"),
+                        card_ref
+                            .card
+                            .as_deck()
+                            .expect("deck-tagged: the executor's overlay mints are Deck payloads"),
                     )
                     .await
                 {
@@ -605,7 +722,17 @@ impl<'a> PushExecutor<'a> {
         ctx: PushCtx,
     ) -> Result<Option<RemoteStackId>, GroupOutcome> {
         for filter in [StackFilter::Active, StackFilter::Archived] {
-            let stacks = match self.client.stacks(card_ref.board.get(), filter).await {
+            let stacks = match self
+                .client
+                .stacks(
+                    card_ref
+                        .board
+                        .as_deck()
+                        .expect("deck-tagged: the executor's overlay mints are Deck payloads"),
+                    filter,
+                )
+                .await
+            {
                 Ok(stacks) => stacks,
                 Err(err) => return Err(classify(group, &err, ctx)),
             };
@@ -615,9 +742,9 @@ impl<'a> PushExecutor<'a> {
                     stack
                         .cards
                         .iter()
-                        .any(|card| taskboard_domain::RemoteCardId(card.id) == card_ref.card)
+                        .any(|card| taskboard_domain::RemoteCardId::deck(card.id) == card_ref.card)
                 })
-                .map(|stack| RemoteStackId(stack.id))
+                .map(|stack| RemoteStackId::deck(stack.id))
             else {
                 continue;
             };
@@ -652,7 +779,10 @@ impl<'a> PushExecutor<'a> {
             let mut unresolved = false;
             for label in &shape.labels {
                 match self.overlay.label_by_local.get(label).copied() {
-                    Some(num) => resolved.push(num.get()),
+                    Some(num) => resolved.push(
+                        num.as_deck()
+                            .expect("deck-tagged: the executor's overlay mints are Deck payloads"),
+                    ),
                     None => unresolved = true,
                 }
             }
@@ -695,7 +825,17 @@ impl<'a> PushExecutor<'a> {
         // set server-side labels; the only writes are the sub-endpoints
         // below, so "assigned" is decided against the *fetched* set.
         let body = mapping::apply_card_shape(&fetched, shape, Some(&[]), self.features);
-        let updated = match self.client.update_card(card_ref.board.get(), &body).await {
+        let updated = match self
+            .client
+            .update_card(
+                card_ref
+                    .board
+                    .as_deck()
+                    .expect("deck-tagged: the executor's overlay mints are Deck payloads"),
+                &body,
+            )
+            .await
+        {
             Ok(updated) => updated,
             // A 2xx write whose echo failed to decode still landed.
             Err(DeckError::Json(_)) => fetched.clone(),
@@ -728,9 +868,18 @@ impl<'a> PushExecutor<'a> {
             match self
                 .client
                 .assign_label(
-                    card_ref.board.get(),
-                    card_ref.stack.get(),
-                    card_ref.card.get(),
+                    card_ref
+                        .board
+                        .as_deck()
+                        .expect("deck-tagged: the executor's overlay mints are Deck payloads"),
+                    card_ref
+                        .stack
+                        .as_deck()
+                        .expect("deck-tagged: the executor's overlay mints are Deck payloads"),
+                    card_ref
+                        .card
+                        .as_deck()
+                        .expect("deck-tagged: the executor's overlay mints are Deck payloads"),
                     *label_num,
                 )
                 .await
@@ -759,9 +908,18 @@ impl<'a> PushExecutor<'a> {
             match self
                 .client
                 .remove_label(
-                    card_ref.board.get(),
-                    card_ref.stack.get(),
-                    card_ref.card.get(),
+                    card_ref
+                        .board
+                        .as_deck()
+                        .expect("deck-tagged: the executor's overlay mints are Deck payloads"),
+                    card_ref
+                        .stack
+                        .as_deck()
+                        .expect("deck-tagged: the executor's overlay mints are Deck payloads"),
+                    card_ref
+                        .card
+                        .as_deck()
+                        .expect("deck-tagged: the executor's overlay mints are Deck payloads"),
                     label_num,
                 )
                 .await
@@ -820,7 +978,12 @@ impl<'a> PushExecutor<'a> {
             Ok(pair) => pair,
             Err(outcome) => return outcome,
         };
-        if fetched.stack_id == target_stack.get() && fetched.order == to.1 {
+        if fetched.stack_id
+            == target_stack
+                .as_deck()
+                .expect("deck-tagged: the executor's overlay mints are Deck payloads")
+            && fetched.order == to.1
+        {
             // Already there (an earlier cycle landed it): nothing to send.
             return GroupOutcome::Outcomes(vec![PushOutcome {
                 op: group.primary,
@@ -832,11 +995,16 @@ impl<'a> PushExecutor<'a> {
         match self
             .client
             .reorder_card(
-                card_ref.board.get(),
+                card_ref
+                    .board
+                    .as_deck()
+                    .expect("deck-tagged: the executor's overlay mints are Deck payloads"),
                 fetched.stack_id,
                 fetched.id,
                 to.1,
-                target_stack.get(),
+                target_stack
+                    .as_deck()
+                    .expect("deck-tagged: the executor's overlay mints are Deck payloads"),
             )
             .await
         {
@@ -869,9 +1037,18 @@ impl<'a> PushExecutor<'a> {
         match self
             .client
             .delete_card(
-                card_ref.board.get(),
-                card_ref.stack.get(),
-                card_ref.card.get(),
+                card_ref
+                    .board
+                    .as_deck()
+                    .expect("deck-tagged: the executor's overlay mints are Deck payloads"),
+                card_ref
+                    .stack
+                    .as_deck()
+                    .expect("deck-tagged: the executor's overlay mints are Deck payloads"),
+                card_ref
+                    .card
+                    .as_deck()
+                    .expect("deck-tagged: the executor's overlay mints are Deck payloads"),
             )
             .await
         {
@@ -919,7 +1096,19 @@ impl<'a> PushExecutor<'a> {
         };
         match self
             .client
-            .delete_card(card_ref.board.get(), fresh_stack.get(), card_ref.card.get())
+            .delete_card(
+                card_ref
+                    .board
+                    .as_deck()
+                    .expect("deck-tagged: the executor's overlay mints are Deck payloads"),
+                fresh_stack
+                    .as_deck()
+                    .expect("deck-tagged: the executor's overlay mints are Deck payloads"),
+                card_ref
+                    .card
+                    .as_deck()
+                    .expect("deck-tagged: the executor's overlay mints are Deck payloads"),
+            )
             .await
         {
             Ok(deleted) => GroupOutcome::Outcomes(primary_outcome(
@@ -943,7 +1132,10 @@ impl<'a> PushExecutor<'a> {
         failed: Option<(u64, &PushResult)>,
         settled: &std::collections::BTreeSet<u64>,
     ) -> Option<PushResult> {
-        let Some(num) = self.overlay.label_by_local.get(&label).map(|n| n.get()) else {
+        let Some(num) = self.overlay.label_by_local.get(&label).map(|n| {
+            n.as_deck()
+                .expect("deck-tagged: the executor's overlay mints are Deck payloads")
+        }) else {
             return Some(PushResult::Rejected {
                 kind: taskboard_domain::SyncErrorKind::LocalData,
             });

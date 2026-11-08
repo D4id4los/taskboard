@@ -161,33 +161,50 @@ pub enum ValidatorKey {
 
 impl ValidatorKey {
     /// The text form shared by the serde wire encoding and the storage
-    /// `sync_metadata.key` column (`"boards"`, `"stacks:<u64>"`,
-    /// `"archived_stacks:<u64>"`) — one definition, three consumers.
+    /// `sync_metadata.key` column — one definition, three consumers.
+    /// The Deck legs keep the pre-widening bare-number forms (stored
+    /// keys decode unchanged); a `Files` payload rides the additive
+    /// `files:<uuid>` suffix (D-BF4: the payload is the domain UUID,
+    /// not a wire number).
     #[must_use]
     pub fn text_form(self) -> String {
         match self {
             Self::Boards => "boards".to_owned(),
-            Self::Stacks(board) => format!("stacks:{}", board.get()),
-            Self::ArchivedStacks(board) => format!("archived_stacks:{}", board.get()),
+            Self::Stacks(crate::ids::RemoteBoardId::Deck(num)) => format!("stacks:{num}"),
+            Self::Stacks(crate::ids::RemoteBoardId::Files(id)) => format!("stacks:files:{id}"),
+            Self::ArchivedStacks(crate::ids::RemoteBoardId::Deck(num)) => {
+                format!("archived_stacks:{num}")
+            }
+            Self::ArchivedStacks(crate::ids::RemoteBoardId::Files(id)) => {
+                format!("archived_stacks:files:{id}")
+            }
         }
     }
 
     /// Parses [`text_form`](Self::text_form) back; `None` on any other
-    /// shape.
+    /// shape. A bare-number payload (every pre-widening key) decodes as
+    /// the `Deck` leg — the mixed-fleet old-reader tolerance.
     #[must_use]
     pub fn parse_text_form(raw: &str) -> Option<Self> {
         if raw == "boards" {
             return Some(Self::Boards);
         }
-        if let Some(num) = raw
-            .strip_prefix("archived_stacks:")
-            .and_then(|num| num.parse::<u64>().ok())
+        let parse_board = |payload: &str| match payload
+            .strip_prefix("files:")
+            .and_then(|id| uuid::Uuid::parse_str(id).ok())
         {
-            return Some(Self::ArchivedStacks(crate::ids::RemoteBoardId(num)));
+            Some(id) => Some(crate::ids::RemoteBoardId::Files(id)),
+            None => payload
+                .parse::<u64>()
+                .ok()
+                .map(crate::ids::RemoteBoardId::Deck),
+        };
+        if let Some(payload) = raw.strip_prefix("archived_stacks:") {
+            return parse_board(payload).map(Self::ArchivedStacks);
         }
         raw.strip_prefix("stacks:")
-            .and_then(|num| num.parse::<u64>().ok())
-            .map(|num| Self::Stacks(crate::ids::RemoteBoardId(num)))
+            .and_then(parse_board)
+            .map(Self::Stacks)
     }
 }
 
@@ -744,11 +761,11 @@ mod tests {
         for (key, form) in [
             (ValidatorKey::Boards, "boards".to_owned()),
             (
-                ValidatorKey::Stacks(crate::ids::RemoteBoardId(9)),
+                ValidatorKey::Stacks(crate::ids::RemoteBoardId::deck(9)),
                 "stacks:9".to_owned(),
             ),
             (
-                ValidatorKey::ArchivedStacks(crate::ids::RemoteBoardId(9)),
+                ValidatorKey::ArchivedStacks(crate::ids::RemoteBoardId::deck(9)),
                 "archived_stacks:9".to_owned(),
             ),
         ] {
@@ -762,6 +779,51 @@ mod tests {
         assert_eq!(ValidatorKey::parse_text_form("stacks:x"), None);
         assert_eq!(ValidatorKey::parse_text_form("archived_stacks:x"), None);
         assert_eq!(ValidatorKey::parse_text_form(""), None);
+    }
+
+    /// T10 — the validator-key tolerance (D-BF4): a Files payload rides
+    /// the additive `files:<uuid>` suffix, and every pre-widening bare
+    /// number form decodes as the `Deck` leg — old journal rows and
+    /// stored `sync_metadata` keys roundtrip untouched.
+    #[test]
+    fn validator_key_files_form_is_additive_and_old_forms_decode_as_deck() {
+        let files_id = uuid::Uuid::from_u128(0xF11E);
+        let stacks = ValidatorKey::Stacks(crate::ids::RemoteBoardId::files(files_id));
+        assert_eq!(stacks.text_form(), format!("stacks:files:{files_id}"));
+        assert_eq!(
+            ValidatorKey::parse_text_form(&stacks.text_form()),
+            Some(stacks)
+        );
+        let archived = ValidatorKey::ArchivedStacks(crate::ids::RemoteBoardId::files(files_id));
+        assert_eq!(
+            archived.text_form(),
+            format!("archived_stacks:files:{files_id}")
+        );
+        assert_eq!(
+            ValidatorKey::parse_text_form(&archived.text_form()),
+            Some(archived)
+        );
+        // Old bare forms (every pre-widening key): Deck.
+        assert_eq!(
+            ValidatorKey::parse_text_form("stacks:42"),
+            Some(ValidatorKey::Stacks(crate::ids::RemoteBoardId::deck(42)))
+        );
+        assert_eq!(
+            ValidatorKey::parse_text_form("archived_stacks:42"),
+            Some(ValidatorKey::ArchivedStacks(
+                crate::ids::RemoteBoardId::deck(42)
+            ))
+        );
+        // A malformed files payload never parses as either leg.
+        assert_eq!(
+            ValidatorKey::parse_text_form("stacks:files:not-a-uuid"),
+            None
+        );
+        // The serde wire form stays the text form for both legs.
+        assert_eq!(
+            serde_json::to_value(stacks).unwrap(),
+            serde_json::json!(stacks.text_form())
+        );
     }
 
     fn task_with_id(raw: u128) -> crate::entities::Task {
@@ -1147,11 +1209,11 @@ mod tests {
             // The doomed board (bound), a second (untouched) board.
             PersistenceAction::UpsertBoard(board_row(
                 board,
-                crate::test_support::test_binding(crate::ids::RemoteBoardId(7)),
+                crate::test_support::test_binding(crate::ids::RemoteBoardId::deck(7)),
             )),
             PersistenceAction::UpsertBoard(board_row(
                 other,
-                crate::test_support::test_binding(crate::ids::RemoteBoardId(8)),
+                crate::test_support::test_binding(crate::ids::RemoteBoardId::deck(8)),
             )),
             PersistenceAction::UpsertStack(stack_row(stack, board)),
             PersistenceAction::UpsertStack(stack_row(other_stack, other)),
@@ -1209,11 +1271,11 @@ mod tests {
             }),
             PersistenceAction::UpsertValidators(ValidatorKey::Boards, SyncValidators::default()),
             PersistenceAction::UpsertValidators(
-                ValidatorKey::Stacks(crate::ids::RemoteBoardId(7)),
+                ValidatorKey::Stacks(crate::ids::RemoteBoardId::deck(7)),
                 SyncValidators::default(),
             ),
             PersistenceAction::UpsertValidators(
-                ValidatorKey::Stacks(crate::ids::RemoteBoardId(8)),
+                ValidatorKey::Stacks(crate::ids::RemoteBoardId::deck(8)),
                 SyncValidators::default(),
             ),
             PersistenceAction::UpsertSyncStatus(
@@ -1259,13 +1321,13 @@ mod tests {
             !state.validators.contains_key(&ValidatorKey::Boards)
                 && !state
                     .validators
-                    .contains_key(&ValidatorKey::Stacks(crate::ids::RemoteBoardId(7))),
+                    .contains_key(&ValidatorKey::Stacks(crate::ids::RemoteBoardId::deck(7))),
             "the board's validators are cleared"
         );
         assert!(
             state
                 .validators
-                .contains_key(&ValidatorKey::Stacks(crate::ids::RemoteBoardId(8))),
+                .contains_key(&ValidatorKey::Stacks(crate::ids::RemoteBoardId::deck(8))),
             "the other board's validators survive"
         );
         assert!(state.reminders.rules.is_empty());
@@ -2055,7 +2117,7 @@ mod tests {
 
     #[test]
     fn archived_stacks_validator_key_roundtrips_through_serde() {
-        let key = ValidatorKey::ArchivedStacks(crate::ids::RemoteBoardId(9));
+        let key = ValidatorKey::ArchivedStacks(crate::ids::RemoteBoardId::deck(9));
         let back: ValidatorKey =
             serde_json::from_str(&serde_json::to_string(&key).unwrap()).unwrap();
         assert_eq!(back, key);
@@ -2646,7 +2708,7 @@ mod tests {
 
         #[test]
         fn board_id_used_as_validator_key_roundtrips(b in any::<u64>()) {
-            let key = ValidatorKey::Stacks(crate::ids::RemoteBoardId(b));
+            let key = ValidatorKey::Stacks(crate::ids::RemoteBoardId::deck(b));
             let back: ValidatorKey =
                 serde_json::from_str(&serde_json::to_string(&key).unwrap()).unwrap();
             prop_assert_eq!(back, key);

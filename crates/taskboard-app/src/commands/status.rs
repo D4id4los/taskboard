@@ -148,7 +148,7 @@ pub(crate) fn derive_connector_views(
         std::collections::BTreeMap::new();
     for board in state.boards.values().filter(|b| !b.deleted) {
         let (connector, remote) = match &board.remote {
-            Some(binding) => (Some(binding.connector.to_string()), Some(binding.board.0)),
+            Some(binding) => (Some(binding.connector.to_string()), binding.board.as_deck()),
             None => (None, None),
         };
         if let Some(name) = &connector {
@@ -175,7 +175,12 @@ pub(crate) fn derive_connector_views(
                     BoardStatusView {
                         board: id.as_uuid().to_string(),
                         title: board.title.clone(),
-                        remote: Some(board.remote.as_ref().expect("grouped ⇒ bound").board.0),
+                        remote: board
+                            .remote
+                            .as_ref()
+                            .expect("grouped ⇒ bound")
+                            .board
+                            .as_deck(),
                         connector: Some(name.clone()),
                         sync: SyncStatusView::new(&board_row(state, *id)),
                     }
@@ -886,7 +891,7 @@ mod tests {
             0xA1,
             Some(RemoteBoardBinding {
                 connector: taskboard_domain::ConnectorId::from("alpha"),
-                board: taskboard_domain::RemoteBoardId(7),
+                board: taskboard_domain::RemoteBoardId::deck(7),
             }),
             "alpha board",
         );
@@ -894,7 +899,7 @@ mod tests {
             0xB1,
             Some(RemoteBoardBinding {
                 connector: taskboard_domain::ConnectorId::from("beta"),
-                board: taskboard_domain::RemoteBoardId(7),
+                board: taskboard_domain::RemoteBoardId::deck(7),
             }),
             "beta board",
         );
@@ -959,7 +964,7 @@ mod tests {
             0xA1,
             Some(RemoteBoardBinding {
                 connector: taskboard_domain::ConnectorId::from("alpha"),
-                board: taskboard_domain::RemoteBoardId(7),
+                board: taskboard_domain::RemoteBoardId::deck(7),
             }),
             "alpha board",
         );
@@ -986,7 +991,7 @@ mod tests {
                 raw,
                 Some(RemoteBoardBinding {
                     connector: taskboard_domain::ConnectorId::from(tag),
-                    board: taskboard_domain::RemoteBoardId(remote),
+                    board: taskboard_domain::RemoteBoardId::deck(remote),
                 }),
                 "b",
             )

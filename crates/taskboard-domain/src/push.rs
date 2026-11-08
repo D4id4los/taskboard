@@ -1348,9 +1348,9 @@ mod tests {
         Task {
             id: task_id(raw),
             remote: Some(crate::ids::RemoteCardRef {
-                board: crate::ids::RemoteBoardId(7),
-                stack: crate::ids::RemoteStackId(1),
-                card: crate::ids::RemoteCardId(u64::try_from(raw).unwrap()),
+                board: crate::ids::RemoteBoardId::deck(7),
+                stack: crate::ids::RemoteStackId::deck(1),
+                card: crate::ids::RemoteCardId::deck(u64::try_from(raw).unwrap()),
             }),
             title: "t".into(),
             description: String::new(),
@@ -1612,7 +1612,7 @@ mod tests {
     #[test]
     fn board_delete_dominates_and_subsumes_the_other_board_ops() {
         let mut bound = board_row(1);
-        bound.remote = crate::test_support::test_binding(crate::ids::RemoteBoardId(42));
+        bound.remote = crate::test_support::test_binding(crate::ids::RemoteBoardId::deck(42));
         let bound_id = bound.id;
         let mut boards = BTreeMap::new();
         boards.insert(bound_id, bound);
@@ -1670,7 +1670,7 @@ mod tests {
     #[test]
     fn board_update_materializes_only_for_a_bound_live_board() {
         let mut bound = board_row(1);
-        bound.remote = crate::test_support::test_binding(crate::ids::RemoteBoardId(42));
+        bound.remote = crate::test_support::test_binding(crate::ids::RemoteBoardId::deck(42));
         let unbound = board_row(2);
         let bound_id = bound.id;
         let unbound_id = unbound.id;
@@ -1726,7 +1726,7 @@ mod tests {
     #[test]
     fn board_groups_precede_their_children() {
         let mut board = board_row(1);
-        board.remote = crate::test_support::test_binding(crate::ids::RemoteBoardId(42));
+        board.remote = crate::test_support::test_binding(crate::ids::RemoteBoardId::deck(42));
         let stack = stack_row(10);
         let board_id = board.id;
         let stack_id = stack.id;

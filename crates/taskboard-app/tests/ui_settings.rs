@@ -745,7 +745,7 @@ async fn bind_directly(app: &App, board: taskboard_domain::BoardId, connector: &
     app.engine
         .execute(StateCommand::BindBoard {
             board,
-            remote: RemoteBoardId(remote),
+            remote: RemoteBoardId::deck(remote),
             connector: taskboard_domain::ConnectorId::from(connector.to_owned()),
         })
         .await
@@ -764,7 +764,7 @@ fn send_attach(
     tx.try_send(UiRequest::AttachConnector {
         board,
         connector: connector.to_owned(),
-        remote: RemoteBoardId(remote),
+        remote: RemoteBoardId::deck(remote),
         reply,
     })
     .expect("capacity holds");
@@ -842,7 +842,7 @@ async fn attach_binds_the_chosen_remote_through_the_engine() {
     // The engine state carries the binding (the command path ran).
     let (connector, remote) = bound_connector_of(&app, board).expect("bound");
     assert_eq!(connector.as_str(), "work");
-    assert_eq!(remote, RemoteBoardId(common::BOARD));
+    assert_eq!(remote, RemoteBoardId::deck(common::BOARD));
 
     // The connector actor is live under its name.
     assert!(
@@ -895,7 +895,7 @@ async fn attach_to_another_remote_on_the_same_connector_refuses_before_any_io() 
     );
     assert_eq!(
         bound_connector_of(&app, board).map(|(_, remote)| remote),
-        Some(RemoteBoardId(7)),
+        Some(RemoteBoardId::deck(7)),
         "the old binding survived"
     );
     assert!(
@@ -953,7 +953,7 @@ async fn attach_to_a_board_bound_elsewhere_refuses_before_any_io() {
     );
     let (connector, remote) = bound_connector_of(&app, board).expect("binding intact");
     assert_eq!(connector.as_str(), "a");
-    assert_eq!(remote, RemoteBoardId(1), "the old binding survived");
+    assert_eq!(remote, RemoteBoardId::deck(1), "the old binding survived");
 
     drop(tx);
     forwarder.await.expect("forwarder joins cleanly");
@@ -993,7 +993,7 @@ async fn attach_reissue_on_the_same_remote_is_idempotent() {
     assert_eq!(row.bound_connector.as_deref(), Some("work"));
     let (connector, remote) = bound_connector_of(&app, board).expect("bound");
     assert_eq!(connector.as_str(), "work");
-    assert_eq!(remote, RemoteBoardId(7), "the binding is unchanged");
+    assert_eq!(remote, RemoteBoardId::deck(7), "the binding is unchanged");
 
     drop(tx);
     forwarder.await.expect("forwarder joins cleanly");
@@ -1084,7 +1084,7 @@ async fn detach_unbinds_and_stops_the_actor_only_when_the_last_binding_leaves() 
     assert!(bound_connector_of(&app, first).is_none());
     let (connector, remote) = bound_connector_of(&app, second).expect("sibling intact");
     assert_eq!(connector.as_str(), "work");
-    assert_eq!(remote, RemoteBoardId(8));
+    assert_eq!(remote, RemoteBoardId::deck(8));
     assert!(
         app.connector_control().connector_commands(&work).is_some(),
         "the shared actor survives a sibling's detach"
@@ -1165,7 +1165,7 @@ async fn a_dropped_attach_reply_receiver_never_wedges_the_forwarder() {
         tx.try_send(UiRequest::AttachConnector {
             board,
             connector: "work".into(),
-            remote: RemoteBoardId(7),
+            remote: RemoteBoardId::deck(7),
             reply,
         })
         .expect("capacity holds");
@@ -1182,7 +1182,7 @@ async fn a_dropped_attach_reply_receiver_never_wedges_the_forwarder() {
         .expect("the scale persisted");
     let (connector, remote) = bound_connector_of(&app, board).expect("the binding landed");
     assert_eq!(connector.as_str(), "work");
-    assert_eq!(remote, RemoteBoardId(7));
+    assert_eq!(remote, RemoteBoardId::deck(7));
 
     drop(tx);
     forwarder.await.expect("forwarder joins cleanly");
@@ -1284,7 +1284,7 @@ async fn the_listing_projects_live_rows_and_changes_nothing() {
         .await
         .expect("reply lane alive")
         .expect("the listing succeeded");
-    let ids: Vec<u64> = rows.iter().map(|r| r.remote_id.0).collect();
+    let ids: Vec<u64> = rows.iter().filter_map(|r| r.remote_id.as_deck()).collect();
     assert_eq!(ids, vec![7, 8], "deleted and archived remotes are filtered");
 
     assert!(
@@ -1406,7 +1406,7 @@ fn send_create(
     let (reply, reply_rx) = tokio::sync::oneshot::channel();
     tx.try_send(UiRequest::CreateLocalBoard {
         connector: connector.to_owned(),
-        remote: RemoteBoardId(remote),
+        remote: RemoteBoardId::deck(remote),
         reply,
     })
     .expect("capacity holds");
@@ -1462,7 +1462,7 @@ async fn create_local_board_mints_and_binds_the_remote() {
     assert_eq!(created.len(), 1, "one local board minted");
     let (connector, remote) = bound_connector_of(&app, created[0]).expect("bound");
     assert_eq!(connector.as_str(), "work");
-    assert_eq!(remote, RemoteBoardId(common::BOARD));
+    assert_eq!(remote, RemoteBoardId::deck(common::BOARD));
     assert!(
         outcome
             .boards

@@ -862,8 +862,8 @@ mod tests {
     #[test]
     fn remote_baseline_text_form_is_the_serde_json_and_round_trips() {
         let mut labels = BTreeSet::new();
-        labels.insert(RemoteLabelId(6));
-        labels.insert(RemoteLabelId(1));
+        labels.insert(RemoteLabelId::deck(6));
+        labels.insert(RemoteLabelId::deck(1));
         let baseline = RemoteTaskBaseline {
             title: "card".to_owned(),
             description: "desc".to_owned(),
@@ -874,7 +874,7 @@ mod tests {
             ),
             scheduled: None,
             done: None,
-            stack: RemoteStackId(7),
+            stack: RemoteStackId::deck(7),
             order: 3,
             labels,
             archived: false,

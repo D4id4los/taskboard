@@ -244,7 +244,7 @@ async fn read_scope(
                 .count();
         (
             board.id,
-            board.remote.as_ref().map(|r| r.board.0),
+            board.remote.as_ref().and_then(|r| r.board.as_deck()),
             stacks,
             tasks,
             labels,
@@ -718,7 +718,7 @@ pub(crate) async fn publish_on(
         .engine
         .execute(StateCommand::BindBoard {
             board: board_id,
-            remote: RemoteBoardId(created.id),
+            remote: RemoteBoardId::deck(created.id),
             connector: connector.clone(),
         })
         .await?;
@@ -734,7 +734,7 @@ pub(crate) async fn publish_on(
     // is the orphan — keep the older board bound, ref-delete the rest.
     // A sweep failure never fails the publish (the ADR 0010 runbook
     // sentence stays the documented floor for anything it misses).
-    let mut bound_remote = RemoteBoardId(created.id);
+    let mut bound_remote = RemoteBoardId::deck(created.id);
     if let Err(sweep_err) = sweep_publish_orphans(
         app,
         client,
@@ -755,9 +755,12 @@ pub(crate) async fn publish_on(
     bind_nudge_wait_reconcile(app, board_id, bound_remote, wiped_refs, timeout).await?;
     let state = app.engine.shared_state().load_full();
     let settled = state.boards[&board_id].clone();
+    // The publish path mints its Deck number above; the payload is
+    // Deck by construction.
+    let bound_deck = bound_remote.as_deck().expect("publish mints Deck payloads");
     Ok(PublishReceipt {
         board: BoardsListEntry {
-            id: bound_remote.0,
+            id: bound_deck,
             title: created.title.clone(),
             archived: created.archived,
             deleted: !created.is_live(),
@@ -829,21 +832,23 @@ async fn sweep_publish_orphans(
         app.engine
             .execute(StateCommand::BindBoard {
                 board: board_id,
-                remote: RemoteBoardId(oldest.id),
+                remote: RemoteBoardId::deck(oldest.id),
                 connector: connector.clone(),
             })
             .await?;
-        *bound_remote = RemoteBoardId(oldest.id);
+        *bound_remote = RemoteBoardId::deck(oldest.id);
     }
     // Delete every non-survivor candidate: the orphans other than the
     // adopted one, plus the just-created board itself when the rebind
     // chose an older orphan (the created board loses identity).
+    // The publish path mints Deck payloads only.
+    let bound_deck = bound_remote.as_deck().expect("publish mints Deck payloads");
     let mut doomed: Vec<u64> = orphans
         .iter()
         .map(|board| board.id)
-        .filter(|id| *id != bound_remote.0)
+        .filter(|id| *id != bound_deck)
         .collect();
-    if bound_remote.0 != created.id {
+    if bound_deck != created.id {
         doomed.push(created.id);
     }
     for doomed_id in doomed {
@@ -1008,7 +1013,7 @@ pub async fn select_on(
     flag: Option<taskboard_domain::BoardId>,
     connector: &taskboard_domain::ConnectorId,
 ) -> Result<SelectReceipt, CommandError> {
-    let remote = RemoteBoardId(entry.id);
+    let remote = RemoteBoardId::deck(entry.id);
     // Resolution (D3-7): the `--board` flag wins; else the single live
     // board; else — and only for a board-less install — the fresh path
     // mints a shell from the remote's real title (D3-1).
@@ -1131,9 +1136,14 @@ async fn wait_for_adoption(
             .is_some_and(|b| !b.deleted && b.remote.as_ref().map(|r| r.board) == Some(remote));
         if fresh_settled && phase == SyncPhase::Idle && binding_present {
             let adopted = &state.boards[&board];
+            // The select ceremony mints its Deck number (the publish
+            // path's payload); Deck by construction.
+            let remote_deck = remote
+                .as_deck()
+                .expect("select adopts the publish path's Deck payload");
             return Ok(SelectReceipt {
                 board: BoardsListEntry {
-                    id: remote.0,
+                    id: remote_deck,
                     title: adopted.title.clone(),
                     archived: adopted.archived,
                     deleted: adopted.deleted,

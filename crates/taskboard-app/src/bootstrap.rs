@@ -306,6 +306,20 @@ pub enum BootstrapError {
     /// The device-identity directory could not be created.
     #[error("device identity directory could not be created")]
     FilesSyncDataDirIo(#[source] std::io::Error),
+    /// The pre-attach binding walk could not read the persisted state.
+    #[error("storage read failed")]
+    StorageRead(#[source] taskboard_domain::persistence::RepositoryError),
+    /// A persisted board binding names a connector that is not in the
+    /// configured set (D-BF5, loud at attach): the board would sit bound
+    /// with no owning actor, never synced. The fix is config — add the
+    /// connector or unbind the board — never a silent orphan.
+    #[error("a persisted binding names an unconfigured connector")]
+    OrphanedConnectorBinding {
+        /// The connector name no config entry minted.
+        connector: taskboard_domain::ConnectorId,
+        /// The bound board left without an owner.
+        board: taskboard_domain::BoardId,
+    },
     /// Another taskboard instance already holds this database.
     #[error("another taskboard instance holds this database")]
     InstanceLocked {
@@ -1254,6 +1268,28 @@ async fn bootstrap_with_modules(
     );
     tracing::info!(db = %db_path.display(), "opening database");
     let repo = Arc::new(taskboard_storage_sqlite::open(&db_path, default_connector.clone()).await?);
+    // D-BF5, enforcement point 2 (loud at attach): claims live in
+    // persisted bindings, not config — a binding naming a connector
+    // outside the configured set has no owning actor. Typed refusal
+    // before anything spawns; never a silently-unsynced board. The
+    // standalone world (no configured connectors) is exempt: its
+    // bindings predate the `connect` ceremony's attach (ADR 0011), and
+    // the legacy scalar tag decodes as-is there (D-3).
+    if !modules.is_empty() {
+        let persisted = repo.load().await.map_err(BootstrapError::StorageRead)?;
+        let configured: std::collections::BTreeSet<taskboard_domain::ConnectorId> =
+            modules.iter().map(|module| module.id().clone()).collect();
+        let ownership =
+            taskboard_domain::ownership::BoardOwnershipMap::from_boards(&persisted.boards);
+        for (board, connector) in ownership.bindings() {
+            if !configured.contains(connector) {
+                return Err(BootstrapError::OrphanedConnectorBinding {
+                    connector: connector.clone(),
+                    board,
+                });
+            }
+        }
+    }
     let (storage, storage_join) = spawn_storage_actor(repo);
 
     let (system, system_rx_engine) = broadcast::channel::<SystemEvent>(SYSTEM_BROADCAST_CAPACITY);
@@ -1957,9 +1993,9 @@ mod connector_module_tests {
 
     fn snapshot_of(board: u64) -> RemoteBoardSnapshot {
         use taskboard_domain::{RemoteBoard, RemoteBoardId};
-        RemoteBoardSnapshot {
+        RemoteBoardSnapshot::Deck(taskboard_domain::DeckBoardSnapshot {
             board: RemoteBoard {
-                id: RemoteBoardId(board),
+                id: RemoteBoardId::deck(board),
                 title: "remote board".into(),
                 color: "00ff00".into(),
                 archived: false,
@@ -1969,7 +2005,7 @@ mod connector_module_tests {
             stacks: Vec::new(),
             tasks: Vec::new(),
             labels: Vec::new(),
-        }
+        })
     }
 
     /// The registry loop at N=1 over a `FakeModule`: the engine's nudge
@@ -2024,7 +2060,7 @@ mod connector_module_tests {
         let state = app.engine.shared_state().load_full();
         let adopted = state.boards.values().next().expect("board adopted");
         let binding = adopted.remote.as_ref().expect("adopt-new mint");
-        assert_eq!(binding.board, taskboard_domain::RemoteBoardId(77));
+        assert_eq!(binding.board, taskboard_domain::RemoteBoardId::deck(77));
         assert_eq!(
             binding.connector.as_str(),
             "fakemodule",

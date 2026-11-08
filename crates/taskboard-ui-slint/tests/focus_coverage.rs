@@ -266,7 +266,7 @@ fn list_remotes(mounted: &mut Mounted, connector: &str, rows: &[(u64, &str)]) {
     let rows = rows
         .iter()
         .map(|(id, title)| taskboard_ui_slint::requests::RemoteBoardRow {
-            remote_id: taskboard_domain::RemoteBoardId(*id),
+            remote_id: taskboard_domain::RemoteBoardId::deck(*id),
             title: (*title).to_owned(),
         })
         .collect();
@@ -286,7 +286,7 @@ fn settings_fixture() -> Mounted {
         .find(|board| !board.deleted && !board.archived)
         .expect("a live board");
     bound.remote = Some(taskboard_domain::RemoteBoardBinding {
-        board: taskboard_domain::RemoteBoardId(900),
+        board: taskboard_domain::RemoteBoardId::deck(900),
         connector: taskboard_domain::ConnectorId::from("nextcloud"),
     });
     let settings = UiSettings {

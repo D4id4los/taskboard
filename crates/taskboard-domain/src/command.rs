@@ -1862,15 +1862,13 @@ pub fn plan_command(
             // One remote board binds to at most one local board — scoped
             // to the same connector: another connector's remote with the
             // same numeric id is a different board and cannot collide.
-            if let Some(holder) = app.boards.values().find(|b| {
-                b.id != board_id
-                    && b.remote
-                        .as_ref()
-                        .is_some_and(|r| r.board == *remote && r.connector == *connector)
-            }) {
+            // (This board's own binding is `None` here — the
+            // already-bound arm returned above — so the holder can never
+            // be the bind target itself.)
+            if let Some(holder) = crate::ownership::holder_of(app, connector, remote) {
                 return Err(CommandError::RemoteBoardInUse {
                     remote: *remote,
-                    board: holder.id,
+                    board: holder,
                 });
             }
             // The bind-wipe: foreign refs among the board's live
@@ -3384,9 +3382,9 @@ mod tests {
         Task {
             id: TaskId::from(uuid::Uuid::from_u128(u128::from(id))),
             remote: bound.then_some(crate::ids::RemoteCardRef {
-                board: crate::ids::RemoteBoardId(77),
-                stack: crate::ids::RemoteStackId(1),
-                card: crate::ids::RemoteCardId(id),
+                board: crate::ids::RemoteBoardId::deck(77),
+                stack: crate::ids::RemoteStackId::deck(1),
+                card: crate::ids::RemoteCardId::deck(id),
             }),
             title: format!("task {id}"),
             description: String::new(),
@@ -3415,8 +3413,8 @@ mod tests {
         Stack {
             id: StackId::from(uuid::Uuid::from_u128(u128::from(id))),
             remote: bound.then_some(crate::ids::RemoteStackRef {
-                board: crate::ids::RemoteBoardId(77),
-                stack: crate::ids::RemoteStackId(id),
+                board: crate::ids::RemoteBoardId::deck(77),
+                stack: crate::ids::RemoteStackId::deck(id),
             }),
             board: BoardId::from(uuid::Uuid::from_u128(u128::from(BOARD))),
             title: format!("stack {id}"),
@@ -3437,8 +3435,8 @@ mod tests {
         Label {
             id: LabelId::from(uuid::Uuid::from_u128(u128::from(id))),
             remote: bound.then_some(crate::ids::RemoteLabelRef {
-                board: crate::ids::RemoteBoardId(77),
-                label: crate::ids::RemoteLabelId(id),
+                board: crate::ids::RemoteBoardId::deck(77),
+                label: crate::ids::RemoteLabelId::deck(id),
             }),
             board: BoardId::from(uuid::Uuid::from_u128(u128::from(BOARD))),
             title: format!("label {id}"),
@@ -3466,7 +3464,7 @@ mod tests {
                 board_id,
                 crate::entities::Board {
                     id: board_id,
-                    remote: crate::test_support::test_binding(crate::ids::RemoteBoardId(77)),
+                    remote: crate::test_support::test_binding(crate::ids::RemoteBoardId::deck(77)),
                     title: "board".into(),
                     color: crate::entities::Color::new("0000ff"),
                     archived: false,
@@ -5711,7 +5709,7 @@ mod tests {
             &outbox,
             &StateCommand::BindBoard {
                 board: board_id(),
-                remote: crate::ids::RemoteBoardId(42),
+                remote: crate::ids::RemoteBoardId::deck(42),
                 connector: crate::test_support::test_connector(),
             },
         )
@@ -5722,7 +5720,7 @@ mod tests {
         };
         assert_eq!(
             updated.remote,
-            crate::test_support::test_binding(crate::ids::RemoteBoardId(42))
+            crate::test_support::test_binding(crate::ids::RemoteBoardId::deck(42))
         );
         assert_eq!(plan.actions.len(), 1, "bind carries no outbox op");
     }
@@ -5738,7 +5736,7 @@ mod tests {
             &[],
             &StateCommand::BindBoard {
                 board: board_id(),
-                remote: crate::ids::RemoteBoardId(42),
+                remote: crate::ids::RemoteBoardId::deck(42),
                 connector: crate::test_support::test_connector(),
             },
         )
@@ -5748,7 +5746,7 @@ mod tests {
         };
         assert_eq!(
             updated.remote,
-            crate::test_support::test_binding(crate::ids::RemoteBoardId(42))
+            crate::test_support::test_binding(crate::ids::RemoteBoardId::deck(42))
         );
     }
 
@@ -5764,7 +5762,7 @@ mod tests {
             &[],
             &StateCommand::BindBoard {
                 board: board_id(),
-                remote: crate::ids::RemoteBoardId(42),
+                remote: crate::ids::RemoteBoardId::deck(42),
                 connector: custom.clone(),
             },
             &CountingIds::default(),
@@ -5781,7 +5779,7 @@ mod tests {
             updated.remote,
             Some(crate::ids::RemoteBoardBinding {
                 connector: custom,
-                board: crate::ids::RemoteBoardId(42),
+                board: crate::ids::RemoteBoardId::deck(42),
             })
         );
     }
@@ -5794,20 +5792,20 @@ mod tests {
         // beta remote as if it were the same remote.
         let mut app = unbound_board_state();
         app.boards.get_mut(&board_id()).unwrap().remote =
-            crate::test_support::test_binding(crate::ids::RemoteBoardId(42));
+            crate::test_support::test_binding(crate::ids::RemoteBoardId::deck(42));
         assert_eq!(
             run(
                 &app,
                 &[],
                 &StateCommand::BindBoard {
                     board: board_id(),
-                    remote: crate::ids::RemoteBoardId(42),
+                    remote: crate::ids::RemoteBoardId::deck(42),
                     connector: crate::ids::ConnectorId::from("beta"),
                 },
             ),
             Err(CommandError::BoardAlreadyBound {
                 board: board_id(),
-                bound: crate::ids::RemoteBoardId(42),
+                bound: crate::ids::RemoteBoardId::deck(42),
             })
         );
     }
@@ -5821,14 +5819,14 @@ mod tests {
         let other = BoardId::from(uuid::Uuid::from_u128(801));
         let mut holder = app.boards[&board_id()].clone();
         holder.id = other;
-        holder.remote = crate::test_support::test_binding(crate::ids::RemoteBoardId(42));
+        holder.remote = crate::test_support::test_binding(crate::ids::RemoteBoardId::deck(42));
         app.boards.insert(other, holder);
         let plan = run(
             &app,
             &[],
             &StateCommand::BindBoard {
                 board: board_id(),
-                remote: crate::ids::RemoteBoardId(42),
+                remote: crate::ids::RemoteBoardId::deck(42),
                 connector: crate::ids::ConnectorId::from("beta"),
             },
         )
@@ -5844,7 +5842,7 @@ mod tests {
         let other = BoardId::from(uuid::Uuid::from_u128(802));
         let mut holder = app.boards[&board_id()].clone();
         holder.id = other;
-        holder.remote = crate::test_support::test_binding(crate::ids::RemoteBoardId(42));
+        holder.remote = crate::test_support::test_binding(crate::ids::RemoteBoardId::deck(42));
         app.boards.insert(other, holder);
         assert_eq!(
             run(
@@ -5852,12 +5850,12 @@ mod tests {
                 &[],
                 &StateCommand::BindBoard {
                     board: board_id(),
-                    remote: crate::ids::RemoteBoardId(42),
+                    remote: crate::ids::RemoteBoardId::deck(42),
                     connector: crate::test_support::test_connector(),
                 },
             ),
             Err(CommandError::RemoteBoardInUse {
-                remote: crate::ids::RemoteBoardId(42),
+                remote: crate::ids::RemoteBoardId::deck(42),
                 board: other,
             })
         );
@@ -5867,14 +5865,14 @@ mod tests {
     fn same_remote_rebind_is_an_accepted_no_op_under_the_binding_type() {
         let mut app = unbound_board_state();
         app.boards.get_mut(&board_id()).unwrap().remote =
-            crate::test_support::test_binding(crate::ids::RemoteBoardId(42));
+            crate::test_support::test_binding(crate::ids::RemoteBoardId::deck(42));
         assert_eq!(
             run(
                 &app,
                 &[],
                 &StateCommand::BindBoard {
                     board: board_id(),
-                    remote: crate::ids::RemoteBoardId(42),
+                    remote: crate::ids::RemoteBoardId::deck(42),
                     connector: crate::test_support::test_connector(),
                 },
             )
@@ -5891,7 +5889,7 @@ mod tests {
         let other = BoardId::from(uuid::Uuid::from_u128(u128::from(other_raw)));
         let mut holder = app.boards[&board_id()].clone();
         holder.id = other;
-        holder.remote = crate::test_support::test_binding(crate::ids::RemoteBoardId(42));
+        holder.remote = crate::test_support::test_binding(crate::ids::RemoteBoardId::deck(42));
         app.boards.insert(other, holder);
         assert_eq!(
             run(
@@ -5899,12 +5897,12 @@ mod tests {
                 &[],
                 &StateCommand::BindBoard {
                     board: board_id(),
-                    remote: crate::ids::RemoteBoardId(42),
+                    remote: crate::ids::RemoteBoardId::deck(42),
                     connector: crate::test_support::test_connector(),
                 }
             ),
             Err(CommandError::RemoteBoardInUse {
-                remote: crate::ids::RemoteBoardId(42),
+                remote: crate::ids::RemoteBoardId::deck(42),
                 board: other,
             })
         );
@@ -5919,7 +5917,7 @@ mod tests {
             duedate: None,
             scheduled: None,
             done: None,
-            stack: crate::ids::RemoteStackId(5),
+            stack: crate::ids::RemoteStackId::deck(5),
             order: 1,
             labels: std::collections::BTreeSet::new(),
             archived: false,
@@ -5936,9 +5934,9 @@ mod tests {
         // naming the bind target R2 (stays), one unbound (stays).
         let mut foreign = task(2, board_stack, true);
         foreign.remote = Some(crate::ids::RemoteCardRef {
-            board: crate::ids::RemoteBoardId(1),
-            stack: crate::ids::RemoteStackId(5),
-            card: crate::ids::RemoteCardId(2),
+            board: crate::ids::RemoteBoardId::deck(1),
+            stack: crate::ids::RemoteStackId::deck(5),
+            card: crate::ids::RemoteCardId::deck(2),
         });
         foreign.remote_seen = Some(chrono::DateTime::from_timestamp(1_000, 0).expect("ts"));
         foreign.remote_baseline = Some(observed_baseline());
@@ -5946,9 +5944,9 @@ mod tests {
         app.tasks.insert(foreign_id, foreign);
         let mut already = task(3, board_stack, true);
         already.remote = Some(crate::ids::RemoteCardRef {
-            board: crate::ids::RemoteBoardId(2),
-            stack: crate::ids::RemoteStackId(5),
-            card: crate::ids::RemoteCardId(3),
+            board: crate::ids::RemoteBoardId::deck(2),
+            stack: crate::ids::RemoteStackId::deck(5),
+            card: crate::ids::RemoteCardId::deck(3),
         });
         already.remote_baseline = Some(observed_baseline());
         let already_id = already.id;
@@ -5960,9 +5958,9 @@ mod tests {
         let mut dead = task(5, board_stack, true);
         dead.deleted = true;
         dead.remote = Some(crate::ids::RemoteCardRef {
-            board: crate::ids::RemoteBoardId(1),
-            stack: crate::ids::RemoteStackId(5),
-            card: crate::ids::RemoteCardId(5),
+            board: crate::ids::RemoteBoardId::deck(1),
+            stack: crate::ids::RemoteStackId::deck(5),
+            card: crate::ids::RemoteCardId::deck(5),
         });
         let dead_id = dead.id;
         app.tasks.insert(dead_id, dead);
@@ -5972,7 +5970,7 @@ mod tests {
             &[],
             &StateCommand::BindBoard {
                 board: board_id(),
-                remote: crate::ids::RemoteBoardId(2),
+                remote: crate::ids::RemoteBoardId::deck(2),
                 connector: crate::test_support::test_connector(),
             },
         )
@@ -6024,7 +6022,7 @@ mod tests {
         };
         assert_eq!(
             board_row.remote,
-            crate::test_support::test_binding(crate::ids::RemoteBoardId(2))
+            crate::test_support::test_binding(crate::ids::RemoteBoardId::deck(2))
         );
     }
 
@@ -6036,9 +6034,9 @@ mod tests {
         app.stacks.insert(board_stack, stack);
         let mut foreign = task(2, board_stack, true);
         foreign.remote = Some(crate::ids::RemoteCardRef {
-            board: crate::ids::RemoteBoardId(1),
-            stack: crate::ids::RemoteStackId(5),
-            card: crate::ids::RemoteCardId(2),
+            board: crate::ids::RemoteBoardId::deck(1),
+            stack: crate::ids::RemoteStackId::deck(5),
+            card: crate::ids::RemoteCardId::deck(2),
         });
         app.tasks.insert(foreign.id, foreign);
         let plan = run(
@@ -6046,7 +6044,7 @@ mod tests {
             &[],
             &StateCommand::BindBoard {
                 board: board_id(),
-                remote: crate::ids::RemoteBoardId(9),
+                remote: crate::ids::RemoteBoardId::deck(9),
                 connector: crate::test_support::test_connector(),
             },
         )
@@ -6066,9 +6064,9 @@ mod tests {
         app.stacks.insert(board_stack, stack);
         let mut foreign = task(2, board_stack, true);
         foreign.remote = Some(crate::ids::RemoteCardRef {
-            board: crate::ids::RemoteBoardId(1),
-            stack: crate::ids::RemoteStackId(5),
-            card: crate::ids::RemoteCardId(2),
+            board: crate::ids::RemoteBoardId::deck(1),
+            stack: crate::ids::RemoteStackId::deck(5),
+            card: crate::ids::RemoteCardId::deck(2),
         });
         let foreign_id = foreign.id;
         app.tasks.insert(foreign.id, foreign);
@@ -6076,12 +6074,17 @@ mod tests {
         let update = op_for(12, LocalOp::UpdateTask(foreign_id));
         let outbox = vec![create, update];
         assert_eq!(
-            bind_wipe_forecast(&app, &outbox, board_id(), crate::ids::RemoteBoardId(9)),
+            bind_wipe_forecast(
+                &app,
+                &outbox,
+                board_id(),
+                crate::ids::RemoteBoardId::deck(9)
+            ),
             1,
             "only the update-class op on a to-be-wiped entity forecasts"
         );
         assert_eq!(
-            bind_wipe_count(&app, board_id(), crate::ids::RemoteBoardId(9)),
+            bind_wipe_count(&app, board_id(), crate::ids::RemoteBoardId::deck(9)),
             1,
             "the wipe count names the one foreign ref"
         );
@@ -6098,7 +6101,7 @@ mod tests {
                 &outbox,
                 &StateCommand::BindBoard {
                     board: stranger,
-                    remote: crate::ids::RemoteBoardId(1),
+                    remote: crate::ids::RemoteBoardId::deck(1),
                     connector: crate::test_support::test_connector(),
                 }
             ),
@@ -6112,7 +6115,7 @@ mod tests {
         let bound = {
             let mut app = unbound_board_state();
             app.boards.get_mut(&board_id()).unwrap().remote =
-                crate::test_support::test_binding(crate::ids::RemoteBoardId(42));
+                crate::test_support::test_binding(crate::ids::RemoteBoardId::deck(42));
             app
         };
         let plan = run(
@@ -6120,7 +6123,7 @@ mod tests {
             &outbox,
             &StateCommand::BindBoard {
                 board: board_id(),
-                remote: crate::ids::RemoteBoardId(42),
+                remote: crate::ids::RemoteBoardId::deck(42),
                 connector: crate::test_support::test_connector(),
             },
         )
@@ -6132,13 +6135,13 @@ mod tests {
                 &outbox,
                 &StateCommand::BindBoard {
                     board: board_id(),
-                    remote: crate::ids::RemoteBoardId(43),
+                    remote: crate::ids::RemoteBoardId::deck(43),
                     connector: crate::test_support::test_connector(),
                 }
             ),
             Err(CommandError::BoardAlreadyBound {
                 board: board_id(),
-                bound: crate::ids::RemoteBoardId(42)
+                bound: crate::ids::RemoteBoardId::deck(42)
             })
         );
     }
@@ -6193,7 +6196,7 @@ mod tests {
     fn unbind_clears_binding_and_drops_status_row() {
         let mut app = unbound_board_state();
         app.boards.get_mut(&board_id()).unwrap().remote =
-            crate::test_support::test_binding(crate::ids::RemoteBoardId(42));
+            crate::test_support::test_binding(crate::ids::RemoteBoardId::deck(42));
         // Two ops attributed to the board (stack op + board op), one
         // other entity op that attributes nowhere near it.
         let stack = app.stacks.values().next().unwrap().id;
@@ -6228,7 +6231,7 @@ mod tests {
     fn unbind_leaves_outbox_and_descendant_refs_untouched() {
         let mut app = unbound_board_state();
         app.boards.get_mut(&board_id()).unwrap().remote =
-            crate::test_support::test_binding(crate::ids::RemoteBoardId(42));
+            crate::test_support::test_binding(crate::ids::RemoteBoardId::deck(42));
         let stack = app.stacks.values().next().unwrap().id;
         let outbox = vec![op_for(11, LocalOp::RenameStack(stack))];
         let plan = run(
@@ -6690,7 +6693,7 @@ mod tests {
                 board_id,
                 crate::entities::Board {
                     id: board_id,
-                    remote: crate::test_support::test_binding(crate::ids::RemoteBoardId(77)),
+                    remote: crate::test_support::test_binding(crate::ids::RemoteBoardId::deck(77)),
                     title: "board".into(),
                     color: crate::entities::Color::new("0000ff"),
                     archived: false,

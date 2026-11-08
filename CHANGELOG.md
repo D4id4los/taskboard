@@ -10,6 +10,25 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 ### Added
 
+- Connector-tagged remote identities & partition routing
+  (boards-over-files chunk 3, D-BF4–D-BF5): the `Remote*` id family
+  widens to a tagged enum (`Deck(u64)` | `Files(uuid)` — the files
+  substrate's remote ids ARE the domain UUIDs, so files boards need no
+  binding table), `SyncReport::Completed`'s snapshot payload becomes
+  backend-tagged (`Deck`/`Files` legs; the Deck leg is byte-compatible
+  with the pre-widening serialization and the engine folds it
+  verbatim), and the Deck connector skips loudly any binding whose
+  payload it cannot address. Board→connector ownership is the derived
+  `BoardOwnershipMap` over the persisted bindings: a second claim on an
+  owned remote stays a typed `RemoteBoardInUse` refusal, and a
+  persisted binding naming an unconfigured connector aborts the boot
+  typed (`OrphanedConnectorBinding`) before any actor spawns.
+  Validators' storage keys gain an additive `files:<uuid>` form; every
+  old bare-number key decodes as `Deck`. Storage migration 0025 adds
+  the boards-table `remote_files_id` column (exactly-one non-NULL by
+  codec construction; old rows decode losslessly). No Deck behavior
+  change — the pre-widening full-sync golden passes untouched.
+
 - Author-tagged clocks (boards-over-files contract chunk 1, F1, ADR
   0022): every roaming clock family gains a parallel author struct
   (`TaskAuthors`/`StackAuthors`/`LabelAuthors`/`BoardAuthors`), the

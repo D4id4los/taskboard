@@ -11,8 +11,8 @@ use crate::ids::{
     RemoteStackRef,
 };
 use crate::remote::{
-    PushOutcome, PushResult, RemoteBoard, RemoteBoardSnapshot, RemoteEcho, RemoteLabel,
-    RemoteStack, RemoteTask,
+    DeckBoardSnapshot, PushOutcome, PushResult, RemoteBoard, RemoteBoardSnapshot, RemoteEcho,
+    RemoteLabel, RemoteStack, RemoteTask,
 };
 use crate::state::SyncErrorKind;
 
@@ -238,13 +238,13 @@ pub fn snapshot_strategy() -> impl Strategy<Value = RemoteBoardSnapshot> {
         snapshot_task_rows(),
     )
         .prop_map(|(board, stack_rows, label_rows, task_rows)| {
-            let board_id = RemoteBoardId(board.num);
+            let board_id = RemoteBoardId::deck(board.num);
             let stacks: Vec<RemoteStack> = stack_rows
                 .into_iter()
                 .map(|row| RemoteStack {
                     id: RemoteStackRef {
                         board: board_id,
-                        stack: RemoteStackId(row.num),
+                        stack: RemoteStackId::deck(row.num),
                     },
                     title: row.title,
                     order: row.order,
@@ -258,7 +258,7 @@ pub fn snapshot_strategy() -> impl Strategy<Value = RemoteBoardSnapshot> {
                 .map(|row| RemoteLabel {
                     id: RemoteLabelRef {
                         board: board_id,
-                        label: RemoteLabelId(row.num),
+                        label: RemoteLabelId::deck(row.num),
                     },
                     title: row.title,
                     color: row.color,
@@ -274,7 +274,7 @@ pub fn snapshot_strategy() -> impl Strategy<Value = RemoteBoardSnapshot> {
                 .map(|row| {
                     let stack = stacks
                         .get(row.stack_idx % stack_count.max(1))
-                        .map_or(RemoteStackId(1), |s| s.id.stack);
+                        .map_or(RemoteStackId::deck(1), |s| s.id.stack);
                     let labels = row
                         .label_idxs
                         .into_iter()
@@ -285,7 +285,10 @@ pub fn snapshot_strategy() -> impl Strategy<Value = RemoteBoardSnapshot> {
                         id: RemoteCardRef {
                             board: board_id,
                             stack,
-                            card: RemoteCardId(row.remote.map_or(row.card, |r| r.card.0)),
+                            card: RemoteCardId::deck(
+                                row.remote
+                                    .map_or(row.card, |r| r.card.as_deck().unwrap_or_default()),
+                            ),
                         },
                         title: row.title,
                         description: row.description,
@@ -302,7 +305,7 @@ pub fn snapshot_strategy() -> impl Strategy<Value = RemoteBoardSnapshot> {
                 })
                 .collect();
 
-            RemoteBoardSnapshot {
+            RemoteBoardSnapshot::Deck(DeckBoardSnapshot {
                 board: RemoteBoard {
                     id: board_id,
                     title: board.title,
@@ -314,7 +317,7 @@ pub fn snapshot_strategy() -> impl Strategy<Value = RemoteBoardSnapshot> {
                 stacks,
                 tasks,
                 labels,
-            }
+            })
         })
 }
 
@@ -329,7 +332,7 @@ pub fn remote_task_strategy() -> impl Strategy<Value = RemoteTask> {
         proptest::option::of(timestamp_strategy()),
         remote_number(),
         -1_000_i64..=1_000,
-        prop::collection::btree_set(remote_number().prop_map(RemoteLabelId), 0..3),
+        prop::collection::btree_set(remote_number().prop_map(RemoteLabelId::deck), 0..3),
         any::<bool>(),
         timestamp_strategy(),
         timestamp_strategy(),
@@ -356,7 +359,7 @@ pub fn remote_task_strategy() -> impl Strategy<Value = RemoteTask> {
                     duedate,
                     scheduled,
                     done,
-                    stack: RemoteStackId(stack),
+                    stack: RemoteStackId::deck(stack),
                     order,
                     labels,
                     archived,

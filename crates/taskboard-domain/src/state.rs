@@ -921,7 +921,7 @@ mod sync_states_tests {
         };
         let board = |raw: u128| Board {
             id: board_id(raw),
-            remote: crate::test_support::test_binding(crate::ids::RemoteBoardId(
+            remote: crate::test_support::test_binding(crate::ids::RemoteBoardId::deck(
                 u64::try_from(raw).unwrap(),
             )),
             title: format!("board {raw}"),
@@ -1097,7 +1097,7 @@ mod sync_states_tests {
         let mut state = AppState::default();
         let mut tombstoned = crate::entities::Board {
             id: board_id(5),
-            remote: crate::test_support::test_binding(crate::ids::RemoteBoardId(50)),
+            remote: crate::test_support::test_binding(crate::ids::RemoteBoardId::deck(50)),
             title: "old".into(),
             color: Color::new("0000ff"),
             archived: false,
@@ -1133,7 +1133,7 @@ mod sync_states_tests {
         let make_board = |id: u64, connector: Option<crate::ids::ConnectorId>| {
             let remote = connector.map(|connector| crate::ids::RemoteBoardBinding {
                 connector,
-                board: crate::ids::RemoteBoardId(id * 10),
+                board: crate::ids::RemoteBoardId::deck(id * 10),
             });
             let mut board = crate::entities::Board {
                 id: board_id(id.into()),

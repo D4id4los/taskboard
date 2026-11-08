@@ -251,7 +251,7 @@ id_strategy!(reflection_id_strategy, crate::ids::ReflectionId);
 
 /// A positive remote board id (0 is the epoch-0 sentinel of old servers).
 pub fn remote_board_id_strategy() -> impl Strategy<Value = crate::ids::RemoteBoardId> {
-    remote_number().prop_map(crate::ids::RemoteBoardId)
+    remote_number().prop_map(crate::ids::RemoteBoardId::deck)
 }
 
 /// The connector tag the test corpus's engine default carries (the legacy

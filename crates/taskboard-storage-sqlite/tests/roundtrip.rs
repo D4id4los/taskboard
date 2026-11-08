@@ -21,7 +21,7 @@ use taskboard_domain::persistence::{
     ValidatorKey,
 };
 use taskboard_domain::state::{SyncErrorKind, SyncPhase, SyncStates};
-use taskboard_storage_sqlite::open_memory;
+use taskboard_storage_sqlite::{open, open_memory};
 
 use common::actions_from_state;
 
@@ -72,7 +72,7 @@ fn board(id: u128) -> Board {
         id: BoardId::from(uuid::Uuid::from_u128(id)),
         remote: Some(taskboard_domain::RemoteBoardBinding {
             connector: taskboard_domain::ConnectorId::from("nextcloud"),
-            board: RemoteBoardId(77),
+            board: RemoteBoardId::deck(77),
         }),
         title: "board".into(),
         color: Color::new("ff0000"),
@@ -93,8 +93,8 @@ fn stack(id: u128, board: &Board) -> Stack {
     Stack {
         id: StackId::from(uuid::Uuid::from_u128(id)),
         remote: Some(RemoteStackRef {
-            board: RemoteBoardId(77),
-            stack: RemoteStackId(7),
+            board: RemoteBoardId::deck(77),
+            stack: RemoteStackId::deck(7),
         }),
         board: board.id,
         title: "stack".into(),
@@ -111,8 +111,8 @@ fn label(id: u128, board: &Board) -> Label {
     Label {
         id: LabelId::from(uuid::Uuid::from_u128(id)),
         remote: Some(RemoteLabelRef {
-            board: RemoteBoardId(77),
-            label: RemoteLabelId(9),
+            board: RemoteBoardId::deck(77),
+            label: RemoteLabelId::deck(9),
         }),
         board: board.id,
         title: "label".into(),
@@ -132,9 +132,9 @@ fn task(
     Task {
         id: TaskId::from(uuid::Uuid::from_u128(id)),
         remote: Some(RemoteCardRef {
-            board: RemoteBoardId(77),
-            stack: RemoteStackId(7),
-            card: RemoteCardId(8),
+            board: RemoteBoardId::deck(77),
+            stack: RemoteStackId::deck(7),
+            card: RemoteCardId::deck(8),
         }),
         title: "task".into(),
         description: "desc".into(),
@@ -748,13 +748,13 @@ async fn ref_delete_ops_roundtrip_through_persistence() {
         .expect("open");
     let board_id = taskboard_domain::BoardId::from(uuid::Uuid::from_u128(2));
     let card_ref = taskboard_domain::RemoteCardRef {
-        board: taskboard_domain::RemoteBoardId(42),
-        stack: taskboard_domain::RemoteStackId(7),
-        card: taskboard_domain::RemoteCardId(517),
+        board: taskboard_domain::RemoteBoardId::deck(42),
+        stack: taskboard_domain::RemoteStackId::deck(7),
+        card: taskboard_domain::RemoteCardId::deck(517),
     };
     let stack_ref = taskboard_domain::RemoteStackRef {
-        board: taskboard_domain::RemoteBoardId(42),
-        stack: taskboard_domain::RemoteStackId(8),
+        board: taskboard_domain::RemoteBoardId::deck(42),
+        stack: taskboard_domain::RemoteStackId::deck(8),
     };
     let batch = vec![
         PersistenceAction::EnqueueOp(PendingOp {
@@ -1080,7 +1080,7 @@ async fn per_board_validators_roundtrip() {
     let repo = open_memory(taskboard_domain::ConnectorId::from("nextcloud"))
         .await
         .expect("open");
-    let key = ValidatorKey::Stacks(RemoteBoardId(55));
+    let key = ValidatorKey::Stacks(RemoteBoardId::deck(55));
     let validators = SyncValidators {
         etag: Some("\"etag\"".into()),
         last_modified: Some("Tue, 01 Jan 2026 00:00:00 GMT".into()),
@@ -1157,9 +1157,9 @@ async fn remote_baseline_roundtrips_through_sqlite() {
         duedate: Some(ts(300)),
         scheduled: Some(ts(310)),
         done: Some(ts(320)),
-        stack: RemoteStackId(7),
+        stack: RemoteStackId::deck(7),
         order: 4,
-        labels: BTreeSet::from([RemoteLabelId(9), RemoteLabelId(11)]),
+        labels: BTreeSet::from([RemoteLabelId::deck(9), RemoteLabelId::deck(11)]),
         archived: true,
     };
 
@@ -1214,7 +1214,7 @@ async fn corrupt_baseline_json_is_typed_corruption() {
         duedate: None,
         scheduled: None,
         done: None,
-        stack: RemoteStackId(7),
+        stack: RemoteStackId::deck(7),
         order: 1,
         labels: BTreeSet::new(),
         archived: false,
@@ -1316,18 +1316,18 @@ async fn pre_membership_rows_decode_as_fresh_adds_at_the_epoch() {
     // task produce the same live labels from the same pull.
     let remote = taskboard_domain::RemoteTask {
         id: taskboard_domain::RemoteCardRef {
-            board: RemoteBoardId(77),
-            stack: RemoteStackId(7),
-            card: RemoteCardId(8),
+            board: RemoteBoardId::deck(77),
+            stack: RemoteStackId::deck(7),
+            card: RemoteCardId::deck(8),
         },
         title: "pre-memberships".into(),
         description: String::new(),
         duedate: None,
         scheduled: None,
         done: None,
-        stack: RemoteStackId(7),
+        stack: RemoteStackId::deck(7),
         order: 1,
-        labels: BTreeSet::from([taskboard_domain::RemoteLabelId(9)]),
+        labels: BTreeSet::from([taskboard_domain::RemoteLabelId::deck(9)]),
         archived: false,
         last_modified: ts(1_800_000_500),
         created_at: ts(1_800_000_500),
@@ -1335,15 +1335,15 @@ async fn pre_membership_rows_decode_as_fresh_adds_at_the_epoch() {
     let mut ctx = taskboard_domain::RemoteIndex::default();
     ctx.stack_by_ref.insert(
         taskboard_domain::RemoteStackRef {
-            board: RemoteBoardId(77),
-            stack: RemoteStackId(7),
+            board: RemoteBoardId::deck(77),
+            stack: RemoteStackId::deck(7),
         },
         s.id,
     );
     ctx.label_by_ref.insert(
         taskboard_domain::RemoteLabelRef {
-            board: RemoteBoardId(77),
-            label: taskboard_domain::RemoteLabelId(9),
+            board: RemoteBoardId::deck(77),
+            label: taskboard_domain::RemoteLabelId::deck(9),
         },
         label_id,
     );
@@ -1414,16 +1414,16 @@ async fn pre_baseline_row_decodes_to_none_and_merges_under_the_fallback() {
     local.clocks.title = ts(1_800_000_400);
     let remote = taskboard_domain::RemoteTask {
         id: taskboard_domain::RemoteCardRef {
-            board: RemoteBoardId(77),
-            stack: RemoteStackId(7),
-            card: RemoteCardId(8),
+            board: RemoteBoardId::deck(77),
+            stack: RemoteStackId::deck(7),
+            card: RemoteCardId::deck(8),
         },
         title: "pre-baseline".into(),
         description: String::new(),
         duedate: None,
         scheduled: None,
         done: None,
-        stack: RemoteStackId(7),
+        stack: RemoteStackId::deck(7),
         order: 1,
         labels: BTreeSet::new(),
         archived: false,
@@ -2642,11 +2642,16 @@ mod author_columns {
         let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", db.path().display()))
             .await
             .expect("raw connect");
-        // Rewind 0024's objects too (the ledger forgets it below).
+        // Rewind 0024's and 0025's objects too (the ledger forgets
+        // them below).
         sqlx::query("DROP TABLE IF EXISTS roaming_settings")
             .execute(&pool)
             .await
             .expect("drop 0024 table");
+        sqlx::query("ALTER TABLE boards DROP COLUMN remote_files_id")
+            .execute(&pool)
+            .await
+            .expect("drop 0025 column");
 
         // Constant statements only (the dynamic-SQL audit lint): the
         // columns are the migration's own, spelled out verbatim.
@@ -2682,4 +2687,114 @@ mod author_columns {
             before.tasks.get(&t.id).map(|t| t.clocks)
         );
     }
+}
+
+/// T8/T9 — the board remote-id tag columns (migration 0025, D-BF4): a
+/// Deck binding rides the INTEGER column with the files column NULL
+/// (the pre-0025 row shape, decoded losslessly), a Files binding rides
+/// the TEXT column with the Deck column NULL — exactly one non-NULL by
+/// construction, both variants roundtrip.
+#[tokio::test]
+async fn board_remote_bindings_roundtrip_both_tags() {
+    use taskboard_domain::entities::{BoardAuthors, BoardClocks, Color};
+    use taskboard_domain::ids::{BoardId, ConnectorId, RemoteBoardBinding, RemoteBoardId};
+
+    let deck_board = Board {
+        id: BoardId::from(uuid::Uuid::from_u128(1)),
+        remote: Some(RemoteBoardBinding {
+            connector: ConnectorId::from("nextcloud"),
+            board: RemoteBoardId::deck(77),
+        }),
+        title: "deck".into(),
+        color: Color::new("ff0000"),
+        archived: false,
+        deleted: false,
+        clocks: BoardClocks {
+            title: ts(100),
+            color: ts(100),
+            archived: ts(100),
+            deleted: ts(100),
+        },
+        authors: BoardAuthors::default(),
+        remote_seen: Some(ts(100)),
+    };
+    let files_board = Board {
+        id: BoardId::from(uuid::Uuid::from_u128(2)),
+        remote: Some(RemoteBoardBinding {
+            connector: ConnectorId::from("files"),
+            board: RemoteBoardId::files(uuid::Uuid::from_u128(0xF11E5)),
+        }),
+        title: "files".into(),
+        color: Color::new("00ff00"),
+        archived: false,
+        deleted: false,
+        clocks: BoardClocks {
+            title: ts(100),
+            color: ts(100),
+            archived: ts(100),
+            deleted: ts(100),
+        },
+        authors: BoardAuthors::default(),
+        remote_seen: Some(ts(100)),
+    };
+    let mut before = PersistedState::default();
+    before.boards.insert(deck_board.id, deck_board.clone());
+    before.boards.insert(files_board.id, files_board.clone());
+    let repo = open_memory(taskboard_domain::ConnectorId::from("nextcloud"))
+        .await
+        .expect("open memory db");
+    repo.apply(actions_from_state(&before))
+        .await
+        .expect("applies");
+    let after = repo.load().await.expect("loads");
+    assert_eq!(after.boards[&deck_board.id].remote, deck_board.remote);
+    assert_eq!(after.boards[&files_board.id].remote, files_board.remote);
+    repo.close().await;
+}
+
+/// T8 — the old-row leg: a row written with only the Deck column set
+/// (the pre-0025 shape, as a restored old database carries it) decodes
+/// as the `Deck` leg, losslessly.
+#[tokio::test]
+async fn pre_widening_board_rows_decode_as_the_deck_leg() {
+    use taskboard_domain::ids::{BoardId, ConnectorId, RemoteBoardId};
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = dir.path().join("old.db");
+    let repo = open(&db, ConnectorId::from("nextcloud"))
+        .await
+        .expect("open migrated db");
+    repo.close().await;
+    // The raw old-shape row, written over the migrated schema (the
+    // files column the migration added stays NULL, as a pre-0025
+    // database's restored rows do).
+    let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}?mode=rw", db.display()))
+        .await
+        .expect("reopen");
+    let id = uuid::Uuid::from_u128(0x01D);
+    sqlx::query(
+        "INSERT INTO boards (id, remote_board_id, title, color, archived, deleted, connector, ck_title, ck_color, ck_archived, ck_deleted) \
+           VALUES (?, 77, 'old row', 'ff0000', 0, 0, 'nextcloud', '1970-01-01T00:00:00+00:00', '1970-01-01T00:00:00+00:00', '1970-01-01T00:00:00+00:00', '1970-01-01T00:00:00+00:00')",
+    )
+    .bind(id.to_string())
+    .execute(&pool)
+    .await
+    .expect("inserts");
+    pool.close().await;
+
+    let repo = open(&db, ConnectorId::from("nextcloud"))
+        .await
+        .expect("reopen");
+    let state = repo.load().await.expect("loads");
+    let board = state
+        .boards
+        .get(&BoardId::from(id))
+        .expect("the old row hydrates");
+    assert_eq!(
+        board.remote,
+        Some(taskboard_domain::RemoteBoardBinding {
+            connector: ConnectorId::from("nextcloud"),
+            board: RemoteBoardId::deck(77),
+        })
+    );
+    repo.close().await;
 }

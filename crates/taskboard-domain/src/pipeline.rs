@@ -46,7 +46,7 @@ use crate::merge::{
 use crate::outbox::{LocalOp, OpId, PendingOp, op_targets_task};
 use crate::persistence::PersistenceAction;
 use crate::remote::{
-    PushOutcome, PushResult, RemoteBoardSnapshot, RemoteEcho, RemoteIndex, RemoteTask,
+    DeckBoardSnapshot, PushOutcome, PushResult, RemoteEcho, RemoteIndex, RemoteTask,
 };
 use crate::state::{AppState, SyncErrorKind, SyncPhase};
 
@@ -446,7 +446,7 @@ fn keep_label_intent(
 pub fn apply_sync_report(
     current: &AppState,
     outbox: &[PendingOp],
-    snapshot: &RemoteBoardSnapshot,
+    snapshot: &DeckBoardSnapshot,
     pushes: &[PushOutcome],
     read_at: DateTime<Utc>,
     ids: &dyn IdGenerator,
@@ -984,7 +984,13 @@ pub fn apply_sync_report(
             let Some(&task_id) = task_by_board_card.get(&(remote.id.board, remote.id.card)) else {
                 continue; // an unresolvable card never reaches the fold
             };
-            let card_key = remote.id.card.get().to_string();
+            // The sidecar card key is the Deck wire number; a
+            // non-Deck payload has no sidecar home — skipped like an
+            // unresolvable card.
+            let Some(card_num) = remote.id.card.as_deck() else {
+                continue;
+            };
+            let card_key = card_num.to_string();
             let local = &tasks[&task_id];
             let intent = task_intents.get(&task_id).copied().unwrap_or_default();
             if let Some(entries) = &document.sections.tasks
@@ -1035,7 +1041,11 @@ pub fn apply_sync_report(
             let board_cards: std::collections::BTreeMap<String, TaskId> = task_by_board_card
                 .iter()
                 .filter(|((board, _), _)| *board == remote_board.id)
-                .map(|((_, card), id)| (card.get().to_string(), *id))
+                .filter_map(|((_, card), id)| {
+                    // Sidecar keys are Deck wire numbers; a Files
+                    // payload has no sidecar home.
+                    card.as_deck().map(|num| (num.to_string(), *id))
+                })
                 .collect();
             let tracking = folded_tracking.get_or_insert_with(|| current.tracking.clone());
             let changes = crate::merge::fold_time_entries(tracking, rows, &board_cards, author);
@@ -2379,7 +2389,7 @@ mod tests {
     pub(super) fn fold_report(
         state: &AppState,
         outbox: &[crate::outbox::PendingOp],
-        snapshot: &RemoteBoardSnapshot,
+        snapshot: &DeckBoardSnapshot,
         evidence: &AppDataEvidence,
         features: DeckFeatures,
         read_at: i64,
@@ -3257,7 +3267,7 @@ mod tests {
         assert!(!merged.deleted, "the echo's card is present");
         assert_eq!(
             merged.remote.map(|r| r.card),
-            Some(crate::ids::RemoteCardId(5))
+            Some(crate::ids::RemoteCardId::deck(5))
         );
         assert!(
             !app.1
@@ -3911,7 +3921,7 @@ mod tests {
         let mut label = RemoteLabel {
             id: crate::ids::RemoteLabelRef {
                 board: board(REMOTE_BOARD_NUM),
-                label: crate::ids::RemoteLabelId(11),
+                label: crate::ids::RemoteLabelId::deck(11),
             },
             title: "urgent".into(),
             color: "00ff00".into(),
@@ -3920,7 +3930,7 @@ mod tests {
         };
         label.last_modified = ts(BASE + 60);
         let mut remote = remote_task(1, 9, BASE + 60);
-        remote.labels.insert(crate::ids::RemoteLabelId(11));
+        remote.labels.insert(crate::ids::RemoteLabelId::deck(11));
 
         let state = base_state(bound_task(1));
         let snap = snapshot(
@@ -4470,7 +4480,7 @@ mod tests {
 
         let mut board = remote_board(REMOTE_BOARD_NUM, BASE + 60);
         board.deleted_at = Some(ts(BASE + 60));
-        let snap = RemoteBoardSnapshot {
+        let snap = DeckBoardSnapshot {
             board,
             stacks: vec![remote_stack(1, BASE)],
             tasks: vec![remote_task(1, 1, BASE)],
@@ -4563,7 +4573,7 @@ mod tests {
 
         let mut board = remote_board(REMOTE_BOARD_NUM, BASE + 60);
         board.deleted_at = Some(ts(BASE + 60));
-        let snap = RemoteBoardSnapshot {
+        let snap = DeckBoardSnapshot {
             board,
             stacks: vec![remote_stack(1, BASE)],
             tasks: vec![remote_task(1, 1, BASE)],
@@ -4624,7 +4634,7 @@ mod tests {
 
         let mut board = remote_board(REMOTE_BOARD_NUM, BASE + 60);
         board.deleted_at = Some(ts(BASE + 60));
-        let snap = RemoteBoardSnapshot {
+        let snap = DeckBoardSnapshot {
             board,
             stacks: vec![remote_stack(1, BASE)],
             tasks: vec![remote_task(1, 1, BASE)],
@@ -4705,7 +4715,7 @@ mod tests {
 
         let mut board = remote_board(REMOTE_BOARD_NUM, BASE + 60);
         board.deleted_at = Some(ts(BASE + 60));
-        let snap = RemoteBoardSnapshot {
+        let snap = DeckBoardSnapshot {
             board,
             stacks: vec![remote_stack(1, BASE)],
             tasks: vec![remote_task(1, 1, BASE)],
@@ -5156,7 +5166,7 @@ mod tests {
     /// (P2 helper): same fields, `last_modified` equal to each entity's
     /// `remote_seen`, so the pipeline's merge and reconciliation phases
     /// reduce to no-ops and only the push phase can act.
-    fn mirror_snapshot(state: &crate::persistence::PersistedState) -> Option<RemoteBoardSnapshot> {
+    fn mirror_snapshot(state: &crate::persistence::PersistedState) -> Option<DeckBoardSnapshot> {
         use crate::remote::{RemoteBoard, RemoteLabel as RL, RemoteStack as RS, RemoteTask as RT};
         let board = state.boards.values().find(|b| b.remote.is_some())?;
         let board_id = board.remote.as_ref()?.board;
@@ -5229,7 +5239,7 @@ mod tests {
                 })
             })
             .collect();
-        Some(RemoteBoardSnapshot {
+        Some(DeckBoardSnapshot {
             board: remote_board,
             stacks,
             tasks,
@@ -5700,7 +5710,7 @@ mod tests {
         let stack_id = *state.stacks.keys().next().unwrap();
         // The card is still listed (Deck's cascade lag), but its stack is
         // gone from the stacks listing.
-        let snap = RemoteBoardSnapshot {
+        let snap = DeckBoardSnapshot {
             board: remote_board(REMOTE_BOARD_NUM, BASE),
             stacks: vec![],
             tasks: vec![remote_task(1, 1, BASE)],
@@ -5834,7 +5844,7 @@ mod tests {
         let mut board = remote_board(REMOTE_BOARD_NUM, BASE + 60);
         board.deleted_at = Some(ts(BASE + 60));
         // Completeness contract: a gone board lists nothing.
-        let snap = RemoteBoardSnapshot {
+        let snap = DeckBoardSnapshot {
             board,
             stacks: vec![],
             tasks: vec![],
@@ -6096,7 +6106,7 @@ mod tests {
     #[test]
     fn unknown_remote_board_is_adopted() {
         let state = base_state(bound_task(1));
-        let snap = RemoteBoardSnapshot {
+        let snap = DeckBoardSnapshot {
             board: remote_board(88, BASE + 60),
             stacks: vec![remote_stack(1, BASE)],
             tasks: vec![],
@@ -6130,7 +6140,7 @@ mod tests {
     #[test]
     fn changed_remote_board_content_emits_board_upsert() {
         let state = base_state(bound_task(1));
-        let snap = RemoteBoardSnapshot {
+        let snap = DeckBoardSnapshot {
             board: remote_board(REMOTE_BOARD_NUM, BASE + 60),
             stacks: vec![remote_stack(1, BASE)],
             tasks: vec![],
@@ -7189,7 +7199,7 @@ mod tests {
         };
         // The snapshot must still list the label: entity-death dominance
         // would otherwise (correctly) kill the queued assignment.
-        let snap = crate::remote::RemoteBoardSnapshot {
+        let snap = crate::remote::DeckBoardSnapshot {
             board: remote_board(REMOTE_BOARD_NUM, BASE + 300),
             stacks: vec![remote_stack(1, BASE + 300)],
             tasks: vec![remote_task(1, 1, BASE + 300)],
@@ -7310,7 +7320,7 @@ mod tests {
         };
         // The snapshot must still list the label: entity-death dominance
         // would otherwise (correctly) kill the queued assignment.
-        let snap = crate::remote::RemoteBoardSnapshot {
+        let snap = crate::remote::DeckBoardSnapshot {
             board: remote_board(REMOTE_BOARD_NUM, BASE + 300),
             stacks: vec![remote_stack(1, BASE + 300)],
             tasks: vec![remote_task(1, 1, BASE + 300)],
@@ -7690,7 +7700,7 @@ mod tests {
     fn run_sync(
         state: &AppState,
         outbox: &[PendingOp],
-        snapshot: &RemoteBoardSnapshot,
+        snapshot: &DeckBoardSnapshot,
     ) -> (
         AppState,
         Vec<PersistenceAction>,
@@ -8004,7 +8014,7 @@ mod duplicate_reconcile_tests {
     fn run(
         state: &AppState,
         outbox: &[PendingOp],
-        snapshot: &RemoteBoardSnapshot,
+        snapshot: &DeckBoardSnapshot,
         pushes: &[PushOutcome],
     ) -> (
         AppState,
@@ -8328,7 +8338,7 @@ mod author_journey_tests {
     fn fold_report(
         state: &AppState,
         outbox: &[crate::outbox::PendingOp],
-        snapshot: &RemoteBoardSnapshot,
+        snapshot: &DeckBoardSnapshot,
         evidence: &AppDataEvidence,
         features: DeckFeatures,
         read_at: i64,

@@ -24,7 +24,7 @@ use crate::state::{AppState, SyncErrorKind, SyncPhase, SyncStates};
 /// A remotely-created entity bound with `board_remote` (or a fixed
 /// fallback when the board itself is unbound, keeping refs well-formed).
 fn board_remote_or(board_remote: Option<RemoteBoardId>) -> RemoteBoardId {
-    board_remote.unwrap_or(RemoteBoardId(1))
+    board_remote.unwrap_or(RemoteBoardId::deck(1))
 }
 
 /// One row of [`app_state_strategy`]'s board.
@@ -127,7 +127,7 @@ pub struct TaskRow {
 fn board_row() -> impl Strategy<Value = BoardRow> {
     (
         board_id_strategy(),
-        proptest::option::of(remote_number().prop_map(RemoteBoardId)),
+        proptest::option::of(remote_number().prop_map(RemoteBoardId::deck)),
         string_strategy(),
         string_strategy(),
         any::<bool>(),
@@ -300,7 +300,7 @@ fn raw_app_state_strategy() -> impl Strategy<Value = AppState> {
             let mut stacks = BTreeMap::new();
             let stack_bindings: Vec<(StackId, Option<RemoteStackId>)> = stack_rows
                 .iter()
-                .map(|row| (row.id, row.remote.map(RemoteStackId)))
+                .map(|row| (row.id, row.remote.map(RemoteStackId::deck)))
                 .collect();
             for row in stack_rows {
                 stacks.insert(
@@ -309,7 +309,7 @@ fn raw_app_state_strategy() -> impl Strategy<Value = AppState> {
                         id: row.id,
                         remote: row.remote.map(|num| RemoteStackRef {
                             board: board_remote_or(board.remote),
-                            stack: RemoteStackId(num),
+                            stack: RemoteStackId::deck(num),
                         }),
                         board: board.id,
                         title: row.title,
@@ -332,7 +332,7 @@ fn raw_app_state_strategy() -> impl Strategy<Value = AppState> {
                         id: row.id,
                         remote: row.remote.map(|num| RemoteLabelRef {
                             board: board_remote_or(board.remote),
-                            label: RemoteLabelId(num),
+                            label: RemoteLabelId::deck(num),
                         }),
                         board: board.id,
                         title: row.title,
@@ -368,8 +368,8 @@ fn raw_app_state_strategy() -> impl Strategy<Value = AppState> {
                         id: row.id,
                         remote: row.remote.map(|num| RemoteCardRef {
                             board: board_remote_or(board.remote),
-                            stack: stack_remote.unwrap_or(RemoteStackId(1)),
-                            card: RemoteCardId(num),
+                            stack: stack_remote.unwrap_or(RemoteStackId::deck(1)),
+                            card: RemoteCardId::deck(num),
                         }),
                         title: row.title,
                         description: row.description,
@@ -489,7 +489,7 @@ pub fn persisted_state_strategy() -> impl Strategy<Value = PersistedState> {
     (
         app_state_strategy(),
         outbox_rows(),
-        prop::option::of(remote_number().prop_map(RemoteBoardId)),
+        prop::option::of(remote_number().prop_map(RemoteBoardId::deck)),
         prop::option::of(string_strategy()),
         prop::option::of(string_strategy()),
         prop::option::of(timestamp_strategy()),

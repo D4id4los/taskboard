@@ -129,7 +129,7 @@ fn bound_board() -> Board {
         id: taskboard_domain::BoardId::from(uuid(1)),
         remote: Some(taskboard_domain::RemoteBoardBinding {
             connector: taskboard_domain::ConnectorId::from("nextcloud"),
-            board: RemoteBoardId(BOARD),
+            board: RemoteBoardId::deck(BOARD),
         }),
         title: "board".into(),
         color: taskboard_domain::Color::new("00ff00"),
@@ -150,8 +150,8 @@ fn bound_stack(local: u128, remote: u64) -> taskboard_domain::Stack {
     taskboard_domain::Stack {
         id: taskboard_domain::StackId::from(uuid(local)),
         remote: Some(taskboard_domain::RemoteStackRef {
-            board: RemoteBoardId(BOARD),
-            stack: taskboard_domain::RemoteStackId(remote),
+            board: RemoteBoardId::deck(BOARD),
+            stack: taskboard_domain::RemoteStackId::deck(remote),
         }),
         board: taskboard_domain::BoardId::from(uuid(1)),
         title: "col".into(),
@@ -336,6 +336,9 @@ async fn a1_nudge_pushes_the_create_and_pulls_it_back() {
     else {
         panic!("expected a Completed report");
     };
+    let snapshot = snapshot
+        .as_deck()
+        .expect("the Deck connector reports a Deck payload");
     assert!(
         snapshot.board.deleted_at.is_none(),
         "the board detail answered: the snapshot board is live"
@@ -344,7 +347,7 @@ async fn a1_nudge_pushes_the_create_and_pulls_it_back() {
     assert!(matches!(
         &pushes[0].result,
         PushResult::Applied { echo: Some(RemoteEcho::Task(view)) }
-            if view.id.card == taskboard_domain::RemoteCardId(55)
+            if view.id.card == taskboard_domain::RemoteCardId::deck(55)
     ));
     assert!(
         snapshot.tasks.iter().any(|t| t.title == "created offline"),
@@ -370,6 +373,9 @@ async fn a2_unchanged_poll_ticks_on_304s_from_the_cache() {
     else {
         panic!("expected a Completed report, got {first:?}");
     };
+    let first_snap = first_snap
+        .as_deck()
+        .expect("the Deck connector reports a Deck payload");
     assert!(first_snap.board.deleted_at.is_none());
 
     actor.commands.send(SyncCommand::SyncNow).await.unwrap();
@@ -377,7 +383,10 @@ async fn a2_unchanged_poll_ticks_on_304s_from_the_cache() {
     let SyncReport::Completed { snapshot, .. } = second else {
         panic!("expected a Completed report");
     };
-    assert_eq!(snapshot.board.id, RemoteBoardId(BOARD));
+    let snapshot = snapshot
+        .as_deck()
+        .expect("the Deck connector reports a Deck payload");
+    assert_eq!(snapshot.board.id, RemoteBoardId::deck(BOARD));
     assert!(
         snapshot.board.deleted_at.is_none(),
         "the board detail answered: the snapshot board is live"
@@ -708,13 +717,16 @@ async fn a9_archived_listing_merges_without_tombstoning() {
     let SyncReport::Completed { snapshot, .. } = report else {
         panic!("expected a Completed report");
     };
+    let snapshot = snapshot
+        .as_deck()
+        .expect("the Deck connector reports a Deck payload");
     let archived = snapshot
         .tasks
         .iter()
         .find(|t| t.title == "archived remotely")
         .expect("the archived card is in the snapshot");
     assert!(archived.archived, "the archived listing decides the flag");
-    assert_eq!(archived.id.stack, taskboard_domain::RemoteStackId(99));
+    assert_eq!(archived.id.stack, taskboard_domain::RemoteStackId::deck(99));
 }
 
 /// A10: warm validators with a cold cache force one unconditional refetch
@@ -727,8 +739,8 @@ async fn a10_304_with_a_cold_cache_refetches_unconditionally() {
     let repo = repo_with(&[(2, STACK)], &[]);
     for key in [
         taskboard_domain::ValidatorKey::Boards,
-        taskboard_domain::ValidatorKey::Stacks(RemoteBoardId(BOARD)),
-        taskboard_domain::ValidatorKey::ArchivedStacks(RemoteBoardId(BOARD)),
+        taskboard_domain::ValidatorKey::Stacks(RemoteBoardId::deck(BOARD)),
+        taskboard_domain::ValidatorKey::ArchivedStacks(RemoteBoardId::deck(BOARD)),
     ] {
         InMemoryRepository::apply(
             repo.as_ref(),
@@ -754,7 +766,11 @@ async fn a10_304_with_a_cold_cache_refetches_unconditionally() {
     else {
         panic!("expected a Completed report");
     };
-    assert_eq!(snapshot.board.id, RemoteBoardId(BOARD));
+    let snapshot = snapshot
+        .as_deck()
+        .expect("the Deck connector reports a Deck payload");
+
+    assert_eq!(snapshot.board.id, RemoteBoardId::deck(BOARD));
     // 3 conditional 304s + 3 unconditional refetches + 1 board detail,
     // plus the actor-start capabilities probe (unstubbed ⇒ 404 ⇒
     // conservative flags; D18's audited +1).
@@ -790,8 +806,11 @@ async fn a11_absent_board_is_confirmed_then_tombstoned() {
     let SyncReport::Completed { snapshot, .. } = report else {
         panic!("expected a Completed report");
     };
+    let snapshot = snapshot
+        .as_deck()
+        .expect("the Deck connector reports a Deck payload");
     server.verify().await;
-    assert_eq!(snapshot.board.id, RemoteBoardId(BOARD));
+    assert_eq!(snapshot.board.id, RemoteBoardId::deck(BOARD));
     assert!(
         snapshot.board.deleted_at.is_some(),
         "the synthesized board carries the delete-wins tombstone"
@@ -923,9 +942,9 @@ async fn a5_a6_rejection_outcomes_travel_in_the_report() {
     let task_id = task.id;
     let mut task = task;
     task.remote = Some(taskboard_domain::RemoteCardRef {
-        board: RemoteBoardId(BOARD),
+        board: RemoteBoardId::deck(BOARD),
         stack: stack_remote.stack,
-        card: taskboard_domain::RemoteCardId(55),
+        card: taskboard_domain::RemoteCardId::deck(55),
     });
     state.tasks.insert(task.id, task);
     state.outbox.push(PendingOp {
@@ -1157,7 +1176,10 @@ async fn a16_forbidden_detail_while_listed_synthesizes_the_tombstone() {
     let SyncReport::Completed { snapshot, .. } = report else {
         panic!("expected a Completed report: the tombstone snapshot is valid");
     };
-    assert_eq!(snapshot.board.id, RemoteBoardId(BOARD));
+    let snapshot = snapshot
+        .as_deck()
+        .expect("the Deck connector reports a Deck payload");
+    assert_eq!(snapshot.board.id, RemoteBoardId::deck(BOARD));
     assert!(
         snapshot.board.deleted_at.is_some(),
         "the synthesized board carries the delete-wins tombstone"
@@ -1311,9 +1333,9 @@ async fn a18_remote_moved_card_survives_its_queued_edit() {
     let mut task = Task {
         id: taskboard_domain::TaskId::from(uuid(10)),
         remote: Some(taskboard_domain::RemoteCardRef {
-            board: RemoteBoardId(BOARD),
-            stack: taskboard_domain::RemoteStackId(STACK),
-            card: taskboard_domain::RemoteCardId(55),
+            board: RemoteBoardId::deck(BOARD),
+            stack: taskboard_domain::RemoteStackId::deck(STACK),
+            card: taskboard_domain::RemoteCardId::deck(55),
         }),
         title: "edited locally".into(),
         description: String::new(),
@@ -1352,6 +1374,9 @@ async fn a18_remote_moved_card_survives_its_queued_edit() {
     else {
         panic!("expected a Completed report");
     };
+    let snapshot = snapshot
+        .as_deck()
+        .expect("the Deck connector reports a Deck payload");
 
     assert!(
         !pushes
@@ -1364,8 +1389,8 @@ async fn a18_remote_moved_card_survives_its_queued_edit() {
             matches!(
                 &outcome.result,
                 PushResult::Applied { echo: Some(RemoteEcho::Task(view)) }
-                    if view.id.stack == taskboard_domain::RemoteStackId(8)
-                        && view.id.card == taskboard_domain::RemoteCardId(55)
+                    if view.id.stack == taskboard_domain::RemoteStackId::deck(8)
+                        && view.id.card == taskboard_domain::RemoteCardId::deck(55)
             )
         }),
         "the edit landed at the card's fresh location: {pushes:?}"
@@ -1373,11 +1398,11 @@ async fn a18_remote_moved_card_survives_its_queued_edit() {
     let view = snapshot
         .tasks
         .iter()
-        .find(|t| t.id.card == taskboard_domain::RemoteCardId(55))
+        .find(|t| t.id.card == taskboard_domain::RemoteCardId::deck(55))
         .expect("the moved card is in the post-push snapshot");
     assert_eq!(
         view.id.stack,
-        taskboard_domain::RemoteStackId(8),
+        taskboard_domain::RemoteStackId::deck(8),
         "the snapshot reports the card under its fresh stack"
     );
 }
@@ -1426,6 +1451,9 @@ async fn a19_dead_board_tombstone_stamps_come_from_the_injected_clock() {
     let SyncReport::Completed { snapshot, .. } = report else {
         panic!("expected a Completed report: the tombstone snapshot is valid");
     };
+    let snapshot = snapshot
+        .as_deck()
+        .expect("the Deck connector reports a Deck payload");
     assert_eq!(snapshot.board.deleted_at, Some(stamped()));
     assert!(
         snapshot.board.last_modified >= stamped(),
@@ -1473,9 +1501,9 @@ async fn a21_archive_mismatch_stamp_uses_the_injected_clock() {
     let task = Task {
         id: taskboard_domain::TaskId::from(uuid(10)),
         remote: Some(taskboard_domain::RemoteCardRef {
-            board: RemoteBoardId(BOARD),
-            stack: taskboard_domain::RemoteStackId(STACK),
-            card: taskboard_domain::RemoteCardId(55),
+            board: RemoteBoardId::deck(BOARD),
+            stack: taskboard_domain::RemoteStackId::deck(STACK),
+            card: taskboard_domain::RemoteCardId::deck(55),
         }),
         title: "bound".into(),
         description: String::new(),
@@ -1505,10 +1533,13 @@ async fn a21_archive_mismatch_stamp_uses_the_injected_clock() {
     let SyncReport::Completed { snapshot, .. } = report else {
         panic!("expected a Completed report");
     };
+    let snapshot = snapshot
+        .as_deck()
+        .expect("the Deck connector reports a Deck payload");
     let view = snapshot
         .tasks
         .iter()
-        .find(|t| t.id.card == taskboard_domain::RemoteCardId(55))
+        .find(|t| t.id.card == taskboard_domain::RemoteCardId::deck(55))
         .expect("the bound card is in the snapshot");
     assert!(view.archived, "the authoritative detail settles the flag");
     assert_eq!(
@@ -1625,9 +1656,9 @@ async fn a22_remote_moved_card_delete_lands_without_a_twin() {
     let task = Task {
         id: taskboard_domain::TaskId::from(uuid(10)),
         remote: Some(taskboard_domain::RemoteCardRef {
-            board: RemoteBoardId(BOARD),
-            stack: taskboard_domain::RemoteStackId(STACK),
-            card: taskboard_domain::RemoteCardId(55),
+            board: RemoteBoardId::deck(BOARD),
+            stack: taskboard_domain::RemoteStackId::deck(STACK),
+            card: taskboard_domain::RemoteCardId::deck(55),
         }),
         title: "deleted locally".into(),
         description: String::new(),
@@ -1665,6 +1696,9 @@ async fn a22_remote_moved_card_delete_lands_without_a_twin() {
     else {
         panic!("expected a Completed report");
     };
+    let snapshot = snapshot
+        .as_deck()
+        .expect("the Deck connector reports a Deck payload");
 
     assert!(
         !pushes
@@ -1677,8 +1711,8 @@ async fn a22_remote_moved_card_delete_lands_without_a_twin() {
             matches!(
                 &outcome.result,
                 PushResult::Applied { echo: Some(RemoteEcho::Task(view)) }
-                    if view.id.stack == taskboard_domain::RemoteStackId(8)
-                        && view.id.card == taskboard_domain::RemoteCardId(55)
+                    if view.id.stack == taskboard_domain::RemoteStackId::deck(8)
+                        && view.id.card == taskboard_domain::RemoteCardId::deck(55)
             )
         }),
         "the delete landed at the card's fresh location: {pushes:?}"
@@ -1687,7 +1721,7 @@ async fn a22_remote_moved_card_delete_lands_without_a_twin() {
         !snapshot
             .tasks
             .iter()
-            .any(|t| t.id.card == taskboard_domain::RemoteCardId(55)),
+            .any(|t| t.id.card == taskboard_domain::RemoteCardId::deck(55)),
         "the tombstone finalized and nothing re-adopted the deleted card"
     );
 }
@@ -1709,10 +1743,13 @@ async fn a23_pulled_board_labels_reach_the_snapshot() {
     let SyncReport::Completed { snapshot, .. } = report else {
         panic!("expected a Completed report");
     };
+    let snapshot = snapshot
+        .as_deck()
+        .expect("the Deck connector reports a Deck payload");
     assert_eq!(snapshot.labels.len(), 1, "the pulled label set is complete");
     let label = &snapshot.labels[0];
-    assert_eq!(label.id.board, RemoteBoardId(BOARD));
-    assert_eq!(label.id.label, taskboard_domain::RemoteLabelId(1));
+    assert_eq!(label.id.board, RemoteBoardId::deck(BOARD));
+    assert_eq!(label.id.label, taskboard_domain::RemoteLabelId::deck(1));
     assert_eq!(label.title, "todo");
     assert_eq!(label.color, "ff0000");
 }
@@ -1791,6 +1828,7 @@ async fn mount_two_board_pull(server: &MockServer) {
 /// surviving slots: per-board cache keys make a set change a non-event
 /// (no cache-clear-on-retarget exists to burn the warm slots).
 #[tokio::test(start_paused = true)]
+#[allow(clippy::too_many_lines)] // two boards, two cycles, per-board cache pins
 async fn a24_two_boards_cycle_from_their_own_cache_slots() {
     let server = start_server().await;
     mount_two_board_pull(&server).await;
@@ -1800,7 +1838,7 @@ async fn a24_two_boards_cycle_from_their_own_cache_slots() {
     second.id = taskboard_domain::BoardId::from(uuid(9));
     second.remote = Some(taskboard_domain::RemoteBoardBinding {
         connector: taskboard_domain::ConnectorId::from("nextcloud"),
-        board: RemoteBoardId(43),
+        board: RemoteBoardId::deck(43),
     });
     InMemoryRepository::apply(
         repo.as_ref(),
@@ -1810,10 +1848,10 @@ async fn a24_two_boards_cycle_from_their_own_cache_slots() {
     .expect("seed board 43");
     for key in [
         taskboard_domain::ValidatorKey::Boards,
-        taskboard_domain::ValidatorKey::Stacks(RemoteBoardId(BOARD)),
-        taskboard_domain::ValidatorKey::ArchivedStacks(RemoteBoardId(BOARD)),
-        taskboard_domain::ValidatorKey::Stacks(RemoteBoardId(43)),
-        taskboard_domain::ValidatorKey::ArchivedStacks(RemoteBoardId(43)),
+        taskboard_domain::ValidatorKey::Stacks(RemoteBoardId::deck(BOARD)),
+        taskboard_domain::ValidatorKey::ArchivedStacks(RemoteBoardId::deck(BOARD)),
+        taskboard_domain::ValidatorKey::Stacks(RemoteBoardId::deck(43)),
+        taskboard_domain::ValidatorKey::ArchivedStacks(RemoteBoardId::deck(43)),
     ] {
         InMemoryRepository::apply(
             repo.as_ref(),
@@ -1837,7 +1875,10 @@ async fn a24_two_boards_cycle_from_their_own_cache_slots() {
     else {
         panic!("expected a Completed report");
     };
-    assert_eq!(first.board.id, RemoteBoardId(BOARD));
+    let first = first
+        .as_deck()
+        .expect("the Deck connector reports a Deck payload");
+    assert_eq!(first.board.id, RemoteBoardId::deck(BOARD));
     assert!(
         first.stacks.iter().all(|s| s.title == "alpha col"),
         "board 42 serves alpha: {:?}",
@@ -1849,7 +1890,10 @@ async fn a24_two_boards_cycle_from_their_own_cache_slots() {
     else {
         panic!("expected the second board's Completed report");
     };
-    assert_eq!(second.board.id, RemoteBoardId(43));
+    let second = second
+        .as_deck()
+        .expect("the Deck connector reports a Deck payload");
+    assert_eq!(second.board.id, RemoteBoardId::deck(43));
     assert!(
         second.stacks.iter().all(|s| s.title == "beta col"),
         "board 43 serves beta — no alpha bleed: {:?}",
@@ -1868,7 +1912,10 @@ async fn a24_two_boards_cycle_from_their_own_cache_slots() {
     else {
         panic!("expected a Completed report");
     };
-    assert_eq!(third.board.id, RemoteBoardId(BOARD));
+    let third = third
+        .as_deck()
+        .expect("the Deck connector reports a Deck payload");
+    assert_eq!(third.board.id, RemoteBoardId::deck(BOARD));
     assert!(
         third.stacks.iter().all(|s| s.title == "alpha col"),
         "board 42's slot survived: still alpha"
@@ -1879,7 +1926,10 @@ async fn a24_two_boards_cycle_from_their_own_cache_slots() {
     else {
         panic!("expected the second board's Completed report");
     };
-    assert_eq!(fourth.board.id, RemoteBoardId(43));
+    let fourth = fourth
+        .as_deck()
+        .expect("the Deck connector reports a Deck payload");
+    assert_eq!(fourth.board.id, RemoteBoardId::deck(43));
     assert!(
         fourth.stacks.iter().all(|s| s.title == "beta col"),
         "board 43's slot survived: still beta"
@@ -2025,7 +2075,10 @@ async fn a27_unlisted_board_tombstone_keeps_the_local_title() {
     let SyncReport::Completed { snapshot, .. } = report else {
         panic!("expected a Completed report");
     };
-    assert_eq!(snapshot.board.id, RemoteBoardId(BOARD));
+    let snapshot = snapshot
+        .as_deck()
+        .expect("the Deck connector reports a Deck payload");
+    assert_eq!(snapshot.board.id, RemoteBoardId::deck(BOARD));
     assert!(
         snapshot.board.deleted_at.is_some(),
         "the synthesized board carries the delete-wins tombstone"
@@ -2114,9 +2167,9 @@ async fn a28_archived_twin_dedupes_and_the_flag_is_adopted_with_the_observed_sta
     let task = Task {
         id: taskboard_domain::TaskId::from(uuid(10)),
         remote: Some(taskboard_domain::RemoteCardRef {
-            board: RemoteBoardId(BOARD),
-            stack: taskboard_domain::RemoteStackId(STACK),
-            card: taskboard_domain::RemoteCardId(55),
+            board: RemoteBoardId::deck(BOARD),
+            stack: taskboard_domain::RemoteStackId::deck(STACK),
+            card: taskboard_domain::RemoteCardId::deck(55),
         }),
         title: "twin".into(),
         description: String::new(),
@@ -2146,12 +2199,15 @@ async fn a28_archived_twin_dedupes_and_the_flag_is_adopted_with_the_observed_sta
     let SyncReport::Completed { snapshot, .. } = report else {
         panic!("expected a Completed report");
     };
+    let snapshot = snapshot
+        .as_deck()
+        .expect("the Deck connector reports a Deck payload");
     server.verify().await;
 
     let twins: Vec<_> = snapshot
         .tasks
         .iter()
-        .filter(|t| t.id.card == taskboard_domain::RemoteCardId(55))
+        .filter(|t| t.id.card == taskboard_domain::RemoteCardId::deck(55))
         .collect();
     assert_eq!(twins.len(), 1, "the archived twin must not duplicate 55");
     assert!(
@@ -2166,7 +2222,7 @@ async fn a28_archived_twin_dedupes_and_the_flag_is_adopted_with_the_observed_sta
     let others: Vec<_> = snapshot
         .tasks
         .iter()
-        .filter(|t| t.id.card == taskboard_domain::RemoteCardId(77))
+        .filter(|t| t.id.card == taskboard_domain::RemoteCardId::deck(77))
         .collect();
     assert_eq!(others.len(), 1, "the unbound archived card appears once");
     assert!(others[0].archived, "the archived listing decides the flag");
@@ -2175,8 +2231,8 @@ async fn a28_archived_twin_dedupes_and_the_flag_is_adopted_with_the_observed_sta
     assert_eq!(
         stack_ids,
         vec![
-            taskboard_domain::RemoteStackId(7),
-            taskboard_domain::RemoteStackId(99)
+            taskboard_domain::RemoteStackId::deck(7),
+            taskboard_domain::RemoteStackId::deck(99)
         ],
         "the stack twin dedupes: exactly stacks 7 and 99"
     );
@@ -2193,7 +2249,7 @@ fn second_board(connector: &str) -> Board {
         id: taskboard_domain::BoardId::from(uuid(9)),
         remote: Some(taskboard_domain::RemoteBoardBinding {
             connector: taskboard_domain::ConnectorId::from(connector),
-            board: RemoteBoardId(43),
+            board: RemoteBoardId::deck(43),
         }),
         title: "beta board".into(),
         color: taskboard_domain::Color::new("0000ff"),
@@ -2215,8 +2271,8 @@ fn second_board_stack() -> taskboard_domain::Stack {
     taskboard_domain::Stack {
         id: taskboard_domain::StackId::from(uuid(6)),
         remote: Some(taskboard_domain::RemoteStackRef {
-            board: RemoteBoardId(43),
-            stack: taskboard_domain::RemoteStackId(70),
+            board: RemoteBoardId::deck(43),
+            stack: taskboard_domain::RemoteStackId::deck(70),
         }),
         board: taskboard_domain::BoardId::from(uuid(9)),
         title: "beta col".into(),
@@ -2260,7 +2316,10 @@ async fn a29_newly_bound_board_joins_the_set_by_the_next_cycle() {
     let SyncReport::Completed { snapshot, .. } = next_report(&mut actor).await else {
         panic!("expected the first board's Completed report");
     };
-    assert_eq!(snapshot.board.id, RemoteBoardId(BOARD));
+    let snapshot = snapshot
+        .as_deck()
+        .expect("the Deck connector reports a Deck payload");
+    assert_eq!(snapshot.board.id, RemoteBoardId::deck(BOARD));
 
     // The engine's BindBoard world: the binding lands in the persisted
     // state between cycles — no message reaches the actor.
@@ -2280,14 +2339,21 @@ async fn a29_newly_bound_board_joins_the_set_by_the_next_cycle() {
     else {
         panic!("expected board 42's Completed report");
     };
-    assert_eq!(first.board.id, RemoteBoardId(BOARD));
+    let first = first
+        .as_deck()
+        .expect("the Deck connector reports a Deck payload");
+
+    assert_eq!(first.board.id, RemoteBoardId::deck(BOARD));
     let SyncReport::Completed {
         snapshot: second, ..
     } = next_report(&mut actor).await
     else {
         panic!("expected board 43's Completed report");
     };
-    assert_eq!(second.board.id, RemoteBoardId(43));
+    let second = second
+        .as_deck()
+        .expect("the Deck connector reports a Deck payload");
+    assert_eq!(second.board.id, RemoteBoardId::deck(43));
     let requests = server.received_requests().await.unwrap();
     assert!(
         requests.iter().any(|r| r.url.path().contains("/boards/43")),
@@ -2332,7 +2398,7 @@ async fn a30_per_board_passes_plan_only_their_own_ops() {
         matches!(
             &pushes[0].result,
             PushResult::Applied { echo: Some(RemoteEcho::Task(view)) }
-                if view.id.card == taskboard_domain::RemoteCardId(66)
+                if view.id.card == taskboard_domain::RemoteCardId::deck(66)
         ),
         "the pushed card is board 42's draft"
     );
@@ -2344,13 +2410,16 @@ async fn a30_per_board_passes_plan_only_their_own_ops() {
     else {
         panic!("expected board 43's Completed report");
     };
-    assert_eq!(snapshot.board.id, RemoteBoardId(43));
+    let snapshot = snapshot
+        .as_deck()
+        .expect("the Deck connector reports a Deck payload");
+    assert_eq!(snapshot.board.id, RemoteBoardId::deck(43));
     assert_eq!(beta_pushes.len(), 1, "board 43's pass plans only its op");
     assert!(
         matches!(
             &beta_pushes[0].result,
             PushResult::Applied { echo: Some(RemoteEcho::Task(view)) }
-                if view.id.card == taskboard_domain::RemoteCardId(67)
+                if view.id.card == taskboard_domain::RemoteCardId::deck(67)
         ),
         "the pushed card is board 43's draft"
     );
@@ -2404,7 +2473,10 @@ async fn a31_foreign_tagged_board_ops_are_never_planned() {
     else {
         panic!("expected the one owned board's Completed report");
     };
-    assert_eq!(snapshot.board.id, RemoteBoardId(BOARD));
+    let snapshot = snapshot
+        .as_deck()
+        .expect("the Deck connector reports a Deck payload");
+    assert_eq!(snapshot.board.id, RemoteBoardId::deck(BOARD));
     assert_eq!(pushes.len(), 1, "only the owned board's op planned");
     let posts: Vec<_> = server
         .received_requests()
@@ -2496,7 +2568,10 @@ async fn a32_per_board_failure_continues_the_loop() {
     let SyncReport::Completed { snapshot, .. } = next_report(&mut actor).await else {
         panic!("board 43 must still cycle past board 42's failure");
     };
-    assert_eq!(snapshot.board.id, RemoteBoardId(43));
+    let snapshot = snapshot
+        .as_deck()
+        .expect("the Deck connector reports a Deck payload");
+    assert_eq!(snapshot.board.id, RemoteBoardId::deck(43));
     assert!(
         actor.system_rx.try_recv().is_err(),
         "a per-board failure is not a lost network"
@@ -2632,7 +2707,7 @@ async fn reports_carry_duration_and_the_failing_board() {
     let SyncReport::Failed { board, .. } = failed else {
         panic!("expected a Failed report, got {failed:?}");
     };
-    assert_eq!(board, Some(RemoteBoardId(BOARD)));
+    assert_eq!(board, Some(RemoteBoardId::deck(BOARD)));
 
     // The commanded board-less skip carries no board identity (an empty
     // repository: no boards at all — `repo_with` always seeds one).
@@ -2856,9 +2931,9 @@ mod sidecar {
         state.stacks.insert(stack.id, stack);
         let (mut task, _) = draft(100, 2, "the anchor task");
         task.remote = Some(taskboard_domain::RemoteCardRef {
-            board: RemoteBoardId(BOARD),
-            stack: taskboard_domain::RemoteStackId(STACK),
-            card: taskboard_domain::RemoteCardId(CARD),
+            board: RemoteBoardId::deck(BOARD),
+            stack: taskboard_domain::RemoteStackId::deck(STACK),
+            card: taskboard_domain::RemoteCardId::deck(CARD),
         });
         task.remote_seen = Some(ts(T));
         state.tasks.insert(task.id, task);
@@ -2902,7 +2977,7 @@ async fn a34_document_evidence_travels_on_the_report() {
         }
         panic!("expected Document evidence, got {app_data:?}");
     };
-    assert_eq!(document.board, RemoteBoardId(BOARD));
+    assert_eq!(document.board, RemoteBoardId::deck(BOARD));
     assert_eq!(document.format, 1);
     let task = &document.sections.tasks.as_ref().unwrap()["55"];
     assert_eq!(
@@ -2942,7 +3017,7 @@ async fn a34b_the_1_19_1_listing_shape_confirms_the_anchor() {
     let taskboard_domain::AppDataEvidence::Document(document) = app_data else {
         panic!("expected Document evidence, got {app_data:?}");
     };
-    assert_eq!(document.board, RemoteBoardId(BOARD));
+    assert_eq!(document.board, RemoteBoardId::deck(BOARD));
     assert_eq!(sidecar::download_hits(&server).await, 1);
 }
 
@@ -3225,9 +3300,9 @@ mod flush_seed {
         state.stacks.insert(stack.id, stack);
         let (mut task, _) = draft(100, 2, "the app task");
         task.remote = Some(taskboard_domain::RemoteCardRef {
-            board: RemoteBoardId(BOARD),
-            stack: taskboard_domain::RemoteStackId(STACK),
-            card: taskboard_domain::RemoteCardId(sidecar::CARD),
+            board: RemoteBoardId::deck(BOARD),
+            stack: taskboard_domain::RemoteStackId::deck(STACK),
+            card: taskboard_domain::RemoteCardId::deck(sidecar::CARD),
         });
         task.remote_seen = Some(ts(T));
         if effort {
@@ -3256,9 +3331,9 @@ mod flush_seed {
         let mut state = flush_work_state(true, true, false);
         let (mut bystander, _) = draft(200, 2, "the bystander");
         bystander.remote = Some(taskboard_domain::RemoteCardRef {
-            board: RemoteBoardId(BOARD),
-            stack: taskboard_domain::RemoteStackId(STACK),
-            card: taskboard_domain::RemoteCardId(56),
+            board: RemoteBoardId::deck(BOARD),
+            stack: taskboard_domain::RemoteStackId::deck(STACK),
+            card: taskboard_domain::RemoteCardId::deck(56),
         });
         bystander.remote_seen = Some(ts(T));
         bystander.effort = Some(taskboard_domain::entities::Effort::new(300));
@@ -4489,6 +4564,9 @@ async fn a18_sync_actor_stamps_come_from_the_injected_clock_when_skewed() {
         else {
             panic!("expected a Completed report: the dead-board snapshot is valid");
         };
+        let snapshot = snapshot
+            .as_deck()
+            .expect("the Deck connector reports a Deck payload");
         assert_eq!(read_at, ts(T + 1000));
         assert_eq!(snapshot.board.deleted_at, Some(ts(T + 1000)));
         assert_eq!(snapshot.board.last_modified, ts(T + 1000));
@@ -4509,6 +4587,9 @@ async fn a18_sync_actor_stamps_come_from_the_injected_clock_when_skewed() {
     else {
         panic!("expected a Completed report: the dead-board snapshot is valid");
     };
+    let snapshot = snapshot
+        .as_deck()
+        .expect("the Deck connector reports a Deck payload");
     assert_eq!(read_at, ts(T - 3600));
     assert_eq!(snapshot.board.deleted_at, Some(ts(T - 3600)));
     assert_eq!(snapshot.board.last_modified, ts(T));
@@ -4774,11 +4855,11 @@ mod migrate_seed {
         }
         origin.remote = Some(taskboard_domain::RemoteBoardBinding {
             connector: ConnectorId::from("nextcloud"),
-            board: RemoteBoardId(BOARD),
+            board: RemoteBoardId::deck(BOARD),
         });
         beta.remote = Some(taskboard_domain::RemoteBoardBinding {
             connector: ConnectorId::from("nextcloud"),
-            board: RemoteBoardId(43),
+            board: RemoteBoardId::deck(43),
         });
         state.boards.insert(origin.id, origin.clone());
         state.boards.insert(beta.id, beta.clone());
@@ -4788,8 +4869,8 @@ mod migrate_seed {
         state.stacks.insert(alpha_stack.id, alpha_stack);
         let mut beta_stack = bound_stack(3, BETA_STACK);
         beta_stack.remote = Some(taskboard_domain::RemoteStackRef {
-            board: RemoteBoardId(43),
-            stack: taskboard_domain::RemoteStackId(BETA_STACK),
+            board: RemoteBoardId::deck(43),
+            stack: taskboard_domain::RemoteStackId::deck(BETA_STACK),
         });
         beta_stack.board = beta_local_id;
         state.stacks.insert(beta_stack.id, beta_stack);
@@ -4797,9 +4878,9 @@ mod migrate_seed {
         let bound_task = |raw: u128, stack_local: u128, board: u64, stack: u64, card: u64| {
             let (mut task, _) = draft(raw, stack_local, "a bound card");
             task.remote = Some(taskboard_domain::RemoteCardRef {
-                board: RemoteBoardId(board),
-                stack: taskboard_domain::RemoteStackId(stack),
-                card: taskboard_domain::RemoteCardId(card),
+                board: RemoteBoardId::deck(board),
+                stack: taskboard_domain::RemoteStackId::deck(stack),
+                card: taskboard_domain::RemoteCardId::deck(card),
             });
             task.remote_seen = Some(ts(T));
             task
@@ -4829,10 +4910,10 @@ mod migrate_seed {
         let repo = Arc::new(InMemoryRepository::with_state(state));
         for key in [
             taskboard_domain::ValidatorKey::Boards,
-            taskboard_domain::ValidatorKey::Stacks(RemoteBoardId(BOARD)),
-            taskboard_domain::ValidatorKey::ArchivedStacks(RemoteBoardId(BOARD)),
-            taskboard_domain::ValidatorKey::Stacks(RemoteBoardId(43)),
-            taskboard_domain::ValidatorKey::ArchivedStacks(RemoteBoardId(43)),
+            taskboard_domain::ValidatorKey::Stacks(RemoteBoardId::deck(BOARD)),
+            taskboard_domain::ValidatorKey::ArchivedStacks(RemoteBoardId::deck(BOARD)),
+            taskboard_domain::ValidatorKey::Stacks(RemoteBoardId::deck(43)),
+            taskboard_domain::ValidatorKey::ArchivedStacks(RemoteBoardId::deck(43)),
         ] {
             InMemoryRepository::apply(
                 repo.as_ref(),
@@ -4979,7 +5060,10 @@ async fn t12_the_cross_board_move_migrates_the_entry_between_two_owned_boards() 
     let SyncReport::Completed { snapshot, .. } = second else {
         panic!("expected the destination board's Completed report");
     };
-    assert_eq!(snapshot.board.id, RemoteBoardId(43));
+    let snapshot = snapshot
+        .as_deck()
+        .expect("the Deck connector reports a Deck payload");
+    assert_eq!(snapshot.board.id, RemoteBoardId::deck(43));
 
     let origin_doc: serde_json::Value =
         serde_json::from_str(&seed::origin_document_json()).unwrap();
@@ -5069,6 +5153,7 @@ async fn t13_a_second_cycle_finds_nothing_to_migrate() {
 /// replaces 42's cache; the destination's migration still finds the
 /// entry — reservoir-sourced — and a follow-up pass finds nothing.
 #[tokio::test(start_paused = true)]
+#[allow(clippy::too_many_lines)] // copy-then-GC-then-migrate, three acts
 async fn t14_the_gc_evicted_entry_still_migrates_from_the_reservoir() {
     let server = start_server().await;
     mount_capabilities(&server, Some("1.19.0")).await;
@@ -5113,7 +5198,11 @@ async fn t14_the_gc_evicted_entry_still_migrates_from_the_reservoir() {
     else {
         panic!("expected the origin board's Completed report");
     };
-    assert_eq!(origin_snapshot.board.id, RemoteBoardId(BOARD));
+    let origin_snapshot = origin_snapshot
+        .as_deck()
+        .expect("the Deck connector reports a Deck payload");
+
+    assert_eq!(origin_snapshot.board.id, RemoteBoardId::deck(BOARD));
     assert!(
         pushes.iter().any(|outcome| {
             outcome.op == taskboard_domain::OpId(uuid(201))
@@ -5131,7 +5220,10 @@ async fn t14_the_gc_evicted_entry_still_migrates_from_the_reservoir() {
     else {
         panic!("expected the destination board's Completed report");
     };
-    assert_eq!(beta_snapshot.board.id, RemoteBoardId(43));
+    let beta_snapshot = beta_snapshot
+        .as_deck()
+        .expect("the Deck connector reports a Deck payload");
+    assert_eq!(beta_snapshot.board.id, RemoteBoardId::deck(43));
     let origin_doc: serde_json::Value =
         serde_json::from_str(&seed::origin_document_json()).unwrap();
     let request = seed::destination_write(&server)
@@ -5208,14 +5300,14 @@ async fn t15_a_missing_sibling_degrades_to_todays_adoption() {
     beta.id = taskboard_domain::BoardId::from(uuid(1));
     beta.remote = Some(taskboard_domain::RemoteBoardBinding {
         connector: ConnectorId::from("nextcloud"),
-        board: RemoteBoardId(43),
+        board: RemoteBoardId::deck(43),
     });
     let beta_local_id = beta.id;
     state.boards.insert(beta.id, beta);
     let mut beta_stack = bound_stack(3, seed::BETA_STACK);
     beta_stack.remote = Some(taskboard_domain::RemoteStackRef {
-        board: RemoteBoardId(43),
-        stack: taskboard_domain::RemoteStackId(seed::BETA_STACK),
+        board: RemoteBoardId::deck(43),
+        stack: taskboard_domain::RemoteStackId::deck(seed::BETA_STACK),
     });
     beta_stack.board = beta_local_id;
     state.stacks.insert(beta_stack.id, beta_stack);
@@ -5229,7 +5321,10 @@ async fn t15_a_missing_sibling_degrades_to_todays_adoption() {
     else {
         panic!("the cycle completes with a missing sibling");
     };
-    assert_eq!(snapshot.board.id, RemoteBoardId(43));
+    let snapshot = snapshot
+        .as_deck()
+        .expect("the Deck connector reports a Deck payload");
+    assert_eq!(snapshot.board.id, RemoteBoardId::deck(43));
     assert!(
         matches!(app_data, taskboard_domain::AppDataEvidence::Document(_)),
         "evidence unchanged: the destination document is the read it was"
@@ -5281,7 +5376,10 @@ async fn t16_an_unreadable_destination_document_suppresses_the_migration() {
     else {
         panic!("the cycle completes despite the failed download");
     };
-    assert_eq!(snapshot.board.id, RemoteBoardId(43));
+    let snapshot = snapshot
+        .as_deck()
+        .expect("the Deck connector reports a Deck payload");
+    assert_eq!(snapshot.board.id, RemoteBoardId::deck(43));
     assert!(
         matches!(
             app_data,
@@ -5341,7 +5439,10 @@ async fn t17_a_cold_cache_converges_on_the_next_full_pass() {
     else {
         panic!("expected the destination board's Completed report");
     };
-    assert_eq!(beta_snapshot.board.id, RemoteBoardId(43));
+    let beta_snapshot = beta_snapshot
+        .as_deck()
+        .expect("the Deck connector reports a Deck payload");
+    assert_eq!(beta_snapshot.board.id, RemoteBoardId::deck(43));
     assert!(matches!(second, SyncReport::Completed { .. }));
     assert!(
         seed::destination_write(&server).await.is_none(),

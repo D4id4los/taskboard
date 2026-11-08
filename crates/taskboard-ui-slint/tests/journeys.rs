@@ -9051,7 +9051,7 @@ fn state_board(state: &mut AppState, id: uuid::Uuid, title: &str, connector: Opt
         Board {
             id: BoardId::from_uuid(id),
             remote: connector.map(|c| RemoteBoardBinding {
-                board: RemoteBoardId(1),
+                board: RemoteBoardId::deck(1),
                 connector: ConnectorId::from(c),
             }),
             title: title.to_owned(),
@@ -9172,7 +9172,7 @@ fn item_at(harness: &Harness, kind: taskboard_ui_slint::ConnectionItemKind, titl
 
 fn remote_row(id: u64, title: &str) -> taskboard_ui_slint::requests::RemoteBoardRow {
     taskboard_ui_slint::requests::RemoteBoardRow {
-        remote_id: taskboard_domain::RemoteBoardId(id),
+        remote_id: taskboard_domain::RemoteBoardId::deck(id),
         title: title.to_owned(),
     }
 }
@@ -9331,7 +9331,7 @@ fn a_refresh_lists_remotes_and_a_pick_binds_explicitly() {
                 &requests[0],
                 taskboard_ui_slint::requests::UiRequest::AttachConnector {
                     board, connector, remote, ..
-                } if board.as_uuid() == home && connector == "work" && *remote == taskboard_domain::RemoteBoardId(2)
+                } if board.as_uuid() == home && connector == "work" && *remote == taskboard_domain::RemoteBoardId::deck(2)
             ));
             assert!(model(&harness).get_busy(), "the gate is busy mid-flight");
             assert!(
@@ -9595,7 +9595,7 @@ fn create_local_board_routes_and_the_row_renders_bound() {
             };
             assert_eq!(
                 (connector.as_str(), remote),
-                ("work", taskboard_domain::RemoteBoardId(1))
+                ("work", taskboard_domain::RemoteBoardId::deck(1))
             );
 
             // The app half: CreateBoard + BindBoard landed.
@@ -9793,7 +9793,7 @@ fn the_account_session_signs_in_lists_and_binds() {
             assert_eq!(board.as_uuid(), home);
             assert_eq!(
                 (connector.as_str(), remote),
-                ("c-example-alice", taskboard_domain::RemoteBoardId(42))
+                ("c-example-alice", taskboard_domain::RemoteBoardId::deck(42))
             );
 
             // The app half's BindBoard lands in the state.
@@ -9803,7 +9803,7 @@ fn the_account_session_signs_in_lists_and_binds() {
                 .get_mut(&taskboard_domain::BoardId::from_uuid(home))
                 .and_then(|b| b.remote.as_mut())
                 .expect("bound")
-                .board = taskboard_domain::RemoteBoardId(42);
+                .board = taskboard_domain::RemoteBoardId::deck(42);
             harness.engine.replace_state(next, &harness.handle);
             let _ = reply.send(Ok(ConnectionsSnapshot {
                 boards: vec![taskboard_ui_slint::requests::BoardInfo {
@@ -16560,7 +16560,7 @@ fn the_account_session_is_keyboard_operable() {
             assert!(matches!(
                 &requests[0],
                 UiRequest::AttachConnector { board, connector, remote, .. }
-                    if board.as_uuid() == home && connector == "work" && *remote == taskboard_domain::RemoteBoardId(7)
+                    if board.as_uuid() == home && connector == "work" && *remote == taskboard_domain::RemoteBoardId::deck(7)
             ));
         },
     );

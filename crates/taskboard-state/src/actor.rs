@@ -1012,53 +1012,81 @@ async fn ingest_sync_report(
             app_data,
             features,
         } => {
-            let (merged, mut batch, system_events) = apply_sync_report(
-                &core.app(),
-                core.outbox(),
-                &snapshot,
-                &pushes,
-                read_at,
-                ids,
-                now,
-                &connector,
-                &app_data,
-                features,
-                day,
-                author,
-            );
-            // The pipeline's broadcast verdicts (R3's resurrect is the
-            // only producer today): upgrade-or-drop like the storage
-            // edge — a closed channel means no receiver can ever
-            // appear, and the skipped emission is unobservable.
-            for event in system_events {
-                if let Some(system_out) = system_out.upgrade() {
-                    let _ = system_out.send(event);
+            // D-BF4: the payload itself is the backend tag. The Deck leg
+            // is the pipeline verbatim (regression-pinned); a
+            // Files-tagged snapshot names a remote no binding of this
+            // shape can hold — structurally "not mine", folded as
+            // nothing (chunk 5 owns the files ingestion lane).
+            match *snapshot {
+                taskboard_domain::RemoteBoardSnapshot::Deck(snapshot) => {
+                    let (merged, mut batch, system_events) = apply_sync_report(
+                        &core.app(),
+                        core.outbox(),
+                        &snapshot,
+                        &pushes,
+                        read_at,
+                        ids,
+                        now,
+                        &connector,
+                        &app_data,
+                        features,
+                        day,
+                        author,
+                    );
+                    // The pipeline's broadcast verdicts (R3's resurrect is the
+                    // only producer today): upgrade-or-drop like the storage
+                    // edge — a closed channel means no receiver can ever
+                    // appear, and the skipped emission is unobservable.
+                    for event in system_events {
+                        if let Some(system_out) = system_out.upgrade() {
+                            let _ = system_out.send(event);
+                        }
+                    }
+                    append_status_if_changed(core, &mut batch, &merged.sync);
+                    // The binding may have been adopted by this very batch, so the
+                    // keys derive from the post-merge board — "its own binding" is
+                    // the engine's after it ingests the report.
+                    append_validators_if_changed(
+                        core,
+                        &mut batch,
+                        &validators,
+                        &merged,
+                        snapshot.board.id,
+                    );
+                    // Counter delta: every remote entity the snapshot carried is a
+                    // pull (the board itself included); the push outcomes are the
+                    // board's landed ops.
+                    let pulls =
+                        1 + snapshot.stacks.len() + snapshot.tasks.len() + snapshot.labels.len();
+                    let delta = SyncCounters {
+                        cycles: 1,
+                        pushes: pushes.len() as u64,
+                        pulls: pulls as u64,
+                        last_cycle: Some(duration),
+                        ..SyncCounters::default()
+                    };
+                    let deltas = if let Some(board) =
+                        resolve_board(&merged, &connector, snapshot.board.id)
+                    {
+                        vec![(board, delta)]
+                    } else {
+                        tracing::debug!(connector = %connector, "counter delta dropped: no board");
+                        Vec::new()
+                    };
+                    (batch, deltas, Vec::<taskboard_domain::SystemEvent>::new())
+                }
+                taskboard_domain::RemoteBoardSnapshot::Files(_) => {
+                    tracing::debug!(
+                        connector = %connector,
+                        "files-tagged snapshot folded as nothing: no files ingestion"
+                    );
+                    (
+                        Vec::<PersistenceAction>::new(),
+                        Vec::new(),
+                        Vec::<taskboard_domain::SystemEvent>::new(),
+                    )
                 }
             }
-            append_status_if_changed(core, &mut batch, &merged.sync);
-            // The binding may have been adopted by this very batch, so the
-            // keys derive from the post-merge board — "its own binding" is
-            // the engine's after it ingests the report.
-            append_validators_if_changed(core, &mut batch, &validators, &merged, snapshot.board.id);
-            // Counter delta: every remote entity the snapshot carried is a
-            // pull (the board itself included); the push outcomes are the
-            // board's landed ops.
-            let pulls = 1 + snapshot.stacks.len() + snapshot.tasks.len() + snapshot.labels.len();
-            let delta = SyncCounters {
-                cycles: 1,
-                pushes: pushes.len() as u64,
-                pulls: pulls as u64,
-                last_cycle: Some(duration),
-                ..SyncCounters::default()
-            };
-            let deltas = if let Some(board) = resolve_board(&merged, &connector, snapshot.board.id)
-            {
-                vec![(board, delta)]
-            } else {
-                tracing::debug!(connector = %connector, "counter delta dropped: no board");
-                Vec::new()
-            };
-            (batch, deltas, Vec::<taskboard_domain::SystemEvent>::new())
         }
         taskboard_domain::SyncReport::Failed {
             connector,

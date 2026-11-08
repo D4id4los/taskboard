@@ -427,7 +427,7 @@ pub async fn seed_board_binding(db_path: &Path, local_id: u128, remote_id: u64, 
             taskboard_domain::Board {
                 id: taskboard_domain::BoardId::from_uuid(uuid::Uuid::from_u128(local_id)),
                 remote: taskboard_domain::test_support::test_binding(
-                    taskboard_domain::RemoteBoardId(remote_id),
+                    taskboard_domain::RemoteBoardId::deck(remote_id),
                 ),
                 title: run.to_owned(),
                 color: taskboard_domain::Color::new("00c2e0"),
@@ -893,7 +893,7 @@ pub async fn seed_tagged_board_binding(
                 id: taskboard_domain::BoardId::from_uuid(uuid::Uuid::from_u128(local_id)),
                 remote: Some(taskboard_domain::RemoteBoardBinding {
                     connector: taskboard_domain::ConnectorId::from(connector),
-                    board: taskboard_domain::RemoteBoardId(remote_id),
+                    board: taskboard_domain::RemoteBoardId::deck(remote_id),
                 }),
                 title: run.to_owned(),
                 color: taskboard_domain::Color::new("00c2e0"),

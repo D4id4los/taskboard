@@ -26,10 +26,11 @@ use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 
 use taskboard_domain::{
-    AppDataEvidence, AppDataUnreadable, BoardPullValidators, Clock, DeckFeatures, EntityTables,
-    PushOutcome, PushResult, RemoteBoard, RemoteBoardId, RemoteBoardSnapshot, RemoteCardRef,
-    RemoteLabel, RemoteStack, RemoteStackId, RemoteTask, SyncCommand, SyncErrorKind, SyncReport,
-    SyncStateReader, SyncValidators, SystemEvent, ValidatorKey, flags_for, plan_pushes,
+    AppDataEvidence, AppDataUnreadable, BoardPullValidators, Clock, DeckBoardSnapshot,
+    DeckFeatures, EntityTables, PushOutcome, PushResult, RemoteBoard, RemoteBoardId,
+    RemoteBoardSnapshot, RemoteCardRef, RemoteLabel, RemoteStack, RemoteStackId, RemoteTask,
+    SyncCommand, SyncErrorKind, SyncReport, SyncStateReader, SyncValidators, SystemEvent,
+    ValidatorKey, flags_for, plan_pushes,
 };
 
 use crate::anchor;
@@ -509,7 +510,15 @@ async fn cycle(
     let mut any_completed = false;
     for (index, (board_id, binding)) in owned.iter().enumerate() {
         let target = binding.board;
-        tracing::info!(board = target.get(), connector = %id, "board sync started");
+        // D-BF4: the Deck connector addresses Deck-tagged payloads only.
+        // A Files payload in a binding this connector owns is a routing
+        // bug — the board is skipped loudly, and no Deck endpoint is ever
+        // addressed with a foreign id.
+        let Some(target_deck) = target.as_deck() else {
+            tracing::warn!(board = %target, connector = %id, "board skipped: non-deck payload in a Deck connector's binding");
+            continue;
+        };
+        tracing::info!(board = target_deck, connector = %id, "board sync started");
         let mut board_ops: Vec<taskboard_domain::PendingOp> = persisted
             .outbox
             .iter()
@@ -670,7 +679,7 @@ async fn cycle(
         let snapshot_cards: std::collections::BTreeSet<String> = snapshot
             .tasks
             .iter()
-            .map(|task| task.id.card.get().to_string())
+            .filter_map(|task| task.id.card.as_deck().map(|num| num.to_string()))
             .collect();
         let migration: taskboard_domain::AppDataSections = {
             let empty = taskboard_domain::AppDataSections::default();
@@ -811,7 +820,7 @@ async fn cycle(
             reports,
             SyncReport::Completed {
                 connector: id.clone(),
-                snapshot: Box::new(snapshot),
+                snapshot: Box::new(RemoteBoardSnapshot::Deck(snapshot)),
                 validators,
                 pushes,
                 read_at,
@@ -824,7 +833,7 @@ async fn cycle(
         if !sent {
             tracing::warn!("report dropped: engine report channel closed");
         }
-        tracing::info!(board = target.get(), "board sync completed");
+        tracing::info!(board = target_deck, "board sync completed");
     }
 
     if any_completed {
@@ -979,7 +988,7 @@ async fn send_report(reports: &mpsc::Sender<SyncReport>, report: SyncReport) -> 
 async fn sidecar_evidence(
     client: &DeckClient,
     target: RemoteBoardId,
-    snapshot: &RemoteBoardSnapshot,
+    snapshot: &DeckBoardSnapshot,
     mut details: std::collections::HashMap<RemoteCardRef, Vec<crate::model::Attachment>>,
     st: &mut LoopState,
 ) -> Result<
@@ -990,6 +999,11 @@ async fn sidecar_evidence(
     ),
     crate::error::DeckError,
 > {
+    // Deck-lane only: the cycle gate skips non-deck bindings before
+    // this runs; the wire numbers below address Deck endpoints only.
+    let target_deck = target
+        .as_deck()
+        .expect("sidecar evidence is Deck-lane only: the cycle gate proves the tag");
     // A dead board's reads answer 404/403: the ceremony is skipped
     // entirely, evidence `Absent` (D10 item 1).
     if snapshot.board.deleted_at.is_some() {
@@ -1005,7 +1019,17 @@ async fn sidecar_evidence(
             continue;
         }
         match client
-            .card(target.get(), card_ref.stack.get(), card_ref.card.get())
+            .card(
+                target_deck,
+                card_ref
+                    .stack
+                    .as_deck()
+                    .expect("deck-tagged: the snapshot is the Deck leg"),
+                card_ref
+                    .card
+                    .as_deck()
+                    .expect("deck-tagged: the snapshot is the Deck leg"),
+            )
             .await
         {
             Ok(detail) => {
@@ -1040,9 +1064,17 @@ async fn sidecar_evidence(
     }
     match client
         .download_attachment(
-            target.get(),
-            candidate.card.stack.get(),
-            candidate.card.card.get(),
+            target_deck,
+            candidate
+                .card
+                .stack
+                .as_deck()
+                .expect("deck-tagged: the snapshot is the Deck leg"),
+            candidate
+                .card
+                .card
+                .as_deck()
+                .expect("deck-tagged: the snapshot is the Deck leg"),
             candidate.attachment_id,
         )
         .await
@@ -1065,7 +1097,7 @@ async fn sidecar_evidence(
             // The reason travels typed, never silence (the loud fence's
             // point); the snapshot and pushes are unaffected evidence.
             tracing::warn!(
-                board = target.get(),
+                board = target_deck,
                 ?err,
                 "sidecar document download failed; folding nothing this cycle"
             );
@@ -1087,7 +1119,7 @@ async fn sidecar_evidence(
 /// validators, and the attachment metadata captured from every bound
 /// card's detail refresh (D10 item 1 — zero marginal GETs).
 struct Pulled {
-    snapshot: RemoteBoardSnapshot,
+    snapshot: DeckBoardSnapshot,
     validators: BoardPullValidators,
     detail_attachments: std::collections::HashMap<RemoteCardRef, Vec<crate::model::Attachment>>,
 }
@@ -1102,6 +1134,11 @@ async fn pull_snapshot(
     local_cards: &LocalCardStamps,
     clock: &dyn Clock,
 ) -> Result<Pulled, crate::error::DeckError> {
+    // Deck-lane only: the cycle gate skips non-deck bindings before
+    // this runs, so the wire numbers below address Deck endpoints only.
+    let target_deck = target
+        .as_deck()
+        .expect("pull_snapshot is Deck-lane only: the cycle gate proves the tag");
     let boards_v = persisted
         .get(&ValidatorKey::Boards)
         .map(|v| Validators {
@@ -1118,7 +1155,7 @@ async fn pull_snapshot(
     .await?;
     let listed = boards_data
         .as_ref()
-        .and_then(|boards| boards.iter().find(|b| b.id == target.get()).cloned());
+        .and_then(|boards| boards.iter().find(|b| b.id == target_deck).cloned());
     cache.boards = boards_data;
 
     // Board absence from the listing is a tombstone, confirmed in a second
@@ -1129,7 +1166,7 @@ async fn pull_snapshot(
             // are authoritative in the board *detail* payload (tier-2
             // verified: the boards listing carries `labels: []` even for
             // labelled boards on Nextcloud 35).
-            match client.board(target.get()).await {
+            match client.board(target_deck).await {
                 Ok(detail) => (
                     mapping::map_board(&detail),
                     inline_labels(&detail),
@@ -1145,7 +1182,7 @@ async fn pull_snapshot(
                     // verified: a soft-deleted board's detail answers 403
                     // while the lagging listing may still claim it live).
                     tracing::debug!(
-                        board = target.get(),
+                        board = target_deck,
                         ?err,
                         "listed board unreadable: treating as dead"
                     );
@@ -1163,7 +1200,7 @@ async fn pull_snapshot(
                 Err(err) => return Err(err),
             }
         }
-        None => match client.board(target.get()).await {
+        None => match client.board(target_deck).await {
             Ok(board) => (
                 mapping::map_board(&board),
                 inline_labels(&board),
@@ -1171,7 +1208,7 @@ async fn pull_snapshot(
             ),
             Err(err @ (crate::error::DeckError::NotFound | crate::error::DeckError::Forbidden)) => {
                 tracing::warn!(
-                    board = target.get(),
+                    board = target_deck,
                     ?err,
                     "board gone: synthesizing tombstone"
                 );
@@ -1231,15 +1268,18 @@ async fn pull_snapshot(
         stacks.push(mapping::map_stack(stack, target));
         for card in &stack.cards {
             tasks.push(mapping::map_card(card, target));
-            seen_cards.insert(taskboard_domain::RemoteCardId(card.id));
+            seen_cards.insert(taskboard_domain::RemoteCardId::deck(card.id));
         }
     }
     for stack in &archived {
-        if !stacks.iter().any(|s| s.id.stack == RemoteStackId(stack.id)) {
+        if !stacks
+            .iter()
+            .any(|s| s.id.stack == RemoteStackId::deck(stack.id))
+        {
             stacks.push(mapping::map_stack(stack, target));
         }
         for card in &stack.cards {
-            if seen_cards.insert(taskboard_domain::RemoteCardId(card.id)) {
+            if seen_cards.insert(taskboard_domain::RemoteCardId::deck(card.id)) {
                 let mut view = mapping::map_card(card, target);
                 view.archived = true;
                 tasks.push(view);
@@ -1280,7 +1320,17 @@ async fn pull_snapshot(
                 continue;
             };
             match client
-                .card(target.get(), view.id.stack.get(), view.id.card.get())
+                .card(
+                    target_deck,
+                    view.id
+                        .stack
+                        .as_deck()
+                        .expect("deck-tagged: the snapshot is the Deck leg"),
+                    view.id
+                        .card
+                        .as_deck()
+                        .expect("deck-tagged: the snapshot is the Deck leg"),
+                )
                 .await
             {
                 Ok(detail) => {
@@ -1302,7 +1352,7 @@ async fn pull_snapshot(
         stacks: to_sync(&active_v),
         archived_stacks: to_sync(&archived_v),
     };
-    let snapshot = RemoteBoardSnapshot {
+    let snapshot = DeckBoardSnapshot {
         board,
         stacks,
         tasks,
@@ -1326,14 +1376,18 @@ async fn fetch_stacks_listing(
     cache_slot: &mut Option<Vec<Stack>>,
     dead_board: bool,
 ) -> Result<(Vec<Stack>, Validators), crate::error::DeckError> {
-    let fetched = match client.fetch_stacks(target.get(), filter, &validators).await {
+    // Deck-lane only: the cycle gate proves the tag (see pull_snapshot).
+    let target_deck = target
+        .as_deck()
+        .expect("stacks listing is Deck-lane only: the cycle gate proves the tag");
+    let fetched = match client.fetch_stacks(target_deck, filter, &validators).await {
         Ok(fetched) => fetched,
         Err(crate::error::DeckError::NotFound | crate::error::DeckError::Forbidden)
             if dead_board =>
         {
             // All reads of a dead board answer 404/403 (tier-2 verified):
             // empty listings make the tombstone snapshot valid.
-            tracing::debug!(board = target.get(), ?filter, "dead board: empty listing");
+            tracing::debug!(board = target_deck, ?filter, "dead board: empty listing");
             return Ok((Vec::new(), Validators::default()));
         }
         Err(err) => return Err(err),
@@ -1341,7 +1395,7 @@ async fn fetch_stacks_listing(
     let (data, validators) = fill(
         cache_slot.take(),
         fetched,
-        client.fetch_stacks(target.get(), filter, &Validators::default()),
+        client.fetch_stacks(target_deck, filter, &Validators::default()),
     )
     .await?;
     cache_slot.clone_from(&data);
@@ -1374,7 +1428,7 @@ fn inline_labels(board: &Board) -> Vec<RemoteLabel> {
     board
         .labels
         .iter()
-        .map(|label: &Label| mapping::map_label(label, RemoteBoardId(board.id)))
+        .map(|label: &Label| mapping::map_label(label, RemoteBoardId::deck(board.id)))
         .collect()
 }
 
@@ -1400,7 +1454,7 @@ mod guard_tests {
             id: taskboard_domain::BoardId::from(uuid::Uuid::from_u128(id)),
             remote: remote.map(|board| taskboard_domain::RemoteBoardBinding {
                 connector: taskboard_domain::ConnectorId::from(connector.unwrap_or("nextcloud")),
-                board: RemoteBoardId(board),
+                board: RemoteBoardId::deck(board),
             }),
             title: "board".into(),
             color: taskboard_domain::entities::Color::new("0000ff"),
@@ -1429,7 +1483,7 @@ mod guard_tests {
             &boards(rows),
         )
         .into_iter()
-        .map(|(_, binding)| binding.board.get())
+        .filter_map(|(_, binding)| binding.board.as_deck())
         .collect()
     }
 

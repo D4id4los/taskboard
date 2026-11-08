@@ -364,28 +364,52 @@ pub fn reminder_ref_from_text(raw: &str) -> Result<ReminderRef, CodecError> {
 }
 
 /// Encodes a remote stack binding into its (`remote_board_id`,
-/// `remote_stack_id`) columns.
-#[must_use]
-pub fn remote_stack_to_columns(r: taskboard_domain::ids::RemoteStackRef) -> (i64, i64) {
-    (remote_col(r.board.get()), remote_col(r.stack.get()))
+/// `remote_stack_id`) columns. The child columns are Deck-shaped: a
+/// `Files` payload has no column representation (files boards carry no
+/// remote child ids — the domain UUID is the identity), so one is a
+/// typed encode refusal, never a lossy write.
+///
+/// # Errors
+///
+/// [`CodecError`] on a `Files`-tagged payload.
+pub fn remote_stack_to_columns(
+    r: taskboard_domain::ids::RemoteStackRef,
+) -> Result<(i64, i64), CodecError> {
+    Ok((
+        remote_col(r.board.as_deck().ok_or(CodecError)?),
+        remote_col(r.stack.as_deck().ok_or(CodecError)?),
+    ))
 }
 
 /// Encodes a remote card binding into its (`remote_board_id`,
 /// `remote_stack_id`, `remote_card_id`) columns.
-#[must_use]
-pub fn remote_card_to_columns(r: taskboard_domain::ids::RemoteCardRef) -> (i64, i64, i64) {
-    (
-        remote_col(r.board.get()),
-        remote_col(r.stack.get()),
-        remote_col(r.card.get()),
-    )
+///
+/// # Errors
+///
+/// [`CodecError`] on a `Files`-tagged payload.
+pub fn remote_card_to_columns(
+    r: taskboard_domain::ids::RemoteCardRef,
+) -> Result<(i64, i64, i64), CodecError> {
+    Ok((
+        remote_col(r.board.as_deck().ok_or(CodecError)?),
+        remote_col(r.stack.as_deck().ok_or(CodecError)?),
+        remote_col(r.card.as_deck().ok_or(CodecError)?),
+    ))
 }
 
 /// Encodes a remote label binding into its (`remote_board_id`,
 /// `remote_label_id`) columns.
-#[must_use]
-pub fn remote_label_to_columns(r: taskboard_domain::ids::RemoteLabelRef) -> (i64, i64) {
-    (remote_col(r.board.get()), remote_col(r.label.get()))
+///
+/// # Errors
+///
+/// [`CodecError`] on a `Files`-tagged payload.
+pub fn remote_label_to_columns(
+    r: taskboard_domain::ids::RemoteLabelRef,
+) -> Result<(i64, i64), CodecError> {
+    Ok((
+        remote_col(r.board.as_deck().ok_or(CodecError)?),
+        remote_col(r.label.as_deck().ok_or(CodecError)?),
+    ))
 }
 
 /// The all-or-none NULL invariant of remote ref columns, checked at decode
@@ -492,8 +516,8 @@ mod tests {
     fn sample_baseline() -> taskboard_domain::entities::RemoteTaskBaseline {
         use taskboard_domain::ids::{RemoteLabelId, RemoteStackId};
         let mut labels = std::collections::BTreeSet::new();
-        labels.insert(RemoteLabelId(6));
-        labels.insert(RemoteLabelId(1));
+        labels.insert(RemoteLabelId::deck(6));
+        labels.insert(RemoteLabelId::deck(1));
         taskboard_domain::entities::RemoteTaskBaseline {
             title: "card".to_owned(),
             description: "desc".to_owned(),
@@ -504,7 +528,7 @@ mod tests {
             ),
             scheduled: None,
             done: None,
-            stack: RemoteStackId(7),
+            stack: RemoteStackId::deck(7),
             order: 3,
             labels,
             archived: false,
@@ -584,13 +608,13 @@ mod tests {
     fn ref_delete_ops_roundtrip_through_board_column_and_payload() {
         let board = taskboard_domain::ids::BoardId::from(id(9));
         let card = taskboard_domain::ids::RemoteCardRef {
-            board: taskboard_domain::ids::RemoteBoardId(42),
-            stack: taskboard_domain::ids::RemoteStackId(7),
-            card: taskboard_domain::ids::RemoteCardId(517),
+            board: taskboard_domain::ids::RemoteBoardId::deck(42),
+            stack: taskboard_domain::ids::RemoteStackId::deck(7),
+            card: taskboard_domain::ids::RemoteCardId::deck(517),
         };
         let stack_ref = taskboard_domain::ids::RemoteStackRef {
-            board: taskboard_domain::ids::RemoteBoardId(42),
-            stack: taskboard_domain::ids::RemoteStackId(8),
+            board: taskboard_domain::ids::RemoteBoardId::deck(42),
+            stack: taskboard_domain::ids::RemoteStackId::deck(8),
         };
         for op in [
             LocalOp::DeleteRemoteCard { board, card },
@@ -772,12 +796,12 @@ mod tests {
             validator_key_from_text(&validator_key_to_text(&ValidatorKey::Boards)),
             Ok(ValidatorKey::Boards)
         );
-        let stacks = ValidatorKey::Stacks(RemoteBoardId(9));
+        let stacks = ValidatorKey::Stacks(RemoteBoardId::deck(9));
         assert_eq!(
             validator_key_from_text(&validator_key_to_text(&stacks)),
             Ok(stacks)
         );
-        let archived = ValidatorKey::ArchivedStacks(RemoteBoardId(9));
+        let archived = ValidatorKey::ArchivedStacks(RemoteBoardId::deck(9));
         assert_eq!(
             validator_key_from_text(&validator_key_to_text(&archived)),
             Ok(archived)
@@ -956,9 +980,9 @@ mod tests {
                 LocalOp::DeleteRemoteCard {
                     board,
                     card: taskboard_domain::ids::RemoteCardRef {
-                        board: taskboard_domain::ids::RemoteBoardId(42),
-                        stack: taskboard_domain::ids::RemoteStackId(7),
-                        card: taskboard_domain::ids::RemoteCardId(517),
+                        board: taskboard_domain::ids::RemoteBoardId::deck(42),
+                        stack: taskboard_domain::ids::RemoteStackId::deck(7),
+                        card: taskboard_domain::ids::RemoteCardId::deck(517),
                     },
                 },
                 "delete_remote_card",
@@ -967,8 +991,8 @@ mod tests {
                 LocalOp::DeleteRemoteStack {
                     board,
                     stack: taskboard_domain::ids::RemoteStackRef {
-                        board: taskboard_domain::ids::RemoteBoardId(42),
-                        stack: taskboard_domain::ids::RemoteStackId(8),
+                        board: taskboard_domain::ids::RemoteBoardId::deck(42),
+                        stack: taskboard_domain::ids::RemoteStackId::deck(8),
                     },
                 },
                 "delete_remote_stack",
@@ -1030,22 +1054,25 @@ mod tests {
     #[test]
     fn remote_refs_decompose_into_columns() {
         let (b, s) = remote_stack_to_columns(taskboard_domain::ids::RemoteStackRef {
-            board: RemoteBoardId(3),
-            stack: RemoteStackId(4),
-        });
+            board: RemoteBoardId::deck(3),
+            stack: RemoteStackId::deck(4),
+        })
+        .expect("deck payload");
         assert_eq!((b, s), (3, 4));
 
         let (b, s, c) = remote_card_to_columns(taskboard_domain::ids::RemoteCardRef {
-            board: RemoteBoardId(3),
-            stack: RemoteStackId(4),
-            card: RemoteCardId(5),
-        });
+            board: RemoteBoardId::deck(3),
+            stack: RemoteStackId::deck(4),
+            card: RemoteCardId::deck(5),
+        })
+        .expect("deck payload");
         assert_eq!((b, s, c), (3, 4, 5));
 
         let (b, l) = remote_label_to_columns(taskboard_domain::ids::RemoteLabelRef {
-            board: RemoteBoardId(3),
-            label: RemoteLabelId(6),
-        });
+            board: RemoteBoardId::deck(3),
+            label: RemoteLabelId::deck(6),
+        })
+        .expect("deck payload");
         assert_eq!((b, l), (3, 6));
     }
 }

@@ -199,7 +199,7 @@ mod tests {
             .fetch_one(&raw)
             .await
             .expect("migration bookkeeping");
-        assert_eq!(applied, 24, "each shipped migration recorded exactly once");
+        assert_eq!(applied, 25, "each shipped migration recorded exactly once");
         raw.close().await;
         second.close().await;
     }
@@ -736,9 +736,9 @@ mod tests {
 
         let board = taskboard_domain::Board {
             id: taskboard_domain::BoardId::from(board_uuid),
-            remote: taskboard_domain::test_support::test_binding(taskboard_domain::RemoteBoardId(
-                42,
-            )),
+            remote: taskboard_domain::test_support::test_binding(
+                taskboard_domain::RemoteBoardId::deck(42),
+            ),
             title: "board".into(),
             color: taskboard_domain::Color::new("00ff00"),
             archived: false,
@@ -804,7 +804,7 @@ mod tests {
             board.remote,
             Some(taskboard_domain::RemoteBoardBinding {
                 connector: taskboard_domain::ConnectorId::from("work"),
-                board: taskboard_domain::RemoteBoardId(42),
+                board: taskboard_domain::RemoteBoardId::deck(42),
             }),
             "the row's tag decodes as-is, never rewritten to the default"
         );
@@ -823,7 +823,7 @@ mod tests {
             id: taskboard_domain::BoardId::from(uuid::Uuid::from_u128(0xd4)),
             remote: Some(taskboard_domain::RemoteBoardBinding {
                 connector: taskboard_domain::ConnectorId::from("work"),
-                board: taskboard_domain::RemoteBoardId(42),
+                board: taskboard_domain::RemoteBoardId::deck(42),
             }),
             title: "board".into(),
             color: taskboard_domain::Color::new("00ff00"),

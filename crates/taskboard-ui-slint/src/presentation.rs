@@ -5170,7 +5170,7 @@ mod connector_status_tests {
             Board {
                 id: board,
                 remote: Some(RemoteBoardBinding {
-                    board: taskboard_domain::RemoteBoardId(1),
+                    board: taskboard_domain::RemoteBoardId::deck(1),
                     connector: ConnectorId::from(connector),
                 }),
                 title: "b".into(),
@@ -5225,7 +5225,7 @@ mod connector_status_tests {
                     Board {
                         id,
                         remote: connector.map(|c| RemoteBoardBinding {
-                            board: taskboard_domain::RemoteBoardId(1),
+                            board: taskboard_domain::RemoteBoardId::deck(1),
                             connector: ConnectorId::from(c),
                         }),
                         title: title.into(),
