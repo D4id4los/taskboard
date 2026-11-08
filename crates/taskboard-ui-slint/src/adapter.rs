@@ -1403,11 +1403,11 @@ impl Adapter {
         // user went elsewhere; the walk never ambushes later.
         if let Flow::ReviewWalk {
             cadence, reference, ..
-        } = self.view_state.flow().clone()
+        } = self.view_state.walk_flow().unwrap_or(Flow::None)
         {
             let (rows, _) = self.walk_rows(&state, cadence, reference);
             let candidates = crate::presentation::walk_file_candidates(&state);
-            self.view_state.clamp_review_walk(rows, &candidates);
+            self.view_state.clamp_review_walk(&state, rows, &candidates);
         }
         if self.walk_resume.is_some()
             && self.view_state.view() != crate::view_state::ViewId::PlanNextDay
@@ -2119,44 +2119,27 @@ impl Adapter {
                 self.view_state.review_walk_file_target(1, &candidates)
             }
             WalkIntent::FileCommit => {
-                let Flow::ReviewWalk {
-                    stage:
-                        WalkStage::Inbox {
-                            filing: Some(target),
-                        },
-                    cursor,
-                    ..
-                } = self.view_state.flow()
-                else {
+                let Some(target) = self.view_state.walk_file_armed() else {
                     return Vec::new();
                 };
-                let target = *target;
-                let row = crate::presentation::walk_inbox_rows(state)
-                    .get(*cursor)
-                    .copied();
-                let Some(task) = row else {
+                if !matches!(
+                    self.view_state.walk_flow().as_ref(),
+                    Some(Flow::ReviewWalk { .. })
+                ) {
                     return Vec::new();
-                };
-                // The end-of-stack append the move flow computes — no
-                // new arithmetic (plan D-W4).
-                let order = crate::view_state::append_order(state, target);
-                let mut outcomes = vec![FlowOutcome::Command(
-                    taskboard_domain::StateCommand::MoveTask {
-                        id: task,
-                        stack: target,
-                        order,
-                    },
-                )];
-                match self.view_state.review_walk_next_row(rows) {
-                    WalkStep::Handoff => {
-                        self.apply_outcomes(window, &outcomes);
-                        self.hand_off_to_planner(window, cadence, reference);
-                        return Vec::new();
-                    }
-                    WalkStep::Advanced => outcomes.push(FlowOutcome::RefreshNow),
-                    WalkStep::Inert => {}
                 }
-                outcomes
+                // The commit completes the child with the armed stack
+                // (N3a); the walk's consumption builds the MoveTask
+                // (the end-of-stack append the move flow computes —
+                // plan D-W4) and steps the row — R2's order preserved
+                // by construction. The handoff ask crosses as
+                // [`FlowOutcome::PlannerHandoff`].
+                self.view_state.end_top_flow_with(
+                    state,
+                    crate::surfaces::GuestExit::Completed(Some(
+                        crate::surfaces::LevelResult::Stack(target),
+                    )),
+                )
             }
             // -- the carry row verbs --
             WalkIntent::CarryTomorrow => {
@@ -2185,10 +2168,10 @@ impl Adapter {
             }
             WalkIntent::CarryPickDate => self.view_state.review_walk_pick_date(),
             WalkIntent::CarryDateCommit => {
-                let Flow::ReviewWalk {
+                let Some(Flow::ReviewWalk {
                     stage: WalkStage::CarryForward { picking_date: true },
                     ..
-                } = self.view_state.flow()
+                }) = self.view_state.walk_flow()
                 else {
                     return Vec::new();
                 };
@@ -2285,12 +2268,12 @@ impl Adapter {
         reference: chrono::NaiveDate,
         rows: crate::view_state::WalkRows,
     ) -> Option<TaskId> {
-        let Flow::ReviewWalk { cursor, .. } = self.view_state.flow() else {
+        let Some(Flow::ReviewWalk { cursor, .. }) = self.view_state.walk_flow() else {
             return None;
         };
         let window = taskboard_domain::review_window(cadence, reference, self.calendar());
         crate::presentation::walk_carry_rows(&state.tasks, cadence, window, self.day_ctx().now)
-            .get(*cursor)
+            .get(cursor)
             .copied()
             .filter(|_| rows.carry > 0)
     }
@@ -2847,6 +2830,19 @@ impl Adapter {
                 let (rows, _) = self.walk_rows(&state, cadence, reference);
                 self.view_state.open_review_walk(cadence, reference, rows)
             }
+            // The carrier's intents under any child level: the child
+            // has no kept arms — the verb table runs against the walk
+            // level beneath (inert without one; the fixture's depth-1
+            // shape).
+            (
+                Flow::EntryDatePicker | Flow::WalkFilePick { .. } | Flow::WalkDatePick,
+                UiEffect::ReviewWalk(intent),
+            ) => match self.view_state.walk_flow() {
+                Some(Flow::ReviewWalk {
+                    cadence, reference, ..
+                }) => self.interpret_walk(window, cadence, reference, intent, &state),
+                _ => Vec::new(),
+            },
             // The carrier's intents: the verb table.
             (
                 Flow::ReviewWalk {
@@ -9097,12 +9093,8 @@ fn install_review_walk_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>)
     let Some(stack) = candidates.get(index).copied() else {
         return; // a stale index past the candidates: inert
     };
-    if let Some(Flow::ReviewWalk {
-        stage: crate::view_state::WalkStage::Inbox { filing },
-        ..
-    }) = a.view_state.flow_mut()
-    {
-        *filing = Some(stack);
+    if let Some(Flow::WalkFilePick { armed }) = a.view_state.flow_mut() {
+        *armed = Some(stack);
     }
     a.apply_outcomes(&window, &[FlowOutcome::RefreshNow]);
     a.finish_mutation(&window);

@@ -182,9 +182,10 @@ pub enum DateField {
 /// then closes (the `TrackEntryDismiss` shape).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WalkStage {
-    /// Inbox triage (P1): `Some` = the File-to picker is armed on the
-    /// cursor row, addressing that candidate stack.
-    Inbox { filing: Option<StackId> },
+    /// Inbox triage (P1): the armed File-to picker is the
+    /// `WalkFilePick` child level (chunk 3's N3a port); the stage
+    /// carries no sub-state.
+    Inbox,
     /// Carry forward (P9): `true` = the Pick-a-date field is armed on
     /// the cursor row.
     CarryForward { picking_date: bool },
@@ -711,8 +712,51 @@ impl ViewState {
         self.end_top_flow_with(state, crate::surfaces::GuestExit::Cancelled)
     }
 
-    /// The innermost `PlanPlace` level's state (the placement form's
-    /// two mirrors): `None` without one.
+    /// The walk level's flow (read through any children above it):
+    /// the stage machine's facts ride the walk level even when one of
+    /// its children holds the chain's top — the flat `flow()` read is
+    /// the innermost level, which under a live child is not the walk.
+    #[must_use]
+    pub(crate) fn walk_flow(&self) -> Option<Flow> {
+        self.surfaces
+            .above_levels()
+            .iter()
+            .rev()
+            .find_map(|level| match level.flow() {
+                Some(flow @ Flow::ReviewWalk { .. }) => Some(flow.clone()),
+                _ => None,
+            })
+    }
+
+    /// The walk level's write seam (through any children above it).
+    pub(crate) fn walk_flow_mut(&mut self) -> Option<&mut Flow> {
+        self.surfaces
+            .above_levels_mut()
+            .iter_mut()
+            .rev()
+            .find_map(|level| match level.flow_mut() {
+                Some(flow @ Flow::ReviewWalk { .. }) => Some(flow),
+                _ => None,
+            })
+    }
+
+    /// The walk's File-to child's armed candidate (N3a): `Some` only
+    /// while the child level is live (its `Option` variant data is the
+    /// same-pass clamp window, D6/R3).
+    #[must_use]
+    pub(crate) fn walk_file_armed(&self) -> Option<StackId> {
+        self.surfaces
+            .above_levels()
+            .iter()
+            .rev()
+            .find_map(|level| match level.flow() {
+                Some(Flow::WalkFilePick { armed }) => *armed,
+                _ => None,
+            })
+    }
+
+    /// Whether the walk's Pick-a-date child is live (the `picking`
+    /// mirror's truth, N3b).
     #[must_use]
     pub(crate) fn plan_place(&self) -> Option<&crate::level_state::PlanPlaceState> {
         self.surfaces
@@ -2007,7 +2051,7 @@ impl ViewState {
         rows: WalkRows,
     ) -> Vec<FlowOutcome> {
         let stage = if rows.inbox > 0 {
-            WalkStage::Inbox { filing: None }
+            WalkStage::Inbox
         } else {
             WalkStage::CarryForward {
                 picking_date: false,
@@ -2045,7 +2089,7 @@ impl ViewState {
     /// The current stage's row count under `rows`.
     const fn walk_stage_rows(stage: WalkStage, rows: WalkRows) -> usize {
         match stage {
-            WalkStage::Inbox { .. } => rows.inbox,
+            WalkStage::Inbox => rows.inbox,
             WalkStage::CarryForward { .. } => rows.carry,
             WalkStage::Prompts => 0,
         }
@@ -2056,7 +2100,7 @@ impl ViewState {
     /// the row verbs are what pass the last row). Inert on Prompts
     /// (no rows) and outside the walk.
     pub fn review_walk_cursor(&mut self, direction: i32, rows: WalkRows) -> Vec<FlowOutcome> {
-        let Some(Flow::ReviewWalk { stage, cursor, .. }) = self.surfaces.top_flow_mut() else {
+        let Some(Flow::ReviewWalk { stage, cursor, .. }) = self.walk_flow_mut() else {
             return Vec::new();
         };
         let len = Self::walk_stage_rows(*stage, rows);
@@ -2072,12 +2116,18 @@ impl ViewState {
     /// A row verb's cursor step (`Keep in inbox`, `Leave as is`, and
     /// the post-commit step of `Move to tomorrow`/the date pick): the
     /// cursor moves to the next row; passing the last row advances the
-    /// stage (the Keep-on-the-last-row rule). The sub-state clears.
+    /// stage (the Keep-on-the-last-row rule). The armed child (the
+    /// File-to picker) dies with its own commit — the row step carries
+    /// no sub-state.
     pub fn review_walk_next_row(&mut self, rows: WalkRows) -> WalkStep {
-        let Some(Flow::ReviewWalk { stage, cursor, .. }) = self.surfaces.top_flow_mut() else {
+        let Some(Flow::ReviewWalk { stage, cursor, .. }) = self.walk_flow_mut() else {
             return WalkStep::Inert;
         };
-        *stage = Self::cleared_substate(*stage);
+        if let WalkStage::CarryForward { picking_date } = stage {
+            // The flattened date rung's step-clear (retires with N3b:
+            // the date child's death is the clear).
+            *picking_date = false;
+        }
         let len = Self::walk_stage_rows(*stage, rows);
         if *cursor + 1 < len {
             *cursor += 1;
@@ -2090,11 +2140,11 @@ impl ViewState {
     /// the planner handoff (the adapter's arm, plan D-W3); Prompts has
     /// no advance (its exits are the commit verbs).
     pub fn advance_review_walk(&mut self) -> WalkStep {
-        let Some(Flow::ReviewWalk { stage, cursor, .. }) = self.surfaces.top_flow_mut() else {
+        let Some(Flow::ReviewWalk { stage, cursor, .. }) = self.walk_flow_mut() else {
             return WalkStep::Inert;
         };
         match stage {
-            WalkStage::Inbox { .. } => {
+            WalkStage::Inbox => {
                 *stage = WalkStage::CarryForward {
                     picking_date: false,
                 };
@@ -2113,14 +2163,13 @@ impl ViewState {
     /// way in and is skipped on the way back — the close); the Inbox
     /// closes. Inert outside the walk.
     pub fn back_review_walk(&mut self, rows: WalkRows) -> Vec<FlowOutcome> {
-        let Some(Flow::ReviewWalk { stage, cursor, .. }) = self.surfaces.top_flow_mut() else {
+        // The File-to child's sub-state rung is the generic Cancelled
+        // rung (D-H4): the adapter's `cancel_top_child` ends the child
+        // before this ladder runs. The armed date field's rung stays
+        // flattened until its own port (N3b) retires it.
+        let Some(Flow::ReviewWalk { stage, cursor, .. }) = self.walk_flow_mut() else {
             return Vec::new();
         };
-        let cleared = Self::cleared_substate(*stage);
-        if cleared != *stage {
-            *stage = cleared;
-            return vec![FlowOutcome::RefreshNow];
-        }
         match stage {
             WalkStage::Prompts => {
                 *stage = WalkStage::CarryForward {
@@ -2129,40 +2178,51 @@ impl ViewState {
                 *cursor = 0;
                 vec![FlowOutcome::RefreshNow]
             }
+            WalkStage::CarryForward { picking_date: true } => {
+                *stage = WalkStage::CarryForward {
+                    picking_date: false,
+                };
+                vec![FlowOutcome::RefreshNow]
+            }
             WalkStage::CarryForward { .. } if rows.inbox > 0 => {
-                *stage = WalkStage::Inbox { filing: None };
+                *stage = WalkStage::Inbox;
                 *cursor = 0;
                 vec![FlowOutcome::RefreshNow]
             }
-            WalkStage::CarryForward { .. } | WalkStage::Inbox { .. } => self.close_review_walk(),
+            WalkStage::CarryForward { .. } | WalkStage::Inbox => self.close_review_walk(),
         }
     }
 
-    const fn cleared_substate(stage: WalkStage) -> WalkStage {
-        match stage {
-            WalkStage::Inbox { .. } => WalkStage::Inbox { filing: None },
-            WalkStage::CarryForward { .. } => WalkStage::CarryForward {
-                picking_date: false,
-            },
-            WalkStage::Prompts => WalkStage::Prompts,
-        }
-    }
-
-    /// `File to…`: arms the picker on the cursor row addressing the
-    /// first candidate stack; inert without candidates, outside the
-    /// Inbox stage, or outside the walk.
+    /// `File to…` (N3a): mounts the File-to child over the walk with
+    /// the first candidate armed — the child is never minted unarmed
+    /// (the arm refuses empty candidate lists). Re-request re-arms to
+    /// the first candidate (the flattened model's reset); inert
+    /// without candidates, outside the Inbox stage, or outside the
+    /// walk. The duplicate-kind refusal is the defensive no-op (D7 —
+    /// unreachable: the walk arms at most one child).
     pub fn review_walk_file(&mut self, candidates: &[StackId]) -> Vec<FlowOutcome> {
-        let Some(Flow::ReviewWalk {
-            stage: WalkStage::Inbox { filing },
-            ..
-        }) = self.surfaces.top_flow_mut()
-        else {
-            return Vec::new();
-        };
         let Some(first) = candidates.first() else {
             return Vec::new();
         };
-        *filing = Some(*first);
+        if let Some(armed) = self.surfaces.top_flow_mut().and_then(|flow| match flow {
+            Flow::WalkFilePick { armed } => Some(armed),
+            _ => None,
+        }) {
+            *armed = Some(*first);
+            return vec![FlowOutcome::RefreshNow];
+        }
+        if !matches!(
+            self.walk_flow().as_ref(),
+            Some(Flow::ReviewWalk {
+                stage: WalkStage::Inbox,
+                ..
+            })
+        ) {
+            return Vec::new();
+        }
+        let _ = self.mount_child(Flow::WalkFilePick {
+            armed: Some(*first),
+        });
         vec![FlowOutcome::RefreshNow]
     }
 
@@ -2174,13 +2234,7 @@ impl ViewState {
         direction: i32,
         candidates: &[StackId],
     ) -> Vec<FlowOutcome> {
-        let Some(Flow::ReviewWalk {
-            stage: WalkStage::Inbox {
-                filing: Some(armed),
-            },
-            ..
-        }) = self.surfaces.top_flow_mut()
-        else {
+        let Some(Flow::WalkFilePick { armed: Some(armed) }) = self.surfaces.top_flow_mut() else {
             return Vec::new();
         };
         if candidates.is_empty() {
@@ -2212,18 +2266,21 @@ impl ViewState {
     /// whose candidate died disarms. Pure — called by the push pass
     /// with the rows it just derived; no command, no repaint request
     /// (the pass is already repainting).
-    pub fn clamp_review_walk(&mut self, rows: WalkRows, candidates: &[StackId]) {
-        let Some(Flow::ReviewWalk { stage, cursor, .. }) = self.surfaces.top_flow_mut() else {
+    pub fn clamp_review_walk(&mut self, state: &AppState, rows: WalkRows, candidates: &[StackId]) {
+        // The armed candidate's death ends the child `Cancelled` —
+        // BEFORE the empty-inbox stage advance, so no one-pass window
+        // can show Carry forward with a stale armed-child mirror (R3).
+        // The exit is ignored by the walk (the disarm was silent).
+        if self
+            .walk_file_armed()
+            .is_some_and(|armed| !candidates.contains(&armed))
+        {
+            let _ = self.end_top_flow_with(state, crate::surfaces::GuestExit::Cancelled);
+        }
+        let Some(Flow::ReviewWalk { stage, cursor, .. }) = self.walk_flow_mut() else {
             return;
         };
-        if let WalkStage::Inbox {
-            filing: Some(armed),
-        } = stage
-            && !candidates.contains(armed)
-        {
-            *stage = WalkStage::Inbox { filing: None };
-        }
-        if matches!(stage, WalkStage::Inbox { .. }) && rows.inbox == 0 {
+        if matches!(stage, WalkStage::Inbox) && rows.inbox == 0 {
             *stage = WalkStage::CarryForward {
                 picking_date: false,
             };
@@ -5755,13 +5812,13 @@ mod settings_surface_tests {
         WalkRows { inbox, carry }
     }
     fn walk_flow(vs: &ViewState) -> (ReviewCadence, chrono::NaiveDate, WalkStage, usize) {
-        match vs.flow() {
-            Flow::ReviewWalk {
+        match vs.walk_flow() {
+            Some(Flow::ReviewWalk {
                 cadence,
                 reference,
                 stage,
                 cursor,
-            } => (*cadence, *reference, *stage, *cursor),
+            }) => (cadence, reference, stage, cursor),
             other => panic!("not a walk: {other:?}"),
         }
     }
@@ -5772,7 +5829,7 @@ mod settings_surface_tests {
         let mut vs = ViewState::new();
         vs.open_review_walk(DAY, reference(), rows(2, 0));
         assert!(
-            matches!(walk_flow(&vs), (DAY, r, WalkStage::Inbox { filing: None }, 0) if r == reference()),
+            matches!(walk_flow(&vs), (DAY, r, WalkStage::Inbox, 0) if r == reference()),
             "a non-empty inbox opens the triage stage"
         );
 
@@ -5859,21 +5916,21 @@ mod settings_surface_tests {
 
     #[test]
     fn the_escape_ladder_steps_substate_then_stage_then_closes() {
+        let (state, _, _, _, _) = two_board_fixture();
         let mut vs = ViewState::new();
         let candidates = [StackId::from_uuid(uuid::Uuid::now_v7())];
 
-        // Sub-state first: an armed picker clears, the stage stays.
+        // Sub-state first: the armed File-to child ends `Cancelled`
+        // alone — the stage stays (the D-H4 generic rung; the
+        // flattened filing field is gone).
         vs.open_review_walk(DAY, reference(), rows(1, 0));
         vs.review_walk_file(&candidates);
-        assert!(matches!(
-            walk_flow(&vs),
-            (DAY, _, WalkStage::Inbox { filing: Some(_) }, _)
-        ));
-        vs.back_review_walk(rows(1, 0));
-        assert!(matches!(
-            walk_flow(&vs),
-            (DAY, _, WalkStage::Inbox { filing: None }, _)
-        ));
+        assert!(matches!(vs.flow(), Flow::WalkFilePick { armed: Some(_) }));
+        assert_eq!(
+            vs.cancel_top_child(&state),
+            Some(vec![FlowOutcome::RefreshNow])
+        );
+        assert!(matches!(walk_flow(&vs), (DAY, _, WalkStage::Inbox, _)));
 
         // Stage back: Carry forward → Inbox when the inbox has rows.
         vs.advance_review_walk();
@@ -5891,10 +5948,7 @@ mod settings_surface_tests {
             )
         ));
         vs.back_review_walk(rows(1, 0));
-        assert!(matches!(
-            walk_flow(&vs),
-            (DAY, _, WalkStage::Inbox { .. }, 0)
-        ));
+        assert!(matches!(walk_flow(&vs), (DAY, _, WalkStage::Inbox, 0)));
 
         // The Inbox rung closes, no command (the close outcome set).
         assert_eq!(
@@ -5929,35 +5983,42 @@ mod settings_surface_tests {
         vs.open_review_walk(DAY, reference(), rows(2, 0));
         vs.review_walk_file(&candidates);
         assert!(matches!(
-            walk_flow(&vs),
-            (DAY, _, WalkStage::Inbox { filing: Some(f) }, _) if f == s0
+            vs.flow(),
+            Flow::WalkFilePick {
+                armed: Some(f),
+            } if *f == s0
         ));
         vs.review_walk_file_target(1, &candidates);
         assert!(matches!(
-            walk_flow(&vs),
-            (DAY, _, WalkStage::Inbox { filing: Some(f) }, _) if f == s1
+            vs.flow(),
+            Flow::WalkFilePick {
+                armed: Some(f),
+            } if *f == s1
         ));
         vs.review_walk_file_target(1, &candidates);
         assert!(
             matches!(
-                walk_flow(&vs),
-                (DAY, _, WalkStage::Inbox { filing: Some(f) }, _) if f == s0
+                vs.flow(),
+                Flow::WalkFilePick {
+                    armed: Some(f),
+                } if *f == s0
             ),
             "the ring wraps"
         );
 
         // The refresh clamp: the cursor clamps against the pushed
-        // count; a vanished candidate list disarms the picker; a
-        // vanished inbox advances structurally.
+        // count; a vanished candidate list ends the child `Cancelled`;
+        // a vanished inbox advances structurally.
         vs.review_walk_cursor(1, rows(2, 0));
-        vs.clamp_review_walk(rows(1, 0), &candidates);
+        vs.clamp_review_walk(&state, rows(1, 0), &candidates);
         assert_eq!(walk_flow(&vs).3, 0, "the cursor clamps");
-        vs.clamp_review_walk(rows(1, 0), &[]);
-        assert!(matches!(
-            walk_flow(&vs),
-            (DAY, _, WalkStage::Inbox { filing: None }, _)
-        ));
-        vs.clamp_review_walk(rows(0, 2), &candidates);
+        vs.clamp_review_walk(&state, rows(1, 0), &[]);
+        assert!(matches!(walk_flow(&vs), (DAY, _, WalkStage::Inbox, _)));
+        assert!(
+            !matches!(vs.flow(), Flow::WalkFilePick { .. }),
+            "the dead candidate's child is gone"
+        );
+        vs.clamp_review_walk(&state, rows(0, 2), &candidates);
         assert!(matches!(
             walk_flow(&vs),
             (DAY, _, WalkStage::CarryForward { .. }, 0)
@@ -5965,7 +6026,7 @@ mod settings_surface_tests {
         // Carry forward's cursor clamps against its own rows.
         vs.review_walk_cursor(5, rows(0, 2));
         assert_eq!(walk_flow(&vs).3, 1);
-        vs.clamp_review_walk(rows(0, 1), &candidates);
+        vs.clamp_review_walk(&state, rows(0, 1), &candidates);
         assert_eq!(walk_flow(&vs).3, 0);
         let _ = state;
     }
@@ -6025,7 +6086,7 @@ mod settings_surface_tests {
         vs.arm_flow(Flow::ReviewWalk {
             cadence: DAY,
             reference: reference(),
-            stage: WalkStage::Inbox { filing: None },
+            stage: WalkStage::Inbox,
             cursor: 0,
         });
     }

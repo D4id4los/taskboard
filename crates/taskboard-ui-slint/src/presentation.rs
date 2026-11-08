@@ -2064,7 +2064,7 @@ pub fn walk_stage_header(
     template: &taskboard_domain::ReflectionTemplate,
 ) -> String {
     match stage {
-        crate::view_state::WalkStage::Inbox { .. } => "Inbox".to_owned(),
+        crate::view_state::WalkStage::Inbox => "Inbox".to_owned(),
         crate::view_state::WalkStage::CarryForward { .. } => "Carry forward".to_owned(),
         crate::view_state::WalkStage::Prompts => template.name.to_owned(),
     }
@@ -2075,7 +2075,7 @@ pub fn walk_stage_header(
 #[must_use]
 pub const fn walk_stage_empty_line(stage: crate::view_state::WalkStage) -> &'static str {
     match stage {
-        crate::view_state::WalkStage::Inbox { .. } => "The inbox is empty.",
+        crate::view_state::WalkStage::Inbox => "The inbox is empty.",
         crate::view_state::WalkStage::CarryForward { .. } => "Nothing to carry forward.",
         crate::view_state::WalkStage::Prompts => "",
     }
@@ -4668,7 +4668,7 @@ mod tests {
         let week = &taskboard_domain::DEFAULT_TEMPLATES[1];
 
         assert_eq!(
-            walk_stage_header(crate::view_state::WalkStage::Inbox { filing: None }, day),
+            walk_stage_header(crate::view_state::WalkStage::Inbox, day),
             "Inbox"
         );
         assert_eq!(
@@ -4685,7 +4685,7 @@ mod tests {
             week.name
         );
         assert_eq!(
-            walk_stage_empty_line(crate::view_state::WalkStage::Inbox { filing: None }),
+            walk_stage_empty_line(crate::view_state::WalkStage::Inbox),
             "The inbox is empty."
         );
         assert_eq!(
@@ -4718,10 +4718,7 @@ mod tests {
         let day = walk_day();
         let day_template = &taskboard_domain::DEFAULT_TEMPLATES[0];
         let stages = [
-            crate::view_state::WalkStage::Inbox { filing: None },
-            crate::view_state::WalkStage::Inbox {
-                filing: Some(StackId::from_uuid(uuid::Uuid::now_v7())),
-            },
+            crate::view_state::WalkStage::Inbox,
             crate::view_state::WalkStage::CarryForward {
                 picking_date: false,
             },
