@@ -177,6 +177,9 @@ enum EK {
     WalkAdvance,
     WalkExit,
     WalkVerb,
+    /// The File-to arm (N3a): the one walk verb that mounts a child
+    /// level — its own cell because its post-state is the child.
+    WalkFileArm,
 }
 
 fn key_of(effect: &UiEffect) -> EK {
@@ -244,6 +247,7 @@ fn key_of(effect: &UiEffect) -> EK {
         UiEffect::ReviewWalk(
             crate::router::WalkIntent::Record | crate::router::WalkIntent::Finish,
         ) => EK::WalkExit,
+        UiEffect::ReviewWalk(crate::router::WalkIntent::InboxFile) => EK::WalkFileArm,
         UiEffect::ReviewWalk(_) => EK::WalkVerb,
         // The picker keys are applied in `apply_effect`, before the
         // table — the matrix never sees them (the menu-family
@@ -613,9 +617,13 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
     row(FK::Child, E::TrackEntriesOpen, exp(Z, K(KTrackList)));
     row(FK::Child, E::TrackEntryDismiss, exp(Z, N));
     row(FK::Child, E::ReviewOpen, exp(Z, K(KWalk)));
-    row(FK::Child, E::WalkAdvance, exp(Z, N));
-    row(FK::Child, E::WalkExit, exp(Z, N));
-    row(FK::Child, E::WalkVerb, exp(Z, N));
+    // The walk intents under a child route to the walk level beneath
+    // (the child dispatch arm); with no walk beneath — the fixture's
+    // depth 1 — they are the inert no-op and the child stays.
+    row(FK::Child, E::WalkAdvance, exp(Z, K(KChild)));
+    row(FK::Child, E::WalkExit, exp(Z, K(KChild)));
+    row(FK::Child, E::WalkVerb, exp(Z, K(KChild)));
+    row(FK::Child, E::WalkFileArm, exp(Z, K(KChild)));
     // -- LIFECYCLE under every foreign kind: the settle-then-run
     //    re-run's outcome is effect-shaped (a rename arms a fresh
     //    text flow, a delete dispatches with no flow) --
@@ -845,6 +853,11 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
         row(kind, E::ReviewOpen, exp(Z, K(KWalk)));
     }
     row(FK::ReviewWalk, E::WalkAdvance, exp(Z, K(KWalk)));
+    // The File-to arm mounts the walk's child when the candidate
+    // list is non-empty — the fixture's rig always has candidates
+    // (the stage's own rows); the empty-list inert is the journeys'
+    // shape.
+    row(FK::ReviewWalk, E::WalkFileArm, exp(Z, K(KChild)));
     row(FK::ReviewWalk, E::WalkVerb, exp(Z, K(KWalk)));
     row(FK::ReviewWalk, E::WalkExit, exp(Z, N));
     // -- PLAN SURFACE rows (#622, D-3/D-4): from None the open
@@ -1078,7 +1091,7 @@ fn all_flows(fx: &Fixture) -> Vec<Flow> {
         Flow::ReviewWalk {
             cadence: taskboard_domain::ReviewCadence::Day,
             reference: chrono::NaiveDate::from_ymd_opt(2026, 11, 5).expect("date"),
-            stage: crate::view_state::WalkStage::Inbox { filing: None },
+            stage: crate::view_state::WalkStage::Inbox,
             cursor: 0,
         },
         // The child levels (chunk 3's ports): armed at depth 1 the

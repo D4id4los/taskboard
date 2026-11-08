@@ -189,6 +189,13 @@ impl Level {
         }
     }
 
+    pub(crate) fn flow_mut(&mut self) -> Option<&mut Flow> {
+        match &mut self.surface {
+            Surface::View(_) => None,
+            Surface::Flow(flow) => Some(flow),
+        }
+    }
+
     #[must_use]
     pub fn kind(&self) -> SurfaceKind {
         kind_of(&self.surface)

@@ -2774,7 +2774,7 @@ fn push_review_walk(
         reference,
         stage,
         cursor,
-    } = vs.flow().clone()
+    } = vs.walk_flow().unwrap_or(crate::view_state::Flow::None)
     else {
         models.walk_prompts_open = false;
         window.set_walk_model(empty());
@@ -2790,7 +2790,7 @@ fn push_review_walk(
     }
     let walk_window = taskboard_domain::review_window(cadence, reference, calendar);
     let strip: Vec<crate::WalkStageStripRow> = [
-        crate::view_state::WalkStage::Inbox { filing: None },
+        crate::view_state::WalkStage::Inbox,
         crate::view_state::WalkStage::CarryForward {
             picking_date: false,
         },
@@ -2809,7 +2809,10 @@ fn push_review_walk(
     })
     .collect();
     let (rows, stage_kind, candidates, candidate_index, filing, picking) = match stage {
-        crate::view_state::WalkStage::Inbox { filing } => {
+        crate::view_state::WalkStage::Inbox => {
+            // The armed File-to picker is the walk's child level (N3a):
+            // the mirrors read its presence and armed position.
+            let armed = vs.walk_file_armed();
             let rows: Vec<crate::WalkRowModel> = presentation::walk_inbox_rows(state)
                 .into_iter()
                 .enumerate()
@@ -2835,17 +2838,10 @@ fn push_review_walk(
                     )
                 })
                 .collect();
-            let candidate_index = filing
+            let candidate_index = armed
                 .and_then(|armed| candidate_ids.iter().position(|stack| stack == &armed))
                 .unwrap_or(0);
-            (
-                rows,
-                0,
-                candidates,
-                candidate_index,
-                filing.is_some(),
-                false,
-            )
+            (rows, 0, candidates, candidate_index, armed.is_some(), false)
         }
         crate::view_state::WalkStage::CarryForward { picking_date } => {
             let rows: Vec<crate::WalkRowModel> =
