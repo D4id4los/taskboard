@@ -40,6 +40,22 @@ impl StateHash {
         let bytes = serde_json::to_vec(&canonicalise(&raw)).expect("serializable");
         Self::new(format!("fnv1a64:{:016x}", fnv1a64(&bytes)))
     }
+
+    /// Mints the board-lane twin: the tagged fingerprint of a
+    /// [`crate::board_fold::BoardState`] — the same opaque-equality
+    /// token contract over the serialized fold (canonicalised, so the
+    /// converged state's hash is order-free by construction). The
+    /// board heartbeat advertises it; the per-user
+    /// [`Self::of`] is untouched.
+    ///
+    /// # Panics
+    /// Never: an in-memory fold and canonical JSON always serialize.
+    #[must_use]
+    pub fn of_board(state: &crate::board_fold::BoardState) -> Self {
+        let raw = serde_json::to_value(state).expect("an in-memory fold always serializes");
+        let bytes = serde_json::to_vec(&canonicalise(&raw)).expect("serializable");
+        Self::new(format!("fnv1a64:{:016x}", fnv1a64(&bytes)))
+    }
 }
 
 /// The FNV-1a 64 hash over raw bytes (the `taskboard-app` IPC
