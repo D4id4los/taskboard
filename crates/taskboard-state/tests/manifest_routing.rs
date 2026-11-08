@@ -410,6 +410,7 @@ fn every_taskchanges_slot_is_manifest_covered() {
             labels: &std::collections::BTreeMap::default(),
             boards: &std::collections::BTreeMap::default(),
         },
+        &taskboard_domain::ownership::BoardOwnershipMap::default(),
     );
     // The op buckets into exactly one group — the board's document
     // flush, never a native wire group (commit 6's coalescing).

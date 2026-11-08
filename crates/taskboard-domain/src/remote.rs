@@ -122,9 +122,9 @@ pub struct RemoteTask {
 /// Untagged, like the id family: the `Deck` leg serializes as the bare
 /// struct — byte-identical with the pre-widening report face — and a
 /// historical bare-struct payload decodes as `Deck`. The two legs'
-/// shapes are disjoint (a files snapshot is identity-only in chunk 3),
-/// so the decode is total and never ambiguous.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// shapes are disjoint (ref-shaped Deck rows vs domain rows on the
+/// files leg), so the decode is total and never ambiguous.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum RemoteBoardSnapshot {
     /// Deck's full stacks/cards/labels view (the pre-widening struct
@@ -172,12 +172,67 @@ pub struct DeckBoardSnapshot {
 }
 
 /// The files-substrate snapshot body (D-BF4: the remote identity *is*
-/// the domain UUID — there is nothing else to carry until chunk 5's
-/// folded sections arrive).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// the domain UUID). The payload is the *folded board* — every entity
+/// already decoded to its domain row (fields + clocks + authors
+/// intact, chunk 1's stamps preserved), so the state engine ingests it
+/// through the ordinary per-field LWW pipeline exactly as a Deck
+/// snapshot: materialized states, never ops, never a pre-merged
+/// verdict.
+///
+/// Sections ride the sidecar document shape (D-BF9): the board-level
+/// rows keyed by domain UUIDs, merged by the same union machinery the
+/// Deck lane folds with.
+///
+/// # Serde form
+///
+/// Every field but `board` defaults: a chunk-3-era identity-only
+/// payload (`{"board": …}`) still decodes — the empty snapshot is the
+/// honest "nothing folded yet". The outer [`RemoteBoardSnapshot`] is
+/// untagged; the Deck body's ref-shaped fields are structurally
+/// disjoint from these domain rows, so the decode stays total.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FilesBoardSnapshot {
     /// The board's remote identity: the domain UUID by construction.
     pub board: RemoteBoardId,
+    /// The ingest watermark the fold reached: the highest chunk seq
+    /// folded into this snapshot (the next pull resumes above it).
+    #[serde(default)]
+    pub up_to_seq: u64,
+    /// The board's own row as the fold resolved it (title, archived,
+    /// clocks, authors); `None` = the subtree carries no board row yet.
+    #[serde(default)]
+    pub board_row: Option<crate::entities::Board>,
+    /// The folded stacks.
+    #[serde(default)]
+    pub stacks: Vec<crate::entities::Stack>,
+    /// The folded tasks.
+    #[serde(default)]
+    pub tasks: Vec<crate::entities::Task>,
+    /// The folded labels.
+    #[serde(default)]
+    pub labels: Vec<crate::entities::Label>,
+    /// The folded board-level sections (time entries, reminder rules,
+    /// dismissals, habits, habit log, break rules) — the sidecar
+    /// document shape with domain-UUID keys. `None` = the subtree
+    /// carries no sections yet.
+    #[serde(default)]
+    pub sections: Option<Box<crate::appdata::AppDataDocument>>,
+}
+
+impl FilesBoardSnapshot {
+    /// The chunk-3-era identity-only payload: an empty fold at seq 0.
+    #[must_use]
+    pub fn identity_only(board: RemoteBoardId) -> Self {
+        Self {
+            board,
+            up_to_seq: 0,
+            board_row: None,
+            stacks: Vec::new(),
+            tasks: Vec::new(),
+            labels: Vec::new(),
+            sections: None,
+        }
+    }
 }
 
 /// Lookup-only index from remote refs to local ids, derived from the
@@ -362,10 +417,31 @@ mod tests {
         fn files_snapshot_roundtrips_through_serde(board in any::<u128>()) {
             let snap = RemoteBoardSnapshot::Files(FilesBoardSnapshot {
                 board: crate::ids::RemoteBoardId::files(uuid::Uuid::from_u128(board)),
+                ..FilesBoardSnapshot::identity_only(crate::ids::RemoteBoardId::files(
+                    uuid::Uuid::from_u128(board),
+                ))
             });
             let json = serde_json::to_string(&snap).unwrap();
             let back: RemoteBoardSnapshot = serde_json::from_str(&json).unwrap();
             prop_assert_eq!(back, snap);
+        }
+
+        /// A chunk-3-era identity-only payload (no grown fields) still
+        /// decodes: the empty fold is the honest default, never a
+        /// decode failure (the mixed-fleet tolerance law).
+        #[test]
+        fn a_chunk3_era_identity_only_files_payload_still_decodes(board in any::<u128>()) {
+            let uuid = uuid::Uuid::from_u128(board);
+            let json = format!(r#"{{"board":"{uuid}"}}"#);
+            let back: RemoteBoardSnapshot = serde_json::from_str(&json).unwrap();
+            let RemoteBoardSnapshot::Files(snapshot) = back else {
+                prop_assert!(false, "the bare body decoded as the Deck leg, never failed");
+                unreachable!()
+            };
+            prop_assert_eq!(snapshot.board, crate::ids::RemoteBoardId::files(uuid));
+            prop_assert_eq!(snapshot.up_to_seq, 0);
+            prop_assert!(snapshot.tasks.is_empty());
+            prop_assert!(snapshot.sections.is_none());
         }
 
         #[test]
