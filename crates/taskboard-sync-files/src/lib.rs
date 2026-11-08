@@ -56,6 +56,7 @@ pub mod board_fold;
 pub mod board_gc;
 pub mod board_identity;
 pub mod board_info;
+pub mod board_move;
 pub mod board_payload;
 pub mod board_snapshot;
 pub mod document;

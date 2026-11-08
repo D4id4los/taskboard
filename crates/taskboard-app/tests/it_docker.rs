@@ -1530,3 +1530,263 @@ async fn move_board_body(
     let _ = app.shutdown().await;
     Ok(())
 }
+
+/// The dual-tier move journey: a real Deck board moves onto the same
+/// server's files tier, a second device (a separate process with its
+/// own device identity) adopts on return, and the undo window restores
+/// Deck on another board.
+#[tokio::test]
+#[ignore = "requires docker and the tier context (TASKBOARD_IT_DOCKER_URL)"]
+async fn it_nextcloud_docker_move_board_to_files_and_adopt() {
+    let Some(cfg) = common::live_docker_config() else {
+        return; // skip, never fail: tier not configured
+    };
+    Box::pin(common::with_deadline(move_to_files_journey(&cfg)))
+        .await
+        .expect("test must finish within the live deadline");
+}
+
+fn second_device(
+    cfg: &common::LiveCfg,
+    dir: &std::path::Path,
+    args: &[&str],
+) -> std::process::Output {
+    let config = dir.join("taskboard.toml");
+    std::fs::write(
+        &config,
+        format!(
+            "[nextcloud]\nserver_url = \"{}\"\nusername = \"{}\"\ncredential_store = \"env\"\n\n\
+             [storage]\ndb_path = \"{}\"\n\n[sync]\npoll_interval_secs = 1\n\n\
+             [files_sync]\nenabled = true\n",
+            cfg.url,
+            cfg.user,
+            dir.join("b.db").display()
+        ),
+    )
+    .expect("config writes");
+    common::binary_command()
+        .arg("--config")
+        .arg(&config)
+        .args(args)
+        .env("TASKBOARD_APP_PASSWORD", &cfg.token)
+        .env("XDG_DATA_HOME", dir.join("data"))
+        .output()
+        .expect("binary runs")
+}
+
+async fn move_to_files_journey(cfg: &common::LiveCfg) {
+    use taskboard_app::board_move_ceremony::{MoveDirection, MoveStage, run_on, run_until};
+    use taskboard_app::commands::boards;
+
+    let _env = common::env_lock();
+    let _password = common::EnvOverride::set("TASKBOARD_APP_PASSWORD", &cfg.token);
+    let budget = Duration::from_secs(60);
+    let client = DeckClient::new(&cfg.url, &cfg.user, &cfg.token).expect("base URL");
+    let run = common::run_id();
+    let (deck, stack) = create_board_and_stack(&client, &run).await;
+    let (deck_undo, _) = create_board_and_stack(&client, &run).await;
+    let seed = format!("{run}-seed");
+    client
+        .create_card(
+            deck.id,
+            stack.id,
+            &taskboard_sync_nextcloud::client::NewCard {
+                title: seed.clone(),
+                order: Some(1),
+                description: None,
+                duedate: None,
+                startdate: None,
+                kind: None,
+            },
+        )
+        .await
+        .expect("seed card");
+
+    let store: Arc<dyn taskboard_app::secrets::CredentialStore> =
+        Arc::new(taskboard_app::secrets::EnvCredentialStore);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let device_b = tempfile::tempdir().expect("tempdir");
+    let config_for = |db: &str| {
+        let mut config = common::live_config(cfg, &dir.path().join(db));
+        config.files_sync.enabled = true;
+        config.sync.poll_interval_secs = 1;
+        config
+    };
+    let boot = |config: taskboard_app::config::AppConfig| {
+        taskboard_app::bootstrap::bootstrap(
+            config,
+            Arc::clone(&store),
+            Arc::new(taskboard_app::notifications::LogSink),
+        )
+    };
+
+    // Both devices hold the Deck board before the move.
+    let id = deck.id.to_string();
+    let selected = second_device(cfg, device_b.path(), &["boards", "select", &id]);
+    assert!(selected.status.success(), "{selected:?}");
+    boards::select(
+        config_for("a.db"),
+        Arc::clone(&store),
+        deck.id,
+        None,
+        budget,
+        false,
+        None,
+    )
+    .await
+    .expect("a selects");
+
+    // The undo leg, on its own board and database.
+    boards::select(
+        config_for("undo.db"),
+        Arc::clone(&store),
+        deck_undo.id,
+        None,
+        budget,
+        false,
+        None,
+    )
+    .await
+    .expect("undo selects");
+    let app = boot(config_for("undo.db")).await.expect("boots");
+    let board = app
+        .engine
+        .shared_state()
+        .load()
+        .boards
+        .keys()
+        .next()
+        .copied()
+        .expect("board");
+    run_until(
+        &app,
+        &store,
+        board,
+        MoveDirection::ToFiles,
+        MoveStage::DeckRetired,
+        budget,
+    )
+    .await
+    .expect("retires");
+    assert_eq!(app.engine.shared_state().load().boards[&board].remote, None);
+    run_on(&app, &store, board, MoveDirection::Undo, budget)
+        .await
+        .expect("undoes");
+    assert_eq!(
+        app.engine.shared_state().load().boards[&board]
+            .remote
+            .as_ref()
+            .and_then(|binding| binding.board.as_deck()),
+        Some(deck_undo.id)
+    );
+    let _ = app.shutdown().await;
+
+    // A moves the board while B is not running.
+    let a = boot(config_for("a.db")).await.expect("boots");
+    let board = a
+        .engine
+        .shared_state()
+        .load()
+        .boards
+        .keys()
+        .next()
+        .copied()
+        .expect("board");
+    // A failed step resumes by rerunning (the live server answers an
+    // occasional 500 under load).
+    let mut receipt = run_on(&a, &store, board, MoveDirection::ToFiles, budget).await;
+    for _ in 0..3 {
+        if receipt.is_ok() {
+            break;
+        }
+        receipt = run_on(&a, &store, board, MoveDirection::ToFiles, budget).await;
+    }
+    let receipt = receipt.expect("moves");
+    assert_eq!(receipt.stage, MoveStage::Committed);
+    assert_eq!(
+        a.engine.shared_state().load().boards[&board]
+            .remote
+            .as_ref()
+            .and_then(|binding| binding.board.as_files()),
+        Some(board.as_uuid())
+    );
+
+    // The Deck-only channel: the sidecar now names the move.
+    let stacks = client
+        .stacks(deck.id, StackFilter::Active)
+        .await
+        .expect("stacks");
+    let (anchor_stack, anchor) = stacks
+        .iter()
+        .flat_map(|s| s.cards.iter().map(move |c| (s.id, c.id, c.title.clone())))
+        .find(|(_, _, title)| title == taskboard_domain::ANCHOR_CARD_TITLE)
+        .map(|(s, c, _)| (s, c))
+        .expect("an anchor card");
+    let attachment = client
+        .attachments(deck.id, anchor_stack, anchor)
+        .await
+        .expect("attachments")
+        .into_iter()
+        .find(|item| item.deleted_at == 0)
+        .expect("the sidecar");
+    let bytes = client
+        .download_attachment(deck.id, anchor_stack, anchor, attachment.id)
+        .await
+        .expect("downloads");
+    let document: taskboard_domain::AppDataDocument =
+        serde_json::from_slice(&bytes).expect("a sidecar document");
+    assert_eq!(
+        document.moved_to_files().map(|marker| marker.files_board),
+        Some(board.as_uuid())
+    );
+
+    // B returns with an edit; it adopts and A converges on one card.
+    let renamed = format!("{run}-renamed-by-b");
+    let edited = second_device(
+        cfg,
+        device_b.path(),
+        &["tasks", "edit", &seed, "--title", &renamed],
+    );
+    assert!(edited.status.success(), "{edited:?}");
+    let live_titles = |app: &taskboard_app::App| -> Vec<String> {
+        let state = app.engine.shared_state().load();
+        state
+            .tasks
+            .values()
+            .filter(|t| t.is_live())
+            .map(|t| t.title.clone())
+            .filter(|t| t != taskboard_domain::ANCHOR_CARD_TITLE)
+            .collect()
+    };
+    let deadline = std::time::Instant::now() + Duration::from_mins(3);
+    while live_titles(&a) != vec![renamed.clone()] {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "a never converged: {:?} B status {} {} ERR {}",
+            live_titles(&a),
+            String::from_utf8_lossy(
+                &second_device(
+                    cfg,
+                    device_b.path(),
+                    &["--json", "sync", "--timeout-secs", "20"]
+                )
+                .stdout
+            ),
+            String::from_utf8_lossy(
+                &second_device(cfg, device_b.path(), &["--json", "tasks", "list"]).stdout
+            ),
+            String::from_utf8_lossy(
+                &second_device(cfg, device_b.path(), &["sync", "--timeout-secs", "5"]).stderr
+            )
+        );
+        let _ = second_device(cfg, device_b.path(), &["sync", "--timeout-secs", "5"]);
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    let listed = second_device(cfg, device_b.path(), &["--json", "tasks", "list"]);
+    let text = String::from_utf8_lossy(&listed.stdout);
+    assert_eq!(text.matches(renamed.as_str()).count(), 1, "{text}");
+    assert_eq!(text.matches(seed.as_str()).count(), 0, "{text}");
+    let _ = a.shutdown().await;
+    let _ = common::retry(|| async { client.delete_board(deck.id).await }).await;
+    let _ = common::retry(|| async { client.delete_board(deck_undo.id).await }).await;
+}

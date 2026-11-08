@@ -24,6 +24,10 @@ pub struct BoardIdentity {
     /// the root identity).
     pub format_version: u32,
     pub created_at: chrono::DateTime<chrono::Utc>,
+    /// Set when this subtree replaces a Deck board; such a subtree is
+    /// never discovered as a separate board.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub moved_from: Option<crate::board_move::MovedFrom>,
 }
 
 #[cfg(test)]
@@ -83,6 +87,7 @@ mod tests {
             board_id: Uuid::from_str(BOARD_ID).expect("uuid"),
             format_version: TREE_FORMAT_VERSION,
             created_at: "2026-11-08T09:15:32Z".parse().expect("rfc3339"),
+            moved_from: None,
         };
         let back: BoardIdentity =
             serde_json::from_value(serde_json::to_value(&identity).expect("encodes"))

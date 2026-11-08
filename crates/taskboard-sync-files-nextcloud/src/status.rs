@@ -53,6 +53,30 @@ pub enum ParkKind {
     Quarantined,
 }
 
+/// Why a moved board could not be adopted; the Deck binding is intact
+/// and the lane retries each cycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoardMoveRefusal {
+    Collision,
+    NotBoundToMovedDeck,
+    RecordMalformed,
+    RecordNewerFormat { format: u32 },
+}
+
+/// A device's view of a board another device moved here from Deck.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoardMoveFinding {
+    Adopting {
+        moved_by: DeviceId,
+        committed_at: DateTime<Utc>,
+    },
+    Adopted {
+        moved_by: DeviceId,
+        committed_at: DateTime<Utc>,
+    },
+    Refused(BoardMoveRefusal),
+}
+
 /// The latest files-sync state a consumer can observe.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FilesSyncStatus {
@@ -72,4 +96,6 @@ pub struct FilesSyncStatus {
     /// derivation in `cycle.rs`). A lagging peer never appears here.
     /// Empty means converged — or not yet judgeable.
     pub diverged_from: BTreeSet<DeviceId>,
+    /// Boards moved from Deck by another device, by files identity.
+    pub moved_boards: BTreeMap<uuid::Uuid, BoardMoveFinding>,
 }

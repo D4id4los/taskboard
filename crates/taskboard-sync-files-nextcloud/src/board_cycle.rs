@@ -31,6 +31,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
 use taskboard_domain::OpId;
+use taskboard_domain::board_move::AdoptionRefusal;
 use taskboard_domain::ids::{AuthorId, BoardId};
 use taskboard_domain::messages::SyncReport;
 use taskboard_domain::ownership::BoardOwnershipMap;
@@ -50,9 +51,12 @@ use taskboard_sync_files::layout::{
     board_ops_path, board_snapshot_path, classify, device_dir_name,
 };
 
+use taskboard_sync_files::board_move::{MoveRecord, MoveRecordError, MovedFrom};
+
 use crate::cycle::SyncContext;
 use crate::error::TransportError;
 use crate::etag::Etag;
+use crate::status::{BoardMoveFinding, BoardMoveRefusal};
 use crate::transport::{FilesTransport, PutOutcome};
 
 /// One board lane's cycle-bookkeeping (in-memory; a restart re-reads
@@ -109,6 +113,8 @@ pub struct Lanes {
     /// joins `boards` with a real lane (a fresh one re-folds once —
     /// the fold is idempotent).
     discovered: std::collections::BTreeSet<uuid::Uuid>,
+    /// Boards moved here from Deck, surfaced on the status watch.
+    pub moved: BTreeMap<uuid::Uuid, BoardMoveFinding>,
 }
 
 /// The one board-cycle tick: every files-owned board's lane, in
@@ -186,7 +192,11 @@ async fn discover_subtrees<T: FilesTransport>(
         else {
             continue; // a foreign name is not ours to read
         };
-        if bound.contains(&uuid) || !lanes.discovered.insert(uuid) {
+        if bound.contains(&uuid) {
+            settle_adopted(lanes, uuid);
+            continue;
+        }
+        if lanes.discovered.contains(&uuid) {
             continue;
         }
         if persisted
@@ -203,6 +213,10 @@ async fn discover_subtrees<T: FilesTransport>(
             );
             continue;
         }
+        if !may_discover(transport, ctx, lanes, persisted, uuid).await {
+            continue;
+        }
+        lanes.discovered.insert(uuid);
         // Fold-first: pull-only, publish nothing (the provisional
         // lane's law).
         let board = BoardId::from_uuid(uuid);
@@ -291,10 +305,203 @@ pub async fn publish_move_floor<T: FilesTransport>(
     board: BoardId,
     remote: uuid::Uuid,
     persisted: &PersistedState,
+    moved_from: &MovedFrom,
 ) -> Result<(), TransportError> {
     let mut lane = Lane::default();
-    attach_board(transport, ctx, &mut lane, remote).await?;
+    attach_board(transport, ctx, &mut lane, remote, Some(moved_from)).await?;
+    let floor = crate::cycle::rooted(&board_snapshot_path(
+        BoardId::from_uuid(remote),
+        ctx.identity.device_id,
+        0,
+    ));
+    match transport.get(&floor).await {
+        Ok(existing) => lane.snapshot_etag = existing.etag,
+        Err(TransportError::NotFound) => {}
+        Err(err) => return Err(err),
+    }
     snapshot_duty(transport, ctx, &mut lane, board, remote, persisted).await
+}
+
+/// The move target's `moved_from`, once published.
+///
+/// # Errors
+///
+/// A transport or decode failure other than an absent identity.
+pub async fn read_moved_from<T: FilesTransport>(
+    transport: &T,
+    remote: uuid::Uuid,
+) -> Result<Option<MovedFrom>, TransportError> {
+    match read_identity_provenance(transport, remote).await {
+        Err(TransportError::NotFound) => Ok(None),
+        other => other,
+    }
+}
+
+/// Whether the commit record exists.
+///
+/// # Errors
+///
+/// A transport failure other than its absence.
+pub async fn move_record_exists<T: FilesTransport>(
+    transport: &T,
+    remote: uuid::Uuid,
+) -> Result<bool, TransportError> {
+    let path = crate::cycle::rooted(&layout::board_move_path(BoardId::from_uuid(remote)));
+    match transport.get(&path).await {
+        Ok(_) => Ok(true),
+        Err(TransportError::NotFound) => Ok(false),
+        Err(err) => Err(err),
+    }
+}
+
+/// Writes the commit record once; an existing record means an earlier
+/// run already committed.
+///
+/// # Errors
+///
+/// The PUT's transport failure.
+pub async fn publish_move_record<T: FilesTransport>(
+    transport: &T,
+    remote: uuid::Uuid,
+    record: &MoveRecord,
+) -> Result<(), TransportError> {
+    let path = crate::cycle::rooted(&layout::board_move_path(BoardId::from_uuid(remote)));
+    let body = serde_json::to_vec(record)?;
+    match transport.put_create(&path, &body).await {
+        Ok(_) | Err(TransportError::PreconditionFailed) => Ok(()),
+        Err(err) => Err(err),
+    }
+}
+
+fn settle_adopted(lanes: &mut Lanes, uuid: uuid::Uuid) {
+    if let Some(finding) = lanes.moved.get_mut(&uuid)
+        && let BoardMoveFinding::Adopting {
+            moved_by,
+            committed_at,
+        } = *finding
+    {
+        *finding = BoardMoveFinding::Adopted {
+            moved_by,
+            committed_at,
+        };
+    }
+}
+
+/// Whether an unbound subtree may be folded as a new board. Anything
+/// short of positive evidence holds: a duplicate board is not undoable,
+/// a held subtree is retried next tick.
+async fn may_discover<T: FilesTransport>(
+    transport: &T,
+    ctx: &SyncContext,
+    lanes: &mut Lanes,
+    persisted: &PersistedState,
+    uuid: uuid::Uuid,
+) -> bool {
+    let moved_from = match read_identity_provenance(transport, uuid).await {
+        Ok(Some(moved_from)) => moved_from,
+        Ok(None) => return true,
+        Err(_) => return false,
+    };
+    let path = crate::cycle::rooted(&layout::board_move_path(BoardId::from_uuid(uuid)));
+    let bytes = match transport.get(&path).await {
+        Ok(content) => content.bytes,
+        // In flight or undone: nobody adopts and nobody mints.
+        Err(_) => return false,
+    };
+    let record = match MoveRecord::decode(&bytes) {
+        Ok(record) => record,
+        Err(err) => {
+            let refusal = match err {
+                MoveRecordError::Malformed => BoardMoveRefusal::RecordMalformed,
+                MoveRecordError::NewerFormat { format } => {
+                    BoardMoveRefusal::RecordNewerFormat { format }
+                }
+            };
+            tracing::warn!(?uuid, ?refusal, "move record unusable; board held");
+            lanes.moved.insert(uuid, BoardMoveFinding::Refused(refusal));
+            return false;
+        }
+    };
+    let Some(local) = deck_holder(ctx, persisted, &moved_from) else {
+        return true; // a device with no copy: the floor is its copy
+    };
+    adopt(ctx, lanes, persisted, uuid, local, &record).await;
+    false
+}
+
+/// The identity's `moved_from`; `Ok(None)` for an ordinary subtree. A
+/// missing identity is an error here: the subtree is still being built.
+async fn read_identity_provenance<T: FilesTransport>(
+    transport: &T,
+    uuid: uuid::Uuid,
+) -> Result<Option<MovedFrom>, TransportError> {
+    let path = crate::cycle::rooted(&board_identity_path(BoardId::from_uuid(uuid)));
+    let content = transport.get(&path).await?;
+    let identity: BoardIdentity = serde_json::from_slice(&content.bytes)?;
+    Ok(identity.moved_from)
+}
+
+fn deck_holder(
+    ctx: &SyncContext,
+    persisted: &PersistedState,
+    moved_from: &MovedFrom,
+) -> Option<BoardId> {
+    let deck = taskboard_domain::RemoteBoardId::deck(moved_from.deck_board);
+    persisted.boards.values().find_map(|board| {
+        let binding = board.remote.as_ref().filter(|_| !board.deleted)?;
+        let origin = ctx.deck_origins.get(&binding.connector)?;
+        (binding.board == deck && *origin == moved_from.deck_server).then_some(board.id)
+    })
+}
+
+/// Loud first: the finding is recorded before anything can change.
+async fn adopt(
+    ctx: &SyncContext,
+    lanes: &mut Lanes,
+    persisted: &PersistedState,
+    uuid: uuid::Uuid,
+    local: BoardId,
+    record: &MoveRecord,
+) {
+    let adoption = record.adoption(uuid);
+    let tables = EntityTables {
+        tasks: &persisted.tasks,
+        stacks: &persisted.stacks,
+        labels: &persisted.labels,
+        boards: &persisted.boards,
+    };
+    let plan = taskboard_domain::board_move::plan_board_adoption(
+        &tables,
+        &persisted.outbox,
+        local,
+        &adoption,
+        &ctx.connector,
+    );
+    if let Err(refusal) = plan {
+        let refusal = match refusal {
+            AdoptionRefusal::Collision => BoardMoveRefusal::Collision,
+            AdoptionRefusal::NotBoundToMovedDeck => BoardMoveRefusal::NotBoundToMovedDeck,
+        };
+        tracing::warn!(?uuid, ?refusal, "moved board not adopted");
+        lanes.moved.insert(uuid, BoardMoveFinding::Refused(refusal));
+        return;
+    }
+    tracing::warn!(?uuid, moved_by = %record.moved_by, "board moved to files; adopting");
+    lanes.moved.insert(
+        uuid,
+        BoardMoveFinding::Adopting {
+            moved_by: record.moved_by,
+            committed_at: record.committed_at,
+        },
+    );
+    let report = SyncReport::BoardMoved {
+        connector: ctx.connector.clone(),
+        board: local,
+        adoption: Box::new(adoption),
+    };
+    if ctx.board_reports.send(report).await.is_err() {
+        tracing::warn!(?uuid, "board report lane closed; adoption retried");
+    }
 }
 
 async fn run_lane<T: FilesTransport>(
@@ -307,7 +514,7 @@ async fn run_lane<T: FilesTransport>(
 ) -> Result<(), TransportError> {
     let started = Instant::now();
     if !lane.attached {
-        attach_board(transport, ctx, lane, remote).await?;
+        attach_board(transport, ctx, lane, remote, None).await?;
     }
     pull_board(transport, ctx, lane, board, remote, started).await?;
     if !lane.folded_once {
@@ -329,6 +536,7 @@ async fn attach_board<T: FilesTransport>(
     ctx: &SyncContext,
     lane: &mut Lane,
     remote: uuid::Uuid,
+    moved_from: Option<&MovedFrom>,
 ) -> Result<(), TransportError> {
     let boards_dir = format!("{}/", crate::cycle::rooted(BOARDS_DIR_NAME));
     crate::cycle::mkcol_exists_ok(transport, boards_dir.trim_end_matches('/')).await?;
@@ -344,6 +552,7 @@ async fn attach_board<T: FilesTransport>(
         board_id: remote,
         format_version: TREE_FORMAT_VERSION,
         created_at: ctx.clock.now(),
+        moved_from: moved_from.cloned(),
     };
     let body = serde_json::to_vec(&identity).expect("identity serializes");
     match transport.put_create(&identity_path, &body).await {
@@ -1170,6 +1379,10 @@ mod tests {
             connector: taskboard_domain::ids::ConnectorId::from("files-sync"),
             state_reader: state,
             board_reports,
+            deck_origins: BTreeMap::from([(
+                taskboard_domain::ids::ConnectorId::from("nextcloud"),
+                DECK_ORIGIN.to_owned(),
+            )]),
         }
     }
 
@@ -1378,7 +1591,7 @@ mod tests {
             crate::cycle::rooted(&taskboard_sync_files::layout::board_identity_path(board()));
         fake.seed_file(
             &identity_path,
-            br#"{"board_id":"x","format_version":1,"created_at":"2026-11-08T00:00:00Z"}"#.to_vec(),
+            br#"{"board_id":"00000000-0000-0000-0000-0000000b0a1d","format_version":1,"created_at":"2026-11-08T00:00:00Z"}"#.to_vec(),
         );
         let peer_chunk = BoardChunk {
             format_version: BOARD_CHUNK_FORMAT,
@@ -1465,6 +1678,15 @@ mod tests {
         assert!(modeled >= 2, "the board's own rows fold in: {modeled}");
     }
 
+    const DECK_ORIGIN: &str = "https://cloud.example";
+
+    fn moved_from() -> MovedFrom {
+        MovedFrom {
+            deck_server: DECK_ORIGIN.to_owned(),
+            deck_board: 42,
+        }
+    }
+
     fn snapshot_at_seq_zero() -> String {
         crate::cycle::rooted(&board_snapshot_path(board(), device(), 0))
     }
@@ -1487,7 +1709,7 @@ mod tests {
             MoveSubtreeProbe::Absent
         );
 
-        publish_move_floor(&fake, &context, board(), remote, &persisted)
+        publish_move_floor(&fake, &context, board(), remote, &persisted, &moved_from())
             .await
             .expect("publish");
 
@@ -1507,7 +1729,7 @@ mod tests {
         let persisted = state_with(vec![]);
         let context = ctx(Arc::new(FixedState(persisted.clone())), mpsc::channel(8).0);
         let remote = board().as_uuid();
-        publish_move_floor(&fake, &context, board(), remote, &persisted)
+        publish_move_floor(&fake, &context, board(), remote, &persisted, &moved_from())
             .await
             .expect("publish");
         fake.remove_file(&snapshot_at_seq_zero());
@@ -1525,5 +1747,130 @@ mod tests {
                 .expect("probe"),
             MoveSubtreeProbe::Foreign
         );
+    }
+
+    /// A moved subtree on the server, with `this_device`'s Deck copy.
+    fn moved_world(record: Option<Vec<u8>>) -> (FakeFilesTransport, PersistedState, uuid::Uuid) {
+        let target = uuid::Uuid::from_u128(0x7777);
+        let fake = FakeFilesTransport::new();
+        let dir = format!("taskboard/boards/{target}");
+        fake.seed_dirs(&["taskboard", "taskboard/boards", &dir]);
+        let identity = BoardIdentity {
+            board_id: target,
+            format_version: TREE_FORMAT_VERSION,
+            created_at: chrono::DateTime::UNIX_EPOCH,
+            moved_from: Some(moved_from()),
+        };
+        fake.seed_file(
+            &format!("{dir}/identity.json"),
+            serde_json::to_vec(&identity).expect("serializes"),
+        );
+        if let Some(bytes) = record {
+            fake.seed_file(&format!("{dir}/move.json"), bytes);
+        }
+        let mut persisted = state_with(vec![]);
+        for row in persisted.boards.values_mut() {
+            row.remote = Some(taskboard_domain::ids::RemoteBoardBinding {
+                connector: taskboard_domain::ids::ConnectorId::from("nextcloud"),
+                board: taskboard_domain::RemoteBoardId::deck(42),
+            });
+        }
+        (fake, persisted, target)
+    }
+
+    fn record_bytes() -> Vec<u8> {
+        serde_json::to_vec(&MoveRecord {
+            format_version: taskboard_sync_files::board_move::MOVE_RECORD_FORMAT,
+            moved_from: moved_from(),
+            moved_by: DeviceId::mint(),
+            committed_at: chrono::DateTime::UNIX_EPOCH,
+            stacks: BTreeMap::new(),
+            cards: BTreeMap::new(),
+            labels: BTreeMap::new(),
+        })
+        .expect("serializes")
+    }
+
+    async fn tick(
+        fake: &FakeFilesTransport,
+        persisted: PersistedState,
+        reports: mpsc::Sender<SyncReport>,
+    ) -> Lanes {
+        let context = ctx(Arc::new(FixedState(persisted)), reports);
+        let mut lanes = Lanes::default();
+        let _ = run_board_lanes(fake, &context, &mut lanes).await;
+        lanes
+    }
+
+    #[tokio::test]
+    async fn an_uncommitted_move_neither_adopts_nor_mints() {
+        let (fake, persisted, target) = moved_world(None);
+        let (tx, mut rx) = mpsc::channel(8);
+        let lanes = tick(&fake, persisted, tx).await;
+        assert!(rx.try_recv().is_err(), "nothing reported");
+        assert!(!lanes.discovered.contains(&target));
+        assert!(lanes.moved.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_committed_move_reports_adoption_and_never_mints() {
+        let (fake, persisted, target) = moved_world(Some(record_bytes()));
+        let (tx, mut rx) = mpsc::channel(8);
+        let lanes = tick(&fake, persisted, tx).await;
+        assert!(matches!(rx.try_recv(), Ok(SyncReport::BoardMoved { .. })));
+        assert!(rx.try_recv().is_err(), "no discovery fold beside it");
+        assert!(matches!(
+            lanes.moved.get(&target),
+            Some(BoardMoveFinding::Adopting { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn the_finding_exists_even_when_the_report_cannot_be_delivered() {
+        let (fake, persisted, target) = moved_world(Some(record_bytes()));
+        let (tx, rx) = mpsc::channel(1);
+        drop(rx);
+        let lanes = tick(&fake, persisted, tx).await;
+        assert!(matches!(
+            lanes.moved.get(&target),
+            Some(BoardMoveFinding::Adopting { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_device_with_no_copy_discovers_the_committed_subtree() {
+        let (fake, mut persisted, target) = moved_world(Some(record_bytes()));
+        for row in persisted.boards.values_mut() {
+            row.remote = None;
+        }
+        let (tx, _rx) = mpsc::channel(8);
+        let lanes = tick(&fake, persisted, tx).await;
+        assert!(lanes.discovered.contains(&target));
+        assert!(lanes.moved.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_malformed_record_is_a_refusal_and_never_mints() {
+        let (fake, persisted, target) = moved_world(Some(b"{}".to_vec()));
+        let (tx, mut rx) = mpsc::channel(8);
+        let lanes = tick(&fake, persisted, tx).await;
+        assert!(rx.try_recv().is_err());
+        assert!(!lanes.discovered.contains(&target));
+        assert_eq!(
+            lanes.moved.get(&target),
+            Some(&BoardMoveFinding::Refused(
+                BoardMoveRefusal::RecordMalformed
+            ))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_subtree_without_a_readable_identity_is_held() {
+        let (fake, persisted, target) = moved_world(None);
+        fake.remove_file(&format!("taskboard/boards/{target}/identity.json"));
+        let (tx, mut rx) = mpsc::channel(8);
+        let lanes = tick(&fake, persisted, tx).await;
+        assert!(rx.try_recv().is_err());
+        assert!(!lanes.discovered.contains(&target));
     }
 }

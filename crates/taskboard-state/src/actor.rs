@@ -1002,6 +1002,35 @@ async fn ingest_sync_report(
     tracing::debug!("sync report ingested");
     let now = clock.now();
     let (actions, deltas, _system_events) = match report {
+        taskboard_domain::SyncReport::BoardMoved {
+            connector,
+            board,
+            adoption,
+        } => {
+            let app = core.app();
+            let tables = taskboard_domain::push::EntityTables {
+                tasks: &app.tasks,
+                stacks: &app.stacks,
+                labels: &app.labels,
+                boards: &app.boards,
+            };
+            let planned = taskboard_domain::board_move::plan_board_adoption(
+                &tables,
+                core.outbox(),
+                board,
+                &adoption,
+                &connector,
+            );
+            let actions = planned.unwrap_or_else(|refusal| {
+                tracing::warn!(?refusal, ?board, "moved board not adopted");
+                Vec::new()
+            });
+            (
+                actions,
+                Vec::new(),
+                Vec::<taskboard_domain::SystemEvent>::new(),
+            )
+        }
         taskboard_domain::SyncReport::Completed {
             connector,
             snapshot,
@@ -1018,6 +1047,27 @@ async fn ingest_sync_report(
             // shape can hold — structurally "not mine", folded as
             // nothing (chunk 5 owns the files ingestion lane).
             match *snapshot {
+                taskboard_domain::RemoteBoardSnapshot::Deck(snapshot)
+                    if taskboard_domain::ownership::holder_of(
+                        &core.app(),
+                        &connector,
+                        &snapshot.board.id,
+                    )
+                    .is_none()
+                        && core.is_retired_deck(&taskboard_domain::RemoteBoardBinding {
+                            connector: connector.clone(),
+                            board: snapshot.board.id,
+                        }) =>
+                {
+                    // A cycle that overlapped an unbind or a move:
+                    // folding it would mint a duplicate board.
+                    tracing::debug!(connector = %connector, "deck report for a retired binding dropped");
+                    (
+                        Vec::new(),
+                        Vec::new(),
+                        Vec::<taskboard_domain::SystemEvent>::new(),
+                    )
+                }
                 taskboard_domain::RemoteBoardSnapshot::Deck(snapshot) => {
                     let (merged, mut batch, system_events) = apply_sync_report(
                         &core.app(),

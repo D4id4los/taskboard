@@ -5,13 +5,8 @@ Moving a board from Deck to the files tier (=boards move=, D-BF11)
 and running Deck boards and files boards side by side. Every step
 names the code symbol it exercises.
 
-*Current limit.* Only the moving device is implemented. Other devices
-holding the same Deck board do not adopt the move: the
-=Finding::BoardMovedToFiles= detection and fold-first adoption are not
-built (issue #689). Until they are, move a board only when this is the
-single device syncing it. On any other device with files sync enabled,
-the discovery door in =board_cycle::discover_subtrees= will fold the
-published subtree as a second, separate board.
+*Before the first move*: upgrade every device. An older build ignores
+the move marker and folds the subtree as a second board.
 
 * 1. Moving a board
 
@@ -24,7 +19,8 @@ Stop editing the board on this device, then run
 | 1 | Final Deck cycle, then the outbox must be quiet | =MoveWorld::pull_deck=, =MoveError::OutboxNotQuiescent= |
 | 2 | Publish the snapshot floor at =boards/<board-uuid>/= | =publish_move_floor= |
 | 3 | Retire the Deck binding (=UnbindBoard=) | =MoveStep::DeckRetired= |
-| 4 | Commit the files binding (=BindBoard=) | =MoveStep::FilesAssigned= |
+| 4a | Write =boards/<board-uuid>/move.json=, the commit point | =publish_move_record=, =MoveStep::CommitPublished= |
+| 4b | Mark the Deck sidecar, then bind files (=BindBoard=) | =write_move_marker=, =MoveStep::FilesAssigned= |
 
 The position is derived by =derive_move_stage= from the binding row
 and =probe_move_subtree=; nothing is checkpointed. After any
@@ -36,16 +32,41 @@ nothing.
 Open only at =MoveStage::DeckRetired= (retired, not yet committed),
 which in practice means a run that was interrupted between steps 3 and
 4. =boards move <board-uuid> --undo= restores the Deck binding and runs
-a Deck cycle. The coordinates are rebuilt from the board's kept stack
-references and the single configured connector; with no stack
-references or several connectors the refusal is
-=MoveError::UndoCoordinatesLost=.
+a Deck cycle. The coordinates come from the subtree's =moved_from= and
+the connector configured for that server; with no such connector the
+refusal is =MoveError::UndoCoordinatesLost=.
 
-The commit closes the window: =MoveError::UndoClosed=.
+The commit record closes the window, before the files binding is
+written: =MoveError::UndoClosed=.
 
-After an undo, the published subtree is orphaned. Delete
-=boards/<board-uuid>/= by hand in the Nextcloud web UI before
-retrying from another device; the app never deletes on the server.
+After an undo the marked subtree is inert: with no commit record, no
+device adopts it or mints a board from it. A later move republishes it.
+Deleting it by hand is optional.
+
+* 2a. A device was offline during the move
+
+On its next files cycle a device still bound to the moved Deck board
+(same server and board id) records =BoardMoveFinding::Adopting= and logs
+a warning, then =plan_board_adoption= re-keys its rows onto the mover's
+ids and swaps the binding in one transaction (=AdoptMovedBoard=). The
+ordinary lane then pulls first and publishes after, so its offline
+edits and cards reach the other devices. =status= shows =adopting=, then
+=adopted=. Queued Deck ref-deletes are dropped; at worst a duplicate
+card stays visible.
+
+Refusals leave the Deck binding in place and retry every cycle:
+=refused_collision= (a published id already exists locally, typically
+a duplicate from an older build; delete it), =refused_record_malformed=
+and =refused_record_newer= (upgrade this app).
+
+A device that had already unbound its copy does not adopt: that copy
+stays a separate board, and the move arrives as a new board.
+
+* 2b. A device without files sync
+
+The mover leaves a marker in the Deck sidecar. The device's =status=
+line and board caption report =moved_to_files=. It does not adopt until
+=[files_sync]= is enabled; until then it syncs a frozen Deck board.
 
 * 3. Mixed-fleet operation
 
@@ -58,7 +79,7 @@ not representable.
 * 4. Retiring the Deck board on the server
 
 The ceremony never deletes the Deck board. Delete it yourself only
-after every device has left it. A device still bound to a deleted Deck
+after every device reports =adopted=. A device still bound to a deleted Deck
 board treats the absence as a real deletion and tombstones the board.
 Recovery for files-side losses is in =files-sync-runbook.org= §2.
 
@@ -90,3 +111,10 @@ An edit landed between the guard and the retirement. The Deck binding
 is already retired at this point.
 *** Recovery (matches the code's semantics)
 Run =--undo= to restore the Deck binding, =sync=, and rerun the move.
+
+** =DeckMarkerFailed=
+*** Cause
+The commit record is written but the Deck sidecar could not be updated
+(server error, or a sidecar this build cannot read).
+*** Recovery (matches the code's semantics)
+Rerun the move; only the marker and the binding remain.

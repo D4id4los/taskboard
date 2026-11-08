@@ -153,6 +153,9 @@ pub struct SyncContext {
     /// `Files` snapshots and echo-less push outcomes (chunk 5's
     /// ingestion lane).
     pub board_reports: mpsc::Sender<SyncReport>,
+    /// Each Deck connector's server origin: `moved_from` names a server,
+    /// a local binding names a connector.
+    pub deck_origins: BTreeMap<ConnectorId, String>,
 }
 
 /// The actor's mutable state, process-local (decision D-FT4). A
@@ -327,6 +330,11 @@ pub async fn run_cycle<T: FilesTransport>(
     // best-effort: a lane's failure is logged per board and retried
     // next tick; it never disturbs the per-user verdict.
     let _lanes_ran = crate::board_cycle::run_board_lanes(transport, ctx, &mut st.board_lanes).await;
+    status.send_if_modified(|current| {
+        let changed = current.moved_boards != st.board_lanes.moved;
+        current.moved_boards.clone_from(&st.board_lanes.moved);
+        changed
+    });
     match verdict {
         Ok((published, read_devices, import_rejected)) => {
             st.failure_streak = 0;

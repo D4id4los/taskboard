@@ -67,6 +67,12 @@ pub fn board_identity_path(board: BoardId) -> String {
     format!("{BOARDS_DIR_NAME}/{}/{IDENTITY_FILE_NAME}", board.as_uuid())
 }
 
+/// The move commit record's path, `boards/<board>/move.json`.
+#[must_use]
+pub fn board_move_path(board: BoardId) -> String {
+    format!("{BOARDS_DIR_NAME}/{}/move.json", board.as_uuid())
+}
+
 /// The per-(board, device) heartbeat path, `boards/<board>/devices/<device>/info.json`.
 #[must_use]
 pub fn board_device_info_path(board: BoardId, device: DeviceId) -> String {

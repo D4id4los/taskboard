@@ -1829,6 +1829,16 @@ impl AppConfig {
             // sync_actor_config precedent).
             clock: std::sync::Arc::new(taskboard_domain::SystemClock),
             app_version: env!("CARGO_PKG_VERSION").to_owned(),
+            deck_origins: crate::connectors::configured_connectors(self)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|spec| {
+                    (
+                        spec.name,
+                        taskboard_sync_files::board_move::deck_origin(&spec.server_url),
+                    )
+                })
+                .collect(),
         }
     }
 

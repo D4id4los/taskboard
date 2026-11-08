@@ -111,7 +111,7 @@ pub(crate) fn scan_snapshot(
 
 /// The stored filename of an attachment's metadata: the normalized
 /// `extendedData.fileName`, else the `data` payload's, else empty.
-fn stored_file_name(attachment: &Attachment) -> &str {
+pub(crate) fn stored_file_name(attachment: &Attachment) -> &str {
     attachment
         .extended_data
         .as_ref()

@@ -110,6 +110,9 @@ pub enum SidecarHealth {
     /// There was something to read and reading it failed for a typed
     /// reason — the loud fence's subject.
     Unreadable(crate::messages::AppDataUnreadable),
+    /// Another device moved this Deck board to the files tier; this
+    /// device is syncing a frozen copy until it enables files sync.
+    MovedToFiles { files_board: uuid::Uuid },
 }
 
 /// Derives a board's [`SidecarHealth`] from its cycle evidence (a total
@@ -118,8 +121,16 @@ pub enum SidecarHealth {
 pub fn derive_sidecar_health(evidence: &crate::messages::AppDataEvidence) -> SidecarHealth {
     match evidence {
         // Absent is the ruled silence, a read document is success.
-        crate::messages::AppDataEvidence::Document(_)
-        | crate::messages::AppDataEvidence::Absent => SidecarHealth::Healthy,
+        crate::messages::AppDataEvidence::Document(document) => {
+            document
+                .moved_to_files()
+                .map_or(SidecarHealth::Healthy, |marker| {
+                    SidecarHealth::MovedToFiles {
+                        files_board: marker.files_board,
+                    }
+                })
+        }
+        crate::messages::AppDataEvidence::Absent => SidecarHealth::Healthy,
         crate::messages::AppDataEvidence::Unreadable(reason) => SidecarHealth::Unreadable(*reason),
     }
 }

@@ -313,8 +313,15 @@ impl SyncStatusView {
 /// absent on the wire.
 #[must_use]
 pub fn sidecar_view(health: taskboard_domain::SidecarHealth) -> Option<SidecarHealthView> {
-    let taskboard_domain::SidecarHealth::Unreadable(reason) = health else {
-        return None;
+    let reason = match health {
+        taskboard_domain::SidecarHealth::Healthy => return None,
+        taskboard_domain::SidecarHealth::MovedToFiles { .. } => {
+            return Some(SidecarHealthView {
+                reason: "moved_to_files".to_owned(),
+                format: None,
+            });
+        }
+        taskboard_domain::SidecarHealth::Unreadable(reason) => reason,
     };
     let view = match reason {
         taskboard_domain::AppDataUnreadable::FormatTooNew { format } => SidecarHealthView {
@@ -366,6 +373,20 @@ pub struct FilesSyncStatusView {
     /// Peers whose published view disagrees with ours past the
     /// quiescence window, sorted (device-id strings).
     pub diverged_from: Vec<String>,
+    /// Boards another device moved here from Deck, sorted by files id.
+    #[serde(default)]
+    pub moved_boards: Vec<BoardMoveFindingView>,
+}
+
+/// One moved board's typed finding.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BoardMoveFindingView {
+    /// The files identity.
+    pub board: String,
+    /// `"adopting" | "adopted"` or `"refused_<reason>"`.
+    pub state: String,
+    /// The moving device (absent on a refusal).
+    pub moved_by: Option<String>,
 }
 
 /// The cycle outcome's wire shape (`{"ok": {..}}` / `"failed"`).
@@ -431,6 +452,28 @@ impl FilesSyncStatusView {
             }),
             last_heartbeat_written: status.last_heartbeat_written,
             forked: status.forked_paths.iter().cloned().collect(),
+            moved_boards: status
+                .moved_boards
+                .iter()
+                .map(|(board, finding)| {
+                    use taskboard_sync_files_nextcloud::status::{
+                        BoardMoveFinding as F, BoardMoveRefusal as R,
+                    };
+                    let (state, moved_by) = match finding {
+                        F::Adopting { moved_by, .. } => ("adopting", Some(moved_by.to_string())),
+                        F::Adopted { moved_by, .. } => ("adopted", Some(moved_by.to_string())),
+                        F::Refused(R::Collision) => ("refused_collision", None),
+                        F::Refused(R::NotBoundToMovedDeck) => ("refused_not_bound", None),
+                        F::Refused(R::RecordMalformed) => ("refused_record_malformed", None),
+                        F::Refused(R::RecordNewerFormat { .. }) => ("refused_record_newer", None),
+                    };
+                    BoardMoveFindingView {
+                        board: board.to_string(),
+                        state: state.to_owned(),
+                        moved_by,
+                    }
+                })
+                .collect(),
             parked: status
                 .parked
                 .iter()

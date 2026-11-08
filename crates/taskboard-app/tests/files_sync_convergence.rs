@@ -312,6 +312,10 @@ impl Side {
                 backoff_max: Duration::from_millis(200),
                 clock: Arc::new(StepClock(1_793_800_000.into())),
                 app_version: "convergence-journey".into(),
+                deck_origins: std::collections::BTreeMap::from([(
+                    taskboard_domain::ids::ConnectorId::from("nextcloud"),
+                    DECK_ORIGIN.to_owned(),
+                )]),
             },
         )
     }
@@ -713,4 +717,401 @@ async fn two_engines_converge_a_files_board() {
         no_deck && quiet
     })
     .await;
+}
+
+const DECK_ORIGIN: &str = "https://cloud.example";
+const DECK_BOARD: u64 = 42;
+const DECK_STACK: u64 = 7;
+const DECK_CARD: u64 = 70;
+
+fn deck_snapshot(board: u64, card_title: &str, modified_secs: i64) -> SyncReport {
+    use chrono::TimeZone as _;
+    use taskboard_domain::{
+        RemoteBoard, RemoteBoardId, RemoteCardId, RemoteCardRef, RemoteStack, RemoteStackId,
+        RemoteStackRef, RemoteTask,
+    };
+    let at = chrono::Utc
+        .timestamp_opt(modified_secs, 0)
+        .single()
+        .expect("in range");
+    let remote_board = RemoteBoardId::deck(board);
+    let stack = RemoteStackId::deck(DECK_STACK + board);
+    SyncReport::Completed {
+        connector: taskboard_domain::ids::ConnectorId::from("nextcloud"),
+        snapshot: Box::new(taskboard_domain::RemoteBoardSnapshot::Deck(
+            taskboard_domain::DeckBoardSnapshot {
+                board: RemoteBoard {
+                    id: remote_board,
+                    title: "moved".into(),
+                    color: "2a9d8f".into(),
+                    archived: false,
+                    deleted_at: None,
+                    last_modified: at,
+                },
+                stacks: vec![RemoteStack {
+                    id: RemoteStackRef {
+                        board: remote_board,
+                        stack,
+                    },
+                    title: "column".into(),
+                    order: 1,
+                    archived: false,
+                    deleted_at: None,
+                    last_modified: at,
+                }],
+                tasks: vec![RemoteTask {
+                    id: RemoteCardRef {
+                        board: remote_board,
+                        stack,
+                        card: RemoteCardId::deck(DECK_CARD + board),
+                    },
+                    title: card_title.into(),
+                    description: String::new(),
+                    duedate: None,
+                    scheduled: None,
+                    done: None,
+                    stack,
+                    order: 1,
+                    labels: std::collections::BTreeSet::new(),
+                    archived: false,
+                    last_modified: at,
+                    created_at: at,
+                }],
+                labels: vec![],
+            },
+        )),
+        validators: taskboard_domain::BoardPullValidators {
+            boards: taskboard_domain::SyncValidators::default(),
+            stacks: taskboard_domain::SyncValidators::default(),
+            archived_stacks: taskboard_domain::SyncValidators::default(),
+        },
+        pushes: vec![],
+        read_at: at,
+        duration: Duration::ZERO,
+        app_data: taskboard_domain::AppDataEvidence::Absent,
+        features: taskboard_domain::DeckFeatures::default(),
+    }
+}
+
+/// A side holding the Deck board, as every device does before a move.
+async fn bind_to_deck(side: &Side, board_number: u64) -> taskboard_domain::BoardId {
+    use taskboard_domain::{CommandOutcome, StateCommand};
+    let CommandOutcome::CreatedBoard(board) = side
+        .engine
+        .execute(StateCommand::CreateBoard {
+            title: "moved".into(),
+            color: taskboard_domain::Color::new("2a9d8f"),
+        })
+        .await
+        .expect("accepted")
+    else {
+        panic!("wrong receipt");
+    };
+    side.engine
+        .execute(StateCommand::BindBoard {
+            board,
+            remote: taskboard_domain::RemoteBoardId::deck(board_number),
+            connector: taskboard_domain::ids::ConnectorId::from("nextcloud"),
+        })
+        .await
+        .expect("accepted");
+    side.board_report_tx
+        .send(deck_snapshot(board_number, "seed card", 500))
+        .await
+        .expect("engine live");
+    until("the Deck card lands", || {
+        let state = side.engine.shared_state().load();
+        state
+            .stacks
+            .values()
+            .filter(|s| s.board == board)
+            .any(|s| state.tasks.values().any(|t| t.stack == s.id))
+    })
+    .await;
+    board
+}
+
+/// The mover's four steps over the fake tier (the live `AppWorld` is
+/// the docker journey's subject); the machine itself is unit-pinned.
+async fn run_mover(
+    a: &Side,
+    board: taskboard_domain::BoardId,
+    device: &std::path::Path,
+) -> uuid::Uuid {
+    use taskboard_domain::StateCommand;
+    use taskboard_sync_files::board_move::{MOVE_RECORD_FORMAT, MoveRecord, MovedFrom};
+    use taskboard_sync_files_nextcloud::board_cycle::{publish_move_floor, publish_move_record};
+    let clock: Arc<dyn taskboard_domain::Clock> = Arc::new(StepClock(1_793_700_000.into()));
+    let identity = taskboard_sync_files_nextcloud::device::load_or_create(device, clock.as_ref())
+        .await
+        .expect("device");
+    let context = taskboard_sync_files_nextcloud::cycle::SyncContext {
+        identity: identity.clone(),
+        app_version: "mover".into(),
+        clock,
+        local: Arc::new(PublishedState::new(a.engine.shared_state())),
+        report_tx: a.user_data_tx.clone(),
+        connector: taskboard_domain::ids::ConnectorId::from("files-sync"),
+        state_reader: Arc::new(a.engine.clone()),
+        board_reports: a.board_report_tx.clone(),
+        deck_origins: std::collections::BTreeMap::new(),
+    };
+    let moved_from = MovedFrom {
+        deck_server: DECK_ORIGIN.to_owned(),
+        deck_board: DECK_BOARD,
+    };
+    let persisted = taskboard_domain::SyncStateReader::read_state(&a.engine)
+        .await
+        .expect("reads");
+    let remote = board.as_uuid();
+    let transport = SharedFake {
+        fake: a.fake.clone(),
+    };
+    publish_move_floor(&transport, &context, board, remote, &persisted, &moved_from)
+        .await
+        .expect("floor");
+    a.engine
+        .execute(StateCommand::UnbindBoard { board })
+        .await
+        .expect("retired");
+    let state = a.engine.shared_state().load_full();
+    let stacks = state
+        .stacks
+        .values()
+        .filter(|s| s.board == board)
+        .filter_map(|s| Some((s.remote?.stack.as_deck()?, s.id.as_uuid())))
+        .collect();
+    let cards = state
+        .tasks
+        .values()
+        .filter_map(|t| Some((t.remote?.card.as_deck()?, t.id.as_uuid())))
+        .collect();
+    let record = MoveRecord {
+        format_version: MOVE_RECORD_FORMAT,
+        moved_from,
+        moved_by: identity.device_id,
+        committed_at: chrono::DateTime::UNIX_EPOCH,
+        stacks,
+        cards,
+        labels: std::collections::BTreeMap::new(),
+    };
+    publish_move_record(&transport, remote, &record)
+        .await
+        .expect("commit");
+    a.engine
+        .execute(StateCommand::BindBoard {
+            board,
+            remote: taskboard_domain::RemoteBoardId::files(remote),
+            connector: taskboard_domain::ids::ConnectorId::from("files-sync"),
+        })
+        .await
+        .expect("assigned");
+    remote
+}
+
+fn titles(side: &Side, board: taskboard_domain::BoardId) -> Vec<String> {
+    let state = side.engine.shared_state().load();
+    let mut titles: Vec<String> = state
+        .tasks
+        .values()
+        .filter(|t| !t.deleted)
+        .filter(|t| state.stacks.get(&t.stack).is_some_and(|s| s.board == board))
+        .map(|t| t.title.clone())
+        .collect();
+    titles.sort();
+    titles
+}
+
+/// Two devices on Deck; B is offline through A's move. On return B
+/// raises the finding, re-keys onto A's ids, folds first, and its
+/// offline work reaches A with nothing duplicated or tombstoned.
+#[tokio::test(start_paused = true)]
+async fn an_offline_device_adopts_a_moved_board_with_its_edits() {
+    use taskboard_domain::{StateCommand, TaskChanges};
+
+    let fake = Arc::new(FakeFilesTransport::new());
+    fake.seed_dirs(&["taskboard"]);
+    let (a, dir_a) = spawn_side(1_000, 10, fake.clone()).await;
+    let (b, dir_b) = spawn_side(1_000, 20, fake.clone()).await;
+    let board_a = bind_to_deck(&a, DECK_BOARD).await;
+    let board_b = bind_to_deck(&b, DECK_BOARD).await;
+    assert_ne!(board_a, board_b);
+
+    let remote = run_mover(&a, board_a, &dir_a.path().join("device.json")).await;
+    let _actors_a = a.spawn_actor(dir_a.path().join("device.json"));
+
+    let (card_b, stack_b) = {
+        let state = b.engine.shared_state().load();
+        let task = state
+            .tasks
+            .values()
+            .find(|t| state.stacks[&t.stack].board == board_b)
+            .expect("b's copy");
+        (task.id, task.stack)
+    };
+    b.clock.advance_secs(60);
+    b.engine
+        .execute(StateCommand::UpdateTask {
+            id: card_b,
+            changes: TaskChanges {
+                title: Some("renamed offline".into()),
+                ..TaskChanges::default()
+            },
+        })
+        .await
+        .expect("accepted");
+    b.engine
+        .execute(StateCommand::CreateTask {
+            title: "created offline".into(),
+            stack: stack_b,
+            order: 2,
+        })
+        .await
+        .expect("accepted");
+
+    let (_actors_b, status_b) = b.spawn_actor(dir_b.path().join("device.json"));
+    let moved = taskboard_domain::BoardId::from_uuid(remote);
+    until("b's board becomes the mover's", || {
+        let state = b.engine.shared_state().load();
+        !state.boards.contains_key(&board_b)
+            && state.boards.get(&moved).is_some_and(|row| {
+                row.remote
+                    .as_ref()
+                    .is_some_and(|r| r.board.as_files() == Some(remote))
+            })
+    })
+    .await;
+
+    let want = vec!["created offline".to_owned(), "renamed offline".to_owned()];
+    until("both sides hold exactly b's work", || {
+        titles(&a, board_a) == want && titles(&b, moved) == want
+    })
+    .await;
+    until("the finding settles to adopted", || {
+        matches!(
+            status_b.borrow().moved_boards.get(&remote),
+            Some(taskboard_sync_files_nextcloud::status::BoardMoveFinding::Adopted { .. })
+        )
+    })
+    .await;
+
+    // A Deck cycle already in flight when adoption landed folds nothing.
+    b.board_report_tx
+        .send(deck_snapshot(DECK_BOARD, "stale deck echo", 900))
+        .await
+        .expect("engine live");
+    // Reports are FIFO: a files row behind the stale report proves the
+    // engine already ingested it.
+    let mut marked = b.engine.shared_state().load().boards[&moved].clone();
+    marked.title = "sentinel".into();
+    marked.clocks.title = chrono::DateTime::<chrono::Utc>::MAX_UTC;
+    let mut snapshot = taskboard_domain::remote::FilesBoardSnapshot::identity_only(
+        taskboard_domain::RemoteBoardId::files(remote),
+    );
+    snapshot.board_row = Some(marked);
+    b.board_report_tx
+        .send(SyncReport::Completed {
+            connector: taskboard_domain::ids::ConnectorId::from("files-sync"),
+            snapshot: Box::new(taskboard_domain::RemoteBoardSnapshot::Files(snapshot)),
+            validators: taskboard_domain::BoardPullValidators {
+                boards: taskboard_domain::SyncValidators::default(),
+                stacks: taskboard_domain::SyncValidators::default(),
+                archived_stacks: taskboard_domain::SyncValidators::default(),
+            },
+            pushes: vec![],
+            read_at: chrono::DateTime::UNIX_EPOCH,
+            duration: Duration::ZERO,
+            app_data: taskboard_domain::AppDataEvidence::Absent,
+            features: taskboard_domain::DeckFeatures::default(),
+        })
+        .await
+        .expect("engine live");
+    until("the row behind the stale report lands", || {
+        b.engine.shared_state().load().boards[&moved].title == "sentinel"
+    })
+    .await;
+    assert_eq!(titles(&b, moved), want);
+    let state = b.engine.shared_state().load();
+    assert_eq!(state.boards.values().filter(|row| !row.deleted).count(), 1);
+}
+
+/// An edit B already pushed to Deck leaves no queued op; B's full-state
+/// boot snapshot is what carries it onto the files tier.
+#[tokio::test(start_paused = true)]
+async fn an_edit_already_pushed_to_deck_still_reaches_files() {
+    use taskboard_domain::{StateCommand, TaskChanges};
+
+    let fake = Arc::new(FakeFilesTransport::new());
+    fake.seed_dirs(&["taskboard"]);
+    let (a, dir_a) = spawn_side(1_000, 10, fake.clone()).await;
+    let (b, dir_b) = spawn_side(1_000, 20, fake.clone()).await;
+    let board_a = bind_to_deck(&a, DECK_BOARD).await;
+    let board_b = bind_to_deck(&b, DECK_BOARD).await;
+    let remote = run_mover(&a, board_a, &dir_a.path().join("device.json")).await;
+    let _actors_a = a.spawn_actor(dir_a.path().join("device.json"));
+
+    let card_b = {
+        let state = b.engine.shared_state().load();
+        state
+            .tasks
+            .values()
+            .find(|t| state.stacks[&t.stack].board == board_b)
+            .expect("b's copy")
+            .id
+    };
+    b.clock.advance_secs(60);
+    b.engine
+        .execute(StateCommand::UpdateTask {
+            id: card_b,
+            changes: TaskChanges {
+                title: Some("pushed to deck".into()),
+                ..TaskChanges::default()
+            },
+        })
+        .await
+        .expect("accepted");
+    let queued = taskboard_domain::SyncStateReader::read_state(&b.engine)
+        .await
+        .expect("reads")
+        .outbox;
+    let mut report = deck_snapshot(DECK_BOARD, "pushed to deck", 1_060);
+    if let SyncReport::Completed { pushes, .. } = &mut report {
+        *pushes = queued
+            .iter()
+            .map(|pending| taskboard_domain::remote::PushOutcome {
+                op: pending.op_id,
+                result: taskboard_domain::remote::PushResult::Applied { echo: None },
+            })
+            .collect();
+    }
+    b.board_report_tx.send(report).await.expect("engine live");
+    until("b's op settles", || {
+        b.engine
+            .shared_state()
+            .load()
+            .sync
+            .get(board_b)
+            .is_some_and(|row| row.pending_ops == 0)
+    })
+    .await;
+
+    let _actors_b = b.spawn_actor(dir_b.path().join("device.json"));
+    until("a holds the pushed edit once", || {
+        titles(&a, board_a) == vec!["pushed to deck".to_owned()]
+    })
+    .await;
+    let moved = taskboard_domain::BoardId::from_uuid(remote);
+    assert_eq!(titles(&b, moved), vec!["pushed to deck".to_owned()]);
+}
+
+/// One connector, two boards: each board's report answers for that
+/// board alone.
+#[tokio::test(start_paused = true)]
+async fn a_deck_report_leaves_another_boards_cards_alone() {
+    let fake = Arc::new(FakeFilesTransport::new());
+    let (side, _dir) = spawn_side(1_000, 10, fake).await;
+    let first = bind_to_deck(&side, DECK_BOARD).await;
+    let second = bind_to_deck(&side, 99).await;
+    assert_eq!(titles(&side, first), vec!["seed card".to_owned()]);
+    assert_eq!(titles(&side, second), vec!["seed card".to_owned()]);
 }
