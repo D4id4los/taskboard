@@ -1,0 +1,333 @@
+---
+source: crates/taskboard-state/tests/snapshots.rs
+expression: "&persisted"
+---
+boards:
+  00000000-0000-0000-0000-000000000001:
+    id: 00000000-0000-0000-0000-000000000001
+    remote:
+      connector: nextcloud
+      board: 42
+    title: golden
+    color: 3366cc
+    archived: false
+    deleted: false
+    clocks:
+      title: "1970-01-01T10:01:00Z"
+      color: "1970-01-01T10:01:00Z"
+      archived: "1970-01-01T10:01:00Z"
+      deleted: "1970-01-01T10:00:00Z"
+    authors:
+      title: ~
+      color: ~
+      archived: ~
+      deleted: ~
+    remote_seen: "1970-01-01T10:00:00Z"
+stacks:
+  00000000-0000-0000-0000-000000000004:
+    id: 00000000-0000-0000-0000-000000000004
+    remote: ~
+    board: 00000000-0000-0000-0000-000000000001
+    title: column
+    order: 1
+    archived: false
+    deleted: false
+    clocks:
+      title: "1970-01-01T10:03:00Z"
+      order: "1970-01-01T10:03:00Z"
+      deleted: "1970-01-01T10:03:00Z"
+    authors:
+      title: ~
+      order: ~
+      deleted: ~
+    remote_seen: ~
+  00000000-0000-0000-0000-00000000000a:
+    id: 00000000-0000-0000-0000-00000000000a
+    remote:
+      board: 42
+      stack: 1
+    board: 00000000-0000-0000-0000-000000000001
+    title: column
+    order: 1
+    archived: false
+    deleted: false
+    clocks:
+      title: "1970-01-01T10:00:00Z"
+      order: "1970-01-01T10:00:00Z"
+      deleted: "1970-01-01T10:00:00Z"
+    authors:
+      title: ~
+      order: ~
+      deleted: ~
+    remote_seen: "1970-01-01T10:00:00Z"
+tasks:
+  00000000-0000-0000-0000-000000000007:
+    id: 00000000-0000-0000-0000-000000000007
+    remote:
+      board: 42
+      stack: 1
+      card: 10
+    title: offline card
+    description: ""
+    duedate: ~
+    scheduled: ~
+    done: ~
+    stack: 00000000-0000-0000-0000-000000000004
+    order: 1
+    label_memberships: {}
+    effort: ~
+    importance: ~
+    urgency: ~
+    recur: ~
+    kind: standard
+    archived: false
+    deleted: false
+    clocks:
+      title: "1970-01-01T10:04:00Z"
+      description: "1970-01-01T10:04:00Z"
+      duedate: "1970-01-01T10:04:00Z"
+      scheduled: "1970-01-01T10:04:00Z"
+      done: "1970-01-01T10:04:00Z"
+      position: "1970-01-01T10:04:00Z"
+      effort: "1970-01-01T10:04:00Z"
+      importance: "1970-01-01T10:04:00Z"
+      urgency: "1970-01-01T10:04:00Z"
+      recur: "1970-01-01T10:04:00Z"
+      kind: "1970-01-01T10:04:00Z"
+      archived: "1970-01-01T10:04:00Z"
+      deleted: "1970-01-01T10:04:00Z"
+    authors:
+      title: ~
+      description: ~
+      duedate: ~
+      scheduled: ~
+      done: ~
+      position: ~
+      effort: ~
+      importance: ~
+      urgency: ~
+      recur: ~
+      kind: ~
+      archived: ~
+      deleted: ~
+    remote_seen: "1970-01-01T10:00:00Z"
+    remote_baseline:
+      title: offline card
+      description: ""
+      duedate: ~
+      scheduled: ~
+      done: ~
+      stack: 1
+      order: 1
+      labels: []
+      archived: false
+  00000000-0000-0000-0000-00000000000c:
+    id: 00000000-0000-0000-0000-00000000000c
+    remote:
+      board: 42
+      stack: 1
+      card: 11
+    title: second card
+    description: ""
+    duedate: ~
+    scheduled: ~
+    done: ~
+    stack: 00000000-0000-0000-0000-00000000000a
+    order: 1
+    label_memberships: {}
+    effort: ~
+    importance: ~
+    urgency: ~
+    recur: ~
+    kind: standard
+    archived: false
+    deleted: false
+    clocks:
+      title: "1970-01-01T10:00:00Z"
+      description: "1970-01-01T10:00:00Z"
+      duedate: "1970-01-01T10:00:00Z"
+      scheduled: "1970-01-01T10:00:00Z"
+      done: "1970-01-01T10:00:00Z"
+      position: "1970-01-01T10:00:00Z"
+      effort: "1970-01-01T10:00:00Z"
+      importance: "1970-01-01T10:00:00Z"
+      urgency: "1970-01-01T10:00:00Z"
+      recur: "1970-01-01T10:00:00Z"
+      kind: "1970-01-01T10:00:00Z"
+      archived: "1970-01-01T10:00:00Z"
+      deleted: "1970-01-01T10:00:00Z"
+    authors:
+      title: ~
+      description: ~
+      duedate: ~
+      scheduled: ~
+      done: ~
+      position: ~
+      effort: ~
+      importance: ~
+      urgency: ~
+      recur: ~
+      kind: ~
+      archived: ~
+      deleted: ~
+    remote_seen: "1970-01-01T10:00:00Z"
+    remote_baseline:
+      title: second card
+      description: ""
+      duedate: ~
+      scheduled: ~
+      done: ~
+      stack: 1
+      order: 1
+      labels: []
+      archived: false
+labels:
+  00000000-0000-0000-0000-00000000000b:
+    id: 00000000-0000-0000-0000-00000000000b
+    remote:
+      board: 42
+      label: 7
+    board: 00000000-0000-0000-0000-000000000001
+    title: urgent
+    color: ff0000
+    deleted: false
+    clocks:
+      title: "1970-01-01T10:00:00Z"
+      color: "1970-01-01T10:00:00Z"
+      deleted: "1970-01-01T10:00:00Z"
+    authors:
+      title: ~
+      color: ~
+      deleted: ~
+    remote_seen: "1970-01-01T10:00:00Z"
+outbox:
+  - op_id: 00000000-0000-0000-0000-000000000005
+    op:
+      CreateStack: 00000000-0000-0000-0000-000000000004
+    queued_at: "1970-01-01T10:03:00Z"
+validators:
+  boards:
+    etag: "\"b42\""
+    last_modified: "Wed, 11 Nov 2026 00:00:00 GMT"
+  "stacks:42":
+    etag: "\"s42\""
+    last_modified: "Wed, 11 Nov 2026 00:00:01 GMT"
+sync:
+  00000000-0000-0000-0000-000000000001:
+    phase: Idle
+    last_success: "1970-01-01T10:04:00Z"
+    pending_ops: 1
+    counters:
+      cycles: 0
+      pushes: 0
+      pulls: 0
+      failures: 0
+      offline_episodes: 0
+      last_cycle: ~
+    sidecar: Healthy
+    features:
+      card_startdate: false
+reminders:
+  rules: {}
+  deliveries: []
+  dismissals: []
+  snoozes: {}
+  muted: []
+  alarms: {}
+  break_rules: {}
+tracking:
+  entries: {}
+habits:
+  habits: {}
+  log: {}
+reflection:
+  entries: {}
+roaming: {}
+journal:
+  entries:
+    - id: 00000000-0000-0000-0000-000000000002
+      parent: ~
+      command:
+        CreateBoard:
+          title: golden
+          color: 3366cc
+      facts:
+        NotUndoable: BoardCeremony
+      ops: []
+      pushed: false
+      board: ~
+      created_at: "1970-01-01T10:01:00Z"
+    - id: 00000000-0000-0000-0000-000000000003
+      parent: 00000000-0000-0000-0000-000000000002
+      command:
+        BindBoard:
+          board: 00000000-0000-0000-0000-000000000001
+          remote: 42
+          connector: nextcloud
+      facts:
+        NotUndoable: BoardCeremony
+      ops: []
+      pushed: false
+      board: 00000000-0000-0000-0000-000000000001
+      created_at: "1970-01-01T10:02:00Z"
+    - id: 00000000-0000-0000-0000-000000000006
+      parent: 00000000-0000-0000-0000-000000000003
+      command:
+        CreateStack:
+          board: 00000000-0000-0000-0000-000000000001
+          title: column
+          order: 1
+      facts:
+        PreImages:
+          images:
+            - Stack:
+                id: 00000000-0000-0000-0000-000000000004
+                before: ~
+          watermark:
+            - - Stack: 00000000-0000-0000-0000-000000000004
+              - Stack:
+                  title: "1970-01-01T10:03:00Z"
+                  order: "1970-01-01T10:03:00Z"
+                  deleted: "1970-01-01T10:03:00Z"
+      ops:
+        - 00000000-0000-0000-0000-000000000005
+      pushed: false
+      board: 00000000-0000-0000-0000-000000000001
+      created_at: "1970-01-01T10:03:00Z"
+    - id: 00000000-0000-0000-0000-000000000009
+      parent: 00000000-0000-0000-0000-000000000006
+      command:
+        CreateTask:
+          title: offline card
+          stack: 00000000-0000-0000-0000-000000000004
+          order: 1
+      facts:
+        PreImages:
+          images:
+            - Task:
+                id: 00000000-0000-0000-0000-000000000007
+                before: ~
+          watermark:
+            - - Task: 00000000-0000-0000-0000-000000000007
+              - Task:
+                  clocks:
+                    title: "1970-01-01T10:04:00Z"
+                    description: "1970-01-01T10:04:00Z"
+                    duedate: "1970-01-01T10:04:00Z"
+                    scheduled: "1970-01-01T10:04:00Z"
+                    done: "1970-01-01T10:04:00Z"
+                    position: "1970-01-01T10:04:00Z"
+                    effort: "1970-01-01T10:04:00Z"
+                    importance: "1970-01-01T10:04:00Z"
+                    urgency: "1970-01-01T10:04:00Z"
+                    recur: "1970-01-01T10:04:00Z"
+                    kind: "1970-01-01T10:04:00Z"
+                    archived: "1970-01-01T10:04:00Z"
+                    deleted: "1970-01-01T10:04:00Z"
+                  memberships: {}
+      ops:
+        - 00000000-0000-0000-0000-000000000008
+      pushed: true
+      board: 00000000-0000-0000-0000-000000000001
+      created_at: "1970-01-01T10:04:00Z"
+  head: 00000000-0000-0000-0000-000000000009

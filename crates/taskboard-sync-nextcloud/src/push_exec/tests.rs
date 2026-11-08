@@ -166,7 +166,7 @@ fn board_row(raw: u128, title: &str) -> taskboard_domain::Board {
         id: taskboard_domain::BoardId::from(uid(raw)),
         remote: Some(taskboard_domain::RemoteBoardBinding {
             connector: taskboard_domain::ConnectorId::from("nextcloud"),
-            board: RemoteBoardId(42),
+            board: RemoteBoardId::deck(42),
         }),
         title: title.into(),
         color: taskboard_domain::Color::new("00c2e0"),
@@ -235,14 +235,14 @@ fn overlay_with(
     cards: &[(u128, u64, u64)],
     labels: &[(u128, u64)],
 ) -> BindingOverlay {
-    let board = RemoteBoardId(board);
+    let board = RemoteBoardId::deck(board);
     let index = RemoteIndex::from_bindings(
         cards.iter().map(|(local, stack, card)| {
             (
                 RemoteCardRef {
                     board,
-                    stack: RemoteStackId(*stack),
-                    card: taskboard_domain::RemoteCardId(*card),
+                    stack: RemoteStackId::deck(*stack),
+                    card: taskboard_domain::RemoteCardId::deck(*card),
                 },
                 taskboard_domain::TaskId::from(uid(*local)),
             )
@@ -251,7 +251,7 @@ fn overlay_with(
             (
                 taskboard_domain::RemoteStackRef {
                     board,
-                    stack: RemoteStackId(*stack),
+                    stack: RemoteStackId::deck(*stack),
                 },
                 stack_id(*local),
             )
@@ -260,7 +260,7 @@ fn overlay_with(
             (
                 taskboard_domain::RemoteLabelRef {
                     board,
-                    label: RemoteLabelId(*label),
+                    label: RemoteLabelId::deck(*label),
                 },
                 label_id(*local),
             )
@@ -279,17 +279,17 @@ fn from_index_scopes_the_overlay_to_the_named_board() {
         [
             (
                 RemoteCardRef {
-                    board: RemoteBoardId(1),
-                    stack: RemoteStackId(10),
-                    card: taskboard_domain::RemoteCardId(100),
+                    board: RemoteBoardId::deck(1),
+                    stack: RemoteStackId::deck(10),
+                    card: taskboard_domain::RemoteCardId::deck(100),
                 },
                 task_id(1),
             ),
             (
                 RemoteCardRef {
-                    board: RemoteBoardId(2),
-                    stack: RemoteStackId(20),
-                    card: taskboard_domain::RemoteCardId(200),
+                    board: RemoteBoardId::deck(2),
+                    stack: RemoteStackId::deck(20),
+                    card: taskboard_domain::RemoteCardId::deck(200),
                 },
                 task_id(2),
             ),
@@ -298,15 +298,15 @@ fn from_index_scopes_the_overlay_to_the_named_board() {
         [
             (
                 taskboard_domain::RemoteStackRef {
-                    board: RemoteBoardId(1),
-                    stack: RemoteStackId(10),
+                    board: RemoteBoardId::deck(1),
+                    stack: RemoteStackId::deck(10),
                 },
                 stack_id(3),
             ),
             (
                 taskboard_domain::RemoteStackRef {
-                    board: RemoteBoardId(2),
-                    stack: RemoteStackId(20),
+                    board: RemoteBoardId::deck(2),
+                    stack: RemoteStackId::deck(20),
                 },
                 stack_id(4),
             ),
@@ -315,13 +315,13 @@ fn from_index_scopes_the_overlay_to_the_named_board() {
         std::iter::empty(),
     );
 
-    let overlay = BindingOverlay::from_index(RemoteBoardId(1), &index);
+    let overlay = BindingOverlay::from_index(RemoteBoardId::deck(1), &index);
     assert_eq!(
         overlay.card_of(task_id(1)),
         Some(RemoteCardRef {
-            board: RemoteBoardId(1),
-            stack: RemoteStackId(10),
-            card: taskboard_domain::RemoteCardId(100),
+            board: RemoteBoardId::deck(1),
+            stack: RemoteStackId::deck(10),
+            card: taskboard_domain::RemoteCardId::deck(100),
         }),
         "the named board's own ref resolves fully",
     );
@@ -332,7 +332,7 @@ fn from_index_scopes_the_overlay_to_the_named_board() {
     );
     assert_eq!(
         overlay.stack_by_local.get(&stack_id(3)),
-        Some(&RemoteStackId(10)),
+        Some(&RemoteStackId::deck(10)),
     );
     assert_eq!(
         overlay.stack_by_local.get(&stack_id(4)),
@@ -404,7 +404,7 @@ async fn create_binds_the_echo_and_rides_label_assignments() {
     assert!(matches!(
         &outcomes[0].result,
         PushResult::Applied { echo: Some(RemoteEcho::Task(view)) }
-            if view.id.card == taskboard_domain::RemoteCardId(55)
+            if view.id.card == taskboard_domain::RemoteCardId::deck(55)
     ));
     assert_eq!(outcomes[1].op, taskboard_domain::OpId(uid(101)));
     assert!(matches!(
@@ -1708,14 +1708,14 @@ async fn update_preflight_404_reresolves_the_card_from_a_fresh_listing() {
     assert!(matches!(
         &outcomes[0].result,
         PushResult::Applied { echo: Some(RemoteEcho::Task(view)) }
-            if view.id.stack == RemoteStackId(8) && view.id.card == taskboard_domain::RemoteCardId(55)
+            if view.id.stack == RemoteStackId::deck(8) && view.id.card == taskboard_domain::RemoteCardId::deck(55)
     ));
     assert_eq!(
         exec.overlay().card_of(task_id(10)),
         Some(RemoteCardRef {
-            board: RemoteBoardId(42),
-            stack: RemoteStackId(8),
-            card: taskboard_domain::RemoteCardId(55),
+            board: RemoteBoardId::deck(42),
+            stack: RemoteStackId::deck(8),
+            card: taskboard_domain::RemoteCardId::deck(55),
         }),
         "the overlay is rebound to the fresh location"
     );
@@ -2146,7 +2146,7 @@ async fn transport_failure_after_a_landed_create_keeps_its_evidence() {
     assert!(matches!(
         &landed[0].result,
         PushResult::Applied { echo: Some(RemoteEcho::Task(view)) }
-            if view.id.card == taskboard_domain::RemoteCardId(55)
+            if view.id.card == taskboard_domain::RemoteCardId::deck(55)
     ));
 }
 
@@ -2253,7 +2253,7 @@ async fn create_stack_posts_and_applies_the_echo() {
     assert!(matches!(
         &outcomes[0].result,
         PushResult::Applied { echo: Some(RemoteEcho::Stack(view)) }
-            if view.id.stack == RemoteStackId(9)
+            if view.id.stack == RemoteStackId::deck(9)
                 && view.title == "Todo"
                 && view.order == 2
     ));
@@ -2735,7 +2735,7 @@ async fn delete_stack_sends_the_delete_and_applies_the_echo() {
     assert!(matches!(
         &outcomes[0].result,
         PushResult::Applied { echo: Some(RemoteEcho::Stack(view)) }
-            if view.id.stack == RemoteStackId(7)
+            if view.id.stack == RemoteStackId::deck(7)
     ));
 }
 
@@ -2775,9 +2775,9 @@ async fn delete_stack_404_maps_to_remote_missing() {
 
 fn ref_card(raw_board: u64, raw_stack: u64, raw_card: u64) -> RemoteCardRef {
     RemoteCardRef {
-        board: RemoteBoardId(raw_board),
-        stack: RemoteStackId(raw_stack),
-        card: taskboard_domain::RemoteCardId(raw_card),
+        board: RemoteBoardId::deck(raw_board),
+        stack: RemoteStackId::deck(raw_stack),
+        card: taskboard_domain::RemoteCardId::deck(raw_card),
     }
 }
 
@@ -2867,8 +2867,8 @@ async fn ref_stack_delete_targets_the_refs_components_and_applies_without_an_ech
     let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
     let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]), FEATURES);
     let target = taskboard_domain::RemoteStackRef {
-        board: RemoteBoardId(42),
-        stack: RemoteStackId(8),
+        board: RemoteBoardId::deck(42),
+        stack: RemoteStackId::deck(8),
     };
     let outcome = exec
         .execute(
@@ -2905,8 +2905,8 @@ async fn ref_stack_delete_404_completes_the_goal_as_remote_missing() {
     let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
     let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]), FEATURES);
     let target = taskboard_domain::RemoteStackRef {
-        board: RemoteBoardId(42),
-        stack: RemoteStackId(8),
+        board: RemoteBoardId::deck(42),
+        stack: RemoteStackId::deck(8),
     };
     let outcome = exec
         .execute(
@@ -2991,7 +2991,7 @@ async fn delete_board_sends_the_delete_and_applies_the_board_echo() {
     assert!(matches!(
         &outcomes[0].result,
         PushResult::Applied { echo: Some(RemoteEcho::Board(view)) }
-            if view.id == RemoteBoardId(42)
+            if view.id == RemoteBoardId::deck(42)
     ));
 }
 
@@ -3059,7 +3059,7 @@ async fn create_label_posts_and_applies_the_echo() {
     assert!(matches!(
         &outcomes[0].result,
         PushResult::Applied { echo: Some(RemoteEcho::Label(view)) }
-            if view.id.label == RemoteLabelId(4) && view.title == "bug"
+            if view.id.label == RemoteLabelId::deck(4) && view.title == "bug"
     ));
     let body: serde_json::Value =
         serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
@@ -3312,7 +3312,7 @@ async fn delete_label_sends_the_delete_and_applies_the_echo() {
     assert!(matches!(
         &outcomes[0].result,
         PushResult::Applied { echo: Some(RemoteEcho::Label(view)) }
-            if view.id.label == RemoteLabelId(3)
+            if view.id.label == RemoteLabelId::deck(3)
     ));
 }
 
@@ -3474,8 +3474,8 @@ async fn delete_404_re_resolves_and_deletes_at_the_fresh_binding() {
             &outcomes[0].result,
             PushResult::Applied {
                 echo: Some(RemoteEcho::Task(view))
-            } if view.id.stack == taskboard_domain::RemoteStackId(8)
-                && view.id.card == taskboard_domain::RemoteCardId(55)
+            } if view.id.stack == taskboard_domain::RemoteStackId::deck(8)
+                && view.id.card == taskboard_domain::RemoteCardId::deck(55)
         ),
         "the delete lands at the fresh stack-8 binding: {:?}",
         outcomes[0].result
@@ -3632,7 +3632,7 @@ async fn delete_re_resolve_consults_the_archived_listing() {
             &outcomes[0].result,
             PushResult::Applied {
                 echo: Some(RemoteEcho::Task(view))
-            } if view.id.stack == taskboard_domain::RemoteStackId(9)
+            } if view.id.stack == taskboard_domain::RemoteStackId::deck(9)
         ),
         "the archived listing located the card: {:?}",
         outcomes[0].result
@@ -3741,7 +3741,7 @@ async fn post_create_archive_transport_failure_aborts_with_the_create_as_landed(
         matches!(
             &landed[0].result,
             PushResult::Applied { echo: Some(RemoteEcho::Task(view)) }
-                if view.id.card == taskboard_domain::RemoteCardId(55)
+                if view.id.card == taskboard_domain::RemoteCardId::deck(55)
         ),
         "the landed create carries its echo so the next cycle never re-POSTs"
     );
@@ -3812,7 +3812,7 @@ async fn post_create_archive_rejection_is_tolerated_without_aborting() {
     assert!(matches!(
         &outcomes[0].result,
         PushResult::Applied { echo: Some(RemoteEcho::Task(view)) }
-            if view.id.card == taskboard_domain::RemoteCardId(55)
+            if view.id.card == taskboard_domain::RemoteCardId::deck(55)
     ));
     let () = server.verify().await;
 }

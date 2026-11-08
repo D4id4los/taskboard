@@ -84,7 +84,7 @@ fn local_stack_id() -> StackId {
 fn bound_board() -> Board {
     Board {
         id: bound_board_id(),
-        remote: taskboard_domain::test_support::test_binding(RemoteBoardId(BOARD)),
+        remote: taskboard_domain::test_support::test_binding(RemoteBoardId::deck(BOARD)),
         title: "board".into(),
         color: Color::new("00ff00"),
         archived: false,
@@ -104,8 +104,8 @@ fn bound_stack() -> Stack {
     Stack {
         id: local_stack_id(),
         remote: Some(taskboard_domain::RemoteStackRef {
-            board: RemoteBoardId(BOARD),
-            stack: taskboard_domain::RemoteStackId(STACK),
+            board: RemoteBoardId::deck(BOARD),
+            stack: taskboard_domain::RemoteStackId::deck(STACK),
         }),
         board: bound_board_id(),
         title: "col".into(),
@@ -260,7 +260,7 @@ async fn b2_seeded_cycle_pulls_and_authenticates() {
     eventually(&app, |state| {
         state.sync.aggregate().last_success.is_some()
             && state.boards.values().any(|b| {
-                b.remote == taskboard_domain::test_support::test_binding(RemoteBoardId(BOARD))
+                b.remote == taskboard_domain::test_support::test_binding(RemoteBoardId::deck(BOARD))
             })
     })
     .await;
@@ -539,7 +539,7 @@ async fn b7_restart_continuity_with_validators() {
     eventually(&app, |state| {
         state.sync.aggregate().last_success.is_some()
             && state.boards.values().any(|b| {
-                b.remote == taskboard_domain::test_support::test_binding(RemoteBoardId(BOARD))
+                b.remote == taskboard_domain::test_support::test_binding(RemoteBoardId::deck(BOARD))
             })
     })
     .await;
@@ -1087,5 +1087,95 @@ async fn b15_salvage_flush_gives_up_at_a_zero_budget() {
         "the zero budget expires before the flush can land"
     );
 
+    app.shutdown().await;
+}
+
+/// B9 — the orphaned-binding attach refusal (D-BF5, loud at boot): a
+/// persisted binding naming a connector that is *not configured* has no
+/// owning actor — bootstrap refuses typed, before any actor spawns.
+#[tokio::test]
+async fn b9_orphaned_binding_refuses_attach_loudly() {
+    let dir = tempdir();
+    let server = MockServer::start().await;
+    let store: Arc<dyn CredentialStore> =
+        Arc::new(FakeCredentialStore::with(&server.uri(), USERNAME, "pw"));
+
+    // A board bound under a connector name no config entry minted.
+    let mut orphan = bound_board();
+    let orphan_id = BoardId::from_uuid(uuid::Uuid::from_u128(0xB9));
+    orphan.id = orphan_id;
+    orphan.remote = Some(taskboard_domain::RemoteBoardBinding {
+        connector: taskboard_domain::ConnectorId::from("ghost-connector"),
+        board: RemoteBoardId::deck(BOARD),
+    });
+    let db_path = dir.path().join("orphan.db");
+    let repo = Arc::new(
+        open(&db_path, taskboard_domain::ConnectorId::from("nextcloud"))
+            .await
+            .expect("open seed db"),
+    );
+    repo.apply(vec![taskboard_domain::PersistenceAction::UpsertBoard(
+        orphan,
+    )])
+    .await
+    .expect("seed orphan binding");
+    drop(repo);
+
+    let mut config = config_for(&server.uri(), &dir);
+    config.storage.db_path = Some(db_path);
+    let err = bootstrap(
+        config,
+        store,
+        Arc::new(taskboard_app::notifications::LogSink),
+    )
+    .await
+    .expect_err("orphaned binding");
+    let BootstrapError::OrphanedConnectorBinding { connector, board } = err else {
+        panic!("typed refusal expected, got a different error");
+    };
+    assert_eq!(connector.as_str(), "ghost-connector");
+    assert_eq!(board, orphan_id);
+}
+
+/// B10 — the mixed-fleet boot (D-BF5): a persisted binding whose
+/// connector *is* configured boots normally — the ownership view covers
+/// the bound board, and a files-capable config (the `[files_sync]`
+/// gate) coexists without claiming anything.
+#[tokio::test]
+async fn b10_mixed_fleet_config_boots_and_covers_its_bindings() {
+    let dir = tempdir();
+    let server = MockServer::start().await;
+    let store: Arc<dyn CredentialStore> =
+        Arc::new(FakeCredentialStore::with(&server.uri(), USERNAME, "pw"));
+    common::mount_standard_pull(&server, serde_json::json!([])).await;
+
+    let (handle, join) = seed_binding(&dir, "mixed.db", false).await;
+    drop(handle);
+    join.await.expect("storage actor drains");
+
+    let mut config = config_for(&server.uri(), &dir);
+    config.storage.db_path = Some(dir.path().join("mixed.db"));
+    config.files_sync.enabled = true;
+    let (app, _env) = {
+        let _guard = common::env_lock();
+        let app = bootstrap(
+            config,
+            store,
+            Arc::new(taskboard_app::notifications::LogSink),
+        )
+        .await
+        .expect("mixed fleet boots");
+        (app, ())
+    };
+    // The bound board is covered by the derived ownership view.
+    let ownership = taskboard_domain::ownership::BoardOwnershipMap::from_state(
+        &app.engine.shared_state().load_full(),
+    );
+    assert_eq!(
+        ownership
+            .owner_of(&bound_board_id())
+            .map(taskboard_domain::ConnectorId::as_str),
+        Some("nextcloud")
+    );
     app.shutdown().await;
 }

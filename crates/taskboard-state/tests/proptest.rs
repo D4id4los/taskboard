@@ -235,6 +235,12 @@ proptest! {
         snapshot in snapshot_strategy(),
         push_plan in proptest::collection::vec(any::<bool>(), 0..4),
     ) {
+        // The merge pipeline is the Deck leg's consumer; a generated
+        // Files payload has no Deck fold and the property is vacuous
+        // there, so the Deck leg drives it.
+        let taskboard_domain::RemoteBoardSnapshot::Deck(snapshot) = &snapshot else {
+            return Ok(());
+        };
         // Push outcomes over op ids actually present in the generated
         // outbox: `true` → Applied (no echo, R9d-style), `false` →
         // BadRequest (dead-letters). The pipeline resolves unknown/marked
@@ -274,7 +280,7 @@ proptest! {
         let (merged, mut actions, _events) = apply_sync_report(
             &app,
             &persisted.outbox,
-            &snapshot,
+            snapshot,
             &pushes,
             chrono::DateTime::<chrono::Utc>::MAX_UTC,
             &ids,

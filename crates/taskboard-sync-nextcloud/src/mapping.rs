@@ -45,7 +45,7 @@ fn deleted_at_secs(raw: i64) -> Option<DateTime<Utc>> {
 #[must_use]
 pub fn map_board(board: &Board) -> RemoteBoard {
     RemoteBoard {
-        id: RemoteBoardId(board.id),
+        id: RemoteBoardId::deck(board.id),
         title: board.title.clone(),
         color: board.color.as_str().to_owned(),
         archived: board.archived,
@@ -60,7 +60,7 @@ pub fn map_stack(stack: &Stack, board: RemoteBoardId) -> RemoteStack {
     RemoteStack {
         id: RemoteStackRef {
             board,
-            stack: RemoteStackId(stack.id),
+            stack: RemoteStackId::deck(stack.id),
         },
         title: stack.title.clone(),
         order: stack.order,
@@ -77,20 +77,20 @@ pub fn map_card(card: &Card, board: RemoteBoardId) -> RemoteTask {
     RemoteTask {
         id: RemoteCardRef {
             board,
-            stack: RemoteStackId(card.stack_id),
-            card: taskboard_domain::RemoteCardId(card.id),
+            stack: RemoteStackId::deck(card.stack_id),
+            card: taskboard_domain::RemoteCardId::deck(card.id),
         },
         title: card.title.clone(),
         description: card.description.clone(),
         duedate: card.duedate,
         scheduled: card.startdate,
         done: card.done,
-        stack: RemoteStackId(card.stack_id),
+        stack: RemoteStackId::deck(card.stack_id),
         order: card.order,
         labels: card
             .labels
             .iter()
-            .map(|l| RemoteLabelId(l.id))
+            .map(|l| RemoteLabelId::deck(l.id))
             .collect::<BTreeSet<_>>(),
         archived: card.archived,
         last_modified: epoch_secs(card.last_modified),
@@ -104,7 +104,7 @@ pub fn map_label(label: &Label, board: RemoteBoardId) -> RemoteLabel {
     RemoteLabel {
         id: RemoteLabelRef {
             board,
-            label: RemoteLabelId(label.id),
+            label: RemoteLabelId::deck(label.id),
         },
         title: label.title.clone(),
         color: label.color.as_str().to_owned(),
@@ -377,7 +377,7 @@ mod tests {
         )
         .unwrap();
         let view = map_board(&board);
-        assert_eq!(view.id, RemoteBoardId(42));
+        assert_eq!(view.id, RemoteBoardId::deck(42));
         assert_eq!(view.title, "b");
         assert_eq!(view.color, "00c2e0");
         assert_eq!(view.deleted_at, None, "deletedAt 0 means live");
@@ -402,7 +402,7 @@ mod tests {
         // an old server's 0 decodes to the minimum, which fails the
         // duplicate-detection window and degrades to adopt-as-new.
         let card: Card = serde_json::from_str(r#"{"id": 5, "title": "c"}"#).unwrap();
-        let view = map_card(&card, RemoteBoardId(42));
+        let view = map_card(&card, RemoteBoardId::deck(42));
         assert_eq!(view.created_at, DateTime::<Utc>::MIN_UTC);
         assert_eq!(view.last_modified, DateTime::<Utc>::MIN_UTC);
     }
@@ -413,27 +413,27 @@ mod tests {
             r#"{"id": 5, "title": "c", "createdAt": 1700000123, "lastModified": 1700000200}"#,
         )
         .unwrap();
-        let view = map_card(&card, RemoteBoardId(42));
+        let view = map_card(&card, RemoteBoardId::deck(42));
         assert_eq!(view.created_at, ts(1_700_000_123));
         assert_eq!(view.last_modified, ts(1_700_000_200));
     }
 
     #[test]
     fn card_mapping_carries_labels_ids_stack_and_archived() {
-        let view = map_card(&wire_card(), RemoteBoardId(42));
+        let view = map_card(&wire_card(), RemoteBoardId::deck(42));
         assert_eq!(
             view.id,
             RemoteCardRef {
-                board: RemoteBoardId(42),
-                stack: RemoteStackId(9),
-                card: taskboard_domain::RemoteCardId(5),
+                board: RemoteBoardId::deck(42),
+                stack: RemoteStackId::deck(9),
+                card: taskboard_domain::RemoteCardId::deck(5),
             }
         );
-        assert_eq!(view.stack, RemoteStackId(9));
+        assert_eq!(view.stack, RemoteStackId::deck(9));
         assert_eq!(view.order, 3);
         assert_eq!(view.labels.len(), 2, "id-or-object both decode to ids");
-        assert!(view.labels.contains(&RemoteLabelId(7)));
-        assert!(view.labels.contains(&RemoteLabelId(11)));
+        assert!(view.labels.contains(&RemoteLabelId::deck(7)));
+        assert!(view.labels.contains(&RemoteLabelId::deck(11)));
         assert_eq!(view.duedate, Some("2020-01-20T09:52:43Z".parse().unwrap()));
         assert_eq!(view.done, None);
     }
@@ -445,7 +445,7 @@ mod tests {
             r#"{"id": 5, "title": "c", "startdate": "2026-04-01T08:00:00+00:00"}"#,
         )
         .unwrap();
-        let view = map_card(&with_start, RemoteBoardId(42));
+        let view = map_card(&with_start, RemoteBoardId::deck(42));
         assert_eq!(
             view.scheduled,
             Some("2026-04-01T08:00:00Z".parse().unwrap())
@@ -456,17 +456,17 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            map_card(&camel, RemoteBoardId(42)).scheduled,
+            map_card(&camel, RemoteBoardId::deck(42)).scheduled,
             view.scheduled
         );
 
         // Absent, explicit null, and camelCase scaffolding all decode to
         // None — null-tolerance both directions (D-F2).
         let absent: Card = serde_json::from_str(r#"{"id": 5, "title": "c"}"#).unwrap();
-        assert_eq!(map_card(&absent, RemoteBoardId(42)).scheduled, None);
+        assert_eq!(map_card(&absent, RemoteBoardId::deck(42)).scheduled, None);
         let nulled: Card =
             serde_json::from_str(r#"{"id": 5, "title": "c", "startdate": null}"#).unwrap();
-        assert_eq!(map_card(&nulled, RemoteBoardId(42)).scheduled, None);
+        assert_eq!(map_card(&nulled, RemoteBoardId::deck(42)).scheduled, None);
     }
 
     #[test]
@@ -558,9 +558,9 @@ mod tests {
         )
         .unwrap();
         let card = &stacks[0].cards[0];
-        let view = map_card(card, RemoteBoardId(42));
+        let view = map_card(card, RemoteBoardId::deck(42));
         assert!(view.archived);
-        assert_eq!(view.id.stack, RemoteStackId(4));
+        assert_eq!(view.id.stack, RemoteStackId::deck(4));
     }
 
     #[test]
@@ -569,8 +569,8 @@ mod tests {
             r#"{"id": 2, "title": "urgent", "color": "00C2E0", "boardId": 42}"#,
         )
         .unwrap();
-        let view = map_label(&label, RemoteBoardId(42));
-        assert_eq!(view.id.label, RemoteLabelId(2));
+        let view = map_label(&label, RemoteBoardId::deck(42));
+        assert_eq!(view.id.label, RemoteLabelId::deck(2));
         assert_eq!(view.color, "00C2E0", "lenient read: verbatim");
         assert_eq!(view.deleted_at, None);
     }
@@ -812,7 +812,7 @@ mod tests {
             );
             let mut card: Card = serde_json::from_str(&raw).unwrap();
             card.duedate = duedate;
-            let view = map_card(&card, RemoteBoardId(board_num));
+            let view = map_card(&card, RemoteBoardId::deck(board_num));
             prop_assert_eq!(view.title, title);
             prop_assert_eq!(view.description, description);
             prop_assert_eq!(view.order, order);
@@ -820,9 +820,9 @@ mod tests {
             prop_assert_eq!(view.duedate, duedate);
             prop_assert_eq!(view.last_modified, ts(last_modified));
             prop_assert_eq!(view.created_at, epoch_secs(card.created_at));
-            prop_assert_eq!(view.id.card, taskboard_domain::RemoteCardId(id));
-            prop_assert_eq!(view.id.stack, RemoteStackId(stack));
-            prop_assert_eq!(view.id.board, RemoteBoardId(board_num));
+            prop_assert_eq!(view.id.card, taskboard_domain::RemoteCardId::deck(id));
+            prop_assert_eq!(view.id.stack, RemoteStackId::deck(stack));
+            prop_assert_eq!(view.id.board, RemoteBoardId::deck(board_num));
         }
 
         #[test]
@@ -838,12 +838,12 @@ mod tests {
                     "order": {order}, "deletedAt": {deleted}}}"#
             );
             let stack: Stack = serde_json::from_str(&raw).unwrap();
-            let view = map_stack(&stack, RemoteBoardId(board_num));
+            let view = map_stack(&stack, RemoteBoardId::deck(board_num));
             prop_assert_eq!(view.title, title);
             prop_assert_eq!(view.order, order);
             prop_assert_eq!(view.deleted_at, deleted_at_secs(deleted));
-            prop_assert_eq!(view.id.stack, RemoteStackId(id));
-            prop_assert_eq!(view.id.board, RemoteBoardId(board_num));
+            prop_assert_eq!(view.id.stack, RemoteStackId::deck(id));
+            prop_assert_eq!(view.id.board, RemoteBoardId::deck(board_num));
         }
     }
 }

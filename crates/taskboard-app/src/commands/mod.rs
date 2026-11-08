@@ -587,7 +587,18 @@ impl CommandError {
                 else {
                     unreachable!("guarded above")
                 };
-                Some(format!("{} (bound remote {})", board.as_uuid(), bound.0))
+                // The Deck leg keeps the pre-widening bare-number
+                // detail (observed CLI output is unchanged); a Files
+                // payload has no wire number and shows its text form.
+                let bound_detail = match bound.as_deck() {
+                    Some(num) => num.to_string(),
+                    None => bound.to_string(),
+                };
+                Some(format!(
+                    "{} (bound remote {})",
+                    board.as_uuid(),
+                    bound_detail
+                ))
             }
             Self::UnknownBoard(id) => Some(id.to_string()),
             Self::UnknownConnector { name } => Some(name.clone()),

@@ -22,8 +22,8 @@ use taskboard_domain::ReminderKind;
 use taskboard_domain::test_support::{CountingIds, InMemoryRepository};
 use taskboard_domain::{
     Color, CommandOutcome, ImportedReflection, LocalOp, NotifierMessage, PushOutcome, PushResult,
-    ReflectionEntry, RemoteBoard, RemoteBoardSnapshot, StateCommand, SyncCommand, SyncErrorKind,
-    SyncPhase, SyncReport, SystemEvent, UserDataReport,
+    ReflectionEntry, RemoteBoard, StateCommand, SyncCommand, SyncErrorKind, SyncPhase, SyncReport,
+    SystemEvent, UserDataReport,
 };
 use taskboard_state::{DayRollConfig, spawn_state_engine_with_user_data};
 
@@ -446,46 +446,48 @@ async fn s3_sync_ingestion_binds_and_pulls() {
             app_data: taskboard_domain::AppDataEvidence::Absent,
             duration: std::time::Duration::from_millis(250),
             connector: taskboard_domain::test_support::test_connector(),
-            snapshot: Box::new(RemoteBoardSnapshot {
-                board: RemoteBoard {
-                    id: taskboard_domain::RemoteBoardId(77),
-                    title: "kiosk".into(),
-                    color: "0000ff".into(),
-                    archived: false,
-                    deleted_at: None,
-                    last_modified: ts(T0),
+            snapshot: Box::new(taskboard_domain::RemoteBoardSnapshot::Deck(
+                taskboard_domain::DeckBoardSnapshot {
+                    board: RemoteBoard {
+                        id: taskboard_domain::RemoteBoardId::deck(77),
+                        title: "kiosk".into(),
+                        color: "0000ff".into(),
+                        archived: false,
+                        deleted_at: None,
+                        last_modified: ts(T0),
+                    },
+                    stacks: vec![taskboard_domain::RemoteStack {
+                        id: taskboard_domain::RemoteStackRef {
+                            board: taskboard_domain::RemoteBoardId::deck(77),
+                            stack: taskboard_domain::RemoteStackId::deck(1),
+                        },
+                        title: "remote column".into(),
+                        order: 1,
+                        archived: false,
+                        deleted_at: None,
+                        last_modified: ts(T0),
+                    }],
+                    tasks: vec![taskboard_domain::RemoteTask {
+                        id: taskboard_domain::RemoteCardRef {
+                            board: taskboard_domain::RemoteBoardId::deck(77),
+                            stack: taskboard_domain::RemoteStackId::deck(1),
+                            card: taskboard_domain::RemoteCardId::deck(10),
+                        },
+                        title: "remote card".into(),
+                        description: String::new(),
+                        duedate: None,
+                        scheduled: None,
+                        done: None,
+                        stack: taskboard_domain::RemoteStackId::deck(1),
+                        order: 1,
+                        labels: std::collections::BTreeSet::default(),
+                        archived: false,
+                        last_modified: ts(T0),
+                        created_at: ts(T0),
+                    }],
+                    labels: vec![],
                 },
-                stacks: vec![taskboard_domain::RemoteStack {
-                    id: taskboard_domain::RemoteStackRef {
-                        board: taskboard_domain::RemoteBoardId(77),
-                        stack: taskboard_domain::RemoteStackId(1),
-                    },
-                    title: "remote column".into(),
-                    order: 1,
-                    archived: false,
-                    deleted_at: None,
-                    last_modified: ts(T0),
-                }],
-                tasks: vec![taskboard_domain::RemoteTask {
-                    id: taskboard_domain::RemoteCardRef {
-                        board: taskboard_domain::RemoteBoardId(77),
-                        stack: taskboard_domain::RemoteStackId(1),
-                        card: taskboard_domain::RemoteCardId(10),
-                    },
-                    title: "remote card".into(),
-                    description: String::new(),
-                    duedate: None,
-                    scheduled: None,
-                    done: None,
-                    stack: taskboard_domain::RemoteStackId(1),
-                    order: 1,
-                    labels: std::collections::BTreeSet::default(),
-                    archived: false,
-                    last_modified: ts(T0),
-                    created_at: ts(T0),
-                }],
-                labels: vec![],
-            }),
+            )),
             validators: test_validators(),
             pushes: vec![],
             read_at: chrono::DateTime::<chrono::Utc>::MAX_UTC,
@@ -506,7 +508,7 @@ async fn s3_sync_ingestion_binds_and_pulls() {
                 .any(|b| {
                     b.remote
                         == taskboard_domain::test_support::test_binding(
-                            taskboard_domain::RemoteBoardId(77),
+                            taskboard_domain::RemoteBoardId::deck(77),
                         )
                 });
             if bound {
@@ -571,19 +573,21 @@ async fn s4_sync_resolution_drains_outbox() {
             app_data: taskboard_domain::AppDataEvidence::Absent,
             duration: std::time::Duration::from_millis(250),
             connector: taskboard_domain::test_support::test_connector(),
-            snapshot: Box::new(RemoteBoardSnapshot {
-                board: RemoteBoard {
-                    id: taskboard_domain::RemoteBoardId(77),
-                    title: "kiosk".into(),
-                    color: "0000ff".into(),
-                    archived: false,
-                    deleted_at: None,
-                    last_modified: ts(T0 + 120),
+            snapshot: Box::new(taskboard_domain::RemoteBoardSnapshot::Deck(
+                taskboard_domain::DeckBoardSnapshot {
+                    board: RemoteBoard {
+                        id: taskboard_domain::RemoteBoardId::deck(77),
+                        title: "kiosk".into(),
+                        color: "0000ff".into(),
+                        archived: false,
+                        deleted_at: None,
+                        last_modified: ts(T0 + 120),
+                    },
+                    stacks: vec![],
+                    tasks: vec![],
+                    labels: vec![],
                 },
-                stacks: vec![],
-                tasks: vec![],
-                labels: vec![],
-            }),
+            )),
             pushes,
             validators: test_validators(),
             read_at: chrono::DateTime::<chrono::Utc>::MAX_UTC,
@@ -790,7 +794,7 @@ async fn s7_standalone_first_run_and_bind() {
     .await;
     s.run(StateCommand::BindBoard {
         board: s.board_id(),
-        remote: taskboard_domain::RemoteBoardId(77),
+        remote: taskboard_domain::RemoteBoardId::deck(77),
         connector: taskboard_domain::test_support::test_connector(),
     })
     .await;
@@ -798,7 +802,7 @@ async fn s7_standalone_first_run_and_bind() {
     let _ = s
         .run_raw(StateCommand::BindBoard {
             board: s.board_id(),
-            remote: taskboard_domain::RemoteBoardId(77),
+            remote: taskboard_domain::RemoteBoardId::deck(77),
             connector: taskboard_domain::test_support::test_connector(),
         })
         .await
@@ -806,7 +810,7 @@ async fn s7_standalone_first_run_and_bind() {
     let app = s.handle.shared_state().load_full();
     assert_eq!(
         app.boards[&board].remote,
-        taskboard_domain::test_support::test_binding(taskboard_domain::RemoteBoardId(77))
+        taskboard_domain::test_support::test_binding(taskboard_domain::RemoteBoardId::deck(77))
     );
     s.snap("s7");
     drop(s);
@@ -975,7 +979,7 @@ async fn s10_boards_reset() {
     .await;
     s.run(StateCommand::BindBoard {
         board: s.board_id(),
-        remote: taskboard_domain::RemoteBoardId(77),
+        remote: taskboard_domain::RemoteBoardId::deck(77),
         connector: taskboard_domain::test_support::test_connector(),
     })
     .await;
@@ -986,19 +990,21 @@ async fn s10_boards_reset() {
             app_data: taskboard_domain::AppDataEvidence::Absent,
             duration: std::time::Duration::ZERO,
             connector: taskboard_domain::test_support::test_connector(),
-            snapshot: Box::new(RemoteBoardSnapshot {
-                board: RemoteBoard {
-                    id: taskboard_domain::RemoteBoardId(77),
-                    title: "repair".into(),
-                    color: "3366cc".into(),
-                    archived: false,
-                    deleted_at: None,
-                    last_modified: ts(T0),
+            snapshot: Box::new(taskboard_domain::RemoteBoardSnapshot::Deck(
+                taskboard_domain::DeckBoardSnapshot {
+                    board: RemoteBoard {
+                        id: taskboard_domain::RemoteBoardId::deck(77),
+                        title: "repair".into(),
+                        color: "3366cc".into(),
+                        archived: false,
+                        deleted_at: None,
+                        last_modified: ts(T0),
+                    },
+                    stacks: vec![],
+                    tasks: vec![],
+                    labels: vec![],
                 },
-                stacks: vec![],
-                tasks: vec![],
-                labels: vec![],
-            }),
+            )),
             validators: warm_validators(),
             pushes: vec![],
             read_at: chrono::DateTime::<chrono::Utc>::MAX_UTC,
@@ -1846,16 +1852,16 @@ const SEED_OP_ID: u128 = 5000;
 
 fn card_ref(card: u64) -> RemoteCardRef {
     RemoteCardRef {
-        board: RemoteBoardId(77),
-        stack: RemoteStackId(1),
-        card: RemoteCardId(card),
+        board: RemoteBoardId::deck(77),
+        stack: RemoteStackId::deck(1),
+        card: RemoteCardId::deck(card),
     }
 }
 
 fn stack_ref() -> RemoteStackRef {
     RemoteStackRef {
-        board: RemoteBoardId(77),
-        stack: RemoteStackId(1),
+        board: RemoteBoardId::deck(77),
+        stack: RemoteStackId::deck(1),
     }
 }
 
@@ -1871,7 +1877,7 @@ fn bound_card_seed(unsynced: bool) -> taskboard_domain::PersistedState {
         board_id,
         taskboard_domain::Board {
             id: board_id,
-            remote: taskboard_domain::test_support::test_binding(RemoteBoardId(77)),
+            remote: taskboard_domain::test_support::test_binding(RemoteBoardId::deck(77)),
             title: "kiosk".into(),
             color: Color::new("0000ff"),
             archived: false,
@@ -1965,19 +1971,21 @@ fn content_report(
         app_data: taskboard_domain::AppDataEvidence::Absent,
         duration: std::time::Duration::from_millis(250),
         connector: taskboard_domain::test_support::test_connector(),
-        snapshot: Box::new(RemoteBoardSnapshot {
-            board: RemoteBoard {
-                id: RemoteBoardId(77),
-                title: "kiosk".into(),
-                color: "0000ff".into(),
-                archived: false,
-                deleted_at: None,
-                last_modified: ts(at),
+        snapshot: Box::new(taskboard_domain::RemoteBoardSnapshot::Deck(
+            taskboard_domain::DeckBoardSnapshot {
+                board: RemoteBoard {
+                    id: RemoteBoardId::deck(77),
+                    title: "kiosk".into(),
+                    color: "0000ff".into(),
+                    archived: false,
+                    deleted_at: None,
+                    last_modified: ts(at),
+                },
+                stacks,
+                tasks,
+                labels: vec![],
             },
-            stacks,
-            tasks,
-            labels: vec![],
-        }),
+        )),
         validators: test_validators(),
         pushes: vec![],
         read_at: chrono::DateTime::<chrono::Utc>::MAX_UTC,
@@ -2004,7 +2012,7 @@ fn remote_card(card: u64, title: &str, at: i64) -> taskboard_domain::RemoteTask 
         duedate: None,
         scheduled: None,
         done: None,
-        stack: RemoteStackId(1),
+        stack: RemoteStackId::deck(1),
         order: 1,
         labels: std::collections::BTreeSet::default(),
         archived: false,
@@ -2151,19 +2159,21 @@ async fn s43_second_absence_after_rebind_tombstones() {
             app_data: taskboard_domain::AppDataEvidence::Absent,
             duration: std::time::Duration::from_millis(250),
             connector: taskboard_domain::test_support::test_connector(),
-            snapshot: Box::new(RemoteBoardSnapshot {
-                board: RemoteBoard {
-                    id: RemoteBoardId(77),
-                    title: "kiosk".into(),
-                    color: "0000ff".into(),
-                    archived: false,
-                    deleted_at: None,
-                    last_modified: ts(T0 + 120),
+            snapshot: Box::new(taskboard_domain::RemoteBoardSnapshot::Deck(
+                taskboard_domain::DeckBoardSnapshot {
+                    board: RemoteBoard {
+                        id: RemoteBoardId::deck(77),
+                        title: "kiosk".into(),
+                        color: "0000ff".into(),
+                        archived: false,
+                        deleted_at: None,
+                        last_modified: ts(T0 + 120),
+                    },
+                    stacks: vec![live_stack(T0 + 120)],
+                    tasks: vec![echo],
+                    labels: vec![],
                 },
-                stacks: vec![live_stack(T0 + 120)],
-                tasks: vec![echo],
-                labels: vec![],
-            }),
+            )),
             validators: test_validators(),
             pushes: vec![PushOutcome {
                 op: create.op_id,
@@ -2564,4 +2574,168 @@ async fn u4_stale_row_skipped_after_local_edit() {
     });
     s.deliver(vec![stale]).await;
     s.snap("u4");
+}
+
+/// S-deck-golden — the Deck full-sync golden (the identity-widening's
+/// pre-pin, dispatch chunk 3): bind → offline queue → one `Completed`
+/// cycle carrying a full snapshot, non-empty validators, and a push
+/// echo that binds the queued card. Captured on pre-widening code; the
+/// connector-tag sweep must pass both snapshots unmodified — a pin edit
+/// there is a finding, not a fix.
+#[cfg_attr(miri, ignore)] // insta needs socketpair (environment gate)
+#[allow(clippy::too_many_lines)] // one journey: bind, queue, one cycle, settle
+#[tokio::test]
+async fn s_deck_full_sync_golden() {
+    let mut s = Scenario::start_empty().await;
+    let CommandOutcome::CreatedBoard(board) = s
+        .run(StateCommand::CreateBoard {
+            title: "golden".into(),
+            color: Color::new("3366cc"),
+        })
+        .await
+    else {
+        panic!("wrong receipt");
+    };
+    s.run(StateCommand::BindBoard {
+        board,
+        remote: taskboard_domain::RemoteBoardId::deck(42),
+        connector: taskboard_domain::test_support::test_connector(),
+    })
+    .await;
+    let CommandOutcome::CreatedStack(stack) = s
+        .run(StateCommand::CreateStack {
+            board,
+            title: "column".into(),
+            order: 1,
+        })
+        .await
+    else {
+        panic!("wrong receipt");
+    };
+    let CommandOutcome::CreatedTask(task) = s
+        .run(StateCommand::CreateTask {
+            title: "offline card".into(),
+            stack,
+            order: 1,
+        })
+        .await
+    else {
+        panic!("wrong receipt");
+    };
+    // The queued op the push echo answers.
+    let queued_op = s
+        .repo
+        .snapshot()
+        .outbox
+        .iter()
+        .find(|pending| pending.op == taskboard_domain::LocalOp::CreateTask(task))
+        .map(|pending| pending.op_id)
+        .expect("the offline create is queued");
+
+    let filled = taskboard_domain::BoardPullValidators {
+        boards: taskboard_domain::SyncValidators {
+            etag: Some("\"b42\"".into()),
+            last_modified: Some("Wed, 11 Nov 2026 00:00:00 GMT".into()),
+        },
+        stacks: taskboard_domain::SyncValidators {
+            etag: Some("\"s42\"".into()),
+            last_modified: Some("Wed, 11 Nov 2026 00:00:01 GMT".into()),
+        },
+        archived_stacks: taskboard_domain::SyncValidators::default(),
+    };
+    let label = taskboard_domain::RemoteLabel {
+        id: taskboard_domain::RemoteLabelRef {
+            board: taskboard_domain::RemoteBoardId::deck(42),
+            label: taskboard_domain::RemoteLabelId::deck(7),
+        },
+        title: "urgent".into(),
+        color: "ff0000".into(),
+        deleted_at: None,
+        last_modified: ts(T0),
+    };
+    let mut labelled = golden_card(10, "offline card", T0);
+    labelled.labels = std::collections::BTreeSet::from([taskboard_domain::RemoteLabelId::deck(7)]);
+    s.report_tx
+        .send(SyncReport::Completed {
+            app_data: taskboard_domain::AppDataEvidence::Absent,
+            duration: std::time::Duration::from_millis(250),
+            connector: taskboard_domain::test_support::test_connector(),
+            snapshot: Box::new(taskboard_domain::RemoteBoardSnapshot::Deck(
+                taskboard_domain::DeckBoardSnapshot {
+                    board: RemoteBoard {
+                        id: taskboard_domain::RemoteBoardId::deck(42),
+                        title: "golden".into(),
+                        color: "3366cc".into(),
+                        archived: false,
+                        deleted_at: None,
+                        last_modified: ts(T0),
+                    },
+                    stacks: vec![golden_stack(T0)],
+                    tasks: vec![labelled, golden_card(11, "second card", T0)],
+                    labels: vec![label],
+                },
+            )),
+            validators: filled,
+            pushes: vec![taskboard_domain::PushOutcome {
+                op: queued_op,
+                result: taskboard_domain::PushResult::Applied {
+                    echo: Some(taskboard_domain::RemoteEcho::Task(golden_card(
+                        10,
+                        "offline card",
+                        T0,
+                    ))),
+                },
+            }],
+            read_at: chrono::DateTime::<chrono::Utc>::MAX_UTC,
+            features: taskboard_domain::DeckFeatures::CONSERVATIVE,
+        })
+        .await
+        .expect("report channel open");
+    // Deterministic settle: the echo adopted the card's remote ref.
+    wait_for_task(&s, |t| {
+        t.remote
+            == Some(taskboard_domain::RemoteCardRef {
+                board: taskboard_domain::RemoteBoardId::deck(42),
+                stack: taskboard_domain::RemoteStackId::deck(1),
+                card: taskboard_domain::RemoteCardId::deck(10),
+            })
+    })
+    .await;
+    s.snap("s_deck_full_sync_golden");
+    drop(s);
+}
+
+fn golden_stack(at: i64) -> taskboard_domain::RemoteStack {
+    taskboard_domain::RemoteStack {
+        id: taskboard_domain::RemoteStackRef {
+            board: taskboard_domain::RemoteBoardId::deck(42),
+            stack: taskboard_domain::RemoteStackId::deck(1),
+        },
+        title: "column".into(),
+        order: 1,
+        archived: false,
+        deleted_at: None,
+        last_modified: ts(at),
+    }
+}
+
+fn golden_card(card: u64, title: &str, at: i64) -> taskboard_domain::RemoteTask {
+    taskboard_domain::RemoteTask {
+        id: taskboard_domain::RemoteCardRef {
+            board: taskboard_domain::RemoteBoardId::deck(42),
+            stack: taskboard_domain::RemoteStackId::deck(1),
+            card: taskboard_domain::RemoteCardId::deck(card),
+        },
+        title: title.into(),
+        description: String::new(),
+        duedate: None,
+        scheduled: None,
+        done: None,
+        stack: taskboard_domain::RemoteStackId::deck(1),
+        order: 1,
+        labels: std::collections::BTreeSet::default(),
+        archived: false,
+        last_modified: ts(at),
+        created_at: ts(at),
+    }
 }

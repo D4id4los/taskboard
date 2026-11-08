@@ -198,7 +198,7 @@ fn seeded_state() -> taskboard_domain::PersistedState {
         id: taskboard_domain::BoardId::from(uuid(1)),
         remote: Some(taskboard_domain::RemoteBoardBinding {
             connector: taskboard_domain::ConnectorId::from("nextcloud"),
-            board: RemoteBoardId0(BOARD),
+            board: RemoteBoardId0::deck(BOARD),
         }),
         title: "board".into(),
         color: taskboard_domain::Color::new("00ff00"),
@@ -216,8 +216,8 @@ fn seeded_state() -> taskboard_domain::PersistedState {
     let stack = taskboard_domain::Stack {
         id: taskboard_domain::StackId::from(uuid(2)),
         remote: Some(taskboard_domain::RemoteStackRef {
-            board: RemoteBoardId0(BOARD),
-            stack: taskboard_domain::RemoteStackId(STACK),
+            board: RemoteBoardId0::deck(BOARD),
+            stack: taskboard_domain::RemoteStackId::deck(STACK),
         }),
         board: board.id,
         title: "col".into(),
@@ -661,9 +661,9 @@ async fn i2_remote_newer_edit_adopts() {
     let task = taskboard_domain::Task {
         id: taskboard_domain::TaskId::from(uuid(100)),
         remote: Some(taskboard_domain::RemoteCardRef {
-            board: RemoteBoardId0(BOARD),
-            stack: taskboard_domain::RemoteStackId(STACK),
-            card: taskboard_domain::RemoteCardId(55),
+            board: RemoteBoardId0::deck(BOARD),
+            stack: taskboard_domain::RemoteStackId::deck(STACK),
+            card: taskboard_domain::RemoteCardId::deck(55),
         }),
         title: "stale local edit".into(),
         description: String::new(),
@@ -731,9 +731,9 @@ async fn i3_concurrent_edits_resolve_per_field() {
     let task = taskboard_domain::Task {
         id: taskboard_domain::TaskId::from(uuid(100)),
         remote: Some(taskboard_domain::RemoteCardRef {
-            board: RemoteBoardId0(BOARD),
-            stack: taskboard_domain::RemoteStackId(STACK),
-            card: taskboard_domain::RemoteCardId(55),
+            board: RemoteBoardId0::deck(BOARD),
+            stack: taskboard_domain::RemoteStackId::deck(STACK),
+            card: taskboard_domain::RemoteCardId::deck(55),
         }),
         // Locally newer than anything remote: LWW keeps it.
         title: "local newer title".into(),
@@ -821,8 +821,8 @@ async fn i4_move_label_and_delete_push_to_the_server() {
     let stack2 = taskboard_domain::Stack {
         id: taskboard_domain::StackId::from(uuid(5)),
         remote: Some(taskboard_domain::RemoteStackRef {
-            board: RemoteBoardId0(BOARD),
-            stack: taskboard_domain::RemoteStackId(8),
+            board: RemoteBoardId0::deck(BOARD),
+            stack: taskboard_domain::RemoteStackId::deck(8),
         }),
         board: taskboard_domain::BoardId::from(uuid(1)),
         title: "col2".into(),
@@ -840,8 +840,8 @@ async fn i4_move_label_and_delete_push_to_the_server() {
     let label = taskboard_domain::Label {
         id: taskboard_domain::LabelId::from(uuid(6)),
         remote: Some(taskboard_domain::RemoteLabelRef {
-            board: RemoteBoardId0(BOARD),
-            label: taskboard_domain::RemoteLabelId(3),
+            board: RemoteBoardId0::deck(BOARD),
+            label: taskboard_domain::RemoteLabelId::deck(3),
         }),
         board: taskboard_domain::BoardId::from(uuid(1)),
         title: "urgent".into(),
@@ -859,9 +859,9 @@ async fn i4_move_label_and_delete_push_to_the_server() {
     let task = taskboard_domain::Task {
         id: task_id,
         remote: Some(taskboard_domain::RemoteCardRef {
-            board: RemoteBoardId0(BOARD),
-            stack: taskboard_domain::RemoteStackId(STACK),
-            card: taskboard_domain::RemoteCardId(55),
+            board: RemoteBoardId0::deck(BOARD),
+            stack: taskboard_domain::RemoteStackId::deck(STACK),
+            card: taskboard_domain::RemoteCardId::deck(55),
         }),
         title: "draft".into(),
         description: String::new(),
@@ -1124,8 +1124,9 @@ async fn i6_crash_window_duplicate_reconciles_to_one_card() {
     eventually(&stack.engine, |app| {
         app.tasks.get(&task_id).is_some_and(|t| {
             t.is_live()
-                && t.remote.is_some_and(|r| r.card.0 == card_a)
-                && app.sync.aggregate().pending_ops == 0
+                && t.remote.is_some_and(|r| {
+                    r.card.as_deck() == Some(card_a) && app.sync.aggregate().pending_ops == 0
+                })
         })
     })
     .await;
@@ -1262,7 +1263,7 @@ async fn i8_adopting_an_occurrence_card_learns_its_series() {
     // document types — this is the JSON shape the flush uploads.
     let document = AppDataDocument {
         format: APPDATA_FORMAT,
-        board: RemoteBoardId(BOARD),
+        board: RemoteBoardId::deck(BOARD),
         sections: AppDataSections {
             habits: None,
             habit_log: None,
@@ -1355,9 +1356,9 @@ async fn i8_adopting_an_occurrence_card_learns_its_series() {
         taskboard_domain::Task {
             id: taskboard_domain::TaskId::from(uuid(100)),
             remote: Some(taskboard_domain::RemoteCardRef {
-                board: RemoteBoardId(BOARD),
-                stack: taskboard_domain::RemoteStackId(STACK),
-                card: taskboard_domain::RemoteCardId(55),
+                board: RemoteBoardId::deck(BOARD),
+                stack: taskboard_domain::RemoteStackId::deck(STACK),
+                card: taskboard_domain::RemoteCardId::deck(55),
             }),
             title: ANCHOR_TITLE.into(),
             description: String::new(),

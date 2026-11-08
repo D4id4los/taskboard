@@ -118,7 +118,7 @@ impl SyncPair {
         self.engine
             .execute(taskboard_domain::StateCommand::BindBoard {
                 board: board_id,
-                remote: taskboard_domain::RemoteBoardId(board),
+                remote: taskboard_domain::RemoteBoardId::deck(board),
                 connector: taskboard_domain::test_support::test_connector(),
             })
             .await

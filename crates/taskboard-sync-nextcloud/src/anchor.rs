@@ -61,9 +61,7 @@ pub(crate) struct AnchorDiscovery {
 
 /// Exact-title matches over the snapshot's card set (active + archived
 /// already merged).
-pub(crate) fn title_matches(
-    snapshot: &taskboard_domain::RemoteBoardSnapshot,
-) -> Vec<RemoteCardRef> {
+pub(crate) fn title_matches(snapshot: &taskboard_domain::DeckBoardSnapshot) -> Vec<RemoteCardRef> {
     snapshot
         .tasks
         .iter()
@@ -78,7 +76,7 @@ pub(crate) fn title_matches(
 /// [`crate::model::ExtendedData::file_name`], D20), live **or**
 /// tombstoned; otherwise *unconfirmed*.
 pub(crate) fn scan_snapshot(
-    snapshot: &taskboard_domain::RemoteBoardSnapshot,
+    snapshot: &taskboard_domain::DeckBoardSnapshot,
     details: &HashMap<RemoteCardRef, Vec<Attachment>>,
 ) -> AnchorDiscovery {
     let mut discovery = AnchorDiscovery::default();
@@ -222,13 +220,13 @@ mod tests {
     use crate::model::ExtendedData;
     use chrono::TimeZone;
     use taskboard_domain::RemoteCardId;
-    use taskboard_domain::{RemoteBoardId, RemoteBoardSnapshot, RemoteStackId};
+    use taskboard_domain::{RemoteBoardId, RemoteStackId};
 
     fn card_ref(card: u64) -> RemoteCardRef {
         RemoteCardRef {
-            board: RemoteBoardId(42),
-            stack: RemoteStackId(7),
-            card: RemoteCardId(card),
+            board: RemoteBoardId::deck(42),
+            stack: RemoteStackId::deck(7),
+            card: RemoteCardId::deck(card),
         }
     }
 
@@ -240,7 +238,7 @@ mod tests {
             duedate: None,
             scheduled: None,
             done: None,
-            stack: RemoteStackId(7),
+            stack: RemoteStackId::deck(7),
             order: 0,
             labels: std::collections::BTreeSet::new(),
             archived: false,
@@ -249,10 +247,10 @@ mod tests {
         }
     }
 
-    fn snapshot_with(tasks: Vec<RemoteTask>) -> RemoteBoardSnapshot {
-        RemoteBoardSnapshot {
+    fn snapshot_with(tasks: Vec<RemoteTask>) -> taskboard_domain::DeckBoardSnapshot {
+        taskboard_domain::DeckBoardSnapshot {
             board: taskboard_domain::RemoteBoard {
-                id: RemoteBoardId(42),
+                id: RemoteBoardId::deck(42),
                 title: "board".into(),
                 color: "00ff00".into(),
                 archived: false,
@@ -383,7 +381,7 @@ mod tests {
         details.extend(mk(7, 3, 200));
         let discovery = scan_snapshot(&snapshot, &details);
         let winner = pick(&discovery).expect("three confirmed carriers");
-        assert_eq!(winner.card.card, RemoteCardId(9), "newest stamp wins");
+        assert_eq!(winner.card.card, RemoteCardId::deck(9), "newest stamp wins");
 
         // Tie on stamp: the lowest remote card id.
         let mut details = HashMap::new();
@@ -396,7 +394,7 @@ mod tests {
                 .expect("three confirmed carriers")
                 .card
                 .card,
-            RemoteCardId(5)
+            RemoteCardId::deck(5)
         );
         assert_eq!(
             pick(&AnchorDiscovery::default()),
@@ -446,8 +444,8 @@ mod tests {
     fn creation_target_picks_the_first_live_stack_at_last_position() {
         let stack = |id: u64, order: i64, deleted: bool, archived: bool| RemoteStack {
             id: taskboard_domain::RemoteStackRef {
-                board: RemoteBoardId(42),
-                stack: RemoteStackId(id),
+                board: RemoteBoardId::deck(42),
+                stack: RemoteStackId::deck(id),
             },
             title: "col".into(),
             order,
@@ -457,7 +455,7 @@ mod tests {
         };
         let task_in = |stack: u64, order: i64| {
             let mut t = task(1, "x");
-            t.id.stack = RemoteStackId(stack);
+            t.id.stack = RemoteStackId::deck(stack);
             t.order = order;
             t
         };
@@ -466,13 +464,13 @@ mod tests {
         let tasks = vec![task_in(20, 3), task_in(20, 7), task_in(10, 1)];
         assert_eq!(
             creation_target(&stacks, &tasks),
-            Some((RemoteStackId(20), 8))
+            Some((RemoteStackId::deck(20), 8))
         );
         // An empty first stack starts at 0.
         let tasks = vec![task_in(10, 5)];
         assert_eq!(
             creation_target(&stacks, &tasks),
-            Some((RemoteStackId(20), 0))
+            Some((RemoteStackId::deck(20), 0))
         );
         // Deleted and archived stacks never host the anchor.
         let only_deleted = vec![stack(10, 0, true, false), stack(20, 1, false, true)];
@@ -485,19 +483,19 @@ mod tests {
     fn build_evidence_enforces_the_envelope_checks() {
         // Undecodable body: Decode.
         assert_eq!(
-            build_evidence(b"{not json", RemoteBoardId(42)),
+            build_evidence(b"{not json", RemoteBoardId::deck(42)),
             AppDataEvidence::Unreadable(AppDataUnreadable::Decode)
         );
         // Missing format: the strict envelope boundary, not leniency.
         assert_eq!(
-            build_evidence(br#"{"board": 42, "sections": {}}"#, RemoteBoardId(42)),
+            build_evidence(br#"{"board": 42, "sections": {}}"#, RemoteBoardId::deck(42)),
             AppDataEvidence::Unreadable(AppDataUnreadable::Decode)
         );
         // Too-new format: folds nothing, the reason carries the version.
         assert_eq!(
             build_evidence(
                 br#"{"format": 99, "board": 42, "sections": {}}"#,
-                RemoteBoardId(42)
+                RemoteBoardId::deck(42)
             ),
             AppDataEvidence::Unreadable(AppDataUnreadable::FormatTooNew { format: 99 })
         );
@@ -505,21 +503,21 @@ mod tests {
         assert_eq!(
             build_evidence(
                 br#"{"format": 1, "board": 43, "sections": {}}"#,
-                RemoteBoardId(42)
+                RemoteBoardId::deck(42)
             ),
             AppDataEvidence::Unreadable(AppDataUnreadable::ForeignBoard)
         );
         // A matching document is Document evidence.
         let doc = AppDataEvidence::Document(Box::new(taskboard_domain::AppDataDocument {
             format: APPDATA_FORMAT,
-            board: RemoteBoardId(42),
+            board: RemoteBoardId::deck(42),
             sections: taskboard_domain::AppDataSections::default(),
             unknown: std::collections::BTreeMap::new(),
         }));
         assert_eq!(
             build_evidence(
                 br#"{"format": 1, "board": 42, "sections": {}}"#,
-                RemoteBoardId(42)
+                RemoteBoardId::deck(42)
             ),
             doc
         );

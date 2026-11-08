@@ -44,7 +44,7 @@ async fn per_board_status_roundtrip_and_fake_parity() {
         id: ids::BoardId::from(uuid::Uuid::from_u128(raw)),
         remote: remote.map(|board| ids::RemoteBoardBinding {
             connector: taskboard_domain::ConnectorId::from("nextcloud"),
-            board: ids::RemoteBoardId(board),
+            board: ids::RemoteBoardId::deck(board),
         }),
         title: format!("board {raw}"),
         color: taskboard_domain::Color::new("0000ff"),

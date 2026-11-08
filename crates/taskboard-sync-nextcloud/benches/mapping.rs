@@ -68,7 +68,7 @@ fn element_throughput(n: usize) -> Throughput {
 
 fn bench_read_mappers(c: &mut Criterion) {
     let f = build_fixture(N_SIZES[2]);
-    let board_id = taskboard_domain::ids::RemoteBoardId(77);
+    let board_id = taskboard_domain::ids::RemoteBoardId::deck(77);
 
     let mut group = c.benchmark_group("map_board");
     group.throughput(element_throughput(1));

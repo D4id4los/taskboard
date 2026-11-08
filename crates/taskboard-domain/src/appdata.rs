@@ -2078,10 +2078,14 @@ pub fn time_entries_for(
             if binding.board != board {
                 return None; // unbound or another board's document
             }
+            // The card key is the Deck wire number (the sidecar is a
+            // Deck-endpoint artifact); a Files payload has no Deck
+            // number and no sidecar home — the entry is skipped.
+            let card_key = binding.card.as_deck()?.to_string();
             Some((
                 id.as_uuid().to_string(),
                 TimeEntryRecord::Entry {
-                    task: Some(binding.card.get().to_string()),
+                    task: Some(card_key),
                     title: entry.task_title.clone(),
                     start: entry.start,
                     end: entry.end,
@@ -2392,7 +2396,7 @@ mod tests {
     fn document(board: u64, sections: AppDataSections) -> AppDataDocument {
         AppDataDocument {
             format: APPDATA_FORMAT,
-            board: RemoteBoardId(board),
+            board: RemoteBoardId::deck(board),
             sections,
             unknown: BTreeMap::new(),
         }
@@ -4115,14 +4119,26 @@ mod tests {
             kind: TimeEntryKind::Work,
         };
         let entries = std::collections::BTreeMap::from([(entry.id, entry.clone())]);
-        let emitted = time_entries_for(&entries, &tasks, RemoteBoardId(2), ts(1_000_000), None);
+        let emitted = time_entries_for(
+            &entries,
+            &tasks,
+            RemoteBoardId::deck(2),
+            ts(1_000_000),
+            None,
+        );
         assert_eq!(
             serde_json::to_value(emitted.values().next().unwrap()).unwrap()["kind"],
             serde_json::json!("work")
         );
         entry.kind = TimeEntryKind::Respite;
         let entries = std::collections::BTreeMap::from([(entry.id, entry)]);
-        let emitted = time_entries_for(&entries, &tasks, RemoteBoardId(2), ts(1_000_000), None);
+        let emitted = time_entries_for(
+            &entries,
+            &tasks,
+            RemoteBoardId::deck(2),
+            ts(1_000_000),
+            None,
+        );
         assert_eq!(
             serde_json::to_value(emitted.values().next().unwrap()).unwrap()["kind"],
             serde_json::json!("respite")
@@ -4378,9 +4394,9 @@ mod tests {
     fn bound_task(deleted: bool) -> Task {
         let mut task = task_fixture();
         task.remote = Some(RemoteCardRef {
-            board: RemoteBoardId(2),
-            stack: RemoteStackId(7),
-            card: RemoteCardId(412),
+            board: RemoteBoardId::deck(2),
+            stack: RemoteStackId::deck(7),
+            card: RemoteCardId::deck(412),
         });
         task.deleted = deleted;
         task
@@ -4422,9 +4438,9 @@ mod tests {
             let mut task = task_fixture();
             task.id = TaskId::from(uuid::Uuid::from_u128(102));
             task.remote = Some(RemoteCardRef {
-                board: RemoteBoardId(2),
-                stack: RemoteStackId(7),
-                card: RemoteCardId(413),
+                board: RemoteBoardId::deck(2),
+                stack: RemoteStackId::deck(7),
+                card: RemoteCardId::deck(413),
             });
             task.deleted = true;
             task
@@ -4435,9 +4451,9 @@ mod tests {
             let mut task = bound_task(false);
             task.id = TaskId::from(uuid::Uuid::from_u128(104));
             task.remote = Some(RemoteCardRef {
-                board: RemoteBoardId(9),
-                stack: RemoteStackId(7),
-                card: RemoteCardId(414),
+                board: RemoteBoardId::deck(9),
+                stack: RemoteStackId::deck(7),
+                card: RemoteCardId::deck(414),
             });
             task
         };
@@ -4480,7 +4496,7 @@ mod tests {
         ] {
             entries.insert(e.id, e.clone());
         }
-        let emitted = time_entries_for(&entries, &tasks, RemoteBoardId(2), now, None);
+        let emitted = time_entries_for(&entries, &tasks, RemoteBoardId::deck(2), now, None);
         assert_eq!(emitted.len(), 3, "fresh + boundary + deleted-task-bound");
         assert!(emitted.contains_key(&fresh.id.as_uuid().to_string()));
         assert!(
@@ -4678,7 +4694,7 @@ mod tests {
         entries.insert(aged.id, aged.clone());
         entries.insert(fresh.id, fresh.clone());
         // Builder and GC over the same now agree: no aged row in either.
-        let overlay = time_entries_for(&entries, &tasks, RemoteBoardId(2), now, None);
+        let overlay = time_entries_for(&entries, &tasks, RemoteBoardId::deck(2), now, None);
         assert_eq!(overlay.len(), 1);
         assert!(overlay.contains_key(&fresh.id.as_uuid().to_string()));
         let base_doc = document(
@@ -5428,7 +5444,7 @@ mod tests {
             target_board in 0_u64..1_000,
             now in 4_000_000_000_i64..4_100_000_000,
         ) {
-            let board = RemoteBoardId(target_board);
+            let board = RemoteBoardId::deck(target_board);
             let mut tasks = BTreeMap::new();
             let mut entries_map = BTreeMap::new();
             for (entry_seed, task_seed, card, start) in &entries {
@@ -5438,8 +5454,8 @@ mod tests {
                     t.id = task;
                     t.remote = card.map(|c| RemoteCardRef {
                         board,
-                        stack: RemoteStackId(7),
-                        card: RemoteCardId(c),
+                        stack: RemoteStackId::deck(7),
+                        card: RemoteCardId::deck(c),
                     });
                     t
                 });
@@ -5457,7 +5473,7 @@ mod tests {
                     return Err(TestCaseError::Fail("non-decimal card".into()));
                 };
                 prop_assert!(
-                    tasks.values().any(|t| t.remote.is_some_and(|r| r.board == board && r.card.get() == card_num)),
+                    tasks.values().any(|t| t.remote.is_some_and(|r| r.board == board && r.card.as_deck() == Some(card_num))),
                     "the card names a board-bound task"
                 );
             }
@@ -5520,7 +5536,7 @@ mod habit_section_tests {
     fn document(board: u64, sections: AppDataSections) -> AppDataDocument {
         AppDataDocument {
             format: APPDATA_FORMAT,
-            board: RemoteBoardId(board),
+            board: RemoteBoardId::deck(board),
             sections,
             unknown: BTreeMap::new(),
         }

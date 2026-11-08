@@ -126,7 +126,7 @@ mod d {
             !app.stacks.is_empty()
                 && app.boards.values().any(|b| {
                     b.remote.as_ref().map(|r| r.board)
-                        == Some(taskboard_domain::RemoteBoardId(board.id))
+                        == Some(taskboard_domain::RemoteBoardId::deck(board.id))
                 })
         })
         .await;
@@ -165,7 +165,7 @@ mod d {
             stacks
                 .iter()
                 .flat_map(|s| &s.cards)
-                .any(|c| c.id == binding.card.get() && c.title == format!("{run}-task")),
+                .any(|c| Some(c.id) == binding.card.as_deck() && c.title == format!("{run}-task")),
             "the pushed card must exist on the server"
         );
 
@@ -190,9 +190,10 @@ mod d {
         .expect("server-side card creation must succeed");
         pair.sync_now().await;
         eventually(&pair, |app| {
-            app.tasks
-                .values()
-                .any(|t| t.remote.is_some_and(|r| r.card.get() == server_card.id))
+            app.tasks.values().any(|t| {
+                t.remote
+                    .is_some_and(|r| r.card.as_deck() == Some(server_card.id))
+            })
         })
         .await;
 
@@ -245,7 +246,7 @@ mod d {
         eventually(&pair, |app| {
             app.tasks
                 .values()
-                .any(|t| t.remote.is_some_and(|r| r.card.get() == card.id))
+                .any(|t| t.remote.is_some_and(|r| r.card.as_deck() == Some(card.id)))
         })
         .await;
 
@@ -253,13 +254,16 @@ mod d {
         let task_id = app
             .tasks
             .values()
-            .find(|t| t.remote.is_some_and(|r| r.card.get() == card.id))
+            .find(|t| t.remote.is_some_and(|r| r.card.as_deck() == Some(card.id)))
             .map(|t| t.id)
             .unwrap();
         let target_stack = app
             .stacks
             .values()
-            .find(|s| s.remote.is_some_and(|r| r.stack.get() == stack_b.id))
+            .find(|s| {
+                s.remote
+                    .is_some_and(|r| r.stack.as_deck() == Some(stack_b.id))
+            })
             .map(|s| s.id)
             .unwrap();
         drop(app);
@@ -341,7 +345,7 @@ mod d {
         eventually(&pair, |app| {
             app.tasks
                 .values()
-                .any(|t| t.remote.is_some_and(|r| r.card.get() == card.id))
+                .any(|t| t.remote.is_some_and(|r| r.card.as_deck() == Some(card.id)))
         })
         .await;
 
@@ -352,7 +356,7 @@ mod d {
         eventually(&pair, |app| {
             app.tasks
                 .values()
-                .any(|t| t.remote.is_some_and(|r| r.card.get() == card.id) && t.archived)
+                .any(|t| t.remote.is_some_and(|r| r.card.as_deck() == Some(card.id)) && t.archived)
         })
         .await;
 
@@ -362,7 +366,9 @@ mod d {
         pair.sync_now().await;
         eventually(&pair, |app| {
             app.tasks.values().any(|t| {
-                t.remote.is_some_and(|r| r.card.get() == card.id) && !t.archived && !t.deleted
+                t.remote.is_some_and(|r| r.card.as_deck() == Some(card.id))
+                    && !t.archived
+                    && !t.deleted
             })
         })
         .await;
@@ -406,7 +412,7 @@ mod d {
         eventually(&pair, |app| {
             app.tasks
                 .values()
-                .any(|t| t.remote.is_some_and(|r| r.card.get() == card.id))
+                .any(|t| t.remote.is_some_and(|r| r.card.as_deck() == Some(card.id)))
         })
         .await;
 
@@ -449,9 +455,10 @@ mod d {
         let pair = boot_pair(client.clone()).await;
         pair.set_board(board.id).await;
         eventually(&pair, |app| {
-            app.labels
-                .values()
-                .any(|l| l.remote.is_some_and(|r| r.label.get() == label.id))
+            app.labels.values().any(|l| {
+                l.remote
+                    .is_some_and(|r| r.label.as_deck() == Some(label.id))
+            })
         })
         .await;
 
@@ -495,7 +502,7 @@ mod d {
         eventually(&pair, |app| {
             app.tasks
                 .values()
-                .any(|t| t.remote.is_some_and(|r| r.card.get() == card.id))
+                .any(|t| t.remote.is_some_and(|r| r.card.as_deck() == Some(card.id)))
         })
         .await;
 
@@ -503,7 +510,7 @@ mod d {
         let task_id = app
             .tasks
             .values()
-            .find(|t| t.remote.is_some_and(|r| r.card.get() == card.id))
+            .find(|t| t.remote.is_some_and(|r| r.card.as_deck() == Some(card.id)))
             .map(|t| t.id)
             .unwrap();
         drop(app);
@@ -592,7 +599,7 @@ mod d {
             !app.stacks.is_empty()
                 && app.boards.values().any(|b| {
                     b.remote.as_ref().map(|r| r.board)
-                        == Some(taskboard_domain::RemoteBoardId(board.id))
+                        == Some(taskboard_domain::RemoteBoardId::deck(board.id))
                 })
         })
         .await;
@@ -627,11 +634,12 @@ mod d {
             .remote
             .expect("bound")
             .card
-            .get();
+            .as_deck()
+            .expect("deck-tagged: the Deck connector bound the card");
         eventually(&b, |app| {
             app.tasks
                 .values()
-                .any(|t| t.remote.is_some_and(|r| r.card.get() == card))
+                .any(|t| t.remote.is_some_and(|r| r.card.as_deck() == Some(card)))
         })
         .await;
         Convergence {
@@ -652,7 +660,10 @@ mod d {
                 .load_full()
                 .tasks
                 .values()
-                .find(|t| t.remote.is_some_and(|r| r.card.get() == self.card))
+                .find(|t| {
+                    t.remote
+                        .is_some_and(|r| r.card.as_deck() == Some(self.card))
+                })
                 .map(|t| t.id)
                 .expect("B adopted the task")
         }

@@ -279,7 +279,7 @@ mod tests {
         reservoir: &'a AppDataSections,
     ) -> BTreeMap<RemoteBoardId, SiblingView<'a>> {
         BTreeMap::from([(
-            RemoteBoardId(1),
+            RemoteBoardId::deck(1),
             SiblingView {
                 document,
                 reservoir,
@@ -290,7 +290,7 @@ mod tests {
     fn document_with(sections: AppDataSections) -> AppDataDocument {
         AppDataDocument {
             format: taskboard_domain::APPDATA_FORMAT,
-            board: RemoteBoardId(1),
+            board: RemoteBoardId::deck(1),
             sections,
             unknown: BTreeMap::new(),
         }

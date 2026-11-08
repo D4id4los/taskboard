@@ -52,6 +52,7 @@ pub mod journal;
 pub mod merge;
 pub mod messages;
 pub mod outbox;
+pub mod ownership;
 pub mod persistence;
 pub mod pipeline;
 pub mod push;
@@ -168,8 +169,9 @@ pub use reminders::{
     overdue_tasks, prune_settled_alarms, prune_settled_at_rules,
 };
 pub use remote::{
-    BoardPullValidators, PushOutcome, PushResult, RemoteBoard, RemoteBoardSnapshot, RemoteEcho,
-    RemoteIndex, RemoteLabel, RemoteStack, RemoteTask, resolve_label,
+    BoardPullValidators, DeckBoardSnapshot, PushOutcome, PushResult, RemoteBoard,
+    RemoteBoardSnapshot, RemoteEcho, RemoteIndex, RemoteLabel, RemoteStack, RemoteTask,
+    resolve_label,
 };
 pub use settings::{
     DueSoonDays, InvalidDueSoonDays, InvalidTickSecs, ROAMING_SETTING_NAMES, ReminderSinkChoice,

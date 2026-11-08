@@ -21,14 +21,13 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use taskboard_domain::{
     AppDataDocument, AppDataEvidence, AppDataSections, AppDataUnreadable,
-    BREAK_DISMISSALS_ENTRY_KEY, BoardId, BreakRule, BreakRuleId, DeckFeatures, EntityTables,
-    HabitState, LocalOp, PendingOp, PushGroup, PushOutcome, PushResult, ReminderRule,
-    ReminderRuleId, RemoteBoardId, RemoteBoardSnapshot, Stack, SyncErrorKind, Task, TaskId,
-    TimeEntry, TimeEntryId, break_dismissals_entry_for, break_rules_for,
-    derive_break_rule_tombstones, derive_rule_tombstones, derive_time_entry_tombstones,
-    dismissals_entry_for, habit_log_for, habits_for, lane_gc_old_habit_log,
-    lane_gc_old_time_entries, lane_gc_scheduled, prune_absent_cards, rules_entry_for,
-    task_entry_for, time_entries_for, union,
+    BREAK_DISMISSALS_ENTRY_KEY, BoardId, BreakRule, BreakRuleId, DeckBoardSnapshot, DeckFeatures,
+    EntityTables, HabitState, LocalOp, PendingOp, PushGroup, PushOutcome, PushResult, ReminderRule,
+    ReminderRuleId, RemoteBoardId, Stack, SyncErrorKind, Task, TaskId, TimeEntry, TimeEntryId,
+    break_dismissals_entry_for, break_rules_for, derive_break_rule_tombstones,
+    derive_rule_tombstones, derive_time_entry_tombstones, dismissals_entry_for, habit_log_for,
+    habits_for, lane_gc_old_habit_log, lane_gc_old_time_entries, lane_gc_scheduled,
+    prune_absent_cards, rules_entry_for, task_entry_for, time_entries_for, union,
 };
 
 use crate::anchor::{self, ANCHOR_ATTACHMENT_FILENAME, ANCHOR_ATTACHMENT_MIME, AnchorAction};
@@ -83,7 +82,7 @@ pub(crate) struct FlushCtx<'a> {
     pub target: RemoteBoardId,
     pub features: DeckFeatures,
     pub read_at: chrono::DateTime<chrono::Utc>,
-    pub snapshot: &'a RemoteBoardSnapshot,
+    pub snapshot: &'a DeckBoardSnapshot,
     pub evidence: &'a AppDataEvidence,
     pub action: &'a AnchorAction,
     pub group: Option<&'a PushGroup>,
@@ -248,6 +247,15 @@ pub(crate) fn has_flush_work(
 /// before the report; the stamp bump lands in the next cycle's pull).
 #[allow(clippy::too_many_lines)] // one ladder, one outcome table; splitting hides the fence rows
 pub(crate) async fn run_flush(ctx: FlushCtx<'_>) -> FlushVerdict {
+    // The Deck connector addresses Deck-tagged payloads only (D-BF4):
+    // the tag discrimination happens once here, every ladder below
+    // works in raw wire numbers. A Files payload is a routing bug
+    // surfaced as the typed Idle verdict — no Deck endpoint is ever
+    // addressed with a foreign id.
+    let Some(target_deck) = ctx.target.as_deck() else {
+        tracing::debug!(board = %ctx.target, verdict = "Idle", clause = "non-deck payload", "flush verdict");
+        return FlushVerdict::Idle;
+    };
     // The fold/flush fences: a document we could not read must never be
     // re-encoded (D-S7: every Unreadable form — Transport, AccessDenied,
     // ServerFault, Decode, FormatTooNew — strands loudly; the residual
@@ -266,7 +274,7 @@ pub(crate) async fn run_flush(ctx: FlushCtx<'_>) -> FlushVerdict {
         }
         AppDataEvidence::Unreadable(_) => {
             tracing::debug!(
-                board = ctx.target.get(),
+                board = target_deck,
                 verdict = "Idle",
                 clause = "unreadable evidence fence",
                 "flush verdict"
@@ -332,7 +340,10 @@ pub(crate) async fn run_flush(ctx: FlushCtx<'_>) -> FlushVerdict {
         if binding.board != ctx.target || !task.is_live() {
             continue;
         }
-        let card_key = binding.card.get().to_string();
+        let Some(card_num) = binding.card.as_deck() else {
+            continue; // a non-Deck payload has no sidecar card key
+        };
+        let card_key = card_num.to_string();
         overlay_tasks.insert(
             card_key.clone(),
             task_entry_for(task, ctx.features.card_startdate),
@@ -381,7 +392,10 @@ pub(crate) async fn run_flush(ctx: FlushCtx<'_>) -> FlushVerdict {
         .values()
         .filter_map(|task| {
             let binding = task.remote.as_ref()?;
-            (binding.board == ctx.target).then(|| binding.card.get().to_string())
+            (binding.board == ctx.target)
+                .then_some(())
+                .and_then(|()| binding.card.as_deck())
+                .map(|num| num.to_string())
         })
         .collect();
     for (key, tombstone) in derive_time_entry_tombstones(
@@ -469,7 +483,7 @@ pub(crate) async fn run_flush(ctx: FlushCtx<'_>) -> FlushVerdict {
         .snapshot
         .tasks
         .iter()
-        .map(|task| task.id.card.get().to_string())
+        .filter_map(|task| task.id.card.as_deck().map(|num| num.to_string()))
         .collect();
     let evicted = gc_evicted(&merged, &present_cards);
     let merged = prune_absent_cards(&merged, &present_cards);
@@ -484,30 +498,36 @@ pub(crate) async fn run_flush(ctx: FlushCtx<'_>) -> FlushVerdict {
 
     // ---- the upload ladder (per anchor_action) ------------------------
     let Some(ladder) = ladder_for(ctx.action) else {
-        tracing::debug!(board = ctx.target.get(), verdict = "Idle", clause = "no ladder for action", action = ?ctx.action, "flush verdict");
+        tracing::debug!(board = target_deck, verdict = "Idle", clause = "no ladder for action", action = ?ctx.action, "flush verdict");
         return FlushVerdict::Idle;
     };
-    tracing::debug!(board = ctx.target.get(), action = ?ctx.action, ?ladder, "flush ladder resolved");
+    tracing::debug!(board = target_deck, action = ?ctx.action, ?ladder, "flush ladder resolved");
     let upload_result = match ladder {
-        Ladder::Use(location) => upload_onto(&ctx, &location, &upload, false).await,
+        Ladder::Use(location) => upload_onto(&ctx, target_deck, &location, &upload, false).await,
         Ladder::RestoreThenReplace(location) => {
             // Restore-then-replace (never create-against-a-tombstone).
             match ctx
                 .client
                 .restore_attachment(
-                    ctx.target.get(),
-                    location.stack.get(),
-                    location.card.get(),
+                    target_deck,
+                    location
+                        .stack
+                        .as_deck()
+                        .expect("deck-tagged: the ladder's snapshot is the gated Deck payload"),
+                    location
+                        .card
+                        .as_deck()
+                        .expect("deck-tagged: the ladder's snapshot is the gated Deck payload"),
                     location.attachment_id,
                 )
                 .await
             {
-                Ok(_) => upload_onto(&ctx, &location, &upload, false).await,
+                Ok(_) => upload_onto(&ctx, target_deck, &location, &upload, false).await,
                 Err(err) => Err(err),
             }
         }
-        Ladder::Adopt(location) => upload_onto(&ctx, &location, &upload, true).await,
-        Ladder::Create => upload_with_create(&ctx, &upload).await,
+        Ladder::Adopt(location) => upload_onto(&ctx, target_deck, &location, &upload, true).await,
+        Ladder::Create => upload_with_create(&ctx, target_deck, &upload).await,
     };
 
     // ---- outcome assembly --------------------------------------------
@@ -578,17 +598,17 @@ pub(crate) async fn run_flush(ctx: FlushCtx<'_>) -> FlushVerdict {
                 Some(_) => {
                     // Other classified failures strand (retryable: auth,
                     // forbidden, server, rate limit…).
-                    tracing::warn!(board = ctx.target.get(), %err, "sidecar flush rejected; ops stay queued");
+                    tracing::warn!(board = target_deck, %err, "sidecar flush rejected; ops stay queued");
                     FlushVerdict::Idle
                 }
                 None => {
-                    tracing::warn!(board = ctx.target.get(), %err, "sidecar flush failed (transport); ops stay queued");
+                    tracing::warn!(board = target_deck, %err, "sidecar flush failed (transport); ops stay queued");
                     FlushVerdict::Idle
                 }
             }
         }
     };
-    tracing::debug!(board = ctx.target.get(), ?verdict, "flush verdict");
+    tracing::debug!(board = target_deck, ?verdict, "flush verdict");
     verdict
 }
 
@@ -686,37 +706,39 @@ fn task_has_app_data(
 /// for the classification table.
 async fn upload_onto(
     ctx: &FlushCtx<'_>,
+    target_deck: u64,
     location: &RemoteCardLocation,
     upload: &AttachmentUpload,
     fresh_card: bool,
 ) -> Result<Option<AttachmentStamp>, DeckError> {
     let step = if fresh_card { "upload" } else { "replace" };
+    // The ladder's locations derive from this cycle's Deck snapshot
+    // (the run_flush gate proved the tag); a foreign payload here is
+    // the typed expectation failure, never a mis-addressed endpoint.
+    let stack_deck = location
+        .stack
+        .as_deck()
+        .expect("deck-tagged: the ladder's snapshot is the gated Deck payload");
+    let card_deck = location
+        .card
+        .as_deck()
+        .expect("deck-tagged: the ladder's snapshot is the gated Deck payload");
     let attachment = if fresh_card {
         ctx.client
-            .upload_attachment(
-                ctx.target.get(),
-                location.stack.get(),
-                location.card.get(),
-                upload,
-            )
+            .upload_attachment(target_deck, stack_deck, card_deck, upload)
             .await
     } else {
         ctx.client
-            .update_attachment_content(
-                ctx.target.get(),
-                location.card.get(),
-                location.attachment_id,
-                upload,
-            )
+            .update_attachment_content(target_deck, card_deck, location.attachment_id, upload)
             .await
     }
     .map_err(|err| {
-        tracing::debug!(board = ctx.target.get(), step, %err, "flush ladder step failed");
+        tracing::debug!(board = target_deck, step, %err, "flush ladder step failed");
         err
     })?;
     let stamp = attachment_stamp(&attachment);
     tracing::debug!(
-        board = ctx.target.get(),
+        board = target_deck,
         step,
         stamped = stamp.is_some(),
         "flush ladder step landed"
@@ -729,6 +751,7 @@ async fn upload_onto(
 /// and lazy; the next pull adopts the carrier (R6).
 async fn upload_with_create(
     ctx: &FlushCtx<'_>,
+    target_deck: u64,
     upload: &AttachmentUpload,
 ) -> Result<Option<AttachmentStamp>, DeckError> {
     let Some((stack, order)) = anchor::creation_target(&ctx.snapshot.stacks, &ctx.snapshot.tasks)
@@ -736,7 +759,7 @@ async fn upload_with_create(
         // No live stack: the flush strands this cycle (the actor never
         // auto-creates stacks); ops stay queued.
         tracing::warn!(
-            board = ctx.target.get(),
+            board = target_deck,
             "sidecar flush stranded: no live stack for the anchor"
         );
         return Ok(None);
@@ -744,8 +767,8 @@ async fn upload_with_create(
     let created = ctx
         .client
         .create_card(
-            ctx.target.get(),
-            stack.get(),
+            target_deck,
+            stack.as_deck().expect("deck-tagged: the snapshot is the Deck leg"),
             &crate::client::NewCard {
                 title: taskboard_domain::ANCHOR_CARD_TITLE.to_owned(),
                 order: Some(order),
@@ -757,26 +780,33 @@ async fn upload_with_create(
         )
         .await
         .map_err(|err| {
-            tracing::debug!(board = ctx.target.get(), step = "create_card", %err, "flush ladder step failed");
+            tracing::debug!(board = target_deck, step = "create_card", %err, "flush ladder step failed");
             err
         })?;
     tracing::debug!(
-        board = ctx.target.get(),
+        board = target_deck,
         card = created.id,
         step = "create_card",
         "flush ladder step landed"
     );
     let attachment = ctx
         .client
-        .upload_attachment(ctx.target.get(), stack.get(), created.id, upload)
+        .upload_attachment(
+            target_deck,
+            stack
+                .as_deck()
+                .expect("deck-tagged: the snapshot is the Deck leg"),
+            created.id,
+            upload,
+        )
         .await
         .map_err(|err| {
-            tracing::debug!(board = ctx.target.get(), step = "upload", %err, "flush ladder step failed");
+            tracing::debug!(board = target_deck, step = "upload", %err, "flush ladder step failed");
             err
         })?;
     let stamp = attachment_stamp(&attachment);
     tracing::debug!(
-        board = ctx.target.get(),
+        board = target_deck,
         step = "upload",
         stamped = stamp.is_some(),
         "flush ladder step landed"
@@ -874,9 +904,9 @@ mod tests {
         let t = Task {
             id,
             remote: Some(taskboard_domain::RemoteCardRef {
-                board: RemoteBoardId(77),
-                stack: taskboard_domain::RemoteStackId(7),
-                card: taskboard_domain::RemoteCardId(412),
+                board: RemoteBoardId::deck(77),
+                stack: taskboard_domain::RemoteStackId::deck(7),
+                card: taskboard_domain::RemoteCardId::deck(412),
             }),
             title: "task".to_owned(),
             description: String::new(),
@@ -915,8 +945,8 @@ mod tests {
         let stack = Stack {
             id: stack_id,
             remote: Some(taskboard_domain::RemoteStackRef {
-                board: RemoteBoardId(77),
-                stack: taskboard_domain::RemoteStackId(7),
+                board: RemoteBoardId::deck(77),
+                stack: taskboard_domain::RemoteStackId::deck(7),
             }),
             board,
             title: "stack".to_owned(),
@@ -1049,7 +1079,7 @@ mod tests {
             &empty,
             &AppDataEvidence::Document(Box::new(taskboard_domain::AppDataDocument {
                 format: taskboard_domain::APPDATA_FORMAT,
-                board: RemoteBoardId(1),
+                board: RemoteBoardId::deck(1),
                 sections: AppDataSections::default(),
                 unknown: BTreeMap::new(),
             })),
@@ -1076,7 +1106,7 @@ mod tests {
             &fragment,
             &AppDataEvidence::Document(Box::new(taskboard_domain::AppDataDocument {
                 format: taskboard_domain::APPDATA_FORMAT,
-                board: RemoteBoardId(1),
+                board: RemoteBoardId::deck(1),
                 sections: AppDataSections::default(),
                 unknown: BTreeMap::new(),
             })),
@@ -1097,7 +1127,7 @@ mod tests {
     // truth does not already carry.
     #[test]
     fn local_overlay_wins_the_card_slot_over_migrated_content() {
-        let target = RemoteBoardId(43);
+        let target = RemoteBoardId::deck(43);
         let mut migrated_entry = taskboard_domain::TaskEntry::default();
         migrated_entry.fields.insert(
             "effort".to_owned(),
@@ -1238,7 +1268,7 @@ mod tests {
         );
         let document = AppDataDocument {
             format: taskboard_domain::APPDATA_FORMAT,
-            board: RemoteBoardId(42),
+            board: RemoteBoardId::deck(42),
             sections: AppDataSections {
                 tasks: Some(BTreeMap::from([
                     ("500".to_owned(), moved),
@@ -1415,7 +1445,7 @@ mod tests {
         // base's effort stands, the kind row enters.
         let base = taskboard_domain::appdata::AppDataDocument {
             format: taskboard_domain::appdata::APPDATA_FORMAT,
-            board: RemoteBoardId(77),
+            board: RemoteBoardId::deck(77),
             sections: taskboard_domain::appdata::AppDataSections {
                 tasks: Some(BTreeMap::from([(
                     "412".to_owned(),
@@ -1439,7 +1469,7 @@ mod tests {
         };
         let overlay_doc = taskboard_domain::appdata::AppDataDocument {
             format: taskboard_domain::appdata::APPDATA_FORMAT,
-            board: RemoteBoardId(77),
+            board: RemoteBoardId::deck(77),
             sections: taskboard_domain::appdata::AppDataSections {
                 tasks: Some(BTreeMap::from([("412".to_owned(), overlay)])),
                 ..Default::default()

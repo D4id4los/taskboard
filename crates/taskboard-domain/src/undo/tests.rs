@@ -1376,9 +1376,9 @@ fn undo_of_pushed_delete_reposts_as_a_create() {
     {
         let mut bound = h.disk.tasks[&task].clone();
         bound.remote = Some(crate::ids::RemoteCardRef {
-            board: crate::ids::RemoteBoardId(7),
-            stack: crate::ids::RemoteStackId(8),
-            card: crate::ids::RemoteCardId(9),
+            board: crate::ids::RemoteBoardId::deck(7),
+            stack: crate::ids::RemoteStackId::deck(8),
+            card: crate::ids::RemoteCardId::deck(9),
         });
         h.disk.tasks.insert(task, bound);
         h.disk.outbox.clear();
@@ -1949,7 +1949,7 @@ fn every_arm_journals_entry_or_nothing() {
         },
         StateCommand::BindBoard {
             board,
-            remote: crate::ids::RemoteBoardId(1),
+            remote: crate::ids::RemoteBoardId::deck(1),
             connector: crate::ids::ConnectorId::from("test"),
         },
         StateCommand::RenameBoard {
@@ -2111,9 +2111,9 @@ fn restore_task_with_a_pending_delete_op_retracts_without_a_new_op() {
     {
         let mut bound = h.disk.tasks[&task].clone();
         bound.remote = Some(crate::ids::RemoteCardRef {
-            board: crate::ids::RemoteBoardId(7),
-            stack: crate::ids::RemoteStackId(8),
-            card: crate::ids::RemoteCardId(9),
+            board: crate::ids::RemoteBoardId::deck(7),
+            stack: crate::ids::RemoteStackId::deck(8),
+            card: crate::ids::RemoteCardId::deck(9),
         });
         h.disk.tasks.insert(task, bound);
         h.disk.outbox.clear();

@@ -384,7 +384,7 @@ mod scope_tests {
                 id,
                 remote: Some(RemoteBoardBinding {
                     connector: ConnectorId::from(tag),
-                    board: RemoteBoardId(remote),
+                    board: RemoteBoardId::deck(remote),
                 }),
                 title: "b".to_owned(),
                 color: taskboard_domain::Color::new("0082c9"),
@@ -456,7 +456,7 @@ mod scope_tests {
         // beta changes alpha's watched set on the next poll.
         state.boards.get_mut(&a2).expect("live").remote = Some(RemoteBoardBinding {
             connector: beta.clone(),
-            board: RemoteBoardId(2),
+            board: RemoteBoardId::deck(2),
         });
         let scoped = scoped_sync_status(&state, Some(&alpha));
         assert_eq!(

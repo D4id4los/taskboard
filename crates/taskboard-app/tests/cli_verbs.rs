@@ -1368,7 +1368,7 @@ mod ceremonies {
             err,
             CommandError::Engine(ref boxed)
                 if matches!(&**boxed, ExecuteError::Rejected(D::RemoteBoardInUse { remote, board })
-                    if remote.0 == common::BOARD
+                    if remote.as_deck() == Some(common::BOARD)
                         && *board == taskboard_domain::BoardId::from_uuid(uuid::Uuid::from_u128(0x00DA_00A1)))
         ));
     }
@@ -1679,8 +1679,8 @@ mod ceremonies {
         let stack = Stack {
             id: stack_id,
             remote: Some(RemoteStackRef {
-                board: RemoteBoardId(remote),
-                stack: RemoteStackId(5),
+                board: RemoteBoardId::deck(remote),
+                stack: RemoteStackId::deck(5),
             }),
             board: taskboard_domain::BoardId::from_uuid(uuid::Uuid::from_u128(board)),
             title: "col".to_owned(),
@@ -1698,9 +1698,9 @@ mod ceremonies {
         let task = Task {
             id: TaskId::from_uuid(uuid::Uuid::from_u128(0x00DA_0601)),
             remote: Some(RemoteCardRef {
-                board: RemoteBoardId(remote),
-                stack: RemoteStackId(5),
-                card: RemoteCardId(6),
+                board: RemoteBoardId::deck(remote),
+                stack: RemoteStackId::deck(5),
+                card: RemoteCardId::deck(6),
             }),
             title: "card".to_owned(),
             description: String::new(),

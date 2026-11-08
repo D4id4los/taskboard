@@ -193,9 +193,9 @@ pub(crate) fn remote_card_ref_strategy() -> impl Strategy<Value = RemoteCardRef>
         super::remote_number(),
     )
         .prop_map(|(board, stack, card)| RemoteCardRef {
-            board: RemoteBoardId(board),
-            stack: RemoteStackId(stack),
-            card: RemoteCardId(card),
+            board: RemoteBoardId::deck(board),
+            stack: RemoteStackId::deck(stack),
+            card: RemoteCardId::deck(card),
         })
 }
 
@@ -214,7 +214,7 @@ pub fn remote_task_baseline_strategy() -> impl Strategy<Value = crate::entities:
         super::remote_number(),
         -1_000_i64..=1_000,
         prop::collection::btree_set(
-            super::remote_number().prop_map(crate::ids::RemoteLabelId),
+            super::remote_number().prop_map(crate::ids::RemoteLabelId::deck),
             0..3,
         ),
         any::<bool>(),
@@ -227,7 +227,7 @@ pub fn remote_task_baseline_strategy() -> impl Strategy<Value = crate::entities:
                     duedate,
                     scheduled,
                     done,
-                    stack: RemoteStackId(stack),
+                    stack: RemoteStackId::deck(stack),
                     order,
                     labels,
                     archived,

@@ -108,10 +108,10 @@ async fn daemon_journey(cfg: &common::LiveCfg) {
         .await
         .expect("RequestSync accepted");
     eventually(&app, |state| {
-        state
-            .tasks
-            .values()
-            .any(|t| t.remote.is_some_and(|r| r.card.get() == server_card.id))
+        state.tasks.values().any(|t| {
+            t.remote
+                .is_some_and(|r| r.card.as_deck() == Some(server_card.id))
+        })
     })
     .await;
 
@@ -122,7 +122,11 @@ async fn daemon_journey(cfg: &common::LiveCfg) {
         .load_full()
         .stacks
         .values()
-        .find(|s| s.remote.as_ref().is_some_and(|r| r.stack.get() == stack.id))
+        .find(|s| {
+            s.remote
+                .as_ref()
+                .is_some_and(|r| r.stack.as_deck() == Some(stack.id))
+        })
         .map(|s| s.id)
         .expect("the remote stack is adopted locally");
     let taskboard_domain::CommandOutcome::CreatedTask(task_id) = app
@@ -154,7 +158,7 @@ async fn daemon_journey(cfg: &common::LiveCfg) {
         stacks
             .iter()
             .flat_map(|s| &s.cards)
-            .any(|c| c.id == binding.card.get() && c.title == format!("{run}-local")),
+            .any(|c| Some(c.id) == binding.card.as_deck() && c.title == format!("{run}-local")),
         "the pushed card must exist on the server"
     );
 
@@ -205,10 +209,11 @@ async fn shutdown_mid_cycle(cfg: &common::LiveCfg) {
 
     // Queue a local op, then race the shutdown against the cycle.
     eventually(&app, |state| {
-        state
-            .stacks
-            .values()
-            .any(|s| s.remote.as_ref().is_some_and(|r| r.stack.get() == stack.id))
+        state.stacks.values().any(|s| {
+            s.remote
+                .as_ref()
+                .is_some_and(|r| r.stack.as_deck() == Some(stack.id))
+        })
     })
     .await;
     let stack_id = app
@@ -217,7 +222,11 @@ async fn shutdown_mid_cycle(cfg: &common::LiveCfg) {
         .load_full()
         .stacks
         .values()
-        .find(|s| s.remote.as_ref().is_some_and(|r| r.stack.get() == stack.id))
+        .find(|s| {
+            s.remote
+                .as_ref()
+                .is_some_and(|r| r.stack.as_deck() == Some(stack.id))
+        })
         .map(|s| s.id)
         .expect("stack adopted");
     app.engine
@@ -809,9 +818,9 @@ async fn v0_1_x_additive_upgrade_boot_settles_offline_without_a_server() {
     // tagged-default decode (NULL column ⇒ "nextcloud", board 77).
     eventually(&app, |state| {
         state.boards.values().any(|b| {
-            b.remote
-                .as_ref()
-                .is_some_and(|r| r.connector.as_str() == "nextcloud" && r.board.get() == 77)
+            b.remote.as_ref().is_some_and(|r| {
+                r.connector.as_str() == "nextcloud" && r.board.as_deck() == Some(77)
+            })
         })
     })
     .await;
@@ -831,7 +840,7 @@ async fn v0_1_x_additive_upgrade_boot_settles_offline_without_a_server() {
                 .boards
                 .get(board)
                 .and_then(|b| b.remote.as_ref())
-                .is_some_and(|r| r.board.get() == 77)
+                .is_some_and(|r| r.board.as_deck() == Some(77))
         })
     })
     .await;
@@ -911,10 +920,9 @@ async fn v0_1_x_additive_upgrade(cfg: &common::LiveCfg) {
         else {
             return false;
         };
-        let binding_ok = b
-            .remote
-            .as_ref()
-            .is_some_and(|r| r.connector.as_str() == "nextcloud" && r.board.get() == board.id);
+        let binding_ok = b.remote.as_ref().is_some_and(|r| {
+            r.connector.as_str() == "nextcloud" && r.board.as_deck() == Some(board.id)
+        });
         let row = state.sync.get(b.id);
         let settled = row.is_some_and(|r| {
             r.phase == taskboard_domain::SyncPhase::Idle && r.last_success.is_some()
@@ -1153,7 +1161,11 @@ async fn two_connector_body(
         let bound = &state.boards[&board];
         let binding = bound.remote.as_ref().expect("seeded binding");
         assert_eq!(binding.connector.as_str(), tag, "{tag}'s binding tag");
-        assert_eq!(binding.board.get(), remote, "{tag}'s remote board");
+        assert_eq!(
+            binding.board.as_deck(),
+            Some(remote),
+            "{tag}'s remote board"
+        );
     }
     let pulled_both = state.tasks.values().filter(|t| t.remote.is_some()).count();
     drop(state);
@@ -1439,7 +1451,7 @@ async fn move_board_body(
         let state = app.engine.shared_state().load_full();
         let binding = state.boards[&l1].remote.as_ref().expect("re-bound");
         assert_eq!(binding.connector, beta, "the command's tag is the mint");
-        assert_eq!(binding.board.get(), board_b.id);
+        assert_eq!(binding.board.as_deck(), Some(board_b.id));
     }
     eventually(&app, |state| {
         state
@@ -1491,9 +1503,10 @@ async fn move_board_body(
             .filter(|s| s.board == l1 && !s.deleted)
             .collect::<Vec<_>>();
         !stacks.is_empty()
-            && stacks
-                .iter()
-                .all(|s| s.remote.is_some_and(|r| r.board.get() == board_b.id))
+            && stacks.iter().all(|s| {
+                s.remote
+                    .is_some_and(|r| r.board.as_deck() == Some(board_b.id))
+            })
     })
     .await;
     let listing_a = retry(|| async { client_a.boards().await }).await?;

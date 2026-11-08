@@ -105,36 +105,122 @@ local_id!(
     ReflectionId
 );
 
+/// A remote id in its connector's namespace (ADR 0010's vocabulary,
+/// promoted — D-BF4). `Deck` payloads are the Nextcloud Deck wire
+/// numbers; `Files` payloads are the entity's own domain UUID — the
+/// files substrate has no separate remote id space, so a files binding
+/// needs no binding table or adoption ceremony (identity, not a link).
+///
+/// # Serde form (deliberate leniency)
+///
+/// The enum is `#[serde(untagged)]`: a `Deck` payload serializes as the
+/// bare number, a `Files` payload as the bare UUID string — exactly the
+/// pre-widening wire/storage face. The leniency is decode-side and
+/// intended: every historical bare-number form decodes as `Deck`, the
+/// mixed-fleet old-reader behavior. The tag discrimination is the
+/// payload shape itself (number vs UUID string), so the roundtrip is
+/// total and the variants never collide.
 macro_rules! remote_id {
     ($(#[$doc:meta])* $name:ident) => {
         $(#[$doc])*
         #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-        pub struct $name(pub u64);
+        #[serde(untagged)]
+        pub enum $name {
+            /// A Nextcloud Deck id (`u64`, unique per server; per board
+            /// for stacks/cards/labels).
+            Deck(u64),
+            /// The files substrate: the entity's own domain UUID.
+            Files(Uuid),
+        }
 
         impl $name {
-            /// The raw Deck id.
+            /// The Deck-lane constructor (the Deck actor's mint; the
+            /// only producer of `Deck` payloads today).
             #[must_use]
-            pub const fn get(self) -> u64 {
-                self.0
+            pub const fn deck(raw: u64) -> Self {
+                Self::Deck(raw)
+            }
+
+            /// The files-lane constructor (chunk 5's consumers; the
+            /// payload is the domain UUID itself).
+            #[must_use]
+            pub const fn files(id: Uuid) -> Self {
+                Self::Files(id)
+            }
+
+            /// The Deck wire number; `None` for a `Files` payload — a
+            /// different namespace the Deck endpoints cannot address.
+            /// Deck-lane callers hold `Deck` payloads by construction
+            /// (the Deck actor mints them); a `None` there is the typed
+            /// signal to refuse, never to unwrap.
+            #[must_use]
+            pub const fn as_deck(self) -> Option<u64> {
+                match self {
+                    Self::Deck(raw) => Some(raw),
+                    Self::Files(_) => None,
+                }
+            }
+
+            /// The files-lane UUID; `None` for a `Deck` payload.
+            #[must_use]
+            pub const fn as_files(self) -> Option<Uuid> {
+                match self {
+                    Self::Files(id) => Some(id),
+                    Self::Deck(_) => None,
+                }
+            }
+        }
+
+        impl fmt::Display for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                match self {
+                    Self::Deck(raw) => write!(f, "deck:{raw}"),
+                    // `Uuid`'s `Display` is the lowercase hyphenated form.
+                    Self::Files(id) => write!(f, "files:{id}"),
+                }
+            }
+        }
+
+        impl std::str::FromStr for $name {
+            type Err = InvalidRemoteId;
+
+            fn from_str(raw: &str) -> Result<Self, Self::Err> {
+                if let Some(num) = raw.strip_prefix("deck:") {
+                    return num
+                        .parse::<u64>()
+                        .map(Self::Deck)
+                        .map_err(|_| InvalidRemoteId);
+                }
+                if let Some(id) = raw.strip_prefix("files:") {
+                    return Uuid::parse_str(id).map(Self::Files).map_err(|_| InvalidRemoteId);
+                }
+                Err(InvalidRemoteId)
             }
         }
     };
 }
 
+/// A remote id text form (`deck:42`, `files:<uuid>`) that failed the
+/// strict parse; carries no payload — the input is echoed by the
+/// caller where it matters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("invalid remote id text form")]
+pub struct InvalidRemoteId;
+
 remote_id!(
-    /// Remote Deck board id (`u64`).
+    /// A remote board id in its connector's namespace.
     RemoteBoardId
 );
 remote_id!(
-    /// Remote Deck stack id (`u64`, unique per board).
+    /// A remote stack id in its connector's namespace (unique per board).
     RemoteStackId
 );
 remote_id!(
-    /// Remote Deck card id (`u64`, unique per board).
+    /// A remote card id in its connector's namespace (unique per board).
     RemoteCardId
 );
 remote_id!(
-    /// Remote Deck label id (`u64`, unique per board).
+    /// A remote label id in its connector's namespace (unique per board).
     RemoteLabelId
 );
 
@@ -378,10 +464,75 @@ mod tests {
 
         #[test]
         fn remote_ids_roundtrip_through_u64(raw in any::<u64>()) {
-            prop_assert_eq!(RemoteCardId(raw).get(), raw);
-            prop_assert_eq!(RemoteStackId(raw).get(), raw);
-            prop_assert_eq!(RemoteLabelId(raw).get(), raw);
-            prop_assert_eq!(RemoteBoardId(raw).get(), raw);
+            prop_assert_eq!(RemoteCardId::deck(raw).as_deck(), Some(raw));
+            prop_assert_eq!(RemoteStackId::deck(raw).as_deck(), Some(raw));
+            prop_assert_eq!(RemoteLabelId::deck(raw).as_deck(), Some(raw));
+            prop_assert_eq!(RemoteBoardId::deck(raw).as_deck(), Some(raw));
+            // The tag legs never cross: a Deck payload carries no files
+            // UUID and vice versa (D-BF4's namespace separation).
+            let uuid = uuid::Uuid::from_u128(u128::from(raw));
+            prop_assert_eq!(RemoteBoardId::files(uuid).as_files(), Some(uuid));
+            prop_assert_eq!(RemoteBoardId::files(uuid).as_deck(), None);
+            prop_assert_eq!(RemoteBoardId::deck(raw).as_files(), None);
+            prop_assert_ne!(RemoteBoardId::deck(raw), RemoteBoardId::files(uuid));
+        }
+
+        #[test]
+        fn remote_id_serde_roundtrips_both_variants(
+            raw in any::<u64>(),
+            uuid_lo in any::<u128>(),
+        ) {
+            // Deck legs ride the bare-number form (the pre-widening
+            // wire/storage face, pinned by the byte-compat law).
+            let deck = RemoteBoardId::deck(raw);
+            let json = serde_json::to_string(&deck).unwrap();
+            prop_assert_eq!(json.clone(), raw.to_string());
+            let back: RemoteBoardId = serde_json::from_str(&json).unwrap();
+            prop_assert_eq!(back, deck);
+            // Files legs ride the bare-UUID-string form.
+            let files = RemoteBoardId::files(uuid::Uuid::from_u128(uuid_lo));
+            let json = serde_json::to_string(&files).unwrap();
+            prop_assert_eq!(
+                json.clone(),
+                format!("\"{}\"", uuid::Uuid::from_u128(uuid_lo))
+            );
+            let back: RemoteBoardId = serde_json::from_str(&json).unwrap();
+            prop_assert_eq!(back, files);
+        }
+
+        #[test]
+        fn remote_id_text_form_roundtrip(raw in any::<u64>()) {
+            use std::str::FromStr;
+            let deck = RemoteStackId::deck(raw);
+            let text = deck.to_string();
+            prop_assert_eq!(text.clone(), format!("deck:{raw}"));
+            prop_assert_eq!(RemoteStackId::from_str(&text), Ok(deck));
+            prop_assert_eq!(
+                RemoteStackId::from_str("42"),
+                Err(crate::ids::InvalidRemoteId)
+            );
+            prop_assert_eq!(
+                RemoteStackId::from_str("deck:nope"),
+                Err(crate::ids::InvalidRemoteId)
+            );
+            prop_assert_eq!(
+                RemoteStackId::from_str("files:nope"),
+                Err(crate::ids::InvalidRemoteId)
+            );
+            prop_assert_eq!(
+                RemoteStackId::from_str(""),
+                Err(crate::ids::InvalidRemoteId)
+            );
+        }
+
+        #[test]
+        fn remote_id_files_text_form_roundtrip(uuid_lo in any::<u128>()) {
+            use std::str::FromStr;
+            let uuid = uuid::Uuid::from_u128(uuid_lo);
+            let files = RemoteCardId::files(uuid);
+            let text = files.to_string();
+            prop_assert_eq!(text.clone(), format!("files:{uuid}"));
+            prop_assert_eq!(RemoteCardId::from_str(&text), Ok(files));
         }
 
         #[test]
@@ -391,7 +542,7 @@ mod tests {
         ) {
             let binding = RemoteBoardBinding {
                 connector: ConnectorId::from(name.as_str()),
-                board: RemoteBoardId(b),
+                board: RemoteBoardId::deck(b),
             };
             let json = serde_json::to_string(&binding).unwrap();
             let back: RemoteBoardBinding = serde_json::from_str(&json).unwrap();
@@ -406,12 +557,12 @@ mod tests {
             l in any::<u64>(),
         ) {
             let card = RemoteCardRef {
-                board: RemoteBoardId(b),
-                stack: RemoteStackId(s),
-                card: RemoteCardId(c),
+                board: RemoteBoardId::deck(b),
+                stack: RemoteStackId::deck(s),
+                card: RemoteCardId::deck(c),
             };
-            let stack = RemoteStackRef { board: RemoteBoardId(b), stack: RemoteStackId(s) };
-            let label = RemoteLabelRef { board: RemoteBoardId(b), label: RemoteLabelId(l) };
+            let stack = RemoteStackRef { board: RemoteBoardId::deck(b), stack: RemoteStackId::deck(s) };
+            let label = RemoteLabelRef { board: RemoteBoardId::deck(b), label: RemoteLabelId::deck(l) };
             let card2: RemoteCardRef =
                 serde_json::from_str(&serde_json::to_string(&card).unwrap()).unwrap();
             prop_assert_eq!(card2, card);

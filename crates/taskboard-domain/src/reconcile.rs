@@ -594,7 +594,7 @@ mod tests {
             authors: crate::entities::BoardAuthors::default(),
             remote_seen: None,
         };
-        row.remote = crate::test_support::test_binding(crate::ids::RemoteBoardId(42));
+        row.remote = crate::test_support::test_binding(crate::ids::RemoteBoardId::deck(42));
         app.boards.insert(board(), row);
         app
     }
@@ -603,8 +603,8 @@ mod tests {
         Stack {
             id: StackId::from(uuid::Uuid::from_u128(u128::from(raw))),
             remote: bound.then_some(crate::ids::RemoteStackRef {
-                board: crate::ids::RemoteBoardId(42),
-                stack: crate::ids::RemoteStackId(raw),
+                board: crate::ids::RemoteBoardId::deck(42),
+                stack: crate::ids::RemoteStackId::deck(raw),
             }),
             board: board(),
             title: title.to_owned(),
@@ -625,8 +625,8 @@ mod tests {
         Label {
             id: LabelId::from(uuid::Uuid::from_u128(u128::from(raw))),
             remote: bound.then_some(crate::ids::RemoteLabelRef {
-                board: crate::ids::RemoteBoardId(42),
-                label: crate::ids::RemoteLabelId(raw),
+                board: crate::ids::RemoteBoardId::deck(42),
+                label: crate::ids::RemoteLabelId::deck(raw),
             }),
             board: board(),
             title: title.to_owned(),
@@ -646,11 +646,11 @@ mod tests {
         Task {
             id: TaskId::from(uuid::Uuid::from_u128(u128::from(raw))),
             remote: bound.then_some(crate::ids::RemoteCardRef {
-                board: crate::ids::RemoteBoardId(42),
-                stack: crate::ids::RemoteStackId(
+                board: crate::ids::RemoteBoardId::deck(42),
+                stack: crate::ids::RemoteStackId::deck(
                     u64::try_from(stack_id.as_uuid().as_u128()).unwrap_or(1),
                 ),
-                card: crate::ids::RemoteCardId(raw),
+                card: crate::ids::RemoteCardId::deck(raw),
             }),
             title: title.to_owned(),
             description: String::new(),
@@ -1085,8 +1085,8 @@ mod proptests {
         Stack {
             id: StackId::from(entity_id(*index)),
             remote: bound.then_some(RemoteStackRef {
-                board: RemoteBoardId(*ref_board),
-                stack: RemoteStackId(u64::try_from(*index).unwrap_or(1)),
+                board: RemoteBoardId::deck(*ref_board),
+                stack: RemoteStackId::deck(u64::try_from(*index).unwrap_or(1)),
             }),
             board: crate::ids::BoardId::from(entity_id(999)),
             title: title.clone(),
@@ -1108,8 +1108,8 @@ mod proptests {
         Label {
             id: LabelId::from(entity_id(*index)),
             remote: bound.then_some(RemoteLabelRef {
-                board: RemoteBoardId(*ref_board),
-                label: crate::ids::RemoteLabelId(u64::try_from(*index).unwrap_or(1)),
+                board: RemoteBoardId::deck(*ref_board),
+                label: crate::ids::RemoteLabelId::deck(u64::try_from(*index).unwrap_or(1)),
             }),
             board: crate::ids::BoardId::from(entity_id(999)),
             title: title.clone(),
@@ -1132,9 +1132,9 @@ mod proptests {
         Some(Task {
             id: TaskId::from(entity_id(*index)),
             remote: bound.then_some(RemoteCardRef {
-                board: RemoteBoardId(*ref_board),
-                stack: RemoteStackId(u64::try_from(*stack_index).unwrap_or(1)),
-                card: crate::ids::RemoteCardId(u64::try_from(*index).unwrap_or(1)),
+                board: RemoteBoardId::deck(*ref_board),
+                stack: RemoteStackId::deck(u64::try_from(*stack_index).unwrap_or(1)),
+                card: crate::ids::RemoteCardId::deck(u64::try_from(*index).unwrap_or(1)),
             }),
             title: title.clone(),
             description: String::new(),
@@ -1190,7 +1190,7 @@ mod proptests {
             board,
             crate::entities::Board {
                 id: board,
-                remote: crate::test_support::test_binding(RemoteBoardId(42)),
+                remote: crate::test_support::test_binding(RemoteBoardId::deck(42)),
                 title: "board".into(),
                 color: crate::entities::Color::new("0000ff"),
                 archived: false,
@@ -1352,7 +1352,7 @@ mod proptests {
         ) {
             let (mut app, board) = reconcile_state(&stacks, &labels, &tasks);
             app.boards.get_mut(&board).unwrap().remote = None;
-            let remote = RemoteBoardId(target);
+            let remote = RemoteBoardId::deck(target);
             let expected: usize = {
                 let board_stack_ids: std::collections::BTreeSet<_> = app
                     .stacks
@@ -1507,9 +1507,9 @@ mod proptest_strategies {
                 let mk = |id: u64, clocks: TaskClocks, bound: bool| Task {
                     id: TaskId::from(uuid::Uuid::from_u128(u128::from(id))),
                     remote: bound.then_some(RemoteCardRef {
-                        board: RemoteBoardId(1),
-                        stack: RemoteStackId(1),
-                        card: crate::ids::RemoteCardId(id),
+                        board: RemoteBoardId::deck(1),
+                        stack: RemoteStackId::deck(1),
+                        card: crate::ids::RemoteCardId::deck(id),
                     }),
                     title: "t".to_owned(),
                     description: "d".to_owned(),

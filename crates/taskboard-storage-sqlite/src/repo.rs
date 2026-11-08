@@ -46,6 +46,7 @@ pub struct SqliteTaskRepository {
 struct BoardRow {
     id: String,
     remote_board_id: Option<i64>,
+    remote_files_id: Option<String>,
     connector: Option<String>,
     title: String,
     color: String,
@@ -361,26 +362,34 @@ mod decode {
         codec::remote_columns_present_or_none(cols).map_err(|_| RepositoryError::Corrupted)
     }
 
-    /// The optional remote binding from the board's remote-id column:
-    /// all-NULL → `None`; any arity other than the ref's exact width —
-    /// or a mixed NULL/NOT-NULL row, or a negative id — is corruption.
+    /// The optional remote binding from the board's id columns
+    /// (D-BF4): both NULL → unbound; exactly one set → that tag's
+    /// payload; both set (or a negative id, or an unparsable UUID) is
+    /// corruption.
     pub(crate) fn remote_board(
-        cols: &[Option<i64>],
+        deck_col: Option<i64>,
+        files_col: Option<&str>,
         connector: Option<String>,
         default_connector: &ConnectorId,
     ) -> Result<Option<RemoteBoardBinding>, RepositoryError> {
-        match remote_opt(cols)?.as_deref() {
-            None => Ok(None),
-            Some([b]) => Ok(Some(RemoteBoardBinding {
-                // NULL tag ⇒ the spawn-time default (DF-4's resolution
-                // home); a non-NULL tag naming an unconfigured connector
-                // decodes as-is (D-3) — the owning actor simply never
-                // finds the board.
-                connector: connector.map_or_else(|| default_connector.clone(), ConnectorId::from),
-                board: RemoteBoardId(*b),
-            })),
-            Some(_) => Err(RepositoryError::Corrupted),
-        }
+        let board = match (deck_col, files_col) {
+            (None, None) => return Ok(None),
+            (Some(num), None) => {
+                RemoteBoardId::Deck(u64::try_from(num).map_err(|_| RepositoryError::Corrupted)?)
+            }
+            (None, Some(raw)) => RemoteBoardId::Files(
+                uuid::Uuid::parse_str(raw).map_err(|_| RepositoryError::Corrupted)?,
+            ),
+            (Some(_), Some(_)) => return Err(RepositoryError::Corrupted),
+        };
+        Ok(Some(RemoteBoardBinding {
+            // NULL tag ⇒ the spawn-time default (DF-4's resolution
+            // home); a non-NULL tag naming an unconfigured connector
+            // decodes as-is (D-3) — the owning actor simply never
+            // finds the board.
+            connector: connector.map_or_else(|| default_connector.clone(), ConnectorId::from),
+            board,
+        }))
     }
 
     /// See [`remote_board`].
@@ -390,8 +399,8 @@ mod decode {
         match remote_opt(cols)?.as_deref() {
             None => Ok(None),
             Some([b, s]) => Ok(Some(RemoteStackRef {
-                board: RemoteBoardId(*b),
-                stack: RemoteStackId(*s),
+                board: RemoteBoardId::deck(*b),
+                stack: RemoteStackId::deck(*s),
             })),
             Some(_) => Err(RepositoryError::Corrupted),
         }
@@ -404,9 +413,9 @@ mod decode {
         match remote_opt(cols)?.as_deref() {
             None => Ok(None),
             Some([b, s, c]) => Ok(Some(RemoteCardRef {
-                board: RemoteBoardId(*b),
-                stack: RemoteStackId(*s),
-                card: RemoteCardId(*c),
+                board: RemoteBoardId::deck(*b),
+                stack: RemoteStackId::deck(*s),
+                card: RemoteCardId::deck(*c),
             })),
             Some(_) => Err(RepositoryError::Corrupted),
         }
@@ -419,8 +428,8 @@ mod decode {
         match remote_opt(cols)?.as_deref() {
             None => Ok(None),
             Some([b, l]) => Ok(Some(RemoteLabelRef {
-                board: RemoteBoardId(*b),
-                label: RemoteLabelId(*l),
+                board: RemoteBoardId::deck(*b),
+                label: RemoteLabelId::deck(*l),
             })),
             Some(_) => Err(RepositoryError::Corrupted),
         }
@@ -481,7 +490,12 @@ fn stmt_error(err: &sqlx::Error) -> RepositoryError {
 
 fn decode_board(row: BoardRow, default_connector: &ConnectorId) -> Result<Board, RepositoryError> {
     let id = decode::uuid(&row.id)?;
-    let remote = decode::remote_board(&[row.remote_board_id], row.connector, default_connector)?;
+    let remote = decode::remote_board(
+        row.remote_board_id,
+        row.remote_files_id.as_deref(),
+        row.connector,
+        default_connector,
+    )?;
     Ok(Board {
         id: BoardId::from(id),
         remote,
@@ -952,7 +966,7 @@ impl SqliteTaskRepository {
 
         let board_rows = sqlx::query_as!(
             BoardRow,
-            r#"SELECT id, remote_board_id, connector, title, color,
+            r#"SELECT id, remote_board_id, remote_files_id, connector, title, color,
                       archived as "archived: bool", deleted as "deleted: bool",
                       ck_title as "ck_title: DateTime<Utc>",
                       ck_color as "ck_color: DateTime<Utc>",
@@ -1591,10 +1605,19 @@ async fn execute_batch(
     }
 
     for board in boards {
-        let remote = board
-            .remote
-            .as_ref()
-            .map(|b| codec::remote_col(b.board.get()));
+        // D-BF4: exactly one id column carries the binding's payload —
+        // `Deck(n)` the INTEGER one, `Files(u)` the TEXT one. An unbound
+        // board leaves both NULL.
+        let (remote_deck, remote_files) =
+            board
+                .remote
+                .as_ref()
+                .map_or((None, None), |b| match b.board {
+                    taskboard_domain::ids::RemoteBoardId::Deck(num) => {
+                        (Some(codec::remote_col(num)), None)
+                    }
+                    taskboard_domain::ids::RemoteBoardId::Files(id) => (None, Some(id.to_string())),
+                });
         // The tag source is the domain binding (DF-4): a bound row carries
         // its binding's connector, an unbound row the default (non-NULL on
         // every upsert; the tag on an unbound row is inert).
@@ -1603,10 +1626,11 @@ async fn execute_batch(
             .as_ref()
             .map_or(default_connector.as_str(), |b| b.connector.as_str());
         sqlx::query!(
-            r#"INSERT INTO boards (id, remote_board_id, title, color, archived, deleted, connector, ck_title, ck_color, ck_archived, ck_deleted, au_title, au_color, au_archived, au_deleted, remote_seen)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            r#"INSERT INTO boards (id, remote_board_id, remote_files_id, title, color, archived, deleted, connector, ck_title, ck_color, ck_archived, ck_deleted, au_title, au_color, au_archived, au_deleted, remote_seen)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
                        remote_board_id = excluded.remote_board_id,
+                       remote_files_id = excluded.remote_files_id,
                        title = excluded.title,
                        color = excluded.color,
                        archived = excluded.archived,
@@ -1622,7 +1646,8 @@ async fn execute_batch(
                        au_deleted = excluded.au_deleted,
                        remote_seen = excluded.remote_seen"#,
             codec::uuid_to_text(board.id.as_uuid()),
-            remote,
+            remote_deck,
+            remote_files,
             board.title,
             board.color.as_str(),
             board.archived,
@@ -1644,10 +1669,14 @@ async fn execute_batch(
     }
 
     for stack in stacks {
-        let (rb, rs) = stack.remote.map_or((None, None), |r| {
-            let (b, s) = codec::remote_stack_to_columns(r);
-            (Some(b), Some(s))
-        });
+        let (rb, rs) = match stack.remote {
+            Some(r) => {
+                let (b, s) =
+                    codec::remote_stack_to_columns(r).map_err(|_| RepositoryError::Corrupted)?;
+                (Some(b), Some(s))
+            }
+            None => (None, None),
+        };
         sqlx::query!(
             r#"INSERT INTO stacks (id, board, remote_board_id, remote_stack_id, title, sort_order, archived, deleted, ck_title, ck_sort_order, ck_deleted, au_title, au_sort_order, au_deleted, remote_seen)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -1688,10 +1717,14 @@ async fn execute_batch(
     }
 
     for label in labels {
-        let (rb, rl) = label.remote.map_or((None, None), |r| {
-            let (b, l) = codec::remote_label_to_columns(r);
-            (Some(b), Some(l))
-        });
+        let (rb, rl) = match label.remote {
+            Some(r) => {
+                let (b, l) =
+                    codec::remote_label_to_columns(r).map_err(|_| RepositoryError::Corrupted)?;
+                (Some(b), Some(l))
+            }
+            None => (None, None),
+        };
         sqlx::query!(
             r#"INSERT INTO labels (id, board, remote_board_id, remote_label_id, title, color, deleted, ck_title, ck_color, ck_deleted, au_title, au_color, au_deleted, remote_seen)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -1730,10 +1763,14 @@ async fn execute_batch(
     }
 
     for task in tasks {
-        let (rb, rs, rc) = task.remote.map_or((None, None, None), |r| {
-            let (b, s, c) = codec::remote_card_to_columns(r);
-            (Some(b), Some(s), Some(c))
-        });
+        let (rb, rs, rc) = match task.remote {
+            Some(r) => {
+                let (b, s, c) =
+                    codec::remote_card_to_columns(r).map_err(|_| RepositoryError::Corrupted)?;
+                (Some(b), Some(s), Some(c))
+            }
+            None => (None, None, None),
+        };
         // D-F1's typed bound: effort is unsigned in the domain; the
         // storage INTEGER is an i64, so values past i64::MAX are a
         // corrupt-input rejection, never a silent wrap.
@@ -2518,7 +2555,15 @@ async fn execute_batch(
             r#"DELETE FROM sync_metadata
                WHERE key = 'boards'
                   OR key IN (SELECT 'stacks:' || remote_board_id FROM boards WHERE id = ?1)
-                  OR key IN (SELECT 'archived_stacks:' || remote_board_id FROM boards WHERE id = ?1)"#,
+                  OR key IN (SELECT 'archived_stacks:' || remote_board_id FROM boards WHERE id = ?1)
+                  OR key IN (
+                      SELECT 'stacks:files:' || remote_files_id FROM boards
+                      WHERE id = ?1 AND remote_files_id IS NOT NULL
+                  )
+                  OR key IN (
+                      SELECT 'archived_stacks:files:' || remote_files_id FROM boards
+                      WHERE id = ?1 AND remote_files_id IS NOT NULL
+                  )"#,
             board_uuid
         )
         .execute(&mut *tx)
@@ -2663,7 +2708,7 @@ mod remote_decode_tests {
     #[test]
     fn all_null_remote_columns_decode_as_unset() {
         assert!(
-            decode::remote_board(&[None], None, &ConnectorId::from("c1"))
+            decode::remote_board(None, None, None, &ConnectorId::from("c1"))
                 .unwrap()
                 .is_none()
         );
@@ -2674,18 +2719,18 @@ mod remote_decode_tests {
 
     #[test]
     fn exact_arity_remote_columns_decode_the_ref() {
-        let board = decode::remote_board(&[Some(7)], None, &ConnectorId::from("c1"))
+        let board = decode::remote_board(Some(7), None, None, &ConnectorId::from("c1"))
             .unwrap()
             .unwrap();
-        assert_eq!(board.board, taskboard_domain::ids::RemoteBoardId(7));
+        assert_eq!(board.board, taskboard_domain::ids::RemoteBoardId::deck(7));
         let stack = decode::remote_stack(&[Some(1), Some(2)]).unwrap().unwrap();
-        assert_eq!(stack.stack, taskboard_domain::ids::RemoteStackId(2));
+        assert_eq!(stack.stack, taskboard_domain::ids::RemoteStackId::deck(2));
         let card = decode::remote_card(&[Some(1), Some(2), Some(3)])
             .unwrap()
             .unwrap();
-        assert_eq!(card.card, taskboard_domain::ids::RemoteCardId(3));
+        assert_eq!(card.card, taskboard_domain::ids::RemoteCardId::deck(3));
         let label = decode::remote_label(&[Some(1), Some(4)]).unwrap().unwrap();
-        assert_eq!(label.label, taskboard_domain::ids::RemoteLabelId(4));
+        assert_eq!(label.label, taskboard_domain::ids::RemoteLabelId::deck(4));
     }
 
     #[test]
@@ -2707,7 +2752,8 @@ mod remote_decode_tests {
     #[test]
     fn over_arity_remote_columns_are_corrupted_not_ignored() {
         assert_eq!(
-            decode::remote_board(&[Some(1), Some(2)], None, &ConnectorId::from("c1")).unwrap_err(),
+            decode::remote_board(Some(1), Some("not-a-uuid"), None, &ConnectorId::from("c1"))
+                .unwrap_err(),
             RepositoryError::Corrupted
         );
         assert_eq!(

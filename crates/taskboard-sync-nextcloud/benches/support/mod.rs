@@ -83,7 +83,7 @@ fn fixture_board() -> Board {
         id: BoardId::from(id(BOARD_BASE, 0)),
         remote: Some(RemoteBoardBinding {
             connector: taskboard_domain::ids::ConnectorId::from("nextcloud"),
-            board: RemoteBoardId(77),
+            board: RemoteBoardId::deck(77),
         }),
         title: "Bench board".into(),
         color: Color::new("3366ff"),
@@ -105,8 +105,8 @@ fn fixture_stack(s: usize, board: &Board) -> Stack {
     Stack {
         id: StackId::from(id(STACK_BASE, s)),
         remote: Some(RemoteStackRef {
-            board: RemoteBoardId(77),
-            stack: RemoteStackId(7 + ux(s)),
+            board: RemoteBoardId::deck(77),
+            stack: RemoteStackId::deck(7 + ux(s)),
         }),
         board: board.id,
         title: format!("Stack {s}"),
@@ -128,8 +128,8 @@ fn fixture_label(l: usize, board: &Board) -> Label {
     Label {
         id: LabelId::from(id(LABEL_BASE, l)),
         remote: Some(RemoteLabelRef {
-            board: RemoteBoardId(77),
-            label: RemoteLabelId(9 + ux(l)),
+            board: RemoteBoardId::deck(77),
+            label: RemoteLabelId::deck(9 + ux(l)),
         }),
         board: board.id,
         title: format!("Label {l}"),
@@ -160,9 +160,9 @@ fn fixture_task(i: usize, stacks: &[Stack], labels: &[Label]) -> Task {
     Task {
         id: TaskId::from(id(TASK_BASE, i)),
         remote: Some(RemoteCardRef {
-            board: RemoteBoardId(77),
-            stack: RemoteStackId(7),
-            card: RemoteCardId(1_000 + ux(i)),
+            board: RemoteBoardId::deck(77),
+            stack: RemoteStackId::deck(7),
+            card: RemoteCardId::deck(1_000 + ux(i)),
         }),
         title: format!("Task {i:05} bench fixture"),
         description: format!("Deterministic bench fixture task number {i}."),

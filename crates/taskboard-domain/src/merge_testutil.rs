@@ -14,7 +14,7 @@ use crate::ids::{
     RemoteStackId, RemoteStackRef, StackId, TaskId,
 };
 use crate::outbox::PendingOp;
-use crate::remote::{RemoteBoard, RemoteBoardSnapshot, RemoteLabel, RemoteStack, RemoteTask};
+use crate::remote::{DeckBoardSnapshot, RemoteBoard, RemoteLabel, RemoteStack, RemoteTask};
 use crate::state::AppState;
 
 pub(crate) fn ts(secs: i64) -> DateTime<Utc> {
@@ -29,21 +29,21 @@ pub(crate) const BASE: i64 = 36_000; // 10:00:00Z
 pub(crate) const REMOTE_BOARD_NUM: u64 = 77;
 
 pub(crate) fn board(num: u64) -> RemoteBoardId {
-    RemoteBoardId(num)
+    RemoteBoardId::deck(num)
 }
 
 pub(crate) fn card_ref(stack: u64, card: u64) -> RemoteCardRef {
     RemoteCardRef {
         board: board(REMOTE_BOARD_NUM),
-        stack: RemoteStackId(stack),
-        card: RemoteCardId(card),
+        stack: RemoteStackId::deck(stack),
+        card: RemoteCardId::deck(card),
     }
 }
 
 pub(crate) fn stack_ref(stack: u64) -> RemoteStackRef {
     RemoteStackRef {
         board: board(REMOTE_BOARD_NUM),
-        stack: RemoteStackId(stack),
+        stack: RemoteStackId::deck(stack),
     }
 }
 
@@ -66,7 +66,7 @@ pub(crate) fn remote_task(stack: u64, card: u64, last_modified: i64) -> RemoteTa
         duedate: None,
         scheduled: None,
         done: None,
-        stack: RemoteStackId(stack),
+        stack: RemoteStackId::deck(stack),
         order: card.cast_signed(),
         labels: BTreeSet::new(),
         archived: false,
@@ -206,8 +206,8 @@ pub(crate) fn base_state(task: Task) -> AppState {
     state
 }
 
-pub(crate) fn snapshot(stacks: Vec<RemoteStack>, tasks: Vec<RemoteTask>) -> RemoteBoardSnapshot {
-    RemoteBoardSnapshot {
+pub(crate) fn snapshot(stacks: Vec<RemoteStack>, tasks: Vec<RemoteTask>) -> DeckBoardSnapshot {
+    DeckBoardSnapshot {
         board: RemoteBoard {
             id: board(REMOTE_BOARD_NUM),
             title: "board".into(),
@@ -225,7 +225,7 @@ pub(crate) fn snapshot(stacks: Vec<RemoteStack>, tasks: Vec<RemoteTask>) -> Remo
 pub(crate) fn single_stack_snapshot(
     tasks: Vec<RemoteTask>,
     last_modified: i64,
-) -> RemoteBoardSnapshot {
+) -> DeckBoardSnapshot {
     snapshot(vec![remote_stack(1, last_modified)], tasks)
 }
 
@@ -253,7 +253,7 @@ pub(crate) fn bound_label(num: u64) -> Label {
         id: LabelId::from(uuid::Uuid::from_u128(600 + u128::from(num))),
         remote: Some(RemoteLabelRef {
             board: board(REMOTE_BOARD_NUM),
-            label: RemoteLabelId(num),
+            label: RemoteLabelId::deck(num),
         }),
         board: BoardId::from(uuid::Uuid::from_u128(800)),
         title: format!("label {num}"),
@@ -273,7 +273,7 @@ pub(crate) fn remote_label(num: u64, last_modified: i64) -> RemoteLabel {
     RemoteLabel {
         id: RemoteLabelRef {
             board: board(REMOTE_BOARD_NUM),
-            label: RemoteLabelId(num),
+            label: RemoteLabelId::deck(num),
         },
         title: format!("label {num} renamed"),
         color: "0000ff".into(),

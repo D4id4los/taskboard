@@ -103,19 +103,64 @@ pub struct RemoteTask {
     pub created_at: DateTime<Utc>,
 }
 
-/// The complete remote view of one board at sync time.
+/// The complete remote view of one board at sync time, in its
+/// backend's shape (D-BF4: the payload itself is the tag — no sidecar
+/// discriminator field exists).
 ///
 /// # Completeness contract
 ///
-/// Binding on the Phase 4 sync actor: a [`RemoteBoardSnapshot`] carried in
+/// Binding on the sync actor: a [`RemoteBoardSnapshot`] carried in
 /// `SyncReport::Completed` is the actor's complete view of the board at
 /// sync time — a resource absent from it is absent on the server. The
-/// actor satisfies this by fetching the full stacks list whenever anything
-/// reports changed (validators gate it: unchanged stacks may be filled
-/// from its cached copy). Absence detection (the R3 pull rule) is only as
-/// correct as this contract.
+/// actor satisfies this by fetching the full stacks list whenever
+/// anything reports changed (validators gate it: unchanged stacks may
+/// be filled from its cached copy). Absence detection (the R3 pull
+/// rule) is only as correct as this contract.
+///
+/// # Serde form (deliberate leniency)
+///
+/// Untagged, like the id family: the `Deck` leg serializes as the bare
+/// struct — byte-identical with the pre-widening report face — and a
+/// historical bare-struct payload decodes as `Deck`. The two legs'
+/// shapes are disjoint (a files snapshot is identity-only in chunk 3),
+/// so the decode is total and never ambiguous.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RemoteBoardSnapshot {
+#[serde(untagged)]
+pub enum RemoteBoardSnapshot {
+    /// Deck's full stacks/cards/labels view (the pre-widening struct
+    /// verbatim; the Deck actor's payload).
+    Deck(DeckBoardSnapshot),
+    /// The files substrate: identity-only in chunk 3 — chunk 5 grows
+    /// the payload (folded board sections), never this chunk.
+    Files(FilesBoardSnapshot),
+}
+
+impl RemoteBoardSnapshot {
+    /// The Deck leg; `None` for a `Files` payload. The Deck lane's
+    /// read-side accessor — callers that hold a Deck connector's report
+    /// match or expect, never assume.
+    #[must_use]
+    pub const fn as_deck(&self) -> Option<&DeckBoardSnapshot> {
+        match self {
+            Self::Deck(snapshot) => Some(snapshot),
+            Self::Files(_) => None,
+        }
+    }
+
+    /// The files leg; `None` for a `Deck` payload.
+    #[must_use]
+    pub const fn as_files(&self) -> Option<&FilesBoardSnapshot> {
+        match self {
+            Self::Files(snapshot) => Some(snapshot),
+            Self::Deck(_) => None,
+        }
+    }
+}
+
+/// The Deck-shaped snapshot body (the pre-widening `RemoteBoardSnapshot`
+/// struct, renamed so the enum owns the name).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeckBoardSnapshot {
     /// The board itself.
     pub board: RemoteBoard,
     /// All stacks of the board.
@@ -124,6 +169,15 @@ pub struct RemoteBoardSnapshot {
     pub tasks: Vec<RemoteTask>,
     /// All labels of the board.
     pub labels: Vec<RemoteLabel>,
+}
+
+/// The files-substrate snapshot body (D-BF4: the remote identity *is*
+/// the domain UUID — there is nothing else to carry until chunk 5's
+/// folded sections arrive).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FilesBoardSnapshot {
+    /// The board's remote identity: the domain UUID by construction.
+    pub board: RemoteBoardId,
 }
 
 /// Lookup-only index from remote refs to local ids, derived from the
@@ -216,6 +270,12 @@ pub struct PushOutcome {
 }
 
 /// Result of one push attempt.
+//
+// The echo variant dominates the enum's size (a full card echo, the
+// R9 echo-adoption input); the widened id payloads grew it past the
+// lint's ratio. The outcomes live in short-lived per-report vectors,
+// so boxing the echo would not buy anything worth the deref noise.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PushResult {
     /// Server accepted. `echo` is the response body as a remote view where
@@ -299,6 +359,16 @@ mod tests {
         }
 
         #[test]
+        fn files_snapshot_roundtrips_through_serde(board in any::<u128>()) {
+            let snap = RemoteBoardSnapshot::Files(FilesBoardSnapshot {
+                board: crate::ids::RemoteBoardId::files(uuid::Uuid::from_u128(board)),
+            });
+            let json = serde_json::to_string(&snap).unwrap();
+            let back: RemoteBoardSnapshot = serde_json::from_str(&json).unwrap();
+            prop_assert_eq!(back, snap);
+        }
+
+        #[test]
         fn push_outcome_roundtrips_through_serde(outcome in test_support::push_outcome_strategy()) {
             let json = serde_json::to_string(&outcome).unwrap();
             let back: PushOutcome = serde_json::from_str(&json).unwrap();
@@ -316,5 +386,32 @@ mod tests {
             let back: BoardPullValidators = serde_json::from_str(&json).unwrap();
             prop_assert_eq!(back, validators);
         }
+    }
+
+    /// T3 — the byte-compat pin: the pre-widening `RemoteBoardSnapshot`
+    /// struct's serialized face (the bare struct, no envelope) decodes
+    /// into the tagged enum as the `Deck` leg, unchanged. The historical
+    /// report bytes — journal rows, in-flight payloads — survive the
+    /// widening verbatim.
+    #[test]
+    fn pre_widening_snapshot_bytes_decode_as_the_deck_leg() {
+        let old = serde_json::json!({
+            "board": {
+                "id": 42,
+                "title": "golden",
+                "color": "3366cc",
+                "archived": false,
+                "deleted_at": null,
+                "last_modified": "1970-01-01T00:00:00Z",
+            },
+            "stacks": [],
+            "tasks": [],
+            "labels": [],
+        });
+        let snap: RemoteBoardSnapshot = serde_json::from_value(old).expect("old bytes decode");
+        let RemoteBoardSnapshot::Deck(deck) = snap else {
+            panic!("the bare struct must decode as the Deck leg");
+        };
+        assert_eq!(deck.board.id, crate::ids::RemoteBoardId::deck(42));
     }
 }

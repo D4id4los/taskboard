@@ -10,8 +10,8 @@ use std::sync::Arc;
 use taskboard_domain::test_support::{CountingIds, InMemoryRepository};
 use taskboard_domain::{
     AppState, CommandOutcome, LocalOp, NotifierMessage, PersistedState, PushOutcome, PushResult,
-    RemoteBoard, RemoteBoardSnapshot, StateCommand, SyncCommand, SyncReport, SystemEvent,
-    TaskRepository, persistence::RepositoryError,
+    RemoteBoard, StateCommand, SyncCommand, SyncReport, SystemEvent, TaskRepository,
+    persistence::RepositoryError,
 };
 use taskboard_state::{DayRollConfig, ExecuteError, spawn_state_engine};
 
@@ -289,19 +289,21 @@ async fn report_ingestion_flips_the_pushed_flag_at_the_boundary() {
     // with pushes; `Failed`-with-pushes shares the one call site).
     let report = SyncReport::Completed {
         connector: taskboard_domain::test_support::test_connector(),
-        snapshot: Box::new(RemoteBoardSnapshot {
-            board: RemoteBoard {
-                id: taskboard_domain::RemoteBoardId(42),
-                title: "kiosk".into(),
-                color: "0000ff".into(),
-                archived: false,
-                deleted_at: None,
-                last_modified: common::ts(T0 + 120),
+        snapshot: Box::new(taskboard_domain::RemoteBoardSnapshot::Deck(
+            taskboard_domain::DeckBoardSnapshot {
+                board: RemoteBoard {
+                    id: taskboard_domain::RemoteBoardId::deck(42),
+                    title: "kiosk".into(),
+                    color: "0000ff".into(),
+                    archived: false,
+                    deleted_at: None,
+                    last_modified: common::ts(T0 + 120),
+                },
+                stacks: vec![],
+                tasks: vec![],
+                labels: vec![],
             },
-            stacks: vec![],
-            tasks: vec![],
-            labels: vec![],
-        }),
+        )),
         validators: common::test_validators(),
         pushes: vec![PushOutcome {
             op: op_id,
@@ -807,19 +809,21 @@ async fn a_pushed_log_time_undo_enqueues_instead_of_retracting() {
     // boundary test above).
     let report = SyncReport::Completed {
         connector: taskboard_domain::test_support::test_connector(),
-        snapshot: Box::new(RemoteBoardSnapshot {
-            board: RemoteBoard {
-                id: taskboard_domain::RemoteBoardId(42),
-                title: "kiosk".into(),
-                color: "0000ff".into(),
-                archived: false,
-                deleted_at: None,
-                last_modified: common::ts(T0 + 120),
+        snapshot: Box::new(taskboard_domain::RemoteBoardSnapshot::Deck(
+            taskboard_domain::DeckBoardSnapshot {
+                board: RemoteBoard {
+                    id: taskboard_domain::RemoteBoardId::deck(42),
+                    title: "kiosk".into(),
+                    color: "0000ff".into(),
+                    archived: false,
+                    deleted_at: None,
+                    last_modified: common::ts(T0 + 120),
+                },
+                stacks: vec![],
+                tasks: vec![],
+                labels: vec![],
             },
-            stacks: vec![],
-            tasks: vec![],
-            labels: vec![],
-        }),
+        )),
         validators: common::test_validators(),
         pushes: vec![PushOutcome {
             op: op_id,

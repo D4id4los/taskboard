@@ -337,9 +337,9 @@ mod tests {
                 LocalOp::DeleteRemoteCard {
                     board,
                     card: crate::ids::RemoteCardRef {
-                        board: crate::ids::RemoteBoardId(42),
-                        stack: crate::ids::RemoteStackId(7),
-                        card: crate::ids::RemoteCardId(517),
+                        board: crate::ids::RemoteBoardId::deck(42),
+                        stack: crate::ids::RemoteStackId::deck(7),
+                        card: crate::ids::RemoteCardId::deck(517),
                     },
                 },
                 "delete_remote_card",
@@ -348,8 +348,8 @@ mod tests {
                 LocalOp::DeleteRemoteStack {
                     board,
                     stack: crate::ids::RemoteStackRef {
-                        board: crate::ids::RemoteBoardId(42),
-                        stack: crate::ids::RemoteStackId(8),
+                        board: crate::ids::RemoteBoardId::deck(42),
+                        stack: crate::ids::RemoteStackId::deck(8),
                     },
                 },
                 "delete_remote_stack",
@@ -610,13 +610,13 @@ mod tests {
     fn ref_delete_ops_own_their_board_and_target_no_task() {
         let board = BoardId::from(Uuid::from_u128(1));
         let card_ref = crate::ids::RemoteCardRef {
-            board: crate::ids::RemoteBoardId(42),
-            stack: crate::ids::RemoteStackId(7),
-            card: crate::ids::RemoteCardId(517),
+            board: crate::ids::RemoteBoardId::deck(42),
+            stack: crate::ids::RemoteStackId::deck(7),
+            card: crate::ids::RemoteCardId::deck(517),
         };
         let stack_ref = crate::ids::RemoteStackRef {
-            board: crate::ids::RemoteBoardId(42),
-            stack: crate::ids::RemoteStackId(8),
+            board: crate::ids::RemoteBoardId::deck(42),
+            stack: crate::ids::RemoteStackId::deck(8),
         };
         let empty: BTreeMap<TaskId, Task> = BTreeMap::new();
         let stacks: BTreeMap<StackId, Stack> = BTreeMap::new();
@@ -643,9 +643,9 @@ mod tests {
     #[test]
     fn ref_delete_pending_ops_roundtrip_through_serde() {
         let card_ref = crate::ids::RemoteCardRef {
-            board: crate::ids::RemoteBoardId(42),
-            stack: crate::ids::RemoteStackId(7),
-            card: crate::ids::RemoteCardId(517),
+            board: crate::ids::RemoteBoardId::deck(42),
+            stack: crate::ids::RemoteStackId::deck(7),
+            card: crate::ids::RemoteCardId::deck(517),
         };
         for op in [
             LocalOp::DeleteRemoteCard {
@@ -655,8 +655,8 @@ mod tests {
             LocalOp::DeleteRemoteStack {
                 board: BoardId::from(Uuid::from_u128(1)),
                 stack: crate::ids::RemoteStackRef {
-                    board: crate::ids::RemoteBoardId(42),
-                    stack: crate::ids::RemoteStackId(8),
+                    board: crate::ids::RemoteBoardId::deck(42),
+                    stack: crate::ids::RemoteStackId::deck(8),
                 },
             },
         ] {

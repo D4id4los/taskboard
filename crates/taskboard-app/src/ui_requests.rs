@@ -846,7 +846,7 @@ async fn list_remote_boards(
     Ok(remotes
         .into_iter()
         .map(|remote| RemoteBoardRow {
-            remote_id: RemoteBoardId(remote.id),
+            remote_id: RemoteBoardId::deck(remote.id),
             title: remote.title,
         })
         .collect())
@@ -1085,7 +1085,7 @@ async fn create_local_board(
     let title = live_remote_boards(&entry, stored.expose())
         .await?
         .into_iter()
-        .find(|b| b.id == remote.0)
+        .find(|b| Some(b.id) == remote.as_deck())
         .map(|b| b.title)
         .ok_or(SettingsError::Gone)?;
     let outcome = workspace

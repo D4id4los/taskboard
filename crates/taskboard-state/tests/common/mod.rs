@@ -174,7 +174,7 @@ pub fn seed_bound_board_state(title: &str) -> PersistedState {
     let mut state = seed_board_state(title);
     let board = state.boards.values_mut().next().expect("one board");
     board.remote =
-        taskboard_domain::test_support::test_binding(taskboard_domain::RemoteBoardId(42));
+        taskboard_domain::test_support::test_binding(taskboard_domain::RemoteBoardId::deck(42));
     state
 }
 
