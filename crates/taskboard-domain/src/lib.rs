@@ -138,7 +138,7 @@ pub use persistence::{
     BoxFuture, PersistedState, PersistenceAction, RepositoryError, SyncStateReader, SyncValidators,
     TaskRepository, ValidatorKey, apply_actions,
 };
-pub use pipeline::{apply_push_report, apply_sync_report};
+pub use pipeline::{apply_files_board_snapshot, apply_push_report, apply_sync_report};
 pub use push::{
     CardShape, EntityTables, MaterializedOp, NewCardShape, PushGroup, PushTarget, plan_pushes,
 };

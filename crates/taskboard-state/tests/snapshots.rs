@@ -2705,6 +2705,246 @@ async fn s_deck_full_sync_golden() {
     drop(s);
 }
 
+/// S-files-golden — the files lane's ingestion golden (dispatch chunk
+/// 5): a `Files`-tagged snapshot — the folded board as domain rows —
+/// through the existing per-field LWW pipeline. The duel legs are the
+/// chunk-1 order: the peer row's title carries an *author* stamp at an
+/// equal clock, so the authored row wins; the queued offline op
+/// settles through `Applied { echo: None }` (files echo semantics:
+/// identity needs no echo); the sections document folds a time entry
+/// keyed by the domain-UUID card key. A second merge implementation
+/// (seq-ordered or author-blind) cannot produce this tree.
+#[cfg_attr(miri, ignore)] // insta needs socketpair (environment gate)
+#[allow(clippy::too_many_lines)] // one journey: bind, queue, one files cycle, settle
+#[tokio::test]
+async fn s_files_board_sync_golden() {
+    const BOARD_UUID: uuid::Uuid = uuid::Uuid::from_u128(0xB0A1D);
+    let mut s = Scenario::start_empty().await;
+    let CommandOutcome::CreatedBoard(board) = s
+        .run(StateCommand::CreateBoard {
+            title: "files board".into(),
+            color: Color::new("2a9d8f"),
+        })
+        .await
+    else {
+        panic!("wrong receipt");
+    };
+    s.run(StateCommand::BindBoard {
+        board,
+        remote: taskboard_domain::RemoteBoardId::files(BOARD_UUID),
+        connector: taskboard_domain::ConnectorId::from("files-sync"),
+    })
+    .await;
+    let CommandOutcome::CreatedStack(stack) = s
+        .run(StateCommand::CreateStack {
+            board,
+            title: "column".into(),
+            order: 1,
+        })
+        .await
+    else {
+        panic!("wrong receipt");
+    };
+    // On files the domain UUID *is* the remote identity: the peer's
+    // row arriving under the local task's UUID is the same row, and
+    // their equal clocks duel on the author leg.
+    let CommandOutcome::CreatedTask(local_task) = s
+        .run(StateCommand::CreateTask {
+            title: "offline card".into(),
+            stack,
+            order: 1,
+        })
+        .await
+    else {
+        panic!("wrong receipt");
+    };
+    let queued_op = s
+        .repo
+        .snapshot()
+        .outbox
+        .iter()
+        .find(|pending| pending.op == taskboard_domain::LocalOp::CreateTask(local_task))
+        .map(|pending| pending.op_id)
+        .expect("the offline create is queued");
+
+    let local_row = s
+        .handle
+        .shared_state()
+        .load_full()
+        .tasks
+        .get(&local_task)
+        .expect("the local row exists")
+        .clone();
+    // Equal title clocks, different authors: the authored peer row
+    // wins (chunk 1's `None < Some` order leg).
+    let mut peer_task = local_row.clone();
+    peer_task.title = "peer rename".into();
+    peer_task.authors.title = Some(taskboard_domain::ids::AuthorId::from_uuid(
+        uuid::Uuid::from_u128(0xBEEF),
+    ));
+    let peer_new_task = {
+        let mut row = files_task_row_defaults(ts(T0 + 120));
+        row.id = taskboard_domain::TaskId::from_uuid(uuid::Uuid::from_u128(0xCAFE));
+        row.stack = stack;
+        row.title = "adopted from peer".into();
+        row
+    };
+    let sections = taskboard_domain::appdata::AppDataDocument {
+        format: 1,
+        board: taskboard_domain::RemoteBoardId::files(BOARD_UUID),
+        sections: taskboard_domain::appdata::AppDataSections {
+            time_entries: Some(
+                [(
+                    // The card key is the domain UUID on files.
+                    peer_new_task.id.as_uuid().to_string(),
+                    taskboard_domain::appdata::TimeEntryRecord::Entry {
+                        task: Some(peer_new_task.id.as_uuid().to_string()),
+                        title: "folded entry".into(),
+                        start: ts(T0),
+                        end: None,
+                        created: ts(T0),
+                        clock: ts(T0 + 120),
+                        kind: taskboard_domain::tracking::TimeEntryKind::Work,
+                        by: None,
+                    },
+                )]
+                .into_iter()
+                .collect(),
+            ),
+            ..taskboard_domain::appdata::AppDataSections::default()
+        },
+        unknown: BTreeMap::default(),
+    };
+    s.report_tx
+        .send(SyncReport::Completed {
+            app_data: taskboard_domain::AppDataEvidence::Absent,
+            duration: std::time::Duration::from_millis(120),
+            connector: taskboard_domain::ConnectorId::from("files-sync"),
+            snapshot: Box::new(taskboard_domain::RemoteBoardSnapshot::Files(
+                taskboard_domain::remote::FilesBoardSnapshot {
+                    board: taskboard_domain::RemoteBoardId::files(BOARD_UUID),
+                    up_to_seq: 7,
+                    board_row: None,
+                    stacks: vec![files_stack_row(stack, ts(T0 + 120), None)],
+                    tasks: vec![peer_task, peer_new_task],
+                    labels: Vec::new(),
+                    sections: Some(Box::new(sections)),
+                },
+            )),
+            validators: taskboard_domain::BoardPullValidators {
+                boards: taskboard_domain::SyncValidators::default(),
+                stacks: taskboard_domain::SyncValidators::default(),
+                archived_stacks: taskboard_domain::SyncValidators::default(),
+            },
+            pushes: vec![taskboard_domain::PushOutcome {
+                op: queued_op,
+                result: taskboard_domain::PushResult::Applied { echo: None },
+            }],
+            read_at: chrono::DateTime::<chrono::Utc>::MAX_UTC,
+            features: taskboard_domain::DeckFeatures::CONSERVATIVE,
+        })
+        .await
+        .expect("report channel open");
+    // The author leg decides the equal-clock duel; the binding rides
+    // the files identity.
+    wait_for_task(&s, |t| {
+        t.title == "peer rename"
+            && t.remote
+                == Some(taskboard_domain::RemoteCardRef {
+                    board: taskboard_domain::RemoteBoardId::files(BOARD_UUID),
+                    stack: taskboard_domain::RemoteStackId::files(stack.as_uuid()),
+                    card: taskboard_domain::RemoteCardId::files(local_task.as_uuid()),
+                })
+    })
+    .await;
+    // The queued create settled through its echo-less Applied.
+    wait_for_outbox(&s, 1, "the adopted peer card's op only remains").await;
+    s.snap("s_files_board_sync_golden");
+    drop(s);
+}
+
+/// A peer task row skeleton: zero clocks (an unset field never duels),
+/// unset everything else — the caller names id/stack/title.
+fn files_task_row_defaults(at: chrono::DateTime<chrono::Utc>) -> taskboard_domain::Task {
+    taskboard_domain::Task {
+        id: taskboard_domain::TaskId::from_uuid(uuid::Uuid::from_u128(0)),
+        remote: None,
+        title: String::new(),
+        description: String::new(),
+        duedate: None,
+        scheduled: None,
+        done: None,
+        stack: taskboard_domain::StackId::from_uuid(uuid::Uuid::from_u128(0)),
+        order: 0,
+        label_memberships: BTreeMap::new(),
+        effort: None,
+        importance: None,
+        urgency: None,
+        recur: None,
+        kind: taskboard_domain::entities::TaskKind::Standard,
+        archived: false,
+        deleted: false,
+        clocks: taskboard_domain::TaskClocks {
+            title: at,
+            description: ts(0),
+            duedate: ts(0),
+            scheduled: ts(0),
+            done: ts(0),
+            position: ts(0),
+            effort: ts(0),
+            importance: ts(0),
+            urgency: ts(0),
+            recur: ts(0),
+            kind: ts(0),
+            archived: ts(0),
+            deleted: ts(0),
+        },
+        authors: taskboard_domain::entities::TaskAuthors::default(),
+        remote_seen: None,
+        remote_baseline: None,
+    }
+}
+
+fn files_stack_row(
+    stack: taskboard_domain::StackId,
+    at: chrono::DateTime<chrono::Utc>,
+    by: Option<taskboard_domain::ids::AuthorId>,
+) -> taskboard_domain::Stack {
+    let default = ts(0);
+    taskboard_domain::Stack {
+        id: stack,
+        board: taskboard_domain::BoardId::from_uuid(uuid::Uuid::from_u128(0xB0A1D)),
+        remote: None,
+        title: "column".into(),
+        order: 1,
+        archived: false,
+        deleted: false,
+        clocks: taskboard_domain::StackClocks {
+            title: at,
+            order: default,
+            deleted: default,
+        },
+        authors: taskboard_domain::entities::StackAuthors {
+            title: by,
+            ..taskboard_domain::entities::StackAuthors::default()
+        },
+        remote_seen: None,
+    }
+}
+
+async fn wait_for_outbox(s: &Scenario, expected: usize, why: &'static str) {
+    tokio::time::timeout(std::time::Duration::from_secs(60), async {
+        loop {
+            if s.repo.snapshot().outbox.len() == expected {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect(why);
+}
+
 fn golden_stack(at: i64) -> taskboard_domain::RemoteStack {
     taskboard_domain::RemoteStack {
         id: taskboard_domain::RemoteStackRef {

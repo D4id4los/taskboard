@@ -962,22 +962,7 @@ pub fn apply_sync_report(
     // task-merge loop (the fold's `merged` input is the post-merge
     // truth, guard flags already applied to the native fields) and
     // before R3 — the fold feeds R3 nothing (no presence facts).
-    let mut rule_actions: Vec<PersistenceAction> = Vec::new();
-    let mut folded_rules: Option<
-        std::collections::BTreeMap<crate::ids::ReminderRuleId, crate::reminders::ReminderRule>,
-    > = None;
-    let mut dismissal_actions: Vec<PersistenceAction> = Vec::new();
-    let mut folded_dismissals: Option<
-        std::collections::BTreeSet<crate::reminders::ReminderDismissal>,
-    > = None;
-    let mut tracking_actions: Vec<PersistenceAction> = Vec::new();
-    let mut habit_actions: Vec<PersistenceAction> = Vec::new();
-    let mut folded_habits: Option<crate::habit::HabitState> = None;
-    let mut folded_tracking: Option<crate::tracking::TrackingState> = None;
-    let mut break_rule_actions: Vec<PersistenceAction> = Vec::new();
-    let mut folded_break_rules: Option<
-        std::collections::BTreeMap<crate::ids::BreakRuleId, crate::reminders::BreakRule>,
-    > = None;
+    let mut folds = SectionFolds::new(current);
     if let crate::messages::AppDataEvidence::Document(document) = app_data {
         let task_intents = pending_task_intents(outbox, read_at);
         for remote in &snapshot.tasks {
@@ -1002,34 +987,20 @@ pub fn apply_sync_report(
                     tasks.insert(task_id, merged);
                 }
             }
-            if let Some(entries) = &document.sections.reminder_rules
-                && let Some(entry) = entries.get(&card_key)
-            {
-                let rules = folded_rules.get_or_insert_with(|| current.reminders.rules.clone());
-                let changes =
-                    fold_reminder_rules(rules, task_id, entry, intent.reminder_rules, author);
-                for rule in changes.upserts {
-                    rule_actions.push(PersistenceAction::UpsertReminderRule(rule));
-                }
-                for rule_id in changes.deletes {
-                    rule_actions.push(PersistenceAction::DeleteReminderRule(rule_id));
-                }
-            }
+            folds.fold_card_rules(
+                document.sections.reminder_rules.as_ref(),
+                &card_key,
+                task_id,
+                intent.reminder_rules,
+                author,
+            );
             // The dismissals fold rides the same pass, AFTER the rules
             // fold (design D-9's fold-order property: a rule adopted in
             // this cycle is immediately suppressed by already-present
             // dismissal rows, before the local device can fire once).
             // Guard-immune by construction: no intent flag is consulted
             // — a dismissal is an append-only fact, never edited.
-            if let Some(entries) = &document.sections.dismissals
-                && let Some(entry) = entries.get(&card_key)
-            {
-                let dismissals =
-                    folded_dismissals.get_or_insert_with(|| current.reminders.dismissals.clone());
-                for dismissal in fold_reminder_dismissals(dismissals, entry) {
-                    dismissal_actions.push(PersistenceAction::RecordReminderDismissal(dismissal));
-                }
-            }
+            folds.fold_card_dismissals(document.sections.dismissals.as_ref(), &card_key);
         }
         // The time-entries fold is board-level: once per document, AFTER
         // the per-card rules/dismissals loop (design D-T12's fold-order
@@ -1047,34 +1018,14 @@ pub fn apply_sync_report(
                     card.as_deck().map(|num| (num.to_string(), *id))
                 })
                 .collect();
-            let tracking = folded_tracking.get_or_insert_with(|| current.tracking.clone());
-            let changes = crate::merge::fold_time_entries(tracking, rows, &board_cards, author);
-            for entry in changes.upserts {
-                tracking_actions.push(PersistenceAction::UpsertTimeEntry(entry));
-            }
-            for entry_id in changes.deletes {
-                tracking_actions.push(PersistenceAction::DeleteTimeEntry(entry_id));
-            }
+            folds.fold_time_entries(Some(rows), &board_cards, author);
         }
         // The habit folds are board-level too: once per document, right
         // after the time-entries fold (§5b's order). Both sections fold
         // against the same copy-on-write state; no card map is needed —
         // habits carry no card hop at all.
-        if document.sections.habits.is_some() || document.sections.habit_log.is_some() {
-            let habits = folded_habits.get_or_insert_with(|| current.habits.clone());
-            if let Some(rows) = &document.sections.habits {
-                let changes = crate::merge::fold_habits(habits, rows, board_id, author);
-                for habit in changes.upserts {
-                    habit_actions.push(PersistenceAction::UpsertHabit(habit));
-                }
-            }
-            if let Some(rows) = &document.sections.habit_log {
-                let changes = crate::merge::fold_habit_log(habits, rows, author);
-                for (key, entry) in changes.records {
-                    habit_actions.push(PersistenceAction::RecordHabitLog(key, entry));
-                }
-            }
-        }
+        folds.fold_habits(document.sections.habits.as_ref(), board_id, author);
+        folds.fold_habit_log(document.sections.habit_log.as_ref(), author);
         // The break folds are board-level too (#588 D-11/D-10, §5b's
         // order — after the habit folds): rules first (LWW against the
         // local rows, the fold stamps the locally-bound board), then
@@ -1083,29 +1034,14 @@ pub fn apply_sync_report(
         // suppressed by the already-folded dismissal). The per-card
         // loop above never reads the reserved entry: it looks up only
         // card keys of present tasks.
-        if let Some(rows) = &document.sections.break_rules {
-            let break_rules =
-                folded_break_rules.get_or_insert_with(|| current.reminders.break_rules.clone());
-            let changes = crate::merge::fold_break_rules(break_rules, rows, board_id, author);
-            for rule in changes.upserts {
-                break_rule_actions.push(PersistenceAction::UpsertBreakRule(rule));
-            }
-            for rule_id in changes.deletes {
-                break_rule_actions.push(PersistenceAction::DeleteBreakRule(rule_id));
-            }
-        }
-        if let Some(reserved) = document
-            .sections
-            .dismissals
-            .as_ref()
-            .and_then(|entries| entries.get(crate::appdata::BREAK_DISMISSALS_ENTRY_KEY))
-        {
-            let dismissals =
-                folded_dismissals.get_or_insert_with(|| current.reminders.dismissals.clone());
-            for dismissal in crate::merge::fold_break_dismissals(dismissals, reserved) {
-                dismissal_actions.push(PersistenceAction::RecordReminderDismissal(dismissal));
-            }
-        }
+        folds.fold_break_rules(document.sections.break_rules.as_ref(), board_id, author);
+        folds.fold_break_dismissals(
+            document
+                .sections
+                .dismissals
+                .as_ref()
+                .and_then(|entries| entries.get(crate::appdata::BREAK_DISMISSALS_ENTRY_KEY)),
+        );
     }
 
     // ---- 5c. Series fold dedup (§3.6, D-C7, rule R-recur-dup) --------
@@ -1232,7 +1168,10 @@ pub fn apply_sync_report(
     }
     let present_stack_refs: std::collections::BTreeSet<RemoteStackRef> =
         snapshot.stacks.iter().map(|s| s.id).collect();
-    let reminder_rules = folded_rules.as_ref().unwrap_or(&current.reminders.rules);
+    let reminder_rules = folds
+        .folded_rules
+        .as_ref()
+        .unwrap_or(&current.reminders.rules);
     let bound_task_refs: Vec<(TaskId, (RemoteBoardId, RemoteCardId))> = tasks
         .iter()
         .filter_map(|(id, t)| {
@@ -1418,11 +1357,7 @@ pub fn apply_sync_report(
     let mut actions = actions_for_changed_entities(current, &boards, &stacks, &labels, &tasks);
     // The rules fold's deltas ride the same batch: the persistence view
     // and the memory view below are the same deltas by construction.
-    actions.extend(rule_actions);
-    actions.extend(dismissal_actions);
-    actions.extend(tracking_actions);
-    actions.extend(habit_actions);
-    actions.extend(break_rule_actions);
+    folds.extend_batch(&mut actions);
     // R3's resurrect creates ride last: the re-planning decided in
     // section 6, the batch materializes here. The duplicate collapse's
     // ref-deletes ride beside them (same shape: decided mid-pass,
@@ -1443,7 +1378,6 @@ pub fn apply_sync_report(
 
     // saturating_sub defensively: a corrupted persisted outbox with
     // duplicate op ids must not underflow the pending count.
-    let remaining_ops = outbox.len().saturating_sub(op_results.len());
     let dead_lettered = op_results.values().any(|completed| !completed);
     let phase = if dead_lettered {
         SyncPhase::Failed {
@@ -1463,59 +1397,294 @@ pub fn apply_sync_report(
         row.sidecar = crate::state::derive_sidecar_health(app_data);
         row.features = features;
     }
+    let folded = folds.into_folded();
+    let state = assemble_state(
+        current,
+        boards,
+        stacks,
+        tasks,
+        labels,
+        folded,
+        sync,
+        outbox,
+        &op_results,
+        &actions,
+        now,
+        "sync report applied",
+    );
+    (state, actions, system_events)
+}
+
+/// The section folds' copy-on-write accumulator: every fold lazily
+/// clones its baseline off `current` on first write and appends the
+/// resulting persistence actions. Both ingestion entries drive the
+/// same methods — the Deck arm's sidecar document and the files arm's
+/// board document differ only in which document feeds them, never in
+/// how a section folds (the merge machinery is shared at the source).
+struct SectionFolds<'a> {
+    current: &'a AppState,
+    rule_actions: Vec<PersistenceAction>,
+    dismissal_actions: Vec<PersistenceAction>,
+    tracking_actions: Vec<PersistenceAction>,
+    habit_actions: Vec<PersistenceAction>,
+    break_rule_actions: Vec<PersistenceAction>,
+    folded_rules: Option<
+        std::collections::BTreeMap<crate::ids::ReminderRuleId, crate::reminders::ReminderRule>,
+    >,
+    folded_dismissals: Option<std::collections::BTreeSet<crate::reminders::ReminderDismissal>>,
+    folded_break_rules:
+        Option<std::collections::BTreeMap<crate::ids::BreakRuleId, crate::reminders::BreakRule>>,
+    folded_tracking: Option<crate::tracking::TrackingState>,
+    folded_habits: Option<crate::habit::HabitState>,
+}
+
+/// The section folds' surviving state, for the post-fold assembly.
+struct FoldedSections {
+    rules: Option<
+        std::collections::BTreeMap<crate::ids::ReminderRuleId, crate::reminders::ReminderRule>,
+    >,
+    dismissals: Option<std::collections::BTreeSet<crate::reminders::ReminderDismissal>>,
+    break_rules:
+        Option<std::collections::BTreeMap<crate::ids::BreakRuleId, crate::reminders::BreakRule>>,
+    tracking: Option<crate::tracking::TrackingState>,
+    habits: Option<crate::habit::HabitState>,
+}
+
+impl<'a> SectionFolds<'a> {
+    fn new(current: &'a AppState) -> Self {
+        Self {
+            current,
+            rule_actions: Vec::new(),
+            dismissal_actions: Vec::new(),
+            tracking_actions: Vec::new(),
+            habit_actions: Vec::new(),
+            break_rule_actions: Vec::new(),
+            folded_rules: None,
+            folded_dismissals: None,
+            folded_break_rules: None,
+            folded_tracking: None,
+            folded_habits: None,
+        }
+    }
+
+    /// One card's reminder-rules section fold (per-card LWW against the
+    /// local rules, the intent's guard on the protected flags).
+    fn fold_card_rules(
+        &mut self,
+        entries: Option<&std::collections::BTreeMap<String, crate::appdata::RulesEntry>>,
+        card_key: &str,
+        task_id: crate::ids::TaskId,
+        protected: bool,
+        author: Option<crate::ids::AuthorId>,
+    ) {
+        let Some(entry) = entries.and_then(|entries| entries.get(card_key)) else {
+            return;
+        };
+        let rules = self
+            .folded_rules
+            .get_or_insert_with(|| self.current.reminders.rules.clone());
+        let changes = fold_reminder_rules(rules, task_id, entry, protected, author);
+        for rule in changes.upserts {
+            self.rule_actions
+                .push(PersistenceAction::UpsertReminderRule(rule));
+        }
+        for rule_id in changes.deletes {
+            self.rule_actions
+                .push(PersistenceAction::DeleteReminderRule(rule_id));
+        }
+    }
+
+    /// One card's dismissals section fold (append-only facts, no guard).
+    fn fold_card_dismissals(
+        &mut self,
+        entries: Option<&std::collections::BTreeMap<String, crate::appdata::DismissalsEntry>>,
+        card_key: &str,
+    ) {
+        let Some(entry) = entries.and_then(|entries| entries.get(card_key)) else {
+            return;
+        };
+        let dismissals = self
+            .folded_dismissals
+            .get_or_insert_with(|| self.current.reminders.dismissals.clone());
+        for dismissal in fold_reminder_dismissals(dismissals, entry) {
+            self.dismissal_actions
+                .push(PersistenceAction::RecordReminderDismissal(dismissal));
+        }
+    }
+
+    /// The board-level time-entries fold (history outlives the card).
+    fn fold_time_entries(
+        &mut self,
+        rows: Option<&std::collections::BTreeMap<String, crate::appdata::TimeEntryRecord>>,
+        board_cards: &std::collections::BTreeMap<String, crate::ids::TaskId>,
+        author: Option<crate::ids::AuthorId>,
+    ) {
+        let Some(rows) = rows else { return };
+        let tracking = self
+            .folded_tracking
+            .get_or_insert_with(|| self.current.tracking.clone());
+        let changes = crate::merge::fold_time_entries(tracking, rows, board_cards, author);
+        for entry in changes.upserts {
+            self.tracking_actions
+                .push(PersistenceAction::UpsertTimeEntry(entry));
+        }
+        for entry_id in changes.deletes {
+            self.tracking_actions
+                .push(PersistenceAction::DeleteTimeEntry(entry_id));
+        }
+    }
+
+    /// The board-level habit-definition fold.
+    fn fold_habits(
+        &mut self,
+        rows: Option<&std::collections::BTreeMap<String, crate::appdata::HabitRecord>>,
+        board_id: crate::ids::BoardId,
+        author: Option<crate::ids::AuthorId>,
+    ) {
+        let Some(rows) = rows else { return };
+        let habits = self
+            .folded_habits
+            .get_or_insert_with(|| self.current.habits.clone());
+        let changes = crate::merge::fold_habits(habits, rows, board_id, author);
+        for habit in changes.upserts {
+            self.habit_actions
+                .push(PersistenceAction::UpsertHabit(habit));
+        }
+    }
+
+    /// The board-level habit-log fold (set-union facts, row-clock LWW).
+    fn fold_habit_log(
+        &mut self,
+        rows: Option<&std::collections::BTreeMap<String, crate::appdata::HabitLogRecord>>,
+        author: Option<crate::ids::AuthorId>,
+    ) {
+        let Some(rows) = rows else { return };
+        let habits = self
+            .folded_habits
+            .get_or_insert_with(|| self.current.habits.clone());
+        let changes = crate::merge::fold_habit_log(habits, rows, author);
+        for (key, entry) in changes.records {
+            self.habit_actions
+                .push(PersistenceAction::RecordHabitLog(key, entry));
+        }
+    }
+
+    /// The board-level break-rules fold (LWW against the local rows).
+    fn fold_break_rules(
+        &mut self,
+        rows: Option<&std::collections::BTreeMap<String, crate::appdata::BreakRuleEntry>>,
+        board_id: crate::ids::BoardId,
+        author: Option<crate::ids::AuthorId>,
+    ) {
+        let Some(rows) = rows else { return };
+        let break_rules = self
+            .folded_break_rules
+            .get_or_insert_with(|| self.current.reminders.break_rules.clone());
+        let changes = crate::merge::fold_break_rules(break_rules, rows, board_id, author);
+        for rule in changes.upserts {
+            self.break_rule_actions
+                .push(PersistenceAction::UpsertBreakRule(rule));
+        }
+        for rule_id in changes.deletes {
+            self.break_rule_actions
+                .push(PersistenceAction::DeleteBreakRule(rule_id));
+        }
+    }
+
+    /// The reserved break-dismissals entry (additive, no rule-existence
+    /// check — a rule adopted in a later cycle is immediately
+    /// suppressed by the already-folded dismissal).
+    fn fold_break_dismissals(&mut self, reserved: Option<&crate::appdata::DismissalsEntry>) {
+        let Some(reserved) = reserved else { return };
+        let dismissals = self
+            .folded_dismissals
+            .get_or_insert_with(|| self.current.reminders.dismissals.clone());
+        for dismissal in crate::merge::fold_break_dismissals(dismissals, reserved) {
+            self.dismissal_actions
+                .push(PersistenceAction::RecordReminderDismissal(dismissal));
+        }
+    }
+
+    /// The batch fragments ride the caller's batch in the house order
+    /// (rules, dismissals, tracking, habits, break rules).
+    fn extend_batch(&self, actions: &mut Vec<PersistenceAction>) {
+        actions.extend(self.rule_actions.iter().cloned());
+        actions.extend(self.dismissal_actions.iter().cloned());
+        actions.extend(self.tracking_actions.iter().cloned());
+        actions.extend(self.habit_actions.iter().cloned());
+        actions.extend(self.break_rule_actions.iter().cloned());
+    }
+
+    fn into_folded(self) -> FoldedSections {
+        FoldedSections {
+            rules: self.folded_rules,
+            dismissals: self.folded_dismissals,
+            break_rules: self.folded_break_rules,
+            tracking: self.folded_tracking,
+            habits: self.folded_habits,
+        }
+    }
+}
+
+/// Both ingestion entries' shared tail: the merged tables and the
+/// section folds' survivors assemble into the next `AppState`, the
+/// sync projection re-derives over the still-queued outbox (advisory —
+/// the engine re-derives after its own interpret), the board row's
+/// phase settles, and the application is logged.
+#[allow(clippy::too_many_arguments)] // the assembly's inputs, one per merged table/folded section
+fn assemble_state(
+    current: &AppState,
+    boards: BTreeMap<crate::ids::BoardId, crate::entities::Board>,
+    stacks: BTreeMap<crate::ids::StackId, crate::entities::Stack>,
+    tasks: BTreeMap<crate::ids::TaskId, crate::entities::Task>,
+    labels: BTreeMap<crate::ids::LabelId, crate::entities::Label>,
+    folded: FoldedSections,
+    sync: crate::state::SyncStates,
+    outbox: &[PendingOp],
+    op_results: &HashMap<OpId, bool>,
+    actions: &[PersistenceAction],
+    now: DateTime<Utc>,
+    why: &'static str,
+) -> AppState {
     let mut state = AppState {
         boards,
         stacks,
         tasks,
         labels,
-        // No reminder data enters the *native* sync path: the rules
-        // section rode the app-data document lane (the fold above);
-        // everything else carries through untouched.
         reminders: crate::reminders::ReminderState {
-            rules: folded_rules.unwrap_or_else(|| current.reminders.rules.clone()),
-            dismissals: folded_dismissals.unwrap_or_else(|| current.reminders.dismissals.clone()),
-            break_rules: folded_break_rules
+            rules: folded
+                .rules
+                .unwrap_or_else(|| current.reminders.rules.clone()),
+            dismissals: folded
+                .dismissals
+                .unwrap_or_else(|| current.reminders.dismissals.clone()),
+            break_rules: folded
+                .break_rules
                 .unwrap_or_else(|| current.reminders.break_rules.clone()),
             ..current.reminders.clone()
         },
-        tracking: folded_tracking.unwrap_or_else(|| current.tracking.clone()),
-        // Definitions and log rows ride their own sidecar sections; a
-        // document carrying them folds into this copy (§5b), an absent
-        // one carries the local truth through untouched.
-        habits: folded_habits.unwrap_or_else(|| current.habits.clone()),
+        tracking: folded.tracking.unwrap_or_else(|| current.tracking.clone()),
+        habits: folded.habits.unwrap_or_else(|| current.habits.clone()),
         reflection: current.reflection.clone(),
         roaming: current.roaming.clone(),
-        // The undo projection is derived from the persisted journal at
-        // publish (core.rs); the pipeline's working copy carries the
-        // current one through untouched.
         undo: current.undo.clone(),
         sync,
-        // Settings are memory-only engine state; the pipeline's merge
-        // carries `current`'s snapshot through untouched.
         settings: current.settings.clone(),
         // Sync ingestion is an engine mutation from a foreign source:
         // stamp it like a local command would be.
         last_updated: Some(now),
     };
-    // The projection is a display derivation over the ops that remain
-    // queued after this cycle's push outcomes (the engine re-derives
-    // after its own interpret, so these values are advisory).
+    let remaining = remaining_outbox(outbox, op_results);
     crate::state::derive_sync_states(
         &state.boards,
         &state.stacks,
         &state.tasks,
         &state.labels,
-        &remaining_outbox(outbox, &op_results),
+        &remaining,
         &mut state.sync,
     );
-    log_report_applied(
-        &state,
-        &actions,
-        &op_results,
-        remaining_ops,
-        "sync report applied",
-    );
-    (state, actions, system_events)
+    log_report_applied(&state, actions, op_results, remaining.len(), why);
+    state
 }
 
 /// The outbox as it will look once this cycle's outcomes are applied:
@@ -1581,6 +1750,246 @@ fn actions_for_changed_entities(
         }
     }
     actions
+}
+
+/// The files lane's ingestion (D-BF9): one `FilesBoardSnapshot` — the
+/// folded board, already decoded to domain rows — through the *same*
+/// per-field LWW pipeline the Deck lane runs. No second merger: the
+/// duels are [`crate::reconcile`]'s pair merges, the pushes settle
+/// through [`apply_push_outcomes`], the sections fold through
+/// [`crate::merge`]'s app-data folds — the Deck arm's machinery,
+/// keyed by domain UUID identity (the files substrate's direct
+/// identity: a row *is* its id, no ref table resolves it).
+///
+/// Ordering mirrors the Deck entry: push outcomes first, then board →
+/// stacks → labels → tasks, then the section folds (per-card rules and
+/// dismissals, then the board-level time-entries/habits/breaks pass),
+/// then the persistence batch. Deck-only machinery (the duplicate
+/// collapse, the ref cascades, `remote_seen` baselines) has no files
+/// home: identity needs no crash-window dedup and the pair merges
+/// carry no diff reference.
+#[allow(clippy::too_many_lines)] // one section per stage, the Deck entry's shape
+#[allow(clippy::too_many_arguments)] // the Deck entry's injected-seams shape (ids/now/author are separate by design)
+pub fn apply_files_board_snapshot(
+    current: &AppState,
+    outbox: &[PendingOp],
+    snapshot: &crate::remote::FilesBoardSnapshot,
+    pushes: &[PushOutcome],
+    read_at: DateTime<Utc>,
+    ids: &dyn IdGenerator,
+    now: DateTime<Utc>,
+    connector: &crate::ids::ConnectorId,
+    author: Option<crate::ids::AuthorId>,
+) -> (AppState, Vec<PersistenceAction>) {
+    let _span = tracing::debug_span!(
+        "apply_files_board_snapshot",
+        board = ?snapshot.board,
+        up_to_seq = snapshot.up_to_seq,
+        outbox_len = outbox.len(),
+        pushes = pushes.len(),
+        snapshot_tasks = snapshot.tasks.len(),
+    )
+    .entered();
+
+    let mut boards = current.boards.clone();
+    let mut stacks = current.stacks.clone();
+    let mut tasks = current.tasks.clone();
+    let mut labels = current.labels.clone();
+
+    // ---- 1. Push outcomes (R9*) — the Deck arm's machinery ----------
+    let mut ctx = RemoteIndex::from_state(current);
+    let op_results = apply_push_outcomes(
+        pushes,
+        outbox,
+        &mut boards,
+        &mut tasks,
+        &mut stacks,
+        &mut labels,
+        &mut ctx,
+        now,
+        read_at,
+        crate::capabilities::DeckFeatures::default(),
+    );
+
+    // ---- 2. Board: resolve by (connector, files identity) -----------
+    // The wire row's binding is rebuilt engine-side: the local binding
+    // (or the adoption's) is the truth, never a payload field.
+    if snapshot.board.as_files().is_none() {
+        // A Deck-tagged identity in the files lane is a typed bug, not
+        // data: fold nothing rather than guess (the actor's lane
+        // dispatch already prevents this; the engine never trusts it).
+        tracing::warn!(connector = %connector, "files snapshot carried a non-files identity; folded as nothing");
+        return (current.clone(), Vec::new());
+    }
+    let binding = crate::ids::RemoteBoardBinding {
+        connector: connector.clone(),
+        board: snapshot.board,
+    };
+    let local_board = boards
+        .values()
+        .find(|b| b.remote.as_ref() == Some(&binding));
+    let board_id = if let Some(local) = local_board {
+        let id = local.id;
+        if let Some(row) = &snapshot.board_row {
+            let mut merged = crate::reconcile::merge_board_pair(local, row);
+            let (update, delete) = pending_board_intent(outbox, id, read_at);
+            keep_board_intent(&mut merged, local, id, update, delete);
+            boards.insert(id, merged);
+        }
+        id
+    } else {
+        // Discovery adoption (fold-first, D-SF13's board lane): the
+        // subtree exists, the fold is in this very snapshot — mint
+        // the binding and take the row (or a minimal one) as-is.
+        let id = snapshot
+            .board_row
+            .as_ref()
+            .map_or_else(|| ids.new_board_id(), |row| row.id);
+        let mut row = snapshot.board_row.clone().unwrap_or_else(|| Board {
+            id,
+            remote: None,
+            title: String::new(),
+            color: crate::entities::Color::new(""),
+            archived: false,
+            deleted: false,
+            clocks: crate::entities::BoardClocks {
+                title: now,
+                color: now,
+                archived: now,
+                deleted: now,
+            },
+            authors: crate::entities::BoardAuthors::default(),
+            remote_seen: None,
+        });
+        row.id = id;
+        row.remote = Some(binding);
+        boards.insert(id, row);
+        tracing::info!(board_id = ?id, "files board adopted fold-first");
+        id
+    };
+
+    // ---- 3. Stacks → labels → tasks: identity-keyed pair merges -----
+    let files_stack_ref = |stack: StackId| RemoteStackRef {
+        board: snapshot.board,
+        stack: RemoteStackId::files(stack.as_uuid()),
+    };
+    for row in &snapshot.stacks {
+        let mut bound = row.clone();
+        bound.remote = Some(files_stack_ref(row.id));
+        if let Some(local) = stacks.get(&row.id).cloned() {
+            stacks.insert(row.id, crate::reconcile::merge_stack_pair(&local, &bound));
+        } else {
+            stacks.insert(row.id, bound);
+        }
+    }
+    for row in &snapshot.labels {
+        let mut bound = row.clone();
+        bound.remote = Some(crate::ids::RemoteLabelRef {
+            board: snapshot.board,
+            label: crate::ids::RemoteLabelId::files(row.id.as_uuid()),
+        });
+        if let Some(local) = labels.get(&row.id).cloned() {
+            labels.insert(row.id, crate::reconcile::merge_label_pair(&local, &bound));
+        } else {
+            labels.insert(row.id, bound);
+        }
+    }
+    for row in &snapshot.tasks {
+        let mut bound = row.clone();
+        bound.remote = Some(RemoteCardRef {
+            board: snapshot.board,
+            stack: RemoteStackId::files(row.stack.as_uuid()),
+            card: RemoteCardId::files(row.id.as_uuid()),
+        });
+        if let Some(local) = tasks.get(&row.id).cloned() {
+            tasks.insert(row.id, crate::reconcile::merge_task_pair(&local, &bound));
+        } else {
+            tasks.insert(row.id, bound);
+        }
+    }
+
+    // ---- 4. The section folds (D-BF9's sections leg) ----------------
+    // The same folds the Deck arm runs, keyed by domain-UUID strings.
+    // The per-card `tasks` section has no files home (app-only fields
+    // are entity slots there — D-BF9's one lane); the per-card rules
+    // and dismissals and the board-level time/habit/break folds do.
+    let mut folds = SectionFolds::new(current);
+    let task_intents = pending_task_intents(outbox, read_at);
+    if let Some(document) = &snapshot.sections {
+        for row in &snapshot.tasks {
+            let Some(local) = tasks.get(&row.id) else {
+                continue;
+            };
+            let task_id = local.id;
+            let card_key = task_id.as_uuid().to_string();
+            let intent = task_intents.get(&task_id).copied().unwrap_or_default();
+            folds.fold_card_rules(
+                document.sections.reminder_rules.as_ref(),
+                &card_key,
+                task_id,
+                intent.reminder_rules,
+                author,
+            );
+            folds.fold_card_dismissals(document.sections.dismissals.as_ref(), &card_key);
+        }
+        if let Some(rows) = &document.sections.time_entries {
+            let board_cards: std::collections::BTreeMap<String, TaskId> = tasks
+                .values()
+                .filter(|t| stacks.get(&t.stack).map(|s| s.board) == Some(board_id))
+                .map(|t| (t.id.as_uuid().to_string(), t.id))
+                .collect();
+            folds.fold_time_entries(Some(rows), &board_cards, author);
+        }
+        folds.fold_habits(document.sections.habits.as_ref(), board_id, author);
+        folds.fold_habit_log(document.sections.habit_log.as_ref(), author);
+        folds.fold_break_rules(document.sections.break_rules.as_ref(), board_id, author);
+        folds.fold_break_dismissals(
+            document
+                .sections
+                .dismissals
+                .as_ref()
+                .and_then(|entries| entries.get(crate::appdata::BREAK_DISMISSALS_ENTRY_KEY)),
+        );
+    }
+
+    // ---- 5. Persistence batch + status transition --------------------
+    let mut actions = actions_for_changed_entities(current, &boards, &stacks, &labels, &tasks);
+    folds.extend_batch(&mut actions);
+    for entry in outbox {
+        if let Some(completed) = op_results.get(&entry.op_id) {
+            actions.push(if *completed {
+                PersistenceAction::CompleteOp(entry.op_id)
+            } else {
+                PersistenceAction::FailOp(entry.op_id)
+            });
+        }
+    }
+    let dead_lettered = op_results.values().any(|completed| !completed);
+    let phase = if dead_lettered {
+        SyncPhase::Failed {
+            last_error: SyncErrorKind::BadRequest,
+        }
+    } else {
+        SyncPhase::Idle
+    };
+    let mut sync = current.sync.clone();
+    sync.set_stored(board_id, phase, Some(now));
+    let folded = folds.into_folded();
+    let state = assemble_state(
+        current,
+        boards,
+        stacks,
+        tasks,
+        labels,
+        folded,
+        sync,
+        outbox,
+        &op_results,
+        &actions,
+        now,
+        "files board snapshot applied",
+    );
+    (state, actions)
 }
 
 /// The pipeline's push-only composition (steps 1 + 7): consumed by the

@@ -321,6 +321,34 @@ pub fn neutralized_stack(local: &Stack, bound: &Stack) -> Stack {
     absorbed
 }
 
+/// The merged survivor of a board pair (the files lane's board-row
+/// duel; same per-field clock rules as the entity pairs — the binding
+/// rides `local`, never the wire row).
+#[must_use]
+pub fn merge_board_pair(
+    local: &crate::entities::Board,
+    bound: &crate::entities::Board,
+) -> crate::entities::Board {
+    let lc = &local.clocks;
+    let bc = &bound.clocks;
+    crate::entities::Board {
+        id: local.id,
+        remote: local.remote.clone(),
+        title: pick(&local.title, &bound.title, lc.title, bc.title),
+        color: pick(&local.color, &bound.color, lc.color, bc.color),
+        archived: pick(&local.archived, &bound.archived, lc.archived, bc.archived),
+        deleted: pick(&local.deleted, &bound.deleted, lc.deleted, bc.deleted),
+        clocks: crate::entities::BoardClocks {
+            title: lc.title.max(bc.title),
+            color: lc.color.max(bc.color),
+            archived: lc.archived.max(bc.archived),
+            deleted: lc.deleted.max(bc.deleted),
+        },
+        authors: crate::entities::BoardAuthors::default(),
+        remote_seen: local.remote_seen,
+    }
+}
+
 /// The merged survivor of a label pair (same rules as stacks).
 #[must_use]
 pub fn merge_label_pair(local: &Label, bound: &Label) -> Label {

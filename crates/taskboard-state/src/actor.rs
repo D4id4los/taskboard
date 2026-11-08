@@ -1075,16 +1075,47 @@ async fn ingest_sync_report(
                     };
                     (batch, deltas, Vec::<taskboard_domain::SystemEvent>::new())
                 }
-                taskboard_domain::RemoteBoardSnapshot::Files(_) => {
-                    tracing::debug!(
-                        connector = %connector,
-                        "files-tagged snapshot folded as nothing: no files ingestion"
+                taskboard_domain::RemoteBoardSnapshot::Files(snapshot) => {
+                    // The files lane runs the SAME pipeline primitives
+                    // (D-BF9's reuse-not-fork law): pair merges, push
+                    // outcomes, section folds — no second merger exists.
+                    // The files lane raises no system events: its
+                    // deletions settle as ordinary field duels — there
+                    // is no echo machinery to resurrect against.
+                    let (merged, mut batch) = taskboard_domain::apply_files_board_snapshot(
+                        &core.app(),
+                        core.outbox(),
+                        &snapshot,
+                        &pushes,
+                        read_at,
+                        ids,
+                        now,
+                        &connector,
+                        author,
                     );
-                    (
-                        Vec::<PersistenceAction>::new(),
-                        Vec::new(),
-                        Vec::<taskboard_domain::SystemEvent>::new(),
-                    )
+                    append_status_if_changed(core, &mut batch, &merged.sync);
+                    // The files report carries no pull validators (its
+                    // change detection is the chunk watermark, not an
+                    // etag counter), so nothing binds here — the
+                    // binding is the domain-UUID identity itself.
+                    let pulls =
+                        1 + snapshot.stacks.len() + snapshot.tasks.len() + snapshot.labels.len();
+                    let delta = SyncCounters {
+                        cycles: 1,
+                        pushes: pushes.len() as u64,
+                        pulls: pulls as u64,
+                        last_cycle: Some(duration),
+                        ..SyncCounters::default()
+                    };
+                    let deltas = if let Some(board) =
+                        resolve_board(&merged, &connector, snapshot.board)
+                    {
+                        vec![(board, delta)]
+                    } else {
+                        tracing::debug!(connector = %connector, "counter delta dropped: no board");
+                        Vec::new()
+                    };
+                    (batch, deltas, Vec::<taskboard_domain::SystemEvent>::new())
                 }
             }
         }
