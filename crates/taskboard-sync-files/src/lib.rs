@@ -45,6 +45,8 @@
 
 #![forbid(unsafe_code)]
 
+pub mod board_identity;
+pub mod board_info;
 pub mod document;
 pub mod fold;
 pub mod hash;
