@@ -321,6 +321,27 @@ pub enum Flow {
         stage: WalkStage,
         cursor: usize,
     },
+    /// The entries form's date grid as a child level (W5b N2, chunk
+    /// 3): pushed only by the form's own toggle seam, ended only
+    /// through the exit protocol. The grid/cursor machinery lives in
+    /// the level's `Picker` family; the completed payload is the
+    /// picked day (`LevelResult::Date`), cancellation is the generic
+    /// `Cancelled` rung.
+    EntryDatePicker,
+    /// The walk's File-to picker as a child level (W5b N3a, chunk 3):
+    /// pushed by the walk's own `File to…` intent with the first
+    /// candidate armed (`None` remains only for the candidate-death
+    /// clamp's same-pass window); the completed payload is the armed
+    /// target stack. The candidate ring's cursor is the variant data
+    /// (D-H2: pure interaction state rides the variant).
+    WalkFilePick { armed: Option<StackId> },
+    /// The walk's Pick-a-date field as a child level (W5b N3b, chunk
+    /// 3): the typed text lives in the level's `WalkDate` family; the
+    /// completed payload is the parsed instant (minted adapter-side —
+    /// the child's commit parses its own text). A foreign settle ends
+    /// it `Cancelled`, discarding half-typed text exactly as the
+    /// flattened walk always did (the Q3 ruling, D5).
+    WalkDatePick,
 }
 
 /// What a view-state transition asks the adapter to do (D9):
@@ -338,6 +359,13 @@ pub enum FlowOutcome {
     /// the `UiRequest` lane; the view state itself never touches a
     /// channel. Idempotent under re-send (full snapshots).
     StackWidthsChanged,
+    /// The walk reached the planner boundary mid-consumption (chunk 3's
+    /// exit protocol): run the shape-B transition now. The pure state
+    /// cannot mount the planner view; the adapter reads the still-open
+    /// walk's `(cadence, reference)` when it acts. Ordering-sensitive:
+    /// outcomes before it are applied first, and the handoff's own
+    /// close outcomes ride [`Self::hand_off_to_planner`]'s apply.
+    PlannerHandoff,
 }
 
 /// Which end of the focus domain the jump addresses (round 2, D20).
@@ -582,6 +610,18 @@ impl ViewState {
     #[cfg(test)]
     pub(crate) fn arm_flow(&mut self, flow: Flow) {
         self.write_flow(flow);
+    }
+
+    /// The test fixture seam: pushes `flow` as a child level above the
+    /// live flow level (the exit-protocol fixtures' chain builder).
+    #[cfg(test)]
+    pub(crate) fn arm_child_for_test(
+        &mut self,
+        flow: Flow,
+    ) -> Result<usize, crate::surfaces::AlreadyInChain> {
+        self.surfaces
+            .record_parent_anchor(crate::level_state::FocusAnchor::View);
+        self.surfaces.push(crate::surfaces::Surface::Flow(flow))
     }
 
     /// The innermost `Walk` level's state (the review walk's answers
@@ -2127,6 +2167,115 @@ impl ViewState {
         *cursor = (*cursor).min(len.saturating_sub(1));
     }
 
+    // -- the exit protocol (W5b D-H3, chunk 3) ------------------------------
+
+    /// Ends the top flow level, delivering `exit` to the level now
+    /// beneath it (its `on_child_exit`). The chain truncates to the
+    /// top flow level's index — the subtree goes with it, the parent's
+    /// own ancestors stay. **Every child exit rides this one seam**:
+    /// the retire drain (`truncate_to`/`end_top_flow`/`settle_fold`/
+    /// `reconcile`) never delivers an exit, so subject death (Q4)
+    /// truncates silently by construction. Delivery reads the parent's
+    /// flow *after* truncation — the parent is `top_flow()` of the
+    /// shortened chain, so a payload can never cross an intermediate
+    /// level. The adapter applies the returned outcomes.
+    pub fn end_top_flow_with(
+        &mut self,
+        state: &AppState,
+        exit: crate::surfaces::GuestExit,
+    ) -> Vec<FlowOutcome> {
+        let Some(index) = self.surfaces.top_flow_index() else {
+            return Vec::new();
+        };
+        let dropped = self.surfaces.truncate_to(index);
+        self.retired.extend(dropped);
+        self.on_child_exit(state, exit)
+    }
+
+    /// The parent's consumption arm (D-H3), matched over the flow
+    /// level beneath the ended subtree. Default: ignore — a parent
+    /// with no arm for the exit (or for a payload it did not ask for)
+    /// returns no outcomes.
+    fn on_child_exit(
+        &mut self,
+        state: &AppState,
+        exit: crate::surfaces::GuestExit,
+    ) -> Vec<FlowOutcome> {
+        let crate::surfaces::GuestExit::Completed(Some(payload)) = exit else {
+            return Vec::new();
+        };
+        match payload {
+            crate::surfaces::LevelResult::Stack(stack) => self.walk_files_cursor_row(state, stack),
+            crate::surfaces::LevelResult::Date(instant) => {
+                // The entries form consumes the picked day (N2): the
+                // same write the day-click made — the local date of
+                // the noon-anchored instant.
+                if self.track_form().is_some() {
+                    let text = instant
+                        .with_timezone(&chrono::Local)
+                        .date_naive()
+                        .format("%Y-%m-%d")
+                        .to_string();
+                    if let Some(form) = self.track_form_mut() {
+                        form.date_text = text;
+                    }
+                    vec![FlowOutcome::RefreshNow]
+                } else {
+                    Vec::new()
+                }
+            }
+        }
+    }
+
+    /// The walk parent's `Stack` consumption (N3a): today's
+    /// `FileCommit` body — the `MoveTask` append for the cursor row
+    /// into `stack`, then the row advance (the flattened sub-state's
+    /// clear rides the advance today, the child's death after the
+    /// port). R2's order is preserved by construction: payload
+    /// consumed → command built → next row. The handoff ask crosses as
+    /// [`FlowOutcome::PlannerHandoff`] — from the Inbox stage the
+    /// advance cannot hand off (the handoff fires only out of Carry
+    /// forward), so the arm is total without the adapter's window.
+    fn walk_files_cursor_row(&mut self, state: &AppState, stack: StackId) -> Vec<FlowOutcome> {
+        let Flow::ReviewWalk { cursor, .. } = self.flow().clone() else {
+            return Vec::new();
+        };
+        let inbox = crate::presentation::walk_inbox_rows(state);
+        let Some(task) = inbox.get(cursor).copied() else {
+            return Vec::new();
+        };
+        let command = append_move_command(state, task, stack);
+        let mut outcomes = vec![command];
+        let rows = WalkRows {
+            inbox: inbox.len(),
+            carry: 0,
+        };
+        match self.review_walk_next_row(rows) {
+            WalkStep::Advanced => outcomes.push(FlowOutcome::RefreshNow),
+            WalkStep::Handoff => outcomes.push(FlowOutcome::PlannerHandoff),
+            WalkStep::Inert => {}
+        }
+        outcomes
+    }
+
+    /// The Cancelled rung (D-H4's ladder generalization): ends exactly
+    /// the top flow level `Cancelled` when it sits above another flow
+    /// level; `None` when the top flow level is at depth 1 (no parent
+    /// flow — the caller's own close rung applies). Inert without a
+    /// flow level. The rung's visible shape is today's step-back: the
+    /// refresh-only outcome set (every current parent ignores a
+    /// `Cancelled` exit; the repaint is what unmounts the child's
+    /// surface).
+    pub fn cancel_top_child(&mut self, state: &AppState) -> Option<Vec<FlowOutcome>> {
+        match self.surfaces.top_flow_index() {
+            Some(index) if index > 1 => {}
+            _ => return None,
+        }
+        let mut outcomes = self.end_top_flow_with(state, crate::surfaces::GuestExit::Cancelled);
+        outcomes.push(FlowOutcome::RefreshNow);
+        Some(outcomes)
+    }
+
     // -- plan-next-day placement (#622, D-3) -------------------------------
 
     /// `plan.begin-place`: arms the placement form over the candidate
@@ -2460,6 +2609,18 @@ impl ViewState {
             // other flow replaces it without committing — there is
             // nothing to commit; the entry is one `Record` at the end).
             Flow::ReviewWalk { .. } => self.close_review_walk(),
+            // The child levels (chunk 3's ports): the modals' row —
+            // the child's close paths are its exits, and its settle
+            // arm is the Cancelled end (the modal family's
+            // terminator). The Q3 ruling scoped correctly (D5): the
+            // text rule governs levels whose settle kind is `Text`;
+            // the walk's half-typed date child never settled as text —
+            // a foreign settle discards it, exactly as the flattened
+            // walk always did. The entries form's typed fields
+            // likewise keep their rule (the overlay cells).
+            Flow::EntryDatePicker | Flow::WalkFilePick { .. } | Flow::WalkDatePick => {
+                self.end_top_flow_with(state, crate::surfaces::GuestExit::Cancelled)
+            }
         }
     }
 
@@ -2681,11 +2842,6 @@ impl ViewState {
             Flow::MoveStack { stack, .. } if !stacks.contains(&stack) => {
                 self.write_flow(Flow::None);
             }
-            // The entries overlay (r4 chunk 10, D-TS2's strand-proof):
-            // it cannot outlive the task-detail view — a dead subject
-            // drops the flow...
-            Flow::TrackEntries { task } if !is_live(task) => self.write_flow(Flow::None),
-            Flow::TrackEntryForm { task, .. } if !is_live(task) => self.write_flow(Flow::None),
             // The placement form (#622): a dead subject drops it; a
             // view change does NOT (the mount gate keys on the
             // subject — the entries overlay's predicate minus the
@@ -2693,18 +2849,36 @@ impl ViewState {
             Flow::PlanPlace { task } if !is_live(task) => self.write_flow(Flow::None),
             _ => {}
         }
-        // ...and so does a view change: the overlay is mounted only
-        // over the task detail (the window-level mount condition reads
-        // the same flow), so a flow surviving a view flip would be a
-        // stranded modal context. Focus falls back through the
-        // existing walk.
-        if self.view() != ViewId::TaskDetail
-            && matches!(
-                self.flow(),
-                Flow::TrackEntries { .. } | Flow::TrackEntryForm { .. }
-            )
+        // The entries overlay (r4 chunk 10, D-TS2's strand-proof;
+        // chain-wide since the ports): it cannot outlive the
+        // task-detail view or a dead subject. The scan walks the
+        // chain because the overlay may sit beneath its own children
+        // (the form, the form's picker) — the OUTERMOST overlay level
+        // ends and the subtree above it goes with it, silently (Q4:
+        // a subject death delivers no exit). Focus falls back through
+        // the existing walk.
+        while let Some(index) = self
+            .surfaces
+            .above_levels()
+            .iter()
+            .position(|level| {
+                matches!(
+                    level.flow(),
+                    Some(Flow::TrackEntries { .. } | Flow::TrackEntryForm { .. })
+                )
+            })
+            .filter(|index| {
+                let dead = match self.surfaces.above_levels()[*index].flow() {
+                    Some(Flow::TrackEntries { task } | Flow::TrackEntryForm { task, .. }) => {
+                        !is_live(*task)
+                    }
+                    _ => false,
+                };
+                dead || self.view() != ViewId::TaskDetail
+            })
         {
-            self.write_flow(Flow::None);
+            let dropped = self.surfaces.truncate_to(index + 1);
+            self.retired.extend(dropped);
         }
     }
 }
@@ -2739,7 +2913,7 @@ mod tests {
         }
     }
 
-    fn task(id: TaskId, stack: StackId, order: i64) -> Task {
+    pub(super) fn task(id: TaskId, stack: StackId, order: i64) -> Task {
         Task {
             id,
             remote: None,
@@ -2766,7 +2940,7 @@ mod tests {
         }
     }
 
-    fn stack(id: StackId, board: BoardId, order: i64) -> Stack {
+    pub(super) fn stack(id: StackId, board: BoardId, order: i64) -> Stack {
         Stack {
             id,
             remote: None,
@@ -5127,7 +5301,7 @@ mod tests {
 
 #[cfg(test)]
 mod settings_surface_tests {
-    use super::tests::{epoch, two_board_fixture};
+    use super::tests::{epoch, stack, task, two_board_fixture};
     use super::*;
 
     fn one_board() -> AppState {
@@ -5725,5 +5899,165 @@ mod settings_surface_tests {
                 .any(|o| matches!(o, FlowOutcome::Command(_))),
             "a settle never dispatches — there is nothing to commit"
         );
+    }
+
+    // -- the exit protocol (W5b D-H3, chunk 3; plan D8) --------------------
+
+    /// An inbox board with one live stack and two open tasks — the
+    /// Stack-consumption fixture's row source.
+    fn inbox_fixture() -> (AppState, StackId, [TaskId; 2]) {
+        let board = BoardId::from_uuid(uuid::Uuid::from_u128(0x4001));
+        let target = StackId::from_uuid(uuid::Uuid::from_u128(0x4002));
+        let t0 = TaskId::from_uuid(uuid::Uuid::from_u128(0x4003));
+        let t1 = TaskId::from_uuid(uuid::Uuid::from_u128(0x4004));
+        let mut state = AppState::default();
+        state.boards.insert(
+            board,
+            taskboard_domain::Board {
+                id: board,
+                remote: None,
+                title: taskboard_domain::state::INBOX_BOARD_TITLE.to_owned(),
+                color: taskboard_domain::Color::new(""),
+                archived: false,
+                deleted: false,
+                clocks: taskboard_domain::BoardClocks {
+                    title: epoch(),
+                    color: epoch(),
+                    archived: epoch(),
+                    deleted: epoch(),
+                },
+                authors: taskboard_domain::entities::BoardAuthors::default(),
+                remote_seen: None,
+            },
+        );
+        state.stacks.insert(target, stack(target, board, 0));
+        for (id, order) in [(t0, 0), (t1, 1)] {
+            state.tasks.insert(id, task(id, target, order));
+        }
+        (state, target, [t0, t1])
+    }
+
+    fn walk_armed(vs: &mut ViewState) {
+        vs.arm_flow(Flow::ReviewWalk {
+            cadence: DAY,
+            reference: reference(),
+            stage: WalkStage::Inbox { filing: None },
+            cursor: 0,
+        });
+    }
+
+    #[test]
+    fn a_completed_stack_payload_reaches_the_walk_parent() {
+        let (state, stack, [first, ..]) = inbox_fixture();
+        let mut vs = ViewState::new();
+        walk_armed(&mut vs);
+        vs.arm_child_for_test(Flow::WalkFilePick { armed: Some(stack) })
+            .expect("the child mounts");
+
+        let outcomes = vs.end_top_flow_with(
+            &state,
+            crate::surfaces::GuestExit::Completed(Some(crate::surfaces::LevelResult::Stack(stack))),
+        );
+        // R2's order: the command first, then the advance's refresh.
+        assert!(matches!(
+            outcomes.first(),
+            Some(FlowOutcome::Command(taskboard_domain::StateCommand::MoveTask {
+                id,
+                stack: target,
+                ..
+            })) if *id == first && *target == stack
+        ));
+        assert!(matches!(outcomes.last(), Some(FlowOutcome::RefreshNow)));
+        // The child is gone, the walk stays and its cursor sat on the
+        // next row (one row step on a two-row inbox).
+        assert!(!matches!(vs.flow(), Flow::WalkFilePick { .. }));
+        assert!(matches!(vs.flow(), Flow::ReviewWalk { cursor: 1, .. }));
+    }
+
+    #[test]
+    fn a_cancelled_exit_is_the_default_ignore_and_the_parent_stays() {
+        let (state, _, _, _, [task, ..]) = two_board_fixture();
+        let mut vs = ViewState::new();
+        vs.arm_flow(Flow::TrackEntryForm { task, seed: None });
+        vs.arm_child_for_test(Flow::EntryDatePicker)
+            .expect("the child mounts");
+
+        let outcomes = vs.cancel_top_child(&state).expect("a parent flow exists");
+        assert!(
+            matches!(outcomes.as_slice(), [FlowOutcome::RefreshNow]),
+            "the rung's shape is the refresh-only step-back"
+        );
+        // The form level is intact; the picker child is gone.
+        assert!(matches!(vs.flow(), Flow::TrackEntryForm { .. }));
+
+        // The form itself is at depth 1: no Cancelled rung above it —
+        // the caller's own close rung applies.
+        assert!(vs.cancel_top_child(&state).is_none());
+    }
+
+    #[test]
+    fn a_completed_none_is_the_default_ignore() {
+        let (state, _, _, _, [task, ..]) = two_board_fixture();
+        let mut vs = ViewState::new();
+        vs.arm_flow(Flow::TrackEntryForm { task, seed: None });
+        vs.arm_child_for_test(Flow::EntryDatePicker)
+            .expect("the child mounts");
+
+        let outcomes = vs.end_top_flow_with(&state, crate::surfaces::GuestExit::Completed(None));
+        assert!(outcomes.is_empty(), "the default ignore produces nothing");
+        assert!(matches!(vs.flow(), Flow::TrackEntryForm { .. }));
+    }
+
+    #[test]
+    fn a_grandchilds_payload_never_crosses_an_intermediate_level() {
+        use chrono::TimeZone as _;
+        let (state, _, _, _, [task, ..]) = two_board_fixture();
+        let mut vs = ViewState::new();
+        vs.arm_flow(Flow::TrackEntries { task });
+        vs.arm_child_for_test(Flow::TrackEntryForm { task, seed: None })
+            .expect("the form mounts");
+        vs.arm_child_for_test(Flow::EntryDatePicker)
+            .expect("the picker mounts");
+
+        let day = chrono::NaiveDate::from_ymd_opt(2030, 6, 15).expect("date");
+        let instant = chrono::Local
+            .from_local_datetime(&day.and_hms_opt(12, 0, 0).expect("noon"))
+            .single()
+            .expect("a real local noon")
+            .with_timezone(&chrono::Utc);
+        let outcomes = vs.end_top_flow_with(
+            &state,
+            crate::surfaces::GuestExit::Completed(Some(crate::surfaces::LevelResult::Date(
+                instant,
+            ))),
+        );
+        // The form (the immediate parent) consumed the payload.
+        assert_eq!(
+            vs.track_form().map(|form| form.date_text.as_str()),
+            Some("2030-06-15")
+        );
+        assert!(matches!(outcomes.as_slice(), [FlowOutcome::RefreshNow]));
+        // The list observed nothing: stepping the form back leaves it
+        // open.
+        let _ = vs.cancel_top_child(&state);
+        assert!(matches!(vs.flow(), Flow::TrackEntries { .. }));
+    }
+
+    #[test]
+    fn subject_death_takes_the_subtree_without_an_exit() {
+        let (mut state, _, _, _, [task, ..]) = two_board_fixture();
+        let mut vs = ViewState::new();
+        vs.arm_flow(Flow::TrackEntryForm { task, seed: None });
+        vs.arm_child_for_test(Flow::EntryDatePicker)
+            .expect("the child mounts");
+
+        state.tasks.remove(&task);
+        vs.reconcile(&state);
+        // The subtree is gone — and it left as retirements (the
+        // Q4 construction fact: no exit was delivered, so no
+        // continuation outcomes exist to observe).
+        assert!(matches!(vs.flow(), Flow::None));
+        let retired = vs.drain_retired();
+        assert_eq!(retired.len(), 2);
     }
 }

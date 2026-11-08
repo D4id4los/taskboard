@@ -14,6 +14,7 @@
 use crate::actions::ContextId;
 use crate::level_state::{FocusAnchor, LevelState};
 use crate::view_state::{Flow, ViewId};
+use taskboard_domain::StackId;
 
 /// A level's surface: the root view or a flow.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,6 +49,9 @@ pub enum FlowTag {
     DragMove,
     PlanPlace,
     ReviewWalk,
+    EntryDatePicker,
+    WalkFilePick,
+    WalkDatePick,
 }
 
 impl Flow {
@@ -75,6 +79,9 @@ impl Flow {
             Flow::DragMove { .. } => FlowTag::DragMove,
             Flow::PlanPlace { .. } => FlowTag::PlanPlace,
             Flow::ReviewWalk { .. } => FlowTag::ReviewWalk,
+            Flow::EntryDatePicker => FlowTag::EntryDatePicker,
+            Flow::WalkFilePick { .. } => FlowTag::WalkFilePick,
+            Flow::WalkDatePick => FlowTag::WalkDatePick,
         }
     }
 }
@@ -94,6 +101,47 @@ pub enum SurfaceKind {
 #[derive(Debug, thiserror::Error)]
 #[error("surface kind already in chain")]
 pub struct AlreadyInChain;
+
+/// What a completed guest hands its parent (D-H3): a payload exists
+/// only for parent-local continuation — the File-to picker's target
+/// stack, a picked date. A guest whose completion the parent does not
+/// consume completes without one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LevelResult {
+    /// The File-to picker's armed candidate — the walk parent files
+    /// the cursor row there.
+    Stack(StackId),
+    /// A picked date, as an instant. The walk's Pick-a-date child
+    /// mints it adapter-side from its parsed text (the honest commit
+    /// value); the entries form's picker child mints the picked day's
+    /// local-noon instant, and the form formats its local date back —
+    /// the noon anchor makes the round trip exact across real zone
+    /// offsets.
+    Date(chrono::DateTime<chrono::Utc>),
+}
+
+/// How a guest level ended (D-H3), delivered to the parent's
+/// `on_child_exit`:
+///
+/// - [`GuestExit::Completed`] — the guest finished; the payload is
+///   the parent-local continuation, `None` when the parent consumes
+///   the completion without one (the entries form: the list just
+///   stays). The `Option` is the documented leniency (A1 policy
+///   §2.1): a third `Completed`-without-payload variant would give
+///   "no payload" two spellings at every match site.
+/// - [`GuestExit::Cancelled`] — the guest was dismissed.
+///
+/// `Cancelled` and `Completed(None)` are distinguishable on purpose
+/// even where every current parent ignores both: the ignore is the
+/// parent's *default*, not the protocol's (a future parent may react
+/// to `Cancelled`; no one may ever react to a payload it did not ask
+/// for). Payload variants are closed: no arm grows for a continuation
+/// no parent consumes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GuestExit {
+    Completed(Option<LevelResult>),
+    Cancelled,
+}
 
 /// One level of the chain: the surface plus its minted interaction
 /// state (D-H2). Both fields private — the only mutators are
@@ -482,6 +530,9 @@ mod tests {
                 stage: WalkStage::Prompts,
                 cursor: 0,
             },
+            FlowTag::EntryDatePicker => Flow::EntryDatePicker,
+            FlowTag::WalkFilePick => Flow::WalkFilePick { armed: Some(STACK) },
+            FlowTag::WalkDatePick => Flow::WalkDatePick,
         }
     }
 
@@ -505,6 +556,9 @@ mod tests {
         FlowTag::DragMove,
         FlowTag::PlanPlace,
         FlowTag::ReviewWalk,
+        FlowTag::EntryDatePicker,
+        FlowTag::WalkFilePick,
+        FlowTag::WalkDatePick,
     ];
 
     fn tag_strategy() -> impl Strategy<Value = FlowTag> {
