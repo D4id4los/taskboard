@@ -47,6 +47,7 @@
 
 pub mod board_identity;
 pub mod board_info;
+pub mod board_payload;
 pub mod document;
 pub mod fold;
 pub mod hash;
