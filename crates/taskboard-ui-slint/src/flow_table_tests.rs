@@ -52,9 +52,14 @@ enum FK {
     /// The plan-next-day placement form (#622): the planner's own
     /// form kind — the kept planner arms own it, settle closes it.
     PlanForm,
-    /// The review walk (#638): the fifth modal — the kept walk arms
-    /// own its intents, settle closes it (the palette family).
+    /// The review walk (#638): the kept walk arms own its intents,
+    /// settle closes it (the palette family).
     ReviewWalk,
+    /// The child levels (chunk 3's ports): no kept arms of their own —
+    /// every effect bubbles outward to the parent (the routing's
+    /// innermost-first walk). The fixture arms them at depth 1, where
+    /// the bubble lands on the root handler.
+    Child,
 }
 
 /// The eleven effect classes the matrix columns range over.
@@ -80,6 +85,9 @@ enum EC {
 fn kind_of(flow: &Flow) -> FK {
     match flow {
         Flow::None => FK::None,
+        // The child levels (chunk 3's ports): no kept intents of
+        // their own; settle is the Cancelled end.
+        Flow::EntryDatePicker | Flow::WalkFilePick { .. } | Flow::WalkDatePick => FK::Child,
         Flow::Create { .. }
         | Flow::CreateStack
         | Flow::CreateBoard
@@ -298,6 +306,7 @@ const fn exp(cmd: Cmd, flow: Post) -> Exp {
 use Cmd::NonZero as NZ;
 use Cmd::Zero as Z;
 use FK::Capture as KCap;
+use FK::Child as KChild;
 use FK::Drag as KDrag;
 use FK::Due as KDue;
 use FK::FocusOverlay as KFoc;
@@ -457,6 +466,22 @@ fn class_table() -> Vec<(FK, EC, Exp)> {
     row(FK::PlanForm, C::TrackOverlay, exp(Z, N));
     row(FK::PlanForm, C::PlanSurface, exp(Z, K(KPlanForm)));
     row(FK::None, C::TrackOverlay, exp(Z, N));
+    // CHILD LEVELS (chunk 3's ports): the settle is the Cancelled end
+    // (the modals' terminator rule); everything else bubbles outward —
+    // at the fixture's depth 1 the overlay-open classes replace the
+    // child (the XOR at depth 1) and the rest reads the root handler:
+    // no kept arms means no arm ends the child but a settle.
+    for class in [C::Nav, C::Lifecycle, C::Begin, C::Title, C::Cancel] {
+        row(FK::Child, class, exp(Z, N));
+    }
+    row(FK::Child, C::OpenPalette, exp(Z, K(KPal)));
+    row(FK::Child, C::BeginCapture, exp(Z, K(KCap)));
+    row(FK::Child, C::FocusOverlay, exp(Z, K(KFoc)));
+    row(FK::Child, C::TrackOverlay, exp(Z, K(KChild)));
+    for class in [C::Edit, C::Menu, C::System, C::Picker] {
+        row(FK::Child, class, exp(Z, K(KChild)));
+    }
+    row(FK::Child, C::ReviewWalk, exp(Z, K(KChild)));
     // A held foreign flow under the plan-surface class: the named
     // inert keeps the flow (the modal discipline; Escape out first).
     for kind in [
@@ -470,6 +495,7 @@ fn class_table() -> Vec<(FK, EC, Exp)> {
         FK::TrackList,
         FK::TrackForm,
         FK::ReviewWalk,
+        FK::Child,
     ] {
         let keep = match kind {
             FK::Text => K(KTxt),
@@ -482,6 +508,7 @@ fn class_table() -> Vec<(FK, EC, Exp)> {
             FK::TrackList => K(KTrackList),
             FK::TrackForm => K(KTrackForm),
             FK::ReviewWalk => K(KWalk),
+            FK::Child => K(KChild),
             FK::PlanForm | FK::None => unreachable!("the loop never names them"),
         };
         row(kind, C::PlanSurface, exp(Z, keep));
@@ -549,6 +576,7 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
         FK::TrackForm,
         FK::PlanForm,
         FK::ReviewWalk,
+        FK::Child,
     ] {
         let keep = match kind {
             FK::Text => K(KTxt),
@@ -562,10 +590,32 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
             FK::TrackForm => K(KTrackForm),
             FK::PlanForm => K(KPlanForm),
             FK::ReviewWalk => K(KWalk),
+            FK::Child => K(KChild),
             FK::None => unreachable!("the loop never names None"),
         };
         row(kind, E::RecurIntent, exp(Z, keep));
     }
+    // -- CHILD LEVELS (chunk 3's ports): the settle-then-run cells —
+    //    the child's Cancelled end dispatches nothing, then the re-run
+    //    opens/acts exactly as it would from no flow (the begin
+    //    family's R4 cells); the dismissal arm is the wildcard's
+    //    close-only rung at depth 1.
+    row(FK::Child, E::BeginCreate, exp(Z, K(KTxt)));
+    row(FK::Child, E::BeginCreateStack, exp(Z, K(KTxt)));
+    row(FK::Child, E::RequestMove, exp(Z, K(KMove)));
+    row(FK::Child, E::StackDelete, exp(NZ, N));
+    row(FK::Child, E::StackRename, exp(Z, K(KTxt)));
+    row(FK::Child, E::StackMove, exp(Z, K(KMove)));
+    row(FK::Child, E::BoardCreate, exp(Z, K(KTxt)));
+    row(FK::Child, E::BoardDelete, exp(NZ, N));
+    row(FK::Child, E::BoardRename, exp(Z, K(KTxt)));
+    row(FK::Child, E::BeginTitleEdit, exp(Z, K(KTxt)));
+    row(FK::Child, E::TrackEntriesOpen, exp(Z, K(KTrackList)));
+    row(FK::Child, E::TrackEntryDismiss, exp(Z, N));
+    row(FK::Child, E::ReviewOpen, exp(Z, K(KWalk)));
+    row(FK::Child, E::WalkAdvance, exp(Z, N));
+    row(FK::Child, E::WalkExit, exp(Z, N));
+    row(FK::Child, E::WalkVerb, exp(Z, N));
     // -- LIFECYCLE under every foreign kind: the settle-then-run
     //    re-run's outcome is effect-shaped (a rename arms a fresh
     //    text flow, a delete dispatches with no flow) --
@@ -826,6 +876,7 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
         FK::TrackList,
         FK::TrackForm,
         FK::ReviewWalk,
+        FK::Child,
     ] {
         let keep = match kind {
             FK::Text => K(KTxt),
@@ -838,6 +889,7 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
             FK::TrackList => K(KTrackList),
             FK::TrackForm => K(KTrackForm),
             FK::ReviewWalk => K(KWalk),
+            FK::Child => K(KChild),
             FK::PlanForm | FK::None => unreachable!("the loop never names them"),
         };
         for key in [
@@ -1029,6 +1081,12 @@ fn all_flows(fx: &Fixture) -> Vec<Flow> {
             stage: crate::view_state::WalkStage::Inbox { filing: None },
             cursor: 0,
         },
+        // The child levels (chunk 3's ports): armed at depth 1 the
+        // fixtures exercise their settle cell (the Cancelled end);
+        // nested mounts are the journeys' and the proptest's shape.
+        Flow::EntryDatePicker,
+        Flow::WalkFilePick { armed: None },
+        Flow::WalkDatePick,
     ]
 }
 
@@ -1345,7 +1403,7 @@ fn the_matrix_covers_every_class_cell() {
     let cells = class_table();
     assert_eq!(
         cells.len(),
-        12 * 15,
+        13 * 15,
         "one row per (FlowKind, EffectClass) cell"
     );
     let mut seen = std::collections::BTreeSet::new();

@@ -1106,6 +1106,19 @@ impl Adapter {
                         }
                     }
                 }
+                FlowOutcome::PlannerHandoff => {
+                    // The walk's boundary ask (chunk 3's exit
+                    // protocol): the shape-B transition, exactly the
+                    // adapter-side half of `WalkStep::Handoff` — the
+                    // walk is still open (the stage does not change on
+                    // the handoff), so the window rides with it.
+                    if let crate::view_state::Flow::ReviewWalk {
+                        cadence, reference, ..
+                    } = self.view_state.flow().clone()
+                    {
+                        self.hand_off_to_planner(window, cadence, reference);
+                    }
+                }
             }
         }
         if mode_changed {
@@ -3300,6 +3313,13 @@ impl Adapter {
             // own the walk's intents; settle is its close (the
             // palette family's terminator).
             | Flow::ReviewWalk { .. }
+            // The child levels (chunk 3's ports): the modals' row —
+            // the children have no kept intents of their own; their
+            // close paths are their exits and their settle arm is the
+            // Cancelled end (D5).
+            | Flow::EntryDatePicker
+            | Flow::WalkFilePick { .. }
+            | Flow::WalkDatePick
             | Flow::None => FlowKind::None,
             Flow::Create { .. }
             | Flow::CreateStack

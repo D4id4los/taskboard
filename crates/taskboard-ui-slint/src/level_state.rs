@@ -87,10 +87,33 @@ pub(crate) struct PlanPlaceState {
 
 /// The review walk's adapter-owned buffers (DR-7 chunk 3): the prompt
 /// answers (one slot per template prompt; survives stage-back and the
-/// planner leg) and the armed date field's text.
+/// planner leg) and the armed date field's text. The date text retires
+/// with the N3b port (chunk 3): the `WalkDatePick` child owns it.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct WalkState {
     pub(crate) answers: Vec<String>,
+    pub(crate) date_text: String,
+    pub(crate) anchor: FocusAnchor,
+}
+
+/// The standalone calendar picker's level family (chunk 3's N2 port):
+/// the entries form's date grid as a child level — the r4 D-TS4
+/// `DuePickerState` machinery verbatim (the time half unused; the
+/// family mounts date-only). Family-default is the epoch placeholder:
+/// the opening seam re-seeds through [`DuePickerState::open`] before
+/// any render reads it (the `TrackFormState` seeding pattern).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PickerState {
+    pub(crate) picker: crate::due_edit::DuePickerState,
+    pub(crate) anchor: FocusAnchor,
+}
+
+/// The walk's Pick-a-date child's typed text (chunk 3's N3b port):
+/// one field's mirror, dropped with the child level — the commit
+/// parses it adapter-side and completes the child with the instant,
+/// so the child's death is the clear (the one per-field wipe retires).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct WalkDateState {
     pub(crate) date_text: String,
     pub(crate) anchor: FocusAnchor,
 }
@@ -116,6 +139,11 @@ pub(crate) enum LevelState {
     TrackForm(TrackFormState),
     PlanPlace(PlanPlaceState),
     Walk(WalkState),
+    /// The standalone calendar-picker family (the entries form's N2
+    /// child).
+    Picker(PickerState),
+    /// The walk's Pick-a-date child's typed field (N3b).
+    WalkDate(WalkDateState),
     /// Every stateless flow (the none/move/overlay families — no
     /// text, no picker, no form): the anchor is all a level owns.
     Bare {
@@ -163,11 +191,31 @@ impl LevelState {
                     date_text: String::new(),
                     anchor: FocusAnchor::None,
                 }),
+                // The epoch placeholder: the opening seam re-seeds
+                // through `DuePickerState::open` before any render
+                // reads the family (the struct doc).
+                crate::surfaces::FlowTag::EntryDatePicker => {
+                    Self::Picker(PickerState {
+                        picker: crate::due_edit::DuePickerState::from_parts(
+                            chrono::NaiveDate::from_ymd_opt(1970, 1, 1)
+                                .expect("the epoch placeholder"),
+                            None,
+                        ),
+                        anchor: FocusAnchor::None,
+                    })
+                }
+                crate::surfaces::FlowTag::WalkDatePick => {
+                    Self::WalkDate(WalkDateState {
+                        date_text: String::new(),
+                        anchor: FocusAnchor::None,
+                    })
+                }
                 crate::surfaces::FlowTag::None
                 | crate::surfaces::FlowTag::Move
                 | crate::surfaces::FlowTag::MoveStack
                 | crate::surfaces::FlowTag::TrackEntries
-                | crate::surfaces::FlowTag::DragMove => Self::Bare {
+                | crate::surfaces::FlowTag::DragMove
+                | crate::surfaces::FlowTag::WalkFilePick => Self::Bare {
                     anchor: FocusAnchor::None,
                 },
                 crate::surfaces::FlowTag::Create
@@ -198,7 +246,9 @@ impl LevelState {
             | Self::DateEditor(DateEditorState { anchor, .. })
             | Self::TrackForm(TrackFormState { anchor, .. })
             | Self::PlanPlace(PlanPlaceState { anchor, .. })
-            | Self::Walk(WalkState { anchor, .. }) => *anchor,
+            | Self::Walk(WalkState { anchor, .. })
+            | Self::Picker(PickerState { anchor, .. })
+            | Self::WalkDate(WalkDateState { anchor, .. }) => *anchor,
         }
     }
 
@@ -211,6 +261,8 @@ impl LevelState {
             Self::TrackForm(state) => state.anchor = anchor,
             Self::PlanPlace(state) => state.anchor = anchor,
             Self::Walk(state) => state.anchor = anchor,
+            Self::Picker(state) => state.anchor = anchor,
+            Self::WalkDate(state) => state.anchor = anchor,
         }
     }
 
@@ -319,6 +371,13 @@ impl LevelState {
             Self::TrackForm(state) => state.date_text = "written".to_owned(),
             Self::PlanPlace(state) => state.time_text = "written".to_owned(),
             Self::Walk(state) => state.date_text = "written".to_owned(),
+            Self::Picker(state) => {
+                state.picker = crate::due_edit::DuePickerState::from_parts(
+                    chrono::NaiveDate::from_ymd_opt(2026, 1, 1).expect("a valid date"),
+                    None,
+                );
+            }
+            Self::WalkDate(state) => state.date_text = "written".to_owned(),
             // The anchor is the stateless families' one observable
             // fact.
             Self::View { .. } | Self::Bare { .. } => self.set_anchor(FocusAnchor::View),
@@ -359,6 +418,7 @@ mod tests {
             FlowTag::MoveStack,
             FlowTag::TrackEntries,
             FlowTag::DragMove,
+            FlowTag::WalkFilePick,
         ] {
             assert!(matches!(state_of(tag), LevelState::Bare { .. }));
         }
@@ -375,6 +435,14 @@ mod tests {
             LevelState::PlanPlace(_)
         ));
         assert!(matches!(state_of(FlowTag::ReviewWalk), LevelState::Walk(_)));
+        assert!(matches!(
+            state_of(FlowTag::EntryDatePicker),
+            LevelState::Picker(_)
+        ));
+        assert!(matches!(
+            state_of(FlowTag::WalkDatePick),
+            LevelState::WalkDate(_)
+        ));
         assert!(matches!(
             LevelState::mint(SurfaceKind::View(crate::view_state::ViewId::Board)),
             LevelState::View { .. }
@@ -404,6 +472,9 @@ mod tests {
             FlowTag::TrackEntryForm,
             FlowTag::PlanPlace,
             FlowTag::ReviewWalk,
+            FlowTag::EntryDatePicker,
+            FlowTag::WalkDatePick,
+            FlowTag::WalkFilePick,
         ] {
             let mut state = state_of(tag);
             state.write_test_fact();
