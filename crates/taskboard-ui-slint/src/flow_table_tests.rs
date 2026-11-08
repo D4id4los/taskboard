@@ -761,11 +761,14 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
     row(FK::None, E::TrackEntriesOpen, exp(Z, K(KTrackList)));
     row(FK::None, E::TrackEntryDismiss, exp(Z, N));
     // Under a live overlay: the open request is the kept inert; the
-    // ladder steps form → list, list → close.
+    // dismissal closes the armed level (N1: the form is the list's
+    // CHILD — the fixture's depth-1 form has no list beneath, so its
+    // dismissal reads the close; the real chain's form→list step is
+    // the generic Cancelled rung, pinned by the unit tests).
     row(FK::TrackList, E::TrackEntriesOpen, exp(Z, K(KTrackList)));
     row(FK::TrackForm, E::TrackEntriesOpen, exp(Z, K(KTrackForm)));
     row(FK::TrackList, E::TrackEntryDismiss, exp(Z, N));
-    row(FK::TrackForm, E::TrackEntryDismiss, exp(Z, K(KTrackList)));
+    row(FK::TrackForm, E::TrackEntryDismiss, exp(Z, N));
     // Settle-then-run under every foreign kind: the settle closes the
     // foreign flow, the re-run opens the list (the overlay family's
     // open is effect-shaped like the palette's).

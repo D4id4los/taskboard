@@ -285,7 +285,8 @@ pub enum Flow {
     /// view).
     TrackEntries { task: TaskId },
     /// The overlay's add (`seed: None`) / edit (`Some`) form surface,
-    /// layered in the Escape ladder over the list.
+    /// the list's child level (chunk 3's N1 port; the sibling
+    /// replace retired).
     TrackEntryForm {
         task: TaskId,
         seed: Option<taskboard_domain::TimeEntryId>,
@@ -2044,30 +2045,34 @@ impl ViewState {
         vec![FlowOutcome::RefreshNow]
     }
 
-    /// Row-activate (or the add button): arms the form surface over
-    /// the same subject — edit seeds the entry (`Some`), add does not
-    /// (`None`).
+    /// Row-activate (or the add button): mounts the form as the
+    /// list's CHILD (N1) — edit seeds the entry (`Some`), add does
+    /// not (`None`). The structural admission rule lives here: the
+    /// list's own handler is the only opener, the form mounts only
+    /// over its own live list, and the duplicate-kind refusal is the
+    /// defensive no-op (D7).
     pub fn open_track_entry_form(
         &mut self,
         task: TaskId,
         seed: Option<taskboard_domain::TimeEntryId>,
     ) -> Vec<FlowOutcome> {
-        self.write_flow(Flow::TrackEntryForm { task, seed });
+        if !self.chain_has_flow(
+            |flow| matches!(flow, Flow::TrackEntries { task: subject, .. } if *subject == task),
+        ) {
+            return Vec::new();
+        }
+        let _ = self.mount_child(Flow::TrackEntryForm { task, seed });
         vec![FlowOutcome::RefreshNow]
     }
 
-    /// The Escape ladder (D-TS2): the form steps back to the list;
-    /// the list closes the overlay. `SetMode(Normal)` rides the close
-    /// step so a disengaged field never re-masks (the `close_palette`
-    /// shape).
-    pub fn step_back_track_entries(&mut self) -> Vec<FlowOutcome> {
-        if let Flow::TrackEntryForm { task, .. } = self.flow().clone() {
-            self.write_flow(Flow::TrackEntries { task });
-            vec![FlowOutcome::RefreshNow]
-        } else {
-            self.write_flow(Flow::None);
-            vec![FlowOutcome::SetMode(Mode::Normal), FlowOutcome::RefreshNow]
+    /// The form's completion (N1): the payload-less `Completed` — the
+    /// parent list ignores it and stays (the commit's multi-add
+    /// posture). Inert without the form child.
+    pub fn complete_track_entry_form(&mut self, state: &AppState) -> Vec<FlowOutcome> {
+        if !matches!(self.flow(), Flow::TrackEntryForm { .. }) {
+            return Vec::new();
         }
+        self.end_top_flow_with(state, crate::surfaces::GuestExit::Completed(None))
     }
 
     /// Every overlay exit that means close-without-effect: the
@@ -3639,13 +3644,18 @@ mod tests {
         vs.reconcile(&state);
         vs.set_focused(Some(a));
         vs.activate_focused(&state);
-        // The add form, typed into, then the ladder step back to the
-        // list; a fresh form mints clean — the drop was the wipe.
+        // The list, then the add form typed into, then the ladder
+        // step back to the list (the generic Cancelled rung); a fresh
+        // form mints clean — the drop was the wipe.
+        vs.open_track_entries(a);
         vs.open_track_entry_form(a, None);
         if let Some(form) = vs.track_form_mut() {
             form.date_text = "typed".to_owned();
         }
-        vs.step_back_track_entries();
+        assert_eq!(
+            vs.cancel_top_child(&state),
+            Some(vec![FlowOutcome::RefreshNow])
+        );
         let entry = taskboard_domain::TimeEntryId::from_uuid(uuid::Uuid::now_v7());
         vs.open_track_entry_form(a, Some(entry));
         let form = vs.track_form().expect("the form armed");

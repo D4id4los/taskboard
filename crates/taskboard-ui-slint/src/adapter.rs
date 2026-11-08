@@ -1899,10 +1899,11 @@ impl Adapter {
             ActionId::TaskTrackEntryLog
         };
         self.route(window, action);
-        // The commit steps the surface back to the list (the
-        // ladder's forward direction); the overlay stays open (the
-        // multi-add posture).
-        let outcomes = self.view_state.open_track_entries(subject);
+        // The commit completes the form child (N1): the parent list
+        // ignores the payload-less completion and stays — the overlay
+        // stays open (the multi-add posture).
+        let snapshot = self.state.load();
+        let outcomes = self.view_state.complete_track_entry_form(&snapshot);
         self.apply_outcomes(window, &outcomes);
         self.finish_mutation(window);
         true
@@ -2682,7 +2683,15 @@ impl Adapter {
             (_, UiEffect::TrackEntryDismiss) if self.shell.mode == Mode::Insert => {
                 vec![FlowOutcome::SetMode(Mode::Normal)]
             }
-            (_, UiEffect::TrackEntryDismiss) => self.view_state.step_back_track_entries(),
+            // The ladder's second rung is the generic Cancelled rung
+            // (D-H4): the form child ends alone, the list stays;
+            // without the child the list's own close rung applies
+            // (`SetMode(Normal)` rides it so a disengaged field never
+            // re-masks — the `close_palette` shape).
+            (_, UiEffect::TrackEntryDismiss) => match self.view_state.cancel_top_child(&state) {
+                Some(outcomes) => outcomes,
+                None => self.view_state.close_track_entries(),
+            },
             // -- the capture commit/close (the palette's modal peer);
             //    NOT `interpret_edit` — capture's non-empty commit
             //    deliberately keeps the flow --
@@ -8662,7 +8671,13 @@ fn install_tracking_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // (the state-truth rule — nothing ticks).
     install_seam!(window: window.on_track_entries_dismiss_requested, adapter: adapter;
     bind mut (a, window), args (), {        a.track_entry_target = None;
-    let outcomes = a.view_state.step_back_track_entries();
+    // The outside click is a ladder step (D-TS1): the form child ends
+    // alone (N1's generic rung); the list closes the overlay.
+    let state = a.state.load();
+    let outcomes = match a.view_state.cancel_top_child(&state) {
+        Some(outcomes) => outcomes,
+        None => a.view_state.close_track_entries(),
+    };
     a.apply_outcomes(&window, &outcomes);
     a.finish_mutation(&window);
 
