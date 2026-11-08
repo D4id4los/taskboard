@@ -199,15 +199,26 @@ fn bench_plan_pushes(c: &mut Criterion) {
             labels: &f.label_map,
             boards: &f.board_map,
         };
+        let ownership = taskboard_domain::ownership::BoardOwnershipMap::from_boards(&f.board_map);
         group.throughput(element_throughput(steady_count(n)));
         group.bench_function(format!("steady/{n}"), |b| {
             b.iter(|| {
-                taskboard_domain::plan_pushes(std::hint::black_box(&f.steady_outbox), tables)
+                taskboard_domain::plan_pushes(
+                    std::hint::black_box(&f.steady_outbox),
+                    tables,
+                    std::hint::black_box(&ownership),
+                )
             });
         });
         group.throughput(element_throughput(n));
         group.bench_function(format!("burst/{n}"), |b| {
-            b.iter(|| taskboard_domain::plan_pushes(std::hint::black_box(&f.burst_outbox), tables));
+            b.iter(|| {
+                taskboard_domain::plan_pushes(
+                    std::hint::black_box(&f.burst_outbox),
+                    tables,
+                    std::hint::black_box(&ownership),
+                )
+            });
         });
     }
     group.finish();

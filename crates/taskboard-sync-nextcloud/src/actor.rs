@@ -552,7 +552,9 @@ async fn cycle(
             // unfiltered overlay would mis-tag foreign refs.
             let overlay = BindingOverlay::from_index(target, &index);
             let mut executor = PushExecutor::new(client, overlay, st.features);
-            for group in plan_pushes(&board_ops, tables) {
+            let ownership =
+                taskboard_domain::ownership::BoardOwnershipMap::from_boards(&persisted.boards);
+            for group in plan_pushes(&board_ops, tables, &ownership) {
                 // The flush executes post-pull (D-S4 item 4's position
                 // ruling): document groups are stashed, never executed
                 // in the push phase.

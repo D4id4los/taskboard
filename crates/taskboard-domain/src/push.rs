@@ -26,6 +26,7 @@ use serde::{Deserialize, Serialize};
 use crate::entities::{Board, Label, Stack, Task};
 use crate::ids::{BoardId, LabelId, RemoteCardRef, RemoteStackRef, StackId, TaskId};
 use crate::outbox::{LocalOp, OpId, PendingOp};
+use crate::ownership::BoardOwnershipMap;
 
 /// Which entity a [`PushGroup`] materializes against.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -358,18 +359,26 @@ pub struct PushGroup {
 /// let stacks: BTreeMap<StackId, taskboard_domain::Stack> = BTreeMap::new();
 /// let labels: BTreeMap<taskboard_domain::LabelId, taskboard_domain::Label> = BTreeMap::new();
 /// let boards: BTreeMap<taskboard_domain::BoardId, taskboard_domain::Board> = BTreeMap::new();
-/// let groups = plan_pushes(&outbox, EntityTables {
-///     tasks: &tasks,
-///     stacks: &stacks,
-///     labels: &labels,
-///     boards: &boards,
-/// });
+/// let groups = plan_pushes(
+///     &outbox,
+///     EntityTables {
+///         tasks: &tasks,
+///         stacks: &stacks,
+///         labels: &labels,
+///         boards: &boards,
+///     },
+///     &taskboard_domain::BoardOwnershipMap::default(),
+/// );
 /// assert_eq!(groups.len(), 1);
 /// assert_eq!(groups[0].primary, OpId(uuid::Uuid::from_u128(10)));
 /// assert_eq!(groups[0].subsumed, vec![OpId(uuid::Uuid::from_u128(11))]);
 /// ```
 #[must_use]
-pub fn plan_pushes(outbox: &[PendingOp], entities: EntityTables<'_>) -> Vec<PushGroup> {
+pub fn plan_pushes(
+    outbox: &[PendingOp],
+    entities: EntityTables<'_>,
+    ownership: &BoardOwnershipMap,
+) -> Vec<PushGroup> {
     // Bucket op (queue index, op) pairs per entity, preserving queue order.
     let mut task_ops: Vec<(TaskId, usize, &PendingOp)> = Vec::new();
     let mut stack_ops: Vec<(StackId, usize, &PendingOp)> = Vec::new();
@@ -419,13 +428,27 @@ pub fn plan_pushes(outbox: &[PendingOp], entities: EntityTables<'_>) -> Vec<Push
                     .and_then(|task| entities.stacks.get(&task.stack))
                     .map(|stack| stack.board)
                 {
-                    document_ops.push((board, idx, entry));
+                    // D-BF10: a files-owned board's app-data touch is an
+                    // ordinary task touch — the app-only fields are
+                    // entity slots on files (D-BF9's one lane).
+                    if routes_to_files(board, ownership, entities.boards) {
+                        task_ops.push((task_id, idx, entry));
+                    } else {
+                        document_ops.push((board, idx, entry));
+                    }
                 }
             }
             // The task-less flush trigger (D-H9): its board rides the
             // op — no entity-graph resolution can strand it.
             LocalOp::FlushBoardAppData(board) => {
-                document_ops.push((board, idx, entry));
+                // D-BF10: the board-level flush trigger rides the board
+                // bucket on files (the sections are board-document
+                // payload there, never a sidecar attachment).
+                if routes_to_files(board, ownership, entities.boards) {
+                    board_ops.push((board, idx, entry));
+                } else {
+                    document_ops.push((board, idx, entry));
+                }
             }
         }
     }
@@ -444,6 +467,23 @@ pub fn plan_pushes(outbox: &[PendingOp], entities: EntityTables<'_>) -> Vec<Push
     // then queue position within a kind.
     groups.sort_by_key(|(first_idx, group)| (kind_rank(group.target), *first_idx));
     groups.into_iter().map(|(_, group)| group).collect()
+}
+
+/// The D-BF10 plan-shape law's read side: a board whose owning binding
+/// is Files-tagged has no sidecar lane — its document ops route as
+/// ordinary entity touches instead of `Document` groups. Ownership is
+/// the chunk-3 map (the derived binding view); the Files tag is the
+/// binding's own. Unbound and Deck-tagged boards keep today's behavior.
+fn routes_to_files(
+    board: crate::ids::BoardId,
+    ownership: &BoardOwnershipMap,
+    boards: &BTreeMap<crate::ids::BoardId, Board>,
+) -> bool {
+    ownership.owner_of(&board).is_some()
+        && boards
+            .get(&board)
+            .and_then(|b| b.remote.as_ref())
+            .is_some_and(|binding| binding.board.as_files().is_some())
 }
 
 /// The cross-entity dependency rank: board first (a board write precedes
@@ -813,7 +853,7 @@ fn noop_group(target: PushTarget, members: &[(usize, &PendingOp)]) -> PushGroup 
 mod tests {
     use super::*;
     use crate::entities::{LabelClocks, StackClocks, TaskClocks};
-    use crate::ids::{LabelId, StackId, TaskId};
+    use crate::ids::{LabelId, RemoteBoardId, StackId, TaskId};
     use chrono::TimeZone;
     use proptest::prelude::*;
     use uuid::Uuid;
@@ -964,6 +1004,8 @@ mod tests {
     static EMPTY_LABELS: std::sync::LazyLock<
         BTreeMap<crate::ids::LabelId, crate::entities::Label>,
     > = std::sync::LazyLock::new(BTreeMap::new);
+    static NO_OWNERSHIP: std::sync::LazyLock<BoardOwnershipMap> =
+        std::sync::LazyLock::new(BoardOwnershipMap::default);
 
     fn tables<'a>(
         tasks: &'a BTreeMap<TaskId, Task>,
@@ -1000,7 +1042,7 @@ mod tests {
             op(102, LocalOp::MoveTask(task.id)),
             op(103, LocalOp::DeleteTask(task.id)),
         ];
-        let groups = plan_pushes(&outbox, tables(&tasks, &stacks, &labels));
+        let groups = plan_pushes(&outbox, tables(&tasks, &stacks, &labels), &NO_OWNERSHIP);
 
         assert_eq!(groups.len(), 1);
         let group = &groups[0];
@@ -1033,7 +1075,7 @@ mod tests {
             op(102, LocalOp::MoveTask(task.id)),
             op(103, LocalOp::AssignLabel(task.id, label_id(20))),
         ];
-        let groups = plan_pushes(&outbox, tables(&tasks, &stacks, &labels));
+        let groups = plan_pushes(&outbox, tables(&tasks, &stacks, &labels), &NO_OWNERSHIP);
 
         assert_eq!(groups.len(), 1);
         let group = &groups[0];
@@ -1073,7 +1115,7 @@ mod tests {
             op(100, LocalOp::UpdateTask(task.id)),
             op(101, LocalOp::UpdateTask(task.id)),
         ];
-        let groups = plan_pushes(&outbox, tables(&tasks, &stacks, &labels));
+        let groups = plan_pushes(&outbox, tables(&tasks, &stacks, &labels), &NO_OWNERSHIP);
 
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].primary, OpId(uuid(100)));
@@ -1098,14 +1140,14 @@ mod tests {
         let labels = BTreeMap::new();
 
         let update = vec![op(100, LocalOp::UpdateTask(task.id))];
-        let groups = plan_pushes(&update, tables(&tasks, &stacks, &labels));
+        let groups = plan_pushes(&update, tables(&tasks, &stacks, &labels), &NO_OWNERSHIP);
         let MaterializedOp::UpdateTask { card, .. } = &groups[0].materialized else {
             panic!("expected an update materialization");
         };
         assert_eq!(card.scheduled, Some(ts(400)));
 
         let create = vec![op(101, LocalOp::CreateTask(task.id))];
-        let groups = plan_pushes(&create, tables(&tasks, &stacks, &labels));
+        let groups = plan_pushes(&create, tables(&tasks, &stacks, &labels), &NO_OWNERSHIP);
         let MaterializedOp::CreateTask { new_card, .. } = &groups[0].materialized else {
             panic!("expected a create materialization");
         };
@@ -1126,7 +1168,7 @@ mod tests {
         let labels = BTreeMap::new();
 
         let outbox = vec![op(100, LocalOp::MoveTask(task.id))];
-        let groups = plan_pushes(&outbox, tables(&tasks, &stacks, &labels));
+        let groups = plan_pushes(&outbox, tables(&tasks, &stacks, &labels), &NO_OWNERSHIP);
 
         assert_eq!(groups.len(), 1);
         assert_eq!(
@@ -1160,7 +1202,7 @@ mod tests {
             op(100, LocalOp::MoveTask(task.id)),
             op(101, LocalOp::UpdateTask(task.id)),
         ];
-        let groups = plan_pushes(&outbox, tables(&tasks, &stacks, &labels));
+        let groups = plan_pushes(&outbox, tables(&tasks, &stacks, &labels), &NO_OWNERSHIP);
 
         assert_eq!(groups.len(), 2);
         assert_eq!(
@@ -1191,7 +1233,7 @@ mod tests {
         let labels = BTreeMap::new();
 
         let outbox = vec![op(100, LocalOp::AssignLabel(task.id, label_id(20)))];
-        let groups = plan_pushes(&outbox, tables(&tasks, &stacks, &labels));
+        let groups = plan_pushes(&outbox, tables(&tasks, &stacks, &labels), &NO_OWNERSHIP);
 
         assert_eq!(groups.len(), 1);
         let MaterializedOp::UpdateTask { card, .. } = &groups[0].materialized else {
@@ -1210,7 +1252,7 @@ mod tests {
             op(100, LocalOp::CreateTask(task_id(10))),
             op(101, LocalOp::DeleteTask(task_id(10))),
         ];
-        let groups = plan_pushes(&outbox, tables(&tasks, &stacks, &labels));
+        let groups = plan_pushes(&outbox, tables(&tasks, &stacks, &labels), &NO_OWNERSHIP);
 
         assert_eq!(groups.len(), 1);
         assert_eq!(
@@ -1235,7 +1277,7 @@ mod tests {
             op(12, LocalOp::FlushBoardAppData(board)),
             op(13, LocalOp::UpdateAppData(task)),
         ];
-        let groups = plan_pushes(&ops, t);
+        let groups = plan_pushes(&ops, t, &NO_OWNERSHIP);
         let doc_groups: Vec<&PushGroup> = groups
             .iter()
             .filter(|g| matches!(g.target, PushTarget::Document(_)))
@@ -1253,6 +1295,127 @@ mod tests {
         assert!(matches!(last.target, PushTarget::Document(_)));
     }
 
+    // ---- The D-BF10 plan-shape routing pins (chunk 5, plan §9.1) ----
+
+    fn board_bound(raw: u128, connector: &str, remote: RemoteBoardId) -> Board {
+        let mut board = board_row(raw);
+        board.remote = Some(crate::ids::RemoteBoardBinding {
+            connector: crate::ids::ConnectorId::from(connector),
+            board: remote,
+        });
+        board
+    }
+
+    /// A files-owned board's document ops join the entity buckets: the
+    /// sidecar lane has no home on files (D-BF10), so the flush triggers
+    /// ride as ordinary task/board touches and **no `Document` group is
+    /// ever produced**.
+    #[test]
+    fn a_files_owned_boards_document_ops_route_into_the_entity_buckets() {
+        let stack = stack_row(1);
+        let mut stacks = BTreeMap::new();
+        stacks.insert(stack.id, stack.clone());
+        let task = task_row(10, stack.id);
+        let mut tasks = BTreeMap::new();
+        tasks.insert(task.id, task.clone());
+        let board = stack.board;
+        let files = board_bound(900, "files-sync", RemoteBoardId::files(uuid(777)));
+        let mut boards = BTreeMap::new();
+        boards.insert(board, files);
+        let ownership = BoardOwnershipMap::from_boards(&boards);
+        let t = EntityTables {
+            tasks: &tasks,
+            stacks: &stacks,
+            labels: &EMPTY_LABELS,
+            boards: &boards,
+        };
+
+        let ops = vec![
+            op(10, LocalOp::FlushBoardAppData(board)),
+            op(11, LocalOp::UpdateAppData(task.id)),
+        ];
+        let groups = plan_pushes(&ops, t, &ownership);
+
+        assert!(
+            groups
+                .iter()
+                .all(|g| !matches!(g.target, PushTarget::Document(_))),
+            "no sidecar flush group for a files-owned board"
+        );
+        let targets: Vec<PushTarget> = groups.iter().map(|g| g.target).collect();
+        assert!(targets.contains(&PushTarget::Task(task.id)));
+        assert!(targets.contains(&PushTarget::Board(board)));
+        assert_eq!(all_ids(&groups).len(), 2, "every op drains exactly once");
+    }
+
+    /// The Deck arm is byte-stable: a Deck-owned board keeps today's one
+    /// coalesced flush group, partition intact, ranked last.
+    #[test]
+    fn a_deck_owned_boards_document_ops_keep_the_flush_group() {
+        let stack = stack_row(1);
+        let mut stacks = BTreeMap::new();
+        stacks.insert(stack.id, stack.clone());
+        let task = task_row(10, stack.id);
+        let mut tasks = BTreeMap::new();
+        tasks.insert(task.id, task.clone());
+        let board = stack.board;
+        let decks = board_bound(900, "nc", RemoteBoardId::deck(42));
+        let mut boards = BTreeMap::new();
+        boards.insert(board, decks);
+        let ownership = BoardOwnershipMap::from_boards(&boards);
+        let t = EntityTables {
+            tasks: &tasks,
+            stacks: &stacks,
+            labels: &EMPTY_LABELS,
+            boards: &boards,
+        };
+
+        let ops = vec![
+            op(10, LocalOp::FlushBoardAppData(board)),
+            op(11, LocalOp::UpdateAppData(task.id)),
+        ];
+        let groups = plan_pushes(&ops, t, &ownership);
+
+        let doc: Vec<&PushGroup> = groups
+            .iter()
+            .filter(|g| matches!(g.target, PushTarget::Document(_)))
+            .collect();
+        assert_eq!(doc.len(), 1);
+        assert_eq!(
+            doc[0].subsumed.len() + 1,
+            2,
+            "one flush group, both ops on it"
+        );
+        assert!(matches!(
+            groups.last().unwrap().target,
+            PushTarget::Document(_)
+        ));
+    }
+
+    /// An unbound board (no ownership entry) keeps today's behavior
+    /// verbatim — the document lane stays queued as its flush group.
+    #[test]
+    fn an_unowned_boards_document_ops_keep_todays_flush_group() {
+        let stack = stack_row(1);
+        let mut stacks = BTreeMap::new();
+        stacks.insert(stack.id, stack.clone());
+        let task = task_row(10, stack.id);
+        let mut tasks = BTreeMap::new();
+        tasks.insert(task.id, task.clone());
+        let t = EntityTables {
+            tasks: &tasks,
+            stacks: &stacks,
+            labels: &EMPTY_LABELS,
+            boards: &EMPTY,
+        };
+
+        let ops = vec![op(11, LocalOp::UpdateAppData(task.id))];
+        let groups = plan_pushes(&ops, t, &BoardOwnershipMap::default());
+
+        assert_eq!(groups.len(), 1);
+        assert!(matches!(groups[0].target, PushTarget::Document(_)));
+    }
+
     #[test]
     fn ops_on_entities_missing_from_the_tables_degrade_to_noop() {
         let stacks = BTreeMap::new();
@@ -1264,7 +1427,7 @@ mod tests {
             op(101, LocalOp::RenameStack(stack_id(20))),
             op(102, LocalOp::UpdateLabel(label_id(30))),
         ];
-        let groups = plan_pushes(&outbox, tables(&tasks, &stacks, &labels));
+        let groups = plan_pushes(&outbox, tables(&tasks, &stacks, &labels), &NO_OWNERSHIP);
 
         assert_eq!(groups.len(), 3);
         assert!(
@@ -1293,7 +1456,7 @@ mod tests {
             op(101, LocalOp::UpdateLabel(label.id)),
             op(102, LocalOp::RenameStack(stack.id)),
         ];
-        let groups = plan_pushes(&outbox, tables(&tasks, &stacks, &labels));
+        let groups = plan_pushes(&outbox, tables(&tasks, &stacks, &labels), &NO_OWNERSHIP);
 
         let targets: Vec<PushTarget> = groups.iter().map(|g| g.target).collect();
         assert_eq!(
@@ -1318,7 +1481,7 @@ mod tests {
             op(100, LocalOp::CreateStack(stack.id)),
             op(101, LocalOp::RenameStack(stack.id)),
         ];
-        let groups = plan_pushes(&outbox, tables(&tasks, &stacks, &labels));
+        let groups = plan_pushes(&outbox, tables(&tasks, &stacks, &labels), &NO_OWNERSHIP);
 
         assert_eq!(groups.len(), 1);
         assert_eq!(
@@ -1335,7 +1498,7 @@ mod tests {
         let labels = BTreeMap::new();
 
         let outbox = vec![op(100, LocalOp::RenameStack(stack_id(20)))];
-        let groups = plan_pushes(&outbox, tables(&tasks, &stacks, &labels));
+        let groups = plan_pushes(&outbox, tables(&tasks, &stacks, &labels), &NO_OWNERSHIP);
         // The stack row exists check is against the tables, which are empty:
         // a rename of a stack the planner cannot see degrades to Noop.
         assert_eq!(groups.len(), 1);
@@ -1421,6 +1584,7 @@ mod tests {
                 labels: &EMPTY_LABELS,
                 boards: &EMPTY,
             },
+            &NO_OWNERSHIP,
         );
         // Two flush groups: one per board, primary first-in-queue-order.
         let documents: Vec<&PushGroup> = groups
@@ -1470,6 +1634,7 @@ mod tests {
                 labels: &EMPTY_LABELS,
                 boards: &EMPTY,
             },
+            &NO_OWNERSHIP,
         );
         // Partition: the resolvable op appears exactly once, the
         // unresolvable one in no group (no outcome ⇒ stays queued).
@@ -1503,6 +1668,7 @@ mod tests {
                 labels: &EMPTY_LABELS,
                 boards: &EMPTY,
             },
+            &NO_OWNERSHIP,
         );
         assert_eq!(groups.len(), 2);
         assert!(matches!(groups[0].target, PushTarget::Task(_)));
@@ -1533,7 +1699,7 @@ mod tests {
                 labels: &state.labels,
                 boards: &state.boards,
             };
-            let groups = plan_pushes(&state.outbox, tables);
+            let groups = plan_pushes(&state.outbox, tables, &NO_OWNERSHIP);
 
             let mut planned: Vec<uuid::Uuid> =
                 all_ids(&groups).into_iter().map(|id| id.0).collect();
@@ -1563,7 +1729,7 @@ mod tests {
                 labels: &state.labels,
                 boards: &state.boards,
             };
-            let groups = plan_pushes(&state.outbox, tables);
+            let groups = plan_pushes(&state.outbox, tables, &NO_OWNERSHIP);
             let ranks: Vec<u8> = groups.iter().map(|g| kind_rank(g.target)).collect();
             let mut sorted = ranks.clone();
             sorted.sort_unstable();
@@ -1580,7 +1746,7 @@ mod tests {
                 labels: &state.labels,
                 boards: &state.boards,
             };
-            let groups = plan_pushes(&state.outbox, tables);
+            let groups = plan_pushes(&state.outbox, tables, &NO_OWNERSHIP);
             for group in &groups {
                 let member_ops: Vec<LocalOp> = state
                     .outbox
@@ -1632,6 +1798,7 @@ mod tests {
                 labels: &labels,
                 boards: &boards,
             },
+            &NO_OWNERSHIP,
         );
         assert_eq!(groups.len(), 1, "one DELETE subsumes the board's ops");
         let group = &groups[0];
@@ -1662,6 +1829,7 @@ mod tests {
                 labels: &labels,
                 boards: &boards,
             },
+            &NO_OWNERSHIP,
         );
         assert_eq!(groups.len(), 1);
         assert!(groups[0].materialized.is_noop(), "synthetic completion");
@@ -1693,6 +1861,7 @@ mod tests {
                 labels: &labels,
                 boards: &boards,
             },
+            &NO_OWNERSHIP,
         );
         assert_eq!(groups.len(), 2);
         assert!(matches!(
@@ -1750,6 +1919,7 @@ mod tests {
                 labels: &labels,
                 boards: &boards,
             },
+            &NO_OWNERSHIP,
         );
         assert_eq!(groups[0].target, PushTarget::Board(board_id));
         assert_eq!(groups[1].target, PushTarget::Stack(stack_id));
@@ -1772,7 +1942,7 @@ mod tests {
             op(2, LocalOp::UpdateTask(task.id)),
             op(3, LocalOp::RenameStack(stack.id)),
         ];
-        let groups = plan_pushes(&outbox, tables(&tasks, &stacks, &labels));
+        let groups = plan_pushes(&outbox, tables(&tasks, &stacks, &labels), &NO_OWNERSHIP);
         assert_eq!(groups.len(), 2, "one PUT per coalesced entity");
     }
 }
