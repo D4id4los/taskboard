@@ -2845,18 +2845,9 @@ async fn s_files_board_sync_golden() {
         })
         .await
         .expect("report channel open");
-    // The author leg decides the equal-clock duel; the binding rides
-    // the files identity.
-    wait_for_task(&s, |t| {
-        t.title == "peer rename"
-            && t.remote
-                == Some(taskboard_domain::RemoteCardRef {
-                    board: taskboard_domain::RemoteBoardId::files(BOARD_UUID),
-                    stack: taskboard_domain::RemoteStackId::files(stack.as_uuid()),
-                    card: taskboard_domain::RemoteCardId::files(local_task.as_uuid()),
-                })
-    })
-    .await;
+    // The author leg decides the equal-clock duel; a files board's
+    // children carry no remote ids (the domain UUID is the identity).
+    wait_for_task(&s, |t| t.title == "peer rename" && t.remote.is_none()).await;
     // The queued create settled through its echo-less Applied.
     wait_for_outbox(&s, 1, "the adopted peer card's op only remains").await;
     s.snap("s_files_board_sync_golden");
