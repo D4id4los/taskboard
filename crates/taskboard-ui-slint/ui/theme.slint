@@ -69,6 +69,16 @@ export global Theme {
     // gets the same layout floor).
     out property <length> card-title-min-width: 84px * base-scale;
 
+    // The layout-constraint severing cap (round-6 R6-4): an explicit
+    // max-width that replaces an inherited constraint instead of merely
+    // flooring it — a conditionally-empty stretch-aligned layout
+    // reports max = min = 0 (i-slint-core box_layout_info's empty early
+    // return), and a single-layout-child wrapper inherits that max
+    // unless one is stated. Effectively unbounded: at base-scale 3 the
+    // cap is still ~22x a full-HD row. Not a spacing step — a layout
+    // meta-constant, the icon-size precedent.
+    out property <length> layout-severing-max-width: 99999px;
+
     // The column resize handle's hit-target width (round-1 D17; the
     // builtin tableview's 10 px pattern, one theme home).
     out property <length> resize-handle-width: 10px * base-scale;
