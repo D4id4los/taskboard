@@ -1,0 +1,50 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The task-card title-width probe (round-6 R6-4): the real `TaskCard`
+// mounted at controlled card widths — the regression host for the
+// empty-decorations-row layout-info collapse (an empty stretch-aligned
+// layout reports max = min, and the text column's merge clamped the
+// title to the widest chip at any card width).
+
+import { TaskCard } from "../ui/widgets/task-card.slint";
+import { DueKind, Theme } from "../ui/theme.slint";
+
+export component TaskCardTitleProbe inherits Window {
+    // Geometry rides theme-token arithmetic: the token lint rules
+    // literal px in layout bindings, and the probe's exact canvas size
+    // is arbitrary (only the card width varies).
+    width: Theme.space-15 * 9;
+    height: Theme.space-15 * 2;
+
+    in property <length> card-w: 340px;
+    in property <bool> with-chips: true;
+    in property <string> the-title: "Create your very first oversized task title";
+
+    out property <length> card-actual: card.width;
+    out property <length> title-actual: tc.title-width;
+    out property <length> title-preferred: tc.title-preferred-width;
+
+    card := Rectangle {
+        x: Theme.space-2;
+        y: Theme.space-2;
+        width: card-w;
+        height: Theme.space-15;
+        background: Theme.surface-raised;
+
+        tc := TaskCard {
+            width: 100%;
+            height: 100%;
+            model: {
+                title: the-title,
+                due-phrase: with-chips ? "1d overdue · 13:00" : "",
+                scheduled-phrase: with-chips ? "starts in 9h · 01:00" : "",
+                effort-phrase: "",
+                due-kind: with-chips ? DueKind.overdue : DueKind.none,
+                done: false,
+                can-done: true,
+                emphasis: false,
+                dragging-source: false,
+                decorations: [],
+            };
+        }
+    }
+}

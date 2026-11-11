@@ -59,6 +59,11 @@ export struct TaskCardModel {
 export component TaskCard inherits Rectangle {
     in property <TaskCardModel> model;
     in property <bool> compact: false;
+    // The title's resolved and intrinsic widths (round-6 R6-4): the
+    // regression probe reads them instead of re-measuring text; the
+    // automation lane shares the seam.
+    out property <length> title-width: title-text.width;
+    out property <length> title-preferred-width: title-text.preferred-width;
     callback activated();
     callback clicked();
     // The done checkbox's toggle (r3 D6): state-less — the wiring
@@ -176,7 +181,7 @@ export component TaskCard inherits Rectangle {
             padding-bottom: Theme.space-1;
             spacing: Theme.space-1;
 
-            RoleText {
+            title-text := RoleText {
                 role: root.model.done ? Typography.caption : Typography.body;
                 text-color: root.model.done ? Theme.text-secondary : Theme.text-primary;
                 text: root.model.title;
@@ -218,23 +223,42 @@ export component TaskCard inherits Rectangle {
 
             // Tertiary decorations (rule-D slot): all v0.1.0 kinds are
             // tertiary (D21) — compact collapses them; call sites pass []
-            // today.
-            if (!root.compact): HorizontalLayout {
-                spacing: Theme.space-1;
-                for decoration in root.model.decorations: Rectangle {
-                    border-radius: Theme.radius-small;
-                    background: decoration.tone == Tone.success ? Semantic.success.with-alpha(0.2)
-                        : decoration.tone == Tone.warning ? Semantic.warning.with-alpha(0.2)
-                        : decoration.tone == Tone.danger ? Semantic.danger.with-alpha(0.2)
-                        : decoration.tone == Tone.overdue ? Semantic.overdue.with-alpha(0.2)
-                        : Theme.surface-raised;
-                    HorizontalLayout {
-                        padding-left: Theme.space-1;
-                        padding-right: Theme.space-1;
-                        RoleText {
-                            role: Typography.badge;
-                            text-color: Theme.text-secondary;
-                            text: decoration.label;
+            // today. The row rides a plain Rectangle (round-6 R6-4): an
+            // empty stretch-aligned layout reports max = min = 0
+            // (box_layout_info's empty early return), and this row's
+            // constraint merge into the text column collapsed the
+            // column's max-width to it — the elided title could never
+            // grow past the widest chip, at any card width. A plain
+            // Rectangle carries no content-derived layout info
+            // (min = preferred = 0, max = unbounded), so the merge
+            // stays unbounded; the height rides the inner layout's.
+            if (!root.compact): deco-row := Rectangle {
+                // The explicit cap (round-6 R6-4): the single-layout
+                // lowering would otherwise inherit the inner layout's
+                // constraint per axis — and an EMPTY stretch-aligned
+                // layout reports max = min = 0, collapsing the text
+                // column's max-width to it (the elided title could
+                // never grow past the widest chip at any card width).
+                // The explicit max replaces the inherited one.
+                max-width: Theme.layout-severing-max-width;
+                height: deco-layout.preferred-height;
+                deco-layout := HorizontalLayout {
+                    spacing: Theme.space-1;
+                    for decoration in root.model.decorations: Rectangle {
+                        border-radius: Theme.radius-small;
+                        background: decoration.tone == Tone.success ? Semantic.success.with-alpha(0.2)
+                            : decoration.tone == Tone.warning ? Semantic.warning.with-alpha(0.2)
+                            : decoration.tone == Tone.danger ? Semantic.danger.with-alpha(0.2)
+                            : decoration.tone == Tone.overdue ? Semantic.overdue.with-alpha(0.2)
+                            : Theme.surface-raised;
+                        HorizontalLayout {
+                            padding-left: Theme.space-1;
+                            padding-right: Theme.space-1;
+                            RoleText {
+                                role: Typography.badge;
+                                text-color: Theme.text-secondary;
+                                text: decoration.label;
+                            }
                         }
                     }
                 }
