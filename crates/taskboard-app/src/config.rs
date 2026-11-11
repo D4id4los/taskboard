@@ -275,21 +275,35 @@ fn focus_notify_is_default(notify: &bool) -> bool {
 /// (DR-8 decision D-FT9). The `[focus]` recipe verbatim: the absent
 /// table is the off posture — nothing spawns, nothing validates — and
 /// a section-less config serializes unchanged. The account identity
-/// and the credential come from the *default connector* (Q4: one
-/// account); validation checks only what is written, the credential
-/// resolution happens at the bootstrap spawn gate.
+/// and the credential come from the *anchor connector* (Q4: one
+/// account; round-6 D-6.6 — the anchor is a choice, the lane is not:
+/// still exactly one files-sync actor per process, #723); validation
+/// checks only what is written, the credential resolution happens at
+/// the bootstrap spawn gate.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FilesSyncSection {
-    /// Spawns the files-sync transport iff `true` AND the default
-    /// connector is Nextcloud. Defaults to `false`; skipped when off
-    /// so the absent-table placeholder serializes to nothing.
+    /// Spawns the files-sync transport iff `true` AND a Nextcloud
+    /// connector is resolvable ([`Self::anchor`]). Defaults to
+    /// `false`; skipped when off so the absent-table placeholder
+    /// serializes to nothing.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub enabled: bool,
     /// Poll-cadence override in seconds (D-SF8: the default rides the
     /// `[sync] poll_interval_secs` the board sync runs on).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub poll_secs: Option<u64>,
+    /// The connector whose Nextcloud account the lane mirrors (kebab
+    /// name; round-6 D-6.6). Absent = the first Nextcloud connector —
+    /// the pre-anchor behaviour, so existing configs serialize and
+    /// decode unchanged. Deliberately a plain `Option<String>` (A1
+    /// documented leniency): the connector set only exists after
+    /// decode, so kebab-ness is enforced by matching against the
+    /// configured connectors — the refusal is typed at `validate`
+    /// (`FilesSyncAnchorUnknown` / `FilesSyncWithoutNextcloud`),
+    /// never validate-and-forget.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor: Option<String>,
 }
 
 impl FilesSyncSection {
@@ -1121,14 +1135,27 @@ pub enum ConfigError {
         /// The dotted config key that is invalid.
         field: &'static str,
     },
-    /// `[files_sync] enabled` without a Nextcloud default connector:
-    /// the files substrate binds to the one Nextcloud account the
-    /// Deck connector uses (DR-8 Q4); a standalone world has no
-    /// account to bind and no silent fallback exists.
+    /// `[files_sync] enabled` without a resolvable Nextcloud anchor:
+    /// the files substrate binds to one Nextcloud account (DR-8 Q4);
+    /// a standalone world has no account to bind and no silent
+    /// fallback exists. Fired for `field: "files_sync.enabled"` (the
+    /// mode is on but no anchor resolves) and for `field:
+    /// "files_sync.anchor"` (the anchor names a non-Nextcloud
+    /// connector — same cause class, the key discriminates).
     #[error("files sync enabled without a nextcloud connector")]
     FilesSyncWithoutNextcloud {
         /// The dotted config key that is invalid.
         field: &'static str,
+    },
+    /// `[files_sync] anchor` names no configured connector: a
+    /// dangling reference is config garbage regardless of the mode
+    /// being off (the `poll_secs == Some(0)` precedent).
+    #[error("files sync anchor names no configured connector")]
+    FilesSyncAnchorUnknown {
+        /// The dotted config key that is invalid.
+        field: &'static str,
+        /// The anchor name that named nothing.
+        name: String,
     },
 }
 
@@ -1151,7 +1178,8 @@ impl ConfigError {
             | Self::InvalidDayStartTime { field }
             | Self::InvalidDueSoonDays { field }
             | Self::InvalidFocusTiming { field }
-            | Self::FilesSyncWithoutNextcloud { field } => Some(field),
+            | Self::FilesSyncWithoutNextcloud { field }
+            | Self::FilesSyncAnchorUnknown { field, .. } => Some(field),
             Self::InvalidConnectorEntry { .. }
             | Self::InvalidConnectorName { .. }
             | Self::DuplicateConnectorName { .. } => Some("sync.connectors"),
@@ -1188,6 +1216,7 @@ impl ConfigError {
             Self::InvalidDueSoonDays { .. } => "invalid-due-soon-days",
             Self::InvalidFocusTiming { .. } => "invalid-focus-timing",
             Self::FilesSyncWithoutNextcloud { .. } => "files-sync-without-nextcloud",
+            Self::FilesSyncAnchorUnknown { .. } => "files-sync-anchor-unknown",
         }
     }
 }
@@ -1371,6 +1400,30 @@ impl AppConfig {
         }
     }
 
+    /// The connector whose Nextcloud account the files-sync lane
+    /// mirrors (round-6 D-6.6): the configured [`FilesSyncSection::
+    /// anchor`] by name when set, else the **first Nextcloud
+    /// connector** in [`crate::connectors::configured_connectors`]
+    /// walk order — the pre-anchor behaviour, so anchor-less configs
+    /// resolve exactly as before. `None` when no Nextcloud connector
+    /// resolves; a set-and-invalid anchor never reaches consumers
+    /// through a validated config (`validate` refuses first), and an
+    /// unvalidated config yields `None` honestly — re-derive, never
+    /// re-validate.
+    #[must_use]
+    pub fn resolved_files_sync_anchor(&self) -> Option<crate::connectors::ConnectorSpec> {
+        let specs = crate::connectors::configured_connectors(self).ok()?;
+        let nextcloud = || {
+            specs
+                .iter()
+                .filter(|spec| spec.backend == SyncBackend::Nextcloud)
+        };
+        match self.files_sync.anchor.as_deref() {
+            Some(name) => nextcloud().find(|spec| spec.name.as_str() == name).cloned(),
+            None => nextcloud().next().cloned(),
+        }
+    }
+
     /// Structural validation of the decoded values. `load` runs this
     /// last; hand-built configs (tests, embedders) can call it directly.
     ///
@@ -1390,6 +1443,37 @@ impl AppConfig {
             self.nextcloud.server_url.is_some() || self.nextcloud.username.is_some();
         if nextcloud_identity_present && self.sync.connectors.is_some() {
             return Err(ConfigError::NextcloudTableWithConnectors);
+        }
+        // `[files_sync] anchor` (round-6 D-6.6): a set anchor must
+        // name a configured Nextcloud connector — deterministic
+        // what-is-written checks, refused even while the mode is off
+        // (the `poll_secs == Some(0)` precedent). These checks sit
+        // before the connector-entry loop on purpose: the loop
+        // rejects `standalone` entries outright, which would
+        // otherwise shadow the non-Nextcloud-anchor refusal and leave
+        // the typed outcome unreachable.
+        if let Some(name) = &self.files_sync.anchor {
+            let named = crate::connectors::configured_connectors(self)
+                .ok()
+                .and_then(|specs| {
+                    specs
+                        .into_iter()
+                        .find(|spec| spec.name.as_str() == name.as_str())
+                });
+            match named {
+                None => {
+                    return Err(ConfigError::FilesSyncAnchorUnknown {
+                        field: "files_sync.anchor",
+                        name: name.clone(),
+                    });
+                }
+                Some(spec) if spec.backend != SyncBackend::Nextcloud => {
+                    return Err(ConfigError::FilesSyncWithoutNextcloud {
+                        field: "files_sync.anchor",
+                    });
+                }
+                Some(_) => {}
+            }
         }
         if let Some(entries) = &self.sync.connectors {
             let mut seen: Vec<&str> = Vec::with_capacity(entries.len());
@@ -1544,16 +1628,16 @@ impl AppConfig {
         }
         // `[files_sync]`: deterministic validation (what is written,
         // not what is live) — a zero poll is garbage even while the
-        // mode is disabled, and an enablement without a Nextcloud
-        // account to bind is rejected here rather than at the spawn
-        // gate (Q4: the substrate binds to the one Nextcloud account
-        // the default connector uses; a standalone world has none).
+        // mode is disabled, and an enablement without a resolvable
+        // Nextcloud anchor is rejected here rather than at the spawn
+        // gate (Q4: the substrate binds to one Nextcloud account; a
+        // standalone world has none).
         if self.files_sync.poll_secs == Some(0) {
             return Err(ConfigError::InvalidDuration {
                 field: "files_sync.poll_secs",
             });
         }
-        if self.files_sync.enabled && self.resolved_default_backend() != SyncBackend::Nextcloud {
+        if self.files_sync.enabled && self.resolved_files_sync_anchor().is_none() {
             return Err(ConfigError::FilesSyncWithoutNextcloud {
                 field: "files_sync.enabled",
             });
@@ -2777,6 +2861,156 @@ mod tests {
         // section-less config renders without any `files_sync` key.
         let value = serde_json::to_value(FilesSyncSection::default()).expect("serializes");
         assert_eq!(value, serde_json::json!({}));
+    }
+
+    /// The anchor resolution rule (round-6 D-6.6): absent = the first
+    /// Nextcloud connector (today's behaviour, pinned); set = that
+    /// connector by name; no Nextcloud anywhere = `None`.
+    #[test]
+    fn files_sync_anchor_resolves_by_name_or_falls_back_to_the_first_nextcloud() {
+        let two_nc = decode(
+            "[[sync.connectors]]\nname = 'work'\nbackend = 'nextcloud'\n\
+             server_url = 'https://a.example'\nusername = 'alice'\n\
+             [[sync.connectors]]\nname = 'home'\nbackend = 'nextcloud'\n\
+             server_url = 'https://b.example'\nusername = 'bob'\n",
+        )
+        .expect("decodes");
+        let resolved = two_nc.resolved_files_sync_anchor().expect("resolves");
+        assert_eq!(resolved.name.as_str(), "work", "absent = the first");
+        assert_eq!(resolved.username, "alice");
+
+        let mut anchored = two_nc.clone();
+        anchored.files_sync.anchor = Some("home".into());
+        let resolved = anchored.resolved_files_sync_anchor().expect("resolves");
+        assert_eq!(resolved.name.as_str(), "home", "set = that connector");
+        assert_eq!(resolved.server_url, "https://b.example");
+
+        let standalone = decode("[sync]\nbackend = 'standalone'\n").expect("decodes");
+        assert!(
+            standalone.resolved_files_sync_anchor().is_none(),
+            "no Nextcloud connector, no anchor"
+        );
+    }
+
+    /// D2b's widening, pinned as the desired semantics: an anchorless
+    /// config whose first entry is standalone still resolves the
+    /// later Nextcloud connector — the fallback is first-*Nextcloud*,
+    /// not first-entry.
+    #[test]
+    fn files_sync_anchor_fallback_skips_a_non_nextcloud_first_entry() {
+        // Hand-built (validate rejects standalone array entries); the
+        // resolution rule itself is total over the decoded shape.
+        let mut config = AppConfig::default();
+        config.sync.connectors = Some(vec![
+            ConnectorCfg {
+                name: "local".into(),
+                backend: SyncBackend::Standalone,
+                server_url: "https://x.example".into(),
+                username: "carol".into(),
+            },
+            ConnectorCfg {
+                name: "cloud".into(),
+                backend: SyncBackend::Nextcloud,
+                server_url: "https://c.example".into(),
+                username: "dave".into(),
+            },
+        ]);
+        let resolved = config.resolved_files_sync_anchor().expect("resolves");
+        assert_eq!(resolved.name.as_str(), "cloud");
+        assert_eq!(resolved.username, "dave");
+    }
+
+    /// A set anchor naming nothing is a typed refusal, even while the
+    /// mode is off; the blame ladder names the key.
+    #[test]
+    fn files_sync_anchor_unknown_is_refused_typed_even_while_disabled() {
+        let mut config = decode("[files_sync]\nanchor = 'ghost'\n").expect("decodes");
+        match config.validate() {
+            Err(ConfigError::FilesSyncAnchorUnknown { field, name }) => {
+                assert_eq!(field, "files_sync.anchor");
+                assert_eq!(name, "ghost");
+            }
+            other => panic!("expected FilesSyncAnchorUnknown, got {other:?}"),
+        }
+        config.files_sync.enabled = true;
+        match config.validate() {
+            Err(ConfigError::FilesSyncAnchorUnknown { .. }) => {}
+            other => panic!("enabled must not mask the anchor refusal, got {other:?}"),
+        }
+        assert_eq!(
+            ConfigError::FilesSyncAnchorUnknown {
+                field: "files_sync.anchor",
+                name: String::new(),
+            }
+            .kind(),
+            "files-sync-anchor-unknown"
+        );
+    }
+
+    /// A set anchor naming a non-Nextcloud connector is the same
+    /// cause class as the enabled refusal — the key discriminates.
+    #[test]
+    fn files_sync_anchor_on_a_standalone_connector_is_refused_typed() {
+        let mut config = AppConfig::default();
+        config.sync.connectors = Some(vec![ConnectorCfg {
+            name: "local".into(),
+            backend: SyncBackend::Standalone,
+            server_url: "https://x.example".into(),
+            username: "carol".into(),
+        }]);
+        config.files_sync.anchor = Some("local".into());
+        config.storage.db_path = Some(std::path::PathBuf::from("/tmp/t.db"));
+        match config.validate() {
+            Err(ConfigError::FilesSyncWithoutNextcloud { field }) => {
+                assert_eq!(field, "files_sync.anchor");
+            }
+            other => panic!("expected FilesSyncWithoutNextcloud, got {other:?}"),
+        }
+    }
+
+    /// The enabled gate now reads the anchor resolution: enabled with
+    /// no resolvable anchor is refused; enabled with a named anchor
+    /// that resolves — including a *later* Nextcloud connector behind
+    /// a standalone first entry (D2b) — is accepted.
+    #[test]
+    fn files_sync_enabled_requires_a_resolvable_anchor_not_the_default_backend() {
+        let mut config = decode("[files_sync]\nenabled = true\n").expect("decodes");
+        config.storage.db_path = Some(std::path::PathBuf::from("/tmp/t.db"));
+        match config.validate() {
+            Err(ConfigError::FilesSyncWithoutNextcloud { field }) => {
+                assert_eq!(field, "files_sync.enabled");
+            }
+            other => panic!("expected FilesSyncWithoutNextcloud, got {other:?}"),
+        }
+
+        config.nextcloud.server_url = Some("https://nc.example".into());
+        config.nextcloud.username = Some("alice".into());
+        config.validate().expect("the legacy world still enables");
+
+        let mut anchored = decode(
+            "[[sync.connectors]]\nname = 'cloud'\nbackend = 'nextcloud'\n\
+                    server_url = 'https://c.example'\nusername = 'dave'\n\
+                    [files_sync]\nenabled = true\nanchor = 'cloud'\n",
+        )
+        .expect("decodes");
+        anchored.storage.db_path = Some(std::path::PathBuf::from("/tmp/t.db"));
+        anchored
+            .validate()
+            .expect("a resolvable named anchor enables");
+    }
+
+    /// The absent-anchor contract: existing configs churn nothing —
+    /// a section with only `enabled` serializes without an `anchor`
+    /// key, and the decoded placeholder serializes to nothing.
+    #[test]
+    fn files_sync_anchor_absent_serializes_to_nothing() {
+        let config = decode("[files_sync]\nenabled = true\n").expect("decodes");
+        assert_eq!(config.files_sync.anchor, None);
+        let value = serde_json::to_value(config.files_sync.clone()).expect("serializes");
+        assert_eq!(value, serde_json::json!({ "enabled": true }));
+
+        let anchored = decode("[files_sync]\nanchor = 'work'\n").expect("decodes");
+        assert_eq!(anchored.files_sync.anchor.as_deref(), Some("work"));
     }
 
     #[test]
