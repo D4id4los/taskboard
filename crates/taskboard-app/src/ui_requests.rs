@@ -512,10 +512,18 @@ async fn handle_settings(request: UiRequest, workspace: &ConnectionWorkspace) {
                 .await,
             );
         }
-        UiRequest::SetFilesSyncEnabled { enabled, reply } => {
+        UiRequest::SetFilesSyncEnabled {
+            enabled,
+            anchor,
+            reply,
+        } => {
             let _ = reply.send(
                 run_editor_write(workspace, Field::FilesSyncEnabled, |path| {
-                    crate::settings_overlay::set_files_sync_enabled(path, enabled)
+                    crate::settings_overlay::set_files_sync_enabled(
+                        path,
+                        enabled,
+                        anchor.as_deref(),
+                    )
                 })
                 .await,
             );
@@ -553,7 +561,7 @@ async fn run_editor_write(
     let path = workspace.config_write_path.as_path();
     let locked =
         AppConfig::env_overridden_keys(Some(path)).map_err(|err| map_config_error(&err))?;
-    if locked.contains(editor_field_key(field)) {
+    if editor_write_env_locked(field, &locked) {
         return Err(SettingsError::EnvLocked { field });
     }
     write(path).map_err(|err| map_overlay_error(field, &err))?;
@@ -606,6 +614,18 @@ fn map_overlay_error(field: Field, err: &crate::settings_overlay::OverlayError) 
             }
         }
     }
+}
+
+/// The env-lock verdict for one editor write: the field's own key is
+/// pinned, or — the Files row's case (round-6 D-6.6) — the row writes
+/// two keys (`enabled` + the re-anchor), so a pinned
+/// `files_sync.anchor` must refuse the whole pick too; the writer
+/// would otherwise churn the file under a pinned effective value.
+fn editor_write_env_locked(field: Field, locked: &std::collections::BTreeSet<String>) -> bool {
+    if locked.contains(editor_field_key(field)) {
+        return true;
+    }
+    field == Field::FilesSyncEnabled && locked.contains("files_sync.anchor")
 }
 
 /// The dotted config key each editor `Field` writes (the blame
@@ -2325,7 +2345,7 @@ mod tests {
         );
         assert_eq!(
             snapshot.applies.len(),
-            17,
+            18,
             "the reply carries the apply map"
         );
         assert!(
@@ -2478,6 +2498,7 @@ mod tests {
         handle_settings(
             UiRequest::SetFilesSyncEnabled {
                 enabled: true,
+                anchor: None,
                 reply,
             },
             &workspace,
@@ -2488,6 +2509,10 @@ mod tests {
         let written = AppConfig::extract_raw(Some(&path)).expect("decodes");
         assert!(written.files_sync.enabled);
         assert_eq!(written.files_sync.poll_secs, Some(7), "poll_secs survives");
+        assert_eq!(
+            written.files_sync.anchor, None,
+            "the None arm leaves the anchor key untouched"
+        );
 
         let standalone = dir.path().join("standalone.toml");
         std::fs::write(&standalone, "[sync]\nbackend = \"standalone\"\n").expect("seed");
@@ -2497,6 +2522,7 @@ mod tests {
         handle_settings(
             UiRequest::SetFilesSyncEnabled {
                 enabled: true,
+                anchor: None,
                 reply,
             },
             &workspace,
@@ -2514,6 +2540,75 @@ mod tests {
             "the gate's own-blame refusal is typed: {outcome:?}"
         );
         assert_eq!(std::fs::read_to_string(&standalone).expect("read"), before);
+    }
+
+    /// The re-anchoring pick (round-6 D-6.6): one request lands both
+    /// keys, the reply snapshot echoes the resolved anchor.
+    #[tokio::test]
+    async fn the_reanchoring_pick_lands_both_keys_and_echoes_the_anchor() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("taskboard.toml");
+        std::fs::write(
+            &path,
+            "[[sync.connectors]]\nname = \"work\"\nbackend = \"nextcloud\"\n\
+             server_url = \"https://c.example\"\nusername = \"alice\"\n\
+             [[sync.connectors]]\nname = \"home\"\nbackend = \"nextcloud\"\n\
+             server_url = \"https://d.example\"\nusername = \"bob\"\n",
+        )
+        .expect("seed");
+        let workspace = test_workspace(path.clone()).await;
+        let (reply, reply_rx) = tokio::sync::oneshot::channel();
+        handle_settings(
+            UiRequest::SetFilesSyncEnabled {
+                enabled: true,
+                anchor: Some("home".into()),
+                reply,
+            },
+            &workspace,
+        )
+        .await;
+        let snapshot = reply_rx.await.expect("alive").expect("lands");
+        assert_eq!(
+            snapshot.files_sync_anchor.as_deref(),
+            Some("home"),
+            "the reply echoes the resolved anchor"
+        );
+        let written = AppConfig::extract_raw(Some(&path)).expect("decodes");
+        assert!(written.files_sync.enabled);
+        assert_eq!(written.files_sync.anchor.as_deref(), Some("home"));
+    }
+
+    /// Env honesty (round-6 D-6.6): the Files row's lock verdict —
+    /// either of its two keys pinned refuses the whole pick, any
+    /// other field is unaffected. (The real env scan is pinned in the
+    /// integration suite: process env is `unsafe` to mutate and this
+    /// lib crate forbids it.)
+    #[test]
+    fn the_files_write_env_lock_covers_both_of_its_keys() {
+        use std::collections::BTreeSet;
+        let locked: BTreeSet<String> = ["files_sync.anchor"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        assert!(
+            editor_write_env_locked(Field::FilesSyncEnabled, &locked),
+            "a pinned anchor locks the Files pick"
+        );
+        let locked: BTreeSet<String> = ["files_sync.enabled"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        assert!(editor_write_env_locked(Field::FilesSyncEnabled, &locked));
+        assert!(
+            !editor_write_env_locked(Field::FocusEnabled, &locked),
+            "another field's verdict reads its own key only"
+        );
+        let locked: BTreeSet<String> = ["focus.enabled"].into_iter().map(String::from).collect();
+        assert!(editor_write_env_locked(Field::FocusEnabled, &locked));
+        assert!(
+            !editor_write_env_locked(Field::FilesSyncEnabled, &locked),
+            "an unrelated pin does not lock the Files row"
+        );
     }
 
     /// A garbage minute write reaching the handler from a non-UI lane

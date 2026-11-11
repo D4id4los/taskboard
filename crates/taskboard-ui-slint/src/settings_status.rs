@@ -257,9 +257,7 @@ pub(crate) fn invalid_text(field: Field, kind: InvalidKind) -> &'static str {
             | InvalidKind::NotKebab
             | InvalidKind::BadUrl
             | InvalidKind::NotFinite => "Pick whether files sync runs.",
-            InvalidKind::OutOfRange => {
-                "Files sync needs a Nextcloud account as the default connection."
-            }
+            InvalidKind::OutOfRange => "Files sync needs a Nextcloud account.",
             InvalidKind::Duplicate => "Files sync is already set that way.",
         },
     }

@@ -337,10 +337,20 @@ pub fn settings_snapshot_from_config(
         focus_long_break_every: config.focus.long_break_every,
         focus_notify: config.focus.notify,
         files_sync_enabled: config.files_sync.enabled,
+        files_sync_anchor: resolved_files_sync_anchor_name(config),
         env_overridden: std::collections::BTreeSet::new(),
         facts: settings_facts(config),
         applies: settings_applies(),
     }
+}
+
+/// The snapshot's anchor field: the effective (resolved) anchor's
+/// connector name (round-6 D-6.6) — one shared fill for both minting
+/// sites.
+fn resolved_files_sync_anchor_name(config: &crate::config::AppConfig) -> Option<String> {
+    config
+        .resolved_files_sync_anchor()
+        .map(|spec| spec.name.to_string())
 }
 
 /// The post-apply reply snapshot (round-5 chunk 5, D-5.3): the editable
@@ -389,6 +399,7 @@ pub fn settings_snapshot_from_domain(
         }),
         focus_notify: settings.focus_notify,
         files_sync_enabled: config.files_sync.enabled,
+        files_sync_anchor: resolved_files_sync_anchor_name(config),
         env_overridden: std::collections::BTreeSet::new(),
         facts: settings_facts(config),
         applies: settings_applies(),
@@ -455,6 +466,14 @@ pub fn settings_apply_registry()
             Apply::on_restart(
                 "the files-sync actor spawns at boot (files_sync_spawn_decision); a live \
                  spawn needs substrate wiring fenced to the filesync round",
+            ),
+        ),
+        (
+            "files_sync.anchor",
+            Apply::on_restart(
+                "the files-sync actor binds its account at boot \
+                 (files_sync_spawn_decision); the lane mirrors the resolved anchor from \
+                 the next process start",
             ),
         ),
     ]
@@ -614,10 +633,23 @@ pub fn resolve_connector_infos(
 ) -> Result<Vec<taskboard_ui_slint::requests::ConnectorInfo>, crate::config::ConfigError> {
     Ok(crate::connectors::configured_connectors(config)?
         .into_iter()
-        .map(|spec| taskboard_ui_slint::requests::ConnectorInfo {
-            name: spec.name.to_string(),
-            server_url: spec.server_url,
-            username: spec.username,
+        .map(|spec| {
+            // Total match: a new `SyncBackend` variant breaks this
+            // build — the UI-word decision cannot silently drift.
+            let backend = match spec.backend {
+                crate::config::SyncBackend::Standalone => {
+                    taskboard_ui_slint::requests::ConnectorBackend::Standalone
+                }
+                crate::config::SyncBackend::Nextcloud => {
+                    taskboard_ui_slint::requests::ConnectorBackend::Nextcloud
+                }
+            };
+            taskboard_ui_slint::requests::ConnectorInfo {
+                name: spec.name.to_string(),
+                server_url: spec.server_url,
+                username: spec.username,
+                backend,
+            }
         })
         .collect())
 }
@@ -916,7 +948,7 @@ mod tests {
         assert!(!snapshot.focus_notify);
 
         // The apply map rides the registry (the verdicts test below).
-        assert_eq!(snapshot.applies.len(), 17);
+        assert_eq!(snapshot.applies.len(), 18);
 
         // The env set: no env overrides over the empty fixture file.
         assert!(snapshot.env_overridden.is_empty());
@@ -991,6 +1023,11 @@ mod tests {
                 "{key} applies at restart (justified)"
             );
         }
+        assert_eq!(
+            snapshot.applies.get("files_sync.anchor").map(|a| a.apply),
+            Some(SectionApply::OnRestart),
+            "files_sync.anchor applies at restart (justified)"
+        );
     }
 
     /// The registry's enforcement (round-5 chunk 5, D-5.6): every
@@ -1010,14 +1047,22 @@ mod tests {
         }
     }
 
-    /// The registry covers exactly the editor's field lattice: a key
-    /// added to the editor without a registry entry — or a registry
-    /// key the editor never writes — fails here.
+    /// The registry covers exactly the editor's field lattice plus
+    /// the Files row's second key: a key added to the editor without
+    /// a registry entry — or a registry key the editor never writes —
+    /// fails here. `files_sync.anchor` has no `Field` variant (the
+    /// row's lattice keys off the row, round-6 D-6.6), so it is
+    /// listed explicitly.
     #[test]
     fn the_registry_covers_exactly_the_editor_field_lattice() {
         let registry: std::collections::BTreeSet<&'static str> =
             settings_apply_registry().into_keys().collect();
-        assert_eq!(registry, crate::ui_requests::editor_field_keys());
+        let mut expected = crate::ui_requests::editor_field_keys();
+        assert!(
+            expected.insert("files_sync.anchor"),
+            "the anchor key is not an editor Field — listed once, here"
+        );
+        assert_eq!(registry, expected);
     }
 
     use std::sync::{Arc, Mutex};

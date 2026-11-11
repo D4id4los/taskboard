@@ -635,3 +635,32 @@ fn the_focus_chain_knobs_reject_typed_and_the_env_lane_overrides() {
     assert!(config.focus.chain, "env beats file");
     assert!(!config.focus.notify, "env beats file");
 }
+
+/// The anchor key rides the generic figment env scan (round-6 D-6.6):
+/// `TASKBOARD_FILES_SYNC__ANCHOR` lands in the override set as the
+/// dotted key — the Files row's env lock reads exactly this set.
+#[test]
+fn files_sync_anchor_is_env_overridable_under_its_dotted_key() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("anchor.toml");
+    std::fs::write(
+        &file,
+        "[[sync.connectors]]\nname = \"work\"\nbackend = \"nextcloud\"\n\
+         server_url = \"https://c.example\"\nusername = \"alice\"\n\
+         [files_sync]\nenabled = true\n",
+    )
+    .expect("write toml");
+    let _env = env_lock(); // figment reads process env during load
+    let _anchor = EnvOverride::set("TASKBOARD_FILES_SYNC__ANCHOR", "work");
+    let overridden = AppConfig::env_overridden_keys(Some(&file)).expect("diffs");
+    assert!(
+        overridden.contains("files_sync.anchor"),
+        "the generic scan sees the anchor key: {overridden:?}"
+    );
+    let config = AppConfig::load(Some(file)).expect("loads");
+    assert_eq!(
+        config.files_sync.anchor.as_deref(),
+        Some("work"),
+        "env beats absence"
+    );
+}

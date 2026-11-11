@@ -5208,6 +5208,7 @@ mod account_card_tests {
             name: name.into(),
             server_url: server.into(),
             username: user.into(),
+            backend: crate::requests::ConnectorBackend::Nextcloud,
         }
     }
 

@@ -3884,7 +3884,12 @@ enum ItemAddr {
     Account {
         connector: String,
     },
-    Files,
+    /// The Files toggle row's address (round-6 D-6.6): the card's
+    /// first Nextcloud connector — the re-anchor target when the
+    /// toggle picks On on a non-anchor card.
+    Files {
+        connector: String,
+    },
     Deck {
         connector: String,
     },
@@ -4755,11 +4760,22 @@ impl Adapter {
             files_on: false,
             files_locked: false,
             files_restart: false,
+            backend_word: SharedString::new(),
         };
-        let default_identity = vm
-            .rows
-            .first()
-            .map(|row| (row.server_url.as_str(), row.username.as_str()));
+        // The backend word per connector (round 6, D-6.8 phase 1): the
+        // adapter owns the mapping, the UI stays dumb. Standalone
+        // connectors drop the "Deck" prefix — the row shows the
+        // connector's own name.
+        let backend_word = |name: &str| {
+            vm.rows
+                .iter()
+                .find(|row| row.name == name)
+                .map(|row| match row.backend {
+                    crate::requests::ConnectorBackend::Nextcloud => SharedString::from("Deck"),
+                    crate::requests::ConnectorBackend::Standalone => SharedString::new(),
+                })
+                .unwrap_or_default()
+        };
         let mut items = Vec::new();
         let mut addrs = Vec::new();
         for card in crate::presentation::account_cards(&vm.rows) {
@@ -4777,17 +4793,40 @@ impl Adapter {
             addrs.push(ItemAddr::Account {
                 connector: card.connectors[0].clone(),
             });
-            if default_identity == Some((card.server_url.as_str(), card.username.as_str())) {
+            // The Files row rides every Nextcloud account card
+            // (round-6 D-6.6): the one global flag shown as per-card
+            // truth — `files_on` = enabled ∧ this card holds the
+            // resolved anchor, so exactly one card renders On. The
+            // re-anchor target is the card's first Nextcloud
+            // connector (deterministic walk order). Standalone cards
+            // carry no Files row.
+            let is_nextcloud = |name: &str| {
+                vm.rows
+                    .iter()
+                    .find(|row| row.name == name)
+                    .is_some_and(|row| row.backend == crate::requests::ConnectorBackend::Nextcloud)
+            };
+            if let Some(files_connector) = card
+                .connectors
+                .iter()
+                .find(|name| is_nextcloud(name))
+                .cloned()
+            {
+                let files_on = vm.snapshot.files_sync_enabled
+                    && vm.snapshot.files_sync_anchor.as_deref() == Some(files_connector.as_str());
                 items.push(crate::ConnectionItem {
                     kind: crate::ConnectionItemKind::Files,
-                    files_on: vm.snapshot.files_sync_enabled,
-                    files_locked: vm.snapshot.env_overridden.contains("files_sync.enabled"),
+                    files_on,
+                    files_locked: vm.snapshot.env_overridden.contains("files_sync.enabled")
+                        || vm.snapshot.env_overridden.contains("files_sync.anchor"),
                     files_restart: vm.snapshot.applies.get("files_sync.enabled").is_some_and(
                         |semantics| semantics.apply == crate::requests::SectionApply::OnRestart,
                     ),
                     ..blank.clone()
                 });
-                addrs.push(ItemAddr::Files);
+                addrs.push(ItemAddr::Files {
+                    connector: files_connector,
+                });
             }
             let several = card.connectors.len() > 1;
             for connector in &card.connectors {
@@ -4795,6 +4834,7 @@ impl Adapter {
                 items.push(crate::ConnectionItem {
                     kind: crate::ConnectionItemKind::Deck,
                     title: connector.clone().into(),
+                    backend_word: backend_word(connector),
                     show_title: several,
                     busy: matches!(
                         pending,
@@ -5551,28 +5591,52 @@ impl Adapter {
         );
     }
 
-    /// The default account's Files toggle seam (round-5 chunk 8,
-    /// D-8.6; commit-on-pick): 0 = On, 1 = Off. An env-locked row
-    /// absorbs the pick (the app-side guard is the authority).
-    pub(crate) fn settings_files_picked(&mut self, window: &AppWindow, index: usize) {
+    /// A Files row's toggle seam (round-5 chunk 8 D-8.6; round-6
+    /// D-6.6; commit-on-pick): 0 = On, 1 = Off. On a non-anchor card
+    /// re-anchors to it and enables — one request carries both values
+    /// (one user action, one overlay write); On the anchor card, or
+    /// any Off, leaves the anchor key untouched. `files_on` is
+    /// recomputed from the snapshot at the seam, never from the
+    /// render-pass model. An env-locked row (either key) absorbs the
+    /// pick (the app-side guard is the authority).
+    pub(crate) fn settings_files_picked(&mut self, window: &AppWindow, item: usize, index: usize) {
         let Some(enabled) = [true, false].get(index).copied() else {
+            return;
+        };
+        let Some(ItemAddr::Files { connector }) = self.settings.items.get(item).cloned() else {
             return;
         };
         if self.settings.pending.is_some() {
             self.set_settings_outcome(window, SettingsOutcome::Rejected, None);
             return;
         }
-        if self
+        let env_locked = self
             .settings
             .snapshot
             .env_overridden
             .contains("files_sync.enabled")
-        {
+            || self
+                .settings
+                .snapshot
+                .env_overridden
+                .contains("files_sync.anchor");
+        if env_locked {
             tracing::debug!("files sync pick on an env-locked row; absorbed");
             return;
         }
+        let files_on = self.settings.snapshot.files_sync_enabled
+            && self.settings.snapshot.files_sync_anchor.as_deref() == Some(connector.as_str());
+        let anchor = if enabled && !files_on {
+            Some(connector.clone())
+        } else {
+            None
+        };
         let (reply, reply_rx) = oneshot::channel();
-        let request = UiRequest::SetFilesSyncEnabled { enabled, reply };
+        let request = UiRequest::SetFilesSyncEnabled {
+            enabled,
+            anchor,
+            reply,
+        };
         let sent = self.settings.send(
             &self.requests,
             request,
@@ -9544,10 +9608,10 @@ fn install_settings_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     }
     {
         install_seam!(window: window.on_settings_files_picked, adapter: adapter;
-        bind mut (a, window), args (item), {            let Ok(item) = usize::try_from(item) else {
+        bind mut (a, window), args (item, index), {            let (Ok(item), Ok(index)) = (usize::try_from(item), usize::try_from(index)) else {
                 return;
             };
-            a.settings_files_picked(&window, item);
+            a.settings_files_picked(&window, item, index);
 
         });
     }

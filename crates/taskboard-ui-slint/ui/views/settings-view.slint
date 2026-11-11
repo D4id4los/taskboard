@@ -93,6 +93,10 @@ export struct ConnectionItem {
     bound: bool,
     // deck: a listing has landed (else the Refresh hint renders).
     listed: bool,
+    // deck: the backend word the app supplies (round 6, D-6.8):
+    // "Deck" for Nextcloud connectors, "" for standalone — the row
+    // composes its label from it and stays a dumb client.
+    backend-word: string,
     // files: the toggle's value and its app-stated facts.
     files-on: bool,
     files-locked: bool,
@@ -573,7 +577,7 @@ export component SettingsView inherits FocusScope {
     callback remote-bind-picked(int, int);
     callback create-clicked(int);
     callback disconnect-clicked(int);
-    callback files-picked(int);
+    callback files-picked(int, int);
     callback preset-picked(int);
     callback scale-committed(string);
     // The scale field's focus-loss seam (r3 D20a writer 7): a
@@ -892,7 +896,7 @@ export component SettingsView inherits FocusScope {
                         selected-index: item.files-on ? 0 : 1;
                         group-label: "Files sync";
                         picked(i) => {
-                            root.files-picked(i);
+                            root.files-picked(index, i);
                         }
                     }
                     if item.files-locked: RoleText {
@@ -903,7 +907,7 @@ export component SettingsView inherits FocusScope {
                     }
                     if item.files-restart && !item.files-locked: RoleText {
                         role: Typography.caption;
-                        text: "Takes effect at the next restart.";
+                        text: "Files sync mirrors this account's Files — takes effect at the next restart.";
                         text-color: Theme.text-secondary;
                         vertical-alignment: center;
                     }
@@ -914,7 +918,9 @@ export component SettingsView inherits FocusScope {
                         spacing: Theme.space-2;
                         RoleText {
                             role: Typography.body;
-                            text: item.show-title ? "Deck · " + item.title : "Deck";
+                            text: item.backend-word == "" ? item.title
+                                : (item.show-title ? item.backend-word + " · " + item.title
+                                                   : item.backend-word);
                             min-width: Theme.space-8;
                             vertical-alignment: center;
                         }

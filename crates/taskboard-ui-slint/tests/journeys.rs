@@ -3153,6 +3153,7 @@ fn the_settings_form_routes_the_save_ceremony() {
                         name: "home".into(),
                         server_url: "https://c.example".into(),
                         username: "alice".into(),
+                        backend: taskboard_ui_slint::requests::ConnectorBackend::Nextcloud,
                     }],
                 }))
                 .expect("the reply lane is alive");
@@ -3201,6 +3202,7 @@ fn connector_episodes_flip_the_row_status() {
                 name: "nextcloud".into(),
                 server_url: "https://c.example".into(),
                 username: "alice".into(),
+                backend: taskboard_ui_slint::requests::ConnectorBackend::Nextcloud,
             },
             // A second plain row (the two-row shape the status
             // episode below reads; the D4 read-only flag is gone with
@@ -3209,6 +3211,7 @@ fn connector_episodes_flip_the_row_status() {
                 name: "legacy".into(),
                 server_url: "https://legacy.example".into(),
                 username: "bob".into(),
+                backend: taskboard_ui_slint::requests::ConnectorBackend::Nextcloud,
             },
         ],
         ..UiSettings::default()
@@ -4182,6 +4185,7 @@ fn busy_status_holds_until_the_reply_lands() {
                         name: "home".into(),
                         server_url: "https://c.example".into(),
                         username: "alice".into(),
+                        backend: taskboard_ui_slint::requests::ConnectorBackend::Nextcloud,
                     }],
                 }))
                 .expect("the reply lane is alive");
@@ -4476,6 +4480,7 @@ fn every_settings_field_carries_its_info_tip() {
             name: "nextcloud".into(),
             server_url: "https://c.example".into(),
             username: "alice".into(),
+            backend: taskboard_ui_slint::requests::ConnectorBackend::Nextcloud,
         }],
         ..UiSettings::default()
     };
@@ -9047,6 +9052,7 @@ fn connector_row(name: &str) -> ConnectorInfo {
         name: name.to_owned(),
         server_url: "https://c.example".into(),
         username: "alice".into(),
+        backend: taskboard_ui_slint::requests::ConnectorBackend::Nextcloud,
     }
 }
 
@@ -9257,6 +9263,14 @@ fn identity_row(name: &str, server: &str, user: &str) -> ConnectorInfo {
         name: name.into(),
         server_url: server.into(),
         username: user.into(),
+        backend: taskboard_ui_slint::requests::ConnectorBackend::Nextcloud,
+    }
+}
+
+fn standalone_row(name: &str, server: &str, user: &str) -> ConnectorInfo {
+    ConnectorInfo {
+        backend: taskboard_ui_slint::requests::ConnectorBackend::Standalone,
+        ..identity_row(name, server, user)
     }
 }
 
@@ -9557,10 +9571,12 @@ fn the_account_cards_group_connectors_and_the_options_project_the_state() {
                     K::Remote,
                     K::Deck,
                     K::Account,
+                    K::Files,
                     K::Deck
                 ],
-                "header, Files (default card only), a Deck row per connector — plus the
-                 binding-without-listing Remote row (round-6 D-6.7)"
+                "header, a Files row on EVERY Nextcloud card (round-6 D-6.6), a Deck
+                 row per connector — plus the binding-without-listing Remote row
+                 (round-6 D-6.7)"
             );
             assert_eq!(shape[2].1, "work");
             assert_eq!(shape[3].1, "away", "the binding-without-listing row");
@@ -9569,7 +9585,11 @@ fn the_account_cards_group_connectors_and_the_options_project_the_state() {
                 shape[2].2 && shape[4].2,
                 "a shared card labels its Deck rows"
             );
-            assert!(!shape[6].2, "a single-connector card does not");
+            assert!(!shape[7].2, "a single-connector card does not");
+            assert!(
+                !items(&harness)[6].files_on,
+                "the second card's Files row renders Off (not the anchor)"
+            );
             let labels: Vec<String> = options(&harness)
                 .into_iter()
                 .map(|row| row.label.to_string())
@@ -10035,14 +10055,30 @@ fn the_files_toggle_commits_on_pick_and_echoes_the_reply() {
                     .expect("the Files row renders")
             };
             assert!(!files().files_on);
-            harness.handle.window().invoke_settings_files_picked(0);
+            #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+            let files_pick = items(&harness)
+                .iter()
+                .position(|item| item.kind == K::Files)
+                .expect("the Files row renders") as i32;
+            harness
+                .handle
+                .window()
+                .invoke_settings_files_picked(files_pick, 0);
             let mut requests = harness.drain_requests();
-            let taskboard_ui_slint::requests::UiRequest::SetFilesSyncEnabled { enabled, reply } =
-                requests.remove(0)
+            let taskboard_ui_slint::requests::UiRequest::SetFilesSyncEnabled {
+                enabled,
+                anchor,
+                reply,
+            } = requests.remove(0)
             else {
                 panic!("the pick routes SetFilesSyncEnabled");
             };
             assert!(enabled);
+            // The commit-on-pick shape (round-6 D-6.6): enabled and the
+            // anchor move as one action — an enablement from off names
+            // the card's connector explicitly (here the resolved
+            // fallback's own name, so the key stays semantically put).
+            assert_eq!(anchor.as_deref(), Some("work"));
             let mut applies = std::collections::BTreeMap::new();
             applies.insert(
                 "files_sync.enabled".to_owned(),
@@ -10050,12 +10086,157 @@ fn the_files_toggle_commits_on_pick_and_echoes_the_reply() {
             );
             let _ = reply.send(Ok(taskboard_ui_slint::requests::SettingsSnapshot {
                 files_sync_enabled: true,
+                files_sync_anchor: Some("work".into()),
                 applies,
                 ..taskboard_ui_slint::requests::SettingsSnapshot::default()
             }));
             harness.handle.drain_setting_replies();
             assert!(files().files_on, "the reply's value landed");
             assert!(files().files_restart, "the restart fact renders");
+        },
+    );
+}
+
+/// Round-6 D-6.6/D-6.8 phase 1 — the Files row rides EVERY Nextcloud
+/// account card (a standalone card carries none), `files_on` is the
+/// per-card truth (enabled ∧ this card holds the resolved anchor —
+/// exactly one card renders On), and the Deck rows' backend word is
+/// backend-aware ("Deck" vs the bare name).
+#[test]
+fn the_files_row_rides_every_nextcloud_card_with_per_card_truth() {
+    use taskboard_ui_slint::ConnectionItemKind as K;
+    let settings = UiSettings {
+        connectors: vec![
+            identity_row("work", "https://a.example", "alice"),
+            standalone_row("local", "https://b.example", "bob"),
+            identity_row("home", "https://c.example", "carol"),
+        ],
+        general: taskboard_ui_slint::requests::SettingsSnapshot {
+            files_sync_enabled: true,
+            files_sync_anchor: Some("work".into()),
+            ..taskboard_ui_slint::requests::SettingsSnapshot::default()
+        },
+        ..UiSettings::default()
+    };
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness =
+                Harness::mount_with_settings(SlintDriver::default(), AppState::default(), settings);
+            harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
+            let all = items(&harness);
+            let files_rows: Vec<_> = all
+                .iter()
+                .enumerate()
+                .filter(|(_, item)| item.kind == K::Files)
+                .collect();
+            assert_eq!(
+                files_rows.len(),
+                2,
+                "two Nextcloud cards, two Files rows; the standalone card carries none"
+            );
+            assert!(files_rows[0].1.files_on, "the anchor's card renders On");
+            assert!(!files_rows[1].1.files_on, "the other card renders Off");
+            let deck_words: Vec<_> = all
+                .iter()
+                .filter(|item| item.kind == K::Deck)
+                .map(|item| item.backend_word.to_string())
+                .collect();
+            assert_eq!(
+                deck_words,
+                vec!["Deck".to_owned(), String::new(), "Deck".to_owned()],
+                "the backend word is app-supplied per connector"
+            );
+        },
+    );
+}
+
+/// Round-6 D-6.6 — the pick seam: On a non-anchor card re-anchors to
+/// it (the request carries the intended anchor), On the anchor card
+/// or any Off leaves the anchor key untouched; a pinned env key
+/// absorbs the pick.
+#[test]
+fn the_files_pick_reanchors_only_when_turning_on_a_non_anchor_card() {
+    use taskboard_ui_slint::ConnectionItemKind as K;
+    let settings = UiSettings {
+        connectors: vec![
+            identity_row("work", "https://a.example", "alice"),
+            identity_row("home", "https://c.example", "carol"),
+        ],
+        general: taskboard_ui_slint::requests::SettingsSnapshot {
+            files_sync_enabled: true,
+            files_sync_anchor: Some("work".into()),
+            ..taskboard_ui_slint::requests::SettingsSnapshot::default()
+        },
+        ..UiSettings::default()
+    };
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness =
+                Harness::mount_with_settings(SlintDriver::default(), AppState::default(), settings);
+            harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
+            let files_indices = || -> Vec<usize> {
+                items(&harness)
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, item)| item.kind == K::Files)
+                    .map(|(index, _)| index)
+                    .collect()
+            };
+            let drained = |h: &mut Harness| {
+                let mut requests = h.drain_requests();
+                let taskboard_ui_slint::requests::UiRequest::SetFilesSyncEnabled {
+                    enabled,
+                    anchor,
+                    ..
+                } = requests.remove(0)
+                else {
+                    panic!("the pick routes SetFilesSyncEnabled");
+                };
+                // Dropping the reply half settles the pending machine
+                // (a dropped reply is a typed failure, not a wedge) —
+                // the next pick must not be absorbed as busy.
+                drop(requests);
+                h.handle.drain_setting_replies();
+                (enabled, anchor)
+            };
+
+            #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+            let (home_pick, work_pick) = (files_indices()[1] as i32, files_indices()[0] as i32);
+            harness
+                .handle
+                .window()
+                .invoke_settings_files_picked(home_pick, 0);
+            let (enabled, anchor) = drained(&mut harness);
+            assert!(enabled);
+            assert_eq!(
+                anchor.as_deref(),
+                Some("home"),
+                "On a non-anchor card re-anchors to it"
+            );
+
+            harness
+                .handle
+                .window()
+                .invoke_settings_files_picked(work_pick, 0);
+            let (enabled, anchor) = drained(&mut harness);
+            assert!(enabled);
+            assert_eq!(anchor, None, "On the anchor card the anchor is untouched");
+
+            harness
+                .handle
+                .window()
+                .invoke_settings_files_picked(home_pick, 1);
+            let (enabled, anchor) = drained(&mut harness);
+            assert!(!enabled);
+            assert_eq!(anchor, None, "any Off leaves the anchor untouched");
         },
     );
 }
@@ -13237,6 +13418,7 @@ fn general_snapshot() -> SettingsSnapshot {
         focus_long_break_every: 4,
         focus_notify: true,
         files_sync_enabled: false,
+        files_sync_anchor: None,
         env_overridden: BTreeSet::new(),
         facts: vec![
             SettingsFact {

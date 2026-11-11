@@ -31,6 +31,20 @@ impl std::fmt::Debug for Secret {
     }
 }
 
+/// The connector's sync mechanism, secret-free — the Files-row gate
+/// and the backend-aware row label (round 6, D-6.6/D-6.8 phase 1).
+/// A named two-variant enum over a bool (the A1 shape): a third
+/// backend would need a UI word decision, and the app-side fill is a
+/// total `match` on the app's `SyncBackend`, so drift is a compile
+/// error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectorBackend {
+    /// Fully local operation; no account card semantics.
+    Standalone,
+    /// The Nextcloud Deck connector.
+    Nextcloud,
+}
+
 /// One configured connector, secret-free — the list row and the
 /// Save/Remove reply payload (resolved app-side from the config).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,6 +52,9 @@ pub struct ConnectorInfo {
     pub name: String,
     pub server_url: String,
     pub username: String,
+    /// The connector's sync mechanism (round 6, D-6.6): gates the
+    /// Files row to Nextcloud cards and words the row label.
+    pub backend: ConnectorBackend,
 }
 
 /// One local board for the settings board selector — secret-free,
@@ -204,6 +221,11 @@ pub struct SettingsSnapshot {
     /// `[files_sync] enabled` (round-5 chunk 8, D-8.6): the default
     /// account card's Files toggle.
     pub files_sync_enabled: bool,
+    /// The *effective* (resolved) files-sync anchor's connector name
+    /// (round-6 D-6.6): the per-card Files row needs "is this card
+    /// the anchor", a resolved fact — a raw-echo would force every
+    /// consumer to re-resolve. `None` = no Nextcloud connector.
+    pub files_sync_anchor: Option<String>,
     /// The dotted keys whose effective value is env-overridden (the
     /// plan D1/D16 per-key honesty overlay). Filled only at hand-over;
     /// empty on write replies (the UI keeps its hand-over set).
@@ -468,11 +490,18 @@ pub enum UiRequest {
         enabled: bool,
         reply: oneshot::Sender<Result<SettingsSnapshot, SettingsError>>,
     },
-    /// Persists `[files_sync] enabled` (round-5 chunk 8, D-8.6): the
-    /// default account's Files toggle — restart-scoped (the files-sync
-    /// actor spawns at boot).
+    /// Persists `[files_sync] enabled` (round-5 chunk 8, D-8.6) —
+    /// restart-scoped (the files-sync actor spawns at boot) — and,
+    /// when the pick re-anchors, `[files_sync] anchor` (round-6
+    /// D-6.6). The two change as ONE user action: a separate anchor
+    /// request would force two round-trips (a torn intermediate file
+    /// state between them), so the payload carries the intended
+    /// anchor; `None` = leave the key untouched.
     SetFilesSyncEnabled {
         enabled: bool,
+        /// `Some(name)` only when the pick re-anchors (turning On a
+        /// non-anchor card).
+        anchor: Option<String>,
         reply: oneshot::Sender<Result<SettingsSnapshot, SettingsError>>,
     },
 }
