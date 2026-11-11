@@ -150,6 +150,42 @@ impl Drop for EnvOverride {
     }
 }
 
+/// [`env_lock`] plus a sandboxed config home: `XDG_CONFIG_HOME` points
+/// at a fresh tempdir for the guard's lifetime, so default-path
+/// resolution (`AppConfig::load(None)`, `config::path(None)`) never
+/// reads the machine's live `taskboard.toml`. A test that wants a file
+/// on the XDG read path plants it under [`XdgLock::config_home`].
+pub fn xdg_lock() -> XdgLock {
+    let env = env_lock();
+    let home = tempdir();
+    let xdg = EnvOverride::set(
+        "XDG_CONFIG_HOME",
+        home.path().to_str().expect("utf-8 tempdir path"),
+    );
+    XdgLock {
+        _xdg: xdg,
+        home,
+        _env: env,
+    }
+}
+
+/// Holds the env mutex and the sandboxed config home. Field order is
+/// drop order: the prior `XDG_CONFIG_HOME` (set or unset) is restored
+/// before the tempdir goes and while the mutex is still held.
+pub struct XdgLock {
+    _xdg: EnvOverride,
+    home: tempfile::TempDir,
+    _env: EnvGuard,
+}
+
+impl XdgLock {
+    /// The sandboxed `XDG_CONFIG_HOME`.
+    #[must_use]
+    pub fn config_home(&self) -> &Path {
+        self.home.path()
+    }
+}
+
 /// A `HashMap`-backed [`CredentialStore`]: the fake for stateful
 /// credential behavior (fakes over mocks). Stores are keyed by
 /// `(server, username)` — tests prove scoping by storing under one key

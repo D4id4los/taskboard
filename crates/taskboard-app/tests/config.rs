@@ -7,7 +7,7 @@
 
 use std::path::PathBuf;
 
-use common::{EnvOverride, env_lock, remove_env, set_env};
+use common::{EnvOverride, env_lock, remove_env, set_env, xdg_lock};
 use taskboard_app::commands::config;
 use taskboard_app::config::{
     AppConfig, ConfigError, CredentialStoreKind, DEFAULT_BACKOFF_INITIAL_SECS,
@@ -521,6 +521,34 @@ fn c16_existing_cwd_install_is_the_write_target() {
     assert_eq!(
         PathBuf::from(&view.write_path),
         PathBuf::from(taskboard_app::config::DEFAULT_CONFIG_PATH)
+    );
+}
+
+/// The XDG read path with controlled content: a file at the XDG
+/// candidate is `load(None)`'s resolution, and an env-injected legacy
+/// `[nextcloud]` identity beside that file's `[[sync.connectors]]` is
+/// the typed mixed-shape refusal — the env lane overlays the file's
+/// tree, it does not replace it.
+#[test]
+fn the_xdg_read_path_refuses_env_identity_beside_connectors() {
+    let xdg = xdg_lock();
+    let app_dir = xdg.config_home().join("taskboard");
+    std::fs::create_dir(&app_dir).expect("xdg app dir");
+    std::fs::write(
+        app_dir.join("taskboard.toml"),
+        "[[sync.connectors]]\nname = 'fixture-cloud'\nbackend = 'nextcloud'\n\
+         server_url = 'https://fixture.example.com'\nusername = 'alice'\n",
+    )
+    .expect("plant the xdg config");
+    let _server = EnvOverride::set(
+        "TASKBOARD_NEXTCLOUD__SERVER_URL",
+        "https://cloud.example.com",
+    );
+    let _user = EnvOverride::set("TASKBOARD_NEXTCLOUD__USERNAME", "alice");
+    let outcome = AppConfig::load(None);
+    assert!(
+        matches!(outcome, Err(ConfigError::NextcloudTableWithConnectors)),
+        "the mixed shape refuses typed: {outcome:?}"
     );
 }
 
