@@ -1229,10 +1229,12 @@ fn read_raw_config(workspace: &ConnectionWorkspace) -> Result<AppConfig, Setting
 /// the migration" made concrete — a boot whose persist failed (or a
 /// boot-less one-shot) is completed here. Array world → returned
 /// as-is; file migrated → re-read (the migrated file); a genuinely
-/// unwritable file → typed `PersistFailed`; a non-migratable scalar
-/// world (env-injected identity, or the writer backstop's refusal
-/// class) → typed `PersistRejected` — the same outcome class the
-/// removed typed legacy gate produced, honest about the corner.
+/// unwritable file → typed `PersistFailed`; the scalar world with a
+/// legacy `[nextcloud]` *identity* ([`has_legacy_identity`] —
+/// env-injected identity or partial legacy keys, genuinely not a
+/// write target) → typed `PersistRejected`; a config merely *empty
+/// of sync* (#721's ordinary first-connection case) falls through to
+/// the writer, which creates the subtree (and the file, when absent).
 fn ensure_migrated(workspace: &ConnectionWorkspace) -> Result<AppConfig, SettingsError> {
     let raw = read_raw_config(workspace)?;
     if raw.sync.connectors.is_some() {
@@ -1250,12 +1252,22 @@ fn ensure_migrated(workspace: &ConnectionWorkspace) -> Result<AppConfig, Setting
             }
             Ok(migrated)
         }
-        Ok(false) => Err(SettingsError::PersistRejected),
+        Ok(false) if has_legacy_identity(&raw) => Err(SettingsError::PersistRejected),
+        Ok(false) => Ok(raw),
         Err(err) => {
             tracing::warn!(error = %err, "settings: the legacy config migration failed");
             Err(SettingsError::PersistFailed)
         }
     }
+}
+
+/// The typed half of the scalar-world corner: an identity beside no
+/// connectors array — env-injected identity or partial legacy keys.
+/// The same predicate `connections::identity_husk_present` keys on at
+/// the document level pre-decode (a mixed identity-beside-array file
+/// decode-rejects, which is why the writer cannot check this typed).
+fn has_legacy_identity(raw: &AppConfig) -> bool {
+    raw.nextcloud.server_url.is_some() || raw.nextcloud.username.is_some()
 }
 
 /// The fresh secret-free list for the reply (the `configured_connectors`

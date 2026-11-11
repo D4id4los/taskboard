@@ -406,6 +406,178 @@ async fn a_legacy_file_on_unwritable_media_refuses_persist_failed() {
     forwarder.await.expect("forwarder joins cleanly");
 }
 
+/// T1 (round-6 chunk 2, plan §3; #721's exact repro) — a save onto a
+/// config carrying neither `[sync]` nor `[nextcloud]` proceeds: the
+/// writer creates the `[[sync.connectors]]` subtree, the store holds
+/// the secret, the connector is attached live.
+#[tokio::test]
+async fn a_save_on_a_config_without_a_sync_section_creates_the_subtree_and_attaches() {
+    let server = mount_boards_ok().await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = dir.path().join("taskboard.toml");
+    std::fs::write(
+        &config,
+        format!(
+            "[storage]\ndb_path = '{}/taskboard.db'\n[ui]\nscale = 1.5\n",
+            dir.path().display()
+        ),
+    )
+    .expect("seed config");
+    let store = Arc::new(FakeCredentialStore::default());
+    let (app, workspace) = booted_workspace(config.clone(), store.clone()).await;
+    let (tx, rx) = ui_request_channel();
+    let forwarder = taskboard_app::ui_requests::spawn_ui_request_forwarder(
+        rx,
+        Arc::new(ArcSwap::from_pointee(taskboard_domain::AppState::default())),
+        workspace,
+    );
+
+    let (reply, reply_rx) = tokio::sync::oneshot::channel();
+    tx.try_send(UiRequest::SaveConnection {
+        profile: ConnectionProfile {
+            name: "home".into(),
+            server_url: server.uri(),
+            username: "alice".into(),
+            password: Secret("hunter2-secret".into()),
+        },
+        reply,
+    })
+    .expect("capacity holds");
+    let outcome = reply_rx
+        .await
+        .expect("the reply lane is alive")
+        .expect("the sync-less config is a write target");
+    assert!(outcome.connectors.iter().any(|row| row.name == "home"));
+
+    let written = std::fs::read_to_string(&config).expect("read back");
+    assert!(written.contains("[[sync.connectors]]"), "subtree created");
+    assert!(written.contains("name = \"home\""));
+    assert!(written.contains("scale = 1.5"), "unrelated tables survive");
+    assert_eq!(
+        store.load(&server.uri(), "alice").expect("stored").expose(),
+        "hunter2-secret"
+    );
+    assert!(
+        app.connector_control()
+            .connector_commands(&taskboard_domain::ConnectorId::from("home"))
+            .is_some(),
+        "the draft connector was attached live"
+    );
+
+    drop(tx);
+    forwarder.await.expect("forwarder joins cleanly");
+}
+
+/// T2 — the absent-file variant of the #721 repro: the save creates
+/// the file, its directory, and the entry end to end.
+#[tokio::test]
+async fn a_save_with_no_config_file_at_all_creates_file_directory_and_entry() {
+    let server = mount_boards_ok().await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = dir.path().join("conf").join("taskboard.toml");
+    let store = Arc::new(FakeCredentialStore::default());
+    let (_app, workspace) = booted_workspace(config.clone(), store.clone()).await;
+    let (tx, rx) = ui_request_channel();
+    let forwarder = taskboard_app::ui_requests::spawn_ui_request_forwarder(
+        rx,
+        Arc::new(ArcSwap::from_pointee(taskboard_domain::AppState::default())),
+        workspace,
+    );
+
+    let (reply, reply_rx) = tokio::sync::oneshot::channel();
+    tx.try_send(UiRequest::SaveConnection {
+        profile: ConnectionProfile {
+            name: "home".into(),
+            server_url: server.uri(),
+            username: "alice".into(),
+            password: Secret("hunter2-secret".into()),
+        },
+        reply,
+    })
+    .expect("capacity holds");
+    reply_rx
+        .await
+        .expect("the reply lane is alive")
+        .expect("the absent config file is a write target");
+
+    let written = std::fs::read_to_string(&config).expect("the file was created");
+    assert!(written.contains("[[sync.connectors]]"));
+    assert!(written.contains("name = \"home\""));
+
+    drop(tx);
+    forwarder.await.expect("forwarder joins cleanly");
+}
+
+/// T3 — the corner that stands: an env-injected `[nextcloud]` identity
+/// beside a sync-less config is genuinely not a write target — the
+/// save replies typed `PersistRejected` and the file stays
+/// byte-untouched. Both husk shapes are pinned: the full env identity
+/// and a *partial* legacy husk (one identity key alone — the `||` leg
+/// of the typed predicate).
+#[tokio::test]
+async fn an_env_injected_identity_still_refuses_persist_rejected() {
+    async fn save_refuses(config: &std::path::Path, before: &str, why: &str) {
+        let (_app, workspace) = booted_workspace(
+            config.to_path_buf(),
+            Arc::new(FakeCredentialStore::default()),
+        )
+        .await;
+        let (tx, rx) = ui_request_channel();
+        let forwarder = taskboard_app::ui_requests::spawn_ui_request_forwarder(
+            rx,
+            Arc::new(ArcSwap::from_pointee(taskboard_domain::AppState::default())),
+            workspace,
+        );
+
+        let (reply, reply_rx) = tokio::sync::oneshot::channel();
+        tx.try_send(UiRequest::SaveConnection {
+            profile: ConnectionProfile {
+                name: "home".into(),
+                server_url: "https://fresh.example".into(),
+                username: "alice".into(),
+                password: Secret("hunter2-secret".into()),
+            },
+            reply,
+        })
+        .expect("capacity holds");
+        let outcome = reply_rx
+            .await
+            .expect("the reply lane is alive")
+            .expect_err("the env identity is not a write target");
+        assert!(
+            matches!(outcome, SettingsError::PersistRejected),
+            "the husk corner stands typed ({why}), got {outcome:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(config).expect("read"),
+            before,
+            "the file is byte-untouched ({why})"
+        );
+
+        drop(tx);
+        forwarder.await.expect("forwarder joins cleanly");
+    }
+
+    let _env = common::env_lock();
+    let server = common::EnvOverride::set("TASKBOARD_NEXTCLOUD__SERVER_URL", "https://env.example");
+    let user = common::EnvOverride::set("TASKBOARD_NEXTCLOUD__USERNAME", "env-user");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = dir.path().join("taskboard.toml");
+    let before = format!(
+        "[storage]\ndb_path = '{}/taskboard.db'\n[ui]\nscale = 1.5\n",
+        dir.path().display()
+    );
+    std::fs::write(&config, &before).expect("seed config");
+
+    save_refuses(&config, &before, "the full env identity").await;
+    // The partial husk: one identity key alone is still the scalar
+    // world — the predicate's other leg refuses the same way.
+    drop(user);
+    save_refuses(&config, &before, "the server_url-only husk").await;
+
+    drop(server);
+}
+
 /// M10 — the Remove choreography on a legacy file migrates first,
 /// then removes the sole entry; the no-empty-husk rule leaves a clean
 /// array-less file.
