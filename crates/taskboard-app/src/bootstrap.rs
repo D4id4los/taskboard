@@ -104,8 +104,10 @@ pub const FILES_SYNC_CONNECTOR_NAME: &str = "files-sync";
 
 /// The pure spawn decision for the files-sync transport (DR-8 decision
 /// D-FT10, the `focus_spawn_decision` precedent): `Some(spec)` iff
-/// `[files_sync] enabled` ∧ the default connector is Nextcloud. No
-/// run-mode arm — a kiosk is a device of the fleet (D-SF18); the mode
+/// `[files_sync] enabled` ∧ a Nextcloud anchor resolves (round-6
+/// D-6.6: the anchor is a choice — the configured connector by name,
+/// else the first Nextcloud one; the lane itself is not). No run-mode
+/// arm — a kiosk is a device of the fleet (D-SF18); the mode
 /// agnosticism is pinned by a test. No IO happens here — the gate
 /// ([`files_sync_spawn`]) does the credential/URL/dir work.
 ///
@@ -119,19 +121,15 @@ pub fn files_sync_spawn_decision(config: &AppConfig) -> Option<FilesSyncSpawnSpe
     if !config.files_sync.enabled {
         return None;
     }
-    // validate() already rejected enabled-without-Nextcloud; the
-    // decision re-derives, never re-validates. An empty connector set
-    // cannot reach here through a validated config.
-    let specs = crate::connectors::configured_connectors(config).ok()?;
-    let default = specs.first()?;
-    if default.backend != SyncBackend::Nextcloud {
-        return None;
-    }
+    // validate() already rejected enabled-without-a-resolvable-anchor;
+    // the decision re-derives, never re-validates. An anchorless
+    // Nextcloud world cannot reach here through a validated config.
+    let anchor = config.resolved_files_sync_anchor()?;
     Some(FilesSyncSpawnSpec {
         identity: taskboard_domain::ConnectorId::from_kebab(FILES_SYNC_CONNECTOR_NAME)
             .expect("FILES_SYNC_CONNECTOR_NAME is kebab"),
-        server_url: default.server_url.clone(),
-        username: default.username.clone(),
+        server_url: anchor.server_url.clone(),
+        username: anchor.username.clone(),
     })
 }
 
@@ -2494,6 +2492,39 @@ mod connector_module_tests {
         let spec = files_sync_spawn_decision(&config).expect("enabled + nextcloud");
         assert_eq!(spec.server_url, "https://nc.example");
         assert_eq!(spec.username, "alice");
+        assert_eq!(spec.identity.as_str(), FILES_SYNC_CONNECTOR_NAME);
+    }
+
+    /// The anchor is a choice (round-6 D-6.6): a named anchor spawns
+    /// under *that* connector's account while the actor identity
+    /// stays the fixed per-device `files-sync` kebab (the lane is the
+    /// substrate, not the account, #723).
+    #[test]
+    fn files_sync_spawn_decision_follows_the_named_anchor() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut config = files_sync_enabled_config(dir.path());
+        config.sync.connectors = Some(vec![
+            crate::config::ConnectorCfg {
+                name: "work".into(),
+                backend: SyncBackend::Nextcloud,
+                server_url: "https://a.example".into(),
+                username: "alice".into(),
+            },
+            crate::config::ConnectorCfg {
+                name: "home".into(),
+                backend: SyncBackend::Nextcloud,
+                server_url: "https://b.example".into(),
+                username: "bob".into(),
+            },
+        ]);
+        config.nextcloud.server_url = None;
+        config.nextcloud.username = None;
+        config.files_sync.anchor = Some("home".into());
+        config.validate().expect("valid anchored world");
+
+        let spec = files_sync_spawn_decision(&config).expect("enabled + resolvable anchor");
+        assert_eq!(spec.server_url, "https://b.example");
+        assert_eq!(spec.username, "bob");
         assert_eq!(spec.identity.as_str(), FILES_SYNC_CONNECTOR_NAME);
     }
 
