@@ -319,6 +319,7 @@ fn settings_fixture() -> Mounted {
                 name: name.into(),
                 server_url: format!("https://{name}.example"),
                 username: "alice".into(),
+                backend: taskboard_ui_slint::requests::ConnectorBackend::Nextcloud,
             })
             .collect(),
         ..UiSettings::default()
@@ -612,6 +613,7 @@ fn dropdown_fixture() -> Mounted {
             name: "work".into(),
             server_url: "https://work.example".into(),
             username: "alice".into(),
+            backend: taskboard_ui_slint::requests::ConnectorBackend::Nextcloud,
         }],
         ..UiSettings::default()
     };

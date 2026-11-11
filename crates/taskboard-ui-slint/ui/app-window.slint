@@ -198,7 +198,7 @@ export component AppWindow inherits Window {
     callback settings-remote-bind-picked(int, int);
     callback settings-create-clicked(int);
     callback settings-disconnect-clicked(int);
-    callback settings-files-picked(int);
+    callback settings-files-picked(int, int);
     callback settings-preset-picked(int);
     callback settings-view-mounted();
     callback settings-scale-committed(string);
@@ -466,7 +466,7 @@ export component AppWindow inherits Window {
                 remote-bind-picked(i, o) => root.settings-remote-bind-picked(i, o);
                 create-clicked(i) => root.settings-create-clicked(i);
                 disconnect-clicked(i) => root.settings-disconnect-clicked(i);
-                files-picked(i) => root.settings-files-picked(i);
+                files-picked(i, o) => root.settings-files-picked(i, o);
                 preset-picked(i) => root.settings-preset-picked(i);
                 scale-committed(t) => root.settings-scale-committed(t);
                 scale-focus-lost() => root.settings-scale-focus-lost();

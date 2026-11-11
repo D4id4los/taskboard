@@ -2205,6 +2205,7 @@ fn an_unchanged_refresh_still_pushes_the_settings_liveness() {
                     name: "nextcloud".into(),
                     server_url: "https://c.example".into(),
                     username: "alice".into(),
+                    backend: crate::requests::ConnectorBackend::Nextcloud,
                 }],
                 ..UiSettings::default()
             },
