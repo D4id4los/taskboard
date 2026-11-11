@@ -651,12 +651,33 @@ pub fn rule_created_phrase(created_at: DateTime<Utc>, _now: DateTime<Utc>) -> St
 
 /// One overdue-banner row (D12): the task truth plus its snooze
 /// target. Visibility never consults mute/snooze/deliveries — board
-/// truth, not nagging policy.
+/// truth, not nagging policy. The round-6 reflection fields (D-6.2)
+/// ride along: `muted` reports the task's mute state and
+/// `snoozed_until` the active journaled snooze link for the row's own
+/// `(reminder, occurrence)` — the state change a snooze/mute click
+/// produces, visible on the row that owns the buttons.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BannerRow {
     pub task: TaskId,
     pub kind: DueKind,
     pub target: ReminderTarget,
+    /// The task sits in `state.reminders.muted`.
+    pub muted: bool,
+    /// The active snooze link for `(target.reminder, target.occurrence)`
+    /// rescheduling into the future; an expired link is `None` (the
+    /// occurrence has effectively re-fired).
+    pub snoozed_until: Option<DateTime<Utc>>,
+}
+
+/// The snoozed row's meta phrase (round 6, D-6.2): the reschedule
+/// target in local wall-clock time. Display text only — never a test
+/// oracle (the clock discipline's wall-clock rule).
+#[must_use]
+pub fn snoozed_phrase(until: DateTime<Utc>, tz: &impl TimeZone) -> String {
+    // The time's own formatter — the `at_time_suffix` shape (the
+    // offset never renders, so no `Display` bound on it).
+    let local = tz.from_utc_datetime(&until.naive_utc());
+    format!("snoozed until {}", local.time().format("%H:%M"))
 }
 
 /// The banner rows for `now`: `overdue_tasks` order (canonical), one
@@ -670,14 +691,25 @@ pub fn banner_rows(state: &AppState, now: DateTime<Utc>) -> Vec<BannerRow> {
         .filter(|task| !is_anchor_task(task))
         .map(|task| {
             let (reminder, occurrence) = snooze_target(state, task);
+            let key = taskboard_domain::ReminderSnoozeKey {
+                reminder,
+                occurrence,
+            };
             BannerRow {
                 task: task.id,
                 kind: DueKind::Overdue,
                 target: ReminderTarget {
                     anchor: taskboard_domain::ReminderAnchor::Task(task.id),
-                    reminder,
-                    occurrence,
+                    reminder: key.reminder,
+                    occurrence: key.occurrence,
                 },
+                muted: state.reminders.muted.contains(&task.id),
+                snoozed_until: state
+                    .reminders
+                    .snoozes
+                    .get(&key)
+                    .filter(|&&to| to > now)
+                    .copied(),
             }
         })
         .collect()
@@ -2855,6 +2887,99 @@ mod tests {
             ReminderAnchor::Task(task_id),
             "banner targets carry Task anchors only"
         );
+    }
+
+    /// D-6.2 (round 6): the banner rows carry the task's mute state
+    /// truth — a muted overdue task still renders (board truth), but
+    /// its row reports `muted` so the surface can describe itself.
+    #[test]
+    fn banner_rows_reflect_muted_tasks() {
+        let now = Utc::now();
+        let stack = StackId::from_uuid(uuid::Uuid::now_v7());
+        let id = TaskId::from_uuid(uuid::Uuid::now_v7());
+        let mut state = AppState::default();
+        let mut t = task(id, stack, 0);
+        t.duedate = Some(now - TimeDelta::hours(2));
+        state.tasks.insert(id, t);
+
+        assert!(
+            !banner_rows(&state, now)[0].muted,
+            "an unmuted overdue task's row is not muted"
+        );
+
+        state.reminders.muted.insert(id);
+        let rows = banner_rows(&state, now);
+        assert_eq!(rows.len(), 1, "mute never removes the row (board truth)");
+        assert!(rows[0].muted, "the muted task's row reports muted");
+    }
+
+    /// D-6.2 (round 6): an active journaled snooze link for the row's
+    /// `(reminder, occurrence)` surfaces as `snoozed_until`; a link in
+    /// the past does not (the occurrence has effectively re-fired).
+    #[test]
+    fn banner_rows_reflect_active_snooze_links() {
+        use taskboard_domain::{PersistenceAction, ReminderSnooze, persistence::apply_actions};
+        let now = Utc::now();
+        let stack = StackId::from_uuid(uuid::Uuid::now_v7());
+        let id = TaskId::from_uuid(uuid::Uuid::now_v7());
+        let mut state = AppState::default();
+        let mut t = task(id, stack, 0);
+        t.duedate = Some(now - TimeDelta::hours(2));
+        state.tasks.insert(id, t);
+
+        let rescheduled_to = now + TimeDelta::hours(1);
+        let mut persisted = taskboard_domain::PersistedState {
+            tasks: state.tasks.clone(),
+            ..Default::default()
+        };
+        apply_actions(
+            &mut persisted,
+            &[PersistenceAction::RecordReminderSnooze(ReminderSnooze {
+                reminder: ReminderRef::Default(id),
+                occurrence: now - TimeDelta::hours(2),
+                rescheduled_to,
+            })],
+        );
+        let state = AppState::from(persisted);
+
+        let rows = banner_rows(&state, now);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].snoozed_until,
+            Some(rescheduled_to),
+            "the active snooze link surfaces on its row"
+        );
+        assert!(!rows[0].muted);
+
+        // A settled (past) link is not a snooze any more.
+        let mut persisted = taskboard_domain::PersistedState {
+            tasks: state.tasks.clone(),
+            ..Default::default()
+        };
+        apply_actions(
+            &mut persisted,
+            &[PersistenceAction::RecordReminderSnooze(ReminderSnooze {
+                reminder: ReminderRef::Default(id),
+                occurrence: now - TimeDelta::hours(2),
+                rescheduled_to: now - TimeDelta::seconds(1),
+            })],
+        );
+        let state = AppState::from(persisted);
+        assert_eq!(
+            banner_rows(&state, now)[0].snoozed_until,
+            None,
+            "an expired snooze link renders as not snoozed"
+        );
+    }
+
+    /// D-6.2 (round 6): the snoozed phrase renders a wall-clock time
+    /// in the given timezone — structural non-emptiness only (AGENTS
+    /// §5: no text assertions); the clock discipline puts wall-clock
+    /// text in display strings, never in oracles.
+    #[test]
+    fn snoozed_phrase_renders_nonempty_in_local_time() {
+        let until = Utc::now() + TimeDelta::hours(1);
+        assert_ne!(snoozed_phrase(until, &Utc), "");
     }
 
     #[test]
