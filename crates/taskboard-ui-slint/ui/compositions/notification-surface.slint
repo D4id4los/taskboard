@@ -26,6 +26,9 @@ export struct NotificationRowModel {
     // planner dismisses implicitly in the same batch, so this
     // dispatches exactly one command.
     can-track-start: bool,
+    // D-6.1 (round 6): the double-click open is advertised on
+    // task-anchored rows only (an alarm has no task view to open).
+    can-open: bool,
 }
 
 export component NotificationSurface inherits Rectangle {
@@ -37,6 +40,10 @@ export component NotificationSurface inherits Rectangle {
     callback mute-clicked(int);
     callback cancel-clicked(int);
     callback track-start-clicked(int);
+    // D-6.1 (round 6): the double-click open — task-anchored rows
+    // only (the TouchArea is disabled otherwise); a single click has
+    // no semantics on this surface.
+    callback row-open-requested(int);
 
     background: Theme.background;
     accessible-role: AccessibleRole.region;
@@ -52,11 +59,26 @@ export component NotificationSurface inherits Rectangle {
         for row[row-index] in root.notifications: HorizontalLayout {
             spacing: Theme.space-2;
 
-            row-info := ListRow {
+            // D-6.1 (round 6): the interactive carrier — the ListRow
+            // keeps its layout slot (the carrier inherits the
+            // horizontal stretch); the TouchArea advertises (hover)
+            // and accepts the double-click only on task-anchored rows.
+            row-box := Rectangle {
                 horizontal-stretch: 1;
-                text: row.title;
-                meta: row.fired-phrase;
-                tone: Tone.info;
+                background: row-touch.has-hover && row.can-open
+                    ? Theme.surface-hover
+                    : transparent;
+                row-info := ListRow {
+                    text: row.title;
+                    meta: row.fired-phrase;
+                    tone: Tone.info;
+                }
+                row-touch := TouchArea {
+                    enabled: row.can-open;
+                    double-clicked => {
+                        root.row-open-requested(row-index);
+                    }
+                }
             }
             VerticalLayout {
                 IconButton {

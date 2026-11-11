@@ -2925,6 +2925,135 @@ mod view_component_tests {
         });
     }
 
+    /// D-6.1 (round 6): the banner row's double-click seam opens the
+    /// task view — the same focus+route shape as today-row activation;
+    /// the open dispatches no command (`TaskEdit` is a pure view route).
+    #[test]
+    fn banner_double_click_opens_the_task_view() {
+        on_slint_thread(|| {
+            let (handle, mut commands) =
+                handover_with(fixture_state(), UiSettings::default().keymap);
+            let overdue_id = {
+                let state = handle.state.load();
+                taskboard_domain::overdue_tasks(&state.tasks, chrono::Utc::now())
+                    .into_iter()
+                    .map(|t| t.id)
+                    .next()
+                    .expect("fixture has one overdue task")
+            };
+
+            handle.window.invoke_banner_row_open_requested(0);
+            assert_eq!(handle.window.get_current_view(), View::TaskDetail);
+            assert_eq!(
+                handle.adapter.borrow().view_state.focused_task(),
+                Some(overdue_id),
+                "the open focuses the row's task"
+            );
+            assert!(
+                commands.try_recv().is_err(),
+                "the open dispatches no engine command"
+            );
+        });
+    }
+
+    /// D-6.1 (round 6): the notification row's open seam — a
+    /// task-anchored row opens the task view (no command dispatched);
+    /// an alarm row neither advertises opening (`can-open` false) nor
+    /// opens (the view stays where it was).
+    #[test]
+    fn notification_row_open_gates_on_task_anchor() {
+        on_slint_thread(|| {
+            let defaults = taskboard_domain::ReminderDefaults::default();
+            let mut state = fixture_state();
+            let overdue_id = {
+                let now = chrono::Utc::now();
+                taskboard_domain::overdue_tasks(&state.tasks, now)
+                    .into_iter()
+                    .map(|t| t.id)
+                    .next()
+                    .expect("fixture has one overdue task")
+            };
+            let occurrence = taskboard_domain::effective_occurrence(
+                &taskboard_domain::ReminderRef::Default(overdue_id),
+                &state.reminders,
+                &state.tasks,
+                &defaults,
+            )
+            .expect("the default's occurrence derives");
+            state
+                .reminders
+                .deliveries
+                .insert(taskboard_domain::ReminderDelivery {
+                    reminder: taskboard_domain::ReminderRef::Default(overdue_id),
+                    occurrence,
+                    delivered_at: chrono::Utc::now(),
+                });
+
+            // The alarm twin, in the same state: one fired adhoc alarm
+            // renders a second row whose open seam is inert (canonical
+            // order puts the task row — the earlier occurrence — at 0,
+            // the alarm row at 1; the shared task ids keep the focus
+            // alive across the refreshes).
+            let fire = chrono::Utc::now() - chrono::TimeDelta::minutes(1);
+            let alarm_id = taskboard_domain::AdhocAlarmId::from_uuid(uuid::Uuid::now_v7());
+            state.reminders.alarms.insert(
+                alarm_id,
+                taskboard_domain::AdhocAlarm {
+                    insistence: taskboard_domain::Insistence::Alarm,
+                    id: alarm_id,
+                    label: "tea".to_owned(),
+                    fire_at: fire,
+                    created_at: fire - chrono::TimeDelta::hours(1),
+                },
+            );
+            state
+                .reminders
+                .deliveries
+                .insert(taskboard_domain::ReminderDelivery {
+                    reminder: taskboard_domain::ReminderRef::Adhoc(alarm_id),
+                    occurrence: fire,
+                    delivered_at: fire,
+                });
+
+            let (handle, mut commands) = handover_with(state, UiSettings::default().keymap);
+            let row = handle
+                .window
+                .get_notification_model()
+                .row_data(0)
+                .expect("the task row renders");
+            assert!(row.can_open, "a task-anchored row advertises opening");
+
+            handle.window.invoke_notification_row_open_requested(0);
+            assert_eq!(handle.window.get_current_view(), View::TaskDetail);
+            assert_eq!(
+                handle.adapter.borrow().view_state.focused_task(),
+                Some(overdue_id),
+                "the open focuses the row's task"
+            );
+            assert!(
+                commands.try_recv().is_err(),
+                "the open dispatches no engine command"
+            );
+
+            let alarm_row = handle
+                .window
+                .get_notification_model()
+                .row_data(1)
+                .expect("the alarm row renders");
+            assert!(
+                !alarm_row.can_open,
+                "an alarm row does not advertise opening"
+            );
+            handle.window.invoke_notification_row_open_requested(1);
+            assert_eq!(
+                handle.window.get_current_view(),
+                View::TaskDetail,
+                "the alarm row's open seam leaves the view unchanged"
+            );
+            assert!(commands.try_recv().is_err(), "nothing dispatched");
+        });
+    }
+
     /// R3-F1-half (D6) — the done checkbox's seam: (column, row)
     /// resolves against the id tables and raw-sends the *toggled*
     /// `SetTaskDone`, both directions; a stale index dispatches

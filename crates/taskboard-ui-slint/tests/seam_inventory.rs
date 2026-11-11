@@ -24,6 +24,7 @@ const ADAPTER_SOURCE: &str = include_str!("../src/adapter.rs");
 const SEAM_INVENTORY: &[&str] = &[
     "banner_mute_clicked",
     "banner_row_activated",
+    "banner_row_open_requested",
     "banner_snooze_clicked",
     "board_add_task_activated",
     "board_bar_segment_activated",
@@ -98,6 +99,7 @@ const SEAM_INVENTORY: &[&str] = &[
     "notification_dismiss_clicked",
     "notification_done_clicked",
     "notification_mute_clicked",
+    "notification_row_open_requested",
     "notification_snooze_clicked",
     "notification_track_start_clicked",
     "plan_box_activated",
