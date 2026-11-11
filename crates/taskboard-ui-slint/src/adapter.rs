@@ -8373,6 +8373,21 @@ fn install_banner_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     a.route(&window, ActionId::ReminderMute);
 
     });
+
+    // D-6.1 (round 6): the row's double-click open — the today-row
+    // activation's shape (focus, then the TaskEdit route). The click
+    // that precedes it already focused and armed the one-shot target
+    // (both idempotent); TaskEdit → Activate → `RefreshNow` performs
+    // the push, so no extra refresh. A stale index stays inert.
+    install_seam!(window: window.on_banner_row_open_requested, adapter: adapter;
+    bind mut (a, window), args (index), {        let Some(banner_row) = banner_row(&a, index) else {
+        return;
+    };
+    a.view_state.set_focused(Some(banner_row.task));
+    a.reminder_target = Some(banner_row.target);
+    a.route(&window, ActionId::TaskEdit);
+
+    });
 }
 
 /// The notification row at `index` (D2: the index resolves against the
@@ -9277,6 +9292,22 @@ fn install_notification_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
         let Some(task) = row.task else { return };
         a.track_target = Some(task);
         a.route(&window, ActionId::TaskTrackStart);
+    });
+    // D-6.1 (round 6): the row's double-click open — focus, then the
+    // TaskEdit route (the today-row activation's shape; Activate's
+    // `RefreshNow` performs the push). Alarm rows never open: the
+    // markup's `enabled: row.can-open` gates, and the seam re-gates on
+    // the row's task (belt and braces). The one-shot reminder target
+    // is deliberately not armed here — nothing on this path consumes
+    // it; every snooze/mute seam arms it itself before routing.
+    install_seam!(window: window.on_notification_row_open_requested, adapter: adapter;
+        bind mut (a, window), args (index), {
+        let Some(row) = notification_row(&a, index) else {
+            return;
+        };
+        let Some(task) = row.task else { return };
+        a.view_state.set_focused(Some(task));
+        a.route(&window, ActionId::TaskEdit);
     });
 }
 

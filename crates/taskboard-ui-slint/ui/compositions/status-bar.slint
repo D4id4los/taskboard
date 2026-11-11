@@ -36,10 +36,14 @@ export struct SyncBadgeModel {
 
 // One overdue-banner row (D12): the task truth plus its due phrase.
 // The snooze/mute targets are Rust-side (D2) — the row carries only
-// its index.
+// its index. The round-6 reflection fields (D-6.2) describe the row's
+// own state: `muted` dims it (mute wins over snooze), `snoozed-phrase`
+// carries the reschedule target (empty = not snoozed).
 export struct BannerRowModel {
     title: string,
     due-phrase: string,
+    muted: bool,
+    snoozed-phrase: string,
 }
 
 // The move-flow hint (D11): the current preset's task.move binding
@@ -94,6 +98,10 @@ export component StatusBar inherits Rectangle {
     callback snooze-clicked(int);
     callback mute-clicked(int);
     callback row-activated(int);
+    // D-6.1 (round 6): the double-click open — fired after the
+    // click's focus+arm (Slint's clicked-then-double-clicked order,
+    // the TaskCard precedent); both halves idempotent.
+    callback row-open-requested(int);
     callback timers-chip-clicked();
 
     background: Theme.surface;
@@ -156,15 +164,30 @@ export component StatusBar inherits Rectangle {
 
                             list := ListRow {
                                 text: row.title;
-                                meta: row.due-phrase;
-                                tone: Tone.overdue;
+                                // D-6.2 (round 6): the state ladder —
+                                // muted rows describe themselves (the
+                                // dimmed tone, no nag copy), snoozed
+                                // rows carry the reschedule target,
+                                // otherwise the due phrase verbatim.
+                                meta: row.muted
+                                    ? "reminders muted"
+                                    : (row.snoozed-phrase != ""
+                                        ? row.snoozed-phrase
+                                        : row.due-phrase);
+                                tone: row.muted ? Tone.neutral : Tone.overdue;
                             }
                             // Click activation: the same seam as tab
                             // focus, plus the focus hand-off (D15).
+                            // D-6.1 (round 6): a double-click fires
+                            // this clicked first (focus+arm,
+                            // idempotent), then the open seam.
                             touch := TouchArea {
                                 clicked => {
                                     row-scope.focus();
                                     root.row-activated(row-index);
+                                }
+                                double-clicked => {
+                                    root.row-open-requested(row-index);
                                 }
                             }
                         }

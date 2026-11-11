@@ -822,6 +822,9 @@ fn push_notifications(
                 can_mute: buttons.mute,
                 can_cancel: buttons.cancel,
                 can_track_start: buttons.track_start,
+                // D-6.1 (round 6): the double-click open rides the
+                // task anchor — alarm rows (no task) don't advertise.
+                can_open: row.task.is_some(),
             }
         })
         .collect();
@@ -2310,6 +2313,14 @@ fn push_status_bar(
             due_phrase: SharedString::from(state.tasks.get(&row.task).map_or(String::new(), |t| {
                 presentation::due_phrase(DueKind::Overdue, t.duedate, now, &chrono::Local)
             })),
+            // D-6.2 (round 6): the state ladder's inputs — the muted
+            // flag switches the row's tone and meta markup-side; the
+            // snoozed phrase (empty = not snoozed) carries the
+            // reschedule target in local wall time.
+            muted: row.muted,
+            snoozed_phrase: SharedString::from(row.snoozed_until.map_or(String::new(), |until| {
+                presentation::snoozed_phrase(until, &chrono::Local)
+            })),
         })
         .collect();
     let mutations = push_rows(
@@ -3573,6 +3584,71 @@ mod tests {
                 now: stamp(now),
                 window: (stamp(now), stamp(now + 86_400)),
             }
+        }
+
+        /// D-6.2 (round 6): the banner row projection carries the
+        /// state ladder's inputs — a muted row pushes `muted` with an
+        /// empty snoozed-phrase; a snoozed (unmuted) row pushes
+        /// `muted == false` and a non-empty snoozed-phrase
+        /// (emptiness/non-emptiness are the structural facts; the
+        /// phrase text is never the oracle).
+        #[test]
+        fn the_banner_rows_push_the_muted_and_snoozed_state() {
+            on_slint_thread(|| {
+                let b = taskboard_domain::BoardId::from_uuid(uuid::Uuid::now_v7());
+                let sa = StackId::from_uuid(uuid::Uuid::now_v7());
+                let mut state = AppState::default();
+                state.boards.insert(b, board(b, "alpha"));
+                state.stacks.insert(sa, stack(sa, b));
+                let muted_id = TaskId::from_uuid(uuid::Uuid::now_v7());
+                let mut t = task(muted_id, sa, "muted");
+                t.order = 0;
+                t.duedate = Some(stamp(31_500_000));
+                state.tasks.insert(muted_id, t);
+                state.reminders.muted.insert(muted_id);
+                let snoozed_id = TaskId::from_uuid(uuid::Uuid::now_v7());
+                let mut t = task(snoozed_id, sa, "snoozed");
+                t.order = 1;
+                t.duedate = Some(stamp(31_510_000));
+                state.tasks.insert(snoozed_id, t);
+                // The journaled snooze link for the rule-less default
+                // ref: the occurrence is the duedate itself (the
+                // banner row's snooze_target shape), rescheduling into
+                // the future.
+                state.reminders.snoozes.insert(
+                    taskboard_domain::ReminderSnoozeKey {
+                        reminder: taskboard_domain::ReminderRef::Default(snoozed_id),
+                        occurrence: stamp(31_510_000),
+                    },
+                    stamp(31_563_600) + chrono::TimeDelta::hours(1),
+                );
+
+                let window = crate::AppWindow::new().expect("window on the testing backend");
+                let vs = ViewState::default();
+                let mut models = PushModels::default();
+                push_pass(&window, &state, &vs, day(31_563_600), false, &mut models);
+
+                let rows = window.get_banner_model();
+                assert_eq!(rows.row_count(), 2, "both overdue tasks render");
+                let by_title = |title: &str| {
+                    (0..rows.row_count())
+                        .map(|i| rows.row_data(i).expect("row"))
+                        .find(|row| row.title == title)
+                        .expect("the addressed row renders")
+                };
+                let muted_row = by_title("muted");
+                assert!(muted_row.muted, "the muted task's row reports muted");
+                assert_eq!(
+                    muted_row.snoozed_phrase, "",
+                    "no snooze record for the muted task: an empty phrase"
+                );
+                let snoozed_row = by_title("snoozed");
+                assert!(!snoozed_row.muted, "the snoozed task is not muted");
+                assert!(
+                    !snoozed_row.snoozed_phrase.is_empty(),
+                    "the snoozed row carries its reschedule phrase"
+                );
+            });
         }
 
         /// Two boards: overdue (B), scheduled (A), due-today (A), an

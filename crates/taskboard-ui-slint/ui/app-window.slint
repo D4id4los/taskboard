@@ -574,6 +574,7 @@ export component AppWindow inherits Window {
                 mute-clicked(i) => root.notification-mute-clicked(i);
                 cancel-clicked(i) => root.notification-cancel-clicked(i);
                 track-start-clicked(i) => root.notification-track-start-clicked(i);
+                row-open-requested(i) => root.notification-row-open-requested(i);
             }
 
             status := StatusBar {
@@ -597,6 +598,7 @@ export component AppWindow inherits Window {
                 snooze-clicked(i) => root.banner-snooze-clicked(i);
                 mute-clicked(i) => root.banner-mute-clicked(i);
                 row-activated(i) => root.banner-row-activated(i);
+                row-open-requested(i) => root.banner-row-open-requested(i);
                 timers-chip-clicked() => root.timers-chip-clicked();
                 tracking-stop-clicked() => root.tracking-chip-stop-clicked();
             }
@@ -1441,6 +1443,9 @@ export component AppWindow inherits Window {
     pure callback banner-snooze-clicked(int);
     pure callback banner-mute-clicked(int);
     pure callback banner-row-activated(int);
+    // D-6.1 (round 6): the rows' double-click open (banner + the
+    // notification surface's task-anchored rows).
+    pure callback banner-row-open-requested(int);
     // The notification surface's buttons (R3 chunk C, D-10): Dismiss /
     // Mark Done / Snooze / Mute — each dispatches one engine command
     // and nothing else (thin client). Start Task (DR-5/4, D-TU7)
@@ -1452,6 +1457,7 @@ export component AppWindow inherits Window {
     pure callback notification-mute-clicked(int);
     pure callback notification-cancel-clicked(int);
     pure callback notification-track-start-clicked(int);
+    pure callback notification-row-open-requested(int);
     // The tracking seams (DR-5/4, D-TU11): the chip's stop routes
     // TaskTrackStop; the detail view's two verbs route over the
     // focused task.

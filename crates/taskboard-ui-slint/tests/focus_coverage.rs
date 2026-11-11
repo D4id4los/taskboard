@@ -56,6 +56,15 @@ const EXEMPT: &[(&str, &str)] = &[
         "chrome chip under the same D-T16 deviation; the tracking stop has \
          its routed action binding",
     ),
+    // D-6.1 (round 6): the notification row's double-click open. The
+    // row's verbs (dismiss/done/snooze/mute) are all key-reachable;
+    // the open's keyboard parity (focus → Enter) is the round-6
+    // declared non-goal, tracked as #724.
+    (
+        "TouchArea:NotificationSurface::row-touch",
+        "the notification row's double-click open; keyboard activation \
+         parity on notification rows is #724 (round-6 non-goal)",
+    ),
     // The modal dismissal backdrops (#665): a full-window outside-click
     // layer under each modal. Dismissal is a pointer convenience; the
     // keyboard closes every modal by its Escape/toggle binding, and a

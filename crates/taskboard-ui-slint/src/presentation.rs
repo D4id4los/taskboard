@@ -700,8 +700,8 @@ pub fn banner_rows(state: &AppState, now: DateTime<Utc>) -> Vec<BannerRow> {
                 kind: DueKind::Overdue,
                 target: ReminderTarget {
                     anchor: taskboard_domain::ReminderAnchor::Task(task.id),
-                    reminder: key.reminder,
-                    occurrence: key.occurrence,
+                    reminder,
+                    occurrence,
                 },
                 muted: state.reminders.muted.contains(&task.id),
                 snoozed_until: state
