@@ -3926,6 +3926,18 @@ struct SettingsVm {
     /// The last listing per connector (round-5 chunk 8): the remote
     /// boards each Deck row maps; bindings render from the live state.
     remotes: BTreeMap<String, Vec<requests::RemoteBoardRow>>,
+    /// The mount auto-lists' in-flight replies (round-6 D-6.7),
+    /// connector → parked reply half. Deliberately NOT the shared
+    /// `replies`/`pending` machine: that drain's settle block clears
+    /// `pending`/`busy_target` and stamps a global outcome for every
+    /// settled reply — a background listing landing mid-Save would
+    /// wipe the user's op's busy marker and banner. Here a settled
+    /// reply only fills `remotes` (silent by construction); the slot
+    /// occupies the map until the reply lands, which is the rapid-
+    /// remount double-fire guard. One listing request per connector
+    /// until its reply lands.
+    auto_listings:
+        BTreeMap<String, oneshot::Receiver<Result<Vec<requests::RemoteBoardRow>, SettingsError>>>,
     /// The rendered connections items' addresses, index-aligned with
     /// the pushed `connection-items` (the callbacks' resolution table).
     items: Vec<ItemAddr>,
@@ -4320,6 +4332,84 @@ impl Adapter {
         let chip = rx.borrow_and_update().clone();
         paint_files_sync_chip(window, &chip);
         true
+    }
+
+    /// The mount auto-list (round-6 D-6.7): one `ListRemoteBoards`
+    /// per connector without a landed listing, fired only from
+    /// `settings_view_mounted` — deferred to the first settings
+    /// visit, never at boot. Guards against double-firing: a landed
+    /// listing (`remotes`), an in-flight auto listing
+    /// (`auto_listings`), and the connector's manual refresh riding
+    /// the pending machine. A full/closed request lane degrades to a
+    /// log line (the `send` choke-point precedent); the map slot is
+    /// what keeps the guard, so a failed `try_send` inserts nothing.
+    fn fire_auto_listings(&mut self) {
+        for row in &self.settings.rows {
+            let connector = row.name.clone();
+            if self.settings.remotes.contains_key(&connector)
+                || self.settings.auto_listings.contains_key(&connector)
+                || (self.settings.pending == Some(PendingKind::ListRemote)
+                    && self.settings.busy_target == connector)
+            {
+                continue;
+            }
+            let (reply, reply_rx) = oneshot::channel();
+            let request = UiRequest::ListRemoteBoards {
+                connector: connector.clone(),
+                reply,
+            };
+            if self.requests.try_send(request).is_ok() {
+                self.settings.auto_listings.insert(connector, reply_rx);
+            } else {
+                tracing::warn!(
+                    "request channel full or closed; the settings auto-list was dropped"
+                );
+            }
+        }
+    }
+
+    /// The auto-listings' drain (round-6 D-6.7): the same
+    /// non-blocking poll the other drains run, called beside
+    /// [`Self::drain_setting_replies`] in the same repaint pass. A
+    /// settled reply fills `remotes` and nothing else — never
+    /// `pending`, `busy_target`, or the outcome banner (a background
+    /// listing is silent by construction; the banner belongs to
+    /// user-initiated ops). A failed reply clears the slot and leaves
+    /// the row unlisted, so the Deck row's refresh hint stays. A
+    /// closed lane counts as settled (the sender died); the slot
+    /// clears so a later mount may retry.
+    pub(crate) fn drain_auto_listings(&mut self, window: &AppWindow) -> bool {
+        let mut settled: Vec<(String, Result<Vec<requests::RemoteBoardRow>, SettingsError>)> =
+            Vec::new();
+        for (connector, rx) in &mut self.settings.auto_listings {
+            match rx.try_recv() {
+                Ok(outcome) => settled.push((connector.clone(), outcome)),
+                Err(oneshot::error::TryRecvError::Empty) => {}
+                Err(oneshot::error::TryRecvError::Closed) => {
+                    tracing::warn!("the settings auto-list reply lane died; the slot clears");
+                    settled.push((connector.clone(), Err(SettingsError::VerifyFailed)));
+                }
+            }
+        }
+        let mut dirty = false;
+        for (connector, outcome) in settled {
+            self.settings.auto_listings.remove(&connector);
+            match outcome {
+                Ok(rows) => {
+                    self.settings.remotes.insert(connector, rows);
+                }
+                Err(err) => {
+                    tracing::info!(variant = ?err, "the settings auto-list failed");
+                }
+            }
+            dirty = true;
+        }
+        if dirty {
+            // The model is a derive input outside the state Arc —
+            // forced. `refresh_forced` ends in `push_settings`.
+            self.refresh_forced(window);
+        }
+        dirty
     }
 
     #[allow(clippy::too_many_lines)] // one arm per reply variant, kept flat
@@ -4721,15 +4811,48 @@ impl Adapter {
                 addrs.push(ItemAddr::Deck {
                     connector: connector.clone(),
                 });
-                for remote in listing.into_iter().flatten() {
-                    let bound = state.boards.values().find(|board| {
+                // The listing's rows (round-5 chunk 8), then the
+                // bindings-without-listing rows (round-6 D-6.7): a
+                // live binding on this connector whose remote is not
+                // among the landed listing still renders — fully
+                // actionable — titled by the local board (the remote
+                // title is unknown until a listing enriches it).
+                let listed_remotes: Vec<_> = listing
+                    .into_iter()
+                    .flatten()
+                    .map(|remote| remote.remote_id)
+                    .collect();
+                let live_bindings: Vec<_> = state
+                    .boards
+                    .values()
+                    .filter(|board| {
                         !board.deleted
                             && !board.archived
-                            && board.remote.as_ref().is_some_and(|binding| {
-                                binding.connector.as_str() == connector
-                                    && binding.board == remote.remote_id
-                            })
-                    });
+                            && board
+                                .remote
+                                .as_ref()
+                                .is_some_and(|binding| binding.connector.as_str() == connector)
+                    })
+                    .collect();
+                let unlisted_bindings: Vec<_> = live_bindings
+                    .iter()
+                    .filter(|board| {
+                        board
+                            .remote
+                            .as_ref()
+                            .is_some_and(|binding| !listed_remotes.contains(&binding.board))
+                    })
+                    .collect();
+                for remote in listing.into_iter().flatten() {
+                    let bound = live_bindings
+                        .iter()
+                        .find(|board| {
+                            board
+                                .remote
+                                .as_ref()
+                                .is_some_and(|binding| binding.board == remote.remote_id)
+                        })
+                        .copied();
                     items.push(crate::ConnectionItem {
                         kind: crate::ConnectionItemKind::Remote,
                         title: remote.title.clone().into(),
@@ -4748,6 +4871,30 @@ impl Adapter {
                         connector: connector.clone(),
                         remote: remote.remote_id,
                         bound: bound.map(|b| b.id),
+                    });
+                }
+                // The bindings whose remote is absent from the listing
+                // (round-6 D-6.7): synthesized Remote rows, `bound` by
+                // construction, titled by the local board, detail
+                // empty (the remote title is unknown pre-listing).
+                // The address is the real one, so detach/bind-pick
+                // resolve unchanged — the row is fully actionable
+                // before any listing exists.
+                for board in &unlisted_bindings {
+                    let binding = board
+                        .remote
+                        .as_ref()
+                        .expect("unlisted_bindings filtered on a binding");
+                    items.push(crate::ConnectionItem {
+                        kind: crate::ConnectionItemKind::Remote,
+                        title: board.title.clone().into(),
+                        bound: true,
+                        ..blank.clone()
+                    });
+                    addrs.push(ItemAddr::Remote {
+                        connector: connector.clone(),
+                        remote: binding.board,
+                        bound: Some(board.id),
                     });
                 }
             }
@@ -5971,6 +6118,10 @@ impl Adapter {
         self.settings.focus_break_draft = None;
         self.settings.focus_long_break_draft = None;
         self.settings.focus_every_draft = None;
+        // The mount auto-list (round-6 D-6.7): the ONLY call site —
+        // the listing cost lands on the first settings visit, never
+        // at boot.
+        self.fire_auto_listings();
         self.push_settings(window);
     }
 

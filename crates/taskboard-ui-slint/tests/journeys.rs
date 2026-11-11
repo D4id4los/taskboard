@@ -3427,6 +3427,7 @@ fn the_scale_drag_moves_nothing_until_release() {
         move |_driver| {
             let mut harness = Harness::mount(SlintDriver::default(), state);
             harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
             let window = harness.handle.window();
             let model = || window.global::<taskboard_ui_slint::SettingsModel>();
             let scale = || {
@@ -3500,6 +3501,7 @@ fn the_scale_echo_renders_the_committed_scale() {
         move |_driver| {
             let mut harness = Harness::mount(SlintDriver::default(), state);
             harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
             let window = harness.handle.window();
             let model = || window.global::<taskboard_ui_slint::SettingsModel>();
             let scale = || {
@@ -3566,6 +3568,7 @@ fn the_scale_echo_renders_the_committed_scale() {
             assert_eq!(model().get_scale_echo(), "9.9", "the draft renders");
             harness.press(ActionId::AppSettings);
             harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
             let window = harness.handle.window();
             assert_eq!(
                 window
@@ -3602,6 +3605,7 @@ fn a_scale_commit_anchors_the_scroll_on_the_scale_row() {
             driver.bind(&harness.handle);
             driver.set_window_size(480, 460);
             harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
             let window = harness.handle.window();
             let facts = window.global::<taskboard_ui_slint::SettingsScrollFacts>();
             driver.advance_time(0);
@@ -3742,6 +3746,7 @@ fn the_status_line_pins_above_the_scroll_viewport() {
             driver.bind(&harness.handle);
             driver.set_window_size(480 * 3, 400 * 3);
             harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
             let window = harness.handle.window();
             let model = || window.global::<taskboard_ui_slint::SettingsModel>();
             driver.advance_time(0);
@@ -3823,6 +3828,7 @@ fn the_eye_toggles_locally_without_leaking_the_secret() {
         move |_driver| {
             let mut harness = Harness::mount(SlintDriver::default(), state);
             harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
             let window = harness.handle.window();
             let model = || window.global::<taskboard_ui_slint::SettingsModel>();
 
@@ -3908,6 +3914,7 @@ fn the_validity_flavour_tracks_each_field_per_keystroke() {
         move |_driver| {
             let mut harness = Harness::mount(SlintDriver::default(), state);
             harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
             let window = harness.handle.window();
             let model = || window.global::<taskboard_ui_slint::SettingsModel>();
 
@@ -3975,6 +3982,7 @@ fn a_scale_parse_miss_renders_the_invalid_flavour_and_typed_detail() {
         move |_driver| {
             let mut harness = Harness::mount(SlintDriver::default(), state);
             harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
             let window = harness.handle.window();
             let model = || window.global::<taskboard_ui_slint::SettingsModel>();
 
@@ -4213,6 +4221,7 @@ fn the_slider_holds_the_gesture_and_commits_once_on_release() {
         move |_driver| {
             let mut harness = Harness::mount(SlintDriver::default(), state);
             harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
             let window = harness.handle.window();
             let scale = || {
                 window
@@ -4270,6 +4279,7 @@ fn a_slider_gesture_is_inert_while_an_op_is_pending() {
         move |_driver| {
             let mut harness = Harness::mount(SlintDriver::default(), state);
             harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
             let window = harness.handle.window();
             let scale = || {
                 window
@@ -4317,6 +4327,7 @@ fn a_slider_commit_reverts_on_a_typed_error_reply() {
         move |_driver| {
             let mut harness = Harness::mount(SlintDriver::default(), state);
             harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
             let window = harness.handle.window();
             let scale = || {
                 window
@@ -9170,11 +9181,42 @@ fn item_at(harness: &Harness, kind: taskboard_ui_slint::ConnectionItemKind, titl
     i32::try_from(index).expect("index fits")
 }
 
+/// The empty listing reply (the settle helper's happy-path argument).
+#[allow(clippy::unnecessary_wraps)] // the settle helper's signature twin
+fn no_rows() -> Result<
+    Vec<taskboard_ui_slint::requests::RemoteBoardRow>,
+    taskboard_ui_slint::requests::SettingsError,
+> {
+    Ok(Vec::new())
+}
+
 fn remote_row(id: u64, title: &str) -> taskboard_ui_slint::requests::RemoteBoardRow {
     taskboard_ui_slint::requests::RemoteBoardRow {
         remote_id: taskboard_domain::RemoteBoardId::deck(id),
         title: title.to_owned(),
     }
+}
+
+/// Answers the mount auto-lists (round-6 D-6.7) with `make`'s typed
+/// outcome and drains the auto lane — afterwards the request lane is
+/// clear for the test's own requests. Mount routes nothing but
+/// auto-lists, so a non-listing request in the lane is a drift, not a
+/// silent drop.
+fn settle_auto_lists(
+    harness: &Harness,
+    make: impl Fn() -> Result<
+        Vec<taskboard_ui_slint::requests::RemoteBoardRow>,
+        taskboard_ui_slint::requests::SettingsError,
+    >,
+) {
+    for request in harness.drain_requests() {
+        let taskboard_ui_slint::requests::UiRequest::ListRemoteBoards { reply, .. } = request
+        else {
+            panic!("the mount routed only auto-lists");
+        };
+        reply.send(make()).expect("the reply lane is alive");
+    }
+    harness.handle.drain_auto_listings();
 }
 
 /// Clicks the named connector's Refresh and answers the listing with
@@ -9218,6 +9260,261 @@ fn identity_row(name: &str, server: &str, user: &str) -> ConnectorInfo {
     }
 }
 
+/// Round-6 D-6.7 (plan §3 T6+T7) — the mount auto-list: the first
+/// settings mount fires exactly one listing per unlisted connector; a
+/// rapid remount re-fires nothing while a listing is in flight; a
+/// landed listing is never re-listed; a failed listing frees the slot
+/// (only that connector re-fires, and the failure lands no outcome);
+/// a manual refresh holding the pending machine suppresses the
+/// auto-fire for its connector.
+#[test]
+fn mounting_the_settings_view_auto_lists_each_unlisted_connector_once() {
+    use taskboard_ui_slint::ConnectionItemKind as K;
+    use taskboard_ui_slint::requests::UiRequest;
+    let settings = UiSettings {
+        connectors: vec![connector_row("work"), connector_row("home")],
+        ..UiSettings::default()
+    };
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness =
+                Harness::mount_with_settings(SlintDriver::default(), AppState::default(), settings);
+            harness.press(ActionId::AppSettings);
+            let window = harness.handle.window();
+            let requests = harness.drain_requests();
+            assert_eq!(requests.len(), 2, "one listing per unlisted connector");
+
+            // Rapid remount: the in-flight slots guard the re-fire.
+            window.invoke_settings_view_mounted();
+            assert!(
+                harness.drain_requests().is_empty(),
+                "an in-flight listing is never re-fired"
+            );
+
+            // work's listing lands; home's fails (the slot frees, the
+            // row stays unlisted, the outcome banner is untouched —
+            // background listings are silent).
+            for request in requests {
+                let UiRequest::ListRemoteBoards { connector, reply } = request else {
+                    panic!("the mount routes only listings");
+                };
+                let outcome = if connector == "work" {
+                    Ok(vec![remote_row(1, "r")])
+                } else {
+                    Err(taskboard_ui_slint::requests::SettingsError::VerifyUnreachable)
+                };
+                reply.send(outcome).expect("the reply lane is alive");
+            }
+            harness.handle.drain_auto_listings();
+            assert_eq!(
+                model(&harness).get_last_outcome(),
+                taskboard_ui_slint::SettingsOutcome::None,
+                "a failed auto-list is silent"
+            );
+            item_at(&harness, K::Remote, "r");
+
+            // The next mount re-fires exactly the failed connector.
+            window.invoke_settings_view_mounted();
+            let mut requests = harness.drain_requests();
+            assert_eq!(requests.len(), 1, "only the unlisted connector re-fires");
+            let UiRequest::ListRemoteBoards { connector, .. } = requests.remove(0) else {
+                panic!("the remount routes a listing");
+            };
+            assert_eq!(connector, "home");
+
+            // While that re-fire is in flight, a manual refresh takes
+            // the pending machine — the mount suppresses work's auto
+            // too (the manual-lane guard), and home's slot still
+            // guards.
+            window.invoke_settings_refresh_clicked(item_at(&harness, K::Deck, "work"));
+            assert_eq!(harness.drain_requests().len(), 1, "the refresh routed");
+            window.invoke_settings_view_mounted();
+            assert!(
+                harness.drain_requests().is_empty(),
+                "the manual-refresh connector and the in-flight slot both guard"
+            );
+        },
+    );
+}
+
+/// Round-6 D-6.7 (plan §3 T8) — an auto-list reply never touches a
+/// concurrently in-flight user op: the pending machine, the busy
+/// marker, and the outcome banner survive the background reply's
+/// settle (the dedicated-lane motivation).
+#[test]
+fn a_settled_auto_list_never_touches_a_pending_op() {
+    use taskboard_ui_slint::requests::UiRequest;
+    let settings = UiSettings {
+        connectors: vec![connector_row("work")],
+        ..UiSettings::default()
+    };
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness =
+                Harness::mount_with_settings(SlintDriver::default(), AppState::default(), settings);
+            harness.press(ActionId::AppSettings);
+            let window = harness.handle.window();
+
+            // The auto-list goes out and is held in flight.
+            let mut requests = harness.drain_requests();
+            assert_eq!(requests.len(), 1);
+            let UiRequest::ListRemoteBoards { reply, .. } = requests.remove(0) else {
+                panic!("the mount routes a listing");
+            };
+
+            // A user op takes the pending machine while it is out.
+            window.invoke_settings_field_edited(1, "https://c.example".into());
+            window.invoke_settings_field_edited(2, "alice".into());
+            window.invoke_settings_field_edited(3, "pw".into());
+            window.invoke_settings_save_clicked(
+                "https://c.example".into(),
+                "alice".into(),
+                "pw".into(),
+            );
+            assert!(model(&harness).get_busy(), "the save is pending");
+            assert_eq!(
+                model(&harness).get_last_outcome(),
+                taskboard_ui_slint::SettingsOutcome::Busy
+            );
+
+            // The background listing settles — success or failure, the
+            // user op's state is untouched.
+            reply
+                .send(Err(
+                    taskboard_ui_slint::requests::SettingsError::VerifyUnreachable,
+                ))
+                .expect("the reply lane is alive");
+            harness.handle.drain_auto_listings();
+            assert!(model(&harness).get_busy(), "the save is still pending");
+            assert_eq!(
+                model(&harness).get_last_outcome(),
+                taskboard_ui_slint::SettingsOutcome::Busy,
+                "the banner still belongs to the save"
+            );
+            assert!(
+                items(&harness)
+                    .iter()
+                    .all(|item| item.kind != taskboard_ui_slint::ConnectionItemKind::Remote),
+                "the failed listing landed no rows"
+            );
+
+            // The save's reply (dropped: closed lane) settles through
+            // the user-op drain as before.
+            drop(harness.drain_requests());
+            harness.handle.drain_setting_replies();
+            assert!(!model(&harness).get_busy(), "the save cleared");
+        },
+    );
+}
+
+/// Round-6 D-6.7 (plan §3 T9) — bindings render without a listing:
+/// the synthesized Remote row is bound, titled by the local board,
+/// and fully actionable (a detach on it routes the typed pair); when
+/// the listing then lands, the binding enriches into the listing's
+/// row and is NOT duplicated, while an unlisted second binding keeps
+/// its synthesized row.
+#[test]
+fn bindings_render_without_a_listing_and_the_listing_enriches_without_duplicates() {
+    use taskboard_ui_slint::ConnectionItemKind as K;
+    use taskboard_ui_slint::requests::UiRequest;
+    let mut state = AppState::default();
+    let home = uuid::Uuid::new_v4();
+    let away = uuid::Uuid::new_v4();
+    state_board(&mut state, home, "home", Some("work"));
+    state_board(&mut state, away, "away", Some("work"));
+    // Distinct remote ids: home's binding is deck 1, away's deck 2.
+    state
+        .boards
+        .get_mut(&taskboard_domain::BoardId::from_uuid(away))
+        .and_then(|b| b.remote.as_mut())
+        .expect("bound")
+        .board = taskboard_domain::RemoteBoardId::deck(2);
+    let settings = UiSettings {
+        connectors: vec![connector_row("work")],
+        ..UiSettings::default()
+    };
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount_with_settings(SlintDriver::default(), state, settings);
+            harness.press(ActionId::AppSettings);
+            let window = harness.handle.window();
+
+            // The mount's listing is held in flight: no listing has
+            // landed, yet both bindings render.
+            let mut requests = harness.drain_requests();
+            assert_eq!(requests.len(), 1);
+            let UiRequest::ListRemoteBoards { reply, .. } = requests.remove(0) else {
+                panic!("the mount routes a listing");
+            };
+            let away_row = item_at(&harness, K::Remote, "away");
+            assert!(
+                items(&harness)[usize::try_from(away_row).expect("fits")].bound,
+                "the synthesized row is bound"
+            );
+            window.invoke_settings_disconnect_clicked(away_row);
+            let mut requests = harness.drain_requests();
+            assert!(
+                matches!(
+                    &requests[0],
+                    UiRequest::DetachConnector { board, connector, .. }
+                        if board.as_uuid() == away && connector == "work"
+                ),
+                "the synthesized row is actionable"
+            );
+            let UiRequest::DetachConnector { reply: detach, .. } = requests.remove(0) else {
+                panic!("unreachable");
+            };
+            // Answer nothing yet — the detach stays in flight only in
+            // the user-op lane; complete it via the reply drop path.
+            let _ = detach.send(Ok(ConnectionsSnapshot {
+                boards: Vec::new(),
+                connectors: vec![connector_row("work")],
+            }));
+            harness.handle.drain_setting_replies();
+
+            // The listing lands containing deck 1 (home's binding) but
+            // not deck 2 (away's): the enriched row renders once, the
+            // unlisted binding keeps its synthesized row.
+            reply
+                .send(Ok(vec![remote_row(1, "r-home"), remote_row(9, "r-new")]))
+                .expect("the reply lane is alive");
+            harness.handle.drain_auto_listings();
+            let remote_titles: Vec<String> = items(&harness)
+                .into_iter()
+                .filter(|item| item.kind == K::Remote)
+                .map(|item| item.title.to_string())
+                .collect();
+            assert_eq!(
+                remote_titles,
+                vec!["r-home".to_owned(), "r-new".to_owned(), "away".to_owned()],
+                "the listing enriches; the unlisted binding synthesizes; no duplicates"
+            );
+            let bound = &items(&harness)
+                [usize::try_from(item_at(&harness, K::Remote, "r-home")).expect("fits")];
+            assert!(bound.bound);
+            assert_eq!(bound.detail, "home", "the listing enriches the detail");
+            assert!(
+                !items(&harness)
+                    [usize::try_from(item_at(&harness, K::Remote, "r-new")).expect("fits")]
+                .bound
+            );
+            let synthesized = &items(&harness)
+                [usize::try_from(item_at(&harness, K::Remote, "away")).expect("fits")];
+            assert!(synthesized.bound);
+            assert!(synthesized.detail.is_empty(), "no remote title pre-listing");
+        },
+    );
+}
+
 /// J1 (rewired round-5 chunk 8) — the account cards group the
 /// connectors by exact identity in config order: header, the Files
 /// toggle on the default connector's card only, one Deck row per
@@ -9253,28 +9550,52 @@ fn the_account_cards_group_connectors_and_the_options_project_the_state() {
             let kinds: Vec<K> = shape.iter().map(|(kind, ..)| *kind).collect();
             assert_eq!(
                 kinds,
-                vec![K::Account, K::Files, K::Deck, K::Deck, K::Account, K::Deck],
-                "header, Files (default card only), a Deck row per connector"
+                vec![
+                    K::Account,
+                    K::Files,
+                    K::Deck,
+                    K::Remote,
+                    K::Deck,
+                    K::Account,
+                    K::Deck
+                ],
+                "header, Files (default card only), a Deck row per connector — plus the
+                 binding-without-listing Remote row (round-6 D-6.7)"
             );
             assert_eq!(shape[2].1, "work");
-            assert_eq!(shape[3].1, "work-2");
+            assert_eq!(shape[3].1, "away", "the binding-without-listing row");
+            assert_eq!(shape[4].1, "work-2");
             assert!(
-                shape[2].2 && shape[3].2,
+                shape[2].2 && shape[4].2,
                 "a shared card labels its Deck rows"
             );
-            assert!(!shape[5].2, "a single-connector card does not");
-            assert!(
-                items(&harness).iter().all(|item| !item.listed),
-                "nothing is listed before a Refresh"
-            );
+            assert!(!shape[6].2, "a single-connector card does not");
             let labels: Vec<String> = options(&harness)
                 .into_iter()
                 .map(|row| row.label.to_string())
                 .collect();
             assert_eq!(labels, vec!["home".to_owned()], "only unbound boards");
+            // The mount auto-list (round-6 D-6.7): every unlisted
+            // connector gets exactly one listing request at mount.
+            let requests = harness.drain_requests();
+            assert_eq!(requests.len(), 3, "one listing per connector");
+            assert!(requests.iter().all(|request| matches!(
+                request,
+                taskboard_ui_slint::requests::UiRequest::ListRemoteBoards { .. }
+            )));
+            for request in requests {
+                if let taskboard_ui_slint::requests::UiRequest::ListRemoteBoards { reply, .. } =
+                    request
+                {
+                    reply.send(no_rows()).expect("the reply lane is alive");
+                }
+            }
+            harness.handle.drain_auto_listings();
             assert!(
-                harness.drain_requests().is_empty(),
-                "mounting routes nothing"
+                items(&harness)
+                    .iter()
+                    .all(|item| item.kind != K::Deck || item.listed),
+                "the landed listings mark every Deck row"
             );
         },
     );
@@ -9306,6 +9627,7 @@ fn a_refresh_lists_remotes_and_a_pick_binds_explicitly() {
         move |_driver| {
             let mut harness = Harness::mount_with_settings(SlintDriver::default(), state, settings);
             harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
             let window = harness.handle.window();
             refresh_with(
                 &harness,
@@ -9413,6 +9735,7 @@ fn disconnect_routes_detach_from_the_bound_remote_row() {
         move |_driver| {
             let mut harness = Harness::mount_with_settings(SlintDriver::default(), state, settings);
             harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
             let window = harness.handle.window();
             refresh_with(
                 &harness,
@@ -9474,6 +9797,7 @@ fn the_busy_gate_holds_one_op_and_the_reply_clears_the_row_marker() {
         move |_driver| {
             let mut harness = Harness::mount_with_settings(SlintDriver::default(), state, settings);
             harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
             let window = harness.handle.window();
             refresh_with(&harness, "work", vec![remote_row(5, "r")]);
             let remote = item_at(&harness, K::Remote, "r");
@@ -9579,6 +9903,7 @@ fn create_local_board_routes_and_the_row_renders_bound() {
             let mut harness =
                 Harness::mount_with_settings(SlintDriver::default(), AppState::default(), settings);
             harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
             let window = harness.handle.window();
             refresh_with(&harness, "work", vec![remote_row(1, "shared")]);
             let row = item_at(&harness, K::Remote, "shared");
@@ -9639,6 +9964,9 @@ fn a_failed_listing_surfaces_typed_without_state_change() {
             let mut harness =
                 Harness::mount_with_settings(SlintDriver::default(), AppState::default(), settings);
             harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, || {
+                Err(taskboard_ui_slint::requests::SettingsError::StoreUnsupported)
+            });
             let window = harness.handle.window();
             for (err, outcome) in [
                 (
@@ -9699,6 +10027,7 @@ fn the_files_toggle_commits_on_pick_and_echoes_the_reply() {
             let mut harness =
                 Harness::mount_with_settings(SlintDriver::default(), AppState::default(), settings);
             harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
             let files = || {
                 items(&harness)
                     .into_iter()
@@ -9750,6 +10079,7 @@ fn the_account_session_signs_in_lists_and_binds() {
             let mut harness =
                 Harness::mount_with_settings(SlintDriver::default(), state, UiSettings::default());
             harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
             let window = harness.handle.window();
             assert!(items(&harness).is_empty(), "no accounts yet");
 
@@ -9845,6 +10175,7 @@ fn every_save_click_produces_a_visible_reaction_and_the_lane_stays_clean() {
         move |_driver| {
             let mut harness = Harness::mount(SlintDriver::default(), state);
             harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
             let window = harness.handle.window();
             let model = || window.global::<taskboard_ui_slint::SettingsModel>();
 
@@ -12949,6 +13280,7 @@ fn the_general_sections_render_the_snapshot() {
         move |_driver| {
             let mut harness = general_harness(state, general_snapshot());
             harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
             let window = harness.handle.window();
             let model = || window.global::<taskboard_ui_slint::SettingsModel>();
 
@@ -13029,6 +13361,7 @@ fn the_apply_badges_follow_the_registry_verdicts() {
             );
             let mut harness = general_harness(state, snapshot);
             harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
             let window = harness.handle.window();
             let model = || window.global::<taskboard_ui_slint::SettingsModel>();
             assert!(
@@ -13059,6 +13392,7 @@ fn the_general_edit_round_trip_routes_and_echoes_the_reply() {
         move |_driver| {
             let mut harness = general_harness(state, general_snapshot());
             harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
             let window = harness.handle.window();
             let model = || window.global::<taskboard_ui_slint::SettingsModel>();
 
@@ -13139,6 +13473,7 @@ fn invalid_general_commits_refuse_typed_without_routing() {
         move |_driver| {
             let mut harness = general_harness(state, general_snapshot());
             harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
             let window = harness.handle.window();
             let model = || window.global::<taskboard_ui_slint::SettingsModel>();
 
@@ -13219,6 +13554,7 @@ fn env_overridden_keys_render_locked_and_refuse_the_seam() {
         move |_driver| {
             let mut harness = general_harness(state, snapshot);
             harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
             let window = harness.handle.window();
             let model = || window.global::<taskboard_ui_slint::SettingsModel>();
 
@@ -13268,6 +13604,7 @@ fn an_empty_return_refuses_typed_without_routing() {
         move |_driver| {
             let mut harness = general_harness(state, general_snapshot());
             harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
             let window = harness.handle.window();
             let model = || window.global::<taskboard_ui_slint::SettingsModel>();
 
@@ -13312,6 +13649,7 @@ fn a_general_return_less_edit_never_survives_the_surface() {
         move |_driver| {
             let mut harness = general_harness(state, general_snapshot());
             harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
             let window = harness.handle.window();
             let model = || window.global::<taskboard_ui_slint::SettingsModel>();
 
@@ -13322,6 +13660,7 @@ fn a_general_return_less_edit_never_survives_the_surface() {
             // The surface closes and reopens: the staged draft died.
             harness.press(ActionId::AppSettings);
             harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
             let window = harness.handle.window();
             assert_eq!(
                 window
@@ -13366,6 +13705,7 @@ fn a_general_op_in_flight_gates_the_other_settings_ops() {
         move |_driver| {
             let mut harness = general_harness(state, general_snapshot());
             harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
             let window = harness.handle.window();
             let model = || window.global::<taskboard_ui_slint::SettingsModel>();
 
@@ -13421,6 +13761,7 @@ fn the_focus_rows_render_the_snapshot() {
         move |_driver| {
             let mut harness = general_harness(state, general_snapshot());
             harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
             let window = harness.handle.window();
             let model = || window.global::<taskboard_ui_slint::SettingsModel>();
 
@@ -13471,6 +13812,7 @@ fn a_focus_edit_round_trips_and_echoes_the_reply() {
         move |_driver| {
             let mut harness = general_harness(state, general_snapshot());
             harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
             let window = harness.handle.window();
             let model = || window.global::<taskboard_ui_slint::SettingsModel>();
 
@@ -13534,6 +13876,7 @@ fn invalid_focus_commits_refuse_typed_without_routing() {
         move |_driver| {
             let mut harness = general_harness(state, general_snapshot());
             harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
             let window = harness.handle.window();
             let model = || window.global::<taskboard_ui_slint::SettingsModel>();
 
@@ -13600,6 +13943,7 @@ fn env_locked_focus_rows_render_locked_and_refuse_the_seam() {
         move |_driver| {
             let mut harness = general_harness(state, snapshot);
             harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
             let window = harness.handle.window();
             let model = || window.global::<taskboard_ui_slint::SettingsModel>();
 
@@ -13629,6 +13973,7 @@ fn an_empty_focus_return_refuses_typed_without_routing() {
         move |_driver| {
             let mut harness = general_harness(state, general_snapshot());
             harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
             let window = harness.handle.window();
             let model = || window.global::<taskboard_ui_slint::SettingsModel>();
 
@@ -13662,6 +14007,7 @@ fn a_focus_return_less_edit_never_survives_the_surface() {
         move |_driver| {
             let mut harness = general_harness(state, general_snapshot());
             harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
             let window = harness.handle.window();
             let model = || window.global::<taskboard_ui_slint::SettingsModel>();
 
@@ -13680,6 +14026,7 @@ fn a_focus_return_less_edit_never_survives_the_surface() {
             window.invoke_settings_field_edited(15, "8".into());
             harness.press(ActionId::AppSettings);
             harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
             let window = harness.handle.window();
             assert_eq!(
                 window
@@ -13704,6 +14051,7 @@ fn a_focus_op_in_flight_gates_the_other_settings_ops() {
         move |_driver| {
             let mut harness = general_harness(state, general_snapshot());
             harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
             let window = harness.handle.window();
             let model = || window.global::<taskboard_ui_slint::SettingsModel>();
 
@@ -13752,6 +14100,7 @@ fn a_failed_focus_persist_reverts_the_echo_and_shows_the_outcome() {
         move |_driver| {
             let mut harness = general_harness(state, general_snapshot());
             harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
             let window = harness.handle.window();
             let model = || window.global::<taskboard_ui_slint::SettingsModel>();
 
@@ -13802,6 +14151,7 @@ fn focus_keystrokes_never_dispatch_until_the_commit_seam() {
         move |_driver| {
             let mut harness = general_harness(state, general_snapshot());
             harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
             let window = harness.handle.window();
 
             for partial in ["4", "45", "450"] {
@@ -14291,6 +14641,7 @@ fn the_empty_board_list_renders_the_disabled_picker_with_its_caption() {
             let mut harness = Harness::mount_with_settings(SlintDriver::default(), state, settings);
             harness.driver.set_window_size(1000, 1400);
             harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
             refresh_with(&harness, "work", vec![remote_row(1, "r")]);
             harness.driver.advance_time(0);
             let window = harness.handle.window();
@@ -14349,6 +14700,7 @@ fn the_settings_picker_flyout_mounts_below_its_anchor_and_dismisses() {
             let mut harness = Harness::mount_with_settings(SlintDriver::default(), state, settings);
             harness.driver.set_window_size(1000, 900);
             harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
             harness.driver.advance_time(0);
             refresh_with(&harness, "work", vec![remote_row(2, "r")]);
             harness.driver.advance_time(0);
@@ -14702,6 +15054,7 @@ fn segments_activate_on_return_and_space() {
         move |_driver| {
             let mut harness = Harness::mount(SlintDriver::default(), state);
             harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
             harness.driver.set_window_size(1000, 6000);
 
             tab_to(&mut harness, "Standalone");
@@ -14753,6 +15106,7 @@ fn segments_activate_on_return_and_space() {
 /// move), the release commits once, a stray release commits nothing,
 /// and Tab-ing away mid-gesture commits once.
 #[test]
+#[allow(clippy::too_many_lines)] // the stroke ladder is one flat walk
 fn the_slider_steps_from_the_keyboard_and_commits_on_release() {
     use taskboard_ui_slint::requests::UiRequest;
     let (_fixture, state) = fixture::golden_state();
@@ -14763,6 +15117,7 @@ fn the_slider_steps_from_the_keyboard_and_commits_on_release() {
         move |_driver| {
             let mut harness = Harness::mount(SlintDriver::default(), state);
             harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
             harness.driver.set_window_size(1000, 6000);
             let scale = |harness: &Harness| {
                 harness
@@ -14903,6 +15258,7 @@ fn focused_settings_controls_render_the_ring() {
         move |_driver| {
             let mut harness = Harness::mount(SlintDriver::default(), state);
             harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
             harness.driver.set_window_size(1000, 6000);
             harness.driver.advance_time(0);
             for label in ["Emacs", "Scale slider", "Sign in"] {
@@ -16503,6 +16859,7 @@ fn the_account_session_is_keyboard_operable() {
         move |_driver| {
             let mut harness = Harness::mount_with_settings(SlintDriver::default(), state, settings);
             harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
             harness.driver.set_window_size(1000, 6000);
             harness.driver.advance_time(0);
 

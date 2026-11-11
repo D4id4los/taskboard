@@ -622,6 +622,12 @@ fn start_repaint_driver(
             if adapter.borrow_mut().drain_files_sync(&window) {
                 signal_dirty = true;
             }
+            // The mount auto-listings' drain (round-6 D-6.7): the
+            // same non-blocking poll — a settled listing fills the
+            // connector's rows and refreshes.
+            if adapter.borrow_mut().drain_auto_listings(&window) {
+                signal_dirty = true;
+            }
             // The settings reply drain (D25b): the non-blocking poll
             // under the same cadence — a settled reply refreshes.
             adapter.borrow_mut().drain_setting_replies(&window);
@@ -892,6 +898,17 @@ impl UiHandle {
     pub fn drain_setting_replies(&self) {
         if let Some(window) = self.window.as_weak().upgrade() {
             self.adapter.borrow_mut().drain_setting_replies(&window);
+        }
+    }
+
+    /// The mount auto-listings' drain (round-6 D-6.7): the same
+    /// non-blocking poll the repaint timer runs every cadence tick.
+    /// Public for the component journeys (the established
+    /// [`UiHandle`]-seam pattern): the test plays the app half by
+    /// answering a drained request's oneshot, then drives the drain.
+    pub fn drain_auto_listings(&self) {
+        if let Some(window) = self.window.as_weak().upgrade() {
+            self.adapter.borrow_mut().drain_auto_listings(&window);
         }
     }
 

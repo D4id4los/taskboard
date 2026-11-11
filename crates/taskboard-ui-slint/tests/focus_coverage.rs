@@ -250,6 +250,20 @@ const TALL: (u32, u32) = (1000, 6000);
 
 /// Answers the named connector's Refresh with `rows` (the account
 /// card's remote rows instantiate their picker/Create/Disconnect stops).
+/// Answers the mount auto-lists (round-6 D-6.7) with empty listings
+/// and drains the auto lane, clearing the request lane for the test's
+/// own requests.
+fn settle_auto_lists(mounted: &mut Mounted) {
+    while let Ok(request) = mounted.requests.try_recv() {
+        let taskboard_ui_slint::requests::UiRequest::ListRemoteBoards { reply, .. } = request
+        else {
+            panic!("the mount routed only auto-lists");
+        };
+        reply.send(Ok(Vec::new())).expect("the reply lane is alive");
+    }
+    mounted.handle.drain_auto_listings();
+}
+
 fn list_remotes(mounted: &mut Mounted, connector: &str, rows: &[(u64, &str)]) {
     let items = mounted
         .handle
@@ -607,6 +621,7 @@ fn dropdown_fixture() -> Mounted {
         &[ActionId::NavFocusBoard, ActionId::AppSettings],
     );
     assert_view(&mounted, View::Settings);
+    settle_auto_lists(&mut mounted);
     list_remotes(&mut mounted, "work", &[(1, "remote")]);
     click_first(&mut mounted, "Dropdown");
     assert!(
