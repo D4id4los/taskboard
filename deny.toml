@@ -117,6 +117,15 @@ yanked = "warn"
 # landing, where the refreshed advisory DB first surfaced it on an
 # untouched dependency graph.
 #
+# RUSTSEC-2026-0459: the bundled SQLite under sqlx 0.9 (libsqlite3-sys
+# 0.37) predates 3.54.0 — CVE-2026-119375, a LOCAL attack vector (a
+# crafted database + mismatched-page-size -wal pair the victim opens;
+# ordinary queries may read stale process memory). The fixed bundler
+# (libsqlite3-sys 0.39) lands with sqlx's next release: sqlx-sqlite
+# 0.9.0 caps the dependency at <0.38, so no in-range upgrade exists
+# (recorded 2026-11-11 against the refreshed advisory DB). Revisit at
+# the next sqlx refresh — swap this ignore for the upgrade.
+#
 # RUSTSEC-2026-0206: `rustybuzz` is unmaintained (no vulnerability
 # known; upstream's own successor is `harfrust`) — the shaping engine
 # behind krilla's `simple-text` feature, arriving only in the
@@ -130,6 +139,7 @@ ignore = [
     "RUSTSEC-2026-0371",
     "RUSTSEC-2026-0372",
     "RUSTSEC-2026-0441",
+    "RUSTSEC-2026-0459",
     "RUSTSEC-2026-0206",
 ]
 
