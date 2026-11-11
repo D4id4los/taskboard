@@ -175,13 +175,101 @@ outcomes, both unfixed and fixed). The stage-3 reviewer re-runs the
 
 ## 5. Acceptance evidence
 
-*(filled in by stage 2 during implementation; stage 1 records the
-expected shape)*
+Recorded by stage 2 on 2026-11-11, on the machine that reported #726
+(a live `~/.config/taskboard/taskboard.toml` is present;
+`XDG_CONFIG_HOME` and `TASKBOARD_CONFIG` unset in the shell). Three
+ambient config homes were used:
 
-- §4's red run: outcome recorded verbatim (expected:
-  `NextcloudTableWithConnectors` on unfixed code with the fixture XDG).
-- §4's green run: whole `config` module passing under the same
-  fixture XDG, plus the full gate suite green.
+- **live** — no `XDG_CONFIG_HOME` pin; the real config is the XDG
+  candidate.
+- **fixture** — `XDG_CONFIG_HOME=$FX/fixture-xdg-config`, whose
+  `taskboard/taskboard.toml` is one `[[sync.connectors]]` entry
+  (`name`/`backend`/`server_url`/`username`).
+- **self-mixed** — `XDG_CONFIG_HOME=$FX/selfmixed-xdg-config`: the
+  same entry plus a `[nextcloud]` identity in the *same file*, so the
+  file refuses on its own, env or no env.
+
+### 5.1 Before — unfixed (`main` @ ca961b3d + the plan commit)
+
+| Ambient | Command | Outcome |
+|---|---|---|
+| live | `cargo nextest run -p taskboard-app -E 'test(c1_defaults_parse_with_no_file)'` | **FAIL** — `panicked at crates/taskboard-app/tests/config.rs:37:40: defaults load: NextcloudTableWithConnectors` (#726 verbatim) |
+| fixture | `cargo nextest run -p taskboard-app -E 'binary(config)'` | **25 passed, 1 failed** of 26 — `c1` with the same panic |
+| fixture | (same run) `c15_ui_scale_env_override` | PASS — see the correction below |
+| self-mixed | `… -E 'test(c15_ui_scale_env_override)'` | **FAIL** — `config.rs:443:40: loads with the override: NextcloudTableWithConnectors` |
+| empty tempdir | `… -E 'test(c1_defaults_parse_with_no_file)'` | PASS (the CI-equivalent machine) |
+
+### 5.2 The pin, red before the sandbox pinned anything
+
+The pin was written first, against an `xdg_lock()` that owned the
+tempdir but did not yet set `XDG_CONFIG_HOME` — the unfixed
+resolution, where the planted file is not on the read path:
+
+| Ambient | Outcome |
+|---|---|
+| empty tempdir | **FAIL** — `the mixed shape refuses typed: Ok(AppConfig { … })`: `load(None)` never saw the planted file |
+| live | PASS — by accident: the *live* file happens to carry connectors, so the refusal came from the machine, not the fixture |
+
+Same test, opposite verdicts, decided by the machine: the
+non-hermeticity in one table. With the `EnvOverride` in place the pin
+passes under all three ambients and the empty tempdir.
+
+### 5.3 After — fixed (branch tip)
+
+| Ambient | Command | Outcome |
+|---|---|---|
+| fixture | `cargo nextest run -p taskboard-app -E 'binary(config)'` | **27 passed**, 0 failed |
+| self-mixed | (same) | **27 passed** |
+| live | (same) | **27 passed** |
+| self-mixed | `cargo test -p taskboard-app --test config` ×5 (one process, threaded) | **27 passed** each run |
+| live | (same, ×1) | **27 passed** |
+
+The guard's restore was checked with a scratch test that did not
+land (it tests a test helper — AGENTS §5): `XDG_CONFIG_HOME` after
+the guard drops equals the value before it, for prior-unset
+(`None → None`) and prior-set (the fixture path restored), and the
+sandbox directory is gone.
+
+### 5.4 Gates (AGENTS §10, no `XDG_CONFIG_HOME` pin — the live config ambient)
+
+| Gate | Result |
+|---|---|
+| `cargo fmt --all -- --check` | green |
+| `cargo clippy --workspace --all-targets -- -D warnings` | green |
+| `cargo nextest run --workspace` | green — 4153 passed, 62 skipped |
+| `cargo test --doc --workspace` | green |
+| `cargo deny check` | **red, pre-existing, not this chunk** — `advisories FAILED, bans ok, licenses ok, sources ok` |
+| `cargo llvm-cov nextest … --no-report` | green — 4197 passed, 62 skipped |
+| `scripts/coverage-quarantine-profraw.sh` | green (one torn profraw quarantined, merge succeeded) |
+| `cargo llvm-cov report --lcov` | green — `lcov.info` written |
+
+The deny failure is RUSTSEC-2026-0459 (`libsqlite3-sys` 0.37 bundles a
+SQLite with CVE-2026-119375), surfaced by the refreshed advisory DB on
+`main` itself; this chunk touches no dependency. The ride-out is
+commit b1a15b4c on PR #727. With that commit's `deny.toml` the same
+tree reports `advisories ok, bans ok, licenses ok, sources ok`.
+Because `run-quality-gates.sh` stops at the first red gate, the three
+coverage steps were run separately under the same lock. Tracked as
+#731; this branch needs #727 on `main` and a rebase before its deny
+check can go green.
+
+### 5.5 Corrections to §2–§4, found while implementing
+
+- **§4's fixture snippet** lists `credential_store = 'env'`, which
+  `ConnectorCfg` (`deny_unknown_fields`) rejects, and omits the
+  required `backend`. The minimal valid entry is
+  `name`/`backend`/`server_url`/`username`; the pin plants that.
+- **§2 calls `c15` a victim of the same hole**, which is right about
+  the mechanism but not about the #726 fixture: `c15` injects no
+  `[nextcloud]` identity, so a connectors-only live file merges
+  without refusing and the test passes. It fails only when the live
+  file does not validate on its own (the self-mixed row above). The
+  sandbox is still warranted — its outcome was the machine's to
+  decide.
+- **Hermeticity is not complete.** `xdg_lock()` closes the XDG
+  channel only. An ambient `TASKBOARD_CONFIG` or any `TASKBOARD_*`
+  override still reaches `c1`, `c15` and the pin (#729), and the XDG
+  pin itself only binds on Linux (#730). Both are outside §6's scope.
 
 ## 6. Non-goals
 
