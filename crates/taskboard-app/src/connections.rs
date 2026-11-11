@@ -94,11 +94,12 @@ fn deck_variant(err: &DeckError) -> &'static str {
     }
 }
 
-/// The `sync.connectors` item plus a scalar-world signal: `None`
-/// means the file has no array at all (the scalar world — refused).
-fn connectors_item(
-    doc: &mut toml_edit::DocumentMut,
-) -> Result<&mut toml_edit::Item, std::io::Error> {
+/// The document-level identity-husk predicate: a `[nextcloud]` table
+/// carrying either identity key. (The typed half of the same
+/// predicate is `ui_requests::has_legacy_identity` — two levels, one
+/// rule: the writer checks pre-decode because a mixed
+/// identity-beside-array file decode-rejects.)
+fn identity_husk_present(doc: &toml_edit::DocumentMut) -> bool {
     // The legacy-singleton exclusion is the writer-level backstop: a
     // `[nextcloud]` *identity* (server_url/username present — the same
     // predicate validate's `NextcloudTableWithConnectors` keys on)
@@ -106,24 +107,57 @@ fn connectors_item(
     // writing a mixed file. A `[nextcloud]` husk holding only
     // `credential_store` (process-global; the migration leaves it)
     // stays a valid settings-write target (plan §6, M11).
-    let identity_husk = doc
-        .get("nextcloud")
+    doc.get("nextcloud")
         .and_then(toml_edit::Item::as_table)
-        .is_some_and(|table| table.contains_key("server_url") || table.contains_key("username"));
-    if identity_husk {
+        .is_some_and(|table| table.contains_key("server_url") || table.contains_key("username"))
+}
+
+/// The upsert's creator: the `sync.connectors` item, created when
+/// absent (the sync-less config is the ordinary first-connection
+/// case, #721). The identity-husk refusal travels here unchanged; the
+/// `[sync]` table and a fresh `ArrayOfTables` are minted exactly the
+/// way `migration::migrate_document_inner` mints them — `or_insert`
+/// preserves an existing table's decor, and the array-of-tables
+/// rendering is the only one ever created (the plain inline array is
+/// navigated, never minted).
+///
+/// # Errors
+///
+/// [`std::io::Error`] of kind [`std::io::ErrorKind::InvalidData`]
+/// against the identity-husk scalar world or a non-table `[sync]`.
+fn ensure_connectors_item(
+    doc: &mut toml_edit::DocumentMut,
+) -> Result<&mut toml_edit::Item, std::io::Error> {
+    if identity_husk_present(doc) {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             "[nextcloud] identity present: the scalar world is not a settings-write target",
         ));
     }
-    doc.get_mut("sync")
-        .and_then(|sync| sync.get_mut("connectors"))
+    if doc
+        .get("sync")
+        .and_then(|sync| sync.get("connectors"))
+        .is_some()
+    {
+        return Ok(doc
+            .get_mut("sync")
+            .and_then(|sync| sync.get_mut("connectors"))
+            .expect("presence was just checked"));
+    }
+    let sync = doc
+        .entry("sync")
+        .or_insert(toml_edit::Item::Table(toml_edit::Table::new()))
+        .as_table_mut()
         .ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "no sync.connectors array: the scalar world is not a settings-write target",
-            )
-        })
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "[sync] is not a table")
+        })?;
+    sync.insert(
+        "connectors",
+        toml_edit::Item::ArrayOfTables(toml_edit::ArrayOfTables::new()),
+    );
+    Ok(sync
+        .get_mut("connectors")
+        .expect("the array was just inserted"))
 }
 
 /// The entry's name as stored in the document (both renderings key
@@ -179,10 +213,13 @@ pub(crate) fn backend_word(backend: SyncBackend) -> &'static str {
 /// replaced in place (document order preserved); otherwise the entry
 /// is appended. Both array renderings are navigated (array-of-tables
 /// and plain array of inline tables — the REPL writer's rule). A
-/// hand-made scalar world (a `[nextcloud]` *identity* beside the
-/// array, or no array at all) is refused typed at the writer level —
+/// hand-made scalar world (a `[nextcloud]` *identity*, or a
+/// non-table `[sync]` / non-array `connectors`) is still refused
+/// typed at the writer level —
 /// the backstop; the handler migrates the reachable legacy world
-/// ahead of the write (round-3 D21, plan §6/A3).
+/// ahead of the write (round-3 D21, plan §6/A3). A missing
+/// `[sync]`/`connectors` subtree is created (the sync-less config is
+/// the ordinary first-connection case, #721).
 ///
 /// # Errors
 ///
@@ -199,7 +236,7 @@ pub fn overlay_upsert_connector(path: &Path, entry: &ConnectorCfg) -> std::io::R
     // borrow scope ends.
     let outcome;
     {
-        let connectors = connectors_item(&mut doc)?;
+        let connectors = ensure_connectors_item(&mut doc)?;
         if let Some(aot) = connectors.as_array_of_tables_mut() {
             let mut replaced = false;
             for existing in aot.iter_mut() {
@@ -458,13 +495,114 @@ mod overlay_tests {
         );
     }
 
+    /// T4 (plan §3, #721) — upsert into a sync-less file creates the
+    /// `[sync]`/`[[sync.connectors]]` subtree; the leading comment and
+    /// every unrelated table survive **byte-verbatim**, the new entry
+    /// round-trips through the config layer.
     #[test]
-    fn upsert_refuses_a_file_without_any_sync_table() {
+    fn upsert_creates_the_subtree_in_a_sync_less_file_preserving_everything_else() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let config = seed_config(&dir, "[app]\nmode = \"desktop\"\n");
+        let config = seed_config(
+            &dir,
+            "# hand-tuned\n\
+             [storage]\ndb_path = '/tmp/t.db'\n\
+             [ui]\nscale = 1.5\n",
+        );
+        let before_prefix = "# hand-tuned\n[storage]\ndb_path = '/tmp/t.db'\n[ui]\nscale = 1.5\n";
+
+        overlay_upsert_connector(&config, &entry("work", "https://n.example", "u"))
+            .expect("the sync-less file is a write target");
+
+        let written = std::fs::read_to_string(&config).expect("read back");
+        assert!(
+            written.starts_with(before_prefix),
+            "every pre-existing byte (comments, tables) survives: {written}"
+        );
+        assert!(written.contains("[sync]"), "the [sync] table is minted");
+        assert!(
+            written.contains("[[sync.connectors]]"),
+            "the array-of-tables rendering is what is minted"
+        );
+        let loaded = crate::config::AppConfig::load(Some(config)).expect("round-trips");
+        let entries = loaded.sync.connectors.as_deref().expect("created array");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "work");
+    }
+
+    /// T4's absent-file twin: the writer creates the missing file (and
+    /// its directory) with the subtree, owner-only (the
+    /// `write_config_atomic` contract, pinned end to end).
+    #[cfg(unix)]
+    #[test]
+    fn upsert_into_an_absent_file_creates_file_and_directory_owner_only() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = dir.path().join("conf").join("taskboard.toml");
+
+        overlay_upsert_connector(&config, &entry("work", "https://n.example", "u"))
+            .expect("an absent file is a write target");
+
+        let written = std::fs::read_to_string(&config).expect("created");
+        assert!(written.contains("[[sync.connectors]]"));
+        let mode = std::fs::metadata(&config)
+            .expect("stat")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600, "a created file is owner-only");
+        let loaded = crate::config::AppConfig::load(Some(config)).expect("round-trips");
+        assert_eq!(
+            loaded.sync.connectors.as_deref().expect("array")[0].name,
+            "work"
+        );
+    }
+
+    /// T4 — a scalar (non-array) `sync.connectors` beside nothing is
+    /// still refused typed: creation never overwrites a present value.
+    #[test]
+    fn upsert_still_refuses_a_present_but_scalar_connectors_value() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = seed_config(&dir, "[sync]\nconnectors = \"nope\"\n");
+
         let err = overlay_upsert_connector(&config, &entry("work", "https://n", "u"))
-            .expect_err("no array to upsert into");
+            .expect_err("a scalar connectors value is refused");
+
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    /// T4 — a non-table `[sync]` is refused typed (creation would
+    /// otherwise silently discard the scalar).
+    #[test]
+    fn upsert_refuses_a_scalar_sync_table() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = seed_config(&dir, "sync = 3\n");
+
+        let err = overlay_upsert_connector(&config, &entry("work", "https://n", "u"))
+            .expect_err("a scalar [sync] is refused");
+
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    /// T4's M11 twin at the creator: a `[nextcloud]` husk holding only
+    /// the process-global `credential_store` and no sync section is a
+    /// valid write target — the subtree is created beside the husk.
+    #[test]
+    fn upsert_creates_the_subtree_beside_a_credential_store_only_husk() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = seed_config(
+            &dir,
+            "[nextcloud]\ncredential_store = \"file\"\n[ui]\nscale = 1.0\n",
+        );
+
+        overlay_upsert_connector(&config, &entry("work", "https://n.example", "u"))
+            .expect("the credential_store-only husk is not the scalar world");
+
+        let written = std::fs::read_to_string(&config).expect("read back");
+        assert!(written.contains("credential_store"), "the husk survives");
+        let loaded = crate::config::AppConfig::load(Some(config)).expect("round-trips");
+        assert_eq!(
+            loaded.sync.connectors.as_deref().expect("created array")[0].name,
+            "work"
+        );
     }
 
     /// A4 — remove deletes the named entry; removing the last entry
