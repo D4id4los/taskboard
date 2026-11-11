@@ -484,19 +484,17 @@ fn c16_env_override_names_both_answers() {
 /// candidate (whose directory the writer creates).
 #[test]
 fn c16_fresh_machine_diverges_read_none_write_xdg() {
-    let _env = env_lock();
+    let xdg = xdg_lock();
     remove_env("TASKBOARD_CONFIG");
-    let xdg = tempdir();
     let cwd = tempdir();
     let original = std::env::current_dir().expect("cwd");
     std::env::set_current_dir(cwd.path()).expect("chdir");
-    let _xdg = EnvOverride::set("XDG_CONFIG_HOME", xdg.path().to_str().expect("utf-8"));
     let view = config::path(None);
     std::env::set_current_dir(original).expect("restore cwd");
     assert_eq!(view.config_path, None);
     assert_eq!(
         PathBuf::from(&view.write_path),
-        xdg.path().join("taskboard").join("taskboard.toml")
+        xdg.config_home().join("taskboard").join("taskboard.toml")
     );
 }
 
@@ -505,14 +503,12 @@ fn c16_fresh_machine_diverges_read_none_write_xdg() {
 /// is not a read resolution).
 #[test]
 fn c16_existing_cwd_install_is_the_write_target() {
-    let _env = env_lock();
+    let _env = xdg_lock();
     remove_env("TASKBOARD_CONFIG");
-    let xdg = tempdir();
     let cwd = tempdir();
     std::fs::write(cwd.path().join("taskboard.toml"), "").expect("cwd install");
     let original = std::env::current_dir().expect("cwd");
     std::env::set_current_dir(cwd.path()).expect("chdir");
-    let _xdg = EnvOverride::set("XDG_CONFIG_HOME", xdg.path().to_str().expect("utf-8"));
     let view = config::path(None);
     std::env::set_current_dir(original).expect("restore cwd");
     assert_eq!(view.config_path, None);
