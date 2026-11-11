@@ -25,7 +25,7 @@ fn tempdir() -> tempfile::TempDir {
 /// default resolves under the platform data dir.
 #[test]
 fn c1_defaults_parse_with_no_file() {
-    let _env = env_lock(); // cwd is process-global, like the env
+    let _env = xdg_lock(); // cwd is process-global, like the env
     let dir = tempdir();
     let original = std::env::current_dir().expect("cwd");
     std::env::set_current_dir(dir.path()).expect("chdir");
@@ -438,7 +438,7 @@ fn c14_reminders_engine_config_mapping() {
 /// (`TASKBOARD_UI__SCALE`), defaults round-trip at 1.0.
 #[test]
 fn c15_ui_scale_env_override() {
-    let _env = env_lock();
+    let _env = xdg_lock();
     let _scale = EnvOverride::set("TASKBOARD_UI__SCALE", "1.5");
     let config = AppConfig::load(None).expect("loads with the override");
     assert!(
