@@ -9734,6 +9734,81 @@ fn a_refresh_lists_remotes_and_a_pick_binds_explicitly() {
     );
 }
 
+/// JP (round-6 D-6.9, #699) — the Deck card's publish picker: picking
+/// an unbound local board routes exactly one explicit `PublishBoard`
+/// carrying the (connector, board) pair and spins the Deck row's busy
+/// marker; the Ok reply clears the gate; stale picks route nothing
+/// (dispatch-level routing only — the unbound-only filter is the
+/// model's existing behaviour, exercised by the listing journeys).
+#[test]
+fn a_deck_publish_pick_routes_publish_board() {
+    use taskboard_ui_slint::ConnectionItemKind as K;
+    let mut state = AppState::default();
+    let home = uuid::Uuid::new_v4();
+    state_board(&mut state, home, "home", None);
+    let settings = UiSettings {
+        connectors: vec![connector_row("work")],
+        ..UiSettings::default()
+    };
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount_with_settings(SlintDriver::default(), state, settings);
+            harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
+            let window = harness.handle.window();
+
+            let deck_index = item_at(&harness, K::Deck, "work");
+            window.invoke_settings_publish_picked(deck_index, 0);
+            let mut requests = harness.drain_requests();
+            assert_eq!(requests.len(), 1, "exactly one publish routed");
+            assert!(matches!(
+                &requests[0],
+                taskboard_ui_slint::requests::UiRequest::PublishBoard {
+                    board, connector, ..
+                } if board.as_uuid() == home && connector == "work"
+            ));
+            assert!(model(&harness).get_busy(), "the gate is busy mid-flight");
+            assert!(
+                items(&harness)[usize::try_from(deck_index).expect("fits")].busy,
+                "the ceremony rides the Deck row"
+            );
+
+            let taskboard_ui_slint::requests::UiRequest::PublishBoard { reply, .. } =
+                requests.remove(0)
+            else {
+                panic!("the publish routed");
+            };
+            reply
+                .send(Ok(ConnectionsSnapshot {
+                    boards: Vec::new(),
+                    connectors: vec![connector_row("work")],
+                }))
+                .expect("the reply lane is alive");
+            harness.handle.drain_setting_replies();
+            assert!(
+                !model(&harness).get_busy(),
+                "the gate cleared with the reply"
+            );
+            assert_eq!(
+                model(&harness).get_last_outcome(),
+                taskboard_ui_slint::SettingsOutcome::Ok,
+            );
+
+            // A stale item or option index is absorbed silently.
+            let deck_index = item_at(&harness, K::Deck, "work");
+            window.invoke_settings_publish_picked(deck_index, 9);
+            window.invoke_settings_publish_picked(99, 0);
+            assert!(
+                harness.drain_requests().is_empty(),
+                "stale picks route nothing"
+            );
+        },
+    );
+}
+
 /// J3 (rewired round-5 chunk 8) — Disconnect moves onto the bound
 /// remote row: the lane carries the typed `(board, connector)` pair,
 /// the busy marker rides that row, and the Ok reply clears it. An

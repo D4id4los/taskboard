@@ -459,6 +459,18 @@ export global SettingsBoardCopy {
     in-out property <string> refresh-hint: "Refresh to list the boards on this server.";
 }
 
+// The publish picker's copy constants (round-6 D-6.9): presentation
+// copy, never asserted.
+export global SettingsPublishCopy {
+    in-out property <string> label: "Publish a local board";
+    in-out property <string> description:
+        "Picks the local board to publish onto this server.";
+    in-out property <string> row-description:
+        "Publishes this local board onto the server and binds it.";
+    in-out property <string> placeholder: "Publish a local board…";
+    in-out property <string> empty-hint: "No unbound local boards";
+}
+
 // One remote row's local-board picker (the shared Dropdown, chunk-3
 // overlay grammar): every remote row's picker mounts on flyout site 0
 // and names its item in `SettingsBoardFacts.active-item` when it
@@ -480,6 +492,54 @@ component RemotePicker inherits Dropdown {
         TooltipState.hover(
             SettingsModel.board-options[i].label,
             SettingsBoardCopy.row-description,
+            [],
+            x, y, w, h);
+    }
+    row-unhovered() => {
+        TooltipState.unhover();
+    }
+    // The journeys' observation seam (the SettingsBoardFacts mirrors):
+    // the opening picker owns the facts.
+    changed open => {
+        if (self.open) {
+            SettingsBoardFacts.active-item = root.item-index;
+            SettingsBoardFacts.field-x = self.absolute-position.x;
+            SettingsBoardFacts.field-y = self.absolute-position.y;
+            SettingsBoardFacts.field-w = self.width;
+            SettingsBoardFacts.field-h = self.height;
+        }
+        SettingsBoardFacts.open = self.open;
+    }
+    changed highlight => {
+        SettingsBoardFacts.highlight = self.highlight;
+    }
+}
+
+// The account cards' publish picker (round-6 D-6.9, #699): one Deck
+// card's "publish a local board" affordance — the same Dropdown
+// grammar as the remote rows' pickers, mounted on flyout site 2 (0 is
+// the remote rows' pickers, 1 the board bar) and mirroring the same
+// `SettingsBoardFacts`, so the window-level flyout's pick resolves to
+// this card. The options are the model's unbound-board list — the
+// unbound-only filter IS the publish precondition, the app re-derives
+// it every pass.
+component DeckPublishPicker inherits Dropdown {
+    in property <int> item-index;
+    callback publish-picked(int, int);
+    rows: SettingsModel.board-options;
+    selected-index: 0;
+    field-text: SettingsPublishCopy.placeholder;
+    field-label: SettingsPublishCopy.label;
+    field-description: SettingsPublishCopy.description;
+    flyout-site: 2;
+    empty-hint: SettingsPublishCopy.empty-hint;
+    row-activated(i) => {
+        root.publish-picked(root.item-index, i);
+    }
+    row-hovered(i, x, y, w, h) => {
+        TooltipState.hover(
+            SettingsModel.board-options[i].label,
+            SettingsPublishCopy.row-description,
             [],
             x, y, w, h);
     }
@@ -578,6 +638,10 @@ export component SettingsView inherits FocusScope {
     callback create-clicked(int);
     callback disconnect-clicked(int);
     callback files-picked(int, int);
+    // The Deck card's publish seam (round-6 D-6.9, #699): the item is
+    // the card's `connection-items` index, the option the unbound
+    // board's index in `board-options`.
+    callback publish-picked(int, int);
     callback preset-picked(int);
     callback scale-committed(string);
     // The scale field's focus-loss seam (r3 D20a writer 7): a
@@ -936,6 +1000,16 @@ export component SettingsView inherits FocusScope {
                             enabled: !SettingsModel.busy;
                             clicked => {
                                 root.refresh-clicked(index);
+                            }
+                        }
+                        // The publish affordance (round-6 D-6.9): the
+                        // picker's closed field IS the button — the
+                        // remote rows' picker grammar (one affordance,
+                        // the flyout renders window-level from site 2).
+                        DeckPublishPicker {
+                            item-index: index;
+                            publish-picked(item-index, option) => {
+                                root.publish-picked(item-index, option);
                             }
                         }
                     }

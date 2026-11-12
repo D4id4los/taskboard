@@ -3866,6 +3866,8 @@ enum PendingKind {
     CreateBind,
     /// `DetachConnector` (r2 D33): the remote row's marker.
     Detach,
+    /// `PublishBoard` (round-6 D-6.9, #699): the Deck row's marker.
+    Publish,
     Preset,
     Scale,
     /// One of the settings editor's commits (the GUI settings editor
@@ -4846,6 +4848,7 @@ impl Adapter {
                                 | PendingKind::Attach
                                 | PendingKind::CreateBind
                                 | PendingKind::Detach
+                                | PendingKind::Publish
                         )
                     ) && vm.busy_target == *connector,
                     listed: listing.is_some(),
@@ -5487,6 +5490,40 @@ impl Adapter {
             } else {
                 SettingsOutcome::Failed
             },
+            None,
+        );
+    }
+
+    /// The Deck row's publish seam (round-6 D-6.9, #699): picking an
+    /// unbound local board publishes it onto this connector's server.
+    /// A stale item/option index is absorbed silently.
+    pub(crate) fn settings_publish_picked(
+        &mut self,
+        window: &AppWindow,
+        item: usize,
+        option: usize,
+    ) {
+        let Some(ItemAddr::Deck { connector }) = self.settings.items.get(item).cloned() else {
+            return;
+        };
+        let Some(board) = self.settings.local_choices.get(option).copied() else {
+            return;
+        };
+        if self.settings.pending.is_some() {
+            return;
+        }
+        let (reply, reply_rx) = oneshot::channel();
+        let request = UiRequest::PublishBoard {
+            board: BoardId::from_uuid(board),
+            connector: connector.clone(),
+            reply,
+        };
+        self.send_connections_op(
+            window,
+            request,
+            reply_rx,
+            PendingKind::Publish,
+            &connector,
             None,
         );
     }
@@ -9624,6 +9661,15 @@ fn install_settings_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
                 return;
             };
             a.settings_remote_bind_picked(&window, item, option);
+
+        });
+    }
+    {
+        install_seam!(window: window.on_settings_publish_picked, adapter: adapter;
+        bind mut (a, window), args (item, option), {            let (Ok(item), Ok(option)) = (usize::try_from(item), usize::try_from(option)) else {
+                return;
+            };
+            a.settings_publish_picked(&window, item, option);
 
         });
     }
