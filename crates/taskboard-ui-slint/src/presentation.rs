@@ -5143,6 +5143,39 @@ pub fn boards_of(state: &AppState) -> Vec<crate::requests::BoardInfo> {
         .collect()
 }
 
+/// The move picker's eligible set (round-6 D-6.8 phase 2, #722): the
+/// live boards whose binding is Deck-typed — the move ceremony's own
+/// start guard read structurally (`derive_move_stage`: a Deck-typed
+/// binding starts a move; unbound refuses `NotDeckBound`; files-bound
+/// is already `Committed`). Files-bound detection is the id type,
+/// never a connector-name match (D-BF4: the payload is the tag).
+/// Unbound and mid-move boards are invisible to the picker on
+/// purpose: the ceremony refuses the former and the latter is not a
+/// fresh move target. Order is the engine's map order — the
+/// [`boards_of`] convention.
+#[must_use]
+pub fn deck_bound_boards(state: &AppState) -> Vec<crate::requests::BoardInfo> {
+    state
+        .boards
+        .values()
+        .filter(|board| !board.deleted && !board.archived)
+        .filter(|board| {
+            board
+                .remote
+                .as_ref()
+                .is_some_and(|binding| binding.board.as_deck().is_some())
+        })
+        .map(|board| crate::requests::BoardInfo {
+            id: board.id.as_uuid(),
+            name: board.title.clone(),
+            bound_connector: board
+                .remote
+                .as_ref()
+                .map(|binding| binding.connector.to_string()),
+        })
+        .collect()
+}
+
 /// One account card (round-5 chunk 8, D-8.2): the connectors sharing
 /// one exact `(server_url, username)` identity, in config order.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -5367,6 +5400,93 @@ mod connector_status_tests {
         assert_eq!(boards.len(), 1, "the tombstone and the archive are out");
         assert_eq!(boards[0].id, live.as_uuid());
         assert_eq!(boards[0].name, "home");
+        assert_eq!(
+            boards[0].bound_connector.as_deref(),
+            Some("work"),
+            "the binding's connector round-trips"
+        );
+    }
+
+    /// The move picker's eligible set (#722): Deck-typed live boards
+    /// only — unbound, files-bound, deleted and archived boards are
+    /// out; the order is the engine's map order.
+    #[test]
+    fn deck_bound_boards_lists_only_the_move_ceremonys_eligible_set() {
+        let mut state = AppState::default();
+        let deck = BoardId::from_uuid(uuid::Uuid::now_v7());
+        let files = BoardId::from_uuid(uuid::Uuid::now_v7());
+        let unbound = BoardId::from_uuid(uuid::Uuid::now_v7());
+        let dead = BoardId::from_uuid(uuid::Uuid::now_v7());
+        let archived = BoardId::from_uuid(uuid::Uuid::now_v7());
+        let mut make = |id: BoardId,
+                        title: &str,
+                        remote: Option<taskboard_domain::RemoteBoardId>,
+                        archived: bool,
+                        deleted: bool| {
+            let epoch = BoardClocks::epoch();
+            state.boards.insert(
+                id,
+                Board {
+                    id,
+                    remote: remote.map(|board| RemoteBoardBinding {
+                        board,
+                        connector: ConnectorId::from("work"),
+                    }),
+                    title: title.into(),
+                    color: taskboard_domain::Color::new(""),
+                    archived,
+                    deleted,
+                    clocks: BoardClocks {
+                        title: epoch,
+                        color: epoch,
+                        archived: epoch,
+                        deleted: epoch,
+                    },
+                    authors: taskboard_domain::entities::BoardAuthors::default(),
+                    remote_seen: None,
+                },
+            );
+        };
+        make(
+            deck,
+            "deck bound",
+            Some(taskboard_domain::RemoteBoardId::deck(1)),
+            false,
+            false,
+        );
+        make(
+            files,
+            "files bound",
+            Some(taskboard_domain::RemoteBoardId::files(uuid::Uuid::now_v7())),
+            false,
+            false,
+        );
+        make(unbound, "loose", None, false, false);
+        make(
+            dead,
+            "gone",
+            Some(taskboard_domain::RemoteBoardId::deck(2)),
+            false,
+            true,
+        );
+        make(
+            archived,
+            "shelved",
+            Some(taskboard_domain::RemoteBoardId::deck(3)),
+            true,
+            false,
+        );
+
+        let boards = deck_bound_boards(&state);
+        assert_eq!(
+            boards
+                .iter()
+                .map(|board| board.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["deck bound"],
+            "unbound, files-bound, deleted and archived boards are ineligible"
+        );
+        assert_eq!(boards[0].id, deck.as_uuid());
         assert_eq!(
             boards[0].bound_connector.as_deref(),
             Some("work"),
