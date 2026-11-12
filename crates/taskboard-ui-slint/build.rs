@@ -41,6 +41,7 @@ fn main() {
         "board_bar_probe",
         "editor_viewport_probe",
         "task_card_title_probe",
+        "stat_bars_severing_probe",
     ];
     for name in probes {
         compile_probe(&manifest.join(format!("tests/{name}.slint")), &out);

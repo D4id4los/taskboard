@@ -1,0 +1,67 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The stat-bars severing probe (#725): the `ReflectionSection` shape —
+// a stretch-aligned column carrying the real `StatBars` strip plus a
+// min-floored elided text (the caption/stat-cell stand-in: the real
+// section's children all carry content minimums) — mounted as a
+// main-axis sibling of a stretch witness in a fixed-width row. The
+// review view mounts `StatBars` unconditionally (D-9 tier 2: the
+// values collapse, never the section); with `bars` empty the strip is
+// its layout's only cell, so the box-layout empty early return reports
+// `max = min = 2·padding`, the column's merge adopts it as the
+// column's max-width, and the main-axis distribution — clamped into
+// [min, max] with min > max — freezes the column at the text's floor
+// at every row width (the TaskCard precedent). The freeze fires
+// wherever a layout distributes width along the main axis; the
+// review view's own cross-axis (Flickable) chain leaves it latent
+// today, which is why no on-screen symptom exists yet.
+
+import { StatBars, StatBarModel } from "../ui/widgets/stat-bars.slint";
+import { Theme, RoleText, Typography } from "../ui/theme.slint";
+
+export component StatBarsSeveringProbe inherits Window {
+    // Geometry rides theme-token arithmetic: the token lint rules
+    // literal px in layout bindings, and the probe's exact canvas size
+    // is arbitrary (only the row width varies).
+    width: Theme.space-15 * 12;
+    height: Theme.space-15 * 8;
+
+    in property <length> col-w: 340px;
+    in property <[StatBarModel]> probe-bars;
+    out property <length> witness-actual: witness.width;
+    out property <length> section-actual: section.width;
+
+    col := Rectangle {
+        x: Theme.space-2;
+        y: Theme.space-2;
+        width: col-w;
+        height: Theme.space-15 * 7;
+        background: Theme.surface;
+
+        row := HorizontalLayout {
+            // The ReflectionSection twin: a stretch-aligned column
+            // whose root merges the strip's constraints upward, the
+            // component shape the review view actually mounts. It
+            // claims its row share (the stretch) so the freeze shows
+            // as a constant width against a growing row.
+            section := VerticalLayout {
+                horizontal-stretch: 1;
+                // The caption stand-in: elided text floored at a
+                // controlled minimum — the column's min-override
+                // width when the strip's empty max clamps below it.
+                caption := RoleText {
+                    role: Typography.caption;
+                    text: "Reflection · last 7 days";
+                    overflow: elide;
+                    min-width: Theme.space-15;
+                }
+                sb := StatBars {
+                    bars: root.probe-bars;
+                }
+            }
+            witness := Rectangle {
+                horizontal-stretch: 1;
+                background: Theme.surface-raised;
+            }
+        }
+    }
+}
