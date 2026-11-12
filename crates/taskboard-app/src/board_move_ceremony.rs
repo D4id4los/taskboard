@@ -569,7 +569,7 @@ pub async fn run_until(
     if direction == MoveDirection::ToDeck {
         return Err(MoveError::ReverseFenced.into());
     }
-    let board = crate::commands::resolve_board(app, Some(board))?;
+    let board = crate::commands::resolve_board(&app.engine, Some(board))?;
     let mut world = app_world(app, store, board, timeout).await?;
     let (stage, steps) = match direction {
         MoveDirection::Undo => {

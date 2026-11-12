@@ -685,7 +685,7 @@ fn boards_use_line(
     io: &mut CommandIo<'_>,
 ) -> u8 {
     if let Some(id) = board {
-        return match crate::commands::resolve_board(app, Some(id)) {
+        return match crate::commands::resolve_board(&app.engine, Some(id)) {
             Ok(board_id) => {
                 let title = app
                     .engine

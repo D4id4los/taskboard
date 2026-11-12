@@ -40,7 +40,7 @@ pub(crate) async fn add_on(
     title: String,
     order: Option<i64>,
 ) -> Result<StackReceipt, CommandError> {
-    let board_id = crate::commands::resolve_board(app, board)?;
+    let board_id = crate::commands::resolve_board(&app.engine, board)?;
     let state = app.engine.shared_state().load_full();
     let order = order.unwrap_or_else(|| {
         state

@@ -84,7 +84,7 @@ pub async fn add_on(
     // byte-for-byte): the single live board is the default; an explicit
     // `--board` flag overrides; zero or several boards share the
     // ambiguity refusal.
-    let board = super::resolve_board(app, board)?;
+    let board = super::resolve_board(&app.engine, board)?;
     let outcome = app
         .engine
         .execute(StateCommand::CreateBreakRule {

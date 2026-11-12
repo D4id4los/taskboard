@@ -166,7 +166,7 @@ pub(crate) async fn rename_on(
     board: Option<taskboard_domain::BoardId>,
     title: String,
 ) -> Result<BoardReceipt, CommandError> {
-    let board_id = crate::commands::resolve_board(app, board)?;
+    let board_id = crate::commands::resolve_board(&app.engine, board)?;
     app.engine
         .execute(StateCommand::RenameBoard {
             board: board_id,
@@ -348,7 +348,7 @@ pub async fn unbind_on(
     board: Option<taskboard_domain::BoardId>,
     confirm: bool,
 ) -> Result<UnbindReceipt, CommandError> {
-    let board_id = crate::commands::resolve_board(app, board)?;
+    let board_id = crate::commands::resolve_board(&app.engine, board)?;
     let scope = read_scope(app, board_id).await?;
     if !confirm {
         return Err(CommandError::UnbindConfirmationRequired {
@@ -384,7 +384,7 @@ pub(crate) async fn reconcile_on(
     board: Option<taskboard_domain::BoardId>,
     confirm: bool,
 ) -> Result<ReconcileReceipt, CommandError> {
-    let board_id = crate::commands::resolve_board(app, board)?;
+    let board_id = crate::commands::resolve_board(&app.engine, board)?;
     if !confirm {
         let state = app.engine.shared_state().load_full();
         let persisted = taskboard_domain::SyncStateReader::read_state(&app.engine)
@@ -432,7 +432,7 @@ pub(crate) async fn color_on(
     board: Option<taskboard_domain::BoardId>,
     color: taskboard_domain::Color,
 ) -> Result<BoardReceipt, CommandError> {
-    let board_id = crate::commands::resolve_board(app, board)?;
+    let board_id = crate::commands::resolve_board(&app.engine, board)?;
     app.engine
         .execute(StateCommand::SetBoardColor {
             board: board_id,
@@ -448,7 +448,7 @@ pub(crate) async fn archive_on(
     board: Option<taskboard_domain::BoardId>,
     archived: bool,
 ) -> Result<BoardReceipt, CommandError> {
-    let board_id = crate::commands::resolve_board(app, board)?;
+    let board_id = crate::commands::resolve_board(&app.engine, board)?;
     app.engine
         .execute(StateCommand::SetBoardArchived {
             board: board_id,
@@ -464,7 +464,7 @@ pub(crate) async fn delete_on(
     board: Option<taskboard_domain::BoardId>,
     confirm: bool,
 ) -> Result<BoardDestructReceipt, CommandError> {
-    let board_id = crate::commands::resolve_board(app, board)?;
+    let board_id = crate::commands::resolve_board(&app.engine, board)?;
     destruct_on(
         app,
         board_id,
@@ -481,7 +481,7 @@ pub(crate) async fn reset_on(
     board: Option<taskboard_domain::BoardId>,
     confirm: bool,
 ) -> Result<BoardDestructReceipt, CommandError> {
-    let board_id = crate::commands::resolve_board(app, board)?;
+    let board_id = crate::commands::resolve_board(&app.engine, board)?;
     destruct_on(
         app,
         board_id,
@@ -645,7 +645,7 @@ pub async fn publish(
 
     let sink = crate::bootstrap::resolve_notifier_sink(&config);
     let app = crate::bootstrap::bootstrap(config, store, sink).await?;
-    let result = publish_on(&app, &client, board, timeout, &spec.name).await;
+    let result = publish_on(&app.engine, &client, board, timeout, &spec.name).await;
     let _ = app.shutdown().await;
     result
 }
@@ -672,16 +672,19 @@ pub(crate) fn publish_prelude(
 }
 
 /// The publish steps on a booted core; the caller owns the shutdown
-/// (the session dispatcher calls this directly against the session core).
+/// (the session dispatcher calls this directly against the session
+/// core). The parameter is the engine handle, not the whole `App` —
+/// the ceremony touches only the engine, so the settings UI arm runs
+/// it against the workspace's engine without a bootable core.
 pub(crate) async fn publish_on(
-    app: &crate::App,
+    engine: &taskboard_state::EngineHandle,
     client: &DeckClient,
     board: Option<taskboard_domain::BoardId>,
     timeout: Duration,
     connector: &taskboard_domain::ConnectorId,
 ) -> Result<PublishReceipt, CommandError> {
-    let board_id = crate::commands::resolve_board(app, board)?;
-    let state = app.engine.shared_state().load_full();
+    let board_id = crate::commands::resolve_board(engine, board)?;
+    let state = engine.shared_state().load_full();
     // The id resolved a moment ago; a miss means the board died between
     // resolve and read (an engine contract break class, not user input).
     let Some(local) = state.boards.get(&board_id) else {
@@ -723,8 +726,7 @@ pub(crate) async fn publish_on(
     // matches by binding (merge, not duplicate) and the outbox drains
     // onto the fresh board. (A concurrent bind loses here as
     // `BoardAlreadyBound` / `RemoteBoardInUse` — the engine's rule.)
-    let outcome = app
-        .engine
+    let outcome = engine
         .execute(StateCommand::BindBoard {
             board: board_id,
             remote: RemoteBoardId::deck(created.id),
@@ -745,7 +747,7 @@ pub(crate) async fn publish_on(
     // sentence stays the documented floor for anything it misses).
     let mut bound_remote = RemoteBoardId::deck(created.id);
     if let Err(sweep_err) = sweep_publish_orphans(
-        app,
+        engine,
         client,
         &title,
         &color,
@@ -761,8 +763,8 @@ pub(crate) async fn publish_on(
             "publish orphan sweep failed; the ADR 0010 runbook stays the floor"
         );
     }
-    bind_nudge_wait_reconcile(app, board_id, bound_remote, wiped_refs, timeout).await?;
-    let state = app.engine.shared_state().load_full();
+    bind_nudge_wait_reconcile(engine, board_id, bound_remote, wiped_refs, timeout).await?;
+    let state = engine.shared_state().load_full();
     let settled = state.boards[&board_id].clone();
     // The publish path mints its Deck number above; the payload is
     // Deck by construction.
@@ -796,7 +798,7 @@ pub(crate) async fn publish_on(
 /// [`CommandError`] — pass-through: the caller degrades to today's
 /// behavior (warn + continue), never failing the publish.
 async fn sweep_publish_orphans(
-    app: &crate::App,
+    engine: &taskboard_state::EngineHandle,
     client: &DeckClient,
     title: &str,
     color: &DeckColor,
@@ -804,7 +806,7 @@ async fn sweep_publish_orphans(
     connector: &taskboard_domain::ConnectorId,
     bound_remote: &mut RemoteBoardId,
 ) -> Result<(), CommandError> {
-    let board_id = crate::commands::resolve_board(app, None)?;
+    let board_id = crate::commands::resolve_board(engine, None)?;
     let listed = client.boards().await?;
     let window_start = created.last_modified.saturating_sub(600);
     let orphans: Vec<&taskboard_sync_nextcloud::model::Board> = listed
@@ -831,14 +833,14 @@ async fn sweep_publish_orphans(
     if survivor < created.last_modified {
         // Rebind to the oldest orphan before the nudge: the ceremony's
         // single wait then targets the final binding (DEC-12).
-        app.engine
+        engine
             .execute(StateCommand::UnbindBoard { board: board_id })
             .await?;
         let oldest = orphans
             .iter()
             .min_by_key(|board| board.last_modified)
             .expect("non-empty above");
-        app.engine
+        engine
             .execute(StateCommand::BindBoard {
                 board: board_id,
                 remote: RemoteBoardId::deck(oldest.id),
@@ -968,7 +970,7 @@ pub async fn select_prelude(
 /// `wiped_refs` rides the receipt only when the bind actually cleared
 /// some.
 async fn bind_nudge_wait_reconcile(
-    app: &crate::App,
+    engine: &taskboard_state::EngineHandle,
     board_id: taskboard_domain::BoardId,
     remote: RemoteBoardId,
     wiped_refs: Option<usize>,
@@ -977,8 +979,7 @@ async fn bind_nudge_wait_reconcile(
     // The board-row snapshot for the freshness decision, taken before
     // the nudge (the S0 guard: a stale persisted phase must not mask
     // the fresh cycle).
-    let startup_row = app
-        .engine
+    let startup_row = engine
         .shared_state()
         .load_full()
         .sync
@@ -987,16 +988,15 @@ async fn bind_nudge_wait_reconcile(
     // The nudge: the engine fans `SyncNow` to every registered connector
     // and marks the bound boards `Syncing`. A connector-less core
     // answers `NoOp` — the honest `sync-unavailable` class.
-    let outcome = app.engine.execute(StateCommand::RequestSync).await?;
+    let outcome = engine.execute(StateCommand::RequestSync).await?;
     if outcome == CommandOutcome::NoOp {
         return Err(CommandError::SyncUnavailable);
     }
-    let view = wait_for_adoption(app, board_id, remote, startup_row.as_ref(), timeout).await?;
+    let view = wait_for_adoption(engine, board_id, remote, startup_row.as_ref(), timeout).await?;
     // The automatic post-adoption reconcile (ungated: the operator's
     // consent was the ceremony itself). A settled same-title sibling
     // merges here; a `NoOp` is the common shape.
-    let _reconciled = app
-        .engine
+    let _reconciled = engine
         .execute(StateCommand::ReconcileByTitle { board: board_id })
         .await?;
     Ok(SelectReceipt {
@@ -1081,7 +1081,7 @@ pub async fn select_on(
         }
         CommandOutcome::Bound { wiped_refs } => {
             let receipt = bind_nudge_wait_reconcile(
-                app,
+                &app.engine,
                 board_id,
                 remote,
                 (wiped_refs > 0).then_some(wiped_refs),
@@ -1125,17 +1125,17 @@ async fn mint_fresh_board(
 /// clears until a cycle settles). Binding-present stays a conjunct of
 /// success (the receipt promises both).
 async fn wait_for_adoption(
-    app: &crate::App,
+    engine: &taskboard_state::EngineHandle,
     board: taskboard_domain::BoardId,
     remote: RemoteBoardId,
     startup_row: Option<&SyncStatus>,
     timeout: Duration,
 ) -> Result<SelectReceipt, CommandError> {
-    let mut signals = app.engine.subscribe();
+    let mut signals = engine.subscribe();
     let mut seen_signal = false;
     let deadline = Instant::now() + timeout;
     loop {
-        let state = app.engine.shared_state().load_full();
+        let state = engine.shared_state().load_full();
         let row = state.sync.get(board);
         let phase = row.map_or(SyncPhase::Idle, |r| r.phase);
         let fresh_settled = phase != SyncPhase::Syncing && (seen_signal || row != startup_row);

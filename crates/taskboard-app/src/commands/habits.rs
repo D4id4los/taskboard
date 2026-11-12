@@ -270,7 +270,7 @@ pub async fn add_on(
     board: Option<taskboard_domain::BoardId>,
     at: Option<chrono::NaiveTime>,
 ) -> Result<HabitAddReceipt, CommandError> {
-    let board = super::resolve_board(app, board)?;
+    let board = super::resolve_board(&app.engine, board)?;
     let CommandOutcome::HabitCreated(habit_id) = app
         .engine
         .execute(StateCommand::CreateHabit {
@@ -318,7 +318,7 @@ pub fn list_on(
     app: &crate::App,
     board: Option<taskboard_domain::BoardId>,
 ) -> Result<HabitListView, CommandError> {
-    let board = super::resolve_board(app, board)?;
+    let board = super::resolve_board(&app.engine, board)?;
     let state = app.engine.shared_state().load_full();
     let day = app.config.resolved_day_calendar();
     Ok(HabitListView {
