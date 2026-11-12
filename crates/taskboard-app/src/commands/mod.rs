@@ -802,11 +802,11 @@ pub(crate) fn map_deck_error(err: DeckError) -> CommandError {
 /// [`CommandError::AmbiguousBoard`] for the zero/≥2 default, the
 /// engine's named-id rejection kinds for a flag that does not resolve.
 pub(crate) fn resolve_board(
-    app: &crate::App,
+    engine: &taskboard_state::EngineHandle,
     flag: Option<taskboard_domain::BoardId>,
 ) -> Result<taskboard_domain::BoardId, CommandError> {
     use taskboard_domain::CommandError as D;
-    let state = app.engine.shared_state().load_full();
+    let state = engine.shared_state().load_full();
     if let Some(id) = flag {
         return match state.boards.get(&id) {
             None => Err(CommandError::Engine(Box::new(
@@ -1975,7 +1975,7 @@ async fn boards_line(
                 Ok((client, spec)) => emit_result(
                     io,
                     boards::publish_on(
-                        app,
+                        &app.engine,
                         &client,
                         board,
                         Duration::from_secs(timeout_secs),
