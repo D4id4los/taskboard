@@ -1071,9 +1071,10 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
                 crate::board_move_ceremony::render_text,
                 move |config, store| async move {
                     let sink = crate::bootstrap::resolve_notifier_sink(&config);
-                    let app = crate::bootstrap::bootstrap(config, Arc::clone(&store), sink).await?;
+                    let app = crate::bootstrap::bootstrap(config.clone(), Arc::clone(&store), sink).await?;
                     let result = crate::board_move_ceremony::run_on(
-                        &app,
+                        &app.engine,
+                        &config,
                         &store,
                         board,
                         direction,
@@ -2021,7 +2022,8 @@ async fn boards_line(
         } => emit_result(
             io,
             crate::board_move_ceremony::run_on(
-                app,
+                &app.engine,
+                session.session_config(),
                 session.session_store(),
                 board,
                 move_direction(to_files, to_deck),

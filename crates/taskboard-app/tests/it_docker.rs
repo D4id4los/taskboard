@@ -1659,7 +1659,8 @@ async fn move_to_files_journey(cfg: &common::LiveCfg) {
         .copied()
         .expect("board");
     run_until(
-        &app,
+        &app.engine,
+        &app.config,
         &store,
         board,
         MoveDirection::ToFiles,
@@ -1669,9 +1670,16 @@ async fn move_to_files_journey(cfg: &common::LiveCfg) {
     .await
     .expect("retires");
     assert_eq!(app.engine.shared_state().load().boards[&board].remote, None);
-    run_on(&app, &store, board, MoveDirection::Undo, budget)
-        .await
-        .expect("undoes");
+    run_on(
+        &app.engine,
+        &app.config,
+        &store,
+        board,
+        MoveDirection::Undo,
+        budget,
+    )
+    .await
+    .expect("undoes");
     assert_eq!(
         app.engine.shared_state().load().boards[&board]
             .remote
@@ -1694,12 +1702,28 @@ async fn move_to_files_journey(cfg: &common::LiveCfg) {
         .expect("board");
     // A failed step resumes by rerunning (the live server answers an
     // occasional 500 under load).
-    let mut receipt = run_on(&a, &store, board, MoveDirection::ToFiles, budget).await;
+    let mut receipt = run_on(
+        &a.engine,
+        &a.config,
+        &store,
+        board,
+        MoveDirection::ToFiles,
+        budget,
+    )
+    .await;
     for _ in 0..3 {
         if receipt.is_ok() {
             break;
         }
-        receipt = run_on(&a, &store, board, MoveDirection::ToFiles, budget).await;
+        receipt = run_on(
+            &a.engine,
+            &a.config,
+            &store,
+            board,
+            MoveDirection::ToFiles,
+            budget,
+        )
+        .await;
     }
     let receipt = receipt.expect("moves");
     assert_eq!(receipt.stage, MoveStage::Committed);
