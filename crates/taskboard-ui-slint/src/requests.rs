@@ -141,6 +141,24 @@ pub enum SettingsError {
     /// board is created and bound, the first sync cycle is still
     /// moving — nothing failed; it timed out.
     SyncTimedOut,
+    /// `[files_sync]` is off or unspawnable (round-6 D-6.8 phase 2,
+    /// D-5): no files lane exists to move onto. Folds
+    /// `MoveError::FilesSyncDisabled`.
+    FilesSyncDisabled,
+    /// The board's outbox is not quiet (D-5): local edits are still
+    /// queued and the ceremony never drops them. Folds
+    /// `MoveError::OutboxNotQuiescent`.
+    OutboxNotQuiescent,
+    /// A move-ceremony step failed (D-5): the floor publish/confirm,
+    /// the commit record, the Deck marker, a stranded-op or refused
+    /// binding write, a foreign subtree, a state read — the coarse
+    /// class; the concrete `MoveError` rides the log. Folds
+    /// `MoveError::{PublishFailed, PublishUnconfirmed,
+    /// FilesSubtreeForeign, CommitFailed, DeckMarkerFailed,
+    /// StateReadFailed, StrandedOps, UndoCoordinatesLost,
+    /// AssignRefused, UnbindRefused, NotDeckBound}` (the last via
+    /// race).
+    MoveFailed,
 }
 
 /// The validated field of a [`SettingsError::Invalid`].
@@ -394,6 +412,18 @@ pub enum UiRequest {
     PublishBoard {
         board: BoardId,
         connector: String,
+        reply: oneshot::Sender<Result<ConnectionsSnapshot, SettingsError>>,
+    },
+    /// Move a Deck-bound local board onto the files tier (round-6
+    /// D-6.8 phase 2, #722): the resumable `boards move --to-files`
+    /// ceremony, run on the running engine — no connector parameter
+    /// (the ceremony resolves the files lane from the config and the
+    /// Deck spec from the board's own binding; the single-lane
+    /// posture, #723, stands). Refuses typed when the board is not
+    /// Deck-bound, the files lane is off, or the outbox is still
+    /// moving; the reply carries the fresh snapshot.
+    MoveBoardToFiles {
+        board: BoardId,
         reply: oneshot::Sender<Result<ConnectionsSnapshot, SettingsError>>,
     },
     /// Persists the keymap preset and replies with the rebuilt keymap

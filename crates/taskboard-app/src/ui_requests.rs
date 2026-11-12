@@ -393,6 +393,10 @@ async fn handle_settings(request: UiRequest, workspace: &ConnectionWorkspace) {
             let outcome = publish_board(workspace, board, &connector).await;
             let _ = reply.send(outcome);
         }
+        UiRequest::MoveBoardToFiles { board, reply } => {
+            let outcome = move_board_to_files(workspace, board).await;
+            let _ = reply.send(outcome);
+        }
         UiRequest::SetKeymapPreset { preset, reply } => {
             let _ = reply.send(set_keymap_preset(workspace, preset));
         }
@@ -1489,6 +1493,74 @@ fn map_config_error(err: &ConfigError) -> SettingsError {
             tracing::debug!(error = %err, "settings save: the config layer rejected the shape");
             SettingsError::PersistRejected
         }
+    }
+}
+
+/// The Files row's move ceremony (round-6 D-6.8 phase 2, D-4): the
+/// pre-IO guards mirror `publish_board`'s posture — the world's own
+/// derived guards (`derive_move_stage`) stay the racy second
+/// enforcers. The ceremony is the CLI's exact path
+/// (`board_move_ceremony::run_on` on the running engine), never a
+/// reimplemented move; the reply is the fresh snapshot so the
+/// standard drain re-pushes the settings page unchanged.
+async fn move_board_to_files(
+    workspace: &ConnectionWorkspace,
+    board: BoardId,
+) -> Result<ConnectionsSnapshot, SettingsError> {
+    let raw = ensure_migrated(workspace)?;
+    if crate::bootstrap::files_sync_spawn_decision(&raw).is_none() {
+        return Err(SettingsError::FilesSyncDisabled);
+    }
+    let state = workspace.engine.shared_state().load();
+    let row = state
+        .boards
+        .get(&board)
+        .filter(|b| !b.deleted && !b.archived)
+        .ok_or(SettingsError::Gone)?;
+    if row
+        .remote
+        .as_ref()
+        .is_none_or(|binding| binding.board.as_deck().is_none())
+    {
+        // Unbound, files-bound (already committed), or a foreign
+        // remote shape: the ceremony's guard, pre-IO.
+        return Err(SettingsError::BindRefused);
+    }
+    drop(state);
+    crate::board_move_ceremony::run_on(
+        &workspace.engine,
+        &raw,
+        &workspace.store,
+        board,
+        crate::board_move_ceremony::MoveDirection::ToFiles,
+        crate::board_move_ceremony::DEFAULT_MOVE_TIMEOUT,
+    )
+    .await
+    .map_err(map_move_error)?;
+    tracing::info!(board = %board.as_uuid(), "settings move to files committed");
+    Ok(current_connections(workspace))
+}
+
+/// The move ceremony's typed fold (D-5): the classes the settings
+/// surface can name, with the concrete `MoveError` logged at `warn`
+/// for the diagnostics the coarse class drops.
+fn map_move_error(err: crate::commands::CommandError) -> SettingsError {
+    match err {
+        crate::commands::CommandError::BoardMove(move_err) => {
+            tracing::warn!(error = %move_err, "settings move to files refused or failed");
+            match move_err {
+                crate::board_move_ceremony::MoveError::FilesSyncDisabled => {
+                    SettingsError::FilesSyncDisabled
+                }
+                crate::board_move_ceremony::MoveError::OutboxNotQuiescent { .. } => {
+                    SettingsError::OutboxNotQuiescent
+                }
+                _ => SettingsError::MoveFailed,
+            }
+        }
+        // Non-ceremony classes (credential store, unreachable server,
+        // unknown board) ride the existing mapping's arms.
+        other => map_ceremony_error(other),
     }
 }
 
@@ -2757,5 +2829,49 @@ mod tests {
         };
         let rendered = format!("{request:?}");
         assert!(!rendered.contains("hunter2-secret"));
+    }
+}
+
+#[cfg(test)]
+mod move_error_tests {
+    use super::*;
+
+    /// The typed fold (D-5): the lane-off and busy-outbox classes map
+    /// to their named variants; every step class folds to the coarse
+    /// `MoveFailed`; non-ceremony command classes ride the existing
+    /// ceremony mapping. Typed outcomes only — never message text.
+    #[test]
+    fn the_move_error_classes_fold_to_their_named_variants() {
+        use crate::board_move_ceremony::MoveError;
+        use taskboard_state::ExecuteError;
+
+        let fold = |err: crate::commands::CommandError| map_move_error(err);
+        assert!(matches!(
+            fold(crate::board_move_ceremony::MoveError::FilesSyncDisabled.into()),
+            SettingsError::FilesSyncDisabled
+        ));
+        assert!(matches!(
+            fold(MoveError::OutboxNotQuiescent { pending: 2 }.into()),
+            SettingsError::OutboxNotQuiescent
+        ));
+        for step in [
+            MoveError::PublishUnconfirmed,
+            MoveError::FilesSubtreeForeign,
+            MoveError::UndoCoordinatesLost,
+            MoveError::NotDeckBound,
+        ] {
+            assert!(
+                matches!(fold(step.into()), SettingsError::MoveFailed),
+                "step classes fold to the coarse class"
+            );
+        }
+        // A non-ceremony class rides the existing mapping's arms —
+        // the move fold claims only `CommandError::BoardMove`.
+        assert!(matches!(
+            fold(crate::commands::CommandError::Engine(Box::new(
+                ExecuteError::EngineGone
+            ))),
+            SettingsError::VerifyFailed
+        ));
     }
 }

@@ -75,6 +75,17 @@ fn error_text(err: &SettingsError) -> &'static str {
         SettingsError::SyncTimedOut => {
             "The board is published and bound; its first sync is still settling."
         }
+        // The move ceremony's classes (round-6 D-6.8 phase 2, D-10):
+        // name the recovery, never the internals.
+        SettingsError::FilesSyncDisabled => {
+            "Files sync is off; turn it on for this account and try again."
+        }
+        SettingsError::OutboxNotQuiescent => {
+            "This board still has unsynced edits; let it sync, then move it again."
+        }
+        SettingsError::MoveFailed => {
+            "The move did not finish; running it again picks up where it stopped."
+        }
     }
 }
 
@@ -376,8 +387,11 @@ mod tests {
                 field: Field::TickSecs,
             },
             SettingsError::SyncTimedOut,
+            SettingsError::FilesSyncDisabled,
+            SettingsError::OutboxNotQuiescent,
+            SettingsError::MoveFailed,
         ];
-        assert_eq!(all.len(), 15, "the variant list is the enum's totality");
+        assert_eq!(all.len(), 18, "the variant list is the enum's totality");
         for err in all {
             assert_ne!(
                 status_text(SettingsOutcome::Rejected, Some(&err)),
@@ -463,6 +477,9 @@ mod tests {
             Just(SettingsError::BindRefused),
             any_field().prop_map(|field| SettingsError::EnvLocked { field }),
             Just(SettingsError::SyncTimedOut),
+            Just(SettingsError::FilesSyncDisabled),
+            Just(SettingsError::OutboxNotQuiescent),
+            Just(SettingsError::MoveFailed),
         ]
     }
 
@@ -525,6 +542,9 @@ mod tests {
             SettingsError::BindRefused => "bind-refused",
             SettingsError::EnvLocked { .. } => "env-locked",
             SettingsError::SyncTimedOut => "sync-timed-out",
+            SettingsError::FilesSyncDisabled => "files-sync-disabled",
+            SettingsError::OutboxNotQuiescent => "outbox-not-quiescent",
+            SettingsError::MoveFailed => "move-failed",
         }
     }
 

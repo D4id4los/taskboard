@@ -4041,7 +4041,16 @@ impl SettingsVm {
             SettingsError::VerifyFailed
             | SettingsError::PersistFailed
             | SettingsError::AttachBusy
-            | SettingsError::AttachFailed => SettingsOutcome::Failed,
+            | SettingsError::AttachFailed
+            // The move's step-failure class (round-6 D-6.8 phase 2,
+            // D-5) folds every ceremony step class; the concrete
+            // `MoveError` rode the app's log.
+            | SettingsError::MoveFailed => SettingsOutcome::Failed,
+            // The move's refusal classes (D-5): a lane-off or
+            // busy-outbox world refused the attempt.
+            SettingsError::FilesSyncDisabled | SettingsError::OutboxNotQuiescent => {
+                SettingsOutcome::Rejected
+            }
         }
     }
 }
