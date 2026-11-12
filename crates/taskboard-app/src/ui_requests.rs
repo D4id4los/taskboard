@@ -328,6 +328,13 @@ fn apply_window_geometry(ui: &mut toml_edit::Table, geometry: &WindowGeometry) {
 /// ceremonies' budget; plan F-C2/D3).
 const SAVE_SETTLE: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// The publish ceremony's settle budget (D-6.9): the CLI default
+/// (`boards publish`'s 60 s), deliberately not `SAVE_SETTLE`'s 5 s —
+/// the budget buys the full first outbox drain onto a freshly created
+/// board, the same semantics the CLI ceremony promises. The settings
+/// busy state covers the window.
+const PUBLISH_SETTLE: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// Dispatches one settings request (never debounced — plan D3). Every
 /// reply is fire-and-forget-honest: a dropped receiver (a stale form)
 /// is at most a log line, never a panic, and persistence is never
@@ -376,6 +383,14 @@ async fn handle_settings(request: UiRequest, workspace: &ConnectionWorkspace) {
             reply,
         } => {
             let outcome = detach_connection(workspace, board, &connector).await;
+            let _ = reply.send(outcome);
+        }
+        UiRequest::PublishBoard {
+            board,
+            connector,
+            reply,
+        } => {
+            let outcome = publish_board(workspace, board, &connector).await;
             let _ = reply.send(outcome);
         }
         UiRequest::SetKeymapPreset { preset, reply } => {
@@ -1039,19 +1054,16 @@ async fn attach_connection(
     Ok(current_connections(workspace))
 }
 
-/// The bind tail both binding intents share: ensure the connector is
-/// attached (the named lookup guards the healthy-attached case — an
-/// unconditional attach would refuse `ConnectorNameInUse` and surface
-/// the misleading `AttachBusy` text), bind through the engine command
-/// path (the receipt implies durability — the REPL bind's route), and
-/// settle the first pull.
-async fn bind_through(
+/// The attach half both binding intents share (and the publish arm's
+/// pre-ceremony step): ensure the connector's actor is registered —
+/// the named lookup guards the healthy-attached case (an unconditional
+/// attach would refuse `ConnectorNameInUse` and surface the misleading
+/// `AttachBusy` text).
+async fn ensure_attached(
     workspace: &ConnectionWorkspace,
     entry: &ConnectorCfg,
     password: &str,
-    board: BoardId,
-    remote: RemoteBoardId,
-) -> Result<(), SettingsError> {
+) -> Result<ConnectorId, SettingsError> {
     let id = ConnectorId::from_kebab(&entry.name).map_err(|_| {
         map_config_error(&ConfigError::InvalidConnectorName {
             name: entry.name.clone(),
@@ -1069,6 +1081,21 @@ async fn bind_through(
             .await
             .map_err(map_attach_error)?;
     }
+    Ok(id)
+}
+
+/// The bind tail both binding intents share: ensure the connector is
+/// attached, bind through the engine command path (the receipt
+/// implies durability — the REPL bind's route), and settle the first
+/// pull.
+async fn bind_through(
+    workspace: &ConnectionWorkspace,
+    entry: &ConnectorCfg,
+    password: &str,
+    board: BoardId,
+    remote: RemoteBoardId,
+) -> Result<(), SettingsError> {
+    let id = ensure_attached(workspace, entry, password).await?;
     workspace
         .engine
         .execute(StateCommand::BindBoard {
@@ -1169,6 +1196,73 @@ async fn detach_connection(
             .await;
     }
     tracing::info!(connector = %connector_name, "settings detach succeeded");
+    Ok(current_connections(workspace))
+}
+
+/// The Publish choreography (D-6.9, #699): resolve the connector and
+/// secret → the pre-IO unbound guard (the publish ceremony's own rule,
+/// moved to the front so the refusal never touches the network) →
+/// ensure the connector's actor is attached (the ceremony's nudge only
+/// reaches a registered actor) → the shared `publish_on` ceremony
+/// (`create_board` REST → `BindBoard` → W2 orphan sweep → nudge →
+/// adoption wait → reconcile) → reply the fresh snapshot.
+///
+/// Failure story (recorded): a transport failure after the
+/// `create_board` POST leaves the board server-side unbound; the W2
+/// orphan sweep cleans same-title/same-color crash-window orphans on
+/// the *next* publish through that connector, and the typed error is
+/// final for this request — no delete-rollback (the duplicate-create
+/// crash window is #150's owned problem).
+async fn publish_board(
+    workspace: &ConnectionWorkspace,
+    board: BoardId,
+    connector_name: &str,
+) -> Result<ConnectionsSnapshot, SettingsError> {
+    let raw = ensure_migrated(workspace)?;
+    let entry = connector_entry(&raw, connector_name)?;
+    tracing::info!(
+        connector = %connector_name,
+        host = %url_host(&entry.server_url),
+        "settings publish started"
+    );
+    let stored = workspace
+        .store
+        .load(&entry.server_url, &entry.username)
+        .map_err(map_credential_error)?;
+    // The pre-IO unbound guard: a deleted/archived/already-bound board
+    // refuses before the create touches the network (`publish_on`
+    // re-checks after the create — the racy second enforcer).
+    {
+        let state = workspace.engine.shared_state().load();
+        let row = state
+            .boards
+            .get(&board)
+            .filter(|b| !b.deleted && !b.archived)
+            .ok_or(SettingsError::Gone)?;
+        if row.remote.is_some() {
+            return Err(SettingsError::BindRefused);
+        }
+    }
+    let id = ensure_attached(workspace, &entry, stored.expose()).await?;
+    let client =
+        DeckClient::new(&entry.server_url, &entry.username, stored.expose()).map_err(|err| {
+            tracing::warn!(variant = %err, "settings publish: the client was refused");
+            SettingsError::AttachFailed
+        })?;
+    crate::commands::boards::publish_on(
+        &workspace.engine,
+        &client,
+        Some(board),
+        PUBLISH_SETTLE,
+        &id,
+    )
+    .await
+    .map_err(map_ceremony_error)?;
+    tracing::info!(
+        connector = %connector_name,
+        host = %url_host(&entry.server_url),
+        "settings publish succeeded"
+    );
     Ok(current_connections(workspace))
 }
 
@@ -1408,6 +1502,10 @@ fn map_ceremony_error(err: CommandError) -> SettingsError {
         CommandError::Deck(_) => SettingsError::VerifyFailed,
         CommandError::ConfigWrite(_) => SettingsError::PersistFailed,
         CommandError::Credential(source) => map_credential_error(source),
+        // The publish settle budget expired (D-6.9): the board is
+        // created and bound, the first cycle is still moving — typed,
+        // not folded into a "failed" arm.
+        CommandError::SyncTimedOut => SettingsError::SyncTimedOut,
         // Unreachable from the settings path (the extracted ceremony
         // surfaces only the classes above); typed anyway.
         other => {

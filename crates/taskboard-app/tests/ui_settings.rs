@@ -1774,3 +1774,165 @@ async fn a_rejected_listing_is_a_typed_verify_refusal() {
     drop(tx);
     forwarder.await.expect("forwarder joins cleanly");
 }
+
+// ---- the Publish arm (round-6 D-6.9, #699) --------------------------
+
+fn send_publish(
+    tx: &tokio::sync::mpsc::Sender<UiRequest>,
+    board: taskboard_domain::BoardId,
+    connector: &str,
+) -> tokio::sync::oneshot::Receiver<
+    Result<taskboard_ui_slint::requests::ConnectionsSnapshot, SettingsError>,
+> {
+    let (reply, reply_rx) = tokio::sync::oneshot::channel();
+    tx.try_send(UiRequest::PublishBoard {
+        board,
+        connector: connector.to_owned(),
+        reply,
+    })
+    .expect("capacity holds");
+    reply_rx
+}
+
+/// P1 — the publish happy path: the create POST carries the local
+/// board's title/color, the reply snapshot names the binding to the
+/// minted remote id, the actor is attached, and the engine has
+/// settled — binding present, phase `Idle` (the ceremony's reply
+/// implies the adoption wait; terminal state, no wall-clock).
+#[tokio::test]
+async fn publish_creates_the_remote_board_and_binds_the_local_one() {
+    let server = wiremock::MockServer::start().await;
+    common::mount_standard_pull(&server, serde_json::json!([])).await;
+    // The create: the ceremony must derive title/color from the local
+    // board (the mock's body match *is* that assertion — an unmatched
+    // body 404s and the publish fails loudly).
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path(BOARDS_PATH))
+        .and(wiremock::matchers::body_partial_json(serde_json::json!({
+            "title": "publish me",
+            "color": "ff8800"
+        })))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_string(common::board_json()))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = seed_array_config(dir.path(), &server.uri());
+    let store = Arc::new(FakeCredentialStore::with(&server.uri(), "old-user", "pw"));
+    let (app, workspace) = booted_workspace(config.clone(), store).await;
+    let (tx, rx) = ui_request_channel();
+    let forwarder = taskboard_app::ui_requests::spawn_ui_request_forwarder(
+        rx,
+        app.engine.shared_state(),
+        workspace,
+    );
+    let board = create_board(&app, "publish me").await;
+
+    let outcome = send_publish(&tx, board, "work")
+        .await
+        .expect("reply lane alive")
+        .expect("publish succeeded");
+    let row = outcome
+        .boards
+        .iter()
+        .find(|b| b.id == board.as_uuid())
+        .expect("the board row is in the reply");
+    assert_eq!(row.bound_connector.as_deref(), Some("work"));
+
+    // Terminal engine state: bound to the minted remote, settled Idle.
+    let (connector, remote) = bound_connector_of(&app, board).expect("bound");
+    assert_eq!(connector.as_str(), "work");
+    assert_eq!(remote, RemoteBoardId::deck(common::BOARD));
+    let phase = app
+        .engine
+        .shared_state()
+        .load()
+        .sync
+        .get(board)
+        .map(|r| r.phase);
+    assert_eq!(phase, Some(taskboard_domain::SyncPhase::Idle));
+
+    // The connector actor is live under its name (the nudge reached it).
+    assert!(
+        app.connector_control()
+            .connector_commands(&taskboard_domain::ConnectorId::from("work"))
+            .is_some(),
+        "the connector was attached"
+    );
+
+    drop(tx);
+    forwarder.await.expect("forwarder joins cleanly");
+}
+
+/// P2 — a bound board refuses pre-IO: `BindRefused`, the binding
+/// intact, and the unreachable server proves the create never ran.
+#[tokio::test]
+async fn publish_refuses_a_bound_board_before_any_io() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = seed_array_config(dir.path(), "http://127.0.0.1:9");
+    let store = Arc::new(FakeCredentialStore::with(
+        "http://127.0.0.1:9",
+        "old-user",
+        "pw",
+    ));
+    let (app, workspace) = booted_workspace(config.clone(), store).await;
+    let (tx, rx) = ui_request_channel();
+    let forwarder = taskboard_app::ui_requests::spawn_ui_request_forwarder(
+        rx,
+        app.engine.shared_state(),
+        workspace,
+    );
+    let board = create_board(&app, "already bound").await;
+    bind_directly(&app, board, "work", 7).await;
+
+    let outcome = send_publish(&tx, board, "work")
+        .await
+        .expect("reply lane alive")
+        .expect_err("bound board");
+    assert!(
+        matches!(outcome, SettingsError::BindRefused),
+        "typed bind refusal, got {outcome:?}"
+    );
+    assert_eq!(
+        bound_connector_of(&app, board).map(|(_, remote)| remote),
+        Some(RemoteBoardId::deck(7)),
+        "the old binding survived"
+    );
+
+    drop(tx);
+    forwarder.await.expect("forwarder joins cleanly");
+}
+
+/// P3 — an unknown connector name refuses `Gone` before any IO (the
+/// unreachable server never being contacted is implied by the typed
+/// refusal of a name that resolves to no config entry).
+#[tokio::test]
+async fn publish_against_an_unknown_connector_refuses_gone() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = seed_array_config(dir.path(), "http://127.0.0.1:9");
+    let store = Arc::new(FakeCredentialStore::with(
+        "http://127.0.0.1:9",
+        "old-user",
+        "pw",
+    ));
+    let (app, workspace) = booted_workspace(config.clone(), store).await;
+    let (tx, rx) = ui_request_channel();
+    let forwarder = taskboard_app::ui_requests::spawn_ui_request_forwarder(
+        rx,
+        app.engine.shared_state(),
+        workspace,
+    );
+    let board = create_board(&app, "wandering").await;
+
+    let outcome = send_publish(&tx, board, "missing")
+        .await
+        .expect("reply lane alive")
+        .expect_err("no such connector");
+    assert!(
+        matches!(outcome, SettingsError::Gone),
+        "typed gone refusal, got {outcome:?}"
+    );
+    assert!(bound_connector_of(&app, board).is_none(), "nothing bound");
+
+    drop(tx);
+    forwarder.await.expect("forwarder joins cleanly");
+}

@@ -72,6 +72,9 @@ fn error_text(err: &SettingsError) -> &'static str {
         SettingsError::EnvLocked { .. } => {
             "This value is set by an environment variable; change it there."
         }
+        SettingsError::SyncTimedOut => {
+            "The board is published and bound; its first sync is still settling."
+        }
     }
 }
 
@@ -348,7 +351,7 @@ mod tests {
         }
     }
 
-    /// The `SettingsError` totality loop: all 14 variants map to
+    /// The `SettingsError` totality loop: every variant maps to
     /// non-empty text through `status_text`'s detail path.
     #[test]
     fn every_settings_error_variant_maps_to_text() {
@@ -372,8 +375,9 @@ mod tests {
             SettingsError::EnvLocked {
                 field: Field::TickSecs,
             },
+            SettingsError::SyncTimedOut,
         ];
-        assert_eq!(all.len(), 14, "the variant list is the enum's totality");
+        assert_eq!(all.len(), 15, "the variant list is the enum's totality");
         for err in all {
             assert_ne!(
                 status_text(SettingsOutcome::Rejected, Some(&err)),
@@ -458,6 +462,7 @@ mod tests {
             Just(SettingsError::Gone),
             Just(SettingsError::BindRefused),
             any_field().prop_map(|field| SettingsError::EnvLocked { field }),
+            Just(SettingsError::SyncTimedOut),
         ]
     }
 
@@ -519,6 +524,7 @@ mod tests {
             SettingsError::Gone => "gone",
             SettingsError::BindRefused => "bind-refused",
             SettingsError::EnvLocked { .. } => "env-locked",
+            SettingsError::SyncTimedOut => "sync-timed-out",
         }
     }
 
