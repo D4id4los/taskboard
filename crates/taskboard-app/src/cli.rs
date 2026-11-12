@@ -279,7 +279,8 @@ pub enum BoardsCmd {
         /// Undo a move that has not committed.
         #[arg(long, group = "move_direction")]
         undo: bool,
-        /// Wait budget for the final Deck pull, in seconds.
+        /// Wait budget for the final Deck pull, in seconds (the
+        /// shared `DEFAULT_MOVE_TIMEOUT`, seconds half).
         #[arg(long, default_value_t = 60)]
         timeout_secs: u64,
     },

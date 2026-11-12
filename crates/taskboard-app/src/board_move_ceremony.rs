@@ -18,6 +18,7 @@ use serde::Serialize;
 use taskboard_domain::board_move::MovedToFilesMarker;
 use taskboard_domain::messages::SyncReport;
 use taskboard_domain::{BoardId, CommandOutcome, ConnectorId, RemoteBoardId, StateCommand};
+use taskboard_state::EngineHandle;
 use taskboard_sync_files::board_move::{MOVE_RECORD_FORMAT, MoveRecord, MovedFrom, deck_origin};
 use taskboard_sync_files_nextcloud::board_cycle::{
     MoveSubtreeProbe, move_record_exists, probe_move_subtree, publish_move_floor,
@@ -30,7 +31,13 @@ use taskboard_sync_nextcloud::move_marker::{MoveMarkerError, write_move_marker};
 
 use crate::commands::CommandError;
 use crate::commands::sync::SyncOutcome;
+use crate::config::AppConfig;
 use crate::secrets::CredentialStore;
+
+/// The final Deck pull's wait budget (D-6.8 phase 2 D-9): one shared
+/// constant so the UI arm cannot drift from the runbook's documented
+/// budget — the CLI's `--timeout-secs` default cites this.
+pub const DEFAULT_MOVE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Where a move stands, as derived from the world.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -280,9 +287,15 @@ pub(crate) async fn undo(world: &mut impl MoveWorld) -> Result<Vec<MoveStep>, Mo
     }
 }
 
-/// The ceremony's effects on a booted core and the live files tier.
+/// The ceremony's effects on a running engine and the live files tier
+/// (D-6.8 phase 2 D-3): keyed to the engine handle + config, not a
+/// booted `App` — the UI process's engine is already running and
+/// cannot re-bootstrap (`App` holds the process-lifetime
+/// `InstanceLock`). The CLI verb passes its own app's handles; the
+/// behaviour is identical, pinned by the verb tests.
 struct AppWorld<'a> {
-    app: &'a crate::App,
+    engine: &'a EngineHandle,
+    config: &'a AppConfig,
     board: BoardId,
     files_connector: ConnectorId,
     transport: WebDavFilesTransport,
@@ -309,7 +322,7 @@ impl AppWorld<'_> {
         let Some(moved_from) = self.moved_from().await? else {
             return Ok(None);
         };
-        let spec = crate::connectors::configured_connectors(&self.app.config)
+        let spec = crate::connectors::configured_connectors(self.config)
             .unwrap_or_default()
             .into_iter()
             .find(|spec| deck_origin(&spec.server_url) == moved_from.deck_server);
@@ -317,14 +330,14 @@ impl AppWorld<'_> {
     }
 
     fn live_moved_from(&self) -> Result<MovedFrom, MoveError> {
-        let state = self.app.engine.shared_state().load_full();
+        let state = self.engine.shared_state().load_full();
         let binding = state
             .boards
             .get(&self.board)
             .and_then(|board| board.remote.as_ref())
             .ok_or(MoveError::NotDeckBound)?;
         let deck_board = binding.board.as_deck().ok_or(MoveError::NotDeckBound)?;
-        let spec = crate::connectors::configured_connectors(&self.app.config)
+        let spec = crate::connectors::configured_connectors(self.config)
             .unwrap_or_default()
             .into_iter()
             .find(|spec| spec.name == binding.connector)
@@ -338,7 +351,7 @@ impl AppWorld<'_> {
     /// The mapping comes from the kept Deck refs, which the files
     /// binding wipes: this must run before `assign_files`.
     fn record(&self, moved_from: MovedFrom) -> MoveRecord {
-        let state = self.app.engine.shared_state().load_full();
+        let state = self.engine.shared_state().load_full();
         let stacks: std::collections::BTreeMap<u64, uuid::Uuid> = state
             .stacks
             .values()
@@ -375,7 +388,7 @@ impl AppWorld<'_> {
 
 impl MoveWorld for AppWorld<'_> {
     fn binding(&self) -> BindingKind {
-        let state = self.app.engine.shared_state().load_full();
+        let state = self.engine.shared_state().load_full();
         match state
             .boards
             .get(&self.board)
@@ -404,7 +417,7 @@ impl MoveWorld for AppWorld<'_> {
     }
 
     async fn pull_deck(&mut self) -> Result<(), MoveError> {
-        let state = self.app.engine.shared_state().load_full();
+        let state = self.engine.shared_state().load_full();
         let connector = state
             .boards
             .get(&self.board)
@@ -412,7 +425,7 @@ impl MoveWorld for AppWorld<'_> {
             .map(|binding| binding.connector.clone());
         drop(state);
         let outcome =
-            crate::commands::sync::sync_on(self.app, false, self.timeout, connector.as_ref())
+            crate::commands::sync::sync_on_engine(self.engine, self.timeout, connector.as_ref())
                 .await
                 .map_err(|err| MoveError::DeckPullFailed(Box::new(err)))?;
         match outcome {
@@ -426,13 +439,13 @@ impl MoveWorld for AppWorld<'_> {
     }
 
     async fn pending_ops(&self) -> Result<usize, MoveError> {
-        crate::commands::boards::pending_ops_of(self.app, self.board)
+        crate::commands::boards::pending_ops_of(self.engine, self.board)
             .await
             .map_err(|err| MoveError::StateReadFailed(Box::new(err)))
     }
 
     async fn publish(&mut self) -> Result<(), MoveError> {
-        let persisted = taskboard_domain::SyncStateReader::read_state(&self.app.engine)
+        let persisted = taskboard_domain::SyncStateReader::read_state(self.engine)
             .await
             .map_err(|_| {
                 // The house read_state posture (commands/boards.rs): the
@@ -456,7 +469,6 @@ impl MoveWorld for AppWorld<'_> {
 
     async fn retire(&mut self) -> Result<usize, MoveError> {
         let outcome = self
-            .app
             .engine
             .execute(StateCommand::UnbindBoard { board: self.board })
             .await
@@ -492,8 +504,7 @@ impl MoveWorld for AppWorld<'_> {
     }
 
     async fn assign_files(&mut self) -> Result<(), MoveError> {
-        self.app
-            .engine
+        self.engine
             .execute(StateCommand::BindBoard {
                 board: self.board,
                 remote: RemoteBoardId::files(self.remote()),
@@ -515,8 +526,7 @@ impl MoveWorld for AppWorld<'_> {
             .ok_or(MoveError::UndoCoordinatesLost)?;
         let remote = RemoteBoardId::deck(moved_from.deck_board);
         let connector = spec.name;
-        self.app
-            .engine
+        self.engine
             .execute(StateCommand::BindBoard {
                 board: self.board,
                 remote,
@@ -543,13 +553,23 @@ pub enum MoveDirection {
 /// [`CommandError::BoardMove`] for every ceremony refusal; credential,
 /// client and board-resolution classes otherwise.
 pub async fn run_on(
-    app: &crate::App,
+    engine: &EngineHandle,
+    config: &AppConfig,
     store: &Arc<dyn CredentialStore>,
     board: BoardId,
     direction: MoveDirection,
     timeout: Duration,
 ) -> Result<MoveReceipt, CommandError> {
-    run_until(app, store, board, direction, MoveStage::Committed, timeout).await
+    run_until(
+        engine,
+        config,
+        store,
+        board,
+        direction,
+        MoveStage::Committed,
+        timeout,
+    )
+    .await
 }
 
 /// [`run_on`] with an explicit stop stage (the live journey's undo leg
@@ -559,7 +579,8 @@ pub async fn run_on(
 ///
 /// As [`run_on`].
 pub async fn run_until(
-    app: &crate::App,
+    engine: &EngineHandle,
+    config: &AppConfig,
     store: &Arc<dyn CredentialStore>,
     board: BoardId,
     direction: MoveDirection,
@@ -569,8 +590,8 @@ pub async fn run_until(
     if direction == MoveDirection::ToDeck {
         return Err(MoveError::ReverseFenced.into());
     }
-    let board = crate::commands::resolve_board(&app.engine, Some(board))?;
-    let mut world = app_world(app, store, board, timeout).await?;
+    let board = crate::commands::resolve_board(engine, Some(board))?;
+    let mut world = app_world(engine, config, store, board, timeout).await?;
     let (stage, steps) = match direction {
         MoveDirection::Undo => {
             let steps = undo(&mut world).await?;
@@ -586,13 +607,14 @@ pub async fn run_until(
 }
 
 async fn app_world<'a>(
-    app: &'a crate::App,
+    engine: &'a EngineHandle,
+    config: &'a AppConfig,
     store: &Arc<dyn CredentialStore>,
     board: BoardId,
     timeout: Duration,
 ) -> Result<AppWorld<'a>, CommandError> {
-    let spec = crate::bootstrap::files_sync_spawn_decision(&app.config)
-        .ok_or(MoveError::FilesSyncDisabled)?;
+    let spec =
+        crate::bootstrap::files_sync_spawn_decision(config).ok_or(MoveError::FilesSyncDisabled)?;
     let password = store.load(&spec.server_url, &spec.username)?;
     let transport = WebDavFilesTransport::new(&spec.server_url, &spec.username, password.expose())
         .map_err(MoveError::PublishFailed)?;
@@ -609,15 +631,16 @@ async fn app_world<'a>(
         identity,
         app_version: env!("CARGO_PKG_VERSION").to_owned(),
         clock,
-        local: Arc::new(PublishedState::new(app.engine.shared_state())),
+        local: Arc::new(PublishedState::new(engine.shared_state())),
         report_tx: tokio::sync::mpsc::channel(1).0,
         connector: spec.identity.clone(),
-        state_reader: Arc::new(app.engine.clone()),
+        state_reader: Arc::new(engine.clone()),
         board_reports: tokio::sync::mpsc::channel::<SyncReport>(1).0,
         deck_origins: std::collections::BTreeMap::new(),
     };
     Ok(AppWorld {
-        app,
+        engine,
+        config,
         board,
         files_connector: spec.identity,
         transport,

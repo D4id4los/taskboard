@@ -1773,15 +1773,32 @@ async fn boards_move_fences_the_reverse_and_refuses_unknown_boards() {
         .expect("boots");
     let unknown = taskboard_domain::BoardId::from_uuid(uuid::Uuid::from_u128(0xdead));
     let budget = Duration::from_secs(1);
+    // The refusals below fire before the world reads the config; the
+    // ceremony's re-keyed signature names it explicitly.
+    let config = taskboard_app::config::AppConfig::default();
 
-    let fenced = run_on(&app, &store, unknown, MoveDirection::ToDeck, budget)
-        .await
-        .expect_err("fenced");
+    let fenced = run_on(
+        &app.engine,
+        &config,
+        &store,
+        unknown,
+        MoveDirection::ToDeck,
+        budget,
+    )
+    .await
+    .expect_err("fenced");
     assert_eq!(fenced.error_kind(), "move-reverse-fenced");
 
-    let missing = run_on(&app, &store, unknown, MoveDirection::ToFiles, budget)
-        .await
-        .expect_err("unknown");
+    let missing = run_on(
+        &app.engine,
+        &config,
+        &store,
+        unknown,
+        MoveDirection::ToFiles,
+        budget,
+    )
+    .await
+    .expect_err("unknown");
     assert_eq!(missing.error_kind(), "unknown-board");
 
     let _ = app.shutdown().await;

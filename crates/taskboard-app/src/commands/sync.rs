@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use taskboard_domain::{StateCommand, SyncErrorKind, SyncPhase, SyncStatus, SystemEvent, TaskId};
+use taskboard_state::EngineHandle;
 
 use crate::commands::CommandError;
 use crate::commands::output::SyncStatusView;
@@ -83,10 +84,10 @@ pub async fn run(
 /// aggregate. The map fold itself is always the domain's
 /// `aggregate_rows` — never duplicated here.
 fn watched_status(
-    app: &crate::App,
+    engine: &EngineHandle,
     scope: Option<&taskboard_domain::ConnectorId>,
 ) -> taskboard_domain::SyncStatus {
-    let state = app.engine.shared_state().load_full();
+    let state = engine.shared_state().load_full();
     scoped_sync_status(&state, scope)
 }
 
@@ -120,28 +121,43 @@ pub(crate) async fn sync_on(
     timeout: Duration,
     scope: Option<&taskboard_domain::ConnectorId>,
 ) -> Result<SyncOutcome, CommandError> {
-    // Hydrated from the db — may be a stale `Idle`/`Failed`.
-    let startup = watched_status(app, scope);
     if no_wait {
-        let view = SyncStatusView::new(&watched_status(app, scope));
+        let view = SyncStatusView::new(&watched_status(&app.engine, scope));
         return Ok(SyncOutcome::NoWait(view));
     }
     // The resurrect listener rides the system broadcast: subscribe
     // *before* the nudge so a resurrect born in the awaited cycle is
     // observable (the engine emits during report ingestion).
     let mut system_rx = app.system.subscribe();
+    let outcome = sync_on_engine(&app.engine, timeout, scope).await?;
+    report_resurrections(app, &mut system_rx);
+    Ok(outcome)
+}
+
+/// The nudge + bounded wait on a running engine, no `App` in sight
+/// (D-6.8 phase 2 D-3): the move ceremony's pull step runs inside the
+/// UI process whose engine is already up — a fresh `App` bootstrap
+/// would refuse on the process-lifetime instance lock. The CLI's
+/// resurrect printing stays with [`sync_on`], which delegates here.
+pub(crate) async fn sync_on_engine(
+    engine: &EngineHandle,
+    timeout: Duration,
+    scope: Option<&taskboard_domain::ConnectorId>,
+) -> Result<SyncOutcome, CommandError> {
     // Belt-and-braces nudge; the boot cycle coalesces with it. A
     // connector-less engine (standalone gate passed on a booted session
     // whose connector was detached, WI-H) answers `NoOp` — refuse typed
     // instead of waiting out the deadline for evidence that can never
     // arrive.
-    let outcome = app.engine.execute(StateCommand::RequestSync).await?;
+    // Hydrated from the db — may be a stale `Idle`/`Failed`; read
+    // *before* the nudge so the wait decides on genuinely fresh
+    // evidence (a cycle landing during the nudge is fresh).
+    let startup = watched_status(engine, scope);
+    let outcome = engine.execute(StateCommand::RequestSync).await?;
     if outcome == taskboard_domain::CommandOutcome::NoOp {
         return Err(CommandError::SyncUnavailable);
     }
-    let outcome = wait_for_sync_result(app, &startup, timeout, scope).await;
-    report_resurrections(app, &mut system_rx);
-    Ok(outcome)
+    Ok(wait_for_sync_result(engine, &startup, timeout, scope).await)
 }
 
 /// The CLI's resurrect surfacing: drains the system broadcast and prints
@@ -213,16 +229,16 @@ fn fresh_outcome(startup: &SyncStatus, status: &SyncStatus) -> Option<SyncOutcom
 ///   that point — a fresh failure identical to a stale persisted `S0`
 ///   publishes nothing and is indistinguishable from "still running").
 pub async fn wait_for_sync_result(
-    app: &crate::App,
+    engine: &EngineHandle,
     startup: &SyncStatus,
     deadline: Duration,
     scope: Option<&taskboard_domain::ConnectorId>,
 ) -> SyncOutcome {
-    let mut signals = app.engine.subscribe();
+    let mut signals = engine.subscribe();
     let mut seen_change = false;
     let deadline_at = Instant::now() + deadline;
     loop {
-        let status = watched_status(app, scope);
+        let status = watched_status(engine, scope);
         if let Some(outcome) = fresh_outcome(startup, &status) {
             return outcome;
         }

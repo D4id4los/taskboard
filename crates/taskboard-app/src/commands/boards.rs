@@ -194,10 +194,10 @@ struct BoardScope {
 /// content plus the engine's persisted outbox (the queue the delete
 /// would cancel / the reset would clear).
 async fn read_scope(
-    app: &crate::App,
+    engine: &taskboard_state::EngineHandle,
     board_id: taskboard_domain::BoardId,
 ) -> Result<BoardScope, CommandError> {
-    let state = app.engine.shared_state().load_full();
+    let state = engine.shared_state().load_full();
     // The id resolved a moment ago; a miss means the board died between
     // resolve and scope-read (an engine contract break class, not user
     // input).
@@ -253,7 +253,7 @@ async fn read_scope(
     };
     let labels = board_labels.len();
     drop(state);
-    let persisted = taskboard_domain::SyncStateReader::read_state(&app.engine)
+    let persisted = taskboard_domain::SyncStateReader::read_state(engine)
         .await
         .map_err(|_| CommandError::Engine(Box::new(taskboard_state::ExecuteError::EngineGone)))?;
     let pending_ops = persisted
@@ -296,10 +296,10 @@ async fn read_scope(
 /// The board's queued outbox ops (the move ceremony's quiescence
 /// guard).
 pub(crate) async fn pending_ops_of(
-    app: &crate::App,
+    engine: &taskboard_state::EngineHandle,
     board: taskboard_domain::BoardId,
 ) -> Result<usize, CommandError> {
-    Ok(read_scope(app, board).await?.pending_ops)
+    Ok(read_scope(engine, board).await?.pending_ops)
 }
 
 /// The shared ceremony body of `boards delete` / `boards reset`: refuse
@@ -312,7 +312,7 @@ async fn destruct_on(
     confirm: bool,
     command: StateCommand,
 ) -> Result<BoardDestructReceipt, CommandError> {
-    let scope = read_scope(app, board_id).await?;
+    let scope = read_scope(&app.engine, board_id).await?;
     if !confirm {
         return Err(CommandError::ConfirmationRequired {
             verb: verb.to_owned(),
@@ -349,7 +349,7 @@ pub async fn unbind_on(
     confirm: bool,
 ) -> Result<UnbindReceipt, CommandError> {
     let board_id = crate::commands::resolve_board(&app.engine, board)?;
-    let scope = read_scope(app, board_id).await?;
+    let scope = read_scope(&app.engine, board_id).await?;
     if !confirm {
         return Err(CommandError::UnbindConfirmationRequired {
             board: board_id.as_uuid().to_string(),
