@@ -71,6 +71,9 @@ export struct ConnectionRow {
 export enum ConnectionItemKind {
     account,
     files,
+    // A files-bound live board's visibility row (round-6 D-6.8
+    // phase 2, #722): binding truth, no actions.
+    files-board,
     deck,
     remote,
 }
@@ -112,6 +115,10 @@ export global SettingsModel {
     // The remote rows' local-board choices (the unbound live boards —
     // one list for every remote row's picker; the flyout's rows).
     in-out property <[DropdownRow]> board-options: [];
+    // The Files row's move picker's choices (round-6 D-6.8 phase 2):
+    // the Deck-bound live boards — the move ceremony's eligible set,
+    // re-derived app-side every pass.
+    in-out property <[DropdownRow]> move-options: [];
     // The busy machine (r2 D34): any op in flight disables every
     // settings op; busy-target names the connector/board the spinner
     // markers render on.
@@ -459,6 +466,20 @@ export global SettingsBoardCopy {
     in-out property <string> refresh-hint: "Refresh to list the boards on this server.";
 }
 
+// The move picker's copy constants (round-6 D-6.8 phase 2, D-7):
+// presentation copy, never asserted. Honest about the ceremony's
+// contract: adoption is eventual (no timing promised) and the move
+// is resumable; no undo is promised (the undo window is CLI-only).
+export global SettingsMoveCopy {
+    in-out property <string> label: "Move a board to Files";
+    in-out property <string> description:
+        "Picks the Deck board to move onto this account's Files.";
+    in-out property <string> row-description:
+        "Moves this board onto this account's Files. Other devices adopt it automatically. If the move is interrupted, running it again resumes it.";
+    in-out property <string> placeholder: "Move to Files…";
+    in-out property <string> empty-hint: "No Deck-bound boards to move";
+}
+
 // The publish picker's copy constants (round-6 D-6.9): presentation
 // copy, never asserted.
 export global SettingsPublishCopy {
@@ -563,6 +584,51 @@ component DeckPublishPicker inherits Dropdown {
     }
 }
 
+// The Files row's move picker (round-6 D-6.8 phase 2, #722): the
+// DeckPublishPicker grammar, one site over — flyout site 3, its own
+// options list (`move-options`, the Deck-bound boards — the move
+// ceremony's eligible set), and the move copy. Mounts window-level
+// like every picker.
+component FilesMovePicker inherits Dropdown {
+    in property <int> item-index;
+    callback move-picked(int, int);
+    rows: SettingsModel.move-options;
+    selected-index: 0;
+    field-text: SettingsMoveCopy.placeholder;
+    field-label: SettingsMoveCopy.label;
+    field-description: SettingsMoveCopy.description;
+    flyout-site: 3;
+    empty-hint: SettingsMoveCopy.empty-hint;
+    row-activated(i) => {
+        root.move-picked(root.item-index, i);
+    }
+    row-hovered(i, x, y, w, h) => {
+        TooltipState.hover(
+            SettingsModel.move-options[i].label,
+            SettingsMoveCopy.row-description,
+            [],
+            x, y, w, h);
+    }
+    row-unhovered() => {
+        TooltipState.unhover();
+    }
+    // The journeys' observation seam (the SettingsBoardFacts mirrors):
+    // the opening picker owns the facts.
+    changed open => {
+        if (self.open) {
+            SettingsBoardFacts.active-item = root.item-index;
+            SettingsBoardFacts.field-x = self.absolute-position.x;
+            SettingsBoardFacts.field-y = self.absolute-position.y;
+            SettingsBoardFacts.field-w = self.width;
+            SettingsBoardFacts.field-h = self.height;
+        }
+        SettingsBoardFacts.open = self.open;
+    }
+    changed highlight => {
+        SettingsBoardFacts.highlight = self.highlight;
+    }
+}
+
 // One general editor row (the GUI settings editor): the LabeledField
 // grammar plus the app-stated badges — the env lock renders the row
 // read-only with its source named; the apply fact renders the
@@ -642,6 +708,10 @@ export component SettingsView inherits FocusScope {
     // the card's `connection-items` index, the option the unbound
     // board's index in `board-options`.
     callback publish-picked(int, int);
+    // The Files row's move seam (round-6 D-6.8 phase 2, #722): the
+    // item is the card's `connection-items` index, the option the
+    // Deck-bound board's index in `move-options`.
+    callback move-picked(int, int);
     callback preset-picked(int);
     callback scale-committed(string);
     // The scale field's focus-loss seam (r3 D20a writer 7): a
@@ -951,6 +1021,12 @@ export component SettingsView inherits FocusScope {
                         min-width: Theme.space-8;
                         vertical-alignment: center;
                     }
+                    // The move ceremony's in-flight marker (round-6
+                    // D-6.8 phase 2, D-9): one dot, no fake progress.
+                    if item.busy: VerticalLayout {
+                        alignment: center;
+                        BusyDot {}
+                    }
                     SegmentedControl {
                         options: ["On", "Off"];
                         segment-enabled: [
@@ -974,6 +1050,38 @@ export component SettingsView inherits FocusScope {
                         text: "Files sync mirrors this account's Files — takes effect at the next restart.";
                         text-color: Theme.text-secondary;
                         vertical-alignment: center;
+                    }
+                    // The move affordance (round-6 D-6.8 phase 2):
+                    // the picker's closed field IS the button — the
+                    // publish precedent (one affordance, the flyout
+                    // renders window-level from site 3).
+                    FilesMovePicker {
+                        item-index: index;
+                        move-picked(item-index, option) => {
+                            root.move-picked(item-index, option);
+                        }
+                    }
+                }
+                // A files-bound board's visibility row (round-6
+                // D-6.8 phase 2, D-6): the row grammar the Files
+                // toggle established — the fixed "Files" lead word,
+                // then the local board's title. No actions: adoption
+                // is automatic, disconnect is a non-goal.
+                if item.kind == ConnectionItemKind.files-board: HorizontalLayout {
+                    spacing: Theme.space-2;
+                    RoleText {
+                        role: Typography.body;
+                        text: "Files";
+                        text-color: Theme.text-secondary;
+                        min-width: Theme.space-8;
+                        vertical-alignment: center;
+                    }
+                    RoleText {
+                        role: Typography.body;
+                        text: item.title;
+                        vertical-alignment: center;
+                        overflow: elide;
+                        horizontal-stretch: 1;
                     }
                 }
                 if item.kind == ConnectionItemKind.deck: VerticalLayout {
