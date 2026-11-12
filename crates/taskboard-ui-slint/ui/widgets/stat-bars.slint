@@ -37,6 +37,16 @@ export component StatBars inherits Rectangle {
     // placement; the height is a theme-scaled token expression).
     in property <length> plot-height: 48px * Theme.base-scale;
 
+    // The explicit cap (#725, the TaskCard remedy): with `bars` empty
+    // the strip layout is the row's only cell, so the box-layout empty
+    // early return reports `max = min = 2·padding`, and the single-cell
+    // lowering hands that to this root — every consuming column's
+    // merge adopts the floor as its own max-width, and any main-axis
+    // distribution starves the section to it (the reflection section
+    // froze at its caption's width, at every row width). Stating the
+    // max severs the merge; the D-9 skeleton promise (values collapse,
+    // the section never does) holds at every placement.
+    max-width: Theme.layout-severing-max-width;
     height: root.plot-height + 2 * Theme.space-1;
     background: Theme.surface;
     border-radius: Theme.radius-small;
