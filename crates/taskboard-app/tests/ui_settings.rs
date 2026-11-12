@@ -1936,3 +1936,165 @@ async fn publish_against_an_unknown_connector_refuses_gone() {
     drop(tx);
     forwarder.await.expect("forwarder joins cleanly");
 }
+
+// ---- the Move-to-Files arm (round-6 D-6.8 phase 2, #722) ------------
+
+fn send_move(
+    tx: &tokio::sync::mpsc::Sender<UiRequest>,
+    board: taskboard_domain::BoardId,
+) -> tokio::sync::oneshot::Receiver<
+    Result<taskboard_ui_slint::requests::ConnectionsSnapshot, SettingsError>,
+> {
+    let (reply, reply_rx) = tokio::sync::oneshot::channel();
+    tx.try_send(UiRequest::MoveBoardToFiles { board, reply })
+        .expect("capacity holds");
+    reply_rx
+}
+
+/// Binds a board directly to the files lane through the engine (the
+/// adoption-posture fixture: the files binding's connector is the
+/// synthesized `files-sync` identity, no config connector).
+async fn bind_files_directly(app: &App, board: taskboard_domain::BoardId) {
+    app.engine
+        .execute(StateCommand::BindBoard {
+            board,
+            remote: RemoteBoardId::files(uuid::Uuid::new_v4()),
+            connector: taskboard_domain::ConnectorId::from("files-sync"),
+        })
+        .await
+        .expect("the fixture files bind is accepted");
+}
+
+/// Seeds an array-world config with one Nextcloud connector and
+/// `[files_sync] enabled` (the lane resolves its anchor from the
+/// connector; the mover needs the lane on to reach the binding
+/// guards).
+fn seed_files_config(dir: &std::path::Path, server: &str) -> PathBuf {
+    let path = dir.join("taskboard.toml");
+    std::fs::write(
+        &path,
+        format!(
+            "[storage]\ndb_path = '{}/taskboard.db'\n\
+             [files_sync]\nenabled = true\n\
+             [[sync.connectors]]\nname = \"work\"\nbackend = \"nextcloud\"\n\
+             server_url = \"{server}\"\nusername = \"old-user\"\n",
+            dir.display()
+        ),
+    )
+    .expect("seed config");
+    path
+}
+
+/// M2 — a files-bound board refuses before any IO: the ceremony is
+/// already `Committed` for it (D-1's structural read of
+/// `derive_move_stage`); the binding survives and the unreachable
+/// server proves nothing was contacted.
+#[tokio::test]
+async fn move_refuses_a_files_bound_board_before_any_io() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = seed_files_config(dir.path(), "http://127.0.0.1:9");
+    let store = Arc::new(FakeCredentialStore::with(
+        "http://127.0.0.1:9",
+        "old-user",
+        "pw",
+    ));
+    let (app, workspace) = booted_workspace(config.clone(), store).await;
+    let (tx, rx) = ui_request_channel();
+    let forwarder = taskboard_app::ui_requests::spawn_ui_request_forwarder(
+        rx,
+        app.engine.shared_state(),
+        workspace,
+    );
+    let board = create_board(&app, "already files").await;
+    bind_files_directly(&app, board).await;
+
+    let outcome = send_move(&tx, board)
+        .await
+        .expect("reply lane alive")
+        .expect_err("files-bound board");
+    assert!(
+        matches!(outcome, SettingsError::BindRefused),
+        "typed bind refusal, got {outcome:?}"
+    );
+    assert!(
+        bound_connector_of(&app, board).is_some_and(|(_, remote)| remote.as_files().is_some()),
+        "the files binding survived"
+    );
+
+    drop(tx);
+    forwarder.await.expect("forwarder joins cleanly");
+}
+
+/// M3 — an unbound board refuses before any IO (`BindRefused`): the
+/// picker's option set mirrors the ceremony's guard, so this arrives
+/// only via a stale pick; the world refuses typed.
+#[tokio::test]
+async fn move_refuses_an_unbound_board_before_any_io() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = seed_files_config(dir.path(), "http://127.0.0.1:9");
+    let store = Arc::new(FakeCredentialStore::with(
+        "http://127.0.0.1:9",
+        "old-user",
+        "pw",
+    ));
+    let (app, workspace) = booted_workspace(config.clone(), store).await;
+    let (tx, rx) = ui_request_channel();
+    let forwarder = taskboard_app::ui_requests::spawn_ui_request_forwarder(
+        rx,
+        app.engine.shared_state(),
+        workspace,
+    );
+    let board = create_board(&app, "loose").await;
+
+    let outcome = send_move(&tx, board)
+        .await
+        .expect("reply lane alive")
+        .expect_err("unbound board");
+    assert!(
+        matches!(outcome, SettingsError::BindRefused),
+        "typed bind refusal, got {outcome:?}"
+    );
+    assert!(bound_connector_of(&app, board).is_none(), "nothing bound");
+
+    drop(tx);
+    forwarder.await.expect("forwarder joins cleanly");
+}
+
+/// M4 — with `[files_sync]` off there is no lane to move onto: the
+/// typed `FilesSyncDisabled` refusal fires before any IO (the
+/// unreachable server is never contacted).
+#[tokio::test]
+async fn move_refuses_when_files_sync_is_disabled() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = seed_array_config(dir.path(), "http://127.0.0.1:9");
+    let store = Arc::new(FakeCredentialStore::with(
+        "http://127.0.0.1:9",
+        "old-user",
+        "pw",
+    ));
+    let (app, workspace) = booted_workspace(config.clone(), store).await;
+    let (tx, rx) = ui_request_channel();
+    let forwarder = taskboard_app::ui_requests::spawn_ui_request_forwarder(
+        rx,
+        app.engine.shared_state(),
+        workspace,
+    );
+    let board = create_board(&app, "deck bound").await;
+    bind_directly(&app, board, "work", 5).await;
+
+    let outcome = send_move(&tx, board)
+        .await
+        .expect("reply lane alive")
+        .expect_err("no files lane");
+    assert!(
+        matches!(outcome, SettingsError::FilesSyncDisabled),
+        "typed lane-off refusal, got {outcome:?}"
+    );
+    assert!(
+        bound_connector_of(&app, board).is_some_and(|(_, remote)| remote.as_deck() == Some(5)),
+        "the Deck binding survived"
+    );
+
+    drop(tx);
+    forwarder.await.expect("forwarder joins cleanly");
+}
