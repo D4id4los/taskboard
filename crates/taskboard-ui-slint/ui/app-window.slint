@@ -45,6 +45,7 @@ import {
     SettingsRowStatus,
     SettingsOutcome,
     SettingsBoardCopy,
+    SettingsPublishCopy,
 } from "views/settings-view.slint";
 export { SettingsModel, ConnectionRow, ConnectionItem, ConnectionItemKind, SettingsRowStatus, SettingsOutcome }
 import { TooltipState, TooltipPanel } from "widgets/tooltip.slint";
@@ -196,6 +197,7 @@ export component AppWindow inherits Window {
     callback settings-remove-clicked(int);
     callback settings-refresh-clicked(int);
     callback settings-remote-bind-picked(int, int);
+    callback settings-publish-picked(int, int);
     callback settings-create-clicked(int);
     callback settings-disconnect-clicked(int);
     callback settings-files-picked(int, int);
@@ -464,6 +466,7 @@ export component AppWindow inherits Window {
                 remove-clicked(i) => root.settings-remove-clicked(i);
                 refresh-clicked(i) => root.settings-refresh-clicked(i);
                 remote-bind-picked(i, o) => root.settings-remote-bind-picked(i, o);
+                publish-picked(i, o) => root.settings-publish-picked(i, o);
                 create-clicked(i) => root.settings-create-clicked(i);
                 disconnect-clicked(i) => root.settings-disconnect-clicked(i);
                 files-picked(i, o) => root.settings-files-picked(i, o);
@@ -837,6 +840,31 @@ export component AppWindow inherits Window {
             TooltipState.hover(
                 SettingsModel.board-options[i].label,
                 SettingsBoardCopy.row-description,
+                [],
+                x, y, w, h);
+        }
+        row-unhovered() => {
+            TooltipState.unhover();
+        }
+    }
+    if (DropdownFacts.open && DropdownFacts.site == 2): DropdownFlyout {
+        rows: SettingsModel.board-options;
+        x: max(Theme.space-2,
+               min(DropdownFacts.anchor-x,
+                   root.width - self.width - Theme.space-2));
+        y: max(Theme.space-2,
+               min((DropdownFacts.anchor-y + DropdownFacts.anchor-height
+                        + Theme.space-1 + self.height <= status.y
+                    ? DropdownFacts.anchor-y + DropdownFacts.anchor-height
+                        + Theme.space-1
+                    : DropdownFacts.anchor-y - self.height - Theme.space-1),
+                   status.y - self.height - Theme.space-2));
+        width: DropdownFacts.anchor-width;
+        row-activated(i) => root.settings-publish-picked(SettingsBoardFacts.active-item, i);
+        row-hovered(i, x, y, w, h) => {
+            TooltipState.hover(
+                SettingsModel.board-options[i].label,
+                SettingsPublishCopy.row-description,
                 [],
                 x, y, w, h);
         }
