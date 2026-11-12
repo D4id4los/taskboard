@@ -9087,6 +9087,38 @@ fn state_board(state: &mut AppState, id: uuid::Uuid, title: &str, connector: Opt
     );
 }
 
+/// The files-bound fixture (round-6 D-6.8 phase 2): the binding's
+/// remote is the files id type — the lane tag is the payload (D-BF4),
+/// the connector is the synthesized `files-sync` identity.
+fn state_files_board(state: &mut AppState, id: uuid::Uuid, title: &str) {
+    use taskboard_domain::{
+        Board, BoardClocks, BoardId, Color, ConnectorId, RemoteBoardBinding, RemoteBoardId,
+    };
+    let id = BoardId::from_uuid(id);
+    state.boards.insert(
+        id,
+        Board {
+            id,
+            remote: Some(RemoteBoardBinding {
+                board: RemoteBoardId::files(uuid::Uuid::new_v4()),
+                connector: ConnectorId::from("files-sync"),
+            }),
+            title: title.to_owned(),
+            color: Color::new(""),
+            archived: false,
+            deleted: false,
+            clocks: BoardClocks {
+                title: BoardClocks::epoch(),
+                color: BoardClocks::epoch(),
+                archived: BoardClocks::epoch(),
+                deleted: BoardClocks::epoch(),
+            },
+            authors: taskboard_domain::entities::BoardAuthors::default(),
+            remote_seen: None,
+        },
+    );
+}
+
 /// The pushed dropdown options (the journeys' model facts).
 fn options(harness: &Harness) -> Vec<taskboard_ui_slint::DropdownRow> {
     let model = harness
@@ -9804,6 +9836,142 @@ fn a_deck_publish_pick_routes_publish_board() {
             assert!(
                 harness.drain_requests().is_empty(),
                 "stale picks route nothing"
+            );
+        },
+    );
+}
+
+/// JP-F (round-6 D-6.8 phase 2, #722) — the Files card's visibility
+/// section: a files-bound live board renders a `FilesBoard` row titled
+/// by the LOCAL board; a Deck-bound board does not (binding-scoped
+/// equality — the rows derive from the engine's bindings only).
+#[test]
+fn the_files_card_lists_files_bound_boards() {
+    use taskboard_ui_slint::ConnectionItemKind as K;
+    let mut state = AppState::default();
+    let files_board = uuid::Uuid::new_v4();
+    let deck_board = uuid::Uuid::new_v4();
+    state_files_board(&mut state, files_board, "files rider");
+    state_board(&mut state, deck_board, "deck rider", Some("work"));
+    let settings = UiSettings {
+        connectors: vec![connector_row("work")],
+        ..UiSettings::default()
+    };
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount_with_settings(SlintDriver::default(), state, settings);
+            harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
+
+            let shape: Vec<(K, String)> = items(&harness)
+                .into_iter()
+                .map(|item| (item.kind, item.title.to_string()))
+                .collect();
+            let board_rows: Vec<&(K, String)> = shape
+                .iter()
+                .filter(|(kind, _)| *kind == K::FilesBoard)
+                .collect();
+            assert_eq!(
+                board_rows,
+                vec![&(K::FilesBoard, "files rider".to_owned())],
+                "exactly the files-bound board renders, titled by the local board"
+            );
+        },
+    );
+}
+
+/// JP-M (round-6 D-6.8 phase 2, #722) — the Files row's move picker:
+/// picking a Deck-bound board routes exactly one `MoveBoardToFiles`
+/// carrying the picked board, the gate closes, and the Files row
+/// carries the busy marker; the Ok reply clears both; stale picks
+/// route nothing and the Deck rows' publish pick is unaffected.
+#[test]
+fn a_files_move_pick_routes_move_board_to_files() {
+    use taskboard_ui_slint::ConnectionItemKind as K;
+    let mut state = AppState::default();
+    let home = uuid::Uuid::new_v4();
+    state_board(&mut state, home, "home", Some("work"));
+    // An unbound board: the publish seam's option set (the move seam
+    // must not disturb it).
+    let loose = uuid::Uuid::new_v4();
+    state_board(&mut state, loose, "loose", None);
+    let settings = UiSettings {
+        connectors: vec![connector_row("work")],
+        ..UiSettings::default()
+    };
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount_with_settings(SlintDriver::default(), state, settings);
+            harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
+            let window = harness.handle.window();
+
+            // The Files row carries no title; its index is the first
+            // Files-kind item (the card header precedes it).
+            let files_index = i32::try_from(
+                items(&harness)
+                    .iter()
+                    .position(|item| item.kind == K::Files)
+                    .expect("the Files row renders"),
+            )
+            .expect("index fits");
+            window.invoke_settings_move_picked(files_index, 0);
+            let mut requests = harness.drain_requests();
+            assert_eq!(requests.len(), 1, "exactly one move routed");
+            assert!(matches!(
+                &requests[0],
+                taskboard_ui_slint::requests::UiRequest::MoveBoardToFiles { board, .. }
+                    if board.as_uuid() == home
+            ));
+            assert!(model(&harness).get_busy(), "the gate is busy mid-flight");
+            assert!(
+                items(&harness)[usize::try_from(files_index).expect("fits")].busy,
+                "the ceremony rides the Files row"
+            );
+
+            let taskboard_ui_slint::requests::UiRequest::MoveBoardToFiles { reply, .. } =
+                requests.remove(0)
+            else {
+                panic!("the move routed");
+            };
+            reply
+                .send(Ok(ConnectionsSnapshot {
+                    boards: Vec::new(),
+                    connectors: vec![connector_row("work")],
+                }))
+                .expect("the reply lane is alive");
+            harness.handle.drain_setting_replies();
+            assert!(
+                !model(&harness).get_busy(),
+                "the gate cleared with the reply"
+            );
+            assert_eq!(
+                model(&harness).get_last_outcome(),
+                taskboard_ui_slint::SettingsOutcome::Ok,
+            );
+
+            // A stale item or option index is absorbed silently.
+            window.invoke_settings_move_picked(files_index, 9);
+            window.invoke_settings_move_picked(99, 0);
+            assert!(
+                harness.drain_requests().is_empty(),
+                "stale picks route nothing"
+            );
+
+            // The Deck rows' publish pick is unaffected by the move
+            // seam's existence.
+            let deck_index = item_at(&harness, K::Deck, "work");
+            window.invoke_settings_publish_picked(deck_index, 0);
+            let requests = harness.drain_requests();
+            assert!(
+                matches!(&requests[..], [taskboard_ui_slint::requests::UiRequest::PublishBoard { board, .. }] if board.as_uuid() == loose),
+                "the publish seam still routes its own option set"
             );
         },
     );

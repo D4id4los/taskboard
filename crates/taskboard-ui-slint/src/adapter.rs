@@ -3868,6 +3868,9 @@ enum PendingKind {
     Detach,
     /// `PublishBoard` (round-6 D-6.9, #699): the Deck row's marker.
     Publish,
+    /// `MoveBoardToFiles` (round-6 D-6.8 phase 2, #722): the Files
+    /// row's marker.
+    Move,
     Preset,
     Scale,
     /// One of the settings editor's commits (the GUI settings editor
@@ -3891,6 +3894,12 @@ enum ItemAddr {
     /// toggle picks On on a non-anchor card.
     Files {
         connector: String,
+    },
+    /// A files-bound board's visibility row (round-6 D-6.8 phase 2,
+    /// D-6): addressable for a future detach seam; the row carries no
+    /// action this round.
+    FilesBoard {
+        board: BoardId,
     },
     Deck {
         connector: String,
@@ -3950,6 +3959,9 @@ struct SettingsVm {
     items: Vec<ItemAddr>,
     /// The pickers' option ids, index-aligned with `board-options`.
     local_choices: Vec<uuid::Uuid>,
+    /// The move picker's option ids (round-6 D-6.8 phase 2, D-8),
+    /// index-aligned with `move-options`.
+    move_choices: Vec<uuid::Uuid>,
     /// The connector name the in-flight op addresses (r2 D34): set by
     /// the send seams, cleared with `pending`.
     busy_target: String,
@@ -4831,6 +4843,10 @@ impl Adapter {
                 items.push(crate::ConnectionItem {
                     kind: crate::ConnectionItemKind::Files,
                     files_on,
+                    // The move ceremony rides the Files row (round-6
+                    // D-6.8 phase 2, D-9): one BusyDot, no fake
+                    // progress — the reply is the next truth.
+                    busy: pending == Some(PendingKind::Move) && vm.busy_target == files_connector,
                     files_locked: vm.snapshot.env_overridden.contains("files_sync.enabled")
                         || vm.snapshot.env_overridden.contains("files_sync.anchor"),
                     files_restart: vm.snapshot.applies.get("files_sync.enabled").is_some_and(
@@ -4839,8 +4855,32 @@ impl Adapter {
                     ..blank.clone()
                 });
                 addrs.push(ItemAddr::Files {
-                    connector: files_connector,
+                    connector: files_connector.clone(),
                 });
+                // The files-bound live boards (round-6 D-6.8 phase 2,
+                // D-6): binding truth, derived from the engine state
+                // every pass — the id type is the lane tag (D-BF4), no
+                // connector-name match. The rows carry no actions;
+                // rendering is independent of the lane switch
+                // (toggling Files off freezes the sync, the binding
+                // persists — hiding the rows would fake the world).
+                for board in state.boards.values() {
+                    if board.deleted
+                        || board.archived
+                        || board
+                            .remote
+                            .as_ref()
+                            .is_none_or(|binding| binding.board.as_files().is_none())
+                    {
+                        continue;
+                    }
+                    items.push(crate::ConnectionItem {
+                        kind: crate::ConnectionItemKind::FilesBoard,
+                        title: board.title.clone().into(),
+                        ..blank.clone()
+                    });
+                    addrs.push(ItemAddr::FilesBoard { board: board.id });
+                }
             }
             let several = card.connectors.len() > 1;
             for connector in &card.connectors {
@@ -4985,6 +5025,21 @@ impl Adapter {
             })
             .collect();
         self.settings.local_choices = choices.iter().map(|board| board.id).collect();
+        // The move picker's options (round-6 D-6.8 phase 2, D-8): the
+        // Deck-bound live boards, re-derived EVERY pass — the same
+        // rule; the ceremony's own guard is the eligible set.
+        let move_choices: Vec<requests::BoardInfo> = crate::presentation::deck_bound_boards(&state);
+        let move_options: Vec<crate::DropdownRow> = move_choices
+            .iter()
+            .map(|board| crate::DropdownRow {
+                label: board.name.clone().into(),
+                indicator: crate::DropdownIndicator::LinkOff,
+                tone: crate::DropdownTone::Neutral,
+                selected: false,
+                busy: false,
+            })
+            .collect();
+        self.settings.move_choices = move_choices.iter().map(|board| board.id).collect();
         let (items, addrs) = Self::connection_items_model(&state, &self.settings);
         self.settings.items = addrs;
         let rows: Vec<crate::ConnectionRow> = self
@@ -5014,6 +5069,7 @@ impl Adapter {
         let global = window.global::<crate::SettingsModel>();
         self.models.push_settings_rows(&global, &rows);
         self.models.push_board_options(&global, &options);
+        self.models.push_move_options(&global, &move_options);
         self.models.push_connection_items(&global, &items);
         global.set_busy(self.settings.pending.is_some());
         global.set_busy_target(self.settings.busy_target.clone().into());
@@ -5532,6 +5588,35 @@ impl Adapter {
             request,
             reply_rx,
             PendingKind::Publish,
+            &connector,
+            None,
+        );
+    }
+
+    /// The Files row's move seam (round-6 D-6.8 phase 2, #722):
+    /// picking a Deck-bound local board moves it onto the files tier
+    /// through the shared ceremony request. A stale item/option index
+    /// is absorbed silently.
+    pub(crate) fn settings_move_picked(&mut self, window: &AppWindow, item: usize, option: usize) {
+        let Some(ItemAddr::Files { connector }) = self.settings.items.get(item).cloned() else {
+            return;
+        };
+        let Some(board) = self.settings.move_choices.get(option).copied() else {
+            return;
+        };
+        if self.settings.pending.is_some() {
+            return;
+        }
+        let (reply, reply_rx) = oneshot::channel();
+        let request = UiRequest::MoveBoardToFiles {
+            board: BoardId::from_uuid(board),
+            reply,
+        };
+        self.send_connections_op(
+            window,
+            request,
+            reply_rx,
+            PendingKind::Move,
             &connector,
             None,
         );
@@ -9679,6 +9764,15 @@ fn install_settings_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
                 return;
             };
             a.settings_publish_picked(&window, item, option);
+
+        });
+    }
+    {
+        install_seam!(window: window.on_settings_move_picked, adapter: adapter;
+        bind mut (a, window), args (item, option), {            let (Ok(item), Ok(option)) = (usize::try_from(item), usize::try_from(option)) else {
+                return;
+            };
+            a.settings_move_picked(&window, item, option);
 
         });
     }

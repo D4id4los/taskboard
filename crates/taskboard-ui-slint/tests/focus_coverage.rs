@@ -607,7 +607,22 @@ fn date_picker_fixture_by(grid: bool) -> Mounted {
 /// Settings over two boards, a remote row's picker flyout open (two
 /// rows to walk).
 fn dropdown_fixture() -> Mounted {
-    let (_fixture, state) = fixture::two_board_state();
+    let (_fixture, mut state) = fixture::two_board_state();
+    // One Deck-bound board (round-6 D-6.8 phase 2): the Files row's
+    // move picker is the walk order's first dropdown, and an
+    // empty-option picker is legitimately disabled — the fixture
+    // gives it rows so the first dropdown opens.
+    {
+        use taskboard_domain::{RemoteBoardBinding, RemoteBoardId};
+        for (raw, remote) in [(0x1001, 7), (0x1002, 8)] {
+            let id = taskboard_domain::BoardId::from_uuid(uuid::Uuid::from_u128(raw));
+            let board = state.boards.get_mut(&id).expect("fixture board");
+            board.remote = Some(RemoteBoardBinding {
+                board: RemoteBoardId::deck(remote),
+                connector: taskboard_domain::ConnectorId::from("work"),
+            });
+        }
+    }
     let settings = UiSettings {
         connectors: vec![taskboard_ui_slint::requests::ConnectorInfo {
             name: "work".into(),
