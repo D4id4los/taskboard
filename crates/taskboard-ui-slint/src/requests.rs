@@ -137,6 +137,10 @@ pub enum SettingsError {
     /// before touching the file — the adapter's hand-over gating
     /// prevents the attempt, the app-side guard is the authority.
     EnvLocked { field: Field },
+    /// The publish ceremony outlived its settle budget (D-6.9): the
+    /// board is created and bound, the first sync cycle is still
+    /// moving — nothing failed; it timed out.
+    SyncTimedOut,
 }
 
 /// The validated field of a [`SettingsError::Invalid`].
@@ -378,6 +382,16 @@ pub enum UiRequest {
     /// stops only when no other live board remains bound to it
     /// (r2 D33, the recorded multi-board guard).
     DetachConnector {
+        board: BoardId,
+        connector: String,
+        reply: oneshot::Sender<Result<ConnectionsSnapshot, SettingsError>>,
+    },
+    /// Publish a local board onto the named connector's server (D-6.9,
+    /// #699): create the Deck board from the local one's title/color
+    /// and bind to it — the `boards publish` ceremony. Refuses typed
+    /// (`BindRefused`) when the board is already bound; the reply
+    /// carries the fresh snapshot.
+    PublishBoard {
         board: BoardId,
         connector: String,
         reply: oneshot::Sender<Result<ConnectionsSnapshot, SettingsError>>,

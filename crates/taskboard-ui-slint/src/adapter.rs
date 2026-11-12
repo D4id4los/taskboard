@@ -4030,9 +4030,12 @@ impl SettingsVm {
             | SettingsError::Gone
             | SettingsError::BindRefused
             | SettingsError::EnvLocked { .. } => SettingsOutcome::Rejected,
-            SettingsError::VerifyUnreachable | SettingsError::StoreFailed => {
-                SettingsOutcome::Unavailable
-            }
+            SettingsError::VerifyUnreachable
+            | SettingsError::StoreFailed
+            // The publish budget expired with the ceremony still
+            // moving (D-6.9): transient, not a failure — observe the
+            // board's sync state instead of retrying the publish.
+            | SettingsError::SyncTimedOut => SettingsOutcome::Unavailable,
             SettingsError::VerifyFailed
             | SettingsError::PersistFailed
             | SettingsError::AttachBusy
