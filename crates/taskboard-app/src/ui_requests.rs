@@ -397,6 +397,10 @@ async fn handle_settings(request: UiRequest, workspace: &ConnectionWorkspace) {
             let outcome = move_board_to_files(workspace, board).await;
             let _ = reply.send(outcome);
         }
+        UiRequest::StopBoardFilesSync { board, reply } => {
+            let outcome = stop_board_files_sync(workspace, board).await;
+            let _ = reply.send(outcome);
+        }
         UiRequest::SetKeymapPreset { preset, reply } => {
             let _ = reply.send(set_keymap_preset(workspace, preset));
         }
@@ -1548,6 +1552,43 @@ async fn move_board_to_files(
     Ok(current_connections(workspace))
 }
 
+/// The roster's Stop-Sync choreography (round-7 D-7.3, W-4/D7): the
+/// guards are the engine's truth read fresh — the board present and
+/// not deleted (`Gone` otherwise), the binding files-typed
+/// (`BindRefused` otherwise: the row grammar can't normally offer
+/// those, the arm still refuses typed) — then `UnbindBoard` on the
+/// engine handle. No connector-actor detach step: the files lane is
+/// global (single-lane, #723), unlike Deck's `detach_connector_named`
+/// sweep. The remote `boards/<uuid>/` subtree lingers until the
+/// DELETE-verb GC exists (#755 — recorded in the request doc and
+/// R-4, not hidden). Reply: the fresh snapshot.
+async fn stop_board_files_sync(
+    workspace: &ConnectionWorkspace,
+    board: BoardId,
+) -> Result<ConnectionsSnapshot, SettingsError> {
+    let state = workspace.engine.shared_state().load();
+    let row = state
+        .boards
+        .get(&board)
+        .filter(|b| !b.deleted)
+        .ok_or(SettingsError::Gone)?;
+    if row
+        .remote
+        .as_ref()
+        .is_none_or(|binding| binding.board.as_files().is_none())
+    {
+        return Err(SettingsError::BindRefused);
+    }
+    drop(state);
+    workspace
+        .engine
+        .execute(StateCommand::UnbindBoard { board })
+        .await
+        .map_err(|e| map_execute_error(&e))?;
+    tracing::info!(board = %board.as_uuid(), "settings stop files sync committed");
+    Ok(current_connections(workspace))
+}
+
 /// The move ceremony's typed fold (D-5): the classes the settings
 /// surface can name, with the concrete `MoveError` logged at `warn`
 /// for the diagnostics the coarse class drops.
@@ -1774,6 +1815,82 @@ mod tests {
             Some("work"),
             "the name field is untouched — the channel is the id type's"
         );
+    }
+
+    // -- the Stop arm (round-7 D-7.3, W-4) ------------------------------
+
+    /// US-2/S2 — the Stop arm's guards refuse typed: a gone board is
+    /// `Gone`; a deck-bound and an unbound board are `BindRefused`
+    /// (the row grammar can't normally offer those — the arm still
+    /// refuses typed).
+    #[tokio::test]
+    async fn us2_s2_stop_sync_guards_refuse_typed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = dir.path().join("taskboard.toml");
+        std::fs::write(&config, "[ui]\nscale = 1.0\n").expect("seed");
+        let workspace = test_workspace(config).await;
+
+        let deck_bound = create_board(&workspace, "deck board").await;
+        let unbound = create_board(&workspace, "loose").await;
+        workspace
+            .engine
+            .execute(StateCommand::BindBoard {
+                board: deck_bound,
+                remote: taskboard_domain::RemoteBoardId::deck(7),
+                connector: taskboard_domain::ConnectorId::from("work"),
+            })
+            .await
+            .expect("deck bind lands");
+
+        let gone = stop_board_files_sync(&workspace, BoardId::from_uuid(uuid::Uuid::now_v7()))
+            .await
+            .expect_err("a gone board refuses");
+        assert_eq!(gone, SettingsError::Gone);
+        let deck = stop_board_files_sync(&workspace, deck_bound)
+            .await
+            .expect_err("a deck-bound board refuses");
+        assert_eq!(deck, SettingsError::BindRefused);
+        let loose = stop_board_files_sync(&workspace, unbound)
+            .await
+            .expect_err("an unbound board refuses");
+        assert_eq!(loose, SettingsError::BindRefused);
+    }
+
+    /// The Stop arm's exact effect (US-2/S3): the engine receives the
+    /// unbind — the files binding is gone, the board itself survives
+    /// (unbind is not a delete) — and the reply is the fresh
+    /// snapshot whose board half no longer carries the binding.
+    #[tokio::test]
+    async fn stop_board_files_sync_sends_exact_unbind_command() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = dir.path().join("taskboard.toml");
+        std::fs::write(&config, "[ui]\nscale = 1.0\n").expect("seed");
+        let workspace = test_workspace(config).await;
+        let board = create_board(&workspace, "files board").await;
+        workspace
+            .engine
+            .execute(StateCommand::BindBoard {
+                board,
+                remote: taskboard_domain::RemoteBoardId::files(uuid::Uuid::now_v7()),
+                connector: taskboard_domain::ConnectorId::from("files-sync"),
+            })
+            .await
+            .expect("files bind lands");
+
+        let snapshot = stop_board_files_sync(&workspace, board)
+            .await
+            .expect("a files-bound board stops");
+        let state = workspace.engine.shared_state().load();
+        let row = state.boards.get(&board).expect("the board survives");
+        assert!(row.remote.is_none(), "the binding is unbound");
+        assert!(!row.deleted, "unbind is not a delete");
+        let replied = snapshot
+            .boards
+            .iter()
+            .find(|info| info.id == board.as_uuid())
+            .expect("the board is in the fresh snapshot");
+        assert_eq!(replied.bound_channel, None);
+        assert_eq!(replied.bound_connector, None);
     }
 
     fn fixture_state() -> (AppState, uuid::Uuid, uuid::Uuid, uuid::Uuid) {
