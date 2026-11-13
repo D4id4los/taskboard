@@ -233,9 +233,10 @@ fn key_of(effect: &UiEffect) -> EK {
         UiEffect::TrackEntriesOpen => EK::TrackEntriesOpen,
         // The recur row's intents (issue #506): flag flips over the
         // subject — no flow moves, no command routes.
-        UiEffect::SeriesPauseOpen | UiEffect::HabitConvertArm | UiEffect::SeriesConvertArm => {
-            EK::RecurIntent
-        }
+        UiEffect::SeriesPauseOpen
+        | UiEffect::HabitConvertArm
+        | UiEffect::HabitCreateToggle
+        | UiEffect::SeriesConvertArm => EK::RecurIntent,
         UiEffect::TrackEntryDismiss => EK::TrackEntryDismiss,
         UiEffect::OpenPlanNextDay => EK::PlanOpen,
         UiEffect::PlanBeginPlace(_) => EK::PlanBegin,
@@ -1164,6 +1165,7 @@ fn all_effects(fx: &Fixture) -> Vec<UiEffect> {
         // intent class as the entries' open.
         UiEffect::SeriesPauseOpen,
         UiEffect::HabitConvertArm,
+        UiEffect::HabitCreateToggle,
         UiEffect::SeriesConvertArm,
         // The plan-next-day family (#622).
         UiEffect::OpenPlanNextDay,
@@ -2298,6 +2300,7 @@ fn dismiss_class(effect: &UiEffect) -> DismissClass {
             // modal takeover, the flags ride the next pass.
             | UiEffect::SeriesPauseOpen
             | UiEffect::HabitConvertArm
+            | UiEffect::HabitCreateToggle
             | UiEffect::SeriesConvertArm
         | UiEffect::BeginCapture
         | UiEffect::ToggleFocusMode

@@ -74,6 +74,11 @@ pub enum UiEffect {
     /// adapter records the armed row; the dispatch itself waits for
     /// Confirm.
     HabitConvertArm,
+    /// The create form's open/toggle (round-7 D-7.2): the adapter
+    /// flips the armed flag — open when closed, discard-and-close
+    /// when armed — only with an active board; kiosk stays inert
+    /// (the action gate, D-T16).
+    HabitCreateToggle,
     /// Arm the recur row's conversion confirm strip (issue #506).
     SeriesConvertArm,
     SetMode(Mode),
@@ -308,7 +313,16 @@ impl UiEffect {
             | Self::StackNext
             | Self::StackPrev
             | Self::StackWider
-            | Self::StackNarrower => EffectClass::Nav,
+            | Self::StackNarrower
+            // The habit trio's + create form's intents are flag flips
+            // over the subject (issue #506; round-7 D-7.2): no flow
+            // moves, no command routes — the nav bucket's contract
+            // (the adapter's interpretation table owns them; no shell
+            // state moves).
+            | Self::SeriesPauseOpen
+            | Self::HabitConvertArm
+            | Self::HabitCreateToggle
+            | Self::SeriesConvertArm => EffectClass::Nav,
             Self::StackDelete
             | Self::StackRename
             | Self::StackMove
@@ -328,13 +342,6 @@ impl UiEffect {
             | Self::PlanBoxLater(_)
             | Self::PlanRemoveBox(_) => EffectClass::PlanSurface,
             Self::OpenReviewWalk | Self::ReviewWalk(_) => EffectClass::ReviewWalk,
-            // The habit trio's intents are flag flips over the subject
-            // (issue #506): no flow moves, no command routes — the
-            // nav bucket's contract (the adapter's interpretation
-            // table owns them; no shell state moves).
-            Self::SeriesPauseOpen | Self::HabitConvertArm | Self::SeriesConvertArm => {
-                EffectClass::Nav
-            }
             Self::BeginCapture => EffectClass::BeginCapture,
             Self::Activate | Self::SetMode(_) => EffectClass::Edit,
             Self::BeginTitleEdit => EffectClass::Title,
@@ -377,6 +384,17 @@ pub struct TimerDraft {
     /// projects the two-rung enum's alarm bit; the default pick mints
     /// `Normal`.
     pub insistence: taskboard_domain::Insistence,
+}
+
+/// The habit create form's commit payload (round-7 D-7.2): the trust
+/// boundary's minted triple — the section's board (resolved fresh at
+/// commit, never cached at arm), the trimmed title, and the quota
+/// target through the `NonZeroCount` mint.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HabitCreateDraft {
+    pub board: taskboard_domain::BoardId,
+    pub title: String,
+    pub target: taskboard_domain::HabitTarget,
 }
 
 /// The focused-entity seam (D16): chunk 2's shell has no views, so
@@ -461,6 +479,11 @@ pub struct DispatchCtx {
     /// `ConvertHabitToSeries` from it together with the pattern draft
     /// (`NoTarget` without either).
     pub habit_convert_target: Option<taskboard_domain::HabitId>,
+    /// The create form's one-shot payload (round-7 D-7.2): the exact
+    /// `CreateHabit` triple the confirm seam minted (board resolved
+    /// fresh at commit, the minted quota target) — `habit.create-commit`
+    /// consumes it, then it is gone (the one-shot take law).
+    pub habit_create_draft: Option<HabitCreateDraft>,
     /// The conversion's pattern draft (issue #506, D-2): the quota's
     /// default mapping the adapter computed from the row; consumed by
     /// the confirm dispatch.
@@ -669,6 +692,19 @@ impl ActionRouter {
                     _ => DispatchOutcome::NoTarget,
                 }
             }
+            // The create form (round-7 D-7.2): the opener is a view
+            // intent (the adapter's toggle); the commit routes the
+            // domain verb from the one-shot draft (`NoTarget` without
+            // one — the stale/disarmed form commits nothing).
+            ActionId::HabitCreate => DispatchOutcome::UiEffect(UiEffect::HabitCreateToggle),
+            ActionId::HabitCreateCommit => match ctx.habit_create_draft.clone() {
+                Some(draft) => DispatchOutcome::Command(StateCommand::CreateHabit {
+                    board: draft.board,
+                    title: draft.title,
+                    target: draft.target,
+                }),
+                None => DispatchOutcome::NoTarget,
+            },
             // The series verbs (issue #506, plan D-8): the pause open
             // is a view intent; commit and resume route the domain
             // verb from the recur row's one-shot target.
@@ -972,6 +1008,7 @@ mod tests {
             habit_move: None,
             habit_repair: None,
             habit_convert_target: None,
+            habit_create_draft: None,
             pattern_draft: None,
             plan_target: None,
             series_target: None,

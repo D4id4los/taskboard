@@ -233,6 +233,18 @@ pub fn timer_setter_dismisses(open: bool, stroke: crate::keymap::Stroke) -> bool
     open && is_bare(stroke) && stroke.named_name() == Some("Escape")
 }
 
+/// The habit create form's dismissal arm (round-7 D-7.2, the timer
+/// setter's twin): bare Escape ahead of the resolver — the armed form
+/// is presentation state, so its Escape is an explicit decline routed
+/// to the adapter's disarm funnel (nothing commits). A `Today`-context
+/// Escape *binding* would statically shadow Global `TaskMoveCancel`'s
+/// Escape on the whole view (exact-match-first resolution) — this arm
+/// is the action layer's existing funnel for that shape.
+#[must_use]
+pub fn habit_create_dismisses(open: bool, stroke: crate::keymap::Stroke) -> bool {
+    open && is_bare(stroke) && stroke.named_name() == Some("Escape")
+}
+
 /// The due editor's Down arm (special case B, r2 D25 / round-3 D10):
 /// while the `EditDate` flow holds, bare Down opens the picker
 /// grid-focused — or, with the picker already open, performs the

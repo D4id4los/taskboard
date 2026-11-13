@@ -104,6 +104,7 @@ impl KeymapShell {
         crate::router::DispatchCtx {
             focused_task: self.focused_task,
             focused_stack: self.focused_stack,
+            habit_create_draft: None,
             plan_target: None,
             create_target: None,
             reminder_target: None,
@@ -242,6 +243,7 @@ impl KeymapShell {
             | UiEffect::TrackEntryDismiss
             | UiEffect::SeriesPauseOpen
             | UiEffect::HabitConvertArm
+            | UiEffect::HabitCreateToggle
             | UiEffect::SeriesConvertArm
             // The review walk's intents are adapter-interpreted view
             // intents (DR-7 chunk 3, #638); the shell records nothing

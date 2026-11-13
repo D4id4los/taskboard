@@ -475,6 +475,11 @@ mod tests {
             // nav.show-task stays out — uniformly unbound).
             ActionId::ViewScrollUp,
             ActionId::ViewScrollDown,
+            // Round 7 (D-7.2): the habit create opener joins the core
+            // set — the accessibility ledger's parity demand makes it
+            // bound in every preset (the no-second-class gate now
+            // enforces that forever).
+            ActionId::HabitCreate,
         ];
         for preset in [Preset::Standard, Preset::Emacs, Preset::Vi] {
             let bound: std::collections::BTreeSet<ActionId> =
