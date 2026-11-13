@@ -78,6 +78,16 @@ export enum ConnectionItemKind {
     remote,
 }
 
+// The files-roster badge's tone vocabulary (round-7 D-7.3, W-2/D2):
+// computed Rust-side, mapped onto the existing `Badge`'s `Tone` by a
+// pure three-arm function in the row — no new `Tone` variants (the
+// theme ruling stands).
+export enum SettingsBadgeTone {
+    success,
+    neutral,
+    info,
+}
+
 // One rendered connections item (the flat, positional projection of
 // the account cards — the adapter resolves every callback's item
 // index through its own address table; no id enters the model).
