@@ -9605,27 +9605,33 @@ fn the_account_cards_group_connectors_and_the_options_project_the_state() {
                 vec![
                     K::Account,
                     K::Files,
+                    K::FilesBoard,
+                    K::FilesBoard,
                     K::Deck,
                     K::Remote,
                     K::Deck,
                     K::Account,
                     K::Files,
+                    K::FilesBoard,
+                    K::FilesBoard,
                     K::Deck
                 ],
-                "header, a Files row on EVERY Nextcloud card (round-6 D-6.6), a Deck
-                 row per connector — plus the binding-without-listing Remote row
-                 (round-6 D-6.7)"
+                "header, a Files row on EVERY Nextcloud card (round-6 D-6.6) with the
+                 card's roster after it (round-7 D-7.3: every live board once per
+                 card, LocalOnly sorted first), a Deck row per connector — plus the
+                 binding-without-listing Remote row (round-6 D-6.7)"
             );
-            assert_eq!(shape[2].1, "work");
-            assert_eq!(shape[3].1, "away", "the binding-without-listing row");
-            assert_eq!(shape[4].1, "work-2");
+            assert_eq!(shape[2].1, "home", "the roster's LocalOnly row sorts first");
+            assert_eq!(shape[3].1, "away", "the deck-bound board's roster row");
+            assert_eq!(shape[4].1, "work");
+            assert_eq!(shape[6].1, "work-2");
             assert!(
-                shape[2].2 && shape[4].2,
+                shape[4].2 && shape[6].2,
                 "a shared card labels its Deck rows"
             );
-            assert!(!shape[7].2, "a single-connector card does not");
+            assert!(!shape[11].2, "a single-connector card does not");
             assert!(
-                !items(&harness)[6].files_on,
+                !items(&harness)[8].files_on,
                 "the second card's Files row renders Off (not the anchor)"
             );
             let labels: Vec<String> = options(&harness)
@@ -9847,10 +9853,13 @@ fn a_deck_publish_pick_routes_publish_board() {
     );
 }
 
-/// JP-F (round-6 D-6.8 phase 2, #722) — the Files card's visibility
-/// section: a files-bound live board renders a `FilesBoard` row titled
-/// by the LOCAL board; a Deck-bound board does not (binding-scoped
-/// equality — the rows derive from the engine's bindings only).
+/// JP-F (re-authored round-7 D-7.3, W-3) — the Files section is the
+/// per-account roster: every live board renders once, titled by the
+/// LOCAL board, rows derived from the engine's bindings every pass.
+/// (Round-6's files-bound-only posture was the picker-era eligibility
+/// set; the roster's broader visibility — archived boards included,
+/// flagged — is US-1 AC-2, covered by the `us1_s2`/`us1_s3` journeys and
+/// the presentation fold tests.)
 #[test]
 fn the_files_card_lists_files_bound_boards() {
     use taskboard_ui_slint::ConnectionItemKind as K;
@@ -9882,102 +9891,615 @@ fn the_files_card_lists_files_bound_boards() {
                 .collect();
             assert_eq!(
                 board_rows,
-                vec![&(K::FilesBoard, "files rider".to_owned())],
-                "exactly the files-bound board renders, titled by the local board"
+                vec![
+                    &(K::FilesBoard, "deck rider".to_owned()),
+                    &(K::FilesBoard, "files rider".to_owned()),
+                ],
+                "every live board renders once, titled by the local board"
             );
         },
     );
 }
 
-/// JP-M (round-6 D-6.8 phase 2, #722) — the Files row's move picker:
-/// picking a Deck-bound board routes exactly one `MoveBoardToFiles`
-/// carrying the picked board, the gate closes, and the Files row
-/// carries the busy marker; the Ok reply clears both; stale picks
-/// route nothing and the Deck rows' publish pick is unaffected.
+// -- the files roster's journeys (round-7 D-7.3; the UX origin
+// .artifacts/plans/2026-11-13-r7-files-roster-ux-plan.md's step-token
+// naming law: one test per journey step, tokens in the names) --------
+
+/// The two-card fixtures' settings hand-over: two Nextcloud
+/// identities (two account cards), the files lane on and anchored to
+/// card A's connector — exactly one card renders the lane On.
+fn two_card_settings() -> UiSettings {
+    UiSettings {
+        connectors: vec![
+            identity_row("a", "https://x.example", "alice"),
+            identity_row("b", "https://y.example", "bob"),
+        ],
+        general: taskboard_ui_slint::requests::SettingsSnapshot {
+            files_sync_enabled: true,
+            files_sync_anchor: Some("a".into()),
+            ..taskboard_ui_slint::requests::SettingsSnapshot::default()
+        },
+        ..UiSettings::default()
+    }
+}
+
+/// The roster rows' indexes: one row per board per card, so a title
+/// yields one index per card in card order (the walk's positional
+/// truth — data identity, titles are the fixture's keys).
+fn roster_indexes(
+    harness: &Harness,
+    kind: taskboard_ui_slint::ConnectionItemKind,
+    title: &str,
+) -> Vec<usize> {
+    items(harness)
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| item.kind == kind && item.title == title)
+        .map(|(index, _)| index)
+        .collect()
+}
+
+/// US-1/S1 — opening the Settings view renders each account card's
+/// Files roster section: every card walks the Files row, then its
+/// roster rows. Back navigation is the existing escape (the view's
+/// own seam, unchanged).
 #[test]
-fn a_files_move_pick_routes_move_board_to_files() {
+fn us1_s1_settings_cards_render_the_files_roster() {
     use taskboard_ui_slint::ConnectionItemKind as K;
     let mut state = AppState::default();
-    let home = uuid::Uuid::new_v4();
-    state_board(&mut state, home, "home", Some("work"));
-    // An unbound board: the publish seam's option set (the move seam
-    // must not disturb it).
-    let loose = uuid::Uuid::new_v4();
-    state_board(&mut state, loose, "loose", None);
-    let settings = UiSettings {
-        connectors: vec![connector_row("work")],
-        ..UiSettings::default()
-    };
+    let files = uuid::Uuid::new_v4();
+    state_files_board(&mut state, files, "files rider");
     support::driver::run(
         DriverOptions {
             headless_renderer: true,
         },
         move |_driver| {
-            let mut harness = Harness::mount_with_settings(SlintDriver::default(), state, settings);
+            let mut harness =
+                Harness::mount_with_settings(SlintDriver::default(), state, two_card_settings());
+            harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
+
+            let per_card = roster_indexes(&harness, K::FilesBoard, "files rider");
+            assert_eq!(
+                per_card.len(),
+                2,
+                "the roster renders once per Nextcloud account card"
+            );
+            assert_eq!(
+                items(&harness)
+                    .iter()
+                    .filter(|item| item.kind == K::Files)
+                    .count(),
+                2,
+                "each card walks its Files row before the roster rows"
+            );
+        },
+    );
+}
+
+/// US-1/S2 — the badges and the sort: on the anchor card the
+/// files-bound board reads `ThisConnection` (success), an unbound pair
+/// sorts `LocalOnly` (neutral) by title, a deck-bound board reads
+/// `OtherConnection` (info); the non-anchor card's same boards read
+/// `OtherConnection`. The badge TEXT is copy — asserted by the
+/// presentation fold's pinned-label test, never here.
+#[test]
+fn us1_s2_roster_badges_sort_and_tones() {
+    use taskboard_ui_slint::ConnectionItemKind as K;
+    use taskboard_ui_slint::SettingsBadgeTone;
+    let mut state = AppState::default();
+    let files = uuid::Uuid::new_v4();
+    state_files_board(&mut state, files, "files rider");
+    let deck = uuid::Uuid::new_v4();
+    state_board(&mut state, deck, "deck rider", Some("work"));
+    // Inserted after `alpha`, titled to sort before it: the map order
+    // must not leak (the (title, id) tiebreak).
+    let zeta = uuid::Uuid::new_v4();
+    state_board(&mut state, zeta, "alpha", None);
+    let alpha = uuid::Uuid::new_v4();
+    state_board(&mut state, alpha, "zeta", None);
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness =
+                Harness::mount_with_settings(SlintDriver::default(), state, two_card_settings());
+            harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
+
+            let all = items(&harness);
+            let roster: Vec<taskboard_ui_slint::ConnectionItem> = all
+                .iter()
+                .filter(|item| item.kind == K::FilesBoard)
+                .cloned()
+                .collect();
+            assert_eq!(roster.len(), 8, "four boards × two cards");
+            // Card A (the anchor): ThisConnection → LocalOnly ×2 →
+            // OtherConnection ×2, the LocalOnly pair in title order.
+            let card_a = &roster[..4];
+            let titles: Vec<String> = card_a.iter().map(|item| item.title.to_string()).collect();
+            assert_eq!(
+                titles,
+                vec![
+                    "files rider".to_owned(),
+                    "alpha".to_owned(),
+                    "zeta".to_owned(),
+                    "deck rider".to_owned(),
+                ],
+                "ThisConnection, then LocalOnly by (title), then OtherConnection — the map order does not leak"
+            );
+            assert_eq!(card_a[0].badge_tone, SettingsBadgeTone::Success);
+            assert_eq!(card_a[1].badge_tone, SettingsBadgeTone::Neutral);
+            assert_eq!(card_a[3].badge_tone, SettingsBadgeTone::Info);
+            assert!(!card_a[0].archived);
+            // Card B (non-anchor): the same boards, but the
+            // files-bound board now reads OtherConnection — so the
+            // per-card sort re-orders LocalOnly first, and the two
+            // OtherConnection rows follow in title order. The badge
+            // is channel-relative, the sort per-account (US-1 AC-1).
+            let card_b = &roster[4..];
+            assert_eq!(card_b[0].badge_tone, SettingsBadgeTone::Neutral);
+            assert_eq!(card_b[1].badge_tone, SettingsBadgeTone::Neutral);
+            assert_eq!(card_b[2].badge_tone, SettingsBadgeTone::Info);
+            assert_eq!(card_b[3].badge_tone, SettingsBadgeTone::Info);
+            assert_eq!(card_b[3].title, "files rider");
+            assert_eq!(card_b[2].title, "deck rider");
+        },
+    );
+}
+
+/// US-1/S3 — the action postures: the anchor card's rows are enabled
+/// with their action labels set; the non-anchor card's rows carry
+/// the honest disabled affordance (R-3), and clicking one dispatches
+/// nothing (the adapter guard absorbs it).
+#[test]
+fn us1_s3_disabled_row_action_postures_absorb_click() {
+    use taskboard_ui_slint::ConnectionItemKind as K;
+    let mut state = AppState::default();
+    let files = uuid::Uuid::new_v4();
+    state_files_board(&mut state, files, "files rider");
+    let deck = uuid::Uuid::new_v4();
+    state_board(&mut state, deck, "deck rider", Some("work"));
+    let loose = uuid::Uuid::new_v4();
+    state_board(&mut state, loose, "loose", None);
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness =
+                Harness::mount_with_settings(SlintDriver::default(), state, two_card_settings());
             harness.press(ActionId::AppSettings);
             settle_auto_lists(&harness, no_rows);
             let window = harness.handle.window();
 
-            // The Files row carries no title; its index is the first
-            // Files-kind item (the card header precedes it).
-            let files_index = i32::try_from(
-                items(&harness)
-                    .iter()
-                    .position(|item| item.kind == K::Files)
-                    .expect("the Files row renders"),
-            )
-            .expect("index fits");
-            window.invoke_settings_move_picked(files_index, 0);
-            let mut requests = harness.drain_requests();
-            assert_eq!(requests.len(), 1, "exactly one move routed");
-            assert!(matches!(
-                &requests[0],
-                taskboard_ui_slint::requests::UiRequest::MoveBoardToFiles { board, .. }
-                    if board.as_uuid() == home
-            ));
-            assert!(model(&harness).get_busy(), "the gate is busy mid-flight");
-            assert!(
-                items(&harness)[usize::try_from(files_index).expect("fits")].busy,
-                "the ceremony rides the Files row"
+            let all = items(&harness);
+            let roster: Vec<&taskboard_ui_slint::ConnectionItem> = all
+                .iter()
+                .filter(|item| item.kind == K::FilesBoard)
+                .collect();
+            assert_eq!(roster.len(), 6, "three boards × two cards");
+            // The anchor card's half (the first occurrence of each
+            // board): enabled, action present.
+            for row in roster.iter().take(3) {
+                assert!(row.action_enabled, "anchor rows are enabled");
+                assert!(!row.busy, "no ceremony in flight");
+            }
+            // The non-anchor card's half: same labels, disabled.
+            for row in roster.iter().skip(3) {
+                assert!(!row.action_enabled, "non-anchor rows are disabled (R-3)");
+            }
+            // Clicking a disabled row dispatches nothing.
+            let disabled_index = items(&harness)
+                .iter()
+                .position(|item| item.kind == K::FilesBoard && !item.action_enabled)
+                .expect("a disabled row renders");
+            window.invoke_settings_files_board_action_clicked(
+                i32::try_from(disabled_index).expect("fits"),
             );
+            assert!(
+                harness.drain_requests().is_empty(),
+                "a disabled row's click is absorbed"
+            );
+        },
+    );
+}
 
-            let taskboard_ui_slint::requests::UiRequest::MoveBoardToFiles { reply, .. } =
+/// US-2/S1 — pressing a `ThisConnection` row's "Stop Sync" action
+/// dispatches exactly one `StopBoardFilesSync` carrying the row's
+/// board; the row busy marker rides the row; a second click during
+/// the pending is absorbed.
+#[test]
+fn us2_s1_roster_row_action_dispatches_stop_board_files_sync() {
+    use taskboard_ui_slint::ConnectionItemKind as K;
+    let mut state = AppState::default();
+    let files = uuid::Uuid::new_v4();
+    state_files_board(&mut state, files, "files rider");
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness =
+                Harness::mount_with_settings(SlintDriver::default(), state, two_card_settings());
+            harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
+            let window = harness.handle.window();
+
+            let row = roster_indexes(&harness, K::FilesBoard, "files rider")[0];
+            window.invoke_settings_files_board_action_clicked(i32::try_from(row).expect("fits"));
+            let requests = harness.drain_requests();
+            assert!(
+                matches!(
+                    &requests[..],
+                    [taskboard_ui_slint::requests::UiRequest::StopBoardFilesSync { board, .. }]
+                        if board.as_uuid() == files
+                ),
+                "exactly one stop routed, carrying the row's board"
+            );
+            assert!(
+                items(&harness)[row].busy,
+                "the busy marker rides the specific roster row"
+            );
+            // Re-entrancy: the pending absorbs a second click.
+            window.invoke_settings_files_board_action_clicked(i32::try_from(row).expect("fits"));
+            assert!(
+                harness.drain_requests().is_empty(),
+                "the in-flight op absorbs further clicks"
+            );
+        },
+    );
+}
+
+/// US-2/S2 — the typed refusal is the escape surface: a stale
+/// stop's `BindRefused` lands in the error fold (the Rejected
+/// outcome) and the roster stays intact.
+#[test]
+fn us2_s2_typed_refusal_surfaces_the_error_fold_roster_intact() {
+    use taskboard_ui_slint::ConnectionItemKind as K;
+    let mut state = AppState::default();
+    let files = uuid::Uuid::new_v4();
+    state_files_board(&mut state, files, "files rider");
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness =
+                Harness::mount_with_settings(SlintDriver::default(), state, two_card_settings());
+            harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
+            let window = harness.handle.window();
+
+            let row = roster_indexes(&harness, K::FilesBoard, "files rider")[0];
+            window.invoke_settings_files_board_action_clicked(i32::try_from(row).expect("fits"));
+            let mut requests = harness.drain_requests();
+            let taskboard_ui_slint::requests::UiRequest::StopBoardFilesSync { reply, .. } =
                 requests.remove(0)
             else {
-                panic!("the move routed");
+                panic!("the stop routed");
             };
             reply
+                .send(Err(
+                    taskboard_ui_slint::requests::SettingsError::BindRefused,
+                ))
+                .expect("the reply lane is alive");
+            harness.handle.drain_setting_replies();
+            assert_eq!(
+                model(&harness).get_last_outcome(),
+                taskboard_ui_slint::SettingsOutcome::Rejected,
+                "the typed refusal lands in the error fold"
+            );
+            assert_eq!(
+                roster_indexes(&harness, K::FilesBoard, "files rider").len(),
+                2,
+                "the roster stays intact"
+            );
+            assert!(!model(&harness).get_busy(), "the gate cleared");
+        },
+    );
+}
+
+/// US-2/S3 — after the unbind lands (state + Ok reply), the row's
+/// badge flips to `LocalOnly` and the action re-arms as the publish
+/// path: pressing it again dispatches `PublishBoardToFiles`.
+#[test]
+fn us2_s3_badge_flips_local_only_and_action_rearms() {
+    use taskboard_ui_slint::ConnectionItemKind as K;
+    use taskboard_ui_slint::SettingsBadgeTone;
+    let mut state = AppState::default();
+    let files = uuid::Uuid::new_v4();
+    state_files_board(&mut state, files, "files rider");
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness =
+                Harness::mount_with_settings(SlintDriver::default(), state, two_card_settings());
+            harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
+            let window = harness.handle.window();
+
+            let row = roster_indexes(&harness, K::FilesBoard, "files rider")[0];
+            window.invoke_settings_files_board_action_clicked(i32::try_from(row).expect("fits"));
+            let mut requests = harness.drain_requests();
+            let taskboard_ui_slint::requests::UiRequest::StopBoardFilesSync { reply, .. } =
+                requests.remove(0)
+            else {
+                panic!("the stop routed");
+            };
+            // The unbind lands engine-side; the fresh snapshot echoes
+            // it (the standard refresh discipline — the next truth is
+            // the reply, never an optimistic flip).
+            let mut next = AppState::default();
+            state_board(&mut next, files, "files rider", None);
+            harness.engine.replace_state(next, &harness.handle);
+            reply
                 .send(Ok(ConnectionsSnapshot {
-                    boards: Vec::new(),
-                    connectors: vec![connector_row("work")],
+                    boards: vec![taskboard_ui_slint::requests::BoardInfo {
+                        id: files,
+                        name: "files rider".into(),
+                        bound_connector: None,
+                        bound_channel: None,
+                    }],
+                    connectors: harness_settings_connectors(),
                 }))
                 .expect("the reply lane is alive");
             harness.handle.drain_setting_replies();
+
+            let all = items(&harness);
+            let flipped = all
+                .iter()
+                .find(|item| item.kind == K::FilesBoard && item.title == "files rider")
+                .expect("the row re-renders");
+            assert_eq!(flipped.badge_tone, SettingsBadgeTone::Neutral, "LocalOnly");
+            assert!(flipped.action_enabled, "the re-armed action is enabled");
+            // The re-armed action routes the publish path.
+            let index = roster_indexes(&harness, K::FilesBoard, "files rider")[0];
+            window.invoke_settings_files_board_action_clicked(i32::try_from(index).expect("fits"));
+            assert!(matches!(
+                &harness.drain_requests()[..],
+                [taskboard_ui_slint::requests::UiRequest::PublishBoardToFiles { board, .. }]
+                    if board.as_uuid() == files
+            ));
+        },
+    );
+}
+
+/// The two-card identity rows, echoed back in the replies (the
+/// connector half re-renders the rows from the reply, r2 D32).
+fn harness_settings_connectors() -> Vec<taskboard_ui_slint::requests::ConnectorInfo> {
+    vec![
+        identity_row("a", "https://x.example", "alice"),
+        identity_row("b", "https://y.example", "bob"),
+    ]
+}
+
+/// US-3/S1 — pressing a deck-bound row's switch action dispatches
+/// `MoveBoardToFiles` verbatim (no new ceremony parameters); the
+/// busy marker rides the Files row (the move ceremony's existing
+/// grammar); a stale row index absorbs.
+#[test]
+fn us3_s1_switch_action_dispatches_move_board_to_files() {
+    use taskboard_ui_slint::ConnectionItemKind as K;
+    let mut state = AppState::default();
+    let deck = uuid::Uuid::new_v4();
+    state_board(&mut state, deck, "deck rider", Some("work"));
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness =
+                Harness::mount_with_settings(SlintDriver::default(), state, two_card_settings());
+            harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
+            let window = harness.handle.window();
+
+            let row = roster_indexes(&harness, K::FilesBoard, "deck rider")[0];
+            window.invoke_settings_files_board_action_clicked(i32::try_from(row).expect("fits"));
+            let requests = harness.drain_requests();
             assert!(
-                !model(&harness).get_busy(),
-                "the gate cleared with the reply"
+                matches!(
+                    &requests[..],
+                    [taskboard_ui_slint::requests::UiRequest::MoveBoardToFiles { board, .. }]
+                        if board.as_uuid() == deck
+                ),
+                "the switch routes the move ceremony verbatim"
             );
+            // The move's busy marker rides the Files row (D9: the
+            // existing grammar stands; the row itself carries no dot).
+            let files_row = items(&harness)
+                .iter()
+                .position(|item| item.kind == K::Files)
+                .expect("the Files row renders");
+            assert!(
+                items(&harness)[files_row].busy,
+                "the ceremony rides the Files row"
+            );
+            // A stale index absorbs silently.
+            window.invoke_settings_files_board_action_clicked(99);
+            assert!(
+                harness.drain_requests().is_empty(),
+                "a stale row index routes nothing"
+            );
+        },
+    );
+}
+
+/// US-3/S2 — after the move lands, the badge flips to
+/// `ThisConnection` on the anchor card.
+#[test]
+fn us3_s2_badge_flips_this_connection_after_move() {
+    use taskboard_ui_slint::ConnectionItemKind as K;
+    use taskboard_ui_slint::SettingsBadgeTone;
+    let mut state = AppState::default();
+    let deck = uuid::Uuid::new_v4();
+    state_board(&mut state, deck, "deck rider", Some("work"));
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness =
+                Harness::mount_with_settings(SlintDriver::default(), state, two_card_settings());
+            harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
+
+            let mut next = AppState::default();
+            state_files_board(&mut next, deck, "deck rider");
+            harness.engine.replace_state(next, &harness.handle);
+            let all = items(&harness);
+            let flipped = all
+                .iter()
+                .find(|item| item.kind == K::FilesBoard && item.title == "deck rider")
+                .expect("the row re-renders");
+            assert_eq!(
+                flipped.badge_tone,
+                SettingsBadgeTone::Success,
+                "ThisConnection after the move"
+            );
+        },
+    );
+}
+
+/// US-4/S1 — pressing a local-only row's publish action dispatches
+/// `PublishBoardToFiles` carrying the row's board.
+#[test]
+fn us4_s1_publish_action_dispatches_publish_board_to_files() {
+    use taskboard_ui_slint::ConnectionItemKind as K;
+    let mut state = AppState::default();
+    let loose = uuid::Uuid::new_v4();
+    state_board(&mut state, loose, "loose", None);
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness =
+                Harness::mount_with_settings(SlintDriver::default(), state, two_card_settings());
+            harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
+            let window = harness.handle.window();
+
+            let row = roster_indexes(&harness, K::FilesBoard, "loose")[0];
+            window.invoke_settings_files_board_action_clicked(i32::try_from(row).expect("fits"));
+            let requests = harness.drain_requests();
+            assert!(
+                matches!(
+                    &requests[..],
+                    [taskboard_ui_slint::requests::UiRequest::PublishBoardToFiles { board, .. }]
+                        if board.as_uuid() == loose
+                ),
+                "exactly one publish routed, carrying the row's board"
+            );
+        },
+    );
+}
+
+/// US-4/S2 — the publish guard's typed refusal is the escape
+/// surface: a stale deck-bound mis-target's `BindRefused` lands in
+/// the error fold with the roster intact.
+#[test]
+fn us4_s2_publish_refusal_surfaces_the_error_fold() {
+    use taskboard_ui_slint::ConnectionItemKind as K;
+    let mut state = AppState::default();
+    let loose = uuid::Uuid::new_v4();
+    state_board(&mut state, loose, "loose", None);
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness =
+                Harness::mount_with_settings(SlintDriver::default(), state, two_card_settings());
+            harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
+            let window = harness.handle.window();
+
+            let row = roster_indexes(&harness, K::FilesBoard, "loose")[0];
+            window.invoke_settings_files_board_action_clicked(i32::try_from(row).expect("fits"));
+            let mut requests = harness.drain_requests();
+            let taskboard_ui_slint::requests::UiRequest::PublishBoardToFiles { reply, .. } =
+                requests.remove(0)
+            else {
+                panic!("the publish routed");
+            };
+            reply
+                .send(Err(
+                    taskboard_ui_slint::requests::SettingsError::BindRefused,
+                ))
+                .expect("the reply lane is alive");
+            harness.handle.drain_setting_replies();
+            assert_eq!(
+                model(&harness).get_last_outcome(),
+                taskboard_ui_slint::SettingsOutcome::Rejected,
+                "the typed refusal lands in the error fold"
+            );
+            assert_eq!(
+                roster_indexes(&harness, K::FilesBoard, "loose").len(),
+                2,
+                "the roster stays intact"
+            );
+        },
+    );
+}
+
+/// US-4/S3 — after the publish lands, the badge flips to
+/// `ThisConnection` (board truth; the files lane re-derives its board
+/// set next cycle — no UI machinery pretends otherwise).
+#[test]
+fn us4_s3_badge_flips_this_connection_after_publish() {
+    use taskboard_ui_slint::ConnectionItemKind as K;
+    use taskboard_ui_slint::SettingsBadgeTone;
+    let mut state = AppState::default();
+    let loose = uuid::Uuid::new_v4();
+    state_board(&mut state, loose, "loose", None);
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness =
+                Harness::mount_with_settings(SlintDriver::default(), state, two_card_settings());
+            harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
+            let window = harness.handle.window();
+
+            let row = roster_indexes(&harness, K::FilesBoard, "loose")[0];
+            window.invoke_settings_files_board_action_clicked(i32::try_from(row).expect("fits"));
+            let mut requests = harness.drain_requests();
+            let taskboard_ui_slint::requests::UiRequest::PublishBoardToFiles { reply, .. } =
+                requests.remove(0)
+            else {
+                panic!("the publish routed");
+            };
+            let mut next = AppState::default();
+            state_files_board(&mut next, loose, "loose");
+            harness.engine.replace_state(next, &harness.handle);
+            reply
+                .send(Ok(ConnectionsSnapshot {
+                    boards: vec![taskboard_ui_slint::requests::BoardInfo {
+                        id: loose,
+                        name: "loose".into(),
+                        bound_connector: Some("files-sync".into()),
+                        bound_channel: Some(taskboard_ui_slint::requests::BoardChannel::Files),
+                    }],
+                    connectors: harness_settings_connectors(),
+                }))
+                .expect("the reply lane is alive");
+            harness.handle.drain_setting_replies();
+            let all = items(&harness);
+            let flipped = all
+                .iter()
+                .find(|item| item.kind == K::FilesBoard && item.title == "loose")
+                .expect("the row re-renders");
+            assert_eq!(flipped.badge_tone, SettingsBadgeTone::Success);
             assert_eq!(
                 model(&harness).get_last_outcome(),
                 taskboard_ui_slint::SettingsOutcome::Ok,
-            );
-
-            // A stale item or option index is absorbed silently.
-            window.invoke_settings_move_picked(files_index, 9);
-            window.invoke_settings_move_picked(99, 0);
-            assert!(
-                harness.drain_requests().is_empty(),
-                "stale picks route nothing"
-            );
-
-            // The Deck rows' publish pick is unaffected by the move
-            // seam's existence.
-            let deck_index = item_at(&harness, K::Deck, "work");
-            window.invoke_settings_publish_picked(deck_index, 0);
-            let requests = harness.drain_requests();
-            assert!(
-                matches!(&requests[..], [taskboard_ui_slint::requests::UiRequest::PublishBoard { board, .. }] if board.as_uuid() == loose),
-                "the publish seam still routes its own option set"
             );
         },
     );

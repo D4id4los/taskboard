@@ -134,7 +134,7 @@ const SEAM_INVENTORY: &[&str] = &[
     "settings_disconnect_clicked",
     "settings_files_picked",
     "settings_refresh_clicked",
-    "settings_move_picked",
+    "settings_files_board_action_clicked",
     "settings_publish_picked",
     "settings_remote_bind_picked",
     "settings_remove_clicked",
