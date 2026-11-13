@@ -1,0 +1,12 @@
+// Fixture .slint surface for the ux-coverage.sh self-test.
+import { Button } from "std-widgets.slint";
+
+export component FixtureView inherits Window {
+    // wiring W-1: callback named in the plan's §6 inventory
+    callback fixture_tap();
+    property <string> badge_caption: "fixture";
+    Button {
+        text: "Add fixture";
+        clicked => { root.fixture_tap(); }
+    }
+}
