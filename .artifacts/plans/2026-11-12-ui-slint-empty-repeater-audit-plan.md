@@ -18,7 +18,42 @@
 
 ---
 
-## 0. The mechanism, restated (from D-6.4, probe-verified)
+## STAGE-2 ADDENDUM (2026-11-13, probe-falsified corrections)
+
+The TDD probes falsified parts of §0/§1; corrected by measurement
+against i-slint-core 1.18.1 (`layout.rs` `box_layout_info` /
+`LayoutInfo::merge`). The corrections below supersede the plan body
+where they conflict; the same summary is posted on #725.
+
+- **The empty early return is single-cell-only**: `count < 1` pins
+  `max = min` only when the repeater is its layout's **only cell**. A
+  bare repeater with layout siblings contributes to the box-layout max
+  as a *sum of cell maxes*, so its emptiness cannot zero the layout.
+- **Cross-axis chains do not propagate a zeroed max**: the viewport
+  (Flickable) does not clamp to the content's max, so no on-screen
+  freeze exists at either view. The freeze fires only where a layout
+  distributes width along the **main axis**, manifesting as the
+  min-override: the column clamps into `[min, max]` with `min > max`
+  and freezes at its children's minimum floor.
+- **Site 4 (`timers.slint:116`) is (b), not (c)**: the repeater rides
+  `section-layout` together with the always-present header and creation
+  form; their unbounded maxes make the section's max a sum, never zero
+  (measured `max-width = unbounded` pre-fix). §2.1 and the
+  `timers_rows_severing_probe` are dropped — no fix, no defect to pin.
+- **Site 9 (`stat-bars.slint:48`) is (c) confirmed, mechanism
+  corrected** (latent, not user-visible today): empty `bars` pins the
+  strip's root max at 8px (2·padding) and `ReflectionSection`'s merge
+  adopts it; fixed per §2.2/D-C (the explicit root cap). Probe
+  `tests/stat_bars_severing_probe*` reproduces the freeze (column
+  frozen at its 96px caption floor at 250px and 500px row widths
+  pre-fix, tracking post-fix; zero delta populated).
+
+Tally after corrections: 5×(a), 7×(b), 1×(c), 2×(not empty-capable).
+
+---
+
+## 0. The mechanism, restated (from D-6.4, probe-verified; partly
+## superseded by the stage-2 addendum above)
 
 An **empty** `for` repeater directly inside a stretch-aligned
 `HorizontalLayout`/`VerticalLayout` reports
