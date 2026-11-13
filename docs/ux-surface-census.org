@@ -100,7 +100,7 @@ every sub-family) and `crates/taskboard-app/src/commands/`.
 | stack.delete | X — stack context menu → =DeleteStack= `view_state.rs:2919`; =StackDelete= `actions.rs:1008-1017`, Ctrl+Delete `presets.rs:164` | U | U | U | U | U | X (pre-existing, =stacks delete= `cli.rs:464`) |
 | stack.move | E — stack move flow → =MoveStack= `view_state.rs:3005`; =StackMove= `actions.rs:997-1007`, Ctrl+Alt+M `presets.rs:163` | U | U | U | U | U | E (pre-existing, =stacks move= `cli.rs:469`) |
 | stack.resize | E — column divider drag `adapter.rs:7577-7652` (`board-layout.slint:316-321`); =StackWider/=StackNarrower= `actions.rs:967-986`, Ctrl+Right/Left `presets.rs:167-168` | U | U | U | U | U | U |
-| stack.count_display | D — per-stack card count badge `board-layout.slint:470,484-486` | U | U | U | U | U | U |
+| stack.count_display | D — per-stack card count badge `board-layout.slint:470-473` | U | U | U | U | U | U |
 | task.create | C — inline create row commit → =CreateTask= `adapter.rs:8409-8414` (view_state.rs:1903,4199), per-column "Add task" ghost `adapter.rs:8374`; =TaskCreate= `actions.rs:1018-1027`, N `presets.rs:127` | U | U | U | U | U | C (pre-existing, =tasks add= `cli.rs:1634`) |
 | task.complete | E — card done checkbox `task-card.slint:150-151` → `adapter.rs:8395` / stack detail `adapter.rs:8318` (→ =SetTaskDone= `messages.rs:51`); =TaskComplete/=TaskReopen= `actions.rs:1057-1075`, Space/Ctrl+Space `presets.rs:125-126` | E — detail done toggle `adapter.rs:9952` | E — today row done toggle `today-view.slint:74` | U | U | U | E (pre-existing, =tasks done=, --undo reopens `cli.rs:1643`) |
 | task.open | E — card click `adapter.rs:8349`, double-click/Enter `adapter.rs:8353`; =TaskEdit= `actions.rs:1037-1045`, Return `presets.rs:129` | — (self) | E — today row activation `today-view.slint:65-74` | U | U | E — palette jump `adapter.rs:8536` | U |
@@ -191,8 +191,8 @@ sub-family) and `crates/taskboard-app/src/commands/`.
 | habit.convert_to_series | U | U | E — armed conversion strip `adapter.rs:7122-7154`; =HabitConvertArm/=HabitConvertToSeries= `actions.rs:1346-1356` (→ =ConvertHabitToSeries= `messages.rs:451`) | U | U | U | U |
 | habit.state_display | U | U | D — progress/streak/chip/met row fields `habits.slint:21-30`, streak badge `habits.slint:202`, anchor chip `habits.slint:201`, met restyle `habits.slint:203`, quota error hint `habits.slint:187-191` | U | U | U | D (pre-existing, =habits list= `cli.rs:1282`) |
 | task.due_today | U | U | E — =TaskDueToday= "Due today (re-commit)" `actions.rs:1076-1078`, Today-only context | U | U | U | U |
-| alarm.create_adhoc | U | U | E — timers section setter `today-view.slint:82-90` (+ `timer-setter.slint`), commit → =CreateAdhocAlarm= `messages.rs:283` | U | U | U | E (pre-existing, =timers add= `cli.rs:921`) |
-| alarm.cancel_adhoc | U | U | E — timers section cancel `today-view.slint:82-90` → =CancelAdhocAlarm= `messages.rs:294` | U | U | U | E (pre-existing, =timers cancel= `cli.rs:958`) |
+| alarm.create_adhoc | U | U | E — timers section setter `today-view.slint:82-90` (+ `timer-setter.slint`), commit → =CreateAdhocAlarm= `messages.rs:303` | U | U | U | E (pre-existing, =timers add= `cli.rs:921`) |
+| alarm.cancel_adhoc | U | U | E — timers section cancel `today-view.slint:82-90` → =CancelAdhocAlarm= `messages.rs:314` | U | U | U | E (pre-existing, =timers cancel= `cli.rs:958`) |
 | alarm.display | U | U | D — timers section mount `today-view.slint:163-180` (props `today-view.slint:79-92`) | U | U | U | D (pre-existing, =timers list= `cli.rs:954`) |
 | review.walk_preview | U | U | D — review-walk surfacing card `today-view.slint:206-238` (props `today-view.slint:127-131`) | U | U | U | U |
 
