@@ -238,6 +238,13 @@ export component AppWindow inherits Window {
     // rendering is not kiosk-gated, the affordances are.
     in-out property <[HabitRowModel]> habits-model;
     in-out property <bool> habits-editing-visible: false;
+    // The create flow (round-7 D-7.2): the affordance's mount gate
+    // (desktop + active board, model-side) and the armed form's
+    // adapter-owned flag + quota validity — no transient UI state.
+    in-out property <bool> habits-create-mountable: false;
+    in-out property <bool> habits-create-open: false;
+    in-out property <FieldValidity> habits-quota-validity: FieldValidity.neutral;
+    in-out property <string> habits-quota-error-hint: "";
     in-out property <int> timers-awaiting: 0;
     in-out property <bool> timers-chip-visible: false;
     in-out property <string> timers-chip;
@@ -444,6 +451,14 @@ export component AppWindow inherits Window {
                 habits-convert-confirmed(r) => root.habits-convert-confirmed(r);
                 habits-convert-cancelled() => root.habits-convert-cancelled();
                 habits-convert-armed-row: root.habits-convert-armed-row;
+                habits-create-mountable: root.habits-create-mountable;
+                habits-create-open: root.habits-create-open;
+                habits-quota-validity: root.habits-quota-validity;
+                habits-quota-error-hint: root.habits-quota-error-hint;
+                habits-create-asked() => root.habits-create-asked();
+                habits-create-confirmed(t, q, i) => root.habits-create-confirmed(t, q, i);
+                habits-create-cancelled() => root.habits-create-cancelled();
+                habits-create-quota-edited(s) => root.habits-create-quota-edited(s);
                 tracked-activated(i) => root.today-tracked-activated(i);
                 review-card-visible: root.review-card-visible;
                 review-card-title: root.review-card-title;
@@ -1539,6 +1554,14 @@ export component AppWindow inherits Window {
     pure callback habits-convert-confirmed(int);
     pure callback habits-convert-cancelled();
     in-out property <int> habits-convert-armed-row: -1;
+    // The create flow's seams (round-7 D-7.2): the header ask routes
+    // the toggle; the commit funnels the minted draft (`false` = an
+    // absorbed miss, the field text kept); quota keystrokes ride the
+    // per-keystroke validity pass.
+    pure callback habits-create-asked();
+    pure callback habits-create-confirmed(string, string, int) -> bool;
+    pure callback habits-create-cancelled();
+    pure callback habits-create-quota-edited(string);
     // The task view's recur row (issue #506): pause open/editor +
     // resume + the conversion's arm/confirm/cancel.
     pure callback task-recur-pause-asked();

@@ -755,6 +755,11 @@ fn push_habits(
         })
         .collect();
     window.set_habits_editing_visible(presentation::habit_editing_visible(kiosk));
+    // The create affordance's mount gate (round-7 D-7.2): desktop
+    // with an active board — the header-only section is how the
+    // first habit gets made. Kiosk and board-less days keep the old
+    // rows-only gate (D-P13 posture untouched).
+    window.set_habits_create_mountable(!kiosk && board.is_some());
     push_rows(
         &mut models.habits,
         |rc| {

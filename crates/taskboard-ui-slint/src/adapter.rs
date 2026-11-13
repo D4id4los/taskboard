@@ -845,6 +845,16 @@ impl Adapter {
             self.refresh_forced(window);
             return Some(true);
         }
+        // The habit create form's dismissal arm (round-7 D-7.2, the
+        // timer setter's twin): bare Escape ahead of the resolver —
+        // the armed form is presentation state; nothing commits.
+        // (A Today-context Escape binding would statically shadow
+        // Global TaskMoveCancel on the whole view — the funnel exists
+        // for exactly this shape.)
+        if crate::keyscope::habit_create_dismisses(window.get_habits_create_open(), stroke) {
+            self.disarm_habit_create(window);
+            return Some(true);
+        }
         // The due editor's Down arm (special case B, r2 D25, round-3
         // D10): consumed ahead of the resolver so the insert-mode
         // chain never has to bind it. With the picker already open
@@ -874,6 +884,19 @@ impl Adapter {
             return Some(true);
         }
         None
+    }
+
+    /// The create form's disarm funnel (round-7 D-7.2): one path,
+    /// three entry points — the toggle's discard branch, the Cancel
+    /// seam, the Escape arm. Clears the armed flag, the one-shot
+    /// draft, and the quota draft (the buffers never outlive the
+    /// flow).
+    fn disarm_habit_create(&mut self, window: &AppWindow) {
+        self.habit_create_open = false;
+        self.habit_create_draft = None;
+        self.habit_create_quota.clear();
+        window.set_habits_create_open(false);
+        self.refresh_forced(window);
     }
 
     fn set_feedback(window: &AppWindow, feedback: KeyFeedback) {
@@ -1557,6 +1580,18 @@ impl Adapter {
         // The entries form's pushed halves (r4 D-TS4): the same
         // every-pass shape; the wipe rides the push.
         self.push_track_form(window);
+        // The create form's pushed halves (round-7 D-7.2): the armed
+        // flag and the quota validity are adapter-owned; cheap every
+        // pass (the setter popover's shape).
+        window.set_habits_create_open(self.habit_create_open);
+        let (quota_validity, quota_hint) =
+            crate::presentation::habit_quota_validity(&self.habit_create_quota);
+        window.set_habits_quota_validity(match quota_validity {
+            crate::presentation::QuotaValidity::Neutral => crate::FieldValidity::Neutral,
+            crate::presentation::QuotaValidity::Valid => crate::FieldValidity::Valid,
+            crate::presentation::QuotaValidity::Invalid => crate::FieldValidity::Invalid,
+        });
+        window.set_habits_quota_error_hint(SharedString::from(quota_hint));
         // The pass materialized: close the cache only now — a
         // re-entrant pass before this line would see the stale cache
         // and derive again, never skip a needed pass.
@@ -3541,10 +3576,6 @@ impl Adapter {
         let before = self.view_state.view_identity();
         let palette_before = self.shell.palette;
         match effect {
-            // The create form's toggle (round-7 D-7.2): routed through
-            // `route`'s interpretation table, never this shell-side
-            // mirror (the HabitConvertArm posture).
-            UiEffect::HabitCreateToggle => {}
             UiEffect::Exit => {
                 self.quit_requests += 1;
                 let _ = crate::quit();
@@ -3704,6 +3735,7 @@ impl Adapter {
             // in the arms.
             | UiEffect::SeriesPauseOpen
             | UiEffect::HabitConvertArm
+            | UiEffect::HabitCreateToggle
             | UiEffect::SeriesConvertArm
             // The plan-next-day family (#622): the surface's intents
             // interpret like every view intent — the kiosk/modal
@@ -7049,6 +7081,73 @@ fn install_habit_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     let next = orders.get(slot).copied();
     a.habit_move = Some((habit, crate::presentation::habit_drop_order(prev, next)));
     a.route(&window, ActionId::HabitMove);
+
+    });
+
+    // The create flow (round-7 D-7.2): the header ask routes the
+    // toggle intent; the quota keystrokes ride the per-keystroke
+    // validity pass; the confirm seam is the trust boundary (board
+    // resolved fresh at commit, the quota through the mint); the
+    // cancel hits the shared disarm funnel.
+    install_seam!(window: window.on_habits_create_asked, adapter: adapter;
+    bind mut (a, window), args (), {        a.route(&window, ActionId::HabitCreate);
+
+    });
+    install_seam!(window: window.on_habits_create_quota_edited, adapter: adapter;
+    bind mut (a, window), args (text), {        a.habit_create_quota = text.to_string();
+    a.refresh_forced(&window);
+
+    });
+    install_seam!(window: window.on_habits_create_cancelled, adapter: adapter;
+    bind mut (a, window), args (), {        a.disarm_habit_create(&window);
+
+    });
+    install_seam!(window: window.on_habits_create_confirmed, adapter: adapter; [else ( false)]
+    bind mut (a, window), args (title, quota_text, target_index), {        // The board resolves fresh at commit — never cached at arm
+    // (what you see is what the habit lands on) and ahead of every
+    // field refusal: a board that went away under the armed form
+    // disarms it silently, whatever the fields hold (the stale-arm
+    // law owns the seam's first word).
+    let Some(board) = a.view_state.board() else {
+        a.disarm_habit_create(&window);
+        return false;
+    };
+    // A whitespace-empty title dispatches nothing (D-P14): the
+    // raw text is never rewritten, an empty one never reaches the
+    // engine.
+    let title = title.trim();
+    if title.is_empty() {
+        return false;
+    }
+    // The quota is the trust boundary's mint: zero, junk, and
+    // overflow all refuse structurally — an absorbed miss keeps the
+    // text (the rule-add seam's return convention). Empty text is
+    // the field's default: it commits as 1.
+    let Ok(quota_count) = crate::presentation::parse_habit_quota(&quota_text) else {
+        return false;
+    };
+    // The target index is structurally bounded by the
+    // SegmentedControl, but the seam is total: out of range refuses.
+    let target = match target_index {
+        0 => taskboard_domain::HabitTarget::PerDay(quota_count),
+        1 => taskboard_domain::HabitTarget::PerWeek(quota_count),
+        2 => taskboard_domain::HabitTarget::PerMonth(quota_count),
+        _ => return false,
+    };
+    a.habit_create_draft = Some(crate::router::HabitCreateDraft {
+        board,
+        title: title.to_string(),
+        target,
+    });
+    // The form closes on commit (the timers form's shape); the
+    // routed dispatch consumes the one-shot draft. The property is
+    // set here — `route`'s trailing sync is not a derive pass (the
+    // convert strip's direct-set precedent).
+    a.habit_create_open = false;
+    a.habit_create_quota.clear();
+    window.set_habits_create_open(false);
+    a.route(&window, ActionId::HabitCreateCommit);
+    true
 
     });
 }
