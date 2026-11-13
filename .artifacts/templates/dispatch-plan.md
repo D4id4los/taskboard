@@ -27,8 +27,11 @@ Exemplars to imitate (newest house style first):
 Fill-in quality bar: every chunk's prompts must name their normative
 origin sections by number, name the chunk's specific traps (from the
 origin's facts/risks — not generic advice), and leave nothing
-implicit. A reader who has never seen the origin must be able to
-dispatch the chunks from this document alone.
+implicit. When the origin includes a UX journey plan, prompts name its
+sections by ID (US-n stories, US-n/S-k steps, W-x wiring rows, R-x
+rulings) the same way they name origin sections by number. A reader
+who has never seen the origin must be able to dispatch the chunks
+from this document alone.
 -->
 
 # [Plan] <Topic> — Dispatch Plan & Agent Prompts
@@ -48,10 +51,16 @@ dispatch the chunks from this document alone.
 
 ## 1. Chunks & ordering
 
-| Chunk | <Origin> slice | Branch | Covers | Size |
-|---|---|---|---|---|
-| 1 | <WI-x / D-y / §z> | `<category>/<scope>-<desc>` | <one line: files + behaviour + explicit non-goals> | S/M/L |
-| … | | | | |
+| Chunk | <Origin> slice | Branch | Covers | UX coverage | Size |
+|---|---|---|---|---|---|
+| 1 | <WI-x / D-y / §z> | `<category>/<scope>-<desc>` | <one line: files + behaviour + explicit non-goals> | <US-n/S-k + W-x IDs this chunk implements, or `n/a — no surface delta` for engine-only chunks. Only when the origin cites a UX journey plan; otherwise `no UX plan in origin`> | S/M/L |
+| … | | | | | |
+
+<!-- UX coverage column (only meaningful when the origin cites a UX
+journey plan — docs/ux_planning.org): the chunk set as a whole must
+cover every P1 story step end-to-end (the P1-slice rule); a dispatch
+plan whose origin includes a UX plan and whose chunks leave a P1 step
+uncovered is invalid at planning time. -->
 
 **Dependency graph**: <which chunks are order-independent (both off
 `main`, disjoint files — serial or parallel), which are gated on
@@ -98,7 +107,11 @@ the worktree as its final handoff task.
    `git worktree add <path> main`), executes per the approved plan — <implementation: TDD,
    every commit standalone (rebase-merge hygiene), full AGENTS §10
    gate suite green | research: the experiments and the deliverable
-   report>. Does **not** push or open a PR. Reports deviations.
+   report>. When the origin cites a UX journey plan: implement exactly
+   the wiring inventory rows this chunk claims, embed journey-step
+   tokens in test names, and run `scripts/ux-coverage.sh <plan> --gate`
+   before reporting done (MISSING on a claimed row is not done). Does
+   **not** push or open a PR. Reports deviations.
 3. **Stage 3 — review agent** *(protocol amended 2026-10-18)*:
    **begins by rebasing onto `main`** — `git fetch origin --prune`,
    rebase the branch onto `origin/main` (AGENTS §8's rebase dance:
@@ -127,7 +140,14 @@ the worktree as its final handoff task.
    "PR open + checks green + merge state `CLEAN` + worktree removed" so
    the
    user's merge needs no additional rebase and the chunk leaves no
-   36–55G of build output behind. Reports a verdict. Never merges;
+   36–55G of build output behind. When the origin cites a UX journey
+   plan, stage 3 additionally carries the **UX completeness mandate**:
+   re-run `scripts/ux-coverage.sh <plan> --gate`; then execute the
+   walkthrough protocol (docs/ux_planning.org) over every P1 story —
+   the four walkthrough questions per step with evidence, then the
+   six-heuristic pass over touched surfaces; BLOCKER/MAJOR findings
+   are fixed on the branch, MINOR findings become backlog issues.
+   Reports a verdict. Never merges;
    never touches `main`. (<`main` is
    branch-protected — merges happen on GitHub by the user, after
    the required checks pass.>)
