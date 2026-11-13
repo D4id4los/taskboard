@@ -4256,6 +4256,49 @@ mod tests {
     }
 
     #[test]
+    fn parse_habit_quota_mints_through_the_structural_zero_refusal() {
+        // (round-7 D-7.2) Empty is the field's default: it commits as
+        // 1 — never a refusal.
+        assert_eq!(
+            parse_habit_quota(""),
+            Ok(taskboard_domain::NonZeroCount::new(1).unwrap())
+        );
+        assert_eq!(
+            parse_habit_quota(" 3 "),
+            Ok(taskboard_domain::NonZeroCount::new(3).unwrap())
+        );
+        // Zero is refused by the mint (the structural refusal), never
+        // a string comparison.
+        assert_eq!(parse_habit_quota("0"), Err(QuotaParseError::Zero));
+        assert_eq!(parse_habit_quota("junk"), Err(QuotaParseError::NotANumber));
+        assert_eq!(parse_habit_quota("-1"), Err(QuotaParseError::NotANumber));
+        assert_eq!(
+            parse_habit_quota("4294967296"),
+            Err(QuotaParseError::OutOfRange)
+        );
+    }
+
+    #[test]
+    fn habit_quota_validity_is_total_and_hints_every_refusal() {
+        // (round-7 D-7.2) The untouched field is the silent default.
+        assert_eq!(habit_quota_validity(""), QuotaValidity::Neutral);
+        assert_eq!(habit_quota_validity("2"), QuotaValidity::Valid);
+        for raw in ["0", "junk", "99999999999999"] {
+            assert_eq!(habit_quota_validity(raw), QuotaValidity::Invalid);
+        }
+        // The hint mapping is total over the error enum: every
+        // refusal carries one (a structural fact — the tests never
+        // assert hint text).
+        for error in [
+            QuotaParseError::NotANumber,
+            QuotaParseError::OutOfRange,
+            QuotaParseError::Zero,
+        ] {
+            assert_ne!(habit_quota_error_hint(error), "");
+        }
+    }
+
+    #[test]
     fn parse_timer_when_rejects_every_malformed_class() {
         let now = Utc.with_ymd_and_hms(2026, 10, 27, 10, 0, 0).unwrap();
         let tz = chrono::FixedOffset::east_opt(0).unwrap();
@@ -6252,6 +6295,78 @@ pub fn habit_repair_target(
         })
         .map_or(0, |entry| entry.count);
     (count < quota).then_some((prev, count + 1))
+}
+
+/// The create form's quota field outcome (round-7 D-7.2): the typed
+/// parse errors the field can produce. Zero is its own variant — the
+/// structural mint refusal made visible — and an out-of-`u32` figure
+/// is distinct from junk so the hint can name the boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuotaParseError {
+    /// The text is not an unsigned integer.
+    NotANumber,
+    /// The number parses but exceeds the count's storage range.
+    OutOfRange,
+    /// The number is zero — `NonZeroCount` has no zero.
+    Zero,
+}
+
+/// The quota field's per-keystroke parse (round-7 D-7.2, the
+/// `parse_timer_when` twin at the create form's trust boundary):
+/// whitespace-trimmed unsigned text through the
+/// [`taskboard_domain::NonZeroCount`] mint
+/// — the zero refusal is structural, never a string check. Empty text
+/// is the field's default: it commits as 1.
+///
+/// # Errors
+///
+/// [`QuotaParseError`] for junk, an out-of-range figure, or zero —
+/// the mint's own refusal surfaced.
+pub fn parse_habit_quota(text: &str) -> Result<taskboard_domain::NonZeroCount, QuotaParseError> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return taskboard_domain::NonZeroCount::new(1).map_err(|_| QuotaParseError::Zero);
+    }
+    let parsed: u64 = trimmed.parse().map_err(|_| QuotaParseError::NotANumber)?;
+    let count = u32::try_from(parsed).map_err(|_| QuotaParseError::OutOfRange)?;
+    taskboard_domain::NonZeroCount::new(count).map_err(|_| QuotaParseError::Zero)
+}
+
+/// The create form's quota field flavours (the timer-when validity's
+/// twin): neutral is the untouched field, valid commits, invalid
+/// carries a hint. The adapter maps this onto the Slint
+/// `FieldValidity` enum — presentation stays slint-free.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuotaValidity {
+    Neutral,
+    Valid,
+    Invalid,
+}
+
+/// The quota field's syntax hint (the `TIMER_SYNTAX_HINT` twin): one
+/// honest sentence per refusal, keyed by the typed parse outcome.
+#[must_use]
+pub fn habit_quota_error_hint(error: QuotaParseError) -> &'static str {
+    match error {
+        QuotaParseError::NotANumber => "Whole number of completions (e.g. 3).",
+        QuotaParseError::OutOfRange => "Too large — pick a smaller quota.",
+        QuotaParseError::Zero => "The quota counts at least 1.",
+    }
+}
+
+/// The quota field's per-keystroke validity (the
+/// `timer_when_validity` twin): total over any text — empty is the
+/// untouched default, a minted quota is valid, every parse miss is
+/// invalid.
+#[must_use]
+pub fn habit_quota_validity(text: &str) -> QuotaValidity {
+    if text.trim().is_empty() {
+        return QuotaValidity::Neutral;
+    }
+    match parse_habit_quota(text) {
+        Ok(_) => QuotaValidity::Valid,
+        Err(_) => QuotaValidity::Invalid,
+    }
 }
 
 /// The conversion flow's default quota (issue #506, plan D-2): the
