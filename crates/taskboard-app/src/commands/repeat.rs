@@ -10,11 +10,11 @@
 
 use std::sync::Arc;
 
-use chrono::{Datelike as _, Utc};
+use chrono::Utc;
 
 use taskboard_domain::{
-    DayOfMonth, EveryWeeks, MonthlyAnchor, RecurBound, RecurPattern, RecurRule, SeriesId,
-    StateCommand, TaskChanges, WeekdaySet, next_occurrence, series_reference_date,
+    DraftBound, DraftPattern, EveryWeeks, MonthlyAnchor, RecurRule, StateCommand, TaskChanges,
+    WeekdaySet, next_occurrence,
 };
 
 use crate::cli::{MonthlyFlag, RepeatArgs, TasksCmd, WeekdaysFlag};
@@ -197,16 +197,11 @@ pub async fn repeat(
 /// `series` and `continued_from` (the user is re-scheduling the
 /// series, not founding a new one — a minted id would reset the
 /// engine's `Count` history); a plain task mints a fresh `SeriesId`
-/// app-side. The anchor is never touched.
+/// in the domain assembly. The anchor is never touched.
 ///
 /// # Errors
 ///
 /// [`CommandError`] — typed, see the variant docs.
-///
-/// # Panics
-///
-/// Only via the bare-default `expect`s: a single weekday is never an
-/// empty set, and a real date's day number is always `1..=31`.
 pub async fn repeat_on(
     app: &crate::App,
     invocation: RepeatInvocation,
@@ -282,21 +277,17 @@ pub async fn repeat_on(
     ))
 }
 
-/// The `Set` arm's rule assembly: the ruled anchor chain through the
-/// day calendar (scheduled → duedate → window-today; never a raw-UTC
-/// date treated as local), the D-S4 series-identity carry, the
-/// bare-flag defaults against the reference date, and the bound. `--off`
-/// carries no rule (`None`).
+/// The `Set` arm's rule assembly: the flag collapse onto the domain's
+/// [`taskboard_domain::assemble_rule`] (the anchor chain, the D-S4
+/// series-identity carry, the bare-flag defaults against the
+/// reference date, and the bound — one behaviour, one
+/// implementation, shared with the GUI editor). `--off` carries no
+/// rule (`None`).
 ///
 /// # Errors
 ///
 /// [`CommandError::TaskDone`] when a pattern targets a done head —
 /// the guard lives app-layer by ruling, the engine never learns of it.
-///
-/// # Panics
-///
-/// Only via the bare-default `expect`s: a single weekday is never an
-/// empty set, and a real date's day number is always `1..=31`.
 fn assemble_rule(
     invocation: &RepeatInvocation,
     task: &taskboard_domain::Task,
@@ -312,45 +303,22 @@ fn assemble_rule(
             selector: selector.to_owned(),
         });
     }
-    let anchor = series_reference_date(task, day, now);
-    let (series, continued_from) = if let Some(r) = task.recur.as_ref() {
-        (r.series, r.continued_from)
-    } else {
-        (SeriesId::from_uuid(uuid::Uuid::now_v7()), None)
-    };
     let pattern = match pattern {
-        PatternSpec::Daily(every) => RecurPattern::Daily { every: *every },
-        PatternSpec::Weekly { interval, on } => RecurPattern::Weekly {
+        PatternSpec::Daily(every) => DraftPattern::Daily { every: *every },
+        PatternSpec::Weekly { interval, on } => DraftPattern::Weekly {
             interval: *interval,
-            on: match on {
-                Some(days) => days.clone(),
-                None => {
-                    WeekdaySet::new([anchor.weekday()]).expect("one weekday is a non-empty set")
-                }
-            },
+            on: on.clone(),
         },
-        PatternSpec::Monthly { on } => RecurPattern::Monthly {
-            on: match on {
-                Some(anchor) => *anchor,
-                None => MonthlyAnchor::OnDay(
-                    DayOfMonth::new(anchor.day()).expect("a real date's day number is 1..=31"),
-                ),
-            },
-        },
+        PatternSpec::Monthly { on } => DraftPattern::Monthly { on: *on },
     };
     let bound = match bound {
-        BoundSpec::None => RecurBound::None,
-        BoundSpec::Until(date) => RecurBound::Until(*date),
-        BoundSpec::Count(n) => RecurBound::Count(*n),
+        BoundSpec::None => DraftBound::None,
+        BoundSpec::Until(date) => DraftBound::Until(*date),
+        BoundSpec::Count(n) => DraftBound::Count(*n),
     };
-    Ok(Some(RecurRule {
-        series,
-        anchor,
-        pattern,
-        bound,
-        continued_from,
-        paused_until: None,
-    }))
+    Ok(Some(taskboard_domain::assemble_rule(
+        task, pattern, bound, day, now,
+    )))
 }
 
 /// The post-state receipt projection: the rule's canonical text forms
