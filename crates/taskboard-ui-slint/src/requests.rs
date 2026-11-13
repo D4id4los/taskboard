@@ -445,6 +445,17 @@ pub enum UiRequest {
         board: BoardId,
         reply: oneshot::Sender<Result<ConnectionsSnapshot, SettingsError>>,
     },
+    /// Stop syncing a files-bound board (round-7 D-7.3, W-4): unbind
+    /// the files binding — the board returns to local-only. The arm
+    /// refuses typed (`Gone` / `BindRefused`) when the board is gone
+    /// or not files-bound; the reply carries the fresh snapshot. No
+    /// connector parameter: the files lane is global (the single-lane
+    /// posture, #723). The remote `boards/<uuid>/` subtree lingers
+    /// until the DELETE-verb GC exists (#755 — recorded, not hidden).
+    StopBoardFilesSync {
+        board: BoardId,
+        reply: oneshot::Sender<Result<ConnectionsSnapshot, SettingsError>>,
+    },
     /// Persists the keymap preset and replies with the rebuilt keymap
     /// (overrides re-resolved under the chosen preset, D9).
     SetKeymapPreset {
