@@ -1156,9 +1156,235 @@ pub(crate) fn seed_recur_editor(
     draft
 }
 
+/// Which draft field failed the mint (round-7 D-7.1, plan D-D3): the
+/// hint row's typed payload — tests assert the pair, never hint text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DraftField {
+    EveryDays,
+    WeeklyInterval,
+    Weekdays,
+    MonthlyDay,
+    MonthlyNth,
+    Until,
+    Count,
+}
+
+/// The invalid's flavour: the recur mints' typed errors, plus the
+/// Until field's own (the date grammar's errors are `DueParseError`,
+/// not `InvalidRecur` — the union keeps the hint honest).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DraftInvalid {
+    Recur(taskboard_domain::InvalidRecur),
+    BadDate,
+}
+
+/// The draft's parse funnel (plan D-D3): every field re-mints from
+/// the raw text — the buffer is the single truth, nothing minted is
+/// cached. The first invalid field in declaration order (pattern
+/// fields per the active arm, then the bound's) names the refusal;
+/// `Ok` carries the collapsed draft for
+/// [`taskboard_domain::assemble_rule`].
+pub(crate) fn parse_recur_draft(
+    draft: &crate::level_state::RecurEditorState,
+    now: DateTime<Utc>,
+    day: taskboard_domain::days::DayCalendar,
+) -> Result<
+    (taskboard_domain::DraftPattern, taskboard_domain::DraftBound),
+    Option<(DraftField, DraftInvalid)>,
+> {
+    use crate::level_state::{MonthlyMode, RecurBoundKind, RecurPatternKind};
+    use taskboard_domain::{DraftBound, DraftPattern, InvalidRecur};
+
+    let recur_err = |field: DraftField, e: InvalidRecur| Some((field, DraftInvalid::Recur(e)));
+    let pattern = match draft.pattern {
+        RecurPatternKind::Daily => DraftPattern::Daily {
+            every: taskboard_domain::EveryDays::parse_text_form(draft.every_days.trim())
+                .map_err(|e| recur_err(DraftField::EveryDays, e))?,
+        },
+        RecurPatternKind::Weekly => DraftPattern::Weekly {
+            interval: taskboard_domain::EveryWeeks::parse_text_form(draft.weekly_interval.trim())
+                .map_err(|e| recur_err(DraftField::WeeklyInterval, e))?,
+            on: {
+                let checked = draft
+                    .weekdays
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, checked)| **checked)
+                    .map(|(slot, _)| weekday_of_slot(slot));
+                Some(
+                    taskboard_domain::WeekdaySet::new(checked)
+                        .map_err(|e| recur_err(DraftField::Weekdays, e))?,
+                )
+            },
+        },
+        RecurPatternKind::Monthly => DraftPattern::Monthly {
+            on: Some(match draft.monthly_mode {
+                MonthlyMode::OnDay => taskboard_domain::MonthlyAnchor::OnDay(
+                    taskboard_domain::DayOfMonth::parse_text_form(draft.monthly_day.trim())
+                        .map_err(|e| recur_err(DraftField::MonthlyDay, e))?,
+                ),
+                MonthlyMode::NthWeekday => taskboard_domain::MonthlyAnchor::NthWeekday(
+                    taskboard_domain::NthWeek::parse_text_form(draft.monthly_nth.trim())
+                        .map_err(|e| recur_err(DraftField::MonthlyNth, e))?,
+                    draft.monthly_nth_weekday,
+                ),
+            }),
+        },
+    };
+    let bound = match draft.bound {
+        RecurBoundKind::Never => DraftBound::None,
+        RecurBoundKind::Until => {
+            match crate::due_edit::parse(draft.until_text.trim(), now, &day.offset) {
+                // Empty (no entry) refuses like junk: Until must name a
+                // date (plan D-D3's table).
+                Ok(Some(instant)) => DraftBound::Until(day.calendar_date(instant)),
+                Ok(None) | Err(crate::due_edit::DueParseError) => {
+                    return Err(Some((DraftField::Until, DraftInvalid::BadDate)));
+                }
+            }
+        }
+        RecurBoundKind::Count => DraftBound::Count(
+            taskboard_domain::OccurrenceCount::parse_text_form(draft.count.trim())
+                .map_err(|e| recur_err(DraftField::Count, e))?,
+        ),
+    };
+    Ok((pattern, bound))
+}
+
+/// The hint row's validity fold: `Ok(())` when the whole draft mints;
+/// the first invalid `(field, invalid)` pair otherwise (never hint
+/// text — the strings live at the render seam).
+pub(crate) fn recur_field_validity(
+    draft: &crate::level_state::RecurEditorState,
+    now: DateTime<Utc>,
+    day: taskboard_domain::days::DayCalendar,
+) -> Result<(), Option<(DraftField, DraftInvalid)>> {
+    parse_recur_draft(draft, now, day).map(|_| ())
+}
+
+/// The editor's echo/commit assembly (plan D-C1): the draft minted
+/// through the shared domain law — the same function the CLI verb
+/// uses, so GUI and CLI cannot drift. `head` must be open (the
+/// assembly precondition; the opener and the commit seam re-check).
+pub(crate) fn assemble_recur_draft(
+    draft: &crate::level_state::RecurEditorState,
+    head: &Task,
+    day: taskboard_domain::days::DayCalendar,
+    now: DateTime<Utc>,
+) -> Result<taskboard_domain::RecurRule, Option<(DraftField, DraftInvalid)>> {
+    let (pattern, bound) = parse_recur_draft(draft, now, day)?;
+    Ok(taskboard_domain::assemble_rule(
+        head, pattern, bound, day, now,
+    ))
+}
+
+/// The task-detail affordances' mount flag (round-7 D-7.1, plan
+/// D-A1): both the add and the edit affordance ride it — kiosk
+/// renders rows, never actions (D-T16); a done subject hides them
+/// (the assembly precondition made visible: the CLI's `TaskDone`
+/// refusal, structural at the mount).
+#[must_use]
+pub fn series_edit_visible(task: &Task, kiosk: bool) -> bool {
+    !kiosk && task.is_open()
+}
+
+/// One field's validity flavour for the pushed marks (plan D-D3's
+/// "invalid while active" column): an inactive field is neutral; an
+/// active one parses its own parser independently — a field's mark
+/// never depends on another's error. Slint-free — the adapter maps to
+/// the widget enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FieldFlavour {
+    Neutral,
+    Valid,
+    Invalid,
+}
+
+/// The per-field flavours in [`DraftField`] declaration order
+/// (`EveryDays`, `WeeklyInterval`, `Weekdays`, `MonthlyDay`, `MonthlyNth`,
+/// Until, Count).
+pub(crate) fn recur_field_flavours(
+    draft: &crate::level_state::RecurEditorState,
+    now: DateTime<Utc>,
+    day: taskboard_domain::days::DayCalendar,
+) -> [FieldFlavour; 7] {
+    use crate::level_state::{MonthlyMode, RecurBoundKind, RecurPatternKind};
+
+    let flavour = |parsed: bool| {
+        if parsed {
+            FieldFlavour::Valid
+        } else {
+            FieldFlavour::Invalid
+        }
+    };
+    [
+        match draft.pattern {
+            RecurPatternKind::Daily => flavour(
+                taskboard_domain::EveryDays::parse_text_form(draft.every_days.trim()).is_ok(),
+            ),
+            _ => FieldFlavour::Neutral,
+        },
+        match draft.pattern {
+            RecurPatternKind::Weekly => flavour(
+                taskboard_domain::EveryWeeks::parse_text_form(draft.weekly_interval.trim()).is_ok(),
+            ),
+            _ => FieldFlavour::Neutral,
+        },
+        match draft.pattern {
+            RecurPatternKind::Weekly => flavour(draft.weekdays.iter().any(|checked| *checked)),
+            _ => FieldFlavour::Neutral,
+        },
+        match (draft.pattern, draft.monthly_mode) {
+            (RecurPatternKind::Monthly, MonthlyMode::OnDay) => flavour(
+                taskboard_domain::DayOfMonth::parse_text_form(draft.monthly_day.trim()).is_ok(),
+            ),
+            _ => FieldFlavour::Neutral,
+        },
+        match (draft.pattern, draft.monthly_mode) {
+            (RecurPatternKind::Monthly, MonthlyMode::NthWeekday) => flavour(
+                taskboard_domain::NthWeek::parse_text_form(draft.monthly_nth.trim()).is_ok(),
+            ),
+            _ => FieldFlavour::Neutral,
+        },
+        match draft.bound {
+            RecurBoundKind::Until => flavour(matches!(
+                crate::due_edit::parse(draft.until_text.trim(), now, &day.offset),
+                Ok(Some(_))
+            )),
+            _ => FieldFlavour::Neutral,
+        },
+        match draft.bound {
+            RecurBoundKind::Count => flavour(
+                taskboard_domain::OccurrenceCount::parse_text_form(draft.count.trim()).is_ok(),
+            ),
+            _ => FieldFlavour::Neutral,
+        },
+    ]
+}
+
+/// The invalid-field hint's copy (UX text — never asserted): names the
+/// field and the typed refusal.
+pub(crate) fn recur_field_hint(field: DraftField, invalid: &DraftInvalid) -> String {
+    let name = match field {
+        DraftField::EveryDays => "the day interval",
+        DraftField::WeeklyInterval => "the week interval",
+        DraftField::Weekdays => "the weekdays",
+        DraftField::MonthlyDay => "the day of month",
+        DraftField::MonthlyNth => "the Nth weekday position",
+        DraftField::Until => "the until date",
+        DraftField::Count => "the occurrence count",
+    };
+    match invalid {
+        DraftInvalid::BadDate => {
+            format!("{name} needs a date: 2026-12-31 or +Nd (days).")
+        }
+        DraftInvalid::Recur(e) => format!("{name}: {e}"),
+    }
+}
+
 /// The weekday at `weekdays` slot `index` (the Mon..Sun canonical
 /// order — `WeekdaySet`'s storage convention).
-fn weekday_of_slot(index: usize) -> chrono::Weekday {
+pub(crate) fn weekday_of_slot(index: usize) -> chrono::Weekday {
     use chrono::Weekday;
     match index {
         0 => Weekday::Mon,
@@ -7825,5 +8051,280 @@ mod recur_editor_seeding_tests {
         // the derivation is anchor-relative, not a constant.
         let friday = seed_recur_editor(None, date(2026, 10, 23));
         assert!(friday.weekdays[4] && friday.weekdays.iter().filter(|c| **c).count() == 1);
+    }
+}
+
+#[cfg(test)]
+mod recur_editor_validity_tests {
+    use super::{
+        DraftField, DraftInvalid, assemble_recur_draft, recur_field_validity, series_edit_visible,
+    };
+    use crate::level_state::{MonthlyMode, RecurBoundKind, RecurEditorState, RecurPatternKind};
+    use chrono::{DateTime, NaiveDate, Utc};
+    use taskboard_domain::{
+        DayOfMonth, MonthlyAnchor, RecurBound, RecurPattern, Task, TaskClocks, TaskId,
+    };
+
+    fn date(y: i32, m: u32, d: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, d).unwrap()
+    }
+
+    fn now() -> DateTime<Utc> {
+        use chrono::TimeZone as _;
+        chrono::Utc.timestamp_opt(1_795_608_000, 0).unwrap() // 2026-11-25T12:00Z
+    }
+
+    fn calendar() -> taskboard_domain::days::DayCalendar {
+        taskboard_domain::days::DayCalendar {
+            day_start_time: chrono::NaiveTime::MIN,
+            offset: chrono::FixedOffset::east_opt(0).unwrap(),
+        }
+    }
+
+    /// An open head scheduled Monday 2026-11-23 (two days before the
+    /// injected now), no rule.
+    fn head() -> Task {
+        use chrono::TimeZone as _;
+        let ts = chrono::Utc.timestamp_opt(0, 0).unwrap();
+        Task {
+            id: TaskId::from_uuid(uuid::Uuid::from_u128(1)),
+            remote: None,
+            title: "head".into(),
+            description: String::new(),
+            duedate: None,
+            scheduled: Some(
+                chrono::Utc.timestamp_opt(1_795_392_000, 0).unwrap(), // 2026-11-23T00:00Z
+            ),
+            done: None,
+            stack: taskboard_domain::StackId::from_uuid(uuid::Uuid::from_u128(2)),
+            order: 0,
+            label_memberships: std::collections::BTreeMap::default(),
+            effort: None,
+            importance: None,
+            urgency: None,
+            recur: None,
+            kind: taskboard_domain::entities::TaskKind::Standard,
+            archived: false,
+            deleted: false,
+            clocks: TaskClocks {
+                title: ts,
+                description: ts,
+                duedate: ts,
+                scheduled: ts,
+                done: ts,
+                position: ts,
+                effort: ts,
+                importance: ts,
+                urgency: ts,
+                recur: ts,
+                kind: ts,
+                archived: ts,
+                deleted: ts,
+            },
+            authors: taskboard_domain::entities::TaskAuthors::default(),
+            remote_seen: None,
+            remote_baseline: None,
+        }
+    }
+
+    fn weekly_checked(mut draft: RecurEditorState) -> RecurEditorState {
+        draft.pattern = RecurPatternKind::Weekly;
+        draft.weekdays = [true, false, false, false, false, false, false];
+        draft
+    }
+
+    fn invalid(draft: &RecurEditorState) -> Option<(DraftField, DraftInvalid)> {
+        recur_field_validity(draft, now(), calendar()).unwrap_err()
+    }
+
+    #[test]
+    fn the_fresh_draft_is_valid() {
+        // The family default is a valid daily-1 draft: the opener
+        // never mounts an invalid editor.
+        assert_eq!(
+            recur_field_validity(&RecurEditorState::fresh(), now(), calendar()),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn every_days_field_maps_the_typed_mint_errors() {
+        let mut draft = RecurEditorState::fresh();
+        draft.every_days = "0".to_owned();
+        assert_eq!(
+            invalid(&draft),
+            Some((
+                DraftField::EveryDays,
+                DraftInvalid::Recur(taskboard_domain::InvalidRecur::ZeroInterval)
+            ))
+        );
+        draft.every_days = "abc".to_owned();
+        assert!(matches!(
+            invalid(&draft),
+            Some((
+                DraftField::EveryDays,
+                DraftInvalid::Recur(taskboard_domain::InvalidRecur::BadNumber { .. })
+            ))
+        ));
+    }
+
+    #[test]
+    fn weekly_interval_and_empty_weekday_set_map_their_fields() {
+        let mut draft = weekly_checked(RecurEditorState::fresh());
+        draft.weekly_interval = "0".to_owned();
+        assert_eq!(
+            invalid(&draft),
+            Some((
+                DraftField::WeeklyInterval,
+                DraftInvalid::Recur(taskboard_domain::InvalidRecur::ZeroInterval)
+            ))
+        );
+        // An empty weekday set is its own field's refusal.
+        draft.weekly_interval = "2".to_owned();
+        draft.weekdays = [false; 7];
+        assert_eq!(
+            invalid(&draft),
+            Some((
+                DraftField::Weekdays,
+                DraftInvalid::Recur(taskboard_domain::InvalidRecur::EmptyWeekdaySet)
+            ))
+        );
+    }
+
+    #[test]
+    fn monthly_fields_map_per_the_active_mode() {
+        let mut draft = RecurEditorState::fresh();
+        draft.pattern = RecurPatternKind::Monthly;
+        draft.monthly_day = "32".to_owned();
+        assert!(matches!(
+            invalid(&draft),
+            Some((
+                DraftField::MonthlyDay,
+                DraftInvalid::Recur(taskboard_domain::InvalidRecur::DayOutOfRange { got: 32 })
+            ))
+        ));
+        draft.monthly_mode = MonthlyMode::NthWeekday;
+        draft.monthly_nth = "6th".to_owned();
+        assert!(matches!(
+            invalid(&draft),
+            Some((
+                DraftField::MonthlyNth,
+                DraftInvalid::Recur(taskboard_domain::InvalidRecur::WeekOutOfRange { got: 6 })
+            ))
+        ));
+        // The nth-weekday dropdown is always valid — no field refuses.
+        draft.monthly_nth = "2nd".to_owned();
+        assert_eq!(recur_field_validity(&draft, now(), calendar()), Ok(()));
+    }
+
+    #[test]
+    fn until_uses_the_due_grammar_and_refuses_empty_like_junk() {
+        let mut draft = RecurEditorState::fresh();
+        draft.bound = RecurBoundKind::Until;
+        // The due grammar's shorthand resolves relative to the
+        // injected now (+5d from 2026-11-25 → 2026-11-30).
+        draft.until_text = "+5d".to_owned();
+        assert_eq!(recur_field_validity(&draft, now(), calendar()), Ok(()));
+        // Absolute dates parse too.
+        draft.until_text = "2026-12-31".to_owned();
+        assert_eq!(recur_field_validity(&draft, now(), calendar()), Ok(()));
+        for bad in ["", "not a date", "2026-13-40"] {
+            draft.until_text = bad.to_owned();
+            assert_eq!(
+                invalid(&draft),
+                Some((DraftField::Until, DraftInvalid::BadDate)),
+                "{bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn count_field_maps_the_typed_mint_errors() {
+        let mut draft = RecurEditorState::fresh();
+        draft.bound = RecurBoundKind::Count;
+        draft.count = "0".to_owned();
+        assert_eq!(
+            invalid(&draft),
+            Some((
+                DraftField::Count,
+                DraftInvalid::Recur(taskboard_domain::InvalidRecur::ZeroInterval)
+            ))
+        );
+        draft.count = "10".to_owned();
+        assert_eq!(recur_field_validity(&draft, now(), calendar()), Ok(()));
+    }
+
+    /// The trust boundary's one law: the commit assembly mints through
+    /// the domain fn — the same law the CLI verb rides — and the
+    /// validity fold is exactly its error half (never a second parser).
+    #[test]
+    fn the_assembly_mints_through_the_domain_law_and_carries_the_head() {
+        let mut draft = weekly_checked(RecurEditorState::fresh());
+        draft.weekly_interval = "2".to_owned();
+        draft.bound = RecurBoundKind::Count;
+        draft.count = "5".to_owned();
+        let rule = assemble_recur_draft(&draft, &head(), calendar(), now())
+            .expect("a valid weekly draft mints");
+        let RecurPattern::Weekly { interval, on } = &rule.pattern else {
+            panic!("weekly");
+        };
+        assert_eq!(interval.get(), 2);
+        assert!(on.contains(chrono::Weekday::Mon) && on.len() == 1);
+        assert!(matches!(rule.bound, RecurBound::Count(n) if n.get() == 5));
+        // The anchor is the head's reference date (scheduled Monday
+        // 2026-11-23: now-2d lands before, the schedule chain reads
+        // the scheduled date).
+        assert_eq!(rule.anchor, date(2026, 11, 23));
+        // The invalid half is the fold's pair verbatim.
+        draft.weekdays = [false; 7];
+        let err = assemble_recur_draft(&draft, &head(), calendar(), now()).unwrap_err();
+        assert_eq!(
+            err,
+            Some((
+                DraftField::Weekdays,
+                DraftInvalid::Recur(taskboard_domain::InvalidRecur::EmptyWeekdaySet)
+            ))
+        );
+    }
+
+    /// D-S4 through the editor's own funnel: re-assembling over a
+    /// ruled head carries the series and the habit seam, and the
+    /// re-set clears the pause (the shared CLI semantic, backlog
+    /// #759).
+    #[test]
+    fn editing_a_ruled_head_carries_series_identity() {
+        let series = taskboard_domain::SeriesId::from_uuid(uuid::Uuid::from_u128(42));
+        let continued = taskboard_domain::HabitId::from_uuid(uuid::Uuid::from_u128(7));
+        let mut ruled = head();
+        ruled.recur = Some(taskboard_domain::RecurRule {
+            series,
+            anchor: date(2026, 9, 1),
+            pattern: RecurPattern::Monthly {
+                on: MonthlyAnchor::OnDay(DayOfMonth::new(1).unwrap()),
+            },
+            bound: RecurBound::None,
+            continued_from: Some(continued),
+            paused_until: Some(date(2026, 12, 24)),
+        });
+        let rule =
+            assemble_recur_draft(&RecurEditorState::fresh(), &ruled, calendar(), now()).unwrap();
+        assert_eq!(rule.series, series);
+        assert_eq!(rule.continued_from, Some(continued));
+        assert_eq!(rule.paused_until, None);
+    }
+
+    #[test]
+    fn the_affordance_mounts_for_open_subjects_only_and_never_on_kiosk() {
+        let mut task = head();
+        assert!(series_edit_visible(&task, false));
+        assert!(
+            !series_edit_visible(&task, true),
+            "kiosk renders rows, never actions"
+        );
+        task.done = Some(now());
+        assert!(
+            !series_edit_visible(&task, false),
+            "the done subject's precondition is structural"
+        );
     }
 }

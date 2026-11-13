@@ -99,6 +99,11 @@ export struct TaskDetailModel {
     // flag (the adapter owns both across refreshes).
     recur-pause-open: bool,
     recur-confirm-open: bool,
+    // The repeat affordances' mount flag (round-7 D-7.1): the add row
+    // for a rule-less task and the recur row's edit button — kiosk
+    // renders rows, never actions; a done subject hides them (the
+    // assembly precondition made visible).
+    series-edit-visible: bool,
     date-time-text: string,
     // The time combobox's pushed half (r4 D26): the visible text
     // mirror, the validity flavour, the filtered quick-list rows, and
@@ -160,6 +165,10 @@ export component TaskView inherits FocusScope {
     // inline editor (a view intent), the editor's commit carries the
     // typed date, resume clears the field, and the conversion arms
     // its confirm strip before the verb dispatches.
+    // The repeat affordances' convergence (round-7 D-7.1): the add
+    // row (rule-less tasks) and the recur row's edit button both
+    // route the same action over the viewed subject (click ≡ key).
+    callback series-edit-asked();
     callback recur-pause-asked();
     callback recur-pause-accepted(string);
     callback recur-pause-cancelled();
@@ -638,6 +647,17 @@ export component TaskView inherits FocusScope {
                 }
             }
 
+            // The add-repeat affordance (round-7 D-7.1): rule-less
+            // open tasks only — the recur row owns the edit side. The
+            // timer icon keeps the recur family's identity; the label
+            // is the hover tip.
+            if (!root.task.recur-visible && root.task.series-edit-visible): IconButton {
+                icon: IconKind.timer;
+                tone: Tone.neutral;
+                label: "Add repeat: the task joins a recurring series";
+                clicked => root.series-edit-asked();
+            }
+
             // The tracked-time summary row (r4 D17): the subject's
             // total at second precision, its own full-width row under
             // the facts. Refresh-static while no entry is open — the
@@ -750,6 +770,15 @@ export component TaskView inherits FocusScope {
                                 vertical-alignment: center;
                             }
                         }
+                    }
+                    // The edit-repeat affordance (round-7 D-7.1):
+                    // beside the pattern echo, the same action as the
+                    // add row and the Ctrl+R binding (click ≡ key).
+                    if (root.task.series-edit-visible): IconButton {
+                        icon: IconKind.timer;
+                        tone: Tone.neutral;
+                        label: "Edit repeat: change the pattern or bound";
+                        clicked => root.series-edit-asked();
                     }
                 }
                 if (root.task.recur-pause-open): HorizontalLayout {

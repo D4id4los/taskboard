@@ -529,6 +529,15 @@ impl Adapter {
         } else {
             SharedString::from(String::new())
         });
+        // The recur editor's window-level mirrors (round-7 D-7.1): the
+        // overlay mounts exactly while the flow holds; the model
+        // re-seeds from the level's buffer every pass (the TimeField
+        // contract — the widget never holds state).
+        let recur_open = matches!(self.view_state.flow(), Flow::EditRecur { .. });
+        window.set_recur_editor_open(recur_open);
+        if recur_open {
+            window.set_recur_editor_model(self.recur_editor_model());
+        }
         let palette_selected = match self.view_state.flow() {
             crate::view_state::Flow::Palette { selected } => *selected,
             _ => 0,
@@ -2560,6 +2569,124 @@ impl Adapter {
                 crate::presentation::seed_recur_editor(t.recur.as_ref(), anchor)
             },
         )
+    }
+
+    /// The recur editor's pushed model (round-7 D-7.1): the buffer's
+    /// mirrors, the per-field flavours, the live echo (the assembled
+    /// rule's canonical text form, or the typed invalid-field hint),
+    /// and the commit's gate. Computed per pass while the flow holds
+    /// — the widget never holds state.
+    fn recur_editor_model(&self) -> crate::RecurEditorModel {
+        use crate::level_state::RecurPatternKind;
+        use crate::presentation::{FieldFlavour, recur_field_flavours, recur_field_hint};
+
+        let flavour = |f: FieldFlavour| match f {
+            FieldFlavour::Neutral => crate::FieldValidity::Neutral,
+            FieldFlavour::Valid => crate::FieldValidity::Valid,
+            FieldFlavour::Invalid => crate::FieldValidity::Invalid,
+        };
+        let Some(draft) = self.view_state.recur_editor() else {
+            return Self::recur_editor_model_closed();
+        };
+        let now = self.day_ctx().now;
+        let day = self.calendar();
+        let [
+            every,
+            weekly,
+            // The weekday toggles carry no field mark (the echo names
+            // an empty set); the flavour stays unused here.
+            _weekdays,
+            monthly_day,
+            monthly_nth,
+            until,
+            count,
+        ] = recur_field_flavours(draft, now, day);
+        // The echo: the rule's canonical text form when the whole
+        // draft mints over the (open) subject; the typed hint
+        // otherwise. Without a subject the overlay is closing — the
+        // closed model's shape.
+        let head = self
+            .view_state
+            .subject_task()
+            .and_then(|task| self.state.load().tasks.get(&task).cloned());
+        let (echo, echo_valid) = match head.as_ref().filter(|t| t.is_open()) {
+            Some(head) => match crate::presentation::assemble_recur_draft(draft, head, day, now) {
+                Ok(rule) => (SharedString::from(rule.text_form()), true),
+                Err(Some((field, invalid))) => {
+                    (SharedString::from(recur_field_hint(field, &invalid)), false)
+                }
+                Err(None) => (SharedString::new(), false),
+            },
+            None => (SharedString::new(), false),
+        };
+        // The commit's gate is the plan's named validity fold (the
+        // same parse, the flag-only view).
+        let commit_enabled = crate::presentation::recur_field_validity(draft, now, day).is_ok()
+            && head.as_ref().is_some_and(taskboard_domain::Task::is_open);
+        crate::RecurEditorModel {
+            pattern_kind: match draft.pattern {
+                RecurPatternKind::Daily => 0,
+                RecurPatternKind::Weekly => 1,
+                RecurPatternKind::Monthly => 2,
+            },
+            every_days_text: SharedString::from(draft.every_days.clone()),
+            every_days_validity: flavour(every),
+            weekly_interval_text: SharedString::from(draft.weekly_interval.clone()),
+            weekly_interval_validity: flavour(weekly),
+            weekdays_checked: ModelRc::new(slint::VecModel::from(draft.weekdays.to_vec())),
+            monthly_mode: match draft.monthly_mode {
+                crate::level_state::MonthlyMode::OnDay => 0,
+                crate::level_state::MonthlyMode::NthWeekday => 1,
+            },
+            monthly_day_text: SharedString::from(draft.monthly_day.clone()),
+            monthly_day_validity: flavour(monthly_day),
+            monthly_nth_text: SharedString::from(draft.monthly_nth.clone()),
+            monthly_nth_validity: flavour(monthly_nth),
+            monthly_weekday: i32::try_from(draft.monthly_nth_weekday.num_days_from_monday())
+                .expect("a weekday index fits i32"),
+            bound_kind: match draft.bound {
+                crate::level_state::RecurBoundKind::Never => 0,
+                crate::level_state::RecurBoundKind::Until => 1,
+                crate::level_state::RecurBoundKind::Count => 2,
+            },
+            until_text: SharedString::from(draft.until_text.clone()),
+            until_validity: flavour(until),
+            count_text: SharedString::from(draft.count.clone()),
+            count_validity: flavour(count),
+            echo,
+            echo_valid,
+            commit_enabled,
+            detach_armed: draft.detach_armed,
+        }
+    }
+
+    /// The closed editor's neutral model (the mount gate's else half).
+    fn recur_editor_model_closed() -> crate::RecurEditorModel {
+        crate::RecurEditorModel {
+            pattern_kind: 0,
+            every_days_text: SharedString::new(),
+            every_days_validity: crate::FieldValidity::Neutral,
+            weekly_interval_text: SharedString::new(),
+            weekly_interval_validity: crate::FieldValidity::Neutral,
+            weekdays_checked: ModelRc::new(slint::VecModel::from(vec![
+                false, false, false, false, false, false, false,
+            ])),
+            monthly_mode: 0,
+            monthly_day_text: SharedString::new(),
+            monthly_day_validity: crate::FieldValidity::Neutral,
+            monthly_nth_text: SharedString::new(),
+            monthly_nth_validity: crate::FieldValidity::Neutral,
+            monthly_weekday: 0,
+            bound_kind: 0,
+            until_text: SharedString::new(),
+            until_validity: crate::FieldValidity::Neutral,
+            count_text: SharedString::new(),
+            count_validity: crate::FieldValidity::Neutral,
+            echo: SharedString::new(),
+            echo_valid: true,
+            commit_enabled: false,
+            detach_armed: false,
+        }
     }
 
     /// The D9 interpretation table: one `match (flow, effect)` whose
@@ -6950,6 +7077,7 @@ fn install_view_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     install_review_walk_seams(window, adapter);
     install_habit_seams(window, adapter);
     install_recur_seams(window, adapter);
+    install_recur_editor_seams(window, adapter);
     install_settings_seams(window, adapter);
 }
 
@@ -7106,6 +7234,210 @@ fn install_recur_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     a.series_target = None;
     a.convert_target = None;
     a.refresh_forced(&window);
+
+    });
+}
+
+/// The recurrence editor's seams (round-7 D-7.1): the affordances'
+/// convergence routes the opener action over the viewed subject; the
+/// field mirrors write the level's buffer the moment a keystroke or
+/// pick happens (the adapter owns the buffer — one truth); the commit
+/// funnel re-mints the whole draft and dispatches nothing on an
+/// invalid parse (the trust boundary never trusts the widget); the
+/// detach strip routes its two-step through the action layer.
+#[allow(clippy::too_many_lines)] // one seam table; splitting hides the editor
+fn install_recur_editor_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
+    use crate::level_state::{MonthlyMode, RecurBoundKind, RecurPatternKind};
+
+    // The affordances' convergence: the add row, the recur row's edit
+    // button, and the Ctrl+R binding all land here (click ≡ key).
+    install_seam!(window: window.on_series_edit_asked, adapter: adapter;
+    bind mut (a, window), args (), {        a.route(&window, ActionId::SeriesEdit);
+
+    });
+
+    // The pattern/bound/mode picks: the pushed index contracts
+    // (0/1/2, 0/1) map to the draft kinds; an out-of-range index is a
+    // stale widget degrading to a no-op.
+    install_seam!(window: window.on_recur_pattern_picked, adapter: adapter;
+    bind mut (a, window), args (index), {        let kind = match index {
+            0 => RecurPatternKind::Daily,
+            1 => RecurPatternKind::Weekly,
+            2 => RecurPatternKind::Monthly,
+            _ => return, // a stale index degrades to a no-op
+        };
+        if let Some(editor) = a.view_state.recur_editor_mut() {
+            editor.pattern = kind;
+        }
+        a.refresh_forced(&window);
+
+    });
+    install_seam!(window: window.on_recur_monthly_mode_picked, adapter: adapter;
+    bind mut (a, window), args (index), {        let mode = match index {
+            0 => MonthlyMode::OnDay,
+            1 => MonthlyMode::NthWeekday,
+            _ => return, // a stale index degrades to a no-op
+        };
+        if let Some(editor) = a.view_state.recur_editor_mut() {
+            editor.monthly_mode = mode;
+        }
+        a.refresh_forced(&window);
+
+    });
+    install_seam!(window: window.on_recur_bound_picked, adapter: adapter;
+    bind mut (a, window), args (index), {        let bound = match index {
+            0 => RecurBoundKind::Never,
+            1 => RecurBoundKind::Until,
+            2 => RecurBoundKind::Count,
+            _ => return, // a stale index degrades to a no-op
+        };
+        if let Some(editor) = a.view_state.recur_editor_mut() {
+            editor.bound = bound;
+        }
+        a.refresh_forced(&window);
+
+    });
+    install_seam!(window: window.on_recur_monthly_weekday_picked, adapter: adapter;
+    bind mut (a, window), args (index), {        let Some(slot) = usize::try_from(index).ok() else {
+            return;
+        };
+        if slot > 6 {
+            return; // a stale index degrades to a no-op
+        }
+        if let Some(editor) = a.view_state.recur_editor_mut() {
+            editor.monthly_nth_weekday = crate::presentation::weekday_of_slot(slot);
+        }
+        a.refresh_forced(&window);
+
+    });
+    install_seam!(window: window.on_recur_weekday_toggled, adapter: adapter;
+    bind mut (a, window), args (index), {        let Some(slot) = usize::try_from(index).ok() else {
+            return;
+        };
+        if slot > 6 {
+            return; // a stale index degrades to a no-op
+        }
+        if let Some(editor) = a.view_state.recur_editor_mut() {
+            editor.weekdays[slot] = !editor.weekdays[slot];
+        }
+        a.refresh_forced(&window);
+
+    });
+
+    // The text mirrors: the typed text lands in the buffer verbatim
+    // (no trim — the parsers are the funnel's business).
+    install_seam!(window: window.on_recur_every_days_edited, adapter: adapter;
+    bind mut (a, window), args (text), {        if let Some(editor) = a.view_state.recur_editor_mut() {
+            editor.every_days = text.to_string();
+        }
+        a.refresh_forced(&window);
+
+    });
+    install_seam!(window: window.on_recur_weekly_interval_edited, adapter: adapter;
+    bind mut (a, window), args (text), {        if let Some(editor) = a.view_state.recur_editor_mut() {
+            editor.weekly_interval = text.to_string();
+        }
+        a.refresh_forced(&window);
+
+    });
+    install_seam!(window: window.on_recur_monthly_day_edited, adapter: adapter;
+    bind mut (a, window), args (text), {        if let Some(editor) = a.view_state.recur_editor_mut() {
+            editor.monthly_day = text.to_string();
+        }
+        a.refresh_forced(&window);
+
+    });
+    install_seam!(window: window.on_recur_monthly_nth_edited, adapter: adapter;
+    bind mut (a, window), args (text), {        if let Some(editor) = a.view_state.recur_editor_mut() {
+            editor.monthly_nth = text.to_string();
+        }
+        a.refresh_forced(&window);
+
+    });
+    install_seam!(window: window.on_recur_until_edited, adapter: adapter;
+    bind mut (a, window), args (text), {        if let Some(editor) = a.view_state.recur_editor_mut() {
+            editor.until_text = text.to_string();
+        }
+        a.refresh_forced(&window);
+
+    });
+    install_seam!(window: window.on_recur_count_edited, adapter: adapter;
+    bind mut (a, window), args (text), {        if let Some(editor) = a.view_state.recur_editor_mut() {
+            editor.count = text.to_string();
+        }
+        a.refresh_forced(&window);
+
+    });
+
+    // The commit funnel (plan D-C1): re-mint the whole buffer; an
+    // invalid draft is a silent no-op (the button does not even mount
+    // — the seam re-checks, the trust boundary never trusts the
+    // widget); the done-subject re-check is the assembly
+    // precondition's second gate.
+    install_seam!(window: window.on_recur_commit_clicked, adapter: adapter;
+    bind mut (a, window), args (), {        let Some(task) = a
+            .view_state
+            .subject_task()
+            .filter(|task| a.state.load().tasks.get(task).is_some_and(taskboard_domain::Task::is_open))
+        else {
+            return;
+        };
+        let draft = a.view_state.recur_editor().cloned();
+        let Some(draft) = draft else {
+            return;
+        };
+        let now = a.day_ctx().now;
+        let day = a.calendar();
+        let head = a.state.load().tasks.get(&task).cloned();
+        let Some(head) = head else {
+            return;
+        };
+        let Ok(rule) = crate::presentation::assemble_recur_draft(&draft, &head, day, now) else {
+            return; // an invalid draft dispatches nothing
+        };
+        a.recur_edit_target = Some(task);
+        a.recur_draft_rule = Some(rule);
+        a.route(&window, ActionId::SeriesEditCommit);
+        // The commit's consume is the flow's end — the level drops
+        // with its buffer, the one-shots were taken by the route.
+        let outcomes = a.view_state.end_edit_recur();
+        a.apply_outcomes(&window, &outcomes);
+
+    });
+
+    // The clean close: the cancel button, the scrim click, and
+    // Escape's law all land here — the draft dies with the level,
+    // nothing dispatches.
+    install_seam!(window: window.on_recur_editor_cancel_clicked, adapter: adapter;
+    bind mut (a, window), args (), {        a.recur_edit_target = None;
+        a.recur_draft_rule = None;
+        let outcomes = a.view_state.end_edit_recur();
+        a.apply_outcomes(&window, &outcomes);
+
+    });
+
+    // The detach strip's two-step (plan D-C1): the arm/cancel route
+    // the flag effects; the confirm routes the detach command over
+    // the opener's one-shot target and ends the flow.
+    install_seam!(window: window.on_recur_detach_arm_clicked, adapter: adapter;
+    bind mut (a, window), args (), {        // route() takes every one-shot; the strip's steps re-arm
+        // the target from the flow (the convert seams' law) so the
+        // confirm still routes.
+        a.recur_edit_target = a.view_state.task_of_edit_recur();
+        a.route(&window, ActionId::SeriesEditDetachArm);
+
+    });
+    install_seam!(window: window.on_recur_detach_cancel_clicked, adapter: adapter;
+    bind mut (a, window), args (), {        a.recur_edit_target = a.view_state.task_of_edit_recur();
+        a.route(&window, ActionId::SeriesEditDetachCancel);
+
+    });
+    install_seam!(window: window.on_recur_detach_confirm_clicked, adapter: adapter;
+    bind mut (a, window), args (), {        a.recur_edit_target = a.view_state.task_of_edit_recur();
+        a.route(&window, ActionId::SeriesEditDetach);
+        // The detach's consume is the flow's end (the commit's shape).
+        let outcomes = a.view_state.end_edit_recur();
+        a.apply_outcomes(&window, &outcomes);
 
     });
 }

@@ -2802,6 +2802,239 @@ mod view_component_tests {
         });
     }
 
+    /// Round-7 D-7.1 (plan T5): the recurrence editor's seams
+    /// end-to-end. The fixture's overdue task carries a FIXED
+    /// scheduled date, so the assembly's anchor is wall-clock-free.
+    fn recur_fixture_state() -> taskboard_domain::AppState {
+        use chrono::TimeZone as _;
+        let mut state = fixture_state();
+        let id = taskboard_domain::overdue_tasks(&state.tasks, chrono::Utc::now())
+            .into_iter()
+            .map(|t| t.id)
+            .next()
+            .expect("the fixture's overdue task");
+        state
+            .tasks
+            .get_mut(&id)
+            .expect("task")
+            // 2026-11-23T00:00Z, a Monday — the scheduled leg of the
+            // reference chain wins, wall-clock-free.
+            .scheduled = Some(chrono::Utc.timestamp_opt(1_795_392_000, 0).unwrap());
+        state
+    }
+
+    /// The fixture's recur subject (the mutated overdue task).
+    fn recur_subject(state: &taskboard_domain::AppState) -> taskboard_domain::TaskId {
+        taskboard_domain::overdue_tasks(&state.tasks, chrono::Utc::now())
+            .into_iter()
+            .map(|t| t.id)
+            .next()
+            .expect("the overdue task")
+    }
+
+    /// Mount the task detail over `task` through the view-state
+    /// machine (the banner-open seam's route, fixture-free).
+    fn open_task_detail(handle: &UiHandle, task: taskboard_domain::TaskId) {
+        let state = handle.state.load_full();
+        let mut adapter = handle.adapter.borrow_mut();
+        adapter.view_state.set_focused(Some(task));
+        let _ = adapter.view_state.activate_focused(&state);
+        drop(adapter);
+        handle.refresh();
+    }
+
+    #[test]
+    fn recur_editor_commits_the_exact_assembled_rule() {
+        on_slint_thread(|| {
+            let state = recur_fixture_state();
+            let task = recur_subject(&state);
+            let (handle, mut commands) = handover_with(state, UiSettings::default().keymap);
+            open_task_detail(&handle, task);
+            handle.window.invoke_series_edit_asked();
+            assert!(handle.window.get_recur_editor_open(), "the overlay mounts");
+            handle.window.invoke_recur_every_days_edited("3".into());
+            handle.window.invoke_recur_commit_clicked();
+            match commands.try_recv().expect("the commit command arrived") {
+                StateCommand::UpdateTask { id, changes } => {
+                    assert_eq!(id, task);
+                    let taskboard_domain::TaskChanges { recur, .. } = changes;
+                    let Some(Some(rule)) = recur else {
+                        panic!("the set write, got {recur:?}");
+                    };
+                    assert_eq!(
+                        rule.pattern,
+                        taskboard_domain::RecurPattern::Daily {
+                            every: taskboard_domain::EveryDays::new(3).unwrap(),
+                        }
+                    );
+                    assert_eq!(rule.bound, taskboard_domain::RecurBound::None);
+                    assert_eq!(rule.continued_from, None);
+                    assert_eq!(rule.series.as_uuid().get_version_num(), 7);
+                    assert_eq!(
+                        rule.anchor,
+                        chrono::NaiveDate::from_ymd_opt(2026, 11, 23).unwrap(),
+                        "the anchor is the scheduled reference date, wall-clock-free"
+                    );
+                }
+                other => panic!("typed outcome expected, got {other:?}"),
+            }
+            assert!(
+                !handle.window.get_recur_editor_open(),
+                "the commit closes the editor"
+            );
+            assert!(commands.try_recv().is_err(), "nothing else dispatched");
+        });
+    }
+
+    /// The detach path (plan T5): the armed strip's confirm dispatches
+    /// `recur: Some(None)` — and nothing else in the changeset.
+    #[test]
+    fn recur_editor_detach_clears_the_rule_and_nothing_else() {
+        on_slint_thread(|| {
+            let state = recur_fixture_state();
+            let task = recur_subject(&state);
+            let (handle, mut commands) = handover_with(state, UiSettings::default().keymap);
+            open_task_detail(&handle, task);
+            handle.window.invoke_series_edit_asked();
+            handle.window.invoke_recur_detach_arm_clicked();
+            assert!(
+                handle.window.get_recur_editor_model().detach_armed,
+                "the strip armed"
+            );
+            handle.window.invoke_recur_detach_confirm_clicked();
+            match commands.try_recv().expect("the detach command arrived") {
+                StateCommand::UpdateTask { id, changes } => {
+                    assert_eq!(id, task);
+                    // The clear, and nothing else: every other mask is
+                    // the default (the review's must-check).
+                    assert_eq!(changes.recur, Some(None));
+                    assert_eq!(changes.title, None);
+                    assert_eq!(changes.duedate, None);
+                    assert_eq!(changes.scheduled, None);
+                    assert_eq!(changes.description, None);
+                }
+                other => panic!("typed outcome expected, got {other:?}"),
+            }
+            assert!(!handle.window.get_recur_editor_open());
+            assert!(commands.try_recv().is_err(), "nothing else dispatched");
+        });
+    }
+
+    /// The D-S4 pin (plan T5, the review's must-find): committing over
+    /// a ruled task carries the series and the habit seam, and the
+    /// re-set clears the pause (the shared CLI semantic, #759).
+    #[test]
+    fn recur_editor_edit_preserves_series_identity() {
+        on_slint_thread(|| {
+            let mut state = recur_fixture_state();
+            let task = recur_subject(&state);
+            let series = taskboard_domain::SeriesId::from_uuid(uuid::Uuid::from_u128(42));
+            let continued = taskboard_domain::HabitId::from_uuid(uuid::Uuid::from_u128(7));
+            state.tasks.get_mut(&task).expect("task").recur = Some(taskboard_domain::RecurRule {
+                series,
+                anchor: chrono::NaiveDate::from_ymd_opt(2026, 9, 1).unwrap(),
+                pattern: taskboard_domain::RecurPattern::Monthly {
+                    on: taskboard_domain::MonthlyAnchor::OnDay(
+                        taskboard_domain::DayOfMonth::new(1).unwrap(),
+                    ),
+                },
+                bound: taskboard_domain::RecurBound::None,
+                continued_from: Some(continued),
+                paused_until: Some(chrono::NaiveDate::from_ymd_opt(2026, 12, 24).unwrap()),
+            });
+            let (handle, mut commands) = handover_with(state, UiSettings::default().keymap);
+            open_task_detail(&handle, task);
+            handle.window.invoke_series_edit_asked();
+            // The seeding mirrors the rule: monthly, on day 1.
+            assert_eq!(handle.window.get_recur_editor_model().pattern_kind, 2);
+            handle.window.invoke_recur_commit_clicked();
+            match commands.try_recv().expect("the commit command arrived") {
+                StateCommand::UpdateTask { id, changes } => {
+                    assert_eq!(id, task);
+                    let Some(Some(rule)) = changes.recur else {
+                        panic!("the set write");
+                    };
+                    assert_eq!(rule.series, series, "D-S4: the series carries");
+                    assert_eq!(rule.continued_from, Some(continued));
+                    assert_eq!(
+                        rule.pattern,
+                        taskboard_domain::RecurPattern::Monthly {
+                            on: taskboard_domain::MonthlyAnchor::OnDay(
+                                taskboard_domain::DayOfMonth::new(1).unwrap(),
+                            ),
+                        },
+                        "the seeded draft mirrors the rule"
+                    );
+                    assert_eq!(
+                        rule.paused_until, None,
+                        "the re-set clears the pause (#759)"
+                    );
+                }
+                other => panic!("typed outcome expected, got {other:?}"),
+            }
+            assert!(commands.try_recv().is_err(), "nothing else dispatched");
+        });
+    }
+
+    /// The stale arm (plan D-C2): a commit or detach without the
+    /// editor mounted dispatches nothing (the seam's own gates; the
+    /// router's `NoTarget` half is pinned in the router tests).
+    #[test]
+    fn recur_editor_commit_without_the_flow_dispatches_nothing() {
+        on_slint_thread(|| {
+            let (handle, mut commands) =
+                handover_with(recur_fixture_state(), UiSettings::default().keymap);
+            handle.window.invoke_recur_commit_clicked();
+            assert!(commands.try_recv().is_err(), "nothing dispatched");
+            handle.window.invoke_recur_detach_confirm_clicked();
+            assert!(commands.try_recv().is_err(), "nothing dispatched");
+        });
+    }
+
+    /// The kiosk gate (plan T4, D-T16): the affordance flag empties on
+    /// kiosk while the subject still renders (the model gate empties
+    /// the ACTION, never the row data).
+    #[test]
+    fn recur_editor_affordance_hides_on_kiosk() {
+        on_slint_thread(|| {
+            let state = recur_fixture_state();
+            let task = recur_subject(&state);
+            let (commands_tx, commands_rx) = mpsc::channel(16);
+            let (requests_tx, _requests_rx) = mpsc::channel(16);
+            let (system_tx, system_rx) = broadcast::channel(16);
+            let (signals_tx, signals_rx) = broadcast::channel(16);
+            drop(system_tx);
+            drop(signals_tx);
+            let (_health_tx, health) =
+                tokio::sync::watch::channel(crate::presentation::DeliveryHealth::default());
+            let handle = mount(
+                Arc::new(ArcSwap::from_pointee(state)),
+                signals_rx,
+                system_rx,
+                commands_tx,
+                requests_tx,
+                UiSettings {
+                    kiosk: true,
+                    ..UiSettings::default()
+                },
+                health,
+                None,
+            )
+            .expect("mount succeeds on the null platform");
+            drop(commands_rx);
+            open_task_detail(&handle, task);
+            assert!(
+                !handle.window.get_task_model().series_edit_visible,
+                "kiosk renders rows, never actions"
+            );
+            // The gate empties the ACTION, never the model: the
+            // subject's done-state half stays present (the tracked
+            // rows' law is the habit kiosk tests' pin, not this one).
+            let model = handle.window.get_task_model();
+            assert!(!model.done, "the subject's state stays present");
+        });
+    }
+
     /// §6 test 4 — banner end-to-end: activating a row then snooze/mute
     /// sends the exact typed commands (rule-less task → the implicit
     /// default with the duedate anchor).

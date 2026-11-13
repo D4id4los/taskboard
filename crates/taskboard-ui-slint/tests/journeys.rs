@@ -6472,15 +6472,21 @@ fn the_task_view_stop_inventory_walks_in_reading_order() {
             // The entries affordance (r4 chunk 10, D-TS8) joins the
             // unreported stops (the tracking verbs' precedent): it
             // sits after the scheduled cell, so the stale-repeat
-            // window carries one more 6 before the rules rows.
-            let observed = walk_steps(&mut harness, 20);
+            // window carries one more 6 before the rules rows. The
+            // add-repeat affordance (round-7 D-7.1) joins them the
+            // same way: one more 6, everything below shifts a step.
+            let observed = walk_steps(&mut harness, 21);
             assert_eq!(
                 &observed[..13],
-                &[0, 2, 3, 3, 5, 6, 6, 90, 91, 92, 93, 93, 11],
+                &[0, 2, 3, 3, 5, 6, 6, 6, 90, 91, 92, 93, 93],
                 "the reading-order inventory"
             );
             assert_eq!(
-                observed[19], 2,
+                observed[13], 11,
+                "the description stop follows the rule rows"
+            );
+            assert_eq!(
+                observed[20], 2,
                 "the walk wraps through the chrome and re-enters at the done box"
             );
 

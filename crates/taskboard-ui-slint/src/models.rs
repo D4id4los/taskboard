@@ -2184,6 +2184,10 @@ fn push_task_detail(
         )),
         recur_pause_open: recur.pause_open,
         recur_confirm_open: recur.confirm_open,
+        // The repeat affordances' mount flag (round-7 D-7.1): the
+        // presentation fold over the subject + the kiosk gate.
+        series_edit_visible: subject
+            .is_some_and(|t| crate::presentation::series_edit_visible(t, kiosk)),
         track_entries: ModelRc::new(slint::VecModel::from(track_entry_rows)),
         date_picker_open: due.picker.is_some(),
         date_caption: SharedString::from(
