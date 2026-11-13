@@ -1,0 +1,371 @@
+#+title: taskboard UX Planning Framework
+#+options: toc:t
+
+This document is the standing UX planning law for the taskboard
+project. It exists because features repeatedly landed complete in the
+domain, engine, storage, sync, and CLI layers but unsatisfying or
+absent in the GUI: display without control (badges for behavior no
+surface could trigger), creation paths that were CLI-only, interaction
+coverage that stopped at the first happy-path click, and Settings UX
+that accumulated hole-ridden multi-edition workarounds. Seven GUI
+review rounds (2026-10-22 to 2026-11-13) converged each outbreak after
+the fact; this framework moves that completeness to planning time.
+
+These rules are binding for agents and humans alike. =AGENTS.md= §7
+carries the short trigger rule and points here; the normative source
+is the accepted framework plan
+(=.artifacts/plans/2026-11-13-ux-journey-planning-framework-plan.md=),
+from which this document is promoted. Nothing here adds UI-side logic:
+the UI stays a dumb presentation client (=AGENTS.md= §2); the
+framework plans journeys, names the existing seams (callbacks,
+=ActionId=s, command variants, =ItemAddr= row kinds — never element
+ids, which the UI deliberately does not have), and reads files.
+
+* 1. What this document is
+
+The framework's single sentence: **journeys enumerate the verbs** — a
+user-visible capability is planned as user stories and step-by-step
+journeys *before* an engine work item may exist for it, the first
+dispatch slice must complete every P1 story end-to-end, a mechanical
+gate proves the wiring and tests exist, and an agentic walkthrough at
+review time judges quality.
+
+- *Trigger rule* (short form; the binding wording lives in
+  =AGENTS.md= §7): a plan or design round that adds or changes a
+  user-visible capability — any new verb, badge, view, or setting a
+  human can perceive or act on — includes, or cites, an accepted UX
+  journey plan written from
+  =.artifacts/templates/ux-journey-plan.md= **before a dispatch plan
+  may chunk the work**. Pure engine/storage/sync internals with no
+  surface delta are exempt.
+- *Advisory during rollout*: while the framework's integration phases
+  (phases 3–5 of §3: surface census, retrofit analysis, remediation)
+  are in flight, the rule binds a chunk only when that chunk's origin
+  cites a UX journey plan. It becomes mandatory for all new
+  user-visible work once those phases complete; see the activation
+  state machine (§3).
+- *What a UX journey plan is*: a first-class =.artifacts/plans/=
+  artefact (=YYYY-MM-DD-<topic>-ux-plan.md=) accepted by the user like
+  a design round; the dispatch plan's Origin field cites it, dispatch
+  chunks map to its IDs (=US-n= stories, =US-n/S-k= steps, =W-x=
+  wiring rows, =R-x= rulings).
+
+* 2. The framework
+
+Four components, one per root cause of the historical failures
+(engine-first planning, reactive UI remediation, no journey artefact,
+chunk-local rulings). Each states the gap classes it kills; a
+component that kills none was cut at design time (§4's rejections).
+
+| Component | Kills | Root cause |
+|---|---|---|
+| 2.1 UX journey plan artefact | G1–G4 | C1, C3 |
+| 2.2 Journey-first derivation + P1-slice rule | G1, G3 | C1, C2 |
+| 2.3 Automated completeness gate (=scripts/ux-coverage.sh=) | G1–G3 mechanically | C5 |
+| 2.4 Review-stage walkthrough protocol + UX surface census | G4 | C2, C4 |
+
+The gap classes:
+
+| # | Class | Real instance |
+|---|---|---|
+| G1 | GUI not integrated at all | files-sync waves: full engine, zero Settings surface until round 6 |
+| G2 | Display without control | recurrence badge + pause/resume/convert rows, but no UI constructs =TaskChanges { recur: … }= (R7-1) |
+| G3 | Partial interaction coverage | task↔habit conversion exists; habit *creation* CLI-only (R7-2); Deck→Files move exists; local→Files publish missing (R7-3) |
+| G4 | Workable but hole-ridden, inconvenient UX | Settings sync-connection management across multiple editions; no cancel/escape paths; entry points scattered |
+
+** 2.1 The UX journey plan artefact
+
+Written from =.artifacts/templates/ux-journey-plan.md=. Its nine
+sections, each with the gap class it kills:
+
+1. *Scope & goals* — what the user can now do that they couldn't;
+   explicit non-goals with homes (backlog issues), house style.
+2. *Capability × surface matrix* (kills G2, G3) — rows: every verb on
+   every entity the feature touches (=task.create=,
+   =habit.create=, =board.publish_to_files=, =connection.disable=, …),
+   **creation verbs are enumerated by default**; columns: the app's
+   fixed surface set (Board, Task detail, Today, Review, Settings,
+   Capture, CLI; platform qualification lives inside cells — =E
+   (desktop)= — never in headers). Cells: =D= display / =E= edit /
+   =C= create / =X= remove, each citing its story ID; =—= =
+   deliberately absent. **Every =—= on a core verb (create/edit/remove
+   of an entity the feature touches) requires a numbered ruling** in
+   the rulings sub-table with a reason and a home. This makes
+   "creation is CLI-only" a *visible, reviewable decision* (kills the
+   round-6/round-7 oscillation) and makes display-without-control a
+   blank cell a reviewer sees at a glance.
+3. *User stories* (=US-n=) — Connextra format (job-story format
+   allowed for situation-triggered behavior), each with: platforms
+   (desktop / kiosk — shared stories carry platform tags, no separate
+   kiosk story sets), **entry points** (every affordance that starts
+   the journey: button-in-view, menu, keyboard =ActionId=, CLI),
+   priority (**P1** = must ship in the first slice; P2/P3 = later
+   slices, each with a home), and acceptance criteria as
+   Given/When/Then citing the verification method (journey test /
+   seam test / fold test / manual).
+4. *Journey specs* — per story, a step table =US-n/S-k=: surface and
+   affordance, user action (gesture and/or =ActionId=), dispatches
+   (the exact =StateCommand= / =UiRequest= variant), system response
+   (state change + UI feedback: badge/tone/busy-dot/caption), and a
+   **mandatory escape/failure column** (cancel, undo, typed-error
+   handling — Cockburn's use-case extensions). A step without an
+   escape path is a plan defect.
+5. *Interaction flows* (kills G1, G3, G4) — mermaid =flowchart TD=
+   per multi-surface journey (entry points as sources, step IDs on
+   edges) and =stateDiagram-v2= for every overlay/editor/modal
+   (mount/armed/invalid/committing states, escape transitions). Every
+   node is ID-addressable and greppable. This extends
+   =docs/flow_model.org='s established GitHub-rendered mermaid
+   practice to the UI.
+6. *Wiring inventory* (kills G1, G2 mechanically) — one row per new
+   or changed affordance: surface file, widget/composition, **slint
+   callback name**, adapter seam (method or =install_seam!= site),
+   =ActionId=, command variant(s) with row addressing (=ItemAddr=
+   kind for list rows — the UI is id-less by design, so callbacks +
+   action ids + command variants are the greppable contract, not
+   element ids), journey steps covered, and the test (file::test
+   name). Rows with no command variant must say why (pure
+   navigation/display).
+7. *Command-contract delta* — every new/changed =StateCommand=,
+   =UiRequest=, and =ActionId= the journeys imply, enumerated here.
+   This section is the derivation hinge (§2.2).
+8. *Verification plan* — which journey steps get journey tests (names
+   embed the step ID: =us1_s2_edit_repeat_mounts_editor=), seam
+   tests, presentation fold tests, kiosk gates; which acceptance
+   criteria are manual and who runs them.
+9. *Definition of done* — the §2.3 gate green; walkthrough protocol
+   executed (§2.4); all matrix holes ruled; non-goals filed.
+
+Acceptance works like design rounds already do: the user accepts the
+UX plan; the dispatch plan's Origin field must cite it; dispatch
+chunks map to its IDs.
+
+** 2.2 Journey-first derivation and the P1-slice rule
+
+Invert the historical direction of derivation. Engine waves used to
+plan verbs and leave the UI to "surface" them eventually. Under the
+framework: **journeys enumerate the verbs**. The UX plan's
+command-contract delta (§2.1.7) is written *before* the engine chunks,
+and engine work items exist because a journey step dispatches them.
+"Engine done, UI missing" becomes structurally hard: an engine verb
+with no journey step is unplanned scope; a journey step with no engine
+verb is a missing chunk.
+
+*P1-slice rule* (story-mapping's release slicing, applied to dispatch
+plans): the set of chunks dispatched for a feature must, as a whole,
+complete every P1 story's journey end-to-end — entry point to visible
+outcome including escape paths. A dispatch plan whose chunk sum leaves
+a P1 step unwired is invalid at planning time, not discovered in
+review round N. P2/P3 stories may trail, but only *after* the P1 slice
+shipped.
+
+** 2.3 Automated completeness gate — =scripts/ux-coverage.sh=
+
+A parser + grepper over the UX plan's fixed-format tables (the
+template pins column order and heading titles, so parsing is stable
+markdown-table extraction):
+
+#+begin_example
+scripts/ux-coverage.sh <ux-plan.md> [--gate] [--root <dir>]
+scripts/ux-coverage.sh --self-test
+#+end_example
+
+Checks:
+
+- For each **wiring-inventory row**: the callback name must appear in
+  a =.slint= file **and** in the adapter (an =install_seam!=/=
+on_*= handler in =adapter.rs=); each command / =ActionId= token must
+  exist in =crates/taskboard-domain/src/messages.rs=
+  (=StateCommand=), =crates/taskboard-ui-slint/src/requests.rs=
+  (=UiRequest=), or =crates/taskboard-ui-slint/src/actions.rs=
+  (=ActionId=), as the plan's command-delta Kind selects; a row with
+  no command variant must carry its reason in the journey-steps
+  column.
+- For each **journey step ID**: the token =us<n>_s<k>= must appear in
+  a test-function name under =crates/taskboard-ui-slint/tests/=
+  (or the crate the plan's =Test-root:= front-matter line nominates)
+  — the template's naming law makes test names the completion proof.
+- For each **capability-matrix cell** marked with a story: that
+  story's §4 table exists and all its steps are covered per the
+  above; each ruling must have a non-empty reason.
+
+Output: one line per check — =FOUND (file:line)= or =MISSING= — then
+counts. A plain run is informational (exit 0) unless a parse error
+occurred; =--gate= exits 1 when any row is MISSING. A malformed or
+missing table is a hard parse error (exit 2,
+=PARSE-ERROR: <section>: <what>=), never a silent skip. Usage errors
+exit 64.
+
+*Honest limits*: the gate proves *wiring exists and is
+claimed-tested*, not that the UX is good — quality is the walkthrough
+protocol's job (§2.4). The two layers together answer "can agents
+automatically analyse if the UX journey is fully implemented": layer
+1 is mechanical and cheap, layer 2 is agentic and runs at review
+time. The gate is a stage-2 self-check and a stage-3 mandate input,
+**never CI**.
+
+*Fixture & self-test*: =scripts/ux-coverage.sh --self-test= runs the
+gate against the bundled fixture
+(=scripts/fixtures/ux-coverage-fixture/=) — a fully-resolving plan
+(exit 0), a plan with exactly three deliberately-missing rows (exit
+1), and a malformed-header variant generated on the fly (exit 2) —
+asserting exit codes and row counts only.
+
+** 2.4 Review-stage walkthrough protocol + UX surface census
+
+*Walkthrough protocol* (carried by the stage-3 review mandate whenever
+the origin cites a UX plan — the dispatch-plan template encodes it):
+for each P1 story, the review agent walks the journey against the
+actual UI — driven through the existing test driver
+(=i-slint-backend-testing=) where practical, reasoned over code
+otherwise — and answers, per step, the four cognitive-walkthrough
+questions with file:line or test evidence:
+
+1. Will the user *see* the control (entry point enumerated in the
+   plan → present in the surface)?
+2. Will they *recognize* what it does (label/hint semantics — judged,
+   not text-asserted)?
+3. Will they *understand the feedback* (badge/tone/busy-dot/caption
+   follows the system-response column)?
+4. Can they *recover* (escape column holds: cancel/undo/typed error)?
+
+Then one heuristic pass over the touched surfaces using a
+six-heuristic rubric (Nielsen subset): visibility of system status;
+user control & freedom (escape/undo everywhere); error prevention &
+recovery; consistency & standards (same verb = same widget/tone
+across surfaces); recognition over recall (state visible, not
+remembered); keyboard/mouse parity (already house law — the rubric
+keeps it in the UX frame). Findings classify as:
+
+- *BLOCKER* — journey can't complete / escape missing — fixed on the
+  branch;
+- *MAJOR* — heuristic violation — fixed on the branch or P2'd with
+  the user's call;
+- *MINOR* — polish — backlog issue per =AGENTS.md= §7 standing
+  authorization.
+
+*UX surface census* — a living app-scale capability × surface matrix
+at =docs/ux-surface-census.org= (not yet created; phase 3 of §3 owns
+it): the union of every feature's §2.1.2 matrix, plus every standing
+ruling with date and authority. Each UX plan updates its slice; each
+GUI review round diffs against it. This is the stable cross-feature
+object whose absence let round 6 rule "disconnect is a non-goal" and
+round 7 silently overturn it — overturning a ruling becomes a visible
+census diff, made at UX-plan level, not a chunk-local surprise.
+
+** 2.5 What lives where (no new sprawl)
+
+| Artefact | Home | Cadence |
+|---|---|---|
+| UX journey plan | =.artifacts/plans/…-ux-plan.md= from =.artifacts/templates/ux-journey-plan.md= | per feature |
+| Framework law | this file + =AGENTS.md= §7 pointer | stable |
+| Census | =docs/ux-surface-census.org= | updated by every UX plan + review round |
+| Gate | =scripts/ux-coverage.sh= | run by stage-2 (self-check) and stage-3 (mandate) |
+| Dispatch integration | =.artifacts/templates/dispatch-plan.md= | stable |
+
+GitHub issues remain what =AGENTS.md= §7 already says: one-per-idea
+backlog items and findings — stories live in the plan file, not as
+issues (avoids issue sprawl and keeps the plan the single reviewable
+object).
+
+House-rule compatibility was checked deliberately at design time: the
+no-text-assertion rule (walkthrough judgments may *cite* labels;
+tests assert typed outcomes); kiosk/desktop duality (platform scope
+on stories, platform-qualified matrix cells, kiosk action-gating laws
+apply as today); UI-crate purity (zero UI-side logic added); the
+id-less UI (the wiring contract keys on the repo's real seams, not
+element ids); one-behavior-one-test (journey tests assert dispatch +
+visible-model effects only; engine behavior stays snapshot-tested in
+=taskboard-state=); plans-follow-templates (the UX plan is a
+first-class plan type; dispatch plans cite it in Origin).
+
+* 3. Activation state machine
+
+The rule's strength ramps through six phases. *Current state:
+**advisory**, phases 1–2.* The trigger rule binds a chunk only when
+that chunk's origin cites a UX journey plan; it becomes **mandatory
+for all new user-visible work** at phase 6.
+
+| Phase | Contents | Exit criteria | State |
+|---|---|---|---|
+| 1 — install (docs/process chunk, =docs/ux-journey-planning-framework=) | template into =.artifacts/templates/ux-journey-plan.md=; dispatch-plan template amendment (all mechanics conditional on the origin citing a UX plan — that conditionality *is* the advisory mode); this file; =AGENTS.md= §7 rule worded advisory-with-activation-condition; =scripts/ux-coverage.sh= + fixture self-test | chunk merged; gate green on the fixture's PASS and MISSING paths | in flight — this chunk (PR pending); DONE when merged |
+| 2 — pilot on round-7 scope | three UX journey plans authored blind from the round-7 design; comparison against the chunk-1/2 implementations; round-7 plan adjustments; chunk 3 + re-works dispatched under the framework; census seeded with only the slices the pilot needs (Today/habits, Task detail/recurrence, Settings/files) | blind-plan discipline steps 1–4 complete; gate proven on real PASS and MISSING rows | pending |
+| 3 — full census stock-take | dedicated agent pass over every surface (Board, Task detail, Today, Review, Settings, Capture, alarm window, CLI) completing =docs/ux-surface-census.org= with evidence anchors; standing rulings recorded with dates and authorities | census complete; stock-take report under =.artifacts/reports/= | pending |
+| 4 — retrofit analysis & triage | per existing UX feature: its own =…-ux-plan.md= from census + code evidence; consolidated triage report classifying journeys that cannot complete, unruled absences, escape-path holes (BLOCKER/MAJOR/MINOR), each finding homed | every existing UX feature has a ux-plan; triage report accepted | pending |
+| 5 — remediation dispatch | dispatch plan(s) chunking the triage findings: fix the identified flaws and holes — the framework's full dress rehearsal at scale (advisory mode, used end-to-end) | remediation chunks merged; findings resolved or explicitly homed as P2/P3 | pending |
+| 6 — mandate activation | tiny docs chunk flips the =AGENTS.md= §7 wording from advisory to mandatory; this section records the activation and its date | new user-visible work requires an accepted UX journey plan before dispatch; GUI review rounds shrink to quality polish | pending |
+
+Advisory→mandatory transition law: the activation condition is
+**phases 3–5 complete** (full census + retrofit of existing UX to the
+new standard *including fixing the identified flaws and holes*). A
+dedicated phase-6 docs chunk rewords =AGENTS.md= §7 and records the
+activation date here. Until then, no agent may treat the UX-journey
+requirement as unconditional — the conditionality is the decided
+semantics (=AGENTS.md= §7 carries the same wording).
+
+Pilot discipline (phase 2, live round-7 state): the pilot plans
+**blind first** (authored from the round-7 stage-1 design reading
+pre-round-7 =git show <sha>:<file>= anchors, never the chunk-1/2
+branches), **compares after** (run the gate per plan against merged
+=main= / the open PR branch at a fixed SHA, plus the walkthrough
+questions), adjusts the round-7 dispatch plan so chunk 3's prompts are
+re-authored under the framework and re-work chunks append on fresh
+branches, and seeds the census minimally. Validation assertion:
+evaluated against pre-round-7 =main=, the blind plans' capability
+matrices must show R7-1/2/3 as blank/unruled cells — proof the
+framework would have caught them at planning time.
+
+* 4. Method survey
+
+Researched 2026-11-13; adopted/adapted/rejected with the gap classes
+(§2) as the acceptance test — a component that kills no gap class was
+cut.
+
+** 4.1 Adopted
+
+| Method | What it contributes | Why it fits here | Kills |
+|---|---|---|---|
+| *User stories* (Connextra format + INVEST qualities; acceptance as Given/When/Then from BDD) | ID-able intent anchors (=US-n=) a plan, a dispatch chunk, a test name, and a review verdict can all reference | The repo already speaks in stable IDs (D-x, R7-x, WI-x, #issue); stories slot into that discipline. G/When/Then maps onto the house seam tests (assert typed outcomes, never text) | G1, G3 |
+| *User story mapping* (Patton) — backbone activities in narrative order, stories as ribs, **release slicing** so every slice completes an end-to-end walk | The discipline that a shippable increment must complete journeys, not accumulate backend halves | Directly answers "complete after first implementation": the first dispatch slice must finish every P1 story end-to-end. Maps 1:1 onto dispatch-plan chunking | G1, G3 |
+| *Job stories* (Klement: "When ⟨situation⟩, I want to ⟨motivation⟩, so I can ⟨outcome⟩") | Situation-triggered framing without personas | taskboard's kiosk mode, offline resilience, and sync-conflict moments are *situations*, not roles — job stories fit these better than role stories | G4 |
+| *Use-case extensions* (Cockburn) — main success scenario + numbered extensions (2a: step fails ⇒ …) | Failure/branch paths as first-class numbered items | Becomes the mandatory **escape-path column** of every journey step (cancel/undo/typed-error handling) | G4 |
+| *Interaction flowcharts* — mermaid =flowchart TD= for multi-surface journeys, =stateDiagram-v2= for modal/editor machines | Entry points, decision points, and reachability made visually explicit and reviewable in the plan | Mermaid is already house-validated for backend flow (=docs/flow_model.org=); GitHub renders it natively in plans, PRs, and issues | G1, G3, G4 |
+| *Statecharts* (Harel; statecharts.dev) for overlay/dialog logic — hierarchy, guards, impossible states excluded by construction | Editors like the round-7 recur-editor (pattern/bound draft validity, armed-confirm strip) are literally state machines; a plan-time statechart forces the invalid-draft, armed-confirm, and escape transitions to be designed *before* implementation | Slint itself has native =states=; the chart stays plan-time documentation (no XState-style runtime machinery — Slint owns state) | G4 |
+| *Cognitive walkthrough* (Polson/Rieman) as a **review-stage agent protocol** | Task-focused learnability inspection that needs no users | 2025 research shows LLM agents perform credible scaled walkthroughs (Synthetic Cognitive Walkthrough, arXiv 2512.03568; Amazon's UXAgent). The stage-3 review agent can role-play each story against the real UI through the existing =i-slint-backend-testing= driver | G4 |
+| *Heuristic evaluation* (Nielsen's 10, subset) | Cheap cross-cutting quality rubric | Paired with the walkthrough as its second pass; six heuristics (§2.4) | G4 |
+| *E2E journey automation* | Journeys that click the real widgets and assert the dispatched commands | Already house-proven: 21 integration test files under =crates/taskboard-ui-slint/tests/= incl. =journeys.rs=, =seam_inventory.rs=, =golden_visuals.rs=, driven through =tests/support/driver.rs= over =i-slint-backend-testing=. The framework only mandates coverage, invents no harness | G1, G2, G3 (mechanically) |
+
+** 4.2 Adapted
+
+- *Gherkin/Cucumber*: adopt the Given/When/Then *discipline* inside
+  journey steps and acceptance criteria; reject Cucumber tooling — the
+  scenarios compile to ordinary Rust tests whose names embed
+  journey-step IDs. (The no-text-assertion rule means scenarios must
+  assert typed outcomes — commands, enums, flags — never label
+  prose.)
+- *Customer journey maps / HTA (hierarchical task analysis)*: rejected
+  as standalone methods (marketing-flavored / heavyweight for one
+  maintainer), but their skeleton — stages → actions → thoughts →
+  pain points — is folded into the journey-step table columns.
+
+** 4.3 Rejected
+
+- *Persona construction* — a single-maintainer personal tool; personas
+  would be theater. Roles in stories stay concrete (desktop user,
+  kiosk viewer).
+- *Runtime state-machine libraries / XState-style machinery* — the UI
+  is a dumb presentation client (=AGENTS.md= §2); adding a UI-side
+  orchestration runtime violates the architecture. Statecharts live
+  in plans only.
+- *Full UML use-case suites* — the journey-step table with escape
+  columns is Cockburn's format already, minus the ceremony.
+
+* 5. Sources
+
+- Jeff Patton, [[https://jpattonassociates.com/the-new-backlog][The New User Story Backlog is a Map]] and [[https://www.jpattonassociates.com/wp-content/uploads/2015/03/story_mapping.pdf][story-mapping concepts (PDF)]]; *User Story Mapping* (O'Reilly, 2014).
+- Alan Klement, job stories ("When ⟨situation⟩, I want to ⟨motivation⟩, so I can ⟨outcome⟩") — situational alternative to persona-based stories.
+- Alistair Cockburn, *Writing Effective Use Cases* (2000) — main scenario + numbered extensions.
+- Erik Mogensen, [[https://statecharts.dev][Welcome to the World of Statecharts]] and [[https://statecharts.dev/use-case-statecharts-in-user-interfaces.html][Statecharts in User Interfaces]]; David Harel, "Statecharts: A Visual Formalism for Complex Systems" (1987); Ian Horrocks, *Constructing the User Interface with Statecharts* (1999).
+- Nielsen Norman Group, [[https://www.nngroup.com/articles/ten-usability-heuristics/][10 Usability Heuristics]]; MeasuringU, [[https://measuringu.com/he-cw][Heuristic Evaluation vs. Cognitive Walkthrough]].
+- LLM-driven usability inspection (precedent for the walkthrough protocol): [[https://arxiv.org/html/2512.03568v1][Synthetic Cognitive Walkthrough (arXiv 2512.03568)]]; [[https://www.amazon.science/publications/uxagent-an-llm-agent-based-usability-testing-framework-for-web-design][UXAgent, Amazon Science 2025]].
+- Gherkin/Given-When-Then discipline: [[https://cucumber.io/docs][Cucumber documentation]] (discipline adopted; tooling rejected).
