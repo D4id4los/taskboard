@@ -723,6 +723,119 @@ pub fn series_reference_date(
         .map_or_else(|| day.today(now), |d| day.calendar_date(d))
 }
 
+/// The caller-collapsed pattern with its bare-flag defaults still
+/// open (`None` = derive from the reference date — the assembly law).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DraftPattern {
+    /// Every `every` days.
+    Daily {
+        /// The day interval (≥ 1).
+        every: EveryDays,
+    },
+    /// On the given weekdays of every `interval`-th week; `None` =
+    /// the anchor's own weekday.
+    Weekly {
+        /// The week interval (≥ 1).
+        interval: EveryWeeks,
+        /// The explicit weekday set, if any.
+        on: Option<WeekdaySet>,
+    },
+    /// Monthly; `None` = the anchor's own day-of-month.
+    Monthly {
+        /// The explicit anchor, if any.
+        on: Option<MonthlyAnchor>,
+    },
+}
+
+/// The caller-collapsed bound.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DraftBound {
+    /// No bound.
+    None,
+    /// No member after this inclusive local date.
+    Until(NaiveDate),
+    /// At most N completed occurrences (engine-evaluated).
+    Count(OccurrenceCount),
+}
+
+/// The shared rule-assembly law (the CLI `tasks repeat` verb and the
+/// GUI recurrence editor mint through the same function — one
+/// behaviour, one implementation). Series identity is D-S4: an
+/// existing rule's `series`/`continued_from` carry (the user is
+/// re-scheduling the series, not founding a new one); a plain task
+/// mints a fresh `SeriesId` (v7). The anchor is
+/// [`series_reference_date`] — never a raw-UTC date treated as local.
+/// The bare-flag defaults derive from the anchor (weekly: its
+/// weekday; monthly: its day-of-month). `paused_until` is `None`: the
+/// pause is the `PauseSeries` verb's field alone — a re-set rule
+/// clears any pause (the pre-existing CLI semantic, pinned by the
+/// tests and recorded as backlog issue #759).
+///
+/// Every fallible mint sits at the *callers*' trust boundaries (the
+/// CLI flag collapse; the GUI field parsers); the two in-body
+/// defaults are total by construction (the documented `expect`s), so
+/// the assembly itself is infallible.
+///
+/// # Precondition
+///
+/// `head.is_open()` — a pattern on a done head is the *caller's*
+/// typed refusal by ruling (the engine never learns of it; the CLI
+/// maps to `CommandError::TaskDone`, the GUI never mounts the editor
+/// for a done task and re-checks at commit).
+///
+/// # Panics
+///
+/// Only via the bare-default `expect`s: a single weekday is never an
+/// empty set, and a real date's day number is always `1..=31`.
+#[must_use]
+pub fn assemble_rule(
+    head: &Task,
+    pattern: DraftPattern,
+    bound: DraftBound,
+    day: crate::days::DayCalendar,
+    now: DateTime<Utc>,
+) -> RecurRule {
+    let anchor = series_reference_date(head, day, now);
+    let (series, continued_from) = if let Some(r) = head.recur.as_ref() {
+        (r.series, r.continued_from)
+    } else {
+        (SeriesId::from_uuid(uuid::Uuid::now_v7()), None)
+    };
+    let pattern = match pattern {
+        DraftPattern::Daily { every } => RecurPattern::Daily { every },
+        DraftPattern::Weekly { interval, on } => RecurPattern::Weekly {
+            interval,
+            on: match on {
+                Some(days) => days,
+                None => {
+                    WeekdaySet::new([anchor.weekday()]).expect("one weekday is a non-empty set")
+                }
+            },
+        },
+        DraftPattern::Monthly { on } => RecurPattern::Monthly {
+            on: match on {
+                Some(anchor) => anchor,
+                None => MonthlyAnchor::OnDay(
+                    DayOfMonth::new(anchor.day()).expect("a real date's day number is 1..=31"),
+                ),
+            },
+        },
+    };
+    let bound = match bound {
+        DraftBound::None => RecurBound::None,
+        DraftBound::Until(date) => RecurBound::Until(date),
+        DraftBound::Count(n) => RecurBound::Count(n),
+    };
+    RecurRule {
+        series,
+        anchor,
+        pattern,
+        bound,
+        continued_from,
+        paused_until: None,
+    }
+}
+
 /// The roll's stale-reference: the same chain minus the dateless
 /// fallback — a dateless head is never stale (nothing anchors it to a
 /// day), so `None` means "skip".
@@ -2887,6 +3000,313 @@ mod pause_tests {
                 _ => prop_assert_eq!(lifted, target),
             }
             prop_assert_eq!(lift_to_live(&rule, lifted), lifted);
+        }
+    }
+}
+
+#[cfg(test)]
+mod assemble_rule_tests {
+    use super::*;
+    use crate::entities::TaskClocks;
+    use crate::test_support::{naive_date_strategy, occurrence_count_strategy, proptest_config};
+    use chrono::{TimeZone as _, Weekday};
+    use proptest::prelude::*;
+
+    fn date(y: i32, m: u32, d: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, d).unwrap()
+    }
+
+    fn ts(secs: i64) -> DateTime<Utc> {
+        chrono::Utc.timestamp_opt(secs, 0).unwrap()
+    }
+
+    /// The UTC-midnight instant of `d` (the `next_occurrence_tests`
+    /// fixture's shape, anchor-leg edition: instants only ever pass
+    /// through the calendar).
+    fn midnight_utc(d: NaiveDate) -> DateTime<Utc> {
+        ts((d - date(1970, 1, 1)).num_days() * 86_400)
+    }
+
+    /// An open head (`recur` filled by the caller) scheduled at UTC
+    /// midnight of `scheduled` (or dateless when `None`).
+    fn head(scheduled: Option<NaiveDate>, recur: Option<RecurRule>) -> Task {
+        Task {
+            id: crate::ids::TaskId::from_uuid(uuid::Uuid::from_u128(1)),
+            remote: None,
+            title: "head".into(),
+            description: String::new(),
+            duedate: None,
+            scheduled: scheduled.map(midnight_utc),
+            done: None,
+            stack: crate::ids::StackId::from_uuid(uuid::Uuid::from_u128(2)),
+            order: 0,
+            label_memberships: std::collections::BTreeMap::default(),
+            effort: None,
+            importance: None,
+            urgency: None,
+            recur,
+            kind: crate::entities::TaskKind::Standard,
+            archived: false,
+            deleted: false,
+            clocks: TaskClocks {
+                title: ts(0),
+                description: ts(0),
+                duedate: ts(0),
+                scheduled: ts(0),
+                done: ts(0),
+                position: ts(0),
+                effort: ts(0),
+                importance: ts(0),
+                urgency: ts(0),
+                recur: ts(0),
+                kind: ts(0),
+                archived: ts(0),
+                deleted: ts(0),
+            },
+            authors: crate::entities::TaskAuthors::default(),
+            remote_seen: None,
+            remote_baseline: None,
+        }
+    }
+
+    fn calendar() -> crate::days::DayCalendar {
+        crate::days::DayCalendar {
+            day_start_time: chrono::NaiveTime::MIN,
+            offset: chrono::FixedOffset::east_opt(0).unwrap(),
+        }
+    }
+
+    fn daily() -> DraftPattern {
+        DraftPattern::Daily {
+            every: EveryDays::new(1).unwrap(),
+        }
+    }
+
+    fn plain_head() -> Task {
+        head(Some(date(2026, 10, 5)), None)
+    }
+
+    #[test]
+    fn a_plain_task_mints_a_fresh_v7_series_and_no_continued_from() {
+        let now = midnight_utc(date(2026, 10, 21));
+        let rule = assemble_rule(&plain_head(), daily(), DraftBound::None, calendar(), now);
+        // v7 is time-ordered: a mint in the far past is recognizable
+        // structurally (the version nibble), without pinning the exact
+        // timestamp.
+        assert_eq!(rule.series.as_uuid().get_version_num(), 7);
+        assert_eq!(rule.continued_from, None);
+        assert_eq!(rule.anchor, date(2026, 10, 5));
+        // Two plain heads mint distinct series ids (fresh identities,
+        // never a shared constant).
+        let other = assemble_rule(&plain_head(), daily(), DraftBound::None, calendar(), now);
+        assert_ne!(rule.series, other.series);
+    }
+
+    #[test]
+    fn re_assembling_a_ruled_task_carries_series_and_continued_from() {
+        // D-S4: the re-set keeps the series identity (the user is
+        // re-scheduling the series; a fresh id would reset the
+        // engine's `Count` history) and the habit seam.
+        let series = crate::ids::SeriesId::from_uuid(uuid::Uuid::from_u128(42));
+        let continued_from = crate::ids::HabitId::from_uuid(uuid::Uuid::from_u128(7));
+        let existing = RecurRule {
+            series,
+            anchor: date(2026, 9, 1),
+            pattern: RecurPattern::Monthly {
+                on: MonthlyAnchor::OnDay(DayOfMonth::new(1).unwrap()),
+            },
+            bound: RecurBound::None,
+            continued_from: Some(continued_from),
+            paused_until: Some(date(2026, 12, 24)),
+        };
+        let now = midnight_utc(date(2026, 10, 21));
+        let rule = assemble_rule(
+            &head(Some(date(2026, 10, 5)), Some(existing)),
+            daily(),
+            DraftBound::None,
+            calendar(),
+            now,
+        );
+        assert_eq!(rule.series, series);
+        assert_eq!(rule.continued_from, Some(continued_from));
+    }
+
+    #[test]
+    fn the_anchor_chain_is_scheduled_then_duedate_then_window_today() {
+        let now = midnight_utc(date(2026, 10, 21));
+        // Leg 1: scheduled wins.
+        let mut h = plain_head();
+        h.duedate = Some(midnight_utc(date(2026, 10, 19)));
+        assert_eq!(
+            assemble_rule(&h, daily(), DraftBound::None, calendar(), now).anchor,
+            date(2026, 10, 5)
+        );
+        // Leg 2: without scheduled, duedate.
+        h.scheduled = None;
+        assert_eq!(
+            assemble_rule(&h, daily(), DraftBound::None, calendar(), now).anchor,
+            date(2026, 10, 19)
+        );
+        // Leg 3: dateless falls to the window-date of now (midnight
+        // UTC + a MIN day start = the same calendar day).
+        h.duedate = None;
+        assert_eq!(
+            assemble_rule(&h, daily(), DraftBound::None, calendar(), now).anchor,
+            date(2026, 10, 21)
+        );
+    }
+
+    #[test]
+    fn weekly_without_an_explicit_set_defaults_to_the_anchor_weekday() {
+        let now = midnight_utc(date(2026, 10, 21));
+        let draft = DraftPattern::Weekly {
+            interval: EveryWeeks::new(2).unwrap(),
+            on: None,
+        };
+        // 2026-10-05 is a Monday.
+        let rule = assemble_rule(&plain_head(), draft, DraftBound::None, calendar(), now);
+        let RecurPattern::Weekly { on, .. } = &rule.pattern else {
+            panic!("weekly pattern");
+        };
+        assert!(on.contains(Weekday::Mon) && on.len() == 1);
+    }
+
+    #[test]
+    fn monthly_without_an_explicit_anchor_defaults_to_the_anchor_day() {
+        let now = midnight_utc(date(2026, 10, 21));
+        let rule = assemble_rule(
+            &plain_head(),
+            DraftPattern::Monthly { on: None },
+            DraftBound::None,
+            calendar(),
+            now,
+        );
+        let RecurPattern::Monthly { on } = &rule.pattern else {
+            panic!("monthly pattern");
+        };
+        assert_eq!(*on, MonthlyAnchor::OnDay(DayOfMonth::new(5).unwrap()));
+    }
+
+    #[test]
+    fn the_bound_and_pattern_round_trip_the_minted_parts() {
+        let now = midnight_utc(date(2026, 10, 21));
+        let until = date(2026, 12, 31);
+        let cases = [
+            (
+                DraftPattern::Daily {
+                    every: EveryDays::new(3).unwrap(),
+                },
+                DraftBound::None,
+                RecurPattern::Daily {
+                    every: EveryDays::new(3).unwrap(),
+                },
+                RecurBound::None,
+            ),
+            (
+                DraftPattern::Weekly {
+                    interval: EveryWeeks::new(2).unwrap(),
+                    on: Some(WeekdaySet::new([Weekday::Mon, Weekday::Fri]).unwrap()),
+                },
+                DraftBound::Until(until),
+                RecurPattern::Weekly {
+                    interval: EveryWeeks::new(2).unwrap(),
+                    on: WeekdaySet::new([Weekday::Mon, Weekday::Fri]).unwrap(),
+                },
+                RecurBound::Until(until),
+            ),
+            (
+                DraftPattern::Monthly {
+                    on: Some(MonthlyAnchor::NthWeekday(
+                        NthWeek::new(2).unwrap(),
+                        Weekday::Mon,
+                    )),
+                },
+                DraftBound::Count(OccurrenceCount::new(10).unwrap()),
+                RecurPattern::Monthly {
+                    on: MonthlyAnchor::NthWeekday(NthWeek::new(2).unwrap(), Weekday::Mon),
+                },
+                RecurBound::Count(OccurrenceCount::new(10).unwrap()),
+            ),
+        ];
+        for (draft_pattern, draft_bound, want_pattern, want_bound) in cases {
+            let rule = assemble_rule(&plain_head(), draft_pattern, draft_bound, calendar(), now);
+            assert_eq!(rule.pattern, want_pattern);
+            assert_eq!(rule.bound, want_bound);
+            assert_eq!(rule.anchor, date(2026, 10, 5));
+        }
+    }
+
+    #[test]
+    fn paused_until_is_none_in_every_assembled_rule() {
+        // The D-E3 pin: a re-set rule clears any pause — the
+        // pre-existing CLI semantic, now GUI-shared by construction.
+        // Naming it here makes a future change a conscious one (the
+        // product question is backlog #759, not this chunk's).
+        let existing = RecurRule {
+            series: crate::ids::SeriesId::from_uuid(uuid::Uuid::from_u128(42)),
+            anchor: date(2026, 9, 1),
+            pattern: RecurPattern::Daily {
+                every: EveryDays::new(1).unwrap(),
+            },
+            bound: RecurBound::None,
+            continued_from: None,
+            paused_until: Some(date(2026, 12, 24)),
+        };
+        let now = midnight_utc(date(2026, 10, 21));
+        for (pattern, bound) in [
+            (daily(), DraftBound::None),
+            (
+                DraftPattern::Weekly {
+                    interval: EveryWeeks::new(1).unwrap(),
+                    on: None,
+                },
+                DraftBound::Count(OccurrenceCount::new(3).unwrap()),
+            ),
+        ] {
+            let rule = assemble_rule(
+                &head(Some(date(2026, 10, 5)), Some(existing.clone())),
+                pattern,
+                bound,
+                calendar(),
+                now,
+            );
+            assert_eq!(rule.paused_until, None);
+        }
+    }
+
+    // The identity law is the invariant worth randomizing: arbitrary
+    // ruled heads carry, arbitrary plain heads mint fresh distinct
+    // ids — across every pattern/bound the grammar can express.
+    proptest! {
+        #![proptest_config(proptest_config(64))]
+
+        #[test]
+        fn identity_carries_for_ruled_heads_and_mints_fresh_for_plain_heads(
+            rule in crate::test_support::recur_rule_strategy(),
+            scheduled in naive_date_strategy(),
+            count in occurrence_count_strategy(),
+        ) {
+            let now = midnight_utc(date(2026, 10, 21));
+            let expected_series = rule.series;
+            let expected_continued = rule.continued_from;
+            let mut ruled = head(Some(scheduled), Some(rule));
+            // Exercise both weekly-default and explicit draft arms via
+            // a fixed daily draft plus the count bound.
+            let assembled = assemble_rule(
+                &ruled,
+                daily(),
+                DraftBound::Count(count),
+                calendar(),
+                now,
+            );
+            prop_assert_eq!(assembled.series, expected_series);
+            prop_assert_eq!(assembled.continued_from, expected_continued);
+            prop_assert_eq!(assembled.paused_until, None);
+
+            ruled.recur = None;
+            let fresh_a = assemble_rule(&ruled, daily(), DraftBound::None, calendar(), now);
+            let fresh_b = assemble_rule(&ruled, daily(), DraftBound::None, calendar(), now);
+            prop_assert_ne!(fresh_a.series, fresh_b.series);
         }
     }
 }
