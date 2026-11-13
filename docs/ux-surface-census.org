@@ -1,0 +1,105 @@
+#+title: taskboard UX Surface Census
+#+options: toc:t
+
+This is the living app-scale capability × surface matrix plus every
+standing ruling with its date and authority
+(`docs/ux_planning.org` §2.4; the framework plan
+`.artifacts/plans/2026-11-13-ux-journey-planning-framework-plan.md`
+§4.4). Each UX journey plan updates its slice; each GUI review round
+diffs against it. Overturning a ruling is a visible census diff made
+at UX-plan level — never a chunk-local surprise.
+
+- *Status*: =Seeded: phase 2 pilot slices only (2026-11-13); full
+  census = phase 3= — the dedicated stock-take over every surface
+  (Board, Task detail, Today, Review, Settings, Capture, alarm
+  window, CLI) is phase 3's pass (framework §3). Only the three
+  pilot slices appear here; their absence below is *not* a ruling.
+- *Evidence convention*: every populated cell cites =file:line= at
+  the recorded baseline SHA **=fb5863ed=** (stated once here) or an
+  existing test name. A cell the phase-2 pilot comparison marked
+  deviating/missing carries its verdict marker; no such markers
+  exist (the comparison found zero deviations —
+  `.artifacts/plans/2026-11-13-round7-ux-pilot-comparison-plan.md` §1).
+- *Columns* are the app's fixed surface set (Board / TaskDetail /
+  Today / Review / Settings / Capture / CLI); =D= display, =E= edit,
+  =C= create, =X= remove; =—= deliberately absent (a core-verb
+  absence needs a ruling in the slice's block).
+
+* Slice: Today (habits)
+
+Origin: the habit-create UX journey plan
+(`.artifacts/plans/2026-11-13-r7-habit-create-ux-plan.md`, D-7.2);
+comparison authority:
+`.artifacts/plans/2026-11-13-round7-ux-pilot-comparison-plan.md` §3.1.
+
+| Capability | Board | TaskDetail | Today | Review | Settings | Capture | CLI |
+|---|---|---|---|---|---|---|---|
+| habit.create | — (R-1) | — (R-1) | C (US-1) — affordance `ui/compositions/habits.slint:110-116`, keyboard =ActionId::HabitCreate= `actions.rs:1307-1317`, exact-command test =lib.rs::habit_create_sends_the_exact_command= | — (R-1) | — (R-1) | — (R-1) | C (pre-existing, =habits add=) |
+| habit.edit | — (R-2) | — (R-2) | — (R-2) | — (R-2) | — (R-2) | — (R-2) | E (pre-existing, =habits update=) |
+| habit.remove | — (R-3) | — (R-3) | — (R-3) | — (R-3) | — (R-3) | — (R-3) | X (pre-existing, =habits rm=) |
+| habit.log | | | E (pre-existing, D-P13 grammar) — row seams `adapter.rs:7453-7467+` | | | | E (pre-existing) |
+
+** Rulings (Today/habits)
+
+| ID | Ruling | Reason | Home | Date | Authority |
+|---|---|---|---|---|---|
+| R-1 | =habit.create= surfaces only in the Today section and the CLI | creation context is the tracker list itself (the board comes from the section, no picker); scattering create entry points breaks the section-scoped grammar | the habit-create UX plan §1; round-7 plan §2 D-7.2 | 2026-11-13 | `.artifacts/plans/2026-11-13-r7-habit-create-ux-plan.md` §2 |
+| R-2 | no GUI habit editing (target retargeting included) | recorded non-goal: the CLI's =habits update= covers; not requested this round | round-7 plan §4 | 2026-11-13 | `.artifacts/plans/2026-11-13-r7-habit-create-ux-plan.md` §2 |
+| R-3 | no GUI habit removal | not requested this round; the CLI's =habits rm= covers; the Today row grammar stays log/reorder/repair/convert | round-7 plan §1 R7-2 scope; §4 | 2026-11-13 | `.artifacts/plans/2026-11-13-r7-habit-create-ux-plan.md` §2 |
+| PC-1 | the create pass-through callback renames =create-asked= → =habits-create-asked= at the view boundary; adapter seams =on_habits_create_*= | the section-scoped rename binds blind-plan assumptions A-1/A-2; scope unchanged | habit-create UX plan, comparison ruling PC-1 | 2026-11-13 | comparison plan §3.1 |
+| PC-2 | the commit funnel routes through internal =ActionId::HabitCreateCommit= | the habit family's internal-verb precedent; a §7-delta addition beyond the blind plan's named =HabitCreate= | habit-create UX plan, comparison ruling PC-2 | 2026-11-13 | comparison plan §3.1 |
+
+* Slice: Task detail (recurrence)
+
+Origin: the recur-editor UX journey plan
+(`.artifacts/plans/2026-11-13-r7-recur-editor-ux-plan.md`, D-7.1);
+comparison authority:
+`.artifacts/plans/2026-11-13-round7-ux-pilot-comparison-plan.md` §3.2.
+
+| Capability | Board | TaskDetail | Today | Review | Settings | Capture | CLI |
+|---|---|---|---|---|---|---|---|
+| task.recur_set | — (R-2) | E (desktop) (US-1, US-2) — "Add repeat"/"Edit repeat" affordances `ui/views/task-view.slint:653-659,776-782`, editor `ui/compositions/recur-editor.slint`, commit funnel `router.rs:765-776`, exact-rule test =lib.rs::recur_editor_commits_the_exact_assembled_rule= | — (R-2) | — (R-2) | — (R-2) | — (R-1) | E (pre-existing, =tasks repeat=, now minting via =recur::assemble_rule= `taskboard-domain/src/recur.rs:791`) |
+| task.recur_clear | — (R-2) | E (desktop) (US-3) — armed "Stop repeating" strip `recur-editor.slint:274+`, detach =router.rs:777-786=, exactness test =lib.rs::recur_editor_detach_clears_the_rule_and_nothing_else= | — (R-2) | — (R-2) | — (R-2) | — (R-1) | E (pre-existing, =tasks repeat --off=) |
+| task.recur_preview | | D (desktop) (US-1, US-2 — inside the editor) — live echo `recur-editor.slint:54-57` fed by =assemble_recur_draft= | | | | | |
+| task.recur_display | D (pre-existing card badge) | D (pre-existing pattern echo) | | | | | |
+
+** Rulings (Task detail/recurrence)
+
+| ID | Ruling | Reason | Home | Date | Authority |
+|---|---|---|---|---|---|
+| R-1 | no recurrence scheduling at create — the capture overlay and inline create rows stay title-only | the recorded capture-overlay ruling stands; the editor is the setting | recorded ruling =capture-overlay.slint= header (pre-round-7); round-7 plan §4 | 2026-11-13 (reaffirmed) | `.artifacts/plans/2026-11-13-r7-recur-editor-ux-plan.md` §2 |
+| R-2 | the editor mounts only in the task detail view, where the recur row renders | single-surface editor posture; other task lists reach it via the task detail | recur-editor UX plan §1; round-7 plan §2 D-7.1 | 2026-11-13 | `.artifacts/plans/2026-11-13-r7-recur-editor-ux-plan.md` §2 |
+| PC-5 | the mount callbacks converge on =series-edit-asked=; the editor seams are the =on_recur_*= family; the draft buffer lives in the view-state level (=RecurEditorState=) | binds blind-plan assumptions A-3/A-4; the due-editor facts-globals default superseded by the newer level-state home | recur-editor UX plan, comparison ruling PC-5 | 2026-11-13 | comparison plan §3.2 |
+| PC-7 | the overlay's commit/cancel/detach verbs are internal action ids (=SeriesEditCommit/DetachArm/DetachCancel/Detach=) in =ContextId::RecurEditor= | resolves US-3's recorded implementation-choice question; pointer-grade, unbound | recur-editor UX plan, comparison ruling PC-7 | 2026-11-13 | comparison plan §3.2 |
+| PC-8 | the mount affordance labels are consequence-style sentences, not the "Add repeat…"/"Edit repeat…" shorthand | §8 designated label semantics manual/judged; consequence-first matches the stop-strip doctrine | recur-editor UX plan, comparison ruling PC-8 | 2026-11-13 | comparison plan §3.2 |
+
+* Slice: Settings (files sync)
+
+Origin: the files-roster UX journey plan
+(`.artifacts/plans/2026-11-13-r7-files-roster-ux-plan.md`, D-7.3).
+**This slice reflects the baseline reality at =fb5863ed=: round-7
+chunk 3 has not run** — the Files rows are title-only with no actions
+and the =FilesMovePicker= still stands. The UX plan's target cells are
+annotated *planned-pending*; chunk 3 updates this slice on merge (the
+census is a snapshot of the app, and each UX plan updates its slice).
+Comparison record: the all-MISSING gate run is the correct pre-state —
+`.artifacts/plans/2026-11-13-round7-ux-pilot-comparison-plan.md` §3.3.
+
+| Capability | Board | TaskDetail | Today | Review | Settings | Capture | CLI |
+|---|---|---|---|---|---|---|---|
+| board.roster_display | | | | | *planned-pending* (US-1) — today: title-only rows duplicated per account card, no badges (=adapter.rs:4867-4883= equivalent) | | |
+| board.unbind_files (Stop Sync) | — (R-1) | — (R-1) | — (R-1) | — (R-1) | *planned-pending* (US-2) — today: no action affordance | — (R-1) | X (pre-existing, =boards unbind=) |
+| board.move_to_files (Switch to Sync via this Connection) | — (R-1) | — (R-1) | — (R-1) | — (R-1) | *planned-pending* (US-3) — today: only via the retiring =FilesMovePicker= dropdown | — (R-1) | E (pre-existing, =boards move --to-files=) |
+| board.publish_to_files (Sync via this Connection) | — (R-1) | — (R-1) | — (R-1) | — (R-1) | *planned-pending* (US-4) — today: no local→Files path except Deck-first-then-move (=requests.rs:412-416= =PublishBoard= Deck-only) | — (R-1) | — (R-2) |
+
+** Rulings (Settings/files sync)
+
+| ID | Ruling | Reason | Home | Date | Authority |
+|---|---|---|---|---|---|
+| round-6 | "adoption is automatic; disconnect is a non-goal" — no unbind affordance in the Files rows | the round-6 posture: the files actor adopts bound boards; manual disconnect was ruled out | round-6 plan D-6 (=settings-view.slint:1065-1069= comment at the baseline) | 2026-11 (round 6) | the round-6 GUI review plan |
+| round-7 overturn | **the round-6 ruling above is OVERTURNED**: "Stop Sync" is a first-class roster action | the user's round-7 request makes disconnect a requirement; the row comment records the overturn | round-7 plan §2 D-7.3 | 2026-11-13 | `.artifacts/plans/2026-11-13-gui-review-round7-plan.md` §2 D-7.3; carried in the files-roster UX plan §1 authority note |
+| R-1 | binding actions live only in the Settings account roster | the roster row is the affordance; per-account context is the action's precondition, which only Settings provides | files-roster UX plan §1; round-7 plan §2 D-7.3 | 2026-11-13 | `.artifacts/plans/2026-11-13-r7-files-roster-ux-plan.md` §2 |
+| R-2 | no =boards publish --to-files= CLI verb in this slice | deliberate GUI-first slice; the asymmetry is filed | #764 | 2026-11-13 | `.artifacts/plans/2026-11-13-r7-files-roster-ux-plan.md` §2 |
+| R-3 | non-anchor accounts show disabled actions with honest captions, not lanes | the single-lane posture (#723) stands | #723 | 2026-11-13 | `.artifacts/plans/2026-11-13-r7-files-roster-ux-plan.md` §2 |
+| R-4 | "Stop Sync" unbind leaves the remote boards subtree in place | fold-first discovery defers adoption for unbound boards; the bytes linger until the DELETE-verb GC exists | #755 (design question), #718 (GC verb) | 2026-11-13 | `.artifacts/plans/2026-11-13-r7-files-roster-ux-plan.md` §2 |
+| R-5 | Deck-to-Deck moves stay out of scope; a Deck-bound board on another connector reads "Synced via other Connection" truthfully | no Deck-to-Deck rebind ceremony exists | #756 | 2026-11-13 | `.artifacts/plans/2026-11-13-r7-files-roster-ux-plan.md` §2 |
