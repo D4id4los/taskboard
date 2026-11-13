@@ -2942,6 +2942,267 @@ mod view_component_tests {
         });
     }
 
+    /// A fixture habit on the fixture board (round-7 D-7.2's kiosk
+    /// leg needs live rows): under-quota daily tracker, stored order.
+    fn fixture_habit(board: taskboard_domain::BoardId) -> taskboard_domain::habit::Habit {
+        taskboard_domain::habit::Habit {
+            id: taskboard_domain::HabitId::from_uuid(uuid::Uuid::now_v7()),
+            board,
+            title: "water".into(),
+            target: taskboard_domain::HabitTarget::PerDay(
+                taskboard_domain::NonZeroCount::new(2).unwrap(),
+            ),
+            order: 0,
+            anchor_time: None,
+            clocks: taskboard_domain::habit::HabitClocks::all(chrono::Utc::now()),
+            continued_from: None,
+            deleted: false,
+        }
+    }
+
+    /// Round-7 D-7.2 — the create form end-to-end: the header ask
+    /// arms, the confirm seam mints and dispatches the exact
+    /// `CreateHabit` against the section's board, and the form closes
+    /// on commit.
+    #[test]
+    fn habit_create_sends_the_exact_command() {
+        on_slint_thread(|| {
+            let (handle, mut commands) =
+                handover_with(fixture_state(), UiSettings::default().keymap);
+            let board = {
+                let state = handle.state.load();
+                *state.boards.keys().next().expect("fixture has one board")
+            };
+            assert!(
+                handle.window.get_habits_create_mountable(),
+                "desktop with an active board mounts the affordance"
+            );
+            handle.window.invoke_habits_create_asked();
+            assert!(
+                handle.window.get_habits_create_open(),
+                "the ask arms the form"
+            );
+            assert!(commands.try_recv().is_err(), "arming dispatches nothing");
+
+            assert!(
+                handle
+                    .window
+                    .invoke_habits_create_confirmed("Water".into(), "3".into(), 0),
+                "a valid draft commits"
+            );
+            match commands.try_recv().expect("the create command arrived") {
+                StateCommand::CreateHabit {
+                    board: b,
+                    title,
+                    target,
+                } => {
+                    assert_eq!(b, board, "the habit lands on the section's board");
+                    assert_eq!(title, "Water");
+                    assert_eq!(
+                        target,
+                        taskboard_domain::HabitTarget::PerDay(
+                            taskboard_domain::NonZeroCount::new(3).unwrap()
+                        )
+                    );
+                }
+                other => panic!("typed outcome expected, got {other:?}"),
+            }
+            assert!(
+                !handle.window.get_habits_create_open(),
+                "commit closes the form"
+            );
+            assert!(commands.try_recv().is_err(), "nothing else dispatched");
+        });
+    }
+
+    /// Round-7 D-7.2 — the structural refusals: quota zero, junk,
+    /// overflow, an out-of-range target index, and an empty title all
+    /// absorb (the field text kept, the channel empty); the quota
+    /// validity flavour rides the per-keystroke pass.
+    #[test]
+    fn habit_create_refusals_absorb_without_dispatching() {
+        on_slint_thread(|| {
+            let (handle, mut commands) =
+                handover_with(fixture_state(), UiSettings::default().keymap);
+            handle.window.invoke_habits_create_asked();
+
+            handle.window.invoke_habits_create_quota_edited("0".into());
+            assert_eq!(
+                handle.window.get_habits_quota_validity(),
+                crate::FieldValidity::Invalid,
+                "zero is refused structurally (the mint)"
+            );
+            assert!(
+                !handle
+                    .window
+                    .invoke_habits_create_confirmed("Water".into(), "0".into(), 0)
+            );
+            assert!(!handle.window.invoke_habits_create_confirmed(
+                "Water".into(),
+                "junk".into(),
+                0
+            ));
+            assert!(!handle.window.invoke_habits_create_confirmed(
+                "Water".into(),
+                "99999999999999".into(),
+                0
+            ));
+            assert!(
+                !handle
+                    .window
+                    .invoke_habits_create_confirmed("   ".into(), "3".into(), 0),
+                "an empty title dispatches nothing"
+            );
+            assert!(
+                !handle
+                    .window
+                    .invoke_habits_create_confirmed("Water".into(), "3".into(), 7),
+                "an out-of-range target index refuses"
+            );
+            assert!(commands.try_recv().is_err(), "no refusal dispatched");
+            assert!(
+                handle.window.get_habits_create_open(),
+                "an absorbed miss keeps the form armed"
+            );
+
+            // The default quota commits: empty text is the field's 1.
+            assert!(
+                handle
+                    .window
+                    .invoke_habits_create_confirmed("Water".into(), "".into(), 1)
+            );
+            match commands
+                .try_recv()
+                .expect("the default-quota commit arrived")
+            {
+                StateCommand::CreateHabit { target, .. } => assert_eq!(
+                    target,
+                    taskboard_domain::HabitTarget::PerWeek(
+                        taskboard_domain::NonZeroCount::new(1).unwrap()
+                    )
+                ),
+                other => panic!("typed outcome expected, got {other:?}"),
+            }
+        });
+    }
+
+    /// Round-7 D-7.2 — the stale-arm law: a board that goes away
+    /// under the armed form unmounts the affordance and disarms the
+    /// form; the confirm dispatches nothing.
+    #[test]
+    fn habit_create_stale_arm_disarms_silently() {
+        on_slint_thread(|| {
+            let (handle, mut commands) =
+                handover_with(fixture_state(), UiSettings::default().keymap);
+            handle.window.invoke_habits_create_asked();
+            assert!(handle.window.get_habits_create_open());
+
+            replace_state(&handle, taskboard_domain::AppState::default());
+            assert!(
+                !handle.window.get_habits_create_mountable(),
+                "no board, no affordance"
+            );
+            assert!(
+                !handle
+                    .window
+                    .invoke_habits_create_confirmed("Water".into(), "3".into(), 0)
+            );
+            assert!(
+                commands.try_recv().is_err(),
+                "the stale arm dispatches nothing"
+            );
+            assert!(
+                !handle.window.get_habits_create_open(),
+                "the stale arm disarms"
+            );
+        });
+    }
+
+    /// Round-7 D-7.2 — the kiosk gate (D-T16): the affordance and the
+    /// form never mount and the toggle dispatch is inert, while the
+    /// rows render untouched.
+    #[test]
+    fn habit_create_kiosk_gates_the_affordance_not_the_rows() {
+        on_slint_thread(|| {
+            let mut state = fixture_state();
+            let board = *state.boards.keys().next().expect("fixture board");
+            let habit = fixture_habit(board);
+            state.habits.habits.insert(habit.id, habit);
+            // Kiosk needs the full settings surface — a local
+            // handover twin of `handover_with` (the helper pins
+            // desktop defaults).
+            let (commands_tx, commands_rx) = mpsc::channel(16);
+            let (requests_tx, _requests_rx) = mpsc::channel(16);
+            let (_system_tx, system_rx) = broadcast::channel(16);
+            let (_signals_tx, signals_rx) = broadcast::channel(16);
+            let (_health_tx, health) =
+                tokio::sync::watch::channel(crate::presentation::DeliveryHealth::default());
+            let handle = mount(
+                Arc::new(ArcSwap::from_pointee(state)),
+                signals_rx,
+                system_rx,
+                commands_tx,
+                requests_tx,
+                UiSettings {
+                    kiosk: true,
+                    ..UiSettings::default()
+                },
+                health,
+                None,
+            )
+            .expect("mount succeeds on the null platform");
+            route_action(&handle, crate::actions::ActionId::NavFocusBoard);
+            let _ = commands_rx;
+            assert!(!handle.window.get_habits_create_mountable());
+            assert!(!handle.window.get_habits_editing_visible());
+            assert_eq!(
+                handle.window.get_habits_model().row_count(),
+                1,
+                "the rows render on kiosk"
+            );
+            route_action(&handle, crate::actions::ActionId::HabitCreate);
+            assert!(
+                !handle.window.get_habits_create_open(),
+                "the action gate empties the ACTION, never the model"
+            );
+        });
+    }
+
+    /// Round-7 D-7.2 — the toggle and the Escape funnel: the opener
+    /// toggles (open → discard-and-close), bare Escape while armed
+    /// disarms through the keyscope arm, and Escape while closed
+    /// falls through to the resolver (the non-shadowing pin).
+    #[test]
+    fn habit_create_toggles_and_escape_disarms_without_shadowing() {
+        on_slint_thread(|| {
+            let (handle, mut commands) =
+                handover_with(fixture_state(), UiSettings::default().keymap);
+            route_action(&handle, crate::actions::ActionId::HabitCreate);
+            assert!(handle.window.get_habits_create_open(), "the opener arms");
+            route_action(&handle, crate::actions::ActionId::HabitCreate);
+            assert!(
+                !handle.window.get_habits_create_open(),
+                "the opener disarms (discard-and-close)"
+            );
+
+            route_action(&handle, crate::actions::ActionId::HabitCreate);
+            press(&handle, "\u{1b}");
+            assert!(
+                !handle.window.get_habits_create_open(),
+                "Escape while armed disarms"
+            );
+            press(&handle, "\u{1b}");
+            assert!(
+                !handle.window.get_habits_create_open(),
+                "Escape while closed falls through (nothing re-arms)"
+            );
+            assert!(
+                commands.try_recv().is_err(),
+                "the whole journey dispatches nothing"
+            );
+        });
+    }
+
     /// D-6.1 (round 6): the banner row's double-click seam opens the
     /// task view — the same focus+route shape as today-row activation;
     /// the open dispatches no command (`TaskEdit` is a pure view route).

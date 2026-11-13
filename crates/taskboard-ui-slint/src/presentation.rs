@@ -4281,14 +4281,16 @@ mod tests {
     #[test]
     fn habit_quota_validity_is_total_and_hints_every_refusal() {
         // (round-7 D-7.2) The untouched field is the silent default.
-        assert_eq!(habit_quota_validity(""), QuotaValidity::Neutral);
-        assert_eq!(habit_quota_validity("2"), QuotaValidity::Valid);
+        assert_eq!(habit_quota_validity(""), (QuotaValidity::Neutral, ""));
+        assert_eq!(habit_quota_validity("2"), (QuotaValidity::Valid, ""));
         for raw in ["0", "junk", "99999999999999"] {
-            assert_eq!(habit_quota_validity(raw), QuotaValidity::Invalid);
+            let (validity, hint) = habit_quota_validity(raw);
+            assert_eq!(validity, QuotaValidity::Invalid);
+            // Every refusal carries a hint (a structural fact — the
+            // tests never assert hint text).
+            assert_ne!(hint, "");
         }
-        // The hint mapping is total over the error enum: every
-        // refusal carries one (a structural fact — the tests never
-        // assert hint text).
+        // The hint mapping is total over the error enum.
         for error in [
             QuotaParseError::NotANumber,
             QuotaParseError::OutOfRange,
@@ -6354,18 +6356,19 @@ pub fn habit_quota_error_hint(error: QuotaParseError) -> &'static str {
     }
 }
 
-/// The quota field's per-keystroke validity (the
+/// The quota field's per-keystroke validity fold (the
 /// `timer_when_validity` twin): total over any text — empty is the
 /// untouched default, a minted quota is valid, every parse miss is
-/// invalid.
+/// invalid with its refusal's hint. The adapter maps the pair onto
+/// the Slint `FieldValidity` + hint properties.
 #[must_use]
-pub fn habit_quota_validity(text: &str) -> QuotaValidity {
+pub fn habit_quota_validity(text: &str) -> (QuotaValidity, &'static str) {
     if text.trim().is_empty() {
-        return QuotaValidity::Neutral;
+        return (QuotaValidity::Neutral, "");
     }
     match parse_habit_quota(text) {
-        Ok(_) => QuotaValidity::Valid,
-        Err(_) => QuotaValidity::Invalid,
+        Ok(_) => (QuotaValidity::Valid, ""),
+        Err(error) => (QuotaValidity::Invalid, habit_quota_error_hint(error)),
     }
 }
 

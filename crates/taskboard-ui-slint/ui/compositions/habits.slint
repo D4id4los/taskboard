@@ -9,9 +9,11 @@
 // empties the ACTION, never the model; `habits-editing-visible` is
 // false on kiosk and the buttons never mount).
 
-import { Theme, Typography, RoleText, Tone } from "../theme.slint";
+import { Theme, Typography, RoleText, Tone, Semantic } from "../theme.slint";
 import { IconButton, IconKind } from "../widgets/icon-button.slint";
 import { ListRow } from "../widgets/list-row.slint";
+import { SegmentedControl } from "../widgets/segmented-control.slint";
+import { FieldValidity, TextField } from "../widgets/text-field.slint";
 
 // One tracker row: the progress phrase is a presentation-side
 // derivation from `count`/`quota`; `met` restyles only — the +1
@@ -49,6 +51,30 @@ export component HabitsSection inherits Rectangle {
     callback convert-cancelled();
     in property <int> convert-armed-row: -1;
 
+    // The create flow (round-7 D-7.2): the header affordance asks,
+    // the adapter arms (`create-open` — adapter-owned, pushed), the
+    // inline form mounts below the header while armed AND editing is
+    // visible (the convert strip's gate: a kiosk flip mid-flow
+    // unmounts the form, the adapter keeps the flag, the form
+    // remounts if editing returns). The commit seam returns `false`
+    // on an absorbed miss — the field text is kept (the timers form's
+    // convention); `true` clears the fields (dispatched).
+    callback create-asked();
+    callback create-confirmed(string, string, int) -> bool;
+    callback create-cancelled();
+    // The quota field's per-keystroke validity (the timers
+    // `when-edited` twin): the adapter parses through the mint and
+    // pushes the flavour.
+    callback create-quota-edited(string);
+    in property <bool> create-open: false;
+    in property <FieldValidity> quota-validity: FieldValidity.neutral;
+    in property <string> quota-error-hint;
+    // The target picker's selection: UI-held until the commit seam
+    // mints it (the timers insistence-index precedent — it is not
+    // business data until the seam converts it). Index order
+    // `[PerDay, PerWeek, PerMonth]`.
+    in-out property <int> target-index: 0;
+
     background: transparent;
     accessible-role: AccessibleRole.region;
     accessible-label: "Habits";
@@ -72,6 +98,96 @@ export component HabitsSection inherits Rectangle {
                 text-color: Theme.text-secondary;
                 text: root.habits.length;
                 vertical-alignment: center;
+            }
+            Rectangle {
+                horizontal-stretch: 1;
+            }
+            // The create affordance (round-7 D-7.2): editing-gated
+            // exactly like the row actions (D-T16 — kiosk renders
+            // rows, never actions). The label ≡ hover tip ≡ walk name.
+            if (root.editing-visible): IconButton {
+                icon: IconKind.plus;
+                tone: Tone.success;
+                label: "Add habit…";
+                clicked => { root.create-asked(); }
+            }
+        }
+
+        // The inline create form (round-7 D-7.2): title + the target
+        // grammar. Commit fires on the title field's Return (the
+        // create-row precedent); an absorbed miss keeps the text (the
+        // rule-add seam's return convention). Empty quota text
+        // commits as the default 1 — the placeholder states it.
+        if (root.editing-visible && root.create-open): VerticalLayout {
+            spacing: Theme.space-1;
+            HorizontalLayout {
+                spacing: Theme.space-2;
+                title-field := TextField {
+                    horizontal-stretch: 1;
+                    placeholder: "Habit title";
+                    label: "Habit title";
+                    autofocus: false;
+                    accepted(text) => {
+                        if (root.create-confirmed(text, quota-field.text, root.target-index)) {
+                            self.text = "";
+                            quota-field.text = "";
+                            // The picker re-seats on its default — a
+                            // stale pick must not shape the next
+                            // create (the fields' own reset
+                            // convention).
+                            root.target-index = 0;
+                        }
+                    }
+                }
+                quota-field := TextField {
+                    horizontal-stretch: 1;
+                    placeholder: "1";
+                    label: "Quota (completions per period)";
+                    validity: root.quota-validity;
+                    autofocus: false;
+                    edited(text) => { root.create-quota-edited(text); }
+                    accepted(text) => {
+                        if (root.create-confirmed(title-field.text, text, root.target-index)) {
+                            self.text = "";
+                            title-field.text = "";
+                            root.target-index = 0;
+                        }
+                    }
+                }
+                SegmentedControl {
+                    options: ["Per day", "Per week", "Per month"];
+                    selected-index: root.target-index;
+                    group-label: "Target";
+                    picked(index) => { root.target-index = index; }
+                }
+                IconButton {
+                    icon: IconKind.check;
+                    tone: Tone.success;
+                    label: "Create habit";
+                    clicked => {
+                        if (root.create-confirmed(title-field.text, quota-field.text, root.target-index)) {
+                            title-field.text = "";
+                            quota-field.text = "";
+                            root.target-index = 0;
+                        }
+                    }
+                }
+                IconButton {
+                    icon: IconKind.remove;
+                    tone: Tone.neutral;
+                    label: "Cancel create";
+                    clicked => {
+                        title-field.text = "";
+                        quota-field.text = "";
+                        root.target-index = 0;
+                        root.create-cancelled();
+                    }
+                }
+            }
+            if (root.quota-validity == FieldValidity.invalid && quota-field.text != ""): RoleText {
+                role: Typography.caption;
+                text-color: Semantic.danger;
+                text: root.quota-error-hint;
             }
         }
 

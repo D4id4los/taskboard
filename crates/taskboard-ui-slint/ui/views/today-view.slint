@@ -96,6 +96,17 @@ export component TodayView inherits FocusScope {
     // visibility IS the point; only the actions gate).
     in property <[HabitRowModel]> habits;
     in property <bool> habits-editing-visible;
+    // The create flow's forwarding (round-7 D-7.2): the mount gate's
+    // widening (`habits-create-mountable` — desktop, board active,
+    // model-side gated) and the form's seams, verbatim.
+    in property <bool> habits-create-mountable: false;
+    in property <bool> habits-create-open: false;
+    in property <FieldValidity> habits-quota-validity;
+    in property <string> habits-quota-error-hint;
+    callback habits-create-asked();
+    callback habits-create-confirmed(string, string, int) -> bool;
+    callback habits-create-cancelled();
+    callback habits-create-quota-edited(string);
     callback habits-plus-clicked(int);
     callback habits-repair-clicked(int);
     callback habits-convert-armed(int);
@@ -168,8 +179,12 @@ export component TodayView inherits FocusScope {
                     when-error-hint: root.timer-when-error-hint;
                 }
                 // The habits section (D-P18): timers, then habits, then
-                // the task sections.
-                if (root.habits.length > 0): HabitsSection {
+                // the task sections. Mounts with rows OR while a
+                // create can happen (round-7 D-7.2: desktop + active
+                // board — the header-only section is how the first
+                // habit gets made; kiosk and board-less days keep the
+                // old rows-only gate model-side).
+                if (root.habits.length > 0 || root.habits-create-mountable): HabitsSection {
                     vertical-stretch: 0;
                     habits: root.habits;
                     editing-visible: root.habits-editing-visible;
@@ -180,6 +195,13 @@ export component TodayView inherits FocusScope {
                     convert-confirmed(r) => root.habits-convert-confirmed(r);
                     convert-cancelled() => root.habits-convert-cancelled();
                     convert-armed-row: root.habits-convert-armed-row;
+                    create-open: root.habits-create-open;
+                    quota-validity: root.habits-quota-validity;
+                    quota-error-hint: root.habits-quota-error-hint;
+                    create-asked() => root.habits-create-asked();
+                    create-confirmed(t, q, i) => root.habits-create-confirmed(t, q, i);
+                    create-cancelled() => root.habits-create-cancelled();
+                    create-quota-edited(s) => root.habits-create-quota-edited(s);
                 }
                 // The surfacing card (DR-7 D-J10): the header slot,
                 // above the sections — outside every `ListView` (the
