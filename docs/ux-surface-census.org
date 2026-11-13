@@ -88,7 +88,7 @@ every sub-family) and `crates/taskboard-app/src/commands/`.
 |---|---|---|---|---|---|---|---|
 | board.create | C — board-create field commit → =CreateBoard= `adapter.rs:8220-8226` (view_state.rs:1944); keyboard =BoardCreate= `actions.rs:916-925`, Ctrl+Shift+N `presets.rs:150` | U | U | U | U | U | C (pre-existing, =boards create= `cli.rs:322`) |
 | board.rename | E — board-rename field commit → =RenameBoard= `adapter.rs:8230-8236` (view_state.rs:1962), inline field `board-bar.slint:89-93`; =BoardRename= `actions.rs:926-935`, Ctrl+F2 `presets.rs:151` | U | U | U | U | U | E (pre-existing, =boards rename= `cli.rs:332`) |
-| board.delete | E — board context menu → =DeleteBoard= `view_state.rs:2933`; =BoardDelete= `actions.rs:936-945`, Ctrl+Shift+Delete `presets.rs:153-156` | U | U | U | U | U | X (pre-existing, =boards delete --confirm= `cli.rs:390`) |
+| board.delete | X — board context menu → =DeleteBoard= `view_state.rs:2933`; =BoardDelete= `actions.rs:936-945`, Ctrl+Shift+Delete `presets.rs:153-156` | U | U | U | U | U | X (pre-existing, =boards delete --confirm= `cli.rs:390`) |
 | board.select | E — board-bar segment click `adapter.rs:8272`, compact switcher `adapter.rs:8366`; =BoardNext/=BoardPrevious= `actions.rs:886-905`, =BoardSelect= `actions.rs:906-915` | U | U | U | U | U | E (pre-existing, =boards use= `cli.rs:358`, =boards select= bind `cli.rs:297`) |
 | board.color | U | U | U | U | U | U | E (pre-existing, =boards color= `cli.rs:365`) |
 | board.archive | U | U | U | U | U | U | E (pre-existing, =boards archive= / =boards unarchive= `cli.rs:375-381`) |
@@ -109,6 +109,7 @@ every sub-family) and `crates/taskboard-app/src/commands/`.
 | task.location_display | D — selected-stack highlight and header hints `board-layout.slint:413-437` | U | D — row context line "board › stack" `today-view.slint:392-399` (model `today-view.slint:35-37`) | U | U | U | D (pre-existing, =tasks list= grouping `cli.rs:1628`) |
 | task.badges_display | D — card decoration chips: reminder / running-timer / recur / tracker badges `task-card.slint:18-33,247-260` | U | D — the same task cards render on today rows `today-view.slint:20,376` | U | U | U | U |
 | task.due_phrase_display | D — due/scheduled/effort chips `task-card.slint:195-222`, due phrase in the accessible label `task-card.slint:96-97` | D — due/scheduled echoes `task-view.slint:73,76,556,625` | D — the same task cards on today rows `today-view.slint:20,376` | U | U | U | U |
+| nav.item_walk | E — =NavNextItem/=NavPrevItem/=NavFirstItem/=NavLastItem= "Focus next/first item" `actions.rs:846-866` (contexts =VIEW_NAV= `actions.rs:618-623`), Down/Up/Ctrl+Home/Ctrl+End `presets.rs:121-124`; StackDetail member bindings `presets.rs:169-177` | E — the same =Nav*= ids (TaskDetail member bindings `presets.rs:179-184`) | E — the same =Nav*= ids (Today member bindings `presets.rs:135-138`) | U | U | U | U |
 
 ** Rulings (Board)
 
@@ -142,6 +143,7 @@ absences are registered below; none is dressed as a ruling.
 | task.location_display | TaskDetail, Review, Settings, Capture | Sweep-T/R/S/C: no board›stack context line outside Today and the board | 2026-11-13 |
 | task.badges_display | TaskDetail, Review, Settings, Capture, CLI | Sweep-T/R/S/C: no decoration chips outside board/today cards; Sweep-CLI: no badge output | 2026-11-13 |
 | task.due_phrase_display | Review, Settings, Capture, CLI | Sweep-R/S/C: no due chip/echo; Sweep-CLI: no phrase output | 2026-11-13 |
+| nav.item_walk | Review, Settings, Capture, CLI | =NavNextItem= contexts =VIEW_NAV= (`actions.rs:618-623`) bind only Today/Board/StackDetail/TaskDetail (Settings carries only the =CONTROL_NAV= text-field motions, `actions.rs:628-634`); Sweep-CLI: no nav verb | 2026-11-13 |
 
 * Slice: Today
 
@@ -191,6 +193,7 @@ sub-family) and `crates/taskboard-app/src/commands/`.
 | habit.convert_to_series | U | U | E — armed conversion strip `adapter.rs:7122-7154`; =HabitConvertArm/=HabitConvertToSeries= `actions.rs:1346-1356` (→ =ConvertHabitToSeries= `messages.rs:451`) | U | U | U | U |
 | habit.state_display | U | U | D — progress/streak/chip/met row fields `habits.slint:21-30`, streak badge `habits.slint:202`, anchor chip `habits.slint:201`, met restyle `habits.slint:203`, quota error hint `habits.slint:187-191` | U | U | U | D (pre-existing, =habits list= `cli.rs:1282`) |
 | task.due_today | U | U | E — =TaskDueToday= "Due today (re-commit)" `actions.rs:1076-1078`, Today-only context | U | U | U | U |
+| nav.item_walk | E — the same =Nav*= ids (Board member bindings `presets.rs:121-124`) | E — the same =Nav*= ids (TaskDetail member bindings `presets.rs:179-184`) | E — =NavNextItem/=NavPrevItem/=NavFirstItem/=NavLastItem= `actions.rs:846-866` (contexts =VIEW_NAV= `actions.rs:618-623`), Down/Up/Ctrl+Home/Ctrl+End `presets.rs:135-138` | U | U | U | U |
 | alarm.create_adhoc | U | U | E — timers section setter `today-view.slint:82-90` (+ `timer-setter.slint`), commit → =CreateAdhocAlarm= `messages.rs:303` | U | U | U | E (pre-existing, =timers add= `cli.rs:921`) |
 | alarm.cancel_adhoc | U | U | E — timers section cancel `today-view.slint:82-90` → =CancelAdhocAlarm= `messages.rs:314` | U | U | U | E (pre-existing, =timers cancel= `cli.rs:958`) |
 | alarm.display | U | U | D — timers section mount `today-view.slint:163-180` (props `today-view.slint:79-92`) | U | U | U | D (pre-existing, =timers list= `cli.rs:954`) |
@@ -220,6 +223,7 @@ sub-family) and `crates/taskboard-app/src/commands/`.
 | alarm.cancel_adhoc | Board, TaskDetail, Review, Settings, Capture | Sweep-B/T/R/S/C: no alarm-cancel seam | 2026-11-13 |
 | alarm.display | Board, TaskDetail, Review, Settings, Capture | Sweep-B/T/R/S/C: no timers display outside Today and the status bar (chunk 2's alarm-window slice owns the rest, D-6) | 2026-11-13 |
 | review.walk_preview | Board, TaskDetail, Review, Settings, Capture, CLI | Sweep-B/T/R/S/C: the surfacing card mounts only in the today view (`today-view.slint:206-238`); Sweep-CLI: none | 2026-11-13 |
+| nav.item_walk | Review, Settings, Capture, CLI | =NavNextItem= contexts =VIEW_NAV= (`actions.rs:618-623`) bind only Today/Board/StackDetail/TaskDetail; Sweep-CLI: no nav verb | 2026-11-13 |
 
 * Slice: Capture
 
@@ -352,6 +356,7 @@ settings seams (adapter.rs:8246,10246-10439); *Sweep-C* =
 | task.recur_convert_to_habit | U | E — convert flow `adapter.rs:7196-7232` (→ =ConvertSeriesToHabit= `messages.rs:437`); recur-row convert label `task-view.slint:832` | E — =SeriesConvertArm/=SeriesConvertToHabit= registry `actions.rs:1396-1406` | U | U | U | U |
 | task.recur_preview | — (R-2) | D (desktop) (US-1, US-2 — inside the editor) — live echo `recur-editor.slint:54-57` fed by =assemble_recur_draft= | — (R-2) | U | U | U | U |
 | task.recur_display | D (pre-existing card badge) | D (pre-existing pattern echo) | D — the same card badge on today rows `today-view.slint:20,376`, `task-card.slint:22-24` | U | U | U | U |
+| nav.item_walk | E — the same =Nav*= ids (Board member bindings `presets.rs:121-124`) | E — =NavNextItem/=NavPrevItem/=NavFirstItem/=NavLastItem= `actions.rs:846-866` (contexts =VIEW_NAV= `actions.rs:618-623`), Down/Up/Ctrl+Home/Ctrl+End `presets.rs:179-184` | E — the same =Nav*= ids (Today member bindings `presets.rs:135-138`) | U | U | U | U |
 
 ** Rulings (Task detail)
 
@@ -389,6 +394,7 @@ settings seams (adapter.rs:8246,10246-10439); *Sweep-C* =
 | task.recur_convert_to_habit | Board, Review, Settings, Capture, CLI | Sweep-B/R/S/C: no convert seam; Sweep-CLI: =tasks repeat= has no convert verb (`cli.rs:1746-1755`) | 2026-11-13 |
 | task.recur_preview | Review, Settings, Capture, CLI | Sweep-R/S/C: no editor mount; Sweep-CLI: no preview verb | 2026-11-13 |
 | task.recur_display | Review, Settings, Capture, CLI | Sweep-R/S/C: no recur badge/echo; Sweep-CLI: none | 2026-11-13 |
+| nav.item_walk | Review, Settings, Capture, CLI | =NavNextItem= contexts =VIEW_NAV= (`actions.rs:618-623`) bind only Today/Board/StackDetail/TaskDetail; Sweep-CLI: no nav verb | 2026-11-13 |
 
 * Slice: Settings (files sync)
 
