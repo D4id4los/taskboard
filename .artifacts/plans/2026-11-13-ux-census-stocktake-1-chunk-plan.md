@@ -160,7 +160,12 @@ the slice's *unruled register* sub-table: one row per marker —
 The `U` marker is deliberately distinct from `—` (deliberately
 absent, needs a ruling — seed convention) and from blank (not yet
 examined — a schema defect; blank cells must not survive stage 2's
-self-check). Queryable: `grep -c 'U — unruled'` and the register
+self-check). *Stage-2 extension, recorded*: a third marker
+`— (self)` is used where a capability row is carried by a slice
+that also owns the capability's surface (e.g. `task.open` in the
+Task detail slice) — the capability *is* that surface, so the cell
+is neither an absence nor a finding and needs no ruling; the census
+header documents it beside the seed grammar. Queryable: `grep -c 'U — unruled'` and the register
 tables are the machine-readable inventory chunk 2's report
 consumes. An `U` never carries a story ID, a ruling ID, or a
 reason-as-judgment — only the sweep evidence.
