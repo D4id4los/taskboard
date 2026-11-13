@@ -1,0 +1,322 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The recurrence-rule editor (round-7 D-7.1): the window-level modal
+// over the task detail — the pattern (daily/weekly/monthly), the
+// bound (never/until/count), the live echo of the rule's canonical
+// text form, and the armed stop-repeating strip. A dumb client: every
+// field's text/validity, the echo, and the strip's armed flag are
+// pushed halves (the TimeField contract — the push re-seeds, the
+// widget never holds state); every edit mirrors up the moment it
+// happens. No `Key.*` literals: Escape rides the action layer's
+// global law, typing rides `ViInsert`.
+//
+// Recorded deviation from the stage-1 plan (D-D2's "weekday
+// Dropdown"): the `Dropdown` widget is flyout-site coupled to the
+// window-level flyout panels and the keyscope ladder — hostile inside
+// a total-mask modal. The NthWeekday's weekday pick is a
+// `SegmentedControl` (the pattern/bound pickers' sibling vocabulary):
+// always-valid, no hint row, keyboard + pointer parity by
+// construction (F19's always-rendered focus ring) — the plan's
+// substance kept, its widget swapped.
+
+import { Theme, Typography, RoleText, Semantic, Tone } from "../theme.slint";
+import { TippedField } from "../widgets/tipped-field.slint";
+import { FieldValidity } from "../widgets/text-field.slint";
+import { SegmentedControl } from "../widgets/segmented-control.slint";
+import { IconButton } from "../widgets/icon-button.slint";
+import { IconKind } from "../widgets/icon.slint";
+
+// The editor's pushed model (the WalkModel shape): every field's
+// text/validity, the echo, and the strip's armed flag in one struct —
+// the adapter computes it per pass, the widget never holds state (the
+// TimeField contract). Index contracts (documented once, mapped at
+// the adapter's push): pattern-kind 0/1/2 = Daily/Weekly/Monthly;
+// monthly-mode 0/1 = OnDay/NthWeekday; bound-kind 0/1/2 =
+// Never/Until/Count; monthly-weekday and the weekday toggles are the
+// Mon..Sun canonical index order.
+export struct RecurEditorModel {
+    pattern-kind: int,
+    every-days-text: string,
+    every-days-validity: FieldValidity,
+    weekly-interval-text: string,
+    weekly-interval-validity: FieldValidity,
+    weekdays-checked: [bool],
+    monthly-mode: int,
+    monthly-day-text: string,
+    monthly-day-validity: FieldValidity,
+    monthly-nth-text: string,
+    monthly-nth-validity: FieldValidity,
+    monthly-weekday: int,
+    bound-kind: int,
+    until-text: string,
+    until-validity: FieldValidity,
+    count-text: string,
+    count-validity: FieldValidity,
+    // The live echo: the assembled rule's canonical text form when
+    // the draft mints, the typed invalid-field hint otherwise.
+    echo: string,
+    echo-valid: bool,
+    // The commit's gate (an invalid draft never dispatches).
+    commit-enabled: bool,
+    // The stop-repeating strip's two-step flag.
+    detach-armed: bool,
+}
+
+export component RecurEditor inherits Rectangle {
+    in property <RecurEditorModel> model;
+
+    // The edit mirrors — every keystroke/pick rides up the moment it
+    // happens; the adapter owns the buffer (one truth).
+    callback pattern-kind-picked(int);
+    callback every-days-edited(string);
+    callback weekly-interval-edited(string);
+    callback weekday-toggled(int);
+    callback monthly-mode-picked(int);
+    callback monthly-day-edited(string);
+    callback monthly-nth-edited(string);
+    callback monthly-weekday-picked(int);
+    callback bound-kind-picked(int);
+    callback until-edited(string);
+    callback count-edited(string);
+    callback commit-clicked();
+    callback cancel-clicked();
+    callback detach-arm-clicked();
+    callback detach-confirm-clicked();
+    callback detach-cancel-clicked();
+
+    background: Theme.surface-raised;
+    border-radius: Theme.radius-medium;
+    border-width: Theme.focus-ring-width;
+    border-color: Semantic.focus-ring;
+    drop-shadow-blur: 12px;
+
+    panel-scope := FocusScope {
+        // The panel takes focus on mount (the entries panel's
+        // changed-height grab); Escape then resolves through the
+        // action layer's global law and closes the editor.
+        changed height => { panel-scope.focus(); }
+
+        VerticalLayout {
+            padding: Theme.space-3;
+            spacing: Theme.space-2;
+
+            RoleText {
+                role: Typography.caption;
+                text-color: Theme.text-secondary;
+                text: "Repeat";
+            }
+
+            SegmentedControl {
+                options: ["Daily", "Weekly", "Monthly"];
+                selected-index: root.model.pattern-kind;
+                group-label: "Repeat pattern";
+                picked(index) => root.pattern-kind-picked(index);
+            }
+
+            // -- Daily: the interval field --
+            if (root.model.pattern-kind == 0): every-field := TippedField {
+                label: "Every N days";
+                help: "The day interval between occurrences; at least 1.";
+                placeholder: "1";
+                initial-text: root.model.every-days-text;
+                validity: root.model.every-days-validity;
+                selected-on-focus: true;
+                edited(text) => root.every-days-edited(text);
+                accepted(text) => root.every-days-edited(text);
+            }
+
+            // -- Weekly: the interval field + the weekday toggles --
+            if (root.model.pattern-kind == 1): VerticalLayout {
+                spacing: Theme.space-2;
+                weekly-field := TippedField {
+                    label: "Every N weeks";
+                    help: "The week interval between occurrence weeks; at least 1.";
+                    placeholder: "1";
+                    initial-text: root.model.weekly-interval-text;
+                    validity: root.model.weekly-interval-validity;
+                    selected-on-focus: true;
+                    edited(text) => root.weekly-interval-edited(text);
+                    accepted(text) => root.weekly-interval-edited(text);
+                }
+                HorizontalLayout {
+                    spacing: Theme.space-1;
+                    // The seven toggles, Mon..Sun (the WeekdaySet
+                    // grammar's canonical order): a plain check/clear
+                    // pair of tones — checked carries the check glyph
+                    // and the info tone, the label is the hover tip.
+                    IconButton {
+                        icon: IconKind.check;
+                        tone: root.model.weekdays-checked[0] ? Tone.info : Tone.neutral;
+                        label: "Repeats on Mondays";
+                        clicked => root.weekday-toggled(0);
+                    }
+                    IconButton {
+                        icon: IconKind.check;
+                        tone: root.model.weekdays-checked[1] ? Tone.info : Tone.neutral;
+                        label: "Repeats on Tuesdays";
+                        clicked => root.weekday-toggled(1);
+                    }
+                    IconButton {
+                        icon: IconKind.check;
+                        tone: root.model.weekdays-checked[2] ? Tone.info : Tone.neutral;
+                        label: "Repeats on Wednesdays";
+                        clicked => root.weekday-toggled(2);
+                    }
+                    IconButton {
+                        icon: IconKind.check;
+                        tone: root.model.weekdays-checked[3] ? Tone.info : Tone.neutral;
+                        label: "Repeats on Thursdays";
+                        clicked => root.weekday-toggled(3);
+                    }
+                    IconButton {
+                        icon: IconKind.check;
+                        tone: root.model.weekdays-checked[4] ? Tone.info : Tone.neutral;
+                        label: "Repeats on Fridays";
+                        clicked => root.weekday-toggled(4);
+                    }
+                    IconButton {
+                        icon: IconKind.check;
+                        tone: root.model.weekdays-checked[5] ? Tone.info : Tone.neutral;
+                        label: "Repeats on Saturdays";
+                        clicked => root.weekday-toggled(5);
+                    }
+                    IconButton {
+                        icon: IconKind.check;
+                        tone: root.model.weekdays-checked[6] ? Tone.info : Tone.neutral;
+                        label: "Repeats on Sundays";
+                        clicked => root.weekday-toggled(6);
+                    }
+                }
+            }
+
+            // -- Monthly: the anchor pair --
+            if (root.model.pattern-kind == 2): VerticalLayout {
+                spacing: Theme.space-2;
+                SegmentedControl {
+                    options: ["On day", "On the Nth weekday"];
+                    selected-index: root.model.monthly-mode;
+                    group-label: "Monthly anchor";
+                    picked(index) => root.monthly-mode-picked(index);
+                }
+                if (root.model.monthly-mode == 0): monthly-day-field := TippedField {
+                    label: "Day of month";
+                    help: "The day-of-month anchor, 1 to 31; short months clamp.";
+                    placeholder: "15";
+                    initial-text: root.model.monthly-day-text;
+                    validity: root.model.monthly-day-validity;
+                    selected-on-focus: true;
+                    edited(text) => root.monthly-day-edited(text);
+                    accepted(text) => root.monthly-day-edited(text);
+                }
+                if (root.model.monthly-mode == 1): VerticalLayout {
+                    spacing: Theme.space-2;
+                    monthly-nth-field := TippedField {
+                        label: "The Nth weekday";
+                        help: "The position, 1st to 5th; a month lacking it contributes no occurrence.";
+                        placeholder: "2nd";
+                        initial-text: root.model.monthly-nth-text;
+                        validity: root.model.monthly-nth-validity;
+                        selected-on-focus: true;
+                        edited(text) => root.monthly-nth-edited(text);
+                        accepted(text) => root.monthly-nth-edited(text);
+                    }
+                    SegmentedControl {
+                        options: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+                        selected-index: root.model.monthly-weekday;
+                        group-label: "The Nth weekday's day";
+                        picked(index) => root.monthly-weekday-picked(index);
+                    }
+                }
+            }
+
+            // -- The bound --
+            SegmentedControl {
+                options: ["Never", "Until", "Count"];
+                selected-index: root.model.bound-kind;
+                group-label: "Where the series stops";
+                picked(index) => root.bound-kind-picked(index);
+            }
+            if (root.model.bound-kind == 1): until-field := TippedField {
+                label: "Until date";
+                help: "No member after this inclusive date; the date-field grammar (2026-12-31 or +Nd).";
+                placeholder: "2026-12-31";
+                initial-text: root.model.until-text;
+                validity: root.model.until-validity;
+                selected-on-focus: true;
+                edited(text) => root.until-edited(text);
+                accepted(text) => root.until-edited(text);
+            }
+            if (root.model.bound-kind == 2): count-field := TippedField {
+                label: "Occurrences";
+                help: "At most this many completed occurrences.";
+                placeholder: "10";
+                initial-text: root.model.count-text;
+                validity: root.model.count-validity;
+                selected-on-focus: true;
+                edited(text) => root.count-edited(text);
+                accepted(text) => root.count-edited(text);
+            }
+
+            // -- The live echo (the rule's canonical text form, or the
+            //    typed invalid-field hint) --
+            RoleText {
+                role: Typography.caption;
+                text-color: root.model.echo-valid ? Theme.text-secondary : Semantic.danger;
+                text: root.model.echo;
+                overflow: elide;
+            }
+
+            // -- The stop-repeating strip: disarmed shows the ask,
+            //    armed shows the consequence + the confirm/cancel pair
+            //    (the recur row's armed-convert precedent) --
+            if (!root.model.detach-armed): IconButton {
+                icon: IconKind.remove;
+                tone: Tone.neutral;
+                label: "Stop repeating: the series ends, the task stays as an ordinary task";
+                clicked => root.detach-arm-clicked();
+            }
+            if (root.model.detach-armed): HorizontalLayout {
+                spacing: Theme.space-2;
+                RoleText {
+                    role: Typography.caption;
+                    text-color: Theme.text-secondary;
+                    text: "The series stops repeating; the task stays as an ordinary task.";
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                IconButton {
+                    icon: IconKind.check;
+                    tone: Tone.success;
+                    label: "Confirm stop repeating";
+                    clicked => root.detach-confirm-clicked();
+                }
+                IconButton {
+                    icon: IconKind.remove;
+                    tone: Tone.neutral;
+                    label: "Cancel stop repeating";
+                    clicked => root.detach-cancel-clicked();
+                }
+            }
+
+            // -- The footer: commit/cancel. The commit button mounts
+            //    only while the whole draft mints (the IconButton
+            //    family's mount-gating idiom — the tracking verbs'
+            //    shape); the seam re-checks regardless (the trust
+            //    boundary never trusts the widget). --
+            HorizontalLayout {
+                spacing: Theme.space-2;
+                if (root.model.commit-enabled): IconButton {
+                    icon: IconKind.check;
+                    tone: Tone.success;
+                    label: "Commit the repeat rule";
+                    clicked => root.commit-clicked();
+                }
+                IconButton {
+                    icon: IconKind.remove;
+                    tone: Tone.neutral;
+                    label: "Cancel repeat editing";
+                    clicked => root.cancel-clicked();
+                }
+            }
+        }
+    }
+}

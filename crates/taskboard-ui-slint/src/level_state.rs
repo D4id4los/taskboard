@@ -124,9 +124,6 @@ pub(crate) struct RecurEditorState {
     pub(crate) count: String,
     /// The stop-repeating strip's armed flag (the confirm two-step).
     pub(crate) detach_armed: bool,
-    /// The programmatic-focus-steal latch (the settle funnel's skip —
-    /// the `DateEditorState` twin).
-    pub(crate) focus_steal: bool,
     pub(crate) anchor: FocusAnchor,
 }
 
@@ -149,7 +146,6 @@ impl RecurEditorState {
             until_text: String::new(),
             count: String::from("1"),
             detach_armed: false,
-            focus_steal: false,
             anchor: FocusAnchor::None,
         }
     }
@@ -394,6 +390,14 @@ impl LevelState {
     }
 
     #[must_use]
+    pub(crate) fn as_recur_editor(&self) -> Option<&RecurEditorState> {
+        match self {
+            Self::RecurEditor(state) => Some(state),
+            _ => None,
+        }
+    }
+
+    #[must_use]
     pub(crate) fn as_date_editor(&self) -> Option<&DateEditorState> {
         match self {
             Self::DateEditor(state) => Some(state),
@@ -615,7 +619,7 @@ mod tests {
         assert_eq!(state.pattern, RecurPatternKind::Daily);
         assert_eq!(state.bound, RecurBoundKind::Never);
         assert_eq!(state.weekdays, [false; 7]);
-        assert!(!state.detach_armed && !state.focus_steal);
+        assert!(!state.detach_armed);
         assert_eq!(state.until_text, "");
     }
 

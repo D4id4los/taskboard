@@ -883,6 +883,26 @@ impl ViewState {
             .find_map(|level| level.state_mut().as_date_editor_mut())
     }
 
+    /// The `EditRecur` flow's subject, if that flow holds (the strip
+    /// seams' re-arm source — the flow is the live truth).
+    #[must_use]
+    pub(crate) fn task_of_edit_recur(&self) -> Option<TaskId> {
+        match self.flow() {
+            Flow::EditRecur { task } => Some(*task),
+            _ => None,
+        }
+    }
+
+    /// The recur editor's read seam (the model push's source).
+    #[must_use]
+    pub(crate) fn recur_editor(&self) -> Option<&crate::level_state::RecurEditorState> {
+        self.surfaces
+            .above_levels()
+            .iter()
+            .rev()
+            .find_map(|level| level.state().as_recur_editor())
+    }
+
     /// The recur editor's write seam (the opener's seeding and the
     /// field keystroke mirrors).
     pub(crate) fn recur_editor_mut(&mut self) -> Option<&mut crate::level_state::RecurEditorState> {
