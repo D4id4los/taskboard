@@ -57,6 +57,19 @@ pub struct ConnectorInfo {
     pub backend: ConnectorBackend,
 }
 
+/// The binding's channel (round-7 D-7.3, W-1): which lane a board's
+/// binding rides, detected STRUCTURALLY from the remote id's payload
+/// type (D-BF4 — the payload is the tag; a connector-name match is
+/// impossible by construction and forbidden by law). Snapshot data
+/// plumbing, not a UI word: the badge fold consumes it Rust-side.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoardChannel {
+    /// Bound through a Deck connector (`RemoteBoardId::deck`).
+    Deck,
+    /// Bound through the files lane (`RemoteBoardId::files`).
+    Files,
+}
+
 /// One local board for the settings board selector — secret-free,
 /// id in the uuid hand-over form (the stack-widths precedent: the
 /// domain newtypes carry no serde, and the adapter converts at the
@@ -67,6 +80,12 @@ pub struct BoardInfo {
     pub name: String,
     /// The connector name this board is bound to, `None` when unbound.
     pub bound_connector: Option<String>,
+    /// The binding's channel, `None` when unbound (round-7 D-7.3,
+    /// W-1). Filled app-side from `binding.board.as_deck()/as_files()`
+    /// — structural detection per D-BF4; every constructor sets it
+    /// explicitly (no `Default` escape hatch — a missed filler must be
+    /// a compile error, not a silent `None`).
+    pub bound_channel: Option<BoardChannel>,
 }
 
 /// The refreshed boards+connectors pair every state-changing settings

@@ -10570,6 +10570,7 @@ fn the_account_session_signs_in_lists_and_binds() {
                     id: home,
                     name: "home".into(),
                     bound_connector: Some("c-example-alice".into()),
+                    bound_channel: Some(taskboard_ui_slint::requests::BoardChannel::Deck),
                 }],
                 connectors: vec![identity_row(
                     "c-example-alice",

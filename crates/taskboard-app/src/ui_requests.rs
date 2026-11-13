@@ -1423,6 +1423,13 @@ fn current_connections(workspace: &ConnectionWorkspace) -> ConnectionsSnapshot {
                 .remote
                 .as_ref()
                 .map(|binding| binding.connector.to_string()),
+            // Structural detection per D-BF4 (round-7 D-7.3, W-1): the
+            // remote id's payload type IS the channel — never a
+            // connector-name match.
+            bound_channel: b
+                .remote
+                .as_ref()
+                .map(|binding| taskboard_ui_slint::presentation::bound_channel_of(&binding.board)),
         })
         .collect();
     ConnectionsSnapshot {
@@ -1689,6 +1696,84 @@ mod tests {
 
     fn epoch() -> chrono::DateTime<chrono::Utc> {
         BoardClocks::epoch()
+    }
+
+    // -- the snapshot's bound-channel fill (round-7 D-7.3, W-1) ---------
+
+    /// Creates one live board through the real engine (the command is
+    /// the trust boundary — the snapshot fill reads only what the
+    /// engine holds).
+    async fn create_board(workspace: &ConnectionWorkspace, title: &str) -> BoardId {
+        let taskboard_domain::CommandOutcome::CreatedBoard(board) = workspace
+            .engine
+            .execute(StateCommand::CreateBoard {
+                title: title.to_owned(),
+                color: taskboard_domain::Color::new(""),
+            })
+            .await
+            .expect("create lands")
+        else {
+            panic!("create mints a board");
+        };
+        board
+    }
+
+    /// The snapshot's board half carries the binding's channel,
+    /// detected STRUCTURALLY from the id type (D-BF4) — never from the
+    /// binding's connector name: a files binding whose connector name
+    /// is a Deck-shaped card name still reads `Files`.
+    #[tokio::test]
+    async fn current_connections_fills_bound_channel_structurally() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = dir.path().join("taskboard.toml");
+        std::fs::write(&config, "[ui]\nscale = 1.0\n").expect("seed");
+        let workspace = test_workspace(config).await;
+
+        let deck_bound = create_board(&workspace, "deck board").await;
+        let files_bound = create_board(&workspace, "files board").await;
+        let _loose = create_board(&workspace, "loose").await;
+        for (board, remote) in [
+            (deck_bound, taskboard_domain::RemoteBoardId::deck(7)),
+            (
+                files_bound,
+                taskboard_domain::RemoteBoardId::files(uuid::Uuid::now_v7()),
+            ),
+        ] {
+            workspace
+                .engine
+                .execute(StateCommand::BindBoard {
+                    board,
+                    remote,
+                    // Deliberately a Deck-card-shaped name for BOTH
+                    // bindings: the channel must not key on it (D-BF4).
+                    connector: taskboard_domain::ConnectorId::from("work"),
+                })
+                .await
+                .expect("bind lands");
+        }
+
+        let snapshot = current_connections(&workspace);
+        let by_name = |name: &str| {
+            snapshot
+                .boards
+                .iter()
+                .find(|board| board.name == name)
+                .expect("the live board is in the snapshot")
+        };
+        assert_eq!(
+            by_name("deck board").bound_channel,
+            Some(taskboard_ui_slint::requests::BoardChannel::Deck),
+        );
+        assert_eq!(
+            by_name("files board").bound_channel,
+            Some(taskboard_ui_slint::requests::BoardChannel::Files),
+        );
+        assert_eq!(by_name("loose").bound_channel, None);
+        assert_eq!(
+            by_name("files board").bound_connector.as_deref(),
+            Some("work"),
+            "the name field is untouched — the channel is the id type's"
+        );
     }
 
     fn fixture_state() -> (AppState, uuid::Uuid, uuid::Uuid, uuid::Uuid) {
