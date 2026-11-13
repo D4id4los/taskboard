@@ -725,6 +725,51 @@ expression: rows
   menu_rank: 270
   description: "Routes the confirmed series-to-habit conversion with the pattern's default quota."
   menu_group: task
+- id: series.edit
+  label: Edit repeat
+  contexts:
+    - task-detail
+  category: task
+  enabled: true
+  menu_rank: 275
+  description: "Opens the recurrence-rule editor over the viewed task: the pattern, the bound, and the stop-repeating strip."
+  menu_group: task
+- id: series.edit-commit
+  label: Commit repeat rule
+  contexts:
+    - recur-editor
+  category: task
+  enabled: true
+  menu_rank: 300
+  description: Routes the assembled rule as the one recurrence write; an invalid draft dispatches nothing.
+  menu_group: ~
+- id: series.edit-detach
+  label: Stop repeating
+  contexts:
+    - recur-editor
+  category: task
+  enabled: true
+  menu_rank: 310
+  description: Clears the rule (the task stays as an ordinary task); nothing else changes.
+  menu_group: ~
+- id: series.edit-detach-arm
+  label: Arm stop repeating
+  contexts:
+    - recur-editor
+  category: task
+  enabled: true
+  menu_rank: 320
+  description: Shows the stop-repeating consequence strip; the confirm dispatches.
+  menu_group: ~
+- id: series.edit-detach-cancel
+  label: Cancel stop repeating
+  contexts:
+    - recur-editor
+  category: task
+  enabled: true
+  menu_rank: 330
+  description: Disarms the stop-repeating strip.
+  menu_group: ~
 - id: view.plan-next-day
   label: Plan next day
   contexts:

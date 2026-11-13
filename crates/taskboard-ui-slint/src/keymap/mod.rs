@@ -954,6 +954,7 @@ mod tests {
                     ContextId::FocusMode,
                     ContextId::TrackEntries,
                     ContextId::ReviewWalk,
+                    ContextId::RecurEditor,
                 ],
                 "every modal surface masks; nothing else does"
             );

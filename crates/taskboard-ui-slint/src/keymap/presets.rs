@@ -60,6 +60,7 @@ impl Preset {
             ContextId::FocusMode,
             ContextId::TrackEntries,
             ContextId::ReviewWalk,
+            ContextId::RecurEditor,
         ]
     }
 }
@@ -187,6 +188,11 @@ static STANDARD: &[(ActionId, ContextId, &[&str])] = &[
     // Round 3 (W-SM-d, F26): the title re-arm — F2, the CUA rename
     // convention, matching this preset's own `StackRename = F2`.
     (ActionId::TaskTitleEdit, ContextId::TaskDetail, &["F2"]),
+    // The recurrence editor's opener (round-7 D-7.1): Ctrl+R, the
+    // repeat mnemonic — a `TaskTitleEdit`-class editing verb, the one
+    // series verb with a preset binding (the row verbs stay
+    // pointer-grade).
+    (ActionId::SeriesEdit, ContextId::TaskDetail, &["Ctrl+R"]),
     // Menu
     (ActionId::MenuNext, ContextId::Menu, &["Down"]),
     (ActionId::MenuPrevious, ContextId::Menu, &["Up"]),
@@ -393,6 +399,14 @@ static EMACS: &[(ActionId, ContextId, &[&str])] = &[
     // unambiguous once task-detail entry no longer auto-arms (emacs
     // binds Return only at Board/Today for `task.edit`).
     (ActionId::TaskTitleEdit, ContextId::TaskDetail, &["Return"]),
+    // The recurrence editor's opener (round-7 D-7.1): the C-c
+    // user-namespace's r — free at TaskDetail (the board family's
+    // C-c r binds StackRename in the Board context only).
+    (
+        ActionId::SeriesEdit,
+        ContextId::TaskDetail,
+        &["Ctrl+c", "r"],
+    ),
     // Round 2 (D16): the board-view C-g alternate for move-cancel.
     (ActionId::TaskMoveCancel, ContextId::Board, &["Ctrl+g"]),
     // Round 2 (D17): emacs' isearch/read-args chords — Ctrl+f/Ctrl+b
@@ -683,6 +697,10 @@ static VI: &[(ActionId, ContextId, &[&str])] = &[
         ContextId::TaskDetail,
         &["Shift+Tab"],
     ),
+    // The recurrence editor's opener (round-7 D-7.1): bare r at the
+    // task detail — vi-normal's repeat mnemonic (`g r` is the stack
+    // rename's prefix family; bare r is free).
+    (ActionId::SeriesEdit, ContextId::TaskDetail, &["r"]),
     (ActionId::NavNextControl, ContextId::Settings, &["Tab"]),
     (
         ActionId::NavPrevControl,

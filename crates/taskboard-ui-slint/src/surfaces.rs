@@ -35,6 +35,7 @@ pub enum FlowTag {
     CreateStack,
     EditTitle,
     EditDate,
+    EditRecur,
     EditDescription,
     Move,
     Palette,
@@ -65,6 +66,7 @@ impl Flow {
             Flow::CreateStack => FlowTag::CreateStack,
             Flow::EditTitle { .. } => FlowTag::EditTitle,
             Flow::EditDate { .. } => FlowTag::EditDate,
+            Flow::EditRecur { .. } => FlowTag::EditRecur,
             Flow::EditDescription { .. } => FlowTag::EditDescription,
             Flow::Move { .. } => FlowTag::Move,
             Flow::Palette { .. } => FlowTag::Palette,
@@ -456,8 +458,8 @@ impl Surfaces {
 impl FlowTag {
     /// The masking modal's declared key-scope head (D-H6): the
     /// contexts the kind arms its scope stack with, innermost first —
-    /// the five hard-coded total-mask branches, now data. The
-    /// non-modal tags declare nothing (empty slice).
+    /// the hard-coded total-mask branches, now data. The non-modal
+    /// tags declare nothing (empty slice).
     #[must_use]
     pub fn scope_head(self) -> &'static [ContextId] {
         match self {
@@ -470,6 +472,11 @@ impl FlowTag {
             ],
             FlowTag::ReviewWalk => &[
                 ContextId::ReviewWalk,
+                ContextId::ViInsert,
+                ContextId::Global,
+            ],
+            FlowTag::EditRecur => &[
+                ContextId::RecurEditor,
                 ContextId::ViInsert,
                 ContextId::Global,
             ],
@@ -506,6 +513,7 @@ mod tests {
                 task: TASK,
                 field: DateField::Due,
             },
+            FlowTag::EditRecur => Flow::EditRecur { task: TASK },
             FlowTag::EditDescription => Flow::EditDescription { task: TASK },
             FlowTag::Move => Flow::Move {
                 task: TASK,
@@ -1013,7 +1021,7 @@ mod tests {
     }
 
     #[test]
-    fn scope_head_declares_the_five_masking_modals_and_nothing_else() {
+    fn scope_head_declares_the_masking_modals_and_nothing_else() {
         assert_eq!(
             FlowTag::Palette.scope_head(),
             &[ContextId::Palette, ContextId::ViInsert, ContextId::Global,]
@@ -1031,6 +1039,18 @@ mod tests {
             ContextId::TrackEntries
         );
         assert_eq!(FlowTag::ReviewWalk.scope_head()[0], ContextId::ReviewWalk);
+        assert_eq!(
+            FlowTag::EditRecur.scope_head(),
+            &[
+                ContextId::RecurEditor,
+                ContextId::ViInsert,
+                ContextId::Global,
+            ]
+        );
+        // The date editor is a non-masking flow (its picker grid rides
+        // the DatePicker context, non-masking by D25); the recur
+        // editor masks, like the entries overlay.
+        assert_eq!(FlowTag::EditDate.scope_head(), &[]);
         assert_eq!(FlowTag::Capture.scope_head(), &[]);
         assert_eq!(FlowTag::None.scope_head(), &[]);
     }

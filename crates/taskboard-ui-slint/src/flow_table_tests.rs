@@ -55,6 +55,10 @@ enum FK {
     /// The review walk (#638): the kept walk arms own its intents,
     /// settle closes it (the palette family).
     ReviewWalk,
+    /// The recurrence-rule editor overlay (round-7 D-7.1): the
+    /// overlay family's row — settle is its clean close (the draft
+    /// dies, nothing dispatches).
+    RecurEditor,
     /// The child levels (chunk 3's ports): no kept arms of their own —
     /// every effect bubbles outward to the parent (the routing's
     /// innermost-first walk). The fixture arms them at depth 1, where
@@ -105,6 +109,7 @@ fn kind_of(flow: &Flow) -> FK {
         Flow::TrackEntryForm { .. } => FK::TrackForm,
         Flow::PlanPlace { .. } => FK::PlanForm,
         Flow::ReviewWalk { .. } => FK::ReviewWalk,
+        Flow::EditRecur { .. } => FK::RecurEditor,
     }
 }
 
@@ -163,6 +168,13 @@ enum EK {
     /// The recur row's intents (issue #506): flag flips over the
     /// subject — no flow moves, no command routes.
     RecurIntent,
+    /// The recurrence editor's opener (round-7 D-7.1): opens the
+    /// overlay; inert under its own flow.
+    SeriesEditOpen,
+    /// The stop-repeating strip's flag flips (round-7 D-7.1): the arm
+    /// and the cancel share the cell (symmetric flips over the editor
+    /// level).
+    SeriesDetach,
     /// The plan-next-day family (#622): the surface toggle and the
     /// placement row verbs.
     PlanOpen,
@@ -237,6 +249,10 @@ fn key_of(effect: &UiEffect) -> EK {
         | UiEffect::HabitConvertArm
         | UiEffect::HabitCreateToggle
         | UiEffect::SeriesConvertArm => EK::RecurIntent,
+        // The recur editor's intents (round-7 D-7.1): the opener and
+        // the detach strip's symmetric flag flips.
+        UiEffect::SeriesEditorOpen => EK::SeriesEditOpen,
+        UiEffect::SeriesDetachArm | UiEffect::SeriesDetachCancel => EK::SeriesDetach,
         UiEffect::TrackEntryDismiss => EK::TrackEntryDismiss,
         UiEffect::OpenPlanNextDay => EK::PlanOpen,
         UiEffect::PlanBeginPlace(_) => EK::PlanBegin,
@@ -318,6 +334,7 @@ use FK::FocusOverlay as KFoc;
 use FK::Move as KMove;
 use FK::Palette as KPal;
 use FK::PlanForm as KPlanForm;
+use FK::RecurEditor as KRecur;
 use FK::ReviewWalk as KWalk;
 use FK::Text as KTxt;
 use FK::TrackForm as KTrackForm;
@@ -470,6 +487,19 @@ fn class_table() -> Vec<(FK, EC, Exp)> {
     }
     row(FK::PlanForm, C::TrackOverlay, exp(Z, N));
     row(FK::PlanForm, C::PlanSurface, exp(Z, K(KPlanForm)));
+    // RECUR EDITOR (round-7 D-7.1): the same settle-then-run overlay
+    // family — the settle is the editor's clean close (the draft dies,
+    // nothing dispatches); the kept classes stay under the modal mask.
+    for class in [C::Nav, C::Lifecycle, C::Begin, C::Title, C::Cancel] {
+        row(FK::RecurEditor, class, exp(Z, N));
+    }
+    row(FK::RecurEditor, C::OpenPalette, exp(Z, K(KPal)));
+    row(FK::RecurEditor, C::FocusOverlay, exp(Z, K(KFoc)));
+    row(FK::RecurEditor, C::BeginCapture, exp(Z, K(KCap)));
+    for class in [C::Edit, C::Menu, C::System, C::Picker] {
+        row(FK::RecurEditor, class, exp(Z, K(KRecur)));
+    }
+    row(FK::RecurEditor, C::TrackOverlay, exp(Z, N));
     row(FK::None, C::TrackOverlay, exp(Z, N));
     // CHILD LEVELS (chunk 3's ports): the settle is the Cancelled end
     // (the modals' terminator rule); everything else bubbles outward —
@@ -500,6 +530,7 @@ fn class_table() -> Vec<(FK, EC, Exp)> {
         FK::TrackList,
         FK::TrackForm,
         FK::ReviewWalk,
+        FK::RecurEditor,
         FK::Child,
     ] {
         let keep = match kind {
@@ -513,6 +544,7 @@ fn class_table() -> Vec<(FK, EC, Exp)> {
             FK::TrackList => K(KTrackList),
             FK::TrackForm => K(KTrackForm),
             FK::ReviewWalk => K(KWalk),
+            FK::RecurEditor => K(KRecur),
             FK::Child => K(KChild),
             FK::PlanForm | FK::None => unreachable!("the loop never names them"),
         };
@@ -551,6 +583,7 @@ fn class_table() -> Vec<(FK, EC, Exp)> {
         FK::TrackForm,
         FK::PlanForm,
         FK::ReviewWalk,
+        FK::RecurEditor,
     ] {
         row(kind, C::ReviewWalk, exp(Z, N));
     }
@@ -581,6 +614,7 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
         FK::TrackForm,
         FK::PlanForm,
         FK::ReviewWalk,
+        FK::RecurEditor,
         FK::Child,
     ] {
         let keep = match kind {
@@ -595,6 +629,7 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
             FK::TrackForm => K(KTrackForm),
             FK::PlanForm => K(KPlanForm),
             FK::ReviewWalk => K(KWalk),
+            FK::RecurEditor => K(KRecur),
             FK::Child => K(KChild),
             FK::None => unreachable!("the loop never names None"),
         };
@@ -814,6 +849,20 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
     row(FK::PlanForm, E::BoardCreate, exp(Z, K(KTxt)));
     row(FK::PlanForm, E::StackMove, exp(Z, K(KMove)));
     row(FK::PlanForm, E::TrackEntriesOpen, exp(Z, K(KTrackList)));
+    // The begin/rename/deletes under the recur editor (round-7 D-7.1):
+    // the settle closes it, the re-run arms its fresh flow (the overlay
+    // family's effect-shaped set).
+    row(FK::RecurEditor, E::BeginCreate, exp(Z, K(KTxt)));
+    row(FK::RecurEditor, E::BeginCreateStack, exp(Z, K(KTxt)));
+    row(FK::RecurEditor, E::RequestMove, exp(Z, K(KMove)));
+    row(FK::RecurEditor, E::BeginTitleEdit, exp(Z, K(KTxt)));
+    row(FK::RecurEditor, E::StackDelete, exp(NZ, N));
+    row(FK::RecurEditor, E::BoardDelete, exp(NZ, N));
+    row(FK::RecurEditor, E::StackRename, exp(Z, K(KTxt)));
+    row(FK::RecurEditor, E::BoardRename, exp(Z, K(KTxt)));
+    row(FK::RecurEditor, E::BoardCreate, exp(Z, K(KTxt)));
+    row(FK::RecurEditor, E::StackMove, exp(Z, K(KMove)));
+    row(FK::RecurEditor, E::TrackEntriesOpen, exp(Z, K(KTrackList)));
     // -- REVIEW WALK rows (#638): from None the walk does not exist
     //    yet (the open effect lands with the walk verbs commit); under
     //    a live walk the settle-then-run re-run is effect-shaped like
@@ -853,6 +902,7 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
         FK::TrackForm,
         FK::PlanForm,
         FK::ReviewWalk,
+        FK::RecurEditor,
     ] {
         row(kind, E::ReviewOpen, exp(Z, K(KWalk)));
     }
@@ -864,6 +914,66 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
     row(FK::ReviewWalk, E::WalkFileArm, exp(Z, K(KChild)));
     row(FK::ReviewWalk, E::WalkVerb, exp(Z, K(KWalk)));
     row(FK::ReviewWalk, E::WalkExit, exp(Z, N));
+    // -- RECUR EDITOR rows (round-7 D-7.1): the opener is the
+    //    entries-overlay's shape — an explicit table arm that replaces
+    //    any foreign flow without settling it (no commit), opens the
+    //    editor over the rig's subject; under the live editor it is
+    //    the kept inert (the modal discipline).
+    for kind in [
+        FK::None,
+        FK::Text,
+        FK::Due,
+        FK::Move,
+        FK::Drag,
+        FK::Palette,
+        FK::Capture,
+        FK::FocusOverlay,
+        FK::TrackList,
+        FK::TrackForm,
+        FK::PlanForm,
+        FK::ReviewWalk,
+        FK::Child,
+    ] {
+        row(kind, E::SeriesEditOpen, exp(Z, K(KRecur)));
+    }
+    row(FK::RecurEditor, E::SeriesEditOpen, exp(Z, K(KRecur)));
+    // The detach strip's flips (round-7 D-7.1): flag flips over the
+    // editor level — the flow is preserved under every foreign kind
+    // (the recur trio's keep shape), a no-op from None, and the
+    // editor stays under its own flow.
+    row(FK::None, E::SeriesDetach, exp(Z, N));
+    for kind in [
+        FK::Text,
+        FK::Due,
+        FK::Move,
+        FK::Drag,
+        FK::Palette,
+        FK::Capture,
+        FK::FocusOverlay,
+        FK::TrackList,
+        FK::TrackForm,
+        FK::PlanForm,
+        FK::ReviewWalk,
+        FK::Child,
+    ] {
+        let keep = match kind {
+            FK::Text => K(KTxt),
+            FK::Due => K(KDue),
+            FK::Move => K(KMove),
+            FK::Drag => K(KDrag),
+            FK::Palette => K(KPal),
+            FK::Capture => K(KCap),
+            FK::FocusOverlay => K(KFoc),
+            FK::TrackList => K(KTrackList),
+            FK::TrackForm => K(KTrackForm),
+            FK::PlanForm => K(KPlanForm),
+            FK::ReviewWalk => K(KWalk),
+            FK::Child => K(KChild),
+            FK::RecurEditor | FK::None => unreachable!("the loop never names them"),
+        };
+        row(kind, E::SeriesDetach, exp(Z, keep));
+    }
+    row(FK::RecurEditor, E::SeriesDetach, exp(Z, K(KRecur)));
     // -- PLAN SURFACE rows (#622, D-3/D-4): from None the open
     //    toggles the view (flow-free), begin-place arms the form,
     //    remove-box is the one honest write; the swaps are inert
@@ -893,6 +1003,7 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
         FK::TrackList,
         FK::TrackForm,
         FK::ReviewWalk,
+        FK::RecurEditor,
         FK::Child,
     ] {
         let keep = match kind {
@@ -906,6 +1017,7 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
             FK::TrackList => K(KTrackList),
             FK::TrackForm => K(KTrackForm),
             FK::ReviewWalk => K(KWalk),
+            FK::RecurEditor => K(KRecur),
             FK::Child => K(KChild),
             FK::PlanForm | FK::None => unreachable!("the loop never names them"),
         };
@@ -1090,6 +1202,9 @@ fn all_flows(fx: &Fixture) -> Vec<Flow> {
         // The placement form (#622): the rig views the subject, so
         // reconcile keeps it alive.
         Flow::PlanPlace { task: a },
+        // The recur editor (round-7 D-7.1): the rig views the subject
+        // (an open task), so reconcile keeps it alive.
+        Flow::EditRecur { task: a },
         // The review walk (#638): subject-free — any stage reconciles
         // fine over the fixture.
         Flow::ReviewWalk {
@@ -1167,6 +1282,10 @@ fn all_effects(fx: &Fixture) -> Vec<UiEffect> {
         UiEffect::HabitConvertArm,
         UiEffect::HabitCreateToggle,
         UiEffect::SeriesConvertArm,
+        // The recur editor's intents (round-7 D-7.1).
+        UiEffect::SeriesEditorOpen,
+        UiEffect::SeriesDetachArm,
+        UiEffect::SeriesDetachCancel,
         // The plan-next-day family (#622).
         UiEffect::OpenPlanNextDay,
         UiEffect::PlanBeginPlace(fx.tasks[0]),
@@ -1421,7 +1540,7 @@ fn the_matrix_covers_every_class_cell() {
     let cells = class_table();
     assert_eq!(
         cells.len(),
-        13 * 15,
+        14 * 15,
         "one row per (FlowKind, EffectClass) cell"
     );
     let mut seen = std::collections::BTreeSet::new();
@@ -2302,6 +2421,12 @@ fn dismiss_class(effect: &UiEffect) -> DismissClass {
             | UiEffect::HabitConvertArm
             | UiEffect::HabitCreateToggle
             | UiEffect::SeriesConvertArm
+            // The recur editor's opener (round-7 D-7.1): a modal
+            // takeover like the entries overlay's; the detach flips
+            // are view intents (the flags ride the next pass).
+            | UiEffect::SeriesEditorOpen
+            | UiEffect::SeriesDetachArm
+            | UiEffect::SeriesDetachCancel
         | UiEffect::BeginCapture
         | UiEffect::ToggleFocusMode
         | UiEffect::TrackEntryDismiss => DismissClass::AnchorOrModal,
