@@ -48,6 +48,101 @@ at UX-plan level — never a chunk-local surprise.
   carries it; *complete* = every derived capability whose exposure lies
   even partly in the slice has a row and zero blank cells in the slice.
 
+* Slice: Board
+
+Baseline: =dc290df2=. Origin: surface slice authored by the phase-3
+stock-take chunk 1 from the verb-inventory method (chunk plan
+`.artifacts/plans/2026-11-13-ux-census-stocktake-1-chunk-plan.md` §2
+D-2/D-5): capabilities derived from the engine =StateCommand= registry
+(`crates/taskboard-domain/src/messages.rs:21`), the =ActionId=
+registry bucketed by =ContextId::Board/=ContextId::StackDetail=
+(`crates/taskboard-ui-slint/src/actions.rs`), the CLI =BoardsCmd=/
+=StacksCmd=/=LabelsCmd=/=TasksCmd= families
+(`crates/taskboard-app/src/cli.rs`), and the display-only affordances
+of `ui/views/board-view.slint`, `ui/views/stack-view.slint`,
+`ui/compositions/board-layout.slint`, `ui/compositions/board-bar.slint`,
+and `ui/widgets/task-card.slint`. The stack-detail view
+(`ui/views/stack-view.slint`) is recorded inside this slice — the
+fixed surface grammar has no StackDetail column, and its seams are the
+=on_stack_*= family — as are the board-surface halves of shared task
+capabilities (their full rows live in the slice that owns their other
+surfaces, under the same capability name). Label capabilities
+(=label.assign= etc.) have no GUI presence anywhere
+(`models.rs:2413` records importance/urgency riding the card
+decorations slot; no =on_label*= seam exists in adapter.rs) and are
+CLI-only — they are recorded in the CLI slice (chunk 2), not here.
+
+Named absence sweeps cited by the register below (all at this
+slice's baseline): *Sweep-T* = `ui/views/task-view.slint` + the task
+seams (adapter.rs:8260-9952); *Sweep-Y* = `ui/views/today-view.slint`,
+`ui/compositions/habits.slint` + the habits/today seams
+(adapter.rs:7094-7562); *Sweep-R* = `ui/views/review-view.slint` + the
+review/walk seams (adapter.rs:10042-10109); *Sweep-S* =
+`ui/views/settings-view.slint` + the settings seams
+(adapter.rs:8246,10246-10439); *Sweep-C* = `capture-overlay.slint` +
+`search-palette.slint` + the overlay seams (adapter.rs:8507-8536);
+*Sweep-CLI* = `crates/taskboard-app/src/cli.rs` (=Command= enum and
+every sub-family) and `crates/taskboard-app/src/commands/`.
+
+| Capability | Board | TaskDetail | Today | Review | Settings | Capture | CLI |
+|---|---|---|---|---|---|---|---|
+| board.create | C — board-create field commit → =CreateBoard= `adapter.rs:8220-8226` (view_state.rs:1944); keyboard =BoardCreate= `actions.rs:916-925`, Ctrl+Shift+N `presets.rs:150` | U | U | U | U | U | C (pre-existing, =boards create= `cli.rs:322`) |
+| board.rename | E — board-rename field commit → =RenameBoard= `adapter.rs:8230-8236` (view_state.rs:1962), inline field `board-bar.slint:89-93`; =BoardRename= `actions.rs:926-935`, Ctrl+F2 `presets.rs:151` | U | U | U | U | U | E (pre-existing, =boards rename= `cli.rs:332`) |
+| board.delete | E — board context menu → =DeleteBoard= `view_state.rs:2933`; =BoardDelete= `actions.rs:936-945`, Ctrl+Shift+Delete `presets.rs:153-156` | U | U | U | U | U | X (pre-existing, =boards delete --confirm= `cli.rs:390`) |
+| board.select | E — board-bar segment click `adapter.rs:8272`, compact switcher `adapter.rs:8366`; =BoardNext/=BoardPrevious= `actions.rs:886-905`, =BoardSelect= `actions.rs:906-915` | U | U | U | U | U | E (pre-existing, =boards use= `cli.rs:358`, =boards select= bind `cli.rs:297`) |
+| board.color | U | U | U | U | U | U | E (pre-existing, =boards color= `cli.rs:365`) |
+| board.archive | U | U | U | U | U | U | E (pre-existing, =boards archive= / =boards unarchive= `cli.rs:375-381`) |
+| board.reset | U | U | U | U | U | U | X (pre-existing, =boards reset --confirm= `cli.rs:403`) |
+| board.reconcile | U | U | U | U | U | U | E (pre-existing, =boards reconcile --confirm= `cli.rs:429`) |
+| board.default_preset | E — empty-board "default kanban" CTA `adapter.rs:8297`, `board-layout.slint:242-250`, mints =CreateStack= payloads `src/board_presets.rs:5,23` | U | U | U | U | U | U |
+| stack.create | C — new-stack field commit → =CreateStack= `adapter.rs:8305-8309` (view_state.rs:1865,4222-4250), "+ stack" opener `adapter.rs:8290`; =StackCreate= `actions.rs:1028-1036`, S `presets.rs:128` | U | U | U | U | U | C (pre-existing, =stacks add= `cli.rs:445`) |
+| stack.rename | E — stack-rename field commit → =RenameStack= `adapter.rs:8208-8214` (view_state.rs:1953), inline field `board-layout.slint:451-462`; =StackRename= `actions.rs:987-996`, F2 `presets.rs:162` | U | U | U | U | U | E (pre-existing, =stacks rename= `cli.rs:456`) |
+| stack.delete | X — stack context menu → =DeleteStack= `view_state.rs:2919`; =StackDelete= `actions.rs:1008-1017`, Ctrl+Delete `presets.rs:164` | U | U | U | U | U | X (pre-existing, =stacks delete= `cli.rs:464`) |
+| stack.move | E — stack move flow → =MoveStack= `view_state.rs:3005`; =StackMove= `actions.rs:997-1007`, Ctrl+Alt+M `presets.rs:163` | U | U | U | U | U | E (pre-existing, =stacks move= `cli.rs:469`) |
+| stack.resize | E — column divider drag `adapter.rs:7577-7652` (`board-layout.slint:316-321`); =StackWider/=StackNarrower= `actions.rs:967-986`, Ctrl+Right/Left `presets.rs:167-168` | U | U | U | U | U | U |
+| stack.count_display | D — per-stack card count badge `board-layout.slint:470,484-486` | U | U | U | U | U | U |
+| task.create | C — inline create row commit → =CreateTask= `adapter.rs:8409-8414` (view_state.rs:1903,4199), per-column "Add task" ghost `adapter.rs:8374`; =TaskCreate= `actions.rs:1018-1027`, N `presets.rs:127` | U | U | U | U | U | C (pre-existing, =tasks add= `cli.rs:1634`) |
+| task.complete | E — card done checkbox `task-card.slint:150-151` → `adapter.rs:8395` / stack detail `adapter.rs:8318` (→ =SetTaskDone= `messages.rs:51`); =TaskComplete/=TaskReopen= `actions.rs:1057-1075`, Space/Ctrl+Space `presets.rs:125-126` | E — detail done toggle `adapter.rs:9952` | E — today row done toggle `today-view.slint:74` | U | U | U | E (pre-existing, =tasks done=, --undo reopens `cli.rs:1643`) |
+| task.open | E — card click `adapter.rs:8349`, double-click/Enter `adapter.rs:8353`; =TaskEdit= `actions.rs:1037-1045`, Return `presets.rs:129` | — (self) | E — today row activation `today-view.slint:65-74` | U | U | E — palette jump `adapter.rs:8536` | U |
+| task.move | E — card drag `adapter.rs:7695-7770` (drop resolves =MoveTask= `view_state.rs:3429-3452`), move flow `view_state.rs:456,3343`; =TaskMove= `actions.rs:1077-1086`, M `presets.rs:130` | E — =TaskMove= `actions.rs:1077-1086` (TaskDetail member) | E — =TaskMove= `actions.rs:1077-1086` (Today member) | U | U | U | E (pre-existing, =tasks move= `cli.rs:1651`) |
+| task.delete | X — card context menu `adapter.rs:7887`; =TaskDelete= `actions.rs:1097-1106`, Delete `presets.rs:131` | X — =TaskDelete= `actions.rs:1097-1106` (TaskDetail member) | X — =TaskDelete= `actions.rs:1106-1108` (Today member) | U | U | U | X (pre-existing, =tasks delete= `cli.rs:1678`) |
+| task.location_display | D — selected-stack highlight and header hints `board-layout.slint:413-437` | U | D — row context line "board › stack" `today-view.slint:392-399` (model `today-view.slint:35-37`) | U | U | U | D (pre-existing, =tasks list= grouping `cli.rs:1628`) |
+| task.badges_display | D — card decoration chips: reminder / running-timer / recur / tracker badges `task-card.slint:18-33,247-260` | U | D — the same task cards render on today rows `today-view.slint:20,376` | U | U | U | U |
+| task.due_phrase_display | D — due/scheduled/effort chips `task-card.slint:195-222`, due phrase in the accessible label `task-card.slint:96-97` | D — due/scheduled echoes `task-view.slint:73,76,556,625` | D — the same task cards on today rows `today-view.slint:20,376` | U | U | U | U |
+
+** Rulings (Board)
+
+None seeded — the board surface had no pilot ruling. Unruled
+absences are registered below; none is dressed as a ruling.
+
+** Unruled register (Board)
+
+| capability | surfaces | evidence-of-absence | date |
+|---|---|---|---|
+| board.create | TaskDetail, Today, Review, Settings, Capture | Sweep-T/Y/R/S/C: no board-create seam or mount in any swept surface | 2026-11-13 |
+| board.rename | TaskDetail, Today, Review, Settings, Capture | Sweep-T/Y/R/S/C: no board-rename seam or mount | 2026-11-13 |
+| board.delete | TaskDetail, Today, Review, Settings, Capture | Sweep-T/Y/R/S/C: no board-delete seam or mount | 2026-11-13 |
+| board.select | TaskDetail, Today, Review, Settings, Capture | Sweep-T/Y/R/S/C: no board-switch seam or mount outside the board bar | 2026-11-13 |
+| board.color | TaskDetail, Today, Review, Settings, Capture | Sweep-T/Y/R/S/C: no =SetBoardColor= seam; the GUI has no color affordance anywhere | 2026-11-13 |
+| board.archive | TaskDetail, Today, Review, Settings, Capture | Sweep-T/Y/R/S/C: no =SetBoardArchived= seam; archived boards are excluded from the board bar (`board-bar.slint:21-34`), unreachable in the GUI | 2026-11-13 |
+| board.reset | TaskDetail, Today, Review, Settings, Capture | Sweep-T/Y/R/S/C: no =ResetBoard= seam | 2026-11-13 |
+| board.reconcile | TaskDetail, Today, Review, Settings, Capture | Sweep-T/Y/R/S/C: no =ReconcileByTitle= seam | 2026-11-13 |
+| board.default_preset | TaskDetail, Today, Review, Settings, Capture, CLI | Sweep-T/Y/R/S/C: the empty-board preset CTA exists only on the board surface; Sweep-CLI: no preset verb | 2026-11-13 |
+| stack.create | TaskDetail, Today, Review, Settings, Capture | Sweep-T/Y/R/S/C: no stack-create seam | 2026-11-13 |
+| stack.rename | TaskDetail, Today, Review, Settings, Capture | Sweep-T/Y/R/S/C: no stack-rename seam | 2026-11-13 |
+| stack.delete | TaskDetail, Today, Review, Settings, Capture | Sweep-T/Y/R/S/C: no stack-delete seam | 2026-11-13 |
+| stack.move | TaskDetail, Today, Review, Settings, Capture | Sweep-T/Y/R/S/C: no stack-move seam | 2026-11-13 |
+| stack.resize | TaskDetail, Today, Review, Settings, Capture, CLI | Sweep-T/Y/R/S/C: no column-width seam outside the board; Sweep-CLI: no stacks width verb | 2026-11-13 |
+| stack.count_display | TaskDetail, Today, Review, Settings, Capture, CLI | Sweep-T/Y/R/S/C: no card-count badge outside the board columns; Sweep-CLI: counts are list output, not a badge capability | 2026-11-13 |
+| task.create | TaskDetail, Today, Review, Settings, Capture | Sweep-T/Y/R/S/C: no inline create row; =TaskCreate= is Board/StackDetail-scoped (`actions.rs:1018-1027`) | 2026-11-13 |
+| task.complete | Review, Settings, Capture | Sweep-R/S/C: no task row or done seam | 2026-11-13 |
+| task.open | Review, Settings, CLI | Sweep-R/S: no task-open seam; Sweep-CLI: =find= (`cli.rs:89-101`) prints results, no open/jump verb | 2026-11-13 |
+| task.move | Review, Settings, Capture | Sweep-R/S/C: no task-move seam | 2026-11-13 |
+| task.delete | Review, Settings, Capture | Sweep-R/S/C: no task-delete seam | 2026-11-13 |
+| task.location_display | TaskDetail, Review, Settings, Capture | Sweep-T/R/S/C: no board›stack context line outside Today and the board | 2026-11-13 |
+| task.badges_display | TaskDetail, Review, Settings, Capture, CLI | Sweep-T/R/S/C: no decoration chips outside board/today cards; Sweep-CLI: no badge output | 2026-11-13 |
+| task.due_phrase_display | Review, Settings, Capture, CLI | Sweep-R/S/C: no due chip/echo; Sweep-CLI: no phrase output | 2026-11-13 |
+
 * Slice: Today
 
 Baseline: =dc290df2=. Origin: surface slice authored by the phase-3
