@@ -5494,8 +5494,29 @@ pub fn boards_of(state: &AppState) -> Vec<crate::requests::BoardInfo> {
                 .remote
                 .as_ref()
                 .map(|binding| binding.connector.to_string()),
+            bound_channel: board
+                .remote
+                .as_ref()
+                .map(|binding| bound_channel_of(&binding.board)),
         })
         .collect()
+}
+
+/// The structural channel tag (round-7 D-7.3, W-1; D-BF4): the
+/// binding's remote id payload type IS the channel — a Deck payload
+/// reads `Deck`, a files payload reads `Files`; the binding's
+/// connector name is never consulted (a files binding's connector is
+/// the synthetic `files-sync` identity, so a name match is impossible
+/// by construction and forbidden by law).
+#[must_use]
+pub fn bound_channel_of(
+    binding: &taskboard_domain::RemoteBoardId,
+) -> crate::requests::BoardChannel {
+    if binding.as_files().is_some() {
+        crate::requests::BoardChannel::Files
+    } else {
+        crate::requests::BoardChannel::Deck
+    }
 }
 
 /// The move picker's eligible set (round-6 D-6.8 phase 2, #722): the
@@ -5527,6 +5548,10 @@ pub fn deck_bound_boards(state: &AppState) -> Vec<crate::requests::BoardInfo> {
                 .remote
                 .as_ref()
                 .map(|binding| binding.connector.to_string()),
+            bound_channel: board
+                .remote
+                .as_ref()
+                .map(|binding| bound_channel_of(&binding.board)),
         })
         .collect()
 }
@@ -5847,6 +5872,67 @@ mod connector_status_tests {
             Some("work"),
             "the binding's connector round-trips"
         );
+    }
+
+    /// The surviving `BoardInfo` constructors carry the binding's
+    /// channel structurally (round-7 D-7.3, W-1/D4): deck-typed →
+    /// `Deck`, files-typed → `Files`, unbound → `None`; the connector
+    /// name is never consulted (D-BF4).
+    #[test]
+    fn board_info_constructors_carry_bound_channel() {
+        let mut state = AppState::default();
+        let deck = BoardId::from_uuid(uuid::Uuid::now_v7());
+        let files = BoardId::from_uuid(uuid::Uuid::now_v7());
+        let unbound = BoardId::from_uuid(uuid::Uuid::now_v7());
+        let mut make =
+            |id: BoardId, title: &str, remote: Option<taskboard_domain::RemoteBoardId>| {
+                let epoch = BoardClocks::epoch();
+                state.boards.insert(
+                    id,
+                    Board {
+                        id,
+                        remote: remote.map(|board| RemoteBoardBinding {
+                            board,
+                            connector: ConnectorId::from("work"),
+                        }),
+                        title: title.into(),
+                        color: taskboard_domain::Color::new(""),
+                        archived: false,
+                        deleted: false,
+                        clocks: BoardClocks {
+                            title: epoch,
+                            color: epoch,
+                            archived: epoch,
+                            deleted: epoch,
+                        },
+                        authors: taskboard_domain::entities::BoardAuthors::default(),
+                        remote_seen: None,
+                    },
+                );
+            };
+        make(deck, "deck", Some(taskboard_domain::RemoteBoardId::deck(1)));
+        make(
+            files,
+            "files",
+            Some(taskboard_domain::RemoteBoardId::files(uuid::Uuid::now_v7())),
+        );
+        make(unbound, "loose", None);
+
+        let by_name = |name: &str| {
+            boards_of(&state)
+                .into_iter()
+                .find(|board| board.name == name)
+                .expect("the live board is in the projection")
+        };
+        assert_eq!(
+            by_name("deck").bound_channel,
+            Some(crate::requests::BoardChannel::Deck),
+        );
+        assert_eq!(
+            by_name("files").bound_channel,
+            Some(crate::requests::BoardChannel::Files),
+        );
+        assert_eq!(by_name("loose").bound_channel, None);
     }
 
     /// The inbox count (chunk 10 D9): the global Inbox board's live,

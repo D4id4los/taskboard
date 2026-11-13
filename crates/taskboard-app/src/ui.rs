@@ -673,6 +673,10 @@ pub fn resolve_board_infos_from_state(
                 .remote
                 .as_ref()
                 .map(|binding| binding.connector.to_string()),
+            bound_channel: board
+                .remote
+                .as_ref()
+                .map(|binding| taskboard_ui_slint::presentation::bound_channel_of(&binding.board)),
         })
         .collect()
 }
