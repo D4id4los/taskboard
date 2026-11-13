@@ -184,15 +184,60 @@ slice's Origin: the recur-editor UX journey plan
 comparison authority:
 `.artifacts/plans/2026-11-13-round7-ux-pilot-comparison-plan.md` §3.2.
 The recurrence capability family below is the seed slice's matrix,
-re-homed verbatim; the full-surface inventory extends it in this
-chunk's later commits.
+re-homed verbatim; the full-surface inventory extends it with the
+remaining capabilities the verb inventory derives for this surface
+(engine =StateCommand=s reachable from the detail view, =ActionId=s in
+=ContextId::TaskDetail/=RecurEditor/=DatePicker/=TrackEntries=, the
+=tasks=/=track= CLI families, and the display-only affordances of
+`ui/views/task-view.slint`, `ui/compositions/recur-editor.slint`,
+`ui/compositions/due-editor.slint`, `ui/compositions/track-entries.slint`).
+The recur-editor and due-editor overlays are recorded here (they mount
+in this view, D-6). The global notification surface
+(`ui/compositions/notification-surface.slint`; seams
+adapter.rs:10150-10230 — dismiss/done/snooze/mute/cancel/track-start/
+open) is a mount-time overlay outside the fixed columns; its rows are
+recorded with the alarm-window slice in chunk 2 per D-6, and this
+slice's snooze/mute cells do not pre-empt it.
+
+Named absence sweeps cited by the register below (all at this slice's
+baseline): *Sweep-B* = `ui/views/board-view.slint`,
+`ui/views/stack-view.slint`, `ui/compositions/board-layout.slint`,
+`ui/compositions/board-bar.slint`, `ui/widgets/task-card.slint` + the
+board seams (adapter.rs:7577-8551); *Sweep-Y* = `today-view.slint` +
+`habits.slint` + the habits/today seams (adapter.rs:7094-7562);
+*Sweep-R* = `review-view.slint` + the review/walk seams
+(adapter.rs:10042-10109); *Sweep-S* = `settings-view.slint` + the
+settings seams (adapter.rs:8246,10246-10439); *Sweep-C* =
+`capture-overlay.slint` + `search-palette.slint` + the overlay seams
+(adapter.rs:8507-8536); *Sweep-CLI* = `crates/taskboard-app/src/cli.rs`
+(=Command= enum and every sub-family) and `crates/taskboard-app/src/commands/`.
 
 | Capability | Board | TaskDetail | Today | Review | Settings | Capture | CLI |
 |---|---|---|---|---|---|---|---|
+| task.open | E — card click/double-click `adapter.rs:8349,8353`; =TaskEdit= `actions.rs:1037-1045` | — (self) | E — today row activation `today-view.slint:65-74` | U | U | E — palette jump `adapter.rs:8536` | U |
+| task.back | U | E — detail back affordance `adapter.rs:8260` | U | U | U | U | U |
+| task.title_edit | U | E — title edit seams `adapter.rs:8594-8603` (→ =UpdateTask= `messages.rs:44`); =TaskTitleEdit= `actions.rs:1046-1048`, F2 `presets.rs:190` | U | U | U | U | E (pre-existing, =tasks edit= --title `cli.rs:1670`, TaskEditFlags `cli.rs:1586-1624`) |
+| task.description_edit | U | E — body editor open/commit `adapter.rs:8614-8630` | U | U | U | U | E (pre-existing, =tasks edit= --description `cli.rs:1670`) |
+| task.due_edit | U | E — due editor open/accept `adapter.rs:8719-8774`, date-picker seams `adapter.rs:8783-8932`, editor `due-editor.slint:26-104`; =PickerCommit= `actions.rs:1797-1799` | U | U | U | U | E (pre-existing, =tasks edit= --due `cli.rs:1670`) |
+| task.scheduled_edit | U | E — scheduled editor open `adapter.rs:8741` | U | U | U | U | E (pre-existing, =tasks edit= --scheduled `cli.rs:1670`) |
+| task.complete | E — card done checkbox `task-card.slint:150-151`, `adapter.rs:8395` | E — detail done toggle `adapter.rs:9952`; =TaskComplete/=TaskReopen= `actions.rs:1056-1068` | E — today row done toggle `today-view.slint:74` | U | U | U | E (pre-existing, =tasks done=, --undo reopens `cli.rs:1643`) |
+| task.move | E — card drag `adapter.rs:7695-7770`, move flow `view_state.rs:456,3343` | E — =TaskMove= `actions.rs:1077-1086` (TaskDetail member) | E — =TaskMove= `actions.rs:1077-1086` (Today member) | U | U | U | E (pre-existing, =tasks move= `cli.rs:1651`) |
+| task.delete | X — card context menu `adapter.rs:7887` | X — =TaskDelete= `actions.rs:1097-1106` (TaskDetail member) | X — =TaskDelete= `actions.rs:1106-1108` (Today member) | U | U | U | X (pre-existing, =tasks delete= `cli.rs:1678`) |
+| task.reminder_rules_edit | U | E — rule rows, preset and offset affordances `task-view.slint:731-735` + `rule-list.slint`; seams `adapter.rs:8636` (remove row), `adapter.rs:8728` (jump to due); =ReminderRuleAdd/=ReminderRuleRemove= `actions.rs:1147-1159` (→ =AddReminderRule/=RemoveReminderRule= `messages.rs:249,271`) | U | U | U | U | E (pre-existing, =tasks remind= `cli.rs:1701`) |
+| task.reminders_mute | U | E — banner mute `adapter.rs:9272`, rule unmute `adapter.rs:8736`; =ReminderMute/=ReminderUnmute= `actions.rs:1127-1139` (→ =SetTaskRemindersMuted= `messages.rs:217`) | U | U | U | U | E (pre-existing, =tasks remind= --mute `cli.rs:1734`) |
+| task.reminder_snooze | U | E — overdue-banner snooze `adapter.rs:9263`; =ReminderSnooze= `actions.rs:1117-1119` (→ =SnoozeReminder= `messages.rs:207`) | U | U | U | U | U |
+| task.track_start | U | E — track chip `adapter.rs:9567`; =TaskTrackStart= `actions.rs:1193-1195` (GLOBAL) | E — =TaskTrackStart= `actions.rs:1193-1195` (GLOBAL) | U | U | U | E (pre-existing, =track start= `cli.rs:1149`) |
+| task.track_stop | U | E — track chip `adapter.rs:9572`; =TaskTrackStop= `actions.rs:1203-1205` | E — status-bar tracking chip `status-bar.slint:77-83`, stop seam `adapter.rs:9562` | U | U | U | E (pre-existing, =track stop= `cli.rs:1159`) |
+| task.track_entry_log | U | E — track form add/commit `adapter.rs:9636,9913`; =TaskTrackEntryLog= `actions.rs:1241-1243` (→ =LogTime= `messages.rs:373`) | U | U | U | U | E (pre-existing, =track log= `cli.rs:1178`) |
+| task.track_entry_adjust | U | E — entry row activation `adapter.rs:9921`, span form `adapter.rs:9876-9913`; =TaskTrackEntryAdjust= `actions.rs:1251-1253` (→ =AdjustTimeEntry= `messages.rs:393`) | U | U | U | U | E (pre-existing, =track adjust= `cli.rs:1207`) |
+| task.track_entry_delete | U | E — entry delete `adapter.rs:9613`; =TaskTrackEntryDelete= `actions.rs:1261-1263` (→ =DeleteTimeEntry= `messages.rs:409`) | U | U | U | U | X (pre-existing, =track delete= `cli.rs:1225`) |
+| task.track_total_display | D — running-timer badge `task-card.slint:20-22` | D — tracked-total row `task-view.slint:33-36,662-689`, overlay total `task-view.slint:41-45` | D — tracked day summary `today-view.slint:243-253` (+ `tracked-today.slint:20-30,49-57`) | U | U | U | U |
 | task.recur_set | — (R-2) | E (desktop) (US-1, US-2) — "Add repeat"/"Edit repeat" affordances `ui/views/task-view.slint:653-659,776-782`, editor `ui/compositions/recur-editor.slint`, commit funnel `router.rs:765-776`, exact-rule test =lib.rs::recur_editor_commits_the_exact_assembled_rule= | — (R-2) | — (R-2) | — (R-2) | — (R-1) | E (pre-existing, =tasks repeat=, now minting via =recur::assemble_rule= `taskboard-domain/src/recur.rs:791`) |
 | task.recur_clear | — (R-2) | E (desktop) (US-3) — armed "Stop repeating" strip `recur-editor.slint:274+`, detach =router.rs:777-786=, exactness test =lib.rs::recur_editor_detach_clears_the_rule_and_nothing_else= | — (R-2) | — (R-2) | — (R-2) | — (R-1) | E (pre-existing, =tasks repeat --off=) |
-| task.recur_preview | | D (desktop) (US-1, US-2 — inside the editor) — live echo `recur-editor.slint:54-57` fed by =assemble_recur_draft= | | | | | |
-| task.recur_display | D (pre-existing card badge) | D (pre-existing pattern echo) | | | | | |
+| task.recur_pause | U | E — pause-through-date flow `adapter.rs:7166-7182`, resume `adapter.rs:7188` (→ =PauseSeries= `messages.rs:423`); recur-row labels `task-view.slint:788-826` | E — =SeriesPause/=SeriesPauseCommit/=SeriesResume= registry `actions.rs:1366-1386`, reachable from today cards via the recur badge `task-card.slint:22-24` | U | U | U | E (pre-existing, =tasks repeat= pause/resume `cli.rs:1746`, flags `cli.rs:821,830`) |
+| task.recur_convert_to_habit | U | E — convert flow `adapter.rs:7196-7232` (→ =ConvertSeriesToHabit= `messages.rs:437`); recur-row convert label `task-view.slint:832` | E — =SeriesConvertArm/=SeriesConvertToHabit= registry `actions.rs:1396-1406` | U | U | U | U |
+| task.recur_preview | — (R-2) | D (desktop) (US-1, US-2 — inside the editor) — live echo `recur-editor.slint:54-57` fed by =assemble_recur_draft= | — (R-2) | U | U | U | U |
+| task.recur_display | D (pre-existing card badge) | D (pre-existing pattern echo) | D — the same card badge on today rows `today-view.slint:20,376`, `task-card.slint:22-24` | U | U | U | U |
 
 ** Rulings (Task detail)
 
@@ -203,6 +248,33 @@ chunk's later commits.
 | PC-5 | the mount callbacks converge on =series-edit-asked=; the editor seams are the =on_recur_*= family; the draft buffer lives in the view-state level (=RecurEditorState=) | binds blind-plan assumptions A-3/A-4; the due-editor facts-globals default superseded by the newer level-state home | recur-editor UX plan, comparison ruling PC-5 | 2026-11-13 | comparison plan §3.2 |
 | PC-7 | the overlay's commit/cancel/detach verbs are internal action ids (=SeriesEditCommit/DetachArm/DetachCancel/Detach=) in =ContextId::RecurEditor= | resolves US-3's recorded implementation-choice question; pointer-grade, unbound | recur-editor UX plan, comparison ruling PC-7 | 2026-11-13 | comparison plan §3.2 |
 | PC-8 | the mount affordance labels are consequence-style sentences, not the "Add repeat…"/"Edit repeat…" shorthand | §8 designated label semantics manual/judged; consequence-first matches the stop-strip doctrine | recur-editor UX plan, comparison ruling PC-8 | 2026-11-13 | comparison plan §3.2 |
+
+** Unruled register (Task detail)
+
+| capability | surfaces | evidence-of-absence | date |
+|---|---|---|---|
+| task.open | Review, Settings, CLI | Sweep-R/S: no task-open seam; Sweep-CLI: =find= (`cli.rs:89-101`) prints results, no open/jump verb | 2026-11-13 |
+| task.back | Board, Today, Review, Settings, Capture, CLI | Sweep-B/Y/R/S/C: no back affordance outside the detail view; Sweep-CLI: none | 2026-11-13 |
+| task.title_edit | Board, Today, Review, Settings, Capture | Sweep-B: board cards carry no title editor (click opens the detail, `adapter.rs:8349,8353`); Sweep-Y/R/S/C: no title-edit seam | 2026-11-13 |
+| task.description_edit | Board, Today, Review, Settings, Capture | Sweep-B/Y/R/S/C: no description seam | 2026-11-13 |
+| task.due_edit | Board, Today, Review, Settings, Capture | Sweep-B/Y/R/S/C: no due/date-picker seam | 2026-11-13 |
+| task.scheduled_edit | Board, Today, Review, Settings, Capture | Sweep-B/Y/R/S/C: no scheduled seam | 2026-11-13 |
+| task.complete | Review, Settings, Capture | Sweep-R/S/C: no task row or done seam | 2026-11-13 |
+| task.move | Review, Settings, Capture | Sweep-R/S/C: no task-move seam | 2026-11-13 |
+| task.delete | Review, Settings, Capture | Sweep-R/S/C: no task-delete seam | 2026-11-13 |
+| task.reminder_rules_edit | Board, Today, Review, Settings, Capture | Sweep-B/Y/R/S/C: no reminder-rule seam (the global notification surface is chunk 2's, see the slice Origin note) | 2026-11-13 |
+| task.reminders_mute | Board, Today, Review, Settings, Capture | Sweep-B/Y/R/S/C: no mute/unmute seam outside the detail banner | 2026-11-13 |
+| task.reminder_snooze | Board, Today, Review, Settings, Capture, CLI | Sweep-B/Y/R/S/C: no snooze seam outside the detail banner; Sweep-CLI: no snooze verb | 2026-11-13 |
+| task.track_start | Board, Review, Settings, Capture | Sweep-B/R/S/C: no track-start seam (board cards show the running badge, display only) | 2026-11-13 |
+| task.track_stop | Board, Review, Settings, Capture | Sweep-B/R/S/C: no track-stop seam | 2026-11-13 |
+| task.track_entry_log | Board, Today, Review, Settings, Capture | Sweep-B/Y/R/S/C: no track-entries overlay outside the detail | 2026-11-13 |
+| task.track_entry_adjust | Board, Today, Review, Settings, Capture | Sweep-B/Y/R/S/C: no adjust seam | 2026-11-13 |
+| task.track_entry_delete | Board, Today, Review, Settings, Capture | Sweep-B/Y/R/S/C: no entry-delete seam | 2026-11-13 |
+| task.track_total_display | Review, Settings, Capture, CLI | Sweep-R/S/C: no tracked-total display; Sweep-CLI: =track status= (`cli.rs:1164`) is a status line, not this surface's total (CLI slice, chunk 2) | 2026-11-13 |
+| task.recur_pause | Board, Review, Settings, Capture | Sweep-B/R/S/C: no pause/resume seam | 2026-11-13 |
+| task.recur_convert_to_habit | Board, Review, Settings, Capture, CLI | Sweep-B/R/S/C: no convert seam; Sweep-CLI: =tasks repeat= has no convert verb (`cli.rs:1746-1755`) | 2026-11-13 |
+| task.recur_preview | Review, Settings, Capture, CLI | Sweep-R/S/C: no editor mount; Sweep-CLI: no preview verb | 2026-11-13 |
+| task.recur_display | Review, Settings, Capture, CLI | Sweep-R/S/C: no recur badge/echo; Sweep-CLI: none | 2026-11-13 |
 
 * Slice: Settings (files sync)
 
