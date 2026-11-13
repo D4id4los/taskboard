@@ -456,6 +456,16 @@ pub enum UiRequest {
         board: BoardId,
         reply: oneshot::Sender<Result<ConnectionsSnapshot, SettingsError>>,
     },
+    /// Publish a local-only board onto the resolved files lane
+    /// (round-7 D-7.3, W-6): the move ceremony's final assign step
+    /// (`BindBoard` against the files connector) — the board reaches
+    /// the account's Files without ever touching Deck. The arm
+    /// refuses typed (`FilesSyncDisabled` / `Gone` / `BindRefused`);
+    /// the reply carries the fresh snapshot.
+    PublishBoardToFiles {
+        board: BoardId,
+        reply: oneshot::Sender<Result<ConnectionsSnapshot, SettingsError>>,
+    },
     /// Persists the keymap preset and replies with the rebuilt keymap
     /// (overrides re-resolved under the chosen preset, D9).
     SetKeymapPreset {

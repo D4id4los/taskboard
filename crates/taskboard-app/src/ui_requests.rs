@@ -401,6 +401,10 @@ async fn handle_settings(request: UiRequest, workspace: &ConnectionWorkspace) {
             let outcome = stop_board_files_sync(workspace, board).await;
             let _ = reply.send(outcome);
         }
+        UiRequest::PublishBoardToFiles { board, reply } => {
+            let outcome = publish_board_to_files(workspace, board).await;
+            let _ = reply.send(outcome);
+        }
         UiRequest::SetKeymapPreset { preset, reply } => {
             let _ = reply.send(set_keymap_preset(workspace, preset));
         }
@@ -1589,6 +1593,52 @@ async fn stop_board_files_sync(
     Ok(current_connections(workspace))
 }
 
+/// The roster's publish choreography (round-7 D-7.3, W-6/D7): a
+/// local-only board reaches this account's Files without ever
+/// touching Deck. Guard order — ① the files spawn decision resolves
+/// from the config (`FilesSyncDisabled` otherwise; config-derived, so
+/// a restart-pending enable succeeds by construction, US-4 AC-5);
+/// ② the board present, not deleted, not archived (`Gone`);
+/// ③ the binding `None` (`BindRefused` — deck-bound and files-bound
+/// refuse alike; the row grammar offers Stop/Switch, so only a stale
+/// snapshot can get here). Ceremony: the move ceremony's final assign
+/// step on the shared engine handle — `BindBoard` with the files
+/// remote id minted from the board's own uuid (the ceremony's
+/// `remote()` law, so publish and move cannot mint differently) and
+/// connector = `FILES_SYNC_CONNECTOR_NAME`. The files actor re-derives
+/// its lanes from `BoardOwnershipMap` next cycle — no nudge needed.
+async fn publish_board_to_files(
+    workspace: &ConnectionWorkspace,
+    board: BoardId,
+) -> Result<ConnectionsSnapshot, SettingsError> {
+    let raw = ensure_migrated(workspace)?;
+    if crate::bootstrap::files_sync_spawn_decision(&raw).is_none() {
+        return Err(SettingsError::FilesSyncDisabled);
+    }
+    let state = workspace.engine.shared_state().load();
+    let row = state
+        .boards
+        .get(&board)
+        .filter(|b| !b.deleted && !b.archived)
+        .ok_or(SettingsError::Gone)?;
+    if row.remote.is_some() {
+        return Err(SettingsError::BindRefused);
+    }
+    drop(state);
+    workspace
+        .engine
+        .execute(StateCommand::BindBoard {
+            board,
+            remote: RemoteBoardId::files(board.as_uuid()),
+            connector: ConnectorId::from_kebab(crate::bootstrap::FILES_SYNC_CONNECTOR_NAME)
+                .expect("FILES_SYNC_CONNECTOR_NAME is kebab"),
+        })
+        .await
+        .map_err(|e| map_execute_error(&e))?;
+    tracing::info!(board = %board.as_uuid(), "settings publish to files committed");
+    Ok(current_connections(workspace))
+}
+
 /// The move ceremony's typed fold (D-5): the classes the settings
 /// surface can name, with the concrete `MoveError` logged at `warn`
 /// for the diagnostics the coarse class drops.
@@ -1891,6 +1941,123 @@ mod tests {
             .expect("the board is in the fresh snapshot");
         assert_eq!(replied.bound_channel, None);
         assert_eq!(replied.bound_connector, None);
+    }
+
+    // -- the Publish arm (round-7 D-7.3, W-6) ---------------------------
+
+    /// A config whose files lane is spawnable (`[files_sync] enabled`
+    /// with a resolvable Nextcloud anchor) at the workspace's write
+    /// path.
+    fn write_files_lane_config(path: &std::path::Path) {
+        std::fs::write(
+            path,
+            "[ui]\nscale = 1.0\n\
+             [[sync.connectors]]\nname = \"work\"\nbackend = \"nextcloud\"\n\
+             server_url = \"https://c.example\"\nusername = \"alice\"\n\
+             [files_sync]\nenabled = true\nanchor = \"work\"\n",
+        )
+        .expect("seed files-lane config");
+    }
+
+    /// US-4/S2 — the Publish arm's guards refuse typed: deck-bound
+    /// and files-bound boards are `BindRefused` (a stale row's
+    /// mis-target), a disabled files lane is `FilesSyncDisabled`, a
+    /// gone board is `Gone`.
+    #[tokio::test]
+    async fn us4_s2_publish_guards_refuse_deck_bound() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = dir.path().join("taskboard.toml");
+        write_files_lane_config(&config);
+        let workspace = test_workspace(config).await;
+
+        let deck_bound = create_board(&workspace, "deck board").await;
+        let files_bound = create_board(&workspace, "files board").await;
+        workspace
+            .engine
+            .execute(StateCommand::BindBoard {
+                board: deck_bound,
+                remote: taskboard_domain::RemoteBoardId::deck(7),
+                connector: taskboard_domain::ConnectorId::from("work"),
+            })
+            .await
+            .expect("deck bind lands");
+        workspace
+            .engine
+            .execute(StateCommand::BindBoard {
+                board: files_bound,
+                remote: taskboard_domain::RemoteBoardId::files(uuid::Uuid::now_v7()),
+                connector: taskboard_domain::ConnectorId::from("files-sync"),
+            })
+            .await
+            .expect("files bind lands");
+
+        let deck = publish_board_to_files(&workspace, deck_bound)
+            .await
+            .expect_err("a deck-bound board refuses");
+        assert_eq!(deck, SettingsError::BindRefused);
+        let files = publish_board_to_files(&workspace, files_bound)
+            .await
+            .expect_err("a files-bound board refuses");
+        assert_eq!(files, SettingsError::BindRefused);
+        let gone = publish_board_to_files(&workspace, BoardId::from_uuid(uuid::Uuid::now_v7()))
+            .await
+            .expect_err("a gone board refuses");
+        assert_eq!(gone, SettingsError::Gone);
+
+        // A lane-off config refuses before the board guards touch the
+        // state (D7's guard order — the cheap config check first).
+        let dir_off = tempfile::tempdir().expect("tempdir");
+        let config_off = dir_off.path().join("taskboard.toml");
+        std::fs::write(&config_off, "[ui]\nscale = 1.0\n").expect("seed");
+        let workspace_off = test_workspace(config_off).await;
+        let unbound = create_board(&workspace_off, "loose").await;
+        let disabled = publish_board_to_files(&workspace_off, unbound)
+            .await
+            .expect_err("a lane-off config refuses");
+        assert_eq!(disabled, SettingsError::FilesSyncDisabled);
+    }
+
+    /// The Publish arm's exact ceremony (US-4/S3): the engine receives
+    /// the files bind — `RemoteBoardId::files` minted from the board's
+    /// own uuid (the ceremony's `remote()` law, so publish and move
+    /// cannot mint differently), connector =
+    /// `FILES_SYNC_CONNECTOR_NAME` — and the reply is the fresh
+    /// snapshot. US-4 AC-5 rides the fixture: the workspace's
+    /// standalone boot never spawned a files actor, so this is the
+    /// restart-pending posture — the bind commits as a state change
+    /// (the config-derived guard), the lane catches up next boot.
+    #[tokio::test]
+    async fn publish_board_to_files_sends_exact_files_bind_command() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = dir.path().join("taskboard.toml");
+        write_files_lane_config(&config);
+        let workspace = test_workspace(config).await;
+        let board = create_board(&workspace, "loose").await;
+
+        let snapshot = publish_board_to_files(&workspace, board)
+            .await
+            .expect("a local-only board publishes");
+        let state = workspace.engine.shared_state().load();
+        let row = state.boards.get(&board).expect("the board survives");
+        let binding = row.remote.as_ref().expect("the bind committed");
+        assert_eq!(
+            binding.connector.as_str(),
+            crate::bootstrap::FILES_SYNC_CONNECTOR_NAME
+        );
+        assert_eq!(
+            binding.board,
+            taskboard_domain::RemoteBoardId::files(board.as_uuid()),
+            "the files remote id is the board's own uuid (the ceremony's mint)"
+        );
+        let replied = snapshot
+            .boards
+            .iter()
+            .find(|info| info.id == board.as_uuid())
+            .expect("the board is in the fresh snapshot");
+        assert_eq!(
+            replied.bound_channel,
+            Some(taskboard_ui_slint::requests::BoardChannel::Files),
+        );
     }
 
     fn fixture_state() -> (AppState, uuid::Uuid, uuid::Uuid, uuid::Uuid) {
