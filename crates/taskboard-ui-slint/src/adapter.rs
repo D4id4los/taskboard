@@ -285,6 +285,15 @@ pub(crate) struct Adapter {
     /// default mapping computed at the arm seam; consumed by the
     /// confirm dispatch.
     convert_target: Option<taskboard_domain::HabitTarget>,
+    /// The recur editor's one-shot subject (round-7 D-7.1, D-C1):
+    /// armed by the opener effect, consumed by the commit/detach
+    /// dispatches, cleared with the flow (the buffers-never-outlive-
+    /// the-flow rule).
+    recur_edit_target: Option<taskboard_domain::TaskId>,
+    /// The recur editor's minted draft (round-7 D-7.1): the commit
+    /// funnel re-mints the whole buffer and lands the rule here just
+    /// before routing; consumed by the commit dispatch.
+    recur_draft_rule: Option<taskboard_domain::RecurRule>,
     /// The recur row's adapter-owned flags (issue #506, plan D-8):
     /// the inline pause editor and the armed confirm strip — cleared
     /// when the subject stops recurring (the buffers-never-outlive-
@@ -939,6 +948,8 @@ impl Adapter {
         ctx.series_target = self.series_target.take();
         ctx.pause_draft = self.pause_draft.take();
         ctx.convert_target = self.convert_target.take();
+        ctx.recur_edit_target = self.recur_edit_target.take();
+        ctx.recur_draft_rule = self.recur_draft_rule.take();
         // The today window rides every dispatch (chunk 10 D4): state-
         // derived from the held pair, never consumed.
         ctx.day_window = Some(self.day_ctx().window);
@@ -2530,6 +2541,27 @@ impl Adapter {
             .unwrap_or(Flow::None)
     }
 
+    /// The recur editor's seeding seam (round-7 D-7.1, plan D-D1): the
+    /// level's draft from the task's rule when one carries, else the
+    /// anchor-derived bare-flag defaults — the anchor is
+    /// `series_reference_date` (never raw-UTC, never "today" unless
+    /// the chain lands there).
+    fn seed_recur_editor(
+        &self,
+        state: &taskboard_domain::AppState,
+        task: taskboard_domain::TaskId,
+    ) -> crate::level_state::RecurEditorState {
+        let now = self.day_ctx().now;
+        let calendar = self.calendar();
+        state.tasks.get(&task).map_or_else(
+            || crate::presentation::seed_recur_editor(None, calendar.today(now)),
+            |t| {
+                let anchor = taskboard_domain::series_reference_date(t, calendar, now);
+                crate::presentation::seed_recur_editor(t.recur.as_ref(), anchor)
+            },
+        )
+    }
+
     /// The D9 interpretation table: one `match (flow, effect)` whose
     /// arms route to `view_state` methods named by what they do.
     #[allow(clippy::too_many_lines)] // one decision table, kept flat for review
@@ -2746,6 +2778,42 @@ impl Adapter {
                     // outside the state Arc — forced (the refresh
                     // invariant's classification).
                     self.refresh_forced(window);
+                }
+                Vec::new()
+            }
+            // -- the recurrence-rule editor (round-7 D-7.1) --
+            // Kiosk and a subjectless/closed view refuse (the
+            // entries-overlay precedent); already open is inert (the
+            // modal discipline). The opener arms the one-shot target,
+            // opens the flow, and seeds the level's draft from the
+            // task's rule or the anchor (the seeding law, D-D1) —
+            // insert mode, the form's fields.
+            (_, UiEffect::SeriesEditorOpen) if self.kiosk => Vec::new(),
+            (Flow::EditRecur { .. }, UiEffect::SeriesEditorOpen) => Vec::new(),
+            (_, UiEffect::SeriesEditorOpen) => match self.view_state.begin_edit_recur(&state) {
+                Some(task) => {
+                    Self::dismiss_tooltip(window);
+                    self.recur_edit_target = Some(task);
+                    let seeded = self.seed_recur_editor(&state, task);
+                    if let Some(editor) = self.view_state.recur_editor_mut() {
+                        *editor = seeded;
+                    }
+                    vec![FlowOutcome::SetMode(Mode::Insert), FlowOutcome::RefreshNow]
+                }
+                None => Vec::new(),
+            },
+            // The stop-repeating strip's flag flips: the
+            // conversion-strip pattern over the editor level; inert
+            // without the flow (a stale dispatch changes nothing).
+            (_, UiEffect::SeriesDetachArm) => {
+                if let Some(editor) = self.view_state.recur_editor_mut() {
+                    editor.detach_armed = true;
+                }
+                Vec::new()
+            }
+            (_, UiEffect::SeriesDetachCancel) => {
+                if let Some(editor) = self.view_state.recur_editor_mut() {
+                    editor.detach_armed = false;
                 }
                 Vec::new()
             }
@@ -3433,6 +3501,10 @@ impl Adapter {
             // own the walk's intents; settle is its close (the
             // palette family's terminator).
             | Flow::ReviewWalk { .. }
+            // The recurrence editor (round-7 D-7.1): the sixth modal —
+            // settle is its clean close (the overlay family's row; a
+            // foreign settle never commits a draft).
+            | Flow::EditRecur { .. }
             // The child levels (chunk 3's ports): the modals' row —
             // the children have no kept intents of their own; their
             // close paths are their exits and their settle arm is the
@@ -3737,6 +3809,13 @@ impl Adapter {
             | UiEffect::HabitConvertArm
             | UiEffect::HabitCreateToggle
             | UiEffect::SeriesConvertArm
+            // The recur editor's intents (round-7 D-7.1): the opener
+            // and the detach strip's flag flips interpret like every
+            // view intent — the kiosk/subject refusals live in the
+            // arms.
+            | UiEffect::SeriesEditorOpen
+            | UiEffect::SeriesDetachArm
+            | UiEffect::SeriesDetachCancel
             // The plan-next-day family (#622): the surface's intents
             // interpret like every view intent — the kiosk/modal
             // refusals live in the arms.
@@ -6644,6 +6723,8 @@ pub(crate) fn install(
         series_target: None,
         pause_draft: None,
         convert_target: None,
+        recur_edit_target: None,
+        recur_draft_rule: None,
         recur_pause_open: false,
         recur_confirm_armed: false,
         walk_resume: None,
@@ -10077,6 +10158,7 @@ impl crate::UiHandle {
                 | ContextId::DatePicker
                 | ContextId::TrackEntries
                 | ContextId::ReviewWalk
+                | ContextId::RecurEditor
                 | ContextId::ViNormal
                 | ContextId::ViInsert
                 | ContextId::Editor,

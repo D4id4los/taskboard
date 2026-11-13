@@ -1087,6 +1087,90 @@ pub fn recur_badge(
     })
 }
 
+/// The recur editor's seeding law (round-7 D-7.1, plan D-D1): a
+/// ruled task's draft mirrors its rule; a rule-less task's draft
+/// derives its bare-flag defaults from the **anchor** — the weekly
+/// pre-check is the anchor's weekday and the monthly pre-fill the
+/// anchor's day number (never "today": the anchor chain
+/// `scheduled → duedate → window-today` is the caller's input here,
+/// so a mid-window render and a rule's own anchor agree by
+/// construction). Every field the rule does not express keeps the
+/// family default (`RecurEditorState::fresh`).
+#[must_use]
+pub(crate) fn seed_recur_editor(
+    rule: Option<&taskboard_domain::RecurRule>,
+    anchor: chrono::NaiveDate,
+) -> crate::level_state::RecurEditorState {
+    use crate::level_state::{MonthlyMode, RecurBoundKind, RecurEditorState, RecurPatternKind};
+    use taskboard_domain::{MonthlyAnchor, RecurBound, RecurPattern};
+
+    let mut draft = RecurEditorState::fresh();
+    let Some(rule) = rule else {
+        // The anchor-seeded defaults: the assembly law's bare-flag
+        // derivations made visible before the first mint.
+        let slot = usize::try_from(anchor.weekday().num_days_from_monday())
+            .expect("a weekday index is a small usize");
+        draft.weekdays = [false; 7];
+        draft.weekdays[slot] = true;
+        draft.monthly_day = anchor.day().to_string();
+        return draft;
+    };
+    match &rule.pattern {
+        RecurPattern::Daily { every } => {
+            draft.pattern = RecurPatternKind::Daily;
+            draft.every_days = every.get().to_string();
+        }
+        RecurPattern::Weekly { interval, on } => {
+            draft.pattern = RecurPatternKind::Weekly;
+            draft.weekly_interval = interval.get().to_string();
+            for (slot, checked) in draft.weekdays.iter_mut().enumerate() {
+                *checked = on.contains(weekday_of_slot(slot));
+            }
+        }
+        RecurPattern::Monthly { on } => {
+            draft.pattern = RecurPatternKind::Monthly;
+            match on {
+                MonthlyAnchor::OnDay(day) => {
+                    draft.monthly_mode = MonthlyMode::OnDay;
+                    draft.monthly_day = day.get().to_string();
+                }
+                MonthlyAnchor::NthWeekday(nth, weekday) => {
+                    draft.monthly_mode = MonthlyMode::NthWeekday;
+                    draft.monthly_nth = nth.text_form();
+                    draft.monthly_nth_weekday = *weekday;
+                }
+            }
+        }
+    }
+    match rule.bound {
+        RecurBound::None => draft.bound = RecurBoundKind::Never,
+        RecurBound::Until(until) => {
+            draft.bound = RecurBoundKind::Until;
+            draft.until_text = until.to_string();
+        }
+        RecurBound::Count(count) => {
+            draft.bound = RecurBoundKind::Count;
+            draft.count = count.get().to_string();
+        }
+    }
+    draft
+}
+
+/// The weekday at `weekdays` slot `index` (the Mon..Sun canonical
+/// order — `WeekdaySet`'s storage convention).
+fn weekday_of_slot(index: usize) -> chrono::Weekday {
+    use chrono::Weekday;
+    match index {
+        0 => Weekday::Mon,
+        1 => Weekday::Tue,
+        2 => Weekday::Wed,
+        3 => Weekday::Thu,
+        4 => Weekday::Fri,
+        5 => Weekday::Sat,
+        _ => Weekday::Sun,
+    }
+}
+
 /// The badge's label glue: the pattern's canonical text form plus a
 /// day-granularity next phrase over the [`duration_bucket`] day bucket
 /// of `next - today` (never a wall-clock delta — day granularity keeps
@@ -7569,5 +7653,177 @@ mod review_tracking_tests {
             && bar.mood.is_finite()
             && bar.energy.is_finite()));
         assert_eq!(review_rating_fractions(&[]), Vec::<ReflectionBar>::new());
+    }
+}
+
+#[cfg(test)]
+mod recur_editor_seeding_tests {
+    use super::seed_recur_editor;
+    use crate::level_state::{MonthlyMode, RecurBoundKind, RecurEditorState, RecurPatternKind};
+    use chrono::{Datelike as _, NaiveDate, Weekday};
+    use taskboard_domain::{
+        DayOfMonth, EveryDays, EveryWeeks, InvalidRecur, MonthlyAnchor, NthWeek, OccurrenceCount,
+        RecurBound, RecurPattern, RecurRule, SeriesId,
+    };
+
+    fn date(y: i32, m: u32, d: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, d).unwrap()
+    }
+
+    fn every_days(n: u16) -> Result<EveryDays, InvalidRecur> {
+        EveryDays::new(n)
+    }
+
+    fn rule(pattern: RecurPattern, bound: RecurBound) -> RecurRule {
+        RecurRule {
+            series: SeriesId::from_uuid(uuid::Uuid::from_u128(1)),
+            anchor: date(2026, 1, 1),
+            pattern,
+            bound,
+            continued_from: None,
+            paused_until: None,
+        }
+    }
+
+    fn fresh() -> RecurEditorState {
+        RecurEditorState::fresh()
+    }
+
+    #[test]
+    fn a_daily_rule_mirrors_its_interval_and_keeps_the_other_defaults() {
+        let seeded = seed_recur_editor(
+            Some(&rule(
+                RecurPattern::Daily {
+                    every: every_days(3).unwrap(),
+                },
+                RecurBound::None,
+            )),
+            date(2026, 10, 21),
+        );
+        assert_eq!(seeded.pattern, RecurPatternKind::Daily);
+        assert_eq!(seeded.every_days, "3");
+        assert_eq!(seeded.bound, RecurBoundKind::Never);
+        // Unexpressed fields keep the family default.
+        assert_eq!(seeded.weekly_interval, fresh().weekly_interval);
+        assert_eq!(seeded.weekdays, fresh().weekdays);
+        assert_eq!(seeded.monthly_day, fresh().monthly_day);
+    }
+
+    #[test]
+    fn a_weekly_rule_checks_exactly_its_weekdays() {
+        let seeded = seed_recur_editor(
+            Some(&rule(
+                RecurPattern::Weekly {
+                    interval: EveryWeeks::new(2).unwrap(),
+                    on: taskboard_domain::WeekdaySet::new([Weekday::Tue, Weekday::Fri]).unwrap(),
+                },
+                RecurBound::None,
+            )),
+            date(2026, 10, 21),
+        );
+        assert_eq!(seeded.pattern, RecurPatternKind::Weekly);
+        assert_eq!(seeded.weekly_interval, "2");
+        let want = [
+            false, // Mon
+            true,  // Tue
+            false, // Wed
+            false, // Thu
+            true,  // Fri
+            false, // Sat
+            false, // Sun
+        ];
+        assert_eq!(seeded.weekdays, want);
+    }
+
+    #[test]
+    fn a_monthly_rule_mirrors_whichever_anchor_arm_it_carries() {
+        let on_day = seed_recur_editor(
+            Some(&rule(
+                RecurPattern::Monthly {
+                    on: MonthlyAnchor::OnDay(DayOfMonth::new(15).unwrap()),
+                },
+                RecurBound::None,
+            )),
+            date(2026, 10, 21),
+        );
+        assert_eq!(on_day.pattern, RecurPatternKind::Monthly);
+        assert_eq!(on_day.monthly_mode, MonthlyMode::OnDay);
+        assert_eq!(on_day.monthly_day, "15");
+
+        let nth = seed_recur_editor(
+            Some(&rule(
+                RecurPattern::Monthly {
+                    on: MonthlyAnchor::NthWeekday(NthWeek::new(2).unwrap(), Weekday::Mon),
+                },
+                RecurBound::None,
+            )),
+            date(2026, 10, 21),
+        );
+        assert_eq!(nth.monthly_mode, MonthlyMode::NthWeekday);
+        assert_eq!(nth.monthly_nth, "2nd");
+        assert_eq!(nth.monthly_nth_weekday, Weekday::Mon);
+        // The OnDay field keeps its default under the NthWeekday arm.
+        assert_eq!(nth.monthly_day, fresh().monthly_day);
+    }
+
+    #[test]
+    fn the_bound_arms_mirror_their_fields() {
+        let until = seed_recur_editor(
+            Some(&rule(
+                RecurPattern::Daily {
+                    every: every_days(1).unwrap(),
+                },
+                RecurBound::Until(date(2026, 12, 31)),
+            )),
+            date(2026, 10, 21),
+        );
+        assert_eq!(until.bound, RecurBoundKind::Until);
+        assert_eq!(until.until_text, "2026-12-31");
+
+        let count = seed_recur_editor(
+            Some(&rule(
+                RecurPattern::Daily {
+                    every: every_days(1).unwrap(),
+                },
+                RecurBound::Count(OccurrenceCount::new(10).unwrap()),
+            )),
+            date(2026, 10, 21),
+        );
+        assert_eq!(count.bound, RecurBoundKind::Count);
+        assert_eq!(count.count, "10");
+    }
+
+    /// The rule-less seeding derives from the ANCHOR, never "today"
+    /// (the review's explicit check): the weekly pre-check is the
+    /// anchor's weekday slot alone, the monthly pre-fill the anchor's
+    /// day number — the function's purity in `(rule, anchor)` is the
+    /// structural guarantee; this test pins the derivation itself.
+    #[test]
+    fn a_ruleless_task_seeds_its_bare_defaults_from_the_anchor() {
+        // 2026-10-21 is a Wednesday.
+        let anchor = date(2026, 10, 21);
+        let seeded = seed_recur_editor(None, anchor);
+        assert_eq!(
+            seeded.pattern,
+            RecurPatternKind::Daily,
+            "the least-assumption start"
+        );
+        assert_eq!(seeded.every_days, "1");
+        assert_eq!(seeded.bound, RecurBoundKind::Never);
+        let want = [
+            false, // Mon
+            false, // Tue
+            true,  // Wed — the anchor's weekday, the only pre-check
+            false, // Thu
+            false, // Fri
+            false, // Sat
+            false, // Sun
+        ];
+        assert_eq!(seeded.weekdays, want);
+        assert_eq!(seeded.monthly_day, anchor.day().to_string());
+        // A different anchor weekday pre-checks a different slot —
+        // the derivation is anchor-relative, not a constant.
+        let friday = seed_recur_editor(None, date(2026, 10, 23));
+        assert!(friday.weekdays[4] && friday.weekdays.iter().filter(|c| **c).count() == 1);
     }
 }

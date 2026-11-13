@@ -716,6 +716,43 @@ mod tests {
         );
     }
 
+    /// The recur editor's chain row (round-7 D-7.1, the T-S1
+    /// checklist's sibling): an armed `Flow::EditRecur` masks over
+    /// the task-detail root — the entries overlay's exact head shape.
+    #[test]
+    fn the_recur_editor_arms_the_masking_head_over_the_task_detail_root() {
+        use crate::surfaces::{Surface, Surfaces};
+        let task = TaskId::from_uuid(uuid::Uuid::now_v7());
+        let mut chain = Surfaces::rooted(crate::view_state::ViewId::TaskDetail);
+        chain
+            .push(Surface::Flow(Flow::EditRecur { task }))
+            .expect("push");
+        let tags: Vec<crate::surfaces::FlowTag> = chain
+            .above_levels()
+            .iter()
+            .rev()
+            .filter_map(|level| level.flow().map(crate::view_state::Flow::tag))
+            .collect();
+        let flow = Flow::EditRecur { task };
+        let i = ScopeInputs {
+            shell: &KeymapShell::default(),
+            picker_open: false,
+            editor_focus: false,
+            flow: &flow,
+            chain: &tags,
+            stroke: None,
+            at_key_doorway: false,
+        };
+        assert_eq!(
+            scope_stack(&i),
+            vec![
+                ContextId::RecurEditor,
+                ContextId::ViInsert,
+                ContextId::Global
+            ]
+        );
+    }
+
     /// T-S1 — the port checklist (plan §4): every legacy chain shape
     /// byte-equal between `scope_stack` and the retired
     /// `KeymapShell::chain` (the deltas' arming facts off). The

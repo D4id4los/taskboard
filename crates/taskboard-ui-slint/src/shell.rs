@@ -124,6 +124,8 @@ impl KeymapShell {
             series_target: None,
             pause_draft: None,
             convert_target: None,
+            recur_edit_target: None,
+            recur_draft_rule: None,
             day_window: None,
             focused_task_done: self.focused_task_done,
             focused_task_tracker: self.focused_task_tracker,
@@ -245,6 +247,11 @@ impl KeymapShell {
             | UiEffect::HabitConvertArm
             | UiEffect::HabitCreateToggle
             | UiEffect::SeriesConvertArm
+            // The recur editor's intents are adapter-interpreted view
+            // intents (round-7 D-7.1); the shell records nothing.
+            | UiEffect::SeriesEditorOpen
+            | UiEffect::SeriesDetachArm
+            | UiEffect::SeriesDetachCancel
             // The review walk's intents are adapter-interpreted view
             // intents (DR-7 chunk 3, #638); the shell records nothing
             // (the flow is the truth; `sync_view_context` mirrors it).

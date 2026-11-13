@@ -222,6 +222,9 @@ expression: rows
             - Shift+Tab
           action: nav.prev-control
         - sequence:
+            - Ctrl+R
+          action: series.edit
+        - sequence:
             - Up
           action: nav.prev-item
         - sequence:
@@ -611,6 +614,10 @@ expression: rows
             - Ctrl+b
           action: nav.prev-control
         - sequence:
+            - Ctrl+c
+            - r
+          action: series.edit
+        - sequence:
             - Ctrl+f
           action: nav.next-control
         - sequence:
@@ -812,6 +819,9 @@ expression: rows
         - sequence:
             - Shift+Tab
           action: nav.prev-control
+        - sequence:
+            - r
+          action: series.edit
     - context: settings
       bindings:
         - sequence:

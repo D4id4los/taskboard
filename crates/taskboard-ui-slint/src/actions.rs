@@ -58,6 +58,12 @@ pub enum ContextId {
     /// overlay holds; the form's fields ride `ViInsert` masking and
     /// the overlay's own rows (dismiss + the walk) live here.
     TrackEntries,
+    /// The recurrence-rule editor overlay (round-7 D-7.1): a total
+    /// mask like `TrackEntries` — the modal context while
+    /// `Flow::EditRecur` holds; the form's fields ride `ViInsert`
+    /// masking and the editor's own verbs (commit, cancel, the
+    /// detach strip) live here.
+    RecurEditor,
     /// The review walk overlay (DR-7 chunk 3, #638): a total mask like
     /// `TrackEntries` — the modal context while `Flow::ReviewWalk`
     /// holds; the prompt fields ride `ViInsert` masking, the walk's
@@ -92,6 +98,7 @@ impl ContextId {
             Self::ViInsert => "vi-insert",
             Self::DatePicker => "date-picker",
             Self::TrackEntries => "track-entries",
+            Self::RecurEditor => "recur-editor",
             Self::ReviewWalk => "review-walk",
             Self::Editor => "editor",
         }
@@ -329,6 +336,26 @@ pub enum ActionId {
     /// The series → habit confirm's dispatch: routes
     /// `ConvertSeriesToHabit` with the pattern's default quota (D-2).
     SeriesConvertToHabit,
+    /// The recurrence-rule editor's opener (round-7 D-7.1): opens the
+    /// window-level editor overlay over the subject task — the add
+    /// affordance for rule-less tasks and the edit affordance in the
+    /// recur row both converge here (click ≡ key).
+    SeriesEdit,
+    /// The recurrence editor's commit: routes the assembled rule as
+    /// the one `UpdateTask { recur: Some(Some(rule)) }` write from
+    /// the one-shot target + draft (`NoTarget` without either — the
+    /// stale-arm law).
+    SeriesEditCommit,
+    /// The recurrence editor's stop-repeating confirm: routes
+    /// `UpdateTask { recur: Some(None) }` — the detach semantic, and
+    /// nothing else in the changeset.
+    SeriesEditDetach,
+    /// The stop-repeating strip's arm step: shows the consequence
+    /// caption (the conversion-strip pattern); the dispatch itself
+    /// waits for the confirm.
+    SeriesEditDetachArm,
+    /// The stop-repeating strip's cancel.
+    SeriesEditDetachCancel,
     /// The plan-next-day surface's opener (#622, D-4): the routed
     /// reachability seam — the same dispatchable intent the review
     /// walk's final leg takes. Toggle semantics (the settings
@@ -492,6 +519,11 @@ impl ActionId {
             Self::SeriesResume => "series.resume",
             Self::SeriesConvertArm => "series.convert-arm",
             Self::SeriesConvertToHabit => "series.convert-to-habit",
+            Self::SeriesEdit => "series.edit",
+            Self::SeriesEditCommit => "series.edit-commit",
+            Self::SeriesEditDetach => "series.edit-detach",
+            Self::SeriesEditDetachArm => "series.edit-detach-arm",
+            Self::SeriesEditDetachCancel => "series.edit-detach-cancel",
             Self::ViewPlanNextDay => "view.plan-next-day",
             Self::PlanBeginPlace => "plan.begin-place",
             Self::PlanCommitPlace => "plan.commit-place",
@@ -1380,6 +1412,62 @@ pub const REGISTRY: &[ActionEntry] = &[
         description: "Routes the confirmed series-to-habit conversion with the pattern's default quota.",
         menu_group: Some(MenuGroup::Task),
     },
+    // The recurrence-rule editor's verbs (round-7 D-7.1): the opener
+    // is TaskDetail-scoped (a `TaskTitleEdit`-class editing verb, the
+    // one series verb with preset bindings); the in-overlay verbs are
+    // the editor context's pointer-grade rows (the picker-actions
+    // rule — no preset bindings, focus + Enter on the mounted
+    // buttons).
+    ActionEntry {
+        id: ActionId::SeriesEdit,
+        label: "Edit repeat",
+        contexts: &[ContextId::TaskDetail],
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 275,
+        description: "Opens the recurrence-rule editor over the viewed task: the pattern, the bound, and the stop-repeating strip.",
+        menu_group: Some(MenuGroup::Task),
+    },
+    ActionEntry {
+        id: ActionId::SeriesEditCommit,
+        label: "Commit repeat rule",
+        contexts: &[ContextId::RecurEditor],
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 300,
+        description: "Routes the assembled rule as the one recurrence write; an invalid draft dispatches nothing.",
+        menu_group: None,
+    },
+    ActionEntry {
+        id: ActionId::SeriesEditDetach,
+        label: "Stop repeating",
+        contexts: &[ContextId::RecurEditor],
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 310,
+        description: "Clears the rule (the task stays as an ordinary task); nothing else changes.",
+        menu_group: None,
+    },
+    ActionEntry {
+        id: ActionId::SeriesEditDetachArm,
+        label: "Arm stop repeating",
+        contexts: &[ContextId::RecurEditor],
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 320,
+        description: "Shows the stop-repeating consequence strip; the confirm dispatches.",
+        menu_group: None,
+    },
+    ActionEntry {
+        id: ActionId::SeriesEditDetachCancel,
+        label: "Cancel stop repeating",
+        contexts: &[ContextId::RecurEditor],
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 330,
+        description: "Disarms the stop-repeating strip.",
+        menu_group: None,
+    },
     ActionEntry {
         id: ActionId::ViewPlanNextDay,
         label: "Plan next day",
@@ -1878,6 +1966,11 @@ mod tests {
             ActionId::SeriesResume,
             ActionId::SeriesConvertArm,
             ActionId::SeriesConvertToHabit,
+            ActionId::SeriesEdit,
+            ActionId::SeriesEditCommit,
+            ActionId::SeriesEditDetach,
+            ActionId::SeriesEditDetachArm,
+            ActionId::SeriesEditDetachCancel,
             ActionId::ViewPlanNextDay,
             ActionId::PlanBeginPlace,
             ActionId::PlanCommitPlace,

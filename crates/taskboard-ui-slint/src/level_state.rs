@@ -60,6 +60,101 @@ pub(crate) struct DateEditorState {
     pub(crate) anchor: FocusAnchor,
 }
 
+/// Which pattern arm the recurrence editor's draft expresses
+/// (round-7 D-7.1, plan D-D1): the `SegmentedControl`'s three-way
+/// vocabulary — a UI draft kind, never a domain type (the minted
+/// parts assemble only at the commit funnel).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum RecurPatternKind {
+    #[default]
+    Daily,
+    Weekly,
+    Monthly,
+}
+
+/// The monthly anchor's two grammar arms in the editor's draft.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum MonthlyMode {
+    #[default]
+    OnDay,
+    NthWeekday,
+}
+
+/// The bound `SegmentedControl`'s three-way vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum RecurBoundKind {
+    #[default]
+    Never,
+    Until,
+    Count,
+}
+
+/// The recurrence editor's adapter-owned draft (round-7 D-7.1, plan
+/// D-D1 — the `DateEditorState` precedent): raw field text plus
+/// armed/kind flags only, **no minted types inside the buffer** —
+/// every field re-mints at the echo/commit funnels so the buffer is
+/// the single truth. The subject task rides the flow variant (the
+/// `EditDate` rule — identity never lives in the buffer). Seeded by
+/// the opener seam from the task's rule or the anchor (D-D1's
+/// seeding law); wiped with the level.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RecurEditorState {
+    /// The Daily arm's interval text (`EveryDays` grammar).
+    pub(crate) every_days: String,
+    /// The Weekly arm's interval text (`EveryWeeks` grammar).
+    pub(crate) weekly_interval: String,
+    /// The weekday toggles, Mon..Sun (canonical index order — the
+    /// `WeekdaySet` mint's vocabulary).
+    pub(crate) weekdays: [bool; 7],
+    /// Which pattern arm the draft expresses.
+    pub(crate) pattern: RecurPatternKind,
+    /// The monthly anchor's arm.
+    pub(crate) monthly_mode: MonthlyMode,
+    /// The `OnDay` day-of-month text (`DayOfMonth` grammar).
+    pub(crate) monthly_day: String,
+    /// The `NthWeekday` position text (`NthWeek` grammar).
+    pub(crate) monthly_nth: String,
+    /// The `NthWeekday`'s weekday (a dropdown — always valid).
+    pub(crate) monthly_nth_weekday: chrono::Weekday,
+    /// The bound arm.
+    pub(crate) bound: RecurBoundKind,
+    /// The Until field's text (the due-editor grammar, D-D4).
+    pub(crate) until_text: String,
+    /// The Count field's text (`OccurrenceCount` grammar).
+    pub(crate) count: String,
+    /// The stop-repeating strip's armed flag (the confirm two-step).
+    pub(crate) detach_armed: bool,
+    /// The programmatic-focus-steal latch (the settle funnel's skip —
+    /// the `DateEditorState` twin).
+    pub(crate) focus_steal: bool,
+    pub(crate) anchor: FocusAnchor,
+}
+
+impl RecurEditorState {
+    /// The family default (the `LevelState::mint` arm's one
+    /// definition site): an empty daily draft the opener seam
+    /// re-seeds before any render reads it — every unexpressed field
+    /// of a seeded draft is this shape (the seeding law's base).
+    pub(crate) fn fresh() -> Self {
+        Self {
+            every_days: String::from("1"),
+            weekly_interval: String::from("1"),
+            weekdays: [false; 7],
+            pattern: RecurPatternKind::Daily,
+            monthly_mode: MonthlyMode::OnDay,
+            monthly_day: String::from("1"),
+            monthly_nth: String::from("1st"),
+            monthly_nth_weekday: chrono::Weekday::Mon,
+            bound: RecurBoundKind::Never,
+            until_text: String::new(),
+            count: String::from("1"),
+            detach_armed: false,
+            focus_steal: false,
+            anchor: FocusAnchor::None,
+        }
+    }
+}
+
 /// The entries form's adapter-owned state (r4 D-TS4): the seed, the
 /// three typed texts, and the two quick-list filter latches — wiped
 /// with the level. The date grid is the form's `EntryDatePicker`
@@ -135,6 +230,7 @@ pub(crate) enum LevelState {
         anchor: FocusAnchor,
     },
     DateEditor(DateEditorState),
+    RecurEditor(RecurEditorState),
     TrackForm(TrackFormState),
     PlanPlace(PlanPlaceState),
     Walk(WalkState),
@@ -170,6 +266,13 @@ impl LevelState {
                     focus_steal: false,
                     anchor: FocusAnchor::None,
                 }),
+                // The recur editor's family-default: an empty daily
+                // draft — the opening seam re-seeds from the task's
+                // rule or the anchor before any render reads it (the
+                // `TrackFormState` seeding pattern).
+                crate::surfaces::FlowTag::EditRecur => {
+                    Self::RecurEditor(RecurEditorState::fresh())
+                }
                 crate::surfaces::FlowTag::TrackEntryForm => Self::TrackForm(TrackFormState {
                     seed: None,
                     date_text: String::new(),
@@ -241,6 +344,7 @@ impl LevelState {
             | Self::Text { anchor, .. }
             | Self::Bare { anchor }
             | Self::DateEditor(DateEditorState { anchor, .. })
+            | Self::RecurEditor(RecurEditorState { anchor, .. })
             | Self::TrackForm(TrackFormState { anchor, .. })
             | Self::PlanPlace(PlanPlaceState { anchor, .. })
             | Self::Walk(WalkState { anchor, .. })
@@ -255,6 +359,7 @@ impl LevelState {
             | Self::Text { anchor: slot, .. }
             | Self::Bare { anchor: slot } => *slot = anchor,
             Self::DateEditor(state) => state.anchor = anchor,
+            Self::RecurEditor(state) => state.anchor = anchor,
             Self::TrackForm(state) => state.anchor = anchor,
             Self::PlanPlace(state) => state.anchor = anchor,
             Self::Walk(state) => state.anchor = anchor,
@@ -277,6 +382,13 @@ impl LevelState {
     pub(crate) fn as_date_editor_mut(&mut self) -> Option<&mut DateEditorState> {
         match self {
             Self::DateEditor(state) => Some(state),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn as_recur_editor_mut(&mut self) -> Option<&mut RecurEditorState> {
+        match self {
+            Self::RecurEditor(state) => Some(state),
             _ => None,
         }
     }
@@ -395,6 +507,7 @@ impl LevelState {
                     None,
                 ));
             }
+            Self::RecurEditor(state) => state.every_days = "written".to_owned(),
             Self::TrackForm(state) => state.date_text = "written".to_owned(),
             Self::PlanPlace(state) => state.time_text = "written".to_owned(),
             Self::Walk(state) => state.answers = vec!["written".to_owned()],
@@ -454,6 +567,10 @@ mod tests {
             LevelState::DateEditor(_)
         ));
         assert!(matches!(
+            state_of(FlowTag::EditRecur),
+            LevelState::RecurEditor(_)
+        ));
+        assert!(matches!(
             state_of(FlowTag::TrackEntryForm),
             LevelState::TrackForm(_)
         ));
@@ -486,6 +603,22 @@ mod tests {
         assert!(state.picker.is_none());
     }
 
+    /// The recur editor's family-default is the empty daily draft the
+    /// opening seam re-seeds (the `TrackFormState` pattern): no
+    /// weekday checked, no bound, no armed strip — nothing a render
+    /// could mistake for a seeded rule.
+    #[test]
+    fn the_recur_editor_mints_an_empty_daily_draft() {
+        let LevelState::RecurEditor(state) = state_of(FlowTag::EditRecur) else {
+            panic!("the recur editor's family");
+        };
+        assert_eq!(state.pattern, RecurPatternKind::Daily);
+        assert_eq!(state.bound, RecurBoundKind::Never);
+        assert_eq!(state.weekdays, [false; 7]);
+        assert!(!state.detach_armed && !state.focus_steal);
+        assert_eq!(state.until_text, "");
+    }
+
     /// The per-family clean-reopen rule (D6.2, at the mint): a level
     /// written through the test seam, dropped, and re-minted is
     /// family-default — the drop is the wipe.
@@ -496,6 +629,7 @@ mod tests {
             FlowTag::Palette,
             FlowTag::FocusMode,
             FlowTag::EditDate,
+            FlowTag::EditRecur,
             FlowTag::TrackEntryForm,
             FlowTag::PlanPlace,
             FlowTag::ReviewWalk,

@@ -81,6 +81,18 @@ pub enum UiEffect {
     HabitCreateToggle,
     /// Arm the recur row's conversion confirm strip (issue #506).
     SeriesConvertArm,
+    /// Open the recurrence-rule editor overlay (round-7 D-7.1): the
+    /// adapter opens `Flow::EditRecur` over the subject task, arms
+    /// the one-shot target, and seeds the level's draft from the
+    /// task's rule or the anchor; refuses on kiosk (the
+    /// entries-overlay precedent) and without an open subject.
+    SeriesEditorOpen,
+    /// The stop-repeating strip's arm step (round-7 D-7.1): flips the
+    /// editor level's `detach_armed` flag (the conversion-strip
+    /// pattern); inert without the flow.
+    SeriesDetachArm,
+    /// The stop-repeating strip's cancel (round-7 D-7.1).
+    SeriesDetachCancel,
     SetMode(Mode),
     // --- chunk-3 view intents (D6/D9): names state the function; the
     // adapter resolves them against the view-state model.
@@ -314,15 +326,19 @@ impl UiEffect {
             | Self::StackPrev
             | Self::StackWider
             | Self::StackNarrower
-            // The habit trio's + create form's intents are flag flips
-            // over the subject (issue #506; round-7 D-7.2): no flow
-            // moves, no command routes — the nav bucket's contract
-            // (the adapter's interpretation table owns them; no shell
+            // The habit trio's + create form's intents (issue #506;
+            // round-7 D-7.2) and the recur editor's intents (round-7
+            // D-7.1) are flag flips over the subject: no flow moves,
+            // no command routes — the nav bucket's contract (the
+            // adapter's interpretation table owns them; no shell
             // state moves).
             | Self::SeriesPauseOpen
             | Self::HabitConvertArm
             | Self::HabitCreateToggle
-            | Self::SeriesConvertArm => EffectClass::Nav,
+            | Self::SeriesConvertArm
+            | Self::SeriesEditorOpen
+            | Self::SeriesDetachArm
+            | Self::SeriesDetachCancel => EffectClass::Nav,
             Self::StackDelete
             | Self::StackRename
             | Self::StackMove
@@ -498,6 +514,17 @@ pub struct DispatchCtx {
     /// default mapping the adapter computed from the rule; consumed by
     /// the confirm dispatch.
     pub convert_target: Option<taskboard_domain::HabitTarget>,
+    /// The recur editor's one-shot subject (round-7 D-7.1): armed by
+    /// the opener, consumed by the commit/detach dispatches
+    /// (`NoTarget` without one — the stale-arm law).
+    pub recur_edit_target: Option<TaskId>,
+    /// The recur editor's minted draft (round-7 D-7.1, D-C1): the
+    /// adapter's commit funnel re-mints the whole buffer through the
+    /// field parsers and lands the rule here; `series.edit-commit`
+    /// routes it (`NoTarget` without one — the button is disabled
+    /// anyway, the seam re-checks; the trust boundary never trusts
+    /// the widget).
+    pub recur_draft_rule: Option<taskboard_domain::RecurRule>,
     /// The planner row's task (#622, D-6): set by the adapter when a
     /// planner row affordance activates; the placement/reorder verbs
     /// route from it (`NoTarget` without one).
@@ -729,6 +756,38 @@ impl ActionRouter {
                 }
                 _ => DispatchOutcome::NoTarget,
             },
+            // The recurrence editor's verbs (round-7 D-7.1, plan
+            // D-C1/D-C2): the opener is a view intent; the commit and
+            // the detach route the one `UpdateTask` from the one-shot
+            // pair — and nothing else rides the detach's changeset
+            // (the review's must-check).
+            ActionId::SeriesEdit => DispatchOutcome::UiEffect(UiEffect::SeriesEditorOpen),
+            ActionId::SeriesEditCommit => {
+                match (ctx.recur_edit_target, ctx.recur_draft_rule.clone()) {
+                    (Some(id), Some(rule)) => DispatchOutcome::Command(StateCommand::UpdateTask {
+                        id,
+                        changes: taskboard_domain::TaskChanges {
+                            recur: Some(Some(rule)),
+                            ..taskboard_domain::TaskChanges::default()
+                        },
+                    }),
+                    _ => DispatchOutcome::NoTarget,
+                }
+            }
+            ActionId::SeriesEditDetach => match ctx.recur_edit_target {
+                Some(id) => DispatchOutcome::Command(StateCommand::UpdateTask {
+                    id,
+                    changes: taskboard_domain::TaskChanges {
+                        recur: Some(None),
+                        ..taskboard_domain::TaskChanges::default()
+                    },
+                }),
+                None => DispatchOutcome::NoTarget,
+            },
+            ActionId::SeriesEditDetachArm => DispatchOutcome::UiEffect(UiEffect::SeriesDetachArm),
+            ActionId::SeriesEditDetachCancel => {
+                DispatchOutcome::UiEffect(UiEffect::SeriesDetachCancel)
+            }
             // The tracking verbs (DR-5/4, D-T16): Start routes from the
             // explicit one-shot target, falling back to the focused
             // task (D-TU5's two honest sources); Stop is payload-free
@@ -1014,6 +1073,8 @@ mod tests {
             series_target: None,
             pause_draft: None,
             convert_target: None,
+            recur_edit_target: None,
+            recur_draft_rule: None,
             day_window: None,
             focused_task_done: false,
             focused_task_tracker: false,
@@ -1596,6 +1657,89 @@ mod tests {
         assert_eq!(
             ActionRouter::dispatch(ActionId::HabitConvertToSeries, &ctx),
             DispatchOutcome::Command(StateCommand::ConvertHabitToSeries { habit, pattern })
+        );
+    }
+
+    /// The recurrence editor's verbs (round-7 D-7.1, plan D-C1/D-C2):
+    /// the opener is a view intent; the commit routes the assembled
+    /// rule as the one recurrence write; the detach routes
+    /// `recur: Some(None)` — and nothing else rides its changeset; a
+    /// stale arm (no one-shots) degrades to `NoTarget` (the
+    /// stale-index law).
+    #[test]
+    fn the_recur_editor_actions_route_their_writes() {
+        let mut ctx = ctx(false);
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::SeriesEdit, &ctx),
+            DispatchOutcome::UiEffect(UiEffect::SeriesEditorOpen)
+        );
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::SeriesEditDetachArm, &ctx),
+            DispatchOutcome::UiEffect(UiEffect::SeriesDetachArm)
+        );
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::SeriesEditDetachCancel, &ctx),
+            DispatchOutcome::UiEffect(UiEffect::SeriesDetachCancel)
+        );
+        // The stale arm: no target, no draft — typed NoTarget.
+        for action in [ActionId::SeriesEditCommit, ActionId::SeriesEditDetach] {
+            assert_eq!(
+                ActionRouter::dispatch(action, &ctx),
+                DispatchOutcome::NoTarget
+            );
+        }
+        // The commit's exact command: the assembled rule verbatim.
+        let task = TaskId::from_uuid(Uuid::now_v7());
+        let rule = taskboard_domain::RecurRule {
+            series: taskboard_domain::SeriesId::from_uuid(Uuid::now_v7()),
+            anchor: chrono::NaiveDate::from_ymd_opt(2026, 11, 5).unwrap(),
+            pattern: taskboard_domain::RecurPattern::Daily {
+                every: taskboard_domain::EveryDays::new(1).unwrap(),
+            },
+            bound: taskboard_domain::RecurBound::None,
+            continued_from: None,
+            paused_until: None,
+        };
+        ctx.recur_edit_target = Some(task);
+        ctx.recur_draft_rule = Some(rule.clone());
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::SeriesEditCommit, &ctx),
+            DispatchOutcome::Command(StateCommand::UpdateTask {
+                id: task,
+                changes: taskboard_domain::TaskChanges {
+                    recur: Some(Some(rule)),
+                    ..taskboard_domain::TaskChanges::default()
+                },
+            })
+        );
+        // The detach: a target routes the clear — Some(None) and the
+        // default mask's nothing else.
+        ctx.recur_edit_target = Some(task);
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::SeriesEditDetach, &ctx),
+            DispatchOutcome::Command(StateCommand::UpdateTask {
+                id: task,
+                changes: taskboard_domain::TaskChanges {
+                    recur: Some(None),
+                    ..taskboard_domain::TaskChanges::default()
+                },
+            })
+        );
+        // A draft without a target is still the stale arm.
+        ctx.recur_edit_target = None;
+        ctx.recur_draft_rule = Some(taskboard_domain::RecurRule {
+            series: taskboard_domain::SeriesId::from_uuid(Uuid::now_v7()),
+            anchor: chrono::NaiveDate::from_ymd_opt(2026, 11, 5).unwrap(),
+            pattern: taskboard_domain::RecurPattern::Daily {
+                every: taskboard_domain::EveryDays::new(1).unwrap(),
+            },
+            bound: taskboard_domain::RecurBound::None,
+            continued_from: None,
+            paused_until: None,
+        });
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::SeriesEditCommit, &ctx),
+            DispatchOutcome::NoTarget
         );
     }
 

@@ -242,6 +242,14 @@ pub enum Flow {
     /// funnel (the adapter's `commit_date`), never `commit_edit`.
     /// Which field rides the flow; every flow rule is field-blind.
     EditDate { task: TaskId, field: DateField },
+    /// The task-detail recurrence-rule editor (round-7 D-7.1): the
+    /// window-level overlay's flow — the draft buffer lives in the
+    /// level's `RecurEditorState` (the `EditDate` rule: identity
+    /// rides the flow, text rides the level), seeded by the opener
+    /// seam, committed through the adapter's funnel over
+    /// `assemble_rule`. Ends clean on cancel/Escape (nothing
+    /// dispatches); dropped by `reconcile` when the subject dies.
+    EditRecur { task: TaskId },
     /// The task-detail description editor (round-3 D15/#228): the
     /// shared `buffer` (the title's), committed verbatim — an empty
     /// buffer commits `Some("")`, which is the clear (the
@@ -873,6 +881,16 @@ impl ViewState {
             .iter_mut()
             .rev()
             .find_map(|level| level.state_mut().as_date_editor_mut())
+    }
+
+    /// The recur editor's write seam (the opener's seeding and the
+    /// field keystroke mirrors).
+    pub(crate) fn recur_editor_mut(&mut self) -> Option<&mut crate::level_state::RecurEditorState> {
+        self.surfaces
+            .above_levels_mut()
+            .iter_mut()
+            .rev()
+            .find_map(|level| level.state_mut().as_recur_editor_mut())
     }
 
     /// The innermost `Text` level's buffer (D9 rule 1): `""` without
@@ -1576,6 +1594,30 @@ impl ViewState {
     /// The date-commit funnel's end (r2 D25): the adapter dispatches
     /// the `UpdateTask` itself; ending the flow returns to normal.
     pub fn end_edit_date(&mut self) -> Vec<FlowOutcome> {
+        self.write_flow(Flow::None);
+        vec![FlowOutcome::SetMode(Mode::Normal), FlowOutcome::RefreshNow]
+    }
+
+    /// The recurrence editor's opener (round-7 D-7.1, plan D-D1):
+    /// arm the window-level overlay flow over the subject task —
+    /// insert mode (the form's text fields). The level's draft seeds
+    /// through the adapter's opener seam (the view state owns no
+    /// recur buffer, the `begin_edit_date` rule).
+    pub fn begin_edit_recur(&mut self, state: &AppState) -> Option<TaskId> {
+        let task = self.subject_task.filter(|id| {
+            state
+                .tasks
+                .get(id)
+                .is_some_and(taskboard_domain::Task::is_open)
+        })?;
+        self.write_flow(Flow::EditRecur { task });
+        Some(task)
+    }
+
+    /// The recurrence editor's clean close: nothing dispatches (the
+    /// date-editor clean-close rule — cancel discards, the level dies
+    /// with its buffers).
+    pub fn end_edit_recur(&mut self) -> Vec<FlowOutcome> {
         self.write_flow(Flow::None);
         vec![FlowOutcome::SetMode(Mode::Normal), FlowOutcome::RefreshNow]
     }
@@ -2750,6 +2792,11 @@ impl ViewState {
                 }
             }
             Flow::EditDate { .. } => self.end_edit_date(),
+            // The recurrence editor clean-closes on a foreign settle
+            // (the date-editor rule): the draft dies with the level,
+            // nothing dispatches — the only commit path is the
+            // editor's own funnel.
+            Flow::EditRecur { .. } => self.end_edit_recur(),
             // The description is a TEXT flow on the shared buffer:
             // commit non-empty, discard empty — a focus steal never
             // clears (round-3 D15).
@@ -2992,7 +3039,8 @@ impl ViewState {
                     | Flow::EditDescription { task: t }
                     | Flow::EditDate {
                         task: t, field: _,
-                    } if t == task
+                    }
+                    | Flow::EditRecur { task: t } if t == task
             ) {
                 self.write_flow(Flow::None);
             }
@@ -3150,7 +3198,7 @@ mod tests {
         }
     }
 
-    fn fixture() -> (AppState, BoardId, [StackId; 2], [TaskId; 3]) {
+    pub(super) fn fixture() -> (AppState, BoardId, [StackId; 2], [TaskId; 3]) {
         let board_id = BoardId::from_uuid(uuid::Uuid::now_v7());
         let s0 = StackId::from_uuid(uuid::Uuid::now_v7());
         let s1 = StackId::from_uuid(uuid::Uuid::now_v7());
@@ -6264,5 +6312,121 @@ mod settings_surface_tests {
         assert!(matches!(vs.flow(), Flow::None));
         let retired = vs.drain_retired();
         assert_eq!(retired.len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod edit_recur_tests {
+    use super::tests::{epoch, fixture};
+    use super::*;
+    use crate::level_state::RecurPatternKind;
+
+    /// An armed editor over the fixture's first task.
+    fn armed() -> (ViewState, AppState, TaskId) {
+        let (state, _, [s0, ..], [a, ..]) = fixture();
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        vs.activate_card(a, s0);
+        vs.activate_focused(&state);
+        let id = vs.begin_edit_recur(&state).expect("an open subject arms");
+        (vs, state, id)
+    }
+
+    #[test]
+    fn begin_arms_over_the_open_subject_and_end_clean_closes() {
+        let (mut vs, state, a) = armed();
+        assert_eq!(vs.begin_edit_recur(&state), Some(a));
+        assert_eq!(*vs.flow(), Flow::EditRecur { task: a });
+        assert!(
+            vs.recur_editor_mut().is_some(),
+            "the level state mints with the flow"
+        );
+        // The clean close: nothing dispatches, the mode resolves.
+        let outcomes = vs.end_edit_recur();
+        assert_eq!(
+            outcomes,
+            vec![FlowOutcome::SetMode(Mode::Normal), FlowOutcome::RefreshNow]
+        );
+        assert_eq!(*vs.flow(), Flow::None);
+    }
+
+    #[test]
+    fn a_done_subject_refuses_to_arm() {
+        let (mut state, _, [s0, ..], [a, ..]) = fixture();
+        state.tasks.get_mut(&a).expect("task").done = Some(epoch());
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        vs.activate_card(a, s0);
+        vs.activate_focused(&state);
+        assert_eq!(
+            vs.begin_edit_recur(&state),
+            None,
+            "the assembly precondition is structural"
+        );
+        assert_eq!(*vs.flow(), Flow::None);
+    }
+
+    #[test]
+    fn the_draft_buffer_drops_with_the_flow() {
+        let (mut vs, state, _) = armed();
+        {
+            let editor = vs.recur_editor_mut().expect("the level state");
+            editor.every_days = "3".to_owned();
+            editor.pattern = RecurPatternKind::Monthly;
+        }
+        let _ = vs.end_edit_recur();
+        assert!(
+            vs.recur_editor_mut().is_none(),
+            "the level died with the flow"
+        );
+        // A re-arm starts from the family default — the previous draft
+        // never survives (the buffers-never-outlive-the-flow rule).
+        assert!(vs.begin_edit_recur(&state).is_some());
+        let editor = vs.recur_editor_mut().expect("the re-minted level");
+        assert_eq!(editor.every_days, "1");
+        assert_eq!(editor.pattern, RecurPatternKind::Daily);
+    }
+
+    #[test]
+    fn reconcile_drops_the_flow_when_the_subject_dies() {
+        let (mut vs, mut state, a) = armed();
+        state.tasks.remove(&a);
+        vs.reconcile(&state);
+        assert_eq!(*vs.flow(), Flow::None);
+        assert!(vs.recur_editor_mut().is_none());
+    }
+
+    #[test]
+    fn a_foreign_settle_clean_closes_without_dispatching() {
+        let (mut vs, state, _) = armed();
+        let outcomes = vs.settle_flow(&state);
+        assert_eq!(
+            outcomes,
+            vec![FlowOutcome::SetMode(Mode::Normal), FlowOutcome::RefreshNow]
+        );
+        assert_eq!(
+            *vs.flow(),
+            Flow::None,
+            "the only commit path is the editor's own funnel"
+        );
+    }
+
+    #[test]
+    fn kiosk_rotation_never_dispatches_from_the_editor() {
+        let (mut vs, state, _) = armed();
+        let outcomes = vs.enter_kiosk_mode(&state, crate::view_state::KioskMode::Today);
+        assert!(
+            !outcomes
+                .iter()
+                .any(|o| matches!(o, FlowOutcome::Command(_)))
+        );
+        assert_eq!(*vs.flow(), Flow::None);
+    }
+
+    #[test]
+    fn the_flow_tags_as_its_own_kind() {
+        let (vs, _, _) = armed();
+        assert_eq!(vs.flow().tag(), crate::surfaces::FlowTag::EditRecur);
+        assert_eq!(vs.chain_tags(), vec![crate::surfaces::FlowTag::EditRecur]);
     }
 }
