@@ -229,8 +229,8 @@ file::name embedding the step-ID token. Header row is a parser contract — do n
 
 | ID | Surface file | Widget | Callback | Adapter seam | ActionId | Commands | Row addressing | Journey steps | Test |
 |---|---|---|---|---|---|---|---|---|---|
-| W-1 | ui/compositions/habits.slint (pass-through via ui/views/today-view.slint and ui/app-window.slint) | header add `IconButton` (plus icon, gated by `editing-visible` per D-T16) | `create-asked` | habits-section adapter seam (name assumed — A-1) | ActionId::HabitCreate | StateCommand::CreateHabit | — (section-scoped: no list row is addressed; the section's own board is the target) | US-1/S1 | journeys.rs::us1_s1_header_affordance_arms_inline_form |
-| W-2 | ui/compositions/habits.slint | inline create form: title `TippedField`, target `SegmentedControl`, quota field, confirm/cancel `IconButton`s | internal callbacks assumed (A-2) | habits-section adapter seam (name assumed — A-1) | — (form-local edits ride the armed form, not the action registry) | StateCommand::CreateHabit | — (section-scoped: no list row) | US-1/S2–S5 | journeys.rs::us1_s2 … us1_s5 |
+| W-1 | ui/compositions/habits.slint (pass-through via ui/views/today-view.slint and ui/app-window.slint) | header add `IconButton` (plus icon, gated by `editing-visible` per D-T16) | `create-asked` | habits-section adapter seam (name assumed — A-1) | ActionId::HabitCreate | StateCommand::CreateHabit | — (section-scoped: no list row is addressed; the section's own board is the target) | US-1/S1 | lib.rs::habit_create_toggles_and_escape_disarms_without_shadowing (bound 2026-11-13, PC-3) |
+| W-2 | ui/compositions/habits.slint | inline create form: title `TippedField`, target `SegmentedControl`, quota field, confirm/cancel `IconButton`s | internal callbacks assumed (A-2) | habits-section adapter seam (name assumed — A-1) | — (form-local edits ride the armed form, not the action registry) | StateCommand::CreateHabit | — (section-scoped: no list row) | US-1/S2–S5 | lib.rs::habit_create_sends_the_exact_command (bound 2026-11-13, PC-3) |
 
 ## 7. Command-contract delta
 
@@ -252,14 +252,18 @@ No `UiRequest` in this plan.
 plan nominating another crate adds a `Test-root: <path>` line to its
 front-matter block above. -->
 
-- **Journey tests** (step-ID-named): `us1_s1` header affordance /
-  action id arms the inline form; `us1_s2` title edit echoes and
-  commits on Return; `us1_s3` target pick echoes the segmented
-  variant; `us1_s4` quota fold (zero unrepresentable, default 1);
-  `us1_s5` confirm dispatches the exact `CreateHabit` command with
-  the section's board and the minted target, row renders; escape
-  paths (`us1_s1`–`us1_s5` cancel/Escape variants) assert disarm +
-  discard + no command.
+- **Journey tests** (step-ID-named; *bound 2026-11-13 to the landed
+  names per the comparison plan PC-3 — the implementation chunk
+  pre-dated this plan's token law; the `us1_s*` tokens remain the
+  spec-side step IDs, the bound names below are the landed evidence*):
+  S1 arm/disarm/Escape — `lib.rs::habit_create_toggles_and_escape_disarms_without_shadowing`
+  and `lib.rs::habit_create_stale_arm_disarms_silently`; S4/S5 quota
+  mint + refusals — `presentation.rs::parse_habit_quota_mints_through_the_structural_zero_refusal`,
+  `presentation.rs::habit_quota_validity_is_total_and_hints_every_refusal`,
+  `lib.rs::habit_create_refusals_absorb_without_dispatching`; S5
+  exact command — `lib.rs::habit_create_sends_the_exact_command`
+  (section's board + minted target); kiosk gate —
+  `lib.rs::habit_create_kiosk_gates_the_affordance_not_the_rows`.
 - **Seam tests**: adapter seam test asserting the exact
   `StateCommand::CreateHabit` payload (board resolution + minted
   target) — the `banner_actions_send_exact_commands` shape.
@@ -294,3 +298,30 @@ front-matter block above. -->
 - **All plans**: the free-key-per-preset choices for `HabitCreate`
   (registry-generated hints pick them up; the totality invariant tests
   stay green per round-7 plan §3).
+
+### Recorded rulings from the pilot comparison (2026-11-13)
+
+*Authority: `.artifacts/plans/2026-11-13-round7-ux-pilot-comparison-plan.md`
+§3.1 (the pilot's chunk-2 comparison plan). Assumption-bindings and
+name-level corrections; scope, affordance shape, command usage, and
+kiosk posture unchanged — no re-work.*
+
+- **PC-1 (binds A-1/A-2)**: the pass-through callback renames at the
+  view boundary — `create-asked` in `habits.slint`, `habits-create-asked`
+  in `today-view.slint:106,201` / `app-window.slint:464,1607`; the
+  adapter seams are `on_habits_create_asked`, `on_habits_create_quota_edited`,
+  `on_habits_create_cancelled`, `on_habits_create_confirmed`
+  (`adapter.rs:7505-7518`). A-2's "propagate unchanged" default did
+  not hold; the section-scoped rename is the binding.
+- **PC-2**: the commit funnel routes through a second internal action,
+  `ActionId::HabitCreateCommit` ("habit.create-commit",
+  `actions.rs:306-311,1320-1330`; dispatch `router.rs:727-731`),
+  following the habit family's internal-verb precedent — a §7 delta
+  addition beyond the plan's named `HabitCreate`, adopted as the
+  bound shape.
+- **PC-3**: the journey tests landed under descriptive names in the
+  UI driver suite (`crates/taskboard-ui-slint/src/lib.rs`,
+  `i-slint-backend-testing`), bound into §6/§8 above. The §2.3 gate's
+  step-token rows stay MISSING on this plan for that reason — the
+  retroactive-token limitation is recorded in the comparison plan §2
+  (backlog #768).

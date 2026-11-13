@@ -347,10 +347,10 @@ file::name embedding the step-ID token. Header row is a parser contract — do n
 
 | ID | Surface file | Widget | Callback | Adapter seam | ActionId | Commands | Row addressing | Journey steps | Test |
 |---|---|---|---|---|---|---|---|---|---|
-| W-1 | ui/views/task-view.slint (adjacent to the due/sched rows) | "Add repeat…" `IconButton`-with-label (walk-ordered, hover-tipped) | assumed on the existing `recur-pause-asked` grammar (A-3, e.g. a `recur-edit-asked` shape) | adapter draft-buffer seam (due-editor precedent — assumed, A-3) | ActionId::SeriesEdit | StateCommand::UpdateTask | — (task-scoped: the open task's detail view, no list row) | US-1/S1 | journeys.rs::us1_s1_add_repeat_mounts_editor |
-| W-2 | ui/views/task-view.slint (beside the pattern echo) | "Edit repeat…" `IconButton`-with-label | assumed on the same grammar (A-3) | adapter draft-buffer seam (A-3) | ActionId::SeriesEdit | StateCommand::UpdateTask | — (task-scoped) | US-2/S1 | journeys.rs::us2_s1_edit_repeat_mounts_prefilled |
-| W-3 | ui/compositions/recur-editor.slint (new; design-named) | overlay composition: pattern/bound `SegmentedControl`s, per-pattern fields, live echo caption, commit/cancel | commit/cancel/field callbacks assumed (A-3) | `ContextId::RecurEditor` (design-named value; enum variant name assumed, A-4); adapter draft-buffer globals (A-3) | — (in-context verbs ride the overlay context; Escape resolves globally) | StateCommand::UpdateTask | — (task-scoped) | US-1/S2–S5, US-2/S2–S4 | journeys.rs::us1_s5_commit_dispatches_recur_rule |
-| W-4 | ui/compositions/recur-editor.slint (inside the overlay) | armed "Stop repeating" strip (design-named affordance, the convert precedent) | arm/confirm/cancel callbacks assumed (A-3) | adapter draft-buffer seam (A-3) | — (in-context verbs) | StateCommand::UpdateTask | — (task-scoped) | US-3/S1–S2 | journeys.rs::us3_s1_stop_strip_arms |
+| W-1 | ui/views/task-view.slint (adjacent to the due/sched rows) | "Add repeat…" `IconButton`-with-label (walk-ordered, hover-tipped) | assumed on the existing `recur-pause-asked` grammar (A-3, e.g. a `recur-edit-asked` shape) | adapter draft-buffer seam (due-editor precedent — assumed, A-3) | ActionId::SeriesEdit | StateCommand::UpdateTask | — (task-scoped: the open task's detail view, no list row) | US-1/S1 | lib.rs::recur_editor_commits_the_exact_assembled_rule (bound 2026-11-13, PC-9) |
+| W-2 | ui/views/task-view.slint (beside the pattern echo) | "Edit repeat…" `IconButton`-with-label | assumed on the same grammar (A-3) | adapter draft-buffer seam (A-3) | ActionId::SeriesEdit | StateCommand::UpdateTask | — (task-scoped) | US-2/S1 | lib.rs::recur_editor_edit_preserves_series_identity (bound 2026-11-13, PC-9) |
+| W-3 | ui/compositions/recur-editor.slint (new; design-named) | overlay composition: pattern/bound `SegmentedControl`s, per-pattern fields, live echo caption, commit/cancel | commit/cancel/field callbacks assumed (A-3) | `ContextId::RecurEditor` (design-named value; enum variant name assumed, A-4); adapter draft-buffer globals (A-3) | — (in-context verbs ride the overlay context; Escape resolves globally) | StateCommand::UpdateTask | — (task-scoped) | US-1/S2–S5, US-2/S2–S4 | lib.rs::recur_editor_commits_the_exact_assembled_rule (bound 2026-11-13, PC-9) |
+| W-4 | ui/compositions/recur-editor.slint (inside the overlay) | armed "Stop repeating" strip (design-named affordance, the convert precedent) | arm/confirm/cancel callbacks assumed (A-3) | adapter draft-buffer seam (A-3) | — (in-context verbs) | StateCommand::UpdateTask | — (task-scoped) | US-3/S1–S2 | lib.rs::recur_editor_detach_clears_the_rule_and_nothing_else (bound 2026-11-13, PC-9) |
 
 ## 7. Command-contract delta
 
@@ -373,14 +373,18 @@ domain truth recorded in §1 — not a UI seam, so not a §7 row.)
 plan nominating another crate adds a `Test-root: <path>` line to its
 front-matter block above. -->
 
-- **Journey tests** (step-ID-named): `us1_s1` Add-repeat affordance /
-  `SeriesEdit` mounts the empty editor; `us1_s2`/`us1_s3` pattern and
-  bound drafts buffer adapter-side; `us1_s5` commit dispatches the
-  exact sparse `UpdateTask` and the row + badge render; `us2_s1`
-  Edit-repeat mounts pre-filled; `us2_s4` replace commit; `us3_s1`
-  stop strip arms (and cancel disarms); `us3_s2` stop confirm
-  dispatches `Some(None)` and the posture returns; escape variants of
-  each assert discard + no command.
+- **Journey tests** (step-ID-named; *bound 2026-11-13 to the landed
+  names per the comparison plan PC-9 — the implementation chunk
+  pre-dated this plan's token law; the `us*_s*` tokens remain the
+  spec-side step IDs*): mount + exact assembled-rule commit —
+  `lib.rs::recur_editor_commits_the_exact_assembled_rule`; detach —
+  `lib.rs::recur_editor_detach_clears_the_rule_and_nothing_else`
+  (`Some(None)`, nothing else changes); D-S4 preservation —
+  `lib.rs::recur_editor_edit_preserves_series_identity`; no-flow
+  no-dispatch — `lib.rs::recur_editor_commit_without_the_flow_dispatches_nothing`;
+  kiosk gate — `lib.rs::recur_editor_affordance_hides_on_kiosk`;
+  router arm/cancel/commit dispatch — `router.rs` tests (1677-1741);
+  draft validity folds — the `presentation.rs` tests module (8060+).
 - **Seam tests**: adapter seam test asserting the exact dispatched
   `StateCommand::UpdateTask` payload (the `banner_actions_send_exact_commands`
   shape) for `Some(Some(rule))` and `Some(None)`.
@@ -422,3 +426,42 @@ front-matter block above. -->
 - **All plans**: the free-key-per-preset choices for `SeriesEdit`
   (registry-generated hints pick them up; the preset totality
   invariant tests stay green per round-7 plan §3).
+
+### Recorded rulings from the pilot comparison (2026-11-13)
+
+*Authority: `.artifacts/plans/2026-11-13-round7-ux-pilot-comparison-plan.md`
+§3.2 (the pilot's chunk-2 comparison plan). Assumption-bindings and
+name-level corrections; scope, affordance shape, command usage, escape
+paths, and kiosk posture unchanged — no re-work.*
+
+- **PC-5 (binds A-3/A-4)**: the mount callbacks converge on
+  `series-edit-asked` (`task-view.slint:171,658,781`;
+  `app-window.slint:556,1634`) — A-3's guessed `recur-edit-asked`
+  shape did not hold. The editor's seams are the `on_recur_*` family
+  (`adapter.rs:7249-7440`; inventory `tests/seam_inventory.rs:170-189`).
+  `ContextId::RecurEditor` is the exact variant A-4 assumed
+  (`actions.rs:66`; mask chain `adapter.rs:10493`,
+  `keyscope.rs:719+`). The draft buffer lives in the view-state level
+  (`level_state::RecurEditorState`, `view_state.rs:247`'s EditDate
+  identity rule), not the due-editor's flat facts globals — the same
+  no-transient-UI-state law, newer home.
+- **PC-6 (binds A-5)**: the pre-fill mapping is
+  `presentation::seed_recur_editor(t.recur, anchor)`
+  (`adapter.rs:2558-2570`); the assembly laws stay design-fixed.
+- **PC-7**: the overlay's commit/cancel/detach verbs are internal
+  action ids in the `RecurEditor` context — `SeriesEditCommit`,
+  `SeriesEditDetachArm`, `SeriesEditDetachCancel`, `SeriesEditDetach`
+  (`actions.rs:1428-1464`; pointer-grade, `presets.rs` unbound) —
+  resolving US-3's recorded implementation-choice question.
+- **PC-8**: the mount affordances' labels are consequence-style
+  sentences ("Add repeat: the task joins a recurring series",
+  "Edit repeat: change the pattern or bound") rather than this plan's
+  "Add repeat…"/"Edit repeat…" shorthand; §8 designated label
+  semantics manual/judged, and consequence-first wording matches the
+  stop-strip doctrine. Affordance shape and click ≡ key convergence
+  are as planned.
+- **PC-9**: the journey tests landed under descriptive names in
+  `crates/taskboard-ui-slint/src/lib.rs`, bound into §6/§8 above. The
+  §2.3 gate's step-token rows stay MISSING on this plan for that
+  reason — the retroactive-token limitation is recorded in the
+  comparison plan §2 (backlog #768).
