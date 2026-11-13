@@ -294,6 +294,19 @@ pub(crate) struct Adapter {
     /// The habits section's armed conversion row (issue #506): the
     /// row index the confirm strip renders for; `None` = disarmed.
     habit_convert_armed: Option<usize>,
+    /// The create form's armed flag (round-7 D-7.2): the inline form
+    /// mounts below the section header while true — adapter-owned,
+    /// pushed per pass (the armed-strip doctrine; no transient UI
+    /// state in Slint).
+    habit_create_open: bool,
+    /// The create form's one-shot commit payload (round-7 D-7.2):
+    /// minted at the confirm seam, consumed by the routed
+    /// `habit.create-commit` dispatch.
+    habit_create_draft: Option<crate::router::HabitCreateDraft>,
+    /// The create form's quota field draft (round-7 D-7.2, the
+    /// `timer_when_draft` twin): the per-keystroke validity pass
+    /// reads it; commit and disarm clear it.
+    habit_create_quota: String,
     /// The one-shot focus hand-over (round-3 D10, r4 D25): the phase
     /// step that owns the next push's focus — `None` keeps the status
     /// quo, `Grid` hands focus to the overlay's grid (the
@@ -898,6 +911,7 @@ impl Adapter {
         ctx.habit_move = self.habit_move.take();
         ctx.habit_repair = self.habit_repair.take();
         ctx.habit_convert_target = self.habit_convert_target.take();
+        ctx.habit_create_draft = self.habit_create_draft.take();
         ctx.pattern_draft = self.pattern_draft.take();
         ctx.series_target = self.series_target.take();
         ctx.pause_draft = self.pause_draft.take();
@@ -2678,6 +2692,28 @@ impl Adapter {
                 Vec::new()
             }
             (_, UiEffect::HabitConvertArm | UiEffect::SeriesConvertArm) => Vec::new(),
+            // The create form's toggle (round-7 D-7.2): kiosk stays
+            // inert (the action gate, D-T16 — the affordance never
+            // mounts there), and opening requires an active board —
+            // the section's board IS the create board, so without one
+            // the dispatch degrades to silence (the stale-arm law).
+            // Armed again = discard-and-close (the ViewPlanNextDay
+            // toggle posture).
+            (_, UiEffect::HabitCreateToggle) if self.kiosk => Vec::new(),
+            (_, UiEffect::HabitCreateToggle) => {
+                if self.view_state.board().is_some() {
+                    self.habit_create_open = !self.habit_create_open;
+                    if !self.habit_create_open {
+                        self.habit_create_draft = None;
+                        self.habit_create_quota.clear();
+                    }
+                    // The armed form's mount is a view-state change
+                    // outside the state Arc — forced (the refresh
+                    // invariant's classification).
+                    self.refresh_forced(window);
+                }
+                Vec::new()
+            }
             // The Escape ladder (D-TS2), level-aware like `MenuBack`:
             // a focused form field disengages first (mode flip; the
             // overlay stays), then the form steps to the list, then
@@ -3505,6 +3541,10 @@ impl Adapter {
         let before = self.view_state.view_identity();
         let palette_before = self.shell.palette;
         match effect {
+            // The create form's toggle (round-7 D-7.2): routed through
+            // `route`'s interpretation table, never this shell-side
+            // mirror (the HabitConvertArm posture).
+            UiEffect::HabitCreateToggle => {}
             UiEffect::Exit => {
                 self.quit_requests += 1;
                 let _ = crate::quit();
@@ -6576,6 +6616,9 @@ pub(crate) fn install(
         recur_confirm_armed: false,
         walk_resume: None,
         habit_convert_armed: None,
+        habit_create_open: false,
+        habit_create_draft: None,
+        habit_create_quota: String::new(),
         walk_reentry: Rc::clone(&walk_flag),
         walk_timer: slint::Timer::default(),
         flow_open: FlowLiveness::Flowless,

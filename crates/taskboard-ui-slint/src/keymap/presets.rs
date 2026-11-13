@@ -140,6 +140,10 @@ static STANDARD: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::TaskEdit, ContextId::Today, &["Return"]),
     (ActionId::TaskMove, ContextId::Today, &["M"]),
     (ActionId::TaskDelete, ContextId::Today, &["Delete"]),
+    // Round 7 (D-7.2): the create form's opener — keyboard parity is
+    // the accessibility ledger's demand, so all three presets carry
+    // it (the habit family's deliberate exception).
+    (ActionId::HabitCreate, ContextId::Today, &["Ctrl+Shift+H"]),
     (ActionId::BoardNext, ContextId::Board, &["b"]),
     (ActionId::BoardPrevious, ContextId::Board, &["B"]),
     (ActionId::BoardCreate, ContextId::Board, &["Ctrl+Shift+N"]),
@@ -382,6 +386,9 @@ static EMACS: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::TaskEdit, ContextId::Today, &["Return"]),
     (ActionId::TaskMove, ContextId::Today, &["Ctrl+c", "Ctrl+w"]),
     (ActionId::TaskDelete, ContextId::Today, &["Ctrl+d"]),
+    // Round 7 (D-7.2): the create form's opener — the CUA chord, free
+    // in this preset's Today (the accessibility ledger's parity row).
+    (ActionId::HabitCreate, ContextId::Today, &["Ctrl+Shift+H"]),
     // Round 3 (W-SM-d, F26): the title re-arm — Return at detail is
     // unambiguous once task-detail entry no longer auto-arms (emacs
     // binds Return only at Board/Today for `task.edit`).
@@ -584,6 +591,10 @@ static VI: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::TaskEdit, ContextId::ViNormal, &["Return"]),
     (ActionId::TaskDelete, ContextId::ViNormal, &["d", "d"]),
     (ActionId::TaskMove, ContextId::ViNormal, &["g", "m"]),
+    // Round 7 (D-7.2): the create form's opener — the ledger's
+    // parity row; the Today context is chain-visible in vi too
+    // (the `[Today, ViNormal, Global]` chain shape).
+    (ActionId::HabitCreate, ContextId::Today, &["Ctrl+Shift+H"]),
     // Round 3 (D29, #231): the banner verbs — bare s/m in ViNormal
     // (free; no family growth). Global stays exactly one row (the
     // vi-shape contract).

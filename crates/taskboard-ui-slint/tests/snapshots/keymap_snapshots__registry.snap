@@ -635,6 +635,24 @@ expression: rows
   menu_rank: 190
   description: "+1 the addressed tracker's current window (surplus logs are first-class)."
   menu_group: ~
+- id: habit.create
+  label: Add habit…
+  contexts:
+    - today
+  category: task
+  enabled: true
+  menu_rank: 215
+  description: "Opens the habit create form under the Today section's header (a second press discards and closes it). The habit lands on the section's board."
+  menu_group: task
+- id: habit.create-commit
+  label: Create habit
+  contexts:
+    - today
+  category: task
+  enabled: true
+  menu_rank: 216
+  description: "Routes the create form's confirm: CreateHabit with the minted title and quota target."
+  menu_group: ~
 - id: habit.repair
   label: Add make-up
   contexts:

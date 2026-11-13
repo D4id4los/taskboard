@@ -286,9 +286,22 @@ pub enum ActionId {
     // The habit verbs (DR-6/6, D-P13): section-scoped like the
     // timers' seams — pointer-driven, no preset bindings; dispatch-time
     // gating only (the kiosk gate empties the affordances, the
-    // planner's idempotent NoOps own the refusals).
+    // planner's idempotent NoOps own the refusals). The deliberate
+    // exception is `HabitCreate` (round-7 D-7.2): the accessibility
+    // ledger demands keyboard parity for creation, so it ships bound
+    // in every preset.
     HabitLog,
     HabitMove,
+    /// The create form's opener (round-7 D-7.2): toggles the armed
+    /// inline form under the Today section's header — open when
+    /// closed, discard-and-close when armed. Opening requires an
+    /// active board (the section's board IS the create board).
+    HabitCreate,
+    /// The create form's confirm dispatch (round-7 D-7.2): routes
+    /// `CreateHabit` from the one-shot draft the confirm seam minted
+    /// (`NoTarget` without one). Internal verb — the form's Confirm
+    /// is its only affordance.
+    HabitCreateCommit,
     /// The streak-repair affordance (issue #506, plan D-7): the
     /// make-up +1 into the previous window — routes `AdjustHabitLog`
     /// from the adapter-resolved `(habit, window, count)` (what you
@@ -469,6 +482,8 @@ impl ActionId {
             Self::FocusModeToggle => "focus.toggle",
             Self::HabitLog => "habit.log",
             Self::HabitMove => "habit.move",
+            Self::HabitCreate => "habit.create",
+            Self::HabitCreateCommit => "habit.create-commit",
             Self::HabitRepair => "habit.repair",
             Self::HabitConvertArm => "habit.convert-arm",
             Self::HabitConvertToSeries => "habit.convert-to-series",
@@ -1259,6 +1274,31 @@ pub const REGISTRY: &[ActionEntry] = &[
         menu_group: None,
     },
     ActionEntry {
+        id: ActionId::HabitCreate,
+        label: "Add habit…",
+        contexts: &[ContextId::Today],
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 215,
+        description: "Opens the habit create form under the Today section's header (a second press discards and closes it). The habit lands on the section's board.",
+        // The accessibility ledger's keyboard parity (round-7 D-7.2):
+        // bound in every preset — the habit family's deliberate
+        // exception, recorded at the variant.
+        menu_group: Some(MenuGroup::Task),
+    },
+    ActionEntry {
+        id: ActionId::HabitCreateCommit,
+        label: "Create habit",
+        contexts: &[ContextId::Today],
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 216,
+        description: "Routes the create form's confirm: CreateHabit with the minted title and quota target.",
+        // Internal dispatch verb (see HabitLog): the form's Confirm
+        // button is its only affordance.
+        menu_group: None,
+    },
+    ActionEntry {
         id: ActionId::HabitRepair,
         label: "Add make-up",
         contexts: GLOBAL,
@@ -1828,6 +1868,8 @@ mod tests {
             ActionId::FocusModeToggle,
             ActionId::HabitLog,
             ActionId::HabitMove,
+            ActionId::HabitCreate,
+            ActionId::HabitCreateCommit,
             ActionId::HabitRepair,
             ActionId::HabitConvertArm,
             ActionId::HabitConvertToSeries,

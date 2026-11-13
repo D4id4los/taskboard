@@ -75,6 +75,9 @@ expression: rows
             - Ctrl+Space
           action: task.reopen
         - sequence:
+            - Ctrl+Shift+H
+          action: habit.create
+        - sequence:
             - M
           action: task.move
         - sequence:
@@ -443,6 +446,9 @@ expression: rows
             - Alt+>
           action: nav.last-item
         - sequence:
+            - Ctrl+Shift+H
+          action: habit.create
+        - sequence:
             - Ctrl+b
           action: nav.prev-control
         - sequence:
@@ -779,6 +785,9 @@ expression: rows
         - sequence:
             - Shift+Tab
           action: nav.prev-control
+        - sequence:
+            - Ctrl+Shift+H
+          action: habit.create
     - context: board
       bindings:
         - sequence:
