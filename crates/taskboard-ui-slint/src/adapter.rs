@@ -10361,7 +10361,7 @@ fn install_settings_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         });
     }
     {
-        install_seam!(window: window.on_settings_files_board_action_clicked, adapter: adapter;
+        install_seam!(window: window.on_settings_files_board_action_clicked, adapter: adapter; // slint: files-board-action-clicked
         bind mut (a, window), args (item), {            let Ok(item) = usize::try_from(item) else {
                 return;
             };

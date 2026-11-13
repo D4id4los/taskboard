@@ -377,12 +377,12 @@ file::name embedding the step-ID token. Header row is a parser contract — do n
 
 | ID | Surface file | Widget | Callback | Adapter seam | ActionId | Commands | Row addressing | Journey steps | Test |
 |---|---|---|---|---|---|---|---|---|---|
-| W-1 | src/requests.rs + taskboard-app/src (snapshot fill in `current_connections`) | — (snapshot data plumbing, no widget) | — (no callback: the field rides `ConnectionsSnapshot` into the render pass) | `BoardInfo.bound_channel` (`BoardChannel`), filled app-side (structural detection per D-BF4) | — (no action id: data plumbing) | — (no dispatch) | ItemAddr kind: ConnectionItem (files-board rows) consume it via the fold | US-1/S2 (snapshot data plumbing — no dispatch) | presentation.rs::us1_s2_bound_channel_drives_badge_fold |
-| W-2 | src/presentation.rs (sibling of `deck_bound_boards`) | — (pure presentation fold, rendered by the existing `Badge` widget) | — (no callback: pure fold over snapshot + app state) | `FilesBoardBadge` enum (design-named; home file assumed, A-6) + the per-account sort fold | — (no action id: pure presentation) | — (no dispatch) | ItemAddr kind: ConnectionItem (files-board rows) | US-1/S2–S3 (pure presentation fold — no dispatch) | presentation.rs::us1_s2_badge_tone_and_sort_fold |
-| W-3 | ui/views/settings-view.slint + src/adapter.rs (roster loop replacing `adapter.rs:4867-4883` baseline) | per-row `SettingsButton` joining the walk; rows as `ConnectionItem { kind: files-board }` with badge/action label/enabled computed Rust-side | per-row action callback assumed (A-6, following the card's `*-clicked(index)` grammar) | adapter roster-push (replaces the title-only rows; struct field additions assumed, A-6) | — (keyboard parity via the Settings walk — the recorded parity argument, no new action id) | UiRequest::StopBoardFilesSync ; UiRequest::MoveBoardToFiles ; UiRequest::PublishBoardToFiles | ItemAddr kind: ConnectionItem (files-board; every live non-deleted board emits once per Nextcloud account card) | US-1/S2, US-2/S1, US-3/S1, US-4/S1 | journeys.rs::us2_s1_roster_row_action_dispatches |
-| W-4 | taskboard-app/src/ui_requests.rs (new arm) | — (app arm, no widget) | — (no slint callback: the arm serves the request) | app arm: guards → `StateCommand::UnbindBoard` + snapshot reply | — (no action id: app arm) | UiRequest::StopBoardFilesSync ; StateCommand::UnbindBoard | ItemAddr kind: ConnectionItem (files-board) | US-2/S1–S3 | ui_requests.rs::us2_s2_stop_sync_guards_refuse_typed |
-| W-5 | taskboard-app/src/ui_requests.rs (existing arm, reused from the row button) + picker retirement in ui/views/settings-view.slint | the `FilesMovePicker` component, its copy global, and the `move_choices` table retire | retired picker callback removed (the row button replaces it) | existing `MoveBoardToFiles` arm (`requests.rs:425-428` baseline), reused verbatim | — (keyboard parity via the Settings walk) | UiRequest::MoveBoardToFiles | ItemAddr kind: ConnectionItem (files-board) | US-3/S1–S2 | ui_requests.rs::us3_s1_move_board_to_files_reused |
-| W-6 | taskboard-app/src/ui_requests.rs (new arm) + constants/decision reuse from taskboard-app/src/bootstrap.rs | — (app arm, no widget) | — (no slint callback: the arm serves the request) | app arm: guards → the `BindBoard` files ceremony (per `bootstrap.rs:103` baseline); adapter handler / `install_seam!` names assumed (A-6) | — (no action id: app arm) | UiRequest::PublishBoardToFiles ; StateCommand::BindBoard | ItemAddr kind: ConnectionItem (files-board) | US-4/S1–S3 | ui_requests.rs::us4_s2_publish_guards_refuse_deck_bound |
+| W-1 | src/requests.rs + taskboard-app/src (snapshot fill in `current_connections`) | — | — | `BoardInfo.bound_channel` (`BoardChannel`), filled app-side (structural detection per D-BF4) | — | — | ItemAddr kind: ConnectionItem (files-board rows) consume it via the fold | US-1/S2 (snapshot data plumbing — no dispatch; the no-callback/no-action/no-command cells are PC-10's bound absences) | ui_requests.rs::current_connections_fills_bound_channel_structurally |
+| W-2 | src/presentation.rs (sibling of `deck_bound_boards`) | — | — | `FilesBoardBadge` enum (bound home: presentation.rs, PC-11) + the per-account sort fold | — | — | ItemAddr kind: ConnectionItem (files-board rows) | US-1/S2–S3 (pure presentation fold — no dispatch; absences bound per PC-10) | presentation.rs::us1_s2_badge_tone_and_sort_fold |
+| W-3 | ui/views/settings-view.slint + src/adapter.rs (roster loop replacing `adapter.rs:4867-4883` baseline) | per-row `SettingsButton` joining the walk; rows as `ConnectionItem { kind: files-board }` with badge/action label/enabled computed Rust-side | files-board-action-clicked | adapter roster-push; handler `settings_files_board_action`; seam `on_settings_files_board_action_clicked` (A-6 bound per PC-11) | — | UiRequest::StopBoardFilesSync ; UiRequest::MoveBoardToFiles ; UiRequest::PublishBoardToFiles | ItemAddr kind: ConnectionItem (files-board; every live non-deleted board emits once per Nextcloud account card) | US-1/S2, US-2/S1, US-3/S1, US-4/S1 (no action id: keyboard parity via the Settings walk — the recorded parity argument) | journeys.rs::us2_s1_roster_row_action_dispatches_stop_board_files_sync |
+| W-4 | taskboard-app/src/ui_requests.rs (new arm) | — | — | app arm: guards → `StateCommand::UnbindBoard` + snapshot reply | — | UiRequest::StopBoardFilesSync ; StateCommand::UnbindBoard | ItemAddr kind: ConnectionItem (files-board) | US-2/S1–S3 (no slint callback: the arm serves the request — PC-10's bound absence) | ui_requests.rs::us2_s2_stop_sync_guards_refuse_typed |
+| W-5 | taskboard-app/src/ui_requests.rs (existing arm, reused from the row button) + picker retirement in ui/views/settings-view.slint | the `FilesMovePicker` component, its copy global, and the `move_choices` table retire | — | existing `MoveBoardToFiles` arm (`requests.rs:425-428` baseline), reused verbatim | — | UiRequest::MoveBoardToFiles | ItemAddr kind: ConnectionItem (files-board) | US-3/S1–S2 (the callback cell is a bound absence, PC-10: the retired picker's callback is removed — the row button rides W-3's seam) | journeys.rs::us3_s1_switch_action_dispatches_move_board_to_files |
+| W-6 | taskboard-app/src/ui_requests.rs (new arm) + constants/decision reuse from taskboard-app/src/bootstrap.rs | — | — | app arm: guards → the `BindBoard` files ceremony (per `bootstrap.rs:103` baseline); seam bound per PC-11 | — | UiRequest::PublishBoardToFiles ; StateCommand::BindBoard | ItemAddr kind: ConnectionItem (files-board) | US-4/S1–S3 (no slint callback: the arm serves the request — PC-10's bound absence) | ui_requests.rs::us4_s2_publish_guards_refuse_deck_bound |
 
 ## 7. Command-contract delta
 
@@ -441,6 +441,36 @@ front-matter block above. -->
   homed
 - [ ] All matrix absences carry rulings; census updated
 - [ ] Non-goals filed as backlog issues
+
+## Plan corrections (stage-2 bindings, 2026-11-13)
+
+Recorded ruling-style (the comparison plan
+`2026-11-13-round7-ux-pilot-comparison-plan.md` §3.1/§7.1 amendment
+mechanism; authority: this chunk's stage-2 implementation, which the
+dispatch plan charges with binding A-6):
+
+- **PC-10 (normalizes the wiring cells)**: cells meaning "deliberately
+  absent" carry the bare `—` token — the coverage gate greps non-absent
+  cells literally, so the blind draft's prose-qualified absences ("—
+  (no callback: …)") are corrected to `—` with the reason moved into
+  the Journey-steps column. This is the gate-acceptance gap the
+  comparison plan recorded for phase 3 (its §2 finding, backlog #768),
+  applied plan-side (a plan correction, never a script change).
+- **PC-11 (binds A-6)**: the per-row action callback is
+  `files-board-action-clicked` (the card's `*-clicked(index)` grammar,
+  as assumed); the adapter handler is `settings_files_board_action`
+  behind the `on_settings_files_board_action_clicked` `install_seam!`
+  (replacing the retired `on_settings_move_picked`); the
+  `ConnectionItem` additions are `badge-text`, `badge-tone`
+  (`SettingsBadgeTone { success, neutral, info }`, exported beside
+  `ConnectionItemKind`), `action-label`, `action-enabled`, `archived`;
+  the `FilesBoardBadge` home is `src/presentation.rs` as assumed; the
+  roster fold is `files_board_roster(state, files_on) -> Vec<FilesBoardRow>`
+  (the row carries `title` + `action_enabled` — the D3 sketch's
+  fold outputs, homed there so the D6 enabled rule has exactly one
+  home). The retired picker's journey/inventory seams are recorded by
+  the deletion itself; the W-5 test binds to the surviving row-button
+  path.
 
 ## Plan assumptions (seam names the design does not fix; the implementation chunk binds them)
 
