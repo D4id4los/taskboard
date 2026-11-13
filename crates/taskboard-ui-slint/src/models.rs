@@ -307,9 +307,6 @@ pub struct PushModels {
     // strings (r4 D39 — the per-row handles the positional diff
     // drives; the row struct itself died with the radio list).
     board_options: MirroredRows<crate::DropdownRow>,
-    // The Files row's move picker's options (round-6 D-6.8 phase 2,
-    // D-8) — the board_options pattern, one list over.
-    move_options: MirroredRows<crate::DropdownRow>,
     connection_items: MirroredRows<crate::ConnectionItem>,
     settings_facts: MirroredRows<crate::SettingsFactRow>,
     hints: HintModels,
@@ -1807,21 +1804,6 @@ impl PushModels {
         push_rows(
             &mut self.board_options,
             |rc| global.set_board_options(rc),
-            desired,
-        )
-    }
-
-    /// Diffs the move picker's options onto their persistent handle
-    /// (round-6 D-6.8 phase 2, D-8) — the `push_board_options`
-    /// pattern, one list over.
-    pub(crate) fn push_move_options(
-        &mut self,
-        global: &crate::SettingsModel<'_>,
-        desired: &[crate::DropdownRow],
-    ) -> usize {
-        push_rows(
-            &mut self.move_options,
-            |rc| global.set_move_options(rc),
             desired,
         )
     }

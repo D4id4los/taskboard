@@ -4149,6 +4149,12 @@ enum PendingKind {
     /// `MoveBoardToFiles` (round-6 D-6.8 phase 2, #722): the Files
     /// row's marker.
     Move,
+    /// `StopBoardFilesSync` (round-7 D-7.3, D9): the roster row's
+    /// marker (`busy_board` names the row). Attribution only.
+    StopFilesSync,
+    /// `PublishBoardToFiles` (round-7 D-7.3, D9): the roster row's
+    /// marker (`busy_board` names the row). Attribution only.
+    PublishFiles,
     Preset,
     Scale,
     /// One of the settings editor's commits (the GUI settings editor
@@ -4173,11 +4179,15 @@ enum ItemAddr {
     Files {
         connector: String,
     },
-    /// A files-bound board's visibility row (round-6 D-6.8 phase 2,
-    /// D-6): addressable for a future detach seam; the row carries no
-    /// action this round.
+    /// The files roster's per-row action seam (round-7 D-7.3, W-3/D1
+    /// — round-6's title-only visibility row grew the roster grammar,
+    /// overturning round-6 D-6's "disconnect is a non-goal" ruling;
+    /// authority: the round-7 plan §2 D-7.3). `connector` is the
+    /// card's files connector — the busy marker's target and the
+    /// lane-on fact's re-derivation source at the trust boundary.
     FilesBoard {
         board: BoardId,
+        connector: String,
     },
     Deck {
         connector: String,
@@ -4237,9 +4247,10 @@ struct SettingsVm {
     items: Vec<ItemAddr>,
     /// The pickers' option ids, index-aligned with `board-options`.
     local_choices: Vec<uuid::Uuid>,
-    /// The move picker's option ids (round-6 D-6.8 phase 2, D-8),
-    /// index-aligned with `move-options`.
-    move_choices: Vec<uuid::Uuid>,
+    /// The board the in-flight Stop/Publish op addresses (round-7
+    /// D-7.3, D9 — the `busy_remote` precedent): the specific roster
+    /// row's busy marker; cleared with `pending`.
+    busy_board: Option<BoardId>,
     /// The connector name the in-flight op addresses (r2 D34): set by
     /// the send seams, cleared with `pending`.
     busy_target: String,
@@ -4844,6 +4855,7 @@ impl Adapter {
                 self.settings.pending = None;
                 self.settings.busy_target.clear();
                 self.settings.busy_remote = None;
+                self.settings.busy_board = None;
                 if let Some((outcome, detail)) = landed {
                     self.set_settings_outcome(window, outcome, detail);
                 }
@@ -5065,6 +5077,11 @@ impl Adapter {
             files_locked: false,
             files_restart: false,
             backend_word: SharedString::new(),
+            badge_text: SharedString::new(),
+            badge_tone: crate::SettingsBadgeTone::Neutral,
+            action_label: SharedString::new(),
+            action_enabled: false,
+            archived: false,
         };
         // The backend word per connector (round 6, D-6.8 phase 1): the
         // adapter owns the mapping, the UI stays dumb. Standalone
@@ -5135,29 +5152,38 @@ impl Adapter {
                 addrs.push(ItemAddr::Files {
                     connector: files_connector.clone(),
                 });
-                // The files-bound live boards (round-6 D-6.8 phase 2,
-                // D-6): binding truth, derived from the engine state
-                // every pass — the id type is the lane tag (D-BF4), no
-                // connector-name match. The rows carry no actions;
+                // The per-account roster (round-7 D-7.3, W-3/D11): the
+                // Files section's body — every live board once per
+                // Nextcloud card, channel-tagged, sorted, one action
+                // per row, all composed Rust-side by the fold. Binding
+                // truth re-derived from the engine state every pass;
                 // rendering is independent of the lane switch
                 // (toggling Files off freezes the sync, the binding
                 // persists — hiding the rows would fake the world).
-                for board in state.boards.values() {
-                    if board.deleted
-                        || board.archived
-                        || board
-                            .remote
-                            .as_ref()
-                            .is_none_or(|binding| binding.board.as_files().is_none())
-                    {
-                        continue;
-                    }
+                for row in crate::presentation::files_board_roster(state, files_on) {
+                    let busy = matches!(
+                        pending,
+                        Some(PendingKind::StopFilesSync | PendingKind::PublishFiles)
+                    ) && vm.busy_board == Some(row.board);
                     items.push(crate::ConnectionItem {
                         kind: crate::ConnectionItemKind::FilesBoard,
-                        title: board.title.clone().into(),
+                        title: row.title.clone().into(),
+                        busy,
+                        badge_text: crate::presentation::files_board_badge_label(row.badge).into(),
+                        badge_tone: crate::presentation::files_board_badge_tone(row.badge),
+                        action_label: row
+                            .action
+                            .map(crate::presentation::files_board_action_label)
+                            .unwrap_or_default()
+                            .into(),
+                        action_enabled: row.action_enabled,
+                        archived: row.archived,
                         ..blank.clone()
                     });
-                    addrs.push(ItemAddr::FilesBoard { board: board.id });
+                    addrs.push(ItemAddr::FilesBoard {
+                        board: row.board,
+                        connector: files_connector.clone(),
+                    });
                 }
             }
             let several = card.connectors.len() > 1;
@@ -5303,21 +5329,6 @@ impl Adapter {
             })
             .collect();
         self.settings.local_choices = choices.iter().map(|board| board.id).collect();
-        // The move picker's options (round-6 D-6.8 phase 2, D-8): the
-        // Deck-bound live boards, re-derived EVERY pass — the same
-        // rule; the ceremony's own guard is the eligible set.
-        let move_choices: Vec<requests::BoardInfo> = crate::presentation::deck_bound_boards(&state);
-        let move_options: Vec<crate::DropdownRow> = move_choices
-            .iter()
-            .map(|board| crate::DropdownRow {
-                label: board.name.clone().into(),
-                indicator: crate::DropdownIndicator::LinkOff,
-                tone: crate::DropdownTone::Neutral,
-                selected: false,
-                busy: false,
-            })
-            .collect();
-        self.settings.move_choices = move_choices.iter().map(|board| board.id).collect();
         let (items, addrs) = Self::connection_items_model(&state, &self.settings);
         self.settings.items = addrs;
         let rows: Vec<crate::ConnectionRow> = self
@@ -5347,7 +5358,6 @@ impl Adapter {
         let global = window.global::<crate::SettingsModel>();
         self.models.push_settings_rows(&global, &rows);
         self.models.push_board_options(&global, &options);
-        self.models.push_move_options(&global, &move_options);
         self.models.push_connection_items(&global, &items);
         global.set_busy(self.settings.pending.is_some());
         global.set_busy_target(self.settings.busy_target.clone().into());
@@ -5871,33 +5881,61 @@ impl Adapter {
         );
     }
 
-    /// The Files row's move seam (round-6 D-6.8 phase 2, #722):
-    /// picking a Deck-bound local board moves it onto the files tier
-    /// through the shared ceremony request. A stale item/option index
-    /// is absorbed silently.
-    pub(crate) fn settings_move_picked(&mut self, window: &AppWindow, item: usize, option: usize) {
-        let Some(ItemAddr::Files { connector }) = self.settings.items.get(item).cloned() else {
-            return;
-        };
-        let Some(board) = self.settings.move_choices.get(option).copied() else {
+    /// The files roster's per-row action seam (round-7 D-7.3, W-3/D1):
+    /// the row's one action, re-derived at the trust boundary — the
+    /// binding's channel is read structurally from the engine state
+    /// fresh (D-BF4; the widget never names the action), the lane-on
+    /// fact re-derives from the snapshot exactly as the render pass
+    /// computed it, and the D6 enabled rule (`files_on ∧ !archived`)
+    /// gates the dispatch — a disabled or stale row's click is
+    /// absorbed silently.
+    pub(crate) fn settings_files_board_action(&mut self, window: &AppWindow, item: usize) {
+        let Some(ItemAddr::FilesBoard { board, connector }) =
+            self.settings.items.get(item).cloned()
+        else {
             return;
         };
         if self.settings.pending.is_some() {
             return;
         }
-        let (reply, reply_rx) = oneshot::channel();
-        let request = UiRequest::MoveBoardToFiles {
-            board: BoardId::from_uuid(board),
-            reply,
+        let files_on = self.settings.snapshot.files_sync_enabled
+            && self.settings.snapshot.files_sync_anchor.as_deref() == Some(connector.as_str());
+        let channel = {
+            let state = self.state.load();
+            state
+                .boards
+                .get(&board)
+                .filter(|row| !row.deleted && !row.archived)
+                .and_then(|row| row.remote.as_ref())
+                .map(|binding| crate::presentation::bound_channel_of(&binding.board))
         };
-        self.send_connections_op(
-            window,
-            request,
-            reply_rx,
-            PendingKind::Move,
-            &connector,
-            None,
-        );
+        // The D6 enabled rule re-checked at the trust boundary: a
+        // disabled posture (lane off, archived) or a stale row
+        // (gone / re-bound mid-flight) absorbs the click silently —
+        // nothing dispatches.
+        let kind = match (channel, files_on) {
+            (Some(crate::requests::BoardChannel::Files), true) => PendingKind::StopFilesSync,
+            (Some(crate::requests::BoardChannel::Deck), true) => PendingKind::Move,
+            (None, true) => PendingKind::PublishFiles,
+            _ => return,
+        };
+        let (reply, reply_rx) = oneshot::channel();
+        let request = match kind {
+            PendingKind::StopFilesSync => UiRequest::StopBoardFilesSync { board, reply },
+            PendingKind::PublishFiles => UiRequest::PublishBoardToFiles { board, reply },
+            // The move ceremony, reused verbatim (US-3) — no new
+            // ceremony parameters; its busy marker rides the Files
+            // row (`PendingKind::Move`'s existing grammar), not the
+            // row's.
+            PendingKind::Move => UiRequest::MoveBoardToFiles { board, reply },
+            _ => unreachable!("the roster action dispatches only its three verbs"),
+        };
+        // The row marker is set BEFORE the send: `send_connections_op`
+        // ends in the busy push that renders it.
+        if matches!(kind, PendingKind::StopFilesSync | PendingKind::PublishFiles) {
+            self.settings.busy_board = Some(board);
+        }
+        self.send_connections_op(window, request, reply_rx, kind, &connector, None);
     }
 
     /// The remote row's picker seam (round-5 chunk 8, D-8.4): picking
@@ -10323,11 +10361,11 @@ fn install_settings_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         });
     }
     {
-        install_seam!(window: window.on_settings_move_picked, adapter: adapter;
-        bind mut (a, window), args (item, option), {            let (Ok(item), Ok(option)) = (usize::try_from(item), usize::try_from(option)) else {
+        install_seam!(window: window.on_settings_files_board_action_clicked, adapter: adapter;
+        bind mut (a, window), args (item), {            let Ok(item) = usize::try_from(item) else {
                 return;
             };
-            a.settings_move_picked(&window, item, option);
+            a.settings_files_board_action(&window, item);
 
         });
     }

@@ -10,7 +10,8 @@
 // rides the D18 insert-mask contract: a focused field engages insert
 // mode via the adapter's edited seams; commit returns to Normal.
 
-import { Theme, Typography, RoleText, Semantic } from "../theme.slint";
+import { Theme, Typography, RoleText, Semantic, Tone } from "../theme.slint";
+import { Badge } from "../widgets/badge.slint";
 import { TextField, FieldValidity } from "../widgets/text-field.slint";
 // The validity flavour's single declaration lives beside the widget
 // (text-field.slint); the view re-exports the import for the
@@ -114,6 +115,14 @@ export struct ConnectionItem {
     files-on: bool,
     files-locked: bool,
     files-restart: bool,
+    // files-board (round-7 D-7.3, W-3/D2): the roster row's badge and
+    // action, composed Rust-side — the UI stays a dumb client. Empty
+    // badge text = no badge; empty action label = no action button.
+    badge-text: string,
+    badge-tone: SettingsBadgeTone,
+    action-label: string,
+    action-enabled: bool,
+    archived: bool,
 }
 
 export global SettingsModel {
@@ -125,10 +134,6 @@ export global SettingsModel {
     // The remote rows' local-board choices (the unbound live boards —
     // one list for every remote row's picker; the flyout's rows).
     in-out property <[DropdownRow]> board-options: [];
-    // The Files row's move picker's choices (round-6 D-6.8 phase 2):
-    // the Deck-bound live boards — the move ceremony's eligible set,
-    // re-derived app-side every pass.
-    in-out property <[DropdownRow]> move-options: [];
     // The busy machine (r2 D34): any op in flight disables every
     // settings op; busy-target names the connector/board the spinner
     // markers render on.
@@ -476,20 +481,6 @@ export global SettingsBoardCopy {
     in-out property <string> refresh-hint: "Refresh to list the boards on this server.";
 }
 
-// The move picker's copy constants (round-6 D-6.8 phase 2, D-7):
-// presentation copy, never asserted. Honest about the ceremony's
-// contract: adoption is eventual (no timing promised) and the move
-// is resumable; no undo is promised (the undo window is CLI-only).
-export global SettingsMoveCopy {
-    in-out property <string> label: "Move a board to Files";
-    in-out property <string> description:
-        "Picks the Deck board to move onto this account's Files.";
-    in-out property <string> row-description:
-        "Moves this board onto this account's Files. Other devices adopt it automatically. If the move is interrupted, running it again resumes it.";
-    in-out property <string> placeholder: "Move to Files…";
-    in-out property <string> empty-hint: "No Deck-bound boards to move";
-}
-
 // The publish picker's copy constants (round-6 D-6.9): presentation
 // copy, never asserted.
 export global SettingsPublishCopy {
@@ -594,51 +585,6 @@ component DeckPublishPicker inherits Dropdown {
     }
 }
 
-// The Files row's move picker (round-6 D-6.8 phase 2, #722): the
-// DeckPublishPicker grammar, one site over — flyout site 3, its own
-// options list (`move-options`, the Deck-bound boards — the move
-// ceremony's eligible set), and the move copy. Mounts window-level
-// like every picker.
-component FilesMovePicker inherits Dropdown {
-    in property <int> item-index;
-    callback move-picked(int, int);
-    rows: SettingsModel.move-options;
-    selected-index: 0;
-    field-text: SettingsMoveCopy.placeholder;
-    field-label: SettingsMoveCopy.label;
-    field-description: SettingsMoveCopy.description;
-    flyout-site: 3;
-    empty-hint: SettingsMoveCopy.empty-hint;
-    row-activated(i) => {
-        root.move-picked(root.item-index, i);
-    }
-    row-hovered(i, x, y, w, h) => {
-        TooltipState.hover(
-            SettingsModel.move-options[i].label,
-            SettingsMoveCopy.row-description,
-            [],
-            x, y, w, h);
-    }
-    row-unhovered() => {
-        TooltipState.unhover();
-    }
-    // The journeys' observation seam (the SettingsBoardFacts mirrors):
-    // the opening picker owns the facts.
-    changed open => {
-        if (self.open) {
-            SettingsBoardFacts.active-item = root.item-index;
-            SettingsBoardFacts.field-x = self.absolute-position.x;
-            SettingsBoardFacts.field-y = self.absolute-position.y;
-            SettingsBoardFacts.field-w = self.width;
-            SettingsBoardFacts.field-h = self.height;
-        }
-        SettingsBoardFacts.open = self.open;
-    }
-    changed highlight => {
-        SettingsBoardFacts.highlight = self.highlight;
-    }
-}
-
 // One general editor row (the GUI settings editor): the LabeledField
 // grammar plus the app-stated badges — the env lock renders the row
 // read-only with its source named; the apply fact renders the
@@ -718,10 +664,11 @@ export component SettingsView inherits FocusScope {
     // the card's `connection-items` index, the option the unbound
     // board's index in `board-options`.
     callback publish-picked(int, int);
-    // The Files row's move seam (round-6 D-6.8 phase 2, #722): the
-    // item is the card's `connection-items` index, the option the
-    // Deck-bound board's index in `move-options`.
-    callback move-picked(int, int);
+    // The Files roster's per-row action seam (round-7 D-7.3, W-3/D1):
+    // the item is the roster row's `connection-items` index; the
+    // adapter resolves the board and re-derives the action kind at
+    // the trust boundary.
+    callback files-board-action-clicked(int);
     callback preset-picked(int);
     callback scale-committed(string);
     // The scale field's focus-loss seam (r3 D20a writer 7): a
@@ -1061,24 +1008,22 @@ export component SettingsView inherits FocusScope {
                         text-color: Theme.text-secondary;
                         vertical-alignment: center;
                     }
-                    // The move affordance (round-6 D-6.8 phase 2):
-                    // the picker's closed field IS the button — the
-                    // publish precedent (one affordance, the flyout
-                    // renders window-level from site 3).
-                    FilesMovePicker {
-                        item-index: index;
-                        move-picked(item-index, option) => {
-                            root.move-picked(item-index, option);
-                        }
-                    }
                 }
-                // A files-bound board's visibility row (round-6
-                // D-6.8 phase 2, D-6): the row grammar the Files
-                // toggle established — the fixed "Files" lead word,
-                // then the local board's title. No actions: adoption
-                // is automatic, disconnect is a non-goal.
+                // Roster rows (round-7 D-7.3): per-board badge + one
+                // action button. Overturns round-6 D-6's "adoption is
+                // automatic, disconnect is a non-goal" ruling —
+                // authority:
+                // .artifacts/plans/2026-11-13-gui-review-round7-plan.md
+                // §2 D-7.3 (that plan authored the overturn; the UX
+                // origin 2026-11-13-r7-files-roster-ux-plan.md §1
+                // carries the authority note). The #755 subtree
+                // leftover is recorded, not hidden.
                 if item.kind == ConnectionItemKind.files-board: HorizontalLayout {
                     spacing: Theme.space-2;
+                    VerticalLayout {
+                        alignment: center;
+                        if item.busy: BusyDot {}
+                    }
                     RoleText {
                         role: Typography.body;
                         text: "Files";
@@ -1092,6 +1037,28 @@ export component SettingsView inherits FocusScope {
                         vertical-alignment: center;
                         overflow: elide;
                         horizontal-stretch: 1;
+                    }
+                    if item.archived: RoleText {
+                        role: Typography.caption;
+                        text: "Archived";
+                        text-color: Theme.text-secondary;
+                        vertical-alignment: center;
+                    }
+                    if item.badge-text != "": Badge {
+                        text: item.badge-text;
+                        // The Rust-side tone mapped onto the existing
+                        // Badge vocabulary — no new `Tone` variants
+                        // (the theme ruling).
+                        tone: item.badge-tone == SettingsBadgeTone.success ? Tone.success
+                            : item.badge-tone == SettingsBadgeTone.info ? Tone.info
+                            : Tone.neutral;
+                    }
+                    if item.action-label != "": SettingsButton {
+                        text: item.action-label;
+                        enabled: item.action-enabled && !SettingsModel.busy;
+                        clicked => {
+                            root.files-board-action-clicked(index);
+                        }
                     }
                 }
                 if item.kind == ConnectionItemKind.deck: VerticalLayout {
