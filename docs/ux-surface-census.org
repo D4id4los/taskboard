@@ -9,28 +9,57 @@ standing ruling with its date and authority
 diffs against it. Overturning a ruling is a visible census diff made
 at UX-plan level — never a chunk-local surprise.
 
-- *Status*: =Seeded: phase 2 pilot slices only (2026-11-13); full
-  census = phase 3= — the dedicated stock-take over every surface
-  (Board, Task detail, Today, Review, Settings, Capture, alarm
-  window, CLI) is phase 3's pass (framework §3). Only the three
-  pilot slices appear here; their absence below is *not* a ruling.
-- *Evidence convention*: every populated cell cites =file:line= at
-  the recorded baseline SHA **=fb5863ed=** (stated once here) or an
-  existing test name. A cell the phase-2 pilot comparison marked
-  deviating/missing carries its verdict marker; no such markers
-  exist (the comparison found zero deviations —
+- *Status*: =phase 3 in flight: task-flow surfaces complete=
+  (2026-11-13) — the stock-take (dispatch
+  `.artifacts/plans/2026-11-13-ux-census-stocktake-dispatch-plan.md`)
+  has re-organized the phase-2 seed from feature-scoped slices into
+  surface-scoped slices and completed the four task-flow surfaces
+  (Board, Task detail, Today, Capture). The Review, Settings (files
+  sync), alarm-window, and CLI slices are chunk 2's; absences outside
+  the completed slices are *not* rulings.
+- *Evidence convention*: every populated cell cites =file:line= at its
+  slice block's recorded **Baseline** SHA (stated once per slice block,
+  D-7) or an existing test name. Seed-derived cells inherit the seed
+  baseline **=fb5863ed=** and keep it; drift between slice baselines is
+  expected and recorded, never normalized. A cell the phase-2 pilot
+  comparison marked deviating/missing carries its verdict marker; no
+  such markers exist (the comparison found zero deviations —
   `.artifacts/plans/2026-11-13-round7-ux-pilot-comparison-plan.md` §1).
 - *Columns* are the app's fixed surface set (Board / TaskDetail /
   Today / Review / Settings / Capture / CLI); =D= display, =E= edit,
-  =C= create, =X= remove; =—= deliberately absent (a core-verb
-  absence needs a ruling in the slice's block).
+  =C= create, =X= remove; =—= deliberately absent (a core-verb absence
+  needs a ruling in the slice's block); =— (self)= the capability *is*
+  that surface (not an absence, no ruling needed); =U= unruled absence
+  — no authority ever ruled it (phase-4 triage input; each =U= has a
+  row in the slice's *unruled register*).
+- *Schema* (the stock-take chunk-1 decisions, recorded in
+  `.artifacts/plans/2026-11-13-ux-census-stocktake-1-chunk-plan.md` §2,
+  binding): slices are *surface-scoped* — one capability×surface matrix
+  per surface, the column set never changes; capabilities are derived
+  by the *verb-inventory method* (five extraction passes: engine
+  `StateCommand` verbs, UI `UiRequest`s grouped per polling family,
+  `ActionId` affordances bucketed by `ContextId`, CLI verbs, and
+  display-only affordances), named =entity.verb= snake_case with the
+  engine/clap word as naming authority; internal-commit action ids fold
+  into the user-facing capability they commit (identity kept in the
+  cell evidence); overlays are recorded inside the slice whose view
+  mounts them, and the alarm window gets its own slice block (chunk 2,
+  D-6); one capability = one row = one name across every slice that
+  carries it; *complete* = every derived capability whose exposure lies
+  even partly in the slice has a row and zero blank cells in the slice.
 
-* Slice: Today (habits)
+* Slice: Today
 
+Baseline: =dc290df2=. Origin: surface slice authored by the phase-3
+stock-take chunk 1 (verb-inventory method, chunk plan
+`.artifacts/plans/2026-11-13-ux-census-stocktake-1-chunk-plan.md` §2
+D-2). (merged from seed slice: Today (habits) —) the seed slice's
 Origin: the habit-create UX journey plan
 (`.artifacts/plans/2026-11-13-r7-habit-create-ux-plan.md`, D-7.2);
 comparison authority:
 `.artifacts/plans/2026-11-13-round7-ux-pilot-comparison-plan.md` §3.1.
+Kiosk note (seed, verbatim posture): habit rows render on kiosk, the
+row actions do not (=ui/compositions/habits.slint:7-10,36=).
 
 | Capability | Board | TaskDetail | Today | Review | Settings | Capture | CLI |
 |---|---|---|---|---|---|---|---|
@@ -39,7 +68,7 @@ comparison authority:
 | habit.remove | — (R-3) | — (R-3) | — (R-3) | — (R-3) | — (R-3) | — (R-3) | X (pre-existing, =habits rm=) |
 | habit.log | | | E (pre-existing, D-P13 grammar) — row seams `adapter.rs:7453-7467+` | | | | E (pre-existing) |
 
-** Rulings (Today/habits)
+** Rulings (Today)
 
 | ID | Ruling | Reason | Home | Date | Authority |
 |---|---|---|---|---|---|
@@ -49,12 +78,19 @@ comparison authority:
 | PC-1 | the create pass-through callback renames =create-asked= → =habits-create-asked= at the view boundary; adapter seams =on_habits_create_*= | the section-scoped rename binds blind-plan assumptions A-1/A-2; scope unchanged | habit-create UX plan, comparison ruling PC-1 | 2026-11-13 | comparison plan §3.1 |
 | PC-2 | the commit funnel routes through internal =ActionId::HabitCreateCommit= | the habit family's internal-verb precedent; a §7-delta addition beyond the blind plan's named =HabitCreate= | habit-create UX plan, comparison ruling PC-2 | 2026-11-13 | comparison plan §3.1 |
 
-* Slice: Task detail (recurrence)
+* Slice: Task detail
 
-Origin: the recur-editor UX journey plan
+Baseline: =dc290df2=. Origin: surface slice authored by the phase-3
+stock-take chunk 1 (verb-inventory method, chunk plan
+`.artifacts/plans/2026-11-13-ux-census-stocktake-1-chunk-plan.md` §2
+D-2). (merged from seed slice: Task detail (recurrence) —) the seed
+slice's Origin: the recur-editor UX journey plan
 (`.artifacts/plans/2026-11-13-r7-recur-editor-ux-plan.md`, D-7.1);
 comparison authority:
 `.artifacts/plans/2026-11-13-round7-ux-pilot-comparison-plan.md` §3.2.
+The recurrence capability family below is the seed slice's matrix,
+re-homed verbatim; the full-surface inventory extends it in this
+chunk's later commits.
 
 | Capability | Board | TaskDetail | Today | Review | Settings | Capture | CLI |
 |---|---|---|---|---|---|---|---|
@@ -63,7 +99,7 @@ comparison authority:
 | task.recur_preview | | D (desktop) (US-1, US-2 — inside the editor) — live echo `recur-editor.slint:54-57` fed by =assemble_recur_draft= | | | | | |
 | task.recur_display | D (pre-existing card badge) | D (pre-existing pattern echo) | | | | | |
 
-** Rulings (Task detail/recurrence)
+** Rulings (Task detail)
 
 | ID | Ruling | Reason | Home | Date | Authority |
 |---|---|---|---|---|---|
