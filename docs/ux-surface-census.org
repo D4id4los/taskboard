@@ -123,10 +123,10 @@ absences are registered below; none is dressed as a ruling.
 | board.rename | TaskDetail, Today, Review, Settings, Capture | Sweep-T/Y/R/S/C: no board-rename seam or mount | 2026-11-13 |
 | board.delete | TaskDetail, Today, Review, Settings, Capture | Sweep-T/Y/R/S/C: no board-delete seam or mount | 2026-11-13 |
 | board.select | TaskDetail, Today, Review, Settings, Capture | Sweep-T/Y/R/S/C: no board-switch seam or mount outside the board bar | 2026-11-13 |
-| board.color | TaskDetail, Today, Review, Settings, Capture | Sweep-T/Y/R/S/C: no =SetBoardColor= seam; the GUI has no color affordance anywhere | 2026-11-13 |
-| board.archive | TaskDetail, Today, Review, Settings, Capture | Sweep-T/Y/R/S/C: no =SetBoardArchived= seam; archived boards are excluded from the board bar (`board-bar.slint:21-34`), unreachable in the GUI | 2026-11-13 |
-| board.reset | TaskDetail, Today, Review, Settings, Capture | Sweep-T/Y/R/S/C: no =ResetBoard= seam | 2026-11-13 |
-| board.reconcile | TaskDetail, Today, Review, Settings, Capture | Sweep-T/Y/R/S/C: no =ReconcileByTitle= seam | 2026-11-13 |
+| board.color | Board, TaskDetail, Today, Review, Settings, Capture | Sweep-B/T/Y/R/S/C: no =SetBoardColor= seam; the GUI has no color affordance anywhere | 2026-11-13 |
+| board.archive | Board, TaskDetail, Today, Review, Settings, Capture | Sweep-B/T/Y/R/S/C: no =SetBoardArchived= seam; archived boards are excluded from the board bar (`board-bar.slint:21-34`), unreachable in the GUI | 2026-11-13 |
+| board.reset | Board, TaskDetail, Today, Review, Settings, Capture | Sweep-B/T/Y/R/S/C: no =ResetBoard= seam | 2026-11-13 |
+| board.reconcile | Board, TaskDetail, Today, Review, Settings, Capture | Sweep-B/T/Y/R/S/C: no =ReconcileByTitle= seam | 2026-11-13 |
 | board.default_preset | TaskDetail, Today, Review, Settings, Capture, CLI | Sweep-T/Y/R/S/C: the empty-board preset CTA exists only on the board surface; Sweep-CLI: no preset verb | 2026-11-13 |
 | stack.create | TaskDetail, Today, Review, Settings, Capture | Sweep-T/Y/R/S/C: no stack-create seam | 2026-11-13 |
 | stack.rename | TaskDetail, Today, Review, Settings, Capture | Sweep-T/Y/R/S/C: no stack-rename seam | 2026-11-13 |
@@ -220,6 +220,72 @@ sub-family) and `crates/taskboard-app/src/commands/`.
 | alarm.cancel_adhoc | Board, TaskDetail, Review, Settings, Capture | Sweep-B/T/R/S/C: no alarm-cancel seam | 2026-11-13 |
 | alarm.display | Board, TaskDetail, Review, Settings, Capture | Sweep-B/T/R/S/C: no timers display outside Today and the status bar (chunk 2's alarm-window slice owns the rest, D-6) | 2026-11-13 |
 | review.walk_preview | Board, TaskDetail, Review, Settings, Capture, CLI | Sweep-B/T/R/S/C: the surfacing card mounts only in the today view (`today-view.slint:206-238`); Sweep-CLI: none | 2026-11-13 |
+
+* Slice: Capture
+
+Baseline: =dc290df2=. Origin: surface slice authored by the phase-3
+stock-take chunk 1 from the verb-inventory method (chunk plan
+`.artifacts/plans/2026-11-13-ux-census-stocktake-1-chunk-plan.md` §2
+D-2/D-5): the capture overlay (`ui/compositions/capture-overlay.slint`)
+and the search palette (`ui/compositions/search-palette.slint`) plus
+the app-level overlays that mount outside the fixed columns but are
+reachable from every surface — the action menu
+(`ui/compositions/action-menu.slint`), undo/redo, and focus mode
+(`ui/compositions/focus-overlay.slint`) — recorded here because no
+other slice's view mounts them. Method note (D-2 pass 2): no
+=UiRequest= variant is triggered from any of these surfaces — the
+overlay lane runs entirely on =StateCommand=/outcome routing
+(seams adapter.rs:8507-8536, 6997-7015); the =UiRequest= registry
+(`crates/taskboard-ui-slint/src/requests.rs:344`) is
+settings/board-management plumbing and belongs to chunk 2's Settings
+slice. The capture overlay is title-only at create (standing ruling
+R-1 in the Task detail slice — recurrence is not schedulable here).
+
+Named absence sweeps cited by the register below (all at this slice's
+baseline): *Sweep-B* = `board-view.slint`, `stack-view.slint`,
+`board-layout.slint`, `board-bar.slint`, `task-card.slint` + the board
+seams (adapter.rs:7577-8551); *Sweep-T* = `task-view.slint` + the task
+seams (adapter.rs:8260-9952); *Sweep-Y* = `today-view.slint` +
+`habits.slint` + the habits/today seams (adapter.rs:7094-7562);
+*Sweep-R* = `review-view.slint` + the review/walk seams
+(adapter.rs:10042-10109); *Sweep-S* = `settings-view.slint` + the
+settings seams (adapter.rs:8246,10246-10439); *Sweep-CLI* =
+`crates/taskboard-app/src/cli.rs` (=Command= enum and every
+sub-family) and `crates/taskboard-app/src/commands/`.
+
+| Capability | Board | TaskDetail | Today | Review | Settings | Capture | CLI |
+|---|---|---|---|---|---|---|---|
+| capture.quick | E (global) — =CaptureQuick= "Captures a thought into the global inbox from anywhere" `actions.rs:718-720`, Ctrl+K `presets.rs:78`, opens the overlay `router.rs:927` | E (global) — same =CaptureQuick= evidence | E (global) — same =CaptureQuick= evidence | E (global) — same =CaptureQuick= evidence | E (global) — same =CaptureQuick= evidence | E — overlay open/typed buffer `adapter.rs:8514-8518` | U |
+| capture.commit | E — capture lands in the focused board's Backlog `view_state.rs:2024,3657` | U | U | U | U | E — overlay accept `adapter.rs:8518-8524` → =CaptureTask= `messages.rs:36` | C (pre-existing, =capture= `cli.rs:105-112`) |
+| capture.dismiss | U | U | U | U | U | E — Escape dismiss `adapter.rs:8524-8530`, hint `capture-overlay.slint:39-43` | U |
+| capture.hint_display | U | U | U | U | U | D — placeholder and return/escape hint `capture-overlay.slint:31,39-43` | U |
+| palette.search | E (global) — =PaletteSearch= `actions.rs:749-751`, Ctrl+F `presets.rs:79`, open effect `router.rs:1040` | E (global) — same =PaletteSearch= evidence | E (global) — same =PaletteSearch= evidence | E (global) — same =PaletteSearch= evidence | E (global) — same =PaletteSearch= evidence | E — query re-rank and dismissal `adapter.rs:8507-8530` | E (pre-existing, =find= `cli.rs:89-101`, handler `commands/find.rs` — same engine ranking, two names) |
+| palette.jump | U | U | U | U | U | E — =NavShowTask= `actions.rs:789-798` (Palette-only context), row activation `adapter.rs:8536-8542` | U |
+| palette.results_display | U | U | U | U | U | D — result rows with kind/context meta `search-palette.slint:13-20,59-67`, selection emphasis `search-palette.slint:63`, overflow caption `search-palette.slint:69-75` | U |
+| app.menu | E (global) — =AppMenu= `actions.rs:668-670`, `presets.rs:74`; two-tier menu seams `adapter.rs:6997-7015`, opener `adapter.rs:7802`, dismiss `adapter.rs:7831` | E (global) — same =AppMenu= evidence | E (global) — same =AppMenu= evidence | E (global) — same =AppMenu= evidence | E (global) — same =AppMenu= evidence | E (global) — menu rows generated from the registry `actions.rs:649+` | U |
+| app.undo | E (global) — =AppUndo= `actions.rs:678-680`, `presets.rs:72` (→ =Undo= `messages.rs:589`; =RestoreTask= `messages.rs:601` rides the undo path) | E (global) — same =AppUndo= evidence | E (global) — same =AppUndo= evidence | E (global) — same =AppUndo= evidence | E (global) — same =AppUndo= evidence | E (global) — same =AppUndo= evidence | E (pre-existing, =undo= `cli.rs:1750`) |
+| app.redo | E (global) — =AppRedo= `actions.rs:688-690`, `presets.rs:73` (→ =Redo= `messages.rs:592`) | E (global) — same =AppRedo= evidence | E (global) — same =AppRedo= evidence | E (global) — same =AppRedo= evidence | E (global) — same =AppRedo= evidence | E (global) — same =AppRedo= evidence | E (pre-existing, =redo= `cli.rs:1753`) |
+| app.focus_toggle | E (global) — =FocusModeToggle= `actions.rs:1286-1288`; the focus overlay (`focus-overlay.slint`) mounts at window level | E (global) — same =FocusModeToggle= evidence | E (global) — same =FocusModeToggle= evidence | E (global) — same =FocusModeToggle= evidence | E (global) — same =FocusModeToggle= evidence | E (global) — same =FocusModeToggle= evidence | U |
+
+** Rulings (Capture)
+
+None seeded — the capture surface's only standing ruling (R-1, no
+recurrence scheduling at create) lives in the Task detail slice where
+it was seeded; the capture-overlay cells above cite it. Unruled
+absences are registered below; none is dressed as a ruling.
+
+** Unruled register (Capture)
+
+| capability | surfaces | evidence-of-absence | date |
+|---|---|---|---|
+| capture.quick | CLI | Sweep-CLI: no interactive capture verb — =capture= (`cli.rs:105-112`) commits its arguments directly and exits; that twin is recorded on =capture.commit= | 2026-11-13 |
+| capture.commit | TaskDetail, Today, Review, Settings | Sweep-T/Y/R/S: no capture-commit seam (the overlay commits into the inbox/backlog targets only, `view_state.rs:2024,3657`) | 2026-11-13 |
+| capture.dismiss | Board, TaskDetail, Today, Review, Settings, CLI | Sweep-B/T/Y/R/S: no overlay mount; Sweep-CLI: none | 2026-11-13 |
+| capture.hint_display | Board, TaskDetail, Today, Review, Settings, CLI | Sweep-B/T/Y/R/S: no overlay mount; Sweep-CLI: none | 2026-11-13 |
+| palette.jump | Board, TaskDetail, Today, Review, Settings, CLI | Sweep-B/T/Y/R/S: no palette mount; Sweep-CLI: =find= prints results, no jump verb | 2026-11-13 |
+| palette.results_display | Board, TaskDetail, Today, Review, Settings, CLI | Sweep-B/T/Y/R/S: no palette mount; Sweep-CLI: =find= output is the CLI slice's row (chunk 2) | 2026-11-13 |
+| app.menu | CLI | Sweep-CLI: no menu verb | 2026-11-13 |
+| app.focus_toggle | CLI | Sweep-CLI: no focus verb (`cli.rs` swept, no match) | 2026-11-13 |
 
 * Slice: Task detail
 
