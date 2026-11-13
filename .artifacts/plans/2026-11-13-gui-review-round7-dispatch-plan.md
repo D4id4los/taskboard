@@ -23,6 +23,23 @@
   (the CLI `habits update` covers it; not requested), and the #750
   adoption-state badge fold (a small follow-up once chunk 3's row
   grammar lands).
+- **[amended 2026-11-13 — authority:
+  `.artifacts/plans/2026-11-13-round7-ux-pilot-comparison-plan.md`, §1/§7
+  (the UX journey framework phase-2 pilot's chunk-2 comparison plan)]**
+  Chunk status: chunks 1 and 2 MERGED (PR #758, PR #765) and compared
+  under the framework — verdict: all claimed steps satisfied, **zero
+  deviations, zero re-work items** (empty re-work list, a valid outcome
+  recorded in the comparison plan §1); the two pilot UX plans
+  (`2026-11-13-r7-habit-create-ux-plan.md`,
+  `2026-11-13-r7-recur-editor-ux-plan.md`) carry the recorded
+  plan-correction rulings; no stage-1 implementation plan was
+  superseded. Chunk 3 NOT STARTED — the files-roster UX plan's
+  all-MISSING gate run is its correct pre-state. Consequently: §4's
+  chunk-3 prompts are re-authored below under the framework (US/W/R
+  IDs cited, the stage-2 gate mandate, the stage-3 walkthrough
+  protocol); **no re-work chunk blocks are appended** (the re-work list
+  is empty). Chunks 1–2's prompts (§2/§3) are left verbatim — they are
+  historical record of what dispatched.
 
 ## 1. Chunks & ordering
 
@@ -445,7 +462,18 @@ merge; never touch main.
 ## 4. Chunk 3 — Per-account Files board roster (`feat/ui-r7-files-board-roster`)
 
 - **Covers** (normative: origin plan §3 D-7.3 + §3 accessibility
-  ledger): (a) `BoardInfo` gains `bound_channel: Option<BoardChannel>`
+  ledger; *[amended 2026-11-13 — authority: the comparison plan §7:
+  the normative UX origin is now the blind-authored UX journey plan
+  `.artifacts/plans/2026-11-13-r7-files-roster-ux-plan.md` — its US-n
+  stories, US-n/S-k journey steps, W-1…W-6 wiring rows, and R-1…R-5
+  rulings. The P1-slice rule is checked here: all four US stories are
+  P1 and this is the only chunk for the slice, so this chunk's sum
+  MUST complete every P1 story end-to-end — entry to visible outcome
+  including escape paths — or the chunk set is invalid. The chunk
+  implements exactly W-1…W-6; on merge, the chunk updates its census
+  slice in `docs/ux-surface-census.org` ("Settings (files sync)") and
+  the files-roster UX plan's gate run must exit 0.]*): (a) `BoardInfo`
+  gains `bound_channel: Option<BoardChannel>`
   (`Deck | Files`), filled app-side in `current_connections`
   (`ui_requests.rs:1413-1432`) from `binding.board.as_deck()/as_files()`
   — structural detection per D-BF4, never a connector-name match;
@@ -489,7 +517,10 @@ merge; never touch main.
   move arm's tests; the existing move-arm tests stay green; picker
   retirement leaves no dead copy/table entries; full gate suite green.
 
-**Prompt 3.1 (planning):**
+**Prompt 3.1 (planning):** *[re-authored 2026-11-13 under the UX
+journey framework — authority: the comparison plan
+`.artifacts/plans/2026-11-13-round7-ux-pilot-comparison-plan.md` §7;
+the prior non-framework text was replaced wholesale]*
 
 ```text
 You are the stage-1 PLANNING agent for chunk 3 of the GUI review round 7
@@ -497,34 +528,39 @@ implementation ("per-account Files board roster", branch
 feat/ui-r7-files-board-roster) in the taskboard repo at
 /home/viktoria/src/taskboard.
 
-1. Read AGENTS.md, then
-   .artifacts/plans/2026-11-13-gui-review-round7-plan.md §3 D-7.3 and the
-   §3 accessibility ledger (normative) and §2 row R7-3, issue #723 (the
+1. Read AGENTS.md (§7's UX journey-plan trigger rule — advisory mode,
+   but this chunk's origin cites a UX journey plan, so it binds you),
+   then the NORMATIVE UX origin:
+   .artifacts/plans/2026-11-13-r7-files-roster-ux-plan.md — cite its
+   IDs the way you cite origin sections: US-1..US-4 stories, US-n/S-k
+   journey steps, W-1..W-6 wiring rows, R-1..R-5 rulings. Alongside it
+   read the design origin
+   .artifacts/plans/2026-11-13-gui-review-round7-plan.md §3 D-7.3 and
+   the §3 accessibility ledger, §2 row R7-3, issue #723 (the
    single-lane boundary), and the dispatch plan
    .artifacts/plans/2026-11-13-gui-review-round7-dispatch-plan.md §1/§4.
-2. Read the seams: crates/taskboard-ui-slint/src/requests.rs (BoardInfo
-   ~65-70, ConnectorInfo ~51-58, SettingsSnapshot.files_sync_anchor
-   ~250, UiRequest variants ~344-430 — MoveBoardToFiles ~425 is the
-   Switch payload), src/adapter.rs (connection_items_model ~4764-4998 —
-   the files-board loop ~4867-4883 is what the roster replaces;
-   files_on ~4841-4842; ItemAddr ~3886-3912; move_choices ~3962-3964;
-   push_settings/push_move_options ~5004-5076; settings_move_picked
-   ~5600-5623; PendingKind), src/presentation.rs (deck_bound_boards
-   ~5157-5177 and account_cards ~5182-5211 — the fold siblings to
-   mirror), ui/views/settings-view.slint (ConnectionItemKind ~71-79 and
-   ConnectionItem ~84-107, the Files row ~1016-1064, the files-board
-   rows ~1070-1086 with their round-6 ruling comment, FilesMovePicker
-   ~592-630), ui/widgets/badge.slint (the Badge primitive),
-   src/settings_status.rs (the sentence registry ~30-89, move sentences
-   ~80-88); crates/taskboard-app/src/ui_requests.rs (current_connections
-   ~1413-1432, handle_settings ~396-399, move_board_to_files
-   ~1506-1542, map_move_error ~1547-1565, detach_connection
-   ~1172-1198), crates/taskboard-app/src/board_move_ceremony.rs
-   (AppWorld::assign_files ~506-516 — the assign step the publish arm
-   reuses), crates/taskboard-app/src/bootstrap.rs (FILES_SYNC_
-   CONNECTOR_NAME ~103, files_sync_spawn_decision ~120-134). Tests you
-   must not break: the move-arm app tests, the settings adapter tests,
-   the presentation folds' tests.
+   Where the UX plan and D-7.3 differ, the UX plan's recorded rulings
+   (R-n) win — D-7.3 authored them.
+2. Read the seams the UX plan's wiring inventory names:
+   crates/taskboard-ui-slint/src/requests.rs (BoardInfo,
+   ConnectorInfo, SettingsSnapshot.files_sync_anchor, UiRequest
+   variants — MoveBoardToFiles is the Switch payload), src/adapter.rs
+   (connection_items_model — the files-board loop the roster replaces;
+   files_on; ItemAddr; move_choices; push_settings/push_move_options;
+   settings_move_picked; PendingKind), src/presentation.rs
+   (deck_bound_boards and account_cards — the fold siblings to
+   mirror), ui/views/settings-view.slint (ConnectionItemKind /
+   ConnectionItem, the Files row, the files-board rows with their
+   round-6 ruling comment, FilesMovePicker), ui/widgets/badge.slint,
+   src/settings_status.rs; crates/taskboard-app/src/ui_requests.rs
+   (current_connections, handle_settings, move_board_to_files,
+   map_move_error, detach_connection),
+   crates/taskboard-app/src/board_move_ceremony.rs
+   (AppWorld::assign_files — the assign step the publish arm reuses),
+   crates/taskboard-app/src/bootstrap.rs (FILES_SYNC_CONNECTOR_NAME,
+   files_sync_spawn_decision). Tests you must not break: the move-arm
+   app tests, the settings adapter tests, the presentation folds'
+   tests.
 3. Run scripts/worktree-doctor.sh from /home/viktoria/src/taskboard
    first (nonzero exit = free disk below the floor: STOP and report),
    then create the worktree: git worktree add -b
@@ -532,75 +568,97 @@ feat/ui-r7-files-board-roster) in the taskboard repo at
    ../taskboard-WT-feat-ui-r7-files-board-roster off main (never
    without -b, never on main — AGENTS §8).
 4. Write a TDD-first plan at
-   .artifacts/plans/<today>-ui-r7-files-board-roster-plan.md settling:
-   the BoardChannel shape and where it lives (requests.rs twin vs
-   deriving from RemoteBoardId at the seam); the exact badge enum +
-   tone map + the verbatim labels' home (presentation constants); the
-   archived-board visibility decision (the origin says "show them
-   flagged archived" — settle the flag/copy and whether actions are
-   enabled on archived rows); the per-account fold's inputs (how the
-   anchor account joins ConnectorInfo) and its determinism; the two new
-   request variants' payloads/replies and their SettingsError variants +
-   status sentences; the Stop/Publish arms' guard order and ceremony
-   reuse (assign_files on the engine handle — the publish-board arm
-   precedent); the pending/busy model for the two new actions; the
-   picker retirement's exact deletion list; the row comment recording
-   the round-6 ruling's overturn (origin D-7.3 as authority); the test
-   catalogue. Resolve every open question with a recorded decision;
-   deviations from the origin need a recorded reason.
+   .artifacts/plans/<today>-ui-r7-files-board-roster-plan.md mapping
+   every chunk deliverable to its UX-plan ID (W-row by W-row; every P1
+   story US-1..US-4 must complete end-to-end including escape paths —
+   the P1-slice rule, §4's Covers line). Bind the UX plan's open
+   assumptions (A-6: the per-row action callback name, the
+   ConnectionItem field additions, the FilesBoardBadge enum's home,
+   the adapter handler / install_seam! names for the two new
+   requests). Settle: the BoardChannel shape and where it lives; the
+   exact badge enum + tone map + the verbatim labels' home; the
+   archived-board visibility decision; the per-account fold's inputs
+   and determinism; the two new request variants' payloads/replies
+   and their SettingsError variants + status sentences; the
+   Stop/Publish arms' guard order and ceremony reuse (assign_files on
+   the engine handle); the pending/busy model for the two new
+   actions; the picker retirement's exact deletion list; the row
+   comment recording the round-6 ruling's overturn (origin D-7.3 as
+   authority); the test catalogue — every journey step US-n/S-k gets
+   a test whose name embeds the step token (us<n>_s<k>), per the UX
+   plan's naming law. Resolve every open question with a recorded
+   decision; deviations from the UX origin need a recorded reason.
 5. Commit it as: docs(plan): the ui-r7 files board roster chunk. Do not
    implement; do not push.
 6. Backlog issues autonomously (AGENTS §7 standing authorization); list
    the numbers in your report.
 
-Report: plan path, decisions, risks, estimated diff size.
+Report: plan path, the UX-ID coverage map, decisions, risks, estimated
+diff size.
 ```
 
-**Prompt 3.2 (implementation):**
+**Prompt 3.2 (implementation):** *[re-authored 2026-11-13 under the
+UX journey framework — authority: the comparison plan §7]*
 
 ```text
 You are the stage-2 IMPLEMENTATION agent for chunk 3 of the GUI review
 round 7 implementation ("per-account Files board roster").
 
-1. Read AGENTS.md, the origin plan §3 D-7.3 (+ the accessibility
-   ledger), issue #723, the dispatch plan §1/§4, and the stage-1 plan in
-   ../taskboard-WT-feat-ui-r7-files-board-roster (recreate the worktree
-   on the branch if missing — <branch>-v2 if the PR landed, AGENTS §8).
+1. Read AGENTS.md, the NORMATIVE UX origin
+   .artifacts/plans/2026-11-13-r7-files-roster-ux-plan.md (US-n
+   stories, US-n/S-k steps, W-x wiring rows, R-n rulings — your
+   contract is its wiring inventory), the origin plan §3 D-7.3 (+ the
+   accessibility ledger), issue #723, the dispatch plan §1/§4, and the
+   stage-1 plan in ../taskboard-WT-feat-ui-r7-files-board-roster
+   (recreate the worktree on the branch if missing — <branch>-v2 if
+   the PR landed, AGENTS §8).
 2. Implement exactly per the approved plan, TDD, every commit standalone.
-   Hard rules: the channel tag is detected STRUCTURALLY from the
-   binding (as_deck/as_files) — any connector-name string match is a
-   D-BF4 violation; the UI stays a dumb client (badge text/tone and
-   action label/enabled are computed Rust-side and pushed); the Switch
-   action reuses MoveBoardToFiles VERBATIM (no new ceremony parameters);
-   the Stop/Publish arms run on the engine handle (the publish-board
-   precedent) and reply with the fresh ConnectionsSnapshot; typed
-   SettingsError variants + registry sentences only (no string errors);
-   the stale-index no-op law for the new row seams; no new Tone
-   variants; SPDX AGPL-3.0-only headers on new files; no sleeps in
-   tests; no text assertions.
-3. Run the full gate suite from AGENTS.md §10 (through
+   Hard rules: implement exactly the wiring-inventory rows this chunk
+   claims (W-1..W-6 — a claimed row with no implementation is not
+   done); embed the journey-step tokens in test names (US-1/S2 →
+   us1_s2, …, per the UX plan's naming law); the channel tag is
+   detected STRUCTURALLY from the binding (as_deck/as_files) — any
+   connector-name string match is a D-BF4 violation; the UI stays a
+   dumb client (badge text/tone and action label/enabled are computed
+   Rust-side and pushed); the Switch action reuses MoveBoardToFiles
+   VERBATIM (no new ceremony parameters); the Stop/Publish arms run on
+   the engine handle (the publish-board precedent) and reply with the
+   fresh ConnectionsSnapshot; typed SettingsError variants + registry
+   sentences only (no string errors); the stale-index no-op law for
+   the new row seams; no new Tone variants; SPDX AGPL-3.0-only headers
+   on new files; no sleeps in tests; no text assertions (typed
+   outcomes / structural facts only).
+3. Run scripts/ux-coverage.sh
+   .artifacts/plans/2026-11-13-r7-files-roster-ux-plan.md --gate
+   before reporting done — MISSING on a claimed row is not done (the
+   stage-2 self-check; never CI).
+4. Run the full gate suite from AGENTS.md §10 (through
    scripts/run-quality-gates.sh) and make it green.
-4. Bookkeeping: none this chunk (#755/#756 stay open as recorded
+5. Bookkeeping: none this chunk (#755/#756 stay open as recorded
    non-goals; do not close or reopen anything).
-5. No push, no PR — shipping is stage 3's last task. Never push to or
+6. No push, no PR — shipping is stage 3's last task. Never push to or
    merge main.
-6. Backlog issues autonomously (AGENTS §7); list the numbers in your
+7. Backlog issues autonomously (AGENTS §7); list the numbers in your
    report.
 
-Report: per-gate results, any deviation from the plan and why.
+Report: per-gate results, the ux-coverage gate row counts (FOUND /
+MISSING on claimed rows), any deviation from the plan and why.
 ```
 
-**Prompt 3.3 (review):**
+**Prompt 3.3 (review):** *[re-authored 2026-11-13 under the UX journey
+framework — authority: the comparison plan §7]*
 
 ```text
 You are the stage-3 REVIEW agent for chunk 3 of the GUI review round 7
 implementation (branch feat/ui-r7-files-board-roster).
 
-1. Read AGENTS.md, the origin plan §3 D-7.3 (+ the accessibility
-   ledger), issue #723, the dispatch plan §1/§4 (the code-quality
-   mandate applies to you), and the stage-1 plan; then review the full
-   branch diff (git diff main...HEAD) in
-   ../taskboard-WT-feat-ui-r7-files-board-roster.
+1. Read AGENTS.md, the NORMATIVE UX origin
+   .artifacts/plans/2026-11-13-r7-files-roster-ux-plan.md (US/W/R IDs —
+   the completeness bar below is its stories and steps), the origin
+   plan §3 D-7.3 (+ the accessibility ledger), issue #723, the
+   dispatch plan §1/§4 (the code-quality mandate applies to you), and
+   the stage-1 plan; then review the full branch diff (git diff
+   main...HEAD) in ../taskboard-WT-feat-ui-r7-files-board-roster.
 2. Functional focus: per-account attribution must be correct on the
    multi-account matrix (anchor card vs non-anchor vs lane-off — a
    badge computed from a connector-name match instead of the anchor
@@ -616,24 +674,37 @@ implementation (branch feat/ui-r7-files-board-roster).
    the row action buttons must be walk-ordered tab stops; the Stop-Sync
    copy must NOT promise remote deletion (#755 — the subtree lingers);
    the existing move-arm tests must be un-weakened.
-3. Code-quality mandate: (copy verbatim from the dispatch plan §1.)
-4. Re-run the full gate suite yourself (AGENTS §10, through
+3. **UX completeness mandate (the framework's walkthrough protocol —
+   `docs/ux_planning.org` §2.4)**: re-run `scripts/ux-coverage.sh
+   .artifacts/plans/2026-11-13-r7-files-roster-ux-plan.md --gate`
+   (exit 0 required on the claimed rows); then for every P1 story
+   (US-1..US-4) walk each journey step and answer the four cognitive
+   walkthrough questions with file:line or test evidence — (1) will
+   the user SEE the control, (2) RECOGNIZE what it does (label
+   semantics judged, never text-asserted), (3) understand the
+   FEEDBACK (badge/tone/echo follows the system-response column),
+   (4) can they RECOVER (the escape column holds); then one
+   six-heuristic pass over the Settings/files surface. BLOCKER and
+   MAJOR findings are fixed on the branch; MINOR findings become
+   `backlog:` issues (AGENTS §7) — never fixed opportunistically.
+4. Code-quality mandate: (copy verbatim from the dispatch plan §1.)
+5. Re-run the full gate suite yourself (AGENTS §10, through
    scripts/run-quality-gates.sh); any failure is a finding.
-5. Fix every issue directly on the branch (amend/reword — no
+6. Fix every issue directly on the branch (amend/reword — no
    duplicate-subject fixups).
-6. Ship: push the branch, open the PR to main with gh, then
+7. Ship: push the branch, open the PR to main with gh, then
    gh pr checks --watch; any failing check is a finding — diagnose,
    fix, push --force-with-lease, repeat until green; verify
    mergeStateStatus CLEAN per the dispatch plan §1.
-7. Backlog issues autonomously (AGENTS §7); list the numbers.
-8. Teardown: from the project root, git -C /home/viktoria/src/taskboard
+8. Backlog issues autonomously (AGENTS §7); list the numbers.
+9. Teardown: from the project root, git -C /home/viktoria/src/taskboard
    worktree remove --force
    ../taskboard-WT-feat-ui-r7-files-board-roster; confirm via
    git worktree list that the removed path was the intended one.
 
-Report: verdict, findings (functional + mandate), what you fixed, PR
-URL, green-checks confirmation, worktree-removed confirmation. Never
-merge; never touch main.
+Report: verdict, findings (functional + mandate + walkthrough), what
+you fixed, PR URL, green-checks confirmation, worktree-removed
+confirmation. Never merge; never touch main.
 ```
 
 ## 5. Completion bookkeeping
