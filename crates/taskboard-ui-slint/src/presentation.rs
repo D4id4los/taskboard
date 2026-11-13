@@ -5556,6 +5556,151 @@ pub fn deck_bound_boards(state: &AppState) -> Vec<crate::requests::BoardInfo> {
         .collect()
 }
 
+/// The files-board roster's badge taxonomy (round-7 D-7.3, W-2;
+/// channel-relative, design-fixed): within an account card, "this
+/// Connection" is that card's files lane — live only while the card
+/// is the resolved anchor and `[files_sync] enabled` holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FilesBoardBadge {
+    /// Bound through this card's live files lane.
+    ThisConnection,
+    /// No binding at all.
+    LocalOnly,
+    /// Bound through anything else — a files lane that is not this
+    /// card's, or any Deck connector (D-7.3: even the same account's
+    /// Deck connector reads "other Connection"; R-5 stands).
+    OtherConnection,
+}
+
+/// The roster row's one action (round-7 D-7.3, W-3/D6): which verb
+/// the row's button dispatches. The label is Rust-side copy
+/// ([`files_board_action_label`]); the UI never derives it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FilesBoardAction {
+    /// Unbind the files binding (`StopBoardFilesSync`).
+    Stop,
+    /// Deck → this card's files lane (`MoveBoardToFiles`, reused
+    /// verbatim).
+    Switch,
+    /// Local-only → this card's files lane (`PublishBoardToFiles`).
+    Publish,
+}
+
+/// The action's affordance label, pinned to the journey tables'
+/// names (the copy's single home; judged at review, never asserted
+/// elsewhere).
+#[must_use]
+pub const fn files_board_action_label(action: FilesBoardAction) -> &'static str {
+    match action {
+        FilesBoardAction::Stop => "Stop Sync",
+        FilesBoardAction::Switch => "Switch to Sync via this Connection",
+        FilesBoardAction::Publish => "Sync via this Connection",
+    }
+}
+
+/// The badge's verbatim label (the UX plan §1's fixed wording; the
+/// copy's single pinning site).
+#[must_use]
+pub const fn files_board_badge_label(badge: FilesBoardBadge) -> &'static str {
+    match badge {
+        FilesBoardBadge::ThisConnection => "Synced via this Connection",
+        FilesBoardBadge::LocalOnly => "No Sync · Local Only",
+        FilesBoardBadge::OtherConnection => "Synced via other Connection",
+    }
+}
+
+/// The badge's tone onto the row badge's vocabulary (success /
+/// neutral / info per the UX plan §1's tone ruling; no new `Tone`
+/// variants). Pinned exhaustively.
+#[must_use]
+pub const fn files_board_badge_tone(badge: FilesBoardBadge) -> crate::SettingsBadgeTone {
+    match badge {
+        FilesBoardBadge::ThisConnection => crate::SettingsBadgeTone::Success,
+        FilesBoardBadge::LocalOnly => crate::SettingsBadgeTone::Neutral,
+        FilesBoardBadge::OtherConnection => crate::SettingsBadgeTone::Info,
+    }
+}
+
+/// One roster row (round-7 D-7.3, W-2/D3): the fold's output the
+/// adapter pushes as a `ConnectionItem { kind: files-board }` — the
+/// badge's text/tone and the action's label/enabled are composed
+/// Rust-side (the UI stays dumb). `title` and `action_enabled` ride
+/// the row because the adapter is the fold's only consumer and the
+/// D6 enabled rule (`files_on ∧ !archived`) must have exactly one
+/// home (this fold).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FilesBoardRow {
+    pub board: BoardId,
+    pub title: String,
+    pub badge: FilesBoardBadge,
+    pub channel: Option<crate::requests::BoardChannel>,
+    pub archived: bool,
+    pub action: Option<FilesBoardAction>,
+    pub action_enabled: bool,
+}
+
+/// The per-account roster fold (round-7 D-7.3, W-2/D3): every live
+/// board once, channel-tagged structurally (D-BF4), sorted
+/// `ThisConnection` → `LocalOnly` → `OtherConnection`, `(title, id)`
+/// inside a group — determinism over the engine map's iteration
+/// order. Archived boards stay in their channel group, flagged
+/// (US-1 AC-2: visibility of archived boards is the roster's job);
+/// only deleted boards are out. `files_on` is the card's lane fact
+/// (enabled ∧ this card holds the resolved anchor); the D6 enabled
+/// rule is `files_on ∧ !archived`. Pure over the state; kiosk-safe
+/// by construction.
+#[must_use]
+pub fn files_board_roster(state: &AppState, files_on: bool) -> Vec<FilesBoardRow> {
+    let mut rows: Vec<FilesBoardRow> = state
+        .boards
+        .values()
+        .filter(|board| !board.deleted)
+        .map(|board| {
+            let channel = board
+                .remote
+                .as_ref()
+                .map(|binding| bound_channel_of(&binding.board));
+            let badge = match channel {
+                None => FilesBoardBadge::LocalOnly,
+                Some(crate::requests::BoardChannel::Deck) => FilesBoardBadge::OtherConnection,
+                Some(crate::requests::BoardChannel::Files) => {
+                    if files_on {
+                        FilesBoardBadge::ThisConnection
+                    } else {
+                        FilesBoardBadge::OtherConnection
+                    }
+                }
+            };
+            let action = match channel {
+                None => FilesBoardAction::Publish,
+                Some(crate::requests::BoardChannel::Deck) => FilesBoardAction::Switch,
+                Some(crate::requests::BoardChannel::Files) => FilesBoardAction::Stop,
+            };
+            FilesBoardRow {
+                board: board.id,
+                title: board.title.clone(),
+                badge,
+                channel,
+                archived: board.archived,
+                action: Some(action),
+                action_enabled: files_on && !board.archived,
+            }
+        })
+        .collect();
+    let rank = |badge: FilesBoardBadge| match badge {
+        FilesBoardBadge::ThisConnection => 0,
+        FilesBoardBadge::LocalOnly => 1,
+        FilesBoardBadge::OtherConnection => 2,
+    };
+    rows.sort_by(|a, b| {
+        rank(a.badge)
+            .cmp(&rank(b.badge))
+            .then_with(|| a.title.cmp(&b.title))
+            .then_with(|| a.board.cmp(&b.board))
+    });
+    rows
+}
+
 /// One account card (round-5 chunk 8, D-8.2): the connectors sharing
 /// one exact `(server_url, username)` identity, in config order.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -6233,6 +6378,258 @@ mod connector_status_tests {
 }
 
 // ---- the recurring badge (DR-6/4, T13) ----------------------------------
+
+#[cfg(test)]
+mod files_board_roster_tests {
+    use super::*;
+    use crate::requests::BoardChannel;
+    use taskboard_domain::{Board, BoardClocks, BoardId, ConnectorId, RemoteBoardBinding};
+
+    /// One board inserted into the synthetic state (the
+    /// `connector_status_tests` fixture shape).
+    fn make(
+        state: &mut AppState,
+        id: BoardId,
+        title: &str,
+        remote: Option<taskboard_domain::RemoteBoardId>,
+        connector: &str,
+        archived: bool,
+    ) {
+        let epoch = BoardClocks::epoch();
+        state.boards.insert(
+            id,
+            Board {
+                id,
+                remote: remote.map(|board| RemoteBoardBinding {
+                    board,
+                    connector: ConnectorId::from(connector),
+                }),
+                title: title.into(),
+                color: taskboard_domain::Color::new(""),
+                archived,
+                deleted: false,
+                clocks: BoardClocks {
+                    title: epoch,
+                    color: epoch,
+                    archived: epoch,
+                    deleted: epoch,
+                },
+                authors: taskboard_domain::entities::BoardAuthors::default(),
+                remote_seen: None,
+            },
+        );
+    }
+
+    /// The synthetic anchor-card matrix (US-1/S2–S3): a files-bound
+    /// board, a deck-bound board, two unbound boards whose map order
+    /// differs from title order (the sort proof), and an archived
+    /// files-bound board. The files binding rides a Deck-card-shaped
+    /// connector name — the badge must not key on it (D-BF4).
+    fn roster_state() -> (AppState, BoardId, BoardId, BoardId, BoardId, BoardId) {
+        let files = BoardId::from_uuid(uuid::Uuid::now_v7());
+        let deck = BoardId::from_uuid(uuid::Uuid::now_v7());
+        let zeta = BoardId::from_uuid(uuid::Uuid::now_v7());
+        let alpha = BoardId::from_uuid(uuid::Uuid::now_v7());
+        let archived = BoardId::from_uuid(uuid::Uuid::now_v7());
+        let mut state = AppState::default();
+        make(
+            &mut state,
+            files,
+            "files board",
+            Some(taskboard_domain::RemoteBoardId::files(uuid::Uuid::now_v7())),
+            "work",
+            false,
+        );
+        make(
+            &mut state,
+            deck,
+            "deck board",
+            Some(taskboard_domain::RemoteBoardId::deck(1)),
+            "work",
+            false,
+        );
+        make(&mut state, zeta, "zeta", None, "", false);
+        make(&mut state, alpha, "alpha", None, "", false);
+        make(
+            &mut state,
+            archived,
+            "shelved",
+            Some(taskboard_domain::RemoteBoardId::files(uuid::Uuid::now_v7())),
+            "files-sync",
+            true,
+        );
+        (state, files, deck, zeta, alpha, archived)
+    }
+
+    /// US-1/S2 — the badge per binding channel (anchor card, lane on),
+    /// the per-account sort `ThisConnection` → `LocalOnly` →
+    /// `OtherConnection`, `(title, id)` inside a group, and the
+    /// archived board staying in its channel group, flagged (US-1
+    /// AC-2).
+    #[test]
+    fn us1_s2_badge_tone_and_sort_fold() {
+        let (state, files, deck, zeta, alpha, _archived) = roster_state();
+        let rows = files_board_roster(&state, true);
+        let title_of = |board: BoardId| {
+            state
+                .boards
+                .get(&board)
+                .map(|board| board.title.as_str())
+                .expect("fixture board")
+        };
+        assert_eq!(
+            rows.iter()
+                .map(|row| title_of(row.board))
+                .collect::<Vec<_>>(),
+            vec!["files board", "shelved", "alpha", "zeta", "deck board"],
+            "ThisConnection, then LocalOnly by (title), then OtherConnection — archived stays flagged in its channel group"
+        );
+        let by_title = |name: &str| {
+            rows.iter()
+                .find(|row| title_of(row.board) == name)
+                .expect("row renders")
+        };
+        assert_eq!(
+            by_title("files board").badge,
+            FilesBoardBadge::ThisConnection
+        );
+        assert_eq!(
+            by_title("deck board").badge,
+            FilesBoardBadge::OtherConnection
+        );
+        assert_eq!(by_title("alpha").badge, FilesBoardBadge::LocalOnly);
+        assert_eq!(by_title("files board").channel, Some(BoardChannel::Files));
+        assert_eq!(by_title("deck board").channel, Some(BoardChannel::Deck));
+        assert_eq!(by_title("alpha").channel, None);
+        assert!(
+            by_title("shelved").archived,
+            "the archived board is flagged"
+        );
+        assert!(!by_title("files board").archived);
+        // The lane off re-reads the same bindings: Files-bound reads
+        // OtherConnection, LocalOnly unchanged.
+        let rows_off = files_board_roster(&state, false);
+        let by_title_off = |name: &str| {
+            rows_off
+                .iter()
+                .find(|row| {
+                    state
+                        .boards
+                        .get(&row.board)
+                        .map(|board| board.title.as_str() == name)
+                        .expect("fixture board")
+                })
+                .expect("row renders")
+        };
+        assert_eq!(
+            by_title_off("files board").badge,
+            FilesBoardBadge::OtherConnection,
+        );
+        assert_eq!(by_title_off("alpha").badge, FilesBoardBadge::LocalOnly);
+        // The deck fold is lane-independent.
+        assert_eq!(
+            by_title_off("deck board").badge,
+            FilesBoardBadge::OtherConnection
+        );
+        assert_eq!(by_title("files board").board, files);
+        assert_eq!(by_title("deck board").board, deck);
+        assert_eq!(by_title("alpha").board, alpha);
+        assert_eq!(by_title("zeta").board, zeta);
+    }
+
+    /// US-1/S2 — the badge label map pinned exhaustively to the UX
+    /// plan §1's verbatim wording (the copy's single pinning site).
+    #[test]
+    fn us1_s2_verbatim_badge_labels_pinned() {
+        assert_eq!(
+            files_board_badge_label(FilesBoardBadge::ThisConnection),
+            "Synced via this Connection",
+        );
+        assert_eq!(
+            files_board_badge_label(FilesBoardBadge::LocalOnly),
+            "No Sync · Local Only",
+        );
+        assert_eq!(
+            files_board_badge_label(FilesBoardBadge::OtherConnection),
+            "Synced via other Connection",
+        );
+    }
+
+    /// US-1/S2 — the badge tone map onto the row badge's vocabulary,
+    /// pinned exhaustively (success / neutral / info per the UX plan
+    /// §1's tone ruling).
+    #[test]
+    fn us1_s2_badge_tone_map_is_exhaustive() {
+        assert_eq!(
+            files_board_badge_tone(FilesBoardBadge::ThisConnection),
+            crate::SettingsBadgeTone::Success,
+        );
+        assert_eq!(
+            files_board_badge_tone(FilesBoardBadge::LocalOnly),
+            crate::SettingsBadgeTone::Neutral,
+        );
+        assert_eq!(
+            files_board_badge_tone(FilesBoardBadge::OtherConnection),
+            crate::SettingsBadgeTone::Info,
+        );
+    }
+
+    /// US-1/S3 — the action label + enabled posture per channel
+    /// (D6's table): Publish / Switch / Stop per channel; enabled =
+    /// `files_on` ∧ !archived everywhere, so the non-anchor card and
+    /// the archived row carry the honest disabled affordance, badge
+    /// true to channel.
+    #[test]
+    fn us1_s3_action_label_and_enabled_postures() {
+        let (state, .., archived) = roster_state();
+        // Anchor card, lane on: every action enabled but the
+        // archived row's.
+        for row in files_board_roster(&state, true) {
+            let expected = row.board != archived;
+            assert_eq!(row.action_enabled, expected, "row {:?}", row.board);
+        }
+        let by_channel = |channel: Option<BoardChannel>| {
+            files_board_roster(&state, true)
+                .into_iter()
+                .find(|row| row.channel == channel)
+                .expect("a row of the channel renders")
+        };
+        assert_eq!(by_channel(None).action, Some(FilesBoardAction::Publish));
+        assert_eq!(
+            by_channel(Some(BoardChannel::Deck)).action,
+            Some(FilesBoardAction::Switch)
+        );
+        assert_eq!(
+            by_channel(Some(BoardChannel::Files)).action,
+            Some(FilesBoardAction::Stop)
+        );
+        // Lane off: same labels, everything disabled (R-3's honest
+        // posture — the action that would apply, unavailable).
+        for row in files_board_roster(&state, false) {
+            assert!(!row.action_enabled, "lane off disables {:?}", row.board);
+            assert!(row.action.is_some(), "the label still renders");
+        }
+    }
+
+    /// US-1/S3 — the action label map pinned exhaustively to the
+    /// journey tables' affordance names (the copy's single pinning
+    /// site).
+    #[test]
+    fn us1_s3_action_labels_pinned() {
+        assert_eq!(
+            files_board_action_label(FilesBoardAction::Stop),
+            "Stop Sync"
+        );
+        assert_eq!(
+            files_board_action_label(FilesBoardAction::Switch),
+            "Switch to Sync via this Connection",
+        );
+        assert_eq!(
+            files_board_action_label(FilesBoardAction::Publish),
+            "Sync via this Connection",
+        );
+    }
+}
 
 #[cfg(test)]
 mod recur_badge_tests {
