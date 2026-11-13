@@ -156,12 +156,45 @@ comparison authority:
 Kiosk note (seed, verbatim posture): habit rows render on kiosk, the
 row actions do not (=ui/compositions/habits.slint:7-10,36=).
 
+The seed habit family below is re-homed verbatim (D-3); the
+full-surface inventory extends it with the remaining capabilities the
+verb inventory derives for this surface (the =Habit*= =ActionId=
+family, the timers section's adhoc-alarm verbs, the CLI =habits=/
+=timers= families, and the display-only affordances of
+`ui/views/today-view.slint` and `ui/compositions/habits.slint`).
+Shared task capabilities exposed on Today (=task.open/complete/move/
+delete/location_display/badges_display/due_phrase_display/
+track_total_display=, the global =capture.quick= and =palette.search=)
+carry their Today cells in their home slices (Board, Task detail,
+Capture) — one capability = one row (chunk plan D-8).
+
+Named absence sweeps cited by the register below (all at this slice's
+baseline): *Sweep-B* = `board-view.slint`, `stack-view.slint`,
+`board-layout.slint`, `board-bar.slint`, `task-card.slint` + the board
+seams (adapter.rs:7577-8551); *Sweep-T* = `task-view.slint` + the task
+seams (adapter.rs:8260-9952); *Sweep-R* = `review-view.slint` + the
+review/walk seams (adapter.rs:10042-10109); *Sweep-S* =
+`settings-view.slint` + the settings seams (adapter.rs:8246,10246-10439);
+*Sweep-C* = `capture-overlay.slint` + `search-palette.slint` + the
+overlay seams (adapter.rs:8507-8536); *Sweep-CLI* =
+`crates/taskboard-app/src/cli.rs` (=Command= enum and every
+sub-family) and `crates/taskboard-app/src/commands/`.
+
 | Capability | Board | TaskDetail | Today | Review | Settings | Capture | CLI |
 |---|---|---|---|---|---|---|---|
 | habit.create | — (R-1) | — (R-1) | C (US-1) — affordance `ui/compositions/habits.slint:110-116`, keyboard =ActionId::HabitCreate= `actions.rs:1307-1317`, exact-command test =lib.rs::habit_create_sends_the_exact_command= | — (R-1) | — (R-1) | — (R-1) | C (pre-existing, =habits add=) |
 | habit.edit | — (R-2) | — (R-2) | — (R-2) | — (R-2) | — (R-2) | — (R-2) | E (pre-existing, =habits update=) |
 | habit.remove | — (R-3) | — (R-3) | — (R-3) | — (R-3) | — (R-3) | — (R-3) | X (pre-existing, =habits rm=) |
-| habit.log | | | E (pre-existing, D-P13 grammar) — row seams `adapter.rs:7453-7467+` | | | | E (pre-existing) |
+| habit.log | U | U | E (pre-existing, D-P13 grammar) — row seams `adapter.rs:7453-7467+` | U | U | U | E (pre-existing) |
+| habit.reorder | U | U | E — drag reorder `adapter.rs:7467-7496`, routes =HabitMove= `actions.rs:1701` (→ =MoveHabit= `messages.rs:481`) | U | U | U | E (pre-existing, =habits update= --order `cli.rs:1314-1358`) |
+| habit.repair | U | U | E — make-up repair affordance `adapter.rs:7094-7116`; =HabitRepair= `actions.rs:1334` (→ =AdjustHabitLog= `messages.rs:502`) | U | U | U | E (pre-existing, =habits adjust= `cli.rs:1300`) |
+| habit.convert_to_series | U | U | E — armed conversion strip `adapter.rs:7122-7154`; =HabitConvertArm/=HabitConvertToSeries= `actions.rs:1346-1356` (→ =ConvertHabitToSeries= `messages.rs:451`) | U | U | U | U |
+| habit.state_display | U | U | D — progress/streak/chip/met row fields `habits.slint:21-30`, streak badge `habits.slint:202`, anchor chip `habits.slint:201`, met restyle `habits.slint:203`, quota error hint `habits.slint:187-191` | U | U | U | D (pre-existing, =habits list= `cli.rs:1282`) |
+| task.due_today | U | U | E — =TaskDueToday= "Due today (re-commit)" `actions.rs:1076-1078`, Today-only context | U | U | U | U |
+| alarm.create_adhoc | U | U | E — timers section setter `today-view.slint:82-90` (+ `timer-setter.slint`), commit → =CreateAdhocAlarm= `messages.rs:283` | U | U | U | E (pre-existing, =timers add= `cli.rs:921`) |
+| alarm.cancel_adhoc | U | U | E — timers section cancel `today-view.slint:82-90` → =CancelAdhocAlarm= `messages.rs:294` | U | U | U | E (pre-existing, =timers cancel= `cli.rs:958`) |
+| alarm.display | U | U | D — timers section mount `today-view.slint:163-180` (props `today-view.slint:79-92`) | U | U | U | D (pre-existing, =timers list= `cli.rs:954`) |
+| review.walk_preview | U | U | D — review-walk surfacing card `today-view.slint:206-238` (props `today-view.slint:127-131`) | U | U | U | U |
 
 ** Rulings (Today)
 
@@ -172,6 +205,21 @@ row actions do not (=ui/compositions/habits.slint:7-10,36=).
 | R-3 | no GUI habit removal | not requested this round; the CLI's =habits rm= covers; the Today row grammar stays log/reorder/repair/convert | round-7 plan §1 R7-2 scope; §4 | 2026-11-13 | `.artifacts/plans/2026-11-13-r7-habit-create-ux-plan.md` §2 |
 | PC-1 | the create pass-through callback renames =create-asked= → =habits-create-asked= at the view boundary; adapter seams =on_habits_create_*= | the section-scoped rename binds blind-plan assumptions A-1/A-2; scope unchanged | habit-create UX plan, comparison ruling PC-1 | 2026-11-13 | comparison plan §3.1 |
 | PC-2 | the commit funnel routes through internal =ActionId::HabitCreateCommit= | the habit family's internal-verb precedent; a §7-delta addition beyond the blind plan's named =HabitCreate= | habit-create UX plan, comparison ruling PC-2 | 2026-11-13 | comparison plan §3.1 |
+
+** Unruled register (Today)
+
+| capability | surfaces | evidence-of-absence | date |
+|---|---|---|---|
+| habit.log | Board, TaskDetail, Review, Settings, Capture | Sweep-B/T/R/S/C: no habit-row seam outside the Today section (habit rows mount only there, `today-view.slint:181-205`) | 2026-11-13 |
+| habit.reorder | Board, TaskDetail, Review, Settings, Capture | Sweep-B/T/R/S/C: no reorder seam | 2026-11-13 |
+| habit.repair | Board, TaskDetail, Review, Settings, Capture | Sweep-B/T/R/S/C: no repair seam | 2026-11-13 |
+| habit.convert_to_series | Board, TaskDetail, Review, Settings, Capture, CLI | Sweep-B/T/R/S/C: no convert seam; Sweep-CLI: the =habits= family (`cli.rs:1236-1362`) has no convert verb | 2026-11-13 |
+| habit.state_display | Board, TaskDetail, Review, Settings, Capture | Sweep-B/T/R/S/C: no habit row outside Today | 2026-11-13 |
+| task.due_today | Board, TaskDetail, Review, Settings, Capture, CLI | Sweep-B/T/R/S/C: no due-today affordance (=TaskDueToday= is Today-only, `actions.rs:1076-1078`); Sweep-CLI: no twin verb | 2026-11-13 |
+| alarm.create_adhoc | Board, TaskDetail, Review, Settings, Capture | Sweep-B/T/R/S/C: no alarm-create seam (the alarm window is chunk 2's own slice, D-6) | 2026-11-13 |
+| alarm.cancel_adhoc | Board, TaskDetail, Review, Settings, Capture | Sweep-B/T/R/S/C: no alarm-cancel seam | 2026-11-13 |
+| alarm.display | Board, TaskDetail, Review, Settings, Capture | Sweep-B/T/R/S/C: no timers display outside Today and the status bar (chunk 2's alarm-window slice owns the rest, D-6) | 2026-11-13 |
+| review.walk_preview | Board, TaskDetail, Review, Settings, Capture, CLI | Sweep-B/T/R/S/C: the surfacing card mounts only in the today view (`today-view.slint:206-238`); Sweep-CLI: none | 2026-11-13 |
 
 * Slice: Task detail
 
