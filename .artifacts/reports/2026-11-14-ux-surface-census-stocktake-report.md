@@ -210,24 +210,24 @@ invented reasons.
 | Settings | settings.facts_display | Board, TaskDetail, Today, Review, Capture, CLI | Sweep-B/T/Y/R/C: no facts panel outside the settings view; Sweep-CLI: =config print= prints the resolved config, not the app-stated apply/env facts |  |
 | Settings | settings.env_override_display | Board, TaskDetail, Today, Review, Capture, CLI | Sweep-B/T/Y/R/C: no env-locked badge outside the settings view; Sweep-CLI: no override output |  |
 | Review | review.open | CLI | Sweep-CLI: no review/walk/planner verb (`cli.rs` swept, `commands/` — the =journal= family records, it does not walk) |  |
-| Review | review.walk_cursor | Board, TaskDetail, Today, Settings, Capture, CLI | the walk verbs bind only =ContextId::ReviewWalk= (`actions.rs:1551-1560`); Sweep-B/T/Y/S/C: no walk seam outside the overlay; Sweep-CLI: no walk verb |  |
-| Review | review.walk_back | Board, TaskDetail, Today, Settings, Capture, CLI | the same =ReviewWalk=-scoped binding (`actions.rs:1562-1570`, Escape preset `presets.rs:312`); Sweep-CLI: no walk verb |  |
-| Review | review.walk_advance | Board, TaskDetail, Today, Settings, Capture, CLI | the same =ReviewWalk=-scoped binding (`actions.rs:1572-1580`); Sweep-CLI: no walk verb |  |
-| Review | review.inbox_file | Board, TaskDetail, Today, Settings, Capture, CLI | the same =ReviewWalk=-scoped binding (`actions.rs:1582-1590`); Sweep-CLI: no file-to verb |  |
-| Review | review.inbox_keep | Board, TaskDetail, Today, Settings, Capture, CLI | the same =ReviewWalk=-scoped binding (`actions.rs:1592-1600`); Sweep-CLI: no keep verb |  |
-| Review | review.file_target | Board, TaskDetail, Today, Settings, Capture, CLI | the same =ReviewWalk=-scoped binding (`actions.rs:1602-1618`); Sweep-CLI: no target-nudge verb |  |
-| Review | review.file_commit | Board, TaskDetail, Today, Settings, Capture, CLI | the same =ReviewWalk=-scoped binding (`actions.rs:1620-1628`); the CLI's move twin is recorded on the =task.move= row (Board slice) |  |
-| Review | review.carry_tomorrow | Board, TaskDetail, Today, Settings, Capture, CLI | the same =ReviewWalk=-scoped binding (`actions.rs:1630-1638`); the CLI's scheduled-edit twin is recorded on the =task.scheduled_edit= row (Task detail slice) |  |
-| Review | review.carry_pick | Board, TaskDetail, Today, Settings, Capture, CLI | the same =ReviewWalk=-scoped binding (`actions.rs:1640-1669`); Sweep-CLI: no pick-a-date verb |  |
-| Review | review.carry_leave | Board, TaskDetail, Today, Settings, Capture, CLI | the same =ReviewWalk=-scoped binding (`actions.rs:1650-1659`); Sweep-CLI: no leave verb |  |
+| Review | review.walk_cursor | Board, TaskDetail, Today, Settings, Capture, CLI | the walk verbs bind only =ContextId::ReviewWalk= (`actions.rs:1551-1569`); Sweep-B/T/Y/S/C: no walk seam outside the overlay; Sweep-CLI: no walk verb |  |
+| Review | review.walk_back | Board, TaskDetail, Today, Settings, Capture, CLI | the same =ReviewWalk=-scoped binding (`actions.rs:1571-1579`, Escape preset `presets.rs:312`); Sweep-CLI: no walk verb |  |
+| Review | review.walk_advance | Board, TaskDetail, Today, Settings, Capture, CLI | the same =ReviewWalk=-scoped binding (`actions.rs:1581-1589`); Sweep-CLI: no walk verb |  |
+| Review | review.inbox_file | Board, TaskDetail, Today, Settings, Capture, CLI | the same =ReviewWalk=-scoped binding (`actions.rs:1591-1599`); Sweep-CLI: no file-to verb |  |
+| Review | review.inbox_keep | Board, TaskDetail, Today, Settings, Capture, CLI | the same =ReviewWalk=-scoped binding (`actions.rs:1601-1609`); Sweep-CLI: no keep verb |  |
+| Review | review.file_target | Board, TaskDetail, Today, Settings, Capture, CLI | the same =ReviewWalk=-scoped binding (`actions.rs:1611-1629`); Sweep-CLI: no target-nudge verb |  |
+| Review | review.file_commit | Board, TaskDetail, Today, Settings, Capture, CLI | the same =ReviewWalk=-scoped binding (`actions.rs:1631-1639`); the CLI's move twin is recorded on the =task.move= row (Board slice) |  |
+| Review | review.carry_tomorrow | Board, TaskDetail, Today, Settings, Capture, CLI | the same =ReviewWalk=-scoped binding (`actions.rs:1641-1649`); the CLI's scheduled-edit twin is recorded on the =task.scheduled_edit= row (Task detail slice) |  |
+| Review | review.carry_pick | Board, TaskDetail, Today, Settings, Capture, CLI | the same =ReviewWalk=-scoped binding (`actions.rs:1651-1659 + 1671-1679`); Sweep-CLI: no pick-a-date verb |  |
+| Review | review.carry_leave | Board, TaskDetail, Today, Settings, Capture, CLI | the same =ReviewWalk=-scoped binding (`actions.rs:1661-1669`); Sweep-CLI: no leave verb |  |
 | Review | reflection.record | Board, TaskDetail, Today, Settings, Capture | Sweep-B/T/Y/S/C: no reflection-commit seam outside the walk (the prompts editor mounts only in the walk overlay) |  |
-| Review | review.finish | Board, TaskDetail, Today, Settings, Capture, CLI | the same =ReviewWalk=-scoped binding (`actions.rs:1681-1689`); Sweep-CLI: no finish verb |  |
-| Review | plan.open | CLI | Sweep-CLI: no plan verb (=ViewPlanNextDay= is GLOBAL menu-reachable from every surface, `actions.rs:1471-1486`) |  |
-| Review | plan.begin_place | Board, TaskDetail, Today, Settings, Capture, CLI | the planner verbs bind only =ContextId::PlanNextDay= (`actions.rs:1488-1496`); Sweep-CLI: no place verb |  |
-| Review | plan.commit_place | Board, TaskDetail, Today, Settings, Capture, CLI | the same =PlanNextDay=-scoped binding (`actions.rs:1497-1505`); Sweep-CLI: no commit-placement verb |  |
-| Review | plan.box_earlier | Board, TaskDetail, Today, Settings, Capture, CLI | the same =PlanNextDay=-scoped binding (`actions.rs:1506-1514`); Sweep-CLI: no reorder verb |  |
+| Review | review.finish | Board, TaskDetail, Today, Settings, Capture, CLI | the same =ReviewWalk=-scoped binding (`actions.rs:1691-1699`); Sweep-CLI: no finish verb |  |
+| Review | plan.open | CLI | Sweep-CLI: no plan verb (=ViewPlanNextDay= is GLOBAL menu-reachable from every surface, `actions.rs:1472-1480`) |  |
+| Review | plan.begin_place | Board, TaskDetail, Today, Settings, Capture, CLI | the planner verbs bind only =ContextId::PlanNextDay= (`actions.rs:1485-1493`); Sweep-CLI: no place verb |  |
+| Review | plan.commit_place | Board, TaskDetail, Today, Settings, Capture, CLI | the same =PlanNextDay=-scoped binding (`actions.rs:1495-1503`); Sweep-CLI: no commit-placement verb |  |
+| Review | plan.box_earlier | Board, TaskDetail, Today, Settings, Capture, CLI | the same =PlanNextDay=-scoped binding (`actions.rs:1505-1513`); Sweep-CLI: no reorder verb |  |
 | Review | plan.box_later | Board, TaskDetail, Today, Settings, Capture, CLI | the same =PlanNextDay=-scoped binding (`actions.rs:1515-1523`); Sweep-CLI: no reorder verb |  |
-| Review | plan.box_remove | Board, TaskDetail, Today, Settings, Capture, CLI | the same =PlanNextDay=-scoped binding (`actions.rs:1524-1532`); Sweep-CLI: no box-remove verb |  |
+| Review | plan.box_remove | Board, TaskDetail, Today, Settings, Capture, CLI | the same =PlanNextDay=-scoped binding (`actions.rs:1525-1533`); Sweep-CLI: no box-remove verb |  |
 | Review | review.ledger_display | Board, TaskDetail, Today, Settings, Capture, CLI | Sweep-B/T/Y/S/C: no ledger mount outside the review view |  |
 | Review | review.stats_display | Board, TaskDetail, Today, Settings, Capture, CLI | Sweep-B/T/Y/S/C: no stat-section mount; Sweep-CLI: no aggregate output |  |
 | Review | reflection.ledger_display | Board, TaskDetail, Today, Settings, Capture | Sweep-B/T/Y/S/C: no journal-ledger mount outside the review view |  |
@@ -296,7 +296,17 @@ All checks run against the census at the consolidation commit:
    resolved at `84c04a0b` via `git show 84c04a0b:<file>` (11/12
    exact on first pass; the notification-snooze seam citation was
    corrected from `10186` to `10188` and its neighbours aligned —
-   the fix the spot-check caught).
+   the fix the spot-check caught). **Stage-3 sweep**: the stage-3
+   review's independent ≥10-cell spot-check surfaced a systematic
+   drift in the walk/planner `ActionId` citations (each entry spans
+   id..id+8 in `actions.rs`; the cited ranges were shifted ~9–11
+   lines), three per-callback `lib.rs` ranges in the alarm-window
+   slice, and the round-6 ruling's evidence anchor
+   (`settings-view.slint:1013-1014`, the overturn comment — the
+   cited `1065-1069` is layout code). All corrected in the census
+   and mirrored in this report's inventory; ~25 further anchors
+   (adapter seams, `requests.rs` variants, `cli.rs` verbs, mounts,
+   test names) re-verified exact at `84c04a0b`.
 
 ## 6. The diff-against-seed appendix
 
