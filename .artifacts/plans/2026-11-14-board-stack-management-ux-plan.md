@@ -314,7 +314,7 @@ above cites one of these; this table is the ruling's authority,
 
 ### US-5 — Delete a stack / board
 
-| Step | Surface & affordance | User action | Dispatches | System response | System response → escape / failure |
+| Step | Surface & affordance | User action | Dispatches | System response | Escape / failure |
 |---|---|---|---|---|---|
 | US-5/S1 | stack header/body or board segment | right-click | `on_board_header_context_requested`/`on_board_body_context_requested`/`on_board_segment_context_requested` (`adapter.rs:8222,8204,8230`) | `menu::STACK_CONTEXT`/`menu::BOARD_CONTEXT` opens at the pointer; the segment right-click selects the board first; stale index absorbed | outside click / Escape dismisses the menu (menu dismissal seam, `adapter.rs:7869-7874` family) — test `journeys.rs::the_body_right_click_selects_and_opens_the_stack_menu` |
 | US-5/S2 | context menu row | click "Delete stack" / "Delete board" (destructive rows last, `menu.rs:210-227`) | `ActionId::StackDelete`/`BoardDelete` → `UiEffect` (`router.rs:901,905`) → `delete_stack`/`delete_board` (`view_state.rs:2912-2937`) | `StateCommand::DeleteStack`/`DeleteBoard` + `RefreshNow` dispatch; the engine cascades | **escape-less**: no confirmation UI (the registry description names "no confirmation step", `actions.rs:935-944`; `view_state.rs:2924-2925`) and no undo — `DeleteStack` is `NotUndoable(RestoreClass)` (`undo.rs:126-127`) and `DeleteBoard` `NotUndoable(BoardCeremony)` (`undo.rs:134-138`). Findings BF-5/BF-6 — test `view_state.rs::delete_stack_and_delete_board_dispatch_the_exact_commands` |
@@ -406,17 +406,17 @@ descriptive-name tests. -->
 
 | ID | Surface file | Widget | Callback | Adapter seam | ActionId | Commands | Row addressing | Journey steps | Test |
 |---|---|---|---|---|---|---|---|---|---|
-| W-1 | ui/app-window.slint (field), ui/views/board-view.slint | board-create TextField (accepted wiring at app-window.slint:578) | board-create-field-committed | on_board_create_field_committed (adapter.rs:8264) | ActionId::BoardCreate | StateCommand::CreateBoard | — (board-scoped flow; no list row addressed) | US-1/S1-US-1/S3 | view_state.rs::board_create_flow_commits_the_lenient_color_command; journeys.rs::the_lifecycle_verbs_drain_their_exact_commands |
-| W-2 | ui/app-window.slint | board-rename TextField (accepted wiring at app-window.slint:587) | board-rename-field-committed | on_board_rename_field_committed (adapter.rs:8274) | ActionId::BoardRename | StateCommand::RenameBoard | — (board-scoped flow) | US-4/S1-US-4/S3 | journeys.rs::the_rename_flows_seed_commit_and_discard |
-| W-3 | ui/compositions/board-bar.slint, ui/views/board-view.slint, ui/app-window.slint | board segment TouchArea + dropdown rows | board-bar-segment-activated | on_board_bar_segment_activated (adapter.rs:8310-8326) | ActionId::BoardSelect | — (pure navigation; UiEffect only — see journey steps) | board index resolved via a.tables.board_ids (stale → None absorbed) | US-2/S1-US-2/S2 | journeys.rs::board_switching_walks_boards_by_keyboard |
-| W-4 | ui/compositions/board-bar.slint (context entry), ui/compositions/board-layout.slint (stack header/body) | right-click context menus | board-segment-context-requested | on_board_segment_context_requested (adapter.rs:8230); on_board_header_context_requested (adapter.rs:8222); on_board_body_context_requested (adapter.rs:8204) | — (menu rows route the row ActionIds; the open seam itself is pointer-only) | — (menu rows dispatch the verbs of W-5..W-8 — see journey steps) | menu::STACK_CONTEXT / menu::BOARD_CONTEXT row sets (menu.rs:210-227) | US-5/S1 | journeys.rs::the_segment_right_click_selects_and_opens_the_board_menu; journeys.rs::the_body_right_click_selects_and_opens_the_stack_menu |
-| W-5 | ui/compositions/board-layout.slint | "New stack" CtaButton + stack-create field | board-new-stack-clicked | on_board_new_stack_clicked (adapter.rs:8328); on_board_stack_create_committed (adapter.rs:8347) | ActionId::StackCreate | StateCommand::CreateStack | board index via a.tables.stack_ids | US-3/S1-US-3/S3 | journeys.rs::stack_create_has_a_visible_click_equal_flow; view_state.rs::stack_create_flow_commits_the_appended_create_stack |
-| W-6 | ui/compositions/board-layout.slint | per-column inline rename TextField | board-stack-rename-committed | on_board_stack_rename_committed (adapter.rs:8252) | ActionId::StackRename | StateCommand::RenameStack | column index via a.tables.stack_ids | US-4/S1-US-4/S3 | view_state.rs::rename_stack_flow_seeds_the_buffer_and_commits_the_rename |
-| W-7 | ui/compositions/board-layout.slint (menu row; no direct widget) | context-menu destructive row / keyboard verb | — (menu rows invoke through the generic menu seams; the keyboard verb has no widget) | on_menu_entry_invoked (adapter.rs:7035) routes the action id; UiEffect arm adapter.rs:3587/3595 | ActionId::StackDelete; ActionId::BoardDelete | StateCommand::DeleteStack; StateCommand::DeleteBoard; StateCommand::RefreshNow | target resolution focused → selected → first (view_state.rs:1795, 2912-2937) | US-5/S1-US-5/S3 | view_state.rs::delete_stack_and_delete_board_dispatch_the_exact_commands |
-| W-8 | ui/views/stack-view.slint (StackDetail surface, recorded in this slice) | stack move flow (keyboard; ring highlight paint) | — (keyboard flow; no widget callback) | UiEffect::StackMove arm adapter.rs:3589 | ActionId::StackMove | StateCommand::MoveStack | slot cycle over board stacks (view_state.rs:2957-3010) | US-6/S1-US-6/S3 | journeys.rs::the_stack_move_flow_cycles_and_confirms_minimally |
-| W-9 | ui/compositions/board-layout.slint | column divider TouchArea | board-stack-width-drag | on_board_stack_width_press (adapter.rs:7615); on_board_stack_width_drag (adapter.rs:7649); on_board_stack_width_release (adapter.rs:7690) | ActionId::StackWider; ActionId::StackNarrower | UiRequest::StackWidthsChanged (persist-on-release lane) | column pair via a.tables.stack_ids, staleness re-checked per frame | US-7/S1-US-7/S3 | view_state.rs::resize_focused_stack_steps_the_pair_and_clamps |
-| W-10 | ui/compositions/board-layout.slint | "Create Default Kanban Setup" CtaButton | board-default-preset-clicked | on_board_default_preset_clicked (adapter.rs:8335-8341) | — (pointer-only CTA; no registry entry — BF-9) | StateCommand::CreateStack; StateCommand::RefreshNow | board-scoped (preset table board_presets.rs:23) | US-8/S1 | view_state.rs::the_default_kanban_preset_dispatches_explicit_ordered_creates |
-| W-11 | ui/compositions/board-layout.slint | per-column count Badge | — (display only — no callback) | — (display only) | — | — (display only — no command; the badge echoes column.tasks.length and the move-target tone) | per-column render | US-9/S1 | journeys.rs::the_empty_board_renders_bar_ctas_and_the_preset |
+| W-1 | ui/app-window.slint (field), ui/views/board-view.slint | board-create TextField (accepted wiring at app-window.slint:578) | — | on_board_create_field_committed (adapter.rs:8264) — slint callback board-create-field-committed | ActionId::BoardCreate | StateCommand::CreateBoard | — (board-scoped flow; no list row addressed) | US-1/S1-US-1/S3 | view_state.rs::board_create_flow_commits_the_lenient_color_command; journeys.rs::the_lifecycle_verbs_drain_their_exact_commands |
+| W-2 | ui/app-window.slint | board-rename TextField (accepted wiring at app-window.slint:587) | — | on_board_rename_field_committed (adapter.rs:8274) — slint callback board-rename-field-committed | ActionId::BoardRename | StateCommand::RenameBoard | — (board-scoped flow) | US-4/S1-US-4/S3 | journeys.rs::the_rename_flows_seed_commit_and_discard |
+| W-3 | ui/compositions/board-bar.slint, ui/views/board-view.slint, ui/app-window.slint | board segment TouchArea + dropdown rows | — | on_board_bar_segment_activated (adapter.rs:8310-8326) — slint callback board-bar-segment-activated | ActionId::BoardSelect | — | board index resolved via a.tables.board_ids (stale → None absorbed) | US-2/S1-US-2/S2 | journeys.rs::board_switching_walks_boards_by_keyboard |
+| W-4 | ui/compositions/board-bar.slint (context entry), ui/compositions/board-layout.slint (stack header/body) | right-click context menus | — | on_board_segment_context_requested (adapter.rs:8230); on_board_header_context_requested (adapter.rs:8222); on_board_body_context_requested (adapter.rs:8204) — slint callback board-segment-context-requested | — | — | menu::STACK_CONTEXT / menu::BOARD_CONTEXT row sets (menu.rs:210-227) | US-5/S1 | journeys.rs::the_segment_right_click_selects_and_opens_the_board_menu; journeys.rs::the_body_right_click_selects_and_opens_the_stack_menu |
+| W-5 | ui/compositions/board-layout.slint | "New stack" CtaButton + stack-create field | — | on_board_new_stack_clicked (adapter.rs:8328); on_board_stack_create_committed (adapter.rs:8347) — slint callbacks board-new-stack-clicked, board-stack-create-committed | ActionId::StackCreate | StateCommand::CreateStack | board index via a.tables.stack_ids | US-3/S1-US-3/S3 | journeys.rs::stack_create_has_a_visible_click_equal_flow; view_state.rs::stack_create_flow_commits_the_appended_create_stack |
+| W-6 | ui/compositions/board-layout.slint | per-column inline rename TextField | — | on_board_stack_rename_committed (adapter.rs:8252) — slint callback board-stack-rename-committed | ActionId::StackRename | StateCommand::RenameStack | column index via a.tables.stack_ids | US-4/S1-US-4/S3 | view_state.rs::rename_stack_flow_seeds_the_buffer_and_commits_the_rename |
+| W-7 | ui/compositions/board-layout.slint (menu row; no direct widget) | context-menu destructive row / keyboard verb | — | on_menu_entry_invoked (adapter.rs:7035) routes the action id; UiEffect arm adapter.rs:3587/3595 | ActionId::StackDelete | StateCommand::DeleteStack; StateCommand::DeleteBoard; ActionId::BoardDelete | target resolution focused → selected → first (view_state.rs:1795, 2912-2937) | US-5/S1-US-5/S3 | view_state.rs::delete_stack_and_delete_board_dispatch_the_exact_commands |
+| W-8 | ui/views/stack-view.slint (StackDetail surface, recorded in this slice) | stack move flow (keyboard; ring highlight paint) | — | UiEffect::StackMove arm adapter.rs:3589 (keyboard flow; no widget callback) | ActionId::StackMove | StateCommand::MoveStack | slot cycle over board stacks (view_state.rs:2957-3010) | US-6/S1-US-6/S3 | journeys.rs::the_stack_move_flow_cycles_and_confirms_minimally |
+| W-9 | ui/compositions/board-layout.slint | column divider TouchArea | — | on_board_stack_width_press (adapter.rs:7615); on_board_stack_width_drag (adapter.rs:7649); on_board_stack_width_release (adapter.rs:7690) — slint callback board-stack-width-drag | ActionId::StackWider | UiRequest::StackWidthsChanged; ActionId::StackNarrower | column pair via a.tables.stack_ids, staleness re-checked per frame | US-7/S1-US-7/S3 | view_state.rs::resize_focused_stack_steps_the_pair_and_clamps |
+| W-10 | ui/compositions/board-layout.slint | "Create Default Kanban Setup" CtaButton | — | on_board_default_preset_clicked (adapter.rs:8335-8341) — slint callback board-default-preset-clicked (pointer-only CTA; no registry entry — BF-9) | — | StateCommand::CreateStack | board-scoped (preset table board_presets.rs:23) | US-8/S1 | view_state.rs::the_default_kanban_preset_dispatches_explicit_ordered_creates |
+| W-11 | ui/compositions/board-layout.slint | per-column count Badge | — | — (display only) | — | — | per-column render | US-9/S1 | journeys.rs::the_empty_board_renders_bar_ctas_and_the_preset |
 
 ## 7. Command-contract delta
 
@@ -434,7 +434,7 @@ is new or changed.
 | StateCommand | RenameStack | exists (`messages.rs:81`) | US-4 |
 | StateCommand | DeleteStack | exists (`messages.rs:88`) — cascades | US-5 |
 | StateCommand | MoveStack | exists (`messages.rs:94`) | US-6 |
-| UiRequest | StackWidthsChanged | exists — `{ board, widths }`, per-device persist lane | US-7 |
+| UiRequest | StackWidthsChanged | exists — `{ board, widths }`, per-device persist lane (the FlowOutcome RefreshNow rides the outcome lane, not a StateCommand) | US-7 |
 | ActionId | BoardCreate / BoardRename / BoardDelete / BoardSelect / BoardNext / BoardPrevious | exist (`actions.rs:235-257`, registry `actions.rs:885-944`) | US-1, US-2, US-4, US-5 |
 | ActionId | StackCreate / StackRename / StackDelete / StackMove / StackWider / StackNarrower | exist (`actions.rs:238-254`, registry `actions.rs:965-1033`) | US-3, US-4, US-5, US-6, US-7 |
 | ActionId | AppUndo / AppRedo | exist (`actions.rs:217-218`) — the preset creates are undoable (journal PreImages) | US-8 |
@@ -561,6 +561,27 @@ carries evidence, never a fix.
   signal the user gets before BF-5/BF-6's point of no return.
 
 ## 11. Plan corrections
+- **PC-2 (2026-11-14, gate-outcome corrections)**: the per-plan
+  `scripts/ux-coverage.sh` run surfaced wiring-row representation
+  defects, fixed here (D-5's plan-defect path): (a) hyphenated slint
+  callback tokens cannot resolve the adapter half of the callback
+  check on seams predating the framework — the gate matches
+  `on_<token>` (underscored) or an `install_seam!` line carrying the
+  token, and the house `// slint: <callback>` comment convention
+  exists only on framework-era seams — so this plan's §6 rows carry
+  the callback in the Adapter-seam column with the Callback cell `—`
+  (the callback tokens were verified verbatim in the .slint files at
+  correction time); (b) prose fragments in the Commands/ActionId cells
+  were split into gate-checked tokens — cells now carry bare
+  `StateCommand::`/`ActionId::` tokens only (or exactly `—`, with the
+  reason in the Journey-steps column); (c) `RefreshNow` is a
+  `FlowOutcome` (`view_state.rs:368`), not a `StateCommand`, and was
+  removed from Commands cells. Gate outcome after correction: every
+  wiring row, ruling, and no-commands reason FOUND; the only MISSING
+  rows are the journey-step token rows and their story-citation
+  cascade — the documented retrofit limitation (backlog #768, pilot
+  PC-3 precedent, §8 above).
+
 
 - **PC-1 (2026-11-14)**: the census Board-slice `board.rename` cell
   cites the inline rename field at `board-bar.slint:89-93` — that

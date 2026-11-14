@@ -321,13 +321,13 @@ over SearchTarget kinds) — no ItemAddr kinds are involved here. -->
 
 | ID | Surface file | Widget | Callback | Adapter seam | ActionId | Commands | Row addressing | Journey steps | Test |
 |---|---|---|---|---|---|---|---|---|---|
-| W-1 | ui/compositions/capture-overlay.slint, ui/app-window.slint | capture overlay: title field + hint captions | capture-accepted | on_capture_text_edited (adapter.rs:8552); on_capture_accepted (adapter.rs:8556); on_capture_dismiss_requested (adapter.rs:8562); open effect adapter.rs:2835 | ActionId::CaptureQuick | StateCommand::CaptureTask; StateCommand::RefreshNow | — (title-only buffer; no list row addressed) | US-1/S1-US-2/S1 | view_state.rs::capture_commits_and_continues_then_closes_on_empty |
-| W-2 | ui/compositions/search-palette.slint, ui/app-window.slint | palette input row + result rows + overflow caption | palette-query-edited | on_palette_query_edited (adapter.rs:8545); on_palette_dismiss_requested (adapter.rs:8568); apply_palette_query (adapter.rs:4018-4029) | ActionId::PaletteSearch | — (UI-side ranking/selection only — the domain find engine runs in-process; see journey steps) | palette rows via a.tables.palette (SearchTarget kinds Task/Stack/Board) | US-3/S1-US-3/S2 | journeys.rs::the_palette_searches_and_jumps_across_boards |
-| W-3 | ui/compositions/search-palette.slint, ui/app-window.slint | palette row activation (jump) | palette-row-activated | on_palette_row_activated (adapter.rs:8574-8590); keyboard twin apply_palette_invoke (adapter.rs:3991-4016); palette_jump (view_state.rs:2585+) | ActionId::NavShowTask | — (pure navigation — UiEffect/selection, no StateCommand; see journey steps) | a.tables.palette index; stale → close-only | US-4/S1 | journeys.rs::a_palette_activation_shows_the_task |
-| W-4 | src/router.rs, src/view_state.rs, keymap/presets.rs | nav walk verbs (keyboard-only) | — (keyboard verbs; no widget callbacks — the adapter pushes selection/focus snapshots into models) | effect arms router.rs:887-908; step_focus (view_state.rs:1331); walk machinery (adapter.rs:2074-2385) | ActionId::NavNextItem; ActionId::NavPrevItem; ActionId::NavFirstItem; ActionId::NavLastItem | — (pure navigation — focus moves only; see journey steps) | reading-order walk per VIEW_NAV context | US-5/S1-US-5/S2 | view_state.rs::the_board_walk_steps_without_wrapping |
-| W-5 | ui/compositions/action-menu.slint, ui/app-window.slint | two-tier menu (quick rows, submenus, quit) | menu-entry-invoked | on_menu_entry_invoked (adapter.rs:7035); on_menu_submenu_entry_invoked (adapter.rs:7044); on_menu_level_back (adapter.rs:7053); on_menu_dismiss_requested (adapter.rs:7869); opener on_toolbar_menu_clicked (adapter.rs:7835) | ActionId::AppMenu | — (the menu routes OTHER verbs' ActionIds; it dispatches no command itself — see journey steps) | menu rows are registry-derived entries (menu.rs:89-135); enabled state from the adapter states | US-6/S1-US-6/S2 | journeys.rs::the_two_tier_menu_navigates_levels_in_both_modes |
-| W-6 | ui/compositions/focus-overlay.slint, ui/app-window.slint | focus overlay: countdown, switcher, notes, stop | focus-stop-clicked | on_focus_overlay_close_requested (adapter.rs:10011); on_focus_note_edited (adapter.rs:10019); on_focus_note_accepted (adapter.rs:10028); on_focus_switcher_invoked (adapter.rs:10050); on_focus_stop_clicked (adapter.rs:10067) | ActionId::FocusModeToggle | StateCommand::StartTracking; StateCommand::StopTracking (the session verbs); StateCommand::CaptureTask (the note commit) | switcher rows via the adapter's live-not-done board-order model | US-7/S1-US-7/S2 | presentation.rs::focus_overlay_derives_phase_and_remaining |
-| W-7 | ui/compositions/action-menu.slint (undo/redo rows), src/menu.rs | Undo/Redo quick rows (greyed from UndoView) | menu-entry-invoked | the same generic menu seams (adapter.rs:7035); enablement gate adapter.rs:509-510 | ActionId::AppUndo; ActionId::AppRedo | StateCommand::Undo; StateCommand::Redo | — (global rows; the journeys are the task-lifecycle plan's undo story) | US-6/S2 (as menu rows) | journeys.rs::the_undo_rows_grey_from_the_published_undo_view |
+| W-1 | ui/compositions/capture-overlay.slint, ui/app-window.slint | capture overlay: title field + hint captions | — | on_capture_text_edited (adapter.rs:8552); on_capture_accepted (adapter.rs:8556); on_capture_dismiss_requested (adapter.rs:8562); open effect adapter.rs:2835 — slint callbacks capture-accepted, capture-dismiss-requested, capture-text-edited | ActionId::CaptureQuick | StateCommand::CaptureTask | — (title-only buffer; no list row addressed) | US-1/S1-US-2/S1 | view_state.rs::capture_commits_and_continues_then_closes_on_empty |
+| W-2 | ui/compositions/search-palette.slint, ui/app-window.slint | palette input row + result rows + overflow caption | — | on_palette_query_edited (adapter.rs:8545); on_palette_dismiss_requested (adapter.rs:8568); apply_palette_query (adapter.rs:4018-4029) — slint callback palette-query-edited (UI-side ranking/selection only — the domain find engine runs in-process; see journey steps) | ActionId::PaletteSearch | — | palette rows via a.tables.palette (SearchTarget kinds Task/Stack/Board) | US-3/S1-US-3/S2 | journeys.rs::the_palette_searches_and_jumps_across_boards |
+| W-3 | ui/compositions/search-palette.slint, ui/app-window.slint | palette row activation (jump) | — | on_palette_row_activated (adapter.rs:8574-8590); keyboard twin apply_palette_invoke (adapter.rs:3991-4016); palette_jump (view_state.rs:2585+) — slint callback palette-row-activated | ActionId::NavShowTask | — | a.tables.palette index; stale → close-only | US-4/S1 | journeys.rs::a_palette_activation_shows_the_task |
+| W-4 | src/router.rs, src/view_state.rs, keymap/presets.rs | nav walk verbs (keyboard-only) | — | effect arms router.rs:887-908; step_focus (view_state.rs:1331); walk machinery (adapter.rs:2074-2385) (keyboard verbs; no widget callbacks — the adapter pushes selection/focus snapshots into models) | ActionId::NavNextItem | — | reading-order walk per VIEW_NAV context | US-5/S1-US-5/S2 | view_state.rs::the_board_walk_steps_without_wrapping |
+| W-5 | ui/compositions/action-menu.slint, ui/app-window.slint | two-tier menu (quick rows, submenus, quit) | — | on_menu_entry_invoked (adapter.rs:7035); on_menu_submenu_entry_invoked (adapter.rs:7044); on_menu_level_back (adapter.rs:7053); on_menu_dismiss_requested (adapter.rs:7869); opener on_toolbar_menu_clicked (adapter.rs:7835) — slint callbacks menu-entry-invoked, menu-submenu-entry-invoked, menu-level-back, menu-dismiss-requested, toolbar-menu-clicked | ActionId::AppMenu | — | menu rows are registry-derived entries (menu.rs:89-135); enabled state from the adapter states | US-6/S1-US-6/S2 | journeys.rs::the_two_tier_menu_navigates_levels_in_both_modes |
+| W-6 | ui/compositions/focus-overlay.slint, ui/app-window.slint | focus overlay: countdown, switcher, notes, stop | — | on_focus_overlay_close_requested (adapter.rs:10011); on_focus_note_edited (adapter.rs:10019); on_focus_note_accepted (adapter.rs:10028); on_focus_switcher_invoked (adapter.rs:10050); on_focus_stop_clicked (adapter.rs:10067) — slint callbacks focus-stop-clicked, focus-note-accepted, focus-switcher-invoked | ActionId::FocusModeToggle | StateCommand::StartTracking; StateCommand::StopTracking; StateCommand::CaptureTask | switcher rows via the adapter's live-not-done board-order model | US-7/S1-US-7/S2 | presentation.rs::focus_overlay_derives_phase_and_remaining |
+| W-7 | ui/compositions/action-menu.slint (undo/redo rows), src/menu.rs | Undo/Redo quick rows (greyed from UndoView) | — | the same generic menu seams (adapter.rs:7035); enablement gate adapter.rs:509-510 | ActionId::AppUndo | StateCommand::Undo; StateCommand::Redo; ActionId::AppRedo | — (global rows; the journeys are the task-lifecycle plan's undo story) | US-6/S2 (as menu rows) | journeys.rs::the_undo_rows_grey_from_the_published_undo_view |
 
 ## 7. Command-contract delta
 
@@ -433,6 +433,27 @@ routing — the census Capture slice's method note).
   (same silent-gating posture the task-lifecycle plan's W-N3 records).
 
 ## 11. Plan corrections
+- **PC-2 (2026-11-14, gate-outcome corrections)**: the per-plan
+  `scripts/ux-coverage.sh` run surfaced wiring-row representation
+  defects, fixed here (D-5's plan-defect path): (a) hyphenated slint
+  callback tokens cannot resolve the adapter half of the callback
+  check on seams predating the framework — the gate matches
+  `on_<token>` (underscored) or an `install_seam!` line carrying the
+  token, and the house `// slint: <callback>` comment convention
+  exists only on framework-era seams — so this plan's §6 rows carry
+  the callback in the Adapter-seam column with the Callback cell `—`
+  (the callback tokens were verified verbatim in the .slint files at
+  correction time); (b) prose fragments in the Commands/ActionId cells
+  were split into gate-checked tokens — cells now carry bare
+  `StateCommand::`/`ActionId::` tokens only (or exactly `—`, with the
+  reason in the Journey-steps column); (c) `RefreshNow` is a
+  `FlowOutcome` (`view_state.rs:368`), not a `StateCommand`, and was
+  removed from Commands cells. Gate outcome after correction: every
+  wiring row, ruling, and no-commands reason FOUND; the only MISSING
+  rows are the journey-step token rows and their story-citation
+  cascade — the documented retrofit limitation (backlog #768, pilot
+  PC-3 precedent, §8 above).
+
 
 - **PC-1 (2026-11-14)**: the census Capture-slice `capture.commit`
   Board cell cites "capture lands in the focused board's Backlog

@@ -349,16 +349,16 @@ exists (the ItemAddr kinds are Settings-slice seams). -->
 
 | ID | Surface file | Widget | Callback | Adapter seam | ActionId | Commands | Row addressing | Journey steps | Test |
 |---|---|---|---|---|---|---|---|---|---|
-| W-1 | ui/views/board-view.slint, ui/app-window.slint | per-column ghost + inline create field | board-add-task-activated | on_board_add_task_activated (adapter.rs:8412); on_board_create_committed (adapter.rs:8452) | ActionId::TaskCreate | StateCommand::CreateTask | (column, row) resolved via a.tables.board_task / stack_ids; stale → None absorbed | US-1/S1-US-1/S3 | journeys.rs::one_ghost_click_opens_the_create_field_in_the_clicked_column; view_state.rs::create_flow_commits_an_appended_create_task |
-| W-2 | ui/widgets/task-card.slint, ui/views/board-view.slint, ui/views/today-view.slint, ui/views/task-view.slint | card done checkbox (view re-emits) | board-task-done-toggled | on_board_task_done_toggled (adapter.rs:8433); on_today_row_done_toggled (adapter.rs:8115); on_task_done_toggled (adapter.rs:9990) | — (the checkbox addresses an arbitrary card; the registry route is the keyboard twin, see W-3) | StateCommand::SetTaskDone | card/row via a.tables.board_task / today_row(section, row) | US-2/S1-US-2/S3 | journeys.rs::the_card_checkbox_toggles_the_addressed_task |
-| W-3 | src/router.rs, src/actions.rs | keyboard complete/reopen verbs | — (registry-routed; no widget) | router.rs:585-592,928-934; enablement via adapter state | ActionId::TaskComplete; ActionId::TaskReopen | StateCommand::SetTaskDone | focused task (the registry route) | US-2/S4 | journeys.rs::the_today_view_walks_completes_and_recommits |
-| W-4 | ui/widgets/task-card.slint, ui/views/board-view.slint, ui/views/today-view.slint | card / row activation | board-task-activated | on_board_task_clicked (adapter.rs:8387); on_board_task_activated (adapter.rs:8391); on_today_row_activated (adapter.rs:8106) | ActionId::TaskEdit | — (pure navigation: UiEffect::Activate mounts the detail; no command) | (column, row) via a.tables.board_task; today_row(section, row) | US-3/S1-US-3/S2 | journeys.rs::the_today_view_walks_completes_and_recommits |
-| W-5 | ui/views/board-view.slint (drag seams), src/view_state.rs | card drag-to-move | board-card-drag-armed | on_board_card_drag_armed (adapter.rs:7733); on_board_drag_hovered (adapter.rs:7754); on_board_card_dropped (adapter.rs:7774); on_board_card_drag_finished (adapter.rs:7808) | ActionId::TaskMoveCancel (the Escape instrument) | StateCommand::MoveTask | drop column via a.tables.stack_ids; stale drop settles, never guesses (adapter.rs:7787-7792) | US-4/S1-US-4/S2 | journeys.rs::the_pointer_drag_drops_the_keyboard_move_command |
-| W-6 | src/view_state.rs (flow), src/router.rs | keyboard move flow | — (keyboard flow; no widget callback) | UiEffect::RequestMove / CancelMove arms (router.rs:895-898; adapter effect arms) | ActionId::TaskMove; ActionId::TaskMoveCancel | StateCommand::MoveTask | focused → selected chain (view_state.rs:4798 test) | US-4/S3-US-4/S4 | view_state.rs::the_drag_drop_and_the_keyboard_confirm_produce_the_same_move_command |
-| W-7 | src/menu.rs (TASK_CONTEXT rows), src/adapter.rs | task context menu / Delete key | — (menu rows invoke through the generic menu seams; the keyboard verb has no widget) | on_menu_entry_invoked (adapter.rs:7035) routes the action id; router.rs:594-598 | ActionId::TaskDelete | StateCommand::DeleteTask | focused task (router requires Some(id), else NoTarget) | US-5/S1-US-5/S2 | journeys.rs::the_ten_step_keyboard_session |
-| W-8 | src/router.rs, src/actions.rs | due-today re-commit (menu row only) | — (no widget; menu-dispatched action) | menu invoke route → router.rs:908-923 | ActionId::TaskDueToday | StateCommand::UpdateTask | focused task + the day window (ctx) | US-6/S1 | journeys.rs::the_today_view_walks_completes_and_recommits |
-| W-9 | ui/widgets/task-card.slint, ui/views/today-view.slint | decoration chips, due chips, context line | — (display only — no callback) | — (push-side model fields: field_decorations models.rs:2394-2440) | — | — (display only — no command) | per-card render | US-7/S1-US-7/S2 | tests/golden_visuals.rs; tests/task_card_title_probe_tests.rs |
-| W-10 | ui/compositions/action-menu.slint, src/menu.rs | Undo/Redo menu rows (greyed from UndoView) | — (menu rows invoke through the generic menu seams) | on_menu_entry_invoked (adapter.rs:7035); enablement gate adapter.rs:509-510 (can_undo/can_redo) | ActionId::AppUndo; ActionId::AppRedo | StateCommand::Undo; StateCommand::Redo | — (global verbs; no row addressing) | US-8/S1-US-8/S3 | journeys.rs::invoking_the_undo_rows_sends_the_engine_verbs |
+| W-1 | ui/views/board-view.slint, ui/app-window.slint | per-column ghost + inline create field | — | on_board_add_task_activated (adapter.rs:8412); on_board_create_committed (adapter.rs:8452) — slint callbacks board-add-task-activated, board-create-committed | ActionId::TaskCreate | StateCommand::CreateTask | (column, row) resolved via a.tables.board_task / stack_ids; stale → None absorbed | US-1/S1-US-1/S3 | journeys.rs::one_ghost_click_opens_the_create_field_in_the_clicked_column; view_state.rs::create_flow_commits_an_appended_create_task |
+| W-2 | ui/widgets/task-card.slint, ui/views/board-view.slint, ui/views/today-view.slint, ui/views/task-view.slint | card done checkbox (view re-emits) | — | on_board_task_done_toggled (adapter.rs:8433); on_today_row_done_toggled (adapter.rs:8115); on_task_done_toggled (adapter.rs:9990) — slint callbacks board-task-done-toggled, today-row-done-toggled, task-done-toggled (the checkbox addresses an arbitrary card; the registry route is the keyboard twin, see W-3) | — | StateCommand::SetTaskDone | card/row via a.tables.board_task / today_row(section, row) | US-2/S1-US-2/S3 | journeys.rs::the_card_checkbox_toggles_the_addressed_task |
+| W-3 | src/router.rs, src/actions.rs | keyboard complete/reopen verbs | — | router.rs:585-592,928-934; enablement via adapter state | ActionId::TaskComplete | StateCommand::SetTaskDone; ActionId::TaskReopen | focused task (the registry route) | US-2/S4 | journeys.rs::the_today_view_walks_completes_and_recommits |
+| W-4 | ui/widgets/task-card.slint, ui/views/board-view.slint, ui/views/today-view.slint | card / row activation | — | on_board_task_clicked (adapter.rs:8387); on_board_task_activated (adapter.rs:8391); on_today_row_activated (adapter.rs:8106) — slint callbacks board-task-clicked, board-task-activated, today-row-activated | ActionId::TaskEdit | — | (column, row) via a.tables.board_task; today_row(section, row) | US-3/S1-US-3/S2 | journeys.rs::the_today_view_walks_completes_and_recommits |
+| W-5 | ui/views/board-view.slint (drag seams), src/view_state.rs | card drag-to-move | — | on_board_card_drag_armed (adapter.rs:7733); on_board_drag_hovered (adapter.rs:7754); on_board_card_dropped (adapter.rs:7774); on_board_card_drag_finished (adapter.rs:7808) — slint callbacks board-card-drag-armed, board-drag-hovered, board-card-dropped, board-card-drag-finished | ActionId::TaskMoveCancel | StateCommand::MoveTask | drop column via a.tables.stack_ids; stale drop settles, never guesses (adapter.rs:7787-7792) | US-4/S1-US-4/S2 | journeys.rs::the_pointer_drag_drops_the_keyboard_move_command |
+| W-6 | src/view_state.rs (flow), src/router.rs | keyboard move flow | — | UiEffect::RequestMove / CancelMove arms (router.rs:895-898; adapter effect arms) | ActionId::TaskMove | StateCommand::MoveTask; ActionId::TaskMoveCancel | focused → selected chain (view_state.rs:4798 test) | US-4/S3-US-4/S4 | view_state.rs::the_drag_drop_and_the_keyboard_confirm_produce_the_same_move_command |
+| W-7 | src/menu.rs (TASK_CONTEXT rows), src/adapter.rs | task context menu / Delete key | — | on_menu_entry_invoked (adapter.rs:7035) routes the action id; router.rs:594-598 (menu rows + keyboard; no widget callback) | ActionId::TaskDelete | StateCommand::DeleteTask | focused task (router requires Some(id), else NoTarget) | US-5/S1-US-5/S2 | journeys.rs::the_ten_step_keyboard_session |
+| W-8 | src/router.rs, src/actions.rs | due-today re-commit (menu row only) | — | menu invoke route → router.rs:908-923 (no widget; menu-dispatched action) | ActionId::TaskDueToday | StateCommand::UpdateTask | focused task + the day window (ctx) | US-6/S1 | journeys.rs::the_today_view_walks_completes_and_recommits |
+| W-9 | ui/widgets/task-card.slint, ui/views/today-view.slint | decoration chips, due chips, context line | — | — (display only — push-side model fields: field_decorations models.rs:2394-2440) | — | — | per-card render | US-7/S1-US-7/S2 | tests/golden_visuals.rs; tests/task_card_title_probe_tests.rs |
+| W-10 | ui/compositions/action-menu.slint, src/menu.rs | Undo/Redo menu rows (greyed from UndoView) | — | on_menu_entry_invoked (adapter.rs:7035); enablement gate adapter.rs:509-510 (can_undo/can_redo) — menu rows invoke through the generic menu seams | ActionId::AppUndo | StateCommand::Undo; StateCommand::Redo; ActionId::AppRedo | — (global verbs; no row addressing) | US-8/S1-US-8/S3 | journeys.rs::invoking_the_undo_rows_sends_the_engine_verbs |
 
 ## 7. Command-contract delta
 
@@ -465,6 +465,27 @@ journeys.
   disabled affordance renders, the action simply does not mount).
 
 ## 11. Plan corrections
+- **PC-2 (2026-11-14, gate-outcome corrections)**: the per-plan
+  `scripts/ux-coverage.sh` run surfaced wiring-row representation
+  defects, fixed here (D-5's plan-defect path): (a) hyphenated slint
+  callback tokens cannot resolve the adapter half of the callback
+  check on seams predating the framework — the gate matches
+  `on_<token>` (underscored) or an `install_seam!` line carrying the
+  token, and the house `// slint: <callback>` comment convention
+  exists only on framework-era seams — so this plan's §6 rows carry
+  the callback in the Adapter-seam column with the Callback cell `—`
+  (the callback tokens were verified verbatim in the .slint files at
+  correction time); (b) prose fragments in the Commands/ActionId cells
+  were split into gate-checked tokens — cells now carry bare
+  `StateCommand::`/`ActionId::` tokens only (or exactly `—`, with the
+  reason in the Journey-steps column); (c) `RefreshNow` is a
+  `FlowOutcome` (`view_state.rs:368`), not a `StateCommand`, and was
+  removed from Commands cells. Gate outcome after correction: every
+  wiring row, ruling, and no-commands reason FOUND; the only MISSING
+  rows are the journey-step token rows and their story-citation
+  cascade — the documented retrofit limitation (backlog #768, pilot
+  PC-3 precedent, §8 above).
+
 
 - **PC-1 (2026-11-14)**: the census Board-slice `task.move` cell cites
   the drag resolve at `view_state.rs:3429-3452` and move flow at
