@@ -199,6 +199,9 @@ sub-family) and `crates/taskboard-app/src/commands/`.
 | alarm.display | U | U | D — timers section mount `today-view.slint:163-180` (props `today-view.slint:79-92`) | U | U | U | D (pre-existing, =timers list= `cli.rs:954`) |
 | review.walk_preview | U | U | D — review-walk surfacing card `today-view.slint:206-238` (props `today-view.slint:127-131`) | U | U | U | U |
 
+| break_rule.create | U | U | U | U | U | U | E (CLI-only — =breaks add= `cli.rs:971` → =CreateBreakRule= `messages.rs:324`; the UI crate never constructs the command and mounts no =on_break*= seam, adapter.rs swept) |
+| break_rule.remove | U | U | U | U | U | U | X (CLI-only — =breaks remove= `cli.rs:995` → =DeleteBreakRule= `messages.rs:343`; UI-unreachable, same sweep) |
+| break_rule.roster_display | U | U | U | U | U | U | D (CLI-only — =breaks list= `cli.rs:990`, a pure read of the canonical rule roster) |
 ** Rulings (Today)
 
 | ID | Ruling | Reason | Home | Date | Authority |
@@ -225,6 +228,9 @@ sub-family) and `crates/taskboard-app/src/commands/`.
 | review.walk_preview | Board, TaskDetail, Review, Settings, Capture, CLI | Sweep-B/T/R/S/C: the surfacing card mounts only in the today view (`today-view.slint:206-238`); Sweep-CLI: none | 2026-11-13 |
 | nav.item_walk | Review, Settings, Capture, CLI | =NavNextItem= contexts =VIEW_NAV= (`actions.rs:618-623`) bind only Today/Board/StackDetail/TaskDetail; Sweep-CLI: no nav verb | 2026-11-13 |
 
+| break_rule.create | Board, TaskDetail, Review, Settings, Capture | the break-rule engine verbs are UI-unreachable (no =on_break*= seam; the UI crate never constructs =CreateBreakRule= — adapter.rs and the UI crate swept); Today carries the row as the timer/alarm-adjacent daily surface | 2026-11-14 |
+| break_rule.remove | Board, TaskDetail, Review, Settings, Capture | the same UI-unreachable sweep | 2026-11-14 |
+| break_rule.roster_display | Board, TaskDetail, Review, Settings, Capture | no break-rule roster mounts anywhere in the UI (Sweep-B/T/R/S/C) | 2026-11-14 |
 * Slice: Capture
 
 Baseline: =dc290df2=. Origin: surface slice authored by the phase-3
@@ -358,6 +364,14 @@ settings seams (adapter.rs:8246,10246-10439); *Sweep-C* =
 | task.recur_display | D (pre-existing card badge) | D (pre-existing pattern echo) | D — the same card badge on today rows `today-view.slint:20,376`, `task-card.slint:22-24` | U | U | U | U |
 | nav.item_walk | E — the same =Nav*= ids (Board member bindings `presets.rs:121-124`) | E — =NavNextItem/=NavPrevItem/=NavFirstItem/=NavLastItem= `actions.rs:846-866` (contexts =VIEW_NAV= `actions.rs:618-623`), Down/Up/Ctrl+Home/Ctrl+End `presets.rs:179-184` | E — the same =Nav*= ids (Today member bindings `presets.rs:135-138`) | U | U | U | U |
 
+| label.create | U | U | U | U | U | U | C (CLI-only — =labels add= `cli.rs:1552` → =CreateLabel= `messages.rs`; the UI crate never constructs a =Label= command and mounts no =on_label*= seam — the Board slice Origin's sweep, `models.rs:2413`) |
+| label.edit | U | U | U | U | U | U | E (CLI-only — =labels edit= `cli.rs:1563` → =UpdateLabel=; UI-unreachable, same sweep) |
+| label.delete | U | U | U | U | U | U | X (CLI-only — =labels delete= `cli.rs:1570` → =DeleteLabel=; UI-unreachable, same sweep) |
+| label.roster_display | U | U | U | U | U | U | D (CLI-only — =labels list= `cli.rs:1546`, a pure read; labels render nowhere in the GUI) |
+| task.label_assign | U | U | U | U | U | U | E (CLI-only — =tasks label= `cli.rs:1683` → =AssignLabel=; UI-unreachable, no assign seam) |
+| task.label_unassign | U | U | U | U | U | U | E (CLI-only — =tasks unlabel= `cli.rs:1690` → =UnassignLabel=; UI-unreachable) |
+| track_entry.roster_display | U | D | U | U | U | U | D (CLI-only — =track list= `cli.rs:1166`, the entries table with its date/stack filters `cli.rs:1487-1490`) |
+| track.status_display | U | U | U | U | U | U | D (CLI-only — =track status= `cli.rs:1164`; the GUI's running-timer badge is the =task.track_total_display= row) |
 ** Rulings (Task detail)
 
 | ID | Ruling | Reason | Home | Date | Authority |
@@ -396,6 +410,8 @@ settings seams (adapter.rs:8246,10246-10439); *Sweep-C* =
 | task.recur_display | Review, Settings, Capture, CLI | Sweep-R/S/C: no recur badge/echo; Sweep-CLI: none | 2026-11-13 |
 | nav.item_walk | Review, Settings, Capture, CLI | =NavNextItem= contexts =VIEW_NAV= (`actions.rs:618-623`) bind only Today/Board/StackDetail/TaskDetail; Sweep-CLI: no nav verb | 2026-11-13 |
 
+| reflection.edit | Board, TaskDetail, Today, Review, Settings, Capture | =UpdateReflection= is UI-unreachable (the review slice's ledger is read-only, `review-view.slint:347-351`; the walk only records) | 2026-11-14 |
+| reflection.delete | Board, TaskDetail, Today, Review, Settings, Capture | =DeleteReflection= is UI-unreachable (no delete seam anywhere; the journal ledger carries no activation) | 2026-11-14 |
 * Slice: Settings
 
 Baseline: =84c04a0b=. Origin: surface slice authored by the phase-3
@@ -501,6 +517,14 @@ table, token-identical:
 | settings.facts_display | Board, TaskDetail, Today, Review, Capture, CLI | Sweep-B/T/Y/R/C: no facts panel outside the settings view; Sweep-CLI: =config print= prints the resolved config, not the app-stated apply/env facts | 2026-11-14 |
 | settings.env_override_display | Board, TaskDetail, Today, Review, Capture, CLI | Sweep-B/T/Y/R/C: no env-locked badge outside the settings view; Sweep-CLI: no override output | 2026-11-14 |
 
+| label.create | Board, TaskDetail, Today, Review, Settings, Capture | the label engine verbs are UI-unreachable (no =on_label*= seam; the UI crate never constructs =CreateLabel=); the Task detail slice carries the label rows as the task entity's owning surface (labels bind to tasks; no GUI surface exposes them — the chunk-1 Board Origin deferred them to chunk 2) | 2026-11-14 |
+| label.edit | Board, TaskDetail, Today, Review, Settings, Capture | the same UI-unreachable sweep | 2026-11-14 |
+| label.delete | Board, TaskDetail, Today, Review, Settings, Capture | the same UI-unreachable sweep | 2026-11-14 |
+| label.roster_display | Board, TaskDetail, Today, Review, Settings, Capture | labels render nowhere in the GUI (Sweep-B/T/Y/R/S/C: no label chip, badge, or roster — `models.rs:2413` records importance/urgency riding the card decorations slot) | 2026-11-14 |
+| task.label_assign | Board, TaskDetail, Today, Review, Settings, Capture | =AssignLabel= is UI-unreachable (no assign seam anywhere) | 2026-11-14 |
+| task.label_unassign | Board, TaskDetail, Today, Review, Settings, Capture | =UnassignLabel= is UI-unreachable | 2026-11-14 |
+| track_entry.roster_display | Board, Today, Review, Settings, Capture | the track-entries table mounts only in the task detail view (the =task.track_entry_*= family's seams, `adapter.rs:9613-9921`) | 2026-11-14 |
+| track.status_display | Board, TaskDetail, Review, Settings, Capture | the status-bar tracking chip (the =task.track_stop= Today cell, `status-bar.slint:77-83`) shows the running state, not this status display | 2026-11-14 |
 * Slice: Review
 
 Baseline: =84c04a0b=. Origin: surface slice authored by the phase-3
@@ -574,6 +598,8 @@ every sub-family) and `crates/taskboard-app/src/commands/`.
 | review.stats_display | U | U | U | D — the 7-day/30-day window phrases (estimated/actual/gap) `review-view.slint:211,259`, derived `presentation.rs:2293+` (second-granular precision contract) | U | U | U |
 | reflection.ledger_display | U | U | U | D — the journal-entries ledger, newest first, read verbatim, read-only (`review-view.slint:352-360`, entries `review-view.slint:381+`) | U | U | D (pre-existing, =journal list= `cli.rs:1403` / =journal show= `cli.rs:1417`) |
 
+| reflection.edit | U | U | U | U | U | U | E (CLI-only — =journal edit= `cli.rs:1425` → =UpdateReflection= `messages.rs:549`; the UI crate never constructs it — the walk only records) |
+| reflection.delete | U | U | U | U | U | U | X (CLI-only — =journal delete= `cli.rs:1455` → =DeleteReflection= `messages.rs:581`; UI-unreachable) |
 ** Rulings (Review)
 
 None seeded — the review/plan surface had no pilot ruling. The walk
@@ -677,3 +703,22 @@ are registered below.
 | notification.dismiss | CLI | Sweep-CLI: no dismissal verb (same =DismissReminder= absence as =alarm.dismiss=) | 2026-11-14 |
 | notification.snooze | CLI | Sweep-CLI: no occurrence-snooze verb | 2026-11-14 |
 | notification.open | CLI | Sweep-CLI: =find= (`cli.rs:89-101`) prints results, no open/jump verb (the =task.open= register's CLI sweep, Task detail slice) | 2026-11-14 |
+
+** The CLI-only register (entity-less verbs)
+
+Per the chunk-2 plan D-10: the app-lifecycle/diagnostic verbs whose
+only column *is* the CLI record here, not as matrix rows (a matrix
+row of one cell defeats the surface-scoped grammar). Queryable like
+the unruled registers.
+
+| CLI verb | evidence (cli.rs:line) | note |
+|---|---|---|
+| gui | =gui= `cli.rs:239` | launches the UI; no engine verb |
+| status | =status= `cli.rs:220` | a status line (pure read, entity-less) |
+| daemon stop | =DaemonCmd::Stop= `cli.rs:259` | stops the daemon process |
+| config print | =ConfigCmd::Print= `cli.rs:1518` | prints the resolved config (read-only) |
+| config path | =ConfigCmd::Path= `cli.rs:1522` | prints the config file path |
+| export | =export= `cli.rs:156` | the pdf/csv/json/fold format family; entity-less |
+| find | =find= `cli.rs:89-101` | shares the search palette's engine ranking, no engine verb — the naming asymmetry (palette vs =find=) is recorded as an evidence note, chunk-1 plan §5 |
+| sync | =sync= `cli.rs:199` | registered CLI-only per D-10; its GUI twin ceremony is the =RequestSync= arm — cross-referenced, not duplicated |
+| boards use (dead) | =BoardsCmd::Use= `cli.rs:358`; dispatch `commands/mod.rs:949` (one-shot refuses) and `commands/mod.rs:1949` (unreachable) | parses but is unreachable — backlog **#776**; recorded here, *not* as a capability row (nothing a user can do) |
