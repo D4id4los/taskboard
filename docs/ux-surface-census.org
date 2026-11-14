@@ -608,3 +608,72 @@ are registered below — none is dressed as a ruling.
 | review.ledger_display | Board, TaskDetail, Today, Settings, Capture | Sweep-B/T/Y/S/C: no ledger mount outside the review view | 2026-11-14 |
 | review.stats_display | Board, TaskDetail, Today, Settings, Capture, CLI | Sweep-B/T/Y/S/C: no stat-section mount; Sweep-CLI: no aggregate output | 2026-11-14 |
 | reflection.ledger_display | Board, TaskDetail, Today, Settings, Capture | Sweep-B/T/Y/S/C: no journal-ledger mount outside the review view | 2026-11-14 |
+* Slice: Alarm window
+
+Baseline: =84c04a0b=. Origin: surface slice authored by the phase-3
+stock-take chunk 2 (chunk-1 D-6: the alarm window gets its own slice
+block, not a matrix column — it is a mount-time surface the user is
+*moved to* by a timer, outside the fixed seven-column grammar,
+nothing else mounts it). The slice covers the always-on-top alarm
+window (`ui/alarm-window.slint`, mounted lazily iff not kiosk —
+`lib.rs:322-330`, the R3.5.3 fence; lanes `lib.rs:218-233`) *and* the
+global notification surface (`ui/compositions/notification-surface.slint`,
+mounted at window level over any view `app-window.slint:597`; seams
+`adapter.rs:10154-10246`), whose rows chunk 1's Task-detail slice
+explicitly deferred here (its Origin note, D-6).
+
+*Named finding (pass 2)*: neither the alarm window nor the
+notification surface sends a =UiRequest= — both dispatch
+=StateCommand=s directly over mpsc (the window's button callbacks
+`lib.rs:827-870`; the seams' =a.send(...)= arms
+`adapter.rs:10157-10246`) or route =ActionId=s (the notification
+surface's snooze/mute/cancel/track-start/open route through
+=ReminderSnooze=/=ReminderMute=/=TimerCancel=/=TaskTrackStart= —
+the same dispatch as their home-slice rows). *Named finding (D-P11
+anchor-aware shape)*: an alarm anchor has no task — the window's rows
+carry Dismiss/Snooze/Cancel only, no Done, no Mute
+(`alarm-window.slint:8-10`).
+
+*Column semantics*: the alarm window is an always-on-top second
+window; when it shows it is operable over every surface. Its rows
+therefore carry the same evidence cell in every GUI column (the
+notification surface's global-overlay precedent, the Capture slice's
+=app.*= rows) — an absence register would record six false absences
+per row. The CLI column records the true absences.
+
+Named absence sweeps cited by the register below (all at this
+slice's baseline): *Sweep-CLI* = `crates/taskboard-app/src/cli.rs`
+(=Command= enum and every sub-family) and
+`crates/taskboard-app/src/commands/`.
+
+| Capability | Board | TaskDetail | Today | Review | Settings | Capture | CLI |
+|---|---|---|---|---|---|---|---|
+| alarm.dismiss | E — the window row's Dismiss `alarm-window.slint:32-34`, callback `lib.rs:845-852` → =DismissReminder= | E — same alarm-window evidence | E — same alarm-window evidence | E — same alarm-window evidence | E — same alarm-window evidence | E — same alarm-window evidence | U |
+| alarm.snooze | E — the window row's Snooze `alarm-window.slint:32-34`, callback `lib.rs:853-860` → =SnoozeReminder= with =ALARM_WINDOW_SNOOZE= = 10 min (`presentation.rs:2228`) | E — same alarm-window evidence | E — same alarm-window evidence | E — same alarm-window evidence | E — same alarm-window evidence | E — same alarm-window evidence | U |
+| alarm.cancel | E — the window row's Cancel `alarm-window.slint:32-34`, callback `lib.rs:861-870` → =CancelAdhocAlarm= (the timers section's engine twin) | E — same alarm-window evidence | E — same alarm-window evidence | E — same alarm-window evidence | E — same alarm-window evidence | E — same alarm-window evidence | E (pre-existing, =timers cancel= `cli.rs:958`) |
+| alarm.window_display | D — the awaiting-alarm rows (title snapshot + elapsed phrase), derived =alarm_window_rows= `presentation.rs:2253-2290`, attention-gained edge `lib.rs:778-786` | D — same alarm-window evidence | D — same alarm-window evidence (the timers *section* is the Today slice's =alarm.display= row — a different surface) | D — same alarm-window evidence | D — same alarm-window evidence | D — same alarm-window evidence | U |
+| notification.dismiss | E (global overlay) — the notification row's dismiss seam `adapter.rs:10157-10169` → =DismissReminder=; mounts over any view `app-window.slint:597` | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | U |
+| notification.done | E (global overlay) — the notification row's done seam `adapter.rs:10170-10185` → =SetTaskDone= (the done-seam's guard shape; a stale index degrades to a no-op) | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (pre-existing, =tasks done= `cli.rs:1643`) |
+| notification.snooze | E (global overlay) — the notification row's snooze seam `adapter.rs:10186-10200` routes =ReminderSnooze= `actions.rs:1117-1119` (the Task-detail banner's engine twin) | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | U |
+| notification.mute | E (global overlay) — the notification row's mute seam `adapter.rs:10201-10215` routes =ReminderMute= `actions.rs:1127-1139` (→ =SetTaskRemindersMuted= `messages.rs:217`) | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (pre-existing, =tasks remind= --mute `cli.rs:1734`) |
+| notification.cancel | E (global overlay) — the notification row's cancel seam `adapter.rs:10216-10230` routes =TimerCancel= over the row's adhoc-alarm target (DR-3/3, D-I7) | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (pre-existing, =timers cancel= `cli.rs:958`) |
+| notification.track_start | E (global overlay) — the notification row's "Start Task" seam `adapter.rs:10231-10245` routes =TaskTrackStart= over the row's target (DR-5/4, D-TU7; the implicit dismissal lives planner-side, D-T5) | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (pre-existing, =track start= `cli.rs:1149`) |
+| notification.open | E (global overlay) — the notification row's open seam `adapter.rs:10245-10251` (the stale-index guard, `adapter.rs:9410`) | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | U |
+
+** Rulings (Alarm window)
+
+None seeded — the alarm window and notification surface had no pilot
+ruling. The D-P11 anchor-aware shape (no Done/Mute on alarm rows) is
+recorded as a named finding above, not a ruling; unruled absences
+are registered below.
+
+** Unruled register (Alarm window)
+
+| capability | surfaces | evidence-of-absence | date |
+|---|---|---|---|
+| alarm.dismiss | CLI | Sweep-CLI: no reminder-dismiss verb (the =tasks remind= family mutates rules, it does not dismiss occurrences) | 2026-11-14 |
+| alarm.snooze | CLI | Sweep-CLI: no occurrence-snooze verb (the Task-detail banner's =ReminderSnooze= is GUI-only — its row's CLI cell is =U= there too) | 2026-11-14 |
+| alarm.window_display | CLI | Sweep-CLI: =timers list= `cli.rs:954` is the Today timers section's inventory (the =alarm.display= row's CLI cell), not the window's awaiting-occurrence rows | 2026-11-14 |
+| notification.dismiss | CLI | Sweep-CLI: no dismissal verb (same =DismissReminder= absence as =alarm.dismiss=) | 2026-11-14 |
+| notification.snooze | CLI | Sweep-CLI: no occurrence-snooze verb | 2026-11-14 |
+| notification.open | CLI | Sweep-CLI: =find= (`cli.rs:89-101`) prints results, no open/jump verb (the =task.open= register's CLI sweep, Task detail slice) | 2026-11-14 |
