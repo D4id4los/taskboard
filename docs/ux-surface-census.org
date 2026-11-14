@@ -9,14 +9,20 @@ standing ruling with its date and authority
 diffs against it. Overturning a ruling is a visible census diff made
 at UX-plan level — never a chunk-local surprise.
 
-- *Status*: =phase 3 in flight: task-flow surfaces complete=
-  (2026-11-13) — the stock-take (dispatch
+- *Status*: =full census complete (phase 3)= (2026-11-14) — the
+  stock-take (dispatch
   `.artifacts/plans/2026-11-13-ux-census-stocktake-dispatch-plan.md`)
-  has re-organized the phase-2 seed from feature-scoped slices into
-  surface-scoped slices and completed the four task-flow surfaces
-  (Board, Task detail, Today, Capture). The Review, Settings (files
-  sync), alarm-window, and CLI slices are chunk 2's; absences outside
-  the completed slices are *not* rulings.
+  re-organized the phase-2 seed from feature-scoped slices into
+  surface-scoped slices (chunk 1: Board, Task detail, Today,
+  Capture) and completed the remaining surfaces (chunk 2: Review,
+  Settings, alarm window, CLI column + the CLI-only register). Every
+  derived capability has a row; every cell carries evidence or a
+  marker; the seed's rulings are all preserved. The
+  diff-against-seed appendix below records what phase 3 changed and
+  why; the unruled-observation inventory (the =U= registers,
+  consolidated in
+  `.artifacts/reports/2026-11-14-ux-surface-census-stocktake-report.md`)
+  is phase 4's triage input.
 - *Evidence convention*: every populated cell cites =file:line= at its
   slice block's recorded **Baseline** SHA (stated once per slice block,
   D-7) or an existing test name. Seed-derived cells inherit the seed
@@ -104,7 +110,7 @@ every sub-family) and `crates/taskboard-app/src/commands/`.
 | task.create | C — inline create row commit → =CreateTask= `adapter.rs:8409-8414` (view_state.rs:1903,4199), per-column "Add task" ghost `adapter.rs:8374`; =TaskCreate= `actions.rs:1018-1027`, N `presets.rs:127` | U | U | U | U | U | C (pre-existing, =tasks add= `cli.rs:1634`) |
 | task.complete | E — card done checkbox `task-card.slint:150-151` → `adapter.rs:8395` / stack detail `adapter.rs:8318` (→ =SetTaskDone= `messages.rs:51`); =TaskComplete/=TaskReopen= `actions.rs:1057-1075`, Space/Ctrl+Space `presets.rs:125-126` | E — detail done toggle `adapter.rs:9952` | E — today row done toggle `today-view.slint:74` | U | U | U | E (pre-existing, =tasks done=, --undo reopens `cli.rs:1643`) |
 | task.open | E — card click `adapter.rs:8349`, double-click/Enter `adapter.rs:8353`; =TaskEdit= `actions.rs:1037-1045`, Return `presets.rs:129` | — (self) | E — today row activation `today-view.slint:65-74` | U | U | E — palette jump `adapter.rs:8536` | U |
-| task.move | E — card drag `adapter.rs:7695-7770` (drop resolves =MoveTask= `view_state.rs:3429-3452`), move flow `view_state.rs:456,3343`; =TaskMove= `actions.rs:1077-1086`, M `presets.rs:130` | E — =TaskMove= `actions.rs:1077-1086` (TaskDetail member) | E — =TaskMove= `actions.rs:1077-1086` (Today member) | U | U | U | E (pre-existing, =tasks move= `cli.rs:1651`) |
+| task.move | E — card drag `adapter.rs:7695-7770` (drop resolves =MoveTask= `view_state.rs:3429-3452`), move flow `view_state.rs:456,3343`; =TaskMove= `actions.rs:1077-1086`, M `presets.rs:130` | E — =TaskMove= `actions.rs:1077-1086` (TaskDetail member) | E — =TaskMove= `actions.rs:1077-1086` (Today member) | E — the walk's file commit → =MoveTask= `adapter.rs:2203-2227` (consolidated 2026-11-14, chunk-2 D-11.5; the row's home is this slice) | U | U | E (pre-existing, =tasks move= `cli.rs:1651`) |
 | task.delete | X — card context menu `adapter.rs:7887`; =TaskDelete= `actions.rs:1097-1106`, Delete `presets.rs:131` | X — =TaskDelete= `actions.rs:1097-1106` (TaskDetail member) | X — =TaskDelete= `actions.rs:1106-1108` (Today member) | U | U | U | X (pre-existing, =tasks delete= `cli.rs:1678`) |
 | task.location_display | D — selected-stack highlight and header hints `board-layout.slint:413-437` | U | D — row context line "board › stack" `today-view.slint:392-399` (model `today-view.slint:35-37`) | U | U | U | D (pre-existing, =tasks list= grouping `cli.rs:1628`) |
 | task.badges_display | D — card decoration chips: reminder / running-timer / recur / tracker badges `task-card.slint:18-33,247-260` | U | D — the same task cards render on today rows `today-view.slint:20,376` | U | U | U | U |
@@ -138,7 +144,7 @@ absences are registered below; none is dressed as a ruling.
 | task.create | TaskDetail, Today, Review, Settings, Capture | Sweep-T/Y/R/S/C: no inline create row; =TaskCreate= is Board/StackDetail-scoped (`actions.rs:1018-1027`) | 2026-11-13 |
 | task.complete | Review, Settings, Capture | Sweep-R/S/C: no task row or done seam | 2026-11-13 |
 | task.open | Review, Settings, CLI | Sweep-R/S: no task-open seam; Sweep-CLI: =find= (`cli.rs:89-101`) prints results, no open/jump verb | 2026-11-13 |
-| task.move | Review, Settings, Capture | Sweep-R/S/C: no task-move seam | 2026-11-13 |
+| task.move | Settings, Capture | Sweep-R/S/C: no task-move seam. (The Review entry retired 2026-11-14: the walk's file commit is a task-move seam — `adapter.rs:2203-2227`, chunk-2 D-11.5; the cell now cites it.) | 2026-11-13 |
 | task.delete | Review, Settings, Capture | Sweep-R/S/C: no task-delete seam | 2026-11-13 |
 | task.location_display | TaskDetail, Review, Settings, Capture | Sweep-T/R/S/C: no board›stack context line outside Today and the board | 2026-11-13 |
 | task.badges_display | TaskDetail, Review, Settings, Capture, CLI | Sweep-T/R/S/C: no decoration chips outside board/today cards; Sweep-CLI: no badge output | 2026-11-13 |
@@ -228,9 +234,9 @@ sub-family) and `crates/taskboard-app/src/commands/`.
 | review.walk_preview | Board, TaskDetail, Review, Settings, Capture, CLI | Sweep-B/T/R/S/C: the surfacing card mounts only in the today view (`today-view.slint:206-238`); Sweep-CLI: none | 2026-11-13 |
 | nav.item_walk | Review, Settings, Capture, CLI | =NavNextItem= contexts =VIEW_NAV= (`actions.rs:618-623`) bind only Today/Board/StackDetail/TaskDetail; Sweep-CLI: no nav verb | 2026-11-13 |
 
-| break_rule.create | Board, TaskDetail, Review, Settings, Capture | the break-rule engine verbs are UI-unreachable (no =on_break*= seam; the UI crate never constructs =CreateBreakRule= — adapter.rs and the UI crate swept); Today carries the row as the timer/alarm-adjacent daily surface | 2026-11-14 |
-| break_rule.remove | Board, TaskDetail, Review, Settings, Capture | the same UI-unreachable sweep | 2026-11-14 |
-| break_rule.roster_display | Board, TaskDetail, Review, Settings, Capture | no break-rule roster mounts anywhere in the UI (Sweep-B/T/R/S/C) | 2026-11-14 |
+| break_rule.create | Board, TaskDetail, Today, Review, Settings, Capture | the break-rule engine verbs are UI-unreachable (no =on_break*= seam; the UI crate never constructs =CreateBreakRule= — adapter.rs and the UI crate swept); Today carries the row as the timer/alarm-adjacent daily surface | 2026-11-14 |
+| break_rule.remove | Board, TaskDetail, Today, Review, Settings, Capture | the same UI-unreachable sweep | 2026-11-14 |
+| break_rule.roster_display | Board, TaskDetail, Today, Review, Settings, Capture | no break-rule roster mounts anywhere in the UI (Sweep-B/T/R/S/C) | 2026-11-14 |
 * Slice: Capture
 
 Baseline: =dc290df2=. Origin: surface slice authored by the phase-3
@@ -343,9 +349,9 @@ settings seams (adapter.rs:8246,10246-10439); *Sweep-C* =
 | task.title_edit | U | E — title edit seams `adapter.rs:8594-8603` (→ =UpdateTask= `messages.rs:44`); =TaskTitleEdit= `actions.rs:1046-1048`, F2 `presets.rs:190` | U | U | U | U | E (pre-existing, =tasks edit= --title `cli.rs:1670`, TaskEditFlags `cli.rs:1586-1624`) |
 | task.description_edit | U | E — body editor open/commit `adapter.rs:8614-8630` | U | U | U | U | E (pre-existing, =tasks edit= --description `cli.rs:1670`) |
 | task.due_edit | U | E — due editor open/accept `adapter.rs:8719-8774`, date-picker seams `adapter.rs:8783-8932`, editor `due-editor.slint:26-104`; =PickerCommit= `actions.rs:1797-1799` | U | U | U | U | E (pre-existing, =tasks edit= --due `cli.rs:1670`) |
-| task.scheduled_edit | U | E — scheduled editor open `adapter.rs:8741` | U | U | U | U | E (pre-existing, =tasks edit= --scheduled `cli.rs:1670`) |
+| task.scheduled_edit | U | E — scheduled editor open `adapter.rs:8741` | U | E — the walk's carry date commit → =UpdateTask= `adapter.rs:2252-2299` (consolidated 2026-11-14, chunk-2 D-11.5; the Review cell's evidence lives in the Review slice's =review.carry_pick= row) | U | U | E (pre-existing, =tasks edit= --scheduled `cli.rs:1670`) |
 | task.complete | E — card done checkbox `task-card.slint:150-151`, `adapter.rs:8395` | E — detail done toggle `adapter.rs:9952`; =TaskComplete/=TaskReopen= `actions.rs:1056-1068` | E — today row done toggle `today-view.slint:74` | U | U | U | E (pre-existing, =tasks done=, --undo reopens `cli.rs:1643`) |
-| task.move | E — card drag `adapter.rs:7695-7770`, move flow `view_state.rs:456,3343` | E — =TaskMove= `actions.rs:1077-1086` (TaskDetail member) | E — =TaskMove= `actions.rs:1077-1086` (Today member) | U | U | U | E (pre-existing, =tasks move= `cli.rs:1651`) |
+| task.move | E — card drag `adapter.rs:7695-7770`, move flow `view_state.rs:456,3343` | E — =TaskMove= `actions.rs:1077-1086` (TaskDetail member) | E — =TaskMove= `actions.rs:1077-1086` (Today member) | E — the walk's file commit → =MoveTask= `adapter.rs:2203-2227` (consolidated 2026-11-14, chunk-2 D-11.5; the Review cell's evidence lives in the Review slice's =review.file_commit= row) | U | U | E (pre-existing, =tasks move= `cli.rs:1651`) |
 | task.delete | X — card context menu `adapter.rs:7887` | X — =TaskDelete= `actions.rs:1097-1106` (TaskDetail member) | X — =TaskDelete= `actions.rs:1106-1108` (Today member) | U | U | U | X (pre-existing, =tasks delete= `cli.rs:1678`) |
 | task.reminder_rules_edit | U | E — rule rows, preset and offset affordances `task-view.slint:731-735` + `rule-list.slint`; seams `adapter.rs:8636` (remove row), `adapter.rs:8728` (jump to due); =ReminderRuleAdd/=ReminderRuleRemove= `actions.rs:1147-1159` (→ =AddReminderRule/=RemoveReminderRule= `messages.rs:249,271`) | U | U | U | U | E (pre-existing, =tasks remind= `cli.rs:1701`) |
 | task.reminders_mute | U | E — banner mute `adapter.rs:9272`, rule unmute `adapter.rs:8736`; =ReminderMute/=ReminderUnmute= `actions.rs:1127-1139` (→ =SetTaskRemindersMuted= `messages.rs:217`) | U | U | U | U | E (pre-existing, =tasks remind= --mute `cli.rs:1734`) |
@@ -391,9 +397,9 @@ settings seams (adapter.rs:8246,10246-10439); *Sweep-C* =
 | task.title_edit | Board, Today, Review, Settings, Capture | Sweep-B: board cards carry no title editor (click opens the detail, `adapter.rs:8349,8353`); Sweep-Y/R/S/C: no title-edit seam | 2026-11-13 |
 | task.description_edit | Board, Today, Review, Settings, Capture | Sweep-B/Y/R/S/C: no description seam | 2026-11-13 |
 | task.due_edit | Board, Today, Review, Settings, Capture | Sweep-B/Y/R/S/C: no due/date-picker seam | 2026-11-13 |
-| task.scheduled_edit | Board, Today, Review, Settings, Capture | Sweep-B/Y/R/S/C: no scheduled seam | 2026-11-13 |
+| task.scheduled_edit | Board, Today, Settings, Capture | Sweep-B/Y/R/S/C: no scheduled seam. (The Review entry retired 2026-11-14: the walk's carry date commit is a scheduled-edit seam — `adapter.rs:2252-2299`, chunk-2 D-11.5.) | 2026-11-13 |
 | task.complete | Review, Settings, Capture | Sweep-R/S/C: no task row or done seam | 2026-11-13 |
-| task.move | Review, Settings, Capture | Sweep-R/S/C: no task-move seam | 2026-11-13 |
+| task.move | Settings, Capture | Sweep-R/S/C: no task-move seam. (The Review entry retired 2026-11-14: the walk's file commit is a task-move seam — `adapter.rs:2203-2227`, chunk-2 D-11.5; the cell now cites it.) | 2026-11-13 |
 | task.delete | Review, Settings, Capture | Sweep-R/S/C: no task-delete seam | 2026-11-13 |
 | task.reminder_rules_edit | Board, Today, Review, Settings, Capture | Sweep-B/Y/R/S/C: no reminder-rule seam (the global notification surface is chunk 2's, see the slice Origin note) | 2026-11-13 |
 | task.reminders_mute | Board, Today, Review, Settings, Capture | Sweep-B/Y/R/S/C: no mute/unmute seam outside the detail banner | 2026-11-13 |
@@ -410,8 +416,14 @@ settings seams (adapter.rs:8246,10246-10439); *Sweep-C* =
 | task.recur_display | Review, Settings, Capture, CLI | Sweep-R/S/C: no recur badge/echo; Sweep-CLI: none | 2026-11-13 |
 | nav.item_walk | Review, Settings, Capture, CLI | =NavNextItem= contexts =VIEW_NAV= (`actions.rs:618-623`) bind only Today/Board/StackDetail/TaskDetail; Sweep-CLI: no nav verb | 2026-11-13 |
 
-| reflection.edit | Board, TaskDetail, Today, Review, Settings, Capture | =UpdateReflection= is UI-unreachable (the review slice's ledger is read-only, `review-view.slint:347-351`; the walk only records) | 2026-11-14 |
-| reflection.delete | Board, TaskDetail, Today, Review, Settings, Capture | =DeleteReflection= is UI-unreachable (no delete seam anywhere; the journal ledger carries no activation) | 2026-11-14 |
+| label.create | Board, TaskDetail, Today, Review, Settings, Capture | the label engine verbs are UI-unreachable (no =on_label*= seam; the UI crate never constructs =CreateLabel=); the Task detail slice carries the label rows as the task entity's owning surface (labels bind to tasks; no GUI surface exposes them — the chunk-1 Board Origin deferred them to chunk 2) | 2026-11-14 |
+| label.edit | Board, TaskDetail, Today, Review, Settings, Capture | the same UI-unreachable sweep | 2026-11-14 |
+| label.delete | Board, TaskDetail, Today, Review, Settings, Capture | the same UI-unreachable sweep | 2026-11-14 |
+| label.roster_display | Board, TaskDetail, Today, Review, Settings, Capture | labels render nowhere in the GUI (Sweep-B/T/Y/R/S/C: no label chip, badge, or roster — `models.rs:2413` records importance/urgency riding the card decorations slot) | 2026-11-14 |
+| task.label_assign | Board, TaskDetail, Today, Review, Settings, Capture | =AssignLabel= is UI-unreachable (no assign seam anywhere) | 2026-11-14 |
+| task.label_unassign | Board, TaskDetail, Today, Review, Settings, Capture | =UnassignLabel= is UI-unreachable | 2026-11-14 |
+| track_entry.roster_display | Board, Today, Review, Settings, Capture | the track-entries table mounts only in the task detail view (the =task.track_entry_*= family's seams, `adapter.rs:9613-9921`) | 2026-11-14 |
+| track.status_display | Board, TaskDetail, Today, Review, Settings, Capture | the status-bar tracking chip (the =task.track_stop= Today cell, `status-bar.slint:77-83`) shows the running state, not this status display | 2026-11-14 |
 * Slice: Settings
 
 Baseline: =84c04a0b=. Origin: surface slice authored by the phase-3
@@ -517,14 +529,6 @@ table, token-identical:
 | settings.facts_display | Board, TaskDetail, Today, Review, Capture, CLI | Sweep-B/T/Y/R/C: no facts panel outside the settings view; Sweep-CLI: =config print= prints the resolved config, not the app-stated apply/env facts | 2026-11-14 |
 | settings.env_override_display | Board, TaskDetail, Today, Review, Capture, CLI | Sweep-B/T/Y/R/C: no env-locked badge outside the settings view; Sweep-CLI: no override output | 2026-11-14 |
 
-| label.create | Board, TaskDetail, Today, Review, Settings, Capture | the label engine verbs are UI-unreachable (no =on_label*= seam; the UI crate never constructs =CreateLabel=); the Task detail slice carries the label rows as the task entity's owning surface (labels bind to tasks; no GUI surface exposes them — the chunk-1 Board Origin deferred them to chunk 2) | 2026-11-14 |
-| label.edit | Board, TaskDetail, Today, Review, Settings, Capture | the same UI-unreachable sweep | 2026-11-14 |
-| label.delete | Board, TaskDetail, Today, Review, Settings, Capture | the same UI-unreachable sweep | 2026-11-14 |
-| label.roster_display | Board, TaskDetail, Today, Review, Settings, Capture | labels render nowhere in the GUI (Sweep-B/T/Y/R/S/C: no label chip, badge, or roster — `models.rs:2413` records importance/urgency riding the card decorations slot) | 2026-11-14 |
-| task.label_assign | Board, TaskDetail, Today, Review, Settings, Capture | =AssignLabel= is UI-unreachable (no assign seam anywhere) | 2026-11-14 |
-| task.label_unassign | Board, TaskDetail, Today, Review, Settings, Capture | =UnassignLabel= is UI-unreachable | 2026-11-14 |
-| track_entry.roster_display | Board, Today, Review, Settings, Capture | the track-entries table mounts only in the task detail view (the =task.track_entry_*= family's seams, `adapter.rs:9613-9921`) | 2026-11-14 |
-| track.status_display | Board, TaskDetail, Review, Settings, Capture | the status-bar tracking chip (the =task.track_stop= Today cell, `status-bar.slint:77-83`) shows the running state, not this status display | 2026-11-14 |
 * Slice: Review
 
 Baseline: =84c04a0b=. Origin: surface slice authored by the phase-3
@@ -619,8 +623,8 @@ are registered below — none is dressed as a ruling.
 | review.inbox_file | Board, TaskDetail, Today, Settings, Capture, CLI | the same =ReviewWalk=-scoped binding (`actions.rs:1582-1590`); Sweep-CLI: no file-to verb | 2026-11-14 |
 | review.inbox_keep | Board, TaskDetail, Today, Settings, Capture, CLI | the same =ReviewWalk=-scoped binding (`actions.rs:1592-1600`); Sweep-CLI: no keep verb | 2026-11-14 |
 | review.file_target | Board, TaskDetail, Today, Settings, Capture, CLI | the same =ReviewWalk=-scoped binding (`actions.rs:1602-1618`); Sweep-CLI: no target-nudge verb | 2026-11-14 |
-| review.file_commit | Board, TaskDetail, Today, Settings, Capture | the same =ReviewWalk=-scoped binding (`actions.rs:1620-1628`); the CLI's move twin is recorded on the =task.move= row (Board slice) | 2026-11-14 |
-| review.carry_tomorrow | Board, TaskDetail, Today, Settings, Capture | the same =ReviewWalk=-scoped binding (`actions.rs:1630-1638`); the CLI's scheduled-edit twin is recorded on the =task.scheduled_edit= row (Task detail slice) | 2026-11-14 |
+| review.file_commit | Board, TaskDetail, Today, Settings, Capture, CLI | the same =ReviewWalk=-scoped binding (`actions.rs:1620-1628`); the CLI's move twin is recorded on the =task.move= row (Board slice) | 2026-11-14 |
+| review.carry_tomorrow | Board, TaskDetail, Today, Settings, Capture, CLI | the same =ReviewWalk=-scoped binding (`actions.rs:1630-1638`); the CLI's scheduled-edit twin is recorded on the =task.scheduled_edit= row (Task detail slice) | 2026-11-14 |
 | review.carry_pick | Board, TaskDetail, Today, Settings, Capture, CLI | the same =ReviewWalk=-scoped binding (`actions.rs:1640-1669`); Sweep-CLI: no pick-a-date verb | 2026-11-14 |
 | review.carry_leave | Board, TaskDetail, Today, Settings, Capture, CLI | the same =ReviewWalk=-scoped binding (`actions.rs:1650-1659`); Sweep-CLI: no leave verb | 2026-11-14 |
 | reflection.record | Board, TaskDetail, Today, Settings, Capture | Sweep-B/T/Y/S/C: no reflection-commit seam outside the walk (the prompts editor mounts only in the walk overlay) | 2026-11-14 |
@@ -631,9 +635,11 @@ are registered below — none is dressed as a ruling.
 | plan.box_earlier | Board, TaskDetail, Today, Settings, Capture, CLI | the same =PlanNextDay=-scoped binding (`actions.rs:1506-1514`); Sweep-CLI: no reorder verb | 2026-11-14 |
 | plan.box_later | Board, TaskDetail, Today, Settings, Capture, CLI | the same =PlanNextDay=-scoped binding (`actions.rs:1515-1523`); Sweep-CLI: no reorder verb | 2026-11-14 |
 | plan.box_remove | Board, TaskDetail, Today, Settings, Capture, CLI | the same =PlanNextDay=-scoped binding (`actions.rs:1524-1532`); Sweep-CLI: no box-remove verb | 2026-11-14 |
-| review.ledger_display | Board, TaskDetail, Today, Settings, Capture | Sweep-B/T/Y/S/C: no ledger mount outside the review view | 2026-11-14 |
+| review.ledger_display | Board, TaskDetail, Today, Settings, Capture, CLI | Sweep-B/T/Y/S/C: no ledger mount outside the review view | 2026-11-14 |
 | review.stats_display | Board, TaskDetail, Today, Settings, Capture, CLI | Sweep-B/T/Y/S/C: no stat-section mount; Sweep-CLI: no aggregate output | 2026-11-14 |
 | reflection.ledger_display | Board, TaskDetail, Today, Settings, Capture | Sweep-B/T/Y/S/C: no journal-ledger mount outside the review view | 2026-11-14 |
+| reflection.edit | Board, TaskDetail, Today, Review, Settings, Capture | =UpdateReflection= is UI-unreachable (the review slice's ledger is read-only, `review-view.slint:347-351`; the walk only records) | 2026-11-14 |
+| reflection.delete | Board, TaskDetail, Today, Review, Settings, Capture | =DeleteReflection= is UI-unreachable (no delete seam anywhere; the journal ledger carries no activation) | 2026-11-14 |
 * Slice: Alarm window
 
 Baseline: =84c04a0b=. Origin: surface slice authored by the phase-3
@@ -679,11 +685,11 @@ slice's baseline): *Sweep-CLI* = `crates/taskboard-app/src/cli.rs`
 | alarm.cancel | E — the window row's Cancel `alarm-window.slint:32-34`, callback `lib.rs:861-870` → =CancelAdhocAlarm= (the timers section's engine twin) | E — same alarm-window evidence | E — same alarm-window evidence | E — same alarm-window evidence | E — same alarm-window evidence | E — same alarm-window evidence | E (pre-existing, =timers cancel= `cli.rs:958`) |
 | alarm.window_display | D — the awaiting-alarm rows (title snapshot + elapsed phrase), derived =alarm_window_rows= `presentation.rs:2253-2290`, attention-gained edge `lib.rs:778-786` | D — same alarm-window evidence | D — same alarm-window evidence (the timers *section* is the Today slice's =alarm.display= row — a different surface) | D — same alarm-window evidence | D — same alarm-window evidence | D — same alarm-window evidence | U |
 | notification.dismiss | E (global overlay) — the notification row's dismiss seam `adapter.rs:10157-10169` → =DismissReminder=; mounts over any view `app-window.slint:597` | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | U |
-| notification.done | E (global overlay) — the notification row's done seam `adapter.rs:10170-10185` → =SetTaskDone= (the done-seam's guard shape; a stale index degrades to a no-op) | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (pre-existing, =tasks done= `cli.rs:1643`) |
-| notification.snooze | E (global overlay) — the notification row's snooze seam `adapter.rs:10186-10200` routes =ReminderSnooze= `actions.rs:1117-1119` (the Task-detail banner's engine twin) | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | U |
-| notification.mute | E (global overlay) — the notification row's mute seam `adapter.rs:10201-10215` routes =ReminderMute= `actions.rs:1127-1139` (→ =SetTaskRemindersMuted= `messages.rs:217`) | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (pre-existing, =tasks remind= --mute `cli.rs:1734`) |
-| notification.cancel | E (global overlay) — the notification row's cancel seam `adapter.rs:10216-10230` routes =TimerCancel= over the row's adhoc-alarm target (DR-3/3, D-I7) | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (pre-existing, =timers cancel= `cli.rs:958`) |
-| notification.track_start | E (global overlay) — the notification row's "Start Task" seam `adapter.rs:10231-10245` routes =TaskTrackStart= over the row's target (DR-5/4, D-TU7; the implicit dismissal lives planner-side, D-T5) | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (pre-existing, =track start= `cli.rs:1149`) |
+| notification.done | E (global overlay) — the notification row's done seam `adapter.rs:10172-10185` → =SetTaskDone= (the done-seam's guard shape; a stale index degrades to a no-op) | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (pre-existing, =tasks done= `cli.rs:1643`) |
+| notification.snooze | E (global overlay) — the notification row's snooze seam `adapter.rs:10188-10200` routes =ReminderSnooze= `actions.rs:1117-1119` (the Task-detail banner's engine twin) | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | U |
+| notification.mute | E (global overlay) — the notification row's mute seam `adapter.rs:10197-10210` routes =ReminderMute= `actions.rs:1127-1139` (→ =SetTaskRemindersMuted= `messages.rs:217`) | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (pre-existing, =tasks remind= --mute `cli.rs:1734`) |
+| notification.cancel | E (global overlay) — the notification row's cancel seam `adapter.rs:10210-10229` routes =TimerCancel= over the row's adhoc-alarm target (DR-3/3, D-I7) | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (pre-existing, =timers cancel= `cli.rs:958`) |
+| notification.track_start | E (global overlay) — the notification row's "Start Task" seam `adapter.rs:10229-10244` routes =TaskTrackStart= over the row's target (DR-5/4, D-TU7; the implicit dismissal lives planner-side, D-T5) | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (pre-existing, =track start= `cli.rs:1149`) |
 | notification.open | E (global overlay) — the notification row's open seam `adapter.rs:10245-10251` (the stale-index guard, `adapter.rs:9410`) | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | U |
 
 ** Rulings (Alarm window)
@@ -722,3 +728,26 @@ the unruled registers.
 | find | =find= `cli.rs:89-101` | shares the search palette's engine ranking, no engine verb — the naming asymmetry (palette vs =find=) is recorded as an evidence note, chunk-1 plan §5 |
 | sync | =sync= `cli.rs:199` | registered CLI-only per D-10; its GUI twin ceremony is the =RequestSync= arm — cross-referenced, not duplicated |
 | boards use (dead) | =BoardsCmd::Use= `cli.rs:358`; dispatch `commands/mod.rs:949` (one-shot refuses) and `commands/mod.rs:1949` (unreachable) | parses but is unreachable — backlog **#776**; recorded here, *not* as a capability row (nothing a user can do) |
+
+* Appendix: diff against the phase-2 seed
+
+The phase-2 seed (`docs/ux-surface-census.org` at =fb5863ed=, with
+the files-sync rows updated at =e916609f=) versus the completed
+census. Ruling text is not re-quoted here — IDs and homes only
+(chunk-2 plan D-12).
+
+| seed element | phase-3 fate | where it lives now | why |
+|---|---|---|---|
+| seed slice Today (habits) | dissolved into a surface slice | the Today slice (habit family re-homed verbatim; rulings R-1/R-2/R-3, PC-1/PC-2 under Rulings (Today)) | chunk-1 D-3 (feature-scoped → surface-scoped) |
+| seed slice Task detail (recurrence) | dissolved into a surface slice | the Task detail slice (recur family verbatim; rulings R-1/R-2, PC-5/PC-7/PC-8 under Rulings (Task detail)) | chunk-1 D-3 |
+| seed slice Settings (files sync) | dissolved into a surface slice | the Settings slice (the four board.* rows merged verbatim with their implemented evidence; the ruling table token-identical under Rulings (Settings)) | chunk-1 D-3; chunk-2 §2 (files roster LANDED before baseline — planned-pending resolved, markers retired; the seed's stale provenance sentence superseded) |
+| seed status line "phase-2 seed" | replaced | the census header | chunk-1 D-8 commit 3; final flip to *full census complete (phase 3)* in this chunk |
+| seed evidence convention / marker grammar | carried forward, extended | the census header (the =— (self)= marker added; =U= grammar unchanged) | chunk-1 D-4 + its stage-2 self-cell extension |
+| Board / Task detail / Today / Capture slices | authored fresh by chunk 1 | unchanged in phase 3 (chunk 2 never re-derives another slice's rows, D-5); their CLI cells were already complete | chunk-1 D-5/D-2 |
+| Review surface (no seed slice existed) | authored fresh by chunk 2 | the Review slice (ledger view + walk overlay + plan-next-day; 22 capability rows) | chunk-2 D-9 |
+| Settings surface beyond files sync (no seed rows existed) | authored fresh by chunk 2 | the Settings slice (11 management/knob rows + app.settings + 3 display rows) | chunk-2 D-9 |
+| Alarm window (no seed representation) | authored fresh by chunk 2 as its own slice | the Alarm window slice (window rows + the notification-surface rows chunk 1 deferred here) | chunk-1 D-6; chunk-2 D-9 |
+| CLI column (seed had no CLI representation) | completed by chunk 2 | CLI cells on every row (twins) + the CLI-only register (entity-less verbs + the dead =boards use=, #776) | chunk-2 D-10 |
+| CLI-only entity-anchored verbs (labels, break rules, journal edit/delete, track status/list) | authored fresh by chunk 2 | rows in the owning slices (Task detail: label.* and task.label_*; Today: break_rule.*; Review: reflection.edit/delete) with =U= GUI cells registered | chunk-2 D-10 |
+| chunk-1 unruled register rows for task.move / task.scheduled_edit claiming Review absence | superseded (consolidation) | the rows' Review cells now cite the walk's commit seams; the register entries note the retirement | chunk-2 D-11.5 (cross-slice cell integrity) |
+| Capability counts | grown | seed: 3 feature-scoped slices, 12 rows → census: 8 surface slices + the CLI-only register, 137 capability rows; 14 distinct ruling IDs across 19 slice-scoped entries (the R-1/R-2/R-3 repeats are the seed's per-slice IDs, disambiguated by slice heading per chunk-1 D-3) | the stock-take report has the per-surface counts |
