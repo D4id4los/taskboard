@@ -396,24 +396,76 @@ settings seams (adapter.rs:8246,10246-10439); *Sweep-C* =
 | task.recur_display | Review, Settings, Capture, CLI | Sweep-R/S/C: no recur badge/echo; Sweep-CLI: none | 2026-11-13 |
 | nav.item_walk | Review, Settings, Capture, CLI | =NavNextItem= contexts =VIEW_NAV= (`actions.rs:618-623`) bind only Today/Board/StackDetail/TaskDetail; Sweep-CLI: no nav verb | 2026-11-13 |
 
-* Slice: Settings (files sync)
+* Slice: Settings
 
-Origin: the files-roster UX journey plan
+Baseline: =84c04a0b=. Origin: surface slice authored by the phase-3
+stock-take chunk 2 from the verb-inventory method (chunk plan
+`.artifacts/plans/2026-11-14-ux-census-stocktake-2-chunk-plan.md` §3
+D-9), with the seeded files-sync slice merged in. (merged from seed
+slice: Settings (files sync) —) the seed slice's Origin: the
+files-roster UX journey plan
 (`.artifacts/plans/2026-11-13-r7-files-roster-ux-plan.md`, D-7.3).
-**This slice reflects the baseline reality at =fb5863ed=: round-7
-chunk 3 has not run** — the Files rows are title-only with no actions
-and the =FilesMovePicker= still stands. The UX plan's target cells are
-annotated *planned-pending*; chunk 3 updates this slice on merge (the
-census is a snapshot of the app, and each UX plan updates its slice).
-Comparison record: the all-MISSING gate run is the correct pre-state —
-`.artifacts/plans/2026-11-13-round7-ux-pilot-comparison-plan.md` §3.3.
+*Provenance correction (chunk-2 plan §2)*: the seed slice's stale
+baseline sentence ("this slice reflects the baseline reality at
+=fb5863ed=: round-7 chunk 3 has not run") is superseded — round-7
+chunk 3 landed before this slice's baseline (commits =07b18e64=,
+=6792c962=, =2f731a9e=, =27b2e5f7=, =e916609f=), the files rows below
+carry their implemented evidence, and the *planned-pending* markers
+retired with that merge. The ruling table is token-identical to the
+seed's; only the block's home moved.
+
+*Named finding (pass 1)*: Settings sends **zero =StateCommand=s** —
+the surface talks exclusively in =UiRequest=s
+(`crates/taskboard-ui-slint/src/requests.rs:363`, every variant
+carrying a =oneshot<Result<SettingsSnapshot, SettingsError>>= reply;
+the op fns `adapter.rs:5700-6110`). *Named finding (pass 2)*: of the
+31 =UiRequest= variants, two are board/window plumbing not
+triggered from Settings (=StackWidthsChanged=
+`requests.rs:367`, =WindowGeometryChanged= `requests.rs:375` — the
+widths twin is the Board slice's =stack.resize= row); the remaining
+29 are Settings-triggered: 11 connection/board-management requests
+and the 18 =Set*= knob requests, which group under one
+=settings.knob_set= capability per the chunk-1 D-2 pass-2 grouping
+precedent (one row per plumbing request would bury the matrix; the
+grouped row names every variant below).
+
+Named absence sweeps cited by the register below (all at this
+slice's baseline): *Sweep-B* = `board-view.slint`,
+`stack-view.slint`, `board-layout.slint`, `board-bar.slint`,
+`task-card.slint` + the board seams (adapter.rs:8383-8560); *Sweep-T*
+= `task-view.slint` + the task seams (adapter.rs:8594-9952);
+*Sweep-Y* = `today-view.slint` + `habits.slint` + the today/habits
+seams (adapter.rs:7094-8101); *Sweep-R* = `review-view.slint` +
+`review-walk-overlay.slint` + the review/walk seams
+(adapter.rs:10079-10152); *Sweep-C* = `capture-overlay.slint` +
+`search-palette.slint` + the overlay seams (adapter.rs:8545-8562);
+*Sweep-CLI* = `crates/taskboard-app/src/cli.rs` (=Command= enum and
+every sub-family) and `crates/taskboard-app/src/commands/`.
 
 | Capability | Board | TaskDetail | Today | Review | Settings | Capture | CLI |
 |---|---|---|---|---|---|---|---|
-| board.roster_display | | | | | D (US-1) — implemented (r7 chunk 3): the per-account roster — every live board once per card, channel badge + per-account sort (=files_board_roster= =presentation.rs:5616=, roster push =adapter.rs:5155=, rows =settings-view.slint:1012=, channel tag =BoardInfo.bound_channel= =ui_requests.rs:1437=; journeys =journeys.rs::us1_s1/us1_s2=) | | |
-| board.unbind_files (Stop Sync) | — (R-1) | — (R-1) | — (R-1) | — (R-1) | X (binding only) (US-2) — implemented (r7 chunk 3): the roster row's "Stop Sync" button (=settings-view.slint:671= seam, =adapter.rs:5892= handler) → =StopBoardFilesSync= =requests.rs:455= → =UnbindBoard+snapshot =ui_requests.rs:1569=; exact-effect test =ui_requests.rs::stop_board_files_sync_sends_exact_unbind_command= | — (R-1) | X (pre-existing, =boards unbind=) |
-| board.move_to_files (Switch to Sync via this Connection) | — (R-1) | — (R-1) | — (R-1) | — (R-1) | E (binding) (US-3) — implemented (r7 chunk 3): the roster row's switch action dispatches =MoveBoardToFiles= verbatim; the =FilesMovePicker= dropdown, its copy global and the =move_choices= table retired (the roster is the picker); journey =journeys.rs::us3_s1= | — (R-1) | E (pre-existing, =boards move --to-files=) |
-| board.publish_to_files (Sync via this Connection) | — (R-1) | — (R-1) | — (R-1) | — (R-1) | E (binding) (US-4) — implemented (r7 chunk 3): the roster row's publish action → =PublishBoardToFiles= =requests.rs:465= → the files =BindBoard= assign-step ceremony =ui_requests.rs:1610=; exact-bind test =ui_requests.rs::publish_board_to_files_sends_exact_files_bind_command= | — (R-1) | — (R-2) |
+| connection.save | U | U | U | U | E — the connections form commit `settings-view.slint:653`, seam `adapter.rs:10294-10300`, op `adapter.rs:5700` → =SaveConnection= `requests.rs:381` | U | E (pre-existing, =connect= `cli.rs:33`; =login= `cli.rs:56` is the parser's deprecated alias) |
+| connection.remove | U | U | U | U | X — the connection card's remove `settings-view.slint:657`, seam `adapter.rs:10301-10309`, op `adapter.rs:5795` → =RemoveConnection= `requests.rs:390` | U | E (pre-existing, =logout= `cli.rs:197`) |
+| board.remote_list | U | U | U | U | E — the connection card's refresh `settings-view.slint:658`, seam `adapter.rs:10310-10318`, op `adapter.rs:5820` → =ListRemoteBoards= `requests.rs:398` (the server's boards feed =boards select=-style binding) | U | E (pre-existing, =boards list= `cli.rs:288`) |
+| board.attach | U | U | U | U | E — the remote-bind pick on an unbound board card `settings-view.slint:659`, seam `adapter.rs:10346-10354`, op `adapter.rs:5944` → =AttachConnector= `requests.rs:405` | U | E (pre-existing, =boards select= `cli.rs:297`) |
+| board.create_local | U | U | U | U | C — the local-board create pick `settings-view.slint:660`, seam `adapter.rs:10319-10327`, op `adapter.rs:5984` → =CreateLocalBoard= `requests.rs:413` | U | C (pre-existing, =boards create= `cli.rs:322`) |
+| board.detach | U | U | U | U | X — the connection card's disconnect `settings-view.slint:661`, seam `adapter.rs:10328-10336`, op `adapter.rs:6016` → =DetachConnector= `requests.rs:421` | U | X (pre-existing, =boards unbind= `cli.rs:416`) |
+| board.publish | U | U | U | U | E — the Deck card's publish pick (round-6 D-6.9, #699) `settings-view.slint:666`, seam `adapter.rs:10355-10363`, op `adapter.rs:5853` → =PublishBoard= `requests.rs:431` | U | E (pre-existing, =boards publish= `cli.rs:341`) |
+| board.roster_display | U | U | U | U | D (US-1) — implemented (r7 chunk 3): the per-account roster — every live board once per card, channel badge + per-account sort (=files_board_roster= =presentation.rs:5616=, roster push =adapter.rs:5155=, rows =settings-view.slint:1012=, channel tag =BoardInfo.bound_channel= =ui_requests.rs:1437=; journeys =journeys.rs::us1_s1/us1_s2=) (merged seed row; the seed's blank non-Settings cells record =U= per D-4 — a merge correction, no ruling changed) | U | U |
+| board.unbind_files (Stop Sync) | — (R-1) | — (R-1) | — (R-1) | — (R-1) | X (binding only) (US-2) — implemented (r7 chunk 3): the roster row's "Stop Sync" button (=settings-view.slint:671= seam, =adapter.rs:5892= handler) → =StopBoardFilesSync= =requests.rs:455= → =UnbindBoard+snapshot =ui_requests.rs:1569=; exact-effect test =ui_requests.rs::stop_board_files_sync_sends_exact_unbind_command= (merged seed row verbatim) | — (R-1) | X (pre-existing, =boards unbind=) |
+| board.move_to_files (Switch to Sync via this Connection) | — (R-1) | — (R-1) | — (R-1) | — (R-1) | E (binding) (US-3) — implemented (r7 chunk 3): the roster row's switch action dispatches =MoveBoardToFiles= verbatim; the =FilesMovePicker= dropdown, its copy global and the =move_choices= table retired (the roster is the picker); journey =journeys.rs::us3_s1= (merged seed row verbatim) | — (R-1) | E (pre-existing, =boards move --to-files=) |
+| board.publish_to_files (Sync via this Connection) | — (R-1) | — (R-1) | — (R-1) | — (R-1) | E (binding) (US-4) — implemented (r7 chunk 3): the roster row's publish action → =PublishBoardToFiles= =requests.rs:465= → the files =BindBoard= assign-step ceremony =ui_requests.rs:1610=; exact-bind test =ui_requests.rs::publish_board_to_files_sends_exact_files_bind_command= (merged seed row verbatim) | — (R-1) | — (R-2) |
+| files.sync_enabled_set | U | U | U | U | E — the Files pick on a connector card sets sync + re-anchor in one request (a separate anchor request would force two round-trips, `requests.rs:580-588`); op =settings_files_picked= `adapter.rs:6052-6110` (request at `adapter.rs:6085`) → =SetFilesSyncEnabled= `requests.rs:584` | U | U |
+| settings.knob_set | U | U | U | U | E — the grouped knob/set family, one =UiRequest= per knob: =SetKeymapPreset= `requests.rs:471` (=preset-picked= `settings-view.slint:672`), =SetScale= `requests.rs:476` (=scale-committed= `settings-view.slint:673`), =SetDayStart= `requests.rs:488`, =SetRemindersEnabled= `requests.rs:493`, =SetReminderTick= `requests.rs:499`, =SetReminderBefore= `requests.rs:506` (=reminders-picked= `settings-view.slint:689`), =SetReminderSink= `requests.rs:511` (=sink-picked= `settings-view.slint:690`), =SetPollInterval= `requests.rs:516`, =SetBackoffInitial= `requests.rs:522`, =SetBackoffMax= `requests.rs:528`, =SetDueSoonDays= `requests.rs:533`, =SetFocusEnabled= `requests.rs:542` (=focus-enabled-picked= `settings-view.slint:694`), =SetFocusWorkMins= `requests.rs:548`, =SetFocusBreakMins= `requests.rs:553`, =SetFocusChain= `requests.rs:558` (=focus-chain-picked= `settings-view.slint:695`), =SetFocusLongBreakMins= `requests.rs:563`, =SetFocusLongBreakEvery= `requests.rs:568`, =SetFocusNotify= `requests.rs:573` (=focus-notify-picked= `settings-view.slint:696`); seams `adapter.rs:10373-10480`, general fields commit `adapter.rs:10416-10434` | U | U |
+| app.settings | E (global) — =AppSettings= `actions.rs:698-704` (GLOBAL, menu) | E (global) — same =AppSettings= evidence | E (global) — same =AppSettings= evidence | E (global) — same =AppSettings= evidence | E — the settings view opens/back closes `settings-view.slint:643`, seam `adapter.rs:8284-8309` | E (global) — same =AppSettings= evidence | U |
+| connection.roster_display | U | U | U | U | D — the rendered connections items (the flat positional projection) `settings-view.slint:92-133`, mount `settings-view.slint:933` | U | U |
+| settings.facts_display | U | U | U | U | D — the read-only =SettingsFact= inventory (dotted config key, secret-free value, apply/on-restart badges) `requests.rs:332-341`, struct `settings-view.slint:50-56`, facts composition `settings-view.slint:22` | U | U |
+| settings.env_override_display | U | U | U | U | D — the env-override badge on each fact row (=SettingsFactRow.env-locked= `settings-view.slint:50-56`; the env-locked absorb path `adapter.rs:6070-6076`) | U | U |
+
+** Rulings (Settings)
+
+(merged from seed slice: Settings (files sync) —) the seed ruling
+table, token-identical:
 
 ** Rulings (Settings/files sync)
 
@@ -428,6 +480,26 @@ Comparison record: the all-MISSING gate run is the correct pre-state —
 | R-5 | Deck-to-Deck moves stay out of scope; a Deck-bound board on another connector reads "Synced via other Connection" truthfully | no Deck-to-Deck rebind ceremony exists | #756 | 2026-11-13 | `.artifacts/plans/2026-11-13-r7-files-roster-ux-plan.md` §2 |
 | PC-10 | the UX plan's wiring-table absent cells normalize to the bare =—= token (reasons move to the journey-steps column) | the coverage gate greps non-absent cells literally; the blind draft's prose-qualified absences cannot resolve | files-roster UX plan, stage-2 ruling PC-10 | 2026-11-13 | files-roster UX plan §"Plan corrections"; comparison plan §2's gate finding (backlog #768) |
 | PC-11 | A-6 bound: callback =files-board-action-clicked=, handler =settings_files_board_action=, seam =on_settings_files_board_action_clicked=; =SettingsBadgeTone= exported beside =ConnectionItemKind=; the fold home is =presentation.rs= | the dispatch charges stage 2 with binding the blind plan's assumptions; scope and behavior unchanged | files-roster UX plan, stage-2 ruling PC-11 | 2026-11-13 | files-roster UX plan §"Plan corrections" |
+
+
+** Unruled register (Settings)
+
+| capability | surfaces | evidence-of-absence | date |
+|---|---|---|---|
+| connection.save | Board, TaskDetail, Today, Review, Capture | Sweep-B/T/Y/R/C: no connection-form seam outside the settings view | 2026-11-14 |
+| connection.remove | Board, TaskDetail, Today, Review, Capture | Sweep-B/T/Y/R/C: no connection-remove seam | 2026-11-14 |
+| board.remote_list | Board, TaskDetail, Today, Review, Capture | Sweep-B/T/Y/R/C: no remote-boards refresh seam (the board bar reads the local snapshot; no =ListRemoteBoards= trigger) | 2026-11-14 |
+| board.attach | Board, TaskDetail, Today, Review, Capture | Sweep-B/T/Y/R/C: no remote-bind pick outside the settings view | 2026-11-14 |
+| board.create_local | Board, TaskDetail, Today, Review, Capture | Sweep-B/T/Y/R/C: no local-board-create seam outside the settings view (=CreateLocalBoard= has no =ActionId=) | 2026-11-14 |
+| board.detach | Board, TaskDetail, Today, Review, Capture | Sweep-B/T/Y/R/C: no detach seam outside the settings view | 2026-11-14 |
+| board.publish | Board, TaskDetail, Today, Review, Capture | Sweep-B/T/Y/R/C: no =PublishBoard= pick outside the settings view | 2026-11-14 |
+| board.roster_display | Board, TaskDetail, Today, Review, Capture, CLI | Sweep-B/T/Y/R/C: the per-account roster mounts only in the settings view (=settings-view.slint:1012=); Sweep-CLI: roster output is =boards list='s inventory (the =board.remote_list= CLI cell), not this display | 2026-11-14 |
+| files.sync_enabled_set | Board, TaskDetail, Today, Review, Capture, CLI | Sweep-B/T/Y/R/C: no files-sync pick outside the settings view; Sweep-CLI: no files-sync toggle verb (the config file is the CLI-side path, no set verb exists) | 2026-11-14 |
+| settings.knob_set | Board, TaskDetail, Today, Review, Capture, CLI | Sweep-B/T/Y/R/C: no knob seam outside the settings view; Sweep-CLI: no settings-mutation verb (the =config= family is read-only: =config print= `cli.rs:1518`/ =config path= `cli.rs:1522`) | 2026-11-14 |
+| app.settings | CLI | Sweep-CLI: no settings-open verb | 2026-11-14 |
+| connection.roster_display | Board, TaskDetail, Today, Review, Capture, CLI | Sweep-B/T/Y/R/C: no connections roster outside the settings view; Sweep-CLI: no connection roster output | 2026-11-14 |
+| settings.facts_display | Board, TaskDetail, Today, Review, Capture, CLI | Sweep-B/T/Y/R/C: no facts panel outside the settings view; Sweep-CLI: =config print= prints the resolved config, not the app-stated apply/env facts | 2026-11-14 |
+| settings.env_override_display | Board, TaskDetail, Today, Review, Capture, CLI | Sweep-B/T/Y/R/C: no env-locked badge outside the settings view; Sweep-CLI: no override output | 2026-11-14 |
 
 * Slice: Review
 
