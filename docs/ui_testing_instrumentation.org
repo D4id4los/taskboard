@@ -1,0 +1,266 @@
+#+title: taskboard UI Testing Instrumentation
+#+options: toc:t
+
+How to instrument the UI crate to observe what the layout engine, the
+windowing backend, and the OS window actually do. This document exists
+because the 2026-11-14 window-max-width investigation (see
+=.artifacts/reports/2026-11-14-task-view-window-max-width-collapse-report.md=)
+burned significant agent time rediscovering which instrumentation tier
+applies, where the measurement seams live, and which desktop pitfalls
+silently invalidate a probe. The rules in =AGENTS.md= §5 and
+=docs/testing_strategy.org= govern test *semantics*; this document
+covers test *hosting* — where a given behavior can be observed at all
+and how to drive the harnesses.
+
+* 1. The three instrumentation tiers
+
+Pick the tier by asking: *where does the behavior materialize?* A
+regression test placed on a tier that cannot host the behavior passes
+vacuously — the suite stays green while the bug ships. This cost the
+window-max-width investigation several iterations.
+
+** Tier 1 — null-platform unit tests (in =src/lib.rs=)
+
+The default tier. The =view_component_tests= module mounts the real
+=AppWindow= on a null platform ([[src/test_platform.rs][=test_platform.rs=]]):
+
+#+begin_src rust
+on_slint_thread(|| {
+    let (handle, _commands) =
+        handover_with(fixture_state(), UiSettings::default().keymap);
+    handle.window.invoke_banner_row_open_requested(0);
+    handle.refresh();
+    // assert on pushed models, adapter state, dispatch outcomes …
+});
+#+end_src
+
+- *Can host:* model pushes, focus routing, action dispatch, keymap
+  resolution, adapter tables, refresh diffs.
+- *Cannot host:* anything that materializes through the **event
+  loop**. The null platform never runs event-loop boundaries, and
+  Slint lazily materializes conditionals, repeaters, and layout
+  constraints across them. Two concrete traps observed in the field:
+  a regression measured immediately after an open read a stale
+  (=before-settle=) value, and the conditional-materialization pass
+  (=i_slint_core::item_tree::ensure_item_tree_instantiated=) can be
+  driven explicitly — but layout-constraint recomposition that a real
+  backend performs still does not happen. If a null-platform test
+  passes both with and without the fix, the tier is wrong; move up.
+
+** Tier 2 — probe suites (in =tests/=, the testing backend)
+
+The hosting tier for layout, focus-walk, and constraint behavior. A
+*probe* is a small =.slint= window in =tests/<name>_probe.slint= that
+mounts the real widget under controlled model state; the test binary
+=tests/<name>_probe_tests.rs= drives it through
+=tests/support/driver.rs=.
+
+Mechanics (see any existing pair, e.g. =walk_probe*= or
+=window_max_probe*=):
+
+1. Add the probe stem to the =probes= array in =build.rs=. The probe
+   compiles with element debug info into =OUT_DIR/<stem>.rs=.
+2. The test file includes it:
+   =include!(concat!(env!("OUT_DIR"), "/<stem>.rs"));=
+3. The job runs on the slint thread via
+   =support::driver::run(DriverOptions { headless_renderer: … }, …)=;
+   =advance_probe_clock(ms)= pumps the driver's mock clock.
+4. Measure through either:
+   - the harness's element queries (=find_by_label_on=, geometry),
+     or
+   - the raw constraint seam (§2), for values Slint does not expose
+     as properties.
+5. State the model from Rust on an =in property= — generated structs
+   support =..Default::default()=. The *probe window must not set
+   explicit =width:=/=height:= bindings* if it hosts a
+   constraint measurement: an explicit width replaces the root's own
+   layout info and the assertion reads back the canvas, not the
+   constraint merge.
+
+Run probe suites under =cargo nextest= — the platform is a
+process-global and =DriverOptions= must agree per binary; plain
+=cargo test= runs the =support= self-tests (headless renderer) in the
+same process as the probe tests (real renderer) and trips the
+one-platform assertion. CI and the quality gates use nextest, whose
+per-test process isolation makes this a non-issue.
+
+** Tier 3 — the field probe (the real binary)
+
+The only tier that can observe what a real backend does to a real OS
+window: constraint application, window resizes, decorations,
+fullscreen, geometry persistence. Recipe in §3–§5.
+
+* 2. The layout-constraint measurement seam
+
+Slint's public API does not expose window size constraints
+(=layout_constraints()= is =i-slint-core=-internal). The usable seam,
+available in test and dev-debug code (add =i-slint-core= under
+=[dev-dependencies]= for committed tests):
+
+#+begin_src rust
+use i_slint_core::window::WindowInner;
+use i_slint_core::item_tree::{ItemTreeRc, ensure_item_tree_instantiated};
+
+let win = handle.window.window();                    // &slint::Window
+let inner = WindowInner::from_pub(win);
+let rc = inner.component();
+ensure_item_tree_instantiated(&rc);                  // materialize conditionals
+let comp = ItemTreeRc::borrow_pin(&rc);
+let h = comp.as_ref().layout_info(Orientation::Horizontal);
+// h.min / h.preferred / h.max — the values the winit backend turns
+// into the window's min/max size constraints.
+#+end_src
+
+Interpretation notes learned the hard way:
+
+- The winit backend computes the window max as
+  =max(h.max, h.min)= and the min as =min(h.min, h.max)= — an
+  inverted or collapsed =h.max= silently becomes "the window is
+  pinned at its minimum".
+- Constraints are recomputed lazily; a sample taken immediately after
+  an open can predate the settle. Sample repeatedly (a timer dump) or
+  drive the materialization pass before measuring.
+- On X11 the applied constraints are visible without any Rust seam:
+  =xprop -id <WID> WM_NORMAL_HINTS= prints =program specified
+  maximum size= once a max constraint exists. Absence of that line is
+  the "unbounded" proof.
+
+* 3. Field-probe recipe (X11/XWayland)
+
+This workstation's desktop session is **Wayland** (KDE/KWin). X tools
+only see X surfaces, so force the X11 backend for any probe instance
+you need to drive or measure:
+
+#+begin_src sh
+env -u WAYLAND_DISPLAY target/debug/taskboard --config /tmp/tb-probe/taskboard.toml \
+    >/tmp/tb-probe/run.log 2>&1 &
+echo $! > /tmp/tb-probe/run.pid     # kill by recorded PID — see §6
+#+end_src
+
+** 3.1 Isolated configuration and realistic state
+
+Never point a probe instance at the real database (it takes the
+instance lock and would fight the live instance) and never let it
+sync:
+
+#+begin_src toml
+# /tmp/tb-probe/taskboard.toml
+[app]
+mode = "daemon"
+
+[web]
+enabled = false
+
+[sync]
+connectors = []          # a probe must never touch Nextcloud
+
+[storage]
+db_path = "/tmp/tb-probe/taskboard.db"   # REQUIRED — omitting it
+                                         # defaults to the real DB
+#+end_src
+
+To reproduce a *user's* state: copy =~/.local/share/taskboard/=
+(=taskboard.db=, =-wal=, =-shm=) into the probe directory and point
+=[storage] db_path= at the copy; carry over =[ui] scale= and
+=keymap= from the user's =~/.config/taskboard/taskboard.toml=. Inspect
+and edit the copy with the =sqlite3= CLI (installed 2026-11-14;
+=schema: sqlite3 <db> ".schema tasks"=, quick counts via =select=).
+Remember a running GUI re-persists its config — a probe instance
+writes only to its own =--config= copy, which is exactly why the
+config must be a copy too.
+
+** 3.2 Driving the UI
+
+- *Keyboard, not clicks.* XTEST pointer events are unreliable here:
+  a full-screen X window (plasmashell's desktop layer) sits atop the
+  stack and swallows pointer input aimed at probe windows, and KWin
+  re-clamps =windowmove=. Synthetic keys reach the app regardless:
+  =xdotool key --window $WID <keys>=.
+- *Use the app's own keymap as the driver.* Bindings live in
+  =crates/taskboard-ui-slint/src/keymap/presets.rs=, indexed by
+  preset and context. The desktop preset: =Alt+1= board, =N= task
+  create, =S= stack create, =Return= task edit, arrows navigate. The
+  emacs preset: =Ctrl+x Ctrl+b= board, =Ctrl+Home= first item,
+  =Return= open. Send chords as separate presses for prefixes
+  (=ctrl+x= then =ctrl+b=).
+- *Beware the interception:* bound keys (=Return=, =Space= on
+  Board/Today) are consumed by the keymap layer before focused
+  elements see them — a tab-focused button cannot be activated with
+  them. Route through the bound verb instead.
+- *Read the screen:* =import -window $WID /tmp/probe/shot.png=
+  (imagemagick), then view the PNG. =xdotool getwindowgeometry=
+  reports the client rect; decorations sit outside it.
+- *No-UI verification:* for boot-to-state checks, a temporary
+  instrumentation hook in =mount()= (§5) can open a view
+  programmatically and dump state to the run log — no desktop
+  interaction needed at all.
+
+* 4. Field observation cheat-sheet
+
+| Observable              | Command                                                      |
+|-------------------------+--------------------------------------------------------------|
+| Window size/min/max     | =xprop -id $WID WM_NORMAL_HINTS=                             |
+| Client geometry         | =xdotool getwindowgeometry $WID=                             |
+| Screenshot (client)     | =import -window $WID shot.png=                               |
+| Stacking / occluders    | =xwininfo -root -tree= (bottom-to-top order)                 |
+| Process → window        | =xprop -id $WID _NET_WM_PID=                                 |
+| DB inspection           | =sqlite3 /tmp/tb-probe/taskboard.db ".tables"=               |
+| Constraint dump         | the §2 seam via a temp hook, printed to the run log          |
+
+Remember X hints are in physical pixels: the probe's reported
+=program specified minimum size: 528 by 440= is =480×1.1 / 400×1.1=
+when the UI scale is 1.1 (winit's own scale factor is separate and
+guessed =1= on X11).
+
+* 5. Temporary instrumentation hooks
+
+For a field probe, a scratch hook in =mount()=
+(=crates/taskboard-ui-slint/src/lib.rs=) opens a state programmatically
+and dumps the §2 seam periodically:
+
+#+begin_src rust
+// TEMP-DEBUG (uncommitted): auto-open + periodic constraint dump
+if std::env::var("TASKBOARD_DEBUG_AUTO_TASK_VIEW").is_ok() {
+    let weak = window.as_weak();
+    slint::Timer::single_shot(std::time::Duration::from_secs(2), move || {
+        // invoke a row-open seam, then dump layout info every 1s × N
+    });
+}
+#+end_src
+
+Rules:
+
+- Gate on an env var, print with a recognizable prefix
+  (=TBDEBUG …=), and *never commit it* — the committed regression
+  must live on Tier 1/2 instead.
+- Dump more than once: the field collapse in the window-max-width
+  case only existed *after* the settle; a single boot dump read
+  unbounded and misdirected the investigation toward the wrong rows.
+- If the hook needs =i-slint-core= in =[dependencies]= (not just
+  =dev-dependencies=), that is a further signal the committed test
+  belongs on Tier 2; revert the dependency line before committing.
+
+* 6. Desktop-session pitfalls (each one cost real time)
+
+- =pkill -f <pattern>= matches the invoking shell's own command line
+  and kills it mid-run (output vanishes, commands appear to
+  half-execute). Kill probe instances by recorded PID:
+  =kill $(cat /tmp/tb-probe/run.pid)=. Never =pkill -x taskboard= —
+  it also kills the user's live instance.
+- A probe window may be fully occluded (emacs or the plasma desktop
+  layer sit above it in the X stacking order); =import -window= still
+  captures it, but clicks and hovers land on whatever is actually on
+  top. =windowraise=/=windowactivate= are unreliable under KWin
+  Wayland — prefer keyboard driving (§3.2) and repositioning the
+  window away from occluders.
+- =xdotool getmouselocation= reporting =window: <desktop id>= means
+  the pointer is over the desktop layer, not the probe — pointer
+  injection is not reaching the app.
+- CLI verbs (=capture=, =tasks=, …) fail with =instance-locked=
+  against a running GUI: they boot an in-process core; only =status=
+  speaks IPC, and only to a daemon. Seed state via the DB copy
+  instead.
+- The instance lock, the config overlay writes, and the window
+  geometry persistence are per-instance: a probe with its own
+  =--config= and =db_path= cannot corrupt the user's data — the
+  geometry it persists goes to its own config copy.

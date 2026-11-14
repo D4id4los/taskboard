@@ -713,3 +713,15 @@ The =TASKBOARD_LOG_FORMAT=json= knob (one-line JSON log events on
 stderr, default output unchanged when unset) exists for this
 harness; it is a log-format switch, unrelated to the CLI =--json=
 payload flag.
+
+* Instrumentation tiers for UI behavior (cross-reference)
+
+The strategies above govern test *semantics*. Where a UI behavior can
+be *observed at all* — null-platform lib tests vs. the =tests/= probe
+suites vs. a real-backend field probe, the layout-constraint
+measurement seam, and the desktop-session pitfalls of driving the real
+app — is documented in =docs/ui_testing_instrumentation.org=. Read it
+before writing a regression test for layout/windowing behavior: a
+test hosted on a tier that cannot materialize the behavior passes
+vacuously while the bug ships (the 2026-11-14 window-max-width
+investigation is the worked example).
