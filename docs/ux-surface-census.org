@@ -499,7 +499,7 @@ table, token-identical:
 
 | ID | Ruling | Reason | Home | Date | Authority |
 |---|---|---|---|---|---|
-| round-6 | "adoption is automatic; disconnect is a non-goal" — no unbind affordance in the Files rows | the round-6 posture: the files actor adopts bound boards; manual disconnect was ruled out | round-6 plan D-6 (=settings-view.slint:1065-1069= comment at the baseline) | 2026-11 (round 6) | the round-6 GUI review plan |
+| round-6 | "adoption is automatic; disconnect is a non-goal" — no unbind affordance in the Files rows | the round-6 posture: the files actor adopts bound boards; manual disconnect was ruled out | round-6 plan D-6 (=settings-view.slint:1013-1014= comment at the baseline) | 2026-11 (round 6) | the round-6 GUI review plan |
 | round-7 overturn | **the round-6 ruling above is OVERTURNED**: "Stop Sync" is a first-class roster action | the user's round-7 request makes disconnect a requirement; the row comment records the overturn | round-7 plan §2 D-7.3 | 2026-11-13 | `.artifacts/plans/2026-11-13-gui-review-round7-plan.md` §2 D-7.3; carried in the files-roster UX plan §1 authority note |
 | R-1 | binding actions live only in the Settings account roster | the roster row is the affordance; per-account context is the action's precondition, which only Settings provides | files-roster UX plan §1; round-7 plan §2 D-7.3 | 2026-11-13 | `.artifacts/plans/2026-11-13-r7-files-roster-ux-plan.md` §2 |
 | R-2 | no =boards publish --to-files= CLI verb in this slice | deliberate GUI-first slice; the asymmetry is filed | #764 | 2026-11-13 | `.artifacts/plans/2026-11-13-r7-files-roster-ux-plan.md` §2 |
@@ -563,7 +563,7 @@ are the home slices' business (consolidation, chunk-2 plan D-11.5).
 The planner's commit funnel hands off through
 =FlowOutcome::PlannerHandoff= (`adapter.rs:2214-2216` comment) — one
 scheduled/effort edit per placement, atomic, one undo step
-(`actions.rs:1497-1503`).
+(`actions.rs:1495-1503`).
 
 Named absence sweeps cited by the register below (all at this
 slice's baseline): *Sweep-B* = `board-view.slint`, `stack-view.slint`,
@@ -580,24 +580,24 @@ every sub-family) and `crates/taskboard-app/src/commands/`.
 | Capability | Board | TaskDetail | Today | Review | Settings | Capture | CLI |
 |---|---|---|---|---|---|---|---|
 | review.open | E (global) — =ReviewOpen= "Review" `actions.rs:1541-1549` (GLOBAL, menu rank 75, no preset binding — P7 reachable-not-promoted; kiosk greys in =entry_states=), routes =UiEffect::OpenReviewWalk= `router.rs:991` | E (global) — same =ReviewOpen= evidence | E — the walk-preview card's activation routes the same =ReviewOpen= `adapter.rs:10147-10151` (display card = review.walk_preview in the Today slice) | E (global) — same =ReviewOpen= evidence | E (global) — same =ReviewOpen= evidence | E (global) — same =ReviewOpen= evidence | U |
-| review.walk_cursor | U | U | U | E — =ReviewWalkCursorUp/=ReviewWalkCursorDown= "Walk cursor up/down" `actions.rs:1551-1560` (=ContextId::ReviewWalk=), Up/Down presets `presets.rs:306-311`, overlay strip emphasis `review-walk-overlay.slint:47-54`; the walk seams `adapter.rs:10079-10152` | U | U | U |
-| review.walk_back | U | U | U | E — =ReviewWalkBack= "Walk back" `actions.rs:1562-1570`, Escape preset `presets.rs:312` (an armed picker disengages first, then stage, then close — never dispatching a command) | U | U | U |
-| review.walk_advance | U | U | U | E — =ReviewWalkAdvance= `actions.rs:1572-1580`; =WalkIntent::Advance= `adapter.rs:2146-2153`; advancing out of Carry forward hands off to plan-next-day | U | U | U |
-| review.inbox_file | U | U | U | E — =ReviewInboxFile= "File to…" `actions.rs:1582-1590`, arms the File-to picker (overlay `review-walk-overlay.slint:119-126`); =WalkIntent::InboxFile= `adapter.rs:2188-2194` | U | U | U |
-| review.inbox_keep | U | U | U | E — =ReviewInboxKeep= "Keep in inbox" `actions.rs:1592-1600` (dispatches nothing); =WalkIntent::InboxKeep= `adapter.rs:2192-2194` | U | U | U |
-| review.file_target | U | U | U | E — =ReviewFileTargetPrev/=ReviewFileTargetNext= "Previous/Next file target" `actions.rs:1602-1618`, =WalkIntent::FileTargetPrev/Next= `adapter.rs:2195-2202` | U | U | U |
-| review.file_commit | U | U | U | E — =ReviewFileCommit= "Commit file" `actions.rs:1620-1628`; =WalkIntent::FileCommit= → =MoveTask= `adapter.rs:2203-2227` (the ordinary end-of-stack move verb) | U | U | U |
-| review.carry_tomorrow | U | U | U | E — =ReviewCarryTomorrow= "Move to tomorrow" `actions.rs:1630-1638`; =WalkIntent::CarryTomorrow= → =UpdateTask= `adapter.rs:2227-2249` (scheduled instant; due dates never touched) | U | U | U |
-| review.carry_pick | U | U | U | E — =ReviewCarryPickDate= arms the date field `actions.rs:1640-1648`, =ReviewCarryDateCommit= commits the parsed instant `actions.rs:1661-1669`; =WalkIntent::CarryDateCommit= → =UpdateTask= `adapter.rs:2252-2299` (an unparseable date dispatches nothing) | U | U | U |
-| review.carry_leave | U | U | U | E — =ReviewCarryLeave= "Leave as is" `actions.rs:1650-1659` (dispatches nothing); rides =WalkIntent::InboxKeep='s no-op arm `adapter.rs:2192-2194` | U | U | U |
+| review.walk_cursor | U | U | U | E — =ReviewWalkCursorUp/=ReviewWalkCursorDown= "Walk cursor up/down" `actions.rs:1551-1569` (=ContextId::ReviewWalk=), Up/Down presets `presets.rs:306-311`, overlay strip emphasis `review-walk-overlay.slint:47-54`; the walk seams `adapter.rs:10079-10152` | U | U | U |
+| review.walk_back | U | U | U | E — =ReviewWalkBack= "Walk back" `actions.rs:1571-1579`, Escape preset `presets.rs:312` (an armed picker disengages first, then stage, then close — never dispatching a command) | U | U | U |
+| review.walk_advance | U | U | U | E — =ReviewWalkAdvance= `actions.rs:1581-1589`; =WalkIntent::Advance= `adapter.rs:2146-2153`; advancing out of Carry forward hands off to plan-next-day | U | U | U |
+| review.inbox_file | U | U | U | E — =ReviewInboxFile= "File to…" `actions.rs:1591-1599`, arms the File-to picker (overlay `review-walk-overlay.slint:119-126`); =WalkIntent::InboxFile= `adapter.rs:2188-2194` | U | U | U |
+| review.inbox_keep | U | U | U | E — =ReviewInboxKeep= "Keep in inbox" `actions.rs:1601-1609` (dispatches nothing); =WalkIntent::InboxKeep= `adapter.rs:2192-2194` | U | U | U |
+| review.file_target | U | U | U | E — =ReviewFileTargetPrev/=ReviewFileTargetNext= "Previous/Next file target" `actions.rs:1611-1629`, =WalkIntent::FileTargetPrev/Next= `adapter.rs:2195-2202` | U | U | U |
+| review.file_commit | U | U | U | E — =ReviewFileCommit= "Commit file" `actions.rs:1631-1639`; =WalkIntent::FileCommit= → =MoveTask= `adapter.rs:2203-2227` (the ordinary end-of-stack move verb) | U | U | U |
+| review.carry_tomorrow | U | U | U | E — =ReviewCarryTomorrow= "Move to tomorrow" `actions.rs:1641-1649`; =WalkIntent::CarryTomorrow= → =UpdateTask= `adapter.rs:2227-2249` (scheduled instant; due dates never touched) | U | U | U |
+| review.carry_pick | U | U | U | E — =ReviewCarryPickDate= arms the date field `actions.rs:1651-1659`, =ReviewCarryDateCommit= commits the parsed instant `actions.rs:1671-1679`; =WalkIntent::CarryDateCommit= → =UpdateTask= `adapter.rs:2252-2299` (an unparseable date dispatches nothing) | U | U | U |
+| review.carry_leave | U | U | U | E — =ReviewCarryLeave= "Leave as is" `actions.rs:1661-1669` (dispatches nothing); rides =WalkIntent::InboxKeep='s no-op arm `adapter.rs:2192-2194` | U | U | U |
 | reflection.record | U | U | U | E — =ReviewRecord= "Record" commits the prompt answers as one reflection entry `actions.rs:1671-1679`; =WalkIntent::Record= → =RecordReflection= `adapter.rs:2300-2339` (an all-blank record commits nothing); prompts editor `review-walk-overlay.slint:127-129` | U | U | E (pre-existing, =journal add= `cli.rs:1379`) |
-| review.finish | U | U | U | E — =ReviewFinish= "Finish without recording" `actions.rs:1681-1689` (the equal-prominence exit; dispatches nothing); =WalkIntent::Finish= `adapter.rs:2341-2343` | U | U | U |
-| plan.open | E (global) — =ViewPlanNextDay= "Plan next day" `actions.rs:1471-1486` (GLOBAL, menu rank 65), routes =UiEffect::OpenPlanNextDay= `router.rs:968`; the view mounts `app-window.slint:511` | E (global) — same =ViewPlanNextDay= evidence | E (global) — same =ViewPlanNextDay= evidence | E (global) — same =ViewPlanNextDay= evidence | E (global) — same =ViewPlanNextDay= evidence | E (global) — same =ViewPlanNextDay= evidence | U |
-| plan.begin_place | U | U | U | E — =PlanBeginPlace= "Place task" `actions.rs:1488-1496` (=ContextId::PlanNextDay=), pool-row activation arms the inline form `plan-next-day-view.slint:44-47`, seam `adapter.rs:7993-8011` | U | U | U |
-| plan.commit_place | U | U | U | E — =PlanCommitPlace= "Commit placement" `actions.rs:1497-1505` (one atomic scheduled/effort edit, one undo step); commit seam `adapter.rs:8071-8092` → =UpdateTask= | U | U | U |
-| plan.box_earlier | U | U | U | E — =PlanBoxEarlier= "Move box earlier" `actions.rs:1506-1514`, box seam `adapter.rs:8012-8025`, callback `plan-next-day-view.slint:46` | U | U | U |
+| review.finish | U | U | U | E — =ReviewFinish= "Finish without recording" `actions.rs:1691-1699` (the equal-prominence exit; dispatches nothing); =WalkIntent::Finish= `adapter.rs:2341-2343` | U | U | U |
+| plan.open | E (global) — =ViewPlanNextDay= "Plan next day" `actions.rs:1472-1480` (GLOBAL, menu rank 65), routes =UiEffect::OpenPlanNextDay= `router.rs:968`; the view mounts `app-window.slint:511` | E (global) — same =ViewPlanNextDay= evidence | E (global) — same =ViewPlanNextDay= evidence | E (global) — same =ViewPlanNextDay= evidence | E (global) — same =ViewPlanNextDay= evidence | E (global) — same =ViewPlanNextDay= evidence | U |
+| plan.begin_place | U | U | U | E — =PlanBeginPlace= "Place task" `actions.rs:1485-1493` (=ContextId::PlanNextDay=), pool-row activation arms the inline form `plan-next-day-view.slint:44-47`, seam `adapter.rs:7993-8011` | U | U | U |
+| plan.commit_place | U | U | U | E — =PlanCommitPlace= "Commit placement" `actions.rs:1495-1503` (one atomic scheduled/effort edit, one undo step); commit seam `adapter.rs:8071-8092` → =UpdateTask= | U | U | U |
+| plan.box_earlier | U | U | U | E — =PlanBoxEarlier= "Move box earlier" `actions.rs:1505-1513`, box seam `adapter.rs:8012-8025`, callback `plan-next-day-view.slint:46` | U | U | U |
 | plan.box_later | U | U | U | E — =PlanBoxLater= "Move box later" `actions.rs:1515-1523`, box seam `adapter.rs:8026-8039` | U | U | U |
-| plan.box_remove | U | U | U | E — =PlanRemoveBox= "Remove box" `actions.rs:1524-1532` (clears the scheduled start; the task returns to the pool), seam `adapter.rs:8040-8053` | U | U | U |
+| plan.box_remove | U | U | U | E — =PlanRemoveBox= "Remove box" `actions.rs:1525-1533` (clears the scheduled start; the task returns to the pool), seam `adapter.rs:8040-8053` | U | U | U |
 | review.ledger_display | U | U | U | D — the effort-calibration reading: two aggregate stat sections over one per-task 30-day ledger, rows carry no activation (`review-view.slint:1-9`, ledger `review-view.slint:458+`, empty-state collapse D-9) | U | U | U |
 | review.stats_display | U | U | U | D — the 7-day/30-day window phrases (estimated/actual/gap) `review-view.slint:211,259`, derived `presentation.rs:2293+` (second-granular precision contract) | U | U | U |
 | reflection.ledger_display | U | U | U | D — the journal-entries ledger, newest first, read verbatim, read-only (`review-view.slint:352-360`, entries `review-view.slint:381+`) | U | U | D (pre-existing, =journal list= `cli.rs:1403` / =journal show= `cli.rs:1417`) |
@@ -608,7 +608,7 @@ every sub-family) and `crates/taskboard-app/src/commands/`.
 
 None seeded — the review/plan surface had no pilot ruling. The walk
 and planner verbs are walk/planner-scoped by their =ContextId=
-bindings (`actions.rs:390-425`, `actions.rs:1488-1532`); that scope
+bindings (`actions.rs:390-425`, `actions.rs:1472-1533`); that scope
 is recorded in the cells' evidence, and the other-surface absences
 are registered below — none is dressed as a ruling.
 
@@ -617,24 +617,24 @@ are registered below — none is dressed as a ruling.
 | capability | surfaces | evidence-of-absence | date |
 |---|---|---|---|
 | review.open | CLI | Sweep-CLI: no review/walk/planner verb (`cli.rs` swept, `commands/` — the =journal= family records, it does not walk) | 2026-11-14 |
-| review.walk_cursor | Board, TaskDetail, Today, Settings, Capture, CLI | the walk verbs bind only =ContextId::ReviewWalk= (`actions.rs:1551-1560`); Sweep-B/T/Y/S/C: no walk seam outside the overlay; Sweep-CLI: no walk verb | 2026-11-14 |
-| review.walk_back | Board, TaskDetail, Today, Settings, Capture, CLI | the same =ReviewWalk=-scoped binding (`actions.rs:1562-1570`, Escape preset `presets.rs:312`); Sweep-CLI: no walk verb | 2026-11-14 |
-| review.walk_advance | Board, TaskDetail, Today, Settings, Capture, CLI | the same =ReviewWalk=-scoped binding (`actions.rs:1572-1580`); Sweep-CLI: no walk verb | 2026-11-14 |
-| review.inbox_file | Board, TaskDetail, Today, Settings, Capture, CLI | the same =ReviewWalk=-scoped binding (`actions.rs:1582-1590`); Sweep-CLI: no file-to verb | 2026-11-14 |
-| review.inbox_keep | Board, TaskDetail, Today, Settings, Capture, CLI | the same =ReviewWalk=-scoped binding (`actions.rs:1592-1600`); Sweep-CLI: no keep verb | 2026-11-14 |
-| review.file_target | Board, TaskDetail, Today, Settings, Capture, CLI | the same =ReviewWalk=-scoped binding (`actions.rs:1602-1618`); Sweep-CLI: no target-nudge verb | 2026-11-14 |
-| review.file_commit | Board, TaskDetail, Today, Settings, Capture, CLI | the same =ReviewWalk=-scoped binding (`actions.rs:1620-1628`); the CLI's move twin is recorded on the =task.move= row (Board slice) | 2026-11-14 |
-| review.carry_tomorrow | Board, TaskDetail, Today, Settings, Capture, CLI | the same =ReviewWalk=-scoped binding (`actions.rs:1630-1638`); the CLI's scheduled-edit twin is recorded on the =task.scheduled_edit= row (Task detail slice) | 2026-11-14 |
-| review.carry_pick | Board, TaskDetail, Today, Settings, Capture, CLI | the same =ReviewWalk=-scoped binding (`actions.rs:1640-1669`); Sweep-CLI: no pick-a-date verb | 2026-11-14 |
-| review.carry_leave | Board, TaskDetail, Today, Settings, Capture, CLI | the same =ReviewWalk=-scoped binding (`actions.rs:1650-1659`); Sweep-CLI: no leave verb | 2026-11-14 |
+| review.walk_cursor | Board, TaskDetail, Today, Settings, Capture, CLI | the walk verbs bind only =ContextId::ReviewWalk= (`actions.rs:1551-1569`); Sweep-B/T/Y/S/C: no walk seam outside the overlay; Sweep-CLI: no walk verb | 2026-11-14 |
+| review.walk_back | Board, TaskDetail, Today, Settings, Capture, CLI | the same =ReviewWalk=-scoped binding (`actions.rs:1571-1579`, Escape preset `presets.rs:312`); Sweep-CLI: no walk verb | 2026-11-14 |
+| review.walk_advance | Board, TaskDetail, Today, Settings, Capture, CLI | the same =ReviewWalk=-scoped binding (`actions.rs:1581-1589`); Sweep-CLI: no walk verb | 2026-11-14 |
+| review.inbox_file | Board, TaskDetail, Today, Settings, Capture, CLI | the same =ReviewWalk=-scoped binding (`actions.rs:1591-1599`); Sweep-CLI: no file-to verb | 2026-11-14 |
+| review.inbox_keep | Board, TaskDetail, Today, Settings, Capture, CLI | the same =ReviewWalk=-scoped binding (`actions.rs:1601-1609`); Sweep-CLI: no keep verb | 2026-11-14 |
+| review.file_target | Board, TaskDetail, Today, Settings, Capture, CLI | the same =ReviewWalk=-scoped binding (`actions.rs:1611-1629`); Sweep-CLI: no target-nudge verb | 2026-11-14 |
+| review.file_commit | Board, TaskDetail, Today, Settings, Capture, CLI | the same =ReviewWalk=-scoped binding (`actions.rs:1631-1639`); the CLI's move twin is recorded on the =task.move= row (Board slice) | 2026-11-14 |
+| review.carry_tomorrow | Board, TaskDetail, Today, Settings, Capture, CLI | the same =ReviewWalk=-scoped binding (`actions.rs:1641-1649`); the CLI's scheduled-edit twin is recorded on the =task.scheduled_edit= row (Task detail slice) | 2026-11-14 |
+| review.carry_pick | Board, TaskDetail, Today, Settings, Capture, CLI | the same =ReviewWalk=-scoped binding (`actions.rs:1651-1659 + 1671-1679`); Sweep-CLI: no pick-a-date verb | 2026-11-14 |
+| review.carry_leave | Board, TaskDetail, Today, Settings, Capture, CLI | the same =ReviewWalk=-scoped binding (`actions.rs:1661-1669`); Sweep-CLI: no leave verb | 2026-11-14 |
 | reflection.record | Board, TaskDetail, Today, Settings, Capture | Sweep-B/T/Y/S/C: no reflection-commit seam outside the walk (the prompts editor mounts only in the walk overlay) | 2026-11-14 |
-| review.finish | Board, TaskDetail, Today, Settings, Capture, CLI | the same =ReviewWalk=-scoped binding (`actions.rs:1681-1689`); Sweep-CLI: no finish verb | 2026-11-14 |
-| plan.open | CLI | Sweep-CLI: no plan verb (=ViewPlanNextDay= is GLOBAL menu-reachable from every surface, `actions.rs:1471-1486`) | 2026-11-14 |
-| plan.begin_place | Board, TaskDetail, Today, Settings, Capture, CLI | the planner verbs bind only =ContextId::PlanNextDay= (`actions.rs:1488-1496`); Sweep-CLI: no place verb | 2026-11-14 |
-| plan.commit_place | Board, TaskDetail, Today, Settings, Capture, CLI | the same =PlanNextDay=-scoped binding (`actions.rs:1497-1505`); Sweep-CLI: no commit-placement verb | 2026-11-14 |
-| plan.box_earlier | Board, TaskDetail, Today, Settings, Capture, CLI | the same =PlanNextDay=-scoped binding (`actions.rs:1506-1514`); Sweep-CLI: no reorder verb | 2026-11-14 |
+| review.finish | Board, TaskDetail, Today, Settings, Capture, CLI | the same =ReviewWalk=-scoped binding (`actions.rs:1691-1699`); Sweep-CLI: no finish verb | 2026-11-14 |
+| plan.open | CLI | Sweep-CLI: no plan verb (=ViewPlanNextDay= is GLOBAL menu-reachable from every surface, `actions.rs:1472-1480`) | 2026-11-14 |
+| plan.begin_place | Board, TaskDetail, Today, Settings, Capture, CLI | the planner verbs bind only =ContextId::PlanNextDay= (`actions.rs:1485-1493`); Sweep-CLI: no place verb | 2026-11-14 |
+| plan.commit_place | Board, TaskDetail, Today, Settings, Capture, CLI | the same =PlanNextDay=-scoped binding (`actions.rs:1495-1503`); Sweep-CLI: no commit-placement verb | 2026-11-14 |
+| plan.box_earlier | Board, TaskDetail, Today, Settings, Capture, CLI | the same =PlanNextDay=-scoped binding (`actions.rs:1505-1513`); Sweep-CLI: no reorder verb | 2026-11-14 |
 | plan.box_later | Board, TaskDetail, Today, Settings, Capture, CLI | the same =PlanNextDay=-scoped binding (`actions.rs:1515-1523`); Sweep-CLI: no reorder verb | 2026-11-14 |
-| plan.box_remove | Board, TaskDetail, Today, Settings, Capture, CLI | the same =PlanNextDay=-scoped binding (`actions.rs:1524-1532`); Sweep-CLI: no box-remove verb | 2026-11-14 |
+| plan.box_remove | Board, TaskDetail, Today, Settings, Capture, CLI | the same =PlanNextDay=-scoped binding (`actions.rs:1525-1533`); Sweep-CLI: no box-remove verb | 2026-11-14 |
 | review.ledger_display | Board, TaskDetail, Today, Settings, Capture, CLI | Sweep-B/T/Y/S/C: no ledger mount outside the review view | 2026-11-14 |
 | review.stats_display | Board, TaskDetail, Today, Settings, Capture, CLI | Sweep-B/T/Y/S/C: no stat-section mount; Sweep-CLI: no aggregate output | 2026-11-14 |
 | reflection.ledger_display | Board, TaskDetail, Today, Settings, Capture | Sweep-B/T/Y/S/C: no journal-ledger mount outside the review view | 2026-11-14 |
@@ -680,9 +680,9 @@ slice's baseline): *Sweep-CLI* = `crates/taskboard-app/src/cli.rs`
 
 | Capability | Board | TaskDetail | Today | Review | Settings | Capture | CLI |
 |---|---|---|---|---|---|---|---|
-| alarm.dismiss | E — the window row's Dismiss `alarm-window.slint:32-34`, callback `lib.rs:845-852` → =DismissReminder= | E — same alarm-window evidence | E — same alarm-window evidence | E — same alarm-window evidence | E — same alarm-window evidence | E — same alarm-window evidence | U |
-| alarm.snooze | E — the window row's Snooze `alarm-window.slint:32-34`, callback `lib.rs:853-860` → =SnoozeReminder= with =ALARM_WINDOW_SNOOZE= = 10 min (`presentation.rs:2228`) | E — same alarm-window evidence | E — same alarm-window evidence | E — same alarm-window evidence | E — same alarm-window evidence | E — same alarm-window evidence | U |
-| alarm.cancel | E — the window row's Cancel `alarm-window.slint:32-34`, callback `lib.rs:861-870` → =CancelAdhocAlarm= (the timers section's engine twin) | E — same alarm-window evidence | E — same alarm-window evidence | E — same alarm-window evidence | E — same alarm-window evidence | E — same alarm-window evidence | E (pre-existing, =timers cancel= `cli.rs:958`) |
+| alarm.dismiss | E — the window row's Dismiss `alarm-window.slint:32-34`, callback `lib.rs:854-859` → =DismissReminder= | E — same alarm-window evidence | E — same alarm-window evidence | E — same alarm-window evidence | E — same alarm-window evidence | E — same alarm-window evidence | U |
+| alarm.snooze | E — the window row's Snooze `alarm-window.slint:32-34`, callback `lib.rs:860-866` → =SnoozeReminder= with =ALARM_WINDOW_SNOOZE= = 10 min (`presentation.rs:2228`) | E — same alarm-window evidence | E — same alarm-window evidence | E — same alarm-window evidence | E — same alarm-window evidence | E — same alarm-window evidence | U |
+| alarm.cancel | E — the window row's Cancel `alarm-window.slint:32-34`, callback `lib.rs:867-869` → =CancelAdhocAlarm= (the timers section's engine twin) | E — same alarm-window evidence | E — same alarm-window evidence | E — same alarm-window evidence | E — same alarm-window evidence | E — same alarm-window evidence | E (pre-existing, =timers cancel= `cli.rs:958`) |
 | alarm.window_display | D — the awaiting-alarm rows (title snapshot + elapsed phrase), derived =alarm_window_rows= `presentation.rs:2253-2290`, attention-gained edge `lib.rs:778-786` | D — same alarm-window evidence | D — same alarm-window evidence (the timers *section* is the Today slice's =alarm.display= row — a different surface) | D — same alarm-window evidence | D — same alarm-window evidence | D — same alarm-window evidence | U |
 | notification.dismiss | E (global overlay) — the notification row's dismiss seam `adapter.rs:10157-10169` → =DismissReminder=; mounts over any view `app-window.slint:597` | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | U |
 | notification.done | E (global overlay) — the notification row's done seam `adapter.rs:10172-10185` → =SetTaskDone= (the done-seam's guard shape; a stale index degrades to a no-op) | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (global overlay) — same notification-surface evidence | E (pre-existing, =tasks done= `cli.rs:1643`) |
