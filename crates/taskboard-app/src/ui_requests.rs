@@ -56,6 +56,16 @@ pub const UI_REQUEST_DEBOUNCE: std::time::Duration = std::time::Duration::from_m
 /// The UI → app request channel at its house capacity — one
 /// construction site for both UI lifecycles (desktop and kiosk
 /// appliance).
+///
+/// Ruling R-17 (T-17, #800; dated 2026-11-15, authority
+/// `.artifacts/plans/2026-11-15-ux-r5-surface-friction-chunk-plan.md`
+/// D-4): this lane stays OUTSIDE the undo journal by design — its
+/// remote halves cannot be honestly inverted (a local pre-image would
+/// restore the local fact while the remote half keeps the effect),
+/// the destructive journeys already stage through the chunk-2 armed
+/// confirmations (the recovery surface), and the non-destructive rest
+/// is re-editable at the very knob that made the change. The T-16
+/// typed refusal render keeps every lane outcome visible.
 #[must_use]
 pub fn ui_request_channel() -> (mpsc::Sender<UiRequest>, mpsc::Receiver<UiRequest>) {
     mpsc::channel(UI_REQUEST_CAPACITY)

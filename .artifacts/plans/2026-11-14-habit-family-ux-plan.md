@@ -448,6 +448,14 @@ each carries evidence, never a fix.
   `NotUndoable(HabitSurface)`. The row affordance gives no signal
   which side of the condition a given repair is on. Walkthrough Q3/Q4:
   the feedback and recovery differ per state without being visible.
+  *(Remediated 2026-11-15 — UX remediation chunk 5 / triage T-23
+  (#806): the habit row model carries the typed `repair-undoable`
+  bit — the invert condition restated as a pure predicate over live
+  state next to `habit_repair_target` — and the affordance caption
+  splits on it: the undoable side reads as the adjustment it is, the
+  creating side names the consequence before the stroke — typed test
+  `presentation.rs::the_habit_repair_row_signals_its_undo_side`; the
+  census `habit.repair` feedback cell carries the signal.)*
 - **HB-3 — habit→series conversion has no post-commit undo** (F-Pattern
   4, with a structural edge). `ConvertHabitToSeries` is
   `NotUndoable(HabitSurface)` (`undo.rs:251-261`, the seam-addressed

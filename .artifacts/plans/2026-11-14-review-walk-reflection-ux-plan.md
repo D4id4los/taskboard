@@ -329,13 +329,16 @@ above cites one of these; this table is the ruling's authority,
 
 | Step | Surface & affordance | User action | Dispatches | System response | Escape / failure |
 |---|---|---|---|---|---|
-| US-8/S1 | review view sections | — display only | — display only | the ledger, stats phrases, and journal ledger render read-only (rows carry no activation) | display only — no dispatch, no escape; the read-only ledger is RW-7's evidence (no row activation anywhere) |
+| US-8/S1 | review view sections | — display only | — display only | the ledger, stats phrases, and journal ledger render read-only (rows carry no activation) | display only — no dispatch, no escape; the read-only ledger is RW-7's evidence (no row activation anywhere). SUPERSEDED in part by the T-15 remediation (2026-11-15, #798): the journal-ledger rows activate into the inline editor and stage the delete (US-9/S2–S4); the D-B10 read-only ledger ruling's letter stands for the calibration ledger and the walk targets (the ledger is still not a task list) |
 
 ### US-9 — CLI journal family (P2)
 
 | Step | Surface & affordance | User action | Dispatches | System response | Escape / failure |
 |---|---|---|---|---|---|
-| US-9/S1 | CLI `journal edit` / `journal delete` (`cli.rs:1425,1455`) | run the verbs | `StateCommand::UpdateReflection` (`messages.rs:549`) / `StateCommand::DeleteReflection` (`messages.rs:581`) | the entry edits / tombstones engine-side | no GUI twin exists (RW-1); the undo class is `NotUndoable(ReflectionSurface)` (`undo.rs:238-245`) |
+| US-9/S1 | CLI `journal edit` / `journal delete` (`cli.rs:1425,1455`) | run the verbs | `StateCommand::UpdateReflection` (`messages.rs:549`) / `StateCommand::DeleteReflection` (`messages.rs:581`) | the entry edits / tombstones engine-side | the GUI twin exists since T-15 (below); the undo class is `NotUndoable(ReflectionSurface)` (`undo.rs:238-245`) — the family's own verbs are the recovery surface, and the T-15 GUI editor IS that surface arriving |
+| US-9/S2 (GUI, T-15 2026-11-15 #798) | the review view's journal-ledger row ("Edit entry") | click to activate | the activation seam seeds the inline editor from the stored row verbatim (`adapter.rs::on_reflection_row_activated`) | the editor mounts under the ledger clip; the echoes are the stored row | a stale index against an older tables pass is absorbed |
+| US-9/S3 (GUI, T-15) | the inline editor's Commit | edit text / set-or-clear mood & energy / toggle flag chips; commit | `UpdateReflection` with the EXACT change mask (text verbatim incl. the legal clear; the ratings as double Options; flags by delta; an all-unchanged commit is the exact empty mask — the accepted no-op) | the ledger re-derives; the editor closes | an invalid rating draft refuses the commit (the flavour renders, nothing dispatches); Cancel discards |
+| US-9/S4 (GUI, T-15) | the ledger row's delete affordance + armed strip | arm, then Confirm | arming dispatches nothing; Confirm routes `DeleteReflection` | the row tombstones in place (DR-7 D-J2) and leaves the live ledger | Cancel disarms; the strip names the consequence (the tombstone posture is D-J7 authority — staging is the escape) |
 
 ## 5. Interaction flows
 
@@ -379,7 +382,8 @@ through the UiEffect arms (router.rs:226, the request-free flow). -->
 | W-6 | ui/views/review-walk-overlay.slint | finish exit | — | WalkIntent::Finish arm (adapter.rs:2341-2343) | ActionId::ReviewFinish | — | — (dispatches nothing) | US-6/S1 | — |
 | W-7 | ui/views/plan-next-day-view.slint | planner pool + boxes | — | begin-place seam (adapter.rs:7993-8011); commit seam (adapter.rs:8071-8092); box seams (adapter.rs:8012-8053) | ActionId::PlanBeginPlace | StateCommand::UpdateTask; ActionId::PlanCommitPlace | the planner pool row / day box | US-7/S1-US-7/S4 | — |
 | W-8 | ui/views/review-view.slint | ledger/stats/journal display sections | — | — (display only; presentation.rs:2293+) | — | — | per-section render | US-8/S1 | — |
-| W-9 | crates/taskboard-app/src/cli.rs | `journal add/edit/delete/list/show` verbs | — | — (CLI-only; the GUI never constructs UpdateReflection/DeleteReflection — RW-1's sweep evidence) | — | StateCommand::RecordReflection; StateCommand::UpdateReflection; StateCommand::DeleteReflection | — (CLI verbs, not UI seams) | US-9/S1 | — |
+| W-9 | crates/taskboard-app/src/cli.rs | `journal add/edit/delete/list/show` verbs | — | — (CLI verbs; the GUI twin landed with T-15 — the RW-1 sweep evidence retired) | — | StateCommand::RecordReflection; StateCommand::UpdateReflection; StateCommand::DeleteReflection | — (CLI verbs, not UI seams) | US-9/S1 | — |
+| W-9a (T-15, 2026-11-15) | ui/views/review-view.slint + adapter.rs | the ledger's inline editor + the armed delete | `ContextId::Review` stays binding-free (pointer parity is the bar) | the editor's echoes/validity/chips (`ReflectionRowModel.active/armed`, `ReflectionFlagChip`), the commit mask builder, the arm/confirm pair | the invalid-draft refusal; the strip's Cancel | `StateCommand::UpdateReflection` (exact mask); `StateCommand::DeleteReflection` — dispatched directly (the labels armed-delete precedent; no new ActionIds) | Review view | US-9/S2, US-9/S3, US-9/S4 | journey `the_journal_ledger_edits_then_stages_the_delete` |
 
 ## 7. Command-contract delta
 
