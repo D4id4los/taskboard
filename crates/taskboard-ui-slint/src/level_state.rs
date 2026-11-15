@@ -311,7 +311,11 @@ impl LevelState {
                 | crate::surfaces::FlowTag::MoveStack
                 | crate::surfaces::FlowTag::TrackEntries
                 | crate::surfaces::FlowTag::DragMove
-                | crate::surfaces::FlowTag::WalkFilePick => Self::Bare {
+                | crate::surfaces::FlowTag::WalkFilePick
+                // The armed-delete strip carries no buffer or cursor
+                // (UX R-2 D-2): the armed identity rides the flow
+                // variant itself.
+                | crate::surfaces::FlowTag::ConfirmDelete => Self::Bare {
                     anchor: FocusAnchor::None,
                 },
                 crate::surfaces::FlowTag::Create

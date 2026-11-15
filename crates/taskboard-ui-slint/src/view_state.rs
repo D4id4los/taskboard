@@ -354,6 +354,26 @@ pub enum Flow {
     /// it `Cancelled`, discarding half-typed text exactly as the
     /// flattened walk always did (the Q3 ruling, D5).
     WalkDatePick,
+    /// The armed-delete confirm strip (UX R-2 D-2, #784): the board/
+    /// stack delete verbs arm this flow first — nothing dispatches
+    /// until the subject's stroke repeats or the strip's Confirm
+    /// routes the exact verb (the stack-move two-step grammar; the
+    /// strip is its pointer twin). The shared grammar's escape paths
+    /// are the flow machinery's for free: a foreign settle disarms
+    /// (the settle rule), Escape resolves ahead of the resolver
+    /// (`CancelOnly`), and the subject's vanish ends the flow
+    /// (reconcile's rename-vanish pattern). One armed subject: arming
+    /// a different subject re-arms.
+    ConfirmDelete(DeleteTarget),
+}
+
+/// The armed delete's subject (UX R-2 D-2, #784): the resolved target
+/// the confirmation names — one armed subject per the shared grammar,
+/// re-arming swaps to the new subject.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeleteTarget {
+    Stack(StackId),
+    Board(BoardId),
 }
 
 /// What a view-state transition asks the adapter to do (D9):
@@ -2890,6 +2910,11 @@ impl ViewState {
             Flow::EntryDatePicker | Flow::WalkFilePick { .. } | Flow::WalkDatePick => {
                 self.end_top_flow_with(state, crate::surfaces::GuestExit::Cancelled)
             }
+            // The armed-delete strip (UX R-2 D-2): a foreign settle
+            // disarms without dispatching — the placement form's
+            // close shape (only a confirm or the subject's own repeat
+            // stroke dispatches).
+            Flow::ConfirmDelete(_) => self.cancel_confirm_delete(),
         }
     }
 
@@ -2933,32 +2958,68 @@ impl ViewState {
         vec![FlowOutcome::SetMode(Mode::Insert), FlowOutcome::RefreshNow]
     }
 
-    /// `stack.delete`: dispatches `DeleteStack` for the resolved
-    /// target (focused → selected → first); the engine owns every
-    /// typed refusal. Inert without a target; selection repair is
-    /// `reconcile`'s on the next refresh.
+    /// `stack.delete`, two-phase (UX R-2 D-2, #784): the first
+    /// invocation arms `Flow::ConfirmDelete` over the resolved target
+    /// — nothing dispatches, the strip mounts at the subject; the
+    /// invocation repeated (or the strip's Confirm — click ≡ key at
+    /// every step) dispatches the exact `DeleteStack` + `RefreshNow`
+    /// and clears the flow. Zero command delta, zero undo-class
+    /// change: `DeleteStack` keeps its `NotUndoable(RestoreClass)`
+    /// class; the confirmation *is* the escape path. Inert without a
+    /// target; re-arming over a differently-armed subject swaps.
     pub fn delete_stack(&mut self, state: &AppState) -> Vec<FlowOutcome> {
         let Some(stack) = self.keyboard_resize_target(state) else {
             return Vec::new();
         };
-        vec![
-            FlowOutcome::Command(StateCommand::DeleteStack { id: stack }),
-            FlowOutcome::RefreshNow,
-        ]
+        if *self.flow() == Flow::ConfirmDelete(DeleteTarget::Stack(stack)) {
+            return self.commit_confirm_delete();
+        }
+        self.write_flow(Flow::ConfirmDelete(DeleteTarget::Stack(stack)));
+        vec![FlowOutcome::RefreshNow]
     }
 
-    /// `board.delete`: dispatches `DeleteBoard` for the current board
-    /// (cascades; the engine's typed refusals are the only guard — no
-    /// confirmation UI this round). Inert without a board.
+    /// `board.delete`, the stack twin (UX R-2 D-2): arms
+    /// `Flow::ConfirmDelete` over the current board first; the repeat
+    /// (or the strip's Confirm) dispatches the exact `DeleteBoard`
+    /// (cascades) + `RefreshNow` and clears the flow.
     pub fn delete_board(&mut self, state: &AppState) -> Vec<FlowOutcome> {
         self.normalize_board(state);
         let Some(board) = self.board else {
             return Vec::new();
         };
-        vec![
-            FlowOutcome::Command(StateCommand::DeleteBoard { board }),
-            FlowOutcome::RefreshNow,
-        ]
+        if *self.flow() == Flow::ConfirmDelete(DeleteTarget::Board(board)) {
+            return self.commit_confirm_delete();
+        }
+        self.write_flow(Flow::ConfirmDelete(DeleteTarget::Board(board)));
+        vec![FlowOutcome::RefreshNow]
+    }
+
+    /// The confirm half of the armed delete: dispatches the armed
+    /// subject's exact command and clears the flow. Only a confirm
+    /// reaches here (the two-phase verbs' armed branch and the
+    /// adapter's strip seam).
+    fn commit_confirm_delete(&mut self) -> Vec<FlowOutcome> {
+        let Flow::ConfirmDelete(target) = self.flow().clone() else {
+            return Vec::new();
+        };
+        self.write_flow(Flow::None);
+        let command = match target {
+            DeleteTarget::Stack(stack) => StateCommand::DeleteStack { id: stack },
+            DeleteTarget::Board(board) => StateCommand::DeleteBoard { board },
+        };
+        vec![FlowOutcome::Command(command), FlowOutcome::RefreshNow]
+    }
+
+    /// The armed delete's disarm (the strip's Cancel, a foreign
+    /// settle, Escape): ends the flow without dispatching — the
+    /// placement form's close shape.
+    pub fn cancel_confirm_delete(&mut self) -> Vec<FlowOutcome> {
+        if matches!(self.flow(), Flow::ConfirmDelete(_)) {
+            self.write_flow(Flow::None);
+            vec![FlowOutcome::RefreshNow]
+        } else {
+            Vec::new()
+        }
     }
 
     /// `stack.move` with no flow: the resolved stack starts moving at
@@ -3123,6 +3184,16 @@ impl ViewState {
             }
             Flow::RenameBoard { board } if self.board != Some(board) => self.write_flow(Flow::None),
             Flow::MoveStack { stack, .. } if !stacks.contains(&stack) => {
+                self.write_flow(Flow::None);
+            }
+            // The armed-delete strip (UX R-2 D-2): a vanished subject
+            // ends the flow silently — nothing dispatches (the
+            // rename-vanish pattern; the strip unmounts on the next
+            // model pass).
+            Flow::ConfirmDelete(DeleteTarget::Stack(stack)) if !stacks.contains(&stack) => {
+                self.write_flow(Flow::None);
+            }
+            Flow::ConfirmDelete(DeleteTarget::Board(board)) if self.board != Some(board) => {
                 self.write_flow(Flow::None);
             }
             // The placement form (#622): a dead subject drops it; a
@@ -4962,20 +5033,80 @@ mod tests {
     }
 
     #[test]
-    fn delete_stack_and_delete_board_dispatch_the_exact_commands() {
+    fn delete_stack_arms_then_confirms_dispatching_exactly_once() {
+        let (state, _board_id, [s0, _], _) = fixture();
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        // The first stroke arms: the flow holds, zero commands.
+        assert_eq!(vs.delete_stack(&state), vec![FlowOutcome::RefreshNow]);
+        assert!(matches!(
+            vs.flow(),
+            Flow::ConfirmDelete(DeleteTarget::Stack(s)) if *s == s0
+        ));
+        // The repeat stroke confirms: the exact command, the flow
+        // cleared.
+        assert_eq!(
+            vs.delete_stack(&state),
+            vec![
+                FlowOutcome::Command(StateCommand::DeleteStack { id: s0 }),
+                FlowOutcome::RefreshNow
+            ]
+        );
+        assert_eq!(*vs.flow(), Flow::None);
+    }
+
+    #[test]
+    fn delete_board_arms_per_subject_and_rearm_swaps() {
         let (state, board_id, [s0, _], _) = fixture();
         let mut vs = ViewState::new();
         vs.reconcile(&state);
+        // Arm the board.
+        assert_eq!(vs.delete_board(&state), vec![FlowOutcome::RefreshNow]);
+        assert!(matches!(
+            vs.flow(),
+            Flow::ConfirmDelete(DeleteTarget::Board(b)) if *b == board_id
+        ));
         assert_eq!(
-            vs.delete_stack(&state)[..1],
-            [FlowOutcome::Command(StateCommand::DeleteStack { id: s0 })][..]
+            vs.delete_board(&state),
+            vec![
+                FlowOutcome::Command(StateCommand::DeleteBoard { board: board_id }),
+                FlowOutcome::RefreshNow
+            ]
         );
-        assert_eq!(
-            vs.delete_board(&state)[..1],
-            [FlowOutcome::Command(StateCommand::DeleteBoard {
-                board: board_id
-            })][..]
-        );
+        // Re-arm over an armed subject swaps to the new one (one
+        // armed subject per the shared grammar).
+        assert_eq!(vs.delete_board(&state), vec![FlowOutcome::RefreshNow]);
+        assert!(matches!(
+            vs.flow(),
+            Flow::ConfirmDelete(DeleteTarget::Board(_))
+        ));
+        assert_eq!(vs.delete_stack(&state), vec![FlowOutcome::RefreshNow]);
+        assert!(matches!(
+            vs.flow(),
+            Flow::ConfirmDelete(DeleteTarget::Stack(s)) if *s == s0
+        ));
+    }
+
+    #[test]
+    fn armed_delete_foreign_settle_and_vanish_disarm() {
+        let (state, board_id, [s0, _], _) = fixture();
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        vs.delete_board(&state);
+        assert!(matches!(vs.flow(), Flow::ConfirmDelete(_)));
+        // A foreign settle disarms without dispatching (the settle
+        // rule's strip arm).
+        assert_eq!(vs.cancel_confirm_delete(), vec![FlowOutcome::RefreshNow]);
+        assert_eq!(*vs.flow(), Flow::None);
+        // Re-arm the stack, then delete its subject out-of-band: the
+        // reconcile vanish ends the flow, nothing dispatched.
+        vs.delete_stack(&state);
+        assert!(matches!(vs.flow(), Flow::ConfirmDelete(_)));
+        let mut vanished = state.clone();
+        vanished.stacks.get_mut(&s0).expect("fixture stack").deleted = true;
+        vs.reconcile(&vanished);
+        assert_eq!(*vs.flow(), Flow::None);
+        let _ = board_id;
     }
 
     #[test]

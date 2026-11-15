@@ -97,6 +97,12 @@ export struct StackColumnModel {
     // Rust-authoritative: pushed by the models, never owned by a slint
     // binding during a drag.
     width-px: length,
+    // The armed-delete strip's flag (UX R-2 D-2, #784): this column's
+    // stack is the armed `Flow::ConfirmDelete` subject — the strip
+    // mounts inline under the header; Confirm routes the verb, Cancel
+    // disarms. Presentation fact only: the armed identity lives in
+    // the view state's flow, indexed into this pass's columns.
+    delete-armed: bool,
 }
 
 export component BoardLayout inherits Rectangle {
@@ -111,6 +117,12 @@ export component BoardLayout inherits Rectangle {
     callback task-context(int, int, float, float);
     callback header-activated(int);
     callback switcher-activated(int);
+    // The armed-delete strip's pair (UX R-2 D-2, #784): Confirm
+    // routes the armed subject's exact delete verb, Cancel disarms —
+    // the recur stop-strip's grammar, indexed into this pass's
+    // columns.
+    callback stack-delete-confirmed(int);
+    callback stack-delete-cancelled(int);
     // The stack-header right-click (r2 D21): select the column, then
     // open the stack context menu at the pointer — the card pattern
     // (right-click selects like left-click).
@@ -476,6 +488,35 @@ export component BoardLayout inherits Rectangle {
                                     text: "\{column.tasks.length}";
                                     tone: column-index == root.move-target ? Tone.sync-active : Tone.neutral;
                                 }
+                            }
+                        }
+
+                        // The armed-delete strip (UX R-2 D-2): mounts
+                        // inline at the subject, names the consequence,
+                        // Confirm/Cancel — the recur editor's stop-strip
+                        // shape. Nothing dispatches until Confirm (or
+                        // the arm stroke's repeat — click ≡ key).
+                        if (column.delete-armed): HorizontalLayout {
+                            spacing: Theme.space-2;
+                            RoleText {
+                                role: Typography.caption;
+                                text-color: Semantic.danger;
+                                text: "Deletes this stack and every task in it.";
+                                vertical-alignment: center;
+                                horizontal-stretch: 1;
+                                overflow: elide;
+                            }
+                            IconButton {
+                                icon: IconKind.check;
+                                tone: Tone.danger;
+                                label: "Confirm delete stack";
+                                clicked => root.stack-delete-confirmed(column-index);
+                            }
+                            IconButton {
+                                icon: IconKind.remove;
+                                tone: Tone.neutral;
+                                label: "Cancel delete stack";
+                                clicked => root.stack-delete-cancelled(column-index);
                             }
                         }
 

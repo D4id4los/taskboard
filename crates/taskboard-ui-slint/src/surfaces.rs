@@ -53,6 +53,8 @@ pub enum FlowTag {
     EntryDatePicker,
     WalkFilePick,
     WalkDatePick,
+    /// The armed-delete confirm strip (UX R-2 D-2).
+    ConfirmDelete,
 }
 
 impl Flow {
@@ -84,6 +86,7 @@ impl Flow {
             Flow::EntryDatePicker => FlowTag::EntryDatePicker,
             Flow::WalkFilePick { .. } => FlowTag::WalkFilePick,
             Flow::WalkDatePick => FlowTag::WalkDatePick,
+            Flow::ConfirmDelete(_) => FlowTag::ConfirmDelete,
         }
     }
 }
@@ -548,6 +551,9 @@ mod tests {
             FlowTag::EntryDatePicker => Flow::EntryDatePicker,
             FlowTag::WalkFilePick => Flow::WalkFilePick { armed: Some(STACK) },
             FlowTag::WalkDatePick => Flow::WalkDatePick,
+            FlowTag::ConfirmDelete => {
+                Flow::ConfirmDelete(crate::view_state::DeleteTarget::Stack(STACK))
+            }
         }
     }
 

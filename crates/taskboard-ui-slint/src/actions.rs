@@ -939,7 +939,7 @@ pub const REGISTRY: &[ActionEntry] = &[
         category: Category::Navigation,
         enabled: true,
         menu_rank: 110,
-        description: "Deletes the current board and all its content (no confirmation step); typed refusals are the engine's.",
+        description: "Deletes the current board and all its content: the first press arms the confirm strip, the repeat or the strip's Confirm commits; typed refusals are the engine's.",
         menu_group: Some(MenuGroup::Board),
     },
     ActionEntry {
@@ -1009,7 +1009,7 @@ pub const REGISTRY: &[ActionEntry] = &[
         category: Category::Navigation,
         enabled: true,
         menu_rank: 130,
-        description: "Deletes the focused or selected stack and everything in it; the engine refuses typed when the target is gone.",
+        description: "Deletes the focused or selected stack and everything in it: the first press arms the confirm strip, the repeat or the strip's Confirm commits; the engine refuses typed when the target is gone.",
         menu_group: Some(MenuGroup::Stack),
     },
     ActionEntry {

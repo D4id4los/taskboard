@@ -4,7 +4,8 @@
 // itself on mount (D15's programmatic-focus seam; conditional
 // mounting creates the element, `init` grabs focus).
 
-import { Theme, Semantic } from "../theme.slint";
+import { Theme, Semantic, Typography, RoleText, Tone } from "../theme.slint";
+import { IconButton, IconKind } from "../widgets/icon-button.slint";
 import { BoardLayout, StackColumnModel } from "../compositions/board-layout.slint";
 import { BoardBarModel } from "../compositions/board-bar.slint";
 
@@ -21,6 +22,12 @@ export struct BoardModel {
     // The stack-create flow's visible field (usability D7), open or
     // closed — board-level, not per column.
     stack-create-open: bool,
+    // The armed-delete strip's typed fact (UX R-2 D-2, #784): the
+    // armed `Flow::ConfirmDelete` stack indexed into this pass's
+    // columns, or −1 (the move-target convention) when nothing is
+    // armed. Drives the per-column strip flag; read by the seam
+    // tests.
+    delete-armed-stack: int,
 }
 
 export component BoardView inherits FocusScope {
@@ -75,6 +82,16 @@ export component BoardView inherits FocusScope {
     callback new-stack-activated();
     // The empty-board preset CTA (r3 D5).
     callback board-default-preset-clicked();
+    // The armed-delete strip's facts + pair (UX R-2 D-2, #784): the
+    // board strip mounts in the board-bar region when the view
+    // state's `Flow::ConfirmDelete` arms the board; Confirm routes
+    // the exact verb, Cancel disarms. The stack strip threads
+    // per-column through the layout (the recur stop-strip grammar).
+    in property <bool> board-delete-armed;
+    callback board-delete-confirmed();
+    callback board-delete-cancelled();
+    callback stack-delete-confirmed(int);
+    callback stack-delete-cancelled(int);
     // The pointer drag-to-move seams (r2 chunk-8), threaded window →
     // view → layout; index-only, the D2 convention.
     callback card-drag-armed(int, int);
@@ -102,6 +119,34 @@ export component BoardView inherits FocusScope {
 
         VerticalLayout {
             spacing: Theme.space-2;
+
+            // The armed board-delete strip (UX R-2 D-2): the
+            // board-bar region's consequence strip — board delete
+            // cascades, and the strip names it. Compact keeps the
+            // strip (the keyboard twin is reachable there too).
+            if (root.board-delete-armed): HorizontalLayout {
+                spacing: Theme.space-2;
+                RoleText {
+                    role: Typography.caption;
+                    text-color: Semantic.danger;
+                    text: "Deletes this board and all its stacks and tasks.";
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                    overflow: elide;
+                }
+                IconButton {
+                    icon: IconKind.check;
+                    tone: Tone.danger;
+                    label: "Confirm delete board";
+                    clicked => root.board-delete-confirmed();
+                }
+                IconButton {
+                    icon: IconKind.remove;
+                    tone: Tone.neutral;
+                    label: "Cancel delete board";
+                    clicked => root.board-delete-cancelled();
+                }
+            }
 
             BoardLayout {
                 text-flow-focus-lost() => root.text-flow-focus-lost();
@@ -144,6 +189,8 @@ export component BoardView inherits FocusScope {
                 board-default-preset-clicked() => root.board-default-preset-clicked();
                 stack-create-committed(t) => root.stack-create-committed(t);
                 stack-create-edited(t) => root.stack-create-edited(t);
+                stack-delete-confirmed(c) => root.stack-delete-confirmed(c);
+                stack-delete-cancelled(c) => root.stack-delete-cancelled(c);
             }
         }
     }
