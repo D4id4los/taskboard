@@ -28,6 +28,12 @@ const SEAM_INVENTORY: &[&str] = &[
     "banner_snooze_clicked",
     "board_add_task_activated",
     "board_bar_archived_activated",
+    // The armed-delete strips' pair (UX R-2 D-2, #784): Confirm
+    // routes the armed verb, Cancel disarms — one install each.
+    "board_delete_strip_confirmed",
+    "board_delete_strip_cancelled",
+    "stack_delete_strip_confirmed",
+    "stack_delete_strip_cancelled",
     "board_bar_segment_activated",
     "board_body_activated",
     "board_body_context_requested",

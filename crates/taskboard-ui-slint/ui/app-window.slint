@@ -343,6 +343,10 @@ export component AppWindow inherits Window {
     in-out property <bool> board-flow-open: false;
     in-out property <bool> board-rename-open: false;
     in-out property <string> board-flow-initial;
+    // The armed board-delete strip's fact (UX R-2 D-2, #784): the
+    // view state's `Flow::ConfirmDelete` arms the board — the strip
+    // mounts in the board-bar region; pushed by the models pass.
+    in-out property <bool> board-delete-armed: false;
 
     // The rendering fact for tests and reviews (§6 test 2): compact
     // mode is active (board degeneration, D8/D17).
@@ -432,6 +436,11 @@ export component AppWindow inherits Window {
                 board-default-preset-clicked() => root.board-default-preset-clicked();
                 stack-create-committed(t) => root.board-stack-create-committed(t);
                 stack-create-edited(t) => root.board-stack-create-edited(t);
+                board-delete-armed: root.board-delete-armed;
+                board-delete-confirmed() => root.board-delete-strip-confirmed();
+                board-delete-cancelled() => root.board-delete-strip-cancelled();
+                stack-delete-confirmed(c) => root.stack-delete-strip-confirmed(c);
+                stack-delete-cancelled(c) => root.stack-delete-strip-cancelled(c);
             }
             if (root.current-view == View.today): TodayView {
                 today: root.today-model;
@@ -1447,6 +1456,14 @@ export component AppWindow inherits Window {
     // The empty-board preset CTA (r3 D5): direct command dispatch —
     // the adapter applies the preset's CreateStack commands.
     pure callback board-default-preset-clicked();
+    // The armed-delete strips' pair (UX R-2 D-2, #784): Confirm
+    // routes the armed subject's exact verb (click ≡ key — the
+    // armed flow's route confirms), Cancel disarms without
+    // dispatching. The stack pair is per-column (the pass's index).
+    pure callback board-delete-strip-confirmed();
+    pure callback board-delete-strip-cancelled();
+    pure callback stack-delete-strip-confirmed(int);
+    pure callback stack-delete-strip-cancelled(int);
     pure callback board-stack-create-committed(string);
     pure callback board-stack-create-edited(string);
     pure callback stack-task-activated(int);

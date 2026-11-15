@@ -5897,8 +5897,15 @@ fn the_lifecycle_verbs_drain_their_exact_commands() {
             }]);
             harness.engine.settle(&harness.handle);
 
-            // Stack delete via the keyboard binding: the selection
-            // (seeded to the first stack) is the target.
+            // Stack delete via the keyboard binding (UX R-2 D-2):
+            // the first stroke arms — the armed fact holds, zero
+            // commands; the repeat stroke commits the exact verb.
+            harness.press(ActionId::StackDelete);
+            harness.assert_commands(&[]);
+            assert!(
+                harness.handle.window().get_board_model().delete_armed_stack >= 0,
+                "the armed strip fact holds after the arm stroke"
+            );
             harness.press(ActionId::StackDelete);
             harness.assert_commands(&[StateCommand::DeleteStack {
                 id: fixture.stack_a,
@@ -5924,15 +5931,129 @@ fn the_lifecycle_verbs_drain_their_exact_commands() {
             harness.press(ActionId::TaskReopen);
             harness.assert_commands(&[]);
 
-            // Board delete via the keyboard binding: the exact verb,
-            // the only live board the target (matched structurally —
-            // the fixture does not expose the board id).
+            // Board delete via the keyboard binding (UX R-2 D-2):
+            // the arm stroke dispatches nothing; the repeat commits
+            // the exact verb (matched structurally — the fixture does
+            // not expose the board id).
+            harness.press(ActionId::BoardDelete);
+            harness.assert_commands(&[]);
+            assert!(
+                harness.handle.window().get_board_delete_armed(),
+                "the board strip fact holds after the arm stroke"
+            );
             harness.press(ActionId::BoardDelete);
             let drained = harness.engine.drain();
             assert_eq!(drained.len(), 1);
             assert!(
                 matches!(drained[0], StateCommand::DeleteBoard { .. }),
                 "board.delete drains DeleteBoard"
+            );
+        },
+    );
+}
+
+/// UX R-2 D-2 (D-7 T4, #784): the armed strip's Confirm click commits
+/// the exact verb the keyboard twin would — click ≡ key at every
+/// step (the context-menu delete row routes the same `ActionId` the
+/// keymap stroke routes, so the arm via the stroke is the same
+/// journey the menu row drives). The arm stroke mounts the strip in
+/// the armed column; the driver invokes its Confirm affordance.
+#[test]
+fn us5_s2_menu_delete_row_arms_and_confirm_click_commits() {
+    let (fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+
+            // The arm stroke: the armed fact holds, zero commands.
+            harness.press(ActionId::StackDelete);
+            harness.assert_commands(&[]);
+            assert!(
+                harness.handle.window().get_board_model().delete_armed_stack >= 0,
+                "the armed strip fact holds"
+            );
+            // The strip's Confirm affordance routes the exact verb.
+            let confirm = harness
+                .driver
+                .find_by_label("Confirm delete stack")
+                .expect("the armed strip mounts at the subject");
+            confirm.invoke_default_action();
+            harness.driver.advance_time(0);
+            harness.assert_commands(&[StateCommand::DeleteStack {
+                id: fixture.stack_a,
+            }]);
+            harness.engine.settle(&harness.handle);
+        },
+    );
+}
+
+/// UX R-2 D-2 (D-7 T5, #784): the two-step invoke — the second
+/// stroke commits; Escape first cancels and nothing dispatches ever.
+#[test]
+fn us5_s3_repeat_stroke_confirms_and_escape_cancels() {
+    let (fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+
+            // Arm, then Escape: the disarm, nothing dispatched.
+            harness.press(ActionId::StackDelete);
+            harness.stroke(parse("Escape").expect("Escape"));
+            harness.assert_commands(&[]);
+            assert!(
+                harness.handle.window().get_board_model().delete_armed_stack < 0,
+                "Escape disarms the strip"
+            );
+            // Arm again, the repeat stroke commits the exact verb.
+            harness.press(ActionId::StackDelete);
+            harness.press(ActionId::StackDelete);
+            harness.assert_commands(&[StateCommand::DeleteStack {
+                id: fixture.stack_a,
+            }]);
+            harness.engine.settle(&harness.handle);
+        },
+    );
+}
+
+/// UX R-2 D-2 (D-7 T6, #784): the kiosk delete stage is
+/// visible-gated, not absent — the arm yields the armed fact on
+/// kiosk exactly as on desktop (the confirmation rides the delete
+/// verbs' existing reachability; no capability change either way).
+#[test]
+fn the_kiosk_delete_stage_is_visible_gated_not_absent() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        support::driver::DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut kiosk = Harness::mount_with_settings(
+                SlintDriver::default(),
+                state.clone(),
+                taskboard_ui_slint::UiSettings {
+                    kiosk: true,
+                    ..taskboard_ui_slint::UiSettings::default()
+                },
+            );
+            kiosk.press(ActionId::StackDelete);
+            kiosk.assert_commands(&[]);
+            assert!(
+                kiosk.handle.window().get_board_model().delete_armed_stack >= 0,
+                "the kiosk arm yields the armed fact (visible-gated, not absent)"
+            );
+            // Desktop parity: the same arm mounts the same fact.
+            let mut desktop = Harness::mount(SlintDriver::default(), state);
+            desktop.press(ActionId::StackDelete);
+            desktop.assert_commands(&[]);
+            assert!(
+                desktop.handle.window().get_board_model().delete_armed_stack >= 0,
+                "the desktop arm yields the armed fact"
             );
         },
     );

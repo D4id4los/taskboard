@@ -23,7 +23,7 @@ use crate::actions::{ActionId, ContextId};
 use crate::keymap::Keymap;
 use crate::presentation::{self, DueKind, DueSets};
 use crate::responsive::Breakpoint;
-use crate::view_state::{DateField, Flow, ViewState};
+use crate::view_state::{DateField, DeleteTarget, Flow, ViewState};
 use crate::{
     AppWindow, BannerRowModel, BoardBarModel, BoardModel, BoardSegmentModel,
     Breakpoint as SlintBreakpoint, DecorationKind, DragState, DueDayModel, DueKind as SlintDueKind,
@@ -1669,6 +1669,28 @@ pub(crate) fn board_row(window: &AppWindow, state: &AppState, vs: &ViewState) ->
 /// and move target marked by index (D8/D22). The board title renders
 /// in the toolbar (`push_chrome`), so the model carries only the
 /// kanban geometry. Returns the diff's mutation count.
+/// The armed-delete strip's typed fact (UX R-2 D-2): the armed
+/// `Flow::ConfirmDelete` stack indexed into the pass's columns, −1
+/// (the move-target convention) when nothing is armed or the armed
+/// stack is not in this pass (the dead-strip rule: the strip
+/// unmounts).
+/// The per-column strip flag (UX R-2 D-2): the column's stack is the
+/// armed `Flow::ConfirmDelete` subject.
+fn stack_delete_armed(flow: &Flow, stack_id: &StackId) -> bool {
+    matches!(flow, Flow::ConfirmDelete(DeleteTarget::Stack(armed)) if armed == stack_id)
+}
+
+fn armed_stack_index(flow: &Flow, stack_ids: &[StackId]) -> i32 {
+    match flow {
+        Flow::ConfirmDelete(DeleteTarget::Stack(armed)) => stack_ids
+            .iter()
+            .position(|s| s == armed)
+            .and_then(|i| i32::try_from(i).ok())
+            .unwrap_or(-1),
+        _ => -1,
+    }
+}
+
 #[allow(clippy::too_many_arguments)] // the pass's inputs, one bundle
 fn push_board(
     window: &AppWindow,
@@ -1722,6 +1744,9 @@ fn push_board(
             .diff(&cards);
         tables.board_tasks.push(task_ids);
         columns.push(StackColumnModel {
+            // The armed-delete strip's per-column flag (UX R-2 D-2):
+            // this column's stack is the armed subject.
+            delete_armed: stack_delete_armed(&flow, stack_id),
             title: SharedString::from(stack.title.clone()),
             // The column's own persistent handle: the outer row fires
             // only when scalars or the inner handle actually differ
@@ -1748,6 +1773,10 @@ fn push_board(
     mutations += models.columns.diff(&columns);
     // The board create/rename fields' window-level slot (r2 D21).
     window.set_board_create_open(matches!(flow, Flow::CreateBoard));
+    // The armed board-delete strip's window-level fact (UX R-2 D-2):
+    // the board-bar region's strip mounts while the board is the
+    // armed subject.
+    window.set_board_delete_armed(matches!(flow, Flow::ConfirmDelete(DeleteTarget::Board(_))));
     // The pointer drag's window bits (r2 chunk-8 D-D): the ghost's
     // open flag and its card snapshot rebuild on every pass while the
     // drag flow holds (the chunk-2 refresh-survival invariant made
@@ -1784,6 +1813,9 @@ fn push_board(
         stacks: ModelRc::from(models.columns.handle_or_insert_with()),
         // The stack-create flow's visible field (usability D7).
         stack_create_open: matches!(flow, Flow::CreateStack),
+        // The armed-delete strip's typed fact (UX R-2 D-2): the
+        // armed stack indexed into this pass, −1 when unarmed.
+        delete_armed_stack: armed_stack_index(&flow, stack_ids),
         // The true selection (r2 D4): None flattens to −1 — the
         // move-target convention in the same struct. The regular
         // header paints the selected stack; the compact leg clamps
@@ -3396,6 +3428,7 @@ mod tests {
             rename_open: false,
             initial_title: "a".into(),
             width_px: 0.0,
+            delete_armed: false,
         };
         let mut mirror = vec![column.clone()];
         let model = VecModel::from(vec![column.clone()]);

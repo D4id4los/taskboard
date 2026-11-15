@@ -304,7 +304,7 @@ expression: rows
   category: navigation
   enabled: true
   menu_rank: 110
-  description: "Deletes the current board and all its content (no confirmation step); typed refusals are the engine's."
+  description: "Deletes the current board and all its content: the first press arms the confirm strip, the repeat or the strip's Confirm commits; typed refusals are the engine's."
   menu_group: board
 - id: stack.next
   label: Next stack
@@ -378,7 +378,7 @@ expression: rows
   category: navigation
   enabled: true
   menu_rank: 130
-  description: Deletes the focused or selected stack and everything in it; the engine refuses typed when the target is gone.
+  description: "Deletes the focused or selected stack and everything in it: the first press arms the confirm strip, the repeat or the strip's Confirm commits; the engine refuses typed when the target is gone."
   menu_group: stack
 - id: task.create
   label: New task

@@ -3073,6 +3073,14 @@ impl Adapter {
                         .jump_focus(&state, edge, compact, self.kiosk, &day)
                 }
             }
+            // The armed delete's repeat stroke (UX R-2 D-2, #784):
+            // the invoking verb's second stroke confirms the armed
+            // subject (or re-arms to a new one) — the two-step
+            // invoke; the strip's Confirm seam is its pointer twin
+            // (click ≡ key at every step).
+            (Flow::ConfirmDelete(_), effect @ (UiEffect::StackDelete | UiEffect::BoardDelete)) => {
+                self.interpret_lifecycle(&flow, effect, &state)
+            }
             // Round 2 (D18/D21): the board/stack lifecycle verbs —
             // target resolution is the view state's; the engine owns
             // every delete refusal.
@@ -3639,6 +3647,10 @@ impl Adapter {
             | Flow::EntryDatePicker
             | Flow::WalkFilePick { .. }
             | Flow::WalkDatePick
+            // The armed-delete strip (UX R-2 D-2): the modals' row —
+            // settle is its disarm (nothing dispatches); its kept
+            // intents own the confirm/re-arm.
+            | Flow::ConfirmDelete(_)
             | Flow::None => FlowKind::None,
             Flow::Create { .. }
             | Flow::CreateStack
@@ -7093,6 +7105,7 @@ fn install_view_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     install_menu_dismiss_seam(window, adapter);
     install_board_bar_seam(window, adapter);
     install_board_bar_archived_seam(window, adapter);
+    install_delete_strip_seams(window, adapter);
     install_stack_create_seams(window, adapter);
     install_board_seams(window, adapter);
     install_stack_seams(window, adapter);
@@ -8347,6 +8360,39 @@ fn install_board_bar_archived_seam(window: &AppWindow, adapter: &Rc<RefCell<Adap
     let outcomes = a.view_state.unarchive_board(board);
     a.apply_outcomes(&window, &outcomes);
 
+    });
+}
+
+/// The armed-delete strips' seams (UX R-2 D-2, #784): Confirm routes
+/// the armed subject's own delete `ActionId` — with the strip armed,
+/// the route's interpretation table arm confirms (click ≡ key at
+/// every step); Cancel disarms without dispatching. The stack pair's
+/// index is the mounting column (the pass the strip rendered from);
+/// the confirm routes the armed subject regardless, since the strip
+/// only mounts in the armed column of the current pass.
+fn install_delete_strip_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
+    // No `settle_pointer_conflict` on any of the four: the armed
+    // flow IS the interaction's subject — a settle here would disarm
+    // before the route re-arms (the confirm would never commit).
+    // One flow lives at a time, so no foreign flow can be settled
+    // by a strip interaction.
+    install_seam!(window: window.on_board_delete_strip_confirmed, adapter: adapter;
+    bind mut (a, window), args (), {
+        a.route(&window, ActionId::BoardDelete);
+    });
+    install_seam!(window: window.on_board_delete_strip_cancelled, adapter: adapter;
+    bind mut (a, window), args (), {
+        let outcomes = a.view_state.cancel_confirm_delete();
+        a.apply_outcomes(&window, &outcomes);
+    });
+    install_seam!(window: window.on_stack_delete_strip_confirmed, adapter: adapter;
+    bind mut (a, window), args (_column), {
+        a.route(&window, ActionId::StackDelete);
+    });
+    install_seam!(window: window.on_stack_delete_strip_cancelled, adapter: adapter;
+    bind mut (a, window), args (_column), {
+        let outcomes = a.view_state.cancel_confirm_delete();
+        a.apply_outcomes(&window, &outcomes);
     });
 }
 

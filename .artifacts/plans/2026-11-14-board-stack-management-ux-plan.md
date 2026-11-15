@@ -191,14 +191,40 @@ above cites one of these; this table is the ruling's authority,
   segment right-click → `menu::BOARD_CONTEXT`; destructive rows last);
   CLI `stacks delete` / `boards delete --confirm` (pre-existing twins).
 - **Priority**: P1
-- **Acceptance**:
+- **Acceptance** (amended 2026-11-15, UX R-2 D-2/D-5, #784 — the
+  triage finding BF-5/BF-6 "escape-less" retires to this dated
+  pointer: the confirmation *is* the escape path):
   - AC-1: Given a target (focused → selected → first resolution),
-    When delete dispatches, Then the exact
-    `StateCommand::DeleteStack`/`DeleteBoard` drains and the selection
+    When delete is invoked, Then it **arms** — the
+    `Flow::ConfirmDelete` armed-confirm strip mounts at the subject
+    naming the consequence and **nothing dispatches**; When the
+    stroke repeats (or the strip's Confirm routes the same
+    `ActionId`), Then the exact `StateCommand::DeleteStack`/
+    `DeleteBoard` drains, the flow clears, and the selection
     reconciles on the next refresh — verified by
-    `view_state.rs::delete_stack_and_delete_board_dispatch_the_exact_commands`.
+    `view_state.rs::delete_stack_arms_then_confirms_dispatching_exactly_once`,
+    `delete_board_arms_per_subject_and_rearm_swaps`, and
+    `journeys.rs::us5_s2_menu_delete_row_arms_and_confirm_click_commits`.
+  - AC-1b (escape paths, all real): Escape / the strip's Cancel / a
+    foreign settle / the subject's vanish all disarm without
+    dispatching — verified by
+    `view_state.rs::armed_delete_foreign_settle_and_vanish_disarm`,
+    `journeys.rs::us5_s3_repeat_stroke_confirms_and_escape_cancels`.
+    One armed subject surface-wide: arming the other kind re-arms
+    (D-2's shared grammar).
+  - AC-1c (kiosk): the stage is visible-gated, not absent — the arm
+    yields the armed fact on kiosk exactly as on desktop (the verbs
+    were already reachable there; no capability change either way) —
+    verified by `journeys.rs::the_kiosk_delete_stage_is_visible_gated_not_absent`.
   - AC-2: Given no target, When delete is invoked, Then it is inert —
     verified by `view_state.rs::delete_stack_is_inert_without_a_target`.
+  - **Command-contract delta (2026-11-15)**: zero new `StateCommand`,
+    zero undo-class change, unchanged `ActionId`s (`StackDelete`/
+    `BoardDelete` — new two-phase route); the armed identity is the
+    view-state flow `Flow::ConfirmDelete(DeleteTarget)`
+    (`view_state.rs`), presented through `BoardModel.delete-armed-stack`
+    + the window `board-delete-armed` fact and the per-column
+    strip flag; wiring rows W-4a/W-7a below.
 
 ### US-6 — Move a stack
 
@@ -355,8 +381,8 @@ above cites one of these; this table is the ruling's authority,
 | Step | Surface & affordance | User action | Dispatches | System response | Escape / failure |
 |---|---|---|---|---|---|
 | US-5/S1 | stack header/body or board segment | right-click | `on_board_header_context_requested`/`on_board_body_context_requested`/`on_board_segment_context_requested` (`adapter.rs:8222,8204,8230`) | `menu::STACK_CONTEXT`/`menu::BOARD_CONTEXT` opens at the pointer; the segment right-click selects the board first; stale index absorbed | outside click / Escape dismisses the menu (menu dismissal seam, `adapter.rs:7869-7874` family) — test `journeys.rs::the_body_right_click_selects_and_opens_the_stack_menu` |
-| US-5/S2 | context menu row | click "Delete stack" / "Delete board" (destructive rows last, `menu.rs:210-227`) | `ActionId::StackDelete`/`BoardDelete` → `UiEffect` (`router.rs:901,905`) → `delete_stack`/`delete_board` (`view_state.rs:2912-2937`) | `StateCommand::DeleteStack`/`DeleteBoard` + `RefreshNow` dispatch; the engine cascades | **escape-less**: no confirmation UI (the registry description names "no confirmation step", `actions.rs:935-944`; `view_state.rs:2924-2925`) and no undo — `DeleteStack` is `NotUndoable(RestoreClass)` (`undo.rs:126-127`) and `DeleteBoard` `NotUndoable(BoardCeremony)` (`undo.rs:134-138`). Findings BF-5/BF-6 — test `view_state.rs::delete_stack_and_delete_board_dispatch_the_exact_commands` |
-| US-5/S3 | keyboard twin | Ctrl+Delete (stack) / Ctrl+Shift+Delete (board) | same action ids via the keymap route (`presets.rs:152-156,164`) | same as S2 | same escape-less posture (BF-5/BF-6); inert without a target (`view_state.rs:4885` test) |
+| US-5/S2 | context menu row | click "Delete stack" / "Delete board" (destructive rows last, `menu.rs:210-227`) | `ActionId::StackDelete`/`BoardDelete` → `UiEffect` → `delete_stack`/`delete_board` (two-phase, UX R-2 D-2) | **arm**: the `Flow::ConfirmDelete` strip mounts at the subject, zero commands; **confirm** (repeat click/stroke or the strip's Confirm) dispatches `StateCommand::DeleteStack`/`DeleteBoard` + `RefreshNow`; the engine cascades. Escape: Escape / Cancel / foreign settle / subject-vanish disarm without dispatching (the retired "escape-less" finding: superseded 2026-11-15, UX R-2 D-2 — see the acceptance's dated pointer) — tests `view_state.rs::delete_stack_arms_then_confirms_dispatching_exactly_once`, `armed_delete_foreign_settle_and_vanish_disarm` |
+| US-5/S3 | keyboard twin | Ctrl+Delete (stack) / Ctrl+Shift+Delete (board) | same action ids via the keymap route (`presets.rs:152-156,164`) | the two-step invoke (UX R-2 D-2): the first stroke arms, the repeat commits; Escape cancels via the flow settle law — the strip's Confirm/Cancel are the pointer twin (click ≡ key at every step); inert without a target (`view_state.rs::delete_stack_is_inert_without_a_target`) | escape: Escape (bare, the flow machinery) disarms — test `journeys.rs::us5_s3_repeat_stroke_confirms_and_escape_cancels` |
 
 ### US-6 — Move a stack
 
@@ -455,6 +481,7 @@ descriptive-name tests. -->
 | W-1 | ui/app-window.slint (field), ui/views/board-view.slint | board-create TextField (accepted wiring at app-window.slint:578) | — | on_board_create_field_committed (adapter.rs:8264) — slint callback board-create-field-committed | ActionId::BoardCreate | StateCommand::CreateBoard | — (board-scoped flow; no list row addressed) | US-1/S1-US-1/S3 | view_state.rs::board_create_flow_commits_the_lenient_color_command; journeys.rs::the_lifecycle_verbs_drain_their_exact_commands |
 | W-2 | ui/app-window.slint | board-rename TextField (accepted wiring at app-window.slint:587) | — | on_board_rename_field_committed (adapter.rs:8274) — slint callback board-rename-field-committed | ActionId::BoardRename | StateCommand::RenameBoard | — (board-scoped flow) | US-4/S1-US-4/S3 | journeys.rs::the_rename_flows_seed_commit_and_discard |
 | W-3 | ui/compositions/board-bar.slint, ui/views/board-view.slint, ui/app-window.slint | board segment TouchArea + dropdown rows | — | on_board_bar_segment_activated (adapter.rs:8310-8326) — slint callback board-bar-segment-activated | ActionId::BoardSelect | — | board index resolved via a.tables.board_ids (stale → None absorbed) | US-2/S1-US-2/S2 | journeys.rs::board_switching_walks_boards_by_keyboard |
+| W-4a (UX R-2 D-2, 2026-11-15) | ui/compositions/board-layout.slint (stack strip), ui/views/board-view.slint (board strip) | strip Confirm/Cancel buttons | `on_stack_delete_strip_confirmed/cancelled`, `on_board_delete_strip_confirmed/cancelled` (adapter.rs, install_delete_strip_seams) | Confirm routes the armed `ActionId::StackDelete`/`BoardDelete` (click ≡ key); Cancel disarms via `cancel_confirm_delete` — no settle on these seams (the armed flow is the subject) | escape: Cancel/Escape/foreign settle/subject-vanish all disarm (US-5/S2) | — | `ActionId::StackDelete`; `ActionId::BoardDelete` (two-phase route) | US-5/S2 | journeys.rs::us5_s2_menu_delete_row_arms_and_confirm_click_commits; journeys.rs::us5_s3_repeat_stroke_confirms_and_escape_cancels |
 | W-4 | ui/compositions/board-bar.slint (context entry), ui/compositions/board-layout.slint (stack header/body) | right-click context menus | — | on_board_segment_context_requested (adapter.rs:8230); on_board_header_context_requested (adapter.rs:8222); on_board_body_context_requested (adapter.rs:8204) — slint callback board-segment-context-requested | — | — | menu::STACK_CONTEXT / menu::BOARD_CONTEXT row sets (menu.rs:210-227) | US-5/S1 | journeys.rs::the_segment_right_click_selects_and_opens_the_board_menu; journeys.rs::the_body_right_click_selects_and_opens_the_stack_menu |
 | W-5 | ui/compositions/board-layout.slint | "New stack" CtaButton + stack-create field | — | on_board_new_stack_clicked (adapter.rs:8328); on_board_stack_create_committed (adapter.rs:8347) — slint callbacks board-new-stack-clicked, board-stack-create-committed | ActionId::StackCreate | StateCommand::CreateStack | board index via a.tables.stack_ids | US-3/S1-US-3/S3 | journeys.rs::stack_create_has_a_visible_click_equal_flow; view_state.rs::stack_create_flow_commits_the_appended_create_stack |
 | W-6 | ui/compositions/board-layout.slint | per-column inline rename TextField | — | on_board_stack_rename_committed (adapter.rs:8252) — slint callback board-stack-rename-committed | ActionId::StackRename | StateCommand::RenameStack | column index via a.tables.stack_ids | US-4/S1-US-4/S3 | view_state.rs::rename_stack_flow_seeds_the_buffer_and_commits_the_rename |

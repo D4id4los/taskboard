@@ -88,7 +88,9 @@ enum EC {
 
 fn kind_of(flow: &Flow) -> FK {
     match flow {
-        Flow::None => FK::None,
+        // The armed-delete strip (UX R-2 D-2): the modals' row — its
+        // kept intents own the confirm, settle is the disarm.
+        Flow::ConfirmDelete(_) | Flow::None => FK::None,
         // The child levels (chunk 3's ports): no kept intents of
         // their own; settle is the Cancelled end.
         Flow::EntryDatePicker | Flow::WalkFilePick { .. } | Flow::WalkDatePick => FK::Child,
@@ -341,7 +343,8 @@ use FK::TrackForm as KTrackForm;
 use FK::TrackList as KTrackList;
 use Post::Kind as K;
 
-use Post::None as N;
+use FK::None as KNone;
+use Post::None as N; // the armed-delete strip's kind (UX R-2 D-2)
 
 /// The class-level default matrix (audit §6): every `(FK, EC)` cell
 /// has exactly one row.
@@ -643,11 +646,11 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
     row(FK::Child, E::BeginCreate, exp(Z, K(KTxt)));
     row(FK::Child, E::BeginCreateStack, exp(Z, K(KTxt)));
     row(FK::Child, E::RequestMove, exp(Z, K(KMove)));
-    row(FK::Child, E::StackDelete, exp(NZ, N));
+    row(FK::Child, E::StackDelete, exp(Z, K(KNone)));
     row(FK::Child, E::StackRename, exp(Z, K(KTxt)));
     row(FK::Child, E::StackMove, exp(Z, K(KMove)));
     row(FK::Child, E::BoardCreate, exp(Z, K(KTxt)));
-    row(FK::Child, E::BoardDelete, exp(NZ, N));
+    row(FK::Child, E::BoardDelete, exp(Z, K(KNone)));
     row(FK::Child, E::BoardRename, exp(Z, K(KTxt)));
     row(FK::Child, E::BeginTitleEdit, exp(Z, K(KTxt)));
     row(FK::Child, E::TrackEntriesOpen, exp(Z, K(KTrackList)));
@@ -663,15 +666,17 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
     // -- LIFECYCLE under every foreign kind: the settle-then-run
     //    re-run's outcome is effect-shaped (a rename arms a fresh
     //    text flow, a delete dispatches with no flow) --
-    row(FK::Text, E::StackDelete, exp(NZ, N));
-    row(FK::Text, E::BoardDelete, exp(NZ, N));
+    // The deletes under a text flow: the settle commits the
+    // non-empty buffer, the re-run arms the strip (UX R-2 D-2).
+    row(FK::Text, E::StackDelete, exp(NZ, K(KNone)));
+    row(FK::Text, E::BoardDelete, exp(NZ, K(KNone)));
     row(FK::Text, E::StackRename, exp(NZ, K(KTxt)));
     row(FK::Text, E::BoardRename, exp(NZ, K(KTxt)));
     row(FK::Text, E::BoardCreate, exp(NZ, K(KTxt)));
     row(FK::Text, E::StackMove, exp(NZ, K(KMove)));
     for kind in [FK::Due, FK::Move, FK::Drag, FK::Palette, FK::Capture] {
-        row(kind, E::StackDelete, exp(NZ, N));
-        row(kind, E::BoardDelete, exp(NZ, N));
+        row(kind, E::StackDelete, exp(Z, K(KNone)));
+        row(kind, E::BoardDelete, exp(Z, K(KNone)));
         row(kind, E::StackRename, exp(Z, K(KTxt)));
         row(kind, E::BoardRename, exp(Z, K(KTxt)));
         row(kind, E::BoardCreate, exp(Z, K(KTxt)));
@@ -707,8 +712,8 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
     row(FK::FocusOverlay, E::BeginCreateStack, exp(Z, K(KTxt)));
     row(FK::FocusOverlay, E::RequestMove, exp(Z, K(KMove)));
     row(FK::FocusOverlay, E::BeginTitleEdit, exp(Z, K(KTxt)));
-    row(FK::FocusOverlay, E::StackDelete, exp(NZ, N));
-    row(FK::FocusOverlay, E::BoardDelete, exp(NZ, N));
+    row(FK::FocusOverlay, E::StackDelete, exp(Z, K(KNone)));
+    row(FK::FocusOverlay, E::BoardDelete, exp(Z, K(KNone)));
     row(FK::FocusOverlay, E::StackRename, exp(Z, K(KTxt)));
     row(FK::FocusOverlay, E::BoardRename, exp(Z, K(KTxt)));
     row(FK::FocusOverlay, E::BoardCreate, exp(Z, K(KTxt)));
@@ -726,8 +731,10 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
     row(FK::None, E::BoardRename, exp(Z, K(KTxt)));
     row(FK::None, E::BoardCreate, exp(Z, K(KTxt)));
     row(FK::None, E::StackMove, exp(Z, K(KMove)));
-    row(FK::None, E::StackDelete, exp(NZ, N));
-    row(FK::None, E::BoardDelete, exp(NZ, N));
+    // The delete verbs arm the confirm strip (UX R-2 D-2): nothing
+    // dispatches, the armed flow holds (the kind-None family).
+    row(FK::None, E::StackDelete, exp(Z, K(KNone)));
+    row(FK::None, E::BoardDelete, exp(Z, K(KNone)));
     // -- TEXT rows --
     row(FK::Text, E::Activate, exp(NZ, N)); // kept commit (non-empty)
     row(FK::Text, E::SetModeNormal, exp(Z, N)); // kept discard
@@ -827,8 +834,8 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
         row(kind, E::BeginCreateStack, exp(Z, K(KTxt)));
         row(kind, E::RequestMove, exp(Z, K(KMove)));
         row(kind, E::BeginTitleEdit, exp(Z, K(KTxt)));
-        row(kind, E::StackDelete, exp(NZ, N));
-        row(kind, E::BoardDelete, exp(NZ, N));
+        row(kind, E::StackDelete, exp(Z, K(KNone)));
+        row(kind, E::BoardDelete, exp(Z, K(KNone)));
         row(kind, E::StackRename, exp(Z, K(KTxt)));
         row(kind, E::BoardRename, exp(Z, K(KTxt)));
         row(kind, E::BoardCreate, exp(Z, K(KTxt)));
@@ -842,8 +849,8 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
     row(FK::PlanForm, E::BeginCreateStack, exp(Z, K(KTxt)));
     row(FK::PlanForm, E::RequestMove, exp(Z, K(KMove)));
     row(FK::PlanForm, E::BeginTitleEdit, exp(Z, K(KTxt)));
-    row(FK::PlanForm, E::StackDelete, exp(NZ, N));
-    row(FK::PlanForm, E::BoardDelete, exp(NZ, N));
+    row(FK::PlanForm, E::StackDelete, exp(Z, K(KNone)));
+    row(FK::PlanForm, E::BoardDelete, exp(Z, K(KNone)));
     row(FK::PlanForm, E::StackRename, exp(Z, K(KTxt)));
     row(FK::PlanForm, E::BoardRename, exp(Z, K(KTxt)));
     row(FK::PlanForm, E::BoardCreate, exp(Z, K(KTxt)));
@@ -856,8 +863,8 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
     row(FK::RecurEditor, E::BeginCreateStack, exp(Z, K(KTxt)));
     row(FK::RecurEditor, E::RequestMove, exp(Z, K(KMove)));
     row(FK::RecurEditor, E::BeginTitleEdit, exp(Z, K(KTxt)));
-    row(FK::RecurEditor, E::StackDelete, exp(NZ, N));
-    row(FK::RecurEditor, E::BoardDelete, exp(NZ, N));
+    row(FK::RecurEditor, E::StackDelete, exp(Z, K(KNone)));
+    row(FK::RecurEditor, E::BoardDelete, exp(Z, K(KNone)));
     row(FK::RecurEditor, E::StackRename, exp(Z, K(KTxt)));
     row(FK::RecurEditor, E::BoardRename, exp(Z, K(KTxt)));
     row(FK::RecurEditor, E::BoardCreate, exp(Z, K(KTxt)));
@@ -871,8 +878,8 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
     row(FK::ReviewWalk, E::BeginCreateStack, exp(Z, K(KTxt)));
     row(FK::ReviewWalk, E::RequestMove, exp(Z, K(KMove)));
     row(FK::ReviewWalk, E::BeginTitleEdit, exp(Z, K(KTxt)));
-    row(FK::ReviewWalk, E::StackDelete, exp(NZ, N));
-    row(FK::ReviewWalk, E::BoardDelete, exp(NZ, N));
+    row(FK::ReviewWalk, E::StackDelete, exp(Z, K(KNone)));
+    row(FK::ReviewWalk, E::BoardDelete, exp(Z, K(KNone)));
     row(FK::ReviewWalk, E::StackRename, exp(Z, K(KTxt)));
     row(FK::ReviewWalk, E::BoardRename, exp(Z, K(KTxt)));
     row(FK::ReviewWalk, E::BoardCreate, exp(Z, K(KTxt)));
