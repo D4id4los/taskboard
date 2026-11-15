@@ -530,6 +530,25 @@ fn class_table() -> Vec<(FK, EC, Exp)> {
     }
     row(FK::RecurEditor, C::TrackOverlay, exp(Z, N));
     row(FK::None, C::TrackOverlay, exp(Z, N));
+    // The labels overlay's class cells (UX R-3 D-2, #789): the
+    // TrackOverlay family's mirror — the settle is the overlay's own
+    // close everywhere a kept pair cell doesn't own the pair.
+    for kind in [
+        FK::None,
+        FK::Text,
+        FK::Due,
+        FK::Move,
+        FK::Drag,
+        FK::Palette,
+        FK::Capture,
+        FK::FocusOverlay,
+        FK::PlanForm,
+        FK::ReviewWalk,
+        FK::RecurEditor,
+    ] {
+        row(kind, C::LabelsOverlay, exp(Z, N));
+    }
+    row(FK::Child, C::LabelsOverlay, exp(Z, K(KChild)));
     // CHILD LEVELS (chunk 3's ports): the settle is the Cancelled end
     // (the modals' terminator rule); everything else bubbles outward —
     // at the fixture's depth 1 the overlay-open classes replace the
@@ -594,7 +613,6 @@ fn class_table() -> Vec<(FK, EC, Exp)> {
         FK::Palette,
         FK::Capture,
         FK::FocusOverlay,
-        FK::LabelOverlay,
     ] {
         row(kind, C::TrackOverlay, exp(Z, N));
     }
@@ -1622,18 +1640,18 @@ fn entry_states_grey_the_enumerated_rows_per_state() {
 #[test]
 fn the_matrix_covers_every_class_cell() {
     let cells = class_table();
-    assert_eq!(
-        cells.len(),
-        14 * 15,
-        "one row per (FlowKind, EffectClass) cell"
-    );
     let mut seen = std::collections::BTreeSet::new();
-    for (kind, class, _) in cells {
+    for (kind, class, _) in &cells {
         assert!(
-            seen.insert((kind, class)),
+            seen.insert((*kind, *class)),
             "duplicate row ({kind:?}, {class:?})"
         );
     }
+    assert_eq!(
+        cells.len(),
+        15 * 16,
+        "one row per (FlowKind, EffectClass) cell"
+    );
 }
 
 // -- the R2 drop-miss journeys (F8) --------------------------------------
@@ -4635,4 +4653,150 @@ fn label_manage_routes_the_open_intent() {
         ActionRouter::dispatch(ActionId::LabelOverlayDismiss, &ctx),
         DispatchOutcome::UiEffect(UiEffect::LabelsDismiss)
     ));
+}
+
+// -- the labels form (UX remediation chunk 3, D-2/D-5/D-9, #789) --
+
+/// The create journey (D-9): the add affordance arms the draft, the
+/// typed title + the armed swatch commit the exact `CreateLabel` —
+/// the subject board's id and the swatch's exact hex (the palette's
+/// vocabulary).
+#[test]
+fn the_label_create_commit_routes_createlabel_with_the_swatch_hex() {
+    on_slint_thread(|| {
+        let (mut state, fx) = fixture();
+        let [a_id, _b, _c] = fx.tasks;
+        let [s0, _s1] = fx.stacks;
+        let board = fx.board;
+        seed_labels(&mut state, board, a_id);
+        let mut rig = rig(state);
+        let adapter = rig.adapter();
+        arm_task_view(&rig, &adapter, a_id, s0);
+        adapter
+            .borrow_mut()
+            .interpret_for_test(rig.handle.window(), UiEffect::LabelsOpen);
+        rig.handle.window().invoke_labels_overlay_add_requested();
+        adapter.borrow_mut().refresh_forced(rig.handle.window());
+        assert!(rig.handle.window().get_label_overlay_form_open());
+        // The empty title is the typed inert: the commit refuses,
+        // dispatches nothing, the form stays open.
+        rig.handle
+            .window()
+            .invoke_labels_overlay_title_edited(SharedString::from("  "));
+        assert!(
+            !rig.handle
+                .window()
+                .invoke_labels_overlay_form_commit_requested()
+        );
+        assert_eq!(rig.drain(), 0);
+        assert!(rig.handle.window().get_label_overlay_form_open());
+        // A swatch pick re-arms the color; the commit lands the hex.
+        rig.handle.window().invoke_labels_overlay_swatch_clicked(2);
+        rig.handle
+            .window()
+            .invoke_labels_overlay_title_edited(SharedString::from("urgent"));
+        assert!(
+            rig.handle
+                .window()
+                .invoke_labels_overlay_form_commit_requested()
+        );
+        adapter.borrow_mut().refresh_forced(rig.handle.window());
+        assert_eq!(
+            rig.drain_commands(),
+            vec![StateCommand::CreateLabel {
+                board,
+                title: "urgent".to_owned(),
+                color: taskboard_domain::Color::new("e05a4e"),
+            }],
+        );
+        assert!(
+            !rig.handle.window().get_label_overlay_form_open(),
+            "the commit closes the form"
+        );
+    });
+}
+
+/// The edit journey's sparse mask (D-2/D-9): the form seeds from the
+/// row, and the commit sets only the changed slots — an untouched
+/// color stays `None` in the `LabelChanges`; a no-op edit closes
+/// without dispatching.
+#[test]
+fn the_label_edit_commit_routes_the_sparse_update() {
+    on_slint_thread(|| {
+        let (mut state, fx) = fixture();
+        let [a_id, _b, _c] = fx.tasks;
+        let [s0, _s1] = fx.stacks;
+        let (green, _red) = seed_labels(&mut state, fx.board, a_id);
+        let mut rig = rig(state);
+        let adapter = rig.adapter();
+        arm_task_view(&rig, &adapter, a_id, s0);
+        adapter
+            .borrow_mut()
+            .interpret_for_test(rig.handle.window(), UiEffect::LabelsOpen);
+        // The edit arms seeded from the row.
+        rig.handle.window().invoke_labels_overlay_edit_requested(0);
+        adapter.borrow_mut().refresh_forced(rig.handle.window());
+        assert_eq!(
+            rig.handle.window().get_label_overlay_form_title(),
+            "green",
+            "the seed rides the pushed title"
+        );
+        // The no-op edit: commit closes the form, dispatches nothing.
+        assert!(
+            rig.handle
+                .window()
+                .invoke_labels_overlay_form_commit_requested()
+        );
+        assert_eq!(rig.drain(), 0);
+        assert!(!rig.handle.window().get_label_overlay_form_open());
+        // The title-only edit: the color slot stays `None`.
+        rig.handle.window().invoke_labels_overlay_edit_requested(0);
+        adapter.borrow_mut().refresh_forced(rig.handle.window());
+        rig.handle
+            .window()
+            .invoke_labels_overlay_title_edited(SharedString::from("verde"));
+        assert!(
+            rig.handle
+                .window()
+                .invoke_labels_overlay_form_commit_requested()
+        );
+        assert_eq!(
+            rig.drain_commands(),
+            vec![StateCommand::UpdateLabel {
+                id: green,
+                changes: taskboard_domain::LabelChanges {
+                    title: Some("verde".to_owned()),
+                    color: None,
+                },
+            }],
+        );
+    });
+}
+
+/// The cancel discards the draft without dispatching (D-9); the
+/// overlay stays open.
+#[test]
+fn the_label_form_cancel_discards_without_dispatching() {
+    on_slint_thread(|| {
+        let (mut state, fx) = fixture();
+        let [a_id, _b, _c] = fx.tasks;
+        let [s0, _s1] = fx.stacks;
+        seed_labels(&mut state, fx.board, a_id);
+        let mut rig = rig(state);
+        let adapter = rig.adapter();
+        arm_task_view(&rig, &adapter, a_id, s0);
+        adapter
+            .borrow_mut()
+            .interpret_for_test(rig.handle.window(), UiEffect::LabelsOpen);
+        rig.handle.window().invoke_labels_overlay_add_requested();
+        adapter.borrow_mut().refresh_forced(rig.handle.window());
+        rig.handle.window().invoke_labels_overlay_form_cancelled();
+        adapter.borrow_mut().refresh_forced(rig.handle.window());
+        assert_eq!(rig.drain(), 0);
+        assert!(!rig.handle.window().get_label_overlay_form_open());
+        assert!(
+            matches!(adapter.borrow().view_state.flow(), Flow::Labels { .. }),
+            "the overlay stays open"
+        );
+    });
 }

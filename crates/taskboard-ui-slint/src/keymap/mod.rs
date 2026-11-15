@@ -953,6 +953,7 @@ mod tests {
                     ContextId::Palette,
                     ContextId::FocusMode,
                     ContextId::TrackEntries,
+                    ContextId::Labels,
                     ContextId::ReviewWalk,
                     ContextId::RecurEditor,
                 ],

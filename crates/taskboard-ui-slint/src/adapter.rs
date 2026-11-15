@@ -89,6 +89,16 @@ enum Resolve {
     Inert,
 }
 
+/// The labels overlay's in-place form draft (UX R-3 D-2/D-5, #789):
+/// the addressed label (`None` = create), the typed title, and the
+/// swatch's exact hex (the palette's vocabulary — never free text).
+#[derive(Debug, Clone)]
+pub(crate) struct LabelFormState {
+    pub seed: Option<taskboard_domain::LabelId>,
+    pub title: String,
+    pub color: String,
+}
+
 /// The status bar's transient notice line (#130): presentation text
 /// plus expiry. Never blocking — a passive line wherever the status
 /// bar renders.
@@ -309,6 +319,12 @@ pub(crate) struct Adapter {
     /// the-flow rule).
     recur_pause_open: bool,
     recur_confirm_armed: bool,
+    /// The labels overlay's in-place form (UX R-3 D-2/D-5, #789):
+    /// the create (`seed: None`) / edit (`Some`) draft — the adapter
+    /// owns it across refreshes (the due buffers' pattern); cleared
+    /// on every pass where the overlay flow is gone (the
+    /// buffers-never-outlive rule).
+    label_form: Option<LabelFormState>,
     /// The priority pickers' adapter-owned flag (UX R-3 D-1, #788):
     /// which detail row's quick-list holds — one at a time; cleared
     /// on Escape/outside click, on any leaving settle, and when the
@@ -1585,9 +1601,25 @@ impl Adapter {
         if self.view_state.subject_task().is_none() {
             self.priority_open = None;
         }
+        // The labels form dies with its overlay (the same rule): any
+        // pass that reads a non-Labels flow clears the draft.
+        if !matches!(
+            self.view_state.flow(),
+            crate::view_state::Flow::Labels { .. }
+        ) {
+            self.label_form = None;
+        }
         let priority = crate::models::PriorityPickerPush {
             open: self.priority_open,
         };
+        let label_form = self
+            .label_form
+            .as_ref()
+            .map(|form| crate::models::LabelFormPush {
+                open: true,
+                title: form.title.clone(),
+                color: form.color.clone(),
+            });
         self.tables = crate::models::push(
             window,
             &state,
@@ -1603,6 +1635,7 @@ impl Adapter {
             &due,
             recur,
             priority,
+            label_form.as_ref(),
         );
         // Round-3 D27c: engine syncs re-grey a live menu — the pages
         // rebuild from the fresh state while the menu holds (the
@@ -7137,6 +7170,7 @@ pub(crate) fn install(
         recur_pause_open: false,
         recur_confirm_armed: false,
         priority_open: None,
+        label_form: None,
         walk_resume: None,
         habit_convert_armed: None,
         habit_create_open: false,
@@ -9136,6 +9170,132 @@ fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
             tracing::warn!("label toggle dropped: command channel full or closed");
         }
         a.finish_mutation(&window);
+
+    });
+    // The labels form's seams (UX R-3 D-2/D-5, #789): the row verbs
+    // arm the in-place draft (the adapter owns it — the due buffers'
+    // pattern), the commit funnels through the one sparse-mask
+    // assembly (the changed slots only — the LabelChanges
+    // discipline; a no-op edit closes without dispatching), and an
+    // empty title is the typed inert (the form stays open — the
+    // entries commit's absorbed-miss convention).
+    install_seam!(window: window.on_labels_overlay_add_requested, adapter: adapter;
+    bind mut (a, window), args (), {        if !matches!(a.view_state.flow(), crate::view_state::Flow::Labels { .. }) {
+            return;
+        }
+        a.label_form = Some(LabelFormState {
+            seed: None,
+            title: String::new(),
+            color: crate::presentation::LABEL_SWATCHES[0].to_owned(),
+        });
+        a.refresh_forced(&window);
+
+    });
+    install_seam!(window: window.on_labels_overlay_edit_requested, adapter: adapter;
+    bind mut (a, window), args (index), {        if !matches!(a.view_state.flow(), crate::view_state::Flow::Labels { .. }) {
+            return;
+        }
+        let Some(label) = a
+            .tables
+            .label_ids
+            .get(usize::try_from(index).unwrap_or(usize::MAX))
+            .copied()
+        else {
+            return; // a stale index against an older tables pass
+        };
+        let state = a.state.load_full();
+        let Some(label) = state.labels.get(&label) else {
+            return; // the roster pass's label died mid-interaction
+        };
+        a.label_form = Some(LabelFormState {
+            seed: Some(label.id),
+            title: label.title.clone(),
+            color: label.color.as_str().to_owned(),
+        });
+        drop(state);
+        a.refresh_forced(&window);
+
+    });
+    install_seam!(window: window.on_labels_overlay_title_edited, adapter: adapter; [bare_mut]
+    bind mut (a), args (text), {        if let Some(form) = a.label_form.as_mut() {
+            form.title = text.to_string();
+        }
+
+    });
+    install_seam!(window: window.on_labels_overlay_swatch_clicked, adapter: adapter;
+    bind mut (a, window), args (index), {        let Some(swatch) =
+            crate::presentation::LABEL_SWATCHES.get(usize::try_from(index).unwrap_or(usize::MAX))
+        else {
+            return; // a stale palette index
+        };
+        if let Some(form) = a.label_form.as_mut() {
+            form.color = swatch.to_string();
+            a.refresh_forced(&window);
+        }
+
+    });
+    install_seam!(window: window.on_labels_overlay_form_commit_requested, adapter: adapter; [else ( false)]
+    bind mut (a, window), args (), {        let Some(form) = a.label_form.clone() else {
+            return false; // a stale commit against a disarmed form
+        };
+        let title = form.title.trim().to_owned();
+        if title.is_empty() {
+            return false; // the typed inert — the form stays open
+        }
+        let Some(task) = a.view_state.subject_task() else {
+            return false;
+        };
+        let state = a.state.load_full();
+        let Some(task) = state.tasks.get(&task) else {
+            return false;
+        };
+        // Labels are board-scoped: the create board IS the subject's
+        // board (D-2 — the overlay's roster is the board's live set).
+        let Some(board) = state.stacks.get(&task.stack).map(|stack| stack.board) else {
+            return false;
+        };
+        let command = match form.seed {
+            None => StateCommand::CreateLabel {
+                board,
+                title: title.clone(),
+                color: taskboard_domain::Color::new(form.color.clone()),
+            },
+            Some(id) => {
+                let Some(label) = state.labels.get(&id) else {
+                    return false; // the seeded label died mid-edit
+                };
+                // The sparse-mask discipline (D-2): only the changed
+                // slots set; a no-op edit closes without dispatching.
+                let title_change = (label.title != title).then(|| title.clone());
+                let color_change = (label.color.as_str() != form.color)
+                    .then(|| taskboard_domain::Color::new(form.color.clone()));
+                if title_change.is_none() && color_change.is_none() {
+                    a.label_form = None;
+                    a.refresh_forced(&window);
+                    return true;
+                }
+                StateCommand::UpdateLabel {
+                    id,
+                    changes: taskboard_domain::LabelChanges {
+                        title: title_change,
+                        color: color_change,
+                    },
+                }
+            }
+        };
+        a.label_form = None;
+        if a.commands.try_send(command).is_err() {
+            tracing::warn!("label form commit dropped: command channel full or closed");
+            return false;
+        }
+        a.finish_mutation(&window);
+        true
+
+    });
+    install_seam!(window: window.on_labels_overlay_form_cancelled, adapter: adapter;
+    bind mut (a, window), args (), {        if a.label_form.take().is_some() {
+            a.refresh_forced(&window);
+        }
 
     });
     install_seam!(window: window.on_priority_dismiss_requested, adapter: adapter;

@@ -9,9 +9,10 @@
 // (the `Labels` context's rows); the panel is one FocusScope root
 // (blanket rule b). Every dispatch is a callback (§5.1).
 
-import { Theme, Typography, RoleText, Tone } from "../theme.slint";
+import { Theme, Typography, RoleText, Tone, Semantic } from "../theme.slint";
 import { IconButton, IconKind } from "../widgets/icon-button.slint";
 import { TooltipState } from "../widgets/tooltip.slint";
+import { TextField } from "../widgets/text-field.slint";
 
 // One roster row: display parts plus the subject's assignment state
 // (D-2 — ids stay in the adapter's tables; the toggle routes the
@@ -25,11 +26,32 @@ export struct LabelRowModel {
 
 export component LabelsPanel inherits Rectangle {
     in property <[LabelRowModel]> rows;
+    // The form surface's pushed halves (UX R-3 D-2): the create
+    // (`form-open` over the roster) / edit form — the seeded title
+    // (the field reads it on mount), the fixed swatch palette, and
+    // the armed swatch's index. The buffer stays user-owned while
+    // the form lives; the push never re-seeds a typed title (the
+    // due-editor's rule).
+    in property <bool> form-open: false;
+    in property <string> form-title: "";
+    in property <[color]> swatches;
+    in property <int> swatch-selected: -1;
 
     // The intents (§5.1): no inline side effects — the id
     // resolution and the pair dispatch live in the adapter.
     callback row-toggled(int);
     callback dismiss-requested();
+    // The form's intents (D-2): the row verbs are pointer-grade —
+    // the add/edit arms the form, the swatch click arms its color,
+    // and the commit funnel returns `false` for the typed inert
+    // (an empty title keeps the form open — the entries commit's
+    // absorbed-miss convention).
+    callback add-requested();
+    callback edit-requested(int);
+    callback title-edited(string);
+    callback swatch-clicked(int);
+    callback form-commit-requested() -> bool;
+    callback form-cancelled();
 
     background: Theme.surface-raised;
     border-radius: Theme.radius-small;
@@ -61,6 +83,16 @@ export component LabelsPanel inherits Rectangle {
                     vertical-alignment: center;
                     horizontal-stretch: 1;
                 }
+                if (!root.form-open): IconButton {
+                    icon: IconKind.plus;
+                    tone: Tone.neutral;
+                    label: "New label";
+                    description: "Opens the create form: a title and a swatch.";
+                    clicked => {
+                        TooltipState.unhover();
+                        root.add-requested();
+                    }
+                }
                 IconButton {
                     icon: IconKind.remove;
                     tone: Tone.neutral;
@@ -73,7 +105,64 @@ export component LabelsPanel inherits Rectangle {
                 }
             }
 
-            list := VerticalLayout {
+            // The form surface (UX R-3 D-2/D-5): the create / edit
+            // draft replaces the roster in-place — a title field and
+            // the fixed swatch row (the selection pre-marked), the
+            // commit on the field's Return or the check button.
+            if (root.form-open): VerticalLayout {
+                spacing: Theme.space-2;
+                TextField {
+                    placeholder: "Label title";
+                    label: "Label title";
+                    description: "The label's name as it renders on chips.";
+                    commit-affordance: true;
+                    initial-text: root.form-title;
+                    accepted(text) => {
+                        root.title-edited(text);
+                        root.form-commit-requested();
+                    }
+                    edited(text) => root.title-edited(text);
+                }
+                HorizontalLayout {
+                    spacing: Theme.space-2;
+                    for swatch[index] in root.swatches: Rectangle {
+                        width: Theme.space-4;
+                        height: Theme.space-4;
+                        border-radius: Theme.radius-small;
+                        background: swatch;
+                        border-width: root.swatch-selected == index
+                            ? Theme.focus-ring-width : 0;
+                        border-color: Semantic.focus-ring;
+                        swatch-touch := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            clicked => root.swatch-clicked(index);
+                        }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    IconButton {
+                        icon: IconKind.check;
+                        tone: Tone.success;
+                        label: "Save label";
+                        description: "Commits the label form.";
+                        clicked => {
+                            TooltipState.unhover();
+                            root.form-commit-requested();
+                        }
+                    }
+                    IconButton {
+                        icon: IconKind.remove;
+                        tone: Tone.neutral;
+                        label: "Discard label form";
+                        description: "Discards the draft without committing.";
+                        clicked => {
+                            TooltipState.unhover();
+                            root.form-cancelled();
+                        }
+                    }
+                }
+            }
+
+            if (!root.form-open): list := VerticalLayout {
                 spacing: Theme.space-1;
                 for row[index] in root.rows: Rectangle {
                     height: Theme.space-5;
@@ -98,6 +187,20 @@ export component LabelsPanel inherits Rectangle {
                             vertical-alignment: center;
                             horizontal-stretch: 1;
                             overflow: elide;
+                        }
+                        // The edit affordance (D-2): arms the inline
+                        // form seeded from the row (the pointer-grade
+                        // row verb — no ActionId, the plan D-2's
+                        // grammar).
+                        if (!root.form-open): IconButton {
+                            icon: IconKind.pencil;
+                            tone: Tone.neutral;
+                            label: "Edit label " + row.title;
+                            description: "Opens the edit form seeded from this label.";
+                            clicked => {
+                                TooltipState.unhover();
+                                root.edit-requested(index);
+                            }
                         }
                         // The assignment toggle (D-2): the chip ×'s
                         // twin — the row's pushed state names the
