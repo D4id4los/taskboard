@@ -19,7 +19,7 @@ import { FocusOverlay, FocusRowModel } from "compositions/focus-overlay.slint";
 import { Toolbar } from "compositions/toolbar.slint";
 import { StatusBar, SyncBadgeModel, BannerRowModel, FlowHintModel, FilesSyncChipState } from "compositions/status-bar.slint";
 import { NotificationSurface, NotificationRowModel } from "compositions/notification-surface.slint";
-import { TimerRowModel } from "compositions/timers.slint";
+import { TimerRowModel, BreakRuleRowModel } from "compositions/timers.slint";
 import { TimerSetter } from "compositions/timer-setter.slint";
 import { TrackEntriesPanel, TrackEntryRowModel } from "compositions/track-entries.slint";
 import { LabelsPanel, LabelRowModel } from "compositions/labels-overlay.slint";
@@ -35,6 +35,7 @@ import { PlanNextDayView, PlanModel } from "views/plan-next-day-view.slint";
 import { TaskView, TaskDetailModel } from "views/task-view.slint";
 import { ReviewView, ReviewModel } from "views/review-view.slint";
 export { ReviewModel }
+export { TimerRowModel, BreakRuleRowModel }
 import { DueDayModel } from "compositions/date-picker.slint";
 import { DatePicker } from "compositions/date-picker.slint";
 export { DueDayModel }
@@ -253,6 +254,19 @@ export component AppWindow inherits Window {
     // muted-caption display flag (display state only, never a command).
     in-out property <bool> timers-absence-hint: false;
     in-out property <[TimerRowModel]> timers-model;
+    // The break-rule subsection (T-14, #797): the roster rows, the
+    // create form's state, and the staged remove's seams — the
+    // timers surface's declarations, forwarded to the today view.
+    in-out property <[BreakRuleRowModel]> break-rules-model;
+    in-out property <bool> break-create-open: false;
+    in-out property <FieldValidity> break-threshold-validity: FieldValidity.neutral;
+    in-out property <string> break-threshold-error-hint: "";
+    pure callback timers-break-create-toggled();
+    pure callback timers-break-create-accepted(string, string, bool) -> bool;
+    pure callback timers-break-threshold-edited(string);
+    pure callback timers-break-remove-clicked(int);
+    pure callback timers-break-remove-confirmed(int);
+    pure callback timers-break-remove-cancelled();
     // The habits section (DR-6/6): the active board's tracker rows —
     // rendering is not kiosk-gated, the affordances are.
     in-out property <[HabitRowModel]> habits-model;
@@ -477,6 +491,18 @@ export component AppWindow inherits Window {
                 timer-when-error-hint: root.timer-when-error-hint;
                 timers-when-edited(t) => root.timers-when-edited(t);
                 timers-setter-opened() => root.timers-setter-opened();
+                break-rules: root.break-rules-model;
+                break-create-open: root.break-create-open;
+                break-threshold-validity: root.break-threshold-validity;
+                break-threshold-error-hint: root.break-threshold-error-hint;
+                timers-break-create-toggled() => root.timers-break-create-toggled();
+                timers-break-create-accepted(label, threshold, alarm) => {
+                    root.timers-break-create-accepted(label, threshold, alarm)
+                }
+                timers-break-threshold-edited(t) => root.timers-break-threshold-edited(t);
+                timers-break-remove-clicked(r) => root.timers-break-remove-clicked(r);
+                timers-break-remove-confirmed(r) => root.timers-break-remove-confirmed(r);
+                timers-break-remove-cancelled() => root.timers-break-remove-cancelled();
                 habits: root.habits-model;
                 habits-editing-enabled: root.habits-editing-enabled;
                 habits-plus-clicked(r) => root.habits-plus-clicked(r);

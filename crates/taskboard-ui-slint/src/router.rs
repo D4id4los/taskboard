@@ -461,6 +461,21 @@ pub struct HabitCreateDraft {
     pub target: taskboard_domain::HabitTarget,
 }
 
+/// The break-rule form's commit payload (T-14, #797): the trust
+/// boundary's minted triple — the roaming board (resolved fresh at
+/// commit from the section's host scope, never cached at arm), the
+/// trimmed label, and the threshold through the `WorkThreshold` mint
+/// (zero/negative unrepresentable).
+#[derive(Debug, Clone, PartialEq)]
+pub struct BreakRuleDraft {
+    pub board: taskboard_domain::BoardId,
+    pub label: String,
+    pub threshold: taskboard_domain::WorkThreshold,
+    /// The escalation rung (the timer form's convention): the GUI's
+    /// insistence picker projects the two-rung enum's alarm bit.
+    pub insistence: taskboard_domain::Insistence,
+}
+
 /// The focused-entity seam (D16): chunk 2's shell has no views, so
 /// real sessions carry `None`s (keyboard task verbs resolve to
 /// [`DispatchOutcome::NoTarget`]); chunk 3's focus architecture sets
@@ -504,6 +519,15 @@ pub struct DispatchCtx {
     /// a cancel affordance activates (section row or awaiting row);
     /// `timer.cancel` routes from it (`NoTarget` without one).
     pub timer_target: Option<AdhocAlarmId>,
+    /// The break-rule form's parsed draft (T-14, #797): set by the
+    /// adapter when the form commits; `breakrule.create` routes from
+    /// it (`NoTarget` without one).
+    pub break_rule_draft: Option<BreakRuleDraft>,
+    /// The armed break-rule row's one-shot target (T-14, #797): the
+    /// arm and confirm seams resolve it through the roster's id
+    /// table; `breakrule.remove`/`-confirm` route from it (`NoTarget`
+    /// without one).
+    pub break_rule_target: Option<taskboard_domain::BreakRuleId>,
     /// The entries form's parsed draft (r4 chunk 10, D-TS6): filled at
     /// the adapter's commit seam only when the live validity table
     /// passes; `task.track-entry-log`/`-adjust` route from it
@@ -734,6 +758,32 @@ impl ActionRouter {
             },
             ActionId::TimerCancel => match ctx.timer_target {
                 Some(alarm) => DispatchOutcome::Command(StateCommand::CancelAdhocAlarm { alarm }),
+                None => DispatchOutcome::NoTarget,
+            },
+            // The break-rule verbs (T-14, #797): the timers verbs'
+            // one-shot target pattern — concrete drafts/targets only.
+            // The remove verb is the arm step (the armed-confirm
+            // grammar): the adapter records the armed subject before
+            // routing; the router arm itself dispatches nothing (the
+            // staging lives adapter-side, arming touches no engine
+            // state). Only the confirm routes `DeleteBreakRule`.
+            ActionId::BreakRuleCreate => match &ctx.break_rule_draft {
+                Some(BreakRuleDraft {
+                    board,
+                    label,
+                    threshold,
+                    insistence,
+                }) => DispatchOutcome::Command(StateCommand::CreateBreakRule {
+                    board: Some(*board),
+                    label: label.clone(),
+                    threshold: *threshold,
+                    insistence: *insistence,
+                }),
+                None => DispatchOutcome::NoTarget,
+            },
+            ActionId::BreakRuleRemove => DispatchOutcome::NoTarget,
+            ActionId::BreakRuleRemoveConfirm => match ctx.break_rule_target {
+                Some(rule) => DispatchOutcome::Command(StateCommand::DeleteBreakRule { id: rule }),
                 None => DispatchOutcome::NoTarget,
             },
             // The habit verbs (DR-6/6, D-P13): +1 from the row target;
@@ -1154,6 +1204,8 @@ mod tests {
             track_entry_draft: None,
             track_entry_target: None,
             timer_target: None,
+            break_rule_draft: None,
+            break_rule_target: None,
             track_target: None,
             habit_target: None,
             habit_undo: None,
@@ -1225,6 +1277,52 @@ mod tests {
         assert_eq!(
             ActionRouter::dispatch(ActionId::TimerCancel, &ctx),
             DispatchOutcome::Command(StateCommand::CancelAdhocAlarm { alarm })
+        );
+    }
+
+    /// T-14 (#797) — the break-rule verbs route exact typed commands
+    /// from their one-shot targets: the create from the parsed draft
+    /// (board included), the confirm from the armed target, the arm
+    /// step never dispatching (staging lives adapter-side).
+    #[test]
+    fn break_rule_verbs_route_from_their_targets() {
+        let mut ctx = ctx(false);
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::BreakRuleCreate, &ctx),
+            DispatchOutcome::NoTarget
+        );
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::BreakRuleRemove, &ctx),
+            DispatchOutcome::NoTarget,
+            "the arm step is adapter-side staging — it dispatches nothing"
+        );
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::BreakRuleRemoveConfirm, &ctx),
+            DispatchOutcome::NoTarget
+        );
+        let board = taskboard_domain::BoardId::from_uuid(Uuid::now_v7());
+        let threshold = taskboard_domain::WorkThreshold::try_new(chrono::TimeDelta::minutes(90))
+            .expect("threshold");
+        ctx.break_rule_draft = Some(BreakRuleDraft {
+            board,
+            label: "tea".to_owned(),
+            threshold,
+            insistence: taskboard_domain::Insistence::Alarm,
+        });
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::BreakRuleCreate, &ctx),
+            DispatchOutcome::Command(StateCommand::CreateBreakRule {
+                board: Some(board),
+                label: "tea".to_owned(),
+                threshold,
+                insistence: taskboard_domain::Insistence::Alarm,
+            })
+        );
+        let rule = taskboard_domain::BreakRuleId::from_uuid(Uuid::now_v7());
+        ctx.break_rule_target = Some(rule);
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::BreakRuleRemoveConfirm, &ctx),
+            DispatchOutcome::Command(StateCommand::DeleteBreakRule { id: rule })
         );
     }
 

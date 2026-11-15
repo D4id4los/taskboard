@@ -19,7 +19,7 @@ import { ListView } from "../widgets/listview.slint";
 import { ScrollPageHint } from "../scroll-page.slint";
 import { TaskCard, TaskCardModel } from "../widgets/task-card.slint";
 import { EmptyState } from "../widgets/empty-state.slint";
-import { TimersSection, TimerRowModel } from "../compositions/timers.slint";
+import { TimersSection, TimerRowModel, BreakRuleRowModel } from "../compositions/timers.slint";
 import { FieldValidity } from "../widgets/text-field.slint";
 import { HabitsSection, HabitRowModel } from "../compositions/habits.slint";
 import { TrackedTodaySection, TrackedTodayRowModel } from "../compositions/tracked-today.slint";
@@ -94,6 +94,20 @@ export component TodayView inherits FocusScope {
     callback timers-setter-opened();
     in property <FieldValidity> timer-when-validity;
     in property <string> timer-when-error-hint;
+    // The break-rule subsection (T-14, #797): roster rows, the
+    // create form's state, and the staged remove's forwards.
+    in property <[BreakRuleRowModel]> break-rules;
+    in property <bool> break-create-open;
+    callback timers-break-create-toggled();
+    // `false` keeps the form's text (an absorbed parse miss). The
+    // bool is the insistence rung's alarm bit.
+    callback timers-break-create-accepted(string, string, bool) -> bool;
+    callback timers-break-threshold-edited(string);
+    callback timers-break-remove-clicked(int);
+    callback timers-break-remove-confirmed(int);
+    callback timers-break-remove-cancelled();
+    in property <FieldValidity> break-threshold-validity;
+    in property <string> break-threshold-error-hint;
     // The habits section (DR-6/6, §4.6): after the timers block,
     // above the task sections (D-P18). Renders whenever the active
     // board has live habits — on kiosk too (passive progress
@@ -184,6 +198,20 @@ export component TodayView inherits FocusScope {
                     setter-opened() => root.timers-setter-opened();
                     when-validity: root.timer-when-validity;
                     when-error-hint: root.timer-when-error-hint;
+                    // The break-rule subsection (T-14, #797): the
+                    // roster, the staged remove, and the create form.
+                    break-rules: root.break-rules;
+                    break-create-open: root.break-create-open;
+                    break-create-toggled() => root.timers-break-create-toggled();
+                    break-create-accepted(label, threshold, alarm) => {
+                        root.timers-break-create-accepted(label, threshold, alarm)
+                    }
+                    break-threshold-edited(t) => root.timers-break-threshold-edited(t);
+                    break-remove-clicked(r) => root.timers-break-remove-clicked(r);
+                    break-remove-confirmed(r) => root.timers-break-remove-confirmed(r);
+                    break-remove-cancelled() => root.timers-break-remove-cancelled();
+                    break-threshold-validity: root.break-threshold-validity;
+                    break-threshold-error-hint: root.break-threshold-error-hint;
                 }
                 // The habits section (D-P18): timers, then habits, then
                 // the task sections. Mounts with rows OR while a

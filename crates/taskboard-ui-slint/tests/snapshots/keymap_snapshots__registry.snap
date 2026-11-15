@@ -1,5 +1,6 @@
 ---
 source: crates/taskboard-ui-slint/tests/keymap_snapshots.rs
+assertion_line: 49
 expression: rows
 ---
 - id: app.exit
@@ -599,6 +600,33 @@ expression: rows
   menu_rank: 160
   description: Cancels the selected standalone alarm before or after it fires.
   menu_group: task
+- id: breakrule.create
+  label: Add break rule
+  contexts:
+    - global
+  category: task
+  enabled: true
+  menu_rank: 710
+  description: "Opens the break-rule form: a work threshold that rings when tracked work crosses it."
+  menu_group: ~
+- id: breakrule.remove
+  label: Remove break rule
+  contexts:
+    - global
+  category: task
+  enabled: true
+  menu_rank: 720
+  description: "Arms the roster row's removal: nothing dispatches until confirmed."
+  menu_group: ~
+- id: breakrule.remove-confirm
+  label: Confirm remove break rule
+  contexts:
+    - global
+  category: task
+  enabled: true
+  menu_rank: 730
+  description: Deletes the armed break rule and prunes its recorded firings.
+  menu_group: ~
 - id: task.track-start
   label: Start tracking
   contexts:

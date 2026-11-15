@@ -26,7 +26,7 @@ use crate::presentation::{self, DueKind, DueSets};
 use crate::responsive::Breakpoint;
 use crate::view_state::{DateField, DeleteTarget, Flow, ViewState};
 use crate::{
-    AppWindow, BannerRowModel, BoardBarModel, BoardModel, BoardSegmentModel,
+    AppWindow, BannerRowModel, BoardBarModel, BoardModel, BoardSegmentModel, BreakRuleRowModel,
     Breakpoint as SlintBreakpoint, DecorationKind, DragState, DueDayModel, DueKind as SlintDueKind,
     FilesSyncChipState as SlintFilesSyncChipState, FlowHintModel, HabitRowModel,
     NotificationRowModel, PaletteRowModel, PlanModel, PlanRowModel, ReflectionRowModel,
@@ -87,6 +87,10 @@ pub struct IdTables {
     /// like the notifications table — the cancel seam's resolution
     /// base; empty on kiosk.
     pub timers: Vec<taskboard_domain::AdhocAlarmId>,
+    /// The break-rule roster's rows (T-14, #797): id-indexed in the
+    /// CLI list's canonical `(threshold, id)` order — the staged
+    /// remove seams' resolution base (the index-seam rule).
+    pub break_rules: Vec<taskboard_domain::BreakRuleId>,
     /// The habits section's live habits (DR-6/6): id-indexed in the
     /// stored manual `(order, id)` order — the plus/reorder seams'
     /// resolution base; renders on kiosk too (rows are passive).
@@ -282,6 +286,9 @@ pub struct PushModels {
     /// The timers section's persistent row handle (DR-3/3): the same
     /// diff pattern — stable identity across refreshes.
     timers: MirroredRows<TimerRowModel>,
+    /// The break-rule roster's persistent row handle (T-14, #797):
+    /// the timers handle's twin.
+    break_rules: MirroredRows<BreakRuleRowModel>,
     /// The habits section's persistent row handle (DR-6/6): the same
     /// diff pattern.
     habits: MirroredRows<HabitRowModel>, // generated from compositions/habits.slint
@@ -728,6 +735,8 @@ fn push_timers(
     now: DateTime<Utc>,
     calendar: taskboard_domain::DayCalendar,
     kiosk: bool,
+    board: Option<taskboard_domain::BoardId>,
+    break_rule_armed_index: i32,
     tables: &mut IdTables,
     models: &mut PushModels,
 ) -> usize {
@@ -759,13 +768,40 @@ fn push_timers(
     // honest absence signal — display state only, no command variant.
     window.set_timers_absence_hint(kiosk);
     window.set_timers_awaiting(i32::try_from(awaiting).unwrap_or(i32::MAX));
-    push_rows(
+    let timer_mutations = push_rows(
         &mut models.timers,
         |rc| {
             window.set_timers_model(rc);
         },
         &shown,
-    )
+    );
+    // The break-rule roster (T-14, #797): the active board's rules in
+    // the CLI list's canonical order; the armed index marks the one
+    // staged remove (the label form's armed-index convention). The
+    // kiosk gate rides the section's own (`absence-hint` hides the
+    // whole subsection), so the model still derives — harmless, the
+    // section never mounts it.
+    let break_rows: Vec<presentation::BreakRuleRow> = presentation::break_rule_rows(state, board);
+    tables.break_rules = break_rows.iter().map(|row| row.rule).collect();
+    let break_shown: Vec<BreakRuleRowModel> = break_rows
+        .iter()
+        .enumerate()
+        .map(|(index, row)| BreakRuleRowModel {
+            label: SharedString::from(row.label.clone()),
+            threshold: SharedString::from(row.threshold.text_form()),
+            alarm_rung: row.insistence == taskboard_domain::Insistence::Alarm,
+            board: SharedString::from(row.board_title.clone()),
+            armed: i32::try_from(index).is_ok_and(|i| i == break_rule_armed_index),
+        })
+        .collect();
+    timer_mutations
+        + push_rows(
+            &mut models.break_rules,
+            |rc| {
+                window.set_break_rules_model(rc);
+            },
+            &break_shown,
+        )
 }
 
 /// The habits section (DR-6/6, §4.6): the active board's tracker rows.
@@ -923,6 +959,7 @@ pub fn push(
     priority: crate::models::PriorityPickerPush,
     label_form: Option<&crate::models::LabelFormPush>,
     label_armed_index: i32,
+    break_rule_armed_index: i32,
 ) -> IdTables {
     let now = day.now;
     let sets = presentation::due_sets(state, now, due.horizon);
@@ -1099,6 +1136,8 @@ pub fn push(
         now,
         calendar,
         kiosk,
+        vs.board(),
+        break_rule_armed_index,
         &mut tables,
         models,
     );
@@ -4208,6 +4247,7 @@ mod tests {
                 crate::models::RecurRowPush::default(),
                 crate::models::PriorityPickerPush::default(),
                 None,
+                -1,
                 -1,
             )
         }

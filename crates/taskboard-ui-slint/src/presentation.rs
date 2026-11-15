@@ -1816,6 +1816,65 @@ pub struct TimerRow {
     pub insistence: taskboard_domain::Insistence,
 }
 
+/// One break-rule roster row (T-14, #797): the rule plus its display
+/// projections, carried so the push pass derives the threshold phrase
+/// once per refresh. The insistence rung rides verbatim (the
+/// `TimerRow` convention — the projection never defaults).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BreakRuleRow {
+    /// The rule the remove affordance dispatches against.
+    pub rule: taskboard_domain::BreakRuleId,
+    /// The label snapshot, carried verbatim.
+    pub label: String,
+    /// The accumulated-work threshold (the display phrase derives
+    /// from the mint's canonical text form).
+    pub threshold: taskboard_domain::WorkThreshold,
+    /// The rule's insistence rung (the escalation ladder's datum).
+    pub insistence: taskboard_domain::Insistence,
+    /// The board the rule roams with — the roster row names it (the
+    /// synced `break-rules` section, #588).
+    pub board: taskboard_domain::BoardId,
+    /// The roaming board's title, resolved at derivation (an unknown
+    /// board degrades to an empty name — the row still renders).
+    pub board_title: String,
+}
+
+/// The break-rule roster rows for one board (T-14, #797): the
+/// board's live rules in the CLI `breaks list` canonical
+/// `(threshold, id)` order — one derivation, no second list to
+/// drift. The board scope mirrors the habits section's (`habit_rows`
+/// board parameter): the timers composition renders the active
+/// board's family, and the create form's dispatch targets the same
+/// board (the today view is board-scoped, so the active board is the
+/// unambiguous default — the CLI `--board` default's letter, made
+/// structural by the view's own scope).
+#[must_use]
+pub fn break_rule_rows(
+    state: &AppState,
+    board: Option<taskboard_domain::BoardId>,
+) -> Vec<BreakRuleRow> {
+    let mut rows: Vec<BreakRuleRow> = state
+        .reminders
+        .break_rules
+        .values()
+        .filter(|rule| board.is_none_or(|b| rule.board == b))
+        .map(|rule| BreakRuleRow {
+            rule: rule.id,
+            label: rule.label.clone(),
+            threshold: rule.threshold,
+            insistence: rule.insistence,
+            board: rule.board,
+            board_title: state
+                .boards
+                .get(&rule.board)
+                .map(|b| b.title.clone())
+                .unwrap_or_default(),
+        })
+        .collect();
+    rows.sort_by_key(|row| (row.threshold, row.rule));
+    rows
+}
+
 /// The status-bar chip's parts (D-I6): visibility and nearest-fire
 /// selection are the pure decision; the push assembles the display
 /// text. `effective` may be past (an awaiting alarm is a live timer
@@ -2053,6 +2112,11 @@ pub const OFFSET_SYNTAX_HINT: &str = "45m, 3h, 2d, 1w";
 
 /// The timers `when` field's syntax hint (r4 D27).
 pub const TIMER_SYNTAX_HINT: &str = "in 10m · at 09:30 · at 2030-04-01";
+
+/// The break-rule threshold field's syntax hint (T-14, #797): the
+/// `WorkThreshold` mint's text grammar — the CLI `--after` flag's
+/// phrasing.
+pub const BREAK_THRESHOLD_HINT: &str = "30s · 90m · 1h30m · 2d";
 
 /// The rule-add field's three-form syntax hint (r4 D30/D6): bare stays
 /// due-anchored (the parity anchor), the at/in prefixes mint the
@@ -3547,6 +3611,23 @@ mod tests {
         }
     }
 
+    fn break_rule(
+        id: taskboard_domain::BreakRuleId,
+        board: taskboard_domain::BoardId,
+        label: &str,
+        threshold: chrono::TimeDelta,
+    ) -> taskboard_domain::BreakRule {
+        taskboard_domain::BreakRule {
+            id,
+            board,
+            label: label.to_owned(),
+            threshold: taskboard_domain::WorkThreshold::try_new(threshold)
+                .expect("the test threshold is strictly positive"),
+            insistence: taskboard_domain::Insistence::Normal,
+            created_at: DateTime::<Utc>::UNIX_EPOCH + TimeDelta::hours(1),
+        }
+    }
+
     fn deliver_alarm(state: &mut AppState, id: taskboard_domain::AdhocAlarmId, at: DateTime<Utc>) {
         state
             .reminders
@@ -3686,6 +3767,89 @@ mod tests {
                 (taskboard_domain::Insistence::Alarm, alarm_id),
             ],
             "the rung rides the projection verbatim — no defaulting"
+        );
+    }
+
+    // -- The break-rule roster (T-14, #797) -----------------------------
+
+    /// The roster projects the board's rules in the CLI list's
+    /// canonical `(threshold, id)` order, carries the rung and the
+    /// roaming board's title verbatim, and filters to the scope board
+    /// (`None` = every board).
+    #[test]
+    fn break_rule_rows_order_canonically_and_project_the_row_facts() {
+        let mut state = AppState::default();
+        let board_a = taskboard_domain::BoardId::from_uuid(uuid::Uuid::now_v7());
+        let board_b = taskboard_domain::BoardId::from_uuid(uuid::Uuid::now_v7());
+        state.boards.insert(
+            board_a,
+            taskboard_domain::Board {
+                id: board_a,
+                remote: None,
+                title: "home".to_owned(),
+                color: taskboard_domain::Color::new(""),
+                archived: false,
+                deleted: false,
+                clocks: taskboard_domain::BoardClocks {
+                    title: taskboard_domain::BoardClocks::epoch(),
+                    color: taskboard_domain::BoardClocks::epoch(),
+                    archived: taskboard_domain::BoardClocks::epoch(),
+                    deleted: taskboard_domain::BoardClocks::epoch(),
+                },
+                authors: taskboard_domain::entities::BoardAuthors::default(),
+                remote_seen: None,
+            },
+        );
+        let slow = taskboard_domain::BreakRuleId::from_uuid(uuid::Uuid::now_v7());
+        let fast = taskboard_domain::BreakRuleId::from_uuid(uuid::Uuid::now_v7());
+        let foreign = taskboard_domain::BreakRuleId::from_uuid(uuid::Uuid::now_v7());
+        // Insertion order deliberately opposed to the canonical order.
+        state.reminders.break_rules.insert(
+            slow,
+            break_rule(slow, board_a, "long stretch", TimeDelta::minutes(90)),
+        );
+        let mut fast_rule = break_rule(fast, board_a, "quick pause", TimeDelta::minutes(5));
+        fast_rule.insistence = taskboard_domain::Insistence::Alarm;
+        state.reminders.break_rules.insert(fast, fast_rule);
+        state.reminders.break_rules.insert(
+            foreign,
+            break_rule(foreign, board_b, "elsewhere", TimeDelta::minutes(1)),
+        );
+
+        let scoped = break_rule_rows(&state, Some(board_a));
+        assert_eq!(
+            scoped.iter().map(|row| row.rule).collect::<Vec<_>>(),
+            vec![fast, slow],
+            "the canonical (threshold, id) order, scoped to the board"
+        );
+        assert_eq!(
+            scoped
+                .iter()
+                .map(|row| row.board_title.as_str())
+                .collect::<Vec<_>>(),
+            vec!["home", "home"],
+            "the roaming board's title resolves at derivation"
+        );
+        assert_eq!(
+            scoped.iter().map(|row| row.insistence).collect::<Vec<_>>(),
+            vec![
+                taskboard_domain::Insistence::Alarm,
+                taskboard_domain::Insistence::Normal,
+            ],
+            "the rung rides the projection verbatim — no defaulting"
+        );
+        assert_eq!(
+            scoped
+                .iter()
+                .map(|row| row.threshold.text_form())
+                .collect::<Vec<_>>(),
+            vec!["5m", "1h30m"],
+            "the threshold phrase is the mint's canonical text form"
+        );
+        assert_eq!(
+            break_rule_rows(&state, None).len(),
+            3,
+            "an unscoped derivation sees every board's rules"
         );
     }
 
