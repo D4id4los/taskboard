@@ -193,6 +193,11 @@ static STANDARD: &[(ActionId, ContextId, &[&str])] = &[
     // series verb with a preset binding (the row verbs stay
     // pointer-grade).
     (ActionId::SeriesEdit, ContextId::TaskDetail, &["Ctrl+R"]),
+    // The priority pickers (UX R-3 D-1, #788): F3/F4 — the CUA
+    // sequence continues after F2's rename (free in this preset's
+    // TaskDetail; verified against the conflict contract).
+    (ActionId::TaskImportanceEdit, ContextId::TaskDetail, &["F3"]),
+    (ActionId::TaskUrgencyEdit, ContextId::TaskDetail, &["F4"]),
     // Menu
     (ActionId::MenuNext, ContextId::Menu, &["Down"]),
     (ActionId::MenuPrevious, ContextId::Menu, &["Up"]),
@@ -407,6 +412,12 @@ static EMACS: &[(ActionId, ContextId, &[&str])] = &[
         ContextId::TaskDetail,
         &["Ctrl+c", "r"],
     ),
+    // The priority pickers (UX R-3 D-1, #788): the CUA function keys
+    // are free in emacs' TaskDetail too (no emacs-authentic
+    // candidate; the recorded no-drift rule — the pair shares the
+    // CUA strokes).
+    (ActionId::TaskImportanceEdit, ContextId::TaskDetail, &["F3"]),
+    (ActionId::TaskUrgencyEdit, ContextId::TaskDetail, &["F4"]),
     // Round 2 (D16): the board-view C-g alternate for move-cancel.
     (ActionId::TaskMoveCancel, ContextId::Board, &["Ctrl+g"]),
     // Round 2 (D17): emacs' isearch/read-args chords — Ctrl+f/Ctrl+b
@@ -701,6 +712,11 @@ static VI: &[(ActionId, ContextId, &[&str])] = &[
     // task detail — vi-normal's repeat mnemonic (`g r` is the stack
     // rename's prefix family; bare r is free).
     (ActionId::SeriesEdit, ContextId::TaskDetail, &["r"]),
+    // The priority pickers (UX R-3 D-1, #788): the function keys are
+    // motion-free in normal mode — F3/F4 bind here too (the
+    // no-second-class gate; the insert path never sees them).
+    (ActionId::TaskImportanceEdit, ContextId::TaskDetail, &["F3"]),
+    (ActionId::TaskUrgencyEdit, ContextId::TaskDetail, &["F4"]),
     (ActionId::NavNextControl, ContextId::Settings, &["Tab"]),
     (
         ActionId::NavPrevControl,

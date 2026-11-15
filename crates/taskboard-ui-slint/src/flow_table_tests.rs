@@ -167,6 +167,9 @@ enum EK {
     ScrollDown,
     TrackEntriesOpen,
     TrackEntryDismiss,
+    /// The priority pickers' opener (UX R-3 D-1, #788): the same
+    /// flag-flip class — no flow moves, no command routes.
+    PriorityOpen,
     /// The recur row's intents (issue #506): flag flips over the
     /// subject — no flow moves, no command routes.
     RecurIntent,
@@ -245,6 +248,9 @@ fn key_of(effect: &UiEffect) -> EK {
         UiEffect::ScrollUp => EK::ScrollUp,
         UiEffect::ScrollDown => EK::ScrollDown,
         UiEffect::TrackEntriesOpen => EK::TrackEntriesOpen,
+        // The priority pickers' opener (UX R-3 D-1): the Nav class
+        // flag flip.
+        UiEffect::PriorityPickerOpen(_) => EK::PriorityOpen,
         // The recur row's intents (issue #506): flag flips over the
         // subject — no flow moves, no command routes.
         UiEffect::SeriesPauseOpen
@@ -1285,6 +1291,11 @@ fn all_effects(fx: &Fixture) -> Vec<UiEffect> {
         UiEffect::ScrollDown,
         UiEffect::TrackEntriesOpen,
         UiEffect::TrackEntryDismiss,
+        // The priority pickers' opener (UX R-3 D-1, #788): both
+        // payloads run the whole matrix (the BoardSelect
+        // payload-blindness shape).
+        UiEffect::PriorityPickerOpen(crate::router::PriorityField::Importance),
+        UiEffect::PriorityPickerOpen(crate::router::PriorityField::Urgency),
         // The recur row's view intents (issue #506): the same view
         // intent class as the entries' open.
         UiEffect::SeriesPauseOpen,
@@ -2436,6 +2447,10 @@ fn dismiss_class(effect: &UiEffect) -> DismissClass {
             | UiEffect::SeriesEditorOpen
             | UiEffect::SeriesDetachArm
             | UiEffect::SeriesDetachCancel
+            // The priority pickers' opener (UX R-3 D-1, #788): a
+            // view intent — no modal takeover, the flag rides the
+            // next pass.
+            | UiEffect::PriorityPickerOpen(_)
         | UiEffect::BeginCapture
         | UiEffect::ToggleFocusMode
         | UiEffect::TrackEntryDismiss => DismissClass::AnchorOrModal,
@@ -4179,6 +4194,202 @@ fn the_focus_timings_follow_the_published_settings() {
         assert!(
             rig.adapter().borrow().focus.is_none(),
             "a live disable parks the overlay input"
+        );
+    });
+}
+
+// -- the priority pickers (UX remediation chunk 3, D-1/D-9, #788) --
+
+/// The slot vocabulary's exact `UpdateTask` masks (D-9): per level
+/// the slot click dispatches `UpdateTask { importance:
+/// Some(Some(level)) }` with every other mask `None`; the `unset`
+/// slot commits `Some(None)` — the CLI's `none` twin. The urgency
+/// row is the symmetric twin.
+#[test]
+fn the_importance_picker_slots_dispatch_exact_masks() {
+    on_slint_thread(|| {
+        let (state, fx) = fixture();
+        let [a_id, _b, _c] = fx.tasks;
+        let [s0, _s1] = fx.stacks;
+        let mut rig = rig(state);
+        let adapter = rig.adapter();
+        arm_task_view(&rig, &adapter, a_id, s0);
+        // Open the picker (the routed action's view intent).
+        adapter.borrow_mut().interpret_for_test(
+            rig.handle.window(),
+            UiEffect::PriorityPickerOpen(crate::router::PriorityField::Importance),
+        );
+        let levels = [
+            taskboard_domain::Importance::VeryLow,
+            taskboard_domain::Importance::Low,
+            taskboard_domain::Importance::Normal,
+            taskboard_domain::Importance::High,
+            taskboard_domain::Importance::VeryHigh,
+        ];
+        for (slot, level) in levels.iter().enumerate() {
+            rig.handle
+                .window()
+                .invoke_priority_slot_clicked(i32::try_from(slot + 1).unwrap_or(i32::MAX));
+            let commands = rig.drain_commands();
+            assert!(
+                matches!(
+                    &commands[..],
+                    [StateCommand::UpdateTask {
+                        id,
+                        changes: taskboard_domain::TaskChanges { importance: Some(Some(_)), .. },
+                    }] if *id == a_id
+                ),
+                "slot {slot} dispatches the set mask"
+            );
+            // The exact level rides the slot's declaration order.
+            if let [StateCommand::UpdateTask { changes, .. }] = &commands[..] {
+                assert_eq!(changes.importance, Some(Some(*level)));
+                assert_eq!(changes.urgency, None, "the sibling mask stays untouched");
+            }
+            // Re-open (the commit closed the picker).
+            adapter.borrow_mut().interpret_for_test(
+                rig.handle.window(),
+                UiEffect::PriorityPickerOpen(crate::router::PriorityField::Importance),
+            );
+        }
+        // The unset slot commits the clear twin.
+        rig.handle.window().invoke_priority_slot_clicked(0);
+        let commands = rig.drain_commands();
+        assert!(matches!(
+            &commands[..],
+            [StateCommand::UpdateTask {
+                changes: taskboard_domain::TaskChanges {
+                    importance: Some(None),
+                    ..
+                },
+                ..
+            }]
+        ));
+    });
+}
+
+/// The urgency picker's symmetric mask (D-9): a slot click routes the
+/// `urgency` mask, the importance mask stays `None` — the fields'
+/// independence is the dispatch's own shape.
+#[test]
+fn the_urgency_picker_slots_dispatch_the_symmetric_mask() {
+    on_slint_thread(|| {
+        let (state, fx) = fixture();
+        let [a_id, _b, _c] = fx.tasks;
+        let [s0, _s1] = fx.stacks;
+        let mut rig = rig(state);
+        let adapter = rig.adapter();
+        arm_task_view(&rig, &adapter, a_id, s0);
+        adapter.borrow_mut().interpret_for_test(
+            rig.handle.window(),
+            UiEffect::PriorityPickerOpen(crate::router::PriorityField::Urgency),
+        );
+        rig.handle.window().invoke_priority_slot_clicked(4);
+        let commands = rig.drain_commands();
+        assert!(matches!(
+            &commands[..],
+            [StateCommand::UpdateTask {
+                id,
+                changes: taskboard_domain::TaskChanges {
+                    urgency: Some(Some(taskboard_domain::Urgency::High)),
+                    ..
+                },
+            }] if *id == a_id
+        ));
+    });
+}
+
+/// Escape on an open picker dispatches nothing and clears both open
+/// flags (D-9's settle test); the dismissal seam is the same
+/// close-without-effect shape (the outside click).
+#[test]
+fn escape_and_dismissal_close_the_picker_without_dispatching() {
+    on_slint_thread(|| {
+        let (state, fx) = fixture();
+        let [a_id, _b, _c] = fx.tasks;
+        let [s0, _s1] = fx.stacks;
+        let mut rig = rig(state);
+        let adapter = rig.adapter();
+        arm_task_view(&rig, &adapter, a_id, s0);
+        adapter.borrow_mut().interpret_for_test(
+            rig.handle.window(),
+            UiEffect::PriorityPickerOpen(crate::router::PriorityField::Importance),
+        );
+        assert!(rig.handle.window().get_task_model().importance_open);
+        // Escape routes CancelMove at this surface; the picker's rung
+        // owns it — nothing dispatches, the flag clears.
+        adapter
+            .borrow_mut()
+            .interpret_for_test(rig.handle.window(), UiEffect::CancelMove);
+        assert_eq!(rig.drain(), 0, "the cancel dispatches nothing");
+        assert!(!rig.handle.window().get_task_model().importance_open);
+        // The dismissal seam (the outside click) is the same shape.
+        adapter.borrow_mut().interpret_for_test(
+            rig.handle.window(),
+            UiEffect::PriorityPickerOpen(crate::router::PriorityField::Urgency),
+        );
+        assert!(rig.handle.window().get_task_model().urgency_open);
+        rig.handle.window().invoke_priority_dismiss_requested();
+        assert_eq!(rig.drain(), 0);
+        assert!(!rig.handle.window().get_task_model().urgency_open);
+        assert!(!rig.handle.window().get_task_model().importance_open);
+    });
+}
+
+/// The editor exclusivity (D-1): opening one picker settles the
+/// other — exactly one open flag at any pass.
+#[test]
+fn opening_one_picker_settles_the_other() {
+    on_slint_thread(|| {
+        let (state, fx) = fixture();
+        let [a_id, _b, _c] = fx.tasks;
+        let [s0, _s1] = fx.stacks;
+        let rig = rig(state);
+        let adapter = rig.adapter();
+        arm_task_view(&rig, &adapter, a_id, s0);
+        adapter.borrow_mut().interpret_for_test(
+            rig.handle.window(),
+            UiEffect::PriorityPickerOpen(crate::router::PriorityField::Importance),
+        );
+        adapter.borrow_mut().interpret_for_test(
+            rig.handle.window(),
+            UiEffect::PriorityPickerOpen(crate::router::PriorityField::Urgency),
+        );
+        let model = rig.handle.window().get_task_model();
+        assert!(model.urgency_open);
+        assert!(!model.importance_open, "the sibling picker settled");
+        // And the reverse direction.
+        adapter.borrow_mut().interpret_for_test(
+            rig.handle.window(),
+            UiEffect::PriorityPickerOpen(crate::router::PriorityField::Importance),
+        );
+        let model = rig.handle.window().get_task_model();
+        assert!(model.importance_open);
+        assert!(!model.urgency_open);
+    });
+}
+
+/// The stale-index absorb (D-9/R-2's law): a slot index outside the
+/// closed vocabulary dispatches nothing and leaves the picker armed
+/// (the id-table seam's typed no-op).
+#[test]
+fn a_stale_slot_index_dispatches_nothing() {
+    on_slint_thread(|| {
+        let (state, fx) = fixture();
+        let [a_id, _b, _c] = fx.tasks;
+        let [s0, _s1] = fx.stacks;
+        let mut rig = rig(state);
+        let adapter = rig.adapter();
+        arm_task_view(&rig, &adapter, a_id, s0);
+        adapter.borrow_mut().interpret_for_test(
+            rig.handle.window(),
+            UiEffect::PriorityPickerOpen(crate::router::PriorityField::Importance),
+        );
+        rig.handle.window().invoke_priority_slot_clicked(9);
+        assert_eq!(rig.drain(), 0, "the stale slot dispatches nothing");
+        assert!(
+            rig.handle.window().get_task_model().importance_open,
+            "the picker stays armed — never swallowed silence"
         );
     });
 }

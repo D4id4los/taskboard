@@ -309,6 +309,11 @@ pub(crate) struct Adapter {
     /// the-flow rule).
     recur_pause_open: bool,
     recur_confirm_armed: bool,
+    /// The priority pickers' adapter-owned flag (UX R-3 D-1, #788):
+    /// which detail row's quick-list holds — one at a time; cleared
+    /// on Escape/outside click, on any leaving settle, and when the
+    /// subject dies (the recur flags' buffers-never-outlive rule).
+    priority_open: Option<crate::router::PriorityField>,
     /// The habits section's armed conversion row (issue #506): the
     /// row index the confirm strip renders for; `None` = disarmed.
     habit_convert_armed: Option<usize>,
@@ -1574,6 +1579,15 @@ impl Adapter {
             pause_open: self.recur_pause_open,
             confirm_open: self.recur_confirm_armed,
         };
+        // The priority pickers' flag (UX R-3 D-1): it never outlives
+        // its subject (the recur flags' rule) — a dead/switched
+        // subject clears it on the pass.
+        if self.view_state.subject_task().is_none() {
+            self.priority_open = None;
+        }
+        let priority = crate::models::PriorityPickerPush {
+            open: self.priority_open,
+        };
         self.tables = crate::models::push(
             window,
             &state,
@@ -1588,6 +1602,7 @@ impl Adapter {
             &mut self.models,
             &due,
             recur,
+            priority,
         );
         // Round-3 D27c: engine syncs re-grey a live menu — the pages
         // rebuild from the fresh state while the menu holds (the
@@ -2447,6 +2462,12 @@ impl Adapter {
     /// mechanism, one site.
     fn settle_flows_on_leaving(&mut self, window: &AppWindow, state: &taskboard_domain::AppState) {
         self.settle_flow(window, state);
+        // The priority pickers are flow-free (UX R-3 D-1): the same
+        // leaving rule closes them — a view switch never strands an
+        // open quick-list (the recur flags' outlive rule).
+        if self.priority_open.take().is_some() {
+            self.refresh_forced(window);
+        }
     }
 
     // -- test seams (the lib flow/buffer harnesses; never compiled
@@ -2739,6 +2760,30 @@ impl Adapter {
         }
 
         let outcomes = match (&flow, effect) {
+            // The priority pickers' seams (UX R-3 D-1, #788): Escape
+            // (CancelMove's routing) closes the open picker first —
+            // nothing dispatches (the cancel is the whole effect);
+            // outside click rides the view's own dismissal seam.
+            (_, UiEffect::CancelMove) if self.priority_open.is_some() => {
+                self.priority_open = None;
+                self.refresh_forced(window);
+                Vec::new()
+            }
+            // The openers: flow-free flag flips over the viewed
+            // subject — one picker at a time (opening one settles the
+            // other), the kiosk/no-subject dispatches refuse (the
+            // entries-overlay gate's shape), and a held foreign flow
+            // keeps them inert at this arm (the resolver's Nav class
+            // settles first and re-runs against Flow::None).
+            (Flow::None, UiEffect::PriorityPickerOpen(field)) => {
+                if self.kiosk || self.view_state.subject_task().is_none() {
+                    Vec::new()
+                } else {
+                    self.priority_open = Some(field);
+                    self.refresh_forced(window);
+                    Vec::new()
+                }
+            }
             // -- the pointer drag (r2 chunk-8): every cancel-shaped
             //    effect ends it without dispatching (Escape / C-g via
             //    `CancelMove`, the toggle re-request, mode.normal);
@@ -3965,6 +4010,9 @@ impl Adapter {
             | UiEffect::SeriesEditorOpen
             | UiEffect::SeriesDetachArm
             | UiEffect::SeriesDetachCancel
+            // The priority pickers' openers (UX R-3 D-1, #788) — the
+            // kiosk/no-subject refusals live in the arms.
+            | UiEffect::PriorityPickerOpen(_)
             // The plan-next-day family (#622): the surface's intents
             // interpret like every view intent — the kiosk/modal
             // refusals live in the arms.
@@ -7047,6 +7095,7 @@ pub(crate) fn install(
         recur_draft_rule: None,
         recur_pause_open: false,
         recur_confirm_armed: false,
+        priority_open: None,
         walk_resume: None,
         habit_convert_armed: None,
         habit_create_open: false,
@@ -8900,6 +8949,91 @@ fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         .route(&window, ActionId::TaskTitleEdit);
 
     });
+    // The priority pickers' seams (UX R-3 D-1, #788): the echo rows'
+    // edit affordances route the landed actions (click ≡ key), the
+    // slot click commits the exact `UpdateTask` mask immediately
+    // (the rule-preset posture — recoverable through `AppUndo`), and
+    // the dismissal closes without dispatching.
+    install_seam!(window: window.on_task_importance_edit_asked, adapter: adapter;
+    bind mut (a, window), args (), {        a
+        .route(&window, ActionId::TaskImportanceEdit);
+
+    });
+    install_seam!(window: window.on_task_urgency_edit_asked, adapter: adapter;
+    bind mut (a, window), args (), {        a
+        .route(&window, ActionId::TaskUrgencyEdit);
+
+    });
+    install_seam!(window: window.on_priority_slot_clicked, adapter: adapter;
+    bind mut (a, window), args (index), {        let Some(task) = a.view_state.subject_task() else {
+            return;
+        };
+        let Some(field) = a.priority_open else {
+            return; // a stale click against a closed picker
+        };
+        let slot = usize::try_from(index).unwrap_or(usize::MAX);
+        let command = match (field, slot) {
+            // Slot 0 is the unset twin — the CLI's `none` (the
+            // parity contract, D-5); 1..=5 are the domain levels in
+            // declaration order.
+            (crate::router::PriorityField::Importance, 0) => {
+                StateCommand::UpdateTask {
+                    id: task,
+                    changes: taskboard_domain::TaskChanges {
+                        importance: Some(None),
+                        ..taskboard_domain::TaskChanges::default()
+                    },
+                }
+            }
+            (crate::router::PriorityField::Urgency, 0) => {
+                StateCommand::UpdateTask {
+                    id: task,
+                    changes: taskboard_domain::TaskChanges {
+                        urgency: Some(None),
+                        ..taskboard_domain::TaskChanges::default()
+                    },
+                }
+            }
+            (crate::router::PriorityField::Importance, slot) => {
+                let Some(level) = slot_importance(slot) else {
+                    return; // a stale index against the closed vocabulary
+                };
+                StateCommand::UpdateTask {
+                    id: task,
+                    changes: taskboard_domain::TaskChanges {
+                        importance: Some(Some(level)),
+                        ..taskboard_domain::TaskChanges::default()
+                    },
+                }
+            }
+            (crate::router::PriorityField::Urgency, slot) => {
+                let Some(level) = slot_urgency(slot) else {
+                    return;
+                };
+                StateCommand::UpdateTask {
+                    id: task,
+                    changes: taskboard_domain::TaskChanges {
+                        urgency: Some(Some(level)),
+                        ..taskboard_domain::TaskChanges::default()
+                    },
+                }
+            }
+        };
+        // The commit closes the picker (the choice is made — the
+        // echo re-renders on the next pass).
+        a.priority_open = None;
+        if a.commands.try_send(command).is_err() {
+            tracing::warn!("priority slot commit dropped: command channel full or closed");
+        }
+        a.finish_mutation(&window);
+
+    });
+    install_seam!(window: window.on_priority_dismiss_requested, adapter: adapter;
+    bind mut (a, window), args (), {        if a.priority_open.take().is_some() {
+            a.refresh_forced(&window);
+        }
+
+    });
     install_seam!(window: window.on_task_title_edited, adapter: adapter; [bare_mut]
     bind mut (a), args (text), {        a.view_state.set_buffer(text.to_string());
 
@@ -9611,6 +9745,34 @@ fn notification_row(adapter: &Adapter, index: i32) -> Option<crate::presentation
 /// The done checkbox's dispatch (r3 D6): the toggled `SetTaskDone`
 /// for the addressed task — the raw-send the notification Done button
 /// set (the registry's complete/reopen act on the focused task).
+/// The importance picker's slot mapping (UX R-3 D-1, #788): slots
+/// 1..=5 are the domain's declaration order; anything else is the
+/// stale-index absorb (`None`). Slot 0 (unset) is handled at the
+/// seam before these run.
+fn slot_importance(slot: usize) -> Option<taskboard_domain::Importance> {
+    match slot {
+        1 => Some(taskboard_domain::Importance::VeryLow),
+        2 => Some(taskboard_domain::Importance::Low),
+        3 => Some(taskboard_domain::Importance::Normal),
+        4 => Some(taskboard_domain::Importance::High),
+        5 => Some(taskboard_domain::Importance::VeryHigh),
+        _ => None,
+    }
+}
+
+/// The urgency picker's slot mapping — the importance helper's twin
+/// (distinct types by the domain's own ruling, one slot grammar).
+fn slot_urgency(slot: usize) -> Option<taskboard_domain::Urgency> {
+    match slot {
+        1 => Some(taskboard_domain::Urgency::VeryLow),
+        2 => Some(taskboard_domain::Urgency::Low),
+        3 => Some(taskboard_domain::Urgency::Normal),
+        4 => Some(taskboard_domain::Urgency::High),
+        5 => Some(taskboard_domain::Urgency::VeryHigh),
+        _ => None,
+    }
+}
+
 fn send_toggled_done(adapter: &Adapter, task: taskboard_domain::TaskId) {
     let done_now = adapter
         .state

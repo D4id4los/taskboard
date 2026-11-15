@@ -241,6 +241,14 @@ pub enum ActionId {
     StackCreate,
     TaskEdit,
     TaskTitleEdit,
+    /// The importance picker's opener (UX R-3 D-1, #788): opens the
+    /// immediate-commit value picker over the viewed task's
+    /// importance (a view intent; the kiosk/no-subject refusals are
+    /// the adapter's arms).
+    TaskImportanceEdit,
+    /// The urgency picker's opener (UX R-3 D-1, #788): the
+    /// importance row's twin — distinct types, one picker grammar.
+    TaskUrgencyEdit,
     TaskComplete,
     TaskReopen,
     TaskDueToday,
@@ -482,6 +490,8 @@ impl ActionId {
             Self::StackCreate => "stack.create",
             Self::TaskEdit => "task.edit",
             Self::TaskTitleEdit => "task.title-edit",
+            Self::TaskImportanceEdit => "task.importance-edit",
+            Self::TaskUrgencyEdit => "task.urgency-edit",
             Self::TaskComplete => "task.complete",
             Self::TaskReopen => "task.reopen",
             Self::TaskDueToday => "task.due-today",
@@ -1058,6 +1068,29 @@ pub const REGISTRY: &[ActionEntry] = &[
         enabled: true,
         menu_rank: 72,
         description: "Arms the title editor for the viewed task.",
+        menu_group: Some(MenuGroup::Task),
+    },
+    // The priority pickers (UX R-3 D-1, #788): the metadata rows'
+    // openers — menu-reachable editing verbs over the viewed task
+    // (the title-edit row's shape; the rank rides its tail).
+    ActionEntry {
+        id: ActionId::TaskImportanceEdit,
+        label: "Edit importance",
+        contexts: &[ContextId::TaskDetail],
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 74,
+        description: "Opens the importance picker for the viewed task: six levels, commit on pick.",
+        menu_group: Some(MenuGroup::Task),
+    },
+    ActionEntry {
+        id: ActionId::TaskUrgencyEdit,
+        label: "Edit urgency",
+        contexts: &[ContextId::TaskDetail],
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 76,
+        description: "Opens the urgency picker for the viewed task: six levels, commit on pick.",
         menu_group: Some(MenuGroup::Task),
     },
     ActionEntry {

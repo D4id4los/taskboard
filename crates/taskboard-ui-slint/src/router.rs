@@ -23,6 +23,16 @@ pub enum Mode {
     Insert,
 }
 
+/// Which task-detail priority field a picker intent addresses (UX R-3
+/// D-1, #788): the two independent enum fields share one quick-list
+/// grammar (distinct types — the domain's own ruling; the field, not
+/// the vocabulary, discriminates).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PriorityField {
+    Importance,
+    Urgency,
+}
+
 /// UI-internal effects (design §5: "ui-internal actions → focus
 /// moves, view switches, mode flips"). The adapter applies them to
 /// the shell/window; `Exit` maps to the slint event-loop quit.
@@ -205,6 +215,11 @@ pub enum UiEffect {
     OpenPlanNextDay,
     /// Arm the placement form over the addressed task.
     PlanBeginPlace(TaskId),
+    /// Open one of the task-detail priority pickers (UX R-3 D-1,
+    /// #788) — the flag flips ride the adapter's owned state (the
+    /// recur row's intents' shape); the slot commits are the view's
+    /// own seam, never routed effects.
+    PriorityPickerOpen(PriorityField),
     /// Commit the placement form: the adapter parses its buffers and
     /// routes the one `UpdateTask` (invalid input stays typed-inert).
     PlanCommitPlace,
@@ -338,7 +353,11 @@ impl UiEffect {
             | Self::SeriesConvertArm
             | Self::SeriesEditorOpen
             | Self::SeriesDetachArm
-            | Self::SeriesDetachCancel => EffectClass::Nav,
+            | Self::SeriesDetachCancel
+            // The priority pickers' open intents (UX R-3 D-1): the
+            // same flag-flip class — no flow moves, no command
+            // routes.
+            | Self::PriorityPickerOpen(_) => EffectClass::Nav,
             Self::StackDelete
             | Self::StackRename
             | Self::StackMove
@@ -786,6 +805,15 @@ impl ActionRouter {
             // pair — and nothing else rides the detach's changeset
             // (the review's must-check).
             ActionId::SeriesEdit => DispatchOutcome::UiEffect(UiEffect::SeriesEditorOpen),
+            // The priority pickers' openers (UX R-3 D-1, #788): view
+            // intents — the kiosk/no-subject refusals live in the
+            // adapter's arms (the entries-overlay gate's shape).
+            ActionId::TaskImportanceEdit => {
+                DispatchOutcome::UiEffect(UiEffect::PriorityPickerOpen(PriorityField::Importance))
+            }
+            ActionId::TaskUrgencyEdit => {
+                DispatchOutcome::UiEffect(UiEffect::PriorityPickerOpen(PriorityField::Urgency))
+            }
             ActionId::SeriesEditCommit => {
                 match (ctx.recur_edit_target, ctx.recur_draft_rule.clone()) {
                     (Some(id), Some(rule)) => DispatchOutcome::Command(StateCommand::UpdateTask {

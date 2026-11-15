@@ -194,6 +194,11 @@ export component TaskView inherits FocusScope {
     // the outside click / Escape cancels — nothing dispatches.
     callback priority-slot-clicked(int);
     callback priority-dismiss-requested();
+    // The echo rows' edit affordances (UX R-3 D-1): route the
+    // `task.importance-edit` / `task.urgency-edit` actions over the
+    // viewed task (click ≡ key, §7.1).
+    callback importance-edit-asked();
+    callback urgency-edit-asked();
     // The labels section's seams (UX R-3 D-2, #789): the chip ×
     // unassigns over the VIEW'S SUBJECT (the section always names
     // its subject), the add affordance routes the `label.manage`
@@ -782,10 +787,21 @@ export component TaskView inherits FocusScope {
                         text-color: Theme.text-secondary;
                         text: "Importance";
                     }
-                    RoleText {
-                        role: Typography.mono;
-                        text-color: Theme.text-secondary;
-                        text: root.task.importance-echo == "" ? "—" : root.task.importance-echo;
+                    HorizontalLayout {
+                        spacing: Theme.space-1;
+                        RoleText {
+                            role: Typography.mono;
+                            text-color: Theme.text-secondary;
+                            text: root.task.importance-echo == "" ? "—" : root.task.importance-echo;
+                            vertical-alignment: center;
+                        }
+                        IconButton {
+                            icon: IconKind.pencil;
+                            tone: Tone.neutral;
+                            label: "Edit importance";
+                            description: "Opens the importance picker: six levels, commit on pick.";
+                            clicked => root.importance-edit-asked();
+                        }
                     }
                 }
                 VerticalLayout {
@@ -794,10 +810,21 @@ export component TaskView inherits FocusScope {
                         text-color: Theme.text-secondary;
                         text: "Urgency";
                     }
-                    RoleText {
-                        role: Typography.mono;
-                        text-color: Theme.text-secondary;
-                        text: root.task.urgency-echo == "" ? "—" : root.task.urgency-echo;
+                    HorizontalLayout {
+                        spacing: Theme.space-1;
+                        RoleText {
+                            role: Typography.mono;
+                            text-color: Theme.text-secondary;
+                            text: root.task.urgency-echo == "" ? "—" : root.task.urgency-echo;
+                            vertical-alignment: center;
+                        }
+                        IconButton {
+                            icon: IconKind.pencil;
+                            tone: Tone.neutral;
+                            label: "Edit urgency";
+                            description: "Opens the urgency picker: six levels, commit on pick.";
+                            clicked => root.urgency-edit-asked();
+                        }
                     }
                 }
             }
