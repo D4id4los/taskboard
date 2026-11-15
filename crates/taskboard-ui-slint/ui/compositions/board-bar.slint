@@ -24,6 +24,11 @@ export global BoardBarFacts {
 // model carries no archived field.
 export struct BoardSegmentModel {
     title: string,
+    // The board color's swatch echo (UX R-4 D-1, #791): derived
+    // model-side through the shared `swatch_hex` gate — a six-hex
+    // body renders the typed color, a lenient value renders
+    // transparent (the dot collapses; the GUI never re-derives).
+    color: color,
 }
 
 // The board bar's model (D2/D22): the live segments plus the selected
@@ -233,6 +238,20 @@ export component BoardBar inherits Rectangle {
                 HorizontalLayout {
                     padding-left: Theme.space-2;
                     padding-right: Theme.space-2;
+                    spacing: Theme.space-1;
+                    // The board color's dot (UX R-4 D-1, #791): the
+                    // swatch echo rides the strip segments only (the
+                    // dropdown mode's echo stays the field text — the
+                    // recorded scoping). A transparent (lenient)
+                    // color renders as an invisible slot of the same
+                    // width — the row keeps its rhythm.
+                    Rectangle {
+                        width: Theme.space-2;
+                        height: self.width;
+                        y: (parent.height - self.height) / 2;
+                        border-radius: self.width / 2;
+                        background: segment.color;
+                    }
                     RoleText {
                         role: segment-index == root.bar.selected
                             ? Typography.body-emphasized

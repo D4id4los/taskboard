@@ -421,12 +421,15 @@ pub struct ReminderTarget {
 /// The rule-list add affordance's preset offsets (chunk 6, D12):
 /// presentation const data — the labels are derived through
 /// `ReminderOffset::text_form`, never hand-written strings.
-/// The labels overlay's fixed swatch palette (UX R-3 D-5, #789):
-/// Deck's UI default green first (the CLI's `DEFAULT_LABEL_COLOR`
-/// twin — the create form's default), then the small fixed set. Six
-/// lowercase hex bodies — the CLI's `parse_color` vocabulary; the
-/// GUI never feeds the lenient domain `Color` free text (D-5).
-pub const LABEL_SWATCHES: [&str; 6] = ["31cc7c", "3a70d6", "e05a4e", "edbf45", "9d68d9", "8f8f8f"];
+/// The shared fixed swatch palette (UX R-3 D-5, #789; generalized
+/// for the boards' picker, UX R-4 D-1, #791): Deck's UI default
+/// green first (the CLI's `DEFAULT_LABEL_COLOR` twin — the label
+/// create form's default), then the small fixed set. Six lowercase
+/// hex bodies — the CLI's `parse_color` vocabulary; the GUI never
+/// feeds the lenient domain `Color` free text (the chunk-3 D-5 /
+/// chunk-4 D-6 letter). One vocabulary for every swatch surface
+/// (labels and boards); each consumer maps it to its own default.
+pub const SWATCHES: [&str; 6] = ["31cc7c", "3a70d6", "e05a4e", "edbf45", "9d68d9", "8f8f8f"];
 
 pub const RULE_PRESETS: &[chrono::TimeDelta] = &[
     chrono::TimeDelta::try_minutes(5).expect("5m fits"),
