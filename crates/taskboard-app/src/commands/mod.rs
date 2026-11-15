@@ -128,6 +128,11 @@ pub enum CommandError {
     /// The configuration was rejected.
     #[error("configuration rejected")]
     Config(Box<crate::config::ConfigError>),
+    /// A `config set`/`unset` invocation was refused (T-18, #801):
+    /// env-locked key, unknown key, malformed value, or a write
+    /// failure — matches!-able at the arm.
+    #[error("config set refused")]
+    ConfigSet(#[from] crate::commands::config::ConfigSetError),
     /// The in-process core failed to boot.
     #[error("core bootstrap failed")]
     Bootstrap(Box<BootstrapError>),
@@ -503,6 +508,12 @@ impl CommandError {
     pub fn error_kind(&self) -> &'static str {
         match self {
             Self::Config(err) => err.kind(),
+            Self::ConfigSet(err) => match err {
+                crate::commands::config::ConfigSetError::EnvLocked { .. } => "config-env-locked",
+                crate::commands::config::ConfigSetError::UnknownKey { .. } => "config-unknown-key",
+                crate::commands::config::ConfigSetError::BadValue { .. } => "config-bad-value",
+                crate::commands::config::ConfigSetError::Io(_) => "config-write-failed",
+            },
             Self::Bootstrap(err) => match **err {
                 BootstrapError::InstanceLocked { .. } => "instance-locked",
                 _ => "bootstrap",
