@@ -2919,6 +2919,26 @@ impl Adapter {
                 Flow::TrackEntries { .. } | Flow::TrackEntryForm { .. },
                 UiEffect::TrackEntriesOpen,
             ) => Vec::new(),
+            // -- the labels overlay (UX R-3 D-2, #789): the open
+            //    request settles any foreign flow first (the entries
+            //    overlay's matrix cells), then opens over the viewed
+            //    task; kiosk and a subjectless view refuse; the
+            //    already-open case is inert (the modal discipline).
+            (_, UiEffect::LabelsOpen) if self.kiosk => Vec::new(),
+            (Flow::Labels { .. }, UiEffect::LabelsOpen) => Vec::new(),
+            (_, UiEffect::LabelsOpen) => {
+                // The pickers are flow-free siblings: opening the
+                // overlay settles an open quick-list (the
+                // exclusivity's shape).
+                if let Some(task) = self.view_state.subject_task() {
+                    Self::dismiss_tooltip(window);
+                    self.priority_open = None;
+                    let outcomes = self.view_state.open_labels(task);
+                    self.apply_outcomes(window, &outcomes);
+                    self.finish_mutation(window);
+                }
+                Vec::new()
+            }
             (_, UiEffect::TrackEntriesOpen) => match self.view_state.subject_task() {
                 Some(task) => {
                     Self::dismiss_tooltip(window);
@@ -3015,6 +3035,15 @@ impl Adapter {
                 Some(outcomes) => outcomes,
                 None => self.view_state.close_track_entries(),
             },
+            // The labels ladder (D-2): a focused field's Insert
+            // disengages first (the mode flip; the overlay stays),
+            // then the overlay closes (no child levels this chunk —
+            // the create/edit forms are in-place surfaces, not
+            // levels).
+            (_, UiEffect::LabelsDismiss) if self.shell.mode == Mode::Insert => {
+                vec![FlowOutcome::SetMode(Mode::Normal)]
+            }
+            (_, UiEffect::LabelsDismiss) => self.view_state.close_labels(),
             // -- the capture commit/close (the palette's modal peer);
             //    NOT `interpret_edit` — capture's non-empty commit
             //    deliberately keeps the flow --
@@ -3683,6 +3712,10 @@ impl Adapter {
             Flow::FocusMode { .. }
             | Flow::TrackEntries { .. }
             | Flow::TrackEntryForm { .. }
+            // The labels overlay (UX R-3 D-2, #789): the modals' row
+            // — its kept arms own the open/dismiss; settle is its
+            // close (the overlay family's row).
+            | Flow::Labels { .. }
             // The placement form (#622): the kept planner arms own
             // its intents and settle leaves the form (its exits are
             // its close paths) — the overlay cells' shape.
@@ -3804,9 +3837,15 @@ impl Adapter {
             (_, C::Begin | C::Title) => R::SettleThenRun,
             // NAV / LIFECYCLE / overlay-open (palette, the focus
             // overlay, the entries overlay): R3 settle-then-run.
-            (_, C::Nav | C::Lifecycle | C::OpenPalette | C::FocusOverlay | C::TrackOverlay) => {
-                R::SettleThenRun
-            }
+            (
+                _,
+                C::Nav
+                | C::Lifecycle
+                | C::OpenPalette
+                | C::FocusOverlay
+                | C::TrackOverlay
+                | C::LabelsOverlay,
+            ) => R::SettleThenRun,
             // The plan-next-day family (#622): a held flow keeps
             // every planner intent inert (the modal discipline
             // verbatim — Escape out of the flow first).
@@ -3996,6 +4035,8 @@ impl Adapter {
             // changed-height grab (the walk probe's P5).
             | UiEffect::TrackEntriesOpen
             | UiEffect::TrackEntryDismiss
+            | UiEffect::LabelsOpen
+            | UiEffect::LabelsDismiss
             // The habit trio's intents interpret like every view
             // intent (issue #506) — the kiosk/subject refusals live
             // in the arms.
@@ -9028,6 +9069,75 @@ fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         a.finish_mutation(&window);
 
     });
+    // The labels section/overlay seams (UX R-3 D-2, #789): the add
+    // affordance routes `label.manage` (click == key); the chip x
+    // and the overlay toggles dispatch the Assign/Unassign pair
+    // over the VIEW'S SUBJECT, resolved through the pass's tables
+    // (the id-table seam law — a stale index absorbs typed).
+    install_seam!(window: window.on_labels_manage_asked, adapter: adapter;
+    bind mut (a, window), args (), {        a
+        .route(&window, ActionId::LabelManage);
+
+    });
+    install_seam!(window: window.on_labels_overlay_dismiss_requested, adapter: adapter;
+    bind mut (a, window), args (), {        a
+        .route(&window, ActionId::LabelOverlayDismiss);
+
+    });
+    install_seam!(window: window.on_chip_unassign_clicked, adapter: adapter;
+    bind mut (a, window), args (index), {        let Some(task) = a.view_state.subject_task() else {
+            return;
+        };
+        let Some(label) = a
+            .tables
+            .task_labels
+            .get(usize::try_from(index).unwrap_or(usize::MAX))
+            .copied()
+        else {
+            return; // a stale index against an older tables pass
+        };
+        if a
+            .commands
+            .try_send(StateCommand::UnassignLabel { task, label })
+            .is_err()
+        {
+            tracing::warn!("chip unassign dropped: command channel full or closed");
+        }
+        a.finish_mutation(&window);
+
+    });
+    install_seam!(window: window.on_labels_overlay_row_toggled, adapter: adapter;
+    bind mut (a, window), args (index), {        let Some(task) = a.view_state.subject_task() else {
+            return;
+        };
+        let Some(label) = a
+            .tables
+            .label_ids
+            .get(usize::try_from(index).unwrap_or(usize::MAX))
+            .copied()
+        else {
+            return; // a stale index against an older tables pass
+        };
+        // The row's pushed state names the pair's arm (D-2): the
+        // engine's idempotence owns the rest — the CLI's own
+        // contract, no GUI-side guard re-derives it.
+        let assigned = a
+            .state
+            .load()
+            .tasks
+            .get(&task)
+            .is_some_and(|t| t.live_labels().contains(&label));
+        let command = if assigned {
+            StateCommand::UnassignLabel { task, label }
+        } else {
+            StateCommand::AssignLabel { task, label }
+        };
+        if a.commands.try_send(command).is_err() {
+            tracing::warn!("label toggle dropped: command channel full or closed");
+        }
+        a.finish_mutation(&window);
+
+    });
     install_seam!(window: window.on_priority_dismiss_requested, adapter: adapter;
     bind mut (a, window), args (), {        if a.priority_open.take().is_some() {
             a.refresh_forced(&window);
@@ -10973,7 +11083,9 @@ impl crate::UiHandle {
             Some(ContextId::Today) => crate::view_state::ViewId::Today,
             Some(ContextId::Board) => crate::view_state::ViewId::Board,
             Some(ContextId::StackDetail) => crate::view_state::ViewId::StackDetail,
-            Some(ContextId::TaskDetail) => crate::view_state::ViewId::TaskDetail,
+            Some(ContextId::TaskDetail | ContextId::Labels) => {
+                crate::view_state::ViewId::TaskDetail
+            }
             Some(ContextId::Review) => crate::view_state::ViewId::Review,
             Some(ContextId::Settings) => crate::view_state::ViewId::Settings,
             Some(ContextId::PlanNextDay) => crate::view_state::ViewId::PlanNextDay,

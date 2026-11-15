@@ -2353,6 +2353,14 @@ fn push_task_detail(
             vs.subject_task(),
             &tables.task_labels,
         ))),
+        // The overlay's open flag reads the flow — subject-affine: a
+        // flow whose task stopped being the viewed subject renders
+        // closed (the track-entries push-side belt; reconcile drops
+        // it anyway).
+        labels_open: match vs.flow() {
+            Flow::Labels { task } => vs.subject_task() == Some(*task),
+            _ => false,
+        },
         date_validity: match due.date_valid {
             None => crate::FieldValidity::Neutral,
             Some(true) => crate::FieldValidity::Valid,
@@ -2368,6 +2376,29 @@ fn push_task_detail(
         offset_error_hint: SharedString::from(due.offset_hint),
     });
     tables.task_rules = task_rules;
+    // The labels overlay's roster (UX R-3 D-2, #789): the subject
+    // board's live labels with the subject's assignment bit — the
+    // fresh-VecModel-per-pass shape (the track-entries rows' rule;
+    // ids ride `tables.label_ids`, the rows carry display parts).
+    let overlay_rows: Vec<crate::LabelRowModel> = match vs.flow() {
+        Flow::Labels { task } if vs.subject_task() == Some(*task) => {
+            let assigned: std::collections::BTreeSet<_> = subject
+                .map(taskboard_domain::Task::live_labels)
+                .unwrap_or_default();
+            tables
+                .label_ids
+                .iter()
+                .filter_map(|id| state.labels.get(id).map(|label| (id, label)))
+                .map(|(id, label)| crate::LabelRowModel {
+                    title: SharedString::from(label.title.clone()),
+                    color: swatch_hex(&label.color),
+                    assigned: assigned.contains(id),
+                })
+                .collect()
+        }
+        _ => Vec::new(),
+    };
+    window.set_label_overlay_rows(ModelRc::new(slint::VecModel::from(overlay_rows)));
     mutations
 }
 

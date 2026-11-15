@@ -150,10 +150,12 @@ export struct TaskDetailModel {
     priority-slots: [PrioritySlotRow],
     // The labels section's pushed halves (UX R-3 D-2, #789): the
     // mount flag (desktop + subject present — the detail view's own
-    // platform posture) and the subject's live chips in canonical
-    // order.
+    // platform posture), the subject's live chips in canonical
+    // order, and the overlay's open flag (the flow's; the window's
+    // mount condition reads it).
     labels-visible: bool,
     labels: [LabelChipModel],
+    labels-open: bool,
 }
 
 export component TaskView inherits FocusScope {

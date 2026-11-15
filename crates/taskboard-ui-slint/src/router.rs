@@ -73,6 +73,15 @@ pub enum UiEffect {
     /// Insert disengages first, then the form steps to the list, then
     /// the overlay closes.
     TrackEntryDismiss,
+    /// Open the labels overlay (UX R-3 D-2, #789): the adapter opens
+    /// `Flow::Labels` over the subject task; refuses on kiosk (the
+    /// structural exclusion) and without a viewed task — the
+    /// `TrackEntriesOpen` shape.
+    LabelsOpen,
+    /// The labels overlay's Escape ladder (D-2): the adapter
+    /// resolves it against the current flow — a focused field's
+    /// Insert disengages first, then the overlay closes.
+    LabelsDismiss,
     /// The adapter closes the menu and re-dispatches the selected
     /// entry — bounded (the menu is closed first, no recursion).
     InvokeSelected,
@@ -287,6 +296,9 @@ pub enum EffectClass {
     /// request settle-then-runs (the `FocusOverlay` shape); the
     /// dismissal is the modal's own exit arm.
     TrackOverlay,
+    /// The labels overlay's intents (UX R-3 D-2, #789) — the
+    /// [`EffectClass::TrackOverlay`] class's twin.
+    LabelsOverlay,
     /// The capture overlay request (the one replace-without-commit).
     BeginCapture,
     /// The edit-flow's own commit/discard verbs (`Activate`,
@@ -370,6 +382,7 @@ impl UiEffect {
             Self::OpenPalette => EffectClass::OpenPalette,
             Self::ToggleFocusMode => EffectClass::FocusOverlay,
             Self::TrackEntriesOpen | Self::TrackEntryDismiss => EffectClass::TrackOverlay,
+            Self::LabelsOpen | Self::LabelsDismiss => EffectClass::LabelsOverlay,
             Self::OpenPlanNextDay
             | Self::PlanBeginPlace(_)
             | Self::PlanCommitPlace
@@ -814,6 +827,11 @@ impl ActionRouter {
             ActionId::TaskUrgencyEdit => {
                 DispatchOutcome::UiEffect(UiEffect::PriorityPickerOpen(PriorityField::Urgency))
             }
+            // The labels overlay (UX R-3 D-2, #789): the opener is a
+            // view intent; the dismissal is its ladder rung — the
+            // entries pair's shape.
+            ActionId::LabelManage => DispatchOutcome::UiEffect(UiEffect::LabelsOpen),
+            ActionId::LabelOverlayDismiss => DispatchOutcome::UiEffect(UiEffect::LabelsDismiss),
             ActionId::SeriesEditCommit => {
                 match (ctx.recur_edit_target, ctx.recur_draft_rule.clone()) {
                     (Some(id), Some(rule)) => DispatchOutcome::Command(StateCommand::UpdateTask {

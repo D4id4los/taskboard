@@ -55,6 +55,10 @@ enum FK {
     /// The review walk (#638): the kept walk arms own its intents,
     /// settle closes it (the palette family).
     ReviewWalk,
+    /// The labels overlay (UX R-3 D-2, #789): the overlay family's
+    /// row — its kept intents own the open/dismiss; settle is its
+    /// close (the palette terminator rule).
+    LabelOverlay,
     /// The recurrence-rule editor overlay (round-7 D-7.1): the
     /// overlay family's row — settle is its clean close (the draft
     /// dies, nothing dispatches).
@@ -82,6 +86,7 @@ enum EC {
     Title,
     Picker,
     TrackOverlay,
+    LabelsOverlay,
     PlanSurface,
     ReviewWalk,
 }
@@ -112,6 +117,7 @@ fn kind_of(flow: &Flow) -> FK {
         Flow::PlanPlace { .. } => FK::PlanForm,
         Flow::ReviewWalk { .. } => FK::ReviewWalk,
         Flow::EditRecur { .. } => FK::RecurEditor,
+        Flow::Labels { .. } => FK::LabelOverlay,
     }
 }
 
@@ -167,6 +173,11 @@ enum EK {
     ScrollDown,
     TrackEntriesOpen,
     TrackEntryDismiss,
+    /// The labels overlay's intents (UX R-3 D-2, #789): the
+    /// entries pair's twin — the open settles-then-runs, the
+    /// dismissal closes.
+    LabelsOpen,
+    LabelsDismiss,
     /// The priority pickers' opener (UX R-3 D-1, #788): the same
     /// flag-flip class — no flow moves, no command routes.
     PriorityOpen,
@@ -262,6 +273,8 @@ fn key_of(effect: &UiEffect) -> EK {
         UiEffect::SeriesEditorOpen => EK::SeriesEditOpen,
         UiEffect::SeriesDetachArm | UiEffect::SeriesDetachCancel => EK::SeriesDetach,
         UiEffect::TrackEntryDismiss => EK::TrackEntryDismiss,
+        UiEffect::LabelsOpen => EK::LabelsOpen,
+        UiEffect::LabelsDismiss => EK::LabelsDismiss,
         UiEffect::OpenPlanNextDay => EK::PlanOpen,
         UiEffect::PlanBeginPlace(_) => EK::PlanBegin,
         UiEffect::PlanCommitPlace => EK::PlanCommit,
@@ -300,6 +313,7 @@ fn class_of(effect: &UiEffect) -> EC {
         crate::router::EffectClass::Title => EC::Title,
         crate::router::EffectClass::Picker => EC::Picker,
         crate::router::EffectClass::TrackOverlay => EC::TrackOverlay,
+        crate::router::EffectClass::LabelsOverlay => EC::LabelsOverlay,
         crate::router::EffectClass::PlanSurface => EC::PlanSurface,
         crate::router::EffectClass::ReviewWalk => EC::ReviewWalk,
     }
@@ -339,6 +353,7 @@ use FK::Child as KChild;
 use FK::Drag as KDrag;
 use FK::Due as KDue;
 use FK::FocusOverlay as KFoc;
+use FK::LabelOverlay as KLabel;
 use FK::Move as KMove;
 use FK::Palette as KPal;
 use FK::PlanForm as KPlanForm;
@@ -472,7 +487,7 @@ fn class_table() -> Vec<(FK, EC, Exp)> {
     // TrackOverlay arms are the pair overrides below (the open
     // request is inert under a live overlay; the dismissal ladder is
     // per-surface).
-    for kind in [FK::TrackList, FK::TrackForm] {
+    for kind in [FK::TrackList, FK::TrackForm, FK::LabelOverlay] {
         for class in [C::Nav, C::Lifecycle, C::Begin, C::Title, C::Cancel] {
             row(kind, class, exp(Z, N));
         }
@@ -483,6 +498,9 @@ fn class_table() -> Vec<(FK, EC, Exp)> {
             row(kind, class, exp(Z, K(kind)));
         }
         row(kind, C::TrackOverlay, exp(Z, N));
+        // The sibling overlay's open settles-then-runs (the kept
+        // open/dismiss cells are the pair rows below).
+        row(kind, C::LabelsOverlay, exp(Z, N));
     }
     // PLAN FORM (#622, D-3): the same settle-then-run family — the
     // settle is the form's own close; the kept PlanSurface arms are
@@ -540,6 +558,7 @@ fn class_table() -> Vec<(FK, EC, Exp)> {
         FK::FocusOverlay,
         FK::TrackList,
         FK::TrackForm,
+        FK::LabelOverlay,
         FK::ReviewWalk,
         FK::RecurEditor,
         FK::Child,
@@ -554,6 +573,7 @@ fn class_table() -> Vec<(FK, EC, Exp)> {
             FK::FocusOverlay => K(KFoc),
             FK::TrackList => K(KTrackList),
             FK::TrackForm => K(KTrackForm),
+            FK::LabelOverlay => K(KLabel),
             FK::ReviewWalk => K(KWalk),
             FK::RecurEditor => K(KRecur),
             FK::Child => K(KChild),
@@ -574,6 +594,7 @@ fn class_table() -> Vec<(FK, EC, Exp)> {
         FK::Palette,
         FK::Capture,
         FK::FocusOverlay,
+        FK::LabelOverlay,
     ] {
         row(kind, C::TrackOverlay, exp(Z, N));
     }
@@ -592,6 +613,7 @@ fn class_table() -> Vec<(FK, EC, Exp)> {
         FK::FocusOverlay,
         FK::TrackList,
         FK::TrackForm,
+        FK::LabelOverlay,
         FK::PlanForm,
         FK::ReviewWalk,
         FK::RecurEditor,
@@ -638,6 +660,7 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
             FK::FocusOverlay => K(KFoc),
             FK::TrackList => K(KTrackList),
             FK::TrackForm => K(KTrackForm),
+            FK::LabelOverlay => K(KLabel),
             FK::PlanForm => K(KPlanForm),
             FK::ReviewWalk => K(KWalk),
             FK::RecurEditor => K(KRecur),
@@ -878,6 +901,42 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
     row(FK::RecurEditor, E::BoardCreate, exp(Z, K(KTxt)));
     row(FK::RecurEditor, E::StackMove, exp(Z, K(KMove)));
     row(FK::RecurEditor, E::TrackEntriesOpen, exp(Z, K(KTrackList)));
+    // -- LABELS OVERLAY rows (UX R-3 D-2, #789): from None the open
+    //    request opens the list (the rig views the subject; the
+    //    kiosk/subject refusals are outside this matrix's cells); the
+    //    dismissal under None is the honest no-op close. Under a
+    //    live overlay: the open request is the kept inert; the
+    //    dismissal closes (the entries pair's shape). Settle-then-run
+    //    under every foreign kind: the settle closes the foreign
+    //    flow, the re-run opens the list (a TEXT settle commits —
+    //    the auto-settle's rule).
+    row(FK::None, E::LabelsOpen, exp(Z, K(KLabel)));
+    row(FK::None, E::LabelsDismiss, exp(Z, N));
+    row(FK::LabelOverlay, E::LabelsOpen, exp(Z, K(KLabel)));
+    row(FK::LabelOverlay, E::LabelsDismiss, exp(Z, N));
+    // The open REPLACES the foreign text flow without settling (the
+    // entries open's explicit-arm shape — the modal takeover, not
+    // the auto-commit).
+    row(FK::Text, E::LabelsOpen, exp(Z, K(KLabel)));
+    row(FK::Text, E::LabelsDismiss, exp(Z, N));
+    for kind in [
+        FK::Due,
+        FK::Move,
+        FK::Drag,
+        FK::Palette,
+        FK::Capture,
+        FK::FocusOverlay,
+        FK::TrackList,
+        FK::TrackForm,
+        FK::PlanForm,
+        FK::ReviewWalk,
+        FK::RecurEditor,
+    ] {
+        row(kind, E::LabelsOpen, exp(Z, K(KLabel)));
+        row(kind, E::LabelsDismiss, exp(Z, N));
+    }
+    row(FK::Child, E::LabelsOpen, exp(Z, K(KLabel)));
+    row(FK::Child, E::LabelsDismiss, exp(Z, N));
     // -- REVIEW WALK rows (#638): from None the walk does not exist
     //    yet (the open effect lands with the walk verbs commit); under
     //    a live walk the settle-then-run re-run is effect-shaped like
@@ -981,6 +1040,7 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
             FK::FocusOverlay => K(KFoc),
             FK::TrackList => K(KTrackList),
             FK::TrackForm => K(KTrackForm),
+            FK::LabelOverlay => K(KLabel),
             FK::PlanForm => K(KPlanForm),
             FK::ReviewWalk => K(KWalk),
             FK::Child => K(KChild),
@@ -1017,6 +1077,7 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
         FK::FocusOverlay,
         FK::TrackList,
         FK::TrackForm,
+        FK::LabelOverlay,
         FK::ReviewWalk,
         FK::RecurEditor,
         FK::Child,
@@ -1031,6 +1092,7 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
             FK::FocusOverlay => K(KFoc),
             FK::TrackList => K(KTrackList),
             FK::TrackForm => K(KTrackForm),
+            FK::LabelOverlay => K(KLabel),
             FK::ReviewWalk => K(KWalk),
             FK::RecurEditor => K(KRecur),
             FK::Child => K(KChild),
@@ -1291,6 +1353,8 @@ fn all_effects(fx: &Fixture) -> Vec<UiEffect> {
         UiEffect::ScrollDown,
         UiEffect::TrackEntriesOpen,
         UiEffect::TrackEntryDismiss,
+        UiEffect::LabelsOpen,
+        UiEffect::LabelsDismiss,
         // The priority pickers' opener (UX R-3 D-1, #788): both
         // payloads run the whole matrix (the BoardSelect
         // payload-blindness shape).
@@ -2435,6 +2499,9 @@ fn dismiss_class(effect: &UiEffect) -> DismissClass {
         // sentence) — its open is the AnchorOrModal class like the
         // palette's; the dismissal itself is identity-preserving.
         | UiEffect::TrackEntriesOpen
+            // The labels overlay is a modal takeover (UX R-3 D-2,
+            // #789) — the entries overlay's class.
+            | UiEffect::LabelsOpen
             // The recur row's intents (issue #506): view intents — no
             // modal takeover, the flags ride the next pass.
             | UiEffect::SeriesPauseOpen
@@ -2453,7 +2520,10 @@ fn dismiss_class(effect: &UiEffect) -> DismissClass {
             | UiEffect::PriorityPickerOpen(_)
         | UiEffect::BeginCapture
         | UiEffect::ToggleFocusMode
-        | UiEffect::TrackEntryDismiss => DismissClass::AnchorOrModal,
+        | UiEffect::TrackEntryDismiss
+        // The labels ladder closes the overlay (UX R-3 D-2): the
+        // entries ladder's class.
+        | UiEffect::LabelsDismiss => DismissClass::AnchorOrModal,
         UiEffect::Exit
         | UiEffect::MenuBack
         | UiEffect::MenuNext
@@ -4392,4 +4462,177 @@ fn a_stale_slot_index_dispatches_nothing() {
             "the picker stays armed — never swallowed silence"
         );
     });
+}
+
+// -- the labels overlay (UX remediation chunk 3, D-2/D-9, #789) --
+
+/// Seeds two live labels on the fixture's board: `green` assigned to
+/// the subject, `red` unassigned — the toggle test's vocabulary.
+fn seed_labels(
+    state: &mut AppState,
+    board: BoardId,
+    subject: TaskId,
+) -> (taskboard_domain::LabelId, taskboard_domain::LabelId) {
+    let (green, red) = (
+        taskboard_domain::LabelId::from_uuid(uuid::Uuid::now_v7()),
+        taskboard_domain::LabelId::from_uuid(uuid::Uuid::now_v7()),
+    );
+    let make = |id, title: &str| taskboard_domain::Label {
+        id,
+        remote: None,
+        board,
+        title: title.to_owned(),
+        color: taskboard_domain::Color::new("31cc7c"),
+        deleted: false,
+        clocks: taskboard_domain::LabelClocks {
+            title: taskboard_domain::BoardClocks::epoch(),
+            color: taskboard_domain::BoardClocks::epoch(),
+            deleted: taskboard_domain::BoardClocks::epoch(),
+        },
+        authors: taskboard_domain::entities::LabelAuthors::default(),
+        remote_seen: None,
+    };
+    state.labels.insert(green, make(green, "green"));
+    state.labels.insert(red, make(red, "red"));
+    if let Some(task) = state.tasks.get_mut(&subject) {
+        task.label_memberships.insert(
+            green,
+            taskboard_domain::entities::MembershipState::Added {
+                at: taskboard_domain::BoardClocks::epoch(),
+            },
+        );
+    }
+    (green, red)
+}
+
+/// The overlay's assignment toggle (D-9): the row's pushed state
+/// names the pair's arm — the assigned row's toggle dispatches
+/// `UnassignLabel`, the unassigned row's dispatches `AssignLabel`,
+/// both over the VIEW'S SUBJECT with the id resolved from
+/// `IdTables::label_ids`. A stale index absorbs typed and the
+/// overlay stays armed.
+#[test]
+fn the_overlay_toggle_dispatches_the_assignment_pair() {
+    on_slint_thread(|| {
+        let (mut state, fx) = fixture();
+        let [a_id, _b, _c] = fx.tasks;
+        let [s0, _s1] = fx.stacks;
+        let (green, red) = seed_labels(&mut state, fx.board, a_id);
+        let mut rig = rig(state);
+        let adapter = rig.adapter();
+        arm_task_view(&rig, &adapter, a_id, s0);
+        adapter
+            .borrow_mut()
+            .interpret_for_test(rig.handle.window(), UiEffect::LabelsOpen);
+        assert!(matches!(
+            adapter.borrow().view_state.flow(),
+            Flow::Labels { task } if *task == a_id
+        ));
+        // Row 0 = green (assigned) → the unassign arm.
+        rig.handle.window().invoke_labels_overlay_row_toggled(0);
+        assert_eq!(
+            rig.drain_commands(),
+            vec![StateCommand::UnassignLabel {
+                task: a_id,
+                label: green,
+            }],
+        );
+        // Row 1 = red (unassigned) → the assign arm.
+        rig.handle.window().invoke_labels_overlay_row_toggled(1);
+        assert_eq!(
+            rig.drain_commands(),
+            vec![StateCommand::AssignLabel {
+                task: a_id,
+                label: red,
+            }],
+        );
+        // The stale index absorbs typed; the overlay stays armed.
+        rig.handle.window().invoke_labels_overlay_row_toggled(9);
+        assert_eq!(rig.drain(), 0);
+        assert!(matches!(
+            adapter.borrow().view_state.flow(),
+            Flow::Labels { .. }
+        ));
+    });
+}
+
+/// The detail chip's × (D-2/D-9): the chip seam resolves through
+/// `IdTables::task_labels` and dispatches `UnassignLabel` verbatim;
+/// a stale index absorbs.
+#[test]
+fn the_chip_unassign_dispatches_the_exact_verb() {
+    on_slint_thread(|| {
+        let (mut state, fx) = fixture();
+        let [a_id, _b, _c] = fx.tasks;
+        let [s0, _s1] = fx.stacks;
+        let (green, _red) = seed_labels(&mut state, fx.board, a_id);
+        let mut rig = rig(state);
+        let adapter = rig.adapter();
+        arm_task_view(&rig, &adapter, a_id, s0);
+        rig.handle.window().invoke_chip_unassign_clicked(0);
+        assert_eq!(
+            rig.drain_commands(),
+            vec![StateCommand::UnassignLabel {
+                task: a_id,
+                label: green,
+            }],
+        );
+        rig.handle.window().invoke_chip_unassign_clicked(5);
+        assert_eq!(rig.drain(), 0, "the stale chip index absorbs");
+    });
+}
+
+/// The overlay's ladder (D-2/D-9): `label.manage` opens over the
+/// viewed task (the routed action's view intent — click ≡ key), the
+/// dismissal closes without dispatching, and a second open request
+/// under the live overlay is the kept inert (the modal discipline).
+#[test]
+fn the_labels_overlay_opens_and_the_dismissal_closes() {
+    on_slint_thread(|| {
+        let (state, fx) = fixture();
+        let [a_id, _b, _c] = fx.tasks;
+        let [s0, _s1] = fx.stacks;
+        let mut rig = rig(state);
+        let adapter = rig.adapter();
+        arm_task_view(&rig, &adapter, a_id, s0);
+        adapter
+            .borrow_mut()
+            .interpret_for_test(rig.handle.window(), UiEffect::LabelsOpen);
+        assert!(rig.handle.window().get_task_model().labels_open);
+        // The kept inert under the live overlay.
+        adapter
+            .borrow_mut()
+            .interpret_for_test(rig.handle.window(), UiEffect::LabelsOpen);
+        assert!(matches!(
+            adapter.borrow().view_state.flow(),
+            Flow::Labels { .. }
+        ));
+        // The dismissal: nothing dispatches, the flow ends.
+        rig.handle
+            .window()
+            .invoke_labels_overlay_dismiss_requested();
+        adapter.borrow_mut().refresh_forced(rig.handle.window());
+        assert_eq!(rig.drain(), 0);
+        assert_eq!(adapter.borrow().view_state.flow(), &Flow::None);
+        assert!(!rig.handle.window().get_task_model().labels_open);
+    });
+}
+
+/// `label.manage` routes the open intent from the registry (the
+/// `rule_verbs_route_from_their_targets` shape): the dotted id
+/// resolves, and the dispatch emits the `LabelsOpen` effect — no
+/// command (the view intent's contract).
+#[test]
+fn label_manage_routes_the_open_intent() {
+    use crate::actions::ActionId;
+    use crate::router::{ActionRouter, DispatchCtx, DispatchOutcome};
+    let ctx = DispatchCtx::default();
+    assert!(matches!(
+        ActionRouter::dispatch(ActionId::LabelManage, &ctx),
+        DispatchOutcome::UiEffect(UiEffect::LabelsOpen)
+    ));
+    assert!(matches!(
+        ActionRouter::dispatch(ActionId::LabelOverlayDismiss, &ctx),
+        DispatchOutcome::UiEffect(UiEffect::LabelsDismiss)
+    ));
 }
