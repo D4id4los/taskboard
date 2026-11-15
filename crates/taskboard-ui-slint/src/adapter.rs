@@ -12091,6 +12091,7 @@ impl crate::UiHandle {
                 | ContextId::TrackEntries
                 | ContextId::ReviewWalk
                 | ContextId::RecurEditor
+                | ContextId::AlarmWindow
                 | ContextId::ViNormal
                 | ContextId::ViInsert
                 | ContextId::Editor,

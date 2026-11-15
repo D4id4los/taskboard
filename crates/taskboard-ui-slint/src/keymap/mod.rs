@@ -514,6 +514,40 @@ mod tests {
         }
     }
 
+    /// T-22 (#805): every preset binds the alarm window's total
+    /// grammar — the three verbs over the selected row, the cursor
+    /// walk, and the Escape close — in the `AlarmWindow` context (the
+    /// contract's totality oracle; the window's own `FocusScope`
+    /// handles the same keys).
+    #[test]
+    fn every_preset_binds_the_alarm_window_grammar() {
+        for preset in [Preset::Standard, Preset::Emacs, Preset::Vi] {
+            // The total mask: AlarmWindow masks the chain below it.
+            assert!(
+                preset.masks().contains(&ContextId::AlarmWindow),
+                "{preset:?} does not mask the alarm window context"
+            );
+            let keymap = Keymap::from_preset(preset);
+            let bindings = keymap
+                .bindings_in(ContextId::AlarmWindow)
+                .expect("the alarm window context is bound");
+            let verbs: std::collections::BTreeSet<&ActionId> = bindings.values().collect();
+            for verb in [
+                ActionId::AlarmDismiss,
+                ActionId::AlarmSnooze,
+                ActionId::AlarmCancel,
+                ActionId::MenuNext,
+                ActionId::MenuPrevious,
+                ActionId::MenuDismiss,
+            ] {
+                assert!(
+                    verbs.contains(&verb),
+                    "{preset:?} does not bind {verb} in the alarm window"
+                );
+            }
+        }
+    }
+
     /// Round-1 chunk 2 (D18): every preset resolves both stack-width
     /// verbs in the `[Board, ViNormal, Global]` chain — standard/emacs
     /// bind them in `Board`, vi in `ViNormal`.
@@ -956,6 +990,9 @@ mod tests {
                     ContextId::Labels,
                     ContextId::ReviewWalk,
                     ContextId::RecurEditor,
+                    // The alarm window (T-22, #805): the newest modal
+                    // surface masks like its peers.
+                    ContextId::AlarmWindow,
                 ],
                 "every modal surface masks; nothing else does"
             );

@@ -1,6 +1,5 @@
 ---
 source: crates/taskboard-ui-slint/tests/keymap_snapshots.rs
-assertion_line: 49
 expression: rows
 ---
 - id: app.exit
@@ -626,6 +625,33 @@ expression: rows
   enabled: true
   menu_rank: 730
   description: Deletes the armed break rule and prunes its recorded firings.
+  menu_group: ~
+- id: alarm.dismiss
+  label: Dismiss alarm
+  contexts:
+    - alarm-window
+  category: task
+  enabled: true
+  menu_rank: 740
+  description: "Marks the selected fired alarm's occurrence notified."
+  menu_group: ~
+- id: alarm.snooze
+  label: Snooze alarm
+  contexts:
+    - alarm-window
+  category: task
+  enabled: true
+  menu_rank: 750
+  description: "Postpones the selected fired alarm by the window's snooze span."
+  menu_group: ~
+- id: alarm.cancel
+  label: Cancel alarm
+  contexts:
+    - alarm-window
+  category: task
+  enabled: true
+  menu_rank: 760
+  description: Cancels the selected alarm outright; its row leaves the window.
   menu_group: ~
 - id: task.track-start
   label: Start tracking

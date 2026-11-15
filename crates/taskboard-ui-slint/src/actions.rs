@@ -74,6 +74,13 @@ pub enum ContextId {
     /// holds; the prompt fields ride `ViInsert` masking, the walk's
     /// own verbs (cursor, row verbs, commit, back) live here.
     ReviewWalk,
+    /// The alarm window (T-22, #805): a total mask like
+    /// `Palette`/`FocusMode` — while the always-on-top window holds,
+    /// it owns the keyboard exactly as a modal should (the window's
+    /// own key grammar consumes; nothing underneath fires). The
+    /// window's three verbs and the cursor walk live here, bound in
+    /// every preset.
+    AlarmWindow,
     /// The multi-line editor's element scope (round-5 chunk 7, D-δ2):
     /// armed exactly while `EditingFacts.editor-focus-count > 0`.
     /// Non-masking and keymap-unbound in every preset — the scope's
@@ -94,6 +101,7 @@ impl ContextId {
             Self::StackDetail => "stack-detail",
             Self::TaskDetail => "task-detail",
             Self::Review => "review",
+            Self::AlarmWindow => "alarm-window",
             Self::Settings => "settings",
             Self::PlanNextDay => "plan-next-day",
             Self::Menu => "menu",
@@ -310,6 +318,13 @@ pub enum ActionId {
     /// The staged remove's confirm: routes `DeleteBreakRule` over the
     /// armed subject (the armed identity types the verb).
     BreakRuleRemoveConfirm,
+    /// The alarm window's verbs (T-22, #805): routed over the window's
+    /// selected row — the keyboard twins of the pointer buttons (the
+    /// routed commands are structurally the buttons'; the shared
+    /// `presentation::alarm_command` constructor guarantees it).
+    AlarmDismiss,
+    AlarmSnooze,
+    AlarmCancel,
     TaskTrackStart,
     TaskTrackStop,
     TaskToggleTracker,
@@ -561,6 +576,9 @@ impl ActionId {
             Self::BreakRuleCreate => "breakrule.create",
             Self::BreakRuleRemove => "breakrule.remove",
             Self::BreakRuleRemoveConfirm => "breakrule.remove-confirm",
+            Self::AlarmDismiss => "alarm.dismiss",
+            Self::AlarmSnooze => "alarm.snooze",
+            Self::AlarmCancel => "alarm.cancel",
             Self::TaskTrackStart => "task.track-start",
             Self::TaskTrackStop => "task.track-stop",
             Self::TaskToggleTracker => "task.toggle-tracker",
@@ -1354,6 +1372,41 @@ pub const REGISTRY: &[ActionEntry] = &[
         description: "Deletes the armed break rule and prunes its recorded firings.",
         menu_group: None,
     },
+    // The alarm window's verbs (T-22, #805): window-local, bound in
+    // every preset's total-mask `AlarmWindow` context; never menu
+    // rows (the window is its own surface).
+    ActionEntry {
+        id: ActionId::AlarmDismiss,
+        label: "Dismiss alarm",
+        contexts: &[ContextId::AlarmWindow],
+        category: Category::Task,
+        enabled: true,
+        // The rank-spacing law owns every registry row (the
+        // menu-less projection still carries a distinct rank).
+        menu_rank: 740,
+        description: "Marks the selected fired alarm's occurrence notified.",
+        menu_group: None,
+    },
+    ActionEntry {
+        id: ActionId::AlarmSnooze,
+        label: "Snooze alarm",
+        contexts: &[ContextId::AlarmWindow],
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 750,
+        description: "Postpones the selected fired alarm by the window's snooze span.",
+        menu_group: None,
+    },
+    ActionEntry {
+        id: ActionId::AlarmCancel,
+        label: "Cancel alarm",
+        contexts: &[ContextId::AlarmWindow],
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 760,
+        description: "Cancels the selected alarm outright; its row leaves the window.",
+        menu_group: None,
+    },
     // The tracking verbs (DR-5/4, D-T16): the timers family's
     // pointer-driven precedent — menu-reachable, no preset bindings;
     // dispatch-time gating only (the planner's idempotent NoOps own
@@ -2133,6 +2186,9 @@ mod tests {
             ActionId::BreakRuleCreate,
             ActionId::BreakRuleRemove,
             ActionId::BreakRuleRemoveConfirm,
+            ActionId::AlarmDismiss,
+            ActionId::AlarmSnooze,
+            ActionId::AlarmCancel,
             ActionId::TaskTrackStart,
             ActionId::TaskTrackStop,
             ActionId::TaskToggleTracker,

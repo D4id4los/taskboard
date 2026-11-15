@@ -117,6 +117,7 @@ impl KeymapShell {
             timer_target: None,
             break_rule_draft: None,
             break_rule_target: None,
+            alarm_row: None,
             track_target: None,
             habit_target: None,
             habit_undo: None,

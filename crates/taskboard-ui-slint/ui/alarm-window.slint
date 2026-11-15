@@ -29,9 +29,24 @@ export component AlarmWindow inherits Window {
     background: Theme.background;
 
     in-out property <[AlarmRowModel]> rows;
+    // The selection walk (T-22, #805): the keyboard verbs apply to
+    // the selected row; a single row is pre-selected (index 0) and a
+    // shrinking roster clamps Rust-side.
+    in-out property <int> selected-row: 0;
     callback dismiss(int);
     callback snooze(int);
     callback cancel(int);
+    // The Escape arm: the window-local close, committing nothing.
+    callback escape-requested();
+
+    function select(delta: int) {
+        if (delta < 0 && root.selected-row > 0) {
+            root.selected-row += delta;
+        }
+        if (delta > 0 && root.selected-row + delta < root.rows.length) {
+            root.selected-row += delta;
+        }
+    }
 
     VerticalLayout {
         padding-left: Theme.space-4;
@@ -40,6 +55,42 @@ export component AlarmWindow inherits Window {
         padding-bottom: Theme.space-2;
         spacing: Theme.space-1;
 
+        // The keyboard surface (T-22, #805): the window-local grammar
+        // — Up/Down walk the selection, d/s/c fire the three verbs
+        // over the selected row (the same callbacks the buttons
+        // invoke: click ≡ key), Escape closes committing nothing. The
+        // preset-bound `AlarmWindow` ids carry the same grammar in the
+        // keymap registry (the contract suite's totality oracle); the
+        // window holds slint focus at mount.
+        FocusScope {
+            horizontal-stretch: 1;
+            vertical-stretch: 1;
+            init => { self.focus(); }
+            key-pressed(e) => {
+                if (e.text == Key.UpArrow) {
+                    root.select(-1);
+                    accept
+                } else if (e.text == Key.DownArrow) {
+                    root.select(1);
+                    accept
+                } else if (e.text == "d") {
+                    root.dismiss(root.selected-row);
+                    accept
+                } else if (e.text == "s") {
+                    root.snooze(root.selected-row);
+                    accept
+                } else if (e.text == "c") {
+                    root.cancel(root.selected-row);
+                    accept
+                } else if (e.text == Key.Escape) {
+                    root.escape-requested();
+                    accept
+                } else {
+                    reject
+                }
+            }
+        }
+
         for row[row-index] in root.rows: HorizontalLayout {
             spacing: Theme.space-2;
 
@@ -47,6 +98,16 @@ export component AlarmWindow inherits Window {
                 horizontal-stretch: 1;
                 text: row.title;
                 meta: row.phrase;
+                // The walk's visual (T-22): the selected row's card
+                // carries the focus-ring border — the keyboard
+                // target is visible before the stroke.
+                Rectangle {
+                    x: 0; y: 0;
+                    width: root.width; height: root.height;
+                    border-width: row-index == root.selected-row ? Theme.focus-ring-width : 0;
+                    border-color: Theme.focus-ring;
+                    border-radius: Theme.radius-small;
+                }
             }
             VerticalLayout {
                 IconButton {

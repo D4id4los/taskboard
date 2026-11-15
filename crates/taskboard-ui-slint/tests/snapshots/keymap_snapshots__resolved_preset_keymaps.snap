@@ -403,6 +403,26 @@ expression: rows
         - sequence:
             - Down
           action: review.walk-cursor-down
+    - context: alarm-window
+      bindings:
+        - sequence:
+            - Escape
+          action: menu.dismiss
+        - sequence:
+            - c
+          action: alarm.cancel
+        - sequence:
+            - d
+          action: alarm.dismiss
+        - sequence:
+            - s
+          action: alarm.snooze
+        - sequence:
+            - Up
+          action: menu.previous
+        - sequence:
+            - Down
+          action: menu.next
 - preset: emacs
   contexts:
     - context: global
@@ -852,6 +872,26 @@ expression: rows
         - sequence:
             - Ctrl+p
           action: review.walk-cursor-up
+    - context: alarm-window
+      bindings:
+        - sequence:
+            - Escape
+          action: menu.dismiss
+        - sequence:
+            - c
+          action: alarm.cancel
+        - sequence:
+            - d
+          action: alarm.dismiss
+        - sequence:
+            - s
+          action: alarm.snooze
+        - sequence:
+            - Up
+          action: menu.previous
+        - sequence:
+            - Down
+          action: menu.next
 - preset: vi
   contexts:
     - context: global
@@ -1197,3 +1237,23 @@ expression: rows
         - sequence:
             - Down
           action: review.walk-cursor-down
+    - context: alarm-window
+      bindings:
+        - sequence:
+            - Escape
+          action: menu.dismiss
+        - sequence:
+            - c
+          action: alarm.cancel
+        - sequence:
+            - d
+          action: alarm.dismiss
+        - sequence:
+            - s
+          action: alarm.snooze
+        - sequence:
+            - Up
+          action: menu.previous
+        - sequence:
+            - Down
+          action: menu.next
