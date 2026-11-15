@@ -365,6 +365,13 @@ pub enum Flow {
     /// (reconcile's rename-vanish pattern). One armed subject: arming
     /// a different subject re-arms.
     ConfirmDelete(DeleteTarget),
+    /// The labels overlay (UX R-3 D-2, #789): the task-detail's
+    /// modal over the subject task — the entries overlay's pattern
+    /// (subject-affine mount; `reconcile` drops it when the view
+    /// leaves the task detail or the subject dies). Create/edit/
+    /// delete live in its rows; assign/unassign are one click from
+    /// the detail chips.
+    Labels { task: TaskId },
 }
 
 /// The armed delete's subject (UX R-2 D-2, #784): the resolved target
@@ -2204,6 +2211,26 @@ impl ViewState {
         vec![FlowOutcome::SetMode(Mode::Normal), FlowOutcome::RefreshNow]
     }
 
+    // -- the labels overlay (UX R-3 D-2, #789) ---------------------------
+
+    /// `label.manage`: opens the labels overlay over the viewed
+    /// task. The kiosk refusal and the no-subject refusal are the
+    /// *adapter's* gate (dispatch-time gating — the entries
+    /// overlay's D-TS8 shape); this arm opens whenever asked. A held
+    /// foreign flow settles first (the resolver's overlay class).
+    pub fn open_labels(&mut self, task: TaskId) -> Vec<FlowOutcome> {
+        self.write_flow(Flow::Labels { task });
+        vec![FlowOutcome::RefreshNow]
+    }
+
+    /// Every overlay exit that means close-without-effect: the
+    /// Escape ladder's last rung, the outside click, the view
+    /// leaving, the subject dying (the `close_track_entries` shape).
+    pub fn close_labels(&mut self) -> Vec<FlowOutcome> {
+        self.write_flow(Flow::None);
+        vec![FlowOutcome::SetMode(Mode::Normal), FlowOutcome::RefreshNow]
+    }
+
     // -- the review walk (DR-7 D-J9, #638; plan D-W2) ----------------------
 
     /// `review.open` / the Today card: opens the walk over
@@ -2894,6 +2921,11 @@ impl ViewState {
             // the Escape ladder / the outside click (the
             // close-without-effect shape — no command rides it).
             Flow::TrackEntries { .. } | Flow::TrackEntryForm { .. } => self.close_track_entries(),
+            // The labels overlay closes like the palette (the
+            // entries-overlay's shape — the close-without-effect
+            // family; the escape ladder and the outside click are
+            // its exits).
+            Flow::Labels { .. } => self.close_labels(),
             // The review walk closes like the palette (DR-7 D-J8: any
             // other flow replaces it without committing — there is
             // nothing to commit; the entry is one `Record` at the end).
@@ -3105,6 +3137,7 @@ impl ViewState {
     /// deleted task pops `TaskDetail` → Board, a deleted stack pops
     /// `StackDetail` → Board and re-falls-back the compact selection;
     /// flows on vanished entities end without commands.
+    #[allow(clippy::too_many_lines)] // the reconcile fold, one pass
     pub fn reconcile(&mut self, state: &AppState) {
         // The roster's one-shot select (UX R-1 D-1): consumed exactly
         // on the first refresh where the target is live again; a
@@ -3218,7 +3251,11 @@ impl ViewState {
             .position(|level| {
                 matches!(
                     level.flow(),
-                    Some(Flow::TrackEntries { .. } | Flow::TrackEntryForm { .. })
+                    Some(
+                        Flow::TrackEntries { .. }
+                            | Flow::TrackEntryForm { .. }
+                            | Flow::Labels { .. }
+                    )
                 )
             })
             .filter(|index| {
@@ -3226,6 +3263,7 @@ impl ViewState {
                     Some(Flow::TrackEntries { task } | Flow::TrackEntryForm { task, .. }) => {
                         !is_live(*task)
                     }
+                    Some(Flow::Labels { task }) => !is_live(*task),
                     _ => false,
                 };
                 dead || self.view() != ViewId::TaskDetail

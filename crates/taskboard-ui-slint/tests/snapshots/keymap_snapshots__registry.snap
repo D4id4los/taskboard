@@ -438,6 +438,24 @@ expression: rows
   menu_rank: 76
   description: "Opens the urgency picker for the viewed task: six levels, commit on pick."
   menu_group: task
+- id: label.manage
+  label: Manage labels
+  contexts:
+    - task-detail
+  category: task
+  enabled: true
+  menu_rank: 78
+  description: "Opens the labels overlay for the viewed task: assign, create, edit, delete."
+  menu_group: task
+- id: label.overlay-dismiss
+  label: Dismiss labels overlay
+  contexts:
+    - labels
+  category: task
+  enabled: true
+  menu_rank: 270
+  description: "Closes the labels overlay: a focused field's Escape first, then the overlay."
+  menu_group: ~
 - id: task.complete
   label: Complete task
   contexts:

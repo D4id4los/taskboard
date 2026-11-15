@@ -55,6 +55,9 @@ pub enum FlowTag {
     WalkDatePick,
     /// The armed-delete confirm strip (UX R-2 D-2).
     ConfirmDelete,
+    /// The labels overlay (UX R-3 D-2, #789): the task-detail's
+    /// modal over the subject task.
+    Labels,
 }
 
 impl Flow {
@@ -87,6 +90,7 @@ impl Flow {
             Flow::WalkFilePick { .. } => FlowTag::WalkFilePick,
             Flow::WalkDatePick => FlowTag::WalkDatePick,
             Flow::ConfirmDelete(_) => FlowTag::ConfirmDelete,
+            Flow::Labels { .. } => FlowTag::Labels,
         }
     }
 }
@@ -478,6 +482,7 @@ impl FlowTag {
                 ContextId::ViInsert,
                 ContextId::Global,
             ],
+            FlowTag::Labels => &[ContextId::Labels, ContextId::ViInsert, ContextId::Global],
             FlowTag::EditRecur => &[
                 ContextId::RecurEditor,
                 ContextId::ViInsert,
@@ -548,6 +553,7 @@ mod tests {
                 stage: WalkStage::Prompts,
                 cursor: 0,
             },
+            FlowTag::Labels => Flow::Labels { task: TASK },
             FlowTag::EntryDatePicker => Flow::EntryDatePicker,
             FlowTag::WalkFilePick => Flow::WalkFilePick { armed: Some(STACK) },
             FlowTag::WalkDatePick => Flow::WalkDatePick,

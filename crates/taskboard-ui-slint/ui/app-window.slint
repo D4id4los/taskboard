@@ -22,6 +22,7 @@ import { NotificationSurface, NotificationRowModel } from "compositions/notifica
 import { TimerRowModel } from "compositions/timers.slint";
 import { TimerSetter } from "compositions/timer-setter.slint";
 import { TrackEntriesPanel, TrackEntryRowModel } from "compositions/track-entries.slint";
+import { LabelsPanel, LabelRowModel } from "compositions/labels-overlay.slint";
 import { TrackPanelFacts, TrackPanelWalkFacts } from "track-panel-facts.slint";
 import { TimerSetterFacts } from "menu-facts.slint";
 import { TimeSlotRow } from "widgets/time-field.slint";
@@ -850,6 +851,38 @@ export component AppWindow inherits Window {
         end-picked(m) => root.track-form-end-picked(m);
         commit-requested() => root.track-form-commit-requested();
     }
+
+            // The labels overlay's window-level mount (UX R-3 D-2,
+            // #789): the track-entries overlay's pattern — the
+            // dismissal layer first, the anchored panel after, both
+            // gated on one mount condition (the model's flag over
+            // the task-detail view, so the layer can never linger).
+            // The panel rides centered (the labels overlay owns no
+            // anchor button; the modal reads over the whole detail
+            // surface).
+            if (root.current-view == View.task-detail
+                    && root.task-model.labels-open): labels-backdrop := TouchArea {
+                width: 100%;
+                height: 100%;
+                clicked => root.labels-overlay-dismiss-requested();
+                pointer-event(event) => {
+                    if (event.kind == PointerEventKind.down
+                            && event.button == PointerEventButton.right) {
+                        root.labels-overlay-dismiss-requested();
+                    }
+                }
+            }
+            if (root.current-view == View.task-detail
+                    && root.task-model.labels-open): LabelsPanel {
+                width: min(root.width - 2 * Theme.space-2,
+                           360px * Theme.base-scale);
+                x: (parent.width - self.width) / 2;
+                y: max(Theme.space-2, (parent.height - self.height) / 2);
+                rows: root.label-overlay-rows;
+                row-toggled(index) => root.labels-overlay-row-toggled(index);
+                dismiss-requested() => root.labels-overlay-dismiss-requested();
+            }
+
 
     // The dropdown/quick-list flyouts mount window-level (round-5 D6,
     // 2026-11-05): this **overrides the r4 D39 "no window overlay"
@@ -1729,6 +1762,13 @@ export component AppWindow inherits Window {
     pure callback chip-unassign-clicked(int);
     pure callback labels-manage-asked();
     pure callback track-entries-dismiss-requested();
+    // The labels overlay's pushed half (UX R-3 D-2, #789): the
+    // subject board's live roster rows (the fresh-VecModel-per-pass
+    // shape); the open flag rides the task model. The intents
+    // resolve against the adapter's id tables.
+    in property <[LabelRowModel]> label-overlay-rows;
+    pure callback labels-overlay-row-toggled(int);
+    pure callback labels-overlay-dismiss-requested();
     pure callback track-entry-row-activated(int);
     pure callback track-entry-delete-clicked(int);
     pure callback track-form-add-requested();

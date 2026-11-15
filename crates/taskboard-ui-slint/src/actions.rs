@@ -64,6 +64,11 @@ pub enum ContextId {
     /// masking and the editor's own verbs (commit, cancel, the
     /// detach strip) live here.
     RecurEditor,
+    /// The labels overlay (UX R-3 D-2, #789): a total mask like
+    /// `TrackEntries` — the modal context while `Flow::Labels`
+    /// holds; the form's fields ride `ViInsert` masking and the
+    /// overlay's own verbs (dismiss + the row verbs) live here.
+    Labels,
     /// The review walk overlay (DR-7 chunk 3, #638): a total mask like
     /// `TrackEntries` — the modal context while `Flow::ReviewWalk`
     /// holds; the prompt fields ride `ViInsert` masking, the walk's
@@ -99,6 +104,7 @@ impl ContextId {
             Self::DatePicker => "date-picker",
             Self::TrackEntries => "track-entries",
             Self::RecurEditor => "recur-editor",
+            Self::Labels => "labels",
             Self::ReviewWalk => "review-walk",
             Self::Editor => "editor",
         }
@@ -249,6 +255,17 @@ pub enum ActionId {
     /// The urgency picker's opener (UX R-3 D-1, #788): the
     /// importance row's twin — distinct types, one picker grammar.
     TaskUrgencyEdit,
+    /// The labels overlay's opener (UX R-3 D-2, #789): opens
+    /// `Flow::Labels` over the subject task (a view intent; the
+    /// kiosk/no-subject refusals are the adapter's arms). The whole
+    /// label family's GUI home — assign/unassign one click from the
+    /// detail chips, create/edit/delete in the overlay.
+    LabelManage,
+    /// The overlay's Escape ladder (D-2): the labels context's
+    /// dismiss — a focused field's Escape first (the mode read),
+    /// then the overlay closes. The `TaskTrackEntryDismiss`
+    /// pattern.
+    LabelOverlayDismiss,
     TaskComplete,
     TaskReopen,
     TaskDueToday,
@@ -492,6 +509,8 @@ impl ActionId {
             Self::TaskTitleEdit => "task.title-edit",
             Self::TaskImportanceEdit => "task.importance-edit",
             Self::TaskUrgencyEdit => "task.urgency-edit",
+            Self::LabelManage => "label.manage",
+            Self::LabelOverlayDismiss => "label.overlay-dismiss",
             Self::TaskComplete => "task.complete",
             Self::TaskReopen => "task.reopen",
             Self::TaskDueToday => "task.due-today",
@@ -1092,6 +1111,30 @@ pub const REGISTRY: &[ActionEntry] = &[
         menu_rank: 76,
         description: "Opens the urgency picker for the viewed task: six levels, commit on pick.",
         menu_group: Some(MenuGroup::Task),
+    },
+    // The labels overlay (UX R-3 D-2, #789): the menu-reachable row
+    // of the family (the entries-overlay fence's shape); the overlay
+    // rows' verbs stay pointer-grade with the dismiss in its own
+    // context.
+    ActionEntry {
+        id: ActionId::LabelManage,
+        label: "Manage labels",
+        contexts: &[ContextId::TaskDetail],
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 78,
+        description: "Opens the labels overlay for the viewed task: assign, create, edit, delete.",
+        menu_group: Some(MenuGroup::Task),
+    },
+    ActionEntry {
+        id: ActionId::LabelOverlayDismiss,
+        label: "Dismiss labels overlay",
+        contexts: &[ContextId::Labels],
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 270,
+        description: "Closes the labels overlay: a focused field's Escape first, then the overlay.",
+        menu_group: None,
     },
     ActionEntry {
         id: ActionId::TaskComplete,
@@ -1975,6 +2018,10 @@ mod tests {
             ActionId::StackCreate,
             ActionId::TaskEdit,
             ActionId::TaskTitleEdit,
+            ActionId::TaskImportanceEdit,
+            ActionId::TaskUrgencyEdit,
+            ActionId::LabelManage,
+            ActionId::LabelOverlayDismiss,
             ActionId::TaskComplete,
             ActionId::TaskReopen,
             ActionId::TaskDueToday,

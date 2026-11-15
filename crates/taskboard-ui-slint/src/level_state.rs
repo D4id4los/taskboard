@@ -266,6 +266,13 @@ impl LevelState {
                 // draft — the opening seam re-seeds from the task's
                 // rule or the anchor before any render reads it (the
                 // `TrackFormState` seeding pattern).
+                // The labels overlay (UX R-3 D-2, #789): no child
+                // machinery — the row surfaces are in-place model
+                // flags, the flow carries no interaction state (the
+                // create form's buffers ride the adapter, rung 4).
+                crate::surfaces::FlowTag::Labels => Self::View {
+                    anchor: FocusAnchor::None,
+                },
                 crate::surfaces::FlowTag::EditRecur => {
                     Self::RecurEditor(RecurEditorState::fresh())
                 }

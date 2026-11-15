@@ -61,6 +61,7 @@ impl Preset {
             ContextId::TrackEntries,
             ContextId::ReviewWalk,
             ContextId::RecurEditor,
+            ContextId::Labels,
         ]
     }
 }
@@ -198,6 +199,19 @@ static STANDARD: &[(ActionId, ContextId, &[&str])] = &[
     // TaskDetail; verified against the conflict contract).
     (ActionId::TaskImportanceEdit, ContextId::TaskDetail, &["F3"]),
     (ActionId::TaskUrgencyEdit, ContextId::TaskDetail, &["F4"]),
+    // The labels overlay's opener (UX R-3 D-2, #789): Ctrl+L — the
+    // labels mnemonic, verified free in all three presets'
+    // TaskDetail at this HEAD (stage-1 D-4's recorded check).
+    (ActionId::LabelManage, ContextId::TaskDetail, &["Ctrl+L"]),
+    // The overlay's own context (D-2): the Escape ladder + the tab
+    // walk (the entries-overlay's per-view row pattern).
+    (
+        ActionId::LabelOverlayDismiss,
+        ContextId::Labels,
+        &["Escape"],
+    ),
+    (ActionId::NavNextControl, ContextId::Labels, &["Tab"]),
+    (ActionId::NavPrevControl, ContextId::Labels, &["Shift+Tab"]),
     // Menu
     (ActionId::MenuNext, ContextId::Menu, &["Down"]),
     (ActionId::MenuPrevious, ContextId::Menu, &["Up"]),
@@ -315,6 +329,17 @@ static STANDARD: &[(ActionId, ContextId, &[&str])] = &[
         &["Down"],
     ),
     (ActionId::ReviewWalkBack, ContextId::ReviewWalk, &["Escape"]),
+    // The labels overlay (UX R-3 D-2, #789): Ctrl+L is unbound in
+    // normal mode here; the overlay's own context carries the
+    // ladder + tab rows (the entries-overlay's vi pattern).
+    (ActionId::LabelManage, ContextId::TaskDetail, &["Ctrl+L"]),
+    (
+        ActionId::LabelOverlayDismiss,
+        ContextId::Labels,
+        &["Escape"],
+    ),
+    (ActionId::NavNextControl, ContextId::Labels, &["Tab"]),
+    (ActionId::NavPrevControl, ContextId::Labels, &["Shift+Tab"]),
 ];
 
 /// `emacs` — default-emacs-authentic (the review's tmux standard):
@@ -418,6 +443,18 @@ static EMACS: &[(ActionId, ContextId, &[&str])] = &[
     // CUA strokes).
     (ActionId::TaskImportanceEdit, ContextId::TaskDetail, &["F3"]),
     (ActionId::TaskUrgencyEdit, ContextId::TaskDetail, &["F4"]),
+    // The labels overlay's opener (UX R-3 D-2, #789): Ctrl+L is
+    // free in emacs' TaskDetail (real emacs rebinds it in buffers,
+    // but this preset's TaskDetail never binds it — the recorded
+    // no-drift share, the StackWider pair's rule).
+    (ActionId::LabelManage, ContextId::TaskDetail, &["Ctrl+L"]),
+    (
+        ActionId::LabelOverlayDismiss,
+        ContextId::Labels,
+        &["Escape"],
+    ),
+    (ActionId::NavNextControl, ContextId::Labels, &["Tab"]),
+    (ActionId::NavPrevControl, ContextId::Labels, &["Shift+Tab"]),
     // Round 2 (D16): the board-view C-g alternate for move-cancel.
     (ActionId::TaskMoveCancel, ContextId::Board, &["Ctrl+g"]),
     // Round 2 (D17): emacs' isearch/read-args chords — Ctrl+f/Ctrl+b
@@ -773,4 +810,15 @@ static VI: &[(ActionId, ContextId, &[&str])] = &[
         &["Down"],
     ),
     (ActionId::ReviewWalkBack, ContextId::ReviewWalk, &["Escape"]),
+    // The labels overlay (UX R-3 D-2, #789): Ctrl+L is unbound in
+    // normal mode here; the overlay's own context carries the
+    // ladder + tab rows (the entries-overlay's vi pattern).
+    (ActionId::LabelManage, ContextId::TaskDetail, &["Ctrl+L"]),
+    (
+        ActionId::LabelOverlayDismiss,
+        ContextId::Labels,
+        &["Escape"],
+    ),
+    (ActionId::NavNextControl, ContextId::Labels, &["Tab"]),
+    (ActionId::NavPrevControl, ContextId::Labels, &["Shift+Tab"]),
 ];

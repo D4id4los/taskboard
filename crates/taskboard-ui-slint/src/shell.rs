@@ -257,6 +257,11 @@ impl KeymapShell {
             // view intents (UX R-3 D-1, #788); the shell records
             // nothing (the flag is the adapter's).
             | UiEffect::PriorityPickerOpen(_)
+            // The labels overlay's intents are adapter-interpreted
+            // view intents (UX R-3 D-2, #789); the shell records
+            // nothing (the flow is the truth).
+            | UiEffect::LabelsOpen
+            | UiEffect::LabelsDismiss
             // The review walk's intents are adapter-interpreted view
             // intents (DR-7 chunk 3, #638); the shell records nothing
             // (the flow is the truth; `sync_view_context` mirrors it).

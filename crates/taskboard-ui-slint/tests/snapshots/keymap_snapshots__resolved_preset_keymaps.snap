@@ -222,6 +222,9 @@ expression: rows
             - Shift+Tab
           action: nav.prev-control
         - sequence:
+            - Ctrl+L
+          action: label.manage
+        - sequence:
             - Ctrl+R
           action: series.edit
         - sequence:
@@ -363,6 +366,17 @@ expression: rows
         - sequence:
             - Escape
           action: task.track-entry-dismiss
+    - context: labels
+      bindings:
+        - sequence:
+            - Tab
+          action: nav.next-control
+        - sequence:
+            - Shift+Tab
+          action: nav.prev-control
+        - sequence:
+            - Escape
+          action: label.overlay-dismiss
     - context: review-walk
       bindings:
         - sequence:
@@ -617,6 +631,9 @@ expression: rows
             - Alt+>
           action: nav.last-item
         - sequence:
+            - Ctrl+L
+          action: label.manage
+        - sequence:
             - Ctrl+b
           action: nav.prev-control
         - sequence:
@@ -775,6 +792,17 @@ expression: rows
         - sequence:
             - Ctrl+p
           action: nav.prev-control
+    - context: labels
+      bindings:
+        - sequence:
+            - Tab
+          action: nav.next-control
+        - sequence:
+            - Shift+Tab
+          action: nav.prev-control
+        - sequence:
+            - Escape
+          action: label.overlay-dismiss
     - context: review-walk
       bindings:
         - sequence:
@@ -831,6 +859,9 @@ expression: rows
         - sequence:
             - Shift+Tab
           action: nav.prev-control
+        - sequence:
+            - Ctrl+L
+          action: label.manage
         - sequence:
             - r
           action: series.edit
@@ -1090,6 +1121,17 @@ expression: rows
         - sequence:
             - Escape
           action: task.track-entry-dismiss
+    - context: labels
+      bindings:
+        - sequence:
+            - Tab
+          action: nav.next-control
+        - sequence:
+            - Shift+Tab
+          action: nav.prev-control
+        - sequence:
+            - Escape
+          action: label.overlay-dismiss
     - context: review-walk
       bindings:
         - sequence:

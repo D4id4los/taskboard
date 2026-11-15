@@ -1,0 +1,125 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The labels overlay panel (UX remediation chunk 3, D-2, #789): the
+// task-detail's modal over the subject task — the board's live
+// labels as roster rows (swatch + title + the subject's assignment
+// toggle; create/edit/delete join in their own rungs). Rendering
+// reads the pushed model only; the row ids resolve Rust-side through
+// the `IdTables::label_ids` index seam, never viewport offsets. The
+// Escape ladder / outside click ride the action layer's dismissal
+// (the `Labels` context's rows); the panel is one FocusScope root
+// (blanket rule b). Every dispatch is a callback (§5.1).
+
+import { Theme, Typography, RoleText, Tone } from "../theme.slint";
+import { IconButton, IconKind } from "../widgets/icon-button.slint";
+import { TooltipState } from "../widgets/tooltip.slint";
+
+// One roster row: display parts plus the subject's assignment state
+// (D-2 — ids stay in the adapter's tables; the toggle routes the
+// pair by the row's pushed state, the engine's idempotence owns the
+// rest — the CLI's own contract, no GUI-side guard).
+export struct LabelRowModel {
+    title: string,
+    color: color,
+    assigned: bool,
+}
+
+export component LabelsPanel inherits Rectangle {
+    in property <[LabelRowModel]> rows;
+
+    // The intents (§5.1): no inline side effects — the id
+    // resolution and the pair dispatch live in the adapter.
+    callback row-toggled(int);
+    callback dismiss-requested();
+
+    background: Theme.surface-raised;
+    border-radius: Theme.radius-small;
+    border-width: Theme.focus-ring-width;
+    border-color: Theme.border;
+    accessible-role: AccessibleRole.region;
+    accessible-label: "Labels";
+    // The focus hand-off (the walk probe's P5 shape): a fresh
+    // conditional instantiation's init grab does not take, so the
+    // root grabs on the panel's own post-mount height transition.
+    changed height => { panel-scope.focus(); }
+
+    panel-scope := FocusScope {
+        focus-on-tab-navigation: true;
+        width: 100%;
+
+        VerticalLayout {
+            padding: Theme.space-2;
+            spacing: Theme.space-2;
+
+            // The header: the section's title plus the dismissal
+            // affordance (the pointer twin of the Escape rung).
+            header := HorizontalLayout {
+                spacing: Theme.space-2;
+                RoleText {
+                    role: Typography.caption;
+                    text-color: Theme.text-secondary;
+                    text: "Labels";
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                IconButton {
+                    icon: IconKind.remove;
+                    tone: Tone.neutral;
+                    label: "Close labels";
+                    description: "Closes the labels overlay.";
+                    clicked => {
+                        TooltipState.unhover();
+                        root.dismiss-requested();
+                    }
+                }
+            }
+
+            list := VerticalLayout {
+                spacing: Theme.space-1;
+                for row[index] in root.rows: Rectangle {
+                    height: Theme.space-5;
+                    border-radius: Theme.radius-small;
+                    background: row-touch.has-hover ? Theme.surface-hover : Theme.surface;
+                    HorizontalLayout {
+                        padding-left: Theme.space-2;
+                        padding-right: Theme.space-1;
+                        spacing: Theme.space-2;
+                        Rectangle {
+                            width: Theme.space-3;
+                            height: Theme.space-3;
+                            y: (parent.height - self.height) / 2;
+                            border-radius: Theme.radius-small;
+                            background: row.color;
+                            border-width: Theme.hairline-width;
+                            border-color: Theme.border;
+                        }
+                        RoleText {
+                            role: Typography.caption;
+                            text: row.title;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                            overflow: elide;
+                        }
+                        // The assignment toggle (D-2): the chip ×'s
+                        // twin — the row's pushed state names the
+                        // verb pair's arm; the click routes it.
+                        IconButton {
+                            icon: row.assigned ? IconKind.remove : IconKind.plus;
+                            tone: row.assigned ? Tone.neutral : Tone.info;
+                            label: row.assigned
+                                ? "Remove label " + row.title + " from the task"
+                                : "Add label " + row.title + " to the task";
+                            description: row.assigned
+                                ? "Detaches this label from the task."
+                                : "Attaches this label to the task.";
+                            clicked => {
+                                TooltipState.unhover();
+                                root.row-toggled(index);
+                            }
+                        }
+                    }
+                    row-touch := TouchArea {}
+                }
+            }
+        }
+    }
+}
