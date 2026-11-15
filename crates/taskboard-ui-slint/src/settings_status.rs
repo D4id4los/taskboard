@@ -64,6 +64,7 @@ fn error_text(err: &SettingsError) -> &'static str {
         SettingsError::AttachBusy => {
             "That connection is still shutting down; try again in a moment."
         }
+        SettingsError::RequestPending => "A request is still running; wait for it to finish.",
         SettingsError::AttachFailed => "The connection could not be started; check the server.",
         SettingsError::Gone => "The form went stale; reopen the settings and try again.",
         SettingsError::BindRefused => {
@@ -380,6 +381,7 @@ mod tests {
             SettingsError::PersistRejected,
             SettingsError::PersistFailed,
             SettingsError::AttachBusy,
+            SettingsError::RequestPending,
             SettingsError::AttachFailed,
             SettingsError::Gone,
             SettingsError::BindRefused,
@@ -391,7 +393,7 @@ mod tests {
             SettingsError::OutboxNotQuiescent,
             SettingsError::MoveFailed,
         ];
-        assert_eq!(all.len(), 18, "the variant list is the enum's totality");
+        assert_eq!(all.len(), 19, "the variant list is the enum's totality");
         for err in all {
             assert_ne!(
                 status_text(SettingsOutcome::Rejected, Some(&err)),
@@ -472,6 +474,7 @@ mod tests {
             Just(SettingsError::PersistRejected),
             Just(SettingsError::PersistFailed),
             Just(SettingsError::AttachBusy),
+            Just(SettingsError::RequestPending),
             Just(SettingsError::AttachFailed),
             Just(SettingsError::Gone),
             Just(SettingsError::BindRefused),
@@ -537,6 +540,7 @@ mod tests {
             SettingsError::PersistRejected => "persist-rejected",
             SettingsError::PersistFailed => "persist-failed",
             SettingsError::AttachBusy => "attach-busy",
+            SettingsError::RequestPending => "request-pending",
             SettingsError::AttachFailed => "attach-failed",
             SettingsError::Gone => "gone",
             SettingsError::BindRefused => "bind-refused",

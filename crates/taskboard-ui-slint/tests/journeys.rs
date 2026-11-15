@@ -15678,6 +15678,54 @@ fn invalid_general_commits_refuse_typed_without_routing() {
     );
 }
 
+/// T-38 (#821): the busy lane's refusal carries its typed posture —
+/// a second op under a parked request renders `Rejected` with the
+/// `RequestPending` detail class (the old shape was the generic
+/// detail-less refusal) and the status line renders. Typed facts
+/// only; the sentence text is never asserted.
+#[test]
+fn a_click_under_a_pending_request_refuses_with_the_busy_posture() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = general_harness(state, general_snapshot());
+            harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
+            let window = harness.handle.window();
+            let model = || window.global::<taskboard_ui_slint::SettingsModel>();
+
+            // The first op routes; its reply is deliberately left
+            // parked — the request lane stays pending.
+            window.invoke_settings_reminders_picked(1);
+            assert_eq!(harness.drain_requests().len(), 1, "the first op routed");
+
+            // A second op under the parked request: the busy refusal
+            // (typed posture, zero lane traffic).
+            window.invoke_settings_sink_picked(1);
+            assert!(
+                harness.drain_requests().is_empty(),
+                "the busy click routes nothing"
+            );
+            assert_eq!(
+                model().get_last_outcome(),
+                taskboard_ui_slint::SettingsOutcome::Rejected
+            );
+            assert!(
+                model().get_last_error_request_pending(),
+                "the typed busy posture renders"
+            );
+            assert_ne!(
+                model().get_status_text(),
+                "",
+                "the status line carries the refusal"
+            );
+        },
+    );
+}
+
 /// J-4 — the env-override journey: a key in the hand-over's env set
 /// renders read-only (the env-locked fact present, the badge fact
 /// pushed), and its commit is absorbed at the defence arm — nothing
