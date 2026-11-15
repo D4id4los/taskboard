@@ -37,6 +37,9 @@ expression: rows
             - Ctrl+Q
           action: app.exit
         - sequence:
+            - Ctrl+Shift+R
+          action: review.open
+        - sequence:
             - Ctrl+Shift+S
           action: reminder.snooze
         - sequence:
@@ -422,6 +425,10 @@ expression: rows
             - Ctrl+c
             - Ctrl+s
           action: reminder.snooze
+        - sequence:
+            - Ctrl+c
+            - Ctrl+v
+          action: review.open
         - sequence:
             - Ctrl+g
             - Ctrl+/
@@ -1072,6 +1079,10 @@ expression: rows
             - g
             - v
           action: stack.move
+        - sequence:
+            - g
+            - w
+          action: review.open
         - sequence:
             - i
           action: mode.insert

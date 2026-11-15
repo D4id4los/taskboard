@@ -95,6 +95,11 @@ static STANDARD: &[(ActionId, ContextId, &[&str])] = &[
         ContextId::Global,
         &["Ctrl+Shift+P"],
     ),
+    // The review walk's opener (UX R-4 D-8, #804): the CUA shift-chord
+    // family, R free in this preset's Global (Ctrl+R is the recurrence
+    // editor's TaskDetail binding — different context, no contract
+    // contact).
+    (ActionId::ReviewOpen, ContextId::Global, &["Ctrl+Shift+R"]),
     (
         ActionId::ViewPlanNextDay,
         ContextId::PlanNextDay,
@@ -365,6 +370,14 @@ static EMACS: &[(ActionId, ContextId, &[&str])] = &[
     // preset's Global — emacs' own C-j has no domain verb here).
     (ActionId::FocusModeToggle, ContextId::Global, &["Ctrl+J"]),
     (ActionId::ViewToday, ContextId::Global, &["Ctrl+T"]),
+    // The review walk's opener (UX R-4 D-8, #804): the C-c family's
+    // free Ctrl+v second stroke (the scroll pair owns bare C-v/Alt-v
+    // in the view contexts — the chord is unambiguous).
+    (
+        ActionId::ReviewOpen,
+        ContextId::Global,
+        &["Ctrl+c", "Ctrl+v"],
+    ),
     (ActionId::NavNextView, ContextId::Global, &["Ctrl+x", "]"]),
     (ActionId::NavPrevView, ContextId::Global, &["Ctrl+x", "["]),
     (
@@ -671,6 +684,9 @@ static VI: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::NavNextView, ContextId::ViNormal, &["g", "t"]),
     (ActionId::NavPrevView, ContextId::ViNormal, &["g", "T"]),
     (ActionId::NavFocusBoard, ContextId::ViNormal, &["g", "g"]),
+    // The review walk's opener (UX R-4 D-8, #804): the g-family's
+    // free w (the walk), beside the view-nav's g t.
+    (ActionId::ReviewOpen, ContextId::ViNormal, &["g", "w"]),
     (ActionId::ViewToday, ContextId::Global, &["Ctrl+T"]),
     (ActionId::TaskComplete, ContextId::ViNormal, &["Space"]),
     (ActionId::TaskCreate, ContextId::ViNormal, &["o"]),
