@@ -298,6 +298,13 @@ pub enum ActionId {
     // ledger demands keyboard parity for creation, so it ships bound
     // in every preset.
     HabitLog,
+    /// The row's "−1" recovery (UX R-2 D-3, #786): the mis-click
+    /// class recovers through the audited `AdjustHabitLog` valve —
+    /// routes the row's current window with the count decremented
+    /// (`n − 1`); count 0 is the typed `NoTarget` (no negative log
+    /// exists). Zero journal-class change: `LogHabit` keeps its
+    /// recorded posture.
+    HabitUndoLog,
     HabitMove,
     /// The create form's opener (round-7 D-7.2): toggles the armed
     /// inline form under the Today section's header — open when
@@ -508,6 +515,7 @@ impl ActionId {
             Self::TaskTrackEntryDismiss => "task.track-entry-dismiss",
             Self::FocusModeToggle => "focus.toggle",
             Self::HabitLog => "habit.log",
+            Self::HabitUndoLog => "habit.unlog",
             Self::HabitMove => "habit.move",
             Self::HabitCreate => "habit.create",
             Self::HabitCreateCommit => "habit.create-commit",
@@ -1306,6 +1314,18 @@ pub const REGISTRY: &[ActionEntry] = &[
         menu_group: None,
     },
     ActionEntry {
+        id: ActionId::HabitUndoLog,
+        label: "Take one habit log back",
+        contexts: GLOBAL,
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 200,
+        description: "−1 the addressed tracker's current window (the mis-click recovery; count 0 refuses typed as NoTarget).",
+        // Section-scoped (the HabitLog R-11 ruling's exact twin):
+        // the row's own affordance is the only invocation.
+        menu_group: None,
+    },
+    ActionEntry {
         id: ActionId::HabitCreate,
         label: "Add habit…",
         contexts: &[ContextId::Today],
@@ -1955,6 +1975,7 @@ mod tests {
             ActionId::TaskTrackEntryDismiss,
             ActionId::FocusModeToggle,
             ActionId::HabitLog,
+            ActionId::HabitUndoLog,
             ActionId::HabitMove,
             ActionId::HabitCreate,
             ActionId::HabitCreateCommit,

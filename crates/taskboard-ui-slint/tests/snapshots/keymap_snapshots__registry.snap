@@ -635,6 +635,15 @@ expression: rows
   menu_rank: 190
   description: "+1 the addressed tracker's current window (surplus logs are first-class)."
   menu_group: ~
+- id: habit.unlog
+  label: Take one habit log back
+  contexts:
+    - global
+  category: task
+  enabled: true
+  menu_rank: 200
+  description: "−1 the addressed tracker's current window (the mis-click recovery; count 0 refuses typed as NoTarget)."
+  menu_group: ~
 - id: habit.create
   label: Add habit…
   contexts:
