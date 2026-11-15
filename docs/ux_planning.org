@@ -279,10 +279,30 @@ visible-model effects only; engine behavior stays snapshot-tested in
 =taskboard-state=); plans-follow-templates (the UX plan is a
 first-class plan type; dispatch plans cite it in Origin).
 
+** 2.6 The doctrine bar (recognition-over-recall positives)
+
+Recorded 2026-11-15 by the phase-5 walkthroughs (triage T-46, #829);
+every new surface and every review round holds to these; a regression
+against any of them is a review finding, not a style difference:
+
+- *BF-W-N2* (board-stack plan §10 W-N2): "the context menus order
+  destructive rows last and grey disabled verbs (=menu.rs:210-227=,
+  =menu.rs:68-71=)".
+- *TE-W-N3* (task-editing plan §10 W-N3): "the staged clear echoes
+  'clears the due date' before commit (=due_edit.rs:170=)".
+- *RW-W-N1* (review-walk plan §10 W-N1): "the stage-then-close Escape
+  preset (=presets.rs:312=) is command-free by design".
+- *SC-W-N4* (settings-connections plan §10 W-N4): "non-anchor
+  accounts show disabled actions with honest captions, not lanes (the
+  pilot's R-3 ruling, #723)".
+- *SC-W-N2* (settings-connections plan §10 W-N2): "the pickers' seam
+  names are consistent (=*-picked=, =settings-view.slint:672-696=)".
+
 * 3. Activation state machine
 
 The rule's strength ramps through six phases. *Current state:
-**advisory**, phases 1–2.* The trigger rule binds a chunk only when
+**advisory**; phase 5 completed 2026-11-15 — phase 6 (mandate
+activation) is next.* The trigger rule binds a chunk only when
 that chunk's origin cites a UX journey plan; it becomes **mandatory
 for all new user-visible work** at phase 6.
 
@@ -292,7 +312,7 @@ for all new user-visible work** at phase 6.
 | 2 — pilot on round-7 scope | three UX journey plans authored blind from the round-7 design; comparison against the chunk-1/2 implementations; round-7 plan adjustments; chunk 3 + re-works dispatched under the framework; census seeded with only the slices the pilot needs (Today/habits, Task detail/recurrence, Settings/files) | blind-plan discipline steps 1–4 complete; gate proven on real PASS and MISSING rows | pending |
 | 3 — full census stock-take | dedicated agent pass over every surface (Board, Task detail, Today, Review, Settings, Capture, alarm window, CLI) completing =docs/ux-surface-census.org= with evidence anchors; standing rulings recorded with dates and authorities | census complete; stock-take report under =.artifacts/reports/= | pending |
 | 4 — retrofit analysis & triage | per existing UX feature: its own =…-ux-plan.md= from census + code evidence; consolidated triage report classifying journeys that cannot complete, unruled absences, escape-path holes (BLOCKER/MAJOR/MINOR), each finding homed | every existing UX feature has a ux-plan; triage report accepted | pending |
-| 5 — remediation dispatch | dispatch plan(s) chunking the triage findings: fix the identified flaws and holes — the framework's full dress rehearsal at scale (advisory mode, used end-to-end) | remediation chunks merged; findings resolved or explicitly homed as P2/P3 | pending |
+| 5 — remediation dispatch | dispatch plan(s) chunking the triage findings: fix the identified flaws and holes — the framework's full dress rehearsal at scale (advisory mode, used end-to-end) | remediation chunks merged; findings resolved or explicitly homed as P2/P3 | complete 2026-11-15 — the remediation chunks merged; findings resolved (fix/ruling) or explicitly deferred with homes |
 | 6 — mandate activation | tiny docs chunk flips the =AGENTS.md= §7 wording from advisory to mandatory; this section records the activation and its date | new user-visible work requires an accepted UX journey plan before dispatch; GUI review rounds shrink to quality polish | pending |
 
 Advisory→mandatory transition law: the activation condition is
