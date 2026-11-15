@@ -403,6 +403,7 @@ export component AppWindow inherits Window {
                 stack-width-drag(c, d) => root.board-stack-width-drag(c, d);
                 stack-width-release(c) => root.board-stack-width-release(c);
                 board-bar-activated(i) => root.board-bar-segment-activated(i);
+                board-bar-archived-activated(i) => root.board-bar-archived-activated(i);
                 segment-context(i, x, y) => root.board-segment-context-requested(i, x, y);
                 task-activated(c, r) => root.board-task-activated(c, r);
                 task-clicked(c, r) => root.board-task-clicked(c, r);
@@ -923,6 +924,34 @@ export component AppWindow inherits Window {
             TooltipState.unhover();
         }
     }
+    // The archived-boards roster's flyout (UX R-1 D-1, #785): site 3
+    // — the bar's trailing indicator; activating a row routes the
+    // unarchive seam.
+    if (DropdownFacts.open && DropdownFacts.site == 3): DropdownFlyout {
+        rows: root.board-bar-model.archived-rows;
+        x: max(Theme.space-2,
+               min(DropdownFacts.anchor-x,
+                   root.width - self.width - Theme.space-2));
+        y: max(Theme.space-2,
+               min((DropdownFacts.anchor-y + DropdownFacts.anchor-height
+                        + Theme.space-1 + self.height <= status.y
+                    ? DropdownFacts.anchor-y + DropdownFacts.anchor-height
+                        + Theme.space-1
+                    : DropdownFacts.anchor-y - self.height - Theme.space-1),
+                   status.y - self.height - Theme.space-2));
+        width: DropdownFacts.anchor-width;
+        row-activated(i) => root.board-bar-archived-activated(i);
+        row-hovered(i, x, y, w, h) => {
+            TooltipState.hover(
+                root.board-bar-model.archived-rows[i].label,
+                "Restores this archived board to the bar.",
+                [],
+                x, y, w, h);
+        }
+        row-unhovered() => {
+            TooltipState.unhover();
+        }
+    }
     if (TimeFieldFacts.open): time-field-backdrop := TouchArea {
         width: 100%;
         height: 100%;
@@ -1332,6 +1361,11 @@ export component AppWindow inherits Window {
     pure callback toolbar-switcher-board-clicked();
     pure callback toolbar-switcher-today-clicked();
     pure callback board-bar-segment-activated(int);
+    // The archived-boards roster's row activation (UX R-1 D-1, #785):
+    // the unarchive seam — SetBoardArchived { archived: false } + the
+    // models refresh, then the restored board re-selects (the
+    // view-state one-shot consumed at reconcile).
+    pure callback board-bar-archived-activated(int);
     pure callback board-task-activated(int, int);
     pure callback board-task-clicked(int, int);
     // The right-click context menu seams (round-1 D13).

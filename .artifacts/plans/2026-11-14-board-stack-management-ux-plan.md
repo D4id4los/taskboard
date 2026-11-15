@@ -18,6 +18,16 @@
   chunk-plan §5 anchor-drift law).
 - **Status**: ACCEPTED (retrofit documentation authored under the
   accepted phase-4 dispatch; stage 3 reviews it against this posture).
+  **Amended 2026-11-15** (UX remediation chunk 1 — completability,
+  stage 2; authority: the accepted triage report findings T-2 (#785)
+  and the remediation chunk plan
+  `.artifacts/plans/2026-11-15-ux-r1-completability-chunk-plan.md`
+  D-1/D-4): the remediation design below is recorded as **changed
+  journeys** — new story US-11 (§3/§4), wiring row W-12 (§6), the
+  `SetBoardArchived` delta row (§7), the board.archive Board cell
+  `U (BF-2)` → `E (US-11)` (§2), and US-10/S2's lockout cells retired
+  to history (§4). Command-contract delta of the amendment: **zero new
+  variants** — `SetBoardArchived` exists (`messages.rs:179`).
 - **Surfaces touched**: `ui/compositions/board-bar.slint`,
   `ui/compositions/board-layout.slint`, `ui/views/board-view.slint`,
   `ui/views/stack-view.slint`, `ui/app-window.slint`,
@@ -61,7 +71,7 @@ avoid `|`. -->
 | board.delete | X (US-5) — board context menu → `DeleteBoard` `view_state.rs:2933`; `BoardDelete` `actions.rs:936-945`, Ctrl+Shift+Delete `presets.rs:153-156` | — (R-1) | — (R-1) | — (R-1) | — (R-1) | — (R-1) | X (pre-existing, `boards delete --confirm` `cli.rs:390`) |
 | board.select | E (US-2) — board-bar segment click `adapter.rs:8272`, compact switcher `adapter.rs:8366`; `BoardNext`/`BoardPrevious` `actions.rs:886-905`, `BoardSelect` `actions.rs:906-915` | — (R-1) | — (R-1) | — (R-1) | — (R-1) | — (R-1) | E (pre-existing, `boards use` `cli.rs:358`, `boards select` bind `cli.rs:297`) |
 | board.color | U (BF-1) | U (BF-1) | U (BF-1) | U (BF-1) | U (BF-1) | U (BF-1) | E (pre-existing, `boards color` `cli.rs:365`) |
-| board.archive | U (BF-2) | U (BF-2) | U (BF-2) | U (BF-2) | U (BF-2) | U (BF-2) | E (pre-existing, `boards archive` / `boards unarchive` `cli.rs:375-381`) |
+| board.archive | E (US-11) — the archived-boards roster: a trailing indicator (mounted iff the archived set is non-empty, `board-bar.slint` roster-dd) opens the shared dropdown (site 3) of title-only rows; activating a row dispatches `SetBoardArchived with archived false` + `RefreshNow` and the restored board re-selects (`adapter.rs::install_board_bar_archived_seam`, `view_state.rs::unarchive_board`) | U (BF-2) | U (BF-2) | U (BF-2) | U (BF-2) | U (BF-2) | E (pre-existing, `boards archive` / `boards unarchive` `cli.rs:375-381`) |
 | board.reset | U (BF-3) | U (BF-3) | U (BF-3) | U (BF-3) | U (BF-3) | U (BF-3) | X (pre-existing, `boards reset --confirm` `cli.rs:403`) |
 | board.reconcile | U (BF-4) | U (BF-4) | U (BF-4) | U (BF-4) | U (BF-4) | U (BF-4) | E (pre-existing, `boards reconcile --confirm` `cli.rs:429`) |
 | board.default_preset | E (US-8) — empty-board "default kanban" CTA `adapter.rs:8297`, `board-layout.slint:242-250`, mints `CreateStack` payloads `src/board_presets.rs:5,23` | — (R-2) | — (R-2) | — (R-2) | — (R-2) | — (R-2) | U (BF-8) |
@@ -261,6 +271,34 @@ above cites one of these; this table is the ruling's authority,
     (empty-board leg) and the golden visuals suite
     (`tests/golden_visuals.rs`); display only, no dispatch.
 
+### US-11 — Unarchive a board from the GUI
+
+- **Story** (amendment 2026-11-15, remediation T-2/#785): As a desktop
+  user I want to restore an archived board from the board bar so that
+  archiving is recoverable without the CLI.
+- **Platforms**: desktop. On kiosk the indicator renders the disabled
+  affordance (the D-2 grammar: visible, grey, non-interactive — no new
+  kiosk capability; the adapter's layer-3 refusal stands behind it).
+- **Entry points**: the board bar's trailing archived-boards indicator
+  (`board-bar.slint` roster-dd; flyout site 3). Pointer-only rows —
+  keyboard parity rides the shared dropdown's own walk; no new
+  `ActionId` (chunk-plan D-1 non-goal: the board-verb entry-point
+  asymmetry is chunk 4's family).
+- **Priority**: P1
+- **Acceptance**:
+  - AC-1: Given an archived board, When a roster row activates, Then
+    the exact `StateCommand::SetBoardArchived with archived false` + a
+    models refresh dispatch and the restored board re-selects —
+    verified by `journeys.rs::us11_s2_roster_row_unarchives_and_selects`.
+  - AC-2: Given nothing archived, When the bar renders, Then no
+    indicator mounts (a non-empty archive is the honest signal) —
+    verified by `journeys.rs::us11_s1_roster_absent_while_no_board_is_archived`.
+  - AC-3: Given a confirmed unarchive, When the engine's apply lands,
+    Then the board rejoins the bar's segment set and the roster
+    unmounts again — verified by
+    `journeys.rs::us11_s3_the_restored_board_rejoins_the_bar_and_the_roster_unmounts`
+    and `view_state.rs::unarchive_board_arms_a_pending_select_consumed_once_live`.
+
 ### US-10 — CLI-only board ceremonies (P2, CLI-completed journeys)
 
 - **Story**: When a board's color, archive state, or full reset needs
@@ -353,9 +391,17 @@ above cites one of these; this table is the ruling's authority,
 | Step | Surface & affordance | User action | Dispatches | System response | Escape / failure |
 |---|---|---|---|---|---|
 | US-10/S1 | CLI `boards color` (`cli.rs:365`) | run the verb | `StateCommand::SetBoardColor` (`messages.rs:170`) | the board color changes engine-side; the GUI board bar renders it | `--confirm`-free non-destructive verb; no GUI twin exists (BF-1) |
-| US-10/S2 | CLI `boards archive` / `unarchive` (`cli.rs:375-381`) | run the verb | `StateCommand::SetBoardArchived` (`messages.rs:179`) | the board leaves/joins the live set; **an archived board is unreachable in the GUI** (`board-bar.slint:20-24`, `view_state.rs:1252`) — BF-2's lockout | CLI-only; unarchive is the only GUI recovery path and it is CLI too (BF-2) |
+| US-10/S2 | CLI `boards archive` / `unarchive` (`cli.rs:375-381`) | run the verb | `StateCommand::SetBoardArchived` (`messages.rs:179`) | the board leaves/joins the live set. **History (retired 2026-11-15)**: "an archived board is unreachable in the GUI" — BF-2's lockout ended with US-11 (the archived-boards roster); the archive verb itself stays CLI-only (chunk 4's board-verb family) | unarchive is now GUI-completable end-to-end via US-11/S2-S3; archive remains CLI-first until chunk 4 |
 | US-10/S3 | CLI `boards reset --confirm` (`cli.rs:403`) | run the verb | `StateCommand::ResetBoard` (`messages.rs:199`) | the board content resets | `--confirm` flag is the CLI's destructive gate; no GUI affordance (BF-3); `ResetBoard` is `NotUndoable(BoardCeremony)` (`undo.rs:134-138`) |
 | US-10/S4 | CLI `boards reconcile --confirm` (`cli.rs:429`) | run the verb | `StateCommand::ReconcileByTitle` (`messages.rs:296`) | cross-entity references reconcile | `--confirm` gate; no GUI affordance (BF-4) |
+
+### US-11 — Unarchive a board from the GUI (amendment 2026-11-15)
+
+| Step | Surface & affordance | User action | Dispatches | System response | Escape / failure |
+|---|---|---|---|---|---|
+| US-11/S1 | board bar, trailing archived-boards indicator (flyout site 3) | click the indicator | — (opens the roster dropdown; nothing dispatched) | the dropdown opens with one title-only row per archived board, canonical order; the indicator mounts only while the archive is non-empty | Escape / outside click closes the dropdown, nothing dispatched (the shared dropdown's own dismissal contract, `dropdown.slint` ladder) — test `journeys.rs::us11_s1_roster_absent_while_no_board_is_archived` |
+| US-11/S2 | roster row | click an archived board's row | `on_board_bar_archived_activated` (`adapter.rs`) → `view_state.rs::unarchive_board` → `StateCommand::SetBoardArchived { board, archived: false }` (`messages.rs:179`) + `RefreshNow` | the restored board re-selects on the first refresh where the engine's apply lands (the view-state one-shot consumed at reconcile) | typed engine refusals surface through the outcome lane; `SetBoardArchived` is journal-eligible (`undo.rs:324`), so `AppUndo` reverses — test `journeys.rs::us11_s2_roster_row_unarchives_and_selects` |
+| US-11/S3 | board bar | — (the apply's system response) | — | the board rejoins the segment set, becomes the selection, and the roster unmounts (the archive is empty again) | a refused apply never selects (`view_state.rs::unarchive_board_arms_a_pending_select_consumed_once_live`); a deleted target prunes the arm — test `journeys.rs::us11_s3_the_restored_board_rejoins_the_bar_and_the_roster_unmounts` |
 
 ## 5. Interaction flows
 
@@ -417,6 +463,7 @@ descriptive-name tests. -->
 | W-9 | ui/compositions/board-layout.slint | column divider TouchArea | — | on_board_stack_width_press (adapter.rs:7615); on_board_stack_width_drag (adapter.rs:7649); on_board_stack_width_release (adapter.rs:7690) — slint callback board-stack-width-drag | ActionId::StackWider | UiRequest::StackWidthsChanged; ActionId::StackNarrower | column pair via a.tables.stack_ids, staleness re-checked per frame | US-7/S1-US-7/S3 | view_state.rs::resize_focused_stack_steps_the_pair_and_clamps |
 | W-10 | ui/compositions/board-layout.slint | "Create Default Kanban Setup" CtaButton | — | on_board_default_preset_clicked (adapter.rs:8335-8341) — slint callback board-default-preset-clicked (pointer-only CTA; no registry entry — BF-9) | — | StateCommand::CreateStack | board-scoped (preset table board_presets.rs:23) | US-8/S1 | view_state.rs::the_default_kanban_preset_dispatches_explicit_ordered_creates |
 | W-11 | ui/compositions/board-layout.slint | per-column count Badge | — | — (display only) | — | — | per-column render | US-9/S1 | journeys.rs::the_empty_board_renders_bar_ctas_and_the_preset |
+| W-12 | ui/compositions/board-bar.slint (flyout site 3 mounted at ui/app-window.slint) | trailing archived-boards indicator (the shared Dropdown, `field-enabled` platform gate) | — | on_board_bar_archived_activated (adapter.rs) — slint callback board-bar-archived-activated | — | StateCommand::SetBoardArchived | roster row index via a.tables.archived_board_ids (stale absorbed; kiosk refused at layer 3) | US-11/S1-US-11/S3 | journeys.rs::us11_s2_roster_row_unarchives_and_selects |
 
 ## 7. Command-contract delta
 
@@ -427,6 +474,7 @@ is new or changed.
 
 | Kind | Name | Payload sketch | Journeys |
 |---|---|---|---|
+| StateCommand | SetBoardArchived | exists (`messages.rs:179`) — `{ board, archived }`; the GUI's unarchive dispatches only `archived: false` (amendment 2026-11-15; archive-from-GUI is chunk 4's non-goal) | US-11 |
 | StateCommand | CreateBoard | exists (`messages.rs:138`) — `{ title, color: lenient empty }` | US-1 |
 | StateCommand | RenameBoard | exists (`messages.rs:162`) | US-4 |
 | StateCommand | DeleteBoard | exists (`messages.rs:190`) — cascades | US-5 |
@@ -444,8 +492,10 @@ kind is involved in these journeys.
 
 ## 8. Verification plan
 
-- **Journey tests (step-ID-named)**: none exist — the retrofitted
-  journeys predate the framework's step-token test law. Per the pilot
+- **Journey tests (step-ID-named)**: US-11's three steps carry their
+  step-ID tests (`journeys.rs::us11_s1/us11_s2/us11_s3`, amendment
+  2026-11-15). The pre-amendment journeys (US-1..US-10) still predate
+  the framework's step-token test law. Per the pilot
   precedent (comparison plan §2, backlog #768; habit-create plan PC-3)
   the §2.3 gate's journey-step token rows stay MISSING on this plan;
   the per-step verification evidence is the Test column of §6 and the
@@ -497,6 +547,9 @@ carries evidence, never a fix.
   a board color without the CLI. Walkthrough Q1/Q2: no control exists
   to see.
 - **BF-2 — archived boards are GUI-unreachable (lockout)**
+  *(Remediated 2026-11-15: the unarchive half — US-11, remediation
+  chunk 1 / triage T-2 (#785); the archive-from-GUI verb remains
+  open, homed by the dispatch plan's chunk 4.)*
   (F-Pattern 1 + F-Pattern 3, journey integrity). `boards archive` is
   CLI-only; the board bar's segment model filters archived boards
   (`board-bar.slint:20-24` "an archived board is unreachable as a
@@ -561,6 +614,17 @@ carries evidence, never a fix.
   signal the user gets before BF-5/BF-6's point of no return.
 
 ## 11. Plan corrections
+- **PC-3 (2026-11-15, remediation amendment)**: the UX remediation
+  chunk 1 (stage 2, `fix/ux-r1-completability`) amended this plan
+  under the dispatch plan's dress-rehearsal mandate (authority: the
+  chunk plan D-1/D-4/D-7): US-11 (story, journey table, W-12), the
+  `SetBoardArchived` delta row, the board.archive Board cell `U
+  (BF-2)` → `E (US-11)`, US-10/S2's lockout cells retired to history,
+  and BF-2's remediation note. Zero new command/ActionId variants.
+  Kiosk posture: the roster renders the disabled affordance on kiosk
+  (`archived-enabled` display state + the adapter's layer-3 refusal),
+  per the chunk plan D-2 grammar and the no-new-kiosk-capabilities
+  non-goal.
 - **PC-2 (2026-11-14, gate-outcome corrections)**: the per-plan
   `scripts/ux-coverage.sh` run surfaced wiring-row representation
   defects, fixed here (D-5's plan-defect path): (a) hyphenated slint

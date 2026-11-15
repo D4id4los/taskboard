@@ -198,6 +198,14 @@ impl FakeEngine {
                         task.deleted = true;
                     }
                 }
+                // The archived-boards roster's verb (UX R-1 D-1): the
+                // continuity half of the unarchive journey — the board
+                // rejoins the live set on the settle's refresh.
+                StateCommand::SetBoardArchived { board, archived } => {
+                    if let Some(board) = state.boards.get_mut(&board) {
+                        board.archived = archived;
+                    }
+                }
                 // The journey session exercises only the task verbs
                 // and the stack reorder above; anything else is
                 // continuity-relevant never — log-and-keep (the

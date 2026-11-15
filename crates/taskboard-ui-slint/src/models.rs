@@ -64,6 +64,11 @@ pub struct IdTables {
     /// bar's segment indices resolve against this pass (an added index
     /// table — the content tables stay single-board-per-refresh).
     pub board_ids: Vec<BoardId>,
+    /// The archived boards in canonical order (UX R-1 D-1, #785): the
+    /// board bar's archived-boards roster row indices resolve against
+    /// this pass (index-aligned with the pushed `archived-rows`;
+    /// stale absorbed like every seam).
+    pub archived_board_ids: Vec<BoardId>,
     /// The board's stacks in display order.
     pub stack_ids: Vec<StackId>,
     /// Per board column, the tasks in canonical order.
@@ -243,6 +248,9 @@ fn string_model(values: &[String]) -> ModelRc<SharedString> {
 pub struct PushModels {
     bar_segments: MirroredRows<BoardSegmentModel>,
     bar_rows: MirroredRows<crate::DropdownRow>,
+    /// The archived-boards roster's persistent row handle (UX R-1
+    /// D-1): the same stable-identity diff as `bar_rows`.
+    bar_archived_rows: MirroredRows<crate::DropdownRow>,
     columns: MirroredRows<StackColumnModel>,
     /// The per-column card models, keyed by the column's stack (the
     /// board's columns and the stack-detail list address them by
@@ -910,6 +918,24 @@ pub fn push(
         .collect();
     let bar_rows_handle = models.bar_rows.handle_or_insert_with();
     mutations += models.bar_rows.diff(&bar_rows);
+    // The archived-boards roster (UX R-1 D-1, #785): one title-only
+    // row per archived board, canonical order; the bar's trailing
+    // indicator mounts exactly when the set is non-empty. The id
+    // table rides the same pass — the roster row index resolves
+    // against `archived_board_ids` (stale absorbed like every seam).
+    let archived = presentation::archived_boards(state);
+    let archived_rows: Vec<crate::DropdownRow> = archived
+        .iter()
+        .map(|board| crate::DropdownRow {
+            label: SharedString::from(board.title.clone()),
+            indicator: crate::DropdownIndicator::None,
+            tone: crate::DropdownTone::Neutral,
+            selected: false,
+            busy: false,
+        })
+        .collect();
+    let archived_rows_handle = models.bar_archived_rows.handle_or_insert_with();
+    mutations += models.bar_archived_rows.diff(&archived_rows);
     // The struct re-assignment runs every pass — its `selected` scalar
     // must stay live; the unchanged segments handle makes it a
     // renderer no-op for the repetition (the repetition-probe pins).
@@ -917,6 +943,8 @@ pub fn push(
         segments: ModelRc::from(segments_handle),
         selected,
         rows: ModelRc::from(bar_rows_handle),
+        archived_rows: ModelRc::from(archived_rows_handle),
+        archived_enabled: !kiosk,
     });
 
     mutations += push_chrome(
@@ -945,6 +973,10 @@ pub fn push(
         stack_ids: stack_ids.clone(),
         ..IdTables::default()
     };
+    // The roster row indices' resolution base (UX R-1 D-1): the
+    // archived pass's canonical order, index-aligned with the pushed
+    // `archived-rows`.
+    tables.archived_board_ids = archived.iter().map(|b| b.id).collect();
     mutations += push_board(
         window,
         state,

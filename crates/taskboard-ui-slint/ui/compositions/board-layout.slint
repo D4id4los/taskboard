@@ -172,6 +172,9 @@ export component BoardLayout inherits Rectangle {
     // while a flow is open — the view-state refusal is the suspenders.
     in property <bool> flow-open: false;
     callback board-bar-activated(int);
+    // The archived-boards roster's row activation (UX R-1 D-1, #785),
+    // threaded through to the window's unarchive seam.
+    callback board-bar-archived-activated(int);
     // The board-bar segment right-click (r2 D21), threaded through.
     callback segment-context(int, float, float);
     // The stack-create flow (usability D7): the on-board button and
@@ -235,6 +238,7 @@ export component BoardLayout inherits Rectangle {
             bar: root.board-bar;
             segment-hint: root.board-segment-hint;
             segment-activated(index) => root.board-bar-activated(index);
+            archived-activated(i) => root.board-bar-archived-activated(i);
             segment-context(i, x, y) => root.segment-context(i, x, y);
         }
         EmptyState {
@@ -283,6 +287,7 @@ export component BoardLayout inherits Rectangle {
             bar: root.board-bar;
             segment-hint: root.board-segment-hint;
             segment-activated(index) => root.board-bar-activated(index);
+            archived-activated(i) => root.board-bar-archived-activated(i);
             segment-context(i, x, y) => root.segment-context(i, x, y);
         }
 

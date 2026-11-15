@@ -7092,6 +7092,7 @@ fn install_view_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     install_toolbar_seam(window, adapter);
     install_menu_dismiss_seam(window, adapter);
     install_board_bar_seam(window, adapter);
+    install_board_bar_archived_seam(window, adapter);
     install_stack_create_seams(window, adapter);
     install_board_seams(window, adapter);
     install_stack_seams(window, adapter);
@@ -8317,6 +8318,34 @@ fn install_board_bar_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     };
     a.board_target = Some(board);
     a.route(&window, ActionId::BoardSelect);
+
+    });
+}
+
+/// The archived-boards roster's row activation (UX R-1 D-1, #785):
+/// resolve the row's board against the same pass's archived-boards
+/// table, dispatch `SetBoardArchived { archived: false }` + the
+/// models refresh, and arm the one-shot re-select (consumed at
+/// reconcile once the engine's apply makes the board live again). A
+/// stale index against an older pass is absorbed silently.
+fn install_board_bar_archived_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
+    install_seam!(window: window.on_board_bar_archived_activated, adapter: adapter;
+    bind mut (a, window), args (index), {        let Ok(index) = usize::try_from(index) else {
+        return;
+    };
+    settle_pointer_conflict(&mut a, &window);
+    let Some(board) = a.tables.archived_board_ids.get(index).copied() else {
+        return;
+    };
+    // Layer 3 (the ToggleFocusMode precedent, UX R-1 D-1's no-new-
+    // kiosk-capability non-goal): the kiosk dispatch refuses — the
+    // roster renders the disabled affordance (layer 1's visual), the
+    // refusal keeps the verb structurally unreachable.
+    if a.kiosk {
+        return;
+    }
+    let outcomes = a.view_state.unarchive_board(board);
+    a.apply_outcomes(&window, &outcomes);
 
     });
 }

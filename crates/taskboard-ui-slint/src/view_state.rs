@@ -434,6 +434,13 @@ pub struct ViewState {
     /// them (the exit side-effects ride the drain, never a per-flow
     /// wipe rule).
     retired: Vec<crate::surfaces::Level>,
+    /// The archived-boards roster's one-shot select target (UX R-1
+    /// D-1, issue #785): armed when a roster row dispatches
+    /// `SetBoardArchived { archived: false }` — the engine applies the
+    /// command asynchronously, so the selection is consumed by
+    /// `reconcile` exactly on the first refresh where the board is
+    /// live again (an armed target whose board is deleted prunes).
+    pending_board_select: Option<BoardId>,
 }
 
 /// The `Flow` the flow accessors return when no flow level is live —
@@ -505,6 +512,7 @@ impl ViewState {
             selected_stack: None,
             stack_widths: BTreeMap::new(),
             retired: Vec::new(),
+            pending_board_select: None,
         }
     }
 
@@ -1271,6 +1279,24 @@ impl ViewState {
             .selected_stack
             .and_then(|stack| Self::first_task_of(state, stack));
         vec![FlowOutcome::RefreshNow]
+    }
+
+    /// The archived-boards roster's unarchive verb (UX R-1 D-1, issue
+    /// #785): dispatches the exact `SetBoardArchived { archived: false
+    /// }` plus the models refresh, and arms the one-shot select target
+    /// — `reconcile` selects the board on the first refresh where the
+    /// engine's apply makes it live again (the async apply makes an
+    /// immediate `select_board` repair away). The command is journal-
+    /// eligible (`undo.rs:324`), so `AppUndo` is the escape path.
+    pub fn unarchive_board(&mut self, board: BoardId) -> Vec<FlowOutcome> {
+        self.pending_board_select = Some(board);
+        vec![
+            FlowOutcome::Command(StateCommand::SetBoardArchived {
+                board,
+                archived: false,
+            }),
+            FlowOutcome::RefreshNow,
+        ]
     }
 
     /// `board.next`: step to the next live board in canonical order —
@@ -3019,6 +3045,19 @@ impl ViewState {
     /// `StackDetail` → Board and re-falls-back the compact selection;
     /// flows on vanished entities end without commands.
     pub fn reconcile(&mut self, state: &AppState) {
+        // The roster's one-shot select (UX R-1 D-1): consumed exactly
+        // on the first refresh where the target is live again; a
+        // deleted target prunes (a stale arm must not linger forever).
+        if let Some(target) = self.pending_board_select {
+            match state.boards.get(&target) {
+                Some(board) if !board.deleted && !board.archived => {
+                    self.pending_board_select = None;
+                    self.board = Some(target);
+                }
+                Some(_) => {}
+                None => self.pending_board_select = None,
+            }
+        }
         self.normalize_board(state);
         let is_live = |id: TaskId| {
             state
@@ -4500,6 +4539,64 @@ mod tests {
         vs.select_board(&state, b2);
         vs.reconcile(&state);
         assert_eq!(vs.view(), ViewId::Board, "the stale subject pops");
+    }
+
+    /// UX R-1 D-1 (issue #785): the roster's one-shot select — armed
+    /// at unarchive, consumed exactly when the engine's apply makes
+    /// the board live again, pruned when the board is deleted first.
+    #[test]
+    fn unarchive_board_arms_a_pending_select_consumed_once_live() {
+        let (state, b1, b2, _, _) = two_board_fixture();
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        vs.select_board(&state, b1);
+
+        // The verb dispatches the exact unarchive + refresh and arms
+        // the one-shot; the selection holds until the apply lands.
+        let outcomes = vs.unarchive_board(b2);
+        assert_eq!(outcomes.len(), 2);
+        assert!(matches!(
+            &outcomes[0],
+            FlowOutcome::Command(StateCommand::SetBoardArchived {
+                archived: false,
+                ..
+            })
+        ));
+        assert!(matches!(outcomes[1], FlowOutcome::RefreshNow));
+        assert_eq!(vs.board(), Some(b1), "the apply has not landed yet");
+
+        // The engine applies; the next reconcile selects the restored
+        // board exactly once (the one-shot is consumed).
+        let mut applied = state.clone();
+        applied.boards.get_mut(&b2).expect("board").archived = false;
+        vs.reconcile(&applied);
+        assert_eq!(vs.board(), Some(b2));
+        vs.reconcile(&applied);
+        assert_eq!(vs.board(), Some(b2), "consumed — a no-op thereafter");
+
+        // A deleted target prunes (a stale arm never lingers).
+        let (state, _, b2, _, _) = two_board_fixture();
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        vs.unarchive_board(b2);
+        let mut deleted = state.clone();
+        deleted.boards.get_mut(&b2).expect("board").deleted = true;
+        vs.reconcile(&deleted);
+        assert_eq!(vs.board(), Some(b1), "the deletion repairs normally");
+
+        // The engine's typed refusals (the escape column): an engine
+        // that refuses leaves the board archived forever, so the
+        // armed target never consumes — the selection stays put
+        // rather than landing on a non-live board.
+        let (state, b1, b2, _, _) = two_board_fixture();
+        let mut still_archived = state.clone();
+        still_archived.boards.get_mut(&b2).expect("board").archived = true;
+        let mut vs = ViewState::new();
+        vs.reconcile(&still_archived);
+        vs.select_board(&still_archived, b1);
+        vs.unarchive_board(b2);
+        vs.reconcile(&still_archived);
+        assert_eq!(vs.board(), Some(b1), "a refused apply never selects");
     }
 
     #[test]
