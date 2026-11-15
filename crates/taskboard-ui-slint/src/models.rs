@@ -16,7 +16,8 @@ use std::rc::Rc;
 use chrono::{DateTime, Datelike as _, TimeDelta, Utc};
 
 use taskboard_domain::{
-    AppState, BoardId, ReminderRuleId, SearchHit, SearchTarget, StackId, Task, TaskId,
+    AppState, BoardId, Importance, LabelId, ReminderRuleId, SearchHit, SearchTarget, StackId, Task,
+    TaskId,
 };
 
 use crate::actions::{ActionId, ContextId};
@@ -111,6 +112,16 @@ pub struct IdTables {
     /// entry ids through this table (the index-seam rule, never a
     /// viewport-relative offset).
     pub track_entries: Vec<taskboard_domain::TimeEntryId>,
+    /// The task-detail labels section's chips (UX R-3 D-2, #789):
+    /// index-aligned with the pushed `labels` model — the chip ×
+    /// unassign seam resolves the label id through this table (the
+    /// index-seam rule; stale absorbed like every seam).
+    pub task_labels: Vec<LabelId>,
+    /// The subject board's live labels in canonical order (UX R-3
+    /// D-2/D-3): the labels overlay's roster row indices resolve
+    /// against this pass — the assignment toggle, the edit seed, and
+    /// the armed-delete resolve label ids through this table.
+    pub label_ids: Vec<LabelId>,
     /// The Tracked-today section's rows (r4 chunk 10, D-TS7):
     /// index-aligned with the pushed section model — row activation
     /// opens the addressed task.
@@ -2105,6 +2116,25 @@ fn push_task_detail(
         .map(|subject| presentation::track_entry_rows(state, subject, now, &chrono::Local))
         .unwrap_or_default();
     tables.track_entries = track_rows.iter().map(|row| row.id).collect();
+    // The labels tables (UX R-3 D-3): the subject's live chips in
+    // canonical order (the OR-set's BTreeSet), then the subject
+    // board's full live roster — labels are board-scoped, the
+    // overlay's rows resolve against the roster pass.
+    tables.task_labels = subject
+        .map(|t| t.live_labels().into_iter().collect())
+        .unwrap_or_default();
+    tables.label_ids = subject
+        .and_then(|t| state.stacks.get(&t.stack))
+        .map(|stack| stack.board)
+        .map(|board| {
+            state
+                .labels
+                .values()
+                .filter(|label| !label.deleted && label.board == board)
+                .map(|label| label.id)
+                .collect()
+        })
+        .unwrap_or_default();
     let track_entry_rows: Vec<TrackEntryRowModel> = track_rows
         .iter()
         .map(|row| TrackEntryRowModel {
@@ -2273,6 +2303,35 @@ fn push_task_detail(
                 .collect::<Vec<crate::TimeSlotRow>>(),
         )),
         date_time_nearest_row: i32::try_from(due.time_nearest_row).unwrap_or(0),
+        // The priority rows' halves (UX R-3 D-1, #788): the echoes are
+        // the domain text forms (the card chips' own labels); the open
+        // flags ride the picker flow (the seams commit wires the
+        // Flow::EditPriority read — the display half pushes closed).
+        importance_echo: SharedString::from(
+            subject
+                .and_then(|t| t.importance)
+                .map_or(String::new(), |level| level.text_form().to_owned()),
+        ),
+        urgency_echo: SharedString::from(
+            subject
+                .and_then(|t| t.urgency)
+                .map_or(String::new(), |level| level.text_form().to_owned()),
+        ),
+        importance_open: false,
+        urgency_open: false,
+        priority_slots: ModelRc::new(slint::VecModel::from(priority_slot_rows(
+            subject.and_then(|t| t.importance.map(|level| level as usize)),
+        ))),
+        // The labels section's halves (UX R-3 D-2, #789): the
+        // subject's live labels as chips in canonical order; the chip
+        // ids ride the same pass's table (index-aligned by
+        // construction).
+        labels_visible: subject.is_some(),
+        labels: ModelRc::new(slint::VecModel::from(label_chip_rows(
+            state,
+            vs.subject_task(),
+            &tables.task_labels,
+        ))),
         date_validity: match due.date_valid {
             None => crate::FieldValidity::Neutral,
             Some(true) => crate::FieldValidity::Valid,
@@ -2289,6 +2348,84 @@ fn push_task_detail(
     });
     tables.task_rules = task_rules;
     mutations
+}
+
+/// The priority picker's slot rows (UX R-3 D-1, #788): the
+/// six-value vocabulary in order — `unset` first, then the five
+/// domain levels in declaration order — with the current value
+/// pre-marked (`current` is the vocabulary index of the open field's
+/// level; `None` marks the unset slot).
+fn priority_slot_rows(current: Option<usize>) -> Vec<crate::PrioritySlotRow> {
+    let mut rows = Vec::with_capacity(6);
+    let unset_selected = current.is_none();
+    rows.push(crate::PrioritySlotRow {
+        label: SharedString::from("unset"),
+        selected: unset_selected,
+    });
+    let levels: [&str; 5] = [
+        Importance::VeryLow.text_form(),
+        Importance::Low.text_form(),
+        Importance::Normal.text_form(),
+        Importance::High.text_form(),
+        Importance::VeryHigh.text_form(),
+    ];
+    for (index, label) in levels.iter().enumerate() {
+        rows.push(crate::PrioritySlotRow {
+            label: SharedString::from(*label),
+            selected: current == Some(index + 1),
+        });
+    }
+    rows
+}
+
+/// The labels section's chip rows (UX R-3 D-2, #789): the subject's
+/// live labels as display chips, index-aligned with
+/// `IdTables::task_labels` (the same pass builds both).
+fn label_chip_rows(
+    state: &AppState,
+    subject: Option<TaskId>,
+    chip_ids: &[LabelId],
+) -> Vec<crate::LabelChipModel> {
+    subject
+        .and_then(|subject| {
+            let task = state.tasks.get(&subject)?;
+            Some(
+                chip_ids
+                    .iter()
+                    .filter(|id| task.live_labels().contains(id))
+                    .filter(|id| state.labels.get(*id).is_some_and(|l| !l.deleted))
+                    .filter_map(|id| {
+                        state.labels.get(id).map(|label| crate::LabelChipModel {
+                            title: SharedString::from(label.title.clone()),
+                            color: swatch_hex(&label.color),
+                        })
+                    })
+                    .collect::<Vec<crate::LabelChipModel>>(),
+            )
+        })
+        .unwrap_or_default()
+}
+
+/// The swatch echo of a lenient domain `Color`: six-hex bodies mint
+/// the typed color (the palette's own vocabulary); anything else
+/// renders transparent (the lenient value survives sync — the GUI
+/// never re-derives it, D-5).
+fn swatch_hex(color: &taskboard_domain::Color) -> slint::Color {
+    let raw = color.as_str();
+    if raw.len() == 6 && raw.bytes().all(|b| b.is_ascii_hexdigit()) {
+        let bytes = raw.as_bytes();
+        let (r, g, b) = (hex(&bytes[0..2]), hex(&bytes[2..4]), hex(&bytes[4..6]));
+        slint::Color::from_argb_u8(0xff, r, g, b)
+    } else {
+        slint::Color::from_argb_u8(0, 0, 0, 0)
+    }
+}
+
+/// One two-hex-digit byte (the swatch's own six-hex vocabulary;
+/// `swatch_hex` gates the shape before calling).
+fn hex(digits: &[u8]) -> u8 {
+    let value = |d: u8| u8::try_from((d as char).to_digit(16).unwrap_or(0)).unwrap_or(0);
+    (value(digits[0]) << 4) | value(digits[1])
 }
 
 /// The timers chip's display text (r4 D32): the label and the
@@ -3217,6 +3354,129 @@ mod tests {
             remote_seen: None,
             remote_baseline: None,
         }
+    }
+
+    /// A live label on `board` with the given title/color.
+    fn label(
+        id: LabelId,
+        board: BoardId,
+        title: &str,
+        color: &str,
+        deleted: bool,
+    ) -> taskboard_domain::Label {
+        taskboard_domain::Label {
+            id,
+            remote: None,
+            board,
+            title: title.to_owned(),
+            color: taskboard_domain::Color::new(color),
+            deleted,
+            clocks: taskboard_domain::LabelClocks {
+                title: epoch(),
+                color: epoch(),
+                deleted: epoch(),
+            },
+            authors: taskboard_domain::entities::LabelAuthors::default(),
+            remote_seen: None,
+        }
+    }
+
+    /// The priority picker's slot rows (UX R-3 D-1/D-9): the closed
+    /// six-value vocabulary in order, exactly one pre-mark — the
+    /// open field's current level (the unset slot when `None`).
+    #[test]
+    fn priority_slots_enumerate_the_vocabulary_with_one_mark() {
+        let unset = priority_slot_rows(None);
+        assert_eq!(unset.len(), 6, "unset + the five domain levels");
+        assert!(unset[0].selected, "no level = the unset slot pre-marked");
+        assert!(!unset.iter().skip(1).any(|slot| slot.selected));
+        // High rides vocabulary index 4 (unset + VeryLow..VeryHigh).
+        let marked = priority_slot_rows(Some(4));
+        assert_eq!(
+            marked.iter().filter(|slot| slot.selected).count(),
+            1,
+            "exactly one pre-mark"
+        );
+        assert!(marked[4].selected);
+        assert!(!marked[0].selected);
+        // The slot labels ARE the domain text forms — the same
+        // strings the card decorations render (reconciliation by
+        // construction).
+        for (slot, level) in marked.iter().skip(1).zip([
+            Importance::VeryLow,
+            Importance::Low,
+            Importance::Normal,
+            Importance::High,
+            Importance::VeryHigh,
+        ]) {
+            assert_eq!(slot.label, level.text_form());
+        }
+    }
+
+    /// Both vocabularies share the slot shape (D-1: one quick-list
+    /// grammar, two fields) — the urgency row's slots are the same
+    /// six-value vocabulary (distinct types, same text forms).
+    #[test]
+    fn the_urgency_vocabulary_maps_to_the_same_slot_shape() {
+        let marked = priority_slot_rows(Some(1));
+        for (slot, level) in marked.iter().skip(1).zip([
+            Urgency::VeryLow,
+            Urgency::Low,
+            Urgency::Normal,
+            Urgency::High,
+            Urgency::VeryHigh,
+        ]) {
+            assert_eq!(slot.label, level.text_form());
+        }
+        assert!(marked[1].selected);
+    }
+
+    /// The labels section's chips (UX R-3 D-2/D-9): the subject's
+    /// live labels in canonical order — a tombstoned or removed
+    /// membership never renders, a six-hex color echoes as a swatch,
+    /// a lenient color echoes empty (the GUI never re-derives it).
+    #[test]
+    fn label_chips_render_the_subjects_live_labels() {
+        let board = BoardId::from_uuid(uuid::Uuid::now_v7());
+        let mut state = AppState::default();
+        let mut subject = task();
+        let (green, red, dead) = (
+            LabelId::from_uuid(uuid::Uuid::now_v7()),
+            LabelId::from_uuid(uuid::Uuid::now_v7()),
+            LabelId::from_uuid(uuid::Uuid::now_v7()),
+        );
+        state
+            .labels
+            .insert(green, label(green, board, "green", "31cc7c", false));
+        state
+            .labels
+            .insert(red, label(red, board, "red", "ff0000", false));
+        state
+            .labels
+            .insert(dead, label(dead, board, "dead", "0000ff", true));
+        subject.label_memberships.insert(
+            green,
+            taskboard_domain::entities::MembershipState::Added { at: epoch() },
+        );
+        subject.label_memberships.insert(
+            dead,
+            taskboard_domain::entities::MembershipState::Added { at: epoch() },
+        );
+        state.tasks.insert(subject.id, subject.clone());
+        let chip_ids = vec![green, dead];
+        let rows = label_chip_rows(&state, Some(subject.id), &chip_ids);
+        assert_eq!(rows.len(), 1, "only the live label renders");
+        assert_eq!(
+            rows[0].color,
+            slint::Color::from_argb_u8(0xff, 0x31, 0xcc, 0x7c),
+        );
+        // The lenient-color hygiene: a non-palette color renders
+        // transparent, not re-derived.
+        state.labels.get_mut(&green).expect("live").color = taskboard_domain::Color::new("junk");
+        let rows = label_chip_rows(&state, Some(subject.id), &chip_ids);
+        assert_eq!(rows[0].color, slint::Color::from_argb_u8(0, 0, 0, 0));
+        // No subject: the section is empty.
+        assert_eq!(label_chip_rows(&state, None, &chip_ids).len(), 0);
     }
 
     fn epoch() -> chrono::DateTime<chrono::Utc> {

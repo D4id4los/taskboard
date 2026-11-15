@@ -23,6 +23,26 @@ import { TaskViewWalkFacts } from "../walk-facts.slint";
 import { TrackPanelFacts } from "../track-panel-facts.slint";
 import { TrackEntryRowModel } from "../compositions/track-entries.slint";
 
+// One priority-picker slot row (UX R-3 D-1, #788): the level's
+// canonical text form plus the current-value pre-mark. Display parts
+// only — the slot's level resolves Rust-side through the row index
+// into the closed six-value vocabulary (`unset` + the five domain
+// levels, in declaration order).
+export struct PrioritySlotRow {
+    label: string,
+    selected: bool,
+}
+
+// One label chip (UX R-3 D-2, #789): the live label's title and its
+// lenient color's swatch echo (a typed color — the adapter mints it
+// from the lenient domain string; unparsable renders transparent).
+// Display parts only — the chip's id resolves Rust-side through the
+// `IdTables::label_ids`-adjacent chip table.
+export struct LabelChipModel {
+    title: string,
+    color: color,
+}
+
 // The task-detail model (D22).
 export struct TaskDetailModel {
     title: string,
@@ -117,6 +137,23 @@ export struct TaskDetailModel {
     date-time-validity: FieldValidity,
     date-time-slots: [TimeSlotRow],
     date-time-nearest-row: int,
+    // The priority rows' pushed halves (UX R-3 D-1, #788): the two
+    // echoes (the domain text forms — the card chips' own labels;
+    // empty where the field is unset) and the picker's open flags
+    // (the flow's, one picker at a time — the editor exclusivity's
+    // shape). The slot rows are the pushed quick-list: the six-value
+    // vocabulary in order, the current value pre-marked.
+    importance-echo: string,
+    urgency-echo: string,
+    importance-open: bool,
+    urgency-open: bool,
+    priority-slots: [PrioritySlotRow],
+    // The labels section's pushed halves (UX R-3 D-2, #789): the
+    // mount flag (desktop + subject present — the detail view's own
+    // platform posture) and the subject's live chips in canonical
+    // order.
+    labels-visible: bool,
+    labels: [LabelChipModel],
 }
 
 export component TaskView inherits FocusScope {
@@ -152,6 +189,18 @@ export component TaskView inherits FocusScope {
     // routes the `task.track-entries` action over the subject (click
     // ≡ key, §7.1).
     callback task-track-entries-clicked();
+    // The priority pickers' seams (UX R-3 D-1, #788): a slot click
+    // commits the picked level immediately (the rule-preset posture),
+    // the outside click / Escape cancels — nothing dispatches.
+    callback priority-slot-clicked(int);
+    callback priority-dismiss-requested();
+    // The labels section's seams (UX R-3 D-2, #789): the chip ×
+    // unassigns over the VIEW'S SUBJECT (the section always names
+    // its subject), the add affordance routes the `label.manage`
+    // action (click ≡ key, §7.1). Index seams resolve through the
+    // adapter's chip table.
+    callback chip-unassign-clicked(int);
+    callback labels-manage-asked();
     // The done checkbox (r4 D16b): raw-sends the toggled SetTaskDone
     // over the VIEW'S SUBJECT — the adapter seam resolves it (the
     // subject is not guaranteed focused; the cycle's fallback).
@@ -264,6 +313,18 @@ export component TaskView inherits FocusScope {
         border-width: root.has-focus ? Theme.focus-ring-width : 0;
         border-color: Semantic.focus-ring;
         border-radius: Theme.radius-medium;
+
+        // The priority pickers' outside-click dismissal (UX R-3 D-1):
+        // an invisible full-view underlay armed exactly while a
+        // picker holds — the earlier sibling is hit-tested last, so
+        // the layout's own controls absorb their clicks and every
+        // non-control region cancels the picker (the track-entries
+        // backdrop's view-local twin).
+        if (root.task.importance-open || root.task.urgency-open): priority-catch := TouchArea {
+            width: 100%;
+            height: 100%;
+            clicked => root.priority-dismiss-requested();
+        }
 
         VerticalLayout {
             spacing: Theme.space-3;
@@ -660,6 +721,136 @@ export component TaskView inherits FocusScope {
                         text-color: root.task.done ? Semantic.success : Theme.text-primary;
                         text: root.task.done ? "Completed" : "Open";
                     }
+                }
+            }
+
+            // The priority rows (UX R-3 D-1, #788): the two echoes of
+            // the card decorations' own labels (reconciliation by
+            // construction — the same domain text forms), mounted in
+            // the metadata block below the date columns. The picker
+            // block expands under the open row: the pushed six-slot
+            // quick-list, the current value pre-marked.
+            if (root.task.importance-open || root.task.urgency-open): VerticalLayout {
+                spacing: Theme.space-1;
+                RoleText {
+                    role: Typography.caption;
+                    text-color: Theme.text-secondary;
+                    text: root.task.importance-open ? "Importance" : "Urgency";
+                }
+                for slot[index] in root.task.priority-slots: Rectangle {
+                    height: Theme.space-5;
+                    border-radius: Theme.radius-small;
+                    background: slot-touch.has-hover ? Theme.surface-hover : transparent;
+                    border-width: slot.selected ? Theme.focus-ring-width : 0;
+                    border-color: Semantic.focus-ring;
+                    HorizontalLayout {
+                        padding-left: Theme.space-2;
+                        padding-right: Theme.space-2;
+                        RoleText {
+                            role: Typography.body;
+                            text: slot.label;
+                            vertical-alignment: center;
+                        }
+                        Rectangle {
+                            horizontal-stretch: 1;
+                        }
+                        if (slot.selected): Path {
+                            width: Theme.space-3;
+                            height: Theme.space-3;
+                            commands: "M 2 6 L 5 9 L 10 3";
+                            stroke: Semantic.success;
+                            stroke-width: Theme.focus-ring-width;
+                            fill: transparent;
+                            viewbox-width: 12;
+                            viewbox-height: 12;
+                        }
+                    }
+                    slot-touch := TouchArea {
+                        mouse-cursor: MouseCursor.pointer;
+                        clicked => {
+                            TooltipState.unhover();
+                            root.priority-slot-clicked(index);
+                        }
+                    }
+                }
+            }
+            if (!root.task.importance-open && !root.task.urgency-open): HorizontalLayout {
+                spacing: Theme.space-3;
+                VerticalLayout {
+                    RoleText {
+                        role: Typography.caption;
+                        text-color: Theme.text-secondary;
+                        text: "Importance";
+                    }
+                    RoleText {
+                        role: Typography.mono;
+                        text-color: Theme.text-secondary;
+                        text: root.task.importance-echo == "" ? "—" : root.task.importance-echo;
+                    }
+                }
+                VerticalLayout {
+                    RoleText {
+                        role: Typography.caption;
+                        text-color: Theme.text-secondary;
+                        text: "Urgency";
+                    }
+                    RoleText {
+                        role: Typography.mono;
+                        text-color: Theme.text-secondary;
+                        text: root.task.urgency-echo == "" ? "—" : root.task.urgency-echo;
+                    }
+                }
+            }
+
+            // The labels section (UX R-3 D-2, #789): the subject's
+            // live labels as swatch chips with their unassign
+            // affordances, plus the add affordance that opens the
+            // labels overlay (click ≡ key — the affordance routes the
+            // same `label.manage` action the keyboard binding does).
+            if (root.task.labels-visible): HorizontalLayout {
+                spacing: Theme.space-2;
+                RoleText {
+                    role: Typography.caption;
+                    text-color: Theme.text-secondary;
+                    text: "Labels";
+                    vertical-alignment: center;
+                }
+                for chip[index] in root.task.labels: Rectangle {
+                    border-radius: Theme.radius-small;
+                    background: Theme.surface;
+                    HorizontalLayout {
+                        padding-left: Theme.space-2;
+                        padding-right: Theme.space-1;
+                        spacing: Theme.space-1;
+                        Rectangle {
+                            width: Theme.space-3;
+                            height: Theme.space-3;
+                            y: (parent.height - self.height) / 2;
+                            border-radius: Theme.radius-small;
+                            background: chip.color;
+                            border-width: Theme.hairline-width;
+                            border-color: Theme.border;
+                        }
+                        RoleText {
+                            role: Typography.caption;
+                            text: chip.title;
+                            vertical-alignment: center;
+                        }
+                        IconButton {
+                            icon: IconKind.remove;
+                            tone: Tone.neutral;
+                            label: "Remove label " + chip.title;
+                            description: "Detaches this label from the task.";
+                            clicked => root.chip-unassign-clicked(index);
+                        }
+                    }
+                }
+                IconButton {
+                    icon: IconKind.plus;
+                    tone: Tone.neutral;
+                    label: "Add label";
+                    description: "Opens the labels overlay: assign, create, edit, delete.";
+                    clicked => root.labels-manage-asked();
                 }
             }
 
