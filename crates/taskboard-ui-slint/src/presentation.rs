@@ -2113,6 +2113,21 @@ pub const OFFSET_SYNTAX_HINT: &str = "45m, 3h, 2d, 1w";
 /// The timers `when` field's syntax hint (r4 D27).
 pub const TIMER_SYNTAX_HINT: &str = "in 10m · at 09:30 · at 2030-04-01";
 
+/// The disabled-menu-invocation notice's visibility horizon (T-19,
+/// #802): the resurrect notice's transient class — a non-blocking
+/// line wherever the status bar renders.
+pub const MENU_NOTICE_HORIZON: chrono::TimeDelta =
+    chrono::TimeDelta::try_seconds(6).expect("non-zero constant");
+
+/// The invoked-disabled-row notice's phrase (T-19, #802): the typed
+/// fact (the row is disabled) plus the row's own registry description
+/// — the why-text, composed presentation-side. Tests assert the typed
+/// fact routes and the notice arms, never this sentence.
+#[must_use]
+pub fn disabled_menu_notice_phrase(description: &str) -> String {
+    format!("That action is unavailable right now — {description}")
+}
+
 /// The curated health flags in declaration order (T-15, #798): the
 /// flag chips' fixed row source — the delta never carries the parked
 /// extra names (the write paths never park; the domain's posture).

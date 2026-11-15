@@ -4369,8 +4369,28 @@ impl Adapter {
         let Some(action) = entry.action else {
             return;
         };
+        // T-19 (#802): the doctrine's letter — every click reacts. A
+        // disabled row's invocation sets the status-line notice built
+        // from the row's own registry description (the why-text, the
+        // modality-neutral channel) instead of absorbing into the
+        // router's Disabled arm.
+        if !entry.enabled {
+            self.arm_disabled_menu_notice(entry.description);
+            self.push_notice(window);
+            return;
+        }
         self.apply_close_menu(window);
         self.route(window, action);
+    }
+
+    /// The disabled-row notice's arming (T-19, #802): the typed fact
+    /// (entry disabled) plus the registry description, captured at
+    /// event time (the resurrect notice's event-stamp shape).
+    fn arm_disabled_menu_notice(&mut self, description: &str) {
+        self.notice = Some(Notice {
+            text: crate::presentation::disabled_menu_notice_phrase(description),
+            until: chrono::Utc::now() + crate::presentation::MENU_NOTICE_HORIZON,
+        });
     }
 
     /// A root-panel row's invocation (round-1 D6): identical to
@@ -4383,6 +4403,16 @@ impl Adapter {
         if let Some(group) = submenu {
             self.shell.menu.selected = index;
             self.activate_parent(window, group);
+            return;
+        }
+        // The disabled guard rides the root twin too (the keyboard
+        // `menu.invoke` and the fly-out rows both land here).
+        let disabled = self.root_entries.get(index).is_some_and(|entry| {
+            entry.submenu.is_none() && entry.action.is_some() && !entry.enabled
+        });
+        if disabled {
+            self.arm_disabled_menu_notice(self.root_entries[index].description);
+            self.push_notice(window);
             return;
         }
         let action = self.root_entries.get(index).and_then(|entry| entry.action);
