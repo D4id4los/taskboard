@@ -9496,6 +9496,35 @@ fn the_kiosk_habit_undo_affordance_renders_disabled() {
     );
 }
 
+/// T-41 (#824): the +1's acknowledgement rides the status-notice
+/// lane — the command routes AND the typed surplus fact (the logged
+/// count delta) arms the notice (both facts, one dispatch).
+#[test]
+fn a_habit_log_routes_and_sets_the_status_notice() {
+    let (_fixture, mut state) = fixture::journey_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    state_habit(&mut state, board);
+    support::driver::run(
+        support::driver::DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::ViewToday);
+            harness.handle.window().invoke_habits_plus_clicked(0);
+            harness.driver.advance_time(0);
+            match harness.engine.drain().as_slice() {
+                [StateCommand::LogHabit { .. }] => {}
+                other => panic!("the log reached the boundary, got {other:?}"),
+            }
+            assert!(
+                harness.handle.window().get_notice_visible(),
+                "the +1 acknowledgement arms the status notice"
+            );
+        },
+    );
+}
+
 /// UX R-1 D-2 (D-6 T5, #790): the focus toggle's menu row greys on
 /// kiosk (the `entry_states` layer) and its activation still yields
 /// ZERO effects (the dispatch no-op arm stands — layer 3).
@@ -12850,6 +12879,44 @@ fn the_timers_form_creates_then_cancels() {
             harness.engine.settle(&harness.handle);
             assert_eq!(harness.handle.window().get_timers_model().row_count(), 0);
             assert!(!harness.handle.window().get_timers_chip_visible());
+        },
+    );
+}
+
+/// T-43 (#826): the created timer's acknowledgement rides the
+/// status-notice lane — the create routes AND the typed created-
+/// occurrence fact (the label plus its target) arms the notice.
+#[test]
+fn a_created_timer_routes_and_sets_the_status_notice() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::ViewToday);
+            let click_field = |harness: &mut Harness, label: &str| {
+                let element = harness
+                    .driver
+                    .find_by_label(label)
+                    .unwrap_or_else(|| panic!("the field {label:?} is present"));
+                let (x, y) = support::driver::centre(&element);
+                harness.driver.click_at(x, y);
+            };
+            click_field(&mut harness, "Timer label");
+            harness.type_text("Tea");
+            click_field(&mut harness, "Timer timing (in 10m or at 09:30)");
+            harness.type_text("in 3m");
+            harness.stroke(parse("Return").expect("Return"));
+            match harness.engine.drain().as_slice() {
+                [StateCommand::CreateAdhocAlarm { .. }] => {}
+                other => panic!("the create reached the boundary, got {other:?}"),
+            }
+            assert!(
+                harness.handle.window().get_notice_visible(),
+                "the created-timer acknowledgement arms the status notice"
+            );
         },
     );
 }

@@ -828,6 +828,39 @@ pub fn notification_phrase(occurrence: DateTime<Utc>, now: DateTime<Utc>) -> Str
 pub const RESURRECT_NOTICE_HORIZON: chrono::TimeDelta =
     chrono::TimeDelta::try_seconds(10).expect("non-zero constant");
 
+/// The dispatch-outcome notice's visibility horizon (T-41/T-43,
+/// #824/#826): the resurrect notice's transient class — a non-blocking
+/// line wherever the status bar renders.
+pub const OUTCOME_NOTICE_HORIZON: chrono::TimeDelta =
+    chrono::TimeDelta::try_seconds(6).expect("non-zero constant");
+
+/// The habit-log acknowledgement's phrase (T-41, #824): the typed
+/// surplus fact — the logged count delta (+1 by the domain's design,
+/// never a no-op). Tests assert the notice arms, never this sentence.
+#[must_use]
+pub fn habit_log_notice_phrase() -> String {
+    "Habit logged \u{2014} +1.".to_owned()
+}
+
+/// The created-timer acknowledgement's phrase (T-43, #826): the typed
+/// fact (the label plus the created occurrence's target instant) —
+/// the acknowledgement lands with the next render's row as its
+/// recognition anchor. Tests assert the notice arms, never this
+/// sentence.
+#[must_use]
+pub fn adhoc_alarm_notice_phrase(label: &str, when: &taskboard_domain::AdhocWhen) -> String {
+    match when {
+        taskboard_domain::AdhocWhen::At(at) => format!(
+            "Timer set: {label} \u{2014} fires {}.",
+            iso_local_fire_time(*at, &chrono::Local)
+        ),
+        taskboard_domain::AdhocWhen::In(delta) => format!(
+            "Timer set: {label} \u{2014} fires {}.",
+            countdown_text(chrono::Utc::now() + *delta, chrono::Utc::now())
+        ),
+    }
+}
+
 /// The notice's visibility decision (#130): visible while the expiry
 /// instant is still ahead of `now` — the pure half of the cadence tick's
 /// clear.
