@@ -21,6 +21,14 @@
   recorded baseline anchors — chunk-1 plan §5 anchor-drift law).
 - **Status**: ACCEPTED (retrofit documentation authored under the
   accepted phase-4 dispatch; stage 3 reviews it against this posture).
+  **Amended 2026-11-15** (UX remediation chunk 4, stage 2; authority:
+  the accepted triage report finding T-21 (#804) and the chunk plan
+  `.artifacts/plans/2026-11-15-ux-r4-board-entry-points-chunk-plan.md`
+  D-8): US-1's entry points gain the preset key (Standard
+  Ctrl+Shift+R, emacs C-c Ctrl+v, vi g w — the ContextId::Global
+  rows); RW-3's reachable-not-promoted finding gains its dated
+  remediation pointer (the reachable half is now promoted; the menu
+  rank and the kiosk `entry_states` greying stand unchanged).
 - **Surfaces touched**: `ui/views/review-view.slint`,
   `ui/views/review-walk-overlay.slint`,
   `ui/views/plan-next-day-view.slint`, `ui/app-window.slint` (the
@@ -65,7 +73,7 @@ authority, dated 2026-11-14). The F-Pattern 1 cells
 
 | Capability | Board | TaskDetail | Today | Review | Settings | Capture | CLI |
 |---|---|---|---|---|---|---|---|
-| review.open | E (global) (US-1) — =ReviewOpen= "Review" `actions.rs:1541-1549` (GLOBAL, menu rank 75, no preset binding — P7 reachable-not-promoted; kiosk greys in =entry_states=), routes =UiEffect::OpenReviewWalk= `router.rs:991` | E (global) — same =ReviewOpen= evidence | E — the walk-preview card's activation routes the same =ReviewOpen= `adapter.rs:10147-10151` (display card = review.walk_preview in the Today slice) | E (global) — same =ReviewOpen= evidence | E (global) — same =ReviewOpen= evidence | E (global) — same =ReviewOpen= evidence | U (RW-4) |
+| review.open | E (global) (US-1) — =ReviewOpen= "Review" `actions.rs` (GLOBAL, menu rank 75; preset keys in every preset — Standard Ctrl+Shift+R, emacs C-c Ctrl+v, vi g w — remediated 2026-11-15, T-21/#804; kiosk greys in =entry_states=), routes =UiEffect::OpenReviewWalk= `router.rs:991` | E (global) — same =ReviewOpen= evidence | E — the walk-preview card's activation routes the same =ReviewOpen= `adapter.rs:10147-10151` (display card = review.walk_preview in the Today slice) | E (global) — same =ReviewOpen= evidence | E (global) — same =ReviewOpen= evidence | E (global) — same =ReviewOpen= evidence | U (RW-4) |
 | review.walk_cursor | — (R-1) | — (R-1) | — (R-1) | E (US-2) — =ReviewWalkCursorUp/=ReviewWalkCursorDown= "Walk cursor up/down" `actions.rs:1551-1569` (=ContextId::ReviewWalk=), Up/Down presets `presets.rs:306-311`, overlay strip emphasis `review-walk-overlay.slint:47-54`; the walk seams `adapter.rs:10079-10152` | — (R-1) | — (R-1) | U (RW-2) |
 | review.walk_back | — (R-1) | — (R-1) | — (R-1) | E (US-2) — =ReviewWalkBack= "Walk back" `actions.rs:1571-1579`, Escape preset `presets.rs:312` (an armed picker disengages first, then stage, then close — never dispatching a command) | — (R-1) | — (R-1) | U (RW-2) |
 | review.walk_advance | — (R-1) | — (R-1) | — (R-1) | E (US-2) — =ReviewWalkAdvance= `actions.rs:1581-1589`; =WalkIntent::Advance= `adapter.rs:2146-2153`; advancing out of Carry forward hands off to plan-next-day | — (R-1) | — (R-1) | U (RW-2) |
@@ -108,9 +116,11 @@ above cites one of these; this table is the ruling's authority,
 - **Story**: As a desktop user I want to open the review from
   anywhere so that the end-of-day triage is reachable without hunting.
 - **Platforms**: desktop.
-- **Entry points**: the two-tier menu (`ActionId::ReviewOpen`,
-  GLOBAL, menu rank 75 — reachable-not-promoted, no preset binding);
-  the Today walk-preview card's activation (`adapter.rs:10147-10151`).
+- **Entry points** (amended 2026-11-15, UX R-4 D-8/#804): the preset
+  key (Standard Ctrl+Shift+R, emacs C-c Ctrl+v, vi g w — the
+  ContextId::Global rows, one stroke from anywhere); the two-tier
+  menu (`ActionId::ReviewOpen`, GLOBAL, menu rank 75); the Today
+  walk-preview card's activation (`adapter.rs`).
 - **Priority**: P1
 - **Acceptance**:
   - AC-1: Given the menu or the preview card, When review opens,
@@ -266,7 +276,7 @@ above cites one of these; this table is the ruling's authority,
 
 | Step | Surface & affordance | User action | Dispatches | System response | Escape / failure |
 |---|---|---|---|---|---|
-| US-1/S1 | two-tier menu / today walk-preview card | open review | `ActionId::ReviewOpen` (`actions.rs:1541-1549`) → `UiEffect::OpenReviewWalk` (`router.rs:991`); the card's activation `adapter.rs:10147-10151` routes the same | the walk overlay stages over the current view | the walk's Escape preset closes stage-by-stage (`presets.rs:312`) — the overlay's own escape (audit mechanism (b)) |
+| US-1/S1 | preset key / two-tier menu / today walk-preview card (entry points amended 2026-11-15, UX R-4 D-8/#804) | press the preset key (Ctrl+Shift+R / C-c Ctrl+v / g w), open the menu and invoke "Review", or click the preview card | `ActionId::ReviewOpen` (`actions.rs`) → `UiEffect::OpenReviewWalk` (`router.rs:991`); the card's activation routes the same | the walk overlay stages over the current view | the walk's Escape preset closes stage-by-stage (`presets.rs`) — the overlay's own escape (audit mechanism (b)) |
 
 ### US-2 — Walk the overlay
 
@@ -447,13 +457,14 @@ each carries evidence, never a fix.
   `tasks edit --scheduled`), so no journey depends on walk verbs in
   the CLI — the CLI cells stay `U` (MINOR-class arm unless the triage
   finds a dependent journey).
-- **RW-3 — the review is reachable-not-promoted** (entry-point
-  asymmetry evidence). `ReviewOpen` is GLOBAL with menu rank 75 and
-  no preset binding in any keymap (`actions.rs:1541-1549`; the
-  census's P7 posture); the only keyboard-free alternative is the
-  Today walk-preview card. A user must open the two-tier menu to
-  reach the review — discoverable but not promoted (the
-  chunk-1-lifecycle TF-1 posture family).
+- **RW-3 — the review is reachable-not-promoted** *(Remediated
+  2026-11-15: chunk-4 D-8 / triage T-21 (#804) — the preset keys
+  shipped in every preset; the reachable-not-promoted asymmetry
+  closes, the menu rank and the kiosk greying stand.)* (entry-point
+  asymmetry evidence). `ReviewOpen` was GLOBAL with menu rank 75 and
+  no preset binding in any keymap (`actions.rs`; the census's P7
+  posture); the only keyboard-free alternative was the Today
+  walk-preview card.
 - **RW-4 — review.open / plan.open have no CLI twins** (CLI-absence
   evidence note). No review/walk/planner verb exists in the CLI
   (census Sweep-CLI evidence, register 2026-11-14). The GUI completes
@@ -502,6 +513,16 @@ each carries evidence, never a fix.
   it (recognition question).
 
 ## 11. Plan corrections
+- **PC (2026-11-15, remediation chunk 4)**: the UX remediation
+  chunk 4 (stage 2, `fix/ux-r4-board-entry-points`) amended this plan
+  under the dispatch plan's dress-rehearsal mandate (authority: the
+  chunk plan D-8/D-10): US-1's entry points (the preset key), the §2
+  review.open cell's binding evidence, the US-1/S1 step's entry-point
+  list, and RW-3's remediation pointer. Command-contract delta: zero
+  new variants (the verb and route existed; the binding is the
+  remediation). Kiosk posture unchanged: the preset keys are desktop
+  keymap rows and `ReviewOpen`'s kiosk `entry_states` greying stands
+  (the chunk plan §6).
 
 - None required — the stage-2 `scripts/ux-coverage.sh` run
   (2026-11-14) returned checks: 64, FOUND: 38, MISSING: 26; every

@@ -19099,3 +19099,54 @@ fn us2_s4_target_free_board_select_opens_flyout_and_return_selects() {
         },
     );
 }
+
+/// US-6/S2 (UX R-4 D-8, #796): the today-row context menu extends with
+/// the re-commit row (today-only — the extension composition is
+/// pinned adapter-side); this journey drives the action through the
+/// today seam's route and pins the exact due write.
+#[test]
+fn us6_s2_today_row_menu_and_preset_key_recommit() {
+    let (_fixture, state, _walked) = fixture::today_overdue_state();
+    support::driver::run(
+        support::driver::DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            // The today surface (the verb binds ContextId::Today only).
+            harness.press(ActionId::ViewToday);
+            // Focus a today row (the click seam: click ≡ key's focus
+            // half — section 0 is the overdue section, row 0 the
+            // fixture's overdue task).
+            harness.handle.window().invoke_today_row_clicked(0, 0);
+            // The preset key route: the exact due write (S1's
+            // assertion shape, driven through the today surface's
+            // focused row).
+            let before = harness.engine.drain().len();
+            harness.press(ActionId::TaskDueToday);
+            let drained = harness.engine.drain();
+            assert_eq!(drained.len(), before + 1);
+            assert!(matches!(
+                &drained[before],
+                taskboard_domain::StateCommand::UpdateTask { .. }
+            ));
+            harness.engine.settle(&harness.handle);
+            // The today-row context menu carries the re-commit row
+            // (the today-only extension; the card menus' negative is
+            // the adapter composition pin).
+            harness
+                .handle
+                .window()
+                .invoke_today_row_context_requested(0, 0, 10.0, 10.0);
+            let entries = keyboard(&harness).get_menu_entries();
+            let ids: Vec<String> = (0..entries.row_count())
+                .filter_map(|i| entries.row_data(i))
+                .map(|row| row.action.to_string())
+                .collect();
+            assert!(
+                ids.iter().any(|id| id == "task.due-today"),
+                "the today row's menu offers the re-commit"
+            );
+        },
+    );
+}

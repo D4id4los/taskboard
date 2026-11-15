@@ -15,6 +15,17 @@
   HEAD (wiring anchors live; census cells keep their baseline anchors).
 - **Status**: ACCEPTED (retrofit documentation under the accepted
   phase-4 dispatch; stage 3 reviews it against this posture).
+  **Amended 2026-11-15** (UX remediation chunk 4 — board verbs +
+  entry-point asymmetry, stage 2; authority: the accepted triage
+  report finding T-13 (#796) and the chunk plan
+  `.artifacts/plans/2026-11-15-ux-r4-board-entry-points-chunk-plan.md`
+  D-8): the remediation design is recorded as **changed journeys** —
+  US-6's entry points gain the preset keys and the today-row
+  context-menu row, US-6/S1's escape cell retires to history (dated
+  pointer), the task.due_today Today cell's evidence gains the keys +
+  context row (§2), and TF-1 gains its remediation note (§10). The
+  round-10 D11 "no default stroke" note is deliberately overturned
+  with the accepted triage as authority (chunk-4 D-8).
 - **Surfaces touched**: `ui/views/board-view.slint`,
   `ui/views/today-view.slint`, `ui/views/task-view.slint`,
   `ui/views/stack-view.slint`, `ui/widgets/task-card.slint`,
@@ -62,7 +73,7 @@ is the ruling's authority, 2026-11-14). Cells avoid `|`. -->
 | task.location_display | D (US-7) — selected-stack highlight and header hints `board-layout.slint:413-437` | U (TF-3) | D (US-7) — row context line "board › stack" `today-view.slint:392-399` (model `today-view.slint:35-37`) | — (R-6) | — (R-6) | — (R-6) | D (pre-existing, `tasks list` grouping `cli.rs:1628`) |
 | task.badges_display | D (US-7) — card decoration chips: reminder / running-timer / recur / tracker badges `task-card.slint:18-33,247-260` | U (TF-3) | D (US-7) — the same task cards render on today rows `today-view.slint:20,376` | — (R-7) | — (R-7) | — (R-7) | U (TF-4) |
 | task.due_phrase_display | D (US-7) — due/scheduled/effort chips `task-card.slint:195-222`, due phrase in the accessible label `task-card.slint:96-97` | D — due/scheduled echoes `task-view.slint:73,76,556,625` | D (US-7) — the same task cards on today rows `today-view.slint:20,376` | — (R-8) | — (R-8) | — (R-8) | U (TF-4) |
-| task.due_today | — (R-9) | — (R-9) | E (US-6) — `TaskDueToday` "Due today (re-commit)" `actions.rs:1076-1078`, Today-only context | — (R-9) | — (R-9) | — (R-9) | U (TF-1) |
+| task.due_today | — (R-9) | — (R-9) | E (US-6) — `TaskDueToday` "Due today (re-commit)" `actions.rs`, Today-only context; preset keys in every preset (Standard T, emacs C-c t, vi t — remediated 2026-11-15, T-13/#796) and the today-row context-menu row (the today-only extension) | — (R-9) | — (R-9) | — (R-9) | U (TF-1) |
 | app.undo | E (US-8) — `AppUndo` `actions.rs:678-680`, `presets.rs:72` (→ `Undo` `messages.rs:589`; `RestoreTask` `messages.rs:601` rides the undo path) | E (US-8) — same `AppUndo` evidence | E (US-8) — same `AppUndo` evidence | E (US-8) — same `AppUndo` evidence | E (US-8) — same `AppUndo` evidence | E (US-8) — same `AppUndo` evidence | E (pre-existing, `undo` `cli.rs:1750`) |
 | app.redo | E (US-8) — `AppRedo` `actions.rs:688-690`, `presets.rs:73` (→ `Redo` `messages.rs:592`) | E (US-8) — same `AppRedo` evidence | E (US-8) — same `AppRedo` evidence | E (US-8) — same `AppRedo` evidence | E (US-8) — same `AppRedo` evidence | E (US-8) — same `AppRedo` evidence | E (pre-existing, `redo` `cli.rs:1753`) |
 
@@ -198,11 +209,16 @@ ruling's authority, 2026-11-14, per chunk plan D-3):
 - **Story**: As a user looking at today I want to push a task's due
   date to today's end so that it re-enters today's list without
   editing the date by hand.
-- **Platforms**: both (menu path; no key — TF-1).
-- **Entry points**: `ActionId::TaskDueToday` via the action menu only
-  (no preset binding, no pointer affordance —
-  `journeys.rs:8926` comment "no default stroke; the menu path's
-  action").
+- **Platforms**: both (the preset keys and the two-tier menu row are
+  the desktop keymap/menu grammar; the today-row context menu rides
+  the row seams).
+- **Entry points** (amended 2026-11-15, UX R-4 D-8/#796 — the
+  "menu only" absence retires to history): `ActionId::TaskDueToday`
+  preset keys in every preset (Standard T, emacs C-c t, vi t — the
+  ContextId::Today rows); the action-menu row (unchanged); the
+  today-row context-menu row (the today-only extension —
+  `open_task_context_menu`'s extra ids, the tracker hide-set's
+  extension precedent).
 - **Priority**: P1
 - **Acceptance**:
   - AC-1: Given a focused task with a day window, When TaskDueToday
@@ -296,7 +312,8 @@ ruling's authority, 2026-11-14, per chunk plan D-3):
 
 | Step | Surface & affordance | User action | Dispatches | System response | Escape / failure |
 |---|---|---|---|---|---|
-| US-6/S1 | action menu, Today context | open the menu and invoke the "Due today (re-commit)" row | `ActionId::TaskDueToday` (`actions.rs:1076-1084`) → `UpdateTask { duedate: Some(Some(window end)) }` (`router.rs:908-923`) | the task's due phrase re-renders; the today list re-ranks on refresh | no key and no pointer affordance bind the verb (TF-1); a wrong re-commit is a `UpdateTask` PreImage — `AppUndo` restores the prior due date — test `journeys.rs::the_today_view_walks_completes_and_recommits` |
+| US-6/S2 | the today-row context menu / the preset key (step added 2026-11-15, UX R-4 D-8/#796) | right-click a today row and pick "Due today (re-commit)", or press the preset key on a focused today row | `ActionId::TaskDueToday` via the today-only extension (the menu row exists on today rows only — board/stack cards' menus never offer it) → `UpdateTask { duedate: Some(Some(window end)) }` | same re-commit response as S1 | the extension is today-only by construction (the composition pin); the keyboard route needs the focused row (`NoTarget` without one) — test `journeys.rs::us6_s2_today_row_menu_and_preset_key_recommit` |
+| US-6/S1 | action menu, Today context — **or** the preset key (Standard T / emacs C-c t / vi t) / the today-row context-menu row (amended 2026-11-15, UX R-4 D-8/#796) | invoke the "Due today (re-commit)" row, press the preset key, or pick the row from the today-row context menu | `ActionId::TaskDueToday` (`actions.rs`) → `UpdateTask { duedate: Some(Some(window end)) }` (`router.rs`) | the task's due phrase re-renders; the today list re-ranks on refresh | **history (retired 2026-11-15)**: "no key and no pointer affordance" (TF-1) — the preset keys and the context row shipped; a wrong re-commit is a `UpdateTask` PreImage — `AppUndo` restores the prior due date — test `journeys.rs::the_today_view_walks_completes_and_recommits`; the today-only menu composition pin is `flow_table_tests.rs::the_today_context_menu_extends_with_due_today_and_the_card_menus_do_not` |
 
 ### US-7 — Read location, badges, and due phrase
 
@@ -356,7 +373,7 @@ exists (the ItemAddr kinds are Settings-slice seams). -->
 | W-5 | ui/views/board-view.slint (drag seams), src/view_state.rs | card drag-to-move | — | on_board_card_drag_armed (adapter.rs:7733); on_board_drag_hovered (adapter.rs:7754); on_board_card_dropped (adapter.rs:7774); on_board_card_drag_finished (adapter.rs:7808) — slint callbacks board-card-drag-armed, board-drag-hovered, board-card-dropped, board-card-drag-finished | ActionId::TaskMoveCancel | StateCommand::MoveTask | drop column via a.tables.stack_ids; stale drop settles, never guesses (adapter.rs:7787-7792) | US-4/S1-US-4/S2 | journeys.rs::the_pointer_drag_drops_the_keyboard_move_command |
 | W-6 | src/view_state.rs (flow), src/router.rs | keyboard move flow | — | UiEffect::RequestMove / CancelMove arms (router.rs:895-898; adapter effect arms) | ActionId::TaskMove | StateCommand::MoveTask; ActionId::TaskMoveCancel | focused → selected chain (view_state.rs:4798 test) | US-4/S3-US-4/S4 | view_state.rs::the_drag_drop_and_the_keyboard_confirm_produce_the_same_move_command |
 | W-7 | src/menu.rs (TASK_CONTEXT rows), src/adapter.rs | task context menu / Delete key | — | on_menu_entry_invoked (adapter.rs:7035) routes the action id; router.rs:594-598 (menu rows + keyboard; no widget callback) | ActionId::TaskDelete | StateCommand::DeleteTask | focused task (router requires Some(id), else NoTarget) | US-5/S1-US-5/S2 | journeys.rs::the_ten_step_keyboard_session |
-| W-8 | src/router.rs, src/actions.rs | due-today re-commit (menu row only) | — | menu invoke route → router.rs:908-923 (no widget; menu-dispatched action) | ActionId::TaskDueToday | StateCommand::UpdateTask | focused task + the day window (ctx) | US-6/S1 | journeys.rs::the_today_view_walks_completes_and_recommits |
+| W-8 | src/router.rs, src/actions.rs, src/keymap/presets.rs (today rows), src/adapter.rs (today-row context seam) | due-today re-commit (menu row, preset keys, today-row context-menu row) | — | menu invoke route → router.rs (menu-dispatched action; the preset keys resolve through the keymap; the today seam passes the today-only extension) | ActionId::TaskDueToday | StateCommand::UpdateTask | focused task + the day window (ctx) | US-6/S1 | journeys.rs::the_today_view_walks_completes_and_recommits; flow_table_tests.rs::the_today_context_menu_extends_with_due_today_and_the_card_menus_do_not |
 | W-9 | ui/widgets/task-card.slint, ui/views/today-view.slint | decoration chips, due chips, context line | — | — (display only — push-side model fields: field_decorations models.rs:2394-2440) | — | — | per-card render | US-7/S1-US-7/S2 | tests/golden_visuals.rs; tests/task_card_title_probe_tests.rs |
 | W-10 | ui/compositions/action-menu.slint, src/menu.rs | Undo/Redo menu rows (greyed from UndoView) | — | on_menu_entry_invoked (adapter.rs:7035); enablement gate adapter.rs:509-510 (can_undo/can_redo) — menu rows invoke through the generic menu seams | ActionId::AppUndo | StateCommand::Undo; StateCommand::Redo; ActionId::AppRedo | — (global verbs; no row addressing) | US-8/S1-US-8/S3 | journeys.rs::invoking_the_undo_rows_sends_the_engine_verbs |
 
@@ -420,10 +437,13 @@ journeys.
 ## 10. Findings (retrofit — descriptive only; no redesign proposed)
 
 - **TF-1 — task.due_today has no key and no pointer affordance**
-  (F-Pattern 4, entry-point asymmetry). `TaskDueToday` is
-  menu-dispatch only: no preset row in any keymap (grep of
-  `presets.rs` returns nothing) and no slint callback mounts it
-  (`journeys.rs:8926` "no default stroke; the menu path's action").
+  *(Remediated 2026-11-15: chunk-4 D-8 / triage T-13 (#796) — the
+  preset keys in every preset and the today-row context-menu row; the
+  round-10 D11 note is overturned with the accepted triage as
+  authority.)* (F-Pattern 4, entry-point asymmetry). `TaskDueToday`
+  was menu-dispatch only: no preset row in any keymap and no slint
+  callback mounted it (`journeys.rs` "no default stroke; the menu
+  path's action" — the comment retires to history).
   A user must open the two-tier menu, navigate to the task submenu
   posture, and invoke — discoverable but buried; the click-vs-key
   parity law has no instance for this verb at all.
@@ -465,6 +485,16 @@ journeys.
   disabled affordance renders, the action simply does not mount).
 
 ## 11. Plan corrections
+- **PC (2026-11-15, remediation chunk 4)**: the UX remediation
+  chunk 4 (stage 2, `fix/ux-r4-board-entry-points`) amended this plan
+  under the dispatch plan's dress-rehearsal mandate (authority: the
+  chunk plan D-8/D-10): US-6's entry points (preset keys +
+  today-row context row), the US-6/S1 escape cell's dated retirement,
+  the §2 Today cell's evidence, W-8's row, and TF-1's remediation
+  note. Command-contract delta: zero new variants (the verb and
+  command existed; the entry points are the remediation). Kiosk
+  posture unchanged: the preset keys are desktop keymap rows and the
+  today rows' kiosk gating stands (the chunk plan §6).
 - **PC-2 (2026-11-14, gate-outcome corrections)**: the per-plan
   `scripts/ux-coverage.sh` run surfaced wiring-row representation
   defects, fixed here (D-5's plan-defect path): (a) hyphenated slint
