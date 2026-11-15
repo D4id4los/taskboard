@@ -834,6 +834,14 @@ pub const RESURRECT_NOTICE_HORIZON: chrono::TimeDelta =
 pub const OUTCOME_NOTICE_HORIZON: chrono::TimeDelta =
     chrono::TimeDelta::try_seconds(6).expect("non-zero constant");
 
+/// The blank-reflection-record no-op's phrase (T-47, #830): the
+/// typed fact (nothing was recorded). Tests assert the notice arms,
+/// never this sentence.
+#[must_use]
+pub fn blank_record_notice_phrase() -> String {
+    "Nothing recorded.".to_owned()
+}
+
 /// The overlay-over-live-flow announcement's phrase (T-31, #814):
 /// the typed fact (a live flow was replaced). Tests assert the
 /// notice arms, never this sentence.

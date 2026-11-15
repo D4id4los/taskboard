@@ -18589,6 +18589,44 @@ fn capture_over_a_live_flow_announces_the_replacement() {
     );
 }
 
+/// T-47 (#830): an all-blank record echoes its typed no-op — no
+/// `RecordReflection` dispatches AND the status notice arms (the walk
+/// stage is no longer the only signal).
+#[test]
+fn a_blank_reflection_record_echoes_its_typed_no_op() {
+    let (_fixture, state, _stack, _inbox_ids) = walk_fixture_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::ViewToday);
+            harness.driver.advance_time(0);
+            open_walk(&mut harness);
+            // Straight to the prompts (the recorded journey's path).
+            harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
+            harness.driver.advance_time(0);
+            harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
+            harness.driver.advance_time(0);
+            harness.stroke(parse("Escape").expect("Escape"));
+            harness.driver.advance_time(0);
+            assert_eq!(walk_stage(&harness), 2);
+            harness.handle.dispatch_action(ActionId::ReviewRecord);
+            harness.driver.advance_time(0);
+            assert!(
+                harness.engine.drain().is_empty(),
+                "an all-blank record dispatches nothing"
+            );
+            assert!(
+                harness.handle.window().get_notice_visible(),
+                "the typed no-op echoes on the status notice"
+            );
+            assert!(!walk_open(&harness), "the walk closed gently");
+        },
+    );
+}
+
 /// J18 — a refresh mid-walk re-derives the rows for the SAME window:
 /// a concurrent engine write moves the rows, the walk stays open with
 /// the reference pinned (no re-target at a state change).

@@ -2466,6 +2466,14 @@ impl Adapter {
                 if text.is_empty() {
                     // The gentle end (DR-7 D-J9): an all-blank record
                     // dispatches nothing — never relying on a NoOp.
+                    // T-47 (#830): the no-op echoes its typed fact on
+                    // the status-notice lane (the walk stage is no
+                    // longer the only signal).
+                    self.notice = Some(Notice {
+                        text: crate::presentation::blank_record_notice_phrase(),
+                        until: chrono::Utc::now() + crate::presentation::OUTCOME_NOTICE_HORIZON,
+                    });
+                    self.push_notice(window);
                     let outcomes = self.view_state.close_review_walk();
                     self.apply_outcomes(window, &outcomes);
                     // The prompt editors died with the flow (no loss
