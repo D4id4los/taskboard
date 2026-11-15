@@ -273,6 +273,14 @@ front-matter block above. -->
 - **Kiosk gates**: the header add affordance and the inline form do
   not mount in kiosk mode (`editing-visible` empty — D-T16); the
   tracker rows still render.
+  *(Superseded 2026-11-15 — the D-T16 posture text above is history,
+  never edited in place: the UX remediation chunk 1 amendment (chunk
+  plan `.artifacts/plans/2026-11-15-ux-r1-completability-chunk-plan.md`
+  D-2, triage T-7/#790) changes the kiosk posture to the rendered
+  disabled affordance (`editing-enabled` — the greyed trigger; the
+  inline form stays unmountable from it). Authority: the habit-family
+  plan's 2026-11-15 amendment; test
+  `journeys.rs::the_kiosk_habit_actions_render_disabled_not_absent`.)*
 - **Manual**: hint/label semantics ("Add habit…", segmented labels)
   judged at review; the walkthrough protocol covers it.
 

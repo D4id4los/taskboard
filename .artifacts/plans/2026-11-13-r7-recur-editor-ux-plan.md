@@ -397,6 +397,14 @@ front-matter block above. -->
 - **Kiosk gates**: the editor overlay and both mount affordances ride
   the task-detail editing gate (absent when the gate empties the
   action — D-T16); the recur row's display (echo/badge) unaffected.
+  *(Superseded 2026-11-15 — the D-T16 posture text above is history,
+  never edited in place: the UX remediation chunk 1 amendment (chunk
+  plan `.artifacts/plans/2026-11-15-ux-r1-completability-chunk-plan.md`
+  D-2, triage T-7/#790) changes the kiosk posture to the rendered
+  disabled affordance (`series-edit-enabled` — the greyed buttons; the
+  editor overlay stays unmountable from them). Authority: the
+  recurrence-family plan's 2026-11-15 amendment; test
+  `journeys.rs::the_kiosk_recur_row_renders_with_disabled_actions`.)*
 - **Manual**: echo readability and the stop-strip consequence caption
   judged at review; the walkthrough protocol covers it.
 
