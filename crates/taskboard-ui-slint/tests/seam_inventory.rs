@@ -27,6 +27,7 @@ const SEAM_INVENTORY: &[&str] = &[
     "banner_row_open_requested",
     "banner_snooze_clicked",
     "board_add_task_activated",
+    "board_bar_archived_activated",
     "board_bar_segment_activated",
     "board_body_activated",
     "board_body_context_requested",

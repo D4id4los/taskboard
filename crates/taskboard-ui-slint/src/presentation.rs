@@ -2147,6 +2147,19 @@ pub fn live_boards(state: &AppState) -> Vec<&Board> {
         .collect()
 }
 
+/// The archived, non-deleted boards in canonical order (UX R-1 D-1,
+/// issue #785): the archived-boards roster's row source — the bar's
+/// trailing indicator mounts exactly when this is non-empty. Same
+/// canonical order as `live_boards`; a board cannot be in both.
+#[must_use]
+pub fn archived_boards(state: &AppState) -> Vec<&Board> {
+    state
+        .boards
+        .values()
+        .filter(|b| b.archived && !b.deleted)
+        .collect()
+}
+
 /// The global inbox's open tasks (chunk 10 D9; the one inbox reading
 /// — the toolbar chip counts it, the review walk's Inbox stage lists
 /// it): live, open, anchor-filtered tasks whose stack belongs to the

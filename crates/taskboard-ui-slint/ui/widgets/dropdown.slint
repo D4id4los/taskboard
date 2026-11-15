@@ -123,6 +123,12 @@ export component Dropdown inherits Rectangle {
     // The selection's mid-ceremony marker (r2 D34): renders the busy
     // pulse in the field's dot slot.
     in property <bool> field-busy: false;
+    // The platform gate (UX R-1 D-1 + the R-D2 grammar): false renders
+    // the field a disabled affordance — visible, grey, non-interactive
+    // (the F14 empty-rows disabled shape, now also available to a
+    // non-empty list whose verb is platform-gated, e.g. the board
+    // bar's archived-boards roster on kiosk).
+    in property <bool> field-enabled: true;
     // The empty-rows caption (round-5 F14's visible-state half):
     // consumer-owned copy, rendered under the disabled field when the
     // row list is empty; empty string = no caption (the board bar's
@@ -244,14 +250,14 @@ export component Dropdown inherits Rectangle {
         // The empty-rows state (F14): the walk legitimately skips a
         // disabled control — the picker names its emptiness instead
         // of sitting as a dead stop.
-        enabled: root.rows.length > 0;
+        enabled: root.field-enabled && root.rows.length > 0;
         accessible-role: AccessibleRole.button;
         accessible-label: root.field-label;
         accessible-description: root.field-description;
         // The default a11y action opens (the driver's click seam —
         // the icon-button precedent).
         accessible-action-default => {
-            if (root.rows.length > 0) {
+            if (root.field-enabled && root.rows.length > 0) {
                 root.open = true;
                 root.anchor-highlight();
             }
@@ -295,7 +301,7 @@ export component Dropdown inherits Rectangle {
                 }
             } else if (!root.open
                     && (event.text == Key.Return || event.text == " ")
-                    && root.rows.length > 0) {
+                    && root.field-enabled && root.rows.length > 0) {
                 root.open = true;
                 root.anchor-highlight();
                 accept
@@ -338,6 +344,9 @@ export component Dropdown inherits Rectangle {
             field-text := RoleText {
                 role: Typography.body;
                 text: root.field-text;
+                text-color: root.field-enabled && root.rows.length > 0
+                    ? Theme.text-primary
+                    : Theme.text-secondary;
                 vertical-alignment: center;
                 overflow: elide;
                 horizontal-stretch: 1;
@@ -354,7 +363,7 @@ export component Dropdown inherits Rectangle {
             // The empty-rows state (F14): a disabled, non-interactive
             // click target — the open gates above become unreachable
             // by construction, and the caption below names the state.
-            enabled: root.rows.length > 0;
+            enabled: root.field-enabled && root.rows.length > 0;
             clicked => {
                 field-scope.focus();
                 root.open = !root.open;

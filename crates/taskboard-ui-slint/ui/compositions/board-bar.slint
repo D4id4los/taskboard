@@ -35,6 +35,17 @@ export struct BoardBarModel {
     // no connection indicator — connection status is the connector
     // surfaces' business), pushed over the same pass.
     rows: [DropdownRow],
+    // The archived-boards roster's rows (UX R-1 D-1, #785): one
+    // title-only row per archived board, canonical order; empty when
+    // nothing is archived — the trailing indicator mounts exactly
+    // when this is non-empty (no dead affordance). Archived boards
+    // stay excluded from `segments`/`rows` (the exclusion stands for
+    // normal navigation — the roster is a separate affordance).
+    archived-rows: [DropdownRow],
+    // The platform gate (UX R-1 D-1 + the R-D2 grammar): desktop arms
+    // the verb; kiosk renders the indicator a disabled affordance —
+    // visible, grey, non-interactive (no new kiosk capability).
+    archived-enabled: bool,
 }
 
 export component BoardBar inherits Rectangle {
@@ -53,6 +64,20 @@ export component BoardBar inherits Rectangle {
     // The segment right-click (r2 D21): select the board, then open
     // the board context menu at the pointer (the card precedent).
     callback segment-context(int, float, float);
+    // The archived-boards roster's row activation (UX R-1 D-1, #785):
+    // the adapter seam resolves the index against the same pass's
+    // archived-boards table, dispatches the unarchive, and re-selects
+    // the restored board. Keyboard parity rides the shared dropdown's
+    // own walk — no new ActionId (the chunk-plan D-1 non-goal).
+    callback archived-activated(int);
+
+    // The roster's mount rule (D-1's visibility law): exactly when the
+    // archived set is non-empty.
+    out property <bool> roster-mounted: root.bar.archived-rows.length > 0;
+    // The indicator's fixed width — the switcher's reserved-zone
+    // computation reads this property (a conditional element's id is
+    // not accessible across mounts).
+    property <length> roster-width: Theme.space-6 * 2;
 
     // Round-1 D20b: the bar is exactly one control tall — the
     // uncapped layout share that caused the tall whitespace is gone.
@@ -78,7 +103,11 @@ export component BoardBar inherits Rectangle {
     // dropdown mode the menu stays reachable through the action menu.
     if (root.dropdown-mode): bar-dd := Dropdown {
         x: Theme.space-1;
-        width: parent.width - 2 * Theme.space-1;
+        // The trailing roster's reserved zone (D-1): the switcher
+        // yields the indicator's width so the two dropdowns never
+        // overlap in the bar's one-control row.
+        width: parent.width - 2 * Theme.space-1
+            - (root.roster-mounted ? root.roster-width + Theme.space-1 : 0);
         y: Theme.space-1;
         height: parent.height - 2 * Theme.space-1;
         rows: root.bar.rows;
@@ -109,6 +138,49 @@ export component BoardBar inherits Rectangle {
         }
         changed highlight => {
             BoardBarFacts.highlight = self.highlight;
+        }
+    }
+
+    // The archived-boards roster (UX R-1 D-1, #785): a trailing
+    // indicator that opens the shared dropdown of archived boards —
+    // title-only rows, the compact switcher's row pattern (the
+    // keyboard walk is the widget's own). Mounted exactly while the
+    // archived set is non-empty; activating a row routes the
+    // unarchive seam. Declared last so it paints over the strip's
+    // right end in strip mode (the segments' 160px cap leaves the
+    // trailing zone free at any realistic count; the zone is
+    // reserved outright in dropdown mode).
+    if (root.roster-mounted): roster-dd := Dropdown {
+        x: parent.width - self.width - Theme.space-1;
+        y: Theme.space-1;
+        height: parent.height - 2 * Theme.space-1;
+        // The count IS the indicator (the honest signal): the closed
+        // field shows how many boards sit archived. A fixed two-cell
+        // width — the count is one or two digits, the chevron rides
+        // the field's own layout.
+        width: root.roster-width;
+        field-enabled: root.bar.archived-enabled;
+        rows: root.bar.archived-rows;
+        // No selected row — the roster is an action list, not a
+        // selection (the unarchive does not switch away from the
+        // viewed board until the restored board re-selects).
+        selected-index: -1;
+        flyout-site: 3;
+        field-text: "\{root.bar.archived-rows.length}";
+        field-label: "Archived boards";
+        field-description: "Opens the archived boards: activating a row restores the board to the bar.";
+        row-activated(i) => {
+            root.archived-activated(i);
+        }
+        row-hovered(i, x, y, w, h) => {
+            TooltipState.hover(
+                root.bar.archived-rows[i].label,
+                "Restores this archived board to the bar.",
+                [],
+                x, y, w, h);
+        }
+        row-unhovered() => {
+            TooltipState.unhover();
         }
     }
 

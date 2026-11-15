@@ -9125,6 +9125,141 @@ fn state_files_board(state: &mut AppState, id: uuid::Uuid, title: &str) {
     );
 }
 
+/// The board bar's pushed model (the roster journeys' facts).
+fn bar_model(harness: &Harness) -> taskboard_ui_slint::BoardBarModel {
+    harness.handle.window().get_board_bar_model()
+}
+
+/// The bar model's rows as a flat vec (the model-facts convention).
+fn model_rows(
+    model: &slint::ModelRc<taskboard_ui_slint::BoardSegmentModel>,
+) -> Vec<taskboard_ui_slint::BoardSegmentModel> {
+    (0..model.row_count())
+        .filter_map(|i| model.row_data(i))
+        .collect()
+}
+
+/// UX R-1 D-1 fixture: two live boards plus one archived (the
+/// archived board keeps its title "archived one").
+fn roster_state() -> (uuid::Uuid, AppState) {
+    let mut state = AppState::default();
+    state_board(
+        &mut state,
+        uuid::uuid!("00000000-0000-0000-0000-000000000001"),
+        "live one",
+        None,
+    );
+    state_board(
+        &mut state,
+        uuid::uuid!("00000000-0000-0000-0000-000000000002"),
+        "live two",
+        None,
+    );
+    state_board(
+        &mut state,
+        uuid::uuid!("00000000-0000-0000-0000-000000000003"),
+        "archived one",
+        None,
+    );
+    let id =
+        taskboard_domain::BoardId::from_uuid(uuid::uuid!("00000000-0000-0000-0000-000000000003"));
+    state.boards.get_mut(&id).expect("board").archived = true;
+    (uuid::uuid!("00000000-0000-0000-0000-000000000003"), state)
+}
+
+/// US-11/S1 (D-6 T3): the roster is a non-empty-archive affordance —
+/// with everything live the bar model carries no archived rows, so
+/// the indicator never mounts (structural model length, not text).
+#[test]
+fn us11_s1_roster_absent_while_no_board_is_archived() {
+    let (_fixture, state) = fixture::journey_state();
+    support::driver::run(
+        support::driver::DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let harness = Harness::mount(SlintDriver::default(), state);
+            assert_eq!(bar_model(&harness).archived_rows.row_count(), 0);
+        },
+    );
+    unsafe { std::env::remove_var("TASKBOARD_JOURNEYS_STAY_ON_TODAY") };
+}
+
+/// US-11/S2 (D-6 T2): activating a roster row dispatches the exact
+/// `StateCommand::SetBoardArchived { archived: false }` — nothing
+/// else drains — and the restored board becomes the selected board
+/// once the engine's apply lands (the one-shot select consumed at
+/// reconcile).
+#[test]
+fn us11_s2_roster_row_unarchives_and_selects() {
+    let (_fixture, _state) = fixture::journey_state();
+    support::driver::run(
+        support::driver::DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let (archived_id, state) = roster_state();
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            assert_eq!(bar_model(&harness).archived_rows.row_count(), 1);
+            harness
+                .handle
+                .window()
+                .invoke_board_bar_archived_activated(0);
+            let drained = harness.engine.drain();
+            assert_eq!(drained.len(), 1);
+            assert!(matches!(
+                &drained[0],
+                taskboard_domain::StateCommand::SetBoardArchived {
+                    archived: false,
+                    ..
+                }
+            ));
+            let StateCommand::SetBoardArchived { board, .. } = &drained[0] else {
+                unreachable!("asserted above")
+            };
+            assert_eq!(*board, taskboard_domain::BoardId::from_uuid(archived_id));
+            // The engine applies; the next refresh consumes the
+            // one-shot select — the restored board is the selection.
+            harness.engine.settle(&harness.handle);
+            let segments = model_rows(&bar_model(&harness).segments);
+            assert_eq!(segments.len(), 3);
+            let selected =
+                usize::try_from(bar_model(&harness).selected).expect("a non-negative selection");
+            assert_eq!(segments[selected].title, "archived one");
+        },
+    );
+}
+
+/// US-11/S3 (D-6 T2's continuation): the board rejoins the bar's
+/// segment set and the roster unmounts again — the archived set is
+/// empty, so the indicator's mount law removes it (no dead
+/// affordance).
+#[test]
+fn us11_s3_the_restored_board_rejoins_the_bar_and_the_roster_unmounts() {
+    let (_fixture, _state) = fixture::journey_state();
+    support::driver::run(
+        support::driver::DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), roster_state().1);
+            harness
+                .handle
+                .window()
+                .invoke_board_bar_archived_activated(0);
+            harness.engine.drain();
+            harness.engine.settle(&harness.handle);
+            let model = bar_model(&harness);
+            let titles: Vec<String> = model_rows(&model.segments)
+                .into_iter()
+                .map(|s| s.title.to_string())
+                .collect();
+            assert!(titles.contains(&"archived one".to_owned()));
+            assert_eq!(model.archived_rows.row_count(), 0);
+        },
+    );
+}
+
 /// The pushed dropdown options (the journeys' model facts).
 fn options(harness: &Harness) -> Vec<taskboard_ui_slint::DropdownRow> {
     let model = harness

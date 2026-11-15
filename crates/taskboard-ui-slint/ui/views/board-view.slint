@@ -42,6 +42,9 @@ export component BoardView inherits FocusScope {
     callback stack-width-drag(int, float);
     callback stack-width-release(int);
     callback board-bar-activated(int);
+    // The archived-boards roster's row activation (UX R-1 D-1, #785),
+    // threaded through to the window's unarchive seam.
+    callback board-bar-archived-activated(int);
     // The board-bar segment right-click (r2 D21).
     callback segment-context(int, float, float);
     callback task-activated(int, int);
@@ -121,6 +124,7 @@ export component BoardView inherits FocusScope {
                 stack-width-drag(c, d) => root.stack-width-drag(c, d);
                 stack-width-release(c) => root.stack-width-release(c);
                 board-bar-activated(i) => root.board-bar-activated(i);
+                board-bar-archived-activated(i) => root.board-bar-archived-activated(i);
                 segment-context(i, x, y) => root.segment-context(i, x, y);
                 task-activated(c, r) => root.task-activated(c, r);
                 task-clicked(c, r) => root.task-clicked(c, r);
