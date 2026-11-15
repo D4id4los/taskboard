@@ -18,6 +18,13 @@
   anchors).
 - **Status**: ACCEPTED (retrofit documentation under the accepted
   phase-4 dispatch; stage 3 reviews it against this posture).
+- **Amended 2026-11-15** (UX remediation chunk 3, dispatch plan
+  `.artifacts/plans/2026-11-15-ux-remediation-dispatch-plan.md` §4's
+  dress-rehearsal mandate; stage-1 decisions D-1..D-10 govern): the
+  CLI-only posture ended — US-12's writes gained GUI siblings
+  US-13/US-14/US-15 (the priority pickers, T-5/#788; the labels
+  family, T-6/#789), wiring rows W-11..W-13, and the §7 ActionId
+  delta. US-12 stays as the CLI journey, its cells untouched.
 - **Surfaces touched**: `ui/views/task-view.slint`,
   `ui/compositions/due-editor.slint`, `ui/compositions/rule-list.slint`,
   `ui/compositions/track-entries.slint`,
@@ -446,13 +453,42 @@ ruling's authority, 2026-11-14, per chunk plan D-3):
 |---|---|---|---|---|---|
 | US-11/S1 | detail total row + overlay header | — display only | — display only | the pushed phrase renders mono with the "Tracked time total" accessible label; freezes when the view closes (`flow_table_tests.rs:1828`); the seconds gate holds only while the open entry is mounted | display only |
 
-### US-12 — CLI-only writes (P2)
+### US-12 — CLI-only writes (P2; the GUI siblings are US-13..US-15
+below — amended 2026-11-15, the cells here stay CLI-accurate)
 
 | Step | Surface & affordance | User action | Dispatches | System response | Escape / failure |
 |---|---|---|---|---|---|
 | US-12/S1 | CLI `labels` family (`cli.rs:1544-1572`) | run the verbs | `CreateLabel`/`UpdateLabel`/`DeleteLabel` (engine-side) | the label roster changes; the GUI renders none of it (TE-4) | `DeleteLabel` is `NotUndoable(RestoreClass)` (`undo.rs:126-127`); create/edit/assign are journal PreImages |
 | US-12/S2 | CLI `tasks label` / `tasks unlabel` (`cli.rs:1683,1690`) | run the verbs | `AssignLabel`/`UnassignLabel` | the task's labels change engine-side; no GUI echo (TE-4) | journal PreImages — `AppUndo`-class reversal exists engine-side |
 | US-12/S3 | CLI `tasks edit` importance/urgency (`cli.rs:592-637`) | run the verb | `UpdateTask { changes: { importance, urgency } }` (`messages.rs:653-666`) | the card decorations re-render (`models.rs:2394-2422`) | journal PreImage; the census hole for these rows is backlog #781 (TE-5) |
+
+
+### US-13 — Set or clear importance/urgency (P1; amended in
+2026-11-15's chunk 3, T-5/#788)
+
+| Step | Surface & affordance | User action | Dispatches | System response | Escape / failure |
+|---|---|---|---|---|---|
+| US-13/S1 | detail priority rows, edit affordances | click the pencil or press F3 (`task.importance-edit`) / F4 (`task.urgency-edit`) | `task-importance-edit-asked` / `task-urgency-edit-asked` route the landed actions → `PriorityPickerOpen` (a Nav-class flag flip; the adapter owns the open flag) | the picker's six-slot quick-list mounts under the row, the current value pre-marked; one picker at a time (opening one settles the other and the date editors) | kiosk and subjectless dispatches refuse (the entries-overlay gate's shape); Escape/outside click closes, nothing dispatches — test `journeys.rs::us13_s1_the_importance_edit_affordance_opens_the_picker` |
+| US-13/S2 | picker slot row | click a level (or walk + Return) | `priority-slot-clicked` → `StateCommand::UpdateTask { changes: { importance/urgency: Some(Some(level)) } }` — every sibling mask `None` (the exact-mask seam) | the echo re-renders (row echo + card chip); the picker closes (the choice is made) | a stale slot index absorbs typed, the picker stays armed; undo via `AppUndo` (`UpdateTask` PreImage) — test `journeys.rs::us13_s2_the_slot_pick_commits_the_exact_mask` |
+| US-13/S3 | picker `unset` slot | pick unset | the `Some(None)` clear twin — the CLI's `none` grammar verbatim (the parity contract, D-5) | the echo clears to the em-dash | the same `AppUndo` recovery — test `journeys.rs::us13_s3_the_unset_slot_commits_the_clear_twin` |
+
+### US-14 — Assign / unassign labels on the open task (P1; amended in
+2026-11-15's chunk 3, T-6/#789)
+
+| Step | Surface & affordance | User action | Dispatches | System response | Escape / failure |
+|---|---|---|---|---|---|
+| US-14/S1 | labels section's add affordance / `label.manage` (Ctrl+L) | open the overlay | `labels-manage-asked` routes `ActionId::LabelManage` → `LabelsOpen` → `Flow::Labels` over the viewed task (the entries-overlay's pattern) | the roster renders the subject board's live labels (swatch + title + assignment toggle) | kiosk/subjectless refuse; the `Labels` context masks while the overlay holds — test `journeys.rs::us14_s1_label_manage_opens_the_overlay_with_the_roster` |
+| US-14/S2 | roster row assignment toggle | click the toggle | `labels-overlay-row-toggled` → `AssignLabel`/`UnassignLabel` by the row's pushed state (id from `IdTables::label_ids`; the engine's idempotence owns the rest — the CLI's doc contract) | the chips re-render; the row's toggle flips | stale index absorbs typed; undo via `AppUndo` (journal PreImages) — test `journeys.rs::us14_s2_the_roster_toggle_dispatches_the_pair` |
+| US-14/S3 | detail chip's × | click the × | `chip-unassign-clicked` → `StateCommand::UnassignLabel { task, label }` (chip id from `IdTables::task_labels`) | the chip disappears | same `AppUndo` recovery; Escape ladders the overlay closed (`LabelOverlayDismiss`) — test `journeys.rs::us14_s3_the_chip_unassign_routes_the_exact_verb` |
+
+### US-15 — Manage the board's labels: create, edit, delete (P1;
+amended in 2026-11-15's chunk 3, T-6/#789)
+
+| Step | Surface & affordance | User action | Dispatches | System response | Escape / failure |
+|---|---|---|---|---|---|
+| US-15/S1 | overlay create form | title + swatch, commit | `labels-overlay-form-commit-requested` → `StateCommand::CreateLabel { board: subject.board, title, color }` — the fixed swatch palette's exact hex (the CLI `parse_color` vocabulary; no free hex input, D-5) | the roster and any wearing chips re-render | an empty title is the typed inert (the form stays open); undo via `AppUndo` — test `journeys.rs::us15_s1_the_create_form_commits_createlabel` |
+| US-15/S2 | row edit affordance → form | edit seeded title/color, commit | the sparse `UpdateLabel` — only the changed slots set (`LabelChanges` discipline) | the row re-renders | a no-op edit closes without dispatching; undo via `AppUndo` — test `journeys.rs::us15_s2_the_edit_form_commits_the_sparse_mask` |
+| US-15/S3 | row delete affordance | arm, then Confirm | `labels-overlay-delete-clicked`: first activation arms (the consequence-naming strip — detaches from every task), Confirm → `StateCommand::DeleteLabel { id }` | the label leaves the roster and every task | `DeleteLabel` is `NotUndoable(RestoreClass)` — the staging IS the escape (the r2 grammar); Cancel/Escape disarms — test `journeys.rs::us15_s3_the_armed_delete_stages_then_confirms` |
 
 ## 5. Interaction flows
 
@@ -503,6 +539,9 @@ involved on this surface (ItemAddr is Settings-slice). -->
 | W-8 | ui/views/task-view.slint, ui/app-window.slint, ui/compositions/status-bar.slint | track chips (detail + status bar) | — | on_task_track_start_clicked (adapter.rs:9605); on_task_track_stop_clicked (adapter.rs:9610); on_tracking_chip_stop_clicked (adapter.rs:9600) — slint callbacks task-track-start-clicked, task-track-stop-clicked, tracking-chip-stop-clicked | ActionId::TaskTrackStart | StateCommand::StartTracking; StateCommand::StopTracking; ActionId::TaskTrackStop | track target = subject task / focused task (router.rs:795-805) | US-9/S1-US-9/S2 | router.rs::tracking_verbs_route_exact_commands_from_their_two_sources |
 | W-9 | ui/compositions/track-entries.slint, ui/views/task-view.slint, ui/app-window.slint | entries overlay: form, row list, armed delete | — | on_task_track_entries_clicked (adapter.rs:9621); on_track_form_add_requested (adapter.rs:9674); on_track_form_commit_requested (adapter.rs:9951); on_track_entry_row_activated (adapter.rs:9959); on_track_entry_delete_clicked (adapter.rs:9651); on_track_entries_dismiss_requested (adapter.rs:9631) — slint callbacks task-track-entries-clicked, track-form-commit-requested, track-entry-row-activated, track-entry-delete-clicked | ActionId::TaskTrackEntryLog | StateCommand::LogTime; StateCommand::AdjustTimeEntry; StateCommand::DeleteTimeEntry; ActionId::TaskTrackEntryAdjust; ActionId::TaskTrackEntryDelete; ActionId::TaskTrackEntryDismiss | entry rows via a.tables.track_entries (TimeEntryId) | US-10/S1-US-10/S4 | flow_table_tests.rs::the_track_form_add_commit_routes_logtime_with_the_exact_instants |
 | W-10 | ui/views/task-view.slint, ui/compositions/track-entries.slint, ui/views/today-view.slint, ui/widgets/task-card.slint | total row, overlay header total, day summary, card badge | — | — (display only — push-side model fields: task-view.slint:33-45; the tick cadence is the adapter seam flow_table_tests.rs:1912) | — | — | per-render | US-11/S1 | flow_table_tests.rs::the_task_detail_model_carries_the_tracked_total_and_it_freezes_when_closed |
+| W-11 | ui/views/task-view.slint, ui/app-window.slint | priority echo rows + pickers | — | on_task_importance_edit_asked / on_task_urgency_edit_asked / on_priority_slot_clicked / on_priority_dismiss_requested (adapter.rs; the exact-mask seam) — slint callbacks task-importance-edit-asked, task-urgency-edit-asked, priority-slot-clicked, priority-dismiss-requested | ActionId::TaskImportanceEdit | StateCommand::UpdateTask | subject task + the field's exact mask (`Some(Some(level))` / `Some(None)`) | US-13/S1-US-13/S3 | journeys.rs::us13_s2_the_slot_pick_commits_the_exact_mask |
+| W-12 | ui/views/task-view.slint, ui/compositions/labels-overlay.slint, ui/app-window.slint | labels section chips + overlay roster + toggles | — | on_labels_manage_asked / on_chip_unassign_clicked / on_labels_overlay_row_toggled / on_labels_overlay_dismiss_requested (adapter.rs; the id-table seam law) — slint callbacks labels-manage-asked, chip-unassign-clicked, labels-overlay-row-toggled, labels-overlay-dismiss-requested | ActionId::LabelManage | StateCommand::AssignLabel; StateCommand::UnassignLabel | chips via tables.task_labels; roster rows via tables.label_ids (canonical order) | US-14/S1-US-14/S3 | journeys.rs::us14_s2_the_roster_toggle_dispatches_the_pair |
+| W-13 | ui/compositions/labels-overlay.slint, ui/app-window.slint | overlay create/edit forms + armed delete strip | — | on_labels_overlay_add_requested / on_labels_overlay_edit_requested / on_labels_overlay_title_edited / on_labels_overlay_swatch_clicked / on_labels_overlay_form_commit_requested / on_labels_overlay_form_cancelled / on_labels_overlay_delete_clicked / on_labels_overlay_delete_cancelled (adapter.rs; the adapter-owned draft + the r2 armed grammar) — slint callbacks labels-overlay-form-commit-requested, labels-overlay-delete-clicked | — | StateCommand::CreateLabel; StateCommand::UpdateLabel; StateCommand::DeleteLabel | the create board IS the subject's board; edit/delete ids via tables.label_ids | US-15/S1-US-15/S3 | journeys.rs::us15_s1_the_create_form_commits_createlabel |
 
 ## 7. Command-contract delta
 
@@ -518,6 +557,20 @@ the journeys dispatch, for greppability:
 | StateCommand | LogTime / AdjustTimeEntry / DeleteTimeEntry | exist (`messages.rs:373,393,409`) | US-10 |
 | ActionId | TaskTitleEdit / PickerCommit / ReminderRuleAdd / ReminderRuleRemove / ReminderMute / ReminderUnmute / ReminderSnooze / TaskTrackStart / TaskTrackStop / TaskTrackEntryLog / TaskTrackEntryAdjust / TaskTrackEntryDelete / TaskTrackEntryDismiss | exist (`actions.rs:1046-1052,1117-1167,1193-1205,1241-1281,1797-1803`) | US-1, US-3, US-6, US-7, US-8, US-9, US-10 |
 | ActionId | NavFocusBoard | exist (`actions.rs:779-786`, GLOBAL) — the back seam's route | US-5 |
+
+### §7 delta (amended 2026-11-15, chunk 3)
+
+**No new StateCommand** — the remediation dispatches the existing
+engine family verbatim (the CLI family is the behavior contract, D-5).
+
+| Kind | Name | Payload sketch | Journeys |
+|---|---|---|---|
+| StateCommand | UpdateTask | exists — the importance/urgency double-option masks (`messages.rs:655-668`): `Some(Some(level))` sets, `Some(None)` clears (the CLI's `none` twin) | US-13 |
+| StateCommand | CreateLabel / UpdateLabel / DeleteLabel / AssignLabel / UnassignLabel | exist (`messages.rs:100-134`; `LabelChanges` `messages.rs:731-738`) | US-14, US-15 |
+| ActionId | TaskImportanceEdit (`task.importance-edit`) | new — opens the importance picker; contexts `TaskDetail`; Standard F3, Emacs/Vi F3 | US-13 |
+| ActionId | TaskUrgencyEdit (`task.urgency-edit`) | new — the importance row's twin; Standard F4, Emacs/Vi F4 | US-13 |
+| ActionId | LabelManage (`label.manage`) | new — opens the labels overlay; contexts `TaskDetail`; Standard/Emacs/Vi Ctrl+L | US-14 |
+| ActionId | LabelOverlayDismiss (`label.overlay-dismiss`) | new — the overlay's Escape ladder; contexts `Labels` (new ContextId, a total mask like `TrackEntries`); Escape in all three presets, plus NavNext/PrevControl Tab/Shift+Tab rows | US-14, US-15 |
 
 No `UiRequest` and no new variant of any kind is involved in these
 journeys.
