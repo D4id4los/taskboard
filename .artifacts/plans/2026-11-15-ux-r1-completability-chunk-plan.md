@@ -237,3 +237,15 @@ grey tone, not invent one.
   the pilot habit-create plan's recorded D-T16 posture text; the
   amendment supersedes it with a dated pointer (D-5 mechanism), never
   edits the pilot plan in place.
+
+## 12. Plan corrections
+
+- **PC-1 (2026-11-15, chunk-6 stage 1)**: §2's D-1/D-4 claim
+  "`SetBoardArchived` is journal/undo-eligible (`undo.rs:324`)" is
+  **false** — the command falls in the BoardCeremony arm
+  (`UndoFacts::NotUndoable(NotUndoableReason::BoardCeremony)` at
+  `main` @ `d7a8173c`), so the unarchive's escape is the re-archive
+  path, not `AppUndo`. The shipped behavior (this plan's unarchive
+  seam, the r1 PR) is unaffected — the defect was in this plan's
+  justification text only. Erratum homed on #842; the board-stack
+  plan's carriage records the same correction as its PC-5.

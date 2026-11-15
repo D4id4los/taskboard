@@ -695,6 +695,16 @@ carries evidence, never a fix.
   signal the user gets before BF-5/BF-6's point of no return.
 
 ## 11. Plan corrections
+
+- **PC-5 (2026-11-15, chunk-6 stage 1)**: PC-3's US-11 carriage
+  inherited the r1 chunk plan's false "`SetBoardArchived` is
+  journal-eligible (`undo.rs:324`)" claim — the command falls in the
+  BoardCeremony arm (`UndoFacts::NotUndoable(NotUndoableReason::
+  BoardCeremony)` at `main` @ `d7a8173c`), so the unarchive's escape
+  is the re-archive path, not `AppUndo`. The shipped behavior is
+  unaffected (the defect is in the plans' justification text only);
+  the authoritative correction is the r1 plan's PC-1 (erratum homed
+  on #842).
 - **PC-4 (2026-11-15, remediation chunk 4)**: the UX remediation
   chunk 4 (stage 2, `fix/ux-r4-board-entry-points`) amended this plan
   under the dispatch plan's dress-rehearsal mandate (authority: the
