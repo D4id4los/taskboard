@@ -148,6 +148,20 @@ export component Dropdown inherits Rectangle {
     callback row-hovered(int, length, length, length, length);
     callback row-unhovered();
 
+    // The adapter-driven open (UX R-4 D-4, #794): the host invokes
+    // this when the target-free `BoardSelect` flow arms the flyout —
+    // the same open arms the field's own click/Return ladder runs
+    // (open, the selected-row anchor, the field's focus — the walk's
+    // home). The empty-rows guard is the field's own rule verbatim.
+    callback open-requested();
+    open-requested() => {
+        if (root.rows.length > 0) {
+            root.open = true;
+            root.anchor-highlight();
+            field-scope.focus();
+        }
+    }
+
     // Widget-local open state (the time-field pattern).
     in-out property <bool> open: false;
     // The keyboard highlight inside `rows`; re-anchored from the

@@ -872,6 +872,18 @@ impl Adapter {
         window: &AppWindow,
         stroke: crate::keymap::Stroke,
     ) -> Option<bool> {
+        // The request-driven switcher flyout's walk (UX R-4 D-4,
+        // #794): the flyout armed by the target-free BoardSelect
+        // stroke has no focused field instance (the widget's own
+        // ladder serves the pointer path), so the identical key
+        // vocabulary rides here against the facts — the walk's state
+        // seam. Escape closes with nothing dispatched; Return routes
+        // the highlighted row's selection (the segment seam's route)
+        // and closes. Runs ahead of the ladder-decline block (whose
+        // decline would dead-end the keys without a focused field).
+        if let Some(consumed) = self.switcher_flyout_key(window, stroke) {
+            return Some(consumed);
+        }
         // The dropdown ladders (special case D, r4 D39/D40, round-5
         // D6): while a flyout is open, its keys decline the single
         // key path — the focused field's modal arm owns them.
@@ -4074,6 +4086,32 @@ impl Adapter {
                 } else {
                     self.shell.apply(&effect, self.menu_entries.len());
                 }
+            }
+            UiEffect::OpenBoardBarFlyout => {
+                // The target-free BoardSelect flow (UX R-4 D-4, #794):
+                // arm the switcher flyout directly over the facts —
+                // the window-level panel mounts from them (the
+                // site-1 group), the walk rides the adapter's key arm,
+                // and the anchor geometry is the bar's mirrored
+                // mirror. Zero live boards: inert (no rows to walk).
+                // Pre-table, view-state blind — the tooltip tail and
+                // the settle matrix do not apply.
+                let facts = window.global::<crate::BoardBarFacts>();
+                let rows = i32::try_from(slint::Model::row_count(&window.get_board_bar_model().rows)).unwrap_or(i32::MAX);
+                if rows > 0 {
+                    let selected = window.get_board_bar_model().selected;
+                    facts.set_highlight(selected.clamp(0, rows - 1));
+                    facts.set_switcher_request(true);
+                    facts.set_open(true);
+                    let dd = window.global::<crate::DropdownFacts>();
+                    dd.set_site(1);
+                    dd.set_anchor_x(facts.get_anchor_x());
+                    dd.set_anchor_y(facts.get_anchor_y());
+                    dd.set_anchor_width(facts.get_anchor_width());
+                    dd.set_anchor_height(facts.get_anchor_height());
+                    dd.set_open(true);
+                }
+                return;
             }
             UiEffect::PickerKey(key) => self.apply_picker_key(window, key),
             UiEffect::OpenPalette
@@ -8694,16 +8732,101 @@ fn install_task_back_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     });
 }
 
+/// The request-driven switcher flyout's open predicate (UX R-4 D-4,
+/// #794): the panel's own facts, not the widget's — the walk's truth
+/// is what the window mounted.
+fn switcher_flyout_open(window: &AppWindow) -> bool {
+    let dd = window.global::<crate::DropdownFacts>();
+    dd.get_open()
+        && dd.get_site() == 1
+        && window
+            .global::<crate::BoardBarFacts>()
+            .get_switcher_request()
+}
+
+/// The flyout's close (the walk's exits): every fact resets, so the
+/// strip returns in strip mode and the ladder declines stop.
+fn close_switcher_flyout(window: &AppWindow) {
+    {
+        let facts = window.global::<crate::BoardBarFacts>();
+        facts.set_open(false);
+        facts.set_switcher_request(false);
+    }
+    window.global::<crate::DropdownFacts>().set_open(false);
+}
+
+impl Adapter {
+    /// The flyout walk's key arm (the helper above's engine): the
+    /// ladder vocabulary only; anything else is `None` (the resolver
+    /// owns it). The clamped highlight moves; Return routes the
+    /// highlighted row through the existing segment route.
+    pub(crate) fn switcher_flyout_key(
+        &mut self,
+        window: &AppWindow,
+        stroke: crate::keymap::Stroke,
+    ) -> Option<bool> {
+        // The self-heal: an outside click's underlay wrote the panel's
+        // fact directly; the request flags fall in line on the next
+        // key (the production loop's changed-delivery syncs them too).
+        if window
+            .global::<crate::BoardBarFacts>()
+            .get_switcher_request()
+            && !window.global::<crate::DropdownFacts>().get_open()
+        {
+            close_switcher_flyout(window);
+        }
+        if !switcher_flyout_open(window) {
+            return None;
+        }
+        let rows = i32::try_from(slint::Model::row_count(&window.get_board_bar_model().rows))
+            .unwrap_or(i32::MAX);
+        if rows == 0 {
+            return None;
+        }
+        let named = stroke.named_name();
+        let up = named == Some("Up") || (stroke.ctrl && stroke.key == 'p');
+        let down = named == Some("Down") || (stroke.ctrl && stroke.key == 'n');
+        let ret = named == Some("Return");
+        let esc = named == Some("Escape");
+        if !(up || down || ret || esc) {
+            return None;
+        }
+        Self::set_feedback(window, KeyFeedback::None);
+        let facts = window.global::<crate::BoardBarFacts>();
+        if up || down {
+            let delta: i32 = if up { -1 } else { 1 };
+            let next = (facts.get_highlight() + delta).clamp(0, rows - 1);
+            facts.set_highlight(next);
+            Some(true)
+        } else if esc {
+            close_switcher_flyout(window);
+            Some(true)
+        } else {
+            let highlight = facts.get_highlight();
+            close_switcher_flyout(window);
+            if let Some(index) = usize::try_from(highlight).ok()
+                && let Some(board) = self.tables.board_ids.get(index).copied()
+            {
+                self.board_target = Some(board);
+                self.route(window, ActionId::BoardSelect);
+            }
+            Some(true)
+        }
+    }
+}
+
 /// A board-bar segment click (design §3.8): resolve the segment's
 /// board against the tables pass that pushed the bar, set the one-shot
 /// target, and route `board.select` — every click affordance has an
 /// action equivalent (§7.1). A stale index against an older pass is
-/// absorbed silently.
+/// absorbed silently. The request-driven flyout's row activation
+/// closes it first (the widget path's Return closes — click ≡ key).
 fn install_board_bar_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     install_seam!(window: window.on_board_bar_segment_activated, adapter: adapter;
     bind mut (a, window), args (index), {        let Ok(index) = usize::try_from(index) else {
         return;
     };
+    close_switcher_flyout(&window);
     settle_pointer_conflict(&mut a, &window);
     let Some(board) = a.tables.board_ids.get(index).copied() else {
         return;

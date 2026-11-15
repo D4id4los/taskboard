@@ -23,6 +23,15 @@ export global BoardBarFacts {
     in-out property <length> anchor-y: 0;
     in-out property <length> anchor-width: 0;
     in-out property <length> anchor-height: 0;
+    // The target-free BoardSelect flow (UX R-4 D-4, #794): the
+    // adapter arms the switcher flyout — `switcher-request` makes
+    // the switcher field visible in strip mode too (the bar swaps
+    // to the field while picking); the open trigger rides the
+    // `open-requested` callback chain (invoked, not observed — the
+    // changed-hook timing is unreliable across a mount). The bar
+    // clears the request when the flyout closes (the close loop's
+    // tail), so the strip returns.
+    in-out property <bool> switcher-request: false;
 }
 
 // One board-bar segment (a display model, not a bag of strings). The
@@ -129,7 +138,37 @@ export component BoardBar inherits Rectangle {
     // strip-only (the flyout must not host it here — the
     // overlay-over-flyout dismissal ordering is unprobed); in
     // dropdown mode the menu stays reachable through the action menu.
-    if (root.dropdown-mode): bar-dd := Dropdown {
+    // The close loop's tail (the adapter's request protocol): the
+    // flyout's close (Escape, the underlay, the row activation)
+    // clears the request, returning the strip in strip mode. A
+    // no-op in dropdown mode (the field is permanent there).
+    property <bool> facts-open-mirror: BoardBarFacts.open;
+    changed facts-open-mirror => {
+        if (!self.facts-open-mirror) {
+            BoardBarFacts.switcher-request = false;
+        }
+    }
+
+    // The switcher dropdown (always mounted, UX R-4 D-4: the
+    // target-free BoardSelect flow's trigger is a property write, so
+    // the instance must exist to receive it — the conditional mount
+    // would race the init evaluation). Visible in dropdown mode
+    // permanently; in strip mode only while the flyout is requested
+    // (the bar swaps to the field while picking).
+    // The flyout open trigger (UX R-4 D-4, #794): the request flag's
+    // false→true edge invokes the dropdown's open arms (the changed
+    // delivery rides the event loop; the adapter sets the flag and
+    // the walk opens). Re-arming re-fires: the close loop clears the
+    // flag first, so the next set is a fresh edge.
+    property <bool> request-mirror: BoardBarFacts.switcher-request;
+    changed request-mirror => {
+        if (self.request-mirror) {
+            bar-dd.open-requested();
+        }
+    }
+
+    bar-dd := Dropdown {
+        visible: root.dropdown-mode || BoardBarFacts.switcher-request;
         x: Theme.space-1;
         // The trailing roster's reserved zone (D-1): the switcher
         // yields the indicator's width so the two dropdowns never
@@ -214,7 +253,8 @@ export component BoardBar inherits Rectangle {
 
     // A zero-segment model (a never-booted install) renders no row;
     // under the budget the reviewed strip stays.
-    if (!root.dropdown-mode && root.bar.segments.length > 0): HorizontalLayout {
+    if (!root.dropdown-mode && root.bar.segments.length > 0
+            && !BoardBarFacts.switcher-request): HorizontalLayout {
         spacing: Theme.space-1;
         accessible-role: AccessibleRole.tab-list;
         accessible-label: "Boards";
