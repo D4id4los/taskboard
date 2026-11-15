@@ -343,8 +343,10 @@ use FK::TrackForm as KTrackForm;
 use FK::TrackList as KTrackList;
 use Post::Kind as K;
 
+// The armed-delete strip (UX R-2 D-2) joins the kind-None family:
+// its settle is the disarm (Post::None), its kept intents run.
 use FK::None as KNone;
-use Post::None as N; // the armed-delete strip's kind (UX R-2 D-2)
+use Post::None as N;
 
 /// The class-level default matrix (audit §6): every `(FK, EC)` cell
 /// has exactly one row.

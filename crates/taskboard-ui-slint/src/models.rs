@@ -1665,21 +1665,17 @@ pub(crate) fn board_row(window: &AppWindow, state: &AppState, vs: &ViewState) ->
     }
 }
 
-/// The board model: one column per live stack, the flow's create row
-/// and move target marked by index (D8/D22). The board title renders
-/// in the toolbar (`push_chrome`), so the model carries only the
-/// kanban geometry. Returns the diff's mutation count.
-/// The armed-delete strip's typed fact (UX R-2 D-2): the armed
-/// `Flow::ConfirmDelete` stack indexed into the pass's columns, −1
-/// (the move-target convention) when nothing is armed or the armed
-/// stack is not in this pass (the dead-strip rule: the strip
-/// unmounts).
 /// The per-column strip flag (UX R-2 D-2): the column's stack is the
 /// armed `Flow::ConfirmDelete` subject.
 fn stack_delete_armed(flow: &Flow, stack_id: &StackId) -> bool {
     matches!(flow, Flow::ConfirmDelete(DeleteTarget::Stack(armed)) if armed == stack_id)
 }
 
+/// The armed-delete strip's typed fact (UX R-2 D-2): the armed
+/// `Flow::ConfirmDelete` stack indexed into the pass's columns, −1
+/// (the move-target convention) when nothing is armed or the armed
+/// stack is not in this pass (the dead-strip rule: the strip
+/// unmounts).
 fn armed_stack_index(flow: &Flow, stack_ids: &[StackId]) -> i32 {
     match flow {
         Flow::ConfirmDelete(DeleteTarget::Stack(armed)) => stack_ids
@@ -1691,6 +1687,10 @@ fn armed_stack_index(flow: &Flow, stack_ids: &[StackId]) -> i32 {
     }
 }
 
+/// The board model: one column per live stack, the flow's create row
+/// and move target marked by index (D8/D22). The board title renders
+/// in the toolbar (`push_chrome`), so the model carries only the
+/// kanban geometry. Returns the diff's mutation count.
 #[allow(clippy::too_many_arguments)] // the pass's inputs, one bundle
 fn push_board(
     window: &AppWindow,
