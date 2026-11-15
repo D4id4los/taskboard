@@ -642,7 +642,7 @@ pub struct RecurRowPush {
 /// #789): the seeded title (the field reads it on mount only — the
 /// buffer stays user-owned while the form lives) and the armed
 /// swatch's hex. The swatch row is the presentation constant
-/// (`LABEL_SWATCHES`); the model carries the selection's echo.
+/// (`presentation::SWATCHES`); the model carries the selection's echo.
 #[derive(Debug, Clone, Default)]
 pub struct LabelFormPush {
     /// The form surface is mounted.
@@ -936,6 +936,7 @@ pub fn push(
         .iter()
         .map(|b| BoardSegmentModel {
             title: SharedString::from(b.title.clone()),
+            color: swatch_hex(&b.color),
         })
         .collect();
     let selected = i32::try_from(
@@ -2423,7 +2424,7 @@ fn push_task_detail(
     // The form surface's pushed halves (UX R-3 D-2): the armed
     // swatch rides the palette's index; the title seed is the
     // field's mount-only read.
-    let swatches: Vec<slint::Color> = presentation::LABEL_SWATCHES
+    let swatches: Vec<slint::Color> = presentation::SWATCHES
         .iter()
         .map(|hex| swatch_hex(&taskboard_domain::Color::new(*hex)))
         .collect();
@@ -2438,7 +2439,7 @@ fn push_task_detail(
         label_form
             .as_ref()
             .and_then(|f| {
-                presentation::LABEL_SWATCHES
+                presentation::SWATCHES
                     .iter()
                     .position(|hex| *hex == f.color)
             })
@@ -2508,7 +2509,7 @@ fn label_chip_rows(
 /// the typed color (the palette's own vocabulary); anything else
 /// renders transparent (the lenient value survives sync — the GUI
 /// never re-derives it, D-5).
-fn swatch_hex(color: &taskboard_domain::Color) -> slint::Color {
+pub(crate) fn swatch_hex(color: &taskboard_domain::Color) -> slint::Color {
     let raw = color.as_str();
     if raw.len() == 6 && raw.bytes().all(|b| b.is_ascii_hexdigit()) {
         let bytes = raw.as_bytes();
@@ -3379,6 +3380,25 @@ mod tests {
     use super::*;
 
     use taskboard_domain::{Importance, TaskClocks, Urgency};
+
+    /// The swatch echo's gate (UX R-4 D-1/R-4, #791): a six-hex body
+    /// mints the typed color; a lenient (non-hex, wrong-length, or
+    /// empty) value renders transparent — the echo is honest, the GUI
+    /// never re-derives. The labels' chip path shares the fn (the
+    /// chunk-3 echo tests guard that side; this is the gate itself).
+    #[test]
+    fn swatch_hex_mints_six_hex_and_renders_lenient_transparent() {
+        let typed = swatch_hex(&taskboard_domain::Color::new("0082c9"));
+        assert_eq!(typed.alpha(), 255, "the typed body renders opaque");
+        for lenient in ["", "0082c", "0082c99", "ZZZZZZ"] {
+            let echoed = swatch_hex(&taskboard_domain::Color::new(lenient));
+            assert_eq!(
+                echoed.alpha(),
+                0,
+                "the lenient value {lenient:?} renders transparent"
+            );
+        }
+    }
 
     /// The #373 D-6 reverse helpers: forward scans resolve positions
     /// that the forward lookups mint, per table.

@@ -9220,7 +9220,7 @@ fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         a.label_form = Some(LabelFormState {
             seed: None,
             title: String::new(),
-            color: crate::presentation::LABEL_SWATCHES[0].to_owned(),
+            color: crate::presentation::SWATCHES[0].to_owned(),
         });
         a.label_delete_armed = None;
         a.refresh_forced(&window);
@@ -9260,7 +9260,7 @@ fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     });
     install_seam!(window: window.on_labels_overlay_swatch_clicked, adapter: adapter;
     bind mut (a, window), args (index), {        let Some(swatch) =
-            crate::presentation::LABEL_SWATCHES.get(usize::try_from(index).unwrap_or(usize::MAX))
+            crate::presentation::SWATCHES.get(usize::try_from(index).unwrap_or(usize::MAX))
         else {
             return; // a stale palette index
         };

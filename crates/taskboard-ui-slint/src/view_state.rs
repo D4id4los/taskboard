@@ -1990,13 +1990,19 @@ impl ViewState {
             }
             // Round 2 (D18/D21): the board/stack lifecycle commits.
             Flow::CreateBoard if !title.is_empty() => {
-                // The lenient empty color (the fixture convention); a
-                // colour picker is recorded debt for a future round.
+                // The CLI's own omission default (UX R-4 D-6, #791):
+                // the GUI create mints the exact payload the CLI's
+                // create applies when `--color` is omitted — both
+                // front ends produce identical creates. The recorded
+                // colour-picker debt is retired by the board color
+                // picker (UX R-4 D-1).
                 outcomes.insert(
                     0,
                     FlowOutcome::Command(StateCommand::CreateBoard {
                         title,
-                        color: taskboard_domain::Color::new(""),
+                        color: taskboard_domain::Color::new(
+                            taskboard_domain::entities::DEFAULT_BOARD_COLOR,
+                        ),
                     }),
                 );
             }
@@ -5012,7 +5018,7 @@ mod tests {
     // -- the board/stack lifecycle flows (r2 D18/D21) ----------------------
 
     #[test]
-    fn board_create_flow_commits_the_lenient_color_command() {
+    fn board_create_flow_commits_the_default_board_color() {
         let (state, _, _, _) = fixture();
         let mut vs = ViewState::new();
         vs.reconcile(&state);
@@ -5028,7 +5034,9 @@ mod tests {
             vs.commit_edit(&state)[..1],
             [FlowOutcome::Command(StateCommand::CreateBoard {
                 title: "second board".to_owned(),
-                color: taskboard_domain::Color::new(""),
+                color: taskboard_domain::Color::new(
+                    taskboard_domain::entities::DEFAULT_BOARD_COLOR,
+                ),
             })][..]
         );
         assert_eq!(*vs.flow(), Flow::None);

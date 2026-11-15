@@ -5893,7 +5893,9 @@ fn the_lifecycle_verbs_drain_their_exact_commands() {
             harness.stroke(parse("Return").expect("Return"));
             harness.assert_commands(&[StateCommand::CreateBoard {
                 title: "second".to_owned(),
-                color: taskboard_domain::Color::new(""),
+                color: taskboard_domain::Color::new(
+                    taskboard_domain::entities::DEFAULT_BOARD_COLOR,
+                ),
             }]);
             harness.engine.settle(&harness.handle);
 
