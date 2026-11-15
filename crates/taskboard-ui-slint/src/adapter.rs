@@ -3020,6 +3020,12 @@ impl Adapter {
             //    under the overlay).
             (_, UiEffect::BeginCapture) => {
                 Self::dismiss_tooltip(window);
+                // T-31 (#814): a live flow's replacement announces
+                // itself (the kept arm's own replace, the resolver's
+                // twin).
+                if !matches!(self.view_state.flow(), Flow::None) {
+                    self.arm_overlay_replacement_notice(window);
+                }
                 self.view_state.begin_capture()
             }
             // -- the concentration overlay's toggle (#496): the
@@ -3955,6 +3961,11 @@ impl Adapter {
                 // The one X: the capture overlay's fire-drill replace
                 // without committing (chunk-10 D8).
                 debug_assert!(matches!(effect, UiEffect::BeginCapture));
+                // T-31 (#814): the replacement announces itself — the
+                // typed fact arms before the overlay mounts (the
+                // settle rule still bounds data-at-risk; the notice
+                // adds only the announcement).
+                self.arm_overlay_replacement_notice(window);
                 let was_drag = matches!(flow, Flow::DragMove { .. });
                 let outcomes = self.view_state.begin_capture();
                 self.width_drag = None;
@@ -3973,10 +3984,28 @@ impl Adapter {
                 // on `Flow::None`, so the gate was provably dead —
                 // and it was the only shape that could silently eat a
                 // re-dispatch if the kept-arm set ever shifted.
+                // T-31 (#814): the palette's settle-then-run announces
+                // the flow it displaced (the capture twin; only the
+                // overlay-open class announces — the other
+                // settle-then-run effects run in place).
+                if matches!(effect, UiEffect::OpenPalette) {
+                    self.arm_overlay_replacement_notice(window);
+                }
                 self.settle_flow(window, state);
                 self.interpret(window, effect);
             }
         }
+    }
+
+    /// The overlay-over-live-flow announcement's arming (T-31, #814):
+    /// the typed fact (a live flow was replaced) on the status-notice
+    /// lane, captured before the overlay mounts.
+    fn arm_overlay_replacement_notice(&mut self, window: &AppWindow) {
+        self.notice = Some(Notice {
+            text: crate::presentation::flow_replacement_notice_phrase(),
+            until: chrono::Utc::now() + crate::presentation::OUTCOME_NOTICE_HORIZON,
+        });
+        self.push_notice(window);
     }
 
     /// The matrix (audit §6) as a pure function: no silent default —

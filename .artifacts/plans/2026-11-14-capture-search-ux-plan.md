@@ -433,6 +433,11 @@ routing — the census Capture slice's method note).
   discard-otherwise), so data-at-risk is bounded, but the replacement
   itself is not announced anywhere in the UI beyond the overlay
   appearing.
+  *(Remediated 2026-11-15 — UX remediation chunk 6 / triage T-31
+  (#814): the replacement now announces itself — the transient
+  status-line notice arms with the typed replaced-flow fact before
+  the overlay mounts (the T-19 notice channel; the escape column is
+  unchanged and the settle rule still bounds data-at-risk).)*
 - **W-N3 — walkthrough note (US-6/S2, disabled rows absorb)**: menu
   rows grey via the adapter's enablement states and an invocation of
   a disabled row is absorbed silently (`menu.rs:68-71`,
