@@ -165,6 +165,11 @@ enum EK {
     BoardRename,
     BoardColorEdit,
     BoardDefaultPreset,
+    /// Present for the class mapping's totality; the pair harness
+    /// never drives it (applied before the table, the `PickerKey`
+    /// exclusion verbatim).
+    #[allow(dead_code)]
+    OpenBoardBarFlyout,
     FocusFirst,
     FocusLast,
     OpenSettings,
@@ -297,6 +302,12 @@ fn key_of(effect: &UiEffect) -> EK {
         // pattern). Their class cell is exercised via `class_of`.
         UiEffect::PickerKey(_) => {
             unreachable!("picker keys are applied before the table")
+        }
+        // The board bar flyout's open request (UX R-4 D-4, #794) is
+        // applied in `apply_effect`, before the table (the picker
+        // keys' pattern) — the matrix never sees it.
+        UiEffect::OpenBoardBarFlyout => {
+            unreachable!("the flyout request is applied before the table")
         }
     }
 }
@@ -1393,6 +1404,8 @@ fn all_effects(fx: &Fixture) -> Vec<UiEffect> {
         UiEffect::BoardColorEdit,
         UiEffect::BoardDefaultPreset,
         UiEffect::FocusFirst,
+        // OpenBoardBarFlyout is excluded: applied in `apply_effect`,
+        // before the table (the picker keys' exclusion).
         UiEffect::FocusLast,
         UiEffect::OpenSettings,
         UiEffect::BeginTitleEdit,
@@ -2614,7 +2627,8 @@ fn dismiss_class(effect: &UiEffect) -> DismissClass {
         | UiEffect::BoardDelete
         | UiEffect::BoardRename
         | UiEffect::BoardColorEdit
-        | UiEffect::BoardDefaultPreset => DismissClass::Survive,
+        | UiEffect::BoardDefaultPreset
+        | UiEffect::OpenBoardBarFlyout => DismissClass::Survive,
     }
 }
 
@@ -4868,6 +4882,113 @@ fn the_default_preset_action_dispatches_on_empty_and_is_the_typed_noop_on_conten
             .interpret_for_test(rig2.handle.window(), UiEffect::BoardDefaultPreset);
         adapter.borrow_mut().refresh_forced(rig2.handle.window());
         assert_eq!(rig2.drain(), 0, "the gate's typed no-op dispatches nothing");
+    });
+}
+
+// -- the target-free BoardSelect flow (UX remediation chunk 4, D-4, #794) --
+
+/// The R-2 settle pins: the bare stroke opens the switcher flyout
+/// (the facts global), zero commands drain; a row activation routes
+/// the existing selection (a view intent — still zero commands, the
+/// selection moves); the outside click's close (the facts-global
+/// write the window backdrop performs) clears the request with
+/// nothing dispatched, and the flow re-arms (the request protocol's
+/// nonce advances).
+#[test]
+fn the_target_free_board_select_opens_the_flyout_walks_and_disarms_clean() {
+    on_slint_thread(|| {
+        let (state, _, _, _) = walk_fixture();
+        let mut rig = rig(state);
+        let adapter = rig.adapter();
+        macro_rules! flyout_open {
+            () => {{
+                rig.handle
+                    .window()
+                    .global::<crate::BoardBarFacts>()
+                    .get_open()
+            }};
+        }
+        macro_rules! flyout_armed {
+            () => {{
+                rig.handle
+                    .window()
+                    .global::<crate::BoardBarFacts>()
+                    .get_switcher_request()
+            }};
+        }
+        macro_rules! highlight {
+            () => {{
+                rig.handle
+                    .window()
+                    .global::<crate::BoardBarFacts>()
+                    .get_highlight()
+            }};
+        }
+        let walk = |rig: &Rig, stroke: &str| {
+            rig.adapter().borrow_mut().switcher_flyout_key(
+                rig.handle.window(),
+                crate::keymap::stroke::parse(stroke).expect("a ladder stroke"),
+            )
+        };
+        // Open: the request arms, the panel mounts, zero commands.
+        adapter
+            .borrow_mut()
+            .apply_effect_for_test(rig.handle.window(), UiEffect::OpenBoardBarFlyout);
+        adapter.borrow_mut().refresh_forced(rig.handle.window());
+        assert!(flyout_open!(), "the flyout opened on the bare stroke");
+        assert!(flyout_armed!(), "the request is armed");
+        assert_eq!(rig.drain(), 0, "opening dispatches nothing");
+        // Walk: the highlight is anchored on the selection and moves
+        // within the rows.
+        let before = rig.handle.window().get_board_bar_model().selected;
+        assert_eq!(highlight!(), before, "the anchor is the selection");
+        walk(&rig, "Down");
+        assert_ne!(highlight!(), before, "the Down arm moved the walk");
+        // Return: the highlighted row's selection routes (the
+        // segment seam's route); the flyout closes and disarms.
+        let target = highlight!();
+        walk(&rig, "Return");
+        adapter.borrow_mut().refresh_forced(rig.handle.window());
+        assert_eq!(
+            rig.handle.window().get_board_bar_model().selected,
+            target,
+            "the row activation selected the walked board"
+        );
+        assert!(!flyout_open!(), "the activation closed the flyout");
+        assert!(!flyout_armed!());
+        assert_eq!(rig.drain(), 0, "the selection is a view intent");
+        // Escape: closes with nothing dispatched, disarmed.
+        adapter
+            .borrow_mut()
+            .apply_effect_for_test(rig.handle.window(), UiEffect::OpenBoardBarFlyout);
+        adapter.borrow_mut().refresh_forced(rig.handle.window());
+        assert!(flyout_open!());
+        walk(&rig, "Escape");
+        assert!(!flyout_open!(), "Escape closes");
+        assert!(!flyout_armed!(), "the request cleared");
+        assert_eq!(rig.drain(), 0);
+        // The outside click's underlay (the window backdrop's facts
+        // write) + the next key's self-heal: the request flags fall in
+        // line, nothing dispatches.
+        adapter
+            .borrow_mut()
+            .apply_effect_for_test(rig.handle.window(), UiEffect::OpenBoardBarFlyout);
+        adapter.borrow_mut().refresh_forced(rig.handle.window());
+        assert!(flyout_open!());
+        rig.handle
+            .window()
+            .global::<crate::DropdownFacts>()
+            .set_open(false);
+        walk(&rig, "Escape");
+        assert!(!flyout_open!(), "the underlay close landed");
+        assert!(!flyout_armed!(), "the request cleared via the self-heal");
+        assert_eq!(rig.drain(), 0);
+        // Re-arm: the flow re-opens after a clean close.
+        adapter
+            .borrow_mut()
+            .apply_effect_for_test(rig.handle.window(), UiEffect::OpenBoardBarFlyout);
+        adapter.borrow_mut().refresh_forced(rig.handle.window());
+        assert!(flyout_open!(), "the flow re-arms after a clean close");
     });
 }
 

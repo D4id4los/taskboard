@@ -176,6 +176,11 @@ pub enum UiEffect {
     BoardPrevious,
     /// Select the parameterized board (`DispatchCtx::board_target`).
     BoardSelect(BoardId),
+    /// Open the board bar's switcher flyout (UX R-4 D-4, #794): the
+    /// target-free `BoardSelect` flow — the stroke arms the flyout,
+    /// the row activation routes the same `BoardSelect` selection.
+    /// The adapter owns the trigger (the facts-global nonce).
+    OpenBoardBarFlyout,
     // --- round-1 chunk 2 (D18): the keyboard stack-width verbs —
     // pure view intents (the BoardNext precedent); the adapter
     // computes the live ceiling and routes to the view state.
@@ -375,7 +380,10 @@ impl UiEffect {
             // The priority pickers' open intents (UX R-3 D-1): the
             // same flag-flip class — no flow moves, no command
             // routes.
-            | Self::PriorityPickerOpen(_) => EffectClass::Nav,
+            | Self::PriorityPickerOpen(_)
+            // The board bar flyout's open request (UX R-4 D-4, #794):
+            // a pure view intent — the adapter owns the trigger.
+            | Self::OpenBoardBarFlyout => EffectClass::Nav,
             Self::StackDelete
             | Self::StackRename
             | Self::StackMove
@@ -1034,9 +1042,13 @@ impl ActionRouter {
             // The board dimension (design §3.8): pure view intents.
             ActionId::BoardNext => DispatchOutcome::UiEffect(UiEffect::BoardNext),
             ActionId::BoardPrevious => DispatchOutcome::UiEffect(UiEffect::BoardPrevious),
+            // UX R-4 D-4 (#794): a target (the segment click's
+            // one-shot) selects directly; the bare stroke opens the
+            // switcher flyout — the target-free flow the finding
+            // names (the old bare `NoTarget` was the asymmetry).
             ActionId::BoardSelect => match ctx.board_target {
                 Some(board) => DispatchOutcome::UiEffect(UiEffect::BoardSelect(board)),
-                None => DispatchOutcome::NoTarget,
+                None => DispatchOutcome::UiEffect(UiEffect::OpenBoardBarFlyout),
             },
             ActionId::StackWider => DispatchOutcome::UiEffect(UiEffect::StackWider),
             ActionId::StackNarrower => DispatchOutcome::UiEffect(UiEffect::StackNarrower),
@@ -1550,9 +1562,12 @@ mod tests {
             DispatchOutcome::UiEffect(UiEffect::BoardSelect(board))
         );
         ctx.board_target = None;
+        // UX R-4 D-4 (#794): the bare stroke is no longer the useless
+        // `NoTarget` — it opens the switcher flyout (the target-free
+        // flow; the adapter owns the trigger).
         assert_eq!(
             ActionRouter::dispatch(ActionId::BoardSelect, &ctx),
-            DispatchOutcome::NoTarget
+            DispatchOutcome::UiEffect(UiEffect::OpenBoardBarFlyout)
         );
     }
 
