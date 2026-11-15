@@ -9049,8 +9049,10 @@ fn the_today_view_walks_completes_and_recommits() {
             let done_section = today.sections.row_data(3).expect("done section");
             assert_eq!(done_section.count, 1, "done-placement");
 
-            // The re-commit verb (no default stroke; the menu path's
-            // action): a fresh double-option due write, free of
+            // The re-commit verb (UX R-4 D-8, #796: the round-10
+            // "no default stroke" posture is overturned — the verb
+            // binds per preset now; this journey drives the action
+            // path): a fresh double-option due write, free of
             // confirmations.
             let before = harness.engine.drain().len();
             harness

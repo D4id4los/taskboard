@@ -8330,7 +8330,18 @@ impl Adapter {
 
     /// The task card's menu list (round-2 D21 spelling of round-1
     /// D13): the Task group's rows, reopen and move-cancel included.
-    fn open_task_context_menu(&mut self, window: &AppWindow, x: f32, y: f32) {
+    /// `extra` extends the list for the calling surface (the
+    /// tracker hide-set filter is the subtraction precedent) — the
+    /// today seam passes `TaskDueToday` (UX R-4 D-8, #796: the
+    /// verb binds `ContextId::Today` only, so board/stack cards'
+    /// menus stay untouched).
+    pub(crate) fn open_task_context_menu(
+        &mut self,
+        window: &AppWindow,
+        x: f32,
+        y: f32,
+        extra: &[ActionId],
+    ) {
         // The tracker hide-set (issue #492): a tracker card's menu
         // omits the impossible complete verb. Only the impossible verb
         // is hidden — the reopen no-op stays (dispatch-time semantics
@@ -8342,11 +8353,12 @@ impl Adapter {
             .and_then(|id| state.tasks.get(&id))
             .is_some_and(|task| task.kind == taskboard_domain::entities::TaskKind::Tracker);
         drop(state);
-        let ids: Vec<ActionId> = menu::TASK_CONTEXT
+        let mut ids: Vec<ActionId> = menu::TASK_CONTEXT
             .iter()
             .copied()
             .filter(|id| !(tracker && *id == ActionId::TaskComplete))
             .collect();
+        ids.extend_from_slice(extra);
         self.open_context_menu(window, x, y, &ids);
     }
 }
@@ -8363,7 +8375,7 @@ fn install_board_context_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
     };
     let outcomes = a.view_state.activate_card(task, stack);
     a.apply_outcomes(&window, &outcomes);
-    a.open_task_context_menu(&window, x, y);
+    a.open_task_context_menu(&window, x, y, &[]);
 
     });
 }
@@ -8383,7 +8395,7 @@ fn install_stack_context_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
     };
     let outcomes = a.view_state.activate_card(task, stack);
     a.apply_outcomes(&window, &outcomes);
-    a.open_task_context_menu(&window, x, y);
+    a.open_task_context_menu(&window, x, y, &[]);
 
     });
 }
@@ -8565,7 +8577,7 @@ fn install_today_row_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     install_seam!(window: window.on_today_row_context_requested, adapter: adapter;
     bind mut (a, window), args (section, row, x, y), {        settle_pointer_conflict(&mut a, &window);
     if focus_today_row(&mut a, &window, section, row).is_some() {
-        a.open_task_context_menu(&window, x, y);
+        a.open_task_context_menu(&window, x, y, &[ActionId::TaskDueToday]);
     }
 
     });

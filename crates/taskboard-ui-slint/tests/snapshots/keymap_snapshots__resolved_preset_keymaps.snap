@@ -81,6 +81,9 @@ expression: rows
             - M
           action: task.move
         - sequence:
+            - T
+          action: task.due-today
+        - sequence:
             - Delete
           action: task.delete
         - sequence:
@@ -482,6 +485,10 @@ expression: rows
           action: nav.prev-control
         - sequence:
             - Ctrl+c
+            - t
+          action: task.due-today
+        - sequence:
+            - Ctrl+c
             - Ctrl+t
           action: task.complete
         - sequence:
@@ -849,6 +856,9 @@ expression: rows
         - sequence:
             - Ctrl+Shift+H
           action: habit.create
+        - sequence:
+            - t
+          action: task.due-today
     - context: board
       bindings:
         - sequence:

@@ -142,6 +142,13 @@ static STANDARD: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::TaskEdit, ContextId::Today, &["Return"]),
     (ActionId::TaskMove, ContextId::Today, &["M"]),
     (ActionId::TaskDelete, ContextId::Today, &["Delete"]),
+    // The today re-commit (UX R-4 D-8, #796): the bare mnemonic — the
+    // round-10 D11 "menu-reachable without default strokes" note is
+    // deliberately overturned (the accepted triage classed the
+    // absence MAJOR: a today-re-commit verb living only in the
+    // two-tier menu fails keyboard/mouse parity for the Today
+    // surface's core loop).
+    (ActionId::TaskDueToday, ContextId::Today, &["T"]),
     // Round 7 (D-7.2): the create form's opener — keyboard parity is
     // the accessibility ledger's demand, so all three presets carry
     // it (the habit family's deliberate exception).
@@ -420,6 +427,11 @@ static EMACS: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::TaskEdit, ContextId::Today, &["Return"]),
     (ActionId::TaskMove, ContextId::Today, &["Ctrl+c", "Ctrl+w"]),
     (ActionId::TaskDelete, ContextId::Today, &["Ctrl+d"]),
+    // The today re-commit (UX R-4 D-8, #796): the C-c family's free
+    // bare t (C-c Ctrl+t is the complete verb — the chord stays
+    // unambiguous); the round-10 D11 note is overturned with the
+    // accepted triage as authority.
+    (ActionId::TaskDueToday, ContextId::Today, &["Ctrl+c", "t"]),
     // Round 7 (D-7.2): the create form's opener — the CUA chord, free
     // in this preset's Today (the accessibility ledger's parity row).
     (ActionId::HabitCreate, ContextId::Today, &["Ctrl+Shift+H"]),
@@ -670,6 +682,10 @@ static VI: &[(ActionId, ContextId, &[&str])] = &[
     // parity row; the Today context is chain-visible in vi too
     // (the `[Today, ViNormal, Global]` chain shape).
     (ActionId::HabitCreate, ContextId::Today, &["Ctrl+Shift+H"]),
+    // The today re-commit (UX R-4 D-8, #796): the bare mnemonic in
+    // the Today context (the HabitCreate row's pattern — the view
+    // context resolves before ViNormal); free in both contexts.
+    (ActionId::TaskDueToday, ContextId::Today, &["t"]),
     // Round 3 (D29, #231): the banner verbs — bare s/m in ViNormal
     // (free; no family growth). Global stays exactly one row (the
     // vi-shape contract).
