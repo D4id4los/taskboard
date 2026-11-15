@@ -54,15 +54,43 @@ three-stage protocol): one agent session per prompt (N.1 → N.2 → N.3);
 doctor first; worktree `../taskboard-WT-<branch-flat>`; stage 1 writes
 the TDD-first chunk plan (`docs(plan): …`) resolving every design
 question with a recorded decision; stage 2 implements per that plan
-(TDD where code is involved, every commit standalone, full AGENTS §10
-suite green via `scripts/run-quality-gates.sh`); stage 3 rebases onto
+(TDD where code is involved, every commit standalone, fast gate green —
+see the long-command discipline below); stage 3 rebases onto
 `origin/main`, reviews the full branch diff against acceptance + the
-code-quality mandate (this is a code phase), re-runs gates, fixes every
-finding on the branch, ships (push, `gh pr create`, checks to green,
+code-quality mandate (this is a code phase), re-runs the fast gate,
+fixes every
+finding on the branch, ships (push, `gh pr create`, checks to green via
+CI — the dispatcher watches them,
 `mergeStateStatus` `CLEAN`, rebase-dance if `BEHIND`/`DIRTY`), then
 removes the worktree (absolute anchor + `git worktree list`
 confirmation). Never merge; never touch `main`. Every stage files
 `backlog:` issues for out-of-scope findings without asking.
+
+**Long-command discipline (amended 2026-11-15 after three stage-2/3
+agents stalled on the coverage suite; binding for every chunk, every
+stage):** the subagent harness kills an agent after ~600s without
+observable activity, and the gate suite's coverage trio
+(`cargo llvm-cov nextest` + quarantine + report) runs 10–14 minutes of
+silent compile+test — longer than any subagent may wait. Therefore:
+
+1. **The coverage trio never runs inside a subagent.** A stage-2 or
+   stage-3 agent's gate is the fast subset: the pre-commit hooks (fmt +
+   clippy + slint lint, already run on every commit) plus
+   `scripts/run-quality-gates.sh cargo nextest run --workspace`
+   (the wrapper's flock-safe arbitrary-command mode, ~4–6 min). The
+   full AGENTS §10 suite is **dispatcher-owned**: the dispatcher runs
+   it in its own session (background + poll) after stage 2's commits
+   land and before stage 3 ships — and CI's `Code Coverage` check runs
+   it authoritatively on the PR regardless.
+2. **Any single command a subagent expects to exceed ~5 minutes runs
+   via a background task with short interleaved polls and productive
+   work between polls** — and the agent commits all landed work before
+   beginning any long wait, so a stall loses nothing.
+3. **Stage-exit verification by the dispatcher**: before dispatching
+   stage N+1, the dispatcher verifies stage N's landed state directly
+   (commits present, tree clean, gate evidence re-runnable) rather
+   than trusting the agent's report; a stalled stage is completed by
+   the dispatcher from the worktree state, never re-dispatched blind.
 
 **The framework dress-rehearsal mandate (binding for every chunk —
 this is what makes phase 5 the rehearsal)**: every remediation changes
