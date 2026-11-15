@@ -879,8 +879,18 @@ export component AppWindow inherits Window {
                 x: (parent.width - self.width) / 2;
                 y: max(Theme.space-2, (parent.height - self.height) / 2);
                 rows: root.label-overlay-rows;
+                form-open: root.label-overlay-form-open;
+                form-title: root.label-overlay-form-title;
+                swatches: root.label-overlay-swatches;
+                swatch-selected: root.label-overlay-swatch-selected;
                 row-toggled(index) => root.labels-overlay-row-toggled(index);
                 dismiss-requested() => root.labels-overlay-dismiss-requested();
+                add-requested() => root.labels-overlay-add-requested();
+                edit-requested(index) => root.labels-overlay-edit-requested(index);
+                title-edited(t) => root.labels-overlay-title-edited(t);
+                swatch-clicked(i) => root.labels-overlay-swatch-clicked(i);
+                form-commit-requested() => root.labels-overlay-form-commit-requested();
+                form-cancelled() => root.labels-overlay-form-cancelled();
             }
 
 
@@ -1767,8 +1777,19 @@ export component AppWindow inherits Window {
     // shape); the open flag rides the task model. The intents
     // resolve against the adapter's id tables.
     in property <[LabelRowModel]> label-overlay-rows;
+    // The form surface's pushed halves (UX R-3 D-2) + intents (§5.1).
+    in property <bool> label-overlay-form-open;
+    in property <string> label-overlay-form-title;
+    in property <[color]> label-overlay-swatches;
+    in property <int> label-overlay-swatch-selected;
     pure callback labels-overlay-row-toggled(int);
     pure callback labels-overlay-dismiss-requested();
+    pure callback labels-overlay-add-requested();
+    pure callback labels-overlay-edit-requested(int);
+    pure callback labels-overlay-title-edited(string);
+    pure callback labels-overlay-swatch-clicked(int);
+    pure callback labels-overlay-form-commit-requested() -> bool;
+    pure callback labels-overlay-form-cancelled();
     pure callback track-entry-row-activated(int);
     pure callback track-entry-delete-clicked(int);
     pure callback track-form-add-requested();

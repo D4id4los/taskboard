@@ -59,9 +59,9 @@ impl Preset {
             ContextId::Palette,
             ContextId::FocusMode,
             ContextId::TrackEntries,
+            ContextId::Labels,
             ContextId::ReviewWalk,
             ContextId::RecurEditor,
-            ContextId::Labels,
         ]
     }
 }
@@ -329,17 +329,6 @@ static STANDARD: &[(ActionId, ContextId, &[&str])] = &[
         &["Down"],
     ),
     (ActionId::ReviewWalkBack, ContextId::ReviewWalk, &["Escape"]),
-    // The labels overlay (UX R-3 D-2, #789): Ctrl+L is unbound in
-    // normal mode here; the overlay's own context carries the
-    // ladder + tab rows (the entries-overlay's vi pattern).
-    (ActionId::LabelManage, ContextId::TaskDetail, &["Ctrl+L"]),
-    (
-        ActionId::LabelOverlayDismiss,
-        ContextId::Labels,
-        &["Escape"],
-    ),
-    (ActionId::NavNextControl, ContextId::Labels, &["Tab"]),
-    (ActionId::NavPrevControl, ContextId::Labels, &["Shift+Tab"]),
 ];
 
 /// `emacs` — default-emacs-authentic (the review's tmux standard):

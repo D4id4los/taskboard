@@ -638,6 +638,21 @@ pub struct RecurRowPush {
 /// which detail row's quick-list is open — one at a time (the editor
 /// exclusivity's shape), the adapter owns the flag across refreshes
 /// (the due buffers pattern), this push only carries.
+/// The labels overlay's in-place form's pushed halves (UX R-3 D-2,
+/// #789): the seeded title (the field reads it on mount only — the
+/// buffer stays user-owned while the form lives) and the armed
+/// swatch's hex. The swatch row is the presentation constant
+/// (`LABEL_SWATCHES`); the model carries the selection's echo.
+#[derive(Debug, Clone, Default)]
+pub struct LabelFormPush {
+    /// The form surface is mounted.
+    pub open: bool,
+    /// The seed (the edit form's) or empty (create).
+    pub title: String,
+    /// The armed swatch's exact hex (no `#`).
+    pub color: String,
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PriorityPickerPush {
     /// The open picker's field; `None` = both closed.
@@ -906,6 +921,7 @@ pub fn push(
     due: &DueEditorPush<'_>,
     recur: crate::models::RecurRowPush,
     priority: crate::models::PriorityPickerPush,
+    label_form: Option<&crate::models::LabelFormPush>,
 ) -> IdTables {
     let now = day.now;
     let sets = presentation::due_sets(state, now, due.horizon);
@@ -1037,6 +1053,7 @@ pub fn push(
         due,
         recur,
         priority,
+        label_form,
         calendar,
     );
     mutations += push_review(window, state, day, calendar, kiosk, models);
@@ -2007,6 +2024,7 @@ fn push_task_detail(
     due: &DueEditorPush<'_>,
     recur: crate::models::RecurRowPush,
     priority: crate::models::PriorityPickerPush,
+    label_form: Option<&crate::models::LabelFormPush>,
     calendar: taskboard_domain::DayCalendar,
 ) -> usize {
     let subject = vs.subject_task().and_then(|t| state.tasks.get(&t));
@@ -2399,6 +2417,30 @@ fn push_task_detail(
         _ => Vec::new(),
     };
     window.set_label_overlay_rows(ModelRc::new(slint::VecModel::from(overlay_rows)));
+    // The form surface's pushed halves (UX R-3 D-2): the armed
+    // swatch rides the palette's index; the title seed is the
+    // field's mount-only read.
+    let swatches: Vec<slint::Color> = presentation::LABEL_SWATCHES
+        .iter()
+        .map(|hex| swatch_hex(&taskboard_domain::Color::new(*hex)))
+        .collect();
+    window.set_label_overlay_swatches(ModelRc::new(slint::VecModel::from(swatches)));
+    window.set_label_overlay_form_open(label_form.as_ref().is_some());
+    window.set_label_overlay_form_title(SharedString::from(
+        label_form
+            .as_ref()
+            .map_or(String::new(), |f| f.title.clone()),
+    ));
+    window.set_label_overlay_swatch_selected(
+        label_form
+            .as_ref()
+            .and_then(|f| {
+                presentation::LABEL_SWATCHES
+                    .iter()
+                    .position(|hex| *hex == f.color)
+            })
+            .map_or(-1, |p| i32::try_from(p).unwrap_or(i32::MAX)),
+    );
     mutations
 }
 
@@ -4113,6 +4155,7 @@ mod tests {
                 &due,
                 crate::models::RecurRowPush::default(),
                 crate::models::PriorityPickerPush::default(),
+                None,
             )
         }
 
