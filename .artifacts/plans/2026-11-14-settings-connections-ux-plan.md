@@ -72,14 +72,14 @@ The F-Pattern 1 CLI cells stay `U` as findings SC-1/SC-2. Cells avoid
 | Capability | Board | TaskDetail | Today | Review | Settings | Capture | CLI |
 |---|---|---|---|---|---|---|---|
 | connection.save | — (R-1) | — (R-1) | — (R-1) | — (R-1) | E (US-1) — the connections form commit `settings-view.slint:653`, seam `adapter.rs:10294-10300`, op `adapter.rs:5700` → =SaveConnection= `requests.rs:381` | — (R-1) | E (pre-existing, =connect= `cli.rs:33`; =login= `cli.rs:56` is the parser's deprecated alias) |
-| connection.remove | — (R-1) | — (R-1) | — (R-1) | — (R-1) | X (US-2) — the connection card's remove `settings-view.slint:657`, seam `adapter.rs:10301-10309`, op `adapter.rs:5795` → =RemoveConnection= `requests.rs:390` | — (R-1) | E (pre-existing, =logout= `cli.rs:197`) |
+| connection.remove | — (R-1) | — (R-1) | — (R-1) | — (R-1) | X (US-2) — the connection card's remove `settings-view.slint:657`, seam `adapter.rs:10301-10309`, op `adapter.rs:5795` → =RemoveConnection= `requests.rs:390`; armed-strip confirmation (UX R-2 D-4, 2026-11-15, #787) | — (R-1) | E (pre-existing, =logout= `cli.rs:197`) |
 | board.remote_list | — (R-1) | — (R-1) | — (R-1) | — (R-1) | E (US-3) — the connection card's refresh `settings-view.slint:658`, seam `adapter.rs:10310-10318`, op `adapter.rs:5820` → =ListRemoteBoards= `requests.rs:398` (the server's boards feed =boards select=-style binding) | — (R-1) | E (pre-existing, =boards list= `cli.rs:288`) |
 | board.attach | — (R-1) | — (R-1) | — (R-1) | — (R-1) | E (US-3) — the remote-bind pick on an unbound board card `settings-view.slint:659`, seam `adapter.rs:10346-10354`, op `adapter.rs:5944` → =AttachConnector= `requests.rs:405` | — (R-1) | E (pre-existing, =boards select= `cli.rs:297`) |
 | board.create_local | — (R-1) | — (R-1) | — (R-1) | — (R-1) | C (US-4) — the local-board create pick `settings-view.slint:660`, seam `adapter.rs:10319-10327`, op `adapter.rs:5984` → =CreateLocalBoard= `requests.rs:413` | — (R-1) | C (pre-existing, =boards create= `cli.rs:322`) |
-| board.detach | — (R-1) | — (R-1) | — (R-1) | — (R-1) | X (US-5) — the connection card's disconnect `settings-view.slint:661`, seam `adapter.rs:10328-10336`, op `adapter.rs:6016` → =DetachConnector= `requests.rs:421` | — (R-1) | X (pre-existing, =boards unbind= `cli.rs:416`) |
+| board.detach | — (R-1) | — (R-1) | — (R-1) | — (R-1) | X (US-5) — the connection card's disconnect `settings-view.slint:661`, seam `adapter.rs:10328-10336`, op `adapter.rs:6016` → =DetachConnector= `requests.rs:421`; armed-strip confirmation (UX R-2 D-4, 2026-11-15, #787) | — (R-1) | X (pre-existing, =boards unbind= `cli.rs:416`) |
 | board.publish | — (R-1) | — (R-1) | — (R-1) | — (R-1) | E (US-5) — the Deck card's publish pick (round-6 D-6.9, #699) `settings-view.slint:666`, seam `adapter.rs:10355-10363`, op `adapter.rs:5853` → =PublishBoard= `requests.rs:431` | — (R-1) | E (pre-existing, =boards publish= `cli.rs:341`) |
 | board.roster_display | — (R-2) | — (R-2) | — (R-2) | — (R-2) | D (US-9) — implemented (r7 chunk 3): the per-account roster — every live board once per card, channel badge + per-account sort (=files_board_roster= =presentation.rs:5616=, roster push =adapter.rs:5155=, rows =settings-view.slint:1012=, channel tag =BoardInfo.bound_channel= =ui_requests.rs:1437=; journeys =journeys.rs::us1_s1/us1_s2=) | — (R-2) | U (SC-2) |
-| board.unbind_files (Stop Sync) | — (R-1) | — (R-1) | — (R-1) | — (R-1) | X (binding only) (US-2) — implemented (r7 chunk 3): the roster row's "Stop Sync" button (=settings-view.slint:671= seam, =adapter.rs:5892= handler) → =StopBoardFilesSync= =requests.rs:455= → =UnbindBoard+snapshot =ui_requests.rs:1569=; exact-effect test =ui_requests.rs::stop_board_files_sync_sends_exact_unbind_command= | — (R-1) | X (pre-existing, =boards unbind=) |
+| board.unbind_files (Stop Sync) | — (R-1) | — (R-1) | — (R-1) | — (R-1) | X (binding only) (US-2) — implemented (r7 chunk 3): the roster row's "Stop Sync" button (=settings-view.slint:671= seam, =adapter.rs:5892= handler) → =StopBoardFilesSync= =requests.rs:455= → =UnbindBoard+snapshot =ui_requests.rs:1569=; exact-effect test =ui_requests.rs::stop_board_files_sync_sends_exact_unbind_command=; armed-strip confirmation, Stop branch only (UX R-2 D-4, 2026-11-15, #787) | — (R-1) | X (pre-existing, =boards unbind=) |
 | board.move_to_files (Switch to Sync via this Connection) | — (R-1) | — (R-1) | — (R-1) | — (R-1) | E (binding) (US-3) — implemented (r7 chunk 3): the roster row's switch action dispatches =MoveBoardToFiles= verbatim; the =FilesMovePicker= dropdown, its copy global and the =move_choices= table retired (the roster is the picker); journey =journeys.rs::us3_s1= | — (R-1) | E (pre-existing, =boards move --to-files=) |
 | board.publish_to_files (Sync via this Connection) | — (R-1) | — (R-1) | — (R-1) | — (R-1) | E (binding) (US-3) — implemented (r7 chunk 3): the roster row's publish action → =PublishBoardToFiles= =requests.rs:465= → the files =BindBoard= assign-step ceremony =ui_requests.rs:1610=; exact-bind test =ui_requests.rs::publish_board_to_files_sends_exact_files_bind_command= | — (R-1) | — (R-2) |
 | files.sync_enabled_set | — (R-1) | — (R-1) | — (R-1) | — (R-1) | E (US-6) — the Files pick on a connector card sets sync + re-anchor in one request (a separate anchor request would force two round-trips, `requests.rs:580-588`); op =settings_files_picked= `adapter.rs:6052-6110` (request at `adapter.rs:6085`) → =SetFilesSyncEnabled= `requests.rs:584` | — (R-1) | U (SC-1) |
@@ -135,14 +135,33 @@ re-argue them.)
   (`settings-view.slint:657`); the roster row's "Stop Sync" (the
   pilot plan's US-2 journey — referenced).
 - **Priority**: P1
-- **Acceptance**:
-  - AC-1: Given a connection card, When remove fires, Then
-    `UiRequest::RemoveConnection` dispatches (`requests.rs:390`, op
-    `adapter.rs:5795`).
-  - AC-2: Given a bound roster row, When "Stop Sync" fires, Then
-    `StopBoardFilesSync` → `UnbindBoard` + snapshot (the pilot's
-    exact-effect test
-    `ui_requests.rs::stop_board_files_sync_sends_exact_unbind_command`).
+- **Acceptance** (amended 2026-11-15, UX R-2 D-4/D-5, #787 — the
+  triage's T-4 "deliberate end (no undo)" sentences retire to this
+  dated pointer; the acceptance of the triage report settles the
+  re-creatability doubt to the rubric's floor: confirmation stages
+  are required):
+  - AC-1: Given a connection card, When remove is clicked, Then the
+    card **arms** — the armed strip mounts naming the consequence,
+    zero lane traffic
+    (`us2_s1_remove_arms_then_confirm_sends_exact_request_once`
+    asserts the armed fact and the empty lane); When the strip's
+    Confirm is clicked, Then the armed flag clears BEFORE the send
+    and exactly one `UiRequest::RemoveConnection` dispatches
+    (`requests.rs:390`; the op body moved verbatim into
+    `settings_send_remove`) — the re-click cannot double-dispatch.
+  - AC-1b (escape paths, real): Cancel disarms; arming another item
+    displaces; a busy lane or a vanished subject (stale `ItemAddr`)
+    leaves a dead strip that dispatches nothing —
+    `cancel_rearm_and_snapshot_refresh_disarm_without_dispatch`.
+  - AC-2: Given a bound roster row, When "Stop Sync" is clicked, Then
+    the row **arms** (only the Stop branch arms — the Move/Publish
+    branches of the same seam stay one-step, non-destructive); the
+    strip's Confirm routes `StopBoardFilesSync` → `UnbindBoard` +
+    snapshot (the pilot's exact-effect test
+    `ui_requests.rs::stop_board_files_sync_sends_exact_unbind_command`
+    binds the request;
+    `us2_s2_stop_sync_confirm_dispatches_once` pins the arm/confirm
+    pair and the no-double-dispatch guard).
 
 ### US-3 — List remote boards / attach / switch / publish-to-files
 
@@ -189,12 +208,26 @@ re-argue them.)
   (`settings-view.slint:666`, round-6 D-6.9 #699); CLI
   `boards unbind` / `boards publish` (pre-existing twins).
 - **Priority**: P1
-- **Acceptance**:
-  - AC-1: Given a connection card, When disconnect fires, Then
-    `DetachConnector` dispatches (`requests.rs:421`, op
-    `adapter.rs:6016`).
+- **Acceptance** (amended 2026-11-15, UX R-2 D-4/D-5, #787):
+  - AC-1: Given a bound remote row, When disconnect is clicked, Then
+    the row **arms** (the strip mounts); the Confirm routes the exact
+    `DetachConnector` (`requests.rs:421`; the op body moved verbatim
+    into `settings_send_detach`) — the armed `ItemAddr` types the
+    verb (Remove and Disconnect share the confirm seam;
+    `bindings_render_without_a_listing_and_the_listing_enriches_without_duplicates`
+    pins the arm/confirm pair; T-4's one-armed-item rule:
+    `settings_armed_item_renders_strip_flag_only`).
   - AC-2: Given a Deck card, When publish fires, Then `PublishBoard`
-    dispatches (`requests.rs:431`, op `adapter.rs:5853`).
+    dispatches (`requests.rs:431`, op `adapter.rs:5853`) — one-step,
+    non-destructive (no arm; the typed outcome + re-bindability hold,
+    US-3/US-4's escape columns stand).
+  - **Command-contract delta (2026-11-15)**: zero new `UiRequest`,
+    zero lane-state change (arming touches no `PendingKind`); the
+    armed identity is the adapter-owned
+    `SettingsVm.armed_item: Option<ItemAddr>`; the busy lane's
+    posture is byte-for-byte untouched (T-38 #821 stays chunk 6's).
+  - **Kiosk**: settings is desktop-only (US-2 platforms) — no kiosk
+    leg; recorded so the test catalogue invents none.
 
 ### US-6 — Toggle files sync
 
@@ -284,8 +317,8 @@ re-argue them.)
 
 | Step | Surface & affordance | User action | Dispatches | System response | Escape / failure |
 |---|---|---|---|---|---|
-| US-2/S1 | connection card | click remove | the remove seam (`adapter.rs:10301-10309`) → op `adapter.rs:5795` → `UiRequest::RemoveConnection` (`requests.rs:390`) | the connection leaves the roster (snapshot refresh) | the removal is the deliberate end (no undo — the request lane is outside the journal); the typed outcome renders on failure |
-| US-2/S2 | roster row ("Stop Sync" — the pilot's journey) | click Stop Sync | `StopBoardFilesSync` (`requests.rs:455`) → `UnbindBoard` + snapshot | the binding clears; the remote subtree lingers (the pilot's R-4 posture) | the pilot's exact-effect test binds the behavior; referenced, not re-walked |
+| US-2/S1 | connection card | click remove | the remove seam arms (`settings_arm_item`) → the strip's Confirm → `UiRequest::RemoveConnection` (`requests.rs:390`) | **arm**: the strip mounts, zero lane traffic; **confirm**: exactly one request, the connection leaves the roster (snapshot refresh) | escape: Cancel / re-arm elsewhere / stale `ItemAddr` dead strip / busy lane — all dispatch-free (UX R-2 D-4, 2026-11-15; the retired "deliberate end (no undo)" sentence: superseded by that dated pointer); the typed outcome renders on failure |
+| US-2/S2 | roster row ("Stop Sync" — the pilot's journey) | click Stop Sync | the Stop branch arms (Move/Publish stay one-step) → the strip's Confirm → `StopBoardFilesSync` (`requests.rs:455`) → `UnbindBoard` + snapshot | **arm**: the strip mounts, nothing sends; **confirm**: the binding clears; the remote subtree lingers (the pilot's R-4 posture) | escape: Cancel / displacement / dead strip (UX R-2 D-4, 2026-11-15); the pilot's exact-effect test binds the request; `us2_s2_stop_sync_confirm_dispatches_once` pins the pair |
 
 ### US-3 — List remote boards / attach / switch / publish-to-files
 
@@ -305,8 +338,8 @@ re-argue them.)
 
 | Step | Surface & affordance | User action | Dispatches | System response | Escape / failure |
 |---|---|---|---|---|---|
-| US-5/S1 | connection card | click disconnect | `DetachConnector` (`requests.rs:421`, op `adapter.rs:6016`) | the connector detaches | deliberate end; typed outcome on failure |
-| US-5/S2 | Deck card | pick publish | `PublishBoard` (`requests.rs:431`, op `adapter.rs:5853`) | the board publishes to Deck | deliberate end; typed outcome on failure |
+| US-5/S1 | bound remote row | click disconnect | the disconnect seam arms → the strip's Confirm → `DetachConnector` (`requests.rs:421`) | **arm**: the strip mounts, nothing sends; **confirm**: the connector detaches | escape: Cancel / displacement / dead strip (UX R-2 D-4, 2026-11-15; the retired "deliberate end" sentence: superseded by that dated pointer); typed outcome on failure |
+| US-5/S2 | Deck card | pick publish | `PublishBoard` (`requests.rs:431`, op `adapter.rs:5853`) | the board publishes to Deck | one-step (non-destructive — no arm, UX R-2 D-4); typed outcome on failure |
 
 ### US-6 — Toggle files sync
 
@@ -359,6 +392,7 @@ Commands column carries the request-lane tokens the gate checks. -->
 | ID | Surface file | Widget | Callback | Adapter seam | ActionId | Commands | Row addressing | Journey steps | Test |
 |---|---|---|---|---|---|---|---|---|---|
 | W-1 | ui/views/settings-view.slint (form 653) | connections form commit | — | on_settings_form_committed (adapter.rs:10294-10300); op settings_save (adapter.rs:5700-5720) | — | UiRequest::SaveConnection | the connections lane (one pending at a time) | US-1/S1-US-1/S2 | — |
+| W-2a (UX R-2 D-4, 2026-11-15) | ui/views/settings-view.slint (the three armed strips) | strip Confirm/Cancel buttons | on_settings_remove_confirmed / on_settings_remove_cancelled / on_settings_files_action_confirmed / on_settings_files_action_cancelled (adapter.rs, `settings_remove_confirmed` / `settings_disarm_item` / `settings_files_action_confirmed`) | — (the armed `ItemAddr` types the verb) | UiRequest::RemoveConnection; UiRequest::DetachConnector; UiRequest::StopBoardFilesSync (the confirm clears the armed flag BEFORE the send) | armed identity `SettingsVm.armed_item: Option<ItemAddr>`; stale index disarms; busy lane disarms; one armed item surface-wide | US-2/S1, US-2/S2, US-5/S1 | journeys.rs::us2_s1_remove_arms_then_confirm_sends_exact_request_once; us2_s2_stop_sync_confirm_dispatches_once; cancel_rearm_and_snapshot_refresh_disarm_without_dispatch; settings_armed_item_renders_strip_flag_only |
 | W-2 | ui/views/settings-view.slint (cards 657-666) | connection card actions (remove / refresh / attach / create-local / detach / publish) | — | on_settings_remove_connection (adapter.rs:10301-10309); op settings_remote_boards (adapter.rs:5820); op settings_remote_bind (adapter.rs:5944); op settings_create_local_board (adapter.rs:5984); op settings_detach (adapter.rs:6016); op settings_publish (adapter.rs:5853) | — | UiRequest::RemoveConnection; UiRequest::ListRemoteBoards; UiRequest::AttachConnector; UiRequest::CreateLocalBoard; UiRequest::DetachConnector; UiRequest::PublishBoard | the connection card's account target | US-2/S1, US-3/S1-US-3/S2, US-4/S1, US-5/S1-US-5/S2 | — |
 | W-3 | ui/views/settings-view.slint (roster rows, the pilot's journeys) | roster row actions (Stop Sync / switch / publish-to-files) | — | on_settings_files_board_action_clicked (adapter.rs); op handlers adapter.rs:5892+ | — | UiRequest::StopBoardFilesSync; UiRequest::MoveBoardToFiles; UiRequest::PublishBoardToFiles | the roster row's board target | US-2/S2, US-3/S3 | ui_requests.rs::stop_board_files_sync_sends_exact_unbind_command; ui_requests.rs::publish_board_to_files_sends_exact_files_bind_command |
 | W-4 | ui/views/settings-view.slint (connector card) | Files pick (sync enable + re-anchor) | — | op settings_files_picked (adapter.rs:6052-6110, request at 6085) | — | UiRequest::SetFilesSyncEnabled | the connector card's account target | US-6/S1-US-6/S2 | — |

@@ -197,6 +197,13 @@ export component AppWindow inherits Window {
     callback settings-field-edited(int, string);
     callback settings-save-clicked(string, string, string);
     callback settings-remove-clicked(int);
+    // The armed strips' pair (UX R-2 D-4, #787): Confirm routes the
+    // armed subject's exact request (the armed ItemAddr types the
+    // verb), Cancel disarms — the seam comments carry the contract.
+    callback settings-remove-confirmed(int);
+    callback settings-remove-cancelled();
+    callback settings-files-action-confirmed(int);
+    callback settings-files-action-cancelled();
     callback settings-refresh-clicked(int);
     callback settings-remote-bind-picked(int, int);
     callback settings-publish-picked(int, int);
@@ -503,6 +510,10 @@ export component AppWindow inherits Window {
                 field-edited(f, t) => root.settings-field-edited(f, t);
                 save-clicked(s, u, p) => root.settings-save-clicked(s, u, p);
                 remove-clicked(i) => root.settings-remove-clicked(i);
+                remove-confirmed(i) => root.settings-remove-confirmed(i);
+                remove-cancelled() => root.settings-remove-cancelled();
+                files-action-confirmed(i) => root.settings-files-action-confirmed(i);
+                files-action-cancelled() => root.settings-files-action-cancelled();
                 refresh-clicked(i) => root.settings-refresh-clicked(i);
                 remote-bind-picked(i, o) => root.settings-remote-bind-picked(i, o);
                 publish-picked(i, o) => root.settings-publish-picked(i, o);

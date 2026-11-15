@@ -123,6 +123,12 @@ export struct ConnectionItem {
     action-label: string,
     action-enabled: bool,
     archived: bool,
+    // The armed-confirm strip's flag (UX R-2 D-4, #787): this row is
+    // the VM's one armed item — the strip mounts inline naming the
+    // consequence; Confirm routes the verb, Cancel disarms. The
+    // armed identity is the adapter's `ItemAddr`, so a vanished
+    // subject's strip is dead (dispatches nothing).
+    armed: bool,
 }
 
 export global SettingsModel {
@@ -655,6 +661,18 @@ export component SettingsView inherits FocusScope {
     // `connection-items` index (the adapter's address table resolves
     // it); `remote-bind-picked` adds the local-board option index.
     callback remove-clicked(int);
+    // The armed strips' pair (UX R-2 D-4, #787): Confirm routes the
+    // armed subject's exact request — the adapter matches the armed
+    // `ItemAddr` (Remove and Disconnect share the confirm seam: the
+    // armed address types the verb) — and clears the flag BEFORE the
+    // send; Cancel disarms without dispatching. A stale index
+    // disarms (the silent-absorb law).
+    callback remove-confirmed(int);
+    callback remove-cancelled();
+    // The Files roster row's Stop-Sync twin (the Move/Publish branches
+    // of the same action stay one-step — non-destructive).
+    callback files-action-confirmed(int);
+    callback files-action-cancelled();
     callback refresh-clicked(int);
     callback remote-bind-picked(int, int);
     callback create-clicked(int);
@@ -965,6 +983,29 @@ export component SettingsView inherits FocusScope {
                             root.remove-clicked(index);
                         }
                     }
+                    // The armed remove strip (UX R-2 D-4): the
+                    // consequence names what the removal takes.
+                    if item.armed: HorizontalLayout {
+                        spacing: Theme.space-2;
+                        RoleText {
+                            role: Typography.caption;
+                            text-color: Theme.text-secondary;
+                            text: "Removes this connection and its remote bindings; local boards stay.";
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                            overflow: elide;
+                        }
+                        SettingsButton {
+                            text: "Confirm remove";
+                            enabled: !SettingsModel.busy;
+                            clicked => { root.remove-confirmed(index); }
+                        }
+                        SettingsButton {
+                            text: "Cancel";
+                            enabled: true;
+                            clicked => { root.remove-cancelled(); }
+                        }
+                    }
                     help-rows := InfoTip {
                         about: item.title;
                         help: SettingsModel.help-rows;
@@ -1061,6 +1102,29 @@ export component SettingsView inherits FocusScope {
                         }
                     }
                 }
+                // The armed Stop-Sync strip (UX R-2 D-4): only the
+                // Stop branch arms — Move and Publish stay one-step.
+                if item.armed && item.kind == ConnectionItemKind.files-board: HorizontalLayout {
+                    spacing: Theme.space-2;
+                    RoleText {
+                        role: Typography.caption;
+                        text-color: Theme.text-secondary;
+                        text: "Stops file syncing for this board; the local copies stay.";
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                        overflow: elide;
+                    }
+                    SettingsButton {
+                        text: "Confirm stop";
+                        enabled: !SettingsModel.busy;
+                        clicked => { root.files-action-confirmed(index); }
+                    }
+                    SettingsButton {
+                        text: "Cancel";
+                        enabled: true;
+                        clicked => { root.files-action-cancelled(); }
+                    }
+                }
                 if item.kind == ConnectionItemKind.deck: VerticalLayout {
                     spacing: Theme.space-1;
                     HorizontalLayout {
@@ -1130,6 +1194,29 @@ export component SettingsView inherits FocusScope {
                         enabled: !SettingsModel.busy;
                         clicked => {
                             root.disconnect-clicked(index);
+                        }
+                    }
+                    // The armed disconnect strip (UX R-2 D-4): the
+                    // binding severs; the board stays local.
+                    if item.armed && item.kind == ConnectionItemKind.remote && item.bound: HorizontalLayout {
+                        spacing: Theme.space-2;
+                        RoleText {
+                            role: Typography.caption;
+                            text-color: Theme.text-secondary;
+                            text: "Detaches this board from the connection; the board stays local.";
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                            overflow: elide;
+                        }
+                        SettingsButton {
+                            text: "Confirm disconnect";
+                            enabled: !SettingsModel.busy;
+                            clicked => { root.remove-confirmed(index); }
+                        }
+                        SettingsButton {
+                            text: "Cancel";
+                            enabled: true;
+                            clicked => { root.remove-cancelled(); }
                         }
                     }
                     if !item.bound: remote-picker := RemotePicker {

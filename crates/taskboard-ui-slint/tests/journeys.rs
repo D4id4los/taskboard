@@ -10003,7 +10003,14 @@ fn bindings_render_without_a_listing_and_the_listing_enriches_without_duplicates
                 items(&harness)[usize::try_from(away_row).expect("fits")].bound,
                 "the synthesized row is bound"
             );
+            // UX R-2 D-4 (#787): the disconnect click arms; the
+            // confirm sends the typed pair once.
             window.invoke_settings_disconnect_clicked(away_row);
+            assert!(
+                harness.drain_requests().is_empty(),
+                "the arm dispatches nothing"
+            );
+            window.invoke_settings_remove_confirmed(away_row);
             let mut requests = harness.drain_requests();
             assert!(
                 matches!(
@@ -10597,6 +10604,213 @@ fn us1_s3_disabled_row_action_postures_absorb_click() {
     );
 }
 
+/// UX R-2 D-4 (D-7 T9, #787): the account card's Remove arms — zero
+/// lane traffic, the armed fact rides the card — and the Confirm
+/// sends exactly one `RemoveConnection`; the armed flag cleared
+/// before the send means a re-click cannot double-dispatch.
+#[test]
+fn us2_s1_remove_arms_then_confirm_sends_exact_request_once() {
+    let settings = UiSettings {
+        connectors: vec![connector_row("work")],
+        ..UiSettings::default()
+    };
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness =
+                Harness::mount_with_settings(SlintDriver::default(), AppState::default(), settings);
+            harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
+            let window = harness.handle.window();
+
+            // The arm: the armed fact rides the card, nothing sends.
+            window.invoke_settings_remove_clicked(0);
+            assert!(
+                harness.drain_requests().is_empty(),
+                "the arm dispatches nothing"
+            );
+            assert!(items(&harness)[0].armed, "the armed fact rides the card");
+
+            // The confirm: exactly one RemoveConnection; the flag
+            // cleared (the pre-send clear), the lane busy.
+            window.invoke_settings_remove_confirmed(0);
+            let requests = harness.drain_requests();
+            assert!(
+                matches!(
+                    &requests[..],
+                    [taskboard_ui_slint::requests::UiRequest::RemoveConnection { name, .. }]
+                        if name == "work"
+                ),
+                "exactly one remove routed"
+            );
+            assert!(
+                !items(&harness)[0].armed,
+                "the flag cleared before the send"
+            );
+            assert!(model(&harness).get_busy(), "the lane went busy");
+
+            // The re-click cannot re-enter either path.
+            window.invoke_settings_remove_confirmed(0);
+            assert!(
+                harness.drain_requests().is_empty(),
+                "no double-dispatch after the pre-send clear"
+            );
+        },
+    );
+}
+
+/// UX R-2 D-4 (D-7 T10, #787): the Stop-Sync pair confirm-dispatches
+/// exactly once — the confirm re-invoked cannot double-dispatch (the
+/// armed flag cleared pre-send; the pending gate). The Disconnect
+/// pair's arm/confirm is pinned by
+/// `bindings_render_without_a_listing_and_the_listing_enriches_without_duplicates`
+/// (updated to the two-step grammar) and the re-confirm guard by T9.
+#[test]
+fn us2_s2_stop_sync_confirm_dispatches_once() {
+    use taskboard_ui_slint::ConnectionItemKind as K;
+    let mut state = AppState::default();
+    let files = uuid::Uuid::new_v4();
+    state_files_board(&mut state, files, "files rider");
+    let settings = two_card_settings();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount_with_settings(SlintDriver::default(), state, settings);
+            harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
+            let window = harness.handle.window();
+
+            // Stop-Sync: arm, confirm, re-confirm — one request.
+            let row = roster_indexes(&harness, K::FilesBoard, "files rider")[0];
+            window.invoke_settings_files_board_action_clicked(i32::try_from(row).expect("fits"));
+            window.invoke_settings_files_action_confirmed(i32::try_from(row).expect("fits"));
+            let requests = harness.drain_requests();
+            assert!(matches!(
+                &requests[..],
+                [taskboard_ui_slint::requests::UiRequest::StopBoardFilesSync { .. }]
+            ));
+            window.invoke_settings_files_action_confirmed(i32::try_from(row).expect("fits"));
+            assert!(harness.drain_requests().is_empty(), "no double-dispatch");
+            let taskboard_ui_slint::requests::UiRequest::StopBoardFilesSync { reply, .. } =
+                requests.into_iter().next().expect("one request")
+            else {
+                panic!("unreachable");
+            };
+            reply
+                .send(Ok(ConnectionsSnapshot {
+                    boards: Vec::new(),
+                    connectors: harness_settings_connectors(),
+                }))
+                .expect("the reply lane is alive");
+            harness.handle.drain_setting_replies();
+        },
+    );
+}
+
+/// UX R-2 D-4 (D-7 T11, #787): Cancel disarms; arming item B disarms
+/// A; a snapshot refresh killing the armed `ItemAddr` leaves a dead
+/// strip that dispatches nothing — every disarm path is
+/// dispatch-free.
+#[test]
+fn cancel_rearm_and_snapshot_refresh_disarm_without_dispatch() {
+    use taskboard_ui_slint::ConnectionItemKind as K;
+    let mut state = AppState::default();
+    let files = uuid::Uuid::new_v4();
+    state_files_board(&mut state, files, "files rider");
+    let settings = two_card_settings();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount_with_settings(SlintDriver::default(), state, settings);
+            harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
+            let window = harness.handle.window();
+
+            // Cancel disarms.
+            let row = roster_indexes(&harness, K::FilesBoard, "files rider")[0];
+            window.invoke_settings_files_board_action_clicked(i32::try_from(row).expect("fits"));
+            assert!(items(&harness)[row].armed);
+            window.invoke_settings_files_action_cancelled();
+            assert!(
+                items(&harness).iter().all(|item| !item.armed),
+                "cancel disarms"
+            );
+            window.invoke_settings_files_action_confirmed(i32::try_from(row).expect("fits"));
+            assert!(
+                harness.drain_requests().is_empty(),
+                "a disarmed confirm sends nothing"
+            );
+
+            // Arming item B disarms A (one armed subject surface-wide).
+            window.invoke_settings_remove_clicked(0);
+            assert!(items(&harness)[0].armed);
+            window.invoke_settings_files_board_action_clicked(i32::try_from(row).expect("fits"));
+            assert!(
+                !items(&harness)[0].armed && items(&harness)[row].armed,
+                "the newer arm displaces the older"
+            );
+            window.invoke_settings_remove_cancelled();
+            assert!(items(&harness).iter().all(|item| !item.armed));
+
+            // A snapshot refresh killing the armed address leaves a
+            // dead strip: arm the roster row, then replace the state
+            // so the board vanishes — the pass disarms, the confirm
+            // dispatches nothing.
+            window.invoke_settings_files_board_action_clicked(i32::try_from(row).expect("fits"));
+            assert!(items(&harness)[row].armed);
+            harness
+                .engine
+                .replace_state(AppState::default(), &harness.handle);
+            harness.handle.drain_setting_replies();
+            assert!(
+                items(&harness).iter().all(|item| !item.armed),
+                "the vanished subject's strip is dead"
+            );
+            window.invoke_settings_files_action_confirmed(i32::try_from(row).expect("fits"));
+            assert!(
+                harness.drain_requests().is_empty(),
+                "the dead strip dispatches nothing"
+            );
+        },
+    );
+}
+
+/// UX R-2 D-4 (D-7 T12, #787): the VM's typed armed fact drives the
+/// strip — exactly one row armed surface-wide after an arm, the
+/// flag mirrored per row (no label oracle).
+#[test]
+fn settings_armed_item_renders_strip_flag_only() {
+    use taskboard_ui_slint::ConnectionItemKind as K;
+    let mut state = AppState::default();
+    let files = uuid::Uuid::new_v4();
+    state_files_board(&mut state, files, "files rider");
+    let settings = two_card_settings();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount_with_settings(SlintDriver::default(), state, settings);
+            harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
+            let window = harness.handle.window();
+
+            let armed_count =
+                |harness: &Harness| items(harness).iter().filter(|item| item.armed).count();
+            assert_eq!(armed_count(&harness), 0, "nothing armed at mount");
+            let row = roster_indexes(&harness, K::FilesBoard, "files rider")[0];
+            window.invoke_settings_files_board_action_clicked(i32::try_from(row).expect("fits"));
+            assert_eq!(armed_count(&harness), 1, "exactly one armed surface-wide");
+        },
+    );
+}
+
 /// US-2/S1 — pressing a `ThisConnection` row's "Stop Sync" action
 /// dispatches exactly one `StopBoardFilesSync` carrying the row's
 /// board; the row busy marker rides the row; a second click during
@@ -10619,7 +10833,19 @@ fn us2_s1_roster_row_action_dispatches_stop_board_files_sync() {
             let window = harness.handle.window();
 
             let row = roster_indexes(&harness, K::FilesBoard, "files rider")[0];
+            // UX R-2 D-4 (#787): the click arms — the armed fact
+            // holds, zero lane traffic; the Confirm sends the exact
+            // request once.
             window.invoke_settings_files_board_action_clicked(i32::try_from(row).expect("fits"));
+            assert!(
+                harness.drain_requests().is_empty(),
+                "the arm dispatches nothing"
+            );
+            assert!(
+                items(&harness)[row].armed,
+                "the armed strip fact rides the specific roster row"
+            );
+            window.invoke_settings_files_action_confirmed(i32::try_from(row).expect("fits"));
             let requests = harness.drain_requests();
             assert!(
                 matches!(
@@ -10632,6 +10858,10 @@ fn us2_s1_roster_row_action_dispatches_stop_board_files_sync() {
             assert!(
                 items(&harness)[row].busy,
                 "the busy marker rides the specific roster row"
+            );
+            assert!(
+                !items(&harness)[row].armed,
+                "the armed flag cleared before the send"
             );
             // Re-entrancy: the pending absorbs a second click.
             window.invoke_settings_files_board_action_clicked(i32::try_from(row).expect("fits"));
@@ -10665,6 +10895,7 @@ fn us2_s2_typed_refusal_surfaces_the_error_fold_roster_intact() {
 
             let row = roster_indexes(&harness, K::FilesBoard, "files rider")[0];
             window.invoke_settings_files_board_action_clicked(i32::try_from(row).expect("fits"));
+            window.invoke_settings_files_action_confirmed(i32::try_from(row).expect("fits"));
             let mut requests = harness.drain_requests();
             let taskboard_ui_slint::requests::UiRequest::StopBoardFilesSync { reply, .. } =
                 requests.remove(0)
@@ -10715,6 +10946,7 @@ fn us2_s3_badge_flips_local_only_and_action_rearms() {
 
             let row = roster_indexes(&harness, K::FilesBoard, "files rider")[0];
             window.invoke_settings_files_board_action_clicked(i32::try_from(row).expect("fits"));
+            window.invoke_settings_files_action_confirmed(i32::try_from(row).expect("fits"));
             let mut requests = harness.drain_requests();
             let taskboard_ui_slint::requests::UiRequest::StopBoardFilesSync { reply, .. } =
                 requests.remove(0)
@@ -11029,7 +11261,13 @@ fn disconnect_routes_detach_from_the_bound_remote_row() {
             assert!(harness.drain_requests().is_empty(), "unbound, no detach");
 
             let bound = item_at(&harness, K::Remote, "r-home");
+            // UX R-2 D-4 (#787): the click arms; the confirm routes.
             window.invoke_settings_disconnect_clicked(bound);
+            assert!(
+                harness.drain_requests().is_empty(),
+                "the arm dispatches nothing"
+            );
+            window.invoke_settings_remove_confirmed(bound);
             let mut requests = harness.drain_requests();
             assert_eq!(requests.len(), 1, "exactly one detach routed");
             assert!(matches!(
