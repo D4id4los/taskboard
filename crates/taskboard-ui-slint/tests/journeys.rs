@@ -18952,3 +18952,150 @@ fn us15_s3_the_armed_delete_stages_then_confirms() {
         },
     );
 }
+
+// -- UX remediation chunk 4 (UX R-4 D-1/D-4/D-5, #791/#794/#795) --
+
+/// US-12/S1 (UX R-4 D-1, #791): the opener arms the swatch strip over
+/// the selected board — nothing dispatches, the strip mounts with the
+/// current color's ring (structural: the open fact + the empty drain).
+#[test]
+fn us12_s1_board_color_edit_arms_the_swatch_strip() {
+    let (_fixture, state) = fixture::journey_state();
+    support::driver::run(
+        support::driver::DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::BoardColorEdit);
+            assert!(
+                harness.handle.window().get_board_color_strip_open(),
+                "the strip mounts on the opener"
+            );
+            harness.assert_commands(&[]);
+        },
+    );
+}
+
+/// US-12/S2 (UX R-4 D-1): a swatch click dispatches the exact
+/// `SetBoardColor` (the palette's hex — never free text) and closes
+/// the strip.
+#[test]
+fn us12_s2_swatch_pick_commits_setboardcolor_and_closes() {
+    let (_fixture, state) = fixture::journey_state();
+    let board = state.boards.values().next().expect("fixture board").id;
+    support::driver::run(
+        support::driver::DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::BoardColorEdit);
+            harness.handle.window().invoke_board_color_picked(1);
+            harness.assert_commands(&[StateCommand::SetBoardColor {
+                board,
+                color: taskboard_domain::Color::new("3a70d6"),
+            }]);
+            assert!(
+                !harness.handle.window().get_board_color_strip_open(),
+                "the commit closes the strip"
+            );
+        },
+    );
+}
+
+/// US-12/S3 (UX R-4 D-1): the dismissal (outside click's seam)
+/// disarms with nothing dispatched; re-arming works (the verb is
+/// self-reversing — the recovery path).
+#[test]
+fn us12_s3_strip_dismissal_dispatches_nothing_and_rearm_works() {
+    let (_fixture, state) = fixture::journey_state();
+    support::driver::run(
+        support::driver::DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::BoardColorEdit);
+            harness.handle.window().invoke_board_color_strip_dismissed();
+            harness.assert_commands(&[]);
+            assert!(!harness.handle.window().get_board_color_strip_open());
+            harness.press(ActionId::BoardColorEdit);
+            assert!(harness.handle.window().get_board_color_strip_open());
+        },
+    );
+}
+
+/// US-8/S2 (UX R-4 D-5, #795): on a non-empty board the preset action
+/// is the typed no-op — nothing drains (the dispatch-time gate's safe
+/// side; the CTA never renders here, but the key could).
+#[test]
+fn us8_s2_preset_on_nonempty_board_is_the_typed_noop() {
+    let (_fixture, state) = fixture::journey_state();
+    support::driver::run(
+        support::driver::DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::BoardDefaultPreset);
+            harness.assert_commands(&[]);
+        },
+    );
+}
+
+/// US-2/S4 (UX R-4 D-4, #794): the target-free `BoardSelect` stroke
+/// opens the switcher flyout; the walk's Return routes the highlighted
+/// row's selection (the segment seam's route) and closes with the
+/// selection moved; Escape closes with nothing dispatched.
+#[test]
+fn us2_s4_target_free_board_select_opens_flyout_and_return_selects() {
+    let mut state = AppState::default();
+    state_board(
+        &mut state,
+        uuid::uuid!("00000000-0000-0000-0000-000000000001"),
+        "live one",
+        None,
+    );
+    state_board(
+        &mut state,
+        uuid::uuid!("00000000-0000-0000-0000-000000000002"),
+        "live two",
+        None,
+    );
+    support::driver::run(
+        support::driver::DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            // The bare stroke: the flyout arms (BoardBarFacts.open).
+            harness.press(ActionId::BoardSelect);
+            assert!(
+                bar_facts(&harness).get_open(),
+                "the target-free stroke opened the flyout"
+            );
+            let before = harness.handle.window().get_board_bar_model().selected;
+            // The walk: Down moves the highlight off the anchor.
+            harness.stroke(parse("Down").expect("Down"));
+            let walked = bar_facts(&harness).get_highlight();
+            assert_ne!(walked, before, "the Down arm moved the walk");
+            // Return: the walked row's selection routes and the flyout
+            // closes.
+            harness.stroke(parse("Return").expect("Return"));
+            assert_eq!(
+                harness.handle.window().get_board_bar_model().selected,
+                walked,
+                "the walked row is the selection"
+            );
+            assert!(!bar_facts(&harness).get_open(), "Return closed the flyout");
+            harness.assert_commands(&[]);
+            // Escape closes with nothing dispatched.
+            harness.press(ActionId::BoardSelect);
+            assert!(bar_facts(&harness).get_open());
+            harness.stroke(parse("Escape").expect("Escape"));
+            assert!(!bar_facts(&harness).get_open(), "Escape closed the flyout");
+            harness.assert_commands(&[]);
+        },
+    );
+}

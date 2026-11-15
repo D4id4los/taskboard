@@ -167,13 +167,13 @@ fn projected_hint_bindings_per_preset() {
             }
         }
     }
-    assert_eq!(
-        empty,
-        [
-            ("standard", "board.select"),
-            ("emacs", "board.select"),
-            ("vi", "board.select"),
-        ],
-        "the only unbound projected action is board.select, on every preset"
+    // UX R-4 D-4 (#794, 2026-11-15): board.select binds per preset now
+    // (the target-free flyout flow) — the chrome projection is fully
+    // bound on every preset. The prior pin ("board.select is the only
+    // unbound projected action") recorded the remediation-era absence,
+    // not a contract.
+    assert!(
+        empty.is_empty(),
+        "every projected chrome action binds on every preset: {empty:?}"
     );
 }

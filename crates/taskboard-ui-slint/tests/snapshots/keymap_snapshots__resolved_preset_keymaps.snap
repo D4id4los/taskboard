@@ -128,6 +128,9 @@ expression: rows
             - B
           action: board.previous
         - sequence:
+            - Ctrl+G
+          action: board.select
+        - sequence:
             - M
           action: task.move
         - sequence:
@@ -560,6 +563,10 @@ expression: rows
             - Ctrl+c
             - Ctrl+f
           action: board.color-edit
+        - sequence:
+            - Ctrl+c
+            - g
+          action: board.select
         - sequence:
             - Ctrl+c
             - m
@@ -1035,6 +1042,10 @@ expression: rows
             - g
             - T
           action: nav.prev-view
+        - sequence:
+            - g
+            - b
+          action: board.select
         - sequence:
             - g
             - c
