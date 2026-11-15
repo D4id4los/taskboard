@@ -73,10 +73,14 @@ export component TodayView inherits FocusScope {
     // resolves the today table and flips the model bit.
     callback row-done-toggled(int, int);
     // The timers section (DR-3/3, D-I6): top-of-page, above the empty
-    // state and the task sections (D-P18). Desktop-only is enforced
-    // model-side — `timers-visible` is false on kiosk and the section
-    // never renders (the push_notifications gate precedent).
+    // state and the task sections (D-P18). The desktop controls are
+    // enforced model-side — `timers-visible` is false on kiosk, but
+    // the section's display host mounts there under the absence hint
+    // (UX R-1 D-2, #790: the fenced surface's honest absence signal).
     in property <bool> timers-visible;
+    // The kiosk absence hint (UX R-1 D-2, #790): the muted caption's
+    // display flag — display state only, never a command.
+    in property <bool> timers-absence-hint;
     in property <[TimerRowModel]> timers;
     in property <int> timers-awaiting;
     callback timers-cancel-clicked(int);
@@ -95,7 +99,7 @@ export component TodayView inherits FocusScope {
     // board has live habits — on kiosk too (passive progress
     // visibility IS the point; only the actions gate).
     in property <[HabitRowModel]> habits;
-    in property <bool> habits-editing-visible;
+    in property <bool> habits-editing-enabled;
     // The create flow's forwarding (round-7 D-7.2): the mount gate's
     // widening (`habits-create-mountable` — desktop, board active,
     // model-side gated) and the form's seams, verbatim.
@@ -162,10 +166,11 @@ export component TodayView inherits FocusScope {
                 }
                 // The timers section (D-P18): first on the page — the
                 // status-bar chip's click target lands here visibly.
-                if (root.timers-visible): TimersSection {
+                if (root.timers-visible || root.timers-absence-hint): TimersSection {
                     vertical-stretch: 0;
                     timers: root.timers;
                     timers-awaiting: root.timers-awaiting;
+                    absence-hint: root.timers-absence-hint;
                     cancel-clicked(r) => root.timers-cancel-clicked(r);
                     create-accepted(label, when, alarm) => {
                         root.timers-create-accepted(label, when, alarm)
@@ -187,7 +192,7 @@ export component TodayView inherits FocusScope {
                 if (root.habits.length > 0 || root.habits-create-mountable): HabitsSection {
                     vertical-stretch: 0;
                     habits: root.habits;
-                    editing-visible: root.habits-editing-visible;
+                    editing-enabled: root.habits-editing-enabled;
                     plus-clicked(r) => root.habits-plus-clicked(r);
                     reorder-asked(row, slot) => root.habits-reorder-asked(row, slot);
                     repair-clicked(r) => root.habits-repair-clicked(r);

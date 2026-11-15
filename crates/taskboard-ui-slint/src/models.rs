@@ -719,6 +719,9 @@ fn push_timers(
         })
         .collect();
     window.set_timers_visible(!kiosk);
+    // The kiosk absence hint (UX R-1 D-2, #790): the fenced surface's
+    // honest absence signal — display state only, no command variant.
+    window.set_timers_absence_hint(kiosk);
     window.set_timers_awaiting(i32::try_from(awaiting).unwrap_or(i32::MAX));
     push_rows(
         &mut models.timers,
@@ -731,7 +734,7 @@ fn push_timers(
 
 /// The habits section (DR-6/6, §4.6): the active board's tracker rows.
 /// No kiosk model gate (D-P13): the rows render on the appliance —
-/// only the section's actions gate (`habits-editing-visible`). Returns
+/// only the section's actions disable (`habits-editing-enabled`). Returns
 /// the diff's mutation count.
 #[allow(clippy::too_many_arguments)] // the pass-shaped parameter list, like `push`
 fn push_habits(
@@ -759,7 +762,7 @@ fn push_habits(
             repair: row.repair,
         })
         .collect();
-    window.set_habits_editing_visible(presentation::habit_editing_visible(kiosk));
+    window.set_habits_editing_enabled(presentation::habit_editing_enabled(kiosk));
     // The create affordance's mount gate (round-7 D-7.2): desktop
     // with an active board — the header-only section is how the
     // first habit gets made. Kiosk and board-less days keep the old
@@ -2199,9 +2202,13 @@ fn push_task_detail(
         recur_pause_open: recur.pause_open,
         recur_confirm_open: recur.confirm_open,
         // The repeat affordances' mount flag (round-7 D-7.1): the
-        // presentation fold over the subject + the kiosk gate.
-        series_edit_visible: subject
-            .is_some_and(|t| crate::presentation::series_edit_visible(t, kiosk)),
+        // presentation fold over the subject — the done-subject
+        // precondition only (UX R-1 D-2: kiosk no longer hides the
+        // row, it greys the actions).
+        series_edit_visible: subject.is_some_and(crate::presentation::series_edit_visible),
+        // The repeat affordances' enablement (UX R-1 D-2, #790): false
+        // on kiosk — the recur row's actions render the disabled tone.
+        series_edit_enabled: crate::presentation::series_edit_enabled(kiosk),
         track_entries: ModelRc::new(slint::VecModel::from(track_entry_rows)),
         date_picker_open: due.picker.is_some(),
         date_caption: SharedString::from(

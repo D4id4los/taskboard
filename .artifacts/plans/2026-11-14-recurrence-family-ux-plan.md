@@ -24,13 +24,24 @@
   recorded baseline anchors — chunk-1 plan §5 anchor-drift law).
 - **Status**: ACCEPTED (retrofit documentation authored under the
   accepted phase-4 dispatch; stage 3 reviews it against this posture).
+  **Amended 2026-11-15** (UX remediation chunk 1 — completability,
+  stage 2; authority: the accepted triage report findings T-7 (#790),
+  RC-W-N2 and the remediation chunk plan
+  `.artifacts/plans/2026-11-15-ux-r1-completability-chunk-plan.md`
+  D-2/D-4): the recur row's kiosk posture changes from
+  **desktop-mounted affordances** to **rendered-disabled affordances**
+  — the row (pattern echo + paused chip) renders on kiosk with the
+  pause/resume/convert buttons greyed. Command-contract delta of the
+  amendment: **zero new variants** (gating is display state — the
+  `series-edit-enabled` flag, `presentation.rs::series_edit_enabled`).
 - **Surfaces touched**: `ui/views/task-view.slint` (the recur row),
   `ui/widgets/task-card.slint` (the recur badge), `src/adapter.rs`
   (recur seams), `src/actions.rs`, `src/router.rs`,
   `src/presentation.rs`; engine-side
   `crates/taskboard-domain/src/command.rs` (the completion spawn)
-- **Platform scope**: desktop (the recur row and its affordances are
-  desktop-mounted; the recur badge renders wherever task cards render)
+- **Platform scope**: desktop for the dispatch; the recur row renders
+  on kiosk with its actions disabled (the remediated D-2 posture;
+  the recur badge renders wherever task cards render)
 
 ## 1. Scope & goals
 
@@ -97,7 +108,10 @@ re-argues them.)
 - **Story**: As a desktop user going on vacation I want to pause a
   recurring series through an inclusive date so that the covered
   members do not exist and the series resumes after it.
-- **Platforms**: desktop.
+- **Platforms**: desktop for the dispatch; the recur row renders on
+  kiosk with the pause affordance disabled (remediated 2026-11-15,
+  the D-2 grammar; test
+  `journeys.rs::the_kiosk_recur_row_renders_with_disabled_actions`).
 - **Entry points**: the detail view's recur row ("Pause series" —
   `task-recur-pause-asked`, `adapter.rs:7204-7208`); the two-tier
   menu's Task group (`ActionId::SeriesPause`, GLOBAL, `actions.rs:1366-1375`);
@@ -119,7 +133,10 @@ re-argues them.)
   series so that its future members exist again; and when a series'
   cadence dissolves into a daily quota I want to convert it to a habit
   through an armed confirm so that the history continues.
-- **Platforms**: desktop.
+- **Platforms**: desktop for the dispatch; the recur row renders on
+  kiosk with the resume/convert affordances disabled (remediated
+  2026-11-15, the D-2 grammar; the armed confirm strip stays
+  unmountable from a disabled trigger).
 - **Entry points**: resume — the recur row's resume affordance
   (`task-recur-resume-clicked`, `adapter.rs:7230-7237`) →
   `ActionId::SeriesResume`; conversion — the recur row's convert arm
@@ -301,11 +318,13 @@ the existing variants the journeys dispatch, for greppability
   pilot's editor exactness tests
   (`lib.rs::recur_editor_commits_the_exact_assembled_rule`,
   `lib.rs::recur_editor_detach_clears_the_rule_and_nothing_else`).
-- **Kiosk gates**: the recur row and its affordances are
-  desktop-mounted (the detail view does not mount in kiosk); the recur
-  badge renders wherever task cards render — the display half is
-  kiosk-visible, the control half is desktop-only by mount grammar
-  (the kiosk silent-gating family, W-N2).
+- **Kiosk gates**: the recur row renders on kiosk AND so do its
+  affordances, disabled (remediated 2026-11-15: `series-edit-enabled`
+  false — supersedes the desktop-mount gate; test
+  `journeys.rs::the_kiosk_recur_row_renders_with_disabled_actions`).
+  History: the affordances were desktop-mounted and the recur badge
+  was the display half's kiosk-visible half (the kiosk silent-gating
+  family, W-N2).
 - **Manual**: the badge's stale/paused semantics are judged, not
   text-asserted; the stage-3 walkthrough covers them.
 
@@ -375,11 +394,15 @@ each carries evidence, never a fix.
   populated evidence stands as recorded (census cells are immutable
   input); this note records the widget-level fact for the triage's
   classification of RC-1.
-- **W-N2 — walkthrough note (US-4, kiosk)**: the recur badge renders
-  on kiosk (task cards render there); the pause/resume/convert
-  controls live in the detail view, which does not mount — the
-  display half is kiosk-visible, the control half desktop-only by
-  mount grammar (the kiosk silent-gating family).
+- **W-N2 — walkthrough note (US-4, kiosk)**: *(Remediated
+  2026-11-15 — UX remediation chunk 1 / triage T-7 (#790): the recur
+  row renders on kiosk with its pause/resume/convert buttons greyed
+  (`presentation.rs::series_edit_enabled`; test
+  `journeys.rs::the_kiosk_recur_row_renders_with_disabled_actions`).
+  History: the recur badge rendered on kiosk (task cards render
+  there) while the pause/resume/convert controls lived in the detail
+  view's desktop-mounted affordances — the kiosk silent-gating
+  family.)*
 - **W-N3 — walkthrough note (US-1, feedback)**: the pause's system
   response is the badge's paused chip (`presentation.rs::recur_badge`
   carries `paused_until`) — the state change is visible at the card

@@ -19,6 +19,11 @@ export { IconKind }
 export component IconButton inherits Rectangle {
     in property <IconKind> icon: IconKind.menu;
     in property <Tone> tone: Tone.neutral;
+    // The enablement (UX R-1 D-2, #790): false renders the disabled
+    // affordance — visible, grey (the recorded disabled tone, the
+    // menu's text-secondary), non-interactive (touch + keyboard + AT
+    // all refuse). Platform gating greys, never hides.
+    in property <bool> enabled: true;
     // The a11y label — the registry label of the routed action (D16).
     in property <string> label;
     // The generalized tooltip trigger's parts (round-1 D8): empty
@@ -27,7 +32,8 @@ export component IconButton inherits Rectangle {
     in property <[string]> hint-keys;
     callback clicked();
 
-    background: touch.pressed || touch.has-hover ? Theme.surface-hover
+    background: touch.enabled && (touch.pressed || touch.has-hover)
+        ? Theme.surface-hover
         : transparent;
     border-radius: Theme.radius-small;
     border-width: focus-surface.has-focus ? Theme.focus-ring-width : 0;
@@ -47,6 +53,7 @@ export component IconButton inherits Rectangle {
         focus-on-tab-navigation: true;
         accessible-role: AccessibleRole.button;
         accessible-label: root.label;
+        enabled: root.enabled;
         // The AT/keyboard activation lands on the same callback the
         // TouchArea's click hits (§7.1's equivalence, D15).
         accessible-action-default => { root.clicked(); }
@@ -55,7 +62,8 @@ export component IconButton inherits Rectangle {
         // widget-level (the routed action's binding stays the
         // semantic path; this is the direct-key half).
         key-pressed(event) => {
-            if (event.text == Key.Return || event.text == " ") {
+            if (root.enabled
+                    && (event.text == Key.Return || event.text == " ")) {
                 root.clicked();
                 accept
             } else {
@@ -71,7 +79,8 @@ export component IconButton inherits Rectangle {
             // The neutral icon lifts to text-primary while hovered —
             // the background alone carries the cue for the semantic
             // tones (usability D2).
-            root.tone == Tone.neutral
+            !root.enabled ? Theme.text-secondary
+            : root.tone == Tone.neutral
                 ? (touch.has-hover ? Theme.text-primary : Theme.text-secondary)
             : root.tone == Tone.info ? Theme.text-primary
             : root.tone == Tone.success ? Semantic.success
@@ -89,6 +98,7 @@ export component IconButton inherits Rectangle {
     }
 
     touch := TouchArea {
+        enabled: root.enabled;
         // The tooltip trigger (usability D3): enter arms the delay,
         // leave and click dismiss — the label is the same property
         // the a11y layer reads, so the tooltip never says anything

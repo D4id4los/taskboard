@@ -9260,6 +9260,192 @@ fn us11_s3_the_restored_board_rejoins_the_bar_and_the_roster_unmounts() {
     );
 }
 
+/// The kiosk gate fixtures' habit (the lib `fixture_habit` twin — the
+/// journeys build state directly).
+fn state_habit(state: &mut AppState, board: taskboard_domain::BoardId) {
+    let habit = taskboard_domain::habit::Habit {
+        id: taskboard_domain::HabitId::from_uuid(uuid::Uuid::now_v7()),
+        board,
+        title: "water".into(),
+        target: taskboard_domain::HabitTarget::PerDay(
+            taskboard_domain::NonZeroCount::new(2).unwrap(),
+        ),
+        order: 0,
+        anchor_time: None,
+        clocks: taskboard_domain::habit::HabitClocks::all(chrono::Utc::now()),
+        continued_from: None,
+        deleted: false,
+    };
+    state.habits.habits.insert(habit.id, habit);
+}
+
+/// UX R-1 D-2 (D-6 T4, #790): the habit section's kiosk gate is the
+/// DISABLED affordance, never absence — the rows render on kiosk AND
+/// the editing flag reads disabled; the desktop profile reads enabled.
+#[test]
+fn the_kiosk_habit_actions_render_disabled_not_absent() {
+    let (_fixture, mut state) = fixture::journey_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    state_habit(&mut state, board);
+    support::driver::run(
+        support::driver::DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let kiosk = Harness::mount_with_settings(
+                SlintDriver::default(),
+                state.clone(),
+                taskboard_ui_slint::UiSettings {
+                    kiosk: true,
+                    ..taskboard_ui_slint::UiSettings::default()
+                },
+            );
+            assert_eq!(
+                kiosk.handle.window().get_habits_model().row_count(),
+                1,
+                "the rows render on kiosk"
+            );
+            assert!(
+                !kiosk.handle.window().get_habits_editing_enabled(),
+                "the actions render disabled"
+            );
+            let desktop = Harness::mount(SlintDriver::default(), state);
+            assert_eq!(desktop.handle.window().get_habits_model().row_count(), 1);
+            assert!(
+                desktop.handle.window().get_habits_editing_enabled(),
+                "the desktop actions stay enabled"
+            );
+        },
+    );
+}
+
+/// UX R-1 D-2 (D-6 T5, #790): the focus toggle's menu row greys on
+/// kiosk (the `entry_states` layer) and its activation still yields
+/// ZERO effects (the dispatch no-op arm stands — layer 3).
+#[test]
+fn the_kiosk_focus_toggle_row_greys_and_still_no_ops() {
+    let (_fixture, state) = fixture::journey_state();
+    support::driver::run(
+        support::driver::DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount_with_settings(
+                SlintDriver::default(),
+                state,
+                taskboard_ui_slint::UiSettings {
+                    kiosk: true,
+                    ..taskboard_ui_slint::UiSettings::default()
+                },
+            );
+            harness.handle.window().invoke_toolbar_menu_clicked();
+            let entries = keyboard(&harness).get_menu_entries();
+            let focus = (0..entries.row_count())
+                .map(|i| entries.row_data(i).expect("row"))
+                .find(|row| row.action == "focus.toggle")
+                .expect("the focus row renders on kiosk");
+            assert!(
+                !focus.enabled,
+                "the row greys (the visual layer of the three-layer gate)"
+            );
+            let index = (0..entries.row_count())
+                .position(|i| entries.row_data(i).expect("row").action == "focus.toggle")
+                .expect("the row's index");
+            harness
+                .handle
+                .window()
+                .invoke_menu_entry_invoked(i32::try_from(index).expect("small index"));
+            harness.assert_commands(&[]);
+        },
+    );
+}
+
+/// UX R-1 D-2 (D-6 T6, #790): the recur row renders on kiosk — the
+/// display halves stay — with its actions' enablement flag false.
+#[test]
+fn the_kiosk_recur_row_renders_with_disabled_actions() {
+    let (_fixture, state) = fixture::journey_state();
+    support::driver::run(
+        support::driver::DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount_with_settings(
+                SlintDriver::default(),
+                state,
+                taskboard_ui_slint::UiSettings {
+                    kiosk: true,
+                    ..taskboard_ui_slint::UiSettings::default()
+                },
+            );
+            // The kiosk pin lands on Board (no rotation) — the card
+            // grid renders; the card's activation opens the task
+            // detail (the desktop double-click journey's path; the
+            // activation carries no kiosk refusal).
+            let card = harness
+                .driver
+                .find_by_label("task-0")
+                .expect("the first card is addressable");
+            let (cx, cy) = support::driver::centre(&card);
+            harness.driver.click_at(cx, cy);
+            harness.handle.refresh();
+            harness.driver.click_at(cx, cy);
+            assert_eq!(
+                harness.handle.window().get_current_view(),
+                View::TaskDetail,
+                "the task detail mounts on kiosk"
+            );
+            let model = harness.handle.window().get_task_model();
+            assert!(
+                model.series_edit_visible,
+                "the recur row renders (the display half stays)"
+            );
+            assert!(
+                !model.series_edit_enabled,
+                "the recur actions render disabled"
+            );
+        },
+    );
+}
+
+/// UX R-1 D-2 (D-6 T7, #790): the R3.5.3 fence stands — the alarm
+/// lanes never mount on kiosk and the timers model stays empty — but
+/// the absence is no longer silent: the Today timers host carries the
+/// hint flag; the desktop profile reads it false.
+#[test]
+fn the_kiosk_alarm_fence_stands_with_the_absence_hint() {
+    let (_fixture, state) = fixture::journey_state();
+    support::driver::run(
+        support::driver::DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let kiosk = Harness::mount_with_settings(
+                SlintDriver::default(),
+                state.clone(),
+                taskboard_ui_slint::UiSettings {
+                    kiosk: true,
+                    ..taskboard_ui_slint::UiSettings::default()
+                },
+            );
+            assert!(
+                kiosk.handle.window().get_timers_absence_hint(),
+                "the fenced surface's absence is signalled"
+            );
+            assert_eq!(
+                kiosk.handle.window().get_timers_model().row_count(),
+                0,
+                "the fence holds: no reminder rows mount"
+            );
+            let desktop = Harness::mount(SlintDriver::default(), state);
+            assert!(
+                !desktop.handle.window().get_timers_absence_hint(),
+                "the desktop renders no absence hint"
+            );
+        },
+    );
+}
+
 /// The pushed dropdown options (the journeys' model facts).
 fn options(harness: &Harness) -> Vec<taskboard_ui_slint::DropdownRow> {
     let model = harness

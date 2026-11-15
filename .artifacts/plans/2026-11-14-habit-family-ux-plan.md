@@ -23,12 +23,23 @@
   baseline anchors — chunk-1 plan §5 anchor-drift law).
 - **Status**: ACCEPTED (retrofit documentation authored under the
   accepted phase-4 dispatch; stage 3 reviews it against this posture).
+  **Amended 2026-11-15** (UX remediation chunk 1 — completability,
+  stage 2; authority: the accepted triage report findings T-7 (#790),
+  HB-6, D-T16 and the remediation chunk plan
+  `.artifacts/plans/2026-11-15-ux-r1-completability-chunk-plan.md`
+  D-2/D-4): the kiosk gating posture changes from **do not mount** to
+  **render disabled** (the visible-gating grammar) — US-1/US-3–US-5's
+  platform notes and the affected steps' system-response columns below
+  carry the disabled-tone sentence. Command-contract delta of the
+  amendment: **zero new variants** (gating is display state — the
+  `editing-enabled` flag, `presentation.rs::habit_editing_enabled`).
 - **Surfaces touched**: `ui/views/today-view.slint`,
   `ui/compositions/habits.slint`, `src/adapter.rs` (habits seams),
   `src/actions.rs`, `src/router.rs`, `src/presentation.rs`
 - **Platform scope**: desktop for the row actions; the habit rows
-  render on kiosk while the actions are gated (D-T16 posture —
-  finding HB-6)
+  AND their actions render on kiosk — the actions disabled (the
+  remediated D-2 posture; supersedes the D-T16 mount gate, finding
+  HB-6)
 
 ## 1. Scope & goals
 
@@ -94,8 +105,10 @@ re-argues them.)
 - **Story**: As a desktop user I want to log today's habit from its
   Today row so that my streak and quota stay current without opening
   anything else.
-- **Platforms**: desktop (rows render on kiosk; the row actions are
-  gated — HB-6).
+- **Platforms**: desktop for the dispatch; the affordance renders on
+  kiosk disabled (remediated 2026-11-15: `editing-enabled` false —
+  the greyed affordance reads "exists, not for this device"; HB-6
+  remediated).
 - **Entry points**: the habit row's own affordance — the "+" /
   plus-click seam (`habits-plus-clicked`, `adapter.rs:7491-7505`)
   routes `ActionId::HabitLog` ("Log habit", section-scoped — the
@@ -105,7 +118,10 @@ re-argues them.)
 - **Acceptance**:
   - AC-1: Given a habit row, When the affordance is invoked, Then
     `StateCommand::LogHabit { habit }` dispatches for the addressed
-    row — verified by `router.rs::habit_verbs_route_from_their_row_targets`
+    row; on kiosk the affordance renders the disabled tone and does
+    not dispatch (the layer-3 no-op stands) — verified by
+    `router.rs::habit_verbs_route_from_their_row_targets` and
+    `journeys.rs::the_kiosk_habit_actions_render_disabled_not_absent`
     (the `HabitLog` arm dispatches the exact `LogHabit` payload,
     `router.rs:1202-1203`).
   - AC-2: Given a stale row index, When the seam fires, Then it
@@ -134,7 +150,8 @@ re-argues them.)
 
 - **Story**: As a desktop user I want to drag habit rows into the
   order I work them so that the section matches my routine.
-- **Platforms**: desktop.
+- **Platforms**: desktop for the dispatch; the affordance renders on
+  kiosk disabled (remediated 2026-11-15, the D-2 grammar).
 - **Entry points**: the drag reorder seam
   (`habits-reorder-asked`, `adapter.rs:7505-7543`) routing
   `ActionId::HabitMove` (→ `MoveHabit`, the order clock — undoable,
@@ -144,9 +161,11 @@ re-argues them.)
 - **Acceptance**:
   - AC-1: Given a drop into a free interval, When the seam fires,
     Then the midpoint order mints and `StateCommand::MoveHabit`
-    dispatches — verified by
-    `presentation.rs::habit_drop_order_takes_the_floor_midpoint_of_the_free_interval`
-    and the `HabitMove` route (`router.rs:689-695`).
+    dispatches; on kiosk the affordance renders the disabled tone
+    (no dispatch) — verified by
+    `presentation.rs::habit_drop_order_takes_the_floor_midpoint_of_the_free_interval`,
+    the `HabitMove` route (`router.rs:689-695`), and
+    `journeys.rs::the_kiosk_habit_actions_render_disabled_not_absent`.
 
 ### US-4 — Repair a habit (make-up log)
 
@@ -154,7 +173,8 @@ re-argues them.)
   make-up affordance to add the missed +1 into the previous window
   while its overflow grace is open so that a slip does not kill the
   streak.
-- **Platforms**: desktop.
+- **Platforms**: desktop for the dispatch; the affordance renders on
+  kiosk disabled (remediated 2026-11-15, the D-2 grammar).
 - **Entry points**: the repair affordance
   (`habits-repair-clicked`, `adapter.rs:7131-7157`) routing
   `ActionId::HabitRepair` ("Add make-up") → `AdjustHabitLog`
@@ -169,7 +189,9 @@ re-argues them.)
     `presentation.rs::habit_repair_target`.
   - AC-2: Given the affordance armed against stale state, When no
     repair target exists, Then nothing dispatches (the seam's
-    `else return` guard, `adapter.rs:7141-7152`).
+    `else return` guard, `adapter.rs:7141-7152`). On kiosk the
+    affordance renders the disabled tone (no dispatch) —
+    `journeys.rs::the_kiosk_habit_actions_render_disabled_not_absent`.
 
 ### US-5 — Convert a habit to a series
 
@@ -177,7 +199,9 @@ re-argues them.)
   I want to convert it to a recurring series through an armed confirm
   so that the conversion is deliberate and its history links to the
   new series.
-- **Platforms**: desktop.
+- **Platforms**: desktop for the dispatch; the affordance renders on
+  kiosk disabled and the armed strip stays unmountable from the
+  disabled trigger (remediated 2026-11-15, the D-2 grammar).
 - **Entry points**: the armed conversion strip
   (`habits-convert-armed`, `adapter.rs:7159-7177`; confirm
   `habits-convert-confirmed` `adapter.rs:7178-7191`; cancel
@@ -192,7 +216,9 @@ re-argues them.)
     pattern (`router.rs:711-716`); the habit retires, the series
     inherits the history.
   - AC-2: Given an armed conversion, When Cancel fires, Then the arm
-    clears and nothing dispatches (`adapter.rs:7192-7199`).
+    clears and nothing dispatches (`adapter.rs:7192-7199`). On kiosk
+    the arm never fires (the disabled trigger; the layer-3 refusal
+    stands) — `journeys.rs::the_kiosk_habit_actions_render_disabled_not_absent`.
 
 ### US-6 — CLI habit management (P2, CLI journeys)
 
@@ -328,9 +354,12 @@ here is new or changed.
   (`presentation.rs::habit_quota_validity_is_total_and_hints_every_refusal`),
   the kiosk gate
   (`presentation.rs::habit_rows_render_stored_order_and_kiosk_gates_the_actions_only`).
-- **Kiosk gates**: the habit rows render on kiosk while the row
-  actions are gated (`editing-visible` empty — D-T16; the gate empties
-  the ACTION, never the model). The display half (US-2) is
+- **Kiosk gates**: the habit rows render on kiosk AND so do the row
+  actions, disabled (remediated 2026-11-15: `editing-enabled` false —
+  supersedes the D-T16 mount gate; test
+  `journeys.rs::the_kiosk_habit_actions_render_disabled_not_absent`.
+  History: the actions were gated (`editing-visible` empty — D-T16;
+  the gate emptied the ACTION, never the model). The display half (US-2) is
   kiosk-complete; the control half is desktop-only by gating, and the
   gating is silent — finding HB-6.
 - **Manual**: the row affordances' recognition (what "+" means on a
@@ -402,11 +431,16 @@ each carries evidence, never a fix.
   justification" condition is not met). Documented here so the triage
   classifies with the authority visible.
 - **HB-6 — kiosk gating is silent on the habit actions** (heuristic:
-  visibility of system status; the D-T16 posture). The habit rows
-  render on kiosk while the row actions are gated
-  (`presentation.rs::habit_editing_visible`, `habits.slint:7-10,36` —
-  the gate empties the ACTION, never the model). No disabled
-  affordance renders — the action simply does not mount. The display
+  visibility of system status; the D-T16 posture). *(Remediated
+  2026-11-15 — UX remediation chunk 1 / triage T-7 (#790): the actions
+  now render the disabled tone on kiosk
+  (`presentation.rs::habit_editing_enabled`, `habits.slint`
+  `editing-enabled` + the `IconButton` enabled gate; test
+  `journeys.rs::the_kiosk_habit_actions_render_disabled_not_absent`).
+  History: the rows rendered while the actions were gated
+  (`presentation.rs::habit_editing_visible` — the gate emptied the
+  ACTION, never the model); no disabled affordance rendered — the
+  action simply did not mount.) The display
   half (US-2) is kiosk-complete; the control half is desktop-only,
   and nothing tells the kiosk viewer the controls exist elsewhere.
   (The same posture the task-lifecycle plan's W-N3 and the

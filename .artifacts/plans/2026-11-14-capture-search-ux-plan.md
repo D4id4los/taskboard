@@ -17,6 +17,15 @@
   cells keep their baseline anchors).
 - **Status**: ACCEPTED (retrofit documentation under the accepted
   phase-4 dispatch; stage 3 reviews it against this posture).
+  **Amended 2026-11-15** (UX remediation chunk 1 — completability,
+  stage 2; authority: the accepted triage report findings T-7 (#790),
+  CF-W-N4 and the remediation chunk plan
+  `.artifacts/plans/2026-11-15-ux-r1-completability-chunk-plan.md`
+  D-2/D-4): the kiosk gating posture for `app.focus_toggle` is the
+  **visible-gating grammar** — the menu row renders the disabled
+  affordance on kiosk (the `entry_states` greying, layer 2) and the
+  dispatch no-op stands (layer 3). Command-contract delta of the
+  amendment: **zero new variants** (gating is display state).
 - **Surfaces touched**: `ui/compositions/capture-overlay.slint`,
   `ui/compositions/search-palette.slint`,
   `ui/compositions/action-menu.slint`,
@@ -73,7 +82,7 @@ rulings table below (this plan is the ruling's authority,
 | app.menu | E (global) (US-6) — `AppMenu` `actions.rs:668-670`, `presets.rs:74`; two-tier menu seams `adapter.rs:6997-7015`, opener `adapter.rs:7802`, dismiss `adapter.rs:7831` | E (global) (US-6) — same `AppMenu` evidence | E (global) (US-6) — same `AppMenu` evidence | E (global) (US-6) — same `AppMenu` evidence | E (global) (US-6) — same `AppMenu` evidence | E (global) (US-6) — menu rows generated from the registry `actions.rs:649+` | U (CF-3) |
 | app.undo | E — `AppUndo` `actions.rs:678-680`, `presets.rs:72` (→ `Undo` `messages.rs:589`; `RestoreTask` `messages.rs:601` rides the undo path) — the journey is the task-lifecycle plan's undo story | E — same `AppUndo` evidence | E — same `AppUndo` evidence | E — same `AppUndo` evidence | E — same `AppUndo` evidence | E — same `AppUndo` evidence | E (pre-existing, `undo` `cli.rs:1750`) |
 | app.redo | E — `AppRedo` `actions.rs:688-690`, `presets.rs:73` (→ `Redo` `messages.rs:592`) — the journey is the task-lifecycle plan's redo story | E — same `AppRedo` evidence | E — same `AppRedo` evidence | E — same `AppRedo` evidence | E — same `AppRedo` evidence | E — same `AppRedo` evidence | E (pre-existing, `redo` `cli.rs:1753`) |
-| app.focus_toggle | E (global) (US-7) — `FocusModeToggle` `actions.rs:1286-1288`; the focus overlay (`focus-overlay.slint`) mounts at window level | E (global) (US-7) — same `FocusModeToggle` evidence | E (global) (US-7) — same `FocusModeToggle` evidence | E (global) (US-7) — same `FocusModeToggle` evidence | E (global) (US-7) — same `FocusModeToggle` evidence | E (global) (US-7) — same `FocusModeToggle` evidence | U (CF-3) |
+| app.focus_toggle | E (global; kiosk: disabled menu row) (US-7) — `FocusModeToggle` `actions.rs:1286-1288`; the focus overlay (`focus-overlay.slint`) mounts at window level | E (global; kiosk: disabled menu row) (US-7) — same `FocusModeToggle` evidence | E (global; kiosk: disabled menu row) (US-7) — same `FocusModeToggle` evidence | E (global; kiosk: disabled menu row) (US-7) — same `FocusModeToggle` evidence | E (global; kiosk: disabled menu row) (US-7) — same `FocusModeToggle` evidence | E (global; kiosk: disabled menu row) (US-7) — same `FocusModeToggle` evidence | U (CF-3) |
 
 **Rulings** (conversions of census `U` cells; this table is the
 ruling's authority, 2026-11-14, per chunk plan D-3):
@@ -214,9 +223,11 @@ ruling's authority, 2026-11-14, per chunk plan D-3):
 - **Story**: When I need to concentrate, I want Ctrl+J to open an
   overlay with the phase countdown, current task, task switcher, and
   quick notes so that the session state is visible at a glance.
-- **Platforms**: desktop (kiosk-gated: `adapter.rs:2846-2852` returns
-  no effect in kiosk; the dispatch-time gating template,
-  `actions.rs:1280-1285`).
+- **Platforms**: desktop for the dispatch (kiosk: the stroke no-ops,
+  `adapter.rs:2846-2852` — layer 3); the menu row renders on kiosk
+  DISABLED (`entry_states` greying — the remediated 2026-11-15
+  visible-gating posture, D-2; test
+  `journeys.rs::the_kiosk_focus_toggle_row_greys_and_still_no_ops`).
 - **Entry points**: `ActionId::FocusModeToggle` (Ctrl+J; Escape and
   Ctrl+J close while the overlay is open, `presets.rs:211-212`); the
   scrim.
@@ -279,7 +290,7 @@ ruling's authority, 2026-11-14, per chunk plan D-3):
 
 | Step | Surface & affordance | User action | Dispatches | System response | Escape / failure |
 |---|---|---|---|---|---|
-| US-7/S1 | any desktop surface | press Ctrl+J | `ActionId::FocusModeToggle` → `UiEffect::ToggleFocusMode` (`router.rs:849`; kiosk → no effect, `adapter.rs:2846-2852`) | the overlay opens: phase countdown, current task, switcher, quick notes (`focus-overlay.slint`) | not configured → the gate holds the overlay closed (dispatch-time gating, `actions.rs:1280-1285`) — test `presentation.rs::focus_overlay_derives_phase_and_remaining` |
+| US-7/S1 | any desktop surface | press Ctrl+J | `ActionId::FocusModeToggle` → `UiEffect::ToggleFocusMode` (`router.rs:849`; kiosk → no effect, `adapter.rs:2846-2852`) | the overlay opens: phase countdown, current task, switcher, quick notes (`focus-overlay.slint`). Kiosk leg (remediated 2026-11-15, D-2): the menu row renders the disabled tone and the stroke stays a no-op — `journeys.rs::the_kiosk_focus_toggle_row_greys_and_still_no_ops` | not configured → the gate holds the overlay closed (dispatch-time gating, `actions.rs:1280-1285`) — test `presentation.rs::focus_overlay_derives_phase_and_remaining` |
 | US-7/S2 | focus overlay | use the switcher / notes / stop | `focus-switcher-invoked` starts tracking; `focus-note-accepted` commits the note into the inbox; `focus-stop-clicked` stops the session (`adapter.rs:10050-10068`) | the switcher rows are live-not-done in board order; the note lands like a capture; stop ends the entry | Escape / Ctrl+J / the scrim close the overlay while the session keeps running (`view_state.rs:2066-2076`) — test `presentation.rs::focus_switcher_rows_are_live_not_done_in_board_order_bounded` |
 
 ## 5. Interaction flows
@@ -427,10 +438,14 @@ routing — the census Capture slice's method note).
   a disabled row is absorbed silently (`menu.rs:68-71`,
   `adapter.rs:509-510`) — the user gets no feedback beyond the grey,
   a recognition question the walkthrough flags for the triage.
-- **W-N4 — walkthrough note (US-7, kiosk gating is silent)**: the
-  focus toggle produces no effect in kiosk (`adapter.rs:2846-2852`) —
-  the stroke simply does nothing, with no disabled affordance or hint
-  (same silent-gating posture the task-lifecycle plan's W-N3 records).
+- **W-N4 — walkthrough note (US-7, kiosk gating is silent)**:
+  *(Remediated 2026-11-15 — UX remediation chunk 1 / triage T-7
+  (#790): the menu row greys on kiosk via `entry_states` (layer 2)
+  and the dispatch no-op stands (layer 3) — test
+  `journeys.rs::the_kiosk_focus_toggle_row_greys_and_still_no_ops`.)
+  History: the focus toggle produced no effect in kiosk
+  (`adapter.rs:2846-2852`) and the plan recorded the stroke as
+  silent.
 
 ## 11. Plan corrections
 - **PC-2 (2026-11-14, gate-outcome corrections)**: the per-plan

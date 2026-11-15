@@ -22,6 +22,17 @@
   recorded baseline anchors — chunk-1 plan §5 anchor-drift law).
 - **Status**: ACCEPTED (retrofit documentation authored under the
   accepted phase-4 dispatch; stage 3 reviews it against this posture).
+  **Amended 2026-11-15** (UX remediation chunk 1 — completability,
+  stage 2; authority: the accepted triage report findings T-7 (#790),
+  TA-W-N4 and the remediation chunk plan
+  `.artifacts/plans/2026-11-15-ux-r1-completability-chunk-plan.md`
+  D-2/D-4): the alarm window's kiosk posture gains the **recorded
+  absence** — a static muted caption on the Today timers host section
+  (the D-2 grammar's "hint where the surface is fenced" arm); the
+  R3.5.3 fence stands (no window mounts, the model stays empty,
+  zero new commands), the alarm-window stories' platform notes record
+  it. Command-contract delta of the amendment: **zero new variants**
+  (the caption is display state — `timers-absence-hint`).
 - **Surfaces touched**: `ui/views/today-view.slint` (timers section),
   `ui/compositions/timer-setter.slint`, `ui/alarm-window.slint`,
   `ui/compositions/notification-surface.slint`, `src/adapter.rs`
@@ -109,8 +120,10 @@ chunk-2 plan D-8.)
 - **Story**: As a desktop user I want to set a quick timer or alarm
   from the Today section so that a nudge exists without opening
   settings.
-- **Platforms**: desktop (the timers section renders on kiosk; the
-  setter is desktop-gated — W-N4).
+- **Platforms**: desktop for the dispatch; on kiosk the timers
+  section renders with the setter greyed and the absence caption
+  (remediated 2026-11-15, the D-2 grammar; test
+  `journeys.rs::the_kiosk_alarm_fence_stands_with_the_absence_hint`).
 - **Entry points**: the timers section's setter
   (`timers-setter-opened`, `adapter.rs:9439-9448`; the setter
   composition `timer-setter.slint`); commit
@@ -278,7 +291,7 @@ chunk-2 plan D-8.)
 
 | Step | Surface & affordance | User action | Dispatches | System response | Escape / failure |
 |---|---|---|---|---|---|
-| US-3/S1 | Today timers section (`today-view.slint:163-180`) | — display only | — display only | waiting/elapsed timers render with countdown state | display only — no dispatch, no escape |
+| US-3/S1 | Today timers section (`today-view.slint:163-180`) | — display only | — display only | waiting/elapsed timers render with countdown state. Kiosk leg (remediated 2026-11-15, D-2): the section renders with the setter greyed and the muted absence caption (the R3.5.3 fence's honest signal) — `journeys.rs::the_kiosk_alarm_fence_stands_with_the_absence_hint` | display only — no dispatch, no escape |
 
 ### US-4 — Alarm window as-displayed
 
@@ -362,6 +375,7 @@ finding). -->
 | W-6 | ui/compositions/notification-surface.slint | notification row action family | — | install_seam! on_notification_dismiss_clicked (adapter.rs:10157-10169); install_seam! on_notification_done_clicked (adapter.rs:10172-10185); install_seam! on_notification_snooze_clicked (adapter.rs:10188-10200); install_seam! on_notification_mute_clicked (adapter.rs:10197-10210); install_seam! on_notification_cancel_clicked (adapter.rs:10210-10229); install_seam! on_notification_track_start_clicked (adapter.rs:10229-10244) | ActionId::ReminderSnooze | StateCommand::DismissReminder; StateCommand::SetTaskDone; StateCommand::SetTaskRemindersMuted; StateCommand::CancelAdhocAlarm; StateCommand::StartTracking | row target via the notification row's resolved index | US-7/S1 | lib.rs::the notification seam tests (invoke_notification_dismiss_clicked / invoke_notification_snooze_clicked exact-command asserts) |
 | W-7 | ui/compositions/notification-surface.slint | notification row open seam | — | install_seam! on_notification_row_open_requested (adapter.rs:10245-10251) | — | — | row target via the stale-index guard (adapter.rs:9410) | US-8/S1 | — |
 | W-8 | crates/taskboard-app/src/cli.rs | `breaks add` / `breaks remove` / `breaks list` verbs | — | — (CLI-only; no GUI seam anywhere — TA-1's sweep evidence) | — | StateCommand::CreateBreakRule; StateCommand::DeleteBreakRule | — (CLI verbs, not UI seams) | US-9/S1 | — |
+| W-9 | ui/compositions/timers.slint (pass-through via ui/views/today-view.slint, ui/app-window.slint) | the Today timers host's muted absence caption (amendment 2026-11-15, UX R-1 D-2 / TA-W-N4) | — | — (no seam: pure display caption, framework §2.1.6 reason law — display state only, zero new commands) | — | — | — (the flag `timers-absence-hint` is a pushed display bit, not a row address) | US-3/S1 kiosk leg: pure display caption (framework §2.1.6 reason law) | journeys.rs::the_kiosk_alarm_fence_stands_with_the_absence_hint |
 
 ## 7. Command-contract delta
 
@@ -487,13 +501,16 @@ each carries evidence, never a fix.
   only as far as the desktop environment honors
   `UserAttentionType::Critical` — a recorded environment-dependent
   posture.
-- **W-N4 — walkthrough note (US-1/US-3, kiosk)**: the timers section
-  renders on kiosk (the display half); the alarm window never mounts
-  (`lib.rs:322-330` — the whole surface, display and controls
-  together, is gated). A kiosk viewer sees the timer countdown but a
-  fired alarm surfaces nowhere on kiosk — the display half ships, the
-  surfacing half is silently gated (the kiosk silent-gating family;
-  the display/control asymmetry the triage classifies).
+- **W-N4 — walkthrough note (US-1/US-3, kiosk)**: *(Remediated
+  2026-11-15 — UX remediation chunk 1 / triage T-7 (#790), within the
+  R3.5.3 fence: the Today timers host renders the muted absence
+  caption on kiosk (`timers-absence-hint` — display state only, zero
+  new commands; test
+  `journeys.rs::the_kiosk_alarm_fence_stands_with_the_absence_hint`).
+  History: the timers section rendered on kiosk (the display half)
+  while the alarm window never mounted (`lib.rs:322-330` — the whole
+  surface, display and controls together, is gated) and nothing told
+  the kiosk viewer where alarms live.)*
 
 ## 11. Plan corrections
 
