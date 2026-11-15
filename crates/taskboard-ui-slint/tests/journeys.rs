@@ -18556,6 +18556,39 @@ fn capture_replaces_the_walk_without_committing() {
     );
 }
 
+/// T-31 (#814): opening capture over a live flow announces the
+/// replacement — the notice arms AND the overlay still opens (both
+/// facts, one dispatch; nothing routes).
+#[test]
+fn capture_over_a_live_flow_announces_the_replacement() {
+    let (_fixture, state, _stack, _inbox_ids) = walk_fixture_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.handle.dispatch_action(ActionId::ReviewOpen);
+            harness.driver.advance_time(0);
+            assert!(walk_open(&harness), "the walk is live");
+            harness.handle.dispatch_action(ActionId::CaptureQuick);
+            harness.driver.advance_time(0);
+            assert!(
+                harness.handle.window().get_notice_visible(),
+                "the replacement announcement arms"
+            );
+            assert!(
+                harness.handle.window().get_capture_open(),
+                "the overlay still opens"
+            );
+            assert!(
+                harness.engine.drain().is_empty(),
+                "the replacement dispatched nothing"
+            );
+        },
+    );
+}
+
 /// J18 — a refresh mid-walk re-derives the rows for the SAME window:
 /// a concurrent engine write moves the rows, the walk stays open with
 /// the reference pinned (no re-target at a state change).
