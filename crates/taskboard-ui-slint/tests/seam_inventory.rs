@@ -65,6 +65,10 @@ const SEAM_INVENTORY: &[&str] = &[
     "stack_delete_strip_confirmed",
     "stack_delete_strip_cancelled",
     "board_bar_segment_activated",
+    // The board color strip's pair (UX R-4 D-1, #791): a swatch
+    // click commits the exact SetBoardColor, the dismissal disarms.
+    "board_color_picked",
+    "board_color_strip_dismissed",
     "board_body_activated",
     "board_body_context_requested",
     "board_card_drag_armed",
