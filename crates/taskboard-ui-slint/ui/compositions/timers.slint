@@ -29,6 +29,21 @@ export struct TimerRowModel {
     alarm-rung: bool,
 }
 
+// One break-rule roster row (T-14, #797): the label, the canonical
+// threshold phrase (the mint's text form), the insistence rung bit
+// (the `TimerRowModel.alarm-rung` convention), the roaming board's
+// name, and the armed-strip flag (the board columns'
+// `delete-armed` convention — this row is the one armed subject).
+// Derived per refresh — the remove target is Rust-side (the IdTables
+// index convention); the row carries only its index.
+export struct BreakRuleRowModel {
+    label: string,
+    threshold: string,
+    alarm-rung: bool,
+    board: string,
+    armed: bool,
+}
+
 export component TimersSection inherits Rectangle {
     in property <[TimerRowModel]> timers;
     // The absence hint (UX R-1 D-2, remediated 2026-11-15, #790 — the
@@ -40,6 +55,32 @@ export component TimersSection inherits Rectangle {
     // absence. Desktop controls (the setter, the creation form) stay
     // gated off under the hint.
     in property <bool> absence-hint: false;
+    // -- The break-rule subsection (T-14, #797): the roster, the
+    //    staged remove, and the create form. The subsection rides the
+    //    section's gates (never mounts under the kiosk absence hint).
+    in property <[BreakRuleRowModel]> break-rules;
+    // The create form's open flag (the popover-open precedent): the
+    // "Add break rule" affordance flips it, a commit or the header
+    // toggle closes it. Pure presentation; the adapter owns the state.
+    in property <bool> break-create-open: false;
+    callback break-create-toggled();
+    // The form's commit seam (the rule-add convention): `false` keeps
+    // the field text (an absorbed parse miss), `true` clears both and
+    // closes the form. The bool is the insistence rung's alarm bit
+    // (the timer form's convention).
+    callback break-create-accepted(string, string, bool) -> bool;
+    // The threshold field's per-keystroke validity (the `when-edited`
+    // convention): the adapter parses with the mint's text grammar
+    // and pushes the flavour.
+    callback break-threshold-edited(string);
+    in property <FieldValidity> break-threshold-validity: FieldValidity.neutral;
+    in property <string> break-threshold-error-hint;
+    // The staged remove (the armed-confirm grammar, UX R-2): the row's
+    // remove affordance arms (arming dispatches nothing), the strip's
+    // Confirm routes the verb, Cancel disarms.
+    callback break-remove-clicked(int);
+    callback break-remove-confirmed(int);
+    callback break-remove-cancelled();
     // The awaiting (fired ∧ ¬dismissed) alarms count — a non-
     // interactive pointer badge to the notification surface (D-P15).
     in property <int> timers-awaiting;
@@ -124,13 +165,27 @@ export component TimersSection inherits Rectangle {
                 enabled: !root.absence-hint;
                 clicked => { root.setter-opened(); }
             }
+            // The break-rule create affordance (T-14, #797): the
+            // section header is the permanent affordance home (the
+            // D-P3 letter) — the roster subsection below collapses to
+            // zero rows while no rules exist or the form is open, so
+            // the empty family costs no viewport row (the
+            // virtualisation suite's realized-window geometry stays
+            // put; stage-2 note on D-1).
+            IconButton {
+                icon: root.break-create-open ? IconKind.remove : IconKind.plus;
+                tone: Tone.info;
+                label: root.break-create-open ? "Close the break-rule form" : "Add break rule";
+                enabled: !root.absence-hint;
+                clicked => { root.break-create-toggled(); }
+            }
         }
         // The fence's honest absence signal (UX R-1 D-2, #790): a
         // static muted caption — display state only, no command.
         if (root.absence-hint): RoleText {
             role: Typography.caption;
             text-color: Theme.text-secondary;
-            text: "Alarms ring on the interactive desktop surface — timers here stay display-only.";
+            text: "Alarms ring on the interactive desktop surface — timers and break rules here stay display-only.";
             wrap: word-wrap;
         }
 
@@ -176,6 +231,151 @@ export component TimersSection inherits Rectangle {
                     tone: Tone.info;
                     label: "Cancel timer";
                     clicked => root.cancel-clicked(row-index);
+                }
+            }
+        }
+
+        // The break-rule subsection (T-14, #797): a break rule is a
+        // duration-trigger timer (the `timers` recipe), so it mounts
+        // with its family. Desktop-only, and content-gated: with no
+        // rules and no open form the subsection collapses entirely —
+        // the create affordance lives in the header above (the
+        // empty-state header would cost a permanent viewport row on
+        // the today page; the stage-2 note on D-1). The kiosk absence
+        // hint gates the whole block.
+        if (!root.absence-hint && (root.break-rules.length > 0 || root.break-create-open)): VerticalLayout {
+            spacing: Theme.space-1;
+            HorizontalLayout {
+                spacing: Theme.space-2;
+                RoleText {
+                    role: Typography.caption;
+                    text: "Break rules";
+                    vertical-alignment: center;
+                }
+                RoleText {
+                    role: Typography.caption;
+                    text-color: Theme.text-secondary;
+                    text: root.break-rules.length;
+                    vertical-alignment: center;
+                }
+                Rectangle {
+                    horizontal-stretch: 1;
+                }
+            }
+
+            for rule-row[rule-index] in root.break-rules: VerticalLayout {
+                spacing: Theme.space-1;
+                HorizontalLayout {
+                    spacing: Theme.space-2;
+                    VerticalLayout {
+                        horizontal-stretch: 1;
+                        spacing: Theme.space-1;
+                        HorizontalLayout {
+                            spacing: Theme.space-2;
+                            RoleText {
+                                role: Typography.body;
+                                text: rule-row.label;
+                                vertical-alignment: center;
+                                overflow: elide;
+                            }
+                            if (rule-row.alarm-rung): Badge {
+                                text: "alarm";
+                                tone: Tone.warning;
+                            }
+                            RoleText {
+                                role: Typography.mono;
+                                text: rule-row.threshold;
+                                text-color: Theme.text-secondary;
+                                vertical-alignment: center;
+                            }
+                        }
+                        RoleText {
+                            role: Typography.caption;
+                            text-color: Theme.text-secondary;
+                            text: rule-row.board;
+                            vertical-alignment: center;
+                        }
+                    }
+                    VerticalLayout {
+                        IconButton {
+                            icon: IconKind.remove;
+                            tone: rule-row.armed ? Tone.danger : Tone.info;
+                            label: "Remove break rule";
+                            clicked => root.break-remove-clicked(rule-index);
+                        }
+                    }
+                }
+                // The armed-confirm strip (UX R-2's grammar, T-14):
+                // mounts inline at the armed subject, names the
+                // consequence (the removal cascade-prunes the rule's
+                // deliveries, dismissals, and snooze links and is not
+                // undoable), Confirm/Cancel. Nothing dispatches until
+                // Confirm.
+                if (rule-row.armed): HorizontalLayout {
+                    spacing: Theme.space-2;
+                    RoleText {
+                        role: Typography.caption;
+                        text-color: Semantic.danger;
+                        text: "Deletes this rule and its recorded firings; this cannot be undone.";
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                        overflow: elide;
+                    }
+                    IconButton {
+                        icon: IconKind.check;
+                        tone: Tone.danger;
+                        label: "Confirm remove rule";
+                        clicked => root.break-remove-confirmed(rule-index);
+                    }
+                    IconButton {
+                        icon: IconKind.remove;
+                        tone: Tone.neutral;
+                        label: "Cancel remove rule";
+                        clicked => root.break-remove-cancelled();
+                    }
+                }
+            }
+
+            // The create form (the timer form's convention): label +
+            // threshold (`30s|5m|1h30m|2d`, the mint's grammar) + the
+            // insistence rung. Commit fires on the threshold field's
+            // Return; an absorbed miss keeps the text.
+            if (root.break-create-open): VerticalLayout {
+                spacing: Theme.space-1;
+                HorizontalLayout {
+                    spacing: Theme.space-2;
+                    break-label-field := TextField {
+                        horizontal-stretch: 1;
+                        placeholder: "Break rule label";
+                        label: "Break rule label";
+                        autofocus: false;
+                    }
+                    break-threshold-field := TextField {
+                        horizontal-stretch: 1;
+                        placeholder: "after 90m · 1h30m · 2d";
+                        label: "Work threshold (e.g. 90m or 1h30m)";
+                        validity: root.break-threshold-validity;
+                        autofocus: false;
+                        accepted(text) => {
+                            if (root.break-create-accepted(break-label-field.text, text, root.insistence-index == 1)) {
+                                break-label-field.text = "";
+                                break-threshold-field.text = "";
+                                // The rung re-seats on its silent
+                                // default (the timer form's reset).
+                                root.insistence-index = 0;
+                            }
+                        }
+                        edited(text) => { root.break-threshold-edited(text); }
+                    }
+                    // The insistence picker rides the timer form's
+                    // own selection (`insistence-index` above): one
+                    // picker, two families — the commit seams read
+                    // the same rung.
+                }
+                if (root.break-threshold-validity == FieldValidity.invalid && break-threshold-field.text != ""): RoleText {
+                    role: Typography.caption;
+                    text-color: Semantic.danger;
+                    text: root.break-threshold-error-hint;
                 }
             }
         }

@@ -239,9 +239,9 @@ sub-family) and `crates/taskboard-app/src/commands/`.
 | alarm.display | — (R-2) | — (R-2) | D (both; kiosk: hint) (timers-alarms US-3, amended 2026-11-15) — timers section mount `today-view.slint:163-180` (props `today-view.slint:79-92`) | — (R-2) | — (R-2) | — (R-2) | D (pre-existing, =timers list= `cli.rs:954`) |
 | review.walk_preview | — (R-3) | — (R-3) | D — review-walk surfacing card `today-view.slint:206-238` (props `today-view.slint:127-131`) | — (R-3) | — (R-3) | — (R-3) | U (RW-5) |
 
-| break_rule.create | U | U | U | U | U | U | E (CLI-only — =breaks add= `cli.rs:971` → =CreateBreakRule= `messages.rs:324`; the UI crate never constructs the command and mounts no =on_break*= seam, adapter.rs swept) |
-| break_rule.remove | U | U | U | U | U | U | X (CLI-only — =breaks remove= `cli.rs:995` → =DeleteBreakRule= `messages.rs:343`; UI-unreachable, same sweep) |
-| break_rule.roster_display | U | U | U | U | U | U | D (CLI-only — =breaks list= `cli.rs:990`, a pure read of the canonical rule roster) |
+| break_rule.create | — (R-1) | — (R-1) | E — the timers composition's create form (T-14, #797): the header affordance opens the form; the commit seam parses the threshold with the =WorkThreshold= mint and routes =BreakRuleCreate= → =CreateBreakRule= over the host board (`adapter.rs::on_timers_break_create_accepted`, router arm `router.rs::breakrule.create`); journey `journeys.rs::the_break_rule_roster_creates_then_stages_the_remove` | — (R-1) | — (R-1) | — (R-1) | E (CLI — =breaks add= `cli.rs:971` → =CreateBreakRule= `messages.rs:324`; the GUI mirrors it per the one-vocabulary rule) |
+| break_rule.remove | — (R-1) | — (R-1) | E — the staged remove (T-14): the roster row's affordance arms (arming dispatches nothing), the strip's Confirm routes =BreakRuleRemoveConfirm= → =DeleteBreakRule= (the cascade-pruning delete is NotUndoable — staging is the escape, the chunk-2 grammar); seam =on_timers_break_remove_confirmed= | — (R-1) | — (R-1) | — (R-1) | E (CLI — =breaks remove= `cli.rs:995`) |
+| break_rule.roster_display | — (R-2) | — (R-2) | D — the roster subsection renders when rules exist: label, alarm-rung bit, canonical threshold phrase (the mint's text form), the roaming board's title, in the CLI list's `(threshold, id)` order (`presentation.rs::break_rule_rows`, `timers.slint` BreakRuleRowModel); the kiosk absence hint names the fence (the whole subsection rides =timers-visible=/=absence-hint=) | — (R-2) | — (R-2) | — (R-2) | D (CLI — =breaks list= `cli.rs:990`) |
 ** Rulings (Today)
 
 | ID | Ruling | Reason | Home | Date | Authority |
@@ -268,9 +268,9 @@ sub-family) and `crates/taskboard-app/src/commands/`.
 | review.walk_preview | Board, TaskDetail, Review, Settings, Capture, CLI | Sweep-B/T/R/S/C: the surfacing card mounts only in the today view (`today-view.slint:206-238`); Sweep-CLI: none. (GUI cells converted 2026-11-14 to R-3 (R-Pattern 3 — the surfacing card mounts only in the today view; authority: 2026-11-14-review-walk-reflection-ux-plan.md §2, 2026-11-14); the CLI cell stays U as plan finding RW-5) | 2026-11-13 |
 | nav.item_walk | Review, Settings, Capture, CLI | =NavNextItem= contexts =VIEW_NAV= (`actions.rs:618-623`) bind only Today/Board/StackDetail/TaskDetail; Sweep-CLI: no nav verb. (R-Pattern 1 (VIEW_NAV binds Today/Board/StackDetail/TaskDetail exclusively) — Review/Settings/Capture cells converted 2026-11-14 to R-6; the CLI cell stays U as plan finding CF-2 (authority: 2026-11-14-capture-search-ux-plan.md §2, 2026-11-14)) | 2026-11-13 |
 
-| break_rule.create | Board, TaskDetail, Today, Review, Settings, Capture | the break-rule engine verbs are UI-unreachable (no =on_break*= seam; the UI crate never constructs =CreateBreakRule= — adapter.rs and the UI crate swept); Today carries the row as the timer/alarm-adjacent daily surface | 2026-11-14 |
-| break_rule.remove | Board, TaskDetail, Today, Review, Settings, Capture | the same UI-unreachable sweep | 2026-11-14 |
-| break_rule.roster_display | Board, TaskDetail, Today, Review, Settings, Capture | no break-rule roster mounts anywhere in the UI (Sweep-B/T/R/S/C) | 2026-11-14 |
+| break_rule.create | Board, TaskDetail, Today, Review, Settings, Capture | T-14 remediation (2026-11-15): the timers composition mounts the create form and routes =CreateBreakRule= (finding #797 resolved — the sweep's "UI-unreachable" evidence retired); the non-owning columns stay R-1 | 2026-11-15 |
+| break_rule.remove | Board, TaskDetail, Today, Review, Settings, Capture | T-14 remediation (2026-11-15): the staged remove (arm + Confirm strip) routes =DeleteBreakRule=; the non-owning columns stay R-1 | 2026-11-15 |
+| break_rule.roster_display | Board, TaskDetail, Today, Review, Settings, Capture | T-14 remediation (2026-11-15): the roster subsection renders in the timers composition (Today); the other GUI columns stay R-2 | 2026-11-15 |
 * Slice: Capture
 
 Baseline: =dc290df2=. Origin: surface slice authored by the phase-3

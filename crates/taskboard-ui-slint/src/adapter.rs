@@ -246,6 +246,21 @@ pub(crate) struct Adapter {
     /// The timers row's alarm (DR-3/3, D-I8); consumed by the next
     /// `timer.cancel` dispatch, then cleared (one-shot).
     timer_target: Option<taskboard_domain::AdhocAlarmId>,
+    /// The break-rule form's parsed draft (T-14, #797); consumed by
+    /// the next `breakrule.create` dispatch, then cleared (one-shot).
+    break_rule_draft: Option<crate::router::BreakRuleDraft>,
+    /// The armed break-rule row's one-shot target (T-14, #797);
+    /// consumed by the confirm dispatch, then cleared.
+    break_rule_target: Option<taskboard_domain::BreakRuleId>,
+    /// The staged remove's armed subject (T-14, the chunk-2
+    /// one-armed-subject rule): arming touches no engine state; the
+    /// confirm clears it BEFORE the send.
+    break_rule_armed: Option<taskboard_domain::BreakRuleId>,
+    /// The break-rule create form's open flag (pure presentation).
+    break_rule_form_open: bool,
+    /// The break-rule form's threshold staged buffer (the
+    /// `timer_when_draft` convention).
+    break_rule_threshold_draft: String,
     /// The entries form's parsed draft (r4 chunk 10, D-TS6); filled at
     /// the commit seam only when the live validity table passes,
     /// consumed by the next `-log`/`-adjust` dispatch (one-shot).
@@ -991,6 +1006,8 @@ impl Adapter {
         self.rule_add_when = None;
         ctx.timer_draft = self.timer_draft.take();
         ctx.timer_target = self.timer_target.take();
+        ctx.break_rule_draft = self.break_rule_draft.take();
+        ctx.break_rule_target = self.break_rule_target.take();
         ctx.track_entry_draft = self.track_entry_draft.take();
         ctx.track_entry_target = self.track_entry_target.take();
         ctx.plan_target = self.plan_target.take();
@@ -1656,6 +1673,19 @@ impl Adapter {
             })
             .and_then(|p| i32::try_from(p).ok())
             .unwrap_or(-1);
+        // The break-rule roster's armed index (T-14, the label form's
+        // armed-index convention): the armed id's position in the
+        // canonical `(threshold, id)` order this pass derives — a
+        // vanished subject's index is -1 (no strip renders).
+        let break_rule_armed_index = self
+            .break_rule_armed
+            .and_then(|armed| {
+                crate::presentation::break_rule_rows(&state, self.view_state.board())
+                    .iter()
+                    .position(|row| row.rule == armed)
+            })
+            .and_then(|p| i32::try_from(p).ok())
+            .unwrap_or(-1);
         self.tables = crate::models::push(
             window,
             &state,
@@ -1673,6 +1703,7 @@ impl Adapter {
             priority,
             label_form.as_ref(),
             label_armed_index,
+            break_rule_armed_index,
         );
         // Round-3 D27c: engine syncs re-grey a live menu — the pages
         // rebuild from the fresh state while the menu holds (the
@@ -5556,6 +5587,7 @@ impl Adapter {
     /// refresh pass's settings half; rows fold liveness + the bound
     /// boards' phases, D8). The row lists ride their persistent
     /// handles through the positional diff (r2 D9).
+    #[allow(clippy::too_many_lines)] // the per-pass push, one block per surface fact
     pub(crate) fn push_settings(&mut self, window: &AppWindow) {
         use crate::SettingsRowStatus as Row;
         let state = self.state.load();
@@ -5652,6 +5684,25 @@ impl Adapter {
         };
         window.set_timer_when_validity(when_validity);
         window.set_timer_when_error_hint(SharedString::from(when_hint));
+        // The break-rule form's facts (T-14, #797): the form's open
+        // flag and the threshold field's validity flavour (the
+        // `when` field's convention — parse at the trust boundary
+        // with the `WorkThreshold` mint's text grammar).
+        window.set_break_create_open(self.break_rule_form_open);
+        let (break_validity, break_hint) = if self.break_rule_threshold_draft.is_empty() {
+            (crate::FieldValidity::Neutral, "")
+        } else {
+            match taskboard_domain::WorkThreshold::parse_text_form(&self.break_rule_threshold_draft)
+            {
+                Ok(_) => (crate::FieldValidity::Valid, ""),
+                Err(_) => (
+                    crate::FieldValidity::Invalid,
+                    crate::presentation::BREAK_THRESHOLD_HINT,
+                ),
+            }
+        };
+        window.set_break_threshold_validity(break_validity);
+        window.set_break_threshold_error_hint(SharedString::from(break_hint));
         global.set_preset_index(preset_index(self.settings.preset));
         global.set_status_text(SharedString::from(crate::settings_status::status_text(
             self.settings.outcome,
@@ -7315,6 +7366,11 @@ pub(crate) fn install(
         rule_add_when: None,
         timer_draft: None,
         timer_target: None,
+        break_rule_draft: None,
+        break_rule_target: None,
+        break_rule_armed: None,
+        break_rule_form_open: false,
+        break_rule_threshold_draft: String::new(),
         track_entry_draft: None,
         track_entry_target: None,
         track_target: None,
@@ -10452,6 +10508,117 @@ fn install_timer_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // visibly (D-P2).
     install_seam!(window: window.on_timers_chip_clicked, adapter: adapter;
     bind mut (a, window), args (), {        a.route(&window, ActionId::ViewToday);
+
+    });
+
+    // The break-rule seams (T-14, #797): the timers family's own
+    // grammar. The create form's commit parses at the trust boundary
+    // (the `WorkThreshold` mint — zero/negative unrepresentable) and
+    // routes `BreakRuleCreate` over the one-shot draft; the remove
+    // stages through the armed confirm (the chunk-2 one-armed-subject
+    // rule — arming touches no engine state; only the confirm routes
+    // `DeleteBreakRule`, whose cascade is NotUndoable).
+    install_seam!(window: window.on_timers_break_create_toggled, adapter: adapter;
+    bind mut (a, window), args (), {        a.break_rule_form_open = !a.break_rule_form_open;
+    if !a.break_rule_form_open {
+        a.break_rule_threshold_draft.clear();
+    }
+    a.refresh_forced(&window);
+
+    });
+    install_seam!(window: window.on_timers_break_threshold_edited, adapter: adapter;
+    bind mut (a, window), args (text), {        a.break_rule_threshold_draft = text.to_string();
+    a.refresh_forced(&window);
+
+    });
+    install_seam!(window: window.on_timers_break_create_accepted, adapter: adapter; [else ( false)]
+    bind mut (a, window), args (label, threshold_text, alarm_rung), {        // A whitespace-empty label dispatches nothing (the timer
+        // form's D-P14 shape).
+        if label.trim().is_empty() {
+            return false;
+        }
+        let Ok(threshold) = taskboard_domain::WorkThreshold::parse_text_form(&threshold_text)
+        else {
+            // A parse miss keeps the text (the rule-add seam's
+            // return convention; the validity flavour renders).
+            return false;
+        };
+        // The roaming board is the section's host scope: the today
+        // view is board-scoped, so the active board IS the
+        // unambiguous default (the CLI `--board` default's letter,
+        // made structural by the view's own scope — stage-2 note on
+        // D-1). Board-less, nothing dispatches.
+        let Some(board) = a.view_state.board() else {
+            return false;
+        };
+        let insistence = if alarm_rung {
+            taskboard_domain::Insistence::Alarm
+        } else {
+            taskboard_domain::Insistence::Normal
+        };
+        a.break_rule_draft = Some(crate::router::BreakRuleDraft {
+            board,
+            label: label.trim().to_owned(),
+            threshold,
+            insistence,
+        });
+        a.route(&window, ActionId::BreakRuleCreate);
+        a.break_rule_threshold_draft.clear();
+        a.break_rule_form_open = false;
+        true
+
+    });
+    install_seam!(window: window.on_timers_break_remove_clicked, adapter: adapter;
+    bind mut (a, window), args (index), {        let Some(rule) = a
+            .tables
+            .break_rules
+            .get(usize::try_from(index).unwrap_or(usize::MAX))
+            .copied()
+        else {
+            return; // a stale index against an older tables pass
+        };
+        // Arming is a UI-state toggle (the settings armed-item
+        // letter): one armed subject surface-wide, arming a different
+        // row displaces the previous, the arm stroke's repeat is not
+        // the confirm (the strip's Confirm is the only verb that
+        // dispatches — the two-seam staging, not the second-click
+        // shape).
+        a.break_rule_armed = if a.break_rule_armed == Some(rule) {
+            None
+        } else {
+            Some(rule)
+        };
+        a.refresh_forced(&window);
+
+    });
+    install_seam!(window: window.on_timers_break_remove_confirmed, adapter: adapter;
+    bind mut (a, window), args (index), {        let Some(rule) = a
+            .tables
+            .break_rules
+            .get(usize::try_from(index).unwrap_or(usize::MAX))
+            .copied()
+        else {
+            a.break_rule_armed = None; // a stale confirm disarms
+            return;
+        };
+        // The armed identity types the verb (the settings
+        // `settings_remove_confirmed` letter): clears the flag BEFORE
+        // the send; a stale index (not the armed subject) disarms
+        // silently.
+        let Some(armed) = a.break_rule_armed.take() else {
+            return;
+        };
+        if armed != rule {
+            return;
+        }
+        a.break_rule_target = Some(rule);
+        a.route(&window, ActionId::BreakRuleRemoveConfirm);
+
+    });
+    install_seam!(window: window.on_timers_break_remove_cancelled, adapter: adapter;
+    bind mut (a, window), args (), {        if a.break_rule_armed.take().is_some() {
+            a.refresh_forced(&window);
+        }
 
     });
 

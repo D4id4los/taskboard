@@ -300,6 +300,16 @@ pub enum ActionId {
     ReminderRuleRemove,
     TimerCreate,
     TimerCancel,
+    /// The break-rule family (T-14, #797): open the create form —
+    /// pointer-driven, timers-composition-mounted, no preset
+    /// bindings (the timers family's grammar).
+    BreakRuleCreate,
+    /// The staged remove's arm step: records the armed subject
+    /// (arming touches no engine state); the confirm routes the verb.
+    BreakRuleRemove,
+    /// The staged remove's confirm: routes `DeleteBreakRule` over the
+    /// armed subject (the armed identity types the verb).
+    BreakRuleRemoveConfirm,
     TaskTrackStart,
     TaskTrackStop,
     TaskToggleTracker,
@@ -548,6 +558,9 @@ impl ActionId {
             Self::ReminderRuleRemove => "reminder.rule-remove",
             Self::TimerCreate => "timer.create",
             Self::TimerCancel => "timer.cancel",
+            Self::BreakRuleCreate => "breakrule.create",
+            Self::BreakRuleRemove => "breakrule.remove",
+            Self::BreakRuleRemoveConfirm => "breakrule.remove-confirm",
             Self::TaskTrackStart => "task.track-start",
             Self::TaskTrackStop => "task.track-stop",
             Self::TaskToggleTracker => "task.toggle-tracker",
@@ -1304,6 +1317,42 @@ pub const REGISTRY: &[ActionEntry] = &[
         menu_rank: 160,
         description: "Cancels the selected standalone alarm before or after it fires.",
         menu_group: Some(MenuGroup::Task),
+    },
+    // The break-rule family (T-14, #797): mounted in the timers
+    // composition, NOT the action menu (the stage-1 D-1 letter) —
+    // pointer parity with the sibling timer rows is the bar, so no
+    // menu rows and no preset bindings.
+    ActionEntry {
+        id: ActionId::BreakRuleCreate,
+        label: "Add break rule",
+        contexts: GLOBAL,
+        category: Category::Task,
+        enabled: true,
+        // The menu-less projection still carries a distinct rank (the
+        // rank-spacing law owns every registry row).
+        menu_rank: 710,
+        description: "Opens the break-rule form: a work threshold that rings when tracked work crosses it.",
+        menu_group: None,
+    },
+    ActionEntry {
+        id: ActionId::BreakRuleRemove,
+        label: "Remove break rule",
+        contexts: GLOBAL,
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 720,
+        description: "Arms the roster row's removal: nothing dispatches until confirmed.",
+        menu_group: None,
+    },
+    ActionEntry {
+        id: ActionId::BreakRuleRemoveConfirm,
+        label: "Confirm remove break rule",
+        contexts: GLOBAL,
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 730,
+        description: "Deletes the armed break rule and prunes its recorded firings.",
+        menu_group: None,
     },
     // The tracking verbs (DR-5/4, D-T16): the timers family's
     // pointer-driven precedent — menu-reachable, no preset bindings;
@@ -2081,6 +2130,9 @@ mod tests {
             ActionId::ReminderRuleRemove,
             ActionId::TimerCreate,
             ActionId::TimerCancel,
+            ActionId::BreakRuleCreate,
+            ActionId::BreakRuleRemove,
+            ActionId::BreakRuleRemoveConfirm,
             ActionId::TaskTrackStart,
             ActionId::TaskTrackStop,
             ActionId::TaskToggleTracker,

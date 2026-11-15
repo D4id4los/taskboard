@@ -29,6 +29,14 @@ pub struct FakeEngine {
 }
 
 impl FakeEngine {
+    /// The current state snapshot (the journeys' read seam — the
+    /// settle's application is observable through it).
+    pub fn snapshot(&self) -> arc_swap::Guard<Arc<AppState>> {
+        self.state.load()
+    }
+}
+
+impl FakeEngine {
     /// Opens the boundary channel over `state` (the same `ArcSwap`
     /// [`taskboard_ui_slint::mount`] reads).
     #[must_use]
@@ -168,6 +176,31 @@ impl FakeEngine {
                 }
                 StateCommand::CancelAdhocAlarm { alarm } => {
                     state.reminders.alarms.remove(&alarm);
+                }
+                // The break-rule verbs (T-14, #797): create inserts
+                // the roaming row; delete is terminal-by-removal (the
+                // `CancelAdhocAlarm` law).
+                StateCommand::CreateBreakRule {
+                    board: Some(board),
+                    label,
+                    threshold,
+                    insistence,
+                } => {
+                    let id = taskboard_domain::BreakRuleId::from_uuid(uuid::Uuid::now_v7());
+                    state.reminders.break_rules.insert(
+                        id,
+                        taskboard_domain::BreakRule {
+                            id,
+                            board,
+                            label,
+                            threshold,
+                            insistence,
+                            created_at: taskboard_domain::BoardClocks::epoch(),
+                        },
+                    );
+                }
+                StateCommand::DeleteBreakRule { id } => {
+                    state.reminders.break_rules.remove(&id);
                 }
                 StateCommand::DismissReminder {
                     reminder,

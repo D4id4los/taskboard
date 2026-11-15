@@ -12977,6 +12977,149 @@ fn the_timers_form_carries_the_insistence_rung() {
     );
 }
 
+// -- T-14 (#797): the break-rule roster in the timers composition --------
+
+/// The roster journey: the create form commits the exact
+/// `CreateBreakRule` over the section's host board (the roster row
+/// renders from the reply's state), the remove affordance arms without
+/// dispatching (the strip is the only verb that routes), and the
+/// strip's Confirm dispatches the exact `DeleteBreakRule`. A
+/// threshold parse miss keeps the field text and routes nothing (the
+/// rule-add seam's return convention).
+#[test]
+#[allow(clippy::too_many_lines)] // the journey's legs, one block per verb
+fn the_break_rule_roster_creates_then_stages_the_remove() {
+    let (_fixture, state) = fixture::golden_state();
+    let board = state
+        .boards
+        .keys()
+        .next()
+        .copied()
+        .expect("the fixture board");
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::ViewToday);
+            assert_eq!(
+                harness.handle.window().get_break_rules_model().row_count(),
+                0,
+                "the empty roster renders"
+            );
+
+            // Open the form (the Add affordance), stage a parse miss,
+            // then a valid commit.
+            harness.driver.click_by_label("Add break rule");
+            harness.driver.advance_time(0);
+            assert!(
+                harness.handle.window().get_break_create_open(),
+                "the form opened"
+            );
+            let click_field = |harness: &mut Harness, label: &str| {
+                let element = harness
+                    .driver
+                    .find_by_label(label)
+                    .unwrap_or_else(|| panic!("the field {label:?} is present"));
+                let (x, y) = support::driver::centre(&element);
+                harness.driver.click_at(x, y);
+            };
+            click_field(&mut harness, "Break rule label");
+            harness.type_text("Tea break");
+            // The threshold draft rides the `edited` seam directly
+            // (the r4 D27 journeys' grammar — the typing driver's
+            // text events are not the callback under test).
+            harness
+                .handle
+                .window()
+                .invoke_timers_break_threshold_edited("nonsense".into());
+            harness.driver.advance_time(0);
+            click_field(&mut harness, "Work threshold (e.g. 90m or 1h30m)");
+            harness.type_text("nonsense");
+            harness.stroke(parse("Return").expect("Return"));
+            assert!(
+                harness.engine.drain().is_empty(),
+                "a threshold parse miss routes nothing"
+            );
+            assert!(
+                harness.handle.window().get_break_threshold_validity() == FieldValidity::Invalid,
+                "the miss renders the invalid flavour"
+            );
+
+            harness
+                .handle
+                .window()
+                .invoke_timers_break_threshold_edited("90m".into());
+            harness.driver.advance_time(0);
+            click_field(&mut harness, "Work threshold (e.g. 90m or 1h30m)");
+            harness.type_text("90m");
+            harness.stroke(parse("Return").expect("Return"));
+            match harness.engine.drain().as_slice() {
+                [
+                    StateCommand::CreateBreakRule {
+                        board: rule_board,
+                        label,
+                        threshold,
+                        insistence,
+                    },
+                ] => {
+                    assert_eq!(*rule_board, Some(board), "the rule roams the host board");
+                    assert_eq!(label.as_str(), "Tea break");
+                    assert_eq!(threshold.as_duration(), TimeDelta::minutes(90));
+                    assert_eq!(*insistence, taskboard_domain::Insistence::Normal);
+                }
+                other => panic!("the create reached the boundary, got {other:?}"),
+            }
+            harness.engine.settle(&harness.handle);
+            assert_eq!(
+                harness.handle.window().get_break_rules_model().row_count(),
+                1
+            );
+            assert!(
+                !harness.handle.window().get_break_create_open(),
+                "a valid commit closes the form"
+            );
+
+            // The staged remove: the arm stroke dispatches nothing;
+            // the strip's Confirm routes the exact delete.
+            harness.driver.click_by_label("Remove break rule");
+            harness.driver.advance_time(0);
+            assert!(
+                harness.engine.drain().is_empty(),
+                "arming dispatches nothing"
+            );
+            let rows: Vec<_> = harness
+                .handle
+                .window()
+                .get_break_rules_model()
+                .iter()
+                .collect();
+            assert!(rows[0].armed, "the armed row renders its strip flag");
+            let rule_id = {
+                let state = harness.engine.snapshot();
+                let mut ids = state.reminders.break_rules.keys().copied();
+                let id = ids.next().expect("the created rule is in state");
+                assert!(ids.next().is_none(), "exactly one rule");
+                id
+            };
+            harness.driver.click_by_label("Confirm remove rule");
+            match harness.engine.drain().as_slice() {
+                [StateCommand::DeleteBreakRule { id }] => {
+                    assert_eq!(*id, rule_id, "the armed subject's exact delete");
+                }
+                other => panic!("the confirm reached the boundary, got {other:?}"),
+            }
+            harness.engine.settle(&harness.handle);
+            assert_eq!(
+                harness.handle.window().get_break_rules_model().row_count(),
+                0,
+                "the removal empties the roster by derivation"
+            );
+        },
+    );
+}
+
 // -- r4 D33: the timers mouse setter (F13) --------------------------------
 
 /// Drives one popover leg: opens via the header button and returns the

@@ -155,6 +155,33 @@ pub fn add_alarm_with_rung(
     id
 }
 
+/// The break-rule roster helper (T-14, #797): mints one rule roaming
+/// with the given board and hands back its id — the journeys address
+/// roster rows through these, never hand-building the domain row.
+#[must_use]
+pub fn add_break_rule(
+    state: &mut AppState,
+    board: BoardId,
+    label: &str,
+    threshold: chrono::TimeDelta,
+    insistence: taskboard_domain::Insistence,
+) -> taskboard_domain::BreakRuleId {
+    let id = taskboard_domain::BreakRuleId::from_uuid(uuid::Uuid::now_v7());
+    state.reminders.break_rules.insert(
+        id,
+        taskboard_domain::BreakRule {
+            id,
+            board,
+            label: label.to_owned(),
+            threshold: taskboard_domain::WorkThreshold::try_new(threshold)
+                .expect("the fixture threshold is strictly positive"),
+            insistence,
+            created_at: epoch(),
+        },
+    );
+    id
+}
+
 /// The tracking-surface helper (DR-5/4, D-TU12): mints one open entry
 /// into `state` and hands back its id — the journeys address the chip
 /// and the badge through these, never hand-building the domain row.
