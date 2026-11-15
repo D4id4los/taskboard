@@ -7123,6 +7123,14 @@ pub struct HabitRow {
     /// `habit_repair_target` answered `Some` — the button mounts (in
     /// the edit cluster's gate), the dispatch carries the tuple.
     pub repair: bool,
+    /// Which side of the invert condition the repair is on (T-23,
+    /// #806): true exactly when the target window already holds a log
+    /// row — the `AdjustHabitLog` undo predicate (`undo.rs`'s
+    /// `PreImages` arm); false when the repair CREATES the window's
+    /// row (`NotUndoable(HabitSurface)` — the lossy-inverse
+    /// rationale is the engine's). Meaningless when `repair` is
+    /// false (no affordance renders).
+    pub repair_undoable: bool,
     /// The restyle flag.
     pub met: bool,
 }
@@ -7156,6 +7164,7 @@ pub fn habit_rows(
             };
             let count = state.habits.log.get(&key).map_or(0, |e| e.count);
             let quota = habit.target.quota().get();
+            let repair_target = habit_repair_target(habit, &state.habits.log, now, day);
             HabitRow {
                 habit: habit.id,
                 title: habit.title.clone(),
@@ -7170,7 +7179,20 @@ pub fn habit_rows(
                     day,
                 ),
                 chip: habit.anchor_time,
-                repair: habit_repair_target(habit, &state.habits.log, now, day).is_some(),
+                repair: repair_target.is_some(),
+                // The typed invert-condition bit (T-23, #806): the
+                // target window's own log row — present ⇒ the exact
+                // inverse (`PreImages`), absent ⇒ the repair creates
+                // the row (`NotUndoable(HabitSurface)`).
+                repair_undoable: repair_target.is_some_and(|(window, _)| {
+                    state
+                        .habits
+                        .log
+                        .contains_key(&taskboard_domain::HabitLogKey {
+                            habit: habit.id,
+                            window,
+                        })
+                }),
                 met: count >= quota,
             }
         })
@@ -7469,6 +7491,56 @@ mod habit_section_tests {
         assert!(habit_editing_enabled(false));
         assert!(!habit_editing_enabled(true));
         assert_eq!(habit_rows(&state, board, now, day()).len(), 2);
+    }
+
+    /// T-23 (#806) — the repair's typed undo side: the row model's
+    /// `repair_undoable` bit carries the `AdjustHabitLog` invert
+    /// condition verbatim — the target window holding a log row is
+    /// the `PreImages` side; an empty target window is the
+    /// `NotUndoable(HabitSurface)` side (the repair CREATES the row).
+    /// The caption splits on the bit; the tests are typed per side.
+    #[test]
+    fn the_habit_repair_row_signals_its_undo_side() {
+        let board = taskboard_domain::BoardId::from(uuid::Uuid::from_u128(2));
+        let now = ts(1_700_000_000);
+        let day_ctx = day();
+        // Inside yesterday's overflow grace (the repair arm's window):
+        // `now` early in today's day window keeps yesterday in grace.
+        let grace_now = day_ctx.instant(day_ctx.today(now), chrono::NaiveTime::MIN);
+        // A daily habit, quota 3, yesterday EMPTY: the repair targets
+        // the empty window — the not-undoable side.
+        let mut state = AppState::default();
+        let a = habit(1, 2, 0, None);
+        state.habits.habits.insert(a.id, a.clone());
+        let rows = habit_rows(&state, board, grace_now, day_ctx);
+        let row = rows.iter().find(|r| r.habit == a.id).expect("the row");
+        assert!(row.repair, "yesterday under quota mounts the repair");
+        assert!(
+            !row.repair_undoable,
+            "an empty target window is the NotUndoable(HabitSurface) side"
+        );
+        // Give yesterday a log row: the same repair now sits on the
+        // PreImages side — the exact invert.
+        state.habits.log.insert(
+            HabitLogKey {
+                habit: a.id,
+                window: WindowStart::of_period(
+                    PeriodKind::Day,
+                    day_ctx.today(grace_now).pred_opt().expect("yesterday"),
+                ),
+            },
+            HabitLogEntry {
+                count: 1,
+                clock: ts(100),
+            },
+        );
+        let rows = habit_rows(&state, board, grace_now, day_ctx);
+        let row = rows.iter().find(|r| r.habit == a.id).expect("the row");
+        assert!(row.repair);
+        assert!(
+            row.repair_undoable,
+            "a held target window is the exact-invert (PreImages) side"
+        );
     }
 
     /// D-6 T1 (UX R-1 D-2, #790): the renamed successor of the
