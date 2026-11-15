@@ -453,7 +453,7 @@ mod set_tests {
     /// carries the section, and a re-read through the figment stack
     /// (`extract_file_only`) sees the value.
     #[test]
-    fn a_known_key_writes_the_toml_layer_and_rereads() {
+    fn us10_s1_config_set_writes_the_toml_layer_and_rereads() {
         let path = temp_config("happy");
         let _ = std::fs::remove_file(&path);
         set(Some(path.clone()), "reminders.tick_secs", "45").expect("the write succeeds");
@@ -516,7 +516,7 @@ mod set_tests {
     /// D-5's unset arm: `config unset` removes the override so the
     /// default applies again (the figment re-read sees no override).
     #[test]
-    fn unset_removes_the_key() {
+    fn us10_s2_config_unset_removes_the_key() {
         let path = temp_config("unset");
         set(Some(path.clone()), "focus.work_mins", "50").expect("set");
         unset(Some(path.clone()), "focus.work_mins").expect("unset");
