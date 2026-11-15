@@ -160,6 +160,10 @@ static STANDARD: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::HabitCreate, ContextId::Today, &["Ctrl+Shift+H"]),
     (ActionId::BoardNext, ContextId::Board, &["b"]),
     (ActionId::BoardPrevious, ContextId::Board, &["B"]),
+    // The switcher flyout's opener (UX R-4 D-4, #794): the jump-to
+    // mnemonic — a target-free stroke now opens the bar's flyout
+    // (the b/B walk steps, Ctrl+G jumps).
+    (ActionId::BoardSelect, ContextId::Board, &["Ctrl+G"]),
     (ActionId::BoardCreate, ContextId::Board, &["Ctrl+Shift+N"]),
     (ActionId::BoardRename, ContextId::Board, &["Ctrl+F2"]),
     // The color picker's opener (UX R-4 D-1, #791): the CUA function
@@ -486,6 +490,10 @@ static EMACS: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::StackPrev, ContextId::Board, &["Ctrl+b"]),
     (ActionId::BoardNext, ContextId::Board, &["b"]),
     (ActionId::BoardPrevious, ContextId::Board, &["B"]),
+    // The switcher flyout's opener (UX R-4 D-4, #794): the C-c
+    // family's free bare g second stroke (C-c Ctrl+b is board-create
+    // — the chord stays unambiguous; the lone C-g is move-cancel).
+    (ActionId::BoardSelect, ContextId::Board, &["Ctrl+c", "g"]),
     // Round 2 (D18): the org-mode C-c family extends — bare second
     // strokes for stack verbs, chorded for board verbs.
     (ActionId::StackCreate, ContextId::Board, &["Ctrl+c", "s"]),
@@ -738,6 +746,10 @@ static VI: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::TaskReopen, ContextId::ViNormal, &["U"]),
     (ActionId::BoardNext, ContextId::ViNormal, &["b"]),
     (ActionId::BoardPrevious, ContextId::ViNormal, &["B"]),
+    // The switcher flyout's opener (UX R-4 D-4, #794): the g-family's
+    // free b (no family conflict; the buffer-switch shadow is vim's,
+    // ours is the flyout).
+    (ActionId::BoardSelect, ContextId::ViNormal, &["g", "b"]),
     // Round-1 chunk 2 (D18): vim's own window-resize family; `Ctrl+w`
     // alone is unbound, so the prefix-shadow pass stays clean.
     (ActionId::StackWider, ContextId::ViNormal, &["Ctrl+w", ">"]),
