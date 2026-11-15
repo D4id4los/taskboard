@@ -2113,6 +2113,21 @@ pub const OFFSET_SYNTAX_HINT: &str = "45m, 3h, 2d, 1w";
 /// The timers `when` field's syntax hint (r4 D27).
 pub const TIMER_SYNTAX_HINT: &str = "in 10m · at 09:30 · at 2030-04-01";
 
+/// The curated health flags in declaration order (T-15, #798): the
+/// flag chips' fixed row source — the delta never carries the parked
+/// extra names (the write paths never park; the domain's posture).
+pub const HEALTH_FLAGS: &[taskboard_domain::HealthFlag] = &[
+    taskboard_domain::HealthFlag::Migraine,
+    taskboard_domain::HealthFlag::MinorHeadache,
+    taskboard_domain::HealthFlag::MediumHeadache,
+    taskboard_domain::HealthFlag::ColdOrFlu,
+    taskboard_domain::HealthFlag::Allergies,
+    taskboard_domain::HealthFlag::Cramps,
+    taskboard_domain::HealthFlag::PoorSleep,
+    taskboard_domain::HealthFlag::Overwhelmed,
+    taskboard_domain::HealthFlag::GoodDay,
+];
+
 /// The break-rule threshold field's syntax hint (T-14, #797): the
 /// `WorkThreshold` mint's text grammar — the CLI `--after` flag's
 /// phrasing.

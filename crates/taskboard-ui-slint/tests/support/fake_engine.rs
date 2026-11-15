@@ -202,6 +202,48 @@ impl FakeEngine {
                 StateCommand::DeleteBreakRule { id } => {
                     state.reminders.break_rules.remove(&id);
                 }
+                // The journal verbs (T-15, #798): the edit applies the
+                // exact change mask (the planner's contract — the
+                // engine re-mints the ratings); the delete is the
+                // in-place tombstone (the row survives, the ledger
+                // renders live rows only).
+                StateCommand::UpdateReflection {
+                    id,
+                    text,
+                    mood,
+                    energy,
+                    ref flags_add,
+                    ref flags_remove,
+                } => {
+                    if let Some(entry) = state.reflection.entries.get_mut(&id) {
+                        if let Some(new_text) = text {
+                            entry.text = new_text;
+                        }
+                        if let Some(mood) = mood {
+                            entry.attributes.mood = mood.map(|n| {
+                                taskboard_domain::reflection::Rating::try_new(n)
+                                    .expect("the fixture rating is 1..=5")
+                            });
+                        }
+                        if let Some(energy) = energy {
+                            entry.attributes.energy = energy.map(|n| {
+                                taskboard_domain::reflection::Rating::try_new(n)
+                                    .expect("the fixture rating is 1..=5")
+                            });
+                        }
+                        for flag in flags_add {
+                            entry.attributes.flags.insert(*flag);
+                        }
+                        for flag in flags_remove {
+                            entry.attributes.flags.remove(flag);
+                        }
+                    }
+                }
+                StateCommand::DeleteReflection { id } => {
+                    if let Some(entry) = state.reflection.entries.get_mut(&id) {
+                        entry.deleted = true;
+                    }
+                }
                 StateCommand::DismissReminder {
                     reminder,
                     occurrence,

@@ -8,7 +8,7 @@
 //! UI start (no live re-map machinery — §5.6).
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -258,6 +258,19 @@ pub(crate) struct Adapter {
     break_rule_armed: Option<taskboard_domain::BreakRuleId>,
     /// The break-rule create form's open flag (pure presentation).
     break_rule_form_open: bool,
+    /// The journal ledger's editor facts (T-15, #798): the active
+    /// subject and the staged delete's armed subject (the one-armed
+    /// rule), the editor's staged buffers, and the flag delta relative
+    /// to the subject's live set (the commit folds them into
+    /// `flags_add`/`flags_remove` — the mask, never whole-set
+    /// replace).
+    reflection_active: Option<taskboard_domain::ReflectionId>,
+    reflection_armed: Option<taskboard_domain::ReflectionId>,
+    reflection_text_draft: String,
+    reflection_mood_draft: String,
+    reflection_energy_draft: String,
+    reflection_flags_add: BTreeSet<taskboard_domain::HealthFlag>,
+    reflection_flags_remove: BTreeSet<taskboard_domain::HealthFlag>,
     /// The break-rule form's threshold staged buffer (the
     /// `timer_when_draft` convention).
     break_rule_threshold_draft: String,
@@ -1704,6 +1717,7 @@ impl Adapter {
             label_form.as_ref(),
             label_armed_index,
             break_rule_armed_index,
+            (self.reflection_active, self.reflection_armed),
         );
         // Round-3 D27c: engine syncs re-grey a live menu — the pages
         // rebuild from the fresh state while the menu holds (the
@@ -5703,6 +5717,64 @@ impl Adapter {
         };
         window.set_break_threshold_validity(break_validity);
         window.set_break_threshold_error_hint(SharedString::from(break_hint));
+        // The journal ledger's editor facts (T-15, #798): open flag,
+        // the staged echoes, the ratings' validity flavours (the
+        // `Rating` mint's 1..=5; empty is neutral — the legal clear),
+        // the curated flag chips' rendered membership, and the armed
+        // strip's flag.
+        window.set_reflection_editor_open(self.reflection_active.is_some());
+        window.set_reflection_editor_text_echo(SharedString::from(
+            self.reflection_text_draft.clone(),
+        ));
+        window.set_reflection_editor_mood_echo(SharedString::from(
+            self.reflection_mood_draft.clone(),
+        ));
+        window.set_reflection_editor_energy_echo(SharedString::from(
+            self.reflection_energy_draft.clone(),
+        ));
+        let rating_validity = |draft: &str| {
+            if draft.is_empty() {
+                crate::FieldValidity::Neutral
+            } else if taskboard_domain::reflection::Rating::try_new(
+                draft.parse::<u8>().unwrap_or(0),
+            )
+            .is_ok()
+            {
+                crate::FieldValidity::Valid
+            } else {
+                crate::FieldValidity::Invalid
+            }
+        };
+        window.set_reflection_editor_mood_validity(rating_validity(&self.reflection_mood_draft));
+        window
+            .set_reflection_editor_energy_validity(rating_validity(&self.reflection_energy_draft));
+        window.set_reflection_remove_armed(self.reflection_armed.is_some());
+        let chips: Vec<crate::ReflectionFlagChip> = crate::presentation::HEALTH_FLAGS
+            .iter()
+            .map(|flag| {
+                let current = self
+                    .reflection_active
+                    .and_then(|id| {
+                        self.state
+                            .load()
+                            .reflection
+                            .entries
+                            .get(&id)
+                            .map(|entry| entry.attributes.flags.contains(flag))
+                    })
+                    .unwrap_or(false);
+                let member = if current {
+                    !self.reflection_flags_remove.contains(flag)
+                } else {
+                    self.reflection_flags_add.contains(flag)
+                };
+                crate::ReflectionFlagChip {
+                    label: SharedString::from(flag.text_form()),
+                    member,
+                }
+            })
+            .collect();
+        window.set_reflection_editor_flags_model(ModelRc::new(slint::VecModel::from(chips)));
         global.set_preset_index(preset_index(self.settings.preset));
         global.set_status_text(SharedString::from(crate::settings_status::status_text(
             self.settings.outcome,
@@ -7371,6 +7443,13 @@ pub(crate) fn install(
         break_rule_armed: None,
         break_rule_form_open: false,
         break_rule_threshold_draft: String::new(),
+        reflection_active: None,
+        reflection_armed: None,
+        reflection_text_draft: String::new(),
+        reflection_mood_draft: String::new(),
+        reflection_energy_draft: String::new(),
+        reflection_flags_add: BTreeSet::default(),
+        reflection_flags_remove: BTreeSet::default(),
         track_entry_draft: None,
         track_entry_target: None,
         track_target: None,
@@ -7615,6 +7694,7 @@ fn install_view_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     install_tracking_seams(window, adapter);
     install_focus_seams(window, adapter);
     install_review_walk_seams(window, adapter);
+    install_review_ledger_seams(window, adapter);
     install_habit_seams(window, adapter);
     install_recur_seams(window, adapter);
     install_recur_editor_seams(window, adapter);
@@ -11268,6 +11348,232 @@ fn install_focus_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
 /// mirrors (the answers, the date field) ride the plan buffers'
 /// discipline; the candidate click arms the pick directly (the
 /// one-shot target pattern).
+/// The journal ledger's seams (T-15, #798): the row activation seeds
+/// the inline editor from the subject's live state; the commit builds
+/// the exact `journal edit` change mask (an all-unchanged commit is
+/// the accepted no-op, clocks untouched); the delete stages through
+/// the armed confirm (the tombstone is the family's inverse-of-record,
+/// DR-7 D-J7 — the family's own verbs are the recovery surface, and
+/// this editor IS that surface arriving in the GUI). No new `ActionId`s:
+/// the ledger dispatches the engine commands directly (the labels
+/// armed-delete precedent), keeping `ContextId::Review` binding-free.
+#[allow(clippy::too_many_lines)] // the seam bundle: one block per intent
+fn install_review_ledger_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
+    install_seam!(window: window.on_reflection_row_activated, adapter: adapter;
+    bind mut (a, window), args (index), {        let Some(id) = a
+            .tables
+            .reflections
+            .get(usize::try_from(index).unwrap_or(usize::MAX))
+            .copied()
+        else {
+            return; // a stale index against an older tables pass
+        };
+        // Seed the buffers from the subject's live state (the echo is
+        // the stored row verbatim — never an excerpt).
+        let state = a.state.load();
+        let Some(entry) = state.reflection.entries.get(&id) else {
+            return;
+        };
+        a.reflection_active = Some(id);
+        a.reflection_text_draft.clone_from(&entry.text);
+        a.reflection_mood_draft = entry
+            .attributes
+            .mood
+            .map_or_else(String::new, |rating| rating.get().to_string());
+        a.reflection_energy_draft = entry
+            .attributes
+            .energy
+            .map_or_else(String::new, |rating| rating.get().to_string());
+        a.reflection_flags_add.clear();
+        a.reflection_flags_remove.clear();
+        a.refresh_forced(&window);
+
+    });
+    install_seam!(window: window.on_reflection_editor_text_edited, adapter: adapter; [bare_mut]
+    bind mut (a), args (text), {        a.reflection_text_draft = text.to_string();
+
+    });
+    install_seam!(window: window.on_reflection_editor_mood_edited, adapter: adapter; [bare_mut]
+    bind mut (a), args (text), {        a.reflection_mood_draft = text.to_string();
+
+    });
+    install_seam!(window: window.on_reflection_editor_energy_edited, adapter: adapter; [bare_mut]
+    bind mut (a), args (text), {        a.reflection_energy_draft = text.to_string();
+
+    });
+    install_seam!(window: window.on_reflection_editor_flag_toggled, adapter: adapter;
+    bind mut (a, window), args (index), {        let Some(flag) = crate::presentation::HEALTH_FLAGS
+            .get(usize::try_from(index).unwrap_or(usize::MAX))
+        else {
+            return;
+        };
+        let Some(id) = a.reflection_active else {
+            return;
+        };
+        let state = a.state.load();
+        let Some(entry) = state.reflection.entries.get(&id) else {
+            return;
+        };
+        // The delta is relative to the subject's live set (the mask's
+        // halves, never whole-set replace): a member chip toggles the
+        // remove half, a non-member the add half.
+        if entry.attributes.flags.contains(flag) {
+            if !a.reflection_flags_remove.remove(flag) {
+                a.reflection_flags_remove.insert(*flag);
+            }
+        } else if !a.reflection_flags_add.remove(flag) {
+            a.reflection_flags_add.insert(*flag);
+        }
+        a.refresh_forced(&window);
+
+    });
+    install_seam!(window: window.on_reflection_editor_committed, adapter: adapter;
+    bind mut (a, window), args (), {        let Some(id) = a.reflection_active else {
+            return;
+        };
+        let state = a.state.load();
+        let Some(entry) = state.reflection.entries.get(&id) else {
+            drop(state);
+            a.reflection_active = None; // the subject went stale
+            a.refresh_forced(&window);
+            return;
+        };
+        // The text mask: a changed draft rides verbatim (the empty
+        // text is the domain's legal clear).
+        let text = (a.reflection_text_draft != entry.text)
+            .then(|| a.reflection_text_draft.clone());
+        // The rating masks: empty = clear (when set), a valid number =
+        // set (when changed); an invalid draft refuses the commit (the
+        // flavour renders; nothing dispatches).
+        let rating_mask = |draft: &str,
+                           current: Option<taskboard_domain::reflection::Rating>|
+         -> Option<Option<taskboard_domain::reflection::Rating>> {
+            if draft.is_empty() {
+                current.map(|_| None)
+            } else {
+                match draft.parse::<u8>().ok().and_then(|n| {
+                    taskboard_domain::reflection::Rating::try_new(n).ok()
+                }) {
+                    Some(rating) if Some(rating) != current => Some(Some(rating)),
+                    _ => None,
+                }
+            }
+        };
+        let mood_valid = a.reflection_mood_draft.is_empty()
+            || a
+                .reflection_mood_draft
+                .parse::<u8>()
+                .ok()
+                .and_then(|n| taskboard_domain::reflection::Rating::try_new(n).ok())
+                .is_some();
+        let energy_valid = a.reflection_energy_draft.is_empty()
+            || a
+                .reflection_energy_draft
+                .parse::<u8>()
+                .ok()
+                .and_then(|n| taskboard_domain::reflection::Rating::try_new(n).ok())
+                .is_some();
+        if !mood_valid || !energy_valid {
+            return; // an invalid draft never dispatches (the flavour renders)
+        }
+        // The command's payload carries the raw rating byte (the
+        // planner re-mints — the trust boundary is the engine's).
+        let mood = rating_mask(&a.reflection_mood_draft, entry.attributes.mood)
+            .map(|inner| inner.map(taskboard_domain::reflection::Rating::get));
+        let energy = rating_mask(&a.reflection_energy_draft, entry.attributes.energy)
+            .map(|inner| inner.map(taskboard_domain::reflection::Rating::get));
+        let flags_add = a.reflection_flags_add.clone();
+        let flags_remove = a.reflection_flags_remove.clone();
+        // An all-unchanged editor commits the accepted no-op (the
+        // planner's contract — clocks untouched).
+        let command = StateCommand::UpdateReflection {
+            id,
+            text,
+            mood,
+            energy,
+            flags_add,
+            flags_remove,
+        };
+        if a.commands.try_send(command).is_err() {
+            tracing::warn!("journal edit dropped: command channel full or closed");
+            return;
+        }
+        a.reflection_active = None;
+        a.reflection_text_draft.clear();
+        a.reflection_mood_draft.clear();
+        a.reflection_energy_draft.clear();
+        a.reflection_flags_add.clear();
+        a.reflection_flags_remove.clear();
+        a.refresh_forced(&window);
+
+    });
+    install_seam!(window: window.on_reflection_editor_cancelled, adapter: adapter;
+    bind mut (a, window), args (), {        if a.reflection_active.take().is_some() {
+            a.reflection_text_draft.clear();
+            a.reflection_mood_draft.clear();
+            a.reflection_energy_draft.clear();
+            a.reflection_flags_add.clear();
+            a.reflection_flags_remove.clear();
+            a.refresh_forced(&window);
+        }
+
+    });
+    install_seam!(window: window.on_reflection_remove_clicked, adapter: adapter;
+    bind mut (a, window), args (index), {        let Some(id) = a
+            .tables
+            .reflections
+            .get(usize::try_from(index).unwrap_or(usize::MAX))
+            .copied()
+        else {
+            return; // a stale index against an older tables pass
+        };
+        // Arming is a UI-state toggle (the settings armed-item
+        // letter): one armed subject surface-wide, arming touches no
+        // engine state.
+        a.reflection_armed = if a.reflection_armed == Some(id) {
+            None
+        } else {
+            Some(id)
+        };
+        a.refresh_forced(&window);
+
+    });
+    install_seam!(window: window.on_reflection_remove_confirmed, adapter: adapter;
+    bind mut (a, window), args (index), {        let Some(id) = a
+            .tables
+            .reflections
+            .get(usize::try_from(index).unwrap_or(usize::MAX))
+            .copied()
+        else {
+            a.reflection_armed = None; // a stale confirm disarms
+            return;
+        };
+        // The armed identity types the verb: clears the flag BEFORE
+        // the send; a stale index disarms silently.
+        let Some(armed) = a.reflection_armed.take() else {
+            return;
+        };
+        if armed != id {
+            return;
+        }
+        if a
+            .commands
+            .try_send(StateCommand::DeleteReflection { id })
+            .is_err()
+        {
+            tracing::warn!("journal delete dropped: command channel full or closed");
+        }
+        a.refresh_forced(&window);
+
+    });
+    install_seam!(window: window.on_reflection_remove_cancelled, adapter: adapter;
+    bind mut (a, window), args (), {        if a.reflection_armed.take().is_some() {
+            a.refresh_forced(&window);
+        }
+
+    });
+}
+
 fn install_review_walk_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     install_seam!(window: window.on_walk_scrim_clicked, adapter: adapter;
     bind mut (a, window), args (), {        a.route(&window, ActionId::ReviewWalkBack);

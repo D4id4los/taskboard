@@ -33,7 +33,7 @@ import { StackView, StackDetailModel } from "views/stack-view.slint";
 import { TodayView, TodayModel } from "views/today-view.slint";
 import { PlanNextDayView, PlanModel } from "views/plan-next-day-view.slint";
 import { TaskView, TaskDetailModel } from "views/task-view.slint";
-import { ReviewView, ReviewModel } from "views/review-view.slint";
+import { ReviewView, ReviewModel, ReflectionFlagChip } from "views/review-view.slint";
 export { ReviewModel }
 export { TimerRowModel, BreakRuleRowModel }
 import { DueDayModel } from "compositions/date-picker.slint";
@@ -201,6 +201,26 @@ export component AppWindow inherits Window {
     // The review surface (#214): the whole model arrives from the
     // push pass; the kiosk gate empties it model-side.
     in-out property <ReviewModel> review-model;
+    // The journal ledger's editor + staged delete (T-15, #798): the
+    // review view's facts, forwarded to the seams.
+    in-out property <bool> reflection-editor-open: false;
+    in-out property <string> reflection-editor-text-echo: "";
+    in-out property <string> reflection-editor-mood-echo: "";
+    in-out property <string> reflection-editor-energy-echo: "";
+    in-out property <FieldValidity> reflection-editor-mood-validity: FieldValidity.neutral;
+    in-out property <FieldValidity> reflection-editor-energy-validity: FieldValidity.neutral;
+    in-out property <[ReflectionFlagChip]> reflection-editor-flags-model;
+    in-out property <bool> reflection-remove-armed: false;
+    pure callback reflection-row-activated(int);
+    pure callback reflection-editor-text-edited(string);
+    pure callback reflection-editor-mood-edited(string);
+    pure callback reflection-editor-energy-edited(string);
+    pure callback reflection-editor-flag-toggled(int);
+    pure callback reflection-editor-committed();
+    pure callback reflection-editor-cancelled();
+    pure callback reflection-remove-clicked(int);
+    pure callback reflection-remove-confirmed(int);
+    pure callback reflection-remove-cancelled();
     // The settings seams (round-1 chunk 3, D6.6/D7/D9).
     callback settings-back-clicked();
     callback settings-field-edited(int, string);
@@ -585,6 +605,25 @@ export component AppWindow inherits Window {
             if (root.current-view == View.review): ReviewView {
                 review: root.review-model;
                 viewport-height: root.window-height;
+                // The ledger's editor + staged delete (T-15, #798).
+                reflection-editor-open: root.reflection-editor-open;
+                reflection-editor-text-echo: root.reflection-editor-text-echo;
+                reflection-editor-mood-echo: root.reflection-editor-mood-echo;
+                reflection-editor-energy-echo: root.reflection-editor-energy-echo;
+                reflection-editor-mood-validity: root.reflection-editor-mood-validity;
+                reflection-editor-energy-validity: root.reflection-editor-energy-validity;
+                reflection-editor-flags: root.reflection-editor-flags-model;
+                reflection-remove-armed: root.reflection-remove-armed;
+                reflection-row-activated(r) => root.reflection-row-activated(r);
+                reflection-editor-text-edited(t) => root.reflection-editor-text-edited(t);
+                reflection-editor-mood-edited(t) => root.reflection-editor-mood-edited(t);
+                reflection-editor-energy-edited(t) => root.reflection-editor-energy-edited(t);
+                reflection-editor-flag-toggled(c) => root.reflection-editor-flag-toggled(c);
+                reflection-editor-committed() => root.reflection-editor-committed();
+                reflection-editor-cancelled() => root.reflection-editor-cancelled();
+                reflection-remove-clicked(r) => root.reflection-remove-clicked(r);
+                reflection-remove-confirmed(r) => root.reflection-remove-confirmed(r);
+                reflection-remove-cancelled() => root.reflection-remove-cancelled();
             }
             if (root.current-view == View.task-detail): TaskView {
                 task: root.task-model;

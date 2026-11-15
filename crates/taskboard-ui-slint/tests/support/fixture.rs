@@ -155,6 +155,41 @@ pub fn add_alarm_with_rung(
     id
 }
 
+/// The journal-ledger helper (T-15, #798): mints one live reflection
+/// entry with the given text/attributes and hands back its id — the
+/// journeys address ledger rows through these, never hand-building
+/// the domain row.
+#[must_use]
+pub fn add_reflection(
+    state: &mut AppState,
+    text: &str,
+    attributes: taskboard_domain::ReflectionAttributes,
+    now: chrono::DateTime<chrono::Utc>,
+) -> taskboard_domain::ReflectionId {
+    let calendar = taskboard_domain::DayCalendar {
+        day_start_time: chrono::NaiveTime::from_hms_opt(4, 0, 0).expect("4:00"),
+        offset: chrono::FixedOffset::east_opt(0).expect("utc"),
+    };
+    let yesterday = calendar.today(now).pred_opt().expect("yesterday");
+    let window =
+        taskboard_domain::review_window(taskboard_domain::ReviewCadence::Day, yesterday, calendar);
+    let entry = taskboard_domain::ReflectionEntry {
+        id: taskboard_domain::ReflectionId::from_uuid(uuid::Uuid::now_v7()),
+        cadence: taskboard_domain::ReviewCadence::Day,
+        day: window.day(),
+        window_start: window.start(),
+        window_end: window.end(),
+        text: text.to_owned(),
+        attributes,
+        created_at: now,
+        updated_at: now,
+        deleted: false,
+    };
+    let id = entry.id;
+    state.reflection.entries.insert(entry.id, entry);
+    id
+}
+
 /// The break-rule roster helper (T-14, #797): mints one rule roaming
 /// with the given board and hands back its id — the journeys address
 /// roster rows through these, never hand-building the domain row.

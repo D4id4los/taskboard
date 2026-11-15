@@ -87,6 +87,11 @@ pub struct IdTables {
     /// like the notifications table — the cancel seam's resolution
     /// base; empty on kiosk.
     pub timers: Vec<taskboard_domain::AdhocAlarmId>,
+    /// The journal ledger's rows (T-15, #798): id-indexed in the
+    /// ledger's own `(window_start desc, id desc)` display order — the
+    /// activation and staged-delete seams' resolution base (the
+    /// index-seam rule).
+    pub reflections: Vec<taskboard_domain::ReflectionId>,
     /// The break-rule roster's rows (T-14, #797): id-indexed in the
     /// CLI list's canonical `(threshold, id)` order — the staged
     /// remove seams' resolution base (the index-seam rule).
@@ -960,6 +965,10 @@ pub fn push(
     label_form: Option<&crate::models::LabelFormPush>,
     label_armed_index: i32,
     break_rule_armed_index: i32,
+    reflection_focus: (
+        Option<taskboard_domain::ReflectionId>,
+        Option<taskboard_domain::ReflectionId>,
+    ),
 ) -> IdTables {
     let now = day.now;
     let sets = presentation::due_sets(state, now, due.horizon);
@@ -1096,7 +1105,16 @@ pub fn push(
         label_armed_index,
         calendar,
     );
-    mutations += push_review(window, state, day, calendar, kiosk, models);
+    mutations += push_review(
+        window,
+        state,
+        day,
+        calendar,
+        kiosk,
+        reflection_focus,
+        &mut tables,
+        models,
+    );
     mutations += push_plan_next_day(
         window,
         state,
@@ -1230,12 +1248,18 @@ fn push_focus_overlay(
 /// the `push_notifications` precedent): the empty model is emitted on
 /// the appliance even though the rotation can never route to the view.
 /// Returns the diff's mutation count.
+#[allow(clippy::too_many_arguments)] // the pass-shaped parameter list, like `push`
 fn push_review(
     window: &AppWindow,
     state: &AppState,
     day: crate::view_state::DayCtx,
     calendar: taskboard_domain::DayCalendar,
     kiosk: bool,
+    reflection_focus: (
+        Option<taskboard_domain::ReflectionId>,
+        Option<taskboard_domain::ReflectionId>,
+    ),
+    tables: &mut IdTables,
     models: &mut PushModels,
 ) -> usize {
     // The kiosk belt (D-10(b)): the empty model on the appliance,
@@ -1243,6 +1267,7 @@ fn push_review(
     if kiosk {
         return push_review_model(window, models, empty_review_model(), &[], &[]);
     }
+    let (reflection_active, reflection_armed) = reflection_focus;
     // The bounds are derived per pass and passed into `calibrate` as
     // data (constraint 2: the projection never reads a clock).
     let now = day.now;
@@ -1325,7 +1350,9 @@ fn push_review(
     let reflection_week = to_reflection(week_window, week_days);
     let reflection_month = to_reflection(month_window, month_days);
     let reflection_month_empty = reflection_month.empty;
-    let reflection_rows = rows_of_past_entries(&state.reflection);
+    let (reflection_rows, reflection_ids) =
+        rows_of_past_entries(&state.reflection, reflection_active, reflection_armed);
+    tables.reflections = reflection_ids;
     let model = ReviewModel {
         week: to_window(&week_report.aggregate),
         month: to_window(&month_report.aggregate),
@@ -1426,8 +1453,14 @@ fn reflection_section_model(
 /// text form, the text body, the ratings ("" = unrated, the dash
 /// renders structurally), and the flags in declaration order with the
 /// parked names verbatim behind the curated set. No window, no cap.
-fn rows_of_past_entries(reflection: &taskboard_domain::ReflectionState) -> Vec<ReflectionRowModel> {
-    taskboard_domain::past_entries(reflection)
+fn rows_of_past_entries(
+    reflection: &taskboard_domain::ReflectionState,
+    active: Option<taskboard_domain::ReflectionId>,
+    armed: Option<taskboard_domain::ReflectionId>,
+) -> (Vec<ReflectionRowModel>, Vec<taskboard_domain::ReflectionId>) {
+    let entries = taskboard_domain::past_entries(reflection);
+    let ids = entries.iter().map(|row| row.id).collect();
+    let rows = entries
         .into_iter()
         .map(|row| ReflectionRowModel {
             day: SharedString::from(row.day.to_string()),
@@ -1448,8 +1481,11 @@ fn rows_of_past_entries(reflection: &taskboard_domain::ReflectionState) -> Vec<R
                     .collect::<Vec<_>>()
                     .join(" "),
             ),
+            active: active == Some(row.id),
+            armed: armed == Some(row.id),
         })
-        .collect()
+        .collect();
+    (rows, ids)
 }
 
 /// The review windows' fixed sizes (D-4): the smallest defensible
@@ -4249,6 +4285,7 @@ mod tests {
                 None,
                 -1,
                 -1,
+                (None, None),
             )
         }
 
